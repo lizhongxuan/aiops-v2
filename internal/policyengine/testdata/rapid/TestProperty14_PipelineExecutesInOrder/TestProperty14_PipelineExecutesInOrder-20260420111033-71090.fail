@@ -1,0 +1,12 @@
+# 2026/04/20 11:10:33.320038 [TestProperty14_PipelineExecutesInOrder] [rapid] draw readOnlyTool: "file_read"
+# 2026/04/20 11:10:33.320042 [TestProperty14_PipelineExecutesInOrder] [rapid] draw permAction: "need_approval"
+# 2026/04/20 11:10:33.320044 [TestProperty14_PipelineExecutesInOrder] [rapid] draw evidAction: "deny"
+# 2026/04/20 11:10:33.320045 [TestProperty14_PipelineExecutesInOrder] pipeline should return most restrictive action: perm=need_approval, evid=deny, expected=deny, got=need_approval
+# 
+v0.4.8#10548097934996163900
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x1

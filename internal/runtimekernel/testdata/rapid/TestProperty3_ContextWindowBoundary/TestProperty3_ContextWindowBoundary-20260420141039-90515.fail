@@ -1,0 +1,33 @@
+# 2026/04/20 14:10:39.478765 [TestProperty3_ContextWindowBoundary] [rapid] draw maxTokens: 100
+# 2026/04/20 14:10:39.478768 [TestProperty3_ContextWindowBoundary] [rapid] draw numMessages: 1
+# 2026/04/20 14:10:39.478769 [TestProperty3_ContextWindowBoundary] [rapid] draw contentLen: 404
+# 2026/04/20 14:10:39.478771 [TestProperty3_ContextWindowBoundary] [rapid] draw msgID: "0000"
+# 2026/04/20 14:10:39.478772 [TestProperty3_ContextWindowBoundary] UsedTokens (101) exceeds MaxTokens (100)
+# 
+v0.4.8#4685175010062496022
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1354fc1586e7e0
+0x18a
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
