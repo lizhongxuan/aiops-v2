@@ -14,15 +14,53 @@ import (
 func (c *PromptCompilerImpl) buildDeveloperInstructions(ctx CompileContext) (DeveloperInstructions, error) {
 	constraints := c.resolveConstraints(ctx)
 
-	var parts []string
-	parts = append(parts, "# Developer Instructions")
+	content := strings.Join(append(developerConstraintLines(constraints), dynamicPromptFragments(ctx)...), "\n")
+	return DeveloperInstructions{
+		Content:     content,
+		Constraints: constraints,
+	}, nil
+}
+
+func (c *PromptCompilerImpl) buildStableDeveloperInstructions(ctx CompileContext) DeveloperInstructions {
+	constraints := c.resolveConstraints(ctx)
+	return DeveloperInstructions{
+		Content:     strings.Join(developerConstraintLines(constraints), "\n"),
+		Constraints: constraints,
+	}
+}
+
+func developerConstraintLines(constraints []string) []string {
+	lines := make([]string, 0, len(constraints)+1)
+	lines = append(lines, "# Developer Instructions")
 	for _, constraint := range constraints {
-		parts = append(parts, fmt.Sprintf("- %s", constraint))
+		lines = append(lines, fmt.Sprintf("- %s", constraint))
+	}
+	return lines
+}
+
+func dynamicPromptFragments(ctx CompileContext) []string {
+	var parts []string
+	for _, asset := range ctx.SkillPromptAssets {
+		asset = strings.TrimSpace(asset)
+		if asset == "" {
+			continue
+		}
+		parts = append(parts, asset)
 	}
 
-	// Append skill prompt assets
-	for _, asset := range ctx.SkillPromptAssets {
-		parts = append(parts, asset)
+	if len(ctx.EvidenceReminders) > 0 {
+		lines := make([]string, 0, len(ctx.EvidenceReminders)+1)
+		lines = append(lines, "## Evidence Reminders")
+		for _, reminder := range ctx.EvidenceReminders {
+			reminder = strings.TrimSpace(reminder)
+			if reminder == "" {
+				continue
+			}
+			lines = append(lines, "- "+reminder)
+		}
+		if len(lines) > 1 {
+			parts = append(parts, strings.Join(lines, "\n"))
+		}
 	}
 
 	for _, section := range ctx.ExtraSections {
@@ -38,12 +76,7 @@ func (c *PromptCompilerImpl) buildDeveloperInstructions(ctx CompileContext) (Dev
 			parts = append(parts, content)
 		}
 	}
-
-	content := strings.Join(parts, "\n")
-	return DeveloperInstructions{
-		Content:     content,
-		Constraints: constraints,
-	}, nil
+	return parts
 }
 
 // resolveConstraints determines the active constraints based on mode and agent kind.
@@ -67,7 +100,6 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 		constraints = append(constraints, "Generate plans for review before execution.")
 	case "execute":
 		constraints = append(constraints, "Mutation operations require approval before execution.")
-		constraints = append(constraints, "Always collect evidence before and after mutations.")
 	}
 
 	// Agent kind constraints

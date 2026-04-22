@@ -304,3 +304,45 @@ func TestRegistryAssembleToolPoolWithOptionsPrefersBuiltinOverExtraMCPConflict(t
 		t.Fatalf("Info().Desc = %q, want builtin", info.Desc)
 	}
 }
+
+func TestToolMetadataAndResultSpillHelpers(t *testing.T) {
+	meta := ToolMetadata{ResultBudget: ResultBudget{MaxInlineResultBytes: 8192}}
+	if got := meta.EffectiveResultBudget(4096); got.MaxInlineResultBytes != 8192 {
+		t.Fatalf("EffectiveResultBudget().MaxInlineResultBytes = %d, want 8192", got.MaxInlineResultBytes)
+	}
+
+	zeroBudget := ToolMetadata{}
+	if got := zeroBudget.EffectiveResultBudget(4096); got.MaxInlineResultBytes != 4096 {
+		t.Fatalf("EffectiveResultBudget().MaxInlineResultBytes = %d, want 4096", got.MaxInlineResultBytes)
+	}
+
+	result := ToolResult{ResultBudget: ResultBudget{MaxInlineResultBytes: 2048, SpillPolicy: ResultSpillPolicyExternalize}}
+	if got := result.EffectiveResultBudget(4096); got.MaxInlineResultBytes != 2048 {
+		t.Fatalf("ToolResult.EffectiveResultBudget().MaxInlineResultBytes = %d, want 2048", got.MaxInlineResultBytes)
+	}
+	if got := result.EffectiveResultBudget(4096); got.SpillPolicy != ResultSpillPolicyExternalize {
+		t.Fatalf("ToolResult.EffectiveResultBudget().SpillPolicy = %q, want %q", got.SpillPolicy, ResultSpillPolicyExternalize)
+	}
+	if result.HasSpill() {
+		t.Fatal("HasSpill() = true, want false")
+	}
+
+	result.Spill = &ResultSpill{
+		ID:          "spill-1",
+		ContentType: "text/plain",
+		Bytes:       12,
+	}
+	if !result.HasSpill() {
+		t.Fatal("HasSpill() = false, want true")
+	}
+	if result.Spill.ID != "spill-1" {
+		t.Fatalf("Spill.ID = %q, want spill-1", result.Spill.ID)
+	}
+
+	result.References = []ResultReference{
+		{Kind: ResultReferenceKindCard, CardRef: "card-1"},
+	}
+	if !result.HasReferences() {
+		t.Fatal("HasReferences() = false, want true")
+	}
+}

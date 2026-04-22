@@ -221,6 +221,9 @@ func TestCompile_DeveloperInstructions_ExecuteMode(t *testing.T) {
 	ctx := CompileContext{
 		SessionType: "host",
 		Mode:        "execute",
+		EvidenceReminders: []string{
+			"Collect pre/post evidence for this run.",
+		},
 	}
 
 	result, err := compiler.Compile(ctx)
@@ -231,8 +234,11 @@ func TestCompile_DeveloperInstructions_ExecuteMode(t *testing.T) {
 	if !strings.Contains(result.Developer.Content, "approval") {
 		t.Error("Execute mode should mention approval requirement")
 	}
-	if !strings.Contains(result.Developer.Content, "evidence") {
-		t.Error("Execute mode should mention evidence collection")
+	if !strings.Contains(result.Dynamic.Content, "Collect pre/post evidence for this run.") {
+		t.Error("Dynamic prompt should mention evidence collection")
+	}
+	if strings.Contains(result.Stable.Content, "Collect pre/post evidence for this run.") {
+		t.Error("Stable prompt should not inline evidence collection reminder")
 	}
 }
 
@@ -308,6 +314,9 @@ func TestCompile_ToolPromptSet_WithTools(t *testing.T) {
 	ctx := CompileContext{
 		SessionType: "host",
 		Mode:        "execute",
+		EvidenceReminders: []string{
+			"Capture before/after evidence for any mutation.",
+		},
 		AssembledTools: []Tool{
 			&mockToolRuntime{
 				name:                "host.disk_usage",
@@ -337,12 +346,24 @@ func TestCompile_ToolPromptSet_WithTools(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should contain tool names
+	// Stable index should contain tool names and capability summaries.
 	if !strings.Contains(result.Tools.Content, "host.disk_usage") {
 		t.Error("Tool prompt should contain disk_usage tool")
 	}
 	if !strings.Contains(result.Tools.Content, "host.file_write") {
 		t.Error("Tool prompt should contain file_write tool")
+	}
+	if !strings.Contains(result.Tools.Content, "# Tool Index") {
+		t.Fatal("Tool prompt should render a stable tool index")
+	}
+	if strings.Contains(result.Tools.Content, "Approval:") {
+		t.Fatal("Tool index should not inline approval reminders")
+	}
+	if strings.Contains(result.Tools.Content, "Constraints:") {
+		t.Fatal("Tool index should not inline full constraint blocks")
+	}
+	if strings.Contains(result.Tools.Content, "Result:") {
+		t.Fatal("Tool index should not inline result-shape blocks")
 	}
 
 	// Should have correct number of entries
@@ -368,6 +389,12 @@ func TestCompile_ToolPromptSet_WithTools(t *testing.T) {
 	}
 	if writeEntry.ApprovalNote == "" {
 		t.Error("Destructive tool should have approval note")
+	}
+	if !strings.Contains(result.Dynamic.Content, "host.file_write") {
+		t.Fatal("Dynamic prompt should carry approval reminders for destructive tools")
+	}
+	if !strings.Contains(result.Dynamic.Content, "Capture before/after evidence") {
+		t.Fatal("Dynamic prompt should carry evidence reminders")
 	}
 }
 
@@ -572,6 +599,111 @@ func TestCompile_RuntimePolicy_CustomPolicy(t *testing.T) {
 	}
 }
 
+func TestCompile_StableAndDynamicSplit(t *testing.T) {
+	compiler := NewCompiler()
+
+	ctx := CompileContext{
+		SessionType:       "workspace",
+		Mode:              "execute",
+		HostContext:       "worker-host-01",
+		SkillPromptAssets: []string{"Use evidence-driven remediation."},
+		ExtraSections: []PromptSection{
+			{Title: "Reminder", Content: "Collect pre/post evidence."},
+		},
+		AssembledTools: []Tool{
+			&mockToolRuntime{
+				name:                "workspace.sync_state",
+				metadataDescription: "Synchronize workspace state",
+				desc:                "Synchronize workspace state fallback",
+				readOnly:            true,
+				concurrencySafe:     true,
+				outputSchema:        json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}
+
+	result, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Stable.Content == "" {
+		t.Fatal("Stable prompt should not be empty")
+	}
+	if result.Dynamic.Content == "" {
+		t.Fatal("Dynamic prompt should not be empty")
+	}
+
+	if !strings.Contains(result.Stable.Content, result.System.Content) {
+		t.Error("Stable prompt should include system content")
+	}
+	if !strings.Contains(result.Stable.Content, result.Stable.Developer.Content) {
+		t.Error("Stable prompt should include stable developer content")
+	}
+	if !strings.Contains(result.Stable.Content, result.Tools.Content) {
+		t.Error("Stable prompt should include tool content")
+	}
+	if strings.Contains(result.Stable.Content, result.Policy.Content) {
+		t.Error("Stable prompt should not include runtime policy content")
+	}
+	if strings.Contains(result.Stable.Content, "Use evidence-driven remediation.") {
+		t.Error("Stable prompt should exclude skill prompt assets")
+	}
+	if strings.Contains(result.Stable.Content, "Collect pre/post evidence.") {
+		t.Error("Stable prompt should exclude injected dynamic sections")
+	}
+
+	if !strings.Contains(result.Dynamic.Content, result.Policy.Content) {
+		t.Error("Dynamic prompt should include runtime policy content")
+	}
+	if result.Dynamic.Policy.Content != result.Policy.Content {
+		t.Error("Dynamic prompt policy should mirror legacy policy layer")
+	}
+	if !strings.Contains(result.Dynamic.Content, "Use evidence-driven remediation.") {
+		t.Error("Dynamic prompt should include skill prompt assets")
+	}
+	if !strings.Contains(result.Dynamic.Content, "Collect pre/post evidence.") {
+		t.Error("Dynamic prompt should include injected dynamic sections")
+	}
+	if !strings.Contains(result.Developer.Content, "Use evidence-driven remediation.") {
+		t.Error("Legacy developer content should remain backward compatible")
+	}
+}
+
+func TestCompiledPromptToMessages_UsesStableDynamicFallback(t *testing.T) {
+	compiled := CompiledPrompt{
+		Stable: StablePromptEnvelope{
+			System: SystemPrompt{Content: "system"},
+			Developer: DeveloperInstructions{
+				Content: "developer",
+			},
+			Tools:   ToolPromptSet{Content: "tools"},
+			Content: strings.Join([]string{"system", "developer", "tools"}, "\n\n"),
+		},
+		Dynamic: DynamicPromptDelta{
+			Policy:  RuntimePolicyPrompt{Content: "policy", Mode: "execute"},
+			Content: "policy",
+		},
+	}
+
+	messages := CompiledPromptToMessages(compiled)
+	if len(messages) != 4 {
+		t.Fatalf("expected 4 messages, got %d", len(messages))
+	}
+	if messages[0].Content != "system" {
+		t.Fatalf("message[0] = %q, want %q", messages[0].Content, "system")
+	}
+	if messages[1].Content != "developer" {
+		t.Fatalf("message[1] = %q, want %q", messages[1].Content, "developer")
+	}
+	if messages[2].Content != "tools" {
+		t.Fatalf("message[2] = %q, want %q", messages[2].Content, "tools")
+	}
+	if messages[3].Content != "policy" {
+		t.Fatalf("message[3] = %q, want %q", messages[3].Content, "policy")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: CompileForEino
 // ---------------------------------------------------------------------------
@@ -623,11 +755,73 @@ func TestCompileForEino_ProducesSystemMessages(t *testing.T) {
 	if !strings.Contains(messages[1].Content, "Developer Instructions") {
 		t.Error("Second message should be developer instructions")
 	}
-	if !strings.Contains(messages[2].Content, "Available Tools") {
+	if !strings.Contains(messages[2].Content, "Tool Index") {
 		t.Error("Third message should be tool prompt set")
 	}
 	if !strings.Contains(messages[3].Content, "Runtime Policy") {
 		t.Error("Fourth message should be runtime policy")
+	}
+}
+
+func TestCompile_DynamicPromptDelta_CarriesToolDeltaAndEvidenceReminders(t *testing.T) {
+	compiler := NewCompiler()
+
+	ctx := CompileContext{
+		SessionType: "host",
+		Mode:        "execute",
+		EvidenceReminders: []string{
+			"Pending evidence: capture config diff before remediation.",
+		},
+		ToolDelta: ToolPromptDelta{
+			NewlyAvailable:        []string{"remote.inspect"},
+			TemporarilyUnavailable: []string{"remote.write"},
+		},
+		AssembledTools: []Tool{
+			&mockToolRuntime{
+				name:                "remote.inspect",
+				metadataDescription: "Inspect remote state",
+				readOnly:            true,
+				concurrencySafe:     true,
+				outputSchema:        json.RawMessage(`{"type":"object"}`),
+			},
+			&mockToolRuntime{
+				name:                "remote.patch",
+				metadataDescription: "Patch remote state",
+				destructive:         true,
+				concurrencySafe:     true,
+				outputSchema:        json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	}
+
+	result, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Dynamic.EvidenceReminders) != 1 {
+		t.Fatalf("evidence reminders = %v, want 1 item", result.Dynamic.EvidenceReminders)
+	}
+	if !strings.Contains(result.Dynamic.Content, "Pending evidence: capture config diff before remediation.") {
+		t.Fatal("dynamic content should include evidence reminder")
+	}
+	if !strings.Contains(result.Dynamic.Content, "Newly available tools") {
+		t.Fatal("dynamic content should include tool delta section")
+	}
+	if !strings.Contains(result.Dynamic.Content, "remote.inspect") {
+		t.Fatal("dynamic content should mention newly available tool")
+	}
+	if !strings.Contains(result.Dynamic.Content, "remote.write") {
+		t.Fatal("dynamic content should mention temporarily unavailable tool")
+	}
+	if !strings.Contains(result.Dynamic.Content, "remote.patch") {
+		t.Fatal("dynamic content should include approval reminder for destructive tool")
+	}
+	if strings.Contains(result.Stable.Content, "Pending evidence: capture config diff before remediation.") {
+		t.Fatal("stable prompt must not contain evidence reminder")
+	}
+	if strings.Contains(result.Stable.Content, "Newly available tools") {
+		t.Fatal("stable prompt must not contain tool delta section")
 	}
 }
 

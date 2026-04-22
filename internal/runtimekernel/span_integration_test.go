@@ -151,6 +151,55 @@ func TestRunTurn_NoSpanSourceIsNoop(t *testing.T) {
 	}
 }
 
+func TestRunTurn_EmitsIterationStageActivityUpdates(t *testing.T) {
+	spanSource := &mockSpanStreamSource{}
+	kernel := newTestKernelWithSpanSource(spanSource)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-stage-events",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-stage-events",
+		Input:       "hello stages",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %q", result.Status)
+	}
+
+	emitter, ok := kernel.projector.(*testMockEventEmitter)
+	if !ok {
+		t.Fatal("expected testMockEventEmitter projector")
+	}
+	var stages []string
+	for _, event := range emitter.events {
+		if event.Type != EventActivityUpdate {
+			continue
+		}
+		var payload struct {
+			Iteration int    `json:"iteration"`
+			Stage     string `json:"stage"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("unmarshal stage payload: %v", err)
+		}
+		if payload.Iteration == 0 {
+			stages = append(stages, payload.Stage)
+		}
+	}
+	if len(stages) == 0 {
+		t.Fatal("expected iteration stage activity updates")
+	}
+	if !containsStage(stages, "context_pipeline") || !containsStage(stages, "call_model") {
+		t.Fatalf("iteration stages = %v, want context_pipeline and call_model", stages)
+	}
+	if len(spanSource.textEmissions) == 0 {
+		t.Fatal("expected span text emissions for iteration stages")
+	}
+}
+
 func TestSpanAwareRunnerCallback_ToolLifecycle(t *testing.T) {
 	spanSource := &mockSpanStreamSource{}
 	emitter := &testMockEventEmitter{}
@@ -516,6 +565,15 @@ func newMockToolAssemblySource() ToolAssemblySource {
 	return &testMockToolAssemblySource{registry: newEmptyRegistry()}
 }
 
+func containsStage(stages []string, target string) bool {
+	for _, stage := range stages {
+		if stage == target {
+			return true
+		}
+	}
+	return false
+}
+
 func newEmptyRegistry() *tooling.Registry {
 	return tooling.NewRegistry()
 }
@@ -545,7 +603,7 @@ type mockToolExecutor struct {
 	calls  int
 }
 
-func (m *mockToolExecutor) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+func (m *mockToolExecutor) Execute(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
 	m.calls++
-	return m.result, m.err
+	return tooling.ToolResult{Content: m.result}, m.err
 }

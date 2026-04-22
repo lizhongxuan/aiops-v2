@@ -210,8 +210,9 @@ func TestRouteRequest_ComplexTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result.Status != "running" {
-		t.Errorf("expected status 'running', got %q", result.Status)
+	// Complex workspace tasks now delegate to the shared runtime iteration loop.
+	if result.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", result.Status)
 	}
 }
 

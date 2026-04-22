@@ -49,6 +49,55 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 
 ---
 
+## 长时间运行 Runtime Guardrails
+
+这部分约束的是 `runtimekernel` 主运行链。新增 tool、prompt、checkpoint、session 恢复、streaming、compaction 时，必须先满足这里，再谈局部功能。
+
+### 1. 主运行链只有一条
+
+- 长时间运行 turn 只能由 `runtimekernel.EinoKernel` 驱动
+- host 路径的标准链路是：
+  `model -> assistant/tool_use checkpoint -> ToolDispatcher -> progress/tool_result checkpoint -> next iteration`
+- 不允许再造第二套 runtime kernel、第二套 turn loop、第二套 tool execution 旁路
+- 不允许在 feature 代码里直接调用 tool executor 绕开 `ToolDispatcher`
+
+### 2. Checkpoint / Suspend / Resume 是硬约束
+
+- assistant response 和 parsed `tool_use` 必须先落 checkpoint，再进入工具执行
+- `progress`、`partial result`、`tool_result` 必须支持增量 checkpoint，不能只在整批 tool 结束后一次性落盘
+- `NeedApproval` / `NeedEvidence` 必须进入显式 `suspended` 或 `resumable` 状态
+- 不允许出现“逻辑上 blocked，但 runtime 没有 checkpoint/pending state”的隐式中断
+
+### 3. Context / Result 只有一套治理路径
+
+- trim、compaction、spill、summary 必须在统一 context pipeline 中决策
+- tool result budget 只有一套标准语义：
+  `MaxInlineResultBytes`、`ResultSpillPolicy`、`SummarizeLargeResult`
+- runtime 结果承载只允许三段策略：
+  小结果内联；中结果摘要/预览内联且全文外溢；大结果只回灌摘要与引用
+- `ToolResult` 可以带 `blob/card/file` 引用，但这些引用仍要进入 runtime message / checkpoint / session external references 主路径
+- 不允许额外引入“只给 UI 看”的隐藏结果存储，或者另一套私有 compaction 状态
+
+### 4. Prompt / Tool 刷新必须按 iteration 收敛
+
+- stable prompt 与 dynamic prompt 的分层只能在 `promptcompiler` 中完成
+- tool surface 只能来自 iteration 级 assemble/refresh，不允许手写额外 tool prompt side channel
+- permission mode、hooks、MCP topology 造成的 tool 可见性变化，必须通过下一 iteration 的 tool refresh 生效
+
+### 5. 目前仍未完成的边界
+
+- `WorkspaceTask` 的创建/消费主路径仍主要属于后续 multi-agent 生命周期层；当前已具备 store-backed 持久化与 restart reconcile，但不是日常 host turn 主链的一部分
+
+### 6. 未来新增功能的落地规则
+
+- `docs/longtime_design_0422.md` 与 `docs/longtime_todo_0422.md` 的实施顺序固定按 `P0 -> P4` 表达；后续增强项只能追加在 `P4` 之后，不能重排主线
+- workspace/host 都必须继续走共享的 `RunTurn -> runHostIterationLoop` 主链；禁止重新引入 legacy workspace runtime path 或其他临时旁路
+- 如果新增功能需要 prompt、tool、checkpoint、session 恢复、streaming、compaction 变化，先改主链和设计文档，再落具体 feature
+
+以后新增功能，如果会碰到这些边界，先改设计和主链，不要在边缘逻辑里补兼容分支。
+
+---
+
 ## ⚠️ Registration Upgrade Guardrails
 
 本节是当前仓库的硬约束，不是建议项。它来自两部分依据：

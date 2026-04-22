@@ -53,29 +53,61 @@ func (cc *ContextCompressor) CompressAsync(ctx context.Context, span *Span, mess
 
 	go func() {
 		defer close(resultCh)
-
-		// Acquire worker slot (semaphore)
-		select {
-		case <-ctx.Done():
+		summary, err := cc.Compress(ctx, span, messages)
+		if err != nil {
 			resultCh <- ""
 			return
-		case <-cc.workerPool:
-			// acquired
 		}
-		// Release worker slot when done
-		defer func() { cc.workerPool <- struct{}{} }()
-
-		summary := cc.compress(ctx, span, messages)
 		resultCh <- summary
 	}()
 
 	return resultCh
 }
 
+// Compress synchronously compresses the provided messages into a summary.
+// It honors the compressor's concurrency limit and returns an error when the
+// context is canceled, the compressor is misconfigured, or the model fails.
+func (cc *ContextCompressor) Compress(ctx context.Context, span *Span, messages []Message) (string, error) {
+	if cc == nil {
+		return "", fmt.Errorf("context compressor is nil")
+	}
+
+	acquired, err := cc.acquireWorker(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer cc.releaseWorker(acquired)
+
+	return cc.compress(ctx, span, messages)
+}
+
+func (cc *ContextCompressor) acquireWorker(ctx context.Context) (bool, error) {
+	if cc == nil || cc.workerPool == nil {
+		return false, nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-cc.workerPool:
+		return true, nil
+	}
+}
+
+func (cc *ContextCompressor) releaseWorker(acquired bool) {
+	if !acquired || cc == nil || cc.workerPool == nil {
+		return
+	}
+	cc.workerPool <- struct{}{}
+}
+
 // compress performs the actual compression by calling the summary model.
-func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages []Message) string {
+func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages []Message) (string, error) {
 	if len(messages) == 0 {
-		return ""
+		return "", nil
+	}
+	if cc.summaryModel == nil {
+		return "", fmt.Errorf("summary model is nil")
 	}
 
 	// Build the prompt for summarization
@@ -83,12 +115,12 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 
 	resp, err := cc.summaryModel.Generate(ctx, prompt)
 	if err != nil {
-		return ""
+		return "", err
 	}
 
 	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {
-		return ""
+		return "", nil
 	}
 
 	// Update the span's summary field
@@ -96,7 +128,7 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 		span.Summary = summary
 	}
 
-	return summary
+	return summary, nil
 }
 
 // buildSummaryPrompt constructs the messages for the summary extraction call.

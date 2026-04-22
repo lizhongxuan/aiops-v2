@@ -67,6 +67,44 @@ func TestAllModes(t *testing.T) {
 	}
 }
 
+func TestTurnLifecycleState_IsValid(t *testing.T) {
+	valid := []TurnLifecycleState{
+		TurnLifecyclePending,
+		TurnLifecycleRunning,
+		TurnLifecycleSuspended,
+		TurnLifecycleResumable,
+		TurnLifecycleCompleted,
+		TurnLifecycleFailed,
+		TurnLifecycleCanceled,
+	}
+	for _, state := range valid {
+		if !state.IsValid() {
+			t.Errorf("expected %q to be valid", state)
+		}
+	}
+	if TurnLifecycleState("unknown").IsValid() {
+		t.Fatal("unknown lifecycle state should be invalid")
+	}
+}
+
+func TestTurnResumeState_IsValid(t *testing.T) {
+	valid := []TurnResumeState{
+		TurnResumeStateNone,
+		TurnResumeStatePendingApproval,
+		TurnResumeStatePendingEvidence,
+		TurnResumeStateCheckpointReady,
+		TurnResumeStateResumable,
+	}
+	for _, state := range valid {
+		if !state.IsValid() {
+			t.Errorf("expected %q to be valid", state)
+		}
+	}
+	if TurnResumeState("unknown").IsValid() {
+		t.Fatal("unknown resume state should be invalid")
+	}
+}
+
 func TestTurnRequest_Validate(t *testing.T) {
 	valid := TurnRequest{SessionType: SessionTypeHost, Mode: ModeChat}
 	if err := valid.Validate(); err != nil {
@@ -260,7 +298,6 @@ func TestRuntimeContext_JSONUsesVisibleTools(t *testing.T) {
 	}
 }
 
-
 func TestSessionState_Validate(t *testing.T) {
 	valid := SessionState{
 		ID:        "sess-1",
@@ -348,6 +385,152 @@ func TestSessionState_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestLongRunningStateModels_JSONRoundTrip(t *testing.T) {
+	now := time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC)
+	checkpoint := &CheckpointMetadata{
+		ID:          "chk-1",
+		SessionID:   "sess-abc",
+		TurnID:      "turn-1",
+		Iteration:   1,
+		Sequence:    2,
+		Kind:        "assistant_checkpoint",
+		Source:      "runtimekernel",
+		Lifecycle:   TurnLifecycleSuspended,
+		ResumeState: TurnResumeStatePendingApproval,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	approval := PendingApproval{
+		ID:        "approval-1",
+		SessionID: "sess-abc",
+		TurnID:    "turn-1",
+		Iteration: 1,
+		ToolName:  "write_file",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	evidence := PendingEvidence{
+		ID:        "evidence-1",
+		SessionID: "sess-abc",
+		TurnID:    "turn-1",
+		Iteration: 1,
+		ToolName:  "read_file",
+		Status:    "pending",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	segment := CompactedSegment{
+		ID:                 "segment-1",
+		SessionID:          "sess-abc",
+		TurnID:             "turn-1",
+		Iteration:          1,
+		StartIndex:         0,
+		EndIndex:           3,
+		Summary:            "compacted summary",
+		ReferenceIDs:       []string{"ref-1"},
+		ExternalReferences: []ExternalReference{{ID: "ref-1", SessionID: "sess-abc", TurnID: "turn-1", Iteration: 1, URI: "file:///tmp/blob", CreatedAt: now}},
+		Checkpoint:         checkpoint,
+		CreatedAt:          now,
+	}
+	iter := IterationState{
+		ID:                 "iter-1",
+		SessionID:          "sess-abc",
+		TurnID:             "turn-1",
+		Iteration:          1,
+		Lifecycle:          TurnLifecycleSuspended,
+		ResumeState:        TurnResumeStatePendingApproval,
+		MessagesForModel:   []Message{{ID: "msg-1", Role: "assistant", Content: "working", Timestamp: now}},
+		ToolCalls:          []ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"/tmp"}`)}},
+		ToolResults:        []ToolResult{{ToolCallID: "call-1", Content: "ok"}},
+		RefreshedTools:     []string{"write_file"},
+		PromptDelta:        "delta",
+		TokenBudget:        1024,
+		ResultBudget:       2048,
+		Checkpoint:         checkpoint,
+		PendingApprovals:   []PendingApproval{approval},
+		PendingEvidence:    []PendingEvidence{evidence},
+		CompactedSegments:  []CompactedSegment{segment},
+		ExternalReferences: []ExternalReference{{ID: "ref-2", SessionID: "sess-abc", TurnID: "turn-1", Iteration: 1, URI: "file:///tmp/blob-2", CreatedAt: now}},
+		StartedAt:          now,
+		UpdatedAt:          now,
+	}
+	snapshot := TurnSnapshot{
+		ID:                    "turn-1",
+		SessionID:             "sess-abc",
+		SessionType:           SessionTypeHost,
+		Mode:                  ModeChat,
+		Lifecycle:             TurnLifecycleSuspended,
+		ResumeState:           TurnResumeStatePendingApproval,
+		Iteration:             1,
+		StartedAt:             now,
+		UpdatedAt:             now,
+		StablePromptHash:      "hash-1",
+		StableToolFingerprint: "fingerprint-1",
+		GovernanceSnapshot:    "governance-1",
+		PromptSections:        []string{"system", "tools"},
+		LatestCheckpoint:      checkpoint,
+		Iterations:            []IterationState{iter},
+		PendingApprovals:      []PendingApproval{approval},
+		PendingEvidence:       []PendingEvidence{evidence},
+		CompactedSegments:     []CompactedSegment{segment},
+		ExternalReferences:    []ExternalReference{{ID: "ref-3", SessionID: "sess-abc", TurnID: "turn-1", Iteration: 1, URI: "file:///tmp/blob-3", CreatedAt: now}},
+		FinalOutput:           "done",
+	}
+	session := SessionState{
+		ID:                 "sess-abc",
+		Type:               SessionTypeHost,
+		Mode:               ModeChat,
+		Messages:           []Message{{ID: "msg-0", Role: "user", Content: "hello", Timestamp: now}},
+		Context:            ContextWindow{MaxTokens: 4096, UsedTokens: 128, Messages: 1},
+		Activity:           ActivityStats{CommandCount: 1},
+		CurrentTurn:        &snapshot,
+		TurnHistory:        []TurnSnapshot{snapshot},
+		PendingApprovals:   []PendingApproval{approval},
+		PendingEvidence:    []PendingEvidence{evidence},
+		LatestCheckpoint:   checkpoint,
+		CompactedSegments:  []CompactedSegment{segment},
+		ExternalReferences: []ExternalReference{{ID: "ref-4", SessionID: "sess-abc", TurnID: "turn-1", Iteration: 1, URI: "file:///tmp/blob-4", CreatedAt: now}},
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}
+
+	data, err := json.Marshal(session)
+	if err != nil {
+		t.Fatalf("json.Marshal session: %v", err)
+	}
+
+	var decoded SessionState
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal session: %v", err)
+	}
+
+	if decoded.CurrentTurn == nil {
+		t.Fatal("decoded CurrentTurn is nil")
+	}
+	if decoded.CurrentTurn.Lifecycle != TurnLifecycleSuspended {
+		t.Fatalf("decoded CurrentTurn lifecycle = %q", decoded.CurrentTurn.Lifecycle)
+	}
+	if decoded.CurrentTurn.ResumeState != TurnResumeStatePendingApproval {
+		t.Fatalf("decoded CurrentTurn resume state = %q", decoded.CurrentTurn.ResumeState)
+	}
+	if len(decoded.CurrentTurn.Iterations) != 1 {
+		t.Fatalf("decoded CurrentTurn iterations = %d, want 1", len(decoded.CurrentTurn.Iterations))
+	}
+	if len(decoded.TurnHistory) != 1 {
+		t.Fatalf("decoded turn history = %d, want 1", len(decoded.TurnHistory))
+	}
+	if len(decoded.PendingApprovals) != 1 || len(decoded.PendingEvidence) != 1 {
+		t.Fatalf("decoded pending state lost: approvals=%d evidence=%d", len(decoded.PendingApprovals), len(decoded.PendingEvidence))
+	}
+	if decoded.LatestCheckpoint == nil || decoded.LatestCheckpoint.ID != "chk-1" {
+		t.Fatal("decoded latest checkpoint missing")
+	}
+	if len(decoded.CompactedSegments) != 1 || len(decoded.ExternalReferences) != 1 {
+		t.Fatalf("decoded compaction/reference state lost: segments=%d refs=%d", len(decoded.CompactedSegments), len(decoded.ExternalReferences))
+	}
+}
+
 func TestMessage_JSONRoundTrip(t *testing.T) {
 	args := json.RawMessage(`{"path":"/tmp"}`)
 	now := time.Date(2024, 6, 15, 10, 30, 0, 0, time.UTC)
@@ -394,6 +577,18 @@ func TestToolResult_JSONRoundTrip(t *testing.T) {
 			Title: "Disk Usage",
 			Data:  displayData,
 		},
+		References: []ToolResultReference{
+			{
+				Kind:     ToolResultReferenceKindFile,
+				FilePath: "/tmp/report.txt",
+				Title:    "Disk report",
+			},
+			{
+				Kind:    ToolResultReferenceKindCard,
+				CardRef: "card-disk-usage",
+				Title:   "Disk card",
+			},
+		},
 	}
 
 	data, err := json.Marshal(original)
@@ -420,6 +615,43 @@ func TestToolResult_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.Display.Title != "Disk Usage" {
 		t.Errorf("Display.Title mismatch: got %q, want %q", decoded.Display.Title, "Disk Usage")
+	}
+	if len(decoded.References) != 2 {
+		t.Fatalf("References length mismatch: got %d, want 2", len(decoded.References))
+	}
+	if decoded.References[0].Kind != ToolResultReferenceKindFile {
+		t.Errorf("References[0].Kind mismatch: got %q, want %q", decoded.References[0].Kind, ToolResultReferenceKindFile)
+	}
+	if decoded.References[0].FilePath != "/tmp/report.txt" {
+		t.Errorf("References[0].FilePath mismatch: got %q", decoded.References[0].FilePath)
+	}
+	if decoded.References[1].Kind != ToolResultReferenceKindCard {
+		t.Errorf("References[1].Kind mismatch: got %q, want %q", decoded.References[1].Kind, ToolResultReferenceKindCard)
+	}
+	if decoded.References[1].CardRef != "card-disk-usage" {
+		t.Errorf("References[1].CardRef mismatch: got %q", decoded.References[1].CardRef)
+	}
+}
+
+func TestToolResultReference_Validate(t *testing.T) {
+	validBlob := ToolResultReference{Kind: ToolResultReferenceKindBlob, URI: "store://tool-spills/spill-1"}
+	if err := validBlob.Validate(); err != nil {
+		t.Fatalf("valid blob reference = %v", err)
+	}
+
+	validCard := ToolResultReference{Kind: ToolResultReferenceKindCard, CardRef: "card-1"}
+	if err := validCard.Validate(); err != nil {
+		t.Fatalf("valid card reference = %v", err)
+	}
+
+	validFile := ToolResultReference{Kind: ToolResultReferenceKindFile, FilePath: "/tmp/report.txt"}
+	if err := validFile.Validate(); err != nil {
+		t.Fatalf("valid file reference = %v", err)
+	}
+
+	invalid := ToolResultReference{Kind: ToolResultReferenceKindCard}
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("expected card reference without cardRef to fail")
 	}
 }
 

@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -164,6 +166,93 @@ func (r *Registry) DynamicTools() []tooling.Tool {
 		out = append(out, tools...)
 	}
 	return out
+}
+
+// DynamicToolRefreshToken returns a stable token that changes when the
+// registered server/tool surface changes. It is safe to use as an iteration-
+// level refresh fingerprint for runtimekernel.
+func (r *Registry) DynamicToolRefreshToken() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	h := sha256.New()
+
+	serverIDs := make([]string, 0, len(r.serverCfgs))
+	for serverID := range r.serverCfgs {
+		serverIDs = append(serverIDs, serverID)
+	}
+	sort.Strings(serverIDs)
+	for _, serverID := range serverIDs {
+		writeRegistryFingerprintPart(h, "server", serverFingerprint(r.serverCfgs[serverID]))
+	}
+
+	serverToolIDs := make([]string, 0, len(r.serverTools))
+	for serverID := range r.serverTools {
+		serverToolIDs = append(serverToolIDs, serverID)
+	}
+	sort.Strings(serverToolIDs)
+	for _, serverID := range serverToolIDs {
+		tools := append([]tooling.Tool(nil), r.serverTools[serverID]...)
+		sort.Slice(tools, func(i, j int) bool {
+			return tools[i].Metadata().Name < tools[j].Metadata().Name
+		})
+		for _, tool := range tools {
+			writeRegistryFingerprintPart(h, "tool", serverToolFingerprint(serverID, tool))
+		}
+	}
+
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func serverFingerprint(cfg ServerConfig) string {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg.ID
+	}
+	return string(data)
+}
+
+func serverToolFingerprint(serverID string, t tooling.Tool) string {
+	meta := t.Metadata()
+	meta.Aliases = append([]string(nil), meta.Aliases...)
+	sort.Strings(meta.Aliases)
+
+	payload := struct {
+		ServerID        string               `json:"serverId"`
+		Metadata        tooling.ToolMetadata `json:"metadata"`
+		InputSchema     string               `json:"inputSchema,omitempty"`
+		OutputSchema    string               `json:"outputSchema,omitempty"`
+		Description     string               `json:"description,omitempty"`
+		Prompt          string               `json:"prompt,omitempty"`
+		Enabled         bool                 `json:"enabled"`
+		ReadOnly        bool                 `json:"readOnly"`
+		Destructive     bool                 `json:"destructive"`
+		ConcurrencySafe bool                 `json:"concurrencySafe"`
+	}{
+		ServerID:        serverID,
+		Metadata:        meta,
+		InputSchema:     strings.TrimSpace(string(t.InputSchema())),
+		OutputSchema:    strings.TrimSpace(string(t.OutputSchema())),
+		Description:     strings.TrimSpace(t.Description(nil, tooling.DescribeContext{Metadata: meta})),
+		Prompt:          strings.TrimSpace(t.Prompt(tooling.PromptContext{Metadata: meta})),
+		Enabled:         t.IsEnabled(tooling.ToolContext{Metadata: meta}),
+		ReadOnly:        t.IsReadOnly(nil),
+		Destructive:     t.IsDestructive(nil),
+		ConcurrencySafe: t.IsConcurrencySafe(nil),
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return meta.Name
+	}
+	return string(data)
+}
+
+func writeRegistryFingerprintPart(h interface{ Write([]byte) (int, error) }, kind, value string) {
+	_, _ = h.Write([]byte(kind))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(value))
+	_, _ = h.Write([]byte{0})
 }
 
 type metadataOverrideTool struct {

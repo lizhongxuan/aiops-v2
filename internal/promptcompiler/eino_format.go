@@ -34,24 +34,52 @@ func CompiledPromptToMessages(compiled CompiledPrompt) []*schema.Message {
 	messages := make([]*schema.Message, 0, 4)
 
 	// Layer 1: System Prompt as system message
-	if compiled.System.Content != "" {
-		messages = append(messages, schema.SystemMessage(compiled.System.Content))
+	if system := compiled.effectiveSystemPrompt(); system.Content != "" {
+		messages = append(messages, schema.SystemMessage(system.Content))
 	}
 
 	// Layer 2: Developer Instructions as system message
-	if compiled.Developer.Content != "" {
-		messages = append(messages, schema.SystemMessage(compiled.Developer.Content))
+	if developer := compiled.effectiveDeveloperInstructions(); developer.Content != "" {
+		messages = append(messages, schema.SystemMessage(developer.Content))
 	}
 
 	// Layer 3: Tool Prompt Set as system message
-	if compiled.Tools.Content != "" {
-		messages = append(messages, schema.SystemMessage(compiled.Tools.Content))
+	if tools := compiled.effectiveToolPromptSet(); tools.Content != "" {
+		messages = append(messages, schema.SystemMessage(tools.Content))
 	}
 
 	// Layer 4: Runtime Policy Prompt as system message
-	if compiled.Policy.Content != "" {
-		messages = append(messages, schema.SystemMessage(compiled.Policy.Content))
+	if policy := compiled.effectiveRuntimePolicyPrompt(); policy.Content != "" {
+		messages = append(messages, schema.SystemMessage(policy.Content))
 	}
 
 	return messages
+}
+
+func (c CompiledPrompt) effectiveSystemPrompt() SystemPrompt {
+	if c.System.Content != "" || c.System.Role != "" || c.System.Environment != "" {
+		return c.System
+	}
+	return c.Stable.System
+}
+
+func (c CompiledPrompt) effectiveDeveloperInstructions() DeveloperInstructions {
+	if c.Developer.Content != "" || len(c.Developer.Constraints) > 0 {
+		return c.Developer
+	}
+	return c.Stable.Developer
+}
+
+func (c CompiledPrompt) effectiveToolPromptSet() ToolPromptSet {
+	if c.Tools.Content != "" || len(c.Tools.Entries) > 0 {
+		return c.Tools
+	}
+	return c.Stable.Tools
+}
+
+func (c CompiledPrompt) effectiveRuntimePolicyPrompt() RuntimePolicyPrompt {
+	if c.Policy.Content != "" || c.Policy.Mode != "" {
+		return c.Policy
+	}
+	return c.Dynamic.Policy
 }

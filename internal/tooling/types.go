@@ -3,6 +3,8 @@ package tooling
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"time"
 )
 
 // ToolOrigin describes where a tool came from.
@@ -34,18 +36,49 @@ type MCPInfo struct {
 	Raw        json.RawMessage `json:"raw,omitempty"`
 }
 
+// ResultSpillPolicy controls how large tool results are externalized.
+type ResultSpillPolicy string
+
+const (
+	ResultSpillPolicyInline        ResultSpillPolicy = "inline"
+	ResultSpillPolicySummaryInline ResultSpillPolicy = "summary_inline"
+	ResultSpillPolicyExternalize   ResultSpillPolicy = "externalize"
+)
+
+// ResultBudget captures the runtime budget for a tool result.
+type ResultBudget struct {
+	MaxInlineResultBytes int               `json:"maxInlineResultBytes,omitempty"`
+	SpillPolicy          ResultSpillPolicy `json:"spillPolicy,omitempty"`
+	SummarizeLargeResult bool              `json:"summarizeLargeResult,omitempty"`
+}
+
+// Normalize fills zero values with runtime defaults.
+func (b ResultBudget) Normalize(defaultInlineBytes int) ResultBudget {
+	if b.MaxInlineResultBytes <= 0 {
+		b.MaxInlineResultBytes = defaultInlineBytes
+	}
+	if b.SpillPolicy == "" {
+		b.SpillPolicy = ResultSpillPolicySummaryInline
+	}
+	if !b.SummarizeLargeResult && b.SpillPolicy != ResultSpillPolicyInline {
+		b.SummarizeLargeResult = true
+	}
+	return b
+}
+
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
-	Name        string     `json:"name"`
-	Aliases     []string   `json:"aliases,omitempty"`
-	Description string     `json:"description,omitempty"`
-	Origin      ToolOrigin `json:"origin,omitempty"`
-	SearchHint  string     `json:"searchHint,omitempty"`
-	ShouldDefer bool       `json:"shouldDefer,omitempty"`
-	AlwaysLoad  bool       `json:"alwaysLoad,omitempty"`
-	IsMCP       bool       `json:"isMCP,omitempty"`
-	IsLSP       bool       `json:"isLSP,omitempty"`
-	MCPInfo     MCPInfo    `json:"mcpInfo,omitempty"`
+	Name         string       `json:"name"`
+	Aliases      []string     `json:"aliases,omitempty"`
+	Description  string       `json:"description,omitempty"`
+	Origin       ToolOrigin   `json:"origin,omitempty"`
+	SearchHint   string       `json:"searchHint,omitempty"`
+	ShouldDefer  bool         `json:"shouldDefer,omitempty"`
+	AlwaysLoad   bool         `json:"alwaysLoad,omitempty"`
+	IsMCP        bool         `json:"isMCP,omitempty"`
+	IsLSP        bool         `json:"isLSP,omitempty"`
+	ResultBudget ResultBudget `json:"resultBudget,omitempty"`
+	MCPInfo      MCPInfo      `json:"mcpInfo,omitempty"`
 }
 
 // HasMCPSource reports whether the metadata identifies an MCP-backed tool.
@@ -73,6 +106,11 @@ func (m ToolMetadata) HasSource(source ToolSource) bool {
 	}
 }
 
+// EffectiveResultBudget returns the configured result budget or runtime defaults.
+func (m ToolMetadata) EffectiveResultBudget(defaultInlineBytes int) ResultBudget {
+	return m.ResultBudget.Normalize(defaultInlineBytes)
+}
+
 // ToolDisplayPayload is a simple structured payload for human-facing tool output.
 type ToolDisplayPayload struct {
 	Type    string          `json:"type"`
@@ -81,12 +119,80 @@ type ToolDisplayPayload struct {
 	CardRef string          `json:"cardRef,omitempty"`
 }
 
+// ResultReferenceKind describes the external carrier for a tool result.
+type ResultReferenceKind string
+
+const (
+	ResultReferenceKindBlob ResultReferenceKind = "blob"
+	ResultReferenceKindCard ResultReferenceKind = "card"
+	ResultReferenceKindFile ResultReferenceKind = "file"
+)
+
+// ResultReference captures a structured external reference returned by a tool.
+type ResultReference struct {
+	Kind        ResultReferenceKind `json:"kind"`
+	URI         string              `json:"uri,omitempty"`
+	CardRef     string              `json:"cardRef,omitempty"`
+	FilePath    string              `json:"filePath,omitempty"`
+	Title       string              `json:"title,omitempty"`
+	Summary     string              `json:"summary,omitempty"`
+	ContentType string              `json:"contentType,omitempty"`
+	Digest      string              `json:"digest,omitempty"`
+	Bytes       int64               `json:"bytes,omitempty"`
+}
+
+// ResultSpill captures content that was externalized because it exceeded the inline budget.
+type ResultSpill struct {
+	ID          string    `json:"id"`
+	ToolCallID  string    `json:"toolCallId,omitempty"`
+	ToolName    string    `json:"toolName,omitempty"`
+	SessionID   string    `json:"sessionId,omitempty"`
+	TurnID      string    `json:"turnId,omitempty"`
+	ContentType string    `json:"contentType,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	Content     []byte    `json:"content,omitempty"`
+	Bytes       int64     `json:"bytes,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// StreamingResult captures a stream-backed tool result that should be read
+// incrementally by the runtime.
+type StreamingResult struct {
+	Reader      io.Reader `json:"-"`
+	ChunkSize   int       `json:"-"`
+	ContentType string    `json:"contentType,omitempty"`
+}
+
 // ToolResult is the output of a tool invocation.
 type ToolResult struct {
-	ToolCallID string              `json:"toolCallId,omitempty"`
-	Content    string              `json:"content,omitempty"`
-	Display    *ToolDisplayPayload `json:"display,omitempty"`
-	Error      string              `json:"error,omitempty"`
+	ToolCallID   string              `json:"toolCallId,omitempty"`
+	Content      string              `json:"content,omitempty"`
+	Display      *ToolDisplayPayload `json:"display,omitempty"`
+	Error        string              `json:"error,omitempty"`
+	References   []ResultReference   `json:"references,omitempty"`
+	ResultBudget ResultBudget        `json:"resultBudget,omitempty"`
+	Spill        *ResultSpill        `json:"spill,omitempty"`
+	Stream       *StreamingResult    `json:"-"`
+}
+
+// EffectiveResultBudget returns the configured result budget or runtime defaults.
+func (r ToolResult) EffectiveResultBudget(defaultInlineBytes int) ResultBudget {
+	return r.ResultBudget.Normalize(defaultInlineBytes)
+}
+
+// HasSpill reports whether the result points to an externalized spill.
+func (r ToolResult) HasSpill() bool {
+	return r.Spill != nil && r.Spill.ID != ""
+}
+
+// HasReferences reports whether the result returns explicit external references.
+func (r ToolResult) HasReferences() bool {
+	return len(r.References) > 0
+}
+
+// HasStream reports whether the result should be consumed incrementally.
+func (r ToolResult) HasStream() bool {
+	return r.Stream != nil && r.Stream.Reader != nil
 }
 
 // PermissionAction classifies the outcome of a permission check.

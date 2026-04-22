@@ -1,0 +1,1516 @@
+package runtimekernel
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/spanstream"
+	"aiops-v2/internal/tooling"
+)
+
+type sequentialLoopModel struct {
+	responses   []*schema.Message
+	inputs      [][]*schema.Message
+	boundTools  [][]string
+	generateErr error
+}
+
+func (m *sequentialLoopModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
+	if m.generateErr != nil {
+		return nil, m.generateErr
+	}
+	if len(m.responses) == 0 {
+		return nil, errors.New("no more responses configured")
+	}
+	resp := m.responses[0]
+	m.responses = m.responses[1:]
+	return cloneSchemaMessage(resp), nil
+}
+
+func (m *sequentialLoopModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("stream not implemented in test model")
+}
+
+func (m *sequentialLoopModel) BindTools(tools []*schema.ToolInfo) error {
+	names := make([]string, 0, len(tools))
+	for _, info := range tools {
+		if info == nil {
+			continue
+		}
+		names = append(names, info.Name)
+	}
+	m.boundTools = append(m.boundTools, names)
+	return nil
+}
+
+func cloneSchemaMessages(messages []*schema.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages))
+	for _, msg := range messages {
+		out = append(out, cloneSchemaMessage(msg))
+	}
+	return out
+}
+
+func cloneSchemaMessage(msg *schema.Message) *schema.Message {
+	if msg == nil {
+		return nil
+	}
+	cp := *msg
+	if len(msg.ToolCalls) > 0 {
+		cp.ToolCalls = append([]schema.ToolCall(nil), msg.ToolCalls...)
+	}
+	return &cp
+}
+
+type fixedSummaryModel struct {
+	response string
+}
+
+func (m *fixedSummaryModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return &schema.Message{Role: schema.Assistant, Content: m.response}, nil
+}
+
+func (m *fixedSummaryModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("stream not implemented in test model")
+}
+
+func (m *fixedSummaryModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
+type memoryToolResultSpillRepo struct {
+	spills map[string]*tooling.ResultSpill
+}
+
+func newMemoryToolResultSpillRepo() *memoryToolResultSpillRepo {
+	return &memoryToolResultSpillRepo{spills: make(map[string]*tooling.ResultSpill)}
+}
+
+func (r *memoryToolResultSpillRepo) GetToolResultSpill(id string) (*tooling.ResultSpill, error) {
+	spill, ok := r.spills[id]
+	if !ok {
+		return nil, errors.New("spill not found")
+	}
+	cp := *spill
+	cp.Content = append([]byte(nil), spill.Content...)
+	return &cp, nil
+}
+
+func (r *memoryToolResultSpillRepo) ListToolResultSpills() ([]*tooling.ResultSpill, error) {
+	out := make([]*tooling.ResultSpill, 0, len(r.spills))
+	for _, spill := range r.spills {
+		cp := *spill
+		cp.Content = append([]byte(nil), spill.Content...)
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (r *memoryToolResultSpillRepo) SaveToolResultSpill(spill *tooling.ResultSpill) error {
+	cp := *spill
+	cp.Content = append([]byte(nil), spill.Content...)
+	r.spills[spill.ID] = &cp
+	return nil
+}
+
+func (r *memoryToolResultSpillRepo) DeleteToolResultSpill(id string) error {
+	delete(r.spills, id)
+	return nil
+}
+
+type panickingAgentManager struct{}
+
+func (p *panickingAgentManager) CreateWorkspaceAgent(context.Context, string) error {
+	panic("legacy workspace agent path should not be called")
+}
+
+func (p *panickingAgentManager) SpawnAndRunPlanner(context.Context, string, string, string) (string, error) {
+	panic("legacy workspace planner path should not be called")
+}
+
+func (p *panickingAgentManager) CollectResults(string) []AgentResult {
+	panic("legacy workspace result collection should not be called")
+}
+
+type assemblerBackedToolSource struct {
+	assembler *tooling.Assembler
+}
+
+func (s *assemblerBackedToolSource) CompileContext(session SessionType, mode Mode) promptcompiler.CompileContext {
+	return promptcompiler.CompileContext{
+		SessionType:    string(session),
+		Mode:           string(mode),
+		AssembledTools: s.assembler.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{}),
+	}
+}
+
+func (s *assemblerBackedToolSource) AssembleToolPool(session SessionType, mode Mode) []tool.BaseTool {
+	return s.assembler.AssembleToolPoolWithOptions(string(session), string(mode), tooling.AssembleOptions{})
+}
+
+func (s *assemblerBackedToolSource) RefreshToken(session SessionType, mode Mode) string {
+	return s.assembler.RefreshToken(string(session), string(mode), tooling.AssembleOptions{})
+}
+
+type recordingCompiler struct {
+	delegate promptcompiler.Compiler
+	contexts []promptcompiler.CompileContext
+}
+
+func newRecordingCompiler() *recordingCompiler {
+	return &recordingCompiler{delegate: promptcompiler.NewCompiler()}
+}
+
+func (c *recordingCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
+	cloned := ctx
+	cloned.AssembledTools = append([]promptcompiler.Tool(nil), ctx.AssembledTools...)
+	cloned.SkillPromptAssets = append([]string(nil), ctx.SkillPromptAssets...)
+	cloned.EvidenceReminders = append([]string(nil), ctx.EvidenceReminders...)
+	cloned.ExtraSections = append([]promptcompiler.PromptSection(nil), ctx.ExtraSections...)
+	cloned.ToolDelta = promptcompiler.ToolPromptDelta{
+		NewlyAvailable:         append([]string(nil), ctx.ToolDelta.NewlyAvailable...),
+		TemporarilyUnavailable: append([]string(nil), ctx.ToolDelta.TemporarilyUnavailable...),
+		ApprovalRequired:       append([]string(nil), ctx.ToolDelta.ApprovalRequired...),
+		Content:                ctx.ToolDelta.Content,
+	}
+	c.contexts = append(c.contexts, cloned)
+	return c.delegate.Compile(ctx)
+}
+
+func (c *recordingCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
+	return c.delegate.CompileForEino(ctx)
+}
+
+func newKernelForLoopTests(
+	t *testing.T,
+	source ToolAssemblySource,
+	compiler promptcompiler.Compiler,
+	chatModel modelrouter.ChatModel,
+) (*EinoKernel, *testMockEventEmitter) {
+	t.Helper()
+
+	policy := &policyengine.Engine{
+		ModePolicy:       policyengine.NewDefaultModePolicies(),
+		CompletionPolicy: &testMockCompletionEvaluator{action: policyengine.PolicyActionAllow},
+	}
+	projector := &testMockEventEmitter{}
+	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
+	return NewEinoKernel(EinoKernelConfig{
+		ToolSource:  source,
+		Compiler:    compiler,
+		Policy:      policy,
+		Projector:   projector,
+		ModelRouter: router,
+	}), projector
+}
+
+func newLoopKernel(t *testing.T, chatModel modelrouter.ChatModel, tools []tooling.Tool, hookRegistry *hooks.Registry, modePolicies map[policyengine.Mode]policyengine.ModePolicy) *EinoKernel {
+	return newLoopKernelWithDeps(t, chatModel, tools, hookRegistry, modePolicies, nil, nil)
+}
+
+func newLoopKernelWithDeps(
+	t *testing.T,
+	chatModel modelrouter.ChatModel,
+	tools []tooling.Tool,
+	hookRegistry *hooks.Registry,
+	modePolicies map[policyengine.Mode]policyengine.ModePolicy,
+	compressor *spanstream.ContextCompressor,
+	spillRepo ToolResultSpillRepository,
+) *EinoKernel {
+	t.Helper()
+
+	registry := tooling.NewRegistry()
+	for _, toolDef := range tools {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+
+	if modePolicies == nil {
+		modePolicies = policyengine.NewDefaultModePolicies()
+	}
+	policy := &policyengine.Engine{
+		ModePolicy:       modePolicies,
+		CompletionPolicy: &testMockCompletionEvaluator{action: policyengine.PolicyActionAllow},
+	}
+	projector := &testMockEventEmitter{}
+	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
+
+	return NewEinoKernel(EinoKernelConfig{
+		ToolSource:  &testMockToolAssemblySource{registry: registry},
+		Compiler:    &testMockCompiler{},
+		Policy:      policy,
+		Hooks:       hookRegistry,
+		Projector:   projector,
+		ModelRouter: router,
+		Compressor:  compressor,
+		SpillRepo:   spillRepo,
+	})
+}
+
+func TestRunTurn_ExecutesMultiIterationToolLoop(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-1",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_disk_usage",
+						Arguments: `{"path":"/tmp/one"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-2",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_disk_usage",
+						Arguments: `{"path":"/tmp/two"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("final answer", nil),
+		},
+	}
+
+	var executed []string
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_disk_usage",
+			Description: "Inspect disk usage",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			executed = append(executed, string(input))
+			return tooling.ToolResult{Content: "ok:" + string(input)}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-loop",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-loop",
+		Input:       "inspect disks",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if result.Output != "final answer" {
+		t.Fatalf("result output = %q, want final answer", result.Output)
+	}
+	if len(executed) != 2 {
+		t.Fatalf("executed tool calls = %d, want 2", len(executed))
+	}
+	if len(model.inputs) != 3 {
+		t.Fatalf("model Generate calls = %d, want 3", len(model.inputs))
+	}
+
+	foundFirstToolMessage := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-1" && msg.Content == `ok:{"path":"/tmp/one"}` {
+			foundFirstToolMessage = true
+			break
+		}
+	}
+	if !foundFirstToolMessage {
+		t.Fatalf("second model input did not include first tool result: %#v", model.inputs[1])
+	}
+
+	session := kernel.sessions.Get("sess-loop")
+	if session == nil {
+		t.Fatal("expected session to exist")
+	}
+	if len(session.Messages) != 6 {
+		t.Fatalf("session messages len = %d, want 6", len(session.Messages))
+	}
+	if session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot to exist")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	if len(session.CurrentTurn.Iterations) != 3 {
+		t.Fatalf("turn iterations = %d, want 3", len(session.CurrentTurn.Iterations))
+	}
+	if got := session.Messages[len(session.Messages)-1].Content; got != "final answer" {
+		t.Fatalf("latest session message = %q, want final answer", got)
+	}
+}
+
+func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-approval",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("write complete", nil),
+		},
+	}
+
+	var executed int
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "write_file",
+			Description: "Write a file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "wrote:" + string(input)}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-approval",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-approval",
+		Input:       "write the file",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+	if executed != 0 {
+		t.Fatalf("tool should not execute before approval, got %d executions", executed)
+	}
+	session := kernel.sessions.Get("sess-approval")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected suspended current turn snapshot")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleSuspended {
+		t.Fatalf("current turn lifecycle = %q, want suspended", session.CurrentTurn.Lifecycle)
+	}
+	if session.CurrentTurn.ResumeState != TurnResumeStatePendingApproval {
+		t.Fatalf("current turn resume state = %q, want pending_approval", session.CurrentTurn.ResumeState)
+	}
+	if len(session.PendingApprovals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(session.PendingApprovals))
+	}
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: "sess-approval",
+		TurnID:    "turn-approval",
+		Decision:  "approved",
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn failed: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("resume status = %q, want completed", resumed.Status)
+	}
+	if resumed.Output != "write complete" {
+		t.Fatalf("resume output = %q, want write complete", resumed.Output)
+	}
+	if executed != 1 {
+		t.Fatalf("tool executions after resume = %d, want 1", executed)
+	}
+	session = kernel.sessions.Get("sess-approval")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn after resume")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle after resume = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	if len(session.PendingApprovals) != 0 {
+		t.Fatalf("pending approvals after resume = %d, want 0", len(session.PendingApprovals))
+	}
+}
+
+func TestRunTurn_LargeToolResultIsSummarizedAndSpilled(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-large",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "tail_logs",
+						Arguments: `{"path":"/tmp/logs"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("logs reviewed", nil),
+		},
+	}
+
+	largeContent := `{"lines":["alpha alpha alpha alpha alpha alpha","beta beta beta beta beta beta","gamma gamma gamma gamma gamma gamma","delta delta delta delta delta delta","epsilon epsilon epsilon epsilon epsilon epsilon"]}`
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "tail_logs",
+			Description: "Tail logs",
+			ResultBudget: tooling.ResultBudget{
+				MaxInlineResultBytes: 48,
+				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
+				SummarizeLargeResult: true,
+			},
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: largeContent}, nil
+		},
+	}
+
+	spillRepo := newMemoryToolResultSpillRepo()
+	kernel := newLoopKernelWithDeps(t, model, []tooling.Tool{toolDef}, nil, nil, nil, spillRepo)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-spill",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-spill",
+		Input:       "inspect logs",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-spill")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session and current turn")
+	}
+	if len(session.CurrentTurn.ExternalReferences) != 1 {
+		t.Fatalf("external references = %d, want 1", len(session.CurrentTurn.ExternalReferences))
+	}
+	ref := session.CurrentTurn.ExternalReferences[0]
+	if ref.URI == "" {
+		t.Fatal("expected external reference URI")
+	}
+	spill, err := spillRepo.GetToolResultSpill(ref.ID)
+	if err != nil {
+		t.Fatalf("GetToolResultSpill failed: %v", err)
+	}
+	if string(spill.Content) != largeContent {
+		t.Fatalf("spill content mismatch")
+	}
+	if len(session.Messages) < 3 {
+		t.Fatalf("session messages len = %d, want at least 3", len(session.Messages))
+	}
+	toolMsg := session.Messages[len(session.Messages)-2]
+	if toolMsg.ToolResult == nil {
+		t.Fatal("expected tool result message")
+	}
+	if !toolMsg.ToolResult.Spilled {
+		t.Fatal("expected spilled tool result")
+	}
+	if !strings.Contains(toolMsg.Content, "Summary:") {
+		t.Fatalf("tool message content = %q, want summary marker", toolMsg.Content)
+	}
+	if strings.Contains(toolMsg.Content, "Preview:") {
+		t.Fatalf("tool message content = %q, should not include preview marker for large results", toolMsg.Content)
+	}
+	if len(toolMsg.ToolResult.References) != 1 {
+		t.Fatalf("tool message references = %d, want 1", len(toolMsg.ToolResult.References))
+	}
+	if toolMsg.ToolResult.References[0].Kind != ToolResultReferenceKindBlob {
+		t.Fatalf("tool message reference kind = %q, want %q", toolMsg.ToolResult.References[0].Kind, ToolResultReferenceKindBlob)
+	}
+	if len(toolMsg.ToolResult.ExternalReferences) != 1 {
+		t.Fatalf("tool message external references = %d, want 1", len(toolMsg.ToolResult.ExternalReferences))
+	}
+	if toolMsg.Content == largeContent {
+		t.Fatal("expected inline tool content to be summarized, not full payload")
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("Generate calls = %d, want 2", len(model.inputs))
+	}
+	foundToolSummary := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-large" {
+			if msg.Content == largeContent {
+				t.Fatal("model received full spilled content instead of summary")
+			}
+			foundToolSummary = true
+		}
+	}
+	if !foundToolSummary {
+		t.Fatal("expected second model input to include summarized tool result")
+	}
+}
+
+func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-medium",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "tail_logs",
+						Arguments: `{"path":"/tmp/medium.log"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("preview reviewed", nil),
+		},
+	}
+
+	mediumContent := strings.Repeat("alpha ", 14)
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "tail_logs",
+			Description: "Tail logs",
+			ResultBudget: tooling.ResultBudget{
+				MaxInlineResultBytes: 48,
+				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
+				SummarizeLargeResult: true,
+			},
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: mediumContent}, nil
+		},
+	}
+
+	spillRepo := newMemoryToolResultSpillRepo()
+	kernel := newLoopKernelWithDeps(t, model, []tooling.Tool{toolDef}, nil, nil, nil, spillRepo)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-medium-spill",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-medium-spill",
+		Input:       "inspect medium logs",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-medium-spill")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session and current turn")
+	}
+	toolMsg := session.Messages[len(session.Messages)-2]
+	if toolMsg.ToolResult == nil {
+		t.Fatal("expected tool result message")
+	}
+	if !toolMsg.ToolResult.Spilled {
+		t.Fatal("expected spilled tool result")
+	}
+	if !strings.Contains(toolMsg.Content, "Preview:") {
+		t.Fatalf("tool message content = %q, want preview marker", toolMsg.Content)
+	}
+	if !strings.Contains(toolMsg.Content, "Summary:") {
+		t.Fatalf("tool message content = %q, want summary marker", toolMsg.Content)
+	}
+	if len(toolMsg.ToolResult.References) != 1 {
+		t.Fatalf("tool message references = %d, want 1", len(toolMsg.ToolResult.References))
+	}
+	if toolMsg.ToolResult.References[0].Kind != ToolResultReferenceKindBlob {
+		t.Fatalf("tool message reference kind = %q, want %q", toolMsg.ToolResult.References[0].Kind, ToolResultReferenceKindBlob)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("Generate calls = %d, want 2", len(model.inputs))
+	}
+	foundPreview := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role != schema.Tool || msg.ToolCallID != "call-medium" {
+			continue
+		}
+		if strings.Contains(msg.Content, "Preview:") {
+			foundPreview = true
+		}
+	}
+	if !foundPreview {
+		t.Fatal("expected second model input to include previewed tool result")
+	}
+}
+
+func TestRunTurn_ToolResultPreservesExplicitReferences(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-artifacts",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_artifacts",
+						Arguments: `{"path":"/tmp/output"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("artifacts reviewed", nil),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_artifacts",
+			Description: "Read artifacts",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{
+				Content: "artifacts ready",
+				Display: &tooling.ToolDisplayPayload{
+					Type:    "artifact-card",
+					Title:   "Artifacts",
+					CardRef: "card-artifacts",
+				},
+				References: []tooling.ResultReference{
+					{
+						Kind:     tooling.ResultReferenceKindFile,
+						FilePath: "/tmp/output/report.txt",
+						Title:    "Artifact report",
+					},
+				},
+			}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-artifacts",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-artifacts",
+		Input:       "read artifacts",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-artifacts")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session and current turn")
+	}
+	toolMsg := session.Messages[len(session.Messages)-2]
+	if toolMsg.ToolResult == nil {
+		t.Fatal("expected tool result message")
+	}
+	if len(toolMsg.ToolResult.References) != 2 {
+		t.Fatalf("tool message references = %d, want 2", len(toolMsg.ToolResult.References))
+	}
+	if !containsToolResultReferenceKind(toolMsg.ToolResult.References, ToolResultReferenceKindCard) {
+		t.Fatalf("tool result references = %+v, want card reference", toolMsg.ToolResult.References)
+	}
+	if !containsToolResultReferenceKind(toolMsg.ToolResult.References, ToolResultReferenceKindFile) {
+		t.Fatalf("tool result references = %+v, want file reference", toolMsg.ToolResult.References)
+	}
+	if len(toolMsg.ToolResult.ExternalReferences) != 2 {
+		t.Fatalf("tool message external references = %d, want 2", len(toolMsg.ToolResult.ExternalReferences))
+	}
+	if len(session.CurrentTurn.ExternalReferences) != 2 {
+		t.Fatalf("current turn external references = %d, want 2", len(session.CurrentTurn.ExternalReferences))
+	}
+	if !containsExternalCardRef(session.CurrentTurn.ExternalReferences, "card-artifacts") {
+		t.Fatalf("current turn external references = %+v, want card ref", session.CurrentTurn.ExternalReferences)
+	}
+	if !containsExternalFilePath(session.CurrentTurn.ExternalReferences, "/tmp/output/report.txt") {
+		t.Fatalf("current turn external references = %+v, want file path", session.CurrentTurn.ExternalReferences)
+	}
+}
+
+func TestRunTurn_ContextPipelineCompactsOlderMessages(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("final answer", nil),
+		},
+	}
+	compressor := spanstream.NewContextCompressor(&fixedSummaryModel{response: "compressed earlier context"}, 1)
+	kernel := newLoopKernelWithDeps(t, model, nil, nil, nil, compressor, nil)
+	session := kernel.sessions.GetOrCreate("sess-compact", SessionTypeHost, ModeChat)
+	session.Context = ContextWindow{MaxTokens: 64}
+	for i := 0; i < 10; i++ {
+		session.Messages = append(session.Messages, Message{
+			ID:        "m-" + string(rune('a'+i)),
+			Role:      "user",
+			Content:   "very long historical message payload " + strings.Repeat("x", 40),
+			Timestamp: time.Now(),
+		})
+	}
+	kernel.sessions.Update(session)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-compact",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-compact",
+		Input:       "continue",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	session = kernel.sessions.Get("sess-compact")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if len(session.CurrentTurn.CompactedSegments) == 0 {
+		t.Fatal("expected compacted segments to be recorded")
+	}
+	firstIter := session.CurrentTurn.Iterations[0]
+	if len(firstIter.CompactedSegments) == 0 {
+		t.Fatal("expected iteration compacted segments to be recorded")
+	}
+	if len(model.inputs) != 1 {
+		t.Fatalf("Generate calls = %d, want 1", len(model.inputs))
+	}
+	if len(model.inputs[0]) == 0 || model.inputs[0][len(model.inputs[0])-1].Content != "continue" {
+		t.Fatalf("expected latest user message to remain in model input")
+	}
+}
+
+func TestRunTurn_HookBlockedDecisionPersistsCheckpointSource(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-hook-block",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_disk_usage",
+						Arguments: `{"path":"/tmp/demo"}`,
+					},
+				},
+			}),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_disk_usage",
+			Description: "Read disk usage",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "ok"}, nil
+		},
+	}
+
+	registry := hooks.NewRegistry()
+	if err := registry.RegisterTool(hooks.ToolRegistration{
+		Name:  "approval-gate",
+		Stage: hooks.StagePreToolUse,
+		Hook: func(_ context.Context, event *hooks.ToolEvent) error {
+			event.UpdatedPermissions = &tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval,
+				Reason: "hook approval required",
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTool failed: %v", err)
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, registry, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-hook-blocked",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-hook-blocked",
+		Input:       "inspect disk",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "blocked" {
+		t.Fatalf("status = %q, want blocked", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-hook-blocked")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if session.CurrentTurn.LatestCheckpoint == nil {
+		t.Fatal("expected latest checkpoint")
+	}
+	if session.CurrentTurn.LatestCheckpoint.Kind != "approval_needed" {
+		t.Fatalf("checkpoint kind = %q, want approval_needed", session.CurrentTurn.LatestCheckpoint.Kind)
+	}
+	if session.CurrentTurn.LatestCheckpoint.Source != "hook" {
+		t.Fatalf("checkpoint source = %q, want hook", session.CurrentTurn.LatestCheckpoint.Source)
+	}
+	if session.CurrentTurn.Error != "hook approval required" {
+		t.Fatalf("turn error = %q, want hook approval required", session.CurrentTurn.Error)
+	}
+	if len(session.CurrentTurn.PendingApprovals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(session.CurrentTurn.PendingApprovals))
+	}
+	if last := latestIteration(session.CurrentTurn); last == nil || last.Checkpoint == nil || last.Checkpoint.Source != "hook" {
+		t.Fatalf("iteration checkpoint = %#v, want hook-sourced checkpoint", last)
+	}
+}
+
+func TestRunTurn_PolicyDeniedToolPersistsFailureCheckpoint(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-policy-deny",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+					},
+				},
+			}),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "write_file",
+			Description: "Write file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "should not run"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-policy-deny",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-policy-deny",
+		Input:       "write a file",
+	})
+	if err == nil {
+		t.Fatal("expected RunTurn to fail")
+	}
+
+	session := kernel.sessions.Get("sess-policy-deny")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleFailed {
+		t.Fatalf("turn lifecycle = %q, want failed", session.CurrentTurn.Lifecycle)
+	}
+	if session.CurrentTurn.LatestCheckpoint == nil {
+		t.Fatal("expected failure checkpoint")
+	}
+	if session.CurrentTurn.LatestCheckpoint.Kind != "tool_denied" {
+		t.Fatalf("checkpoint kind = %q, want tool_denied", session.CurrentTurn.LatestCheckpoint.Kind)
+	}
+	if session.CurrentTurn.LatestCheckpoint.Source != "policy" {
+		t.Fatalf("checkpoint source = %q, want policy", session.CurrentTurn.LatestCheckpoint.Source)
+	}
+	if !strings.Contains(session.CurrentTurn.Error, "inspect mode does not allow mutation operations") {
+		t.Fatalf("turn error = %q", session.CurrentTurn.Error)
+	}
+	if last := latestIteration(session.CurrentTurn); last == nil || last.Checkpoint == nil || last.Checkpoint.Kind != "tool_denied" {
+		t.Fatalf("iteration checkpoint = %#v, want tool_denied", last)
+	}
+}
+
+func TestRunTurn_RefreshesToolsBetweenIterations(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-connect",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_remote_registry",
+						Arguments: `{"server":"dynamic"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("remote attached", nil),
+		},
+	}
+
+	baseRegistry := tooling.NewRegistry()
+	mcpRegistry := mcp.NewRegistry()
+	dynamicTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_remote_metrics",
+			Description: "Inspect remote metrics",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "remote-metrics"}, nil
+		},
+	}
+	connectTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_remote_registry",
+			Description: "Connect a remote MCP surface",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			if err := mcpRegistry.OnServerConnected("dynamic", []tooling.Tool{dynamicTool}); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return tooling.ToolResult{Content: "connected"}, nil
+		},
+	}
+	if err := baseRegistry.Register(connectTool); err != nil {
+		t.Fatalf("Register connect tool failed: %v", err)
+	}
+
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(baseRegistry, mcpRegistry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-refresh",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-refresh",
+		Input:       "attach remote tools",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+
+	secondTools := toolNames(compiler.contexts[1].AssembledTools)
+	if !containsString(secondTools, "read_remote_metrics") {
+		t.Fatalf("second iteration tools = %v, want read_remote_metrics", secondTools)
+	}
+
+	session := kernel.sessions.Get("sess-refresh")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if session.CurrentTurn.StableToolFingerprint == "" {
+		t.Fatal("expected stable tool fingerprint to be recorded")
+	}
+	if session.CurrentTurn.StablePromptHash == "" {
+		t.Fatal("expected stable prompt hash to be recorded")
+	}
+	if len(session.CurrentTurn.Iterations) != 2 {
+		t.Fatalf("iterations = %d, want 2", len(session.CurrentTurn.Iterations))
+	}
+	if !containsString(session.CurrentTurn.Iterations[1].RefreshedTools, "read_remote_metrics") {
+		t.Fatalf("iteration[1] refreshed tools = %v, want read_remote_metrics", session.CurrentTurn.Iterations[1].RefreshedTools)
+	}
+	if session.CurrentTurn.Iterations[1].PromptDelta == "" {
+		t.Fatal("expected dynamic prompt delta to be recorded")
+	}
+	if !containsString(compiler.contexts[1].ToolDelta.NewlyAvailable, "read_remote_metrics") {
+		t.Fatalf("second iteration tool delta = %v, want read_remote_metrics", compiler.contexts[1].ToolDelta.NewlyAvailable)
+	}
+	if strings.Contains(session.CurrentTurn.Iterations[1].PromptDelta, "# Tool Index") {
+		t.Fatal("prompt delta should not re-emit the stable tool index")
+	}
+	if !strings.Contains(session.CurrentTurn.Iterations[1].PromptDelta, "Newly available tools") {
+		t.Fatal("prompt delta should carry tool availability changes")
+	}
+}
+
+func TestRunTurn_PostToolHookHidesToolForNextIteration(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-hide-surface",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_restricted_surface",
+						Arguments: `{}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("surface updated", nil),
+		},
+	}
+
+	restrictTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_restricted_surface",
+			Description: "Prepare a restricted tool surface",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "restricted"}, nil
+		},
+	}
+	hiddenTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_remote_metrics",
+			Description: "Read remote metrics",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "metrics"}, nil
+		},
+	}
+
+	registry := hooks.NewRegistry()
+	if err := registry.RegisterTool(hooks.ToolRegistration{
+		Name:  "hide-read-remote",
+		Stage: hooks.StagePostToolUse,
+		Hook: func(_ context.Context, event *hooks.ToolEvent) error {
+			if event.Tool.Name != "read_restricted_surface" {
+				return nil
+			}
+			event.HideTools = append(event.HideTools, "read_remote_metrics")
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTool failed: %v", err)
+	}
+
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{
+		assembler: tooling.NewAssembler(func() *tooling.Registry {
+			reg := tooling.NewRegistry()
+			if err := reg.Register(restrictTool); err != nil {
+				t.Fatalf("Register restrict tool failed: %v", err)
+			}
+			if err := reg.Register(hiddenTool); err != nil {
+				t.Fatalf("Register hidden tool failed: %v", err)
+			}
+			return reg
+		}()),
+	}, compiler, model)
+	kernel.hooks = registry
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-hook-hide",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-hook-hide",
+		Input:       "restrict the surface",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if !containsString(toolNames(compiler.contexts[0].AssembledTools), "read_remote_metrics") {
+		t.Fatal("first iteration should include read_remote_metrics")
+	}
+	if containsString(toolNames(compiler.contexts[1].AssembledTools), "read_remote_metrics") {
+		t.Fatal("second iteration should hide read_remote_metrics")
+	}
+	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "read_remote_metrics") {
+		t.Fatalf("second iteration tool delta = %v, want read_remote_metrics unavailable", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+
+	session := kernel.sessions.Get("sess-hook-hide")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if !containsString(session.CurrentTurn.HiddenTools, "read_remote_metrics") {
+		t.Fatalf("hidden tools = %v, want read_remote_metrics", session.CurrentTurn.HiddenTools)
+	}
+	if containsString(session.CurrentTurn.Iterations[1].VisibleTools, "read_remote_metrics") {
+		t.Fatalf("visible tools = %v, should hide read_remote_metrics", session.CurrentTurn.Iterations[1].VisibleTools)
+	}
+}
+
+func TestRunTurn_StreamingToolEmitsProgressAndPersistsCheckpoint(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-stream",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_stream_logs",
+						Arguments: `{"path":"/tmp/stream.log"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("stream complete", nil),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_stream_logs",
+			Description: "Stream log content",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{
+				Stream: &tooling.StreamingResult{
+					Reader:    strings.NewReader("alpha-beta-gamma"),
+					ChunkSize: 5,
+				},
+			}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-stream",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-stream",
+		Input:       "stream logs",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-stream")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if len(session.CurrentTurn.Iterations) == 0 {
+		t.Fatal("expected at least one iteration")
+	}
+	iter := session.CurrentTurn.Iterations[0]
+	if len(iter.ToolProgress) < 2 {
+		t.Fatalf("tool progress updates = %d, want at least 2", len(iter.ToolProgress))
+	}
+	if iter.ToolProgress[0].Delta == "" {
+		t.Fatal("expected first progress update to contain partial content")
+	}
+	if !iter.ToolProgress[len(iter.ToolProgress)-1].Done {
+		t.Fatal("expected final progress update to mark completion")
+	}
+	if iter.Checkpoint == nil || iter.Checkpoint.Kind != "tool_result" {
+		t.Fatalf("iteration checkpoint = %#v, want final tool_result checkpoint", iter.Checkpoint)
+	}
+
+	emitter, ok := kernel.projector.(*testMockEventEmitter)
+	if !ok {
+		t.Fatal("expected test projector")
+	}
+	progressEvents := 0
+	for _, event := range emitter.events {
+		if event.Type == EventToolProgress {
+			progressEvents++
+		}
+	}
+	if progressEvents == 0 {
+		t.Fatal("expected tool.progress events to be emitted")
+	}
+	if len(session.Messages) < 2 {
+		t.Fatalf("session messages len = %d, want >= 2", len(session.Messages))
+	}
+	foundToolMessage := false
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolResult != nil && msg.ToolResult.ToolCallID == "call-stream" {
+			foundToolMessage = msg.Content == "alpha-beta-gamma"
+			break
+		}
+	}
+	if !foundToolMessage {
+		t.Fatal("expected final tool message to contain full streamed content")
+	}
+}
+
+func TestRunTurn_StreamingToolPartialResultFeedsNextIterationContext(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-stream-partial",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_stream_logs",
+						Arguments: `{"path":"/tmp/partial.log"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("done", nil),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_stream_logs",
+			Description: "Stream log content",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{
+				Stream: &tooling.StreamingResult{
+					Reader:    strings.NewReader("chunk-one chunk-two"),
+					ChunkSize: 9,
+				},
+			}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-stream-context",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-stream-context",
+		Input:       "stream into next iteration",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model inputs = %d, want 2", len(model.inputs))
+	}
+
+	foundPartialContext := false
+	for _, msg := range model.inputs[1] {
+		if !strings.Contains(msg.Content, "Partial tool result") {
+			continue
+		}
+		if strings.Contains(msg.Content, "chunk-one") {
+			foundPartialContext = true
+			break
+		}
+	}
+	if !foundPartialContext {
+		t.Fatal("expected second iteration model input to include partial tool result context")
+	}
+
+	session := kernel.sessions.Get("sess-stream-context")
+	if session == nil {
+		t.Fatal("expected session state")
+	}
+	foundProgressMessage := false
+	for _, msg := range session.Messages {
+		if msg.Role != "system" {
+			continue
+		}
+		if strings.Contains(msg.Content, "Partial tool result") && strings.Contains(msg.Content, "chunk-one") {
+			foundProgressMessage = true
+			break
+		}
+	}
+	if !foundProgressMessage {
+		t.Fatal("expected session messages to retain partial tool result context")
+	}
+}
+
+func TestWorkspaceRouter_DelegatesWorkspaceRequestsToSharedIterationLoop(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-ws-1",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_file",
+						Arguments: `{"path":"/tmp/workspace.txt"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("workspace done", nil),
+		},
+	}
+
+	var executed int
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_file",
+			Description: "Read a file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "read:" + string(input)}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	router := NewWorkspaceRouter(nil)
+
+	result, err := router.RouteRequest(context.Background(), TurnRequest{
+		SessionID:   "sess-ws-shared",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeInspect,
+		TurnID:      "turn-ws-shared",
+		Input:       "inspect the workspace file",
+	}, kernel)
+	if err != nil {
+		t.Fatalf("RouteRequest failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if executed != 1 {
+		t.Fatalf("tool executions = %d, want 1", executed)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+
+	session := kernel.sessions.Get("sess-ws-shared")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected workspace session turn snapshot")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	if len(session.CurrentTurn.Iterations) != 2 {
+		t.Fatalf("turn iterations = %d, want 2", len(session.CurrentTurn.Iterations))
+	}
+	foundToolResult := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-ws-1" && strings.Contains(msg.Content, `read:{"path":"/tmp/workspace.txt"}`) {
+			foundToolResult = true
+			break
+		}
+	}
+	if !foundToolResult {
+		t.Fatal("expected second model input to include workspace tool result")
+	}
+}
+
+func TestRunTurn_WorkspaceSessionIgnoresLegacyAgentManagerPath(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("workspace done", nil),
+		},
+	}
+
+	kernel := newLoopKernel(t, model, nil, nil, policyengine.NewDefaultModePolicies())
+	kernel.agentMgr = &panickingAgentManager{}
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-ws-no-legacy",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModePlan,
+		TurnID:      "turn-ws-no-legacy",
+		Input:       "plan the next steps",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(model.inputs) != 1 {
+		t.Fatalf("model Generate calls = %d, want 1", len(model.inputs))
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsToolResultReferenceKind(refs []ToolResultReference, kind ToolResultReferenceKind) bool {
+	for _, ref := range refs {
+		if ref.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func containsExternalCardRef(refs []ExternalReference, cardRef string) bool {
+	for _, ref := range refs {
+		if ref.CardRef == cardRef {
+			return true
+		}
+	}
+	return false
+}
+
+func containsExternalFilePath(refs []ExternalReference, filePath string) bool {
+	for _, ref := range refs {
+		if ref.FilePath == filePath {
+			return true
+		}
+	}
+	return false
+}

@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -24,6 +26,12 @@ type Store interface {
 	ListSessions() ([]*runtimekernel.SessionState, error)
 	DeleteSession(id string) error
 
+	// Workspace tasks
+	GetWorkspaceTask(id string) (*runtimekernel.WorkspaceTask, error)
+	ListWorkspaceTasks() ([]*runtimekernel.WorkspaceTask, error)
+	SaveWorkspaceTask(task *runtimekernel.WorkspaceTask) error
+	DeleteWorkspaceTask(id string) error
+
 	// Approval audit log
 	AppendApprovalAudit(record *runtimekernel.ApprovalRecord) error
 	ListApprovalAudits() ([]*runtimekernel.ApprovalRecord, error)
@@ -35,6 +43,12 @@ type Store interface {
 	// LLM config
 	GetLLMConfig() (*LLMConfig, error)
 	SaveLLMConfig(config *LLMConfig) error
+
+	// Tool result spills
+	GetToolResultSpill(id string) (*tooling.ResultSpill, error)
+	ListToolResultSpills() ([]*tooling.ResultSpill, error)
+	SaveToolResultSpill(spill *tooling.ResultSpill) error
+	DeleteToolResultSpill(id string) error
 
 	// Flush forces an immediate write of all dirty state to disk.
 	Flush() error
@@ -87,9 +101,11 @@ type JSONFileStore struct {
 	mu       sync.RWMutex
 	dataDir  string
 	sessions map[string]*runtimekernel.SessionState
+	tasks    map[string]*runtimekernel.WorkspaceTask
 	audits   []*runtimekernel.ApprovalRecord
 	uiCards  []UICard
 	llmCfg   *LLMConfig
+	spills   map[string]*tooling.ResultSpill
 
 	// Async write control
 	dirty    map[string]bool // tracks which data sets need flushing
@@ -97,7 +113,6 @@ type JSONFileStore struct {
 	doneCh   chan struct{}
 	interval time.Duration
 }
-
 
 // NewJSONFileStore creates a new JSONFileStore rooted at dataDir.
 // It loads existing state from disk and starts the async writer goroutine.
@@ -112,7 +127,9 @@ func NewJSONFileStore(dataDir string, flushInterval time.Duration) (*JSONFileSto
 	s := &JSONFileStore{
 		dataDir:  dataDir,
 		sessions: make(map[string]*runtimekernel.SessionState),
+		tasks:    make(map[string]*runtimekernel.WorkspaceTask),
 		dirty:    make(map[string]bool),
+		spills:   make(map[string]*tooling.ResultSpill),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 		interval: flushInterval,
@@ -137,8 +154,7 @@ func (s *JSONFileStore) GetSession(id string) (*runtimekernel.SessionState, erro
 	if !ok {
 		return nil, fmt.Errorf("session %q not found", id)
 	}
-	cp := *sess
-	return &cp, nil
+	return cloneSessionState(sess)
 }
 
 func (s *JSONFileStore) SaveSession(session *runtimekernel.SessionState) error {
@@ -150,8 +166,11 @@ func (s *JSONFileStore) SaveSession(session *runtimekernel.SessionState) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cp := *session
-	s.sessions[cp.ID] = &cp
+	cp, err := cloneSessionState(session)
+	if err != nil {
+		return err
+	}
+	s.sessions[cp.ID] = cp
 	s.dirty["session:"+cp.ID] = true
 	return nil
 }
@@ -161,9 +180,21 @@ func (s *JSONFileStore) ListSessions() ([]*runtimekernel.SessionState, error) {
 	defer s.mu.RUnlock()
 	result := make([]*runtimekernel.SessionState, 0, len(s.sessions))
 	for _, sess := range s.sessions {
-		cp := *sess
-		result = append(result, &cp)
+		cp, err := cloneSessionState(sess)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, cp)
 	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].UpdatedAt.After(result[j].UpdatedAt)
+		}
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
 	return result, nil
 }
 
@@ -175,6 +206,77 @@ func (s *JSONFileStore) DeleteSession(id string) error {
 	}
 	delete(s.sessions, id)
 	s.dirty["delete_session:"+id] = true
+	return nil
+}
+
+func (s *JSONFileStore) GetWorkspaceTask(id string) (*runtimekernel.WorkspaceTask, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	task, ok := s.tasks[id]
+	if !ok {
+		return nil, fmt.Errorf("workspace task %q not found", id)
+	}
+	return cloneWorkspaceTask(task)
+}
+
+func (s *JSONFileStore) SaveWorkspaceTask(task *runtimekernel.WorkspaceTask) error {
+	if task == nil {
+		return fmt.Errorf("task is nil")
+	}
+	if task.ID == "" {
+		return fmt.Errorf("task id is required")
+	}
+	cp, err := cloneWorkspaceTask(task)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	if cp.StartTime.IsZero() {
+		cp.StartTime = cp.CreatedAt
+	}
+	cp.UpdatedAt = now
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks[cp.ID] = cp
+	s.dirty["task:"+cp.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) ListWorkspaceTasks() ([]*runtimekernel.WorkspaceTask, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*runtimekernel.WorkspaceTask, 0, len(s.tasks))
+	for _, task := range s.tasks {
+		cp, err := cloneWorkspaceTask(task)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, cp)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].UpdatedAt.After(result[j].UpdatedAt)
+		}
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
+}
+
+func (s *JSONFileStore) DeleteWorkspaceTask(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tasks[id]; !ok {
+		return fmt.Errorf("workspace task %q not found", id)
+	}
+	delete(s.tasks, id)
+	s.dirty["delete_task:"+id] = true
 	return nil
 }
 
@@ -252,6 +354,70 @@ func (s *JSONFileStore) SaveLLMConfig(config *LLMConfig) error {
 }
 
 // ---------------------------------------------------------------------------
+// Tool result spills
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetToolResultSpill(id string) (*tooling.ResultSpill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	spill, ok := s.spills[id]
+	if !ok {
+		return nil, fmt.Errorf("tool result spill %q not found", id)
+	}
+	return cloneToolResultSpill(spill)
+}
+
+func (s *JSONFileStore) ListToolResultSpills() ([]*tooling.ResultSpill, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*tooling.ResultSpill, 0, len(s.spills))
+	for _, spill := range s.spills {
+		cp, err := cloneToolResultSpill(spill)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, cp)
+	}
+	return result, nil
+}
+
+func (s *JSONFileStore) SaveToolResultSpill(spill *tooling.ResultSpill) error {
+	if spill == nil {
+		return fmt.Errorf("spill is nil")
+	}
+	if spill.ID == "" {
+		return fmt.Errorf("spill id is required")
+	}
+	cp, err := cloneToolResultSpill(spill)
+	if err != nil {
+		return err
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	if cp.Bytes == 0 && len(cp.Content) > 0 {
+		cp.Bytes = int64(len(cp.Content))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.spills[cp.ID] = cp
+	s.dirty["spill:"+cp.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) DeleteToolResultSpill(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.spills[id]; !ok {
+		return fmt.Errorf("tool result spill %q not found", id)
+	}
+	delete(s.spills, id)
+	s.dirty["delete_spill:"+id] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Flush / Close
 // ---------------------------------------------------------------------------
 
@@ -319,6 +485,19 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			id := key[15:]
 			path := filepath.Join(s.dataDir, "sessions", id+".json")
 			_ = os.Remove(path)
+		case len(key) > 5 && key[:5] == "task:":
+			id := key[5:]
+			task, ok := s.tasks[id]
+			if !ok {
+				continue
+			}
+			if err := s.writeJSON(filepath.Join("workspace-tasks", id+".json"), task); err != nil {
+				return err
+			}
+		case len(key) > 12 && key[:12] == "delete_task:":
+			id := key[12:]
+			path := filepath.Join(s.dataDir, "workspace-tasks", id+".json")
+			_ = os.Remove(path)
 		case key == "audits":
 			if err := s.writeJSON("approval-audits.json", s.audits); err != nil {
 				return err
@@ -331,6 +510,19 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			if err := s.writeJSON("llm-config.json", s.llmCfg); err != nil {
 				return err
 			}
+		case len(key) > 6 && key[:6] == "spill:":
+			id := key[6:]
+			spill, ok := s.spills[id]
+			if !ok {
+				continue
+			}
+			if err := s.writeJSON(filepath.Join("tool-spills", id+".json"), spill); err != nil {
+				return err
+			}
+		case len(key) > 13 && key[:13] == "delete_spill:":
+			id := key[13:]
+			path := filepath.Join(s.dataDir, "tool-spills", id+".json")
+			_ = os.Remove(path)
 		}
 	}
 	return nil
@@ -375,6 +567,26 @@ func (s *JSONFileStore) loadFromDisk() error {
 		s.sessions[sess.ID] = &sess
 	}
 
+	taskDir := filepath.Join(s.dataDir, "workspace-tasks")
+	taskEntries, err := os.ReadDir(taskDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range taskEntries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(taskDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var task runtimekernel.WorkspaceTask
+		if err := json.Unmarshal(raw, &task); err != nil {
+			continue
+		}
+		s.tasks[task.ID] = &task
+	}
+
 	// Load approval audits
 	auditsPath := filepath.Join(s.dataDir, "approval-audits.json")
 	if raw, err := os.ReadFile(auditsPath); err == nil {
@@ -402,5 +614,71 @@ func (s *JSONFileStore) loadFromDisk() error {
 		}
 	}
 
+	// Load tool result spills
+	spillDir := filepath.Join(s.dataDir, "tool-spills")
+	spillEntries, err := os.ReadDir(spillDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range spillEntries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(spillDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var spill tooling.ResultSpill
+		if err := json.Unmarshal(raw, &spill); err != nil {
+			continue
+		}
+		s.spills[spill.ID] = &spill
+	}
+
 	return nil
+}
+
+func cloneSessionState(src *runtimekernel.SessionState) (*runtimekernel.SessionState, error) {
+	if src == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	var dst runtimekernel.SessionState
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return nil, err
+	}
+	return &dst, nil
+}
+
+func cloneToolResultSpill(src *tooling.ResultSpill) (*tooling.ResultSpill, error) {
+	if src == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	var dst tooling.ResultSpill
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return nil, err
+	}
+	return &dst, nil
+}
+
+func cloneWorkspaceTask(src *runtimekernel.WorkspaceTask) (*runtimekernel.WorkspaceTask, error) {
+	if src == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	var dst runtimekernel.WorkspaceTask
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return nil, err
+	}
+	return &dst, nil
 }

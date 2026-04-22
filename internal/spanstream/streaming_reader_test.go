@@ -130,6 +130,55 @@ func TestStreamingToolReader_IncrementalRead(t *testing.T) {
 	}
 }
 
+func TestStreamingToolReaderSnapshotAndContentSince(t *testing.T) {
+	reader := NewStreamingToolReader(strings.NewReader("abcdef"), 2, nil)
+
+	buf := make([]byte, 2)
+	n, err := reader.Read(buf)
+	if err != nil && err != io.EOF {
+		t.Fatalf("initial Read error: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("initial Read n = %d, want 2", n)
+	}
+
+	if got := string(reader.ContentSince(0)); got != "ab" {
+		t.Fatalf("ContentSince(0) = %q, want %q", got, "ab")
+	}
+	if got := string(reader.ContentSince(1)); got != "b" {
+		t.Fatalf("ContentSince(1) = %q, want %q", got, "b")
+	}
+	if got := reader.ContentSince(3); got != nil {
+		t.Fatalf("ContentSince(3) = %q, want nil", string(got))
+	}
+
+	snap := reader.Snapshot()
+	if snap.TotalRead != 2 {
+		t.Fatalf("Snapshot().TotalRead = %d, want 2", snap.TotalRead)
+	}
+	if snap.Done {
+		t.Fatal("Snapshot().Done should be false before EOF")
+	}
+	if string(snap.Content) != "ab" {
+		t.Fatalf("Snapshot().Content = %q, want %q", string(snap.Content), "ab")
+	}
+
+	if _, err := reader.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	doneSnap := reader.Snapshot()
+	if !doneSnap.Done {
+		t.Fatal("Snapshot().Done should be true after EOF")
+	}
+	if doneSnap.TotalRead != len("abcdef") {
+		t.Fatalf("done Snapshot().TotalRead = %d, want %d", doneSnap.TotalRead, len("abcdef"))
+	}
+	if string(doneSnap.Content) != "abcdef" {
+		t.Fatalf("done Snapshot().Content = %q, want %q", string(doneSnap.Content), "abcdef")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // PartialContentInjector tests
 // ---------------------------------------------------------------------------
@@ -223,6 +272,46 @@ func TestPartialContentInjector_Cursor(t *testing.T) {
 	chunk, _ := injector.NextChunk()
 	if injector.Cursor() != len(chunk) {
 		t.Fatalf("cursor should be %d after first NextChunk, got %d", len(chunk), injector.Cursor())
+	}
+}
+
+func TestPartialContentInjector_Progress(t *testing.T) {
+	content := "partial progress data"
+	reader := NewStreamingToolReader(strings.NewReader(content), 5, nil)
+	injector := NewPartialContentInjector(reader)
+
+	if _, err := reader.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+
+	progress := injector.Progress()
+	if progress.Cursor != 0 {
+		t.Fatalf("progress.Cursor = %d, want 0 before draining", progress.Cursor)
+	}
+	if progress.Available != len(content) {
+		t.Fatalf("progress.Available = %d, want %d", progress.Available, len(content))
+	}
+	if !progress.Done {
+		t.Fatal("progress.Done should be true after reader EOF")
+	}
+
+	chunk, err := injector.NextChunk()
+	if err != nil {
+		t.Fatalf("NextChunk() error = %v", err)
+	}
+	if string(chunk) != content {
+		t.Fatalf("NextChunk() = %q, want %q", string(chunk), content)
+	}
+
+	progress = injector.Progress()
+	if progress.Cursor != len(content) {
+		t.Fatalf("progress.Cursor = %d, want %d", progress.Cursor, len(content))
+	}
+	if progress.Available != len(content) {
+		t.Fatalf("progress.Available = %d, want %d", progress.Available, len(content))
+	}
+	if !progress.Done {
+		t.Fatal("progress.Done should remain true after draining")
 	}
 }
 

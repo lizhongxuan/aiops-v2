@@ -5,6 +5,49 @@ import (
 	"time"
 )
 
+type testTaskRepository struct {
+	tasks map[string]*WorkspaceTask
+}
+
+func newTestTaskRepository() *testTaskRepository {
+	return &testTaskRepository{tasks: make(map[string]*WorkspaceTask)}
+}
+
+func (r *testTaskRepository) GetWorkspaceTask(id string) (*WorkspaceTask, error) {
+	task, ok := r.tasks[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *task
+	cp.HostIDs = append([]string(nil), task.HostIDs...)
+	return &cp, nil
+}
+
+func (r *testTaskRepository) ListWorkspaceTasks() ([]*WorkspaceTask, error) {
+	result := make([]*WorkspaceTask, 0, len(r.tasks))
+	for _, task := range r.tasks {
+		cp := *task
+		cp.HostIDs = append([]string(nil), task.HostIDs...)
+		result = append(result, &cp)
+	}
+	return result, nil
+}
+
+func (r *testTaskRepository) SaveWorkspaceTask(task *WorkspaceTask) error {
+	if task == nil {
+		return nil
+	}
+	cp := *task
+	cp.HostIDs = append([]string(nil), task.HostIDs...)
+	r.tasks[cp.ID] = &cp
+	return nil
+}
+
+func (r *testTaskRepository) DeleteWorkspaceTask(id string) error {
+	delete(r.tasks, id)
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests for TaskStatus state machine
 // ---------------------------------------------------------------------------
@@ -56,12 +99,12 @@ func TestIsValidTransition(t *testing.T) {
 
 	// Invalid transitions
 	invalidCases := []struct{ from, to TaskStatus }{
-		{TaskStatusPending, TaskStatusCompleted},  // can't complete without running
-		{TaskStatusCompleted, TaskStatusRunning},   // terminal → non-terminal
-		{TaskStatusFailed, TaskStatusRunning},      // terminal → non-terminal
-		{TaskStatusKilled, TaskStatusRunning},      // terminal → non-terminal
-		{TaskStatusCompleted, TaskStatusFailed},    // terminal → terminal
-		{TaskStatusRunning, TaskStatusPending},     // can't go back to pending
+		{TaskStatusPending, TaskStatusCompleted}, // can't complete without running
+		{TaskStatusCompleted, TaskStatusRunning}, // terminal → non-terminal
+		{TaskStatusFailed, TaskStatusRunning},    // terminal → non-terminal
+		{TaskStatusKilled, TaskStatusRunning},    // terminal → non-terminal
+		{TaskStatusCompleted, TaskStatusFailed},  // terminal → terminal
+		{TaskStatusRunning, TaskStatusPending},   // can't go back to pending
 	}
 	for _, tc := range invalidCases {
 		if IsValidTransition(tc.from, tc.to) {
@@ -172,6 +215,45 @@ func TestTaskManager_TransitionSetsError(t *testing.T) {
 	got := tm.GetTask("task-1")
 	if got.Error != "timeout" {
 		t.Errorf("expected error 'timeout', got %q", got.Error)
+	}
+}
+
+func TestTaskManager_RepositoryBackedLifecycle(t *testing.T) {
+	repo := newTestTaskRepository()
+	tm := NewTaskManager(repo)
+
+	task := &WorkspaceTask{
+		ID:          "task-1",
+		SessionID:   "workspace-1",
+		TurnID:      "turn-1",
+		Type:        "host_exec",
+		Description: "check disk",
+		StartTime:   time.Now(),
+	}
+	if err := tm.AddTask(task); err != nil {
+		t.Fatalf("AddTask failed: %v", err)
+	}
+	if _, ok := repo.tasks["task-1"]; !ok {
+		t.Fatal("expected task to be saved to repository on add")
+	}
+
+	if err := tm.Transition("task-1", TaskStatusRunning, ""); err != nil {
+		t.Fatalf("transition pending→running failed: %v", err)
+	}
+	if got := repo.tasks["task-1"]; got == nil || got.Status != string(TaskStatusRunning) {
+		t.Fatalf("repository was not updated after transition, got %#v", got)
+	}
+
+	tm2 := NewTaskManager(repo)
+	loaded := tm2.GetTask("task-1")
+	if loaded == nil {
+		t.Fatal("expected task to be loaded from repository")
+	}
+	if loaded.SessionID != "workspace-1" {
+		t.Fatalf("loaded task session mismatch: got %q", loaded.SessionID)
+	}
+	if len(tm2.ListTasks()) != 1 {
+		t.Fatalf("expected one task from repository, got %d", len(tm2.ListTasks()))
 	}
 }
 

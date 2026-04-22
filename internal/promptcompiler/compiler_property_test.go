@@ -217,6 +217,56 @@ func TestProperty9_FourLayerOutputStructure(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Property 9.1: Stable/Dynamic split invariants
+// *For any* valid CompileContext, the stable prompt should contain the
+// system/stable-developer/tool layers and the dynamic prompt should carry
+// per-iteration assets plus policy.
+// ---------------------------------------------------------------------------
+
+func TestProperty9_StableDynamicSplitInvariants(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		compiler := NewCompiler()
+		ctx := genCompileContext().Draw(t, "ctx")
+
+		result, err := compiler.Compile(ctx)
+		if err != nil {
+			t.Fatalf("Compile should not error for valid context: %v", err)
+		}
+
+		if result.Stable.Content == "" {
+			t.Fatal("Stable prompt must not be empty")
+		}
+		if result.Dynamic.Content == "" {
+			t.Fatal("Dynamic prompt must not be empty")
+		}
+
+		wantStable := joinNonEmpty(
+			result.System.Content,
+			result.Stable.Developer.Content,
+			result.Tools.Content,
+		)
+		if result.Stable.Content != wantStable {
+			t.Fatalf("Stable prompt mismatch.\nGot:  %q\nWant: %q", result.Stable.Content, wantStable)
+		}
+
+		for _, asset := range result.Dynamic.SkillPromptAssets {
+			asset = strings.TrimSpace(asset)
+			if asset != "" && !strings.Contains(result.Dynamic.Content, asset) {
+				t.Fatalf("Dynamic prompt missing skill prompt asset %q", asset)
+			}
+		}
+
+		if !strings.Contains(result.Dynamic.Content, result.Policy.Content) {
+			t.Fatalf("Dynamic prompt should include policy.\nGot:  %q\nWant substring: %q", result.Dynamic.Content, result.Policy.Content)
+		}
+
+		if result.Dynamic.Policy.Content != result.Policy.Content {
+			t.Fatalf("Dynamic policy mismatch.\nGot:  %q\nWant: %q", result.Dynamic.Policy.Content, result.Policy.Content)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Property 11: Tool Prompt 内容约束
 // *For any* tool prompt compilation output, content should only contain
 // capability, constraints, result shape, approval note — NOT answer style content.

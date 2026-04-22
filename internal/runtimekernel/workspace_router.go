@@ -185,67 +185,16 @@ func (wr *WorkspaceRouter) handleStateQuery(ctx context.Context, req TurnRequest
 }
 
 // handleSingleHostReadonly completes the request in the current turn using
-// a standard ChatModelAgent (same as host session execution path).
+// the shared runtime iteration loop.
 func (wr *WorkspaceRouter) handleSingleHostReadonly(ctx context.Context, req TurnRequest, kernel *EinoKernel) (TurnResult, error) {
-	// Delegate to the standard RunTurn pipeline — single-host readonly
-	// operations use the same ChatModelAgent path as host sessions.
 	return kernel.RunTurn(ctx, req)
 }
 
-// handleComplexTask routes the request through PlanExecuteAgent for
-// Plan-Execute-Replan orchestration of multi-host tasks.
+// handleComplexTask routes the request through the same runtime iteration
+// loop so workspace sessions do not fork into a second orchestration chain.
 func (wr *WorkspaceRouter) handleComplexTask(ctx context.Context, req TurnRequest, kernel *EinoKernel, decision RoutingDecision) (TurnResult, error) {
-	_ = ctx
-
-	turnID := req.TurnID
-	if turnID == "" {
-		turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
-	}
-
-	sessionID := req.SessionID
-	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
-	}
-
-	// Create a WorkspaceTask to track the complex task lifecycle
-	task := WorkspaceTask{
-		ID:          fmt.Sprintf("task-%d", time.Now().UnixNano()),
-		Type:        classifyTaskType(decision),
-		Status:      "pending",
-		Description: req.Input,
-		HostIDs:     decision.TargetHosts,
-		StartTime:   time.Now(),
-	}
-
-	// In production, this would:
-	// 1. Create PlanExecuteAgent via AgentFactory.CreateWorkspaceAgent
-	// 2. Execute via adk.Runner with Plan-Execute-Replan loop
-	// 3. Planner generates multi-step plan
-	// 4. Executor spawns ParallelAgent with Worker ChatModelAgents
-	// 5. Replanner evaluates results and decides next action
-	//
-	// For now, we mark the task as running and delegate to the kernel's
-	// standard execution path. Full PlanExecuteAgent integration is in
-	// task 11 (Multi-Agent orchestration).
-
-	task.Status = "running"
-
-	// Emit turn complete event
-	kernel.projector.Emit(LifecycleEvent{
-		Type:      EventTurnComplete,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Timestamp: time.Now(),
-	})
-
-	return TurnResult{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		SessionID:   sessionID,
-		TurnID:      turnID,
-		Status:      "running",
-		Output:      fmt.Sprintf("complex task initiated: %s (hosts: %v)", task.Description, task.HostIDs),
-	}, nil
+	_ = decision
+	return kernel.RunTurn(ctx, req)
 }
 
 // ---------------------------------------------------------------------------

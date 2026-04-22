@@ -512,6 +512,40 @@ func TestProperty3_ContextWindowBoundary(t *testing.T) {
 	})
 }
 
+func TestSplitContextForCompaction(t *testing.T) {
+	messages := []Message{
+		{ID: "msg-1", Role: "user", Content: "aaaaa aaaaa aaaaa aaaaa"},
+		{ID: "msg-2", Role: "assistant", Content: "bbbbb bbbbb bbbbb bbbbb"},
+		{ID: "msg-3", Role: "tool", Content: "ccccc ccccc ccccc ccccc"},
+		{ID: "msg-4", Role: "assistant", Content: "ddddd ddddd ddddd ddddd"},
+	}
+
+	cw := &ContextWindow{MaxTokens: 12}
+	plan := SplitContextForCompaction(cw, messages)
+
+	if !plan.Compacted {
+		t.Fatal("expected compaction plan to be marked compacted")
+	}
+	if len(plan.Compactable) == 0 {
+		t.Fatal("expected compactable prefix to be returned")
+	}
+	if len(plan.Retained) == 0 {
+		t.Fatal("expected retained suffix to be returned")
+	}
+	if plan.Retained[len(plan.Retained)-1].ID != messages[len(messages)-1].ID {
+		t.Fatalf("expected newest message to be preserved, got %q", plan.Retained[len(plan.Retained)-1].ID)
+	}
+	if cw.Messages != len(plan.Retained) {
+		t.Fatalf("context messages = %d, want %d", cw.Messages, len(plan.Retained))
+	}
+	if cw.TruncatedAt != len(plan.Compactable) {
+		t.Fatalf("TruncatedAt = %d, want %d", cw.TruncatedAt, len(plan.Compactable))
+	}
+	if cw.UsedTokens > cw.MaxTokens && cw.Messages > 1 {
+		t.Fatalf("UsedTokens (%d) should not exceed MaxTokens (%d) when more than one message remains", cw.UsedTokens, cw.MaxTokens)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Property 27: Workspace 请求分流
 // For any workspace session request, it should be classified into exactly one

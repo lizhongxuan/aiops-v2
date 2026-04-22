@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -86,14 +87,35 @@ type TaskManager struct {
 	mu    sync.RWMutex
 	tasks map[string]*WorkspaceTask // taskID → task
 	hosts map[string]bool           // hostID → online status
+	repo  TaskRepository
+}
+
+// TaskRepository is the persistence abstraction used by TaskManager.
+type TaskRepository interface {
+	GetWorkspaceTask(id string) (*WorkspaceTask, error)
+	ListWorkspaceTasks() ([]*WorkspaceTask, error)
+	SaveWorkspaceTask(task *WorkspaceTask) error
+	DeleteWorkspaceTask(id string) error
 }
 
 // NewTaskManager creates a new TaskManager.
-func NewTaskManager() *TaskManager {
+func NewTaskManager(repo ...TaskRepository) *TaskManager {
+	var backing TaskRepository
+	if len(repo) > 0 {
+		backing = repo[0]
+	}
 	return &TaskManager{
 		tasks: make(map[string]*WorkspaceTask),
 		hosts: make(map[string]bool),
+		repo:  backing,
 	}
+}
+
+// SetRepository attaches or replaces the persistence backend.
+func (tm *TaskManager) SetRepository(repo TaskRepository) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.repo = repo
 }
 
 // AddTask registers a new task in pending state.
@@ -105,6 +127,8 @@ func (tm *TaskManager) AddTask(task *WorkspaceTask) error {
 		return fmt.Errorf("task id is required")
 	}
 
+	tm.loadPersistedTasks()
+
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -114,8 +138,16 @@ func (tm *TaskManager) AddTask(task *WorkspaceTask) error {
 
 	// Ensure task starts in pending state
 	task.Status = string(TaskStatusPending)
+	now := time.Now()
+	if task.StartTime.IsZero() {
+		task.StartTime = now
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = now
+	}
+	task.UpdatedAt = now
 	tm.tasks[task.ID] = task
-	return nil
+	return tm.persistTaskLocked(task)
 }
 
 // Transition attempts to move a task from its current status to the target status.
@@ -135,10 +167,11 @@ func (tm *TaskManager) Transition(taskID string, to TaskStatus, reason string) e
 	}
 
 	task.Status = string(to)
+	task.UpdatedAt = time.Now()
 
 	// Set end time for terminal states
 	if to.IsTerminal() {
-		now := time.Now()
+		now := task.UpdatedAt
 		task.EndTime = &now
 	}
 
@@ -147,37 +180,56 @@ func (tm *TaskManager) Transition(taskID string, to TaskStatus, reason string) e
 		task.Error = reason
 	}
 
-	return nil
+	return tm.persistTaskLocked(task)
 }
 
 // GetTask returns a task by ID, or nil if not found.
 func (tm *TaskManager) GetTask(taskID string) *WorkspaceTask {
 	tm.mu.RLock()
-	defer tm.mu.RUnlock()
-	return tm.tasks[taskID]
+	task, ok := tm.tasks[taskID]
+	repo := tm.repo
+	tm.mu.RUnlock()
+	if ok {
+		return cloneWorkspaceTask(task)
+	}
+	if repo != nil && taskID != "" {
+		if persisted, err := repo.GetWorkspaceTask(taskID); err == nil && persisted != nil {
+			tm.mu.Lock()
+			tm.tasks[persisted.ID] = persisted
+			tm.mu.Unlock()
+			return cloneWorkspaceTask(persisted)
+		}
+	}
+	return nil
 }
 
 // ListTasks returns all tasks.
 func (tm *TaskManager) ListTasks() []*WorkspaceTask {
+	tm.loadPersistedTasks()
+
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	result := make([]*WorkspaceTask, 0, len(tm.tasks))
 	for _, t := range tm.tasks {
-		result = append(result, t)
+		result = append(result, cloneWorkspaceTask(t))
 	}
+	sortWorkspaceTasks(result)
 	return result
 }
 
 // ListByStatus returns tasks filtered by status.
 func (tm *TaskManager) ListByStatus(status TaskStatus) []*WorkspaceTask {
+	tm.loadPersistedTasks()
+
 	tm.mu.RLock()
 	defer tm.mu.RUnlock()
 	var result []*WorkspaceTask
 	for _, t := range tm.tasks {
 		if TaskStatus(t.Status) == status {
-			result = append(result, t)
+			result = append(result, cloneWorkspaceTask(t))
 		}
 	}
+	sortWorkspaceTasks(result)
 	return result
 }
 
@@ -214,8 +266,10 @@ func (tm *TaskManager) SetHostOffline(hostID string) []string {
 				task.Status = string(TaskStatusFailed)
 				task.Error = fmt.Sprintf("host %s went offline", hostID)
 				now := time.Now()
+				task.UpdatedAt = now
 				task.EndTime = &now
 				failedIDs = append(failedIDs, task.ID)
+				_ = tm.persistTaskLocked(task)
 			}
 		}
 	}
@@ -255,8 +309,10 @@ func (tm *TaskManager) StopMission(reason string) []string {
 			task.Status = string(TaskStatusKilled)
 			task.Error = reason
 			now := time.Now()
+			task.UpdatedAt = now
 			task.EndTime = &now
 			killedIDs = append(killedIDs, task.ID)
+			_ = tm.persistTaskLocked(task)
 		}
 	}
 	return killedIDs
@@ -274,4 +330,62 @@ func taskUsesHost(task *WorkspaceTask, hostID string) bool {
 		}
 	}
 	return false
+}
+
+func (tm *TaskManager) loadPersistedTasks() {
+	tm.mu.RLock()
+	repo := tm.repo
+	tm.mu.RUnlock()
+	if repo == nil {
+		return
+	}
+	persisted, err := repo.ListWorkspaceTasks()
+	if err != nil {
+		return
+	}
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	for _, task := range persisted {
+		if task == nil || task.ID == "" {
+			continue
+		}
+		tm.tasks[task.ID] = task
+	}
+}
+
+func (tm *TaskManager) persistTaskLocked(task *WorkspaceTask) error {
+	if task == nil || tm.repo == nil {
+		return nil
+	}
+	return tm.repo.SaveWorkspaceTask(task)
+}
+
+func cloneWorkspaceTask(task *WorkspaceTask) *WorkspaceTask {
+	if task == nil {
+		return nil
+	}
+	cp := *task
+	cp.HostIDs = append([]string(nil), task.HostIDs...)
+	return &cp
+}
+
+func sortWorkspaceTasks(tasks []*WorkspaceTask) {
+	sort.Slice(tasks, func(i, j int) bool {
+		left, right := tasks[i], tasks[j]
+		switch {
+		case left == nil && right == nil:
+			return false
+		case left == nil:
+			return false
+		case right == nil:
+			return true
+		}
+		if !left.UpdatedAt.Equal(right.UpdatedAt) {
+			return left.UpdatedAt.After(right.UpdatedAt)
+		}
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.After(right.CreatedAt)
+		}
+		return left.ID < right.ID
+	})
 }

@@ -48,6 +48,7 @@ type ToolEvent struct {
 	UpdatedMCPToolOutput *tooling.ToolResult
 	UpdatedPermissions   *tooling.PermissionDecision
 	WatchPaths           []string
+	HideTools            []string
 }
 
 type TurnEvent struct {

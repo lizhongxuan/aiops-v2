@@ -190,3 +190,77 @@ func TestRegistryAppliesAllowedMCPServersToCustomSources(t *testing.T) {
 		t.Fatalf("expected plugin MCP server to bypass allowlist, got %v", err)
 	}
 }
+
+func TestRegistryDynamicToolRefreshTokenStableAcrossOrdering(t *testing.T) {
+	r := NewRegistry()
+
+	tools := []tooling.Tool{
+		mockTool{meta: tooling.ToolMetadata{Name: "z_tool", Description: "z"}},
+		mockTool{meta: tooling.ToolMetadata{Name: "a_tool", Description: "a"}},
+	}
+
+	if err := r.OnServerConnected("coroot", tools); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+
+	first := r.DynamicToolRefreshToken()
+	if first == "" {
+		t.Fatal("expected non-empty refresh token")
+	}
+
+	if err := r.OnServerConnected("coroot", []tooling.Tool{
+		mockTool{meta: tooling.ToolMetadata{Name: "a_tool", Description: "a"}},
+		mockTool{meta: tooling.ToolMetadata{Name: "z_tool", Description: "z"}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() reorder error = %v", err)
+	}
+	second := r.DynamicToolRefreshToken()
+	if second != first {
+		t.Fatalf("refresh token changed after reorder: %q vs %q", first, second)
+	}
+
+	if err := r.OnServerConnected("coroot", append(tools, mockTool{meta: tooling.ToolMetadata{Name: "b_tool", Description: "b"}})); err != nil {
+		t.Fatalf("OnServerConnected() add error = %v", err)
+	}
+	third := r.DynamicToolRefreshToken()
+	if third == first {
+		t.Fatal("expected refresh token to change after tool set change")
+	}
+}
+
+func TestAssemblerRefreshTokenTracksDynamicProviders(t *testing.T) {
+	base := tooling.NewRegistry()
+	baseTool := mockTool{meta: tooling.ToolMetadata{Name: "base_tool", Description: "base"}}
+	if err := base.Register(baseTool); err != nil {
+		t.Fatalf("base Register() error = %v", err)
+	}
+
+	dynamic := NewRegistry()
+	if err := dynamic.OnServerConnected("coroot", []tooling.Tool{
+		mockTool{meta: tooling.ToolMetadata{Name: "dyn_tool", Description: "dyn"}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+
+	assembler := tooling.NewAssembler(base, dynamic)
+	first := assembler.RefreshToken("host", "chat", tooling.AssembleOptions{})
+	if first == "" {
+		t.Fatal("expected non-empty assembler refresh token")
+	}
+
+	if err := dynamic.OnServerConnected("coroot", []tooling.Tool{
+		mockTool{meta: tooling.ToolMetadata{Name: "dyn_tool", Description: "dyn"}},
+		mockTool{meta: tooling.ToolMetadata{Name: "extra_tool", Description: "extra"}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() update error = %v", err)
+	}
+	second := assembler.RefreshToken("host", "chat", tooling.AssembleOptions{})
+	if second == first {
+		t.Fatal("expected assembler refresh token to change when dynamic tools change")
+	}
+
+	assembled := assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{})
+	if len(assembled) != 3 {
+		t.Fatalf("assembled tool count = %d, want 3", len(assembled))
+	}
+}

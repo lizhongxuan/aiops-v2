@@ -16,9 +16,9 @@ type captureToolExecutor struct {
 	err    error
 }
 
-func (e *captureToolExecutor) Execute(_ context.Context, args json.RawMessage) (string, error) {
+func (e *captureToolExecutor) Execute(_ context.Context, args json.RawMessage) (tooling.ToolResult, error) {
 	e.args = append(e.args, append(json.RawMessage(nil), args...))
-	return e.result, e.err
+	return tooling.ToolResult{Content: e.result}, e.err
 }
 
 func TestToolDispatcher_PreToolHookRewritesInputBeforeExecution(t *testing.T) {
@@ -142,6 +142,7 @@ func TestToolDispatcher_PostToolHookRewritesOutputAndPayload(t *testing.T) {
 			event.UpdatedMCPToolOutput = &tooling.ToolResult{ToolCallID: event.ToolCallID, Content: "rewritten"}
 			event.AdditionalContext = append(event.AdditionalContext, "output rewritten")
 			event.WatchPaths = append(event.WatchPaths, "/tmp/result.txt")
+			event.HideTools = append(event.HideTools, "remote.write")
 			return nil
 		},
 	}); err != nil {
@@ -157,6 +158,9 @@ func TestToolDispatcher_PostToolHookRewritesOutputAndPayload(t *testing.T) {
 
 	if result.Content != "rewritten" {
 		t.Fatalf("Dispatch result content = %q", result.Content)
+	}
+	if len(result.HiddenTools) != 1 || result.HiddenTools[0] != "remote.write" {
+		t.Fatalf("Dispatch hidden tools = %v", result.HiddenTools)
 	}
 	if len(emitter.events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(emitter.events))
@@ -177,5 +181,9 @@ func TestToolDispatcher_PostToolHookRewritesOutputAndPayload(t *testing.T) {
 	watchPaths, ok := payload["watchPaths"].([]any)
 	if !ok || len(watchPaths) != 1 || watchPaths[0] != "/tmp/result.txt" {
 		t.Fatalf("payload watchPaths = %#v", payload["watchPaths"])
+	}
+	hiddenTools, ok := payload["hiddenTools"].([]any)
+	if !ok || len(hiddenTools) != 1 || hiddenTools[0] != "remote.write" {
+		t.Fatalf("payload hiddenTools = %#v", payload["hiddenTools"])
 	}
 }

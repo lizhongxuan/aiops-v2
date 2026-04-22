@@ -35,6 +35,15 @@ type StreamingToolReader struct {
 	err       error
 }
 
+// StreamingReaderSnapshot captures the readable state of a streaming reader
+// without advancing it.
+type StreamingReaderSnapshot struct {
+	Content   []byte
+	TotalRead int
+	Done      bool
+	Err       error
+}
+
 // NewStreamingToolReader creates a StreamingToolReader that reads from r in
 // chunks of chunkSize bytes. Each chunk triggers the onChunk callback.
 // If chunkSize <= 0, defaults to 4096.
@@ -82,6 +91,35 @@ func (s *StreamingToolReader) Content() []byte {
 	return s.buf.Bytes()
 }
 
+// Snapshot returns a copy of the reader state, including accumulated content.
+func (s *StreamingToolReader) Snapshot() StreamingReaderSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return StreamingReaderSnapshot{
+		Content:   append([]byte(nil), s.buf.Bytes()...),
+		TotalRead: s.totalRead,
+		Done:      s.done,
+		Err:       s.err,
+	}
+}
+
+// ContentSince returns the bytes read since the provided byte offset.
+// If offset is at or beyond the current content length, it returns nil.
+func (s *StreamingToolReader) ContentSince(offset int) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if offset < 0 {
+		offset = 0
+	}
+	content := s.buf.Bytes()
+	if offset >= len(content) {
+		return nil
+	}
+	return append([]byte(nil), content[offset:]...)
+}
+
 // TotalRead returns the total number of bytes read so far.
 func (s *StreamingToolReader) TotalRead() int {
 	s.mu.Lock()
@@ -114,7 +152,6 @@ func (s *StreamingToolReader) ReadAll() ([]byte, error) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // PartialContentInjector feeds partial content from a StreamingToolReader
 // to the LLM prompt incrementally. It tracks what has already been injected
@@ -125,9 +162,17 @@ func (s *StreamingToolReader) ReadAll() ([]byte, error) {
 // prompt. It tracks the injection cursor so that each call to NextChunk()
 // returns only the newly available content since the last injection.
 type PartialContentInjector struct {
-	reader  *StreamingToolReader
-	mu      sync.Mutex
-	cursor  int // byte offset of last injected content
+	reader *StreamingToolReader
+	mu     sync.Mutex
+	cursor int // byte offset of last injected content
+}
+
+// PartialContentProgress captures the current readable/injection state.
+type PartialContentProgress struct {
+	Cursor    int
+	Available int
+	TotalRead int
+	Done      bool
 }
 
 // NewPartialContentInjector creates an injector backed by the given
@@ -176,6 +221,21 @@ func (p *PartialContentInjector) Cursor() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.cursor
+}
+
+// Progress returns the current partial-content state without advancing the
+// injection cursor.
+func (p *PartialContentInjector) Progress() PartialContentProgress {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	snapshot := p.reader.Snapshot()
+	return PartialContentProgress{
+		Cursor:    p.cursor,
+		Available: len(snapshot.Content),
+		TotalRead: snapshot.TotalRead,
+		Done:      snapshot.Done,
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -260,3 +260,244 @@ func TestReconcile_EndTimeSetForReconciledTasks(t *testing.T) {
 		t.Fatal("EndTime should be after test start time")
 	}
 }
+
+type testSessionRepository struct {
+	sessions map[string]*SessionState
+}
+
+func newTestSessionRepository() *testSessionRepository {
+	return &testSessionRepository{sessions: make(map[string]*SessionState)}
+}
+
+func (r *testSessionRepository) GetSession(id string) (*SessionState, error) {
+	sess, ok := r.sessions[id]
+	if !ok {
+		return nil, nil
+	}
+	cp := *sess
+	return &cp, nil
+}
+
+func (r *testSessionRepository) SaveSession(session *SessionState) error {
+	if session == nil {
+		return nil
+	}
+	cp := *session
+	r.sessions[cp.ID] = &cp
+	return nil
+}
+
+func (r *testSessionRepository) ListSessions() ([]*SessionState, error) {
+	result := make([]*SessionState, 0, len(r.sessions))
+	for _, sess := range r.sessions {
+		cp := *sess
+		result = append(result, &cp)
+	}
+	return result, nil
+}
+
+func (r *testSessionRepository) DeleteSession(id string) error {
+	delete(r.sessions, id)
+	return nil
+}
+
+func TestSessionManager_RepositoryBackedLifecycle(t *testing.T) {
+	repo := newTestSessionRepository()
+	sm := NewSessionManager(repo)
+
+	session := sm.GetOrCreate("", SessionTypeHost, ModeChat)
+	if session == nil {
+		t.Fatal("GetOrCreate returned nil session")
+	}
+	if session.ID == "" {
+		t.Fatal("new session should have generated ID")
+	}
+	if _, ok := repo.sessions[session.ID]; !ok {
+		t.Fatal("expected session to be saved to repository on create")
+	}
+
+	session.HostID = "host-1"
+	sm.Update(session)
+	if got := repo.sessions[session.ID]; got == nil || got.HostID != "host-1" {
+		t.Fatalf("repository was not updated, got %#v", got)
+	}
+
+	sm2 := NewSessionManager(repo)
+	loaded := sm2.Get(session.ID)
+	if loaded == nil {
+		t.Fatal("expected session to be loaded from repository")
+	}
+	if loaded.HostID != "host-1" {
+		t.Fatalf("loaded session host mismatch: got %q", loaded.HostID)
+	}
+
+	sm2.Delete(session.ID)
+	if _, ok := repo.sessions[session.ID]; ok {
+		t.Fatal("expected session to be deleted from repository")
+	}
+}
+
+func TestSessionManager_GetLatestReturnsMostRecentlyUpdatedSession(t *testing.T) {
+	repo := newTestSessionRepository()
+	now := time.Now()
+	repo.sessions["sess-old"] = &SessionState{
+		ID:        "sess-old",
+		Type:      SessionTypeHost,
+		Mode:      ModeChat,
+		UpdatedAt: now.Add(-2 * time.Hour),
+	}
+	repo.sessions["sess-new"] = &SessionState{
+		ID:        "sess-new",
+		Type:      SessionTypeWorkspace,
+		Mode:      ModePlan,
+		UpdatedAt: now,
+	}
+
+	sm := NewSessionManager(repo)
+	latest := sm.GetLatest()
+	if latest == nil {
+		t.Fatal("expected latest session")
+	}
+	if latest.ID != "sess-new" {
+		t.Fatalf("latest session = %q, want sess-new", latest.ID)
+	}
+
+	workspaceLatest := sm.GetLatestByType(SessionTypeWorkspace)
+	if workspaceLatest == nil || workspaceLatest.ID != "sess-new" {
+		t.Fatalf("latest workspace session = %#v", workspaceLatest)
+	}
+}
+
+func TestRestoreRuntimeState_LoadsLatestSessionAndReconcilesTasks(t *testing.T) {
+	sessionRepo := newTestSessionRepository()
+	now := time.Now()
+	sessionRepo.sessions["sess-old"] = &SessionState{
+		ID:        "sess-old",
+		Type:      SessionTypeHost,
+		Mode:      ModeChat,
+		UpdatedAt: now.Add(-time.Hour),
+	}
+	sessionRepo.sessions["sess-new"] = &SessionState{
+		ID:               "sess-new",
+		Type:             SessionTypeWorkspace,
+		Mode:             ModePlan,
+		UpdatedAt:        now,
+		PendingApprovals: []PendingApproval{{ID: "approval-1", SessionID: "sess-new", TurnID: "turn-1", Iteration: 1, ToolName: "read_file", CreatedAt: now, UpdatedAt: now}},
+	}
+
+	taskRepo := newTestTaskRepository()
+	taskRepo.tasks["task-pending"] = &WorkspaceTask{
+		ID:          "task-pending",
+		SessionID:   "sess-new",
+		TurnID:      "turn-1",
+		Type:        "host_exec",
+		Status:      string(TaskStatusPending),
+		Description: "pending task",
+		StartTime:   now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	taskRepo.tasks["task-completed"] = &WorkspaceTask{
+		ID:          "task-completed",
+		SessionID:   "sess-new",
+		TurnID:      "turn-1",
+		Type:        "host_exec",
+		Status:      string(TaskStatusCompleted),
+		Description: "done task",
+		StartTime:   now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	sm := NewSessionManager(sessionRepo)
+	tm := NewTaskManager(taskRepo)
+	bc, _ := NewBudgetController(4)
+
+	state, err := RestoreRuntimeState(sm, tm, bc)
+	if err != nil {
+		t.Fatalf("RestoreRuntimeState failed: %v", err)
+	}
+	if state.LatestSession == nil || state.LatestSession.ID != "sess-new" {
+		t.Fatalf("latest session = %#v", state.LatestSession)
+	}
+	if state.ReconcileSummary == nil {
+		t.Fatal("expected reconcile summary")
+	}
+	if len(state.ReconcileSummary.ReconciledTasks) != 1 || state.ReconcileSummary.ReconciledTasks[0] != "task-pending" {
+		t.Fatalf("reconciled tasks = %v", state.ReconcileSummary.ReconciledTasks)
+	}
+	if got := tm.GetTask("task-pending"); got == nil || got.Status != string(TaskStatusFailed) {
+		t.Fatalf("pending task after reconcile = %#v", got)
+	}
+	if got := tm.GetTask("task-completed"); got == nil || got.Status != string(TaskStatusCompleted) {
+		t.Fatalf("completed task after reconcile = %#v", got)
+	}
+}
+
+func TestValidateTurnRecoveryPreconditions(t *testing.T) {
+	now := time.Now()
+	snapshot := &TurnSnapshot{
+		ID:          "turn-1",
+		SessionID:   "sess-1",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		Lifecycle:   TurnLifecycleSuspended,
+		ResumeState: TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		LatestCheckpoint: &CheckpointMetadata{
+			ID:          "chk-1",
+			SessionID:   "sess-1",
+			TurnID:      "turn-1",
+			Iteration:   1,
+			Sequence:    1,
+			Lifecycle:   TurnLifecycleSuspended,
+			ResumeState: TurnResumeStatePendingApproval,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		PendingApprovals: []PendingApproval{{ID: "approval-1", SessionID: "sess-1", TurnID: "turn-1", Iteration: 1, ToolName: "write_file", CreatedAt: now, UpdatedAt: now}},
+	}
+
+	state := InspectTurnRecovery(snapshot)
+	if !state.Resumable {
+		t.Fatal("expected suspended snapshot to be resumable")
+	}
+	if len(state.Reasons) != 0 {
+		t.Fatalf("expected no recovery reasons, got %v", state.Reasons)
+	}
+	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
+		t.Fatalf("expected resumable snapshot to validate, got %v", err)
+	}
+	result, err := RecoverTurnFromSnapshot(snapshot, func() (TurnResult, error) {
+		return TurnResult{
+			SessionType: SessionTypeHost,
+			Mode:        ModeChat,
+			SessionID:   snapshot.SessionID,
+			TurnID:      snapshot.ID,
+			Status:      "completed",
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected recoverable turn to execute, got %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed result, got %q", result.Status)
+	}
+
+	blocked := *snapshot
+	blocked.Lifecycle = TurnLifecyclePending
+	if err := ValidateTurnRecoveryPreconditions(&blocked); err == nil {
+		t.Fatal("pending turn should not pass recovery preconditions")
+	}
+
+	missingCheckpoint := *snapshot
+	missingCheckpoint.LatestCheckpoint = nil
+	missingCheckpoint.PendingApprovals = nil
+	missingCheckpoint.PendingEvidence = nil
+	missingCheckpoint.Iterations = nil
+	if err := ValidateTurnRecoveryPreconditions(&missingCheckpoint); err == nil {
+		t.Fatal("snapshot without checkpoint or iteration history should not be resumable")
+	}
+}

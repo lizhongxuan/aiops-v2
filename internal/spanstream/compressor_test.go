@@ -91,6 +91,35 @@ func TestCompressAsyncSuccess(t *testing.T) {
 	}
 }
 
+func TestCompressSyncSuccess(t *testing.T) {
+	mock := &mockSummaryModel{response: "Disk usage at 95% on /dev/sda1"}
+	cc := NewContextCompressor(mock, 2)
+
+	span := &Span{
+		ID:   "span-sync",
+		Type: SpanTypeShellExec,
+		Name: "host.disk_usage",
+	}
+	messages := []Message{
+		{Role: "user", Content: "Check disk usage"},
+		{Role: "tool", Content: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1       100G   95G    5G  95% /"},
+	}
+
+	summary, err := cc.Compress(context.Background(), span, messages)
+	if err != nil {
+		t.Fatalf("Compress returned error: %v", err)
+	}
+	if summary != "Disk usage at 95% on /dev/sda1" {
+		t.Fatalf("unexpected summary: %s", summary)
+	}
+	if span.Summary != summary {
+		t.Fatalf("expected span summary to be updated, got: %s", span.Summary)
+	}
+	if mock.calls.Load() != 1 {
+		t.Fatalf("expected 1 model call, got %d", mock.calls.Load())
+	}
+}
+
 func TestCompressAsyncEmptyMessages(t *testing.T) {
 	mock := &mockSummaryModel{response: "should not be called"}
 	cc := NewContextCompressor(mock, 2)

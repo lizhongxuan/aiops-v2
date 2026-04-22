@@ -137,6 +137,26 @@ func run() error {
 	agentManager := agentmgr.NewAgentManager(agentFactory, nil, projector)
 
 	// ---------------------------------------------------------------------------
+	// 7.5 Long-running recovery state
+	// ---------------------------------------------------------------------------
+	sessionManager := runtimekernel.NewSessionManager(dataStore)
+	taskManager := runtimekernel.NewTaskManager(dataStore)
+	budgetController, err := runtimekernel.NewBudgetController(32)
+	if err != nil {
+		return fmt.Errorf("init workspace budget controller: %w", err)
+	}
+	recoveryState, err := runtimekernel.RestoreRuntimeState(sessionManager, taskManager, budgetController)
+	if err != nil {
+		return fmt.Errorf("restore runtime state: %w", err)
+	}
+	if recoveryState.LatestSession != nil {
+		log.Printf("ai-server: restored latest session %s (%s/%s)", recoveryState.LatestSession.ID, recoveryState.LatestSession.Type, recoveryState.LatestSession.Mode)
+	}
+	if recoveryState.ReconcileSummary != nil && len(recoveryState.ReconcileSummary.ReconciledTasks) > 0 {
+		log.Printf("ai-server: reconciled %d workspace tasks after restart", len(recoveryState.ReconcileSummary.ReconciledTasks))
+	}
+
+	// ---------------------------------------------------------------------------
 	// 8. Extensions (Coroot, Lab, Generator)
 	// ---------------------------------------------------------------------------
 	pluginHookRegistry.SetGovernance(governance)
@@ -174,6 +194,9 @@ func run() error {
 		Projector:   projector,
 		ModelRouter: router,
 		AgentMgr:    newAgentManagerAdapter(agentManager, agentFactory),
+		Sessions:    sessionManager,
+		SessionRepo: dataStore,
+		SpillRepo:   dataStore,
 	}
 	kernel := runtimekernel.NewEinoKernel(kernelCfg)
 
@@ -287,7 +310,7 @@ func buildProviders() map[string]modelrouter.ChatModel {
 // ---------------------------------------------------------------------------
 
 type registryAdapter struct {
-	tools           interface {
+	tools interface {
 		AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
 	}
 	commandRegistry *commands.CommandRegistry
@@ -315,6 +338,23 @@ func (a *registryAdapter) CompileContext(session runtimekernel.SessionType, mode
 
 func (a *registryAdapter) AssembleToolPool(session runtimekernel.SessionType, mode runtimekernel.Mode) []tool.BaseTool {
 	return tooling.AssembleEinoToolPool(a.assembledTools(string(session), string(mode)))
+}
+
+func (a *registryAdapter) RefreshToken(session runtimekernel.SessionType, mode runtimekernel.Mode) string {
+	if a.tools == nil {
+		return ""
+	}
+	if refresher, ok := a.tools.(interface {
+		RefreshToken(session, mode string, opts tooling.AssembleOptions) string
+	}); ok {
+		return refresher.RefreshToken(string(session), string(mode), tooling.AssembleOptions{
+			MetadataTransform: a.flags.ApplyToolMetadata,
+			Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
+				return a.flags.IsToolVisible(meta)
+			},
+		})
+	}
+	return ""
 }
 
 func (a *registryAdapter) skillPromptCommands() []commands.PromptCommand {

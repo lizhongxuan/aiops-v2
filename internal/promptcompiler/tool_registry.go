@@ -3,6 +3,7 @@ package promptcompiler
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"aiops-v2/internal/tooling"
@@ -19,14 +20,12 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 	var entries []ToolPromptEntry
 	var parts []string
 
-	parts = append(parts, "# Available Tools")
+	parts = append(parts, "# Tool Index")
 
 	for _, tool := range ctx.AssembledTools {
 		toolEntry := c.buildToolPromptEntry(tool)
 		entries = append(entries, toolEntry)
-
-		toolText := c.formatToolEntry(toolPromptSectionTitle(tool), toolEntry)
-		parts = append(parts, toolText)
+		parts = append(parts, c.formatToolIndexLine(toolPromptSectionTitle(tool), toolEntry))
 	}
 
 	if len(entries) == 0 {
@@ -38,6 +37,42 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		Content: content,
 		Entries: entries,
 	}, nil
+}
+
+func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPromptDelta {
+	delta := ToolPromptDelta{
+		NewlyAvailable:         append([]string(nil), ctx.ToolDelta.NewlyAvailable...),
+		TemporarilyUnavailable: append([]string(nil), ctx.ToolDelta.TemporarilyUnavailable...),
+		ApprovalRequired:       append([]string(nil), ctx.ToolDelta.ApprovalRequired...),
+	}
+
+	if len(delta.ApprovalRequired) == 0 {
+		for _, tool := range ctx.AssembledTools {
+			if tool == nil || !tool.IsDestructive(nil) {
+				continue
+			}
+			if name := toolPromptSectionTitle(tool); name != "" {
+				delta.ApprovalRequired = append(delta.ApprovalRequired, name)
+			}
+		}
+	}
+
+	delta.NewlyAvailable = normalizePromptNames(delta.NewlyAvailable)
+	delta.TemporarilyUnavailable = normalizePromptNames(delta.TemporarilyUnavailable)
+	delta.ApprovalRequired = normalizePromptNames(delta.ApprovalRequired)
+
+	var parts []string
+	if len(delta.NewlyAvailable) > 0 {
+		parts = append(parts, "## Newly available tools\n- "+strings.Join(delta.NewlyAvailable, "\n- "))
+	}
+	if len(delta.TemporarilyUnavailable) > 0 {
+		parts = append(parts, "## Temporarily unavailable tools\n- "+strings.Join(delta.TemporarilyUnavailable, "\n- "))
+	}
+	if len(delta.ApprovalRequired) > 0 {
+		parts = append(parts, "## Approval reminders\n- "+strings.Join(delta.ApprovalRequired, "\n- "))
+	}
+	delta.Content = strings.Join(parts, "\n\n")
+	return delta
 }
 
 // buildToolPromptEntry creates a ToolPromptEntry from an assembled tool,
@@ -70,25 +105,11 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 	return te
 }
 
-// formatToolEntry formats a single tool entry as prompt text.
-func (c *PromptCompilerImpl) formatToolEntry(name string, entry ToolPromptEntry) string {
-	var lines []string
-	lines = append(lines, fmt.Sprintf("## %s", name))
-
-	if entry.Capability != "" {
-		lines = append(lines, fmt.Sprintf("Capability: %s", entry.Capability))
+func (c *PromptCompilerImpl) formatToolIndexLine(name string, entry ToolPromptEntry) string {
+	if entry.Capability == "" {
+		return "- " + name
 	}
-	if entry.Constraints != "" {
-		lines = append(lines, fmt.Sprintf("Constraints: %s", entry.Constraints))
-	}
-	if entry.ResultShape != "" {
-		lines = append(lines, fmt.Sprintf("Result: %s", entry.ResultShape))
-	}
-	if entry.ApprovalNote != "" {
-		lines = append(lines, fmt.Sprintf("Approval: %s", entry.ApprovalNote))
-	}
-
-	return strings.Join(lines, "\n")
+	return fmt.Sprintf("- %s: %s", name, entry.Capability)
 }
 
 func toolPromptSectionTitle(tool Tool) string {
@@ -140,6 +161,27 @@ func toolResultShape(tool Tool) string {
 		return shape
 	}
 	return "Output shape: structured data"
+}
+
+func normalizePromptNames(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func summarizeSchema(raw json.RawMessage) string {

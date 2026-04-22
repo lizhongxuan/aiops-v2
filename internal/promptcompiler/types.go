@@ -58,12 +58,19 @@ type CompileContext struct {
 	// SkillPromptAssets are prompt fragments contributed by skill capabilities.
 	SkillPromptAssets []string
 
+	// EvidenceReminders are per-iteration reminders that should stay outside the
+	// stable prompt envelope.
+	EvidenceReminders []string
+
 	// Deprecated: compatibility-only legacy field from the pre-unified prompt path.
 	// PromptCompiler ignores these assets; MCP guidance should come from assembled tools.
 	MCPPromptAssets []string
 
 	// ExtraSections are additional prompt sections injected by runtime/hook layers.
 	ExtraSections []PromptSection
+
+	// ToolDelta carries per-iteration availability/approval changes for Layer 3.
+	ToolDelta ToolPromptDelta
 
 	// AgentKind identifies the type of agent being compiled for.
 	AgentKind AgentKind
@@ -125,6 +132,15 @@ type ToolPromptSet struct {
 	Entries []ToolPromptEntry
 }
 
+// ToolPromptDelta captures per-iteration changes that should not force a
+// stable tool index rewrite.
+type ToolPromptDelta struct {
+	Content                string
+	NewlyAvailable         []string
+	TemporarilyUnavailable []string
+	ApprovalRequired       []string
+}
+
 // RuntimePolicyPrompt is Layer 4: policy constraints based on current mode.
 type RuntimePolicyPrompt struct {
 	// Content is the compiled runtime policy prompt text.
@@ -135,12 +151,66 @@ type RuntimePolicyPrompt struct {
 }
 
 // ---------------------------------------------------------------------------
-// CompiledPrompt is the four-layer output of the PromptCompiler.
+// Stable / Dynamic prompt structures
 // ---------------------------------------------------------------------------
 
-// CompiledPrompt contains the four compiled prompt layers in order:
-// System Prompt → Developer Instructions → Tool Prompt Set → Runtime Policy Prompt.
+// StablePromptEnvelope groups the prompt layers that usually stay stable within
+// a turn. It intentionally excludes runtime policy so the caller can cache or
+// reuse it.
+type StablePromptEnvelope struct {
+	// Content is the concatenated stable prompt text.
+	Content string
+
+	// System is Layer 1: environment and role.
+	System SystemPrompt
+
+	// Developer is Layer 2: runtime constraints.
+	Developer DeveloperInstructions
+
+	// Tools is Layer 3: capability descriptions.
+	Tools ToolPromptSet
+}
+
+// StablePrompt is kept as a compatibility alias while the runtime migrates to
+// the more explicit envelope/delta naming.
+type StablePrompt = StablePromptEnvelope
+
+// DynamicPromptDelta groups the prompt layers that may change per turn.
+type DynamicPromptDelta struct {
+	// Content is the concatenated dynamic prompt text.
+	Content string
+
+	// SkillPromptAssets are prompt fragments that may change within a turn.
+	SkillPromptAssets []string
+
+	// EvidenceReminders are runtime-generated reminders that should stay out of
+	// the stable prompt envelope.
+	EvidenceReminders []string
+
+	// ExtraSections are hook/runtime-injected sections that may change within a turn.
+	ExtraSections []PromptSection
+
+	// ToolDelta captures availability/approval changes for the current iteration.
+	ToolDelta ToolPromptDelta
+
+	// Policy is Layer 4: mode-specific policy constraints.
+	Policy RuntimePolicyPrompt
+}
+
+// DynamicPrompt is kept as a compatibility alias while the runtime migrates to
+// the more explicit envelope/delta naming.
+type DynamicPrompt = DynamicPromptDelta
+
+// CompiledPrompt is the promptcompiler output. It preserves the legacy
+// flattened four-layer view for compatibility and also exposes a stable /
+// dynamic split for long-running turn reuse.
 type CompiledPrompt struct {
+	// Stable contains the layers that are expected to stay stable within a turn.
+	Stable StablePromptEnvelope
+
+	// Dynamic contains the layers that may change per turn.
+	Dynamic DynamicPromptDelta
+
 	// System is Layer 1: environment and role.
 	System SystemPrompt
 
