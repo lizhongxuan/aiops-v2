@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"aiops-v2/internal/settings"
 	"aiops-v2/internal/tooling"
 )
 
@@ -89,8 +91,8 @@ func TestRegistryDynamicToolsLifecycle(t *testing.T) {
 		t.Fatalf("ListServerTools() len = %d, want 2", len(listed))
 	}
 	meta := listed[0].Metadata()
-	if meta.Origin != tooling.ToolOriginMCP {
-		t.Fatalf("connected tool origin = %q, want %q", meta.Origin, tooling.ToolOriginMCP)
+	if !meta.HasMCPSource() {
+		t.Fatalf("connected tool should report MCP source, got %#v", meta)
 	}
 	if meta.MCPInfo.ServerID != "coroot" {
 		t.Fatalf("connected tool server id = %q, want coroot", meta.MCPInfo.ServerID)
@@ -118,5 +120,73 @@ func TestRegistryRejectsEmptyServerID(t *testing.T) {
 	}
 	if err := r.OnServerConnected("", nil); err == nil {
 		t.Fatal("OnServerConnected() should fail for empty server ID")
+	}
+}
+
+func TestRegistryRejectsCustomMCPServersWhenStrictPluginOnlyEnabled(t *testing.T) {
+	governance := settings.NewGovernance()
+	if err := governance.Register("managed", settings.GovernanceContribution{
+		RestrictToPluginOnly: []settings.CustomizationSurface{settings.SurfaceMCP},
+	}); err != nil {
+		t.Fatalf("governance Register() error = %v", err)
+	}
+
+	r := NewRegistry()
+	r.SetGovernance(governance)
+
+	err := r.RegisterServer(ServerConfig{
+		ID:        "custom-mcp",
+		Transport: "stdio",
+		Command:   []string{"custom-mcp"},
+		Source:    string(settings.SourceUserSettings),
+	})
+	if err == nil {
+		t.Fatal("expected strict plugin-only policy to reject userSettings MCP server")
+	}
+	if !strings.Contains(err.Error(), "strictPluginOnlyCustomization") {
+		t.Fatalf("expected strict plugin-only error, got %v", err)
+	}
+}
+
+func TestRegistryAppliesAllowedMCPServersToCustomSources(t *testing.T) {
+	governance := settings.NewGovernance()
+	if err := governance.Register("managed", settings.GovernanceContribution{
+		AllowedMCPServers: []string{"allowed-mcp"},
+	}); err != nil {
+		t.Fatalf("governance Register() error = %v", err)
+	}
+
+	r := NewRegistry()
+	r.SetGovernance(governance)
+
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "allowed-mcp",
+		Transport: "stdio",
+		Command:   []string{"allowed-mcp"},
+		Source:    string(settings.SourceUserSettings),
+	}); err != nil {
+		t.Fatalf("expected listed custom MCP server to be allowed, got %v", err)
+	}
+
+	err := r.RegisterServer(ServerConfig{
+		ID:        "blocked-mcp",
+		Transport: "stdio",
+		Command:   []string{"blocked-mcp"},
+		Source:    string(settings.SourceUserSettings),
+	})
+	if err == nil {
+		t.Fatal("expected unlisted custom MCP server to be rejected")
+	}
+	if !strings.Contains(err.Error(), "allowedMcpServers") {
+		t.Fatalf("expected allowlist error, got %v", err)
+	}
+
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "plugin-mcp",
+		Transport: "stdio",
+		Command:   []string{"plugin-mcp"},
+		Source:    "plugin",
+	}); err != nil {
+		t.Fatalf("expected plugin MCP server to bypass allowlist, got %v", err)
 	}
 }

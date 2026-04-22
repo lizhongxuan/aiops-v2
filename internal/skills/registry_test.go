@@ -4,51 +4,147 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"aiops-v2/internal/commands"
 )
 
-func TestRegistry_RegisterAndDeduplicate(t *testing.T) {
+func TestRegistry_RegisterByNameKeepsMultipleSourceAwareRecords(t *testing.T) {
 	r := NewRegistry()
 
 	r.Register(Definition{
 		Name:        "deploy",
-		Description: "first version",
+		Description: "project version",
 		Prompt:      "Deploy carefully.",
 		Tools:       []string{"kubectl"},
-		Source:      "first",
+		Source:      commands.SourceProjectSettings,
+		LoadedFrom:  "/repo/.codex/skills/deploy/SKILL.md",
+		FileID:      "project:deploy",
 	})
 	r.Register(Definition{
 		Name:        "deploy",
-		Description: "second version",
+		Description: "plugin version",
 		Prompt:      "Deploy with checks.",
 		Tools:       []string{"kubectl", "helm"},
-		Source:      "second",
+		Source:      commands.SourcePlugin,
+		LoadedFrom:  "/plugins/deploy/SKILL.md",
+		FileID:      "plugin:deploy",
 	})
 
 	got, ok := r.Get("deploy")
 	if !ok {
 		t.Fatal("expected deploy to be registered")
 	}
-	if got.Description != "second version" {
-		t.Fatalf("expected last registration to win, got description %q", got.Description)
+	if got.Description != "plugin version" {
+		t.Fatalf("expected higher-precedence source to win, got description %q", got.Description)
 	}
-	if len(r.List()) != 1 {
-		t.Fatalf("expected deduplicated list size 1, got %d", len(r.List()))
+	if len(r.List()) != 2 {
+		t.Fatalf("expected both source-aware records to remain in catalog, got %d", len(r.List()))
 	}
 }
 
-func TestRegistry_PromptAssetsFiltersEmptyPrompts(t *testing.T) {
+func TestRegistry_RegisterDeduplicatesByFileIdentity(t *testing.T) {
+	r := NewRegistry()
+
+	r.Register(Definition{
+		Name:        "deploy",
+		Description: "first version",
+		Prompt:      "Deploy carefully.",
+		Source:      commands.SourceProjectSettings,
+		LoadedFrom:  "/repo/.codex/skills/deploy/SKILL.md",
+		FileID:      "file-123",
+	})
+	r.Register(Definition{
+		Name:        "deploy-copy",
+		Description: "duplicate file",
+		Prompt:      "Deploy carefully.",
+		Source:      commands.SourceProjectSettings,
+		LoadedFrom:  "/repo/.codex/skills-link/deploy/SKILL.md",
+		FileID:      "file-123",
+	})
+
+	defs := r.List()
+	if len(defs) != 1 {
+		t.Fatalf("expected duplicate file identity to be skipped, got %d defs", len(defs))
+	}
+	if defs[0].Name != "deploy" {
+		t.Fatalf("expected first file-backed definition to win, got %q", defs[0].Name)
+	}
+}
+
+func TestRegistry_promptCommandsCarriesPromptBodies(t *testing.T) {
 	r := NewRegistry()
 	r.RegisterBatch([]Definition{
 		{Name: "empty", Prompt: "", Source: "empty"},
 		{Name: "non-empty", Prompt: "Use this prompt.", Source: "non-empty"},
 	})
 
-	assets := r.PromptAssets()
-	if len(assets) != 1 {
-		t.Fatalf("expected 1 prompt asset, got %d", len(assets))
+	cmds := r.promptCommands(commands.SourceProjectSettings)
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 prompt commands, got %d", len(cmds))
 	}
-	if assets[0] != "Use this prompt." {
-		t.Fatalf("unexpected prompt asset %q", assets[0])
+	if cmds[0].Prompt != "" {
+		t.Fatalf("expected empty prompt to stay empty, got %q", cmds[0].Prompt)
+	}
+	if cmds[1].Prompt != "Use this prompt." {
+		t.Fatalf("unexpected prompt body %q", cmds[1].Prompt)
+	}
+}
+
+func TestRegistry_promptCommandsInfersClaudeLikeSources(t *testing.T) {
+	r := NewRegistry()
+	r.RegisterBatch([]Definition{
+		{
+			Name:        "plugin-skill",
+			Description: "plugin prompt",
+			Prompt:      "Plugin prompt body.",
+			LoadedFrom:  "/Users/me/.codex/plugins/cache/example/skills/plugin-skill/SKILL.md",
+		},
+		{
+			Name:        "bundled-skill",
+			Description: "bundled prompt",
+			Prompt:      "Bundled prompt body.",
+			LoadedFrom:  "/Users/me/.codex/skills/.system/bundled-skill/SKILL.md",
+		},
+		{
+			Name:        "project-skill",
+			Description: "project prompt",
+			Prompt:      "Project prompt body.",
+			LoadedFrom:  "/repo/docs/skills/project-skill/SKILL.md",
+		},
+	})
+
+	cmds := r.promptCommands(commands.SourceProjectSettings)
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 prompt commands, got %d", len(cmds))
+	}
+	if cmds[0].Source != commands.SourcePlugin {
+		t.Fatalf("plugin skill source = %q, want %q", cmds[0].Source, commands.SourcePlugin)
+	}
+	if cmds[1].Source != commands.SourceBundled {
+		t.Fatalf("bundled skill source = %q, want %q", cmds[1].Source, commands.SourceBundled)
+	}
+	if cmds[2].Source != commands.SourceProjectSettings {
+		t.Fatalf("project skill source = %q, want %q", cmds[2].Source, commands.SourceProjectSettings)
+	}
+	if cmds[2].LoadedFrom != commands.LoadedFromSkills {
+		t.Fatalf("project skill loadedFrom = %q, want %q", cmds[2].LoadedFrom, commands.LoadedFromSkills)
+	}
+}
+
+func TestPromptCommandForDefinitionHonorsExplicitSource(t *testing.T) {
+	cmd := PromptCommandForDefinition(Definition{
+		Name:        "deploy",
+		Description: "deploy",
+		Prompt:      "Use deploy.",
+		Source:      commands.SourcePolicySettings,
+		LoadedFrom:  "/repo/skills/deploy/SKILL.md",
+	}, commands.SourceProjectSettings)
+
+	if cmd.Source != commands.SourcePolicySettings {
+		t.Fatalf("explicit source should win, got %q", cmd.Source)
+	}
+	if cmd.LoadedFrom != commands.LoadedFromManaged {
+		t.Fatalf("loadedFrom marker should still reflect skill projection, got %q", cmd.LoadedFrom)
 	}
 }
 
@@ -112,7 +208,10 @@ Alpha prompt body.
 	if beta.Prompt != "Beta prompt body." {
 		t.Fatalf("unexpected beta prompt %q", beta.Prompt)
 	}
-	if beta.Source == "" {
-		t.Fatal("expected beta source to be populated")
+	if beta.LoadedFrom == "" {
+		t.Fatal("expected beta loadedFrom to be populated")
+	}
+	if beta.FileID == "" {
+		t.Fatal("expected beta file identity to be populated")
 	}
 }

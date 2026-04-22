@@ -3,7 +3,6 @@ package promptcompiler
 import (
 	"github.com/cloudwego/eino/schema"
 
-	"aiops-v2/internal/capability"
 	"aiops-v2/internal/tooling"
 )
 
@@ -16,9 +15,6 @@ type SessionType = string
 
 // Mode mirrors runtimekernel.Mode.
 type Mode = string
-
-// CapabilityEntry is an alias for capability.Entry used in CompileContext.
-type CapabilityEntry = capability.Entry
 
 // Tool mirrors the assembled tool contract consumed by PromptCompiler.
 type Tool = tooling.Tool
@@ -50,9 +46,6 @@ type CompileContext struct {
 	// AssembledTools is the ordered set of tools assembled for this prompt.
 	AssembledTools []Tool
 
-	// VisibleCapabilities is kept for compatibility with older call sites.
-	VisibleCapabilities []capability.Entry
-
 	// RuntimePolicy is the active policy text for the current mode.
 	RuntimePolicy string
 
@@ -65,11 +58,21 @@ type CompileContext struct {
 	// SkillPromptAssets are prompt fragments contributed by skill capabilities.
 	SkillPromptAssets []string
 
-	// MCPPromptAssets are prompt fragments contributed by MCP tool capabilities.
+	// Deprecated: compatibility-only legacy field from the pre-unified prompt path.
+	// PromptCompiler ignores these assets; MCP guidance should come from assembled tools.
 	MCPPromptAssets []string
+
+	// ExtraSections are additional prompt sections injected by runtime/hook layers.
+	ExtraSections []PromptSection
 
 	// AgentKind identifies the type of agent being compiled for.
 	AgentKind AgentKind
+}
+
+// PromptSection is an additional prompt fragment injected into developer instructions.
+type PromptSection struct {
+	Title   string
+	Content string
 }
 
 // ---------------------------------------------------------------------------

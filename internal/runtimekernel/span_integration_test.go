@@ -3,15 +3,18 @@ package runtimekernel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"aiops-v2/internal/capability"
+	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/spanstream"
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -312,7 +315,15 @@ func TestToolDispatcherWithSpans(t *testing.T) {
 
 	lookup := &mockToolLookup{
 		tools: map[string]mockToolEntry{
-			"disk_usage": {kind: "tool", executor: &mockToolExecutor{result: "80% used"}},
+			"disk_usage": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "disk_usage",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+				},
+				executor: &mockToolExecutor{result: "80% used"},
+			},
 		},
 	}
 
@@ -348,12 +359,116 @@ func TestToolDispatcherWithSpans(t *testing.T) {
 	}
 }
 
+func TestToolDispatcher_PermissionEngineDeniesExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	policy := &policyengine.Engine{
+		ModePolicy: make(map[string]policyengine.ModePolicy),
+	}
+
+	executor := &mockToolExecutor{result: "80% used"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"disk_usage": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "disk_usage",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+				},
+				executor: executor,
+			},
+		},
+	}
+
+	dispatcher := NewToolDispatcher(lookup, policy, emitter)
+	dispatcher.permissions = permissions.NewEngine([]permissions.Rule{
+		{
+			Name:   "deny-disk-usage",
+			Action: permissions.ActionDeny,
+			Reason: "blocked by policy",
+			Matcher: permissions.Matcher{
+				ToolNames: []string{"disk_usage"},
+			},
+		},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(), "sess-1", "turn-1",
+		ToolCall{ID: "tc-1", Name: "disk_usage", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost, ModeInspect,
+	)
+
+	if result.Error != "denied: blocked by policy" {
+		t.Fatalf("expected permission deny error, got %#v", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("expected executor not to run, got %d calls", executor.calls)
+	}
+	if len(emitter.events) != 2 {
+		t.Fatalf("expected tool.started + tool.failed events, got %d", len(emitter.events))
+	}
+}
+
+func TestToolDispatcher_PreToolHookBlocksExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	policy := &policyengine.Engine{
+		ModePolicy: make(map[string]policyengine.ModePolicy),
+	}
+
+	executor := &mockToolExecutor{result: "ok"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"disk_usage": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:    "disk_usage",
+						Aliases: []string{"du"},
+						Origin:  tooling.ToolOriginBuiltin,
+					},
+				},
+				executor: executor,
+			},
+		},
+	}
+
+	registry := hooks.NewRegistry()
+	if err := registry.RegisterTool(hooks.ToolRegistration{
+		Name:  "guard-disk-usage",
+		Stage: hooks.StagePreToolUse,
+		Matcher: hooks.ToolMatcher{
+			ToolNames:     []string{"du"},
+			InputContains: []string{`"/var/log"`},
+		},
+		Hook: func(context.Context, *hooks.ToolEvent) error {
+			return errors.New("hook blocked")
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTool failed: %v", err)
+	}
+
+	dispatcher := NewToolDispatcher(lookup, policy, emitter)
+	dispatcher.hooks = registry
+
+	result := dispatcher.Dispatch(
+		context.Background(), "sess-1", "turn-1",
+		ToolCall{ID: "tc-1", Name: "disk_usage", Arguments: json.RawMessage(`{"path":"/var/log"}`)},
+		SessionTypeHost, ModeInspect,
+	)
+
+	if result.Error != "pre_tool_use: hook blocked" {
+		t.Fatalf("expected pre hook error, got %#v", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("expected executor not to run, got %d calls", executor.calls)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
 func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
-	registry := newMockCapabilityRegistry()
+	registry := newMockToolAssemblySource()
 	compiler := &testMockCompiler{}
 	policy := &policyengine.Engine{
 		ModePolicy:       make(map[string]policyengine.ModePolicy),
@@ -366,7 +481,7 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
 	router := modelrouter.NewRouter("mock", providers, nil)
 
 	return NewEinoKernel(EinoKernelConfig{
-		Registry:    registry,
+		ToolSource:  registry,
 		Compiler:    compiler,
 		Policy:      policy,
 		Projector:   emitter,
@@ -376,7 +491,7 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
 }
 
 func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compiler promptcompiler.Compiler) *EinoKernel {
-	registry := newMockCapabilityRegistry()
+	registry := newMockToolAssemblySource()
 	policy := &policyengine.Engine{
 		ModePolicy:       make(map[string]policyengine.ModePolicy),
 		CompletionPolicy: &testMockCompletionEvaluator{action: policyengine.PolicyActionAllow},
@@ -388,7 +503,7 @@ func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compile
 	router := modelrouter.NewRouter("mock", providers, nil)
 
 	return NewEinoKernel(EinoKernelConfig{
-		Registry:    registry,
+		ToolSource:  registry,
 		Compiler:    compiler,
 		Policy:      policy,
 		Projector:   emitter,
@@ -397,12 +512,12 @@ func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compile
 	})
 }
 
-func newMockCapabilityRegistry() CapabilitySource {
-	return &testMockCapabilitySource{registry: newEmptyRegistry()}
+func newMockToolAssemblySource() ToolAssemblySource {
+	return &testMockToolAssemblySource{registry: newEmptyRegistry()}
 }
 
-func newEmptyRegistry() *capability.Registry {
-	return capability.NewRegistry()
+func newEmptyRegistry() *tooling.Registry {
+	return tooling.NewRegistry()
 }
 
 // mockToolLookup implements ToolLookup for testing.
@@ -411,24 +526,26 @@ type mockToolLookup struct {
 }
 
 type mockToolEntry struct {
-	kind     string
+	desc     ToolDescriptor
 	executor ToolExecutor
 }
 
-func (m *mockToolLookup) LookupTool(name string) (string, ToolExecutor, bool) {
+func (m *mockToolLookup) LookupTool(name string) (ToolDescriptor, ToolExecutor, bool) {
 	entry, ok := m.tools[name]
 	if !ok {
-		return "", nil, false
+		return ToolDescriptor{}, nil, false
 	}
-	return entry.kind, entry.executor, true
+	return entry.desc, entry.executor, true
 }
 
 // mockToolExecutor implements ToolExecutor for testing.
 type mockToolExecutor struct {
 	result string
 	err    error
+	calls  int
 }
 
 func (m *mockToolExecutor) Execute(_ context.Context, _ json.RawMessage) (string, error) {
+	m.calls++
 	return m.result, m.err
 }

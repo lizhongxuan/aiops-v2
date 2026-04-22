@@ -12,13 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"pgregory.net/rapid"
-)
+	"aiops-v2/internal/tooling"
 
-// Session type constants for tests (mirrors runtimekernel values).
-const (
-	SessionTypeHost      SessionType = "host"
-	SessionTypeWorkspace SessionType = "workspace"
+	"pgregory.net/rapid"
 )
 
 // **Validates: Requirements 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 8.1, 8.2, 8.3, 8.5**
@@ -56,77 +52,78 @@ func genMode() *rapid.Generator[Mode] {
 	return rapid.SampledFrom([]Mode{ModeChat, ModeInspect, ModePlan, ModeExecute})
 }
 
-// genToolKind generates one of the six canonical capability kinds.
-func genToolKind() *rapid.Generator[CapabilityKind] {
-	return rapid.SampledFrom([]CapabilityKind{KindTool, KindSkill, KindMCPTool, KindUISurface, KindModeRule, KindWorkspace})
-}
-
-
 // ---------------------------------------------------------------------------
 // Property 13: Mode-能力边界执行
 // ---------------------------------------------------------------------------
 
 // TestProperty13_ChatModeDeniesMutation verifies that for any mutation tool name
-// and any tool kind, chat mode always denies the operation.
+// chat mode always denies the operation.
 func TestProperty13_ChatModeDeniesMutation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		policy := &ChatModePolicy{}
 		toolName := genMutationToolName().Draw(t, "mutationTool")
-		toolKind := genToolKind().Draw(t, "toolKind")
 
-		decision := policy.CheckCapability(toolName, toolKind)
+		decision := policy.CheckTool(PolicyInput{
+			ToolName: toolName,
+			Tool:     tooling.ToolMetadata{Name: toolName},
+		})
 
 		if decision.Action != PolicyActionDeny {
-			t.Fatalf("chat mode should deny mutation tool %q (kind=%s), got action=%s",
-				toolName, toolKind, decision.Action)
+			t.Fatalf("chat mode should deny mutation tool %q, got action=%s",
+				toolName, decision.Action)
 		}
 	})
 }
 
 // TestProperty13_InspectModeDeniesMutation verifies that for any mutation tool name
-// and any tool kind, inspect mode always denies the operation.
+// inspect mode always denies the operation.
 func TestProperty13_InspectModeDeniesMutation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		policy := &InspectModePolicy{}
 		toolName := genMutationToolName().Draw(t, "mutationTool")
-		toolKind := genToolKind().Draw(t, "toolKind")
 
-		decision := policy.CheckCapability(toolName, toolKind)
+		decision := policy.CheckTool(PolicyInput{
+			ToolName: toolName,
+			Tool:     tooling.ToolMetadata{Name: toolName},
+		})
 
 		if decision.Action != PolicyActionDeny {
-			t.Fatalf("inspect mode should deny mutation tool %q (kind=%s), got action=%s",
-				toolName, toolKind, decision.Action)
+			t.Fatalf("inspect mode should deny mutation tool %q, got action=%s",
+				toolName, decision.Action)
 		}
 	})
 }
 
 // TestProperty13_PlanModeDeniesDirectMutation verifies that for any mutation tool name
-// and any tool kind, plan mode denies direct mutation execution.
+// plan mode denies direct mutation execution.
 func TestProperty13_PlanModeDeniesDirectMutation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		policy := &PlanModePolicy{}
 		toolName := genMutationToolName().Draw(t, "mutationTool")
-		toolKind := genToolKind().Draw(t, "toolKind")
 
-		decision := policy.CheckCapability(toolName, toolKind)
+		decision := policy.CheckTool(PolicyInput{
+			ToolName: toolName,
+			Tool:     tooling.ToolMetadata{Name: toolName},
+		})
 
 		if decision.Action != PolicyActionDeny {
-			t.Fatalf("plan mode should deny direct mutation tool %q (kind=%s), got action=%s",
-				toolName, toolKind, decision.Action)
+			t.Fatalf("plan mode should deny direct mutation tool %q, got action=%s",
+				toolName, decision.Action)
 		}
 	})
 }
 
 // TestProperty13_ExecuteModeAllowsMutationWithApproval verifies that for any mutation
-// tool name and any tool kind, execute mode returns NeedApproval with a valid ApprovalRequest.
+// tool name, execute mode returns NeedApproval with a valid ApprovalRequest.
 func TestProperty13_ExecuteModeAllowsMutationWithApproval(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		policy := &ExecuteModePolicy{}
 		toolName := genMutationToolName().Draw(t, "mutationTool")
-		toolKind := genToolKind().Draw(t, "toolKind")
-		_ = toolKind // execute mode doesn't differentiate by kind for mutation
 
-		decision := policy.CheckCapability(toolName, toolKind)
+		decision := policy.CheckTool(PolicyInput{
+			ToolName: toolName,
+			Tool:     tooling.ToolMetadata{Name: toolName},
+		})
 
 		if decision.Action != PolicyActionNeedApproval {
 			t.Fatalf("execute mode should require approval for mutation tool %q, got action=%s",
@@ -142,8 +139,7 @@ func TestProperty13_ExecuteModeAllowsMutationWithApproval(t *testing.T) {
 }
 
 // TestProperty13_ReadOnlyAllowedInAllModes verifies that for any read-only tool name
-// with KindTool, all four modes allow the operation (execute allows everything,
-// chat/inspect/plan allow read-only).
+// with metadata/name traits, all four modes allow the operation.
 func TestProperty13_ReadOnlyAllowedInAllModes(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		mode := genMode().Draw(t, "mode")
@@ -152,10 +148,13 @@ func TestProperty13_ReadOnlyAllowedInAllModes(t *testing.T) {
 		policies := NewDefaultModePolicies()
 		policy := policies[mode]
 
-		decision := policy.CheckCapability(toolName, KindTool)
+		decision := policy.CheckTool(PolicyInput{
+			ToolName: toolName,
+			Tool:     tooling.ToolMetadata{Name: toolName},
+		})
 
 		if decision.Action != PolicyActionAllow {
-			t.Fatalf("mode %q should allow read-only tool %q (KindTool), got action=%s reason=%s",
+			t.Fatalf("mode %q should allow read-only tool %q, got action=%s reason=%s",
 				mode, toolName, decision.Action, decision.Reason)
 		}
 	})
@@ -174,7 +173,7 @@ func TestProperty13_ModeEnforcementViaEngine(t *testing.T) {
 
 		input := PolicyInput{
 			ToolName: toolName,
-			ToolKind: KindTool,
+			Tool:     tooling.ToolMetadata{Name: toolName},
 			Mode:     mode,
 		}
 
@@ -194,7 +193,6 @@ func TestProperty13_ModeEnforcementViaEngine(t *testing.T) {
 		}
 	})
 }
-
 
 // ---------------------------------------------------------------------------
 // Property 14: 三层策略检查管道
@@ -228,7 +226,6 @@ func genPolicyAction() *rapid.Generator[PolicyAction] {
 	})
 }
 
-
 // TestProperty14_PipelineExecutesInOrder verifies that for any tool call request,
 // the Engine executes CapabilityPolicy → PermissionPolicy → EvidencePolicy in sequence.
 // The pipeline short-circuits: the first non-Allow result is the final decision.
@@ -253,7 +250,7 @@ func TestProperty14_PipelineExecutesInOrder(t *testing.T) {
 
 		input := PolicyInput{
 			ToolName: toolName,
-			ToolKind: KindTool,
+			Tool:     tooling.ToolMetadata{Name: toolName},
 			Mode:     ModeExecute,
 		}
 
@@ -301,7 +298,7 @@ func TestProperty14_ModePolicyDenyShortCircuits(t *testing.T) {
 
 		input := PolicyInput{
 			ToolName: toolName,
-			ToolKind: KindTool,
+			Tool:     tooling.ToolMetadata{Name: toolName},
 			Mode:     ModeChat,
 		}
 
@@ -340,7 +337,7 @@ func TestProperty14_PermissionDenyShortCircuitsEvidence(t *testing.T) {
 
 		input := PolicyInput{
 			ToolName: toolName,
-			ToolKind: KindTool,
+			Tool:     tooling.ToolMetadata{Name: toolName},
 			Mode:     ModeExecute,
 		}
 
@@ -374,7 +371,7 @@ func TestProperty14_AllLayersAllowResultsInAllow(t *testing.T) {
 
 		input := PolicyInput{
 			ToolName: toolName,
-			ToolKind: KindTool,
+			Tool:     tooling.ToolMetadata{Name: toolName},
 			Mode:     mode,
 		}
 
@@ -410,7 +407,6 @@ func (m *trackingEvidenceEvaluator) CheckEvidence(_ context.Context, _ PolicyInp
 	*m.called = true
 	return m.decision
 }
-
 
 // ---------------------------------------------------------------------------
 // Property 15: CompletionPolicy Final Gate

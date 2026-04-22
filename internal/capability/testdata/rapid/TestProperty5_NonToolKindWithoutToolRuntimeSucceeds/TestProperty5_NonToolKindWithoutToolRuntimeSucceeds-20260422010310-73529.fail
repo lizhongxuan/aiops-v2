@@ -1,0 +1,32 @@
+# 2026/04/22 01:03:10.474033 [TestProperty5_NonToolKindWithoutToolRuntimeSucceeds] [rapid] draw kind: "skill"
+# 2026/04/22 01:03:10.474037 [TestProperty5_NonToolKindWithoutToolRuntimeSucceeds] [rapid] draw id: "a00"
+# 2026/04/22 01:03:10.474039 [TestProperty5_NonToolKindWithoutToolRuntimeSucceeds] [rapid] draw name: "a00"
+# 2026/04/22 01:03:10.474039 [TestProperty5_NonToolKindWithoutToolRuntimeSucceeds] Register should succeed for non-tool kind "skill" without ToolRuntime: register: capability compatibility registry only accepts "tool" writes, got "skill"
+# 
+v0.4.8#4808398982068989308
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

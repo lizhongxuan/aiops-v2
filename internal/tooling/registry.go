@@ -1,12 +1,21 @@
 package tooling
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
 )
+
+// AssembleOptions controls per-call assembly behavior for the unified tool registry.
+type AssembleOptions struct {
+	ExtraTools        []Tool
+	MetadataTransform func(ToolMetadata) ToolMetadata
+	Filter            func(tool Tool, ctx ToolContext, meta ToolMetadata) bool
+}
 
 type registeredTool struct {
 	tool Tool
@@ -56,7 +65,7 @@ func (r *Registry) Get(name string) (Tool, bool) {
 		if !matchesName(meta, name) {
 			continue
 		}
-		currentRank := originRank(meta.Origin)
+		currentRank := selectionRank(meta)
 		if !ok || currentRank > rank {
 			best = t
 			ok = true
@@ -79,7 +88,7 @@ func (r *Registry) List() []Tool {
 		t := r.records[i].tool
 		meta := t.Metadata()
 		name := meta.Name
-		currentRank := originRank(meta.Origin)
+		currentRank := selectionRank(meta)
 		if prevRank, ok := ranks[name]; !ok || currentRank > prevRank {
 			best[name] = t
 			ranks[name] = currentRank
@@ -116,21 +125,46 @@ func (r *Registry) Unregister(name string) {
 
 // AssembleTools returns the visible tools for a session/mode, preferring builtin over MCP on conflicts.
 func (r *Registry) AssembleTools(session, mode string) []Tool {
+	return r.AssembleToolsWithOptions(session, mode, AssembleOptions{})
+}
+
+// AssembleToolsWithOptions returns the visible tools for a session/mode after
+// applying per-call transforms, filters, and extra dynamic tool sources.
+func (r *Registry) AssembleToolsWithOptions(session, mode string, opts AssembleOptions) []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	best := make(map[string]Tool)
 	ranks := make(map[string]int)
 
-	for i := len(r.records) - 1; i >= 0; i-- {
-		t := r.records[i].tool
+	candidates := make([]Tool, 0, len(r.records)+len(opts.ExtraTools))
+	for _, rec := range r.records {
+		candidates = append(candidates, rec.tool)
+	}
+	candidates = append(candidates, opts.ExtraTools...)
+
+	for i := len(candidates) - 1; i >= 0; i-- {
+		t := candidates[i]
+		if t == nil {
+			continue
+		}
 		meta := t.Metadata()
+		if opts.MetadataTransform != nil {
+			meta = opts.MetadataTransform(meta)
+			t = metadataOverrideTool{base: t, meta: meta}
+		}
+		if meta.Name == "" {
+			continue
+		}
 		ctx := ToolContext{SessionType: session, Mode: mode, Metadata: meta}
 		if !t.IsEnabled(ctx) {
 			continue
 		}
+		if opts.Filter != nil && !opts.Filter(t, ctx, meta) {
+			continue
+		}
 		name := meta.Name
-		currentRank := originRank(meta.Origin)
+		currentRank := selectionRank(meta)
 		if prevRank, ok := ranks[name]; !ok || currentRank > prevRank {
 			best[name] = t
 			ranks[name] = currentRank
@@ -152,20 +186,19 @@ func (r *Registry) AssembleTools(session, mode string) []Tool {
 
 // AssembleToolPool returns Eino tools for the visible unified tools.
 func (r *Registry) AssembleToolPool(session, mode string) []tool.BaseTool {
-	return AssembleEinoToolPool(r.AssembleTools(session, mode))
+	return r.AssembleToolPoolWithOptions(session, mode, AssembleOptions{})
 }
 
-func originRank(origin ToolOrigin) int {
-	switch origin {
-	case ToolOriginBuiltin:
-		return 2
-	case ToolOriginMCP:
-		return 1
-	case ToolOriginMeta:
+// AssembleToolPoolWithOptions returns Eino tools for the visible unified tools.
+func (r *Registry) AssembleToolPoolWithOptions(session, mode string, opts AssembleOptions) []tool.BaseTool {
+	return AssembleEinoToolPool(r.AssembleToolsWithOptions(session, mode, opts))
+}
+
+func selectionRank(meta ToolMetadata) int {
+	if meta.HasMCPSource() {
 		return 0
-	default:
-		return -1
 	}
+	return 1
 }
 
 func matchesName(meta ToolMetadata, name string) bool {
@@ -178,4 +211,60 @@ func matchesName(meta ToolMetadata, name string) bool {
 		}
 	}
 	return false
+}
+
+type metadataOverrideTool struct {
+	base Tool
+	meta ToolMetadata
+}
+
+func (t metadataOverrideTool) Metadata() ToolMetadata { return t.meta }
+
+func (t metadataOverrideTool) InputSchema() json.RawMessage { return t.base.InputSchema() }
+
+func (t metadataOverrideTool) OutputSchema() json.RawMessage { return t.base.OutputSchema() }
+
+func (t metadataOverrideTool) Description(input json.RawMessage, ctx DescribeContext) string {
+	ctx.Metadata = t.meta
+	if desc := t.base.Description(input, ctx); desc != "" {
+		return desc
+	}
+	return t.meta.Description
+}
+
+func (t metadataOverrideTool) Prompt(ctx PromptContext) string {
+	ctx.Metadata = t.meta
+	if prompt := t.base.Prompt(ctx); prompt != "" {
+		return prompt
+	}
+	return t.meta.Description
+}
+
+func (t metadataOverrideTool) IsEnabled(ctx ToolContext) bool {
+	ctx.Metadata = t.meta
+	return t.base.IsEnabled(ctx)
+}
+
+func (t metadataOverrideTool) IsReadOnly(input json.RawMessage) bool {
+	return t.base.IsReadOnly(input)
+}
+
+func (t metadataOverrideTool) IsDestructive(input json.RawMessage) bool {
+	return t.base.IsDestructive(input)
+}
+
+func (t metadataOverrideTool) IsConcurrencySafe(input json.RawMessage) bool {
+	return t.base.IsConcurrencySafe(input)
+}
+
+func (t metadataOverrideTool) ValidateInput(ctx context.Context, input json.RawMessage) error {
+	return t.base.ValidateInput(ctx, input)
+}
+
+func (t metadataOverrideTool) CheckPermissions(ctx context.Context, input json.RawMessage) PermissionDecision {
+	return t.base.CheckPermissions(ctx, input)
+}
+
+func (t metadataOverrideTool) Execute(ctx context.Context, input json.RawMessage) (ToolResult, error) {
+	return t.base.Execute(ctx, input)
 }

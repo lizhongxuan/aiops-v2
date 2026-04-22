@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,26 +18,6 @@ type SessionType = string
 
 // Mode mirrors runtimekernel.Mode.
 type Mode = string
-
-// ---------------------------------------------------------------------------
-// CapabilityKind mirrors capability.Kind to avoid circular imports.
-// ---------------------------------------------------------------------------
-
-// CapabilityKind identifies capability categories (mirrors capability.Kind).
-type CapabilityKind = string
-
-const (
-	KindTool      CapabilityKind = "tool"
-	KindSkill     CapabilityKind = "skill"
-	KindMCPTool   CapabilityKind = "mcp_tool"
-	KindUISurface CapabilityKind = "ui_surface"
-	KindModeRule  CapabilityKind = "mode_rule"
-	KindWorkspace CapabilityKind = "workspace"
-)
-
-// ---------------------------------------------------------------------------
-// PolicyAction enumerates the possible outcomes of a policy check.
-// ---------------------------------------------------------------------------
 
 // PolicyAction represents the decision outcome of a policy evaluation.
 type PolicyAction string
@@ -63,13 +45,13 @@ func (a PolicyAction) IsValid() bool {
 
 // PolicyInput contains the full context for a policy evaluation request.
 type PolicyInput struct {
-	ToolName    string         `json:"toolName"`
-	ToolKind    CapabilityKind `json:"toolKind"`
-	SessionType SessionType    `json:"sessionType"`
-	Mode        Mode           `json:"mode"`
-	HostID      string         `json:"hostId,omitempty"`
-	Arguments   json.RawMessage `json:"arguments,omitempty"`
-	UserContext map[string]string `json:"userContext,omitempty"`
+	ToolName    string               `json:"toolName"`
+	Tool        tooling.ToolMetadata `json:"tool,omitempty"`
+	SessionType SessionType          `json:"sessionType"`
+	Mode        Mode                 `json:"mode"`
+	HostID      string               `json:"hostId,omitempty"`
+	Arguments   json.RawMessage      `json:"arguments,omitempty"`
+	UserContext map[string]string    `json:"userContext,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +80,6 @@ type ApprovalRequest struct {
 	TTL      time.Duration `json:"ttl,omitempty"`
 }
 
-
 // ---------------------------------------------------------------------------
 // TurnState carries the state of a turn for completion evaluation.
 // ---------------------------------------------------------------------------
@@ -122,9 +103,9 @@ type TurnState struct {
 // capability boundary. Each mode (chat/inspect/plan/execute) has its own
 // ModePolicy implementation.
 type ModePolicy interface {
-	// CheckCapability determines whether the given tool (by name and kind)
-	// is permitted under this mode's capability boundary.
-	CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision
+	// CheckTool determines whether the given tool is permitted under this mode's
+	// capability boundary.
+	CheckTool(input PolicyInput) PolicyDecision
 }
 
 // PermissionEvaluator checks user-level permissions for a tool call.
@@ -169,7 +150,7 @@ type Engine struct {
 func (e *Engine) CheckToolCall(ctx context.Context, input PolicyInput) PolicyDecision {
 	// Layer 1: Mode capability boundary check
 	if mp, ok := e.ModePolicy[input.Mode]; ok {
-		decision := mp.CheckCapability(input.ToolName, input.ToolKind)
+		decision := mp.CheckTool(input)
 		if decision.Action != PolicyActionAllow {
 			return decision
 		}
@@ -192,21 +173,4 @@ func (e *Engine) CheckToolCall(ctx context.Context, input PolicyInput) PolicyDec
 	}
 
 	return PolicyDecision{Action: PolicyActionAllow}
-}
-
-// ---------------------------------------------------------------------------
-// NewPolicyInput creates a PolicyInput from primitive types, avoiding the need
-// for callers to import the capability package directly (prevents import cycles).
-// ---------------------------------------------------------------------------
-
-// NewPolicyInput creates a PolicyInput from string-typed kind, avoiding circular
-// imports between runtimekernel and capability packages.
-func NewPolicyInput(toolName, toolKind string, sessionType SessionType, mode Mode, arguments json.RawMessage) PolicyInput {
-	return PolicyInput{
-		ToolName:    toolName,
-		ToolKind:    toolKind,
-		SessionType: sessionType,
-		Mode:        mode,
-		Arguments:   arguments,
-	}
 }

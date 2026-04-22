@@ -8,20 +8,22 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 
+	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 )
 
 // ---------------------------------------------------------------------------
-// CapabilitySource is the interface that the EinoKernel uses to access
+// ToolAssemblySource is the interface that the EinoKernel uses to access
 // assembled tools without importing the capability package directly (avoids
 // circular imports since capability imports runtimekernel).
 // ---------------------------------------------------------------------------
 
-// CapabilitySource provides tool-assembly context and tool pool assembly.
-// Implemented by *capability.Registry via an adapter.
-type CapabilitySource interface {
+// ToolAssemblySource provides tool-assembly context and tool pool assembly.
+// Implemented by unified tooling assemblers via a thin adapter.
+type ToolAssemblySource interface {
 	// CompileContext returns a CompileContext with assembled tools populated.
 	CompileContext(session SessionType, mode Mode) promptcompiler.CompileContext
 
@@ -81,9 +83,11 @@ type AgentManagerSource interface {
 // EinoKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
 type EinoKernel struct {
-	registry    CapabilitySource
+	tools       ToolAssemblySource
 	compiler    promptcompiler.Compiler
 	policy      *policyengine.Engine
+	permissions *permissions.Engine
+	hooks       *hooks.Registry
 	projector   EventEmitter
 	modelRouter *modelrouter.Router
 	sessions    *SessionManager
@@ -93,9 +97,11 @@ type EinoKernel struct {
 
 // EinoKernelConfig holds the dependencies for creating an EinoKernel.
 type EinoKernelConfig struct {
-	Registry    CapabilitySource
+	ToolSource  ToolAssemblySource
 	Compiler    promptcompiler.Compiler
 	Policy      *policyengine.Engine
+	Permissions *permissions.Engine
+	Hooks       *hooks.Registry
 	Projector   EventEmitter
 	ModelRouter *modelrouter.Router
 	AgentMgr    AgentManagerSource
@@ -105,9 +111,11 @@ type EinoKernelConfig struct {
 // NewEinoKernel creates a new EinoKernel with the given dependencies.
 func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 	return &EinoKernel{
-		registry:    cfg.Registry,
+		tools:       cfg.ToolSource,
 		compiler:    cfg.Compiler,
 		policy:      cfg.Policy,
+		permissions: cfg.Permissions,
+		hooks:       cfg.Hooks,
 		projector:   cfg.Projector,
 		modelRouter: cfg.ModelRouter,
 		sessions:    NewSessionManager(),
@@ -172,7 +180,7 @@ func (r *PipelineRecorder) Record(step PipelineStep) {
 //  2. Get/create session
 //  3. Assemble context (messages + trimming)
 //  4. Compile prompt via PromptCompiler
-//  5. Get assembled tools from Registry
+//  5. Get assembled tools from ToolAssemblySource
 //  6. Get model from ModelRouter
 //  7. Create adk.ChatModelAgent with model + tools + instruction
 //  8. Execute via adk.Runner.Run()
@@ -214,6 +222,16 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 
 	// Step 1: Get/create session
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	preTurnEvent, err := k.runTurnHook(ctx, hooks.StagePreTurn, session, req, turnID, "", nil)
+	if err != nil {
+		if k.spanSource != nil && turnSpanID != "" {
+			k.spanSource.FailSpan(turnSpanID, "pre_turn: "+err.Error())
+		}
+		return TurnResult{}, fmt.Errorf("pre_turn: %w", err)
+	}
+	if preTurnEvent.UpdatedInput != "" {
+		req.Input = preTurnEvent.UpdatedInput
+	}
 
 	// Step 2: Assemble context (add user message, trim if needed)
 	if req.Input != "" {
@@ -228,7 +246,10 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	TrimContext(&session.Context, session.Messages)
 
 	// Step 3: Compile prompt via PromptCompiler
-	compileCtx := k.registry.CompileContext(req.SessionType, req.Mode)
+	compileCtx := k.tools.CompileContext(req.SessionType, req.Mode)
+	if len(preTurnEvent.AdditionalContext) > 0 {
+		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
+	}
 	compiled, compileErr := k.compiler.Compile(compileCtx)
 	if compileErr != nil {
 		if k.spanSource != nil && turnSpanID != "" {
@@ -238,7 +259,7 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	}
 
 	// Step 4: Get assembled tools for execution
-	toolPool := k.registry.AssembleToolPool(req.SessionType, req.Mode)
+	toolPool := k.tools.AssembleToolPool(req.SessionType, req.Mode)
 
 	// Step 5: Get model from ModelRouter
 	agentKind := modelrouter.AgentKindWorker
@@ -278,11 +299,15 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	}
 
 	// Step 7: Emit projection events
+	turnCompletePayload, _ := json.Marshal(map[string]any{
+		"watchPaths": append([]string(nil), preTurnEvent.WatchPaths...),
+	})
 	k.projector.Emit(LifecycleEvent{
 		Type:      EventTurnComplete,
 		SessionID: session.ID,
 		TurnID:    turnID,
 		Timestamp: time.Now(),
+		Payload:   turnCompletePayload,
 	})
 
 	// Step 8: Final gate check via PolicyEngine.CompletionPolicy
@@ -306,6 +331,12 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 				Error:       decision.Reason,
 			}, nil
 		}
+	}
+	if _, err := k.runTurnHook(ctx, hooks.StagePostTurn, session, req, turnID, agentOutput, nil); err != nil {
+		if k.spanSource != nil && turnSpanID != "" {
+			k.spanSource.FailSpan(turnSpanID, "post_turn: "+err.Error())
+		}
+		return TurnResult{}, fmt.Errorf("post_turn: %w", err)
 	}
 
 	// Complete the turn span on success
@@ -420,6 +451,13 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	// Step 1: Assemble context
 	recorder.Record(StepAssembleContext)
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	preTurnEvent, err := k.runTurnHook(ctx, hooks.StagePreTurn, session, req, turnID, "", nil)
+	if err != nil {
+		return TurnResult{}, fmt.Errorf("pre_turn: %w", err)
+	}
+	if preTurnEvent.UpdatedInput != "" {
+		req.Input = preTurnEvent.UpdatedInput
+	}
 	if req.Input != "" {
 		msg := Message{
 			ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
@@ -433,7 +471,10 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	compileCtx := k.registry.CompileContext(req.SessionType, req.Mode)
+	compileCtx := k.tools.CompileContext(req.SessionType, req.Mode)
+	if len(preTurnEvent.AdditionalContext) > 0 {
+		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
+	}
 	compiled, compileErr := k.compiler.Compile(compileCtx)
 	if compileErr != nil {
 		return TurnResult{}, fmt.Errorf("compile prompt: %w", compileErr)
@@ -441,7 +482,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 3: Assemble tools
 	recorder.Record(StepAssembleTools)
-	toolPool := k.registry.AssembleToolPool(req.SessionType, req.Mode)
+	toolPool := k.tools.AssembleToolPool(req.SessionType, req.Mode)
 
 	// Step 4: Create agent
 	recorder.Record(StepCreateAgent)
@@ -466,11 +507,15 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 7: Projection
 	recorder.Record(StepProjection)
+	turnCompletePayload, _ := json.Marshal(map[string]any{
+		"watchPaths": append([]string(nil), preTurnEvent.WatchPaths...),
+	})
 	k.projector.Emit(LifecycleEvent{
 		Type:      EventTurnComplete,
 		SessionID: session.ID,
 		TurnID:    turnID,
 		Timestamp: time.Now(),
+		Payload:   turnCompletePayload,
 	})
 
 	// Step 8: Final gate
@@ -492,6 +537,9 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 				Error:       decision.Reason,
 			}, nil
 		}
+	}
+	if _, err := k.runTurnHook(ctx, hooks.StagePostTurn, session, req, turnID, agentOutput, nil); err != nil {
+		return TurnResult{}, fmt.Errorf("post_turn: %w", err)
 	}
 
 	assistantMsg := Message{
@@ -575,6 +623,25 @@ func (k *EinoKernel) projectWorkerResults(results []AgentResult, sessionID, turn
 			Payload:   payloadBytes,
 		})
 	}
+}
+
+func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session *SessionState, req TurnRequest, turnID, output string, turnErr error) (hooks.TurnEvent, error) {
+	if k.hooks == nil {
+		return hooks.TurnEvent{}, nil
+	}
+	event := hooks.TurnEvent{
+		SessionID:   session.ID,
+		TurnID:      turnID,
+		SessionType: string(req.SessionType),
+		Mode:        string(req.Mode),
+		Input:       req.Input,
+		Output:      output,
+		Err:         turnErr,
+	}
+	if err := k.hooks.RunTurnStage(ctx, stage, &event); err != nil {
+		return hooks.TurnEvent{}, err
+	}
+	return event, nil
 }
 
 // ---------------------------------------------------------------------------

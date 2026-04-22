@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"aiops-v2/internal/agents"
-	"aiops-v2/internal/capability"
 )
 
 // ---------------------------------------------------------------------------
@@ -30,25 +29,6 @@ func (k AgentKind) IsValid() bool {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// CapabilityScope defines the capability visibility for an agent type.
-// ---------------------------------------------------------------------------
-
-// CapabilityScope defines the capability kinds and host access an agent type
-// is allowed to use. An empty HostIDs slice means unrestricted host access.
-type CapabilityScope struct {
-	// Kinds lists the allowed capability kinds for this agent type.
-	Kinds []capability.Kind
-
-	// HostIDs lists the allowed host IDs. Empty means unrestricted.
-	HostIDs []string
-}
-
-// ---------------------------------------------------------------------------
-// AgentDefinition defines a template for creating agent instances.
-// Maps to adk.ChatModelAgentConfig at creation time.
-// ---------------------------------------------------------------------------
-
 // AgentDefinition defines a template for creating agent instances of a given kind.
 // It maps to adk.ChatModelAgentConfig when the AgentFactory creates an agent.
 type AgentDefinition struct {
@@ -69,9 +49,6 @@ type AgentDefinition struct {
 
 	// Tools lists the tool names this agent definition expects to use.
 	Tools []string
-
-	// CapabilityScope defines the capability visibility for agents of this kind.
-	CapabilityScope CapabilityScope
 
 	// MaxIterations is the maximum number of ReAct iterations for the ChatModelAgent.
 	MaxIterations int
@@ -100,6 +77,11 @@ func (d AgentDefinition) Validate() error {
 	return nil
 }
 
+// ToAgentTool projects the definition into the orchestration-facing AgentTool view.
+func (d AgentDefinition) ToAgentTool() agents.AgentTool {
+	return d.ToRegistryDefinition().ToAgentTool()
+}
+
 // ToRegistryDefinition converts the agent manager definition into the shared agents registry definition.
 func (d AgentDefinition) ToRegistryDefinition() agents.Definition {
 	prompt := d.Prompt
@@ -110,6 +92,7 @@ func (d AgentDefinition) ToRegistryDefinition() agents.Definition {
 	return agents.Definition{
 		Kind:            string(d.Kind),
 		Name:            d.Name,
+		Source:          string(agents.SourceBuiltin),
 		Description:     d.Description,
 		Prompt:          prompt,
 		Tools:           append([]string(nil), d.Tools...),
@@ -117,8 +100,6 @@ func (d AgentDefinition) ToRegistryDefinition() agents.Definition {
 		Hooks:           append([]string(nil), d.Hooks...),
 		MCPServers:      append([]string(nil), d.MCPServers...),
 		MaxIterations:   d.MaxIterations,
-		CapabilityKinds: capabilityKindsToStrings(d.CapabilityScope.Kinds),
-		CapabilityHosts: append([]string(nil), d.CapabilityScope.HostIDs...),
 	}
 }
 
@@ -135,33 +116,7 @@ func FromRegistryDefinition(def agents.Definition) AgentDefinition {
 		Model:          def.Model,
 		Hooks:          append([]string(nil), def.Hooks...),
 		MCPServers:     append([]string(nil), def.MCPServers...),
-		CapabilityScope: CapabilityScope{
-			Kinds:   stringsToCapabilityKinds(def.CapabilityKinds),
-			HostIDs: append([]string(nil), def.CapabilityHosts...),
-		},
 	}
-}
-
-func capabilityKindsToStrings(kinds []capability.Kind) []string {
-	if len(kinds) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(kinds))
-	for _, k := range kinds {
-		out = append(out, string(k))
-	}
-	return out
-}
-
-func stringsToCapabilityKinds(kinds []string) []capability.Kind {
-	if len(kinds) == 0 {
-		return nil
-	}
-	out := make([]capability.Kind, 0, len(kinds))
-	for _, k := range kinds {
-		out = append(out, capability.Kind(k))
-	}
-	return out
 }
 
 // ---------------------------------------------------------------------------

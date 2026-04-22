@@ -10,21 +10,33 @@
 cmd/ai-server/main.go          # 启动入口，组装所有组件
 internal/
 ├── runtimekernel/              # RuntimeKernel — 唯一的 turn 运行时内核
-├── capability/                 # Capability Registry — 六类能力统一注册
+├── tooling/                    # 统一 Tool 抽象与 tool assembly 真源
+├── commands/                   # Prompt/slash/local command registry
+├── skills/                     # Skill catalog（通过 command surface 暴露）
+├── agents/                     # Agent definition registry
+├── mcp/                        # MCP server registry
+├── integrations/               # 内建 integrations（direct registration）
+├── plugins/                    # Plugin spec/loader/registrar 装配层
 ├── promptcompiler/             # PromptCompiler — 四层结构化 Prompt 编译
 ├── policyengine/               # PolicyEngine — 显式策略硬约束
-├── projection/                 # Projection — 生命周期事件 → 六类投影
+├── projection/                 # Projection — 生命周期事件投影
 ├── modelrouter/                # ModelRouter — LLM Provider 路由与 Fallback
 ├── agentmgr/                   # AgentManager — Multi-Agent 编排（ADK）
 ├── spanstream/                 # SpanTree + MultiplexedStream 多路复用流
 ├── server/                     # HTTP/WebSocket/gRPC API 兼容层
 ├── store/                      # 数据持久化（内存 + JSON 异步写盘）
-├── extensions/                 # Extension 挂载（Coroot/Lab/Generator）
-│   ├── coroot/
-│   ├── lab/
-│   └── generator/
+├── settings/                   # settings precedence / governance 聚合
+├── hooks/                      # tool / turn lifecycle hooks
+├── permissions/                # tool 执行权限治理
 └── integration/                # 集成测试
 ```
+
+## 当前注册模型（2026-04）
+
+- `Tool` 是唯一模型可调用对象；`PromptCompiler`、`RuntimeKernel`、`AgentFactory` 共享同一份 `AssembledTools`。
+- `skills` 不直接进入 tool pool，而是先进入 `SkillRegistry`，再通过 `CommandRegistry.ListSkillLikePromptCommands()` 暴露给 `SkillTool`。
+- `AgentDefinition`、`MCPServerConfig`、`settings / hooks / permissions` 都不是 tool；它们分别进入独立 registry 或治理层。
+- 旧 `capability` 兼容层已经删除；主运行链只认 `tooling.Tool`、`tooling.Registry`、`mcp.Registry`、`commands/skills/agents/...` 各自独立 registry。
 
 ## 快速开始
 
@@ -37,209 +49,176 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 
 ---
 
-## ⚠️ 模块注册规则（必读）
+## ⚠️ Registration Upgrade Guardrails
 
-本项目采用**注册制架构**。所有新增模块必须通过项目中定义的统一接口注册，禁止绕过注册机制直接嵌入核心逻辑。
+本节是当前仓库的硬约束，不是建议项。它来自两部分依据：
 
-如果遇到现有接口无法满足的特殊情况，**必须先与用户确认方案后才能添加代码**。
+- [`docs/registration-upgrade-todo.md`](./docs/registration-upgrade-todo.md) 的阶段目标与统一验收清单
+- 本地 `../claude code/` 源码的对应实现面，重点参考：
+  - `Tool.ts`
+  - `tools.ts`
+  - `commands.ts`
+  - `skills/loadSkillsDir.ts`
+  - `types/plugin.ts`
+  - `utils/settings/constants.ts`
 
-### 1. 新增 Tool（工具）
+以后新增功能，如果会碰到注册、装配、治理、prompt 或 agent 编排，先看这节。看完还觉得需要新增第二套模型、第二条主路径或新的 runtime interface，先停下来确认方案。
 
-所有 tool 必须实现 `capability.ToolRuntime` 接口并通过 `capability.Registry` 注册。
+### 1. 不可破坏的架构不变量
 
-```go
-// 必须实现的接口（internal/capability/registry.go）
-type ToolRuntime interface {
-    Description() string
-    CheckPermissions(ctx context.Context) error
-    IsReadOnly() bool
-    IsDestructive() bool
-    IsConcurrencySafe() bool
-    Display() ToolDisplayPayload
-    InputSchema() json.RawMessage
-    Execute(ctx context.Context, args json.RawMessage) (ToolResult, error)
-}
-```
+1. `Tool` 是唯一模型可调用对象。
+   - `PromptCompiler`、`RuntimeKernel`、`AgentFactory` 只能消费 `AssembledTools`
+   - `SkillDefinition`、`AgentDefinition`、`MCPServerConfig`、settings、hooks、permissions 都不是 tool
 
-注册方式：
+2. tool assembly 只有一个真源。
+   - 必须通过统一装配路径生成 tool pool
+   - 内置 tools、编排 tools、MCP dynamic tools 必须在同一套 registry 语义下组装
+   - 同名冲突时，内置 tool 优先于 dynamic MCP tool
 
-```go
-registry.Register(capability.Entry{
-    ID:          "my-tool/action",
-    Name:        "my_tool.action",
-    Kind:        capability.KindTool,  // 或 KindMCPTool
-    Description: "工具描述",
-    Tool:        &myToolImpl{},
-    Visibility: capability.Visibility{
-        SessionTypes: []string{"host", "workspace"},
-        Modes:        []string{"inspect", "execute"},
-    },
-})
-```
+3. `ToolMetadata` 必须走 traits-first，而不是 kind-first。
+   - 主字段是 `Name / Aliases / SearchHint / ShouldDefer / AlwaysLoad / IsMCP / IsLSP / MCPInfo`
+   - `Origin` 只是兼容/展示字段，不是新的主分流轴
+   - 不允许新增围绕 `Origin=builtin|mcp|meta` 的运行时分支
 
-禁止事项：
-- 禁止在 RuntimeKernel、PromptCompiler 或 PolicyEngine 中硬编码 tool 调用逻辑
-- 禁止创建不经过 Registry 的平行 tool 池
-- `KindTool` 类型的 Entry 必须提供非 nil 的 `ToolRuntime` 实现
+4. skills 只能通过 command surface 暴露给模型。
+   - `skills.Registry` 存定义
+   - `commands.CommandRegistry` 发布 skill-like prompt commands
+   - `SkillTool` 消费 command surface，不直接消费孤立 `SkillDefinition`
 
-### 2. 新增 Agent 类型
+5. agents、MCP servers、plugins 都是独立 registry，不是平行 tool 模型。
+   - `AgentDefinition` 进 `internal/agents`
+   - `AgentTool` 才是编排型 tool 视图
+   - `MCPServerConfig` 进 `internal/mcp`
+   - MCP 在 runtime 上表达为 tool source：`IsMCP + MCPInfo`
 
-所有 Agent 类型必须通过 `AgentDefinition` 注册到 `AgentFactory`。
+6. governance 只治理 tool，不定义 tool 类型。
+   - `PermissionEngine`、`HookRegistry`、`FeatureFlags`、`settings.Governance` 只能影响暴露、审批、阻断、目录范围、MCP allowlist
+   - 它们不能创建新的 capability 类别，也不能偷偷拼出第二套 tool pool
 
-```go
-// 注册新的 AgentKind（internal/agentmgr/definition.go）
-factory.RegisterDefinition(&agentmgr.AgentDefinition{
-    Kind:          agentmgr.AgentKindWorker,  // 使用已有 Kind 或新增
-    Name:          "my-agent",
-    PromptTemplate: "my_agent_v1",
-    MaxIterations:  20,
-    Model:          "gpt-4o-mini",
-    CapabilityScope: agentmgr.CapabilityScope{
-        Kinds: []capability.Kind{capability.KindTool, capability.KindMCPTool},
-    },
-})
-```
+7. plugin / extension 只是装配层，不是 runtime 核心接口。
+   - 可分发的组件面是 `commands / skills / agents / hooks / mcp / lsp / output styles / settings`
+   - `RuntimeKernel`、`PromptCompiler`、`AgentFactory` 不应直接感知 plugin/extension
 
-禁止事项：
-- 禁止绕过 `AgentFactory` 直接创建 Eino ADK Agent 实例
-- 禁止在 `AgentManager` 外部管理 Agent 生命周期
-- 新增 `AgentKind` 常量时必须同步更新 `IsValid()` 方法
+8. 旧兼容层已经删除，不允许重建。
+   - 不允许重新创建 `internal/capability`
+   - 不允许新增 `ExtensionManager` / `MCPServerManager`
+   - 不允许新增 `LegacyToolRuntime` / `NewLegacyToolAdapter`
+   - 不允许重新发明 `VisibleCapabilities` / `MCPPromptAssets` 一类旁路
 
-### 3. 新增 LLM Model Provider
+### 2. Source Precedence And Governance
 
-所有 LLM Provider 必须实现 Eino 的 `model.ChatModel` 接口并注册到 `ModelRouter`。
+- settings/customization 的低到高覆盖顺序是：
+  `userSettings -> projectSettings -> localSettings -> flagSettings -> policySettings`
+- `policySettings` 的内部优先级只允许在 `internal/settings` 内部定义和合并，业务代码不得重新实现
+- agent definition source precedence 是：
+  `built-in -> plugin -> userSettings -> projectSettings -> flagSettings -> policySettings`
+- `strictPluginOnlyCustomization` 生效时，只有 admin-trusted sources 还能继续往受控 surface 写内容
+- 当前 admin-trusted sources 是：
+  `plugin`、`built-in`/`builtin`、`bundled`、`policySettings`
+- `allowedMcpServers` 与 `additionalDirectories` 属于治理层，不允许散落到单个 feature 的私有配置里
 
-```go
-// Provider 必须实现（github.com/cloudwego/eino/components/model）
-type ChatModel interface {
-    Generate(ctx context.Context, msgs []*schema.Message, opts ...Option) (*schema.Message, error)
-    Stream(ctx context.Context, msgs []*schema.Message, opts ...Option) (*StreamReader[*schema.Message], error)
-    BindTools(tools []*schema.ToolInfo) error
-}
-```
+### 3. 新增功能时的接入规则
 
-注册方式：
+**新增 Tool**
 
-```go
-// 在 cmd/ai-server/main.go 的 buildProviders() 中注册
-providers["my_provider"] = myProviderChatModel
+- 优先实现 `internal/tooling.Tool`，简单场景直接用 `tooling.StaticTool`
+- builtin/static tool 只允许 `tooling.Registry.Register(...)`
+- dynamic MCP tool 只允许 `mcp.Registry.OnServerConnected(...)`
+- tool 的可见性、defer/load 行为、MCP/LSP 来源、审批/权限都必须通过 metadata + assembly / execution pipeline 表达
+- 不能在 `RuntimeKernel`、`PromptCompiler`、`PolicyEngine` 里给某个新 tool 写硬编码旁路
 
-// 配置 Fallback
-fallbacks := []modelrouter.FallbackEntry{
-    {Primary: "my_provider", Fallback: "openai"},
-}
+**新增 Skill**
 
-// 按 AgentKind 配置
-router.SetAgentKindConfig(modelrouter.AgentKindWorker, modelrouter.AgentKindConfig{
-    Provider: "my_provider",
-    Model:    "my-model-v1",
-})
-```
+- skill definition 放进 `internal/skills`
+- skill-like command 放进 `internal/commands`
+- 让 `SkillTool` 通过 command surface 发现它
+- 不要再把 skill 当成另一种 tool kind 或 capability 树节点
 
-禁止事项：
-- 禁止在 RuntimeKernel 中直接调用 LLM API，必须通过 `ModelRouter.GetModel()` 获取
-- 禁止绕过 Fallback 机制
+**新增 Agent**
 
-### 4. 新增 Capability 类型
+- 定义进 `internal/agents`
+- 执行和调度留在 `internal/agentmgr`
+- 如果模型需要编排它，暴露 `AgentTool` 风格视图，而不是把 `AgentDefinition` 本身塞进 tool pool
+- agent scope 过滤必须围绕 assembled tools 与 metadata traits，不允许退回旧 `Kind*` 主轴
 
-当前支持六类 Capability Kind：`tool`、`skill`、`mcp_tool`、`ui_surface`、`mode_rule`、`workspace`。
+**新增 MCP 能力**
 
-如需新增 Kind：
-1. 在 `capability.Kind` 常量中添加
-2. 更新 `AllKinds()` 和 `IsValid()`
-3. **必须与用户确认后才能添加**
+- 注册/管理放在 `internal/mcp`
+- 运行时表达必须是 dynamic tool + `IsMCP + MCPInfo`
+- 不允许新增 “第二种 MCP tool 模型” 或 “专供 MCP 的 prompt 旁路”
 
-### 5. 新增 PolicyEngine 策略
+**新增 Plugin / Extension 能力**
 
-策略引擎包含四个维度，每个维度通过接口扩展：
+- 只允许贡献到已有 registry surface：`commands / skills / agents / hooks / mcp / lsp / output styles / settings`
+- builtin integration 只允许通过 `cmd/ai-server/registerBuiltinIntegrations(...)` 直连目标 registry
+- plugin 只允许通过 `plugins.ManifestLoader + Registrar`
+- 不允许让 plugin/extension 反向控制 `RuntimeKernel`、`PromptCompiler`、`AgentFactory`
+- 不允许因为 plugin 需要而新增第二套注册模型或运行时接口
 
-| 维度 | 接口 | 文件 |
-|------|------|------|
-| Mode 能力边界 | `ModePolicy` | `policyengine/mode.go` |
-| 用户权限 | `PermissionEvaluator` | `policyengine/types.go` |
-| 证据收集 | `EvidenceEvaluator` | `policyengine/types.go` |
-| 完成检查 | `CompletionEvaluator` | `policyengine/completion.go` |
+**新增 Prompt / Policy / Governance 规则**
 
-新增 Mode 策略示例：
+- tool prompt 只能来自 `AssembledTools`
+- 非 tool 的补充上下文只能走 `SkillPromptAssets` 或 `ExtraSections`
+- prompt 文案不能替代硬策略；真正的 allow / deny / ask 必须进 `PolicyEngine` / `PermissionEngine`
+- 新 mode / policy / governance source 若改变行为，必须同步补装配与回归测试
 
-```go
-// 实现 ModePolicy 接口
-type MyModePolicy struct{}
+**新增 LLM Provider**
 
-func (p *MyModePolicy) CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision {
-    // 定义该 mode 下的能力允许/禁止边界
-}
+- 必须实现 Eino `model.ChatModel`
+- 必须通过 `ModelRouter` 接入
+- 不能在 `RuntimeKernel` 里直接调 provider SDK
 
-// 注册到 Engine
-engine.ModePolicy["my_mode"] = &MyModePolicy{}
-```
+### 4. 明确禁止的做法
 
-禁止事项：
-- 禁止在 Prompt 中用文字描述来替代 PolicyEngine 的硬约束
-- 禁止跳过三层策略管道（CapabilityPolicy → PermissionPolicy → EvidencePolicy）
-- 新增 Mode 时必须同步更新 PromptCompiler 的 RuntimePolicyPrompt 层
+- 禁止创建平行 tool 池、局部 tool 列表或 “仅 prompt 可见 / runtime 不可执行” 的旁路
+- 禁止在主运行链路新增任何 capability-kind 风格分类轴
+- 禁止重新引入 `VisibleCapabilities -> PromptCompiler` 这类二次筛选模型
+- 禁止重新引入 legacy `MCPPromptAssets` 之类的 MCP prompt side channel
+- 禁止把 `SkillDefinition`、`AgentDefinition`、`MCPServerConfig`、hooks、permissions、settings 直接塞进 tool pool
+- 禁止让 plugin/extension 直接修改 `RuntimeKernel`、`PromptCompiler`、`AgentFactory` 的主逻辑
+- 禁止在 prompt helper、loop nudge 或局部 command 里散写系统级规则
+- 禁止为了新功能重建 `capability`、legacy adapter、compat manager
 
-### 6. 新增 Extension
+### 4.1 以后不允许重新引入的旧入口
 
-所有非核心能力（如 Coroot、Lab、Generator）必须通过 Extension 接口挂载。
+- 不允许重新创建 `internal/capability/*`
+- 不允许新增 `ExtensionManager` / `MCPServerManager`
+- 不允许新增 `LegacyToolRuntime` / `NewLegacyToolAdapter`
+- 不允许让 `SkillPromptAssets` 绕过 `CommandRegistry.ListSkillLikePromptCommands()`
+- 不允许在 `internal/agents` / `internal/agentmgr` 定义层重新引入 `CapabilityKinds`、`Hosts`、`HostScope`
+- 不允许新增 `policyengine.CheckCapability(...)` 或等价 wrapper
 
-```go
-// 必须实现的接口（internal/capability/extension.go）
-type Extension interface {
-    Name() string
-    Register(registry *Registry) error
-    Unregister(registry *Registry) error
-}
-```
+### 5. 需要改设计而不是直接写代码的情况
 
-注册方式：
+出现下面任一情况，先更新设计文档并确认，再继续编码：
 
-```go
-extManager := capability.NewExtensionManager(registry)
-extManager.Register(myExtension)
-```
+- 你觉得现有 `ToolMetadata` traits 不够表达需求
+- 你想新增新的 capability kind / source kind / runtime interface
+- 你想让某类对象既不是 tool、又要被模型直接调用
+- 你想让 plugin/extension 直接参与 runtime 决策
+- 你想绕过统一 source precedence 或 governance merge 逻辑
 
-禁止事项：
-- Extension 只能通过 `Capability Registry` 注册能力和通过 `Projection` 发射事件
-- Extension 禁止反向主导 RuntimeKernel、PromptCompiler 或 PolicyEngine 的设计
-- Extension 禁止直接访问 Store 或 Session 数据
+### 6. 提交前自检清单
 
-### 7. 新增 Prompt 规则
-
-所有 Prompt 规则必须归属到 PromptCompiler 的四层之一：
-
-| 层 | 职责 | 文件 |
-|----|------|------|
-| System Prompt | 环境与角色 | `promptcompiler/system_rules.go` |
-| Developer Instructions | 运行约束 | `promptcompiler/developer_rules.go` |
-| Tool Prompt Set | 能力描述 | `promptcompiler/tool_registry.go` |
-| Runtime Policy Prompt | 策略约束 | `promptcompiler/runtime_policy_prompt.go` |
-
-禁止事项：
-- 禁止在 loop nudge 或局部 helper 中注入 prompt 规则
-- Tool Prompt 只能包含 capability、constraints、result shape、approval note，禁止包含 answer style
-- 禁止散写 prompt，所有 prompt 必须通过 `PromptCompiler.Compile()` 输出
-
-### 8. 新增 Projection 投影类型
-
-当前支持六类投影：`toolInvocations`、`runtime.activity`、`cards`、`approvals`、`evidence`、`snapshot`。
-
-新增投影类型需要：
-1. 在 `projection/projector.go` 中添加对应的处理器
-2. 定义新的 `EventType` 常量
-3. 实现 `Subscriber` 接口的对应回调方法
-4. **必须与用户确认后才能添加**
-
----
+- 新增的模型可调用对象是否真的是 `Tool`，而不是别的定义类型
+- `PromptCompiler`、`RuntimeKernel`、`AgentFactory` 是否复用了同一份装配结果
+- 是否使用了 `ToolMetadata` traits，而不是新增 kind 分支
+- skills 是否通过 command surface 暴露
+- MCP 是否通过 `IsMCP + MCPInfo` 表达，而不是通过并列 kind 表达
+- plugin/extension 是否只做分发，不做 runtime 主逻辑
+- governance / precedence 是否复用了现有聚合逻辑，而不是局部重写
+- 是否补了单元测试；跨层不变量是否补了 property tests
+- 是否运行了 `go test ./...`
+- 是否运行了 `go build ./cmd/ai-server`
 
 ## 通用规则
 
-1. **注册制优先**：所有模块通过统一接口注册，不允许平行能力池或硬编码旁路
-2. **接口隔离**：各层通过接口通信，禁止跨层直接引用实现
-3. **特殊情况必须确认**：如果现有接口无法满足需求，必须先与用户讨论方案，确认后才能修改接口或添加代码
-4. **测试覆盖**：新增模块必须包含单元测试；涉及正确性属性的必须添加 PBT（`pgregory.net/rapid`）
-5. **不修改 aiops-codex/**：所有代码变更限定在 `aiops-v2/` 目录内
-6. **Business Logic Baseline**：任何影响四层语义分层、workspace 状态隔离或 tool lifecycle 真源的改动，必须先更新设计文档并标注"保留/替换/有意变更"
+1. 注册制优先：所有模块通过统一接口注册，不允许平行能力池或硬编码旁路
+2. 接口隔离：各层通过接口通信，禁止跨层直接引用实现
+3. 特殊情况必须确认：如果现有接口无法满足需求，必须先讨论方案，再修改接口或添加代码
+4. 测试覆盖：新增模块必须包含单元测试；涉及跨层正确性不变量的必须补 `pgregory.net/rapid` property tests
+5. 不修改 `aiops-codex/`：所有后端代码变更限定在 `aiops-v2/`
+6. 任何影响四层 prompt 语义、tool lifecycle 真源、workspace/host 隔离、source precedence 的变更，都必须同步更新设计/README
 
 ---
 
@@ -268,10 +247,10 @@ extManager.Register(myExtension)
 不要在通用逻辑中出现 `strings.Contains(toolName, "coroot")` 或 `if mode == "special_debug_mode"` 这类针对特定实例的硬编码判断。
 
 正确做法：
-- 通过 `Entry.Visibility` 控制可见性
-- 通过 `ToolRuntime.IsReadOnly()` / `IsDestructive()` 声明属性
-- 通过 `ModePolicy.CheckCapability()` 定义边界
-- 通过 `DenyRule` 模式匹配（规划中）过滤
+- 通过 `tooling.Visibility` 或 `Tool.IsEnabled(...)` 控制可见性
+- 通过 `Tool.IsReadOnly()` / `IsDestructive()` / `IsConcurrencySafe()` 声明属性
+- 通过 `ModePolicy.CheckTool()` 和 `tooling.ToolMetadata` 定义边界
+- 通过参数/metadata/source 规则过滤
 
 ### 禁止在 Prompt 中补偿代码缺陷
 
@@ -296,7 +275,6 @@ extManager.Register(myExtension)
 
 ```bash
 go test ./...                           # 全量测试
-go test ./internal/capability/...       # 单包测试
 go test -run TestProperty ./...         # 只跑属性测试
 go test -count=1 ./...                  # 清缓存跑
 ```

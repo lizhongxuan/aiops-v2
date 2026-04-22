@@ -18,16 +18,24 @@ import (
 
 	"aiops-v2/internal/agentmgr"
 	"aiops-v2/internal/agents"
-	"aiops-v2/internal/capability"
-	"aiops-v2/internal/extensions/coroot"
+	"aiops-v2/internal/commands"
+	"aiops-v2/internal/featureflag"
+	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/lsp"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/outputstyle"
+	"aiops-v2/internal/permissions"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/projection"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/server"
+	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/tooling"
 )
 
 func main() {
@@ -59,13 +67,23 @@ func run() error {
 	defer dataStore.Close()
 
 	// ---------------------------------------------------------------------------
-	// 2. Capability Registry
+	// 2. Registries
 	// ---------------------------------------------------------------------------
-	registry := capability.NewRegistry()
+	toolRegistry := tooling.NewRegistry()
 	skillRegistry, err := loadSkillRegistryFromEnv()
 	if err != nil {
 		return fmt.Errorf("init skill registry: %w", err)
 	}
+	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
+	flags := featureflag.FromEnv(os.Getenv)
+	permissionEngine := permissions.NewEngine(nil)
+	pluginHookRegistry := hooks.NewRegistry()
+	var runtimeHookRegistry *hooks.Registry
+	if flags.HooksV2 {
+		runtimeHookRegistry = pluginHookRegistry
+	}
+	governance := settings.NewGovernance()
+	commandRegistry.SetGovernance(governance)
 
 	// ---------------------------------------------------------------------------
 	// 3. PromptCompiler
@@ -106,8 +124,12 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 7. AgentFactory & AgentManager
 	// ---------------------------------------------------------------------------
-	agentFactory := agentmgr.NewAgentFactory(registry, compiler, router, policyEngine)
+	mcpRegistry := mcp.NewRegistry()
+	mcpRegistry.SetGovernance(governance)
+	toolAssembler := tooling.NewAssembler(toolRegistry, mcpRegistry)
+	agentFactory := agentmgr.NewAgentFactory(toolAssembler, compiler, router, policyEngine)
 	agentRegistry := agents.NewRegistry()
+	agentRegistry.SetGovernance(governance)
 	if err := registerBuiltinAgentDefinitions(agentRegistry, agentFactory); err != nil {
 		return fmt.Errorf("init agent registry: %w", err)
 	}
@@ -117,25 +139,38 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 8. Extensions (Coroot, Lab, Generator)
 	// ---------------------------------------------------------------------------
-	extManager := capability.NewExtensionManager(registry)
-
-	if corootEndpoint != "" {
-		corootExt := coroot.NewCorootExtension(corootEndpoint)
-		if err := extManager.Register(corootExt); err != nil {
-			log.Printf("warn: coroot extension registration failed: %v", err)
-		}
+	pluginHookRegistry.SetGovernance(governance)
+	lspRegistry := lsp.NewRegistry()
+	outputStyleRegistry := outputstyle.NewRegistry()
+	settingsRegistry := settings.NewRegistry()
+	pluginRegistrar := &plugins.Registrar{
+		Tools:        toolRegistry,
+		Commands:     commandRegistry,
+		Skills:       skillRegistry,
+		Agents:       agentRegistry,
+		MCP:          mcpRegistry,
+		Hooks:        pluginHookRegistry,
+		LSP:          lspRegistry,
+		OutputStyles: outputStyleRegistry,
+		Settings:     settingsRegistry,
+		Governance:   governance,
 	}
-
-	// Lab and Generator extensions are registered when their configs are available.
-	// They follow the same pattern: extManager.Register(labExt) / extManager.Register(genExt)
+	if err := registerPluginsFromEnv(pluginRegistrar); err != nil {
+		return fmt.Errorf("init plugins: %w", err)
+	}
+	if err := registerBuiltinIntegrations(mcpRegistry, corootEndpoint); err != nil {
+		return fmt.Errorf("init builtin integrations: %w", err)
+	}
 
 	// ---------------------------------------------------------------------------
 	// 9. EinoKernel (RuntimeKernel)
 	// ---------------------------------------------------------------------------
 	kernelCfg := runtimekernel.EinoKernelConfig{
-		Registry:    newRegistryAdapter(registry, skillRegistry),
+		ToolSource:  newRegistryAdapter(toolAssembler, commandRegistry, flags),
 		Compiler:    compiler,
 		Policy:      policyEngine,
+		Permissions: permissionEngine,
+		Hooks:       runtimeHookRegistry,
 		Projector:   projector,
 		ModelRouter: router,
 		AgentMgr:    newAgentManagerAdapter(agentManager, agentFactory),
@@ -248,39 +283,57 @@ func buildProviders() map[string]modelrouter.ChatModel {
 }
 
 // ---------------------------------------------------------------------------
-// RegistryAdapter adapts *capability.Registry to runtimekernel.CapabilitySource.
+// RegistryAdapter adapts the unified tool assembler to runtimekernel.ToolAssemblySource.
 // ---------------------------------------------------------------------------
 
 type registryAdapter struct {
-	registry      *capability.Registry
-	skillRegistry *skills.Registry
+	tools           interface {
+		AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
+	}
+	commandRegistry *commands.CommandRegistry
+	flags           featureflag.Flags
 }
 
-func newRegistryAdapter(registry *capability.Registry, skillRegistry *skills.Registry) *registryAdapter {
-	return &registryAdapter{registry: registry, skillRegistry: skillRegistry}
+func newRegistryAdapter(tools interface {
+	AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
+}, commandRegistry *commands.CommandRegistry, flags featureflag.Flags) *registryAdapter {
+	return &registryAdapter{
+		tools:           tools,
+		commandRegistry: commandRegistry,
+		flags:           flags.Clone(),
+	}
 }
 
 func (a *registryAdapter) CompileContext(session runtimekernel.SessionType, mode runtimekernel.Mode) promptcompiler.CompileContext {
 	return promptcompiler.CompileContext{
 		SessionType:       string(session),
 		Mode:              string(mode),
-		AssembledTools:    a.registry.AssembleTools(string(session), string(mode)),
-		SkillPromptAssets: a.skillPromptAssets(string(session), string(mode)),
-		MCPPromptAssets:   a.registry.MCPPromptAssets(string(session), string(mode)),
+		AssembledTools:    a.assembledTools(string(session), string(mode)),
+		SkillPromptAssets: commandPromptAssets(a.skillPromptCommands()),
 	}
 }
 
 func (a *registryAdapter) AssembleToolPool(session runtimekernel.SessionType, mode runtimekernel.Mode) []tool.BaseTool {
-	return a.registry.AssembleToolPool(string(session), string(mode))
+	return tooling.AssembleEinoToolPool(a.assembledTools(string(session), string(mode)))
 }
 
-func (a *registryAdapter) skillPromptAssets(session, mode string) []string {
-	var assets []string
-	if a.skillRegistry != nil {
-		assets = append(assets, a.skillRegistry.PromptAssets()...)
+func (a *registryAdapter) skillPromptCommands() []commands.PromptCommand {
+	if a.commandRegistry != nil {
+		return a.commandRegistry.ListSkillLikePromptCommands()
 	}
-	assets = append(assets, a.registry.SkillPromptAssets(session, mode)...)
-	return dedupeStrings(assets)
+	return nil
+}
+
+func (a *registryAdapter) assembledTools(session, mode string) []tooling.Tool {
+	if a.tools == nil {
+		return nil
+	}
+	return a.tools.AssembleToolsWithOptions(session, mode, tooling.AssembleOptions{
+		MetadataTransform: a.flags.ApplyToolMetadata,
+		Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
+			return a.flags.IsToolVisible(meta)
+		},
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -362,28 +415,74 @@ func loadSkillRegistryFromEnv() (*skills.Registry, error) {
 	return registry, nil
 }
 
+func loadPluginSpecsFromEnv() ([]plugins.Spec, error) {
+	dirs := splitPathList(os.Getenv("AIOPS_PLUGIN_DIRS"))
+	if len(dirs) == 0 {
+		return nil, nil
+	}
+	return plugins.NewManifestLoader(dirs...).Load()
+}
+
+func registerPluginsFromEnv(registrar *plugins.Registrar) error {
+	if registrar == nil {
+		return nil
+	}
+
+	specs, err := loadPluginSpecsFromEnv()
+	if err != nil {
+		return err
+	}
+	for _, spec := range specs {
+		if err := registrar.Register(spec); err != nil {
+			name := strings.TrimSpace(spec.Name)
+			if name == "" {
+				name = strings.TrimSpace(spec.Manifest.Name)
+			}
+			if name == "" {
+				name = "<unnamed>"
+			}
+			return fmt.Errorf("register plugin %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func buildCommandRegistryFromSkills(skillRegistry *skills.Registry) *commands.CommandRegistry {
+	if skillRegistry == nil {
+		return nil
+	}
+
+	commandRegistry := commands.NewRegistry()
+	for _, def := range skillRegistry.List() {
+		cmd := skills.PromptCommandForDefinition(def, commands.SourceProjectSettings)
+		if err := commandRegistry.RegisterPrompt(cmd); err != nil {
+			log.Printf("warn: skipping skill command %q: %v", cmd.Name, err)
+		}
+	}
+	return commandRegistry
+}
+
 func registerBuiltinAgentDefinitions(agentRegistry *agents.Registry, agentFactory *agentmgr.AgentFactory) error {
 	defs := []agents.Definition{
 		{
 			Kind:          string(agentmgr.AgentKindPlanner),
 			Name:          "planner",
+			Source:        string(agents.SourceBuiltin),
 			Description:   "Coordinates planning and worker execution.",
 			MaxIterations: 10,
 		},
 		{
 			Kind:          string(agentmgr.AgentKindWorker),
 			Name:          "worker",
+			Source:        string(agents.SourceBuiltin),
 			Description:   "Executes host and workspace tasks.",
 			MaxIterations: 25,
-			CapabilityKinds: []string{
-				string(capability.KindTool),
-				string(capability.KindMCPTool),
-			},
 		},
 	}
 	if err := agentRegistry.RegisterBatch(defs); err != nil {
 		return err
 	}
+	agentFactory.SetDefinitionRegistry(agentRegistry)
 
 	for _, def := range agentRegistry.List() {
 		agentDef := agentmgr.FromRegistryDefinition(def)
@@ -428,4 +527,18 @@ func dedupeStrings(items []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func commandPromptAssets(cmds []commands.PromptCommand) []string {
+	if len(cmds) == 0 {
+		return nil
+	}
+
+	out := make([]string, 0, len(cmds))
+	for _, cmd := range cmds {
+		if prompt := strings.TrimSpace(cmd.Prompt); prompt != "" {
+			out = append(out, prompt)
+		}
+	}
+	return dedupeStrings(out)
 }

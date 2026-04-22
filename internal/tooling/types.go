@@ -6,12 +6,24 @@ import (
 )
 
 // ToolOrigin describes where a tool came from.
+// It is retained as a compatibility/display field and should not be treated as
+// the primary runtime classification axis for tool selection.
 type ToolOrigin string
 
 const (
 	ToolOriginBuiltin ToolOrigin = "builtin"
 	ToolOriginMCP     ToolOrigin = "mcp"
 	ToolOriginMeta    ToolOrigin = "meta"
+)
+
+// ToolSource captures Claude-like source traits without relying on Origin as the primary axis.
+type ToolSource string
+
+const (
+	ToolSourceBuiltin ToolSource = "builtin"
+	ToolSourceMCP     ToolSource = "mcp"
+	ToolSourceLSP     ToolSource = "lsp"
+	ToolSourceMeta    ToolSource = "meta"
 )
 
 // MCPInfo stores MCP-specific metadata for tools that originated from an MCP server.
@@ -34,6 +46,31 @@ type ToolMetadata struct {
 	IsMCP       bool       `json:"isMCP,omitempty"`
 	IsLSP       bool       `json:"isLSP,omitempty"`
 	MCPInfo     MCPInfo    `json:"mcpInfo,omitempty"`
+}
+
+// HasMCPSource reports whether the metadata identifies an MCP-backed tool.
+// This traits-first predicate is the preferred runtime check over Origin.
+func (m ToolMetadata) HasMCPSource() bool {
+	if m.IsMCP {
+		return true
+	}
+	return m.MCPInfo.ServerID != "" || m.MCPInfo.ServerName != "" || m.MCPInfo.ToolName != ""
+}
+
+// HasSource reports whether the metadata matches the requested source trait.
+func (m ToolMetadata) HasSource(source ToolSource) bool {
+	switch source {
+	case ToolSourceMCP:
+		return m.HasMCPSource()
+	case ToolSourceLSP:
+		return m.IsLSP
+	case ToolSourceMeta:
+		return m.Origin == ToolOriginMeta
+	case ToolSourceBuiltin:
+		return !m.HasMCPSource() && !m.IsLSP && m.Origin != ToolOriginMeta
+	default:
+		return false
+	}
 }
 
 // ToolDisplayPayload is a simple structured payload for human-facing tool output.
@@ -106,19 +143,4 @@ type Tool interface {
 	ValidateInput(ctx context.Context, input json.RawMessage) error
 	CheckPermissions(ctx context.Context, input json.RawMessage) PermissionDecision
 	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
-}
-
-// LegacyToolRuntime is a structural compatibility interface for old tool runtimes.
-// Capability code can bridge its existing ToolRuntime into this shape without
-// importing the capability package here.
-type LegacyToolRuntime interface {
-	Description() string
-	InputSchema() json.RawMessage
-	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
-	IsEnabled(ctx ToolContext) bool
-	CheckPermissions(ctx context.Context) error
-	IsReadOnly() bool
-	IsDestructive() bool
-	IsConcurrencySafe() bool
-	Display() ToolDisplayPayload
 }

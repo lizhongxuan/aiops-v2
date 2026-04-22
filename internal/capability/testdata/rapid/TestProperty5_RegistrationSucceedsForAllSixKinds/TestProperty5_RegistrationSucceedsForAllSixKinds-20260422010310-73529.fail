@@ -1,0 +1,32 @@
+# 2026/04/22 01:03:10.471709 [TestProperty5_RegistrationSucceedsForAllSixKinds] [rapid] draw kind: "skill"
+# 2026/04/22 01:03:10.471716 [TestProperty5_RegistrationSucceedsForAllSixKinds] [rapid] draw id: "a00"
+# 2026/04/22 01:03:10.471718 [TestProperty5_RegistrationSucceedsForAllSixKinds] [rapid] draw name: "a00"
+# 2026/04/22 01:03:10.471719 [TestProperty5_RegistrationSucceedsForAllSixKinds] Register should succeed for valid entry with kind "skill": register: capability compatibility registry only accepts "tool" writes, got "skill"
+# 
+v0.4.8#11335307081499779910
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

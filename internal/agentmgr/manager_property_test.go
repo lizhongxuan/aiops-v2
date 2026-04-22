@@ -9,117 +9,92 @@ import (
 
 	"pgregory.net/rapid"
 
-	"aiops-v2/internal/capability"
+	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/projection"
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
-// Feature: aiops-codex-eino-rewrite, Property 34: Worker Agent 能力隔离
+// Feature: aiops-codex-eino-rewrite, Property 34: Worker Agent 工具隔离
 // For any Worker_Agent instance (adk.ChatModelAgent), its ToolsConfig should
-// only contain tools within the bound host's scope, not tools from other hosts
-// or Planner_Agent planning tools.
+// only contain assembled tools that match the worker's explicit tool allowlist
+// for the bound host.
 //
 // **Validates: Requirements 13.3**
 // ---------------------------------------------------------------------------
 
-func TestProperty34_WorkerAgentCapabilityIsolation(t *testing.T) {
+func TestProperty34_WorkerAgentToolIsolation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		// Generate random capability kinds for the worker scope.
-		allKinds := []capability.Kind{
-			capability.KindTool,
-			capability.KindSkill,
-			capability.KindMCPTool,
-			capability.KindUISurface,
-		}
-		numAllowedKinds := rapid.IntRange(1, len(allKinds)).Draw(t, "numAllowedKinds")
-		allowedKinds := allKinds[:numAllowedKinds]
-
-		// Create a registry with various capability kinds.
-		reg := capability.NewRegistry()
-
-		// Register capabilities of various kinds (using non-tool kinds to avoid
-		// needing ToolRuntime implementations).
+		reg := tooling.NewRegistry()
+		compiler := &mockCompiler{}
+		router := modelrouter.NewRouter("openai", map[string]modelrouter.ChatModel{
+			"openai": &mockChatModel{},
+		}, nil)
+		factory := NewAgentFactory(reg, compiler, router, &policyengine.Engine{})
 		numEntries := rapid.IntRange(3, 10).Draw(t, "numEntries")
-		type entryInfo struct {
-			id   string
-			name string
-			kind capability.Kind
-		}
-		entries := make([]entryInfo, numEntries)
+		allNames := make([]string, 0, numEntries)
 
-		for i := range entries {
-			kind := allKinds[rapid.IntRange(0, len(allKinds)-1).Draw(t, fmt.Sprintf("kind-%d", i))]
-			entries[i] = entryInfo{
-				id:   fmt.Sprintf("entry-%d", i),
-				name: fmt.Sprintf("cap-%d", i),
-				kind: kind,
+		for i := 0; i < numEntries; i++ {
+			name := fmt.Sprintf("tool-%d", i)
+			isMCP := rapid.Bool().Draw(t, fmt.Sprintf("isMCP-%d", i))
+
+			meta := tooling.ToolMetadata{Name: name}
+			if isMCP {
+				meta.IsMCP = true
+				meta.MCPInfo = tooling.MCPInfo{
+					ServerID:   "server",
+					ServerName: "server",
+					ToolName:   name,
+				}
 			}
-			_ = reg.Register(capability.Entry{
-				ID:   entries[i].id,
-				Name: entries[i].name,
-				Kind: kind,
-				Visibility: capability.Visibility{
-					SessionTypes: []capability.SessionType{"workspace"},
-					Modes:        []capability.Mode{"execute"},
-				},
+			_ = reg.Register(&mockTool{
+				name:     name,
+				readOnly: true,
+				meta:     meta,
+				sessions: []string{"workspace"},
+				modes:    []string{"execute"},
 			})
+			allNames = append(allNames, name)
 		}
 
-		// Register a workspace-kind entry (planner tool — should be excluded).
-		_ = reg.Register(capability.Entry{
-			ID:   "planner-tool-1",
-			Name: "plan-dispatch",
-			Kind: capability.KindWorkspace,
-			Visibility: capability.Visibility{
-				SessionTypes: []capability.SessionType{"workspace"},
-				Modes:        []capability.Mode{"plan", "execute"},
-			},
-		})
-
-		// Simulate worker agent filtering (mirrors AgentFactory.filterToolsByHost logic).
-		allVisible := reg.VisibleCapabilities("workspace", "execute")
-
-		// Build allowed kinds set (from worker CapabilityScope).
-		allowedKindSet := make(map[capability.Kind]bool)
-		for _, k := range allowedKinds {
-			allowedKindSet[k] = true
-		}
-
-		// Filter: exclude workspace kind and only include allowed kinds.
-		var workerEntries []capability.Entry
-		for _, e := range allVisible {
-			if e.Kind == capability.KindWorkspace {
-				continue
-			}
-			if !allowedKindSet[e.Kind] {
-				continue
-			}
-			workerEntries = append(workerEntries, e)
-		}
-
-		// Property: no workspace-kind entries in worker's tool set.
-		for _, e := range workerEntries {
-			if e.Kind == capability.KindWorkspace {
-				t.Fatalf("worker has workspace-kind entry %q (planner tool leak)", e.Name)
+		expected := make(map[string]bool, len(allNames))
+		allowedTools := make([]string, 0, len(allNames))
+		for i, name := range allNames {
+			if rapid.Bool().Draw(t, fmt.Sprintf("allow-%d", i)) {
+				expected[name] = true
+				allowedTools = append(allowedTools, name)
 			}
 		}
+		if len(allowedTools) == 0 {
+			expected[allNames[0]] = true
+			allowedTools = append(allowedTools, allNames[0])
+		}
 
-		// Property: all worker entries have kinds within the allowed scope.
-		for _, e := range workerEntries {
-			if !allowedKindSet[e.Kind] {
-				t.Fatalf("worker has entry %q with kind %q not in allowed scope %v",
-					e.Name, e.Kind, allowedKinds)
+		if err := factory.RegisterDefinition(&AgentDefinition{
+			Kind:  AgentKindWorker,
+			Name:  "worker",
+			Tools: allowedTools,
+		}); err != nil {
+			t.Fatalf("register worker definition: %v", err)
+		}
+
+		cfg, err := factory.CreateWorkerAgent(context.Background(), "host-1", "task")
+		if err != nil {
+			t.Fatalf("CreateWorkerAgent() error = %v", err)
+		}
+
+		if len(cfg.Tools) != len(expected) {
+			t.Fatalf("worker tools len = %d, want %d", len(cfg.Tools), len(expected))
+		}
+
+		for _, assembledTool := range cfg.Tools {
+			info, err := assembledTool.Info(context.Background())
+			if err != nil {
+				t.Fatalf("tool info error: %v", err)
 			}
-		}
-
-		// Property: worker entries are a subset of all visible entries.
-		visibleNames := make(map[string]bool)
-		for _, e := range allVisible {
-			visibleNames[e.Name] = true
-		}
-		for _, e := range workerEntries {
-			if !visibleNames[e.Name] {
-				t.Fatalf("worker entry %q not in visible set", e.Name)
+			if !expected[info.Name] {
+				t.Fatalf("worker tool %q not allowed by tool allowlist %v", info.Name, allowedTools)
 			}
 		}
 	})
@@ -168,10 +143,10 @@ func TestProperty35_AgentResultCompleteness(t *testing.T) {
 		mgr := NewAgentManager(nil, runner, projector)
 
 		type agentSpec struct {
-			id       string
-			hostID   string
+			id         string
+			hostID     string
 			shouldFail bool
-			output   string
+			output     string
 		}
 
 		specs := make([]agentSpec, numAgents)

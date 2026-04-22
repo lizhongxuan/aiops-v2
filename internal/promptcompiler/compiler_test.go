@@ -255,7 +255,7 @@ func TestCompile_DeveloperInstructions_SkillAssets(t *testing.T) {
 	}
 }
 
-func TestCompile_DeveloperInstructions_MCPAssets(t *testing.T) {
+func TestCompile_DeveloperInstructions_IgnoresLegacyMCPAssets(t *testing.T) {
 	compiler := NewCompiler()
 
 	ctx := CompileContext{
@@ -269,8 +269,32 @@ func TestCompile_DeveloperInstructions_MCPAssets(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(result.Developer.Content, "Coroot tools require service name") {
-		t.Error("Developer instructions should include MCP prompt assets")
+	if strings.Contains(result.Developer.Content, "Coroot tools require service name") {
+		t.Error("Developer instructions should ignore legacy MCP prompt assets")
+	}
+}
+
+func TestCompile_DeveloperInstructions_ExtraSections(t *testing.T) {
+	compiler := NewCompiler()
+
+	ctx := CompileContext{
+		SessionType: "host",
+		Mode:        "inspect",
+		ExtraSections: []PromptSection{
+			{Title: "Hook Context", Content: "Runtime injected extra context."},
+		},
+	}
+
+	result, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result.Developer.Content, "Hook Context") {
+		t.Error("Developer instructions should include extra section title")
+	}
+	if !strings.Contains(result.Developer.Content, "Runtime injected extra context.") {
+		t.Error("Developer instructions should include extra section content")
 	}
 }
 
@@ -400,6 +424,37 @@ func TestCompile_ToolPromptSet_UsesMetadataDescriptionBeforeDescription(t *testi
 	}
 	if result.Tools.Entries[0].Capability != "List services from Coroot" {
 		t.Errorf("metadata description should be used, got %q", result.Tools.Entries[0].Capability)
+	}
+}
+
+func TestCompile_ToolPromptSet_UsesPromptOverrideAsConstraintGuidance(t *testing.T) {
+	compiler := NewCompiler()
+
+	ctx := CompileContext{
+		SessionType: "host",
+		Mode:        "inspect",
+		AssembledTools: []Tool{
+			&mockToolRuntime{
+				name:                "tool.search",
+				metadataDescription: "Discover relevant tools for the task",
+				desc:                "Use this orchestration tool to discover relevant tools before acting. It does not directly mutate files or services.",
+				readOnly:            true,
+				concurrencySafe:     true,
+				outputSchema:        json.RawMessage(`{"type":"array"}`),
+			},
+		},
+	}
+
+	result, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Tools.Entries) != 1 {
+		t.Fatalf("expected 1 tool entry, got %d", len(result.Tools.Entries))
+	}
+	if !strings.Contains(result.Tools.Entries[0].Constraints, "discover relevant tools before acting") {
+		t.Fatalf("expected orchestration guidance in constraints, got %q", result.Tools.Entries[0].Constraints)
 	}
 }
 

@@ -9,8 +9,8 @@ import (
 // ---------------------------------------------------------------------------
 // SessionManager manages Host and Workspace sessions.
 //
-// Host Session: single ChatModelAgent, visible tool/skill/mcp_tool/ui_surface
-// Workspace Session: PlanExecuteAgent, additionally visible workspace:*
+// Host Session: single ChatModelAgent
+// Workspace Session: PlanExecuteAgent
 // ---------------------------------------------------------------------------
 
 // SessionManager manages the lifecycle of Host and Workspace sessions.
@@ -102,42 +102,4 @@ func (sm *SessionManager) ListByType(sessionType SessionType) []*SessionState {
 		}
 	}
 	return result
-}
-
-// ---------------------------------------------------------------------------
-// Session visibility helpers
-// ---------------------------------------------------------------------------
-
-// HostSessionVisibleKinds returns the capability kinds visible in a Host session.
-// Host Session: tool, skill, mcp_tool, ui_surface
-func HostSessionVisibleKinds() []string {
-	return []string{"tool", "skill", "mcp_tool", "ui_surface"}
-}
-
-// WorkspaceSessionVisibleKinds returns the capability kinds visible in a Workspace session.
-// Workspace Session: tool, skill, mcp_tool, ui_surface, workspace
-func WorkspaceSessionVisibleKinds() []string {
-	return []string{"tool", "skill", "mcp_tool", "ui_surface", "workspace"}
-}
-
-// IsKindVisibleInSession checks if a capability kind is visible in the given session type.
-func IsKindVisibleInSession(kind string, sessionType SessionType) bool {
-	switch sessionType {
-	case SessionTypeHost:
-		for _, k := range HostSessionVisibleKinds() {
-			if k == kind {
-				return true
-			}
-		}
-		return false
-	case SessionTypeWorkspace:
-		for _, k := range WorkspaceSessionVisibleKinds() {
-			if k == kind {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
 }

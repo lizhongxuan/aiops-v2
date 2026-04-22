@@ -43,9 +43,8 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 // buildToolPromptEntry creates a ToolPromptEntry from an assembled tool,
 // extracting only the four allowed fields: capability, constraints, result shape, approval note.
 func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
-	te := ToolPromptEntry{
-		Capability: toolCapabilityDescription(tool),
-	}
+	capability := toolCapabilityDescription(tool)
+	te := ToolPromptEntry{Capability: capability}
 
 	var constraints []string
 	if tool.IsReadOnly(nil) {
@@ -56,6 +55,9 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 	}
 	if !tool.IsConcurrencySafe(nil) {
 		constraints = append(constraints, "not concurrency-safe")
+	}
+	if promptNote := toolPromptConstraint(tool, capability); promptNote != "" {
+		constraints = append(constraints, promptNote)
 	}
 	te.Constraints = strings.Join(constraints, ", ")
 
@@ -109,6 +111,18 @@ func toolCapabilityDescription(tool Tool) string {
 		return meta.Description
 	}
 	return tool.Description(nil, tooling.DescribeContext{Metadata: meta})
+}
+
+func toolPromptConstraint(tool Tool, capability string) string {
+	meta := tool.Metadata()
+	prompt := strings.TrimSpace(tool.Prompt(tooling.PromptContext{Metadata: meta}))
+	if prompt == "" {
+		return ""
+	}
+	if prompt == strings.TrimSpace(capability) {
+		return ""
+	}
+	return prompt
 }
 
 func toolApprovalNote(tool Tool) string {

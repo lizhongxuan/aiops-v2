@@ -95,6 +95,52 @@ func TestRegistryBuiltInPriority(t *testing.T) {
 	}
 }
 
+func TestRegistryPrefersNonMCPWithoutOriginHints(t *testing.T) {
+	r := NewRegistry()
+
+	mcp := &mockTool{
+		meta: ToolMetadata{
+			Name:        "read_file",
+			Description: "mcp",
+			IsMCP:       true,
+			MCPInfo:     MCPInfo{ServerID: "coroot", ToolName: "read_file"},
+		},
+		enabled:     true,
+		description: "mcp",
+	}
+	nonMCP := &mockTool{
+		meta: ToolMetadata{
+			Name:        "read_file",
+			Description: "builtin-like",
+		},
+		enabled:     true,
+		description: "builtin-like",
+	}
+
+	if err := r.Register(nonMCP); err != nil {
+		t.Fatalf("Register(nonMCP) error = %v", err)
+	}
+	if err := r.Register(mcp); err != nil {
+		t.Fatalf("Register(mcp) error = %v", err)
+	}
+
+	got, ok := r.Get("read_file")
+	if !ok {
+		t.Fatal("Get(read_file) returned false")
+	}
+	if got.Metadata().Description != "builtin-like" {
+		t.Fatalf("Get(read_file) description = %q, want builtin-like", got.Metadata().Description)
+	}
+
+	assembled := r.AssembleTools("host", "chat")
+	if len(assembled) != 1 {
+		t.Fatalf("AssembleTools() len = %d, want 1", len(assembled))
+	}
+	if assembled[0].Metadata().Description != "builtin-like" {
+		t.Fatalf("AssembleTools()[0] description = %q, want builtin-like", assembled[0].Metadata().Description)
+	}
+}
+
 func TestRegistryVisibilityAndUnregister(t *testing.T) {
 	r := NewRegistry()
 
@@ -123,5 +169,138 @@ func TestRegistryVisibilityAndUnregister(t *testing.T) {
 	r.Unregister("host_only")
 	if _, ok := r.Get("host_only"); ok {
 		t.Fatal("host_only should be removed after Unregister")
+	}
+}
+
+func TestRegistryAssembleToolsHonorsStaticToolVisibility(t *testing.T) {
+	t.Parallel()
+
+	r := NewRegistry()
+	static := &StaticTool{
+		Meta: ToolMetadata{Name: "workspace_only", Description: "workspace static"},
+		Visibility: Visibility{
+			SessionTypes: []string{"workspace"},
+			Modes:        []string{"chat"},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (ToolResult, error) {
+			return ToolResult{Content: "ok"}, nil
+		},
+	}
+
+	if err := r.Register(static); err != nil {
+		t.Fatalf("Register(static) error = %v", err)
+	}
+
+	if got := r.AssembleTools("host", "chat"); len(got) != 0 {
+		t.Fatalf("AssembleTools(host, chat) len = %d, want 0", len(got))
+	}
+
+	got := r.AssembleTools("workspace", "chat")
+	if len(got) != 1 {
+		t.Fatalf("AssembleTools(workspace, chat) len = %d, want 1", len(got))
+	}
+	if got[0].Metadata().Name != "workspace_only" {
+		t.Fatalf("AssembleTools(workspace, chat)[0].Name = %q, want workspace_only", got[0].Metadata().Name)
+	}
+}
+
+func TestRegistryAssembleToolsWithOptionsAppliesFilterTransformAndExtraTools(t *testing.T) {
+	r := NewRegistry()
+
+	if err := r.Register(&mockTool{
+		meta:        ToolMetadata{Name: "read_file", Description: "builtin"},
+		enabled:     true,
+		readOnly:    true,
+		concurrency: true,
+		description: "builtin",
+	}); err != nil {
+		t.Fatalf("Register(read_file) error = %v", err)
+	}
+	if err := r.Register(&mockTool{
+		meta:        ToolMetadata{Name: "write_file", Description: "writer"},
+		enabled:     true,
+		description: "writer",
+	}); err != nil {
+		t.Fatalf("Register(write_file) error = %v", err)
+	}
+
+	extra := &mockTool{
+		meta: ToolMetadata{
+			Name:        "service_metrics",
+			Description: "dynamic mcp",
+			IsMCP:       true,
+			MCPInfo:     MCPInfo{ServerID: "coroot", ToolName: "service_metrics"},
+		},
+		enabled:     true,
+		readOnly:    true,
+		concurrency: true,
+		description: "dynamic mcp",
+	}
+
+	assembled := r.AssembleToolsWithOptions("host", "chat", AssembleOptions{
+		ExtraTools: []Tool{extra},
+		MetadataTransform: func(meta ToolMetadata) ToolMetadata {
+			if meta.Name == "read_file" {
+				meta.ShouldDefer = true
+			}
+			return meta
+		},
+		Filter: func(_ Tool, _ ToolContext, meta ToolMetadata) bool {
+			return meta.Name != "write_file"
+		},
+	})
+
+	if len(assembled) != 2 {
+		t.Fatalf("AssembleToolsWithOptions() len = %d, want 2", len(assembled))
+	}
+	if assembled[0].Metadata().Name != "read_file" {
+		t.Fatalf("AssembleToolsWithOptions()[0].Name = %q, want read_file", assembled[0].Metadata().Name)
+	}
+	if !assembled[0].Metadata().ShouldDefer {
+		t.Fatalf("expected transformed read_file metadata to set ShouldDefer, got %#v", assembled[0].Metadata())
+	}
+	if assembled[1].Metadata().Name != "service_metrics" {
+		t.Fatalf("AssembleToolsWithOptions()[1].Name = %q, want service_metrics", assembled[1].Metadata().Name)
+	}
+	if !assembled[1].Metadata().HasMCPSource() {
+		t.Fatalf("expected extra dynamic tool to retain MCP traits, got %#v", assembled[1].Metadata())
+	}
+}
+
+func TestRegistryAssembleToolPoolWithOptionsPrefersBuiltinOverExtraMCPConflict(t *testing.T) {
+	r := NewRegistry()
+
+	if err := r.Register(&mockTool{
+		meta:        ToolMetadata{Name: "read_file", Description: "builtin"},
+		enabled:     true,
+		description: "builtin",
+	}); err != nil {
+		t.Fatalf("Register(read_file) error = %v", err)
+	}
+
+	pool := r.AssembleToolPoolWithOptions("host", "chat", AssembleOptions{
+		ExtraTools: []Tool{
+			&mockTool{
+				meta: ToolMetadata{
+					Name:        "read_file",
+					Description: "mcp",
+					IsMCP:       true,
+					MCPInfo:     MCPInfo{ServerID: "filesystem", ToolName: "read_file"},
+				},
+				enabled:     true,
+				description: "mcp",
+			},
+		},
+	})
+
+	if len(pool) != 1 {
+		t.Fatalf("AssembleToolPoolWithOptions() len = %d, want 1", len(pool))
+	}
+	info, err := pool[0].Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info() error = %v", err)
+	}
+	if info.Desc != "builtin" {
+		t.Fatalf("Info().Desc = %q, want builtin", info.Desc)
 	}
 }

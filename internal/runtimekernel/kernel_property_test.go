@@ -11,10 +11,11 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"pgregory.net/rapid"
 
-	"aiops-v2/internal/capability"
+	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -63,12 +64,12 @@ func (m *testMockChatModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
-// testMockCapabilitySource implements CapabilitySource for testing.
-type testMockCapabilitySource struct {
-	registry *capability.Registry
+// testMockToolAssemblySource implements ToolAssemblySource for testing.
+type testMockToolAssemblySource struct {
+	registry *tooling.Registry
 }
 
-func (s *testMockCapabilitySource) CompileContext(session SessionType, mode Mode) promptcompiler.CompileContext {
+func (s *testMockToolAssemblySource) CompileContext(session SessionType, mode Mode) promptcompiler.CompileContext {
 	return promptcompiler.CompileContext{
 		SessionType:    string(session),
 		Mode:           string(mode),
@@ -76,7 +77,7 @@ func (s *testMockCapabilitySource) CompileContext(session SessionType, mode Mode
 	}
 }
 
-func (s *testMockCapabilitySource) AssembleToolPool(session SessionType, mode Mode) []tool.BaseTool {
+func (s *testMockToolAssemblySource) AssembleToolPool(session SessionType, mode Mode) []tool.BaseTool {
 	return s.registry.AssembleToolPool(string(session), string(mode))
 }
 
@@ -98,22 +99,53 @@ func (m *testMockCompletionEvaluator) CheckCompletion(_ context.Context, _ polic
 	return policyengine.PolicyDecision{Action: m.action}
 }
 
-// testMockToolRuntime implements capability.ToolRuntime for testing.
-type testMockToolRuntime struct {
-	readOnly bool
+// testMockTool implements tooling.Tool for testing.
+type testMockTool struct {
+	name        string
+	description string
+	readOnly    bool
+	sessions    []string
+	modes       []string
 }
 
-func (m *testMockToolRuntime) Description() string                      { return "mock tool" }
-func (m *testMockToolRuntime) CheckPermissions(_ context.Context) error { return nil }
-func (m *testMockToolRuntime) IsReadOnly() bool                         { return m.readOnly }
-func (m *testMockToolRuntime) IsDestructive() bool                      { return !m.readOnly }
-func (m *testMockToolRuntime) IsConcurrencySafe() bool                  { return true }
-func (m *testMockToolRuntime) Display() capability.ToolDisplayPayload {
-	return capability.ToolDisplayPayload{}
+func (m *testMockTool) Metadata() tooling.ToolMetadata {
+	return tooling.ToolMetadata{
+		Name:        m.name,
+		Description: m.description,
+	}
 }
-func (m *testMockToolRuntime) InputSchema() json.RawMessage { return json.RawMessage(`{}`) }
-func (m *testMockToolRuntime) Execute(_ context.Context, _ json.RawMessage) (capability.ToolResult, error) {
-	return capability.ToolResult{Content: "ok"}, nil
+func (m *testMockTool) InputSchema() json.RawMessage  { return json.RawMessage(`{}`) }
+func (m *testMockTool) OutputSchema() json.RawMessage { return nil }
+func (m *testMockTool) Description(json.RawMessage, tooling.DescribeContext) string {
+	return m.description
+}
+func (m *testMockTool) Prompt(tooling.PromptContext) string { return m.description }
+func (m *testMockTool) IsEnabled(ctx tooling.ToolContext) bool {
+	return matchToolingTestValue(m.sessions, ctx.SessionType) && matchToolingTestValue(m.modes, ctx.Mode)
+}
+func (m *testMockTool) IsReadOnly(json.RawMessage) bool        { return m.readOnly }
+func (m *testMockTool) IsDestructive(json.RawMessage) bool     { return !m.readOnly }
+func (m *testMockTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (m *testMockTool) ValidateInput(context.Context, json.RawMessage) error {
+	return nil
+}
+func (m *testMockTool) CheckPermissions(context.Context, json.RawMessage) tooling.PermissionDecision {
+	return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+}
+func (m *testMockTool) Execute(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+	return tooling.ToolResult{Content: "ok"}, nil
+}
+
+func matchToolingTestValue(expected []string, actual string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	for _, candidate := range expected {
+		if candidate == actual {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +169,7 @@ func genNonEmptyString() *rapid.Generator[string] {
 // ---------------------------------------------------------------------------
 
 func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
-	registry := capability.NewRegistry()
+	registry := tooling.NewRegistry()
 	if compiler == nil {
 		compiler = &testMockCompiler{}
 	}
@@ -152,12 +184,63 @@ func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
 	router := modelrouter.NewRouter("mock", providers, nil)
 
 	return NewEinoKernel(EinoKernelConfig{
-		Registry:    &testMockCapabilitySource{registry: registry},
+		ToolSource:  &testMockToolAssemblySource{registry: registry},
 		Compiler:    compiler,
 		Policy:      policy,
 		Projector:   emitter,
 		ModelRouter: router,
 	})
+}
+
+func newTestKernelWithHooks(compiler promptcompiler.Compiler, registry *hooks.Registry) *EinoKernel {
+	kernel := newTestKernel(compiler)
+	kernel.hooks = registry
+	return kernel
+}
+
+func TestRunTurn_ExecutesTurnHooks(t *testing.T) {
+	registry := hooks.NewRegistry()
+	var calls []string
+
+	if err := registry.RegisterTurn(hooks.TurnRegistration{
+		Name:  "pre-turn",
+		Stage: hooks.StagePreTurn,
+		Hook: func(_ context.Context, event *hooks.TurnEvent) error {
+			calls = append(calls, "pre:"+event.Input)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTurn pre failed: %v", err)
+	}
+	if err := registry.RegisterTurn(hooks.TurnRegistration{
+		Name:  "post-turn",
+		Stage: hooks.StagePostTurn,
+		Hook: func(_ context.Context, event *hooks.TurnEvent) error {
+			calls = append(calls, "post:"+event.TurnID)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterTurn post failed: %v", err)
+	}
+
+	kernel := newTestKernelWithHooks(nil, registry)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-hooks-1",
+		Input:       "hello hooks",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed status, got %q", result.Status)
+	}
+
+	want := []string{"pre:hello hooks", "post:turn-hooks-1"}
+	if fmt.Sprintf("%v", calls) != fmt.Sprintf("%v", want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -284,128 +367,80 @@ func TestProperty4_PanicRecoveryInRunTurn(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Property 2: 能力可见性按 Session/Mode 过滤
-// For any capability set and session type/mode combination:
-// - Host session: only tool/skill/mcp_tool/ui_surface visible
-// - Workspace session: additionally workspace:* visible
-// - All returned capabilities must have Visibility allowing current session/mode
+// Property 2: 工具装配按 Session/Mode 过滤
+// For any tool set and session type/mode combination:
+// - All assembled tools must have visibility allowing current session/mode
+// - Host session must not see workspace-only tools
+// - Mode-restricted tools must only appear in the allowed mode
 //
 // **Validates: Requirements 1.4, 1.5**
 // ---------------------------------------------------------------------------
 
-func TestProperty2_CapabilityVisibilityBySessionMode(t *testing.T) {
+func TestProperty2_ToolAssemblyVisibilityBySessionMode(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		sessionType := genSessionType().Draw(t, "sessionType")
 		mode := genMode().Draw(t, "mode")
 
-		// Create registry with capabilities restricted by session type
-		registry := capability.NewRegistry()
+		// Create registry with tools restricted by session type.
+		registry := tooling.NewRegistry()
 
-		// Register a workspace-only capability
-		_ = registry.Register(capability.Entry{
-			ID:          "ws-dispatch",
-			Name:        "workspace_dispatch",
-			Kind:        capability.KindWorkspace,
-			Description: "workspace dispatch tool",
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"workspace"},
-				Modes:        []string{"chat", "inspect", "plan", "execute"},
-			},
+		// Register a workspace-only tool.
+		_ = registry.Register(&testMockTool{
+			name:        "workspace_dispatch",
+			description: "workspace dispatch tool",
+			readOnly:    true,
+			sessions:    []string{"workspace"},
+			modes:       []string{"chat", "inspect", "plan", "execute"},
 		})
 
-		// Register a host-visible tool
-		_ = registry.Register(capability.Entry{
-			ID:          "host-disk",
-			Name:        "disk_usage",
-			Kind:        capability.KindTool,
-			Description: "disk usage tool",
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"host", "workspace"},
-				Modes:        []string{"chat", "inspect", "plan", "execute"},
-			},
-			Tool: &testMockToolRuntime{readOnly: true},
+		// Register a host-visible tool.
+		_ = registry.Register(&testMockTool{
+			name:        "disk_usage",
+			description: "disk usage tool",
+			readOnly:    true,
+			sessions:    []string{"host", "workspace"},
+			modes:       []string{"chat", "inspect", "plan", "execute"},
 		})
 
-		// Register a skill visible everywhere
-		_ = registry.Register(capability.Entry{
-			ID:          "skill-search",
-			Name:        "web_search",
-			Kind:        capability.KindSkill,
-			Description: "web search skill",
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"host", "workspace"},
-				Modes:        []string{"chat", "inspect", "plan", "execute"},
-			},
+		// Register a mode-restricted tool (only execute mode).
+		_ = registry.Register(&testMockTool{
+			name:        "dangerous_exec",
+			description: "execute-only tool",
+			readOnly:    false,
+			sessions:    []string{"host", "workspace"},
+			modes:       []string{"execute"},
 		})
 
-		// Register a mode-restricted capability (only execute mode)
-		_ = registry.Register(capability.Entry{
-			ID:          "exec-only",
-			Name:        "dangerous_exec",
-			Kind:        capability.KindTool,
-			Description: "execute-only tool",
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"host", "workspace"},
-				Modes:        []string{"execute"},
-			},
-			Tool: &testMockToolRuntime{readOnly: false},
-		})
-
-		visible := registry.VisibleCapabilities(string(sessionType), string(mode))
-
-		for _, entry := range visible {
-			// Verify session type visibility
-			if len(entry.Visibility.SessionTypes) > 0 {
-				found := false
-				for _, st := range entry.Visibility.SessionTypes {
-					if st == string(sessionType) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("capability %q should not be visible in session %q (allowed: %v)",
-						entry.Name, sessionType, entry.Visibility.SessionTypes)
-				}
-			}
-
-			// Verify mode visibility
-			if len(entry.Visibility.Modes) > 0 {
-				found := false
-				for _, m := range entry.Visibility.Modes {
-					if m == string(mode) {
-						found = true
-						break
-					}
-				}
-				if !found {
-					t.Fatalf("capability %q should not be visible in mode %q (allowed: %v)",
-						entry.Name, mode, entry.Visibility.Modes)
-				}
-			}
+		assembled := registry.AssembleTools(string(sessionType), string(mode))
+		names := make(map[string]bool, len(assembled))
+		for _, assembledTool := range assembled {
+			names[assembledTool.Metadata().Name] = true
 		}
 
-		// Host session must NOT see workspace-only capabilities
+		// Host session must NOT see workspace-only tools.
 		if sessionType == SessionTypeHost {
-			for _, entry := range visible {
-				if entry.Kind == capability.KindWorkspace {
-					t.Fatalf("host session should not see workspace-only capability %q", entry.Name)
-				}
+			if names["workspace_dispatch"] {
+				t.Fatalf("host session should not see workspace-only tool %q", "workspace_dispatch")
 			}
 		}
 
-		// Workspace session MUST see workspace:* capabilities (when visibility allows)
+		// Workspace session MUST see workspace-only tools when visibility allows.
 		if sessionType == SessionTypeWorkspace {
-			foundWS := false
-			for _, entry := range visible {
-				if entry.Kind == capability.KindWorkspace {
-					foundWS = true
-					break
-				}
+			if !names["workspace_dispatch"] {
+				t.Fatal("workspace session should see workspace-only tool")
 			}
-			if !foundWS {
-				t.Fatal("workspace session should see workspace:* capabilities")
+		}
+
+		if !names["disk_usage"] {
+			t.Fatal("assembled tool set should include disk_usage for every session/mode")
+		}
+
+		if mode == ModeExecute {
+			if !names["dangerous_exec"] {
+				t.Fatal("execute mode should include dangerous_exec")
 			}
+		} else if names["dangerous_exec"] {
+			t.Fatalf("non-execute mode %q should not include dangerous_exec", mode)
 		}
 	})
 }

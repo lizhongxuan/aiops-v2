@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"aiops-v2/internal/settings"
 	"aiops-v2/internal/tooling"
 )
 
@@ -17,11 +18,13 @@ type ServerConfig struct {
 	Name      string
 	Transport string
 	Command   []string
+	Source    string
 }
 
 // Registry tracks MCP server configuration and dynamically connected tools.
 type Registry struct {
 	mu          sync.RWMutex
+	governance  *settings.Governance
 	serverCfgs  map[string]ServerConfig
 	serverTools map[string][]tooling.Tool
 }
@@ -32,6 +35,13 @@ func NewRegistry() *Registry {
 		serverCfgs:  make(map[string]ServerConfig),
 		serverTools: make(map[string][]tooling.Tool),
 	}
+}
+
+// SetGovernance attaches a live governance snapshot source to the registry.
+func (r *Registry) SetGovernance(governance *settings.Governance) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.governance = governance
 }
 
 // RegisterServer stores or replaces an MCP server configuration.
@@ -46,6 +56,10 @@ func (r *Registry) RegisterServer(cfg ServerConfig) error {
 	}
 	cfg.Transport = strings.TrimSpace(cfg.Transport)
 	cfg.Command = append([]string(nil), cfg.Command...)
+	cfg.Source = normalizeServerSource(cfg.Source)
+	if err := r.validateServerConfig(cfg); err != nil {
+		return err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -106,6 +120,16 @@ func (r *Registry) OnServerDisconnected(serverID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.serverTools, strings.TrimSpace(serverID))
+}
+
+// UnregisterServer removes a server config and any connected tools.
+func (r *Registry) UnregisterServer(serverID string) {
+	serverID = strings.TrimSpace(serverID)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.serverCfgs, serverID)
+	delete(r.serverTools, serverID)
 }
 
 // ListServerTools returns the connected tools for one server.
@@ -223,4 +247,30 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 func cloneServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.Command = append([]string(nil), cfg.Command...)
 	return cfg
+}
+
+func normalizeServerSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "builtin"
+	}
+	return source
+}
+
+func (r *Registry) validateServerConfig(cfg ServerConfig) error {
+	r.mu.RLock()
+	governance := r.governance
+	r.mu.RUnlock()
+
+	if governance == nil {
+		return nil
+	}
+	snapshot := governance.Snapshot()
+	if !snapshot.AllowsSource(settings.SurfaceMCP, cfg.Source) {
+		return fmt.Errorf("mcp: server %q blocked by strictPluginOnlyCustomization for mcp", cfg.ID)
+	}
+	if !snapshot.AllowsMCPServer(cfg.Source, cfg.ID) {
+		return fmt.Errorf("mcp: server %q blocked by allowedMcpServers policy", cfg.ID)
+	}
+	return nil
 }

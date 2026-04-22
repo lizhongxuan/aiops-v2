@@ -353,7 +353,7 @@ type RuntimeContext struct {
 	SessionID           string            `json:"sessionId,omitempty"`
 	HostID              string            `json:"hostId,omitempty"`
 	WorkspaceSessionID  string            `json:"workspaceSessionId,omitempty"`
-	VisibleCapabilities []string          `json:"visibleCapabilities,omitempty"`
+	VisibleTools        []string          `json:"visibleTools,omitempty"`
 	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 

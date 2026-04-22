@@ -2,6 +2,8 @@ package policyengine
 
 import (
 	"strings"
+
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -58,8 +60,9 @@ func isWebSearch(name string) bool {
 // ChatModePolicy implements ModePolicy for chat mode.
 type ChatModePolicy struct{}
 
-// CheckCapability determines whether the given tool is permitted in chat mode.
-func (p *ChatModePolicy) CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision {
+// CheckTool determines whether the given tool is permitted in chat mode.
+func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
+	toolName := normalizeToolName(input)
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
@@ -67,30 +70,15 @@ func (p *ChatModePolicy) CheckCapability(toolName string, toolKind CapabilityKin
 		}
 	}
 
-	if toolKind == KindSkill {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
 	if isWebSearch(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
-	if toolKind == KindTool && isReadOnly(toolName) {
+	if isReadOnly(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
-	if toolKind == KindTool {
-		return PolicyDecision{
-			Action: PolicyActionDeny,
-			Reason: "chat mode only allows read-only tools and web search",
-		}
-	}
-
-	if toolKind == KindUISurface || toolKind == KindModeRule {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
-	if toolKind == KindMCPTool {
+	if isMCPTool(input) {
 		if isReadOnly(toolName) || isWebSearch(toolName) {
 			return PolicyDecision{Action: PolicyActionAllow}
 		}
@@ -100,14 +88,10 @@ func (p *ChatModePolicy) CheckCapability(toolName string, toolKind CapabilityKin
 		}
 	}
 
-	if toolKind == KindWorkspace {
-		return PolicyDecision{
-			Action: PolicyActionDeny,
-			Reason: "chat mode does not allow workspace operations",
-		}
+	return PolicyDecision{
+		Action: PolicyActionDeny,
+		Reason: "chat mode only allows read-only tools and web search",
 	}
-
-	return PolicyDecision{Action: PolicyActionAllow}
 }
 
 // ---------------------------------------------------------------------------
@@ -117,8 +101,9 @@ func (p *ChatModePolicy) CheckCapability(toolName string, toolKind CapabilityKin
 // InspectModePolicy implements ModePolicy for inspect mode.
 type InspectModePolicy struct{}
 
-// CheckCapability determines whether the given tool is permitted in inspect mode.
-func (p *InspectModePolicy) CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision {
+// CheckTool determines whether the given tool is permitted in inspect mode.
+func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
+	toolName := normalizeToolName(input)
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
@@ -126,33 +111,20 @@ func (p *InspectModePolicy) CheckCapability(toolName string, toolKind Capability
 		}
 	}
 
-	if toolKind == KindSkill {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
 	if isReadOnly(toolName) || isWebSearch(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
-	if toolKind == KindUISurface || toolKind == KindModeRule {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
-	if toolKind == KindTool || toolKind == KindMCPTool {
+	if isMCPTool(input) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
 			Reason: "inspect mode only allows read-only and search tools",
 		}
 	}
-
-	if toolKind == KindWorkspace {
-		return PolicyDecision{
-			Action: PolicyActionDeny,
-			Reason: "inspect mode does not allow workspace operations",
-		}
+	return PolicyDecision{
+		Action: PolicyActionDeny,
+		Reason: "inspect mode only allows read-only and search tools",
 	}
-
-	return PolicyDecision{Action: PolicyActionAllow}
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +144,9 @@ func isPlanTool(name string) bool {
 	return containsAny(name, planPatterns)
 }
 
-// CheckCapability determines whether the given tool is permitted in plan mode.
-func (p *PlanModePolicy) CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision {
+// CheckTool determines whether the given tool is permitted in plan mode.
+func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
+	toolName := normalizeToolName(input)
 	if isPlanTool(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
@@ -185,33 +158,20 @@ func (p *PlanModePolicy) CheckCapability(toolName string, toolKind CapabilityKin
 		}
 	}
 
-	if toolKind == KindSkill {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
 	if isReadOnly(toolName) || isWebSearch(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
-	if toolKind == KindUISurface || toolKind == KindModeRule {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
-	if toolKind == KindTool || toolKind == KindMCPTool {
+	if isMCPTool(input) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
 			Reason: "plan mode only allows read-only, search, and plan tools",
 		}
 	}
-
-	if toolKind == KindWorkspace {
-		return PolicyDecision{
-			Action: PolicyActionDeny,
-			Reason: "plan mode does not allow workspace dispatch",
-		}
+	return PolicyDecision{
+		Action: PolicyActionDeny,
+		Reason: "plan mode only allows read-only, search, and plan tools",
 	}
-
-	return PolicyDecision{Action: PolicyActionAllow}
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +181,9 @@ func (p *PlanModePolicy) CheckCapability(toolName string, toolKind CapabilityKin
 // ExecuteModePolicy implements ModePolicy for execute mode.
 type ExecuteModePolicy struct{}
 
-// CheckCapability determines whether the given tool is permitted in execute mode.
-func (p *ExecuteModePolicy) CheckCapability(toolName string, toolKind CapabilityKind) PolicyDecision {
-	_ = toolKind // execute mode doesn't differentiate by kind for mutation
+// CheckTool determines whether the given tool is permitted in execute mode.
+func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
+	toolName := normalizeToolName(input)
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionNeedApproval,
@@ -236,6 +196,18 @@ func (p *ExecuteModePolicy) CheckCapability(toolName string, toolKind Capability
 	}
 
 	return PolicyDecision{Action: PolicyActionAllow}
+}
+
+func normalizeToolName(input PolicyInput) string {
+	name := strings.TrimSpace(input.ToolName)
+	if name != "" {
+		return name
+	}
+	return strings.TrimSpace(input.Tool.Name)
+}
+
+func isMCPTool(input PolicyInput) bool {
+	return input.Tool.HasSource(tooling.ToolSourceMCP) || input.Tool.IsMCP
 }
 
 // ---------------------------------------------------------------------------

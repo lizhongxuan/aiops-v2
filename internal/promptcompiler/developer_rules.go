@@ -3,8 +3,6 @@ package promptcompiler
 import (
 	"fmt"
 	"strings"
-
-	
 )
 
 // ---------------------------------------------------------------------------
@@ -27,9 +25,18 @@ func (c *PromptCompilerImpl) buildDeveloperInstructions(ctx CompileContext) (Dev
 		parts = append(parts, asset)
 	}
 
-	// Append MCP prompt assets
-	for _, asset := range ctx.MCPPromptAssets {
-		parts = append(parts, asset)
+	for _, section := range ctx.ExtraSections {
+		title := strings.TrimSpace(section.Title)
+		content := strings.TrimSpace(section.Content)
+		if title == "" && content == "" {
+			continue
+		}
+		if title != "" {
+			parts = append(parts, fmt.Sprintf("## %s", title))
+		}
+		if content != "" {
+			parts = append(parts, content)
+		}
 	}
 
 	content := strings.Join(parts, "\n")

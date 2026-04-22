@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	"aiops-v2/internal/capability"
+	"aiops-v2/internal/agents"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/tooling"
 )
 
 // ---------------------------------------------------------------------------
@@ -22,12 +24,15 @@ import (
 type mockCompiler struct {
 	compileFunc        func(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error)
 	compileForEino     func(ctx promptcompiler.CompileContext) ([]*schema.Message, error)
+	compileCalls       []promptcompiler.CompileContext
+	compileForEinoCalls []promptcompiler.CompileContext
 	lastCompileCtx     promptcompiler.CompileContext
 	lastCompileForEino promptcompiler.CompileContext
 }
 
 func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
 	m.lastCompileCtx = ctx
+	m.compileCalls = append(m.compileCalls, ctx)
 	if m.compileFunc != nil {
 		return m.compileFunc(ctx)
 	}
@@ -41,6 +46,7 @@ func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompile
 
 func (m *mockCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
 	m.lastCompileForEino = ctx
+	m.compileForEinoCalls = append(m.compileForEinoCalls, ctx)
 	if m.compileForEino != nil {
 		return m.compileForEino(ctx)
 	}
@@ -57,32 +63,72 @@ type mockChatModel struct {
 	model.ChatModel
 }
 
-// mockToolRuntime implements capability.ToolRuntime for testing.
-type mockToolRuntime struct {
-	name string
+type mockTool struct {
+	name        string
+	description string
+	meta tooling.ToolMetadata
+	readOnly    bool
+	sessions    []string
+	modes       []string
 }
 
-func (m *mockToolRuntime) Description() string                        { return "mock tool: " + m.name }
-func (m *mockToolRuntime) CheckPermissions(ctx context.Context) error { return nil }
-func (m *mockToolRuntime) IsReadOnly() bool                           { return true }
-func (m *mockToolRuntime) IsDestructive() bool                        { return false }
-func (m *mockToolRuntime) IsConcurrencySafe() bool                    { return true }
-func (m *mockToolRuntime) Display() capability.ToolDisplayPayload {
-	return capability.ToolDisplayPayload{Type: "text"}
+func (m *mockTool) Metadata() tooling.ToolMetadata {
+	meta := m.meta
+	if meta.Name == "" {
+		meta.Name = m.name
+	}
+	if meta.Description == "" {
+		meta.Description = m.description
+		if meta.Description == "" {
+			meta.Description = "mock tool: " + meta.Name
+		}
+	}
+	return meta
 }
-func (m *mockToolRuntime) InputSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
-func (m *mockToolRuntime) Execute(ctx context.Context, args json.RawMessage) (capability.ToolResult, error) {
-	return capability.ToolResult{Content: "ok"}, nil
+func (m *mockTool) InputSchema() json.RawMessage  { return json.RawMessage(`{"type":"object"}`) }
+func (m *mockTool) OutputSchema() json.RawMessage { return nil }
+func (m *mockTool) Description(json.RawMessage, tooling.DescribeContext) string {
+	return m.Metadata().Description
+}
+func (m *mockTool) Prompt(tooling.PromptContext) string { return m.Metadata().Description }
+func (m *mockTool) IsEnabled(ctx tooling.ToolContext) bool {
+	return matchFactoryToolValue(m.sessions, ctx.SessionType) && matchFactoryToolValue(m.modes, ctx.Mode)
+}
+func (m *mockTool) IsReadOnly(json.RawMessage) bool { return m.readOnly }
+func (m *mockTool) IsDestructive(json.RawMessage) bool {
+	return !m.readOnly
+}
+func (m *mockTool) IsConcurrencySafe(json.RawMessage) bool { return true }
+func (m *mockTool) ValidateInput(context.Context, json.RawMessage) error {
+	return nil
+}
+func (m *mockTool) CheckPermissions(context.Context, json.RawMessage) tooling.PermissionDecision {
+	return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+}
+func (m *mockTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+	return tooling.ToolResult{Content: "ok"}, nil
+}
+
+func matchFactoryToolValue(expected []string, actual string) bool {
+	if len(expected) == 0 {
+		return true
+	}
+	for _, candidate := range expected {
+		if candidate == actual {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
 // Helper to create a test factory with common setup.
 // ---------------------------------------------------------------------------
 
-func newTestFactory(t *testing.T) (*AgentFactory, *capability.Registry) {
-	t.Helper()
+func newTestFactory(tb testing.TB) (*AgentFactory, *tooling.Registry) {
+	tb.Helper()
 
-	registry := capability.NewRegistry()
+	registry := tooling.NewRegistry()
 	compiler := &mockCompiler{}
 	mockModel := &mockChatModel{}
 	providers := map[string]modelrouter.ChatModel{
@@ -95,52 +141,70 @@ func newTestFactory(t *testing.T) (*AgentFactory, *capability.Registry) {
 	return factory, registry
 }
 
-func registerTestTools(t *testing.T, registry *capability.Registry) {
+func registerFactoryTool(t *testing.T, registry *tooling.Registry, tool tooling.Tool) {
+	t.Helper()
+	if err := registry.Register(tool); err != nil {
+		t.Fatalf("register tool %s: %v", tool.Metadata().Name, err)
+	}
+}
+
+func registerTestTools(t *testing.T, registry *tooling.Registry) {
 	t.Helper()
 
 	// Register a few tools visible in host session
-	tools := []capability.Entry{
-		{
-			ID:   "tool-read-file",
-			Name: "read_file",
-			Kind: capability.KindTool,
-			Tool: &mockToolRuntime{name: "read_file"},
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"host", "workspace"},
-				Modes:        []string{"chat", "inspect", "plan", "execute"},
-			},
+	tools := []tooling.Tool{
+		&mockTool{
+			name:     "read_file",
+			readOnly: true,
+			sessions: []string{"host", "workspace"},
+			modes:    []string{"chat", "inspect", "plan", "execute"},
 		},
-		{
-			ID:   "tool-exec-cmd",
-			Name: "exec_command",
-			Kind: capability.KindTool,
-			Tool: &mockToolRuntime{name: "exec_command"},
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"host", "workspace"},
-				Modes:        []string{"execute"},
-			},
+		&mockTool{
+			name:     "exec_command",
+			readOnly: true,
+			sessions: []string{"host", "workspace"},
+			modes:    []string{"execute"},
 		},
-		{
-			ID:   "tool-workspace-dispatch",
-			Name: "workspace_dispatch",
-			Kind: capability.KindWorkspace,
-			Tool: &mockToolRuntime{name: "workspace_dispatch"},
-			Visibility: capability.Visibility{
-				SessionTypes: []string{"workspace"},
-				Modes:        []string{"execute"},
+		&mockTool{
+			name:     "workspace_dispatch",
+			readOnly: true,
+			meta: tooling.ToolMetadata{
+				Origin: tooling.ToolOriginMeta,
 			},
+			sessions: []string{"workspace"},
+			modes:    []string{"execute"},
 		},
 	}
 
-	for _, e := range tools {
-		if err := registry.Register(e); err != nil {
-			t.Fatalf("register tool %s: %v", e.Name, err)
-		}
+	for _, tool := range tools {
+		registerFactoryTool(t, registry, tool)
 	}
 }
 
 func compiledToolCount(ctx promptcompiler.CompileContext) int {
 	return len(ctx.AssembledTools)
+}
+
+func assembledToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, assembled := range tools {
+		names = append(names, assembled.Metadata().Name)
+	}
+	return names
+}
+
+func runtimeToolNames(t *testing.T, tools []tool.BaseTool) []string {
+	t.Helper()
+
+	names := make([]string, 0, len(tools))
+	for _, runtimeTool := range tools {
+		info, err := runtimeTool.Info(context.Background())
+		if err != nil {
+			t.Fatalf("tool info error = %v", err)
+		}
+		names = append(names, info.Name)
+	}
+	return names
 }
 
 // ---------------------------------------------------------------------------
@@ -164,9 +228,6 @@ func TestRegisterDefinition(t *testing.T) {
 		Kind:          AgentKindWorker,
 		Name:          "worker-v1",
 		MaxIterations: 20,
-		CapabilityScope: CapabilityScope{
-			Kinds: []capability.Kind{capability.KindTool, capability.KindMCPTool},
-		},
 	}
 
 	err := factory.RegisterDefinition(def)
@@ -309,6 +370,66 @@ func TestCreateWorkspaceAgent(t *testing.T) {
 	}
 }
 
+func TestCreateHostAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	compiler := factory.compiler.(*mockCompiler)
+
+	cfg, err := factory.CreateHostAgent(context.Background(), "host-1", "execute")
+	if err != nil {
+		t.Fatalf("CreateHostAgent() error = %v", err)
+	}
+
+	got := runtimeToolNames(t, cfg.Tools)
+	want := assembledToolNames(compiler.lastCompileForEino.AssembledTools)
+	if len(got) != len(want) {
+		t.Fatalf("runtime tools len = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("runtime tool[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCreateWorkspaceAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	compiler := factory.compiler.(*mockCompiler)
+
+	wsCfg, err := factory.CreateWorkspaceAgent(context.Background(), "mission-1")
+	if err != nil {
+		t.Fatalf("CreateWorkspaceAgent() error = %v", err)
+	}
+
+	if len(compiler.compileForEinoCalls) != 3 {
+		t.Fatalf("compileForEino calls = %d, want 3", len(compiler.compileForEinoCalls))
+	}
+
+	cases := []struct {
+		name string
+		cfg  AgentConfig
+		ctx  promptcompiler.CompileContext
+	}{
+		{name: "planner", cfg: wsCfg.Planner, ctx: compiler.compileForEinoCalls[0]},
+		{name: "executor", cfg: wsCfg.Executor, ctx: compiler.compileForEinoCalls[1]},
+		{name: "replanner", cfg: wsCfg.Replanner, ctx: compiler.compileForEinoCalls[2]},
+	}
+
+	for _, tc := range cases {
+		got := runtimeToolNames(t, tc.cfg.Tools)
+		want := assembledToolNames(tc.ctx.AssembledTools)
+		if len(got) != len(want) {
+			t.Fatalf("%s runtime tools len = %d, want %d", tc.name, len(got), len(want))
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s runtime tool[%d] = %q, want %q", tc.name, i, got[i], want[i])
+			}
+		}
+	}
+}
+
 func TestCreateWorkspaceAgent_EmptyMissionID(t *testing.T) {
 	factory, _ := newTestFactory(t)
 
@@ -348,6 +469,28 @@ func TestCreateWorkerAgent(t *testing.T) {
 	}
 }
 
+func TestCreateWorkerAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	compiler := factory.compiler.(*mockCompiler)
+
+	cfg, err := factory.CreateWorkerAgent(context.Background(), "host-2", "check disk usage")
+	if err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	got := runtimeToolNames(t, cfg.Tools)
+	want := assembledToolNames(compiler.lastCompileForEino.AssembledTools)
+	if len(got) != len(want) {
+		t.Fatalf("runtime tools len = %d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("runtime tool[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestCreateWorkerAgent_EmptyHostID(t *testing.T) {
 	factory, _ := newTestFactory(t)
 
@@ -357,18 +500,15 @@ func TestCreateWorkerAgent_EmptyHostID(t *testing.T) {
 	}
 }
 
-func TestCreateWorkerAgent_FiltersByCapabilityScope(t *testing.T) {
+func TestCreateWorkerAgent_FiltersByToolAllowlist(t *testing.T) {
 	factory, registry := newTestFactory(t)
 	registerTestTools(t, registry)
 
-	// Register worker definition that only allows KindTool (not KindWorkspace)
 	factory.RegisterDefinition(&AgentDefinition{
 		Kind:          AgentKindWorker,
 		Name:          "restricted-worker",
 		MaxIterations: 10,
-		CapabilityScope: CapabilityScope{
-			Kinds: []capability.Kind{capability.KindTool},
-		},
+		Tools:         []string{"exec_command"},
 	})
 
 	cfg, err := factory.CreateWorkerAgent(context.Background(), "host-3", "task")
@@ -376,12 +516,15 @@ func TestCreateWorkerAgent_FiltersByCapabilityScope(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Worker should only have KindTool tools, not workspace tools
-	for _, t2 := range cfg.Tools {
-		info, _ := t2.Info(context.Background())
-		if info != nil && info.Name == "workspace_dispatch" {
-			t.Error("worker agent should not have workspace_dispatch tool")
-		}
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("worker tools len = %d, want 1", len(cfg.Tools))
+	}
+	info, err := cfg.Tools[0].Info(context.Background())
+	if err != nil {
+		t.Fatalf("tool info error = %v", err)
+	}
+	if info.Name != "exec_command" {
+		t.Fatalf("worker tool name = %q, want exec_command", info.Name)
 	}
 }
 
@@ -420,5 +563,233 @@ func TestCreateWorkspaceAgent_UsesDefinitionMaxIterations(t *testing.T) {
 	}
 	if wsCfg.Planner.MaxIterations != 8 {
 		t.Errorf("expected planner max iterations 8, got %d", wsCfg.Planner.MaxIterations)
+	}
+}
+
+func TestAgentFactory_UsesSharedDefinitionRegistryForHostCreation(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+
+	defRegistry := agents.NewRegistry()
+	if err := defRegistry.Register(agents.Definition{
+		Kind:          string(AgentKindWorker),
+		Name:          "registry-worker",
+		MaxIterations: 37,
+	}); err != nil {
+		t.Fatalf("register shared worker definition: %v", err)
+	}
+	factory.SetDefinitionRegistry(defRegistry)
+
+	cfg, err := factory.CreateHostAgent(context.Background(), "host-1", "execute")
+	if err != nil {
+		t.Fatalf("CreateHostAgent() error = %v", err)
+	}
+	if cfg.MaxIterations != 37 {
+		t.Fatalf("MaxIterations = %d, want 37", cfg.MaxIterations)
+	}
+}
+
+func TestAgentFactory_UsesSharedDefinitionRegistryToolAllowlist(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+
+	registerFactoryTool(t, registry, &mockTool{
+		name:     "service_metrics",
+		readOnly: true,
+		meta: tooling.ToolMetadata{
+			IsMCP: true,
+			MCPInfo: tooling.MCPInfo{
+				ServerID:   "metrics",
+				ServerName: "metrics",
+				ToolName:   "service_metrics",
+			},
+		},
+		sessions: []string{"workspace"},
+		modes:    []string{"execute"},
+	})
+
+	defRegistry := agents.NewRegistry()
+	if err := defRegistry.Register(agents.Definition{
+		Kind:          string(AgentKindWorker),
+		Name:          "registry-worker",
+		MaxIterations: 12,
+		Tools:         []string{"service_metrics"},
+	}); err != nil {
+		t.Fatalf("register shared worker definition: %v", err)
+	}
+	factory.SetDefinitionRegistry(defRegistry)
+
+	cfg, err := factory.CreateWorkerAgent(context.Background(), "host-1", "task")
+	if err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	if len(cfg.Tools) != 1 {
+		t.Fatalf("worker tools len = %d, want 1", len(cfg.Tools))
+	}
+	info, err := cfg.Tools[0].Info(context.Background())
+	if err != nil {
+		t.Fatalf("tool info error = %v", err)
+	}
+	if info.Name != "service_metrics" {
+		t.Fatalf("worker tool name = %q, want service_metrics", info.Name)
+	}
+}
+
+func TestCreateWorkerAgent_PreservesMetadataTraitsWithoutKindMCPTool(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	compiler := factory.compiler.(*mockCompiler)
+
+	registerFactoryTool(t, registry, &mockTool{
+		name:        "read_file",
+		description: "metadata-aware tool",
+		readOnly:    true,
+		meta: tooling.ToolMetadata{
+			Aliases:     []string{"fs_read"},
+			SearchHint:  "filesystem read",
+			ShouldDefer: true,
+			AlwaysLoad:  true,
+			IsMCP:       true,
+			MCPInfo: tooling.MCPInfo{
+				ServerID:   "filesystem",
+				ServerName: "filesystem",
+				ToolName:   "read_file",
+			},
+		},
+		sessions: []string{"workspace"},
+		modes:    []string{"execute"},
+	})
+
+	defRegistry := agents.NewRegistry()
+	if err := defRegistry.Register(agents.Definition{
+		Kind:          string(AgentKindWorker),
+		Name:          "registry-worker",
+		MaxIterations: 12,
+		Tools:         []string{"read_file"},
+	}); err != nil {
+		t.Fatalf("register shared worker definition: %v", err)
+	}
+	factory.SetDefinitionRegistry(defRegistry)
+
+	if _, err := factory.CreateWorkerAgent(context.Background(), "host-1", "task"); err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	}
+	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	if !meta.HasMCPSource() {
+		t.Fatalf("expected MCP traits in worker assembled tool, got %#v", meta)
+	}
+	if meta.MCPInfo.ServerID != "filesystem" {
+		t.Fatalf("worker MCPInfo.ServerID = %q, want filesystem", meta.MCPInfo.ServerID)
+	}
+	if meta.SearchHint != "filesystem read" {
+		t.Fatalf("worker SearchHint = %q, want filesystem read", meta.SearchHint)
+	}
+	if !meta.ShouldDefer || !meta.AlwaysLoad {
+		t.Fatalf("expected defer/load traits to be preserved, got %#v", meta)
+	}
+	if len(meta.Aliases) != 1 || meta.Aliases[0] != "fs_read" {
+		t.Fatalf("worker Aliases = %#v, want [fs_read]", meta.Aliases)
+	}
+}
+
+func TestCreateWorkerAgent_ToolAllowlistKeepsMetadataDrivenMCPTool(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	compiler := factory.compiler.(*mockCompiler)
+
+	registerFactoryTool(t, registry, &mockTool{
+		name:        "read_file",
+		description: "metadata-aware tool",
+		readOnly:    true,
+		meta: tooling.ToolMetadata{
+			IsMCP: true,
+			MCPInfo: tooling.MCPInfo{
+				ServerID:   "filesystem",
+				ServerName: "filesystem",
+				ToolName:   "read_file",
+			},
+		},
+		sessions: []string{"workspace"},
+		modes:    []string{"execute"},
+	})
+
+	defRegistry := agents.NewRegistry()
+	if err := defRegistry.Register(agents.Definition{
+		Kind:          string(AgentKindWorker),
+		Name:          "registry-worker",
+		MaxIterations: 12,
+		Tools:         []string{"read_file"},
+	}); err != nil {
+		t.Fatalf("register shared worker definition: %v", err)
+	}
+	factory.SetDefinitionRegistry(defRegistry)
+
+	if _, err := factory.CreateWorkerAgent(context.Background(), "host-1", "task"); err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	}
+	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	if !meta.HasMCPSource() {
+		t.Fatalf("expected scope to keep metadata-driven MCP tool, got %#v", meta)
+	}
+}
+
+func TestCreateWorkerAgent_PrefersBuiltinOverMetadataDrivenMCPConflict(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	compiler := factory.compiler.(*mockCompiler)
+
+	registerFactoryTool(t, registry, &mockTool{
+		name:        "read_file",
+		description: "builtin tool",
+		readOnly:    true,
+		sessions:    []string{"workspace"},
+		modes:       []string{"execute"},
+	})
+	registerFactoryTool(t, registry, &mockTool{
+		name:        "read_file",
+		description: "metadata-aware tool",
+		readOnly:    true,
+		meta: tooling.ToolMetadata{
+			IsMCP: true,
+			MCPInfo: tooling.MCPInfo{
+				ServerID:   "filesystem",
+				ServerName: "filesystem",
+				ToolName:   "read_file",
+			},
+		},
+		sessions: []string{"workspace"},
+		modes:    []string{"execute"},
+	})
+
+	defRegistry := agents.NewRegistry()
+	if err := defRegistry.Register(agents.Definition{
+		Kind:          string(AgentKindWorker),
+		Name:          "registry-worker",
+		MaxIterations: 12,
+		Tools:         []string{"read_file"},
+	}); err != nil {
+		t.Fatalf("register shared worker definition: %v", err)
+	}
+	factory.SetDefinitionRegistry(defRegistry)
+
+	if _, err := factory.CreateWorkerAgent(context.Background(), "host-1", "task"); err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	}
+	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	if meta.Description != "builtin tool" {
+		t.Fatalf("worker tool description = %q, want builtin tool", meta.Description)
+	}
+	if meta.HasMCPSource() {
+		t.Fatalf("expected builtin tool to win conflict, got %#v", meta)
 	}
 }

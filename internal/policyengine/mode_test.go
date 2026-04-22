@@ -2,11 +2,9 @@ package policyengine
 
 import (
 	"testing"
-)
 
-// ---------------------------------------------------------------------------
-// Helper
-// ---------------------------------------------------------------------------
+	"aiops-v2/internal/tooling"
+)
 
 func assertDecision(t *testing.T, desc string, got PolicyDecision, wantAction PolicyAction) {
 	t.Helper()
@@ -15,31 +13,41 @@ func assertDecision(t *testing.T, desc string, got PolicyDecision, wantAction Po
 	}
 }
 
-// ---------------------------------------------------------------------------
-// ChatModePolicy tests
-// ---------------------------------------------------------------------------
+func toolInput(name string) PolicyInput {
+	return PolicyInput{
+		ToolName: name,
+		Tool:     tooling.ToolMetadata{Name: name},
+	}
+}
+
+func mcpToolInput(name string) PolicyInput {
+	return PolicyInput{
+		ToolName: name,
+		Tool: tooling.ToolMetadata{
+			Name:  name,
+			IsMCP: true,
+		},
+	}
+}
+
+func metadataOnlyInput(name string) PolicyInput {
+	return PolicyInput{
+		Tool: tooling.ToolMetadata{Name: name},
+	}
+}
 
 func TestChatModePolicy_AllowsReadOnlyTools(t *testing.T) {
 	p := &ChatModePolicy{}
 	readOnlyTools := []string{"file_read", "host_list", "search_logs", "get_status", "show_info", "ps_aux", "df_usage", "cat_file"}
 	for _, name := range readOnlyTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "chat/readonly/"+name, d, PolicyActionAllow)
+		assertDecision(t, "chat/readonly/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
 	}
-}
-
-func TestChatModePolicy_AllowsSkills(t *testing.T) {
-	p := &ChatModePolicy{}
-	d := p.CheckCapability("summarize_conversation", KindSkill)
-	assertDecision(t, "chat/skill", d, PolicyActionAllow)
 }
 
 func TestChatModePolicy_AllowsWebSearch(t *testing.T) {
 	p := &ChatModePolicy{}
-	tools := []string{"web_search", "search_web", "web_browse"}
-	for _, name := range tools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "chat/websearch/"+name, d, PolicyActionAllow)
+	for _, name := range []string{"web_search", "search_web", "web_browse"} {
+		assertDecision(t, "chat/websearch/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
 	}
 }
 
@@ -47,207 +55,107 @@ func TestChatModePolicy_DeniesMutation(t *testing.T) {
 	p := &ChatModePolicy{}
 	mutationTools := []string{"file_write", "host_delete", "service_restart", "process_kill", "container_remove", "task_create", "config_update", "command_exec", "script_run", "service_stop"}
 	for _, name := range mutationTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "chat/mutation/"+name, d, PolicyActionDeny)
+		assertDecision(t, "chat/mutation/"+name, p.CheckTool(toolInput(name)), PolicyActionDeny)
 	}
-}
-
-func TestChatModePolicy_DeniesWorkspace(t *testing.T) {
-	p := &ChatModePolicy{}
-	d := p.CheckCapability("workspace_dispatch", KindWorkspace)
-	assertDecision(t, "chat/workspace", d, PolicyActionDeny)
 }
 
 func TestChatModePolicy_DeniesUnknownTool(t *testing.T) {
 	p := &ChatModePolicy{}
-	d := p.CheckCapability("mysterious_tool", KindTool)
-	assertDecision(t, "chat/unknown", d, PolicyActionDeny)
+	assertDecision(t, "chat/unknown", p.CheckTool(toolInput("mysterious_tool")), PolicyActionDeny)
+	assertDecision(t, "chat/ui_surface_name", p.CheckTool(toolInput("dashboard_panel")), PolicyActionDeny)
+	assertDecision(t, "chat/workspace_name", p.CheckTool(toolInput("workspace_dispatch")), PolicyActionDeny)
 }
 
-func TestChatModePolicy_AllowsUISurface(t *testing.T) {
+func TestChatModePolicy_UsesMCPMetadata(t *testing.T) {
 	p := &ChatModePolicy{}
-	d := p.CheckCapability("dashboard_panel", KindUISurface)
-	assertDecision(t, "chat/ui_surface", d, PolicyActionAllow)
+	assertDecision(t, "chat/mcp_readonly", p.CheckTool(mcpToolInput("coroot.list_services")), PolicyActionAllow)
+	assertDecision(t, "chat/mcp_mutation", p.CheckTool(mcpToolInput("coroot.file_write")), PolicyActionDeny)
 }
 
-func TestChatModePolicy_DeniesMCPMutation(t *testing.T) {
-	p := &ChatModePolicy{}
-	d := p.CheckCapability("mcp_file_write", KindMCPTool)
-	assertDecision(t, "chat/mcp_mutation", d, PolicyActionDeny)
-}
-
-func TestChatModePolicy_AllowsMCPReadOnly(t *testing.T) {
-	p := &ChatModePolicy{}
-	d := p.CheckCapability("mcp_list_services", KindMCPTool)
-	assertDecision(t, "chat/mcp_readonly", d, PolicyActionAllow)
-}
-
-// ---------------------------------------------------------------------------
-// InspectModePolicy tests
-// ---------------------------------------------------------------------------
-
-func TestInspectModePolicy_AllowsReadOnlyTools(t *testing.T) {
+func TestInspectModePolicy_AllowsReadOnlyAndWebSearch(t *testing.T) {
 	p := &InspectModePolicy{}
-	readOnlyTools := []string{"file_read", "host_list", "search_logs", "get_metrics", "show_config", "status_check", "ls_dir", "cat_file", "head_file", "tail_log"}
-	for _, name := range readOnlyTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "inspect/readonly/"+name, d, PolicyActionAllow)
+	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "show_config", "status_check", "ls_dir", "cat_file", "head_file", "tail_log", "web_search"} {
+		assertDecision(t, "inspect/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
 	}
 }
 
-func TestInspectModePolicy_AllowsWebSearch(t *testing.T) {
+func TestInspectModePolicy_DeniesMutationAndUnknown(t *testing.T) {
 	p := &InspectModePolicy{}
-	d := p.CheckCapability("web_search", KindTool)
-	assertDecision(t, "inspect/websearch", d, PolicyActionAllow)
-}
-
-func TestInspectModePolicy_DeniesMutation(t *testing.T) {
-	p := &InspectModePolicy{}
-	mutationTools := []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec"}
-	for _, name := range mutationTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "inspect/mutation/"+name, d, PolicyActionDeny)
+	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec", "analyze_logs", "workspace_dispatch", "mysterious_tool"} {
+		assertDecision(t, "inspect/"+name, p.CheckTool(toolInput(name)), PolicyActionDeny)
 	}
 }
 
-func TestInspectModePolicy_AllowsSkills(t *testing.T) {
-	p := &InspectModePolicy{}
-	d := p.CheckCapability("analyze_logs", KindSkill)
-	assertDecision(t, "inspect/skill", d, PolicyActionAllow)
-}
-
-func TestInspectModePolicy_DeniesWorkspace(t *testing.T) {
-	p := &InspectModePolicy{}
-	d := p.CheckCapability("workspace_dispatch", KindWorkspace)
-	assertDecision(t, "inspect/workspace", d, PolicyActionDeny)
-}
-
-func TestInspectModePolicy_DeniesUnknownTool(t *testing.T) {
-	p := &InspectModePolicy{}
-	d := p.CheckCapability("mysterious_tool", KindTool)
-	assertDecision(t, "inspect/unknown", d, PolicyActionDeny)
-}
-
-// ---------------------------------------------------------------------------
-// PlanModePolicy tests
-// ---------------------------------------------------------------------------
-
-func TestPlanModePolicy_AllowsReadOnlyTools(t *testing.T) {
+func TestPlanModePolicy_AllowsReadOnlySearchAndPlanTools(t *testing.T) {
 	p := &PlanModePolicy{}
-	readOnlyTools := []string{"file_read", "host_list", "search_logs", "get_metrics"}
-	for _, name := range readOnlyTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "plan/readonly/"+name, d, PolicyActionAllow)
+	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "web_search", "create_plan", "draft_proposal", "propose_changes", "schedule_task", "preview_changes"} {
+		assertDecision(t, "plan/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
 	}
 }
 
-func TestPlanModePolicy_AllowsPlanTools(t *testing.T) {
+func TestPlanModePolicy_DeniesMutationAndUnknown(t *testing.T) {
 	p := &PlanModePolicy{}
-	planTools := []string{"create_plan", "draft_proposal", "propose_changes", "schedule_task", "preview_changes"}
-	for _, name := range planTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "plan/plan_tool/"+name, d, PolicyActionAllow)
+	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec", "summarize", "workspace_dispatch", "mysterious_tool"} {
+		assertDecision(t, "plan/"+name, p.CheckTool(toolInput(name)), PolicyActionDeny)
 	}
 }
 
-func TestPlanModePolicy_DeniesMutation(t *testing.T) {
-	p := &PlanModePolicy{}
-	mutationTools := []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec"}
-	for _, name := range mutationTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "plan/mutation/"+name, d, PolicyActionDeny)
-	}
-}
-
-func TestPlanModePolicy_AllowsWebSearch(t *testing.T) {
-	p := &PlanModePolicy{}
-	d := p.CheckCapability("web_search", KindTool)
-	assertDecision(t, "plan/websearch", d, PolicyActionAllow)
-}
-
-func TestPlanModePolicy_AllowsSkills(t *testing.T) {
-	p := &PlanModePolicy{}
-	d := p.CheckCapability("summarize", KindSkill)
-	assertDecision(t, "plan/skill", d, PolicyActionAllow)
-}
-
-func TestPlanModePolicy_DeniesWorkspace(t *testing.T) {
-	p := &PlanModePolicy{}
-	d := p.CheckCapability("workspace_dispatch", KindWorkspace)
-	assertDecision(t, "plan/workspace", d, PolicyActionDeny)
-}
-
-func TestPlanModePolicy_DeniesUnknownTool(t *testing.T) {
-	p := &PlanModePolicy{}
-	d := p.CheckCapability("mysterious_tool", KindTool)
-	assertDecision(t, "plan/unknown", d, PolicyActionDeny)
-}
-
-// ---------------------------------------------------------------------------
-// ExecuteModePolicy tests
-// ---------------------------------------------------------------------------
-
-func TestExecuteModePolicy_AllowsReadOnlyTools(t *testing.T) {
+func TestExecuteModePolicy_AllowsNonMutationTools(t *testing.T) {
 	p := &ExecuteModePolicy{}
-	readOnlyTools := []string{"file_read", "host_list", "search_logs", "get_metrics"}
-	for _, name := range readOnlyTools {
-		d := p.CheckCapability(name, KindTool)
-		assertDecision(t, "execute/readonly/"+name, d, PolicyActionAllow)
+	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "web_search", "summarize", "workspace_dispatch", "draft_proposal", "mysterious_tool"} {
+		assertDecision(t, "execute/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
 	}
 }
 
 func TestExecuteModePolicy_MutationNeedsApproval(t *testing.T) {
 	p := &ExecuteModePolicy{}
-	mutationTools := []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec"}
-	for _, name := range mutationTools {
-		d := p.CheckCapability(name, KindTool)
+	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec"} {
+		d := p.CheckTool(toolInput(name))
 		assertDecision(t, "execute/mutation/"+name, d, PolicyActionNeedApproval)
 		if d.Approval == nil {
-			t.Errorf("execute/mutation/%s: expected non-nil Approval", name)
-		} else if d.Approval.ToolName != name {
-			t.Errorf("execute/mutation/%s: approval.ToolName = %q, want %q", name, d.Approval.ToolName, name)
+			t.Fatalf("execute/mutation/%s: expected non-nil Approval", name)
+		}
+		if d.Approval.ToolName != name {
+			t.Fatalf("execute/mutation/%s: approval.ToolName = %q, want %q", name, d.Approval.ToolName, name)
 		}
 	}
 }
 
-func TestExecuteModePolicy_AllowsWebSearch(t *testing.T) {
-	p := &ExecuteModePolicy{}
-	d := p.CheckCapability("web_search", KindTool)
-	assertDecision(t, "execute/websearch", d, PolicyActionAllow)
+func TestModePoliciesUseMetadataNameWhenToolNameEmpty(t *testing.T) {
+	tests := []struct {
+		name   string
+		policy ModePolicy
+	}{
+		{name: "chat", policy: &ChatModePolicy{}},
+		{name: "inspect", policy: &InspectModePolicy{}},
+		{name: "plan", policy: &PlanModePolicy{}},
+		{name: "execute", policy: &ExecuteModePolicy{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertDecision(t, tc.name+"/metadata_only_read", tc.policy.CheckTool(metadataOnlyInput("file_read")), PolicyActionAllow)
+		})
+	}
 }
 
-func TestExecuteModePolicy_AllowsSkills(t *testing.T) {
-	p := &ExecuteModePolicy{}
-	d := p.CheckCapability("summarize", KindSkill)
-	assertDecision(t, "execute/skill", d, PolicyActionAllow)
-}
+func TestEngineCheckToolCallUsesMCPMetadata(t *testing.T) {
+	engine := &Engine{
+		ModePolicy: NewDefaultModePolicies(),
+	}
 
-func TestExecuteModePolicy_AllowsWorkspace(t *testing.T) {
-	p := &ExecuteModePolicy{}
-	d := p.CheckCapability("workspace_dispatch", KindWorkspace)
-	assertDecision(t, "execute/workspace", d, PolicyActionAllow)
-}
+	decision := engine.CheckToolCall(t.Context(), PolicyInput{
+		ToolName: "coroot.file_write",
+		Tool:     tooling.ToolMetadata{Name: "coroot.file_write", IsMCP: true},
+		Mode:     ModeChat,
+	})
 
-func TestExecuteModePolicy_AllowsPlanTools(t *testing.T) {
-	p := &ExecuteModePolicy{}
-	// "draft_proposal" is a plan tool that doesn't match mutation patterns.
-	d := p.CheckCapability("draft_proposal", KindTool)
-	assertDecision(t, "execute/plan", d, PolicyActionAllow)
+	assertDecision(t, "engine/chat/mcp_metadata_mutation", decision, PolicyActionDeny)
 }
-
-// ---------------------------------------------------------------------------
-// NewDefaultModePolicies tests
-// ---------------------------------------------------------------------------
 
 func TestNewDefaultModePolicies_ReturnsAllFourModes(t *testing.T) {
 	policies := NewDefaultModePolicies()
-
-	expectedModes := []Mode{
-		ModeChat,
-		ModeInspect,
-		ModePlan,
-		ModeExecute,
-	}
+	expectedModes := []Mode{ModeChat, ModeInspect, ModePlan, ModeExecute}
 
 	for _, mode := range expectedModes {
 		if _, ok := policies[mode]; !ok {
@@ -276,10 +184,6 @@ func TestNewDefaultModePolicies_CorrectTypes(t *testing.T) {
 		t.Error("execute mode policy is not *ExecuteModePolicy")
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Helper function tests
-// ---------------------------------------------------------------------------
 
 func TestIsReadOnly(t *testing.T) {
 	cases := []struct {
@@ -349,6 +253,25 @@ func TestIsWebSearch(t *testing.T) {
 	for _, tc := range cases {
 		if got := isWebSearch(tc.name); got != tc.want {
 			t.Errorf("isWebSearch(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestIsPlanTool(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"create_plan", true},
+		{"draft_proposal", true},
+		{"propose_changes", true},
+		{"schedule_task", true},
+		{"preview_changes", true},
+		{"file_read", false},
+	}
+	for _, tc := range cases {
+		if got := isPlanTool(tc.name); got != tc.want {
+			t.Errorf("isPlanTool(%q) = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

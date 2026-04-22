@@ -52,7 +52,12 @@ func loadSkillFile(path string) (Definition, error) {
 	}
 
 	content := strings.TrimSpace(string(data))
-	def := Definition{Source: path}
+	loadedFrom := normalizeLoadedFrom(path)
+	def := Definition{
+		Source:     inferSkillSource(loadedFrom),
+		LoadedFrom: loadedFrom,
+		FileID:     ResolveFileIdentity(loadedFrom),
+	}
 
 	meta, body := parseFrontmatter(content)
 	if meta.name != "" {

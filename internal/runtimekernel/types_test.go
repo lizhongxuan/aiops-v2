@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -236,6 +237,26 @@ func TestRuntimeContext_Validate(t *testing.T) {
 	badMode := RuntimeContext{SessionType: SessionTypeWorkspace, Mode: "x"}
 	if err := badMode.Validate(); err == nil {
 		t.Error("RuntimeContext with invalid mode should fail")
+	}
+}
+
+func TestRuntimeContext_JSONUsesVisibleTools(t *testing.T) {
+	ctx := RuntimeContext{
+		SessionType:  SessionTypeHost,
+		Mode:         ModeInspect,
+		VisibleTools: []string{"read_file"},
+	}
+
+	data, err := json.Marshal(ctx)
+	if err != nil {
+		t.Fatalf("json.Marshal(RuntimeContext) error = %v", err)
+	}
+
+	if strings.Contains(string(data), "visibleCapabilities") {
+		t.Fatalf("runtime context JSON should not contain legacy visibleCapabilities field: %s", data)
+	}
+	if !strings.Contains(string(data), `"visibleTools":["read_file"]`) {
+		t.Fatalf("runtime context JSON = %s, want visibleTools field", data)
 	}
 }
 
