@@ -1,0 +1,112 @@
+version: v0.1
+name: pg-restore
+inventory:
+  hosts:
+    host1:
+      address: "http://127.0.0.1:7072"
+    host2:
+      address: "http://127.0.0.1:7073"
+    host3:
+      address: "http://127.0.0.1:7074"
+vars:
+  pg_data: "/var/lib/postgresql/15/main"
+  backup_path: "/data/pgbackups/full.tar.gz"
+  restore_path: "/data/restore"
+  pg_service: "postgresql"
+  pgbackrest_stanza: "demo"
+steps:
+  - name: check backup exists
+    targets: [host1]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        test -f "${backup_path}"
+        echo "BOPS_EXPORT:BACKUP_OK=true"
+
+  - name: copy backup to host2
+    targets: [host1]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        scp "${backup_path}" host2:${backup_path}
+        echo "BOPS_EXPORT:COPY_DONE=true"
+
+  - name: wait copy done
+    targets: [host2]
+    action: cmd.run
+    args:
+      cmd: |
+        while [ ! -f "${backup_path}" ]; do sleep 3; done
+
+  - name: extract backup
+    targets: [host2]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        mkdir -p "${restore_path}"
+        tar -xzf "${backup_path}" -C "${restore_path}"
+        echo "BOPS_EXPORT:EXTRACT_DONE=true"
+
+  - name: wait extract done
+    targets: [host2]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        test -d "${restore_path}" && echo "BOPS_EXPORT:READY=true"
+
+  - name: stop postgres
+    targets: [host2]
+    action: cmd.run
+    args:
+      cmd: |
+        systemctl stop "${pg_service}"
+
+  - name: move old data dir
+    targets: [host2]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        ts=$(date +%Y%m%d%H%M%S)
+        mv "${pg_data}" "${pg_data}_bak_${ts}"
+        echo "BOPS_EXPORT:DATA_BAK=${pg_data}_bak_${ts}"
+
+  - name: restore by pgbackrest
+    targets: [host2]
+    action: cmd.run
+    args:
+      cmd: |
+        pgbackrest --stanza=${pgbackrest_stanza} --delta restore
+
+  - name: wait restore done
+    targets: [host2]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        test -d "${pg_data}" && echo "BOPS_EXPORT:RESTORE_OK=true"
+
+  - name: start postgres
+    targets: [host2]
+    action: cmd.run
+    args:
+      cmd: |
+        systemctl start "${pg_service}"
+
+  - name: wait pg ready
+    targets: [host2]
+    action: cmd.run
+    args:
+      cmd: |
+        until pg_isready -q; do sleep 2; done
+
+  - name: write success to db
+    targets: [host3]
+    action: cmd.run
+    args:
+      cmd: |
+        echo "restore_success" >> /tmp/pg-restore.log

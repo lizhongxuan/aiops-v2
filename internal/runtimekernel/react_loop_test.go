@@ -361,6 +361,76 @@ func TestRunTurn_ExecutesMultiIterationToolLoop(t *testing.T) {
 	}
 }
 
+func TestRunTurn_EmitsTurnEventLifecycleForReactLoop(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-events",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_disk_usage",
+						Arguments: `{"path":"/tmp/events"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("final event answer", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_disk_usage",
+			Description: "Inspect disk usage",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "ok"}, nil
+		},
+	}
+
+	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+	if err := kernel.tools.(*testMockToolAssemblySource).registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-events",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-events",
+		Input:       "inspect event order",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	eventTypes := make([]EventType, 0, len(emitter.events))
+	for _, event := range emitter.events {
+		eventTypes = append(eventTypes, event.Type)
+	}
+	wantOrdered := []EventType{
+		EventTurnStarted,
+		EventToolStarted,
+		EventToolCompleted,
+		EventPhaseEnd,
+		EventProcessSummary,
+		EventAssistantFinalDelta,
+		EventTurnComplete,
+	}
+	cursor := 0
+	for _, eventType := range eventTypes {
+		if cursor < len(wantOrdered) && eventType == wantOrdered[cursor] {
+			cursor++
+		}
+	}
+	if cursor != len(wantOrdered) {
+		t.Fatalf("event order = %v, want subsequence %v", eventTypes, wantOrdered)
+	}
+}
+
 func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -424,6 +494,20 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if len(session.PendingApprovals) != 1 {
 		t.Fatalf("pending approvals = %d, want 1", len(session.PendingApprovals))
 	}
+	emitter, ok := kernel.projector.(*testMockEventEmitter)
+	if !ok {
+		t.Fatal("expected testMockEventEmitter projector")
+	}
+	foundApprovalNeeded := false
+	for _, event := range emitter.events {
+		if event.Type == EventApprovalNeeded {
+			foundApprovalNeeded = true
+			break
+		}
+	}
+	if !foundApprovalNeeded {
+		t.Fatal("expected approval-needed projection event when turn blocks")
+	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID: "sess-approval",
@@ -451,6 +535,111 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 	if len(session.PendingApprovals) != 0 {
 		t.Fatalf("pending approvals after resume = %d, want 0", len(session.PendingApprovals))
+	}
+}
+
+func TestResumeTurn_WithResumeMetadataContinuesSharedLoop(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("choice applied", nil),
+		},
+	}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	now := time.Now().UTC()
+
+	session := kernel.sessions.GetOrCreate("sess-choice", SessionTypeWorkspace, ModeExecute)
+	session.Messages = []Message{
+		{ID: "msg-assistant", Role: "assistant", Content: "请选择下一步。", Timestamp: now},
+	}
+	checkpoint := &CheckpointMetadata{
+		ID:          "choice-1",
+		SessionID:   session.ID,
+		TurnID:      "turn-choice",
+		Iteration:   0,
+		Sequence:    1,
+		Kind:        "choice_needed",
+		Lifecycle:   TurnLifecycleResumable,
+		ResumeState: TurnResumeStateResumable,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	session.CurrentTurn = &TurnSnapshot{
+		ID:               "turn-choice",
+		SessionID:        session.ID,
+		SessionType:      session.Type,
+		Mode:             session.Mode,
+		Lifecycle:        TurnLifecycleResumable,
+		ResumeState:      TurnResumeStateResumable,
+		Iteration:        0,
+		StartedAt:        now,
+		UpdatedAt:        now,
+		LatestCheckpoint: checkpoint,
+		Iterations: []IterationState{
+			{
+				ID:          "turn-choice-iter-0",
+				SessionID:   session.ID,
+				TurnID:      "turn-choice",
+				Iteration:   0,
+				Lifecycle:   TurnLifecycleResumable,
+				ResumeState: TurnResumeStateResumable,
+				Checkpoint:  checkpoint,
+				StartedAt:   now,
+				UpdatedAt:   now,
+			},
+		},
+	}
+	kernel.sessions.Update(session)
+
+	result, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:    session.ID,
+		TurnID:       "turn-choice",
+		CheckpointID: "choice-1",
+		ResumeState:  TurnResumeStateResumable,
+		Metadata: map[string]string{
+			"choice.requestId": "choice-1",
+			"choice.answer.0":  "Continue with verification",
+			"resume.input":     "Continue with verification",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("resume status = %q, want completed", result.Status)
+	}
+	if len(model.inputs) == 0 {
+		t.Fatal("expected resume to call shared iteration loop")
+	}
+	lastInput := model.inputs[len(model.inputs)-1]
+	foundResumeMessage := false
+	for _, msg := range lastInput {
+		if msg == nil {
+			continue
+		}
+		if msg.Role == schema.User && strings.Contains(msg.Content, "Continue with verification") {
+			foundResumeMessage = true
+			break
+		}
+	}
+	if !foundResumeMessage {
+		t.Fatalf("model input did not include resume message: %+v", lastInput)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected resumed current turn snapshot")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle after resume = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	foundUserMessage := false
+	for _, msg := range session.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Content, "Continue with verification") {
+			foundUserMessage = true
+			break
+		}
+	}
+	if !foundUserMessage {
+		t.Fatalf("session messages did not record resume input: %+v", session.Messages)
 	}
 }
 

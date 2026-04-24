@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"aiops-v2/internal/appui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/server"
 )
@@ -68,17 +69,17 @@ func (m *mockKernel) CancelTurn(ctx context.Context, req runtimekernel.CancelReq
 // TestChatMessageEndpoint verifies POST /api/v1/chat/message JSON structure.
 func TestChatMessageEndpoint(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
 	tests := []struct {
-		name           string
-		body           server.ChatMessageRequest
-		wantStatus     int
-		wantSessionID  bool
-		wantTurnID     bool
-		wantOutputKey  bool
+		name          string
+		body          server.ChatMessageRequest
+		wantStatus    int
+		wantSessionID bool
+		wantTurnID    bool
+		wantOutputKey bool
 	}{
 		{
 			name: "host chat message",
@@ -162,7 +163,7 @@ func TestChatMessageEndpoint(t *testing.T) {
 // TestChatMessageMethodNotAllowed verifies only POST is accepted.
 func TestChatMessageMethodNotAllowed(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -186,7 +187,7 @@ func TestChatMessageMethodNotAllowed(t *testing.T) {
 // TestChatMessageInvalidBody verifies error response for malformed JSON.
 func TestChatMessageInvalidBody(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -212,7 +213,7 @@ func TestChatMessageInvalidBody(t *testing.T) {
 // TestStateEndpoint verifies GET /api/v1/state JSON structure.
 func TestStateEndpoint(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -231,19 +232,22 @@ func TestStateEndpoint(t *testing.T) {
 		t.Fatalf("failed to decode state: %v", err)
 	}
 
-	// Verify expected keys exist
-	if _, ok := state["sessions"]; !ok {
-		t.Error("expected 'sessions' key in state response")
+	// Verify expected snapshot keys exist
+	if _, ok := state["kind"]; !ok {
+		t.Error("expected 'kind' key in state response")
 	}
-	if _, ok := state["status"]; !ok {
-		t.Error("expected 'status' key in state response")
+	if _, ok := state["selectedHostId"]; !ok {
+		t.Error("expected 'selectedHostId' key in state response")
+	}
+	if _, ok := state["runtime"]; !ok {
+		t.Error("expected 'runtime' key in state response")
 	}
 }
 
 // TestResumeTurnEndpoint verifies POST /api/v1/turn/resume JSON structure.
 func TestResumeTurnEndpoint(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
@@ -281,7 +285,7 @@ func TestResumeTurnEndpoint(t *testing.T) {
 // TestCancelTurnEndpoint verifies POST /api/v1/turn/cancel JSON structure.
 func TestCancelTurnEndpoint(t *testing.T) {
 	kernel := &mockKernel{}
-	srv := server.NewHTTPServer(kernel)
+	srv := server.NewHTTPServer(appui.NewServices(kernel, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 

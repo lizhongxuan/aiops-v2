@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -216,12 +217,14 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	defer func() {
 		if r := recover(); r != nil {
 			result = TurnResult{
-				SessionType: req.SessionType,
-				Mode:        req.Mode,
-				SessionID:   req.SessionID,
-				TurnID:      req.TurnID,
-				Status:      "error",
-				Error:       fmt.Sprintf("panic recovered: %v", r),
+				SessionType:     req.SessionType,
+				Mode:            req.Mode,
+				SessionID:       req.SessionID,
+				TurnID:          req.TurnID,
+				ClientTurnID:    req.ClientTurnID,
+				ClientMessageID: req.ClientMessageID,
+				Status:          "error",
+				Error:           fmt.Sprintf("panic recovered: %v", r),
 			}
 			err = nil
 		}
@@ -246,6 +249,17 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 
 	// Step 1: Get/create session
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	if hostID := strings.TrimSpace(req.HostID); hostID != "" {
+		session.HostID = hostID
+		req.HostID = hostID
+	} else if hostID := strings.TrimSpace(session.HostID); hostID != "" {
+		req.HostID = hostID
+	}
+	k.emitRuntimeEvent(EventTurnStarted, session.ID, turnID, map[string]any{
+		"clientTurnId":    req.ClientTurnID,
+		"clientMessageId": req.ClientMessageID,
+		"hostId":          req.HostID,
+	})
 	preTurnEvent, err := k.runTurnHook(ctx, hooks.StagePreTurn, session, req, turnID, "", nil)
 	if err != nil {
 		if k.spanSource != nil && turnSpanID != "" {
@@ -259,11 +273,17 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 
 	// Step 2: Assemble context (add user message, trim if needed)
 	if req.Input != "" {
+		messageID := strings.TrimSpace(req.ClientMessageID)
+		if messageID == "" {
+			messageID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
+		}
 		msg := Message{
-			ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
-			Role:      "user",
-			Content:   req.Input,
-			Timestamp: time.Now(),
+			ID:              messageID,
+			ClientMessageID: req.ClientMessageID,
+			ClientTurnID:    req.ClientTurnID,
+			Role:            "user",
+			Content:         req.Input,
+			Timestamp:       time.Now(),
 		}
 		session.Messages = append(session.Messages, msg)
 	}
@@ -325,12 +345,14 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 				k.spanSource.FailSpan(turnSpanID, "blocked: "+decision.Reason)
 			}
 			return TurnResult{
-				SessionType: req.SessionType,
-				Mode:        req.Mode,
-				SessionID:   session.ID,
-				TurnID:      turnID,
-				Status:      "blocked",
-				Error:       decision.Reason,
+				SessionType:     req.SessionType,
+				Mode:            req.Mode,
+				SessionID:       session.ID,
+				TurnID:          turnID,
+				ClientTurnID:    req.ClientTurnID,
+				ClientMessageID: req.ClientMessageID,
+				Status:          "blocked",
+				Error:           decision.Reason,
 			}, nil
 		}
 	}
@@ -351,12 +373,14 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	}
 
 	return TurnResult{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		SessionID:   session.ID,
-		TurnID:      turnID,
-		Status:      "completed",
-		Output:      agentOutput,
+		SessionType:     req.SessionType,
+		Mode:            req.Mode,
+		SessionID:       session.ID,
+		TurnID:          turnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		Status:          "completed",
+		Output:          agentOutput,
 	}, nil
 }
 
@@ -393,13 +417,29 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		session.PendingApprovals = nil
 		session.PendingEvidence = nil
 		k.persistTurnSnapshot(session, snapshot)
+		if k.projector != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"id":       req.ApprovalID,
+				"decision": req.Decision,
+				"status":   "denied",
+			})
+			k.projector.Emit(LifecycleEvent{
+				Type:      EventApprovalDecided,
+				SessionID: session.ID,
+				TurnID:    req.TurnID,
+				Timestamp: now,
+				Payload:   payload,
+			})
+		}
 		return TurnResult{
-			SessionType: session.Type,
-			Mode:        session.Mode,
-			SessionID:   session.ID,
-			TurnID:      req.TurnID,
-			Status:      "blocked",
-			Error:       "approval denied",
+			SessionType:     session.Type,
+			Mode:            session.Mode,
+			SessionID:       session.ID,
+			TurnID:          req.TurnID,
+			ClientTurnID:    snapshot.ClientTurnID,
+			ClientMessageID: snapshot.ClientMessageID,
+			Status:          "blocked",
+			Error:           "approval denied",
 		}, nil
 	}
 
@@ -412,15 +452,26 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
 	}
 
-	resumeReq := TurnRequest{
-		SessionType: session.Type,
-		Mode:        session.Mode,
-		SessionID:   session.ID,
-		TurnID:      req.TurnID,
-		HostID:      session.HostID,
+	resumeInput := resumeInputFromMetadata(req.Metadata)
+	if resumeInput != "" {
+		appendResumeInputMessage(session, resumeInput)
+		k.markSnapshotResuming(session, snapshot, "resume_user_input")
+	} else if _, ok := pendingToolCall(snapshot); ok {
+		if err := k.resumePendingToolCall(ctx, session, snapshot); err != nil {
+			return TurnResult{}, err
+		}
+	} else {
+		k.markSnapshotResuming(session, snapshot, "resume_checkpoint")
 	}
-	if err := k.resumePendingToolCall(ctx, session, snapshot); err != nil {
-		return TurnResult{}, err
+
+	resumeReq := TurnRequest{
+		SessionType:     session.Type,
+		Mode:            session.Mode,
+		SessionID:       session.ID,
+		TurnID:          req.TurnID,
+		ClientTurnID:    snapshot.ClientTurnID,
+		ClientMessageID: snapshot.ClientMessageID,
+		HostID:          session.HostID,
 	}
 	agentOutput, blocked, runErr := k.runHostIterationLoop(ctx, chatModel, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
@@ -430,12 +481,14 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		return *blocked, nil
 	}
 	return TurnResult{
-		SessionType: session.Type,
-		Mode:        session.Mode,
-		SessionID:   session.ID,
-		TurnID:      req.TurnID,
-		Status:      "completed",
-		Output:      agentOutput,
+		SessionType:     session.Type,
+		Mode:            session.Mode,
+		SessionID:       session.ID,
+		TurnID:          req.TurnID,
+		ClientTurnID:    snapshot.ClientTurnID,
+		ClientMessageID: snapshot.ClientMessageID,
+		Status:          "completed",
+		Output:          agentOutput,
 	}, nil
 }
 
@@ -454,13 +507,44 @@ func (k *EinoKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResul
 		return TurnResult{}, fmt.Errorf("session %q not found", req.SessionID)
 	}
 
-	// In production, this would cancel the adk.Runner context.
+	var clientTurnID, clientMessageID string
+	if snapshot := session.CurrentTurn; snapshot != nil && snapshot.ID == req.TurnID {
+		clientTurnID = snapshot.ClientTurnID
+		clientMessageID = snapshot.ClientMessageID
+		now := time.Now()
+		snapshot.Lifecycle = TurnLifecycleCanceled
+		snapshot.ResumeState = TurnResumeStateNone
+		snapshot.Error = req.Reason
+		snapshot.UpdatedAt = now
+		snapshot.CompletedAt = &now
+		snapshot.PendingApprovals = nil
+		snapshot.PendingEvidence = nil
+		if snapshot.LatestCheckpoint != nil {
+			snapshot.LatestCheckpoint.Lifecycle = TurnLifecycleCanceled
+			snapshot.LatestCheckpoint.ResumeState = TurnResumeStateNone
+			snapshot.LatestCheckpoint.UpdatedAt = now
+		}
+		session.PendingApprovals = nil
+		session.PendingEvidence = nil
+		k.persistTurnSnapshot(session, snapshot)
+		if k.projector != nil {
+			k.projector.Emit(LifecycleEvent{
+				Type:      EventTurnComplete,
+				SessionID: session.ID,
+				TurnID:    req.TurnID,
+				Timestamp: now,
+			})
+		}
+	}
+
 	return TurnResult{
-		SessionType: session.Type,
-		Mode:        session.Mode,
-		SessionID:   session.ID,
-		TurnID:      req.TurnID,
-		Status:      "cancelled",
+		SessionType:     session.Type,
+		Mode:            session.Mode,
+		SessionID:       session.ID,
+		TurnID:          req.TurnID,
+		ClientTurnID:    clientTurnID,
+		ClientMessageID: clientMessageID,
+		Status:          "cancelled",
 	}, nil
 }
 
@@ -470,12 +554,14 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	defer func() {
 		if r := recover(); r != nil {
 			result = TurnResult{
-				SessionType: req.SessionType,
-				Mode:        req.Mode,
-				SessionID:   req.SessionID,
-				TurnID:      req.TurnID,
-				Status:      "error",
-				Error:       fmt.Sprintf("panic recovered: %v", r),
+				SessionType:     req.SessionType,
+				Mode:            req.Mode,
+				SessionID:       req.SessionID,
+				TurnID:          req.TurnID,
+				ClientTurnID:    req.ClientTurnID,
+				ClientMessageID: req.ClientMessageID,
+				Status:          "error",
+				Error:           fmt.Sprintf("panic recovered: %v", r),
 			}
 			err = nil
 		}
@@ -501,11 +587,17 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 		req.Input = preTurnEvent.UpdatedInput
 	}
 	if req.Input != "" {
+		messageID := strings.TrimSpace(req.ClientMessageID)
+		if messageID == "" {
+			messageID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
+		}
 		msg := Message{
-			ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
-			Role:      "user",
-			Content:   req.Input,
-			Timestamp: time.Now(),
+			ID:              messageID,
+			ClientMessageID: req.ClientMessageID,
+			ClientTurnID:    req.ClientTurnID,
+			Role:            "user",
+			Content:         req.Input,
+			Timestamp:       time.Now(),
 		}
 		session.Messages = append(session.Messages, msg)
 	}
@@ -513,7 +605,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	compileCtx := k.tools.CompileContext(req.SessionType, req.Mode)
+	compileCtx := enrichCompileContext(k.tools.CompileContext(req.SessionType, req.Mode), req.SessionType, req.HostID, time.Now())
 	if len(preTurnEvent.AdditionalContext) > 0 {
 		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
 	}
@@ -571,12 +663,14 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 		decision := k.policy.CompletionPolicy.CheckCompletion(ctx, turnState)
 		if decision.Action != policyengine.PolicyActionAllow {
 			return TurnResult{
-				SessionType: req.SessionType,
-				Mode:        req.Mode,
-				SessionID:   session.ID,
-				TurnID:      turnID,
-				Status:      "blocked",
-				Error:       decision.Reason,
+				SessionType:     req.SessionType,
+				Mode:            req.Mode,
+				SessionID:       session.ID,
+				TurnID:          turnID,
+				ClientTurnID:    req.ClientTurnID,
+				ClientMessageID: req.ClientMessageID,
+				Status:          "blocked",
+				Error:           decision.Reason,
 			}, nil
 		}
 	}
@@ -595,12 +689,14 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	k.sessions.Update(session)
 
 	return TurnResult{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		SessionID:   session.ID,
-		TurnID:      turnID,
-		Status:      "completed",
-		Output:      agentOutput,
+		SessionType:     req.SessionType,
+		Mode:            req.Mode,
+		SessionID:       session.ID,
+		TurnID:          turnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		Status:          "completed",
+		Output:          agentOutput,
 	}, nil
 }
 
@@ -651,7 +747,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		contextMessages := contextState.Messages
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
-		compileCtx := k.tools.CompileContext(req.SessionType, req.Mode)
+		compileCtx := enrichCompileContext(k.tools.CompileContext(req.SessionType, req.Mode), req.SessionType, session.HostID, time.Now())
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		if len(additionalContext) > 0 {
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, additionalContext...)
@@ -722,6 +818,9 @@ func (k *EinoKernel) runHostIterationLoop(
 		k.persistTurnSnapshot(session, snapshot)
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
+				"text": assistantMsg.Content,
+			})
 			now := time.Now()
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
@@ -747,12 +846,14 @@ func (k *EinoKernel) runHostIterationLoop(
 			if dispatchResult.Blocked {
 				k.markTurnBlocked(session, snapshot, tc, dispatchResult)
 				return "", &TurnResult{
-					SessionType: req.SessionType,
-					Mode:        req.Mode,
-					SessionID:   session.ID,
-					TurnID:      turnID,
-					Status:      "blocked",
-					Error:       dispatchResult.Reason,
+					SessionType:     req.SessionType,
+					Mode:            req.Mode,
+					SessionID:       session.ID,
+					TurnID:          turnID,
+					ClientTurnID:    req.ClientTurnID,
+					ClientMessageID: req.ClientMessageID,
+					Status:          "blocked",
+					Error:           dispatchResult.Reason,
 				}, nil
 			}
 			if dispatchResult.Error != "" {
@@ -790,10 +891,41 @@ func (k *EinoKernel) runHostIterationLoop(
 			session.LatestCheckpoint = snapshot.LatestCheckpoint
 			k.persistTurnSnapshot(session, snapshot)
 		}
+		k.emitRuntimeEvent(EventPhaseEnd, session.ID, turnID, map[string]any{
+			"phaseId": fmt.Sprintf("%s-iteration-%d", turnID, iteration),
+			"summary": "tool iteration completed",
+		})
+		k.emitRuntimeEvent(EventProcessSummary, session.ID, turnID, map[string]any{
+			"phaseId": fmt.Sprintf("%s-iteration-%d", turnID, iteration),
+			"summary": "tool iteration completed",
+		})
 		k.emitIterationStage(session.ID, turnID, iteration, "finalize_iteration", turnSpanID)
 	}
 
 	return "", nil, fmt.Errorf("iteration limit exceeded")
+}
+
+func enrichCompileContext(
+	compileCtx promptcompiler.CompileContext,
+	sessionType SessionType,
+	hostID string,
+	now time.Time,
+) promptcompiler.CompileContext {
+	hostID = strings.TrimSpace(hostID)
+	if hostID != "" && strings.TrimSpace(compileCtx.HostContext) == "" {
+		compileCtx.HostContext = hostID
+	}
+	if sessionType != SessionTypeHost || hostID != "server-local" {
+		return compileCtx
+	}
+	compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+		Title: "Current Time",
+		Content: fmt.Sprintf(
+			"Current ai-server local time: %s. When the selected host is server-local, treat this as the host's current time.",
+			now.Format("2006-01-02 15:04:05 MST -0700"),
+		),
+	})
+	return compileCtx
 }
 
 func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) error {
@@ -801,7 +933,7 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	if !ok {
 		return fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
-	compileCtx := k.tools.CompileContext(session.Type, session.Mode)
+	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
 	result := dispatcher.DispatchApproved(ctx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
 	if result.Blocked {
@@ -854,6 +986,50 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	return nil
 }
 
+func appendResumeInputMessage(session *SessionState, input string) {
+	if session == nil {
+		return
+	}
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return
+	}
+	msg := Message{
+		ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+		Role:      "user",
+		Content:   text,
+		Timestamp: time.Now(),
+	}
+	session.Messages = append(session.Messages, msg)
+	recomputeContextWindow(&session.Context, session.Messages)
+}
+
+func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) {
+	if session == nil || snapshot == nil {
+		return
+	}
+	now := time.Now()
+	snapshot.Lifecycle = TurnLifecycleRunning
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = ""
+	snapshot.UpdatedAt = now
+	snapshot.PendingApprovals = nil
+	snapshot.PendingEvidence = nil
+	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleRunning, TurnResumeStateNone)
+	session.PendingApprovals = nil
+	session.PendingEvidence = nil
+	session.LatestCheckpoint = snapshot.LatestCheckpoint
+	if last := latestIteration(snapshot); last != nil {
+		last.Lifecycle = TurnLifecycleRunning
+		last.ResumeState = TurnResumeStateNone
+		last.PendingApprovals = nil
+		last.PendingEvidence = nil
+		last.Checkpoint = snapshot.LatestCheckpoint
+		last.UpdatedAt = now
+	}
+	k.persistTurnSnapshot(session, snapshot)
+}
+
 func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
@@ -889,7 +1065,24 @@ func generateModelResponse(ctx context.Context, chatModel modelrouter.ChatModel,
 	if err != nil {
 		return nil, fmt.Errorf("tool info: %w", err)
 	}
-	return chatModel.Generate(ctx, input, einomodel.WithTools(toolInfos), einomodel.WithToolChoice(schema.ToolChoiceAllowed))
+	response, err := chatModel.Generate(ctx, input, einomodel.WithTools(toolInfos), einomodel.WithToolChoice(schema.ToolChoiceAllowed))
+	if err != nil {
+		return nil, err
+	}
+	if isEmptyAssistantResponse(response) {
+		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
+	}
+	return response, nil
+}
+
+func isEmptyAssistantResponse(msg *schema.Message) bool {
+	if msg == nil {
+		return true
+	}
+	return strings.TrimSpace(msg.Content) == "" &&
+		len(msg.ToolCalls) == 0 &&
+		len(msg.MultiContent) == 0 &&
+		len(msg.AssistantGenMultiContent) == 0
 }
 
 func toolInfosFromPool(ctx context.Context, toolPool []tool.BaseTool) ([]*schema.ToolInfo, error) {
@@ -1400,14 +1593,16 @@ func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRe
 	}
 	now := time.Now()
 	snapshot := &TurnSnapshot{
-		ID:          turnID,
-		SessionID:   session.ID,
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		Lifecycle:   TurnLifecycleRunning,
-		ResumeState: TurnResumeStateNone,
-		StartedAt:   now,
-		UpdatedAt:   now,
+		ID:              turnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		SessionID:       session.ID,
+		SessionType:     req.SessionType,
+		Mode:            req.Mode,
+		Lifecycle:       TurnLifecycleRunning,
+		ResumeState:     TurnResumeStateNone,
+		StartedAt:       now,
+		UpdatedAt:       now,
 	}
 	session.CurrentTurn = snapshot
 	return snapshot
@@ -1488,6 +1683,25 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 	}
 
 	k.persistTurnSnapshot(session, snapshot)
+	if k.projector != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"id":       currentBlockedID(snapshot),
+			"toolName": tc.Name,
+			"command":  reason,
+			"status":   "pending",
+		})
+		eventType := EventApprovalNeeded
+		if resumeState == TurnResumeStatePendingEvidence {
+			eventType = EventEvidenceCollected
+		}
+		k.projector.Emit(LifecycleEvent{
+			Type:      eventType,
+			SessionID: session.ID,
+			TurnID:    snapshot.ID,
+			Timestamp: now,
+			Payload:   payload,
+		})
+	}
 }
 
 func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) {
@@ -1522,6 +1736,19 @@ func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapsho
 	k.persistTurnSnapshot(session, snapshot)
 }
 
+func currentBlockedID(snapshot *TurnSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	if len(snapshot.PendingApprovals) > 0 {
+		return snapshot.PendingApprovals[0].ID
+	}
+	if len(snapshot.PendingEvidence) > 0 {
+		return snapshot.PendingEvidence[0].ID
+	}
+	return ""
+}
+
 func (k *EinoKernel) emitIterationStage(sessionID, turnID string, iteration int, stage string, turnSpanID string) {
 	if k.projector == nil && (k.spanSource == nil || turnSpanID == "") {
 		return
@@ -1543,6 +1770,20 @@ func (k *EinoKernel) emitIterationStage(sessionID, turnID string, iteration int,
 	if k.spanSource != nil && turnSpanID != "" {
 		k.spanSource.EmitText(fmt.Sprintf("[iteration %d] %s", iteration, stage))
 	}
+}
+
+func (k *EinoKernel) emitRuntimeEvent(eventType EventType, sessionID, turnID string, payload any) {
+	if k == nil || k.projector == nil {
+		return
+	}
+	data, _ := json.Marshal(payload)
+	k.projector.Emit(LifecycleEvent{
+		Type:      eventType,
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Timestamp: time.Now(),
+		Payload:   data,
+	})
 }
 
 func latestIteration(snapshot *TurnSnapshot) *IterationState {
@@ -1839,6 +2080,49 @@ func pendingToolCall(snapshot *TurnSnapshot) (ToolCall, bool) {
 		}
 	}
 	return ToolCall{}, false
+}
+
+func resumeInputFromMetadata(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	if input := strings.TrimSpace(metadata["resume.input"]); input != "" {
+		return input
+	}
+	type indexedAnswer struct {
+		index int
+		value string
+	}
+	answers := make([]indexedAnswer, 0)
+	for key, value := range metadata {
+		if !strings.HasPrefix(key, "choice.answer.") {
+			continue
+		}
+		indexText := strings.TrimPrefix(key, "choice.answer.")
+		var index int
+		if _, err := fmt.Sscanf(indexText, "%d", &index); err != nil {
+			continue
+		}
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		answers = append(answers, indexedAnswer{index: index, value: trimmed})
+	}
+	if len(answers) == 0 {
+		return ""
+	}
+	sort.SliceStable(answers, func(i, j int) bool {
+		return answers[i].index < answers[j].index
+	})
+	lines := make([]string, 0, len(answers)+1)
+	if requestID := strings.TrimSpace(metadata["choice.requestId"]); requestID != "" {
+		lines = append(lines, fmt.Sprintf("choice request %s", requestID))
+	}
+	for idx, answer := range answers {
+		lines = append(lines, fmt.Sprintf("answer %d: %s", idx+1, answer.value))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func upsertTurnHistory(history *[]TurnSnapshot, snapshot TurnSnapshot) {

@@ -1,0 +1,18 @@
+# 2026/04/23 14:01:32.784133 [TestProperty17_Fallback_PrimaryUnavailable] [rapid] draw availableCount: 1
+# 2026/04/23 14:01:32.784137 [TestProperty17_Fallback_PrimaryUnavailable] [rapid] draw primaryIdx: 1
+# 2026/04/23 14:01:32.784138 [TestProperty17_Fallback_PrimaryUnavailable] [rapid] draw fallbackIdx: 0
+# 2026/04/23 14:01:32.784141 [TestProperty17_Fallback_PrimaryUnavailable] [rapid] draw agentKind: "planner"
+# 
+v0.4.8#15577628587459834545
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

@@ -1,0 +1,39 @@
+version: v0.1
+name: macos-multi-agent-demo
+inventory:
+  hosts:
+    agent_a:
+      address: "http://127.0.0.1:8801"
+    agent_b:
+      address: "http://127.0.0.1:8802"
+    agent_c:
+      address: "http://127.0.0.1:8803"
+vars:
+  demo_name: "m1-local"
+steps:
+  - name: step-1 produce vars on agent_a
+    targets: [agent_a]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        echo "BOPS_EXPORT:HOST_A=agent_a"
+        echo "BOPS_EXPORT:GREETING=hello-from-${demo_name}"
+
+  - name: step-2 consume vars on agent_b
+    targets: [agent_b]
+    action: cmd.run
+    args:
+      export_vars: true
+      cmd: |
+        echo "running on ${HOST_A}"
+        echo "message: ${GREETING}"
+        echo "BOPS_EXPORT:HOST_B=agent_b"
+
+  - name: step-3 final check on agent_c
+    targets: [agent_c]
+    action: cmd.run
+    args:
+      cmd: |
+        echo "from ${HOST_A} -> ${HOST_B}"
+        echo "done on agent_c"

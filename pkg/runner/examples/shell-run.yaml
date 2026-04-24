@@ -1,0 +1,15 @@
+version: v0.1
+name: shell-run-demo
+inventory:
+  hosts:
+    local:
+      address: "http://127.0.0.1:7072"
+steps:
+  - name: inline shell
+    targets: [local]
+    action: shell.run
+    args:
+      export_vars: true
+      script: |
+        echo "hello from shell"
+        echo "BOPS_EXPORT:FOO=bar"

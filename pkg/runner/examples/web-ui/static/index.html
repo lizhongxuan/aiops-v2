@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Runner Web UI</title>
+    <style>
+      :root {
+        --bg: #f4f8f6;
+        --panel: #ffffff;
+        --text: #1f2937;
+        --muted: #5f6b7a;
+        --border: #dbe6e1;
+        --primary: #146c5a;
+        --primary-weak: #e5f4ee;
+        --pending: #8c9aa7;
+        --pending-bg: #f2f4f7;
+        --running: #1d6fd8;
+        --running-bg: #e9f2ff;
+        --success: #1e8449;
+        --success-bg: #e9f8ef;
+        --failed: #c0392b;
+        --failed-bg: #fdecea;
+        --canceled: #a86f15;
+        --canceled-bg: #fff5e8;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: "Avenir Next", "PingFang SC", "Helvetica Neue", sans-serif;
+        background:
+          radial-gradient(circle at 15% 10%, #d6efe4 0, rgba(214, 239, 228, 0) 35%),
+          radial-gradient(circle at 90% 0, #dcefff 0, rgba(220, 239, 255, 0) 30%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      h2 {
+        margin: 0 0 12px;
+      }
+
+      h4 {
+        margin: 0 0 10px;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 3px 10px rgba(20, 108, 90, 0.08);
+      }
+
+      .toolbar label {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .toolbar input,
+      .toolbar select,
+      textarea {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 13px;
+        background: #fff;
+      }
+
+      .toolbar input,
+      .toolbar select {
+        min-width: 150px;
+      }
+
+      button {
+        border: none;
+        border-radius: 8px;
+        padding: 9px 14px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        background: linear-gradient(135deg, #168f73, var(--primary));
+        color: #fff;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+
+      .status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .layout {
+        margin-top: 14px;
+        display: grid;
+        grid-template-columns: 1.15fr 1fr;
+        grid-template-areas:
+          "yaml flow"
+          "yaml detail"
+          "log log";
+        gap: 12px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px;
+        box-shadow: 0 2px 10px rgba(22, 34, 51, 0.05);
+      }
+
+      .yaml-panel { grid-area: yaml; }
+      .flow-panel { grid-area: flow; }
+      .detail-panel { grid-area: detail; }
+      .log-panel { grid-area: log; }
+
+      textarea {
+        width: 100%;
+        min-height: 520px;
+        resize: vertical;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        line-height: 1.4;
+      }
+
+      pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        border-radius: 8px;
+        padding: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+        font-size: 12px;
+      }
+
+      #log {
+        min-height: 220px;
+        max-height: 420px;
+        overflow: auto;
+        background: #091622;
+        color: #d4e2f4;
+      }
+
+      #stepArgs {
+        min-height: 120px;
+        background: #f8fbff;
+        border: 1px solid #dfe8f3;
+        color: #2f3d4f;
+      }
+
+      .flow-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        max-height: 255px;
+        overflow: auto;
+        padding-right: 4px;
+      }
+
+      .step-card {
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        background: #fff;
+        cursor: pointer;
+        transition: transform 0.12s ease, box-shadow 0.12s ease;
+      }
+
+      .step-card:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(23, 40, 65, 0.08);
+      }
+
+      .step-card.selected {
+        outline: 2px solid #79b4ff;
+        outline-offset: 0;
+      }
+
+      .step-card.pending {
+        border-color: #d6dce4;
+        background: var(--pending-bg);
+      }
+
+      .step-card.running {
+        border-color: #91bfff;
+        background: var(--running-bg);
+      }
+
+      .step-card.success {
+        border-color: #96ddb3;
+        background: var(--success-bg);
+      }
+
+      .step-card.failed {
+        border-color: #f1ada6;
+        background: var(--failed-bg);
+      }
+
+      .step-card.canceled {
+        border-color: #f0c48b;
+        background: var(--canceled-bg);
+      }
+
+      .step-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        align-items: flex-start;
+      }
+
+      .step-name {
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .step-action {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .badge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-weight: 700;
+      }
+
+      .badge.pending { color: #66717d; background: #e7ecf0; }
+      .badge.running { color: #1056b5; background: #dbe9ff; }
+      .badge.success { color: #116136; background: #d4f1df; }
+      .badge.failed { color: #a93024; background: #ffd8d4; }
+      .badge.canceled { color: #8b5a12; background: #fdeacc; }
+
+      .targets {
+        margin-top: 6px;
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+
+      .target-chip {
+        font-size: 10px;
+        color: #35576b;
+        background: #e9f2f7;
+        border: 1px solid #c6dce8;
+        border-radius: 999px;
+        padding: 1px 7px;
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 6px;
+        font-size: 12px;
+        color: #374151;
+      }
+
+      .meta-key {
+        color: #5c6977;
+      }
+
+      .empty {
+        color: #8b95a2;
+        font-size: 12px;
+        padding: 8px;
+        background: #f7fafc;
+        border: 1px dashed #d6dde5;
+        border-radius: 8px;
+      }
+
+      @media (max-width: 960px) {
+        .layout {
+          grid-template-columns: 1fr;
+          grid-template-areas:
+            "yaml"
+            "flow"
+            "detail"
+            "log";
+        }
+
+        textarea {
+          min-height: 320px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Runner Web UI</h2>
+
+    <div class="toolbar">
+      <label>Token</label>
+      <input id="token" type="text" placeholder="runner-token" />
+      <label>Mode</label>
+      <select id="mode">
+        <option value="agent">agent</option>
+        <option value="local">local</option>
+      </select>
+      <button id="run">运行 YAML</button>
+      <span class="status" id="status"></span>
+    </div>
+
+    <div class="layout">
+      <section class="panel yaml-panel">
+        <h4>YAML</h4>
+        <textarea id="yaml"></textarea>
+      </section>
+
+      <section class="panel flow-panel">
+        <h4>流程步骤</h4>
+        <div id="flow" class="flow-list"></div>
+      </section>
+
+      <section class="panel detail-panel">
+        <h4>步骤配置</h4>
+        <div id="stepMeta" class="meta-grid"></div>
+        <div style="height:8px;"></div>
+        <pre id="stepArgs"></pre>
+      </section>
+
+      <section class="panel log-panel">
+        <h4>日志</h4>
+        <pre id="log"></pre>
+      </section>
+    </div>
+
+    <script>
+      const yamlEl = document.getElementById("yaml");
+      const logEl = document.getElementById("log");
+      const statusEl = document.getElementById("status");
+      const tokenEl = document.getElementById("token");
+      const modeEl = document.getElementById("mode");
+      const flowEl = document.getElementById("flow");
+      const stepMetaEl = document.getElementById("stepMeta");
+      const stepArgsEl = document.getElementById("stepArgs");
+      const runBtn = document.getElementById("run");
+
+      let es = null;
+      let stepStates = [];
+      let stepLookup = new Map();
+      let selectedStepIndex = -1;
+
+      yamlEl.value = `version: v0.1
+name: macos-multi-agent-demo
+inventory:
+  hosts:
+    agent_a:
+      address: "http://127.0.0.1:7072"
+steps:
+  - name: step-1
+    targets: [agent_a]
+    action: shell.run
+    args:
+      export_vars: true
+      script: |
+        echo "BOPS_EXPORT:HOST_A=agent_a"
+        echo "hello"
+
+  - name: step-2
+    targets: [agent_a]
+    action: shell.run
+    args:
+      export_vars: true
+      script: |
+        echo "from \${HOST_A}"
+        echo "BOPS_EXPORT:HOST_B=agent_b"
+
+  - name: step-3
+    targets: [local]
+    action: shell.run
+    args:
+      script: |
+        echo "from \${HOST_A} -> \${HOST_B}"
+`;
+
+      function appendLog(line) {
+        logEl.textContent += line + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function normalizeStatus(status) {
+        const s = String(status || "").toLowerCase();
+        if (s === "running") return "running";
+        if (s === "success") return "success";
+        if (s === "failed") return "failed";
+        if (s === "canceled") return "canceled";
+        return "pending";
+      }
+
+      function statusText(status) {
+        const s = normalizeStatus(status);
+        if (s === "running") return "运行中";
+        if (s === "success") return "运行成功";
+        if (s === "failed") return "运行失败";
+        if (s === "canceled") return "已取消";
+        return "未运行";
+      }
+
+      function resetFlow(steps) {
+        stepStates = (steps || []).map((step, idx) => ({
+          index: idx + 1,
+          name: step.name || `step-${idx + 1}`,
+          action: step.action || "",
+          targets: Array.isArray(step.targets) ? step.targets : [],
+          args: step.args || {},
+          mustVars: Array.isArray(step.must_vars) ? step.must_vars : [],
+          expectVars: Array.isArray(step.expect_vars) ? step.expect_vars : [],
+          when: step.when || "",
+          retries: step.retries || 0,
+          timeout: step.timeout || "",
+          continueOnError: !!step.continue_on_error,
+          notify: Array.isArray(step.notify) ? step.notify : [],
+          status: "pending"
+        }));
+
+        stepLookup = new Map();
+        stepStates.forEach((step, idx) => {
+          if (!stepLookup.has(step.name)) {
+            stepLookup.set(step.name, idx);
+          }
+        });
+
+        selectedStepIndex = stepStates.length > 0 ? 0 : -1;
+        renderFlow();
+        renderStepDetail();
+      }
+
+      function setStepStatus(stepName, status) {
+        const idx = stepLookup.get(stepName);
+        if (idx === undefined) {
+          return;
+        }
+        stepStates[idx].status = normalizeStatus(status);
+        if (stepStates[idx].status === "running") {
+          selectedStepIndex = idx;
+        }
+        renderFlow();
+        renderStepDetail();
+      }
+
+      function renderFlow() {
+        if (stepStates.length === 0) {
+          flowEl.innerHTML = `<div class="empty">运行后会按 steps 展示流程状态。</div>`;
+          return;
+        }
+
+        flowEl.innerHTML = stepStates
+          .map((step, idx) => {
+            const targetHTML = step.targets
+              .map((target) => `<span class="target-chip">${escapeHtml(target)}</span>`)
+              .join("");
+            const selectedClass = selectedStepIndex === idx ? "selected" : "";
+            const badgeClass = normalizeStatus(step.status);
+            return `
+              <div class="step-card ${badgeClass} ${selectedClass}" data-step-index="${idx}">
+                <div class="step-head">
+                  <div>
+                    <div class="step-name">${step.index}. ${escapeHtml(step.name)}</div>
+                    <div class="step-action">${escapeHtml(step.action)}</div>
+                  </div>
+                  <span class="badge ${badgeClass}">${statusText(step.status)}</span>
+                </div>
+                <div class="targets">${targetHTML || "<span class=\"target-chip\">(all)</span>"}</div>
+              </div>
+            `;
+          })
+          .join("");
+
+        flowEl.querySelectorAll(".step-card").forEach((card) => {
+          card.addEventListener("click", () => {
+            const idx = Number(card.dataset.stepIndex || "-1");
+            if (idx >= 0 && idx < stepStates.length) {
+              selectedStepIndex = idx;
+              renderFlow();
+              renderStepDetail();
+            }
+          });
+        });
+      }
+
+      function renderStepDetail() {
+        if (selectedStepIndex < 0 || selectedStepIndex >= stepStates.length) {
+          stepMetaEl.innerHTML = `<div class="empty" style="grid-column:1 / -1;">点击步骤查看配置。</div>`;
+          stepArgsEl.textContent = "";
+          return;
+        }
+        const step = stepStates[selectedStepIndex];
+        const rows = [
+          ["步骤", `${step.index}. ${step.name}`],
+          ["Action", step.action || "-"],
+          ["目标", step.targets.length > 0 ? step.targets.join(", ") : "(all)"],
+          ["状态", statusText(step.status)],
+          ["When", step.when || "-"],
+          ["Retries", String(step.retries || 0)],
+          ["Timeout", step.timeout || "-"],
+          ["ContinueOnError", String(step.continueOnError)],
+          ["MustVars", step.mustVars.length ? step.mustVars.join(", ") : "-"],
+          ["ExpectVars", step.expectVars.length ? step.expectVars.join(", ") : "-"],
+          ["Notify", step.notify.length ? step.notify.join(", ") : "-"]
+        ];
+
+        stepMetaEl.innerHTML = rows
+          .map(([k, v]) => `<div class="meta-key">${escapeHtml(k)}</div><div>${escapeHtml(v)}</div>`)
+          .join("");
+
+        stepArgsEl.textContent = JSON.stringify(step.args || {}, null, 2);
+      }
+
+      function escapeHtml(input) {
+        return String(input)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      async function startRun() {
+        if (es) {
+          es.close();
+          es = null;
+        }
+        runBtn.disabled = true;
+        logEl.textContent = "";
+        statusEl.textContent = "启动中...";
+
+        const resp = await fetch("/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            yaml: yamlEl.value,
+            token: tokenEl.value,
+            mode: modeEl.value
+          })
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          statusEl.textContent = "启动失败";
+          appendLog(data.error || "start failed");
+          resetFlow([]);
+          runBtn.disabled = false;
+          return;
+        }
+
+        resetFlow(data.steps || []);
+        statusEl.textContent = `运行中: ${data.run_id}`;
+
+        es = new EventSource(`/stream?run_id=${encodeURIComponent(data.run_id)}`);
+        es.onmessage = (evt) => {
+          const payload = JSON.parse(evt.data);
+          if (payload.type === "step_start") {
+            setStepStatus(payload.step, "running");
+            appendLog(`[${payload.step_no}/${payload.step_total}] START ${payload.step}`);
+          } else if (payload.type === "step_finish") {
+            const nextStatus = payload.status || "success";
+            setStepStatus(payload.step, nextStatus);
+            appendLog(`[${payload.step_no}/${payload.step_total}] DONE ${payload.step} (${nextStatus})`);
+          } else if (payload.type === "host_result") {
+            appendLog(`  host=${payload.host} status=${payload.status}`);
+            if (payload.stdout) appendLog(`  stdout: ${payload.stdout}`);
+            if (payload.stderr) appendLog(`  stderr: ${payload.stderr}`);
+          } else if (payload.type === "host_output") {
+            appendLog(`  ${payload.stream}: ${payload.chunk}`);
+          } else if (payload.type === "error") {
+            appendLog(`ERROR: ${payload.message}`);
+            statusEl.textContent = "运行失败";
+          } else if (payload.type === "done") {
+            const finalStatus = normalizeStatus(payload.status);
+            if (finalStatus === "success") {
+              statusEl.textContent = "运行完成";
+            } else if (finalStatus === "failed") {
+              statusEl.textContent = "运行失败";
+            } else if (finalStatus === "canceled") {
+              statusEl.textContent = "运行取消";
+            } else {
+              statusEl.textContent = "完成";
+            }
+            appendLog("DONE");
+            es.close();
+            es = null;
+            runBtn.disabled = false;
+          }
+        };
+
+        es.onerror = () => {
+          appendLog("stream closed");
+          statusEl.textContent = "流已关闭";
+          if (es) {
+            es.close();
+            es = null;
+          }
+          runBtn.disabled = false;
+        };
+      }
+
+      runBtn.onclick = () => {
+        startRun().catch((err) => {
+          appendLog(`ERROR: ${err.message}`);
+          statusEl.textContent = "启动异常";
+          runBtn.disabled = false;
+        });
+      };
+
+      resetFlow([]);
+    </script>
+  </body>
+</html>

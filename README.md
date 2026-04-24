@@ -98,6 +98,67 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 
 ---
 
+## Web Product Surface Guardrails
+
+本节约束 `web/` 与 `ai-server` 的正式产品面。新增页面、接口、实时事件、登录、terminal、settings、hosts、MCP、agent profile 时必须遵守这里，不允许重新把旧项目协议当成永久兼容层。
+
+### 1. 前端只有一套数据入口
+
+- 页面、组件、`store.js` 不允许直接 `fetch(...)`
+- 页面、组件、`store.js` 不允许直接 `new WebSocket(...)`
+- HTTP 只能经由 `web/src/api/*`
+- realtime 只能经由 `web/src/realtime/*`
+- `store.js` 是状态中心，不是协议中心；它只能调用 `api/realtime` client
+
+### 2. 后端只有一套 Web API 应用层
+
+- `internal/server` 只做 transport：路由、decode、status code、cookie、ws framing
+- 业务投影和命令翻译只能放在 `internal/appui`
+- `internal/server` 不允许直接拼 runtime/session/store/mcp/auth/terminal 的业务对象给前端
+- 不允许新增 `webcompat`、legacy pusher、私有 snapshot builder 或页面专用 handler
+
+### 3. Chat / Protocol 只能走 RuntimeKernel 主链
+
+- 新消息只能进入 `runtimekernel.RunTurn -> runHostIterationLoop`
+- approval decision、choice answer、evidence follow-up 都必须回到同一条 `ResumeTurn` path
+- stop/cancel 只能进入 `runtimekernel.CancelTurn`
+- 不允许为 protocol workspace、chat 页面或某张 UI card 新造第二套 orchestrator
+
+### 4. Snapshot / WS 只有一套真相源
+
+- `/api/v1/state` 与主 `/ws` 必须共享 `appui.SnapshotBuilder`
+- 主 `/ws` 只推前端可消费的 `appui.StateSnapshot`、规范化 `agent_event` 和 heartbeat
+- terminal 必须使用独立 `/api/v1/terminal/ws`，不能混进主 `/ws`
+- 已删除的 legacy `WebSocketPusher` / `LegacyMessage` 不能重新引入
+
+### 5. Agent Event 是唯一实时运行事件
+
+- Chat、Protocol、host-agent、subagent、tool、MCP、approval、diff、browser 验证的运行过程只能进入统一 `AgentEvent`
+- 旧 `turn_event` 必须在 AgentEvent 切换同批删除，不能作为生产 adapter 或新功能依赖
+- 运行态 UI 只能由 `AgentEventProjection` 推导，页面不能直接从 `cards/toolInvocations` 猜 `Working`、agent 状态或 process fold
+- `AgentEvent` 必须有 `eventId`、`seq`、`kind`、`phase`、`status`、`visibility` 和 typed payload，不能靠文案正则判断状态
+- `internal/server` 不允许拼业务事件；事件 normalize、append、replay、projection 只能放在 `internal/appui`
+- 前端只能有一套运行事件 reducer；本地 optimistic 状态也必须表示成同一套 `AgentEvent`
+- Busy/Working 必须由 liveness 集合推导：active turns、active agents、active command streams、pending approvals、pending user inputs
+- 主 UI 不显示 UUID/call-id/raw id，只显示 agent handle/name、阶段摘要、diff stats、approval/artifact 入口
+
+### 6. 正式域边界
+
+- auth 真相源只能来自 `internal/auth`
+- terminal 真相源只能来自 `internal/terminal`
+- hosts/settings/agent profiles/skills/agent mcps 只能通过 `Store` 和对应 `appui` service 写入
+- MCP runtime 状态只能通过 `internal/mcp.Registry` 和 `appui.MCPService` 投影，不允许页面直接改 runtime registry
+
+新增 Web 功能的最小接入顺序：
+
+1. 先在 `web/src/api/*` 或 `web/src/realtime/*` 定义唯一前端入口
+2. 再在 `internal/appui` 定义 service/DTO/command translation
+3. 最后在 `internal/server` 补 transport handler
+4. 如果涉及 chat/protocol 中断恢复，必须补 runtimekernel resume/cancel 测试
+5. 如果涉及运行过程展示，必须先扩展 [`docs/codex-native-chat-ui-ux-design_0424.md`](./docs/codex-native-chat-ui-ux-design_0424.md) 定义的 `AgentEvent` contract，再实现 normalizer/projector/reducer
+
+---
+
 ## ⚠️ Registration Upgrade Guardrails
 
 本节是当前仓库的硬约束，不是建议项。它来自两部分依据：

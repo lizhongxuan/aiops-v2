@@ -1,0 +1,11 @@
+# 2026/04/23 14:01:32.787961 [TestProperty17_Fallback_StructuredError] [rapid] draw requestedProvider: "ollama"
+# 2026/04/23 14:01:32.787965 [TestProperty17_Fallback_StructuredError] [rapid] draw agentKind: "planner"
+# 2026/04/23 14:01:32.787969 [TestProperty17_Fallback_StructuredError] expected error for unavailable provider
+# 
+v0.4.8#8332931396423658862
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0

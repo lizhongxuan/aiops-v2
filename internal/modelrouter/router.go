@@ -1,6 +1,10 @@
 package modelrouter
 
 import (
+	"context"
+	"strings"
+
+	"aiops-v2/internal/auth"
 	"github.com/cloudwego/eino/components/model"
 )
 
@@ -40,6 +44,9 @@ type ProviderConfig struct {
 
 	// Model is the specific model name, e.g. "gpt-4o", "claude-3-5-sonnet", "llama3".
 	Model string
+
+	// BaseURL overrides the provider endpoint, e.g. an OpenAI-compatible gateway.
+	BaseURL string
 
 	// Temperature controls randomness in generation (0.0 – 1.0+).
 	Temperature float64
@@ -94,11 +101,21 @@ type Router struct {
 	// providers maps provider names to their ChatModel instances.
 	providers map[string]ChatModel
 
+	// providerFactories lazily construct ChatModel instances when no prebuilt
+	// provider is registered.
+	providerFactories map[string]ProviderFactory
+
 	// defaultProvider is the provider used when no specific provider is configured.
 	defaultProvider string
 
 	// fallbacks defines the fallback chain for provider failover.
 	fallbacks []FallbackEntry
+
+	// resolver exposes the current credential truth for auth-backed providers.
+	resolver auth.Resolver
+
+	// configResolver exposes live provider/model settings from the product UI.
+	configResolver ProviderConfigResolver
 
 	// agentKindConfigs maps AgentKind to its preferred routing configuration.
 	// When set, the AgentKind config takes precedence over the ProviderConfig
@@ -106,15 +123,45 @@ type Router struct {
 	agentKindConfigs map[AgentKind]AgentKindConfig
 }
 
+// ProviderFactory constructs a provider model on demand.
+type ProviderFactory func(ctx context.Context, agentKind AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error)
+
+// ProviderConfigResolver resolves the current product-level LLM config.
+type ProviderConfigResolver interface {
+	ResolveProviderConfig(agentKind AgentKind) (ProviderConfig, bool)
+}
+
 // NewRouter creates a Router with the given default provider, registered
 // providers, and fallback chain.
 func NewRouter(defaultProvider string, providers map[string]ChatModel, fallbacks []FallbackEntry) *Router {
-	return &Router{
-		providers:        providers,
-		defaultProvider:  defaultProvider,
-		fallbacks:        fallbacks,
-		agentKindConfigs: make(map[AgentKind]AgentKindConfig),
+	if providers == nil {
+		providers = make(map[string]ChatModel)
 	}
+	return &Router{
+		providers:         providers,
+		providerFactories: defaultProviderFactories(),
+		defaultProvider:   defaultProvider,
+		fallbacks:         fallbacks,
+		agentKindConfigs:  make(map[AgentKind]AgentKindConfig),
+	}
+}
+
+// SetCredentialResolver wires the current auth truth source into the router.
+func (r *Router) SetCredentialResolver(resolver auth.Resolver) {
+	r.resolver = resolver
+}
+
+// SetProviderConfigResolver wires live provider/model settings into routing.
+func (r *Router) SetProviderConfigResolver(resolver ProviderConfigResolver) {
+	r.configResolver = resolver
+}
+
+// SetProviderFactory registers or replaces the lazy factory for a provider.
+func (r *Router) SetProviderFactory(provider string, factory ProviderFactory) {
+	if r.providerFactories == nil {
+		r.providerFactories = make(map[string]ProviderFactory)
+	}
+	r.providerFactories[strings.TrimSpace(provider)] = factory
 }
 
 // SetAgentKindConfig registers a per-AgentKind routing configuration.
@@ -127,28 +174,90 @@ func (r *Router) SetAgentKindConfig(kind AgentKind, config AgentKindConfig) {
 // GetModel returns a ChatModel instance for the given AgentKind
 // and ProviderConfig. Resolution order:
 //  1. If ProviderConfig.Provider is set explicitly, use it.
-//  2. If AgentKindConfig is registered for the AgentKind, use its Provider.
-//  3. Fall back to the Router's defaultProvider.
-//  4. If the resolved provider is not available, try the fallback chain.
-//  5. If all options are exhausted, return ProviderNotFoundError.
+//  2. If product-level LLM settings are configured, use them.
+//  3. If AgentKindConfig is registered for the AgentKind, use its Provider.
+//  4. Fall back to the Router's defaultProvider.
+//  5. If the resolved provider is not prebuilt, try a lazy provider factory
+//     with the current credential truth.
+//  6. If the resolved candidate still cannot be satisfied, try the fallback chain.
+//  7. If all options are exhausted, return ProviderNotFoundError.
 func (r *Router) GetModel(agentKind AgentKind, config ProviderConfig) (ChatModel, error) {
+	config = r.resolveEffectiveProviderConfig(agentKind, config)
 	provider := r.resolveProvider(agentKind, config)
+	candidates := r.resolveCandidates(provider)
+	truth, hasTruth := r.resolveCredentialTruth()
 
-	// Try primary provider.
-	if m, ok := r.providers[provider]; ok {
-		return m, nil
-	}
-
-	// Try fallback chain.
-	for _, fb := range r.fallbacks {
-		if fb.Primary == provider {
-			if m, ok := r.providers[fb.Fallback]; ok {
-				return m, nil
-			}
+	for _, candidate := range candidates {
+		if m, ok := r.providers[candidate]; ok {
+			return m, nil
+		}
+		if m, ok := r.constructProvider(candidate, agentKind, config, truth, hasTruth); ok {
+			return m, nil
 		}
 	}
 
 	return nil, &ProviderNotFoundError{Provider: provider}
+}
+
+func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config ProviderConfig) ProviderConfig {
+	if r.configResolver == nil {
+		return config
+	}
+	resolved, ok := r.configResolver.ResolveProviderConfig(agentKind)
+	if !ok {
+		return config
+	}
+	if strings.TrimSpace(config.Provider) != "" {
+		resolved.Provider = config.Provider
+	}
+	if strings.TrimSpace(config.Model) != "" {
+		resolved.Model = config.Model
+	}
+	if strings.TrimSpace(config.BaseURL) != "" {
+		resolved.BaseURL = config.BaseURL
+	}
+	if config.Temperature > 0 {
+		resolved.Temperature = config.Temperature
+	}
+	if config.MaxTokens > 0 {
+		resolved.MaxTokens = config.MaxTokens
+	}
+	return resolved
+}
+
+func (r *Router) resolveCandidates(provider string) []string {
+	if provider == "" {
+		return nil
+	}
+	candidates := []string{provider}
+	for _, fb := range r.fallbacks {
+		if fb.Primary == provider && strings.TrimSpace(fb.Fallback) != "" {
+			candidates = append(candidates, fb.Fallback)
+		}
+	}
+	return candidates
+}
+
+func (r *Router) resolveCredentialTruth() (auth.CredentialTruth, bool) {
+	if r.resolver == nil {
+		return auth.CredentialTruth{}, false
+	}
+	return r.resolver.Resolve()
+}
+
+func (r *Router) constructProvider(provider string, agentKind AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, bool) {
+	if r.providerFactories == nil {
+		return nil, false
+	}
+	factory, ok := r.providerFactories[provider]
+	if !ok || factory == nil {
+		return nil, false
+	}
+	model, err := factory(context.Background(), agentKind, config, truth, hasTruth)
+	if err != nil {
+		return nil, false
+	}
+	return model, true
 }
 
 // resolveProvider determines the target provider name based on the resolution
@@ -166,6 +275,95 @@ func (r *Router) resolveProvider(agentKind AgentKind, config ProviderConfig) str
 
 	// 3. Default provider.
 	return r.defaultProvider
+}
+
+func defaultProviderFactories() map[string]ProviderFactory {
+	return map[string]ProviderFactory{
+		"openai":    buildOpenAIProviderModel,
+		"anthropic": buildAnthropicProviderModel,
+	}
+}
+
+func buildOpenAIProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	apiKey := resolveProviderSecret(truth, hasTruth)
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, &ProviderNotAvailableError{
+			Provider: "openai",
+			Model:    resolveProviderModel("openai", config),
+			Reason:   "no credential truth available",
+		}
+	}
+	return NewOpenAIChatModel(context.Background(), OpenAIConfig{
+		APIKey:      apiKey,
+		BaseURL:     strings.TrimSpace(config.BaseURL),
+		Model:       resolveProviderModel("openai", config),
+		Temperature: resolveProviderTemperature(config),
+		MaxTokens:   resolveProviderMaxTokens(config),
+	})
+}
+
+func buildAnthropicProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	apiKey := resolveProviderSecret(truth, hasTruth)
+	if strings.TrimSpace(apiKey) == "" {
+		return nil, &ProviderNotAvailableError{
+			Provider: "anthropic",
+			Model:    resolveProviderModel("anthropic", config),
+			Reason:   "no credential truth available",
+		}
+	}
+	return NewAnthropicChatModel(AnthropicConfig{
+		APIKey:      apiKey,
+		BaseURL:     strings.TrimSpace(config.BaseURL),
+		Model:       resolveProviderModel("anthropic", config),
+		Temperature: resolveProviderTemperature(config),
+		MaxTokens:   resolveProviderMaxTokens(config),
+	}), nil
+}
+
+func buildOllamaProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, _ auth.CredentialTruth, _ bool) (ChatModel, error) {
+	return NewOllamaChatModel(context.Background(), OllamaConfig{
+		BaseURL:     strings.TrimSpace(config.BaseURL),
+		Model:       resolveProviderModel("ollama", config),
+		Temperature: resolveProviderTemperature(config),
+		MaxTokens:   resolveProviderMaxTokens(config),
+	})
+}
+
+func resolveProviderSecret(truth auth.CredentialTruth, hasTruth bool) string {
+	if !hasTruth {
+		return ""
+	}
+	if trimmed := strings.TrimSpace(truth.APIKey); trimmed != "" {
+		return trimmed
+	}
+	if trimmed := strings.TrimSpace(truth.AccessToken); trimmed != "" {
+		return trimmed
+	}
+	return ""
+}
+
+func resolveProviderModel(provider string, config ProviderConfig) string {
+	if strings.TrimSpace(config.Model) != "" {
+		return strings.TrimSpace(config.Model)
+	}
+	switch provider {
+	case "openai":
+		return "gpt-4o"
+	case "anthropic":
+		return "claude-3-5-sonnet"
+	case "ollama":
+		return "llama3"
+	default:
+		return ""
+	}
+}
+
+func resolveProviderTemperature(config ProviderConfig) float64 {
+	return config.Temperature
+}
+
+func resolveProviderMaxTokens(config ProviderConfig) int {
+	return config.MaxTokens
 }
 
 // ---------------------------------------------------------------------------
@@ -193,5 +391,3 @@ type ProviderNotAvailableError struct {
 func (e *ProviderNotAvailableError) Error() string {
 	return "modelrouter: provider " + e.Provider + " (model: " + e.Model + ") not available: " + e.Reason
 }
-
-

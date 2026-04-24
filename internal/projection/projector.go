@@ -72,6 +72,14 @@ func (p *Projector) Emit(event runtimekernel.LifecycleEvent) {
 		for _, s := range p.subscribers {
 			s.OnSnapshot(snapshot)
 		}
+
+	case runtimekernel.EventTurnStarted, runtimekernel.EventAssistantIntent, runtimekernel.EventAssistantFinalDelta,
+		runtimekernel.EventPhaseEnd, runtimekernel.EventProcessSummary, runtimekernel.EventTurnError, runtimekernel.EventTurnAborted:
+		for _, s := range p.subscribers {
+			if receiver, ok := s.(TurnLifecycleSubscriber); ok {
+				receiver.OnRuntimeLifecycleEvent(event)
+			}
+		}
 	}
 }
 
@@ -87,6 +95,10 @@ type Subscriber interface {
 	OnApproval(approval Approval)
 	OnEvidence(evidence Evidence)
 	OnSnapshot(snapshot Snapshot)
+}
+
+type TurnLifecycleSubscriber interface {
+	OnRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent)
 }
 
 // ---------------------------------------------------------------------------

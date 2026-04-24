@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 // ---------------------------------------------------------------------------
@@ -56,5 +58,34 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 		return nil, fmt.Errorf("openai: create chat model: %w", err)
 	}
 
-	return cm, nil
+	return &streamGenerateChatModel{inner: cm}, nil
+}
+
+type streamGenerateChatModel struct {
+	inner ChatModel
+}
+
+func (m *streamGenerateChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	if m == nil || m.inner == nil {
+		return nil, fmt.Errorf("openai: chat model is not configured")
+	}
+	stream, err := m.inner.Stream(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.ConcatMessageStream(stream)
+}
+
+func (m *streamGenerateChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	if m == nil || m.inner == nil {
+		return nil, fmt.Errorf("openai: chat model is not configured")
+	}
+	return m.inner.Stream(ctx, input, opts...)
+}
+
+func (m *streamGenerateChatModel) BindTools(tools []*schema.ToolInfo) error {
+	if m == nil || m.inner == nil {
+		return fmt.Errorf("openai: chat model is not configured")
+	}
+	return m.inner.BindTools(tools)
 }

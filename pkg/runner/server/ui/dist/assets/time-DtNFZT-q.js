@@ -1,0 +1,1 @@
+function e(t){return t?typeof t=="string"?t:t instanceof Date?t.toISOString():String(t):""}function o(t,n){if(!t||!n)return 0;const i=new Date(t).getTime(),r=new Date(n).getTime();return!Number.isFinite(i)||!Number.isFinite(r)?0:Math.max(0,r-i)}export{o as d,e as t};

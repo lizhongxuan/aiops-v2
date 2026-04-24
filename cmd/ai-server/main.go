@@ -18,6 +18,8 @@ import (
 
 	"aiops-v2/internal/agentmgr"
 	"aiops-v2/internal/agents"
+	"aiops-v2/internal/appui"
+	"aiops-v2/internal/auth"
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
@@ -35,6 +37,7 @@ import (
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/terminal"
 	"aiops-v2/internal/tooling"
 )
 
@@ -54,8 +57,12 @@ func run() error {
 	dataDir := envOrDefault("AIOPS_DATA_DIR", ".data")
 	httpAddr := envOrDefault("AIOPS_HTTP_ADDR", ":8080")
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
+	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
 	corootEndpoint := envOrDefault("AIOPS_COROOT_ENDPOINT", "")
+	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
+	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
+	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
 
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
@@ -200,10 +207,47 @@ func run() error {
 	}
 	kernel := runtimekernel.NewEinoKernel(kernelCfg)
 
+	var oauthProvider auth.OAuthProvider
+	if strings.TrimSpace(oauthAuthorizeURL) != "" {
+		oauthProvider = &auth.DefaultOAuthProvider{
+			AuthorizeURL: oauthAuthorizeURL,
+			ExchangeFunc: func(context.Context, auth.OAuthCallbackRequest) (auth.CredentialTruth, error) {
+				return auth.CredentialTruth{
+					Mode:     auth.ModeChatGPT,
+					Email:    strings.TrimSpace(oauthEmail),
+					PlanType: strings.TrimSpace(oauthPlanType),
+				}, nil
+			},
+		}
+	}
+	authManager := auth.NewManager(oauthProvider)
+	llmResolver := &storeLLMResolver{repo: dataStore, fallback: authManager}
+	router.SetCredentialResolver(llmResolver)
+	router.SetProviderConfigResolver(llmResolver)
+	terminalManager := terminal.NewManager()
+
 	// ---------------------------------------------------------------------------
 	// 10. HTTP/WebSocket Server
 	// ---------------------------------------------------------------------------
-	httpServer := server.NewHTTPServer(kernel)
+	webAssets, err := server.NewWebAssetsHandler(webDistDir)
+	if err != nil {
+		return fmt.Errorf("init web assets: %w", err)
+	}
+	httpServer := server.NewHTTPServer(
+		appui.NewServices(
+			kernel,
+			sessionManager,
+			appui.WithStore(dataStore),
+			appui.WithMCPRegistry(mcpRegistry),
+			appui.WithAuthManager(authManager),
+			appui.WithTerminalManager(terminalManager),
+		),
+		server.WithWebAssets(webAssets),
+		server.WithTerminalManager(terminalManager),
+	)
+	if subscriber := httpServer.ProjectionSubscriber(); subscriber != nil {
+		projector.AddSubscriber(subscriber)
+	}
 	httpSrv := &http.Server{
 		Addr:    httpAddr,
 		Handler: httpServer.Handler(),
@@ -291,18 +335,67 @@ func envOrDefault(key, defaultVal string) string {
 }
 
 // buildProviders creates ChatModel instances for configured providers.
-// In production, these would be real eino-ext ChatModel implementations.
+// The router now lazily constructs auth-backed providers from live credential
+// truth, so this stays empty unless we explicitly prewarm models here.
 func buildProviders() map[string]modelrouter.ChatModel {
 	providers := make(map[string]modelrouter.ChatModel)
-	// Provider instances are created via modelrouter/openai.go, anthropic.go, ollama.go
-	// when their API keys are configured. For now, return empty map — the ModelRouter
-	// will return ProviderNotFoundError until providers are configured.
-	//
-	// Example with real providers:
-	//   if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
-	//       providers["openai"] = modelrouter.NewOpenAIModel(apiKey, "gpt-4o")
-	//   }
 	return providers
+}
+
+type storeLLMResolver struct {
+	repo interface {
+		GetLLMConfig() (*store.LLMConfig, error)
+	}
+	fallback auth.Resolver
+}
+
+func (r *storeLLMResolver) Resolve() (auth.CredentialTruth, bool) {
+	if r != nil && r.fallback != nil {
+		if truth, ok := r.fallback.Resolve(); ok {
+			return truth, true
+		}
+	}
+	cfg, ok := r.currentConfig()
+	if !ok {
+		return auth.CredentialTruth{}, false
+	}
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	if apiKey == "" {
+		return auth.CredentialTruth{}, false
+	}
+	return auth.CredentialTruth{
+		Mode:     auth.ModeAPIKey,
+		PlanType: strings.TrimSpace(cfg.Provider),
+		APIKey:   apiKey,
+	}, true
+}
+
+func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelrouter.ProviderConfig, bool) {
+	cfg, ok := r.currentConfig()
+	if !ok {
+		return modelrouter.ProviderConfig{}, false
+	}
+	provider := strings.TrimSpace(cfg.Provider)
+	model := strings.TrimSpace(cfg.Model)
+	if provider == "" && model == "" {
+		return modelrouter.ProviderConfig{}, false
+	}
+	return modelrouter.ProviderConfig{
+		Provider: provider,
+		Model:    model,
+		BaseURL:  strings.TrimSpace(cfg.BaseURL),
+	}, true
+}
+
+func (r *storeLLMResolver) currentConfig() (*store.LLMConfig, bool) {
+	if r == nil || r.repo == nil {
+		return nil, false
+	}
+	cfg, err := r.repo.GetLLMConfig()
+	if err != nil || cfg == nil {
+		return nil, false
+	}
+	return cfg, true
 }
 
 // ---------------------------------------------------------------------------

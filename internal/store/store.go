@@ -44,6 +44,28 @@ type Store interface {
 	GetLLMConfig() (*LLMConfig, error)
 	SaveLLMConfig(config *LLMConfig) error
 
+	// Web settings
+	GetWebSettings() (*WebSettings, error)
+	SaveWebSettings(settings *WebSettings) error
+
+	// Hosts
+	GetHost(id string) (*HostRecord, error)
+	ListHosts() ([]HostRecord, error)
+	SaveHost(host *HostRecord) error
+	DeleteHost(id string) error
+
+	// MCP servers runtime page
+	GetMCPServers() ([]MCPServerRecord, error)
+	SaveMCPServers(items []MCPServerRecord) error
+
+	// Agent profile & catalogs
+	GetSkillCatalog() ([]SkillCatalogEntry, error)
+	SaveSkillCatalog(items []SkillCatalogEntry) error
+	GetAgentMCPCatalog() ([]AgentMCPCatalogEntry, error)
+	SaveAgentMCPCatalog(items []AgentMCPCatalogEntry) error
+	GetAgentProfiles() ([]AgentProfileRecord, error)
+	SaveAgentProfiles(items []AgentProfileRecord) error
+
 	// Tool result spills
 	GetToolResultSpill(id string) (*tooling.ResultSpill, error)
 	ListToolResultSpills() ([]*tooling.ResultSpill, error)
@@ -92,6 +114,92 @@ type LLMConfig struct {
 	CompactModel     string `json:"compactModel"`
 }
 
+// SettingModelOption represents one selectable model option for the web UI.
+type SettingModelOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// WebSettings stores lightweight application settings used by the web shell.
+type WebSettings struct {
+	Quota           string               `json:"quota,omitempty"`
+	Model           string               `json:"model,omitempty"`
+	ReasoningEffort string               `json:"reasoningEffort,omitempty"`
+	Models          []SettingModelOption `json:"models,omitempty"`
+}
+
+// HostRecord stores one managed host entry for inventory-oriented pages.
+type HostRecord struct {
+	ID              string            `json:"id"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind,omitempty"`
+	Address         string            `json:"address,omitempty"`
+	Transport       string            `json:"transport,omitempty"`
+	Status          string            `json:"status,omitempty"`
+	Executable      bool              `json:"executable,omitempty"`
+	TerminalCapable bool              `json:"terminalCapable,omitempty"`
+	OS              string            `json:"os,omitempty"`
+	Arch            string            `json:"arch,omitempty"`
+	AgentVersion    string            `json:"agentVersion,omitempty"`
+	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	LastError       string            `json:"lastError,omitempty"`
+	SSHUser         string            `json:"sshUser,omitempty"`
+	SSHPort         int               `json:"sshPort,omitempty"`
+	InstallState    string            `json:"installState,omitempty"`
+	ControlMode     string            `json:"controlMode,omitempty"`
+	CreatedAt       time.Time         `json:"createdAt,omitempty"`
+	UpdatedAt       time.Time         `json:"updatedAt,omitempty"`
+}
+
+// MCPServerRecord stores one MCP runtime server configuration and its latest
+// UI-facing runtime status.
+type MCPServerRecord struct {
+	Name          string            `json:"name"`
+	Transport     string            `json:"transport,omitempty"`
+	Command       string            `json:"command,omitempty"`
+	Args          []string          `json:"args,omitempty"`
+	URL           string            `json:"url,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Disabled      bool              `json:"disabled,omitempty"`
+	Status        string            `json:"status,omitempty"`
+	Error         string            `json:"error,omitempty"`
+	ToolCount     int               `json:"toolCount,omitempty"`
+	ResourceCount int               `json:"resourceCount,omitempty"`
+	CreatedAt     time.Time         `json:"createdAt,omitempty"`
+	UpdatedAt     time.Time         `json:"updatedAt,omitempty"`
+}
+
+// SkillCatalogEntry stores one skill catalog item exposed to the Agent Profile
+// surface.
+type SkillCatalogEntry struct {
+	ID                    string    `json:"id"`
+	Name                  string    `json:"name"`
+	Description           string    `json:"description,omitempty"`
+	Source                string    `json:"source,omitempty"`
+	DefaultEnabled        bool      `json:"defaultEnabled,omitempty"`
+	DefaultActivationMode string    `json:"defaultActivationMode,omitempty"`
+	CreatedAt             time.Time `json:"createdAt,omitempty"`
+	UpdatedAt             time.Time `json:"updatedAt,omitempty"`
+}
+
+// AgentMCPCatalogEntry stores one MCP catalog item used by agent profiles.
+type AgentMCPCatalogEntry struct {
+	ID                           string    `json:"id"`
+	Name                         string    `json:"name"`
+	Type                         string    `json:"type,omitempty"`
+	Source                       string    `json:"source,omitempty"`
+	DefaultEnabled               bool      `json:"defaultEnabled,omitempty"`
+	Permission                   string    `json:"permission,omitempty"`
+	RequiresExplicitUserApproval bool      `json:"requiresExplicitUserApproval,omitempty"`
+	CreatedAt                    time.Time `json:"createdAt,omitempty"`
+	UpdatedAt                    time.Time `json:"updatedAt,omitempty"`
+}
+
+// AgentProfileRecord keeps one saved agent profile document in a JSON-friendly
+// shape so the Web API can preserve its contract without a second model layer.
+type AgentProfileRecord map[string]any
+
 // ---------------------------------------------------------------------------
 // JSONFileStore implementation
 // ---------------------------------------------------------------------------
@@ -105,6 +213,12 @@ type JSONFileStore struct {
 	audits   []*runtimekernel.ApprovalRecord
 	uiCards  []UICard
 	llmCfg   *LLMConfig
+	webCfg   *WebSettings
+	hosts    map[string]*HostRecord
+	mcpSrv   []MCPServerRecord
+	skillCat []SkillCatalogEntry
+	agentMCP []AgentMCPCatalogEntry
+	profiles []AgentProfileRecord
 	spills   map[string]*tooling.ResultSpill
 
 	// Async write control
@@ -129,6 +243,7 @@ func NewJSONFileStore(dataDir string, flushInterval time.Duration) (*JSONFileSto
 		sessions: make(map[string]*runtimekernel.SessionState),
 		tasks:    make(map[string]*runtimekernel.WorkspaceTask),
 		dirty:    make(map[string]bool),
+		hosts:    make(map[string]*HostRecord),
 		spills:   make(map[string]*tooling.ResultSpill),
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
@@ -354,6 +469,163 @@ func (s *JSONFileStore) SaveLLMConfig(config *LLMConfig) error {
 }
 
 // ---------------------------------------------------------------------------
+// Web settings
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetWebSettings() (*WebSettings, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.webCfg == nil {
+		return nil, fmt.Errorf("web settings not found")
+	}
+	cp := cloneWebSettings(*s.webCfg)
+	return &cp, nil
+}
+
+func (s *JSONFileStore) SaveWebSettings(settings *WebSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := cloneWebSettings(*settings)
+	s.webCfg = &cp
+	s.dirty["websettings"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Hosts
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetHost(id string) (*HostRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	host, ok := s.hosts[id]
+	if !ok {
+		return nil, fmt.Errorf("host %q not found", id)
+	}
+	cp := cloneHostRecord(*host)
+	return &cp, nil
+}
+
+func (s *JSONFileStore) ListHosts() ([]HostRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]HostRecord, 0, len(s.hosts))
+	for _, host := range s.hosts {
+		result = append(result, cloneHostRecord(*host))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].UpdatedAt.Equal(result[j].UpdatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].UpdatedAt.After(result[j].UpdatedAt)
+	})
+	return result, nil
+}
+
+func (s *JSONFileStore) SaveHost(host *HostRecord) error {
+	if host == nil {
+		return fmt.Errorf("host is nil")
+	}
+	if host.ID == "" {
+		return fmt.Errorf("host id is required")
+	}
+	cp := cloneHostRecord(*host)
+	now := time.Now().UTC()
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hosts[cp.ID] = &cp
+	s.dirty["host:"+cp.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) DeleteHost(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.hosts[id]; !ok {
+		return fmt.Errorf("host %q not found", id)
+	}
+	delete(s.hosts, id)
+	s.dirty["delete_host:"+id] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// MCP servers runtime page
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetMCPServers() ([]MCPServerRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneMCPServerRecords(s.mcpSrv), nil
+}
+
+func (s *JSONFileStore) SaveMCPServers(items []MCPServerRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mcpSrv = cloneMCPServerRecords(items)
+	s.dirty["mcpservers"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Agent profile & catalogs
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetSkillCatalog() ([]SkillCatalogEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneSkillCatalogEntries(s.skillCat), nil
+}
+
+func (s *JSONFileStore) SaveSkillCatalog(items []SkillCatalogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.skillCat = cloneSkillCatalogEntries(items)
+	s.dirty["skillcatalog"] = true
+	return nil
+}
+
+func (s *JSONFileStore) GetAgentMCPCatalog() ([]AgentMCPCatalogEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneAgentMCPCatalogEntries(s.agentMCP), nil
+}
+
+func (s *JSONFileStore) SaveAgentMCPCatalog(items []AgentMCPCatalogEntry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentMCP = cloneAgentMCPCatalogEntries(items)
+	s.dirty["agentmcpcatalog"] = true
+	return nil
+}
+
+func (s *JSONFileStore) GetAgentProfiles() ([]AgentProfileRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneAgentProfileRecords(s.profiles)
+}
+
+func (s *JSONFileStore) SaveAgentProfiles(items []AgentProfileRecord) error {
+	cp, err := cloneAgentProfileRecords(items)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = cp
+	s.dirty["agentprofiles"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // Tool result spills
 // ---------------------------------------------------------------------------
 
@@ -510,6 +782,39 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			if err := s.writeJSON("llm-config.json", s.llmCfg); err != nil {
 				return err
 			}
+		case key == "websettings":
+			if err := s.writeJSON("web-settings.json", s.webCfg); err != nil {
+				return err
+			}
+		case len(key) > 5 && key[:5] == "host:":
+			id := key[5:]
+			host, ok := s.hosts[id]
+			if !ok {
+				continue
+			}
+			if err := s.writeJSON(filepath.Join("hosts", id+".json"), host); err != nil {
+				return err
+			}
+		case len(key) > 12 && key[:12] == "delete_host:":
+			id := key[12:]
+			path := filepath.Join(s.dataDir, "hosts", id+".json")
+			_ = os.Remove(path)
+		case key == "mcpservers":
+			if err := s.writeJSON("mcp-servers.json", s.mcpSrv); err != nil {
+				return err
+			}
+		case key == "skillcatalog":
+			if err := s.writeJSON("agent-skills.json", s.skillCat); err != nil {
+				return err
+			}
+		case key == "agentmcpcatalog":
+			if err := s.writeJSON("agent-mcps.json", s.agentMCP); err != nil {
+				return err
+			}
+		case key == "agentprofiles":
+			if err := s.writeJSON("agent-profiles.json", s.profiles); err != nil {
+				return err
+			}
 		case len(key) > 6 && key[:6] == "spill:":
 			id := key[6:]
 			spill, ok := s.spills[id]
@@ -614,6 +919,75 @@ func (s *JSONFileStore) loadFromDisk() error {
 		}
 	}
 
+	// Load web settings
+	webCfgPath := filepath.Join(s.dataDir, "web-settings.json")
+	if raw, err := os.ReadFile(webCfgPath); err == nil {
+		var cfg WebSettings
+		if err := json.Unmarshal(raw, &cfg); err == nil {
+			s.webCfg = &cfg
+		}
+	}
+
+	// Load hosts
+	hostDir := filepath.Join(s.dataDir, "hosts")
+	hostEntries, err := os.ReadDir(hostDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, entry := range hostEntries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(hostDir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var host HostRecord
+		if err := json.Unmarshal(raw, &host); err != nil {
+			continue
+		}
+		s.hosts[host.ID] = &host
+	}
+
+	// Load MCP runtime servers
+	mcpServersPath := filepath.Join(s.dataDir, "mcp-servers.json")
+	if raw, err := os.ReadFile(mcpServersPath); err == nil {
+		var items []MCPServerRecord
+		if err := json.Unmarshal(raw, &items); err == nil {
+			s.mcpSrv = cloneMCPServerRecords(items)
+		}
+	}
+
+	// Load agent skill catalog
+	skillCatalogPath := filepath.Join(s.dataDir, "agent-skills.json")
+	if raw, err := os.ReadFile(skillCatalogPath); err == nil {
+		var items []SkillCatalogEntry
+		if err := json.Unmarshal(raw, &items); err == nil {
+			s.skillCat = cloneSkillCatalogEntries(items)
+		}
+	}
+
+	// Load agent MCP catalog
+	agentMCPCatalogPath := filepath.Join(s.dataDir, "agent-mcps.json")
+	if raw, err := os.ReadFile(agentMCPCatalogPath); err == nil {
+		var items []AgentMCPCatalogEntry
+		if err := json.Unmarshal(raw, &items); err == nil {
+			s.agentMCP = cloneAgentMCPCatalogEntries(items)
+		}
+	}
+
+	// Load agent profiles
+	agentProfilesPath := filepath.Join(s.dataDir, "agent-profiles.json")
+	if raw, err := os.ReadFile(agentProfilesPath); err == nil {
+		var items []AgentProfileRecord
+		if err := json.Unmarshal(raw, &items); err == nil {
+			cloned, cloneErr := cloneAgentProfileRecords(items)
+			if cloneErr == nil {
+				s.profiles = cloned
+			}
+		}
+	}
+
 	// Load tool result spills
 	spillDir := filepath.Join(s.dataDir, "tool-spills")
 	spillEntries, err := os.ReadDir(spillDir)
@@ -681,4 +1055,67 @@ func cloneWorkspaceTask(src *runtimekernel.WorkspaceTask) (*runtimekernel.Worksp
 		return nil, err
 	}
 	return &dst, nil
+}
+
+func cloneWebSettings(src WebSettings) WebSettings {
+	src.Models = append([]SettingModelOption(nil), src.Models...)
+	return src
+}
+
+func cloneHostRecord(src HostRecord) HostRecord {
+	if len(src.Labels) > 0 {
+		labels := make(map[string]string, len(src.Labels))
+		for key, value := range src.Labels {
+			labels[key] = value
+		}
+		src.Labels = labels
+	}
+	return src
+}
+
+func cloneMCPServerRecord(src MCPServerRecord) MCPServerRecord {
+	src.Args = append([]string(nil), src.Args...)
+	if len(src.Env) > 0 {
+		env := make(map[string]string, len(src.Env))
+		for key, value := range src.Env {
+			env[key] = value
+		}
+		src.Env = env
+	}
+	return src
+}
+
+func cloneMCPServerRecords(src []MCPServerRecord) []MCPServerRecord {
+	out := make([]MCPServerRecord, 0, len(src))
+	for _, item := range src {
+		out = append(out, cloneMCPServerRecord(item))
+	}
+	return out
+}
+
+func cloneSkillCatalogEntries(src []SkillCatalogEntry) []SkillCatalogEntry {
+	out := make([]SkillCatalogEntry, len(src))
+	copy(out, src)
+	return out
+}
+
+func cloneAgentMCPCatalogEntries(src []AgentMCPCatalogEntry) []AgentMCPCatalogEntry {
+	out := make([]AgentMCPCatalogEntry, len(src))
+	copy(out, src)
+	return out
+}
+
+func cloneAgentProfileRecords(src []AgentProfileRecord) ([]AgentProfileRecord, error) {
+	if len(src) == 0 {
+		return []AgentProfileRecord{}, nil
+	}
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil, err
+	}
+	var dst []AgentProfileRecord
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return nil, err
+	}
+	return dst, nil
 }

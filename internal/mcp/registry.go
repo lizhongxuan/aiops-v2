@@ -14,12 +14,18 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+var (
+	defaultRegistryMu sync.RWMutex
+	defaultRegistry   *Registry
+)
+
 // ServerConfig stores the registration-time configuration for an MCP server.
 type ServerConfig struct {
 	ID        string
 	Name      string
 	Transport string
 	Command   []string
+	Disabled  bool
 	Source    string
 }
 
@@ -29,14 +35,31 @@ type Registry struct {
 	governance  *settings.Governance
 	serverCfgs  map[string]ServerConfig
 	serverTools map[string][]tooling.Tool
+	serverState map[string]bool
 }
 
 // NewRegistry creates an empty MCP server registry.
 func NewRegistry() *Registry {
-	return &Registry{
+	r := &Registry{
 		serverCfgs:  make(map[string]ServerConfig),
 		serverTools: make(map[string][]tooling.Tool),
+		serverState: make(map[string]bool),
 	}
+	setDefaultRegistry(r)
+	return r
+}
+
+// DefaultRegistry returns the most recently created registry, if any.
+func DefaultRegistry() *Registry {
+	defaultRegistryMu.RLock()
+	defer defaultRegistryMu.RUnlock()
+	return defaultRegistry
+}
+
+func setDefaultRegistry(r *Registry) {
+	defaultRegistryMu.Lock()
+	defer defaultRegistryMu.Unlock()
+	defaultRegistry = r
 }
 
 // SetGovernance attaches a live governance snapshot source to the registry.
@@ -69,6 +92,29 @@ func (r *Registry) RegisterServer(cfg ServerConfig) error {
 	return nil
 }
 
+// SetServerDisabled marks a server as disabled or enabled without removing its config.
+func (r *Registry) SetServerDisabled(serverID string, disabled bool) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if disabled {
+		r.serverState[serverID] = true
+		return
+	}
+	delete(r.serverState, serverID)
+}
+
+// IsServerDisabled reports whether a server is currently disabled.
+func (r *Registry) IsServerDisabled(serverID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.serverState[strings.TrimSpace(serverID)]
+}
+
 // GetServer returns a cloned server configuration by id.
 func (r *Registry) GetServer(id string) (ServerConfig, bool) {
 	r.mu.RLock()
@@ -78,6 +124,7 @@ func (r *Registry) GetServer(id string) (ServerConfig, bool) {
 	if !ok {
 		return ServerConfig{}, false
 	}
+	cfg.Disabled = r.serverState[strings.TrimSpace(id)]
 	return cloneServerConfig(cfg), true
 }
 
@@ -88,6 +135,7 @@ func (r *Registry) ListServers() []ServerConfig {
 
 	out := make([]ServerConfig, 0, len(r.serverCfgs))
 	for _, cfg := range r.serverCfgs {
+		cfg.Disabled = r.serverState[cfg.ID]
 		out = append(out, cloneServerConfig(cfg))
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -139,6 +187,9 @@ func (r *Registry) ListServerTools(serverID string) []tooling.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	if r.serverState[strings.TrimSpace(serverID)] {
+		return nil
+	}
 	tools, ok := r.serverTools[strings.TrimSpace(serverID)]
 	if !ok {
 		return nil
@@ -160,6 +211,9 @@ func (r *Registry) DynamicTools() []tooling.Tool {
 	var out []tooling.Tool
 	for _, serverID := range serverIDs {
 		tools := append([]tooling.Tool(nil), r.serverTools[serverID]...)
+		if r.serverState[serverID] {
+			continue
+		}
 		sort.Slice(tools, func(i, j int) bool {
 			return tools[i].Metadata().Name < tools[j].Metadata().Name
 		})
@@ -183,7 +237,9 @@ func (r *Registry) DynamicToolRefreshToken() string {
 	}
 	sort.Strings(serverIDs)
 	for _, serverID := range serverIDs {
-		writeRegistryFingerprintPart(h, "server", serverFingerprint(r.serverCfgs[serverID]))
+		cfg := r.serverCfgs[serverID]
+		cfg.Disabled = r.serverState[serverID]
+		writeRegistryFingerprintPart(h, "server", serverFingerprint(cfg))
 	}
 
 	serverToolIDs := make([]string, 0, len(r.serverTools))
@@ -192,6 +248,9 @@ func (r *Registry) DynamicToolRefreshToken() string {
 	}
 	sort.Strings(serverToolIDs)
 	for _, serverID := range serverToolIDs {
+		if r.serverState[serverID] {
+			continue
+		}
 		tools := append([]tooling.Tool(nil), r.serverTools[serverID]...)
 		sort.Slice(tools, func(i, j int) bool {
 			return tools[i].Metadata().Name < tools[j].Metadata().Name

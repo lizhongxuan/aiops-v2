@@ -92,12 +92,14 @@ func (s SessionState) Validate() error {
 
 // Message represents a single message in a session conversation.
 type Message struct {
-	ID         string      `json:"id"`
-	Role       string      `json:"role"` // user, assistant, system, tool
-	Content    string      `json:"content,omitempty"`
-	ToolCalls  []ToolCall  `json:"toolCalls,omitempty"`
-	ToolResult *ToolResult `json:"toolResult,omitempty"`
-	Timestamp  time.Time   `json:"timestamp"`
+	ID              string      `json:"id"`
+	ClientMessageID string      `json:"clientMessageId,omitempty"`
+	ClientTurnID    string      `json:"clientTurnId,omitempty"`
+	Role            string      `json:"role"` // user, assistant, system, tool
+	Content         string      `json:"content,omitempty"`
+	ToolCalls       []ToolCall  `json:"toolCalls,omitempty"`
+	ToolResult      *ToolResult `json:"toolResult,omitempty"`
+	Timestamp       time.Time   `json:"timestamp"`
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +481,8 @@ func (s CompactedSegment) Validate() error {
 // TurnSnapshot freezes the turn-level state at a stable boundary.
 type TurnSnapshot struct {
 	ID                    string              `json:"id"`
+	ClientTurnID          string              `json:"clientTurnId,omitempty"`
+	ClientMessageID       string              `json:"clientMessageId,omitempty"`
 	SessionID             string              `json:"sessionId"`
 	SessionType           SessionType         `json:"sessionType"`
 	Mode                  Mode                `json:"mode"`
@@ -813,13 +817,15 @@ func (m Mode) IsValid() bool {
 
 // TurnRequest is the typed V2 input contract for a runtime turn.
 type TurnRequest struct {
-	SessionType SessionType       `json:"sessionType"`
-	Mode        Mode              `json:"mode"`
-	SessionID   string            `json:"sessionId,omitempty"`
-	TurnID      string            `json:"turnId,omitempty"`
-	Input       string            `json:"input,omitempty"`
-	HostID      string            `json:"hostId,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	SessionType     SessionType       `json:"sessionType"`
+	Mode            Mode              `json:"mode"`
+	SessionID       string            `json:"sessionId,omitempty"`
+	TurnID          string            `json:"turnId,omitempty"`
+	ClientTurnID    string            `json:"clientTurnId,omitempty"`
+	ClientMessageID string            `json:"clientMessageId,omitempty"`
+	Input           string            `json:"input,omitempty"`
+	HostID          string            `json:"hostId,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
 // Validate checks that the request uses canonical session and mode values.
@@ -835,13 +841,15 @@ func (r TurnRequest) Validate() error {
 
 // TurnResult is the typed V2 output contract for a completed or failed turn.
 type TurnResult struct {
-	SessionType SessionType `json:"sessionType"`
-	Mode        Mode        `json:"mode"`
-	SessionID   string      `json:"sessionId"`
-	TurnID      string      `json:"turnId"`
-	Status      string      `json:"status"`
-	Output      string      `json:"output,omitempty"`
-	Error       string      `json:"error,omitempty"`
+	SessionType     SessionType `json:"sessionType"`
+	Mode            Mode        `json:"mode"`
+	SessionID       string      `json:"sessionId"`
+	TurnID          string      `json:"turnId"`
+	ClientTurnID    string      `json:"clientTurnId,omitempty"`
+	ClientMessageID string      `json:"clientMessageId,omitempty"`
+	Status          string      `json:"status"`
+	Output          string      `json:"output,omitempty"`
+	Error           string      `json:"error,omitempty"`
 }
 
 // Validate checks that the result keeps the V2 typed contract intact.
@@ -938,27 +946,41 @@ func (c RuntimeContext) Validate() error {
 type EventType string
 
 const (
-	EventToolStarted       EventType = "tool.started"
-	EventToolProgress      EventType = "tool.progress"
-	EventToolCompleted     EventType = "tool.completed"
-	EventToolFailed        EventType = "tool.failed"
-	EventApprovalNeeded    EventType = "approval.needed"
-	EventApprovalDecided   EventType = "approval.decided"
-	EventEvidenceCollected EventType = "evidence.collected"
-	EventTurnComplete      EventType = "turn.complete"
-	EventActivityUpdate    EventType = "activity.update"
-	EventCardGenerated     EventType = "card.generated"
+	EventTurnStarted         EventType = "turn.started"
+	EventAssistantIntent     EventType = "assistant.intent.delta"
+	EventAssistantFinalDelta EventType = "assistant.final.delta"
+	EventToolStarted         EventType = "tool.started"
+	EventToolProgress        EventType = "tool.progress"
+	EventToolCompleted       EventType = "tool.completed"
+	EventToolFailed          EventType = "tool.failed"
+	EventPhaseEnd            EventType = "phase.end"
+	EventProcessSummary      EventType = "process.summary"
+	EventApprovalNeeded      EventType = "approval.needed"
+	EventApprovalDecided     EventType = "approval.decided"
+	EventEvidenceCollected   EventType = "evidence.collected"
+	EventTurnComplete        EventType = "turn.complete"
+	EventTurnError           EventType = "turn.error"
+	EventTurnAborted         EventType = "turn.aborted"
+	EventActivityUpdate      EventType = "activity.update"
+	EventCardGenerated       EventType = "card.generated"
 )
 
 var allEventTypes = []EventType{
+	EventTurnStarted,
+	EventAssistantIntent,
+	EventAssistantFinalDelta,
 	EventToolStarted,
 	EventToolProgress,
 	EventToolCompleted,
 	EventToolFailed,
+	EventPhaseEnd,
+	EventProcessSummary,
 	EventApprovalNeeded,
 	EventApprovalDecided,
 	EventEvidenceCollected,
 	EventTurnComplete,
+	EventTurnError,
+	EventTurnAborted,
 	EventActivityUpdate,
 	EventCardGenerated,
 }
@@ -973,9 +995,11 @@ func AllEventTypes() []EventType {
 // IsValid reports whether the value is one of the canonical event types.
 func (e EventType) IsValid() bool {
 	switch e {
-	case EventToolStarted, EventToolProgress, EventToolCompleted, EventToolFailed,
+	case EventTurnStarted, EventAssistantIntent, EventAssistantFinalDelta,
+		EventToolStarted, EventToolProgress, EventToolCompleted, EventToolFailed,
+		EventPhaseEnd, EventProcessSummary,
 		EventApprovalNeeded, EventApprovalDecided, EventEvidenceCollected,
-		EventTurnComplete, EventActivityUpdate, EventCardGenerated:
+		EventTurnComplete, EventTurnError, EventTurnAborted, EventActivityUpdate, EventCardGenerated:
 		return true
 	default:
 		return false

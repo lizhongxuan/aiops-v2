@@ -1,0 +1,29 @@
+version: v0.1
+name: agent-dispatch
+inventory:
+  hosts:
+    agent-a:
+      address: "http://127.0.0.1:7072"
+    agent-b:
+      address: "http://127.0.0.1:7073"
+    agent-c:
+      address: "http://127.0.0.1:7074"
+steps:
+  - name: step-1-export
+    targets: [agent-a]
+    action: cmd.run
+    args:
+      cmd: |
+        echo "TOKEN=abc123"
+        echo "PORT=8080"
+  - name: step-2-use
+    targets: [agent-b]
+    action: cmd.run
+    args:
+      cmd: |
+        echo "step2 sees TOKEN=$TOKEN PORT=$PORT"
+  - name: step-3-final
+    targets: [agent-c]
+    action: cmd.run
+    args:
+      cmd: "echo step3 done"

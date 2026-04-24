@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package aiops.agent.v1;
+
+option go_package = "github.com/lizhongxuan/aiops-codex/internal/agentrpc";
+
+message Registration {
+  string token = 1;
+  string host_id = 2;
+  string hostname = 3;
+  string os = 4;
+  string arch = 5;
+  string agent_version = 6;
+  map<string, string> labels = 7;
+}
+
+message Heartbeat {
+  string host_id = 1;
+  int64 timestamp = 2;
+}
+
+message Ping {
+  string message = 1;
+  int64 timestamp = 2;
+}
+
+message Ack {
+  string message = 1;
+  int64 timestamp = 2;
+}
+
+message Envelope {
+  string kind = 1;
+  Registration registration = 2;
+  Heartbeat heartbeat = 3;
+  Ping ping = 4;
+  Ack ack = 5;
+  string error = 6;
+}
+
+service AgentService {
+  rpc Connect(stream Envelope) returns (stream Envelope);
+}

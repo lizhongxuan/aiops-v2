@@ -186,8 +186,31 @@ func TestEventType_IsValid(t *testing.T) {
 
 func TestAllEventTypes(t *testing.T) {
 	types := AllEventTypes()
-	if len(types) != 10 {
-		t.Fatalf("AllEventTypes() returned %d items, want 10", len(types))
+	seen := map[EventType]bool{}
+	for _, eventType := range types {
+		if seen[eventType] {
+			t.Fatalf("AllEventTypes() contains duplicate type %q", eventType)
+		}
+		seen[eventType] = true
+		if !eventType.IsValid() {
+			t.Fatalf("AllEventTypes() contains invalid type %q", eventType)
+		}
+	}
+	required := []EventType{
+		EventTurnStarted,
+		EventAssistantFinalDelta,
+		EventToolStarted,
+		EventToolCompleted,
+		EventPhaseEnd,
+		EventProcessSummary,
+		EventTurnComplete,
+		EventTurnError,
+		EventTurnAborted,
+	}
+	for _, eventType := range required {
+		if !seen[eventType] {
+			t.Fatalf("AllEventTypes() missing required type %q", eventType)
+		}
 	}
 }
 
