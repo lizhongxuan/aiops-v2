@@ -1636,6 +1636,192 @@ export function buildProtocolBackgroundAgents(hostRows = []) {
   );
 }
 
+function projectionStatusLabel(status = "") {
+  const normalized = compactText(status).toLowerCase();
+  if (normalized === "running" || normalized === "queued") return "运行中";
+  if (normalized === "blocked" || normalized === "waiting") return "等待";
+  if (normalized === "completed") return "已完成";
+  if (normalized === "failed") return "失败";
+  if (normalized === "canceled") return "已停止";
+  return "空闲";
+}
+
+function protocolMissionPhaseFromAgentProjection(projection = {}, fallback = "idle") {
+  const status = compactText(projection?.status).toLowerCase();
+  if (status === "blocked") return "waiting_approval";
+  if (status === "working") return "executing";
+  if (status === "failed") return "failed";
+  if (status === "reviewing") return "finalizing";
+  return fallback;
+}
+
+function buildProtocolBackgroundAgentsFromProjection(projection = {}) {
+  return sortBackgroundAgentItems(asArray(projection.agents).map((agent) => {
+    const handle = compactText(agent.handle || agent.name || agent.id);
+    const statusKey = compactText(agent.status || "idle").toLowerCase();
+    const stats = asObject(agent.stats);
+    const statParts = [
+      Number(stats.commandsRun || 0) > 0 ? `${Number(stats.commandsRun || 0)} commands` : "",
+      Number(stats.filesRead || 0) > 0 ? `${Number(stats.filesRead || 0)} files` : "",
+      Number(stats.filesChanged || 0) > 0 ? `${Number(stats.filesChanged || 0)} changed` : "",
+      Number(stats.toolsCalled || 0) > 0 ? `${Number(stats.toolsCalled || 0)} tools` : "",
+    ].filter(Boolean);
+    return {
+      id: compactText(agent.id || handle),
+      hostId: compactText(agent.handle || agent.id || handle),
+      name: handle ? (handle.startsWith("@") ? handle : `@${handle}`) : "@agent",
+      subtitle: compactText(agent.lastAction || agent.lastSummary || "等待执行"),
+      meta: statParts.join(" · "),
+      stats,
+      status: statusKey,
+      statusKey,
+      statusLabel: projectionStatusLabel(statusKey),
+      tone: statusTone(statusKey),
+      sortTimestamp: compactText(agent.updatedAt || agent.startedAt || agent.completedAt),
+      raw: agent,
+      projection: buildProtocolProjection({
+        kind: "agent",
+        id: compactText(agent.id || handle),
+        title: handle,
+        summary: compactText(agent.lastAction || agent.lastSummary),
+        status: statusKey,
+        tone: statusTone(statusKey),
+        timestamp: parseTimestamp(agent.updatedAt || agent.startedAt || agent.completedAt),
+      }),
+    };
+  }));
+}
+
+function buildProtocolApprovalItemsFromProjection(projection = {}) {
+  return sortApprovalDisplayItems(asArray(projection.approvals)
+    .filter((approval) => ["blocked", "waiting", "queued", "running"].includes(compactText(approval.status).toLowerCase()))
+    .map((approval) => {
+      const approvalId = compactText(approval.id || approval.approvalId);
+      const title = normalizeWorkspaceCopy(approval.title || "待确认操作");
+      const command = normalizeWorkspaceCopy(approval.reason || approval.summary || title);
+      const timeLabel = formatTime(approval.updatedAt);
+      const timestamp = parseTimestamp(approval.updatedAt);
+      return {
+        id: approvalId,
+        approvalId,
+        kind: compactText(approval.approvalType) === "plan" ? "plan" : "operation",
+        title,
+        hostId: compactText(approval.targets?.[0]),
+        hostName: compactText(approval.targets?.[0] || "Agent"),
+        commandLabel: compactText(approval.approvalType) === "plan" ? "计划:" : "执行命令:",
+        command,
+        summary: command,
+        timeLabel,
+        supportsAuthorize: false,
+        detailRows: normalizeEvidenceRows({
+          risk: approval.risk,
+          decision: approval.decision,
+          targets: asArray(approval.targets).join(", "),
+        }),
+        sortTimestamp: approval.updatedAt,
+        projection: buildProtocolProjection({
+          kind: "approval",
+          id: approvalId,
+          aliases: [approvalId],
+          title,
+          summary: command,
+          hostId: compactText(approval.targets?.[0]),
+          hostName: compactText(approval.targets?.[0] || "Agent"),
+          status: compactText(approval.status),
+          tone: "warning",
+          timeLabel,
+          timestamp,
+        }),
+        raw: approval,
+      };
+    }));
+}
+
+function buildProtocolEventItemsFromProjection(projection = {}) {
+  const timeline = asArray(projection.timeline).map((row) => {
+    const kind = compactText(row.kind || "event");
+    const timestamp = parseTimestamp(row.updatedAt);
+    return {
+      id: compactText(row.id || `${kind}-${row.seq || timestamp || Date.now()}`),
+      time: formatTime(row.updatedAt),
+      timestamp,
+      title: normalizeWorkspaceCopy(row.title || (kind === "tool" ? "工具调用" : kind === "turn" ? "任务" : "事件")),
+      text: normalizeWorkspaceCopy(row.summary || row.detail || ""),
+      detail: normalizeWorkspaceCopy(row.summary || row.detail || ""),
+      tone: statusTone(row.status),
+      status: compactText(row.status),
+      targetType: kind,
+      targetId: compactText(row.toolCallId || row.agentId || row.turnId || row.id),
+      hostId: compactText(row.agentId),
+      command: compactText(row.command),
+      rawCommand: compactText(row.rawCommand || row.command),
+      output: row.output,
+      stdout: row.stdout,
+      stderr: row.stderr,
+      cwd: compactText(row.cwd),
+      exitCode: row.exitCode,
+      commandCard: row.commandCard,
+      projection: buildProtocolProjection({
+        kind: "event",
+        id: compactText(row.id),
+        title: normalizeWorkspaceCopy(row.title || kind),
+        summary: normalizeWorkspaceCopy(row.summary || row.detail || ""),
+        status: compactText(row.status),
+        tone: statusTone(row.status),
+        timeLabel: formatTime(row.updatedAt),
+        timestamp,
+      }),
+      raw: row,
+    };
+  });
+  const finals = Object.values(asObject(projection.finalMessages)).map((final) => {
+    const timestamp = parseTimestamp(final.updatedAt);
+    return {
+      id: `final-${compactText(final.turnId || final.id || timestamp)}`,
+      time: formatTime(final.updatedAt),
+      timestamp,
+      title: "主 Agent",
+      text: normalizeWorkspaceCopy(final.text),
+      detail: normalizeWorkspaceCopy(final.text),
+      tone: "success",
+      targetType: "assistant",
+      targetId: compactText(final.turnId),
+      projection: buildProtocolProjection({
+        kind: "event",
+        id: `final-${compactText(final.turnId || final.id || timestamp)}`,
+        title: "主 Agent",
+        summary: normalizeWorkspaceCopy(final.text),
+        status: compactText(final.status),
+        tone: "success",
+        timeLabel: formatTime(final.updatedAt),
+        timestamp,
+      }),
+      raw: final,
+    };
+  });
+  const diff = projection.diff
+    ? [{
+        id: "agent-projection-diff",
+        time: formatTime(projection.diff.updatedAt),
+        timestamp: parseTimestamp(projection.diff.updatedAt),
+        title: "变更摘要",
+        text: normalizeWorkspaceCopy(
+          projection.diff.summary ||
+            `${Number(projection.diff.filesCount || projection.diff.files?.length || 0)} 个文件，+${Number(projection.diff.addedLines || 0)} -${Number(projection.diff.removedLines || 0)}`,
+        ),
+        detail: normalizeWorkspaceCopy(projection.diff.summary || ""),
+        tone: "info",
+        targetType: "diff",
+        targetId: "agent-projection-diff",
+        raw: projection.diff,
+      }]
+    : [];
+  return [...timeline, ...finals, ...diff]
+    .filter((item) => item.title || item.text)
+    .sort((left, right) => (right.timestamp || 0) - (left.timestamp || 0))
+    .slice(0, 14);
+}
+
 function buildProtocolConversationStatusCard({
   missionPhase = "idle",
   turnActive = false,
@@ -2414,6 +2600,19 @@ export function buildProtocolAgentDetailModel({
     { label: "队列", value: compactText(row.queueCount || 0) },
     { label: "任务", value: compactText(row.taskTitle || agent.subtitle || "等待执行") },
   ];
+  const agentStats = asObject(agent.stats);
+  if (Number(agentStats.commandsRun || 0) > 0) {
+    overviewItems.push({ label: "命令", value: String(Number(agentStats.commandsRun || 0)) });
+  }
+  if (Number(agentStats.filesRead || 0) > 0) {
+    overviewItems.push({ label: "文件", value: String(Number(agentStats.filesRead || 0)) });
+  }
+  if (Number(agentStats.filesChanged || 0) > 0) {
+    overviewItems.push({ label: "变更", value: String(Number(agentStats.filesChanged || 0)) });
+  }
+  if (Number(agentStats.toolsCalled || 0) > 0) {
+    overviewItems.push({ label: "工具", value: String(Number(agentStats.toolsCalled || 0)) });
+  }
 
   return {
     id: hostId || compactText(agent.id) || displayName,
@@ -2471,8 +2670,10 @@ export function buildProtocolAgentDetailModel({
   };
 }
 
-export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
+export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}, agentEventProjection = null) {
   const cards = resolveProtocolWorkspaceCards(snapshot.cards || []);
+  const projection = asObject(agentEventProjection || snapshot.agentEventProjection || runtime.agentEventProjection);
+  const hasAgentProjection = Boolean(compactText(projection.sessionId) || asArray(projection.timeline).length || asArray(projection.agents).length);
   const incidentEvents = asArray(snapshot.incidentEvents);
   let evidenceSummaries = normalizeProtocolEvidenceSummaries(snapshot.evidenceSummaries || []);
   const toolInvocations = normalizeProtocolToolInvocations(snapshot.toolInvocations, evidenceSummaries);
@@ -2487,7 +2688,7 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     cards.currentErrorCard ||
     cards.currentFailureSummaryCard ||
     (compactText(cards.workspaceResultCard?.status).toLowerCase() === "failed" ? cards.workspaceResultCard : null);
-  let missionPhase = runtimePhase;
+  let missionPhase = hasAgentProjection ? protocolMissionPhaseFromAgentProjection(projection, runtimePhase) : runtimePhase;
   if (cards.stopNoticeCard) {
     missionPhase = "aborted";
   } else if (currentFailureCard) {
@@ -2501,7 +2702,8 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     hostRows,
   });
   const dispatchEvents = asArray(pickField(planCardModel, "dispatchEvents", "dispatch_events"));
-  const eventItems = buildProtocolEventItems({
+  const projectionEventItems = hasAgentProjection ? buildProtocolEventItemsFromProjection(projection) : [];
+  const eventItems = hasAgentProjection ? projectionEventItems : buildProtocolEventItems({
     planCard: cards.planCard,
     dispatchSummaryCards: cards.dispatchSummaryCards,
     approvalCards: cards.approvalCards,
@@ -2515,7 +2717,8 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     verificationRecords,
     incidentEvents,
   });
-  const approvalItems = buildProtocolApprovalItems(cards.approvalCards, hostRows);
+  const projectionApprovalItems = hasAgentProjection ? buildProtocolApprovalItemsFromProjection(projection) : [];
+  const approvalItems = hasAgentProjection ? projectionApprovalItems : buildProtocolApprovalItems(cards.approvalCards, hostRows);
   const linkedCollections = linkProtocolProjectionCollections({
     approvalItems,
     eventItems,
@@ -2528,7 +2731,8 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
   const linkedVerificationRecords = linkedCollections.verificationRecords;
   evidenceSummaries = linkedCollections.evidenceSummaries;
   const linkedToolInvocations = linkedCollections.toolInvocations;
-  const backgroundAgents = buildProtocolBackgroundAgents(hostRows);
+  const projectionBackgroundAgents = hasAgentProjection ? buildProtocolBackgroundAgentsFromProjection(projection) : [];
+  const backgroundAgents = hasAgentProjection ? projectionBackgroundAgents : buildProtocolBackgroundAgents(hostRows);
   const conversationStatusCard = buildProtocolConversationStatusCard({
     missionPhase,
     turnActive: runtime?.turn?.active === true,
@@ -2686,8 +2890,8 @@ export function buildProtocolWorkspaceModel(snapshot = {}, runtime = {}) {
     evidenceSummaries,
     incidentEvents,
     verificationRecords: linkedVerificationRecords,
-    agentLoop: snapshot.agentLoop || null,
-    agentLoopIterations: asArray(snapshot.agentLoopIterations),
+    agentLoop: hasAgentProjection ? null : snapshot.agentLoop || null,
+    agentLoopIterations: hasAgentProjection ? [] : asArray(snapshot.agentLoopIterations),
     conversationStatusCard,
     formattedTurns,
     activeProcessTurnId,

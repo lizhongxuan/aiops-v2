@@ -35,15 +35,18 @@ func (s *defaultSettingsService) GetSettings(context.Context) (WebSettingsPayloa
 	if current, err := s.repo.GetWebSettings(); err == nil && current != nil {
 		payload = mergeWebSettings(payload, *current)
 	}
-	if llm, err := s.repo.GetLLMConfig(); err == nil && llm != nil && strings.TrimSpace(payload.Model) == "" {
-		payload.Model = strings.TrimSpace(llm.Model)
+	if llm, err := s.repo.GetLLMConfig(); err == nil && llm != nil {
+		if trimmed := strings.TrimSpace(llm.Model); trimmed != "" {
+			payload.Model = trimmed
+		}
 	}
 	if len(payload.Models) == 0 {
 		payload.Models = append([]store.SettingModelOption(nil), defaultWebSettingsPayload().Models...)
 	}
 	if strings.TrimSpace(payload.Model) == "" {
-		payload.Model = "gpt-4-turbo"
+		payload.Model = "gpt-5.4"
 	}
+	payload.Models = ensureSettingModelOption(payload.Models, payload.Model)
 	if strings.TrimSpace(payload.ReasoningEffort) == "" {
 		payload.ReasoningEffort = "medium"
 	}
@@ -85,8 +88,8 @@ func (s *defaultSettingsService) UpdateSettings(ctx context.Context, payload Web
 func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, error) {
 	view := LLMConfigView{
 		Provider:      "openai",
-		Model:         "gpt-4o-mini",
-		CompactModel:  "gpt-4o-mini",
+		Model:         "gpt-5.4",
+		CompactModel:  "gpt-5.4-mini",
 		BifrostActive: false,
 	}
 	if s.repo == nil {
@@ -115,8 +118,8 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	current, _ := s.repo.GetLLMConfig()
 	next := &store.LLMConfig{
 		Provider:     "openai",
-		Model:        "gpt-4o-mini",
-		CompactModel: "gpt-4o-mini",
+		Model:        "gpt-5.4",
+		CompactModel: "gpt-5.4-mini",
 	}
 	if current != nil {
 		*next = *current
@@ -140,6 +143,25 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		next.CompactModel = trimmed
 	}
 	if err := s.repo.SaveLLMConfig(next); err != nil {
+		return LLMConfigUpdateResult{}, err
+	}
+	webDefaults := defaultWebSettingsPayload()
+	webSettings, _ := s.repo.GetWebSettings()
+	nextWebSettings := &store.WebSettings{
+		Quota:           webDefaults.Quota,
+		Model:           strings.TrimSpace(firstNonEmpty(next.Model, "gpt-5.4")),
+		ReasoningEffort: webDefaults.ReasoningEffort,
+		Models:          append([]store.SettingModelOption(nil), webDefaults.Models...),
+	}
+	if webSettings != nil {
+		*nextWebSettings = *webSettings
+		nextWebSettings.Models = append([]store.SettingModelOption(nil), webSettings.Models...)
+		nextWebSettings.Model = strings.TrimSpace(firstNonEmpty(next.Model, nextWebSettings.Model, "gpt-5.4"))
+		if len(nextWebSettings.Models) == 0 {
+			nextWebSettings.Models = append([]store.SettingModelOption(nil), webDefaults.Models...)
+		}
+	}
+	if err := s.repo.SaveWebSettings(nextWebSettings); err != nil {
 		return LLMConfigUpdateResult{}, err
 	}
 	s.syncAuthFromLLMConfig(ctx, next)
@@ -168,12 +190,12 @@ func (s *defaultSettingsService) syncAuthFromLLMConfig(ctx context.Context, cfg 
 func defaultWebSettingsPayload() WebSettingsPayload {
 	return WebSettingsPayload{
 		Quota:           "Unlimited",
-		Model:           "gpt-4-turbo",
+		Model:           "gpt-5.4",
 		ReasoningEffort: "medium",
 		Models: []store.SettingModelOption{
-			{ID: "gpt-4o", Name: "GPT-4o"},
-			{ID: "gpt-4-turbo", Name: "GPT-4 Turbo"},
-			{ID: "claude-3-opus", Name: "Claude 3 Opus"},
+			{ID: "gpt-5.4", Name: "GPT-5.4"},
+			{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini"},
+			{ID: "claude-sonnet-4", Name: "Claude Sonnet 4"},
 		},
 	}
 }
@@ -192,6 +214,31 @@ func mergeWebSettings(base WebSettingsPayload, incoming store.WebSettings) WebSe
 		base.Models = append([]store.SettingModelOption(nil), incoming.Models...)
 	}
 	return base
+}
+
+func ensureSettingModelOption(models []store.SettingModelOption, model string) []store.SettingModelOption {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return models
+	}
+	for _, option := range models {
+		if strings.TrimSpace(option.ID) == trimmed {
+			return models
+		}
+	}
+	label := trimmed
+	switch trimmed {
+	case "gpt-5.4":
+		label = "GPT-5.4"
+	case "gpt-5.4-mini":
+		label = "GPT-5.4 Mini"
+	case "claude-sonnet-4":
+		label = "Claude Sonnet 4"
+	}
+	return append(append([]store.SettingModelOption(nil), models...), store.SettingModelOption{
+		ID:   trimmed,
+		Name: label,
+	})
 }
 
 func maskSecret(secret string) string {

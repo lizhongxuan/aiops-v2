@@ -11,14 +11,14 @@ const isSaving = ref(false);
 
 onMounted(async () => {
   await store.fetchSettings();
-  localModel.value = store.settings.model || "gpt-4-turbo";
+  localModel.value = store.settings.model || "gpt-5.4";
   localEffort.value = store.settings.reasoningEffort || "medium";
 });
 
 const modelOptions = [
-  { label: "GPT-4o", value: "gpt-4o" },
-  { label: "GPT-4 Turbo", value: "gpt-4-turbo" },
-  { label: "Claude 3 Opus", value: "claude-3-opus" },
+  { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "GPT-5.4 Mini", value: "gpt-5.4-mini" },
+  { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
 ];
 
 const effortOptions = [

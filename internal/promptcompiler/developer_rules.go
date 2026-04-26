@@ -86,6 +86,9 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	// Universal constraints
 	constraints = append(constraints, "Always verify tool results before reporting to user.")
 	constraints = append(constraints, "Do not fabricate information not obtained from tools.")
+	constraints = append(constraints, "For non-trivial or tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.")
+	constraints = append(constraints, "For current or latest factual requests, use precise self-contained web_search queries, verify recency, and cite source URLs in the final answer.")
+	constraints = append(constraints, "When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
 
 	// Mode-specific constraints
 	switch ctx.Mode {

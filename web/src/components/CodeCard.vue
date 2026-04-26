@@ -4,6 +4,7 @@ import { AlertTriangleIcon, CopyIcon, ExternalLinkIcon, FileCode2Icon, SearchIco
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
+import { selectRuntimeBusy } from "../events/agentEventProjection";
 
 const props = defineProps({
   card: {
@@ -13,6 +14,8 @@ const props = defineProps({
 });
 
 const store = useAppStore();
+const activeSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const runtimeBusy = computed(() => selectRuntimeBusy(store.agentEventState, activeSessionId.value));
 const editorContainer = ref(null);
 const selectedIndex = ref(0);
 const previewOpen = ref(false);
@@ -92,7 +95,7 @@ const repeatSearchButtonLabel = computed(() => {
   if (!repeatSearchPrompt.value) return "再次搜索";
   return isFileChangeCard.value ? "再次搜索相关目录" : "再次搜索";
 });
-const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && displayHostId.value !== "server-local" && !repeatSearchBusy.value && !store.sending && !store.runtime.turn.active && store.canSend);
+const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && displayHostId.value !== "server-local" && !repeatSearchBusy.value && !store.sending && !runtimeBusy.value && store.canSend);
 const content = computed(() => {
   if (selectedChange.value?.diff) return selectedChange.value.diff;
   return props.card.output || props.card.text || "";

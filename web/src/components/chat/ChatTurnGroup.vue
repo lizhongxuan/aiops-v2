@@ -143,7 +143,8 @@ function handleOpenPanel() {
         <AssistantActionBar
           :copy-text="turn.finalMessage.card?.text || ''"
           :allow-copy="!showRetryOnly"
-          :allow-feedback="!showRetryOnly"
+          :allow-regenerate="showRetryOnly"
+          :allow-feedback="false"
           :regenerate-label="showRetryOnly ? '重试' : '重新生成'"
           :feedback="feedback"
           :has-process="hasProcess"
@@ -164,6 +165,7 @@ function handleOpenPanel() {
     >
       <AssistantActionBar
         copy-text=""
+        :allow-regenerate="true"
         :allow-copy="false"
         :allow-feedback="false"
         regenerate-label="重试"

@@ -252,9 +252,8 @@ func TestStateAndSessionServicesShareSnapshotBuilder(t *testing.T) {
 }
 
 func TestChatServiceMapsAppCommandsToRuntimeCalls(t *testing.T) {
-	services := NewServices(runtimeStub{
-		run: runtimekernel.TurnResult{SessionID: "sess-1", TurnID: "turn-1", Status: "completed"},
-	}, nil)
+	runtime := &chatRuntimeCapture{}
+	services := NewServices(runtime, nil)
 
 	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
 		SessionType: "workspace",
@@ -266,7 +265,20 @@ func TestChatServiceMapsAppCommandsToRuntimeCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
-	if result.SessionID != "sess-1" || result.TurnID != "turn-1" || result.Status != "completed" {
-		t.Fatalf("result = %+v, want mapped runtime result", result)
+	if result.SessionID != "sess-1" || result.TurnID == "" || result.Status != "accepted" {
+		t.Fatalf("result = %+v, want accepted response for sess-1", result)
+	}
+	waitForRunTurn(t, runtime)
+	if runtime.runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace", runtime.runReq.SessionType)
+	}
+	if runtime.runReq.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("RunTurn mode = %q, want execute", runtime.runReq.Mode)
+	}
+	if runtime.runReq.SessionID != "sess-1" || runtime.runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn target = %+v, want sess-1/host-a", runtime.runReq)
+	}
+	if runtime.runReq.Input != "run it" {
+		t.Fatalf("RunTurn input = %q, want run it", runtime.runReq.Input)
 	}
 }

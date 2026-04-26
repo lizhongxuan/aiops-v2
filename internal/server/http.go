@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -92,6 +93,7 @@ type HTTPServer struct {
 	terminalManager    *terminal.Manager
 	appWSHeartbeatTick time.Duration
 	appSnapshots       *AppSnapshotBroadcaster
+	agentEvents        appui.AgentEventService
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -123,12 +125,21 @@ func WithTerminalManager(manager *terminal.Manager) HTTPServerOption {
 
 // NewHTTPServer creates a new HTTPServer wired to the given application services.
 func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer {
+	agentEvents := appui.NewAgentEventService(nil)
+	if provider, ok := ui.(interface {
+		AgentEventService() appui.AgentEventService
+	}); ok {
+		if provided := provider.AgentEventService(); provided != nil {
+			agentEvents = provided
+		}
+	}
 	s := &HTTPServer{
 		ui:                 ui,
 		mux:                http.NewServeMux(),
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
-		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService()),
+		agentEvents:        agentEvents,
+		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -255,7 +266,19 @@ func (s *HTTPServer) handleGetState(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, state)
+	writeJSON(w, http.StatusOK, s.withAgentEventProjection(r.Context(), state))
+}
+
+func (s *HTTPServer) withAgentEventProjection(ctx context.Context, state appui.StateSnapshot) appui.StateSnapshot {
+	if s == nil || s.agentEvents == nil || strings.TrimSpace(state.SessionID) == "" {
+		return state
+	}
+	projection, err := s.agentEvents.Projection(ctx, state.SessionID)
+	if err != nil {
+		return state
+	}
+	state.AgentEventProjection = &projection
+	return state
 }
 
 // ---------------------------------------------------------------------------

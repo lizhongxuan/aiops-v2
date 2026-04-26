@@ -23,6 +23,7 @@ import (
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/integrations/localtools"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
@@ -184,6 +185,9 @@ func run() error {
 	}
 	if err := registerPluginsFromEnv(pluginRegistrar); err != nil {
 		return fmt.Errorf("init plugins: %w", err)
+	}
+	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{}); err != nil {
+		return fmt.Errorf("init local tools: %w", err)
 	}
 	if err := registerBuiltinIntegrations(mcpRegistry, corootEndpoint); err != nil {
 		return fmt.Errorf("init builtin integrations: %w", err)

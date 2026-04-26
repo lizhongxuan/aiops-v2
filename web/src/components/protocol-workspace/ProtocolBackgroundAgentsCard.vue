@@ -126,10 +126,13 @@ function isAgentExpanded(agentId) {
             class="background-agent"
             @click="toggleAgentExpand(agent.id); selectAgent(agent)"
           >
-            <div class="background-agent-inline">
-              <strong :class="`tone-${toneClass(agent.status)}`">{{ agent.title }}</strong>
-              <n-tag :type="tagType(agent.status)" size="small" round>{{ agent.statusLabel }}</n-tag>
-              <span class="agent-type-label">{{ agent.type }}</span>
+            <div class="background-agent-copy">
+              <div class="background-agent-inline">
+                <strong :class="`tone-${toneClass(agent.status)}`">{{ agent.title }}</strong>
+                <n-tag :type="tagType(agent.status)" size="small" round>{{ agent.statusLabel }}</n-tag>
+                <span class="agent-type-label">{{ agent.type }}</span>
+              </div>
+              <span v-if="agent.meta" class="agent-stat-line">{{ agent.meta }}</span>
             </div>
             <span class="background-toggle-label">
               {{ isAgentExpanded(agent.id) ? '收起' : '展开详情' }}
@@ -244,6 +247,14 @@ function isAgentExpanded(agentId) {
   overflow: hidden;
 }
 
+.background-agent-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
 .background-agent-inline strong {
   font-size: 12px;
   line-height: 1.4;
@@ -257,6 +268,15 @@ function isAgentExpanded(agentId) {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.agent-stat-line {
+  color: #9ca3af;
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .background-toggle-label {

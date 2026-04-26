@@ -2,6 +2,7 @@
 import { computed, h } from "vue";
 import { useRouter } from "vue-router";
 import { useAppStore } from "../store";
+import { selectActiveProjection, selectRuntimeBusy } from "../events/agentEventProjection";
 import { resolveHostDisplay } from "../lib/hostDisplay";
 import {
   ArrowRightIcon,
@@ -23,8 +24,11 @@ const workspaceSession = computed(() => {
 
 const currentHostLabel = computed(() => resolveHostDisplay(store.selectedHost) || "server-local");
 const missionLabel = computed(() => workspaceSession.value?.title || "协作工作台");
+const activeProjectionSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || workspaceSession.value?.id || "");
+const activeAgentProjection = computed(() => selectActiveProjection(store.agentEventState, activeProjectionSessionId.value));
+const runtimeBusy = computed(() => selectRuntimeBusy(store.agentEventState, activeProjectionSessionId.value));
 const missionStatus = computed(() => {
-  if (store.runtime.turn.active) return phaseLabel(store.runtime.turn.phase);
+  if (runtimeBusy.value) return phaseLabel(activeAgentProjection.value?.phase || activeAgentProjection.value?.status);
   if (workspaceSession.value?.status === "completed") return "已完成";
   if (workspaceSession.value?.status === "failed") return "失败";
   return "可用";
@@ -68,6 +72,8 @@ const entryCards = [
 function phaseLabel(phase) {
   switch (phase) {
     case "thinking": return "主 Agent 思考中";
+    case "working": return "主 Agent 工作中";
+    case "blocked": return "等待处理";
     case "planning": return "主 Agent 生成计划";
     case "waiting_approval": return "等待审批";
     case "waiting_input": return "等待补充输入";
@@ -75,6 +81,7 @@ function phaseLabel(phase) {
     case "finalizing": return "结果汇总中";
     case "completed": return "已完成";
     case "failed": return "失败";
+    case "canceled":
     case "aborted": return "已停止";
     default: return "待命";
   }

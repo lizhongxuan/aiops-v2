@@ -1,0 +1,409 @@
+package appui
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"aiops-v2/internal/projection"
+	"aiops-v2/internal/runtimekernel"
+)
+
+func NormalizeToolInvocationAgentEvent(inv projection.ToolInvocation) AgentEvent {
+	events, _ := NormalizeToolInvocation(inv)
+	if len(events) == 0 {
+		return AgentEvent{}
+	}
+	return events[0]
+}
+
+func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error) {
+	phase := AgentEventPhaseUpdated
+	status := AgentEventStatusRunning
+	source := AgentEventSourceTool
+	createdAt := inv.StartedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	switch inv.Status {
+	case projection.ToolInvocationStarted:
+		phase = AgentEventPhaseStarted
+		status = AgentEventStatusRunning
+	case projection.ToolInvocationProgress:
+		phase = AgentEventPhaseUpdated
+		status = AgentEventStatusRunning
+	case projection.ToolInvocationCompleted:
+		phase = AgentEventPhaseCompleted
+		status = AgentEventStatusCompleted
+		if inv.EndedAt != nil {
+			createdAt = *inv.EndedAt
+		}
+	case projection.ToolInvocationFailed:
+		phase = AgentEventPhaseFailed
+		status = AgentEventStatusFailed
+		if inv.EndedAt != nil {
+			createdAt = *inv.EndedAt
+		}
+	}
+	payload, _ := json.Marshal(ToolPayload{
+		ToolCallID:    inv.ID,
+		ToolName:      inv.ToolName,
+		InputSummary:  summarizeAgentToolInput(inv.ToolName, inv.Args),
+		OutputSummary: summarizeAgentToolOutput(inv.ToolName, inv.Result, inv.Error),
+		Error:         inv.Error,
+	})
+	event := AgentEvent{
+		EventID:    fmt.Sprintf("%s:tool:%s:%s:%d", inv.TurnID, inv.ID, phase, createdAt.UnixNano()),
+		SessionID:  inv.SessionID,
+		TurnID:     inv.TurnID,
+		Kind:       AgentEventTool,
+		Phase:      phase,
+		Status:     status,
+		Visibility: AgentEventVisibilitySecondary,
+		Source:     source,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func summarizeAgentToolInput(toolName string, raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return truncateAgentEventSummary(trimmed, 180)
+	}
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	switch name {
+	case "web_search", "search_web":
+		return truncateAgentEventSummary(agentEventStringField(payload, "query"), 180)
+	case "browse_url":
+		return truncateAgentEventSummary(agentEventStringField(payload, "url"), 180)
+	case "exec_command":
+		command := agentEventStringField(payload, "command")
+		if command == "" {
+			command = agentEventStringField(payload, "cmd")
+		}
+		args := agentEventStringSliceField(payload, "args")
+		if command != "" && len(args) > 0 {
+			return truncateAgentEventSummary(strings.Join(append([]string{command}, args...), " "), 180)
+		}
+		return truncateAgentEventSummary(command, 180)
+	default:
+		for _, key := range []string{"query", "url", "path", "command", "cmd", "title", "name"} {
+			if value := agentEventStringField(payload, key); value != "" {
+				return truncateAgentEventSummary(value, 180)
+			}
+		}
+		return truncateAgentEventSummary(trimmed, 180)
+	}
+}
+
+func summarizeAgentToolOutput(toolName, result, errText string) string {
+	if strings.TrimSpace(errText) != "" {
+		return truncateAgentEventSummary(errText, 180)
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(result), &payload) == nil {
+		switch strings.ToLower(strings.TrimSpace(toolName)) {
+		case "web_search", "search_web":
+			if summary := summarizeWebSearchOutput(payload); summary != "" {
+				return summary
+			}
+		case "browse_url":
+			if url := agentEventStringField(payload, "url"); url != "" {
+				return truncateAgentEventSummary("已读取页面："+url, 180)
+			}
+		case "get_current_model_config", "current_model_config", "get_model_config":
+			if model := agentEventStringField(payload, "model"); model != "" {
+				provider := agentEventStringField(payload, "provider")
+				if provider != "" {
+					return truncateAgentEventSummary(provider+" / "+model, 180)
+				}
+				return truncateAgentEventSummary(model, 180)
+			}
+		}
+		if content := agentEventStringField(payload, "content"); content != "" {
+			return truncateAgentEventSummary(firstAgentSummaryLine(content), 180)
+		}
+	}
+	return truncateAgentEventSummary(firstAgentSummaryLine(result), 180)
+}
+
+func summarizeWebSearchOutput(payload map[string]any) string {
+	content := agentEventStringField(payload, "content")
+	if content == "" {
+		return ""
+	}
+	titles := numberedResultTitles(content)
+	if len(titles) == 0 {
+		return truncateAgentEventSummary(firstAgentSummaryLine(content), 180)
+	}
+	return truncateAgentEventSummary(fmt.Sprintf("找到 %d 条网页结果：%s", len(titles), titles[0]), 180)
+}
+
+func numberedResultTitles(content string) []string {
+	var titles []string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		dot := strings.Index(line, ".")
+		if dot <= 0 || dot > 3 {
+			continue
+		}
+		numberPart := line[:dot]
+		isNumber := true
+		for _, r := range numberPart {
+			if r < '0' || r > '9' {
+				isNumber = false
+				break
+			}
+		}
+		if !isNumber {
+			continue
+		}
+		title := strings.TrimSpace(line[dot+1:])
+		if title != "" {
+			titles = append(titles, title)
+		}
+	}
+	return titles
+}
+
+func firstAgentSummaryLine(value string) string {
+	for _, line := range strings.Split(value, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			return trimmed
+		}
+	}
+	return strings.TrimSpace(value)
+}
+
+func agentEventStringField(payload map[string]any, key string) string {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func agentEventStringSliceField(payload map[string]any, key string) []string {
+	value, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	list, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text != "" && text != "<nil>" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func truncateAgentEventSummary(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:limit]) + "..."
+}
+
+func NormalizeRuntimeLifecycleAgentEvent(event runtimekernel.LifecycleEvent) (AgentEvent, bool) {
+	events, err := NormalizeRuntimeLifecycleEvent(event)
+	if err != nil || len(events) == 0 {
+		return AgentEvent{}, false
+	}
+	return events[0], true
+}
+
+func NormalizeRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) ([]AgentEvent, error) {
+	createdAt := event.Timestamp
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	normalized := AgentEvent{
+		EventID:    fmt.Sprintf("%s:%s:%d", event.TurnID, event.Type, createdAt.UnixNano()),
+		SessionID:  event.SessionID,
+		TurnID:     event.TurnID,
+		Visibility: AgentEventVisibilitySecondary,
+		Source:     AgentEventSourceRuntime,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+		Payload:    normalizePayload(event.Payload),
+	}
+	switch event.Type {
+	case runtimekernel.EventTurnStarted:
+		normalized.Kind = AgentEventTurn
+		normalized.Phase = AgentEventPhaseStarted
+		normalized.Status = AgentEventStatusRunning
+		normalized.Visibility = AgentEventVisibilityPrimary
+		var payload TurnPayload
+		decodeAgentEventPayload(normalized.Payload, &payload)
+		normalized.ClientTurnID = payload.ClientTurnID
+	case runtimekernel.EventAssistantIntent:
+		normalized.Kind = AgentEventAssistant
+		normalized.Phase = AgentEventPhaseDelta
+		normalized.Status = AgentEventStatusRunning
+		normalized.Payload = normalizePayloadWithChannel(event.Payload, "intent")
+	case runtimekernel.EventAssistantFinalDelta:
+		normalized.Kind = AgentEventAssistant
+		normalized.Phase = AgentEventPhaseDelta
+		normalized.Status = AgentEventStatusRunning
+		normalized.Visibility = AgentEventVisibilityPrimary
+		normalized.Payload = normalizePayloadWithChannel(event.Payload, "final")
+	case runtimekernel.EventPhaseEnd:
+		normalized.Kind = AgentEventSystem
+		normalized.Phase = AgentEventPhaseCompleted
+		normalized.Status = AgentEventStatusCompleted
+	case runtimekernel.EventProcessSummary:
+		normalized.Kind = AgentEventAssistant
+		normalized.Phase = AgentEventPhaseCompleted
+		normalized.Status = AgentEventStatusCompleted
+		normalized.Payload = normalizePayloadWithChannel(event.Payload, "summary")
+	case runtimekernel.EventTurnComplete:
+		normalized.Kind = AgentEventTurn
+		normalized.Phase = AgentEventPhaseCompleted
+		normalized.Status = AgentEventStatusCompleted
+		normalized.Visibility = AgentEventVisibilityPrimary
+	case runtimekernel.EventTurnError:
+		normalized.Kind = AgentEventTurn
+		normalized.Phase = AgentEventPhaseFailed
+		normalized.Status = AgentEventStatusFailed
+		normalized.Visibility = AgentEventVisibilityPrimary
+	case runtimekernel.EventTurnAborted:
+		normalized.Kind = AgentEventTurn
+		normalized.Phase = AgentEventPhaseCanceled
+		normalized.Status = AgentEventStatusCanceled
+		normalized.Visibility = AgentEventVisibilityPrimary
+	default:
+		return nil, nil
+	}
+	if err := normalized.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{normalized}, nil
+}
+
+func NormalizeSnapshotCompletedAgentEvent(snapshot projection.Snapshot) AgentEvent {
+	events, _ := NormalizeSnapshot(snapshot)
+	if len(events) == 0 {
+		return AgentEvent{}
+	}
+	return events[0]
+}
+
+func NormalizeSnapshot(snapshot projection.Snapshot) ([]AgentEvent, error) {
+	createdAt := snapshot.Timestamp
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	event := AgentEvent{
+		EventID:    fmt.Sprintf("%s:turn.completed:%d", snapshot.TurnID, createdAt.UnixNano()),
+		SessionID:  snapshot.SessionID,
+		TurnID:     snapshot.TurnID,
+		Kind:       AgentEventTurn,
+		Phase:      AgentEventPhaseCompleted,
+		Status:     AgentEventStatusCompleted,
+		Visibility: AgentEventVisibilityPrimary,
+		Source:     AgentEventSourceProjection,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func NormalizeApprovalAgentEvent(approval projection.Approval) AgentEvent {
+	events, _ := NormalizeApproval(approval)
+	if len(events) == 0 {
+		return AgentEvent{}
+	}
+	return events[0]
+}
+
+func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
+	createdAt := approval.CreatedAt
+	if approval.DecidedAt != nil {
+		createdAt = *approval.DecidedAt
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	phase := AgentEventPhaseRequested
+	status := AgentEventStatusBlocked
+	if approval.Status == projection.ApprovalApproved || approval.Status == projection.ApprovalDenied {
+		phase = AgentEventPhaseResolved
+		status = AgentEventStatusCompleted
+	}
+	payload, _ := json.Marshal(ApprovalPayload{
+		ApprovalID:   approval.ID,
+		ApprovalType: "tool",
+		Title:        approval.ToolName,
+		Reason:       approval.Command,
+		Decision:     approval.Decision,
+		Targets:      []string{approval.HostID},
+	})
+	event := AgentEvent{
+		EventID:    fmt.Sprintf("%s:approval:%s:%s:%d", approval.TurnID, approval.ID, phase, createdAt.UnixNano()),
+		SessionID:  approval.SessionID,
+		TurnID:     approval.TurnID,
+		Kind:       AgentEventApproval,
+		Phase:      phase,
+		Status:     status,
+		Visibility: AgentEventVisibilityPrimary,
+		Source:     AgentEventSourceApproval,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func normalizePayload(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return raw
+	}
+	encoded, _ := json.Marshal(payload)
+	return encoded
+}
+
+func normalizePayloadWithChannel(raw json.RawMessage, channel string) json.RawMessage {
+	payload := map[string]any{}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &payload)
+	}
+	payload["channel"] = channel
+	encoded, _ := json.Marshal(payload)
+	return encoded
+}

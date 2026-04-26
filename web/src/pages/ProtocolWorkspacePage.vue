@@ -11,6 +11,7 @@ import { sendMessage as sendMessageApi, stopMessage as stopMessageApi } from "..
 import { submitApprovalDecision as submitApprovalDecisionApi, submitChoiceAnswer as submitChoiceAnswerApi } from "../api/approvals";
 import { buildMcpDecisionNotice, buildSyntheticMcpApproval, buildSyntheticMcpEvent, formatMcpActionLabel, formatMcpActionTarget, isMcpMutationAction } from "../lib/mcpActionRuntime";
 import { buildProtocolAgentDetailModel, buildProtocolEvidenceTabs, buildProtocolWorkspaceModel, resolveWorkspaceToolLabel } from "../lib/protocolWorkspaceVm";
+import { selectActiveProjection, selectRuntimeBusy, selectRuntimeLiveness, selectRuntimeStatus } from "../events/agentEventProjection";
 import { compactText } from "../lib/workspaceViewModel";
 import { useAppStore } from "../store";
 
@@ -526,7 +527,34 @@ const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const recentWorkspaceSession = computed(
   () => store.sessionList.find((session) => session.kind === "workspace" && session.id !== store.activeSessionId) || null,
 );
-const workspaceModel = computed(() => buildProtocolWorkspaceModel(store.snapshot, store.runtime));
+const activeAgentProjection = computed(() =>
+  selectActiveProjection(store.agentEventState, store.activeSessionId || store.snapshot.sessionId || ""),
+);
+const activeProjectionSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const workspaceRuntimeLiveness = computed(() => selectRuntimeLiveness(store.agentEventState, activeProjectionSessionId.value));
+const workspaceRuntimeStatus = computed(() => selectRuntimeStatus(store.agentEventState, activeProjectionSessionId.value));
+const workspaceRuntimeBusy = computed(() => selectRuntimeBusy(store.agentEventState, activeProjectionSessionId.value) || store.sending);
+const workspaceRuntimePhase = computed(() => {
+  const projectionPhase = compactText(activeAgentProjection.value?.phase || "").toLowerCase();
+  if (projectionPhase) return projectionPhase;
+  const status = compactText(workspaceRuntimeStatus.value || "idle").toLowerCase();
+  const live = workspaceRuntimeLiveness.value;
+  if (status === "blocked") {
+    return Object.values(live.pendingUserInputs || {}).some(Boolean) ? "waiting_input" : "waiting_approval";
+  }
+  if (status === "working") return "thinking";
+  if (status === "failed") return "failed";
+  if (status === "canceled") return "aborted";
+  return "completed";
+});
+const workspaceProjectionRuntime = computed(() => ({
+  turn: {
+    active: workspaceRuntimeBusy.value,
+    pendingStart: false,
+    phase: workspaceRuntimePhase.value,
+  },
+}));
+const workspaceModel = computed(() => buildProtocolWorkspaceModel(store.snapshot, workspaceProjectionRuntime.value, activeAgentProjection.value));
 const hostRows = computed(() => workspaceModel.value.hostRows || []);
 const planCardModel = computed(() => workspaceModel.value.planCardModel || { stepItems: [] });
 const choiceCards = computed(() => workspaceModel.value.choiceCards || []);
@@ -535,7 +563,7 @@ const workspaceEventItems = computed(() => workspaceModel.value.eventItems || []
 const toolInvocations = computed(() => workspaceModel.value.toolInvocations || []);
 const evidenceSummaries = computed(() => workspaceModel.value.evidenceSummaries || []);
 const verificationRecords = computed(() => workspaceModel.value.verificationRecords || store.snapshot.verificationRecords || []);
-const agentLoopRun = computed(() => workspaceModel.value.agentLoop || store.snapshot.agentLoop || null);
+const agentLoopRun = computed(() => workspaceModel.value.agentLoop || null);
 const waitingForUserAnswer = computed(() => {
   const loopStatus = compactText(agentLoopRun.value?.status);
   return loopStatus === "waiting_user" || workspaceModel.value.missionPhase === "waiting_input";
@@ -626,14 +654,13 @@ const selectedHostRow = computed(() => {
 });
 
 const canSendWorkspaceMessage = computed(() => {
-  const canAnswerWaitingQuestion = waitingForUserAnswer.value && store.runtime.turn.active && !store.runtime.turn.pendingStart;
+  const canAnswerWaitingQuestion = waitingForUserAnswer.value && workspaceRuntimeBusy.value;
   return (
     isWorkspaceSession.value &&
     store.snapshot.auth?.connected !== false &&
     store.snapshot.config?.codexAlive !== false &&
     !store.sending &&
-    (!store.runtime.turn.active || canAnswerWaitingQuestion) &&
-    !store.runtime.turn.pendingStart
+    (!workspaceRuntimeBusy.value || canAnswerWaitingQuestion)
   );
 });
 
@@ -1710,7 +1737,7 @@ watch(
 watch(
   () => ({
     isWorkspace: isWorkspaceSession.value,
-    turnActive: store.runtime.turn.active,
+    turnActive: workspaceRuntimeBusy.value,
     phase: workspaceModel.value.missionPhase,
     stepCount: Number(planCardModel.value.totalSteps || 0),
   }),
@@ -1739,7 +1766,7 @@ watch(
   () => ({
     kind: store.snapshot.kind,
     loading: store.loading,
-    turnActive: store.runtime.turn.active,
+    turnActive: workspaceRuntimeBusy.value,
   }),
   (state) => {
     if (state.kind === "workspace" || state.loading || state.turnActive || workspaceBootstrapAttempted.value) {
@@ -1751,7 +1778,7 @@ watch(
 );
 
 onMounted(() => {
-  if (!isWorkspaceSession.value && !store.loading && !store.runtime.turn.active && !workspaceBootstrapAttempted.value) {
+  if (!isWorkspaceSession.value && !store.loading && !workspaceRuntimeBusy.value && !workspaceBootstrapAttempted.value) {
     void bootstrapWorkspaceSession();
   }
 });
@@ -1845,7 +1872,7 @@ async function activateRecentWorkspaceSession() {
 }
 
 async function bootstrapWorkspaceSession() {
-  if (isWorkspaceSession.value || workspaceBootstrapBusy.value || store.runtime.turn.active) return false;
+  if (isWorkspaceSession.value || workspaceBootstrapBusy.value || workspaceRuntimeBusy.value) return false;
   workspaceBootstrapBusy.value = true;
   try {
     await store.fetchSessions();
@@ -1908,13 +1935,24 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
   composerDraft.value = "";
 
   try {
-    await sendMessageApi({
+    const accepted = await sendMessageApi({
       message,
       sessionId,
       hostId,
       clientMessageId,
       clientTurnId,
     });
+    if (typeof store.applyLocalTurnPhase === "function") {
+      store.applyLocalTurnPhase("thinking", {
+        sessionId: compactText(accepted?.sessionId || sessionId),
+        turnId: compactText(accepted?.turnId || clientTurnId),
+        clientTurnId: compactText(accepted?.clientTurnId || clientTurnId),
+        clientMessageId,
+        title: message,
+        summary: "正在等待 Agent 启动",
+        hostId,
+      });
+    }
     pushActionNotice(answeringQuestion ? "已提交澄清回答。" : restartingMission ? "已在当前会话启动新一轮 mission。" : "消息已发送给主 Agent。", "info");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
   } catch (_error) {
@@ -1934,18 +1972,31 @@ async function sendWorkspaceMessage(payload = composerDraft.value) {
 }
 
 async function stopWorkspaceMessage() {
-  if ((!store.runtime.turn.active && !store.runtime.turn.pendingStart) || decisionBusy.value || stopBusy.value) return;
+  if (!workspaceRuntimeBusy.value || decisionBusy.value || stopBusy.value) return;
   stopBusy.value = true;
   pushActionNotice("正在中断当前任务...", "info");
   try {
-    await stopMessageApi();
+    const turnId = compactText(activeAgentProjection.value?.currentTurnId || store.runtime.turn.turnId || store.runtime.turn.clientTurnId || "");
+    await stopMessageApi({
+      sessionId: activeProjectionSessionId.value,
+      turnId,
+    });
     pushActionNotice("已停止当前工作台任务。", "info");
     store.errorMessage = "";
     store.setTurnPhase("aborted");
     await Promise.all([store.fetchState(), store.fetchSessions()]);
-  } catch (_error) {
-    store.errorMessage = "Network error";
-    store.setTurnPhase("failed");
+  } catch (error) {
+    const message = String(error?.message || "").trim().toLowerCase();
+    const payloadError = String(error?.payload?.error || "").trim().toLowerCase();
+    if (error?.status === 409 && (message.includes("no active turn found") || payloadError.includes("no active turn found"))) {
+      store.errorMessage = "";
+      store.setTurnPhase("aborted");
+      pushActionNotice("当前任务已结束。", "info");
+      await Promise.all([store.fetchState(), store.fetchSessions()]);
+    } else {
+      store.errorMessage = "Network error";
+      store.setTurnPhase("failed");
+    }
   } finally {
     stopBusy.value = false;
   }
@@ -2021,7 +2072,6 @@ async function submitApprovalDecision(approval, decision) {
       selectedApprovalId.value = "";
     } else if (isApprovalPermissionDenied(msg)) {
       store.errorMessage = msg;
-      store.setTurnPhase("waiting_approval");
     } else {
       store.errorMessage = msg;
       store.setTurnPhase("failed");
@@ -2407,7 +2457,7 @@ function handleMcpSurfaceEventRefresh(surface) {
             :sending="store.sending"
             :busy="stopBusy"
             :primary-action-override="composerPrimaryActionOverride"
-            :virtualization-suspended="store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending"
+            :virtualization-suspended="workspaceRuntimeBusy || store.sending"
             empty-label="工作台已连接，可以直接开始对话。"
             @update:draft="composerDraft = $event"
             @send="sendWorkspaceMessage"

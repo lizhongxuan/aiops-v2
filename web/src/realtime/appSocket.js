@@ -15,7 +15,8 @@ export function createAppSocketClient(options = {}) {
     onStatusChange,
     onHeartbeat,
     onSnapshot,
-    onTurnEvent,
+    onAgentEvent,
+    onProtocolError,
     onError,
     onRestoreRequired,
     onStopped,
@@ -89,8 +90,16 @@ export function createAppSocketClient(options = {}) {
           onHeartbeat?.(payload);
           return;
         }
-        if (payload?.type === "turn_event" && payload?.event) {
-          onTurnEvent?.(payload.event);
+        if (payload?.type === "agent_event" && payload?.event) {
+          onAgentEvent?.(payload.event);
+          return;
+        }
+        if (payload?.type === "snapshot") {
+          onSnapshot?.(payload.snapshot || payload.state || payload);
+          return;
+        }
+        if (payload?.type) {
+          onProtocolError?.(payload);
           return;
         }
         onSnapshot?.(payload);

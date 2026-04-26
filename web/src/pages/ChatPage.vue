@@ -3,6 +3,17 @@ import { computed, defineAsyncComponent, ref, watch, nextTick, onMounted, onBefo
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
 import { formatMainChatTurns, isChatConversationCard, shouldExposeActiveFinalMessage } from "../lib/chatTurnFormatter";
+import {
+  selectActiveProjection,
+  selectAgentRows,
+  selectApprovalDock,
+  selectProjectionActivityLines,
+  selectProjectionStartedAt,
+  selectFinalMessages,
+  selectRuntimeBusy,
+  selectRuntimeStatus,
+  selectTimelineRows,
+} from "../events/agentEventProjection";
 import { useChatScrollState } from "../composables/useChatScrollState";
 import { useVirtualTurnList } from "../composables/useVirtualTurnList";
 import { sendMessage as sendMessageApi, stopMessage as stopMessageApi } from "../api/chat";
@@ -111,7 +122,7 @@ function buildPersistedProcessItems(lines = [], { completed = false } = {}) {
     seenText.add(text);
     return {
       id: compactText(line?.id || `activity-line-${index}`),
-      kind: text.startsWith("已搜索") ? "search" : "activity",
+      kind: compactText(line?.kind) || (text.startsWith("已搜索") ? "search" : "activity"),
       text,
       status: completed ? "completed" : compactText(line?.status),
     };
@@ -278,6 +289,77 @@ function closeMcpSurfaceDrawer() {
   isMcpDrawerOpen.value = false;
 }
 
+const activeProjectionSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const activeAgentProjection = computed(() =>
+  selectActiveProjection(store.agentEventState, activeProjectionSessionId.value),
+);
+const hasProjectionRuntime = computed(() => Boolean(activeAgentProjection.value?.sessionId));
+const projectionRuntimeStatus = computed(() =>
+  selectRuntimeStatus(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionRuntimeBusy = computed(() =>
+  selectRuntimeBusy(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionAgentRows = computed(() =>
+  selectAgentRows(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionApprovalDock = computed(() =>
+  selectApprovalDock(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionArtifactRows = computed(() => activeAgentProjection.value?.artifacts || []);
+const projectionDiffSummary = computed(() => activeAgentProjection.value?.diff || null);
+const projectionStartedAt = computed(() =>
+  selectProjectionStartedAt(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionActivityLines = computed(() =>
+  selectProjectionActivityLines(store.agentEventState, activeProjectionSessionId.value),
+);
+const projectionTimelineRows = computed(() => {
+  const timeline = selectTimelineRows(store.agentEventState, activeProjectionSessionId.value).map((row) => ({
+    ...row,
+    _sortSeq: Number(row?.seq || 0),
+  }));
+  const finals = selectFinalMessages(store.agentEventState, activeProjectionSessionId.value).map((final) => ({
+    id: `assistant-final-${final.turnId || final.id || "current"}`,
+    kind: "assistant_final",
+    turnId: final.turnId || "",
+    text: final.text || "",
+    status: final.status || "running",
+    updatedAt: final.updatedAt || "",
+    _sortSeq: Number(final.seq || 0) || Number.MAX_SAFE_INTEGER,
+  }));
+  return [...timeline, ...finals]
+    .filter((row) => row.kind !== "turn" || row.title || row.summary)
+    .sort((a, b) => {
+      if (a._sortSeq !== b._sortSeq) return a._sortSeq - b._sortSeq;
+      return String(a.updatedAt || "").localeCompare(String(b.updatedAt || ""));
+    })
+    .map(({ _sortSeq, ...row }) => row);
+});
+const hasProjectionRows = computed(() =>
+  Boolean(
+    projectionTimelineRows.value.length ||
+      projectionAgentRows.value.length ||
+      projectionApprovalDock.value.length ||
+      projectionArtifactRows.value.length ||
+      projectionDiffSummary.value,
+  ),
+);
+const chatRuntimeBusy = computed(() => projectionRuntimeBusy.value || store.sending);
+const chatRuntimePhase = computed(() => {
+  const status = compactText(projectionRuntimeStatus.value || "idle").toLowerCase();
+  if (status === "idle" && store.sending) return "thinking";
+  if (status === "working") return "thinking";
+  if (status === "blocked") return projectionApprovalDock.value.length ? "waiting_approval" : "waiting_input";
+  if (status === "failed") return "failed";
+  if (status === "canceled") return "aborted";
+  if (status === "reviewing") return "reviewing";
+  if (status === "idle") return "idle";
+  return "completed";
+});
+const chatRuntimeStartedAt = computed(() => projectionStartedAt.value || "");
+const composerPrimaryActionOverride = computed(() => (chatRuntimeBusy.value ? "stop" : ""));
+
 function inferThinkingPrelude(message) {
   const text = (message || "").trim();
   const lower = text.toLowerCase();
@@ -315,16 +397,16 @@ function queueThinkingPrelude(message) {
   thinkingPhase.value = prelude.phase;
   thinkingHintTimer = window.setTimeout(() => {
     if (!showThinking.value) return;
-    if (store.runtime.turn.phase !== "thinking" && store.runtime.turn.phase !== prelude.phase) return;
+    if (chatRuntimePhase.value !== "thinking" && chatRuntimePhase.value !== prelude.phase) return;
     if (activeActivityLine.value || summaryLine.value) return;
     thinkingHint.value = prelude.hint;
   }, 900);
 }
 
 watch(
-  () => [store.runtime.turn.phase, store.runtime.turn.pendingStart, store.runtime.turn.active],
-  ([phase, pendingStart, active]) => {
-    if ((phase === "idle" || phase === "completed" || phase === "failed" || phase === "aborted") && !pendingStart && !active) {
+  () => [chatRuntimePhase.value, chatRuntimeBusy.value, projectionRuntimeStatus.value],
+  ([phase, busy]) => {
+    if (!busy && (phase === "idle" || phase === "completed" || phase === "failed" || phase === "aborted" || phase === "reviewing")) {
       showThinking.value = false;
       approvalFollowupMode.value = false;
       clearThinkingPrelude();
@@ -369,7 +451,7 @@ function stopElapsedTimer() {
 }
 
 const elapsedLabel = computed(() => {
-  const startedAt = store.runtime.turn.startedAt;
+  const startedAt = chatRuntimeStartedAt.value;
   if (!startedAt) return "";
   const start = typeof startedAt === "number" ? startedAt : new Date(startedAt).getTime();
   if (!start || isNaN(start)) return "";
@@ -401,101 +483,17 @@ function isFinalCommandState(status = "") {
   );
 }
 
-const currentTurnStartTimestamp = computed(() => safeTimestamp(store.runtime.turn.startedAt));
+const currentTurnStartTimestamp = computed(() => safeTimestamp(chatRuntimeStartedAt.value));
 
-const codexActivityLines = computed(() => {
-  const lines = [];
-  const a = store.runtime.activity;
-  const turnStart = currentTurnStartTimestamp.value;
-  const invocations = (store.snapshot.toolInvocations || []).filter((invocation) => {
-    if (!turnStart) return true;
-    const startedAt = safeTimestamp(invocation?.startedAt);
-    const completedAt = safeTimestamp(invocation?.completedAt);
-    const compareAt = startedAt || completedAt;
-    return !compareAt || compareAt >= turnStart;
-  });
-
-  // Show individual tool invocations like Codex does
-  for (const inv of invocations) {
-    const name = inv.name || inv.toolName || "";
-    const summary = inv.inputSummary || inv.outputSummary || "";
-    const status = inv.status || "";
-    const normalizedStatus = compactText(status).toLowerCase();
-    const running = normalizedStatus === "running";
-    if (!name) continue;
-
-    let text = "";
-    switch (name) {
-      case "web_search":
-        text = `${running ? "正在搜索网页" : "已搜索网页"}（${summary || "web"}）`;
-        break;
-      case "open_page":
-        text = `${running ? "正在浏览网页" : "已浏览网页"}（${summary || inv.url || "page"}）`;
-        break;
-      case "find_in_page":
-        text = `${running ? "正在检索页面内容" : "已在页面中搜索"}（${summary || "content"}）`;
-        break;
-      case "shell_command":
-      case "execute_command":
-      case "execute_readonly_query":
-      case "code_mode":
-        text = `${running ? "正在运行" : "已运行"} ${summary || name}`;
-        break;
-      case "list_dir":
-      case "list_files":
-        text = `${running ? "正在浏览目录" : "已浏览目录"}（${summary || "dir"}）`;
-        break;
-      case "read_file":
-        text = `${running ? "正在读取文件" : "已读取文件"}（${summary || "file"}）`;
-        break;
-      case "write_file":
-      case "apply_patch":
-        text = `${running ? "正在修改文件" : "已修改文件"}（${summary || "file"}）`;
-        break;
-      case "search_files":
-        text = `${running ? "正在搜索文件" : "已搜索文件"}（${summary || "query"}）`;
-        break;
-      default:
-        text = `${running ? "正在执行" : "已执行"} ${name}${summary ? "（" + summary + "）" : ""}`;
-    }
-    lines.push({ id: `inv-${inv.id || lines.length}`, text, status: normalizedStatus });
-  }
-
-  // If no invocations yet, fall back to activity counters
-  if (lines.length === 0) {
-    // Completed web searches
-    for (const q of (a.searchedWebQueries || [])) {
-      lines.push({ id: `ws-${q.query || q.label || q}`, text: `已搜索网页（${q.query || q.label || q}）` });
-    }
-    for (const q of (a.searchedContentQueries || [])) {
-      lines.push({ id: `cs-${q.query || q.label || q}`, text: `已搜索文件（${q.query || q.label || q}）` });
-    }
-    if (a.currentSearchQuery) {
-      const kind = (a.currentSearchKind === "web" || a.currentWebSearchQuery) ? "网页" : "文件";
-      lines.push({ id: "active-search", text: `正在搜索${kind}（${a.currentSearchQuery || a.currentWebSearchQuery}）`, status: "running" });
-    }
-    for (const f of (a.viewedFiles || [])) {
-      const label = f.path || f.url || f.label || f;
-      lines.push({ id: `vf-${label}`, text: `已浏览（${label}）` });
-    }
-    if (a.currentReadingFile) {
-      lines.push({ id: "active-read", text: `正在浏览（${a.currentReadingFile}）`, status: "running" });
-    }
-    if (a.commandsRun > 0) {
-      lines.push({ id: "cmds", text: `已运行 ${a.commandsRun} 条命令` });
-    }
-  }
-
-  return lines;
-});
+const codexActivityLines = computed(() => projectionActivityLines.value);
 
 const isThinking = computed(() => {
-  const phase = compactText(store.runtime.turn.phase).toLowerCase();
+  const phase = compactText(chatRuntimePhase.value).toLowerCase();
   return phase === "thinking" || phase === "planning" || phase === "finalizing";
 });
 
 const showCodexActivity = computed(() => {
-  return store.runtime.turn.active && !isWorkspaceSession.value;
+  return chatRuntimeBusy.value && !isWorkspaceSession.value;
 });
 
 // Accumulate activity lines during the turn so they survive the backend clearing current fields
@@ -512,7 +510,7 @@ function mergeAccumulatedActivityLines(lines = [], { replace = false } = {}) {
 }
 
 watch(codexActivityLines, (newLines) => {
-  if (store.runtime.turn.active) {
+  if (chatRuntimeBusy.value) {
     mergeAccumulatedActivityLines(newLines);
     return;
   }
@@ -526,7 +524,7 @@ watch(codexActivityLines, (newLines) => {
 }, { deep: true, immediate: true });
 
 watch(
-  () => store.runtime.turn.active,
+  () => chatRuntimeBusy.value,
   (active, wasActive) => {
     if (active && wasActive === false) {
       // Turn just started (not initial mount)
@@ -547,7 +545,12 @@ watch(
 
 // Approval inline mode (Change 3)
 const hasCodexApproval = computed(() => {
-  return store.runtime.turn.phase === "waiting_approval" && activeApprovalCard.value && !isWorkspaceSession.value;
+  return chatRuntimePhase.value === "waiting_approval" && activeApprovalCard.value && !isWorkspaceSession.value;
+});
+
+const chatStreamApprovalDock = computed(() => {
+  if (hasCodexApproval.value && !isWorkspaceSession.value) return [];
+  return projectionApprovalDock.value;
 });
 
 const approvalQuestion = computed(() => {
@@ -698,7 +701,7 @@ function toggleSummaryDetails() {
 }
 
 const activePlanCard = computed(() => {
-  if (!store.runtime.turn.active) return null;
+  if (!chatRuntimeBusy.value) return null;
   const planCards = store.snapshot.cards.filter((card) => card.type === "PlanCard" && card.items?.length);
   if (!planCards.length) return null;
   return planCards[planCards.length - 1];
@@ -764,8 +767,7 @@ const allowFollowUpComposer = computed(
   () =>
     approvalFollowupMode.value &&
     !hasActiveApprovalOverlay.value &&
-    !store.runtime.turn.active &&
-    !store.runtime.turn.pendingStart,
+    !chatRuntimeBusy.value,
 );
 const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
@@ -906,6 +908,10 @@ function isTerminalOutputCard(card) {
   return card?.type === "CommandCard" || (card?.type === "StepCard" && !!card?.command);
 }
 
+function isToolMessageCard(card) {
+  return compactText(card?.role).toLowerCase() === "tool" || card?.type === "ToolMessageCard";
+}
+
 const singleHostCommandCards = computed(() => {
   return (store.snapshot.cards || []).filter((card) => {
     if (!isTerminalOutputCard(card)) return false;
@@ -915,7 +921,8 @@ const singleHostCommandCards = computed(() => {
 });
 
 const latestRunningCommandCard = computed(() => {
-  if (!store.runtime.turn.active) return null;
+  if (hasProjectionRuntime.value) return null;
+  if (!chatRuntimeBusy.value) return null;
   const turnStart = currentTurnStartTimestamp.value;
   const cards = singleHostCommandCards.value.filter((card) => {
     if (isFinalCommandState(card?.status)) return false;
@@ -932,7 +939,7 @@ const visibleCards = computed(() => {
       return false;
     }
     // Hide active plan card
-    if (activePlanCard.value && card.id === activePlanCard.value.id && store.runtime.turn.active) {
+    if (activePlanCard.value && card.id === activePlanCard.value.id && chatRuntimeBusy.value) {
       return false;
     }
     // Hide all pending approval cards from the chat stream (rendered in overlay)
@@ -940,6 +947,9 @@ const visibleCards = computed(() => {
       return false;
     }
     if (card.id === "__codex_reconnect__") {
+      return false;
+    }
+    if (isToolMessageCard(card)) {
       return false;
     }
     const reconnectText = (card.message || card.text || "").trim();
@@ -950,8 +960,32 @@ const visibleCards = computed(() => {
   });
 });
 
+const projectionTurnRowIds = computed(
+  () => new Set(projectionTimelineRows.value.filter((row) => row.kind === "turn").map((row) => compactText(row.id))),
+);
+const projectionFinalTurnIds = computed(
+  () => new Set(projectionTimelineRows.value.filter((row) => row.kind === "assistant_final").map((row) => compactText(row.turnId))),
+);
+
+function isCoveredByAgentEventProjection(card = {}) {
+  if (!isWorkspaceSession.value) return false;
+  if (!hasProjectionRows.value) return false;
+  if (isUserConversationCard(card)) {
+    const clientMessageId = compactText(card.clientMessageId);
+    return Boolean(card.optimistic && clientMessageId && projectionTurnRowIds.value.has(clientMessageId));
+  }
+  if (isAssistantConversationCard(card)) {
+    const turnId = compactText(card.turnId || String(card.id || "").replace(/^agent-final-/, ""));
+    return Boolean(turnId && projectionFinalTurnIds.value.has(turnId));
+  }
+  return false;
+}
+
 const streamCards = computed(() =>
   visibleCards.value.filter((card) => {
+    if (isCoveredByAgentEventProjection(card)) {
+      return false;
+    }
     if (isApprovalCard(card)) {
       return false;
     }
@@ -987,16 +1021,24 @@ const currentTurnAssistantCards = computed(() => {
 
 const activeStreamingFinalMessageVisible = computed(() => {
   if (isWorkspaceSession.value) return false;
-  if (!(showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending)) return false;
+  if (!(showThinkingCard.value || chatRuntimeBusy.value)) return false;
   const lastAssistantCard = currentTurnAssistantCards.value[currentTurnAssistantCards.value.length - 1];
   return shouldExposeActiveFinalMessage({ card: lastAssistantCard, sourceCard: lastAssistantCard });
 });
 
 const mainChatActiveProcess = computed(() => {
-  const terminalPhase = compactText(store.runtime.turn.phase).toLowerCase();
+  const terminalPhase = compactText(chatRuntimePhase.value).toLowerCase();
   const terminalState = terminalPhase === "failed" || terminalPhase === "aborted";
-  const turnRunning = showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending;
+  const turnRunning = showThinkingCard.value || chatRuntimeBusy.value;
   const completed = !turnRunning || activeStreamingFinalMessageVisible.value;
+  const latestUserCard = [...streamCards.value].reverse().find((card) => isUserConversationCard(card)) || null;
+  const turnKeys = [
+    activeAgentProjection.value?.currentTurnId,
+    store.runtime.turn.turnId,
+    store.runtime.turn.clientTurnId,
+    latestUserCard?.turnId,
+    latestUserCard?.clientTurnId,
+  ].map((value) => compactText(value)).filter(Boolean);
   let items = buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
   const terminalStatusItem = buildTerminalStatusItem(terminalPhase, store.errorMessage);
   if (terminalState && terminalStatusItem && !items.some((item) => item.id === terminalStatusItem.id)) {
@@ -1008,6 +1050,9 @@ const mainChatActiveProcess = computed(() => {
   if (!turnRunning && !terminalState && !hasTopFeedback.value && items.length === 0) return null;
 
   return {
+    turnId: compactText(activeAgentProjection.value?.currentTurnId || store.runtime.turn.turnId || store.runtime.turn.clientTurnId || ""),
+    clientTurnId: compactText(latestUserCard?.clientTurnId || store.runtime.turn.clientTurnId || ""),
+    turnKeys: [...new Set(turnKeys)],
     phase: terminalState ? terminalPhase : thinkingDisplayPhase.value,
     liveHint: terminalState ? "" : (completed ? "" : (activeActivityLine.value || thinkingHint.value || "")),
     summary: terminalState ? "" : (completed ? (activitySummary.value || "") : (summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""))),
@@ -1021,7 +1066,7 @@ const mainChatTurns = computed(() =>
   formatMainChatTurns({
     conversationCards: streamCards.value.filter((card) => isChatConversationCard(card)),
     commandCards: singleHostCommandCards.value,
-    turnActive: showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending,
+    turnActive: showThinkingCard.value || chatRuntimeBusy.value,
     activeProcess: mainChatActiveProcess.value,
     hideLiveProcessDetails: !isWorkspaceSession.value,
   }),
@@ -1033,8 +1078,7 @@ const mainChatTurnByAnchorId = computed(() =>
 
 const singleHostLiveTurnId = computed(() => {
   if (isWorkspaceSession.value) return "";
-  if (activeStreamingFinalMessageVisible.value) return "";
-  if (!(showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending)) {
+  if (!(showThinkingCard.value || chatRuntimeBusy.value)) {
     return "";
   }
   const turns = mainChatTurns.value;
@@ -1069,7 +1113,7 @@ const baseStreamEntries = computed(() => {
   if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value && !showThinkingCard.value) {
     entries.push({ id: "__activity__", kind: "activity" });
   }
-  if (!activeStreamingFinalMessageVisible.value && (showThinkingCard.value || store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending)) {
+  if (showThinkingCard.value || chatRuntimeBusy.value) {
     const hasVisibleSingleHostLiveTurn =
       !isWorkspaceSession.value &&
       !!singleHostLiveTurnId.value &&
@@ -1085,11 +1129,11 @@ const baseStreamEntries = computed(() => {
 });
 
 const streamSessionKey = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
-const showEmptyState = computed(() => !streamCards.value.length && !store.loading && !showThinking.value);
+const showEmptyState = computed(() => !streamCards.value.length && !hasProjectionRows.value && !store.loading && !showThinking.value);
 
 watch(streamSessionKey, () => {
   accumulatedActivityLines.value = [];
-  if (!store.runtime.turn.active && codexActivityLines.value.length) {
+  if (!chatRuntimeBusy.value && codexActivityLines.value.length) {
     mergeAccumulatedActivityLines(codexActivityLines.value, { replace: true });
   }
 });
@@ -1181,7 +1225,7 @@ const renderedStreamEntries = computed(() => {
 const virtualStream = useVirtualTurnList({
   items: renderedStreamEntries,
   scrollContainer,
-  suspended: computed(() => store.runtime.turn.active || store.runtime.turn.pendingStart || store.sending),
+  suspended: computed(() => chatRuntimeBusy.value),
   estimateSize(entry) {
     if (entry?.kind === "turn") return 172;
     if (entry?.kind === "divider") return 72;
@@ -1227,7 +1271,7 @@ function jumpToLatestAndSync() {
 }
 
 watch(
-  [activeActivityLine, summaryLine, () => store.runtime.turn.phase],
+  [activeActivityLine, summaryLine, () => chatRuntimePhase.value],
   ([currentLine, currentSummary, phase]) => {
     const hasFeedback = !!currentLine || !!currentSummary;
     const phaseMovedOn =
@@ -1317,23 +1361,17 @@ function getRowClass(card) {
 async function submitMessage(messageInput, { restoreComposerOnFail = false, originalDraft = "" } = {}) {
   const message = String(messageInput || "").trim();
   if (!store.canSend || !message) return;
-  if (store.runtime.turn.active || store.runtime.turn.pendingStart) return;
+  if (chatRuntimeBusy.value) return;
 
   const clientMessageId = createClientId("client-msg");
   const clientTurnId = createClientId("client-turn");
   const sessionId = store.activeSessionId || store.snapshot.sessionId;
   const hostId = store.snapshot.selectedHostId;
   store.errorMessage = "";
-  showThinking.value = true;
+  accumulatedActivityLines.value = [];
   if (isWorkspaceSession.value) {
     queueThinkingPrelude(message);
   }
-  store.startLocalPendingTurn({
-    clientTurnId,
-    clientMessageId,
-    hostId,
-    phase: "thinking",
-  });
   const optimisticCardId = store.appendOptimisticUserMessage({
     message,
     clientMessageId,
@@ -1346,12 +1384,34 @@ async function submitMessage(messageInput, { restoreComposerOnFail = false, orig
   store.sending = true;
 
   try {
-    await sendMessageApi({
+    const accepted = await sendMessageApi({
       message,
       sessionId,
       hostId,
       clientMessageId,
       clientTurnId,
+    });
+    const acceptedSessionId = compactText(accepted?.sessionId || sessionId);
+    const acceptedTurnId = compactText(accepted?.turnId || clientTurnId);
+    const acceptedClientTurnId = compactText(accepted?.clientTurnId || clientTurnId);
+    store.applyAgentEvent({
+      eventId: `local:${clientMessageId}:turn.started`,
+      seq: 0,
+      sessionId: acceptedSessionId,
+      turnId: acceptedTurnId,
+      clientTurnId: acceptedClientTurnId,
+      kind: "turn",
+      phase: "started",
+      status: "running",
+      visibility: "primary",
+      source: "ui",
+      createdAt: new Date().toISOString(),
+      payload: {
+        title: message,
+        prompt: message,
+        hostId,
+        clientMessageId,
+      },
     });
     approvalFollowupMode.value = false;
     nextTick(() => forceScrollToBottom());
@@ -1388,11 +1448,15 @@ async function sendMessage() {
 }
 
 async function stopMessage() {
-  if (!store.runtime.turn.active && !store.runtime.turn.pendingStart) return;
+  if (!chatRuntimeBusy.value) return;
   if (stopBusy.value) return;
   stopBusy.value = true;
   try {
-    await stopMessageApi();
+    const turnId = compactText(activeAgentProjection.value?.currentTurnId || store.runtime.turn.turnId || store.runtime.turn.clientTurnId || "");
+    await stopMessageApi({
+      sessionId: activeProjectionSessionId.value,
+      turnId,
+    });
     store.errorMessage = "";
     showThinking.value = false;
     store.setTurnPhase("aborted");
@@ -1400,8 +1464,19 @@ async function stopMessage() {
     clearThinkingPrelude();
     focusComposer();
   } catch (e) {
-    console.error(e);
-    store.errorMessage = "stop failed";
+    const message = String(e?.message || "").trim().toLowerCase();
+    const payloadError = String(e?.payload?.error || "").trim().toLowerCase();
+    if (e?.status === 409 && (message.includes("no active turn found") || payloadError.includes("no active turn found"))) {
+      store.errorMessage = "";
+      showThinking.value = false;
+      store.setTurnPhase("aborted");
+      approvalFollowupMode.value = false;
+      clearThinkingPrelude();
+      focusComposer();
+    } else {
+      console.error(e);
+      store.errorMessage = "stop failed";
+    }
   } finally {
     stopBusy.value = false;
   }
@@ -1678,6 +1753,12 @@ watch(
     :show-virtual-bottom-spacer="showVirtualBottomSpacer"
     :virtual-top-spacer-height="virtualTopSpacerHeight"
     :virtual-bottom-spacer-height="virtualBottomSpacerHeight"
+    :timeline-rows="projectionTimelineRows"
+    :agent-rows="projectionAgentRows"
+    :approval-dock="chatStreamApprovalDock"
+    :artifact-rows="projectionArtifactRows"
+    :diff-summary="projectionDiffSummary"
+    :runtime-status="projectionRuntimeStatus"
     :single-host-live-turn-id="singleHostLiveTurnId"
     :working-elapsed-label="workingElapsedLabel"
     :single-host-live-activity-lines="singleHostLiveActivityLines"
@@ -1730,6 +1811,7 @@ watch(
     :show-composer="(!hasActiveApprovalOverlay || authCardCollapsed) && !hasCodexApproval"
     :is-docked-bottom="!!activePlanCard || hasActiveApprovalOverlay"
     :busy="stopBusy"
+    :primary-action-override="composerPrimaryActionOverride"
     @send="sendMessage"
     @stop="stopMessage"
   >

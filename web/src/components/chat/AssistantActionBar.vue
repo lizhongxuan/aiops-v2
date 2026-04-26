@@ -15,13 +15,17 @@ const props = defineProps({
     type: String,
     default: "",
   },
+  allowRegenerate: {
+    type: Boolean,
+    default: false,
+  },
   allowCopy: {
     type: Boolean,
     default: true,
   },
   allowFeedback: {
     type: Boolean,
-    default: true,
+    default: false,
   },
   regenerateLabel: {
     type: String,
@@ -81,7 +85,13 @@ function toggleFeedback(value) {
       <span>{{ copied ? "已复制" : "复制" }}</span>
     </button>
 
-    <button type="button" class="assistant-action-btn" data-testid="assistant-action-regenerate" @click="$emit('regenerate')">
+    <button
+      v-if="allowRegenerate"
+      type="button"
+      class="assistant-action-btn"
+      data-testid="assistant-action-regenerate"
+      @click="$emit('regenerate')"
+    >
       <RefreshCwIcon size="14" />
       <span>{{ regenerateLabel }}</span>
     </button>

@@ -1,8 +1,10 @@
 package policyengine
 
 import (
+	"encoding/json"
 	"strings"
 
+	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
 )
 
@@ -13,6 +15,7 @@ import (
 // readOnlyPatterns identifies tools that only read state.
 var readOnlyPatterns = []string{
 	"read", "list", "search", "get", "show", "status", "info",
+	"browse", "fetch",
 	"ps", "df", "top", "cat", "head", "tail", "ls",
 }
 
@@ -53,6 +56,75 @@ func isWebSearch(name string) bool {
 	return containsAny(name, webSearchPatterns)
 }
 
+func isTerminalCommandTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "exec_command", "terminal_command", "shell_command":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReadOnlyTerminalCommand(args []byte) bool {
+	req, ok := terminalCommandRequestFromArgs(args)
+	if !ok {
+		return false
+	}
+	return terminalpolicy.IsReadOnlyCommand(req.command, req.args)
+}
+
+type terminalCommandRequest struct {
+	command string
+	args    []string
+}
+
+func terminalCommandFromArgs(args []byte) (string, bool) {
+	req, ok := terminalCommandRequestFromArgs(args)
+	return req.command, ok
+}
+
+func terminalCommandRequestFromArgs(args []byte) (terminalCommandRequest, bool) {
+	var payload struct {
+		Command string   `json:"command"`
+		Args    []string `json:"args"`
+		Cmd     string   `json:"cmd"`
+	}
+	if len(args) == 0 || json.Unmarshal(args, &payload) != nil {
+		return terminalCommandRequest{}, false
+	}
+	command := strings.TrimSpace(payload.Command)
+	commandArgs := append([]string(nil), payload.Args...)
+	if command != "" && len(commandArgs) == 0 {
+		parsedCommand, parsedArgs, ok := terminalpolicy.SplitCommandLine(command)
+		if !ok {
+			return terminalCommandRequest{}, false
+		}
+		command = parsedCommand
+		commandArgs = parsedArgs
+	}
+	if command == "" {
+		parsedCommand, parsedArgs, ok := terminalpolicy.SplitCommandLine(payload.Cmd)
+		if !ok {
+			return terminalCommandRequest{}, false
+		}
+		command = parsedCommand
+		commandArgs = parsedArgs
+	}
+	if command == "" || hasTerminalShellOperators(command) {
+		return terminalCommandRequest{}, false
+	}
+	for _, arg := range commandArgs {
+		if strings.ContainsAny(arg, "\x00\n\r") {
+			return terminalCommandRequest{}, false
+		}
+	}
+	return terminalCommandRequest{command: command, args: commandArgs}, true
+}
+
+func hasTerminalShellOperators(value string) bool {
+	return strings.ContainsAny(value, ";&|<>`$")
+}
+
 // ---------------------------------------------------------------------------
 // ChatModePolicy — chat mode: allows read-only + web search, denies mutation.
 // ---------------------------------------------------------------------------
@@ -63,6 +135,26 @@ type ChatModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in chat mode.
 func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if isTerminalCommandTool(toolName) {
+		req, ok := terminalCommandRequestFromArgs(input.Arguments)
+		if !ok {
+			return PolicyDecision{
+				Action: PolicyActionDeny,
+				Reason: "terminal command uses unsupported shell syntax or is missing a command",
+			}
+		}
+		if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
+		return PolicyDecision{
+			Action: PolicyActionNeedApproval,
+			Reason: "chat mode requires approval for local terminal commands that are not classified read-only",
+			Approval: &ApprovalRequest{
+				ToolName: toolName,
+				Reason:   "local terminal command requires approval",
+			},
+		}
+	}
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
@@ -104,6 +196,22 @@ type InspectModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in inspect mode.
 func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if isTerminalCommandTool(toolName) {
+		req, ok := terminalCommandRequestFromArgs(input.Arguments)
+		if !ok {
+			return PolicyDecision{
+				Action: PolicyActionDeny,
+				Reason: "terminal command uses unsupported shell syntax or is missing a command",
+			}
+		}
+		if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: "inspect mode only allows read-only terminal commands",
+		}
+	}
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
@@ -147,6 +255,22 @@ func isPlanTool(name string) bool {
 // CheckTool determines whether the given tool is permitted in plan mode.
 func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if isTerminalCommandTool(toolName) {
+		req, ok := terminalCommandRequestFromArgs(input.Arguments)
+		if !ok {
+			return PolicyDecision{
+				Action: PolicyActionDeny,
+				Reason: "terminal command uses unsupported shell syntax or is missing a command",
+			}
+		}
+		if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: "plan mode only allows read-only terminal commands",
+		}
+	}
 	if isPlanTool(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
@@ -184,6 +308,26 @@ type ExecuteModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in execute mode.
 func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if isTerminalCommandTool(toolName) {
+		req, ok := terminalCommandRequestFromArgs(input.Arguments)
+		if !ok {
+			return PolicyDecision{
+				Action: PolicyActionDeny,
+				Reason: "terminal command uses unsupported shell syntax or is missing a command",
+			}
+		}
+		if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
+		return PolicyDecision{
+			Action: PolicyActionNeedApproval,
+			Reason: "execute mode requires approval for local terminal commands that are not classified read-only",
+			Approval: &ApprovalRequest{
+				ToolName: toolName,
+				Reason:   "local terminal command requires approval",
+			},
+		}
+	}
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionNeedApproval,

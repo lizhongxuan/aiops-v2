@@ -4,7 +4,37 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/modelrouter"
 )
+
+type cancelAwareBlockingModel struct {
+	started chan struct{}
+}
+
+func newCancelAwareBlockingModel() *cancelAwareBlockingModel {
+	return &cancelAwareBlockingModel{started: make(chan struct{}, 1)}
+}
+
+func (m *cancelAwareBlockingModel) Generate(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	select {
+	case m.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (m *cancelAwareBlockingModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (m *cancelAwareBlockingModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
 
 func TestCancelTurn_PersistsCanceledLifecycle(t *testing.T) {
 	kernel := newTestKernel(nil)
@@ -85,6 +115,100 @@ func TestCancelTurn_EmitsTurnCompleteProjection(t *testing.T) {
 	}
 	if last.SessionID != session.ID || last.TurnID != session.CurrentTurn.ID {
 		t.Fatalf("last event = %+v, want session %q turn %q", last, session.ID, session.CurrentTurn.ID)
+	}
+}
+
+func TestCancelTurn_CancelsInFlightRunTurn(t *testing.T) {
+	kernel := newTestKernel(nil)
+	blockingModel := newCancelAwareBlockingModel()
+	kernel.modelRouter = modelrouter.NewRouter("blocking", map[string]modelrouter.ChatModel{"blocking": blockingModel}, nil)
+
+	session := kernel.sessions.GetOrCreate("sess-cancel-live", SessionTypeHost, ModeChat)
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+
+	go func() {
+		result, err := kernel.RunTurn(context.Background(), TurnRequest{
+			SessionType: SessionTypeHost,
+			Mode:        ModeChat,
+			SessionID:   session.ID,
+			TurnID:      "turn-cancel-live",
+			Input:       "请持续生成",
+		})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-blockingModel.started:
+	case <-time.After(time.Second):
+		t.Fatal("model did not start before cancel")
+	}
+
+	result, err := kernel.CancelTurn(context.Background(), CancelRequest{
+		SessionID: session.ID,
+		TurnID:    "turn-cancel-live",
+		Reason:    "user stop",
+	})
+	if err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+	if result.Status != "cancelled" {
+		t.Fatalf("CancelTurn status = %q, want cancelled", result.Status)
+	}
+
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("RunTurn() error = %v, want nil canceled result", outcome.err)
+		}
+		if outcome.result.Status != "cancelled" {
+			t.Fatalf("RunTurn status = %q, want cancelled", outcome.result.Status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not exit after cancel")
+	}
+}
+
+func TestRunTurn_DoesNotStartModelWhenCanceledBeforeExecution(t *testing.T) {
+	kernel := newTestKernel(nil)
+	blockingModel := newCancelAwareBlockingModel()
+	kernel.modelRouter = modelrouter.NewRouter("blocking", map[string]modelrouter.ChatModel{"blocking": blockingModel}, nil)
+
+	session := kernel.sessions.GetOrCreate("sess-cancel-pending", SessionTypeHost, ModeChat)
+	result, err := kernel.CancelTurn(context.Background(), CancelRequest{
+		SessionID: session.ID,
+		TurnID:    "turn-cancel-pending",
+		Reason:    "user stop",
+	})
+	if err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+	if result.Status != "cancelled" {
+		t.Fatalf("CancelTurn status = %q, want cancelled", result.Status)
+	}
+
+	runResult, runErr := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		SessionID:   session.ID,
+		TurnID:      "turn-cancel-pending",
+		Input:       "不要启动模型",
+	})
+	if runErr != nil {
+		t.Fatalf("RunTurn() error = %v", runErr)
+	}
+	if runResult.Status != "cancelled" {
+		t.Fatalf("RunTurn status = %q, want cancelled", runResult.Status)
+	}
+	select {
+	case <-blockingModel.started:
+		t.Fatal("model started despite pending cancel")
+	default:
 	}
 }
 

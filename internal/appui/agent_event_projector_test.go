@@ -1,0 +1,370 @@
+package appui
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func testAgentEvent(kind AgentEventKind, phase AgentEventPhase, status AgentEventStatus, seq int64, payload any) AgentEvent {
+	var raw json.RawMessage
+	if payload != nil {
+		raw, _ = json.Marshal(payload)
+	}
+	return AgentEvent{
+		EventID:    string(kind) + "-" + string(phase) + "-" + string(status),
+		Seq:        seq,
+		SessionID:  "session-1",
+		ThreadID:   "thread-1",
+		TurnID:     "turn-1",
+		AgentID:    "agent-main",
+		Kind:       kind,
+		Phase:      phase,
+		Status:     status,
+		Visibility: AgentEventVisibilityPrimary,
+		Source:     AgentEventSourceRuntime,
+		CreatedAt:  "2026-04-24T00:00:00Z",
+		Payload:    raw,
+	}
+}
+
+func TestAgentEventProjector_TurnRequestedStartedSetsWorking(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseRequested, AgentEventStatusQueued, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 2, TurnPayload{Title: "Working"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if proj.Status != "working" {
+		t.Fatalf("Status = %q, want working", proj.Status)
+	}
+	if !proj.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("ActiveTurns = %+v, want turn-1 active", proj.RuntimeLiveness.ActiveTurns)
+	}
+	if proj.CurrentTurnID != "turn-1" || proj.LastSeq != 2 {
+		t.Fatalf("projection turn/seq = %q/%d, want turn-1/2", proj.CurrentTurnID, proj.LastSeq)
+	}
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("len(Timeline) = %d, want 1 turn row", len(proj.Timeline))
+	}
+	if got := proj.Timeline[0].Title; got != "hello" {
+		t.Fatalf("Timeline[0].Title = %q, want requested prompt", got)
+	}
+	if got := proj.Timeline[0].Summary; got != "Working" {
+		t.Fatalf("Timeline[0].Summary = %q, want latest turn summary", got)
+	}
+}
+
+func TestAgentEventProjector_TerminalTurnEventUpdatesExistingClientTurnRow(t *testing.T) {
+	projector := NewAgentEventProjector()
+	now := "2026-04-24T00:00:00Z"
+	requestedPayload, _ := json.Marshal(TurnPayload{
+		Prompt:          "刷新后不应出现第二条用户行",
+		ClientMessageID: "client-msg-1",
+		ClientTurnID:    "client-turn-1",
+	})
+	completedPayload, _ := json.Marshal(TurnPayload{Summary: "已完成"})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		{
+			EventID:      "turn-1:requested",
+			Seq:          1,
+			SessionID:    "session-1",
+			TurnID:       "turn-1",
+			ClientTurnID: "client-turn-1",
+			Kind:         AgentEventTurn,
+			Phase:        AgentEventPhaseRequested,
+			Status:       AgentEventStatusQueued,
+			Visibility:   AgentEventVisibilityPrimary,
+			Source:       AgentEventSourceUI,
+			CreatedAt:    now,
+			Payload:      requestedPayload,
+		},
+		{
+			EventID:      "turn-1:completed",
+			Seq:          2,
+			SessionID:    "session-1",
+			TurnID:       "turn-1",
+			ClientTurnID: "client-turn-1",
+			Kind:         AgentEventTurn,
+			Phase:        AgentEventPhaseCompleted,
+			Status:       AgentEventStatusCompleted,
+			Visibility:   AgentEventVisibilityPrimary,
+			Source:       AgentEventSourceSystem,
+			CreatedAt:    now,
+			Payload:      completedPayload,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("len(Timeline) = %d, want one logical turn row: %+v", len(proj.Timeline), proj.Timeline)
+	}
+	if got := proj.Timeline[0].ID; got != "client-msg-1" {
+		t.Fatalf("Timeline[0].ID = %q, want existing client message row", got)
+	}
+	if got := proj.Timeline[0].Title; got != "刷新后不应出现第二条用户行" {
+		t.Fatalf("Timeline[0].Title = %q, want original prompt", got)
+	}
+	if got := proj.Timeline[0].Status; got != AgentEventStatusCompleted {
+		t.Fatalf("Timeline[0].Status = %q, want completed", got)
+	}
+	if got := proj.Timeline[0].Summary; got != "已完成" {
+		t.Fatalf("Timeline[0].Summary = %q, want terminal summary", got)
+	}
+}
+
+func TestAgentEventProjector_AgentCompletionRemovesActiveAgentButKeepsAgentRow(t *testing.T) {
+	projector := NewAgentEventProjector()
+	started := testAgentEvent(AgentEventAgent, AgentEventPhaseStarted, AgentEventStatusRunning, 1, AgentPayload{
+		Handle:     "main",
+		Name:       "Main Agent",
+		Role:       "primary",
+		LastAction: "reading files",
+		Stats: AgentStats{
+			CommandsRun: 2,
+			FilesRead:   3,
+			ToolsCalled: 4,
+		},
+	})
+	completed := testAgentEvent(AgentEventAgent, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, AgentPayload{
+		Handle:      "main",
+		Name:        "Main Agent",
+		LastSummary: "done",
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{started, completed})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if proj.RuntimeLiveness.ActiveAgents["agent-main"] {
+		t.Fatalf("agent-main should not remain active: %+v", proj.RuntimeLiveness.ActiveAgents)
+	}
+	if len(proj.Agents) != 1 {
+		t.Fatalf("Agents length = %d, want 1", len(proj.Agents))
+	}
+	if proj.Agents[0].Status != "completed" || proj.Agents[0].LastSummary != "done" {
+		t.Fatalf("agent row = %+v, want completed summary", proj.Agents[0])
+	}
+	if proj.Agents[0].Stats.CommandsRun != 2 || proj.Agents[0].Stats.FilesRead != 3 || proj.Agents[0].Stats.ToolsCalled != 4 {
+		t.Fatalf("agent stats = %+v, want latest non-zero stats from payload", proj.Agents[0].Stats)
+	}
+}
+
+func TestAgentEventProjector_ToolProgressUpdatesOneTimelineRow(t *testing.T) {
+	projector := NewAgentEventProjector()
+	started := testAgentEvent(AgentEventTool, AgentEventPhaseStarted, AgentEventStatusRunning, 1, ToolPayload{
+		ToolCallID:   "tool-1",
+		ToolName:     "web_search",
+		DisplayName:  "搜索网页",
+		InputSummary: "A股",
+	})
+	updated := testAgentEvent(AgentEventTool, AgentEventPhaseUpdated, AgentEventStatusRunning, 2, ToolPayload{
+		ToolCallID:    "tool-1",
+		ToolName:      "web_search",
+		OutputSummary: "找到 3 条",
+	})
+	completed := testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, ToolPayload{
+		ToolCallID:    "tool-1",
+		ToolName:      "web_search",
+		OutputSummary: "已搜索 A股",
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{started, updated, completed})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if proj.RuntimeLiveness.ActiveCommandStreams["tool-1"] {
+		t.Fatalf("tool-1 should not remain active: %+v", proj.RuntimeLiveness.ActiveCommandStreams)
+	}
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("Timeline length = %d, want 1 row", len(proj.Timeline))
+	}
+	if proj.Timeline[0].Status != "completed" || proj.Timeline[0].Summary != "已搜索 A股" {
+		t.Fatalf("tool timeline row = %+v, want completed summary", proj.Timeline[0])
+	}
+	if len(proj.ProcessGroups["turn-1"]) != 1 {
+		t.Fatalf("ProcessGroups[turn-1] length = %d, want 1", len(proj.ProcessGroups["turn-1"]))
+	}
+}
+
+func TestAgentEventProjector_FailedExecCommandKeepsCommandAndError(t *testing.T) {
+	projector := NewAgentEventProjector()
+	failed := testAgentEvent(AgentEventTool, AgentEventPhaseFailed, AgentEventStatusFailed, 1, ToolPayload{
+		ToolCallID:   "exec-1",
+		ToolName:     "exec_command",
+		DisplayName:  "exec_command",
+		InputSummary: "date -d tomorrow",
+		Error:        "command failed: exit status 1",
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{failed})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("Timeline length = %d, want 1", len(proj.Timeline))
+	}
+	got := proj.Timeline[0].Summary
+	if got != "date -d tomorrow: command failed: exit status 1" {
+		t.Fatalf("failed exec summary = %q, want command plus error", got)
+	}
+}
+
+func TestAgentEventProjector_LateOldTurnToolDoesNotReplaceCurrentTurn(t *testing.T) {
+	projector := NewAgentEventProjector()
+	turn1Started := testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Title: "第一轮"})
+	turn1Completed := testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, TurnPayload{Summary: "done"})
+	turn2Started := testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 3, TurnPayload{Title: "第二轮"})
+	turn2Started.EventID = "turn-2-started"
+	turn2Started.TurnID = "turn-2"
+	lateOldTool := testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, ToolPayload{
+		ToolCallID:    "old-search",
+		ToolName:      "web_search",
+		OutputSummary: "旧轮次搜索结果",
+	})
+	lateOldTool.EventID = "late-old-tool"
+	lateOldTool.TurnID = "turn-1"
+
+	proj, err := projector.Replay("session-1", []AgentEvent{turn1Started, turn1Completed, turn2Started, lateOldTool})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if got := proj.CurrentTurnID; got != "turn-2" {
+		t.Fatalf("CurrentTurnID = %q, want turn-2 after late old tool event", got)
+	}
+	if !proj.RuntimeLiveness.ActiveTurns["turn-2"] {
+		t.Fatalf("turn-2 should stay active: %+v", proj.RuntimeLiveness.ActiveTurns)
+	}
+}
+
+func TestAgentEventProjector_ApprovalBlocksThenResolves(t *testing.T) {
+	projector := NewAgentEventProjector()
+	requested := testAgentEvent(AgentEventApproval, AgentEventPhaseRequested, AgentEventStatusBlocked, 1, ApprovalPayload{
+		ApprovalID:   "approval-1",
+		ApprovalType: "command",
+		Title:        "运行命令",
+		Reason:       "需要确认",
+	})
+	resolved := testAgentEvent(AgentEventApproval, AgentEventPhaseResolved, AgentEventStatusCompleted, 2, ApprovalPayload{
+		ApprovalID: "approval-1",
+		Decision:   "approved",
+	})
+
+	proj, err := projector.Apply(AgentEventProjection{}, requested)
+	if err != nil {
+		t.Fatalf("Apply(requested) error = %v", err)
+	}
+	if proj.Status != "blocked" || !proj.RuntimeLiveness.PendingApprovals["approval-1"] {
+		t.Fatalf("requested projection = %+v, want blocked pending approval", proj)
+	}
+
+	proj, err = projector.Apply(proj, resolved)
+	if err != nil {
+		t.Fatalf("Apply(resolved) error = %v", err)
+	}
+	if proj.Status != "idle" || proj.RuntimeLiveness.PendingApprovals["approval-1"] {
+		t.Fatalf("resolved projection = %+v, want idle without pending approval", proj)
+	}
+}
+
+func TestAgentEventProjector_AssistantFinalDeltaAppendsByTurn(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 1, AssistantPayload{Channel: "final", Delta: "第一段"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "第二段"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if got := proj.FinalMessages["turn-1"].Text; got != "第一段第二段" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want concatenated chunks", got)
+	}
+}
+
+func TestAgentEventProjector_AssistantIntentGoesToProcessGroup(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "search"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{
+			Channel: "intent",
+			Text:    "我会先说明处理路径，再搜索网页核对信息。",
+		}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseStarted, AgentEventStatusRunning, 3, ToolPayload{
+			ToolCallID:   "tool-1",
+			ToolName:     "web_search",
+			DisplayName:  "web_search",
+			InputSummary: "query",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	group := proj.ProcessGroups["turn-1"]
+	if len(group) != 2 {
+		t.Fatalf("ProcessGroups[turn-1] length = %d, want intent and tool", len(group))
+	}
+	if group[0].Kind != AgentEventAssistant || group[0].Summary != "我会先说明处理路径，再搜索网页核对信息。" {
+		t.Fatalf("first process group row = %+v, want assistant intent", group[0])
+	}
+	if _, exists := proj.FinalMessages["turn-1"]; exists {
+		t.Fatalf("intent should not be projected as final message: %+v", proj.FinalMessages["turn-1"])
+	}
+}
+
+func TestAgentEventProjector_TurnCompletedMarksStreamingFinalCompleted(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "最终"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Status != AgentEventStatusCompleted {
+		t.Fatalf("FinalMessages[turn-1].Status = %q, want completed", final.Status)
+	}
+}
+
+func TestAgentEventProjector_TurnCompletedWithDiffReviewsOtherwiseIdle(t *testing.T) {
+	projector := NewAgentEventProjector()
+
+	withDiff, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventDiff, AgentEventPhaseUpdated, AgentEventStatusCompleted, 1, DiffPayload{
+			FilesCount:   1,
+			AddedLines:   10,
+			RemovedLines: 2,
+			Summary:      "修改 1 个文件",
+		}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay(with diff) error = %v", err)
+	}
+	if withDiff.Status != "reviewing" {
+		t.Fatalf("with diff Status = %q, want reviewing", withDiff.Status)
+	}
+
+	withoutDiff, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 1, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay(without diff) error = %v", err)
+	}
+	if withoutDiff.Status != "idle" {
+		t.Fatalf("without diff Status = %q, want idle", withoutDiff.Status)
+	}
+}

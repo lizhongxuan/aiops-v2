@@ -48,14 +48,14 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	ResetAuthSummaryForTest()
 	repo := &settingsRepoStub{
 		web: &store.WebSettings{
-			Model:           "gpt-4o",
+			Model:           "gpt-5.4",
 			ReasoningEffort: "high",
 		},
 		llm: &store.LLMConfig{
 			Provider:     "openai",
-			Model:        "gpt-4o",
+			Model:        "gpt-5.4",
 			APIKey:       "sk-test-12345678",
-			CompactModel: "gpt-4o-mini",
+			CompactModel: "gpt-5.4-mini",
 		},
 	}
 	svc := NewSettingsService(repo)
@@ -64,7 +64,7 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSettings() error = %v", err)
 	}
-	if settings.Model != "gpt-4o" || settings.ReasoningEffort != "high" {
+	if settings.Model != "gpt-5.4" || settings.ReasoningEffort != "high" {
 		t.Fatalf("settings = %+v, want stored settings", settings)
 	}
 
@@ -83,8 +83,8 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateSettings() error = %v", err)
 	}
-	if updated.Model != "claude-3-opus" || repo.web.Model != "claude-3-opus" {
-		t.Fatalf("updated = %+v repo.web = %+v, want saved settings", updated, repo.web)
+	if updated.Model != "gpt-5.4" || repo.web.Model != "claude-3-opus" {
+		t.Fatalf("updated = %+v repo.web = %+v, want llm model surfaced while web settings persist local selection", updated, repo.web)
 	}
 
 	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
@@ -96,6 +96,26 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	}
 	if !result.OK || repo.llm.Provider != "anthropic" || repo.llm.APIKey != "sk-test-12345678" {
 		t.Fatalf("result = %+v repo.llm = %+v, want merged llm config", result, repo.llm)
+	}
+}
+
+func TestSettingsServiceDefaultsToGPT54WhenRepoIsEmpty(t *testing.T) {
+	svc := NewSettingsService(&settingsRepoStub{})
+
+	settings, err := svc.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings() error = %v", err)
+	}
+	if settings.Model != "gpt-5.4" {
+		t.Fatalf("settings.Model = %q, want gpt-5.4", settings.Model)
+	}
+
+	llmView, err := svc.GetLLMConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetLLMConfig() error = %v", err)
+	}
+	if llmView.Model != "gpt-5.4" || llmView.CompactModel != "gpt-5.4-mini" {
+		t.Fatalf("llmView = %+v, want gpt-5.4 / gpt-5.4-mini defaults", llmView)
 	}
 }
 

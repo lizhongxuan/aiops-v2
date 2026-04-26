@@ -42,9 +42,23 @@ internal/
 
 ```bash
 cd aiops-v2
+./scripts/start.sh              # 推荐：构建 web/dist + ai-server，并由 ai-server 托管前端
+```
+
+如果只想手动执行各步骤：
+
+```bash
 go test ./...                   # 运行全部测试
 go build ./cmd/ai-server        # 编译
 AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
+```
+
+常用启动覆盖：
+
+```bash
+AIOPS_HTTP_ADDR=:18080 ./scripts/start.sh
+SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
+./scripts/start.sh --dry-run
 ```
 
 ---
@@ -141,6 +155,24 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 - 前端只能有一套运行事件 reducer；本地 optimistic 状态也必须表示成同一套 `AgentEvent`
 - Busy/Working 必须由 liveness 集合推导：active turns、active agents、active command streams、pending approvals、pending user inputs
 - 主 UI 不显示 UUID/call-id/raw id，只显示 agent handle/name、阶段摘要、diff stats、approval/artifact 入口
+
+新增或修改 Chat / Protocol / 工作台 UI 时必须同时满足：
+
+- 后端新增运行过程：先扩展 `internal/appui/agent_event*.go` 的 event contract / normalizer / projector，再由 `/ws` 推 `agent_event`
+- 前端新增运行过程：先扩展 `web/src/events/agentEventReducer.js` 和 `web/src/events/agentEventProjection.js`，页面只消费 projection selector
+- 本地 optimistic、send pending、stop、failed、approval blocked、tool progress 都必须写成本地或后端 `AgentEvent`，不能只改页面局部变量或 `runtime.turn`
+- 单机会话和协作工作台必须共用同一套 projection selector；允许布局不同，不允许状态模型不同
+- `snapshot.cards` 只能作为持久会话内容 / card artifact 输入，不能作为 running/busy/approval/tool progress 的真相源
+- `snapshot.toolInvocations` 只能作为历史证据/详情兼容输入，不能驱动主 Chat 工作流里的实时 process fold
+- 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `RuntimeLiveness` 或 projection row 推导，不能靠 card title/status 文案正则
+- 代码评审前必须运行：
+
+```bash
+rg "turn_event|applyTurnEvent|turnEventsById|processItemsByTurnId|phaseFoldsByTurnId|assistantDraftsByTurnId|finalMessagesByTurnId" web/src internal/server internal/appui
+rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phaseFoldsByTurnId" web/src/App.vue web/src/pages web/src/components
+```
+
+第一条在生产代码中必须无匹配。第二条如果有匹配，必须证明它不是运行态真相源；否则先迁移到 `AgentEventProjection`。
 
 ### 6. 正式域边界
 

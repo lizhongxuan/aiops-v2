@@ -2,10 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"strings"
 	"sync"
-	"time"
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/projection"
@@ -16,23 +14,19 @@ import (
 // clients. It also implements projection.Subscriber so runtime lifecycle events
 // can trigger fresh snapshot rebuilds through appui.StateService.
 type AppSnapshotBroadcaster struct {
-	state appui.StateService
+	state      appui.StateService
+	agentEvent appui.AgentEventService
 
 	mu          sync.RWMutex
 	nextID      int
 	subscribers map[int]chan appui.StateSnapshot
-
-	turnEventMu          sync.RWMutex
-	nextTurnEventID      int
-	nextTurnEventSeq     int64
-	turnEventSubscribers map[int]chan appui.TurnEvent
 }
 
-func NewAppSnapshotBroadcaster(state appui.StateService) *AppSnapshotBroadcaster {
+func NewAppSnapshotBroadcaster(state appui.StateService, agentEvent appui.AgentEventService) *AppSnapshotBroadcaster {
 	return &AppSnapshotBroadcaster{
-		state:                state,
-		subscribers:          map[int]chan appui.StateSnapshot{},
-		turnEventSubscribers: map[int]chan appui.TurnEvent{},
+		state:       state,
+		agentEvent:  agentEvent,
+		subscribers: map[int]chan appui.StateSnapshot{},
 	}
 }
 
@@ -72,59 +66,6 @@ func (b *AppSnapshotBroadcaster) Broadcast(snapshot appui.StateSnapshot) {
 	}
 }
 
-func (b *AppSnapshotBroadcaster) SubscribeTurnEvents() (<-chan appui.TurnEvent, func()) {
-	b.turnEventMu.Lock()
-	defer b.turnEventMu.Unlock()
-	id := b.nextTurnEventID
-	b.nextTurnEventID++
-	ch := make(chan appui.TurnEvent, 16)
-	b.turnEventSubscribers[id] = ch
-	return ch, func() {
-		b.turnEventMu.Lock()
-		defer b.turnEventMu.Unlock()
-		if existing, ok := b.turnEventSubscribers[id]; ok {
-			delete(b.turnEventSubscribers, id)
-			close(existing)
-		}
-	}
-}
-
-func (b *AppSnapshotBroadcaster) BroadcastTurnEvent(event appui.TurnEvent) {
-	b.turnEventMu.RLock()
-	defer b.turnEventMu.RUnlock()
-	for _, ch := range b.turnEventSubscribers {
-		select {
-		case ch <- event:
-		default:
-			select {
-			case <-ch:
-			default:
-			}
-			select {
-			case ch <- event:
-			default:
-			}
-		}
-	}
-}
-
-func (b *AppSnapshotBroadcaster) nextTurnEvent(eventType appui.TurnEventType, sessionID, turnID string, payload map[string]any) appui.TurnEvent {
-	b.turnEventMu.Lock()
-	b.nextTurnEventSeq++
-	seq := b.nextTurnEventSeq
-	b.turnEventMu.Unlock()
-	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	return appui.TurnEvent{
-		Type:      eventType,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		EventID:   fmt.Sprintf("%s:%s:%d", turnID, eventType, seq),
-		Seq:       seq,
-		CreatedAt: createdAt,
-		Payload:   payload,
-	}
-}
-
 func (b *AppSnapshotBroadcaster) BroadcastLatest(ctx context.Context) error {
 	if b == nil || b.state == nil {
 		return nil
@@ -133,35 +74,25 @@ func (b *AppSnapshotBroadcaster) BroadcastLatest(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	b.Broadcast(snapshot)
+	b.Broadcast(b.withAgentEventProjection(ctx, snapshot))
 	return nil
 }
 
-func (b *AppSnapshotBroadcaster) OnToolInvocation(inv projection.ToolInvocation) {
-	eventType := appui.TurnEventToolStatusDelta
-	status := string(inv.Status)
-	switch inv.Status {
-	case projection.ToolInvocationStarted:
-		eventType = appui.TurnEventToolCallStart
-		status = "running"
-	case projection.ToolInvocationCompleted:
-		eventType = appui.TurnEventToolResultDone
-		status = "completed"
-	case projection.ToolInvocationFailed:
-		eventType = appui.TurnEventToolResultError
-		status = "failed"
-	case projection.ToolInvocationProgress:
-		eventType = appui.TurnEventToolStatusDelta
-		status = "running"
+func (b *AppSnapshotBroadcaster) withAgentEventProjection(ctx context.Context, snapshot appui.StateSnapshot) appui.StateSnapshot {
+	if b == nil || b.agentEvent == nil || strings.TrimSpace(snapshot.SessionID) == "" {
+		return snapshot
 	}
-	b.BroadcastTurnEvent(b.nextTurnEvent(eventType, inv.SessionID, inv.TurnID, map[string]any{
-		"toolCallId":    inv.ID,
-		"toolName":      inv.ToolName,
-		"status":        status,
-		"inputSummary":  string(inv.Args),
-		"outputSummary": inv.Result,
-		"error":         inv.Error,
-	}))
+	projection, err := b.agentEvent.Projection(ctx, snapshot.SessionID)
+	if err != nil {
+		return snapshot
+	}
+	snapshot.AgentEventProjection = &projection
+	return snapshot
+}
+
+func (b *AppSnapshotBroadcaster) OnToolInvocation(inv projection.ToolInvocation) {
+	events, err := appui.NormalizeToolInvocation(inv)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 
@@ -173,7 +104,9 @@ func (b *AppSnapshotBroadcaster) OnCard(projection.Card) {
 	_ = b.BroadcastLatest(context.Background())
 }
 
-func (b *AppSnapshotBroadcaster) OnApproval(projection.Approval) {
+func (b *AppSnapshotBroadcaster) OnApproval(approval projection.Approval) {
+	events, err := appui.NormalizeApproval(approval)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 
@@ -182,40 +115,25 @@ func (b *AppSnapshotBroadcaster) OnEvidence(projection.Evidence) {
 }
 
 func (b *AppSnapshotBroadcaster) OnSnapshot(snapshot projection.Snapshot) {
-	b.BroadcastTurnEvent(b.nextTurnEvent(appui.TurnEventDone, snapshot.SessionID, snapshot.TurnID, nil))
+	events, err := appui.NormalizeSnapshot(snapshot)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 
 func (b *AppSnapshotBroadcaster) OnRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) {
-	eventType, ok := mapRuntimeTurnEventType(event.Type)
-	if !ok {
-		return
-	}
-	payload := map[string]any{}
-	if len(event.Payload) > 0 {
-		_ = json.Unmarshal(event.Payload, &payload)
-	}
-	b.BroadcastTurnEvent(b.nextTurnEvent(eventType, event.SessionID, event.TurnID, payload))
+	events, err := appui.NormalizeRuntimeLifecycleEvent(event)
+	b.appendAgentEvents(context.Background(), events, err)
 }
 
-func mapRuntimeTurnEventType(eventType runtimekernel.EventType) (appui.TurnEventType, bool) {
-	switch eventType {
-	case runtimekernel.EventTurnStarted:
-		return appui.TurnEventStarted, true
-	case runtimekernel.EventAssistantIntent:
-		return appui.TurnEventAssistantIntentDelta, true
-	case runtimekernel.EventAssistantFinalDelta:
-		return appui.TurnEventAssistantFinalDelta, true
-	case runtimekernel.EventPhaseEnd:
-		return appui.TurnEventPhaseEnd, true
-	case runtimekernel.EventProcessSummary:
-		return appui.TurnEventProcessSummary, true
-	case runtimekernel.EventTurnError:
-		return appui.TurnEventError, true
-	case runtimekernel.EventTurnAborted:
-		return appui.TurnEventAborted, true
-	default:
-		return "", false
+func (b *AppSnapshotBroadcaster) appendAgentEvents(ctx context.Context, events []appui.AgentEvent, err error) {
+	if b == nil || b.agentEvent == nil {
+		return
+	}
+	if err != nil {
+		return
+	}
+	for _, event := range events {
+		_, _ = b.agentEvent.Append(ctx, event)
 	}
 }
 

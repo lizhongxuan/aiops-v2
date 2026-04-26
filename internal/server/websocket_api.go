@@ -32,19 +32,26 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 
 		var updates <-chan appui.StateSnapshot
 		unsubscribe := func() {}
-		var turnEvents <-chan appui.TurnEvent
-		unsubscribeTurnEvents := func() {}
+		var agentEvents <-chan appui.AgentEvent
+		unsubscribeAgentEvents := func() {}
 		if s.appSnapshots != nil {
 			updates, unsubscribe = s.appSnapshots.Subscribe()
 			defer unsubscribe()
-			turnEvents, unsubscribeTurnEvents = s.appSnapshots.SubscribeTurnEvents()
-			defer unsubscribeTurnEvents()
 		}
 
 		snapshot, err := s.ui.StateService().GetState(ctx)
 		if err != nil {
 			_ = sendJSON(map[string]any{"type": "heartbeat"})
 			return
+		}
+		snapshot = s.withAgentEventProjection(ctx, snapshot)
+		if s.agentEvents != nil {
+			var afterSeq int64
+			if snapshot.AgentEventProjection != nil {
+				afterSeq = snapshot.AgentEventProjection.LastSeq
+			}
+			agentEvents, unsubscribeAgentEvents = s.agentEvents.Subscribe(ctx, snapshot.SessionID, afterSeq)
+			defer unsubscribeAgentEvents()
 		}
 		if err := sendJSON(snapshot); err != nil {
 			return
@@ -84,13 +91,13 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 				if err := sendJSON(snapshot); err != nil {
 					return
 				}
-			case event, ok := <-turnEvents:
+			case event, ok := <-agentEvents:
 				if !ok {
-					turnEvents = nil
+					agentEvents = nil
 					continue
 				}
 				if err := sendJSON(map[string]any{
-					"type":  "turn_event",
+					"type":  "agent_event",
 					"event": event,
 				}); err != nil {
 					return

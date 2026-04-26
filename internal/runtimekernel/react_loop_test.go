@@ -92,6 +92,40 @@ func (m *fixedSummaryModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
+type streamingFinalLoopModel struct {
+	chunks     []*schema.Message
+	inputs     [][]*schema.Message
+	boundTools [][]string
+}
+
+func (m *streamingFinalLoopModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate should not be called for streaming final responses")
+}
+
+func (m *streamingFinalLoopModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
+	sr, sw := schema.Pipe[*schema.Message](len(m.chunks) + 1)
+	go func() {
+		defer sw.Close()
+		for _, chunk := range m.chunks {
+			sw.Send(cloneSchemaMessage(chunk), nil)
+		}
+	}()
+	return sr, nil
+}
+
+func (m *streamingFinalLoopModel) BindTools(tools []*schema.ToolInfo) error {
+	names := make([]string, 0, len(tools))
+	for _, info := range tools {
+		if info == nil {
+			continue
+		}
+		names = append(names, info.Name)
+	}
+	m.boundTools = append(m.boundTools, names)
+	return nil
+}
+
 type memoryToolResultSpillRepo struct {
 	spills map[string]*tooling.ResultSpill
 }
@@ -361,6 +395,241 @@ func TestRunTurn_ExecutesMultiIterationToolLoop(t *testing.T) {
 	}
 }
 
+func TestRunTurn_FeedsToolFailureBackToModelInsteadOfFailingTurn(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-date",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "exec_command",
+						Arguments: `{"command":"date","args":["-d","today","+%F"]}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("继续基于已有上下文回答", nil),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "exec_command",
+			Description: "Execute a command",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{}, errors.New("command failed: date: illegal option -- d")
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-tool-failure",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-tool-failure",
+		Input:       "查看今天的公开数据",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should continue after tool execution failure, got error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if result.Output != "继续基于已有上下文回答" {
+		t.Fatalf("result output = %q, want final answer after failed tool result", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+	foundFailureToolMessage := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-date" {
+			foundFailureToolMessage = strings.Contains(msg.Content, "exec_command failed") &&
+				strings.Contains(msg.Content, "date: illegal option")
+			break
+		}
+	}
+	if !foundFailureToolMessage {
+		t.Fatalf("second model input did not include failed tool result: %#v", model.inputs[1])
+	}
+
+	session := kernel.sessions.Get("sess-tool-failure")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session current turn")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	if len(session.CurrentTurn.Iterations) == 0 || len(session.CurrentTurn.Iterations[0].ToolResults) != 1 {
+		t.Fatalf("first iteration tool results = %#v, want failed tool result recorded", session.CurrentTurn.Iterations)
+	}
+	if got := session.CurrentTurn.Iterations[0].ToolResults[0].Error; !strings.Contains(got, "date: illegal option") {
+		t.Fatalf("recorded tool error = %q, want original tool error", got)
+	}
+}
+
+func TestRunTurn_FeedsToolBudgetBackToModelInsteadOfDispatchingForever(t *testing.T) {
+	toolCalls := make([]schema.ToolCall, 0, defaultMaxToolDispatchesPerTurn+2)
+	for i := 0; i < defaultMaxToolDispatchesPerTurn+2; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-web-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"public data"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("基于已收集证据给出回答", nil),
+		},
+	}
+
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Aliases:     []string{"search_web"},
+			Description: "Search public web pages",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "search result"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-tool-budget",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-tool-budget",
+		Input:       "research public data",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should continue after tool budget is reached, got error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if executed != defaultMaxToolDispatchesPerTurn {
+		t.Fatalf("executed tool calls = %d, want budget %d", executed, defaultMaxToolDispatchesPerTurn)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+	foundBudgetToolMessage := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && strings.Contains(msg.Content, "Tool budget reached") {
+			foundBudgetToolMessage = true
+			break
+		}
+	}
+	if !foundBudgetToolMessage {
+		t.Fatalf("second model input did not include tool budget result: %#v", model.inputs[1])
+	}
+
+	session := kernel.sessions.Get("sess-tool-budget")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session current turn")
+	}
+	if !containsString(session.CurrentTurn.HiddenTools, "web_search") {
+		t.Fatalf("hidden tools = %v, want web_search hidden after budget", session.CurrentTurn.HiddenTools)
+	}
+	firstIter := session.CurrentTurn.Iterations[0]
+	if got := len(firstIter.ToolResults); got != defaultMaxToolDispatchesPerTurn+2 {
+		t.Fatalf("first iteration tool results = %d, want one result per requested tool call", got)
+	}
+	lastResult := firstIter.ToolResults[len(firstIter.ToolResults)-1]
+	if lastResult.Display == nil || lastResult.Display.Type != "tool_budget" {
+		t.Fatalf("last result display = %#v, want tool_budget", lastResult.Display)
+	}
+}
+
+func TestRunTurn_SwitchesToSynthesisOnlyAfterEnoughToolEvidence(t *testing.T) {
+	toolCalls := make([]schema.ToolCall, 0, defaultSynthesisOnlyToolDispatches)
+	for i := 0; i < defaultSynthesisOnlyToolDispatches; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-evidence-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"public evidence"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("基于已收集证据给出最终回答", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Aliases:     []string{"search_web"},
+			Description: "Search public web pages",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "evidence result"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-synthesis-only",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-synthesis-only",
+		Input:       "research public data",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if result.Output != "基于已收集证据给出最终回答" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if len(compiler.contexts[0].AssembledTools) == 0 {
+		t.Fatal("first iteration should expose tools")
+	}
+	if len(compiler.contexts[1].AssembledTools) != 0 {
+		t.Fatalf("second iteration tools = %v, want synthesis-only with no tools", toolNames(compiler.contexts[1].AssembledTools))
+	}
+	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "web_search") {
+		t.Fatalf("second iteration unavailable tools = %v, want web_search", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+}
+
 func TestRunTurn_EmitsTurnEventLifecycleForReactLoop(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -428,6 +697,194 @@ func TestRunTurn_EmitsTurnEventLifecycleForReactLoop(t *testing.T) {
 	}
 	if cursor != len(wantOrdered) {
 		t.Fatalf("event order = %v, want subsequence %v", eventTypes, wantOrdered)
+	}
+}
+
+func TestRunTurn_EmitsIntentPreludeBeforeFirstTool(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-search",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "web_search",
+						Arguments: `{"query":"recent market sectors"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("final answer", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Description: "Search public web pages",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "search result"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	emitter := kernel.projector.(*testMockEventEmitter)
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-intent-prelude",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-intent-prelude",
+		Input:       "research recent market sectors",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	intentAt := -1
+	toolAt := -1
+	intentText := ""
+	for i, event := range emitter.events {
+		switch event.Type {
+		case EventAssistantIntent:
+			if intentAt == -1 {
+				intentAt = i
+				var payload struct {
+					Text string `json:"text"`
+				}
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatalf("unmarshal intent payload: %v", err)
+				}
+				intentText = payload.Text
+			}
+		case EventToolStarted:
+			if toolAt == -1 {
+				toolAt = i
+			}
+		}
+	}
+	if intentAt == -1 {
+		t.Fatalf("events = %v, want assistant intent before tool start", emitter.events)
+	}
+	if toolAt == -1 {
+		t.Fatalf("events = %v, want tool start", emitter.events)
+	}
+	if !(intentAt < toolAt) {
+		t.Fatalf("event order = %v, want assistant intent before first tool", emitter.events)
+	}
+	if !strings.Contains(intentText, "recent market sectors") && !strings.Contains(intentText, "网页") {
+		t.Fatalf("intent text = %q, want user-readable tool plan", intentText)
+	}
+}
+
+func TestRunTurn_EmitsStartedBeforeFinalForNoToolReactLoop(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("direct final answer", nil),
+		},
+	}
+	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-no-tool-events",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-no-tool-events",
+		Input:       "answer directly",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	startedAt := -1
+	finalAt := -1
+	completeAt := -1
+	eventTypes := make([]EventType, 0, len(emitter.events))
+	for i, event := range emitter.events {
+		eventTypes = append(eventTypes, event.Type)
+		switch event.Type {
+		case EventTurnStarted:
+			if startedAt == -1 {
+				startedAt = i
+			}
+		case EventAssistantFinalDelta:
+			if finalAt == -1 {
+				finalAt = i
+			}
+		case EventTurnComplete:
+			if completeAt == -1 {
+				completeAt = i
+			}
+		}
+	}
+	if startedAt == -1 || finalAt == -1 || completeAt == -1 {
+		t.Fatalf("event order = %v, want turn.started -> assistant.final.delta -> turn.complete", eventTypes)
+	}
+	if !(startedAt < finalAt && finalAt < completeAt) {
+		t.Fatalf("event order = %v, want turn.started before assistant.final.delta before turn.complete", eventTypes)
+	}
+}
+
+func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
+	model := &streamingFinalLoopModel{
+		chunks: []*schema.Message{
+			schema.AssistantMessage("第一段", nil),
+			schema.AssistantMessage("第二段", nil),
+		},
+	}
+	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-streaming-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-streaming-final",
+		Input:       "stream directly",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Output != "第一段第二段" {
+		t.Fatalf("RunTurn output = %q, want concatenated streaming output", result.Output)
+	}
+
+	var deltas []string
+	finalAt := -1
+	completeAt := -1
+	for i, event := range emitter.events {
+		switch event.Type {
+		case EventAssistantFinalDelta:
+			var payload struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				t.Fatalf("unmarshal assistant final delta payload: %v", err)
+			}
+			deltas = append(deltas, payload.Text)
+			if finalAt == -1 {
+				finalAt = i
+			}
+		case EventTurnComplete:
+			if completeAt == -1 {
+				completeAt = i
+			}
+		}
+	}
+
+	if completeAt == -1 {
+		t.Fatalf("event order = %v, want turn.complete", emitter.events)
+	}
+	if len(deltas) != 2 {
+		t.Fatalf("assistant final deltas = %v, want two streamed chunks", deltas)
+	}
+	if want := []string{"第一段", "第二段"}; strings.Join(deltas, "|") != strings.Join(want, "|") {
+		t.Fatalf("assistant final deltas = %v, want %v", deltas, want)
+	}
+	if !(finalAt >= 0 && finalAt < completeAt) {
+		t.Fatalf("assistant final delta should arrive before turn.complete, events = %v", emitter.events)
 	}
 }
 

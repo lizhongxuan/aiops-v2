@@ -69,6 +69,79 @@ const historyItems = computed(() => {
   return items.filter(item => !msgSet.has(item.id));
 });
 
+function compactText(value) {
+  return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function classifyStageItem(item = {}) {
+  const kind = compactText(item.kind).toLowerCase();
+  const processKind = compactText(item.processKind).toLowerCase();
+  const text = compactText(`${item.text || ""} ${item.detail || ""}`).toLowerCase();
+  const haystack = `${kind} ${processKind} ${text}`;
+  if (/web[_\s-]?search|search_web|搜索网页|网页搜索/.test(haystack)) return "search";
+  if (/open_page|浏览网页|打开网页|https?:\/\//.test(haystack)) return "page";
+  if (/read_file|file_read|读取文件|read\s+[\w./-]+/.test(haystack)) return "file";
+  if (/list_dir|list_files|浏览目录|列出|listed files|\bls\b/.test(haystack)) return "list";
+  if (kind === "command" || /exec_command|terminal|shell|运行命令|已运行|ran\s+\d*\s*commands?/.test(haystack)) return "command";
+  if (/apply_patch|write_file|diff|patch|修改文件|已编辑/.test(haystack)) return "edit";
+  return "detail";
+}
+
+function stageStatusVerb(items = []) {
+  const statuses = items.map((item) => compactText(item.status).toLowerCase()).filter(Boolean);
+  if (statuses.some((status) => status.includes("fail") || status.includes("error") || status.includes("denied"))) {
+    return "处理失败";
+  }
+  if (statuses.some((status) => status.includes("run") || status.includes("progress") || status.includes("queued"))) {
+    return "正在处理";
+  }
+  return "已探索";
+}
+
+function pluralizeEnglishUnit(count, singular, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function summarizeStageGroup(items = []) {
+  const counters = { search: 0, page: 0, file: 0, list: 0, command: 0, edit: 0, detail: 0 };
+  for (const item of items) {
+    const bucket = classifyStageItem(item);
+    counters[bucket] = (counters[bucket] || 0) + 1;
+  }
+  const phrases = [];
+  if (counters.search) phrases.push(`${counters.search} 次搜索`);
+  if (counters.page) phrases.push(`${counters.page} 个网页`);
+  if (counters.file) phrases.push(`${counters.file} 个文件`);
+  if (counters.list) phrases.push(`${counters.list} 个目录`);
+  if (counters.command) phrases.push(`ran ${pluralizeEnglishUnit(counters.command, "command")}`);
+  if (counters.edit) phrases.push(`edited ${pluralizeEnglishUnit(counters.edit, "file")}`);
+  const counted = counters.search + counters.page + counters.file + counters.list + counters.command + counters.edit;
+  const remaining = Math.max(0, items.length - counted);
+  if (!phrases.length && remaining) phrases.push(`${remaining} 条明细`);
+  return `${stageStatusVerb(items)} ${phrases.join("，") || `${items.length} 条明细`}`;
+}
+
+function buildStageGroups(items = [], turnId = "") {
+  const visibleItems = (items || []).filter((item) => item?.text || item?.display);
+  if (!visibleItems.length) return [];
+  return [{
+    id: `${turnId || "turn"}-stage-0`,
+    summary: summarizeStageGroup(visibleItems),
+    items: visibleItems,
+  }];
+}
+
+const stageGroups = computed(() => buildStageGroups(historyItems.value, props.turn?.id));
+const expandedStageIds = ref(new Set());
+
+watch(
+  () => [props.turn?.id, stageGroups.value.map((group) => group.id).join("|")],
+  () => {
+    expandedStageIds.value = new Set(stageGroups.value.map((group) => group.id));
+  },
+  { immediate: true },
+);
+
 const foldLabel = computed(() => {
   return props.turn?.processLabel || "已处理";
 });
@@ -79,9 +152,6 @@ const collapsedSummary = computed(() => {
 });
 
 const headerLabel = computed(() => {
-  if (!expanded.value && collapsedSummary.value) {
-    return collapsedSummary.value;
-  }
   return foldLabel.value;
 });
 
@@ -94,6 +164,17 @@ function toggleExpanded() {
     expandedState.value = nextValue;
   }
   emit("update:expanded", nextValue);
+}
+
+function isStageExpanded(group) {
+  return expandedStageIds.value.has(group.id);
+}
+
+function toggleStageGroup(group) {
+  const next = new Set(expandedStageIds.value);
+  if (next.has(group.id)) next.delete(group.id);
+  else next.add(group.id);
+  expandedStageIds.value = next;
 }
 
 function isCommandItem(item) {
@@ -139,7 +220,6 @@ function toggleCommandItem(item) {
         type="button"
         class="chat-process-toggle"
         :aria-expanded="expanded"
-        :class="{ 'is-collapsed-summary': !expanded && !!collapsedSummary }"
         @click="toggleExpanded"
       >
         <span class="chat-process-label">{{ headerLabel }}</span>
@@ -150,41 +230,68 @@ function toggleCommandItem(item) {
 
     <div v-if="expanded" class="chat-process-surface">
       <div class="chat-process-body">
+        <div
+          v-if="collapsedSummary"
+          class="chat-process-summary"
+          data-testid="chat-process-summary"
+        >
+          {{ collapsedSummary }}
+        </div>
+
         <div v-for="msg in intermediateMessages" :key="msg.id" class="chat-process-message">
           <MessageCard v-if="msg.card" :card="msg.card" />
           <div v-else class="chat-process-text">{{ msg.text }}</div>
           <ToolDisplayRenderer v-if="itemDisplay(msg)" class="chat-process-item-display" :display="itemDisplay(msg)" />
         </div>
 
-        <template v-for="item in historyItems" :key="item.id">
-          <template v-if="isCommandItem(item)">
-            <button
-              type="button"
-              class="chat-process-command-row"
-              :data-testid="`chat-process-command-row-${item.id}`"
-              @click="toggleCommandItem(item)"
-            >
-              <component :is="isCommandExpanded(item) ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-command-icon" />
-              <span class="chat-process-command-text">{{ item.text }}</span>
-            </button>
+        <div v-for="group in stageGroups" :key="group.id" class="chat-process-stage">
+          <button
+            type="button"
+            class="chat-process-stage-toggle"
+            :aria-expanded="isStageExpanded(group)"
+            :data-testid="`chat-process-stage-toggle-${group.id}`"
+            @click="toggleStageGroup(group)"
+          >
+            <component :is="isStageExpanded(group) ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-stage-icon" />
+            <span>{{ group.summary }}</span>
+          </button>
 
-            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+          <div
+            v-if="isStageExpanded(group)"
+            class="chat-process-stage-details"
+            :data-testid="`chat-process-stage-details-${group.id}`"
+          >
+            <template v-for="item in group.items" :key="item.id">
+              <template v-if="isCommandItem(item)">
+                <button
+                  type="button"
+                  class="chat-process-command-row"
+                  :data-testid="`chat-process-command-row-${item.id}`"
+                  @click="toggleCommandItem(item)"
+                >
+                  <component :is="isCommandExpanded(item) ? ChevronDownIcon : ChevronRightIcon" size="14" class="chat-process-command-icon" />
+                  <span class="chat-process-command-text">{{ item.text }}</span>
+                </button>
 
-            <ChatTerminalPreview
-              v-if="isCommandExpanded(item)"
-              :test-id="`chat-process-terminal-${item.id}`"
-              :command="item.command || item.commandCard?.command || item.commandCard?.title || ''"
-              :output="commandOutput(item)"
-            />
-          </template>
+                <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
 
-          <div v-else class="chat-process-item">
-            <div v-if="item.text" class="chat-process-item-line">
-              <span>{{ item.text }}</span>
-            </div>
-            <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+                <ChatTerminalPreview
+                  v-if="isCommandExpanded(item)"
+                  :test-id="`chat-process-terminal-${item.id}`"
+                  :command="item.command || item.commandCard?.command || item.commandCard?.title || ''"
+                  :output="commandOutput(item)"
+                />
+              </template>
+
+              <div v-else class="chat-process-item">
+                <div v-if="item.text" class="chat-process-item-line">
+                  <span>{{ item.text }}</span>
+                </div>
+                <ToolDisplayRenderer v-if="itemDisplay(item)" class="chat-process-item-display" :display="itemDisplay(item)" />
+              </div>
+            </template>
           </div>
-        </template>
+        </div>
 
         <div v-if="turn.active && turn.liveHint" class="chat-process-live">
           <span class="chat-process-live-dot" aria-hidden="true" />
@@ -229,11 +336,6 @@ function toggleCommandItem(item) {
   color: #475569;
 }
 
-.chat-process-toggle.is-collapsed-summary {
-  font-size: 13px;
-  color: #8b95a7;
-}
-
 .chat-process-label {
   color: inherit;
 }
@@ -257,6 +359,12 @@ function toggleCommandItem(item) {
 
 .chat-process-surface {
   padding-top: 2px;
+}
+
+.chat-process-summary {
+  color: #8b95a7;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .chat-process-message {
@@ -291,6 +399,45 @@ function toggleCommandItem(item) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.chat-process-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-process-stage-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-process-stage-toggle:hover {
+  color: #334155;
+}
+
+.chat-process-stage-icon {
+  flex-shrink: 0;
+  color: #9ca3af;
+}
+
+.chat-process-stage-details {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 20px;
 }
 
 .chat-process-text {

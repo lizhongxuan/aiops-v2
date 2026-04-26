@@ -1,10 +1,15 @@
 <script setup>
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { BotIcon } from "lucide-vue-next";
 import CardItem from "../CardItem.vue";
 import ThinkingCard from "../ThinkingCard.vue";
 import ChatTurnGroup from "./ChatTurnGroup.vue";
 import LiveStatusCard from "./LiveStatusCard.vue";
+import AgentEventTimelineRow from "./AgentEventTimelineRow.vue";
+import AgentStatusRail from "./AgentStatusRail.vue";
+import ApprovalDock from "./ApprovalDock.vue";
+import DiffSummaryRow from "./DiffSummaryRow.vue";
+import ArtifactPreviewDrawer from "./ArtifactPreviewDrawer.vue";
 
 const props = defineProps({
   containerStyle: {
@@ -70,6 +75,30 @@ const props = defineProps({
   virtualBottomSpacerHeight: {
     type: Number,
     default: 0,
+  },
+  timelineRows: {
+    type: Array,
+    default: () => [],
+  },
+  agentRows: {
+    type: Array,
+    default: () => [],
+  },
+  approvalDock: {
+    type: Array,
+    default: () => [],
+  },
+  artifactRows: {
+    type: Array,
+    default: () => [],
+  },
+  diffSummary: {
+    type: Object,
+    default: null,
+  },
+  runtimeStatus: {
+    type: String,
+    default: "idle",
   },
   singleHostLiveTurnId: {
     type: String,
@@ -147,6 +176,7 @@ const emit = defineEmits([
   "toggle-active-details",
   "toggle-summary-details",
   "approval",
+  "approval-detail",
   "choice",
   "retry",
   "card-refresh",
@@ -154,6 +184,23 @@ const emit = defineEmits([
 
 const scrollContainerEl = ref(null);
 const scrollContentEl = ref(null);
+const visibleAgentRows = computed(() =>
+  (props.agentRows || []).filter((agent) => {
+    const handle = String(agent?.handle || agent?.name || "").trim().toLowerCase();
+    const role = String(agent?.role || "").trim().toLowerCase();
+    return handle !== "main" && handle !== "@main" && role !== "primary";
+  }),
+);
+const hasProjectionSurface = computed(() =>
+  props.isWorkspaceSession &&
+  Boolean(
+    (props.timelineRows || []).length ||
+      visibleAgentRows.value.length ||
+      props.approvalDock?.length ||
+      props.artifactRows?.length ||
+      props.diffSummary,
+  ),
+);
 
 defineExpose({
   scrollContainerEl,
@@ -191,6 +238,13 @@ function toggleActiveDetails() {
 function toggleSummaryDetails() {
   emit("toggle-summary-details");
 }
+
+function emitApprovalDecision(approval, decision) {
+  emit("approval", {
+    approvalId: approval?.id || approval?.approvalId,
+    decision,
+  });
+}
 </script>
 
 <template>
@@ -221,6 +275,18 @@ function toggleSummaryDetails() {
       <p v-if="errorMessage" class="chat-banner error">{{ errorMessage }}</p>
 
       <div class="chat-stream">
+        <section v-if="hasProjectionSurface" class="agent-event-surface" data-testid="agent-event-surface">
+          <AgentStatusRail v-if="visibleAgentRows.length" :agents="visibleAgentRows" />
+          <AgentEventTimelineRow
+            v-for="row in timelineRows"
+            :key="row.id"
+            :row="row"
+            :runtime-status="runtimeStatus"
+          />
+          <DiffSummaryRow :diff="diffSummary" />
+          <ArtifactPreviewDrawer :artifacts="artifactRows" />
+        </section>
+
         <div
           v-if="showVirtualTopSpacer"
           class="chat-virtual-spacer"
@@ -323,12 +389,25 @@ function toggleSummaryDetails() {
           :style="{ height: `${virtualBottomSpacerHeight}px` }"
           aria-hidden="true"
         />
+
+        <ApprovalDock
+          :approvals="approvalDock"
+          @accept="emitApprovalDecision($event, 'accept')"
+          @decline="emitApprovalDecision($event, 'reject')"
+          @detail="$emit('approval-detail', $event)"
+        />
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+.agent-event-surface {
+  display: grid;
+  gap: 8px;
+  padding: 8px 0 12px;
+}
+
 .workspace-banner {
   display: flex;
   align-items: center;

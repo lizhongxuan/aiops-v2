@@ -16,13 +16,13 @@ const messageType = ref("success");
 
 const form = ref({
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: "gpt-5.4",
   apiKey: "",
   baseURL: "",
   fallbackProvider: "",
   fallbackModel: "",
   fallbackApiKey: "",
-  compactModel: "gpt-4o-mini",
+  compactModel: "gpt-5.4-mini",
 });
 
 const currentConfig = ref(null);
@@ -35,9 +35,10 @@ const providerOptions = [
 
 const modelPresets = {
   openai: [
+    "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-4o",
     "gpt-4o-mini",
-    "gpt-4-turbo",
     "gpt-3.5-turbo",
     "o1",
     "o1-mini",
@@ -87,11 +88,11 @@ async function fetchConfig() {
     const data = await fetchLlmConfig();
     currentConfig.value = data;
     form.value.provider = data.provider || "openai";
-    form.value.model = data.model || "gpt-4o-mini";
+    form.value.model = data.model || "gpt-5.4";
     form.value.baseURL = data.baseURL || "";
     form.value.fallbackProvider = data.fallbackProvider || "";
     form.value.fallbackModel = data.fallbackModel || "";
-    form.value.compactModel = data.compactModel || "gpt-4o-mini";
+    form.value.compactModel = data.compactModel || "gpt-5.4-mini";
     // Don't populate API key — it's masked
   } catch (e) {
     showMessage("error", "加载配置失败: " + e.message);

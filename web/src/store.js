@@ -2,6 +2,12 @@ import { defineStore } from "pinia";
 import { cloneUiFixturePayload } from "./lib/uiFixturePresets";
 import { resolveUiFixtureRuntime } from "./lib/uiFixtureRuntime";
 import { createAppSocketClient } from "./realtime/appSocket";
+import {
+  applyAgentEvent as reduceAgentEvent,
+  applyAgentProjectionSnapshot,
+  createAgentEventState,
+  createLocalSubmittedEvents,
+} from "./events/agentEventReducer";
 import { fetchState as fetchStateApi, resetThread as resetThreadApi, selectHost as selectHostApi } from "./api/state";
 import { activateSession as activateSessionApi, createSession as createSessionApi, fetchSessions as fetchSessionsApi } from "./api/sessions";
 import { fetchSettings as fetchSettingsApi, updateSettings as updateSettingsApi } from "./api/settings";
@@ -265,12 +271,93 @@ function normalizeCardText(card) {
   return "";
 }
 
+function normalizeComparableCardText(value) {
+  return compactText(String(value || "").replace(/\*\*/g, "")).replace(/\s+/g, "");
+}
+
 function isUserCard(card) {
   return card?.type === "UserMessageCard" || (card?.type === "MessageCard" && card?.role === "user");
 }
 
 function isAssistantCard(card) {
   return card?.type === "AssistantMessageCard" || (card?.type === "MessageCard" && card?.role === "assistant");
+}
+
+function isSyntheticUserTaskCard(card) {
+  return Boolean(card?.syntheticUserTask);
+}
+
+function isTerminalTurnTimelineRow(row = {}) {
+  const status = compactText(row.status).toLowerCase();
+  const phase = compactText(row.phase).toLowerCase();
+  return ["completed", "failed", "canceled", "cancelled", "skipped"].includes(status) ||
+    ["completed", "failed", "canceled", "cancelled"].includes(phase);
+}
+
+function projectionCurrentTurnKeys(projection = {}) {
+  const keys = new Set();
+  const currentTurnId = compactText(projection.currentTurnId);
+  if (currentTurnId) keys.add(currentTurnId);
+
+  const clientTurnMap = asObject(projection.clientTurnMap);
+  if (currentTurnId && clientTurnMap[currentTurnId]) {
+    keys.add(compactText(clientTurnMap[currentTurnId]));
+  }
+  for (const [clientTurnId, turnId] of Object.entries(clientTurnMap)) {
+    if (compactText(turnId) === currentTurnId) {
+      keys.add(compactText(clientTurnId));
+    }
+  }
+
+  for (const row of Array.isArray(projection.timeline) ? projection.timeline : []) {
+    if (row?.kind !== "turn") continue;
+    const rowKeys = [row.turnId, row.clientTurnId, row.id].map((value) => compactText(value)).filter(Boolean);
+    if (!rowKeys.some((key) => keys.has(key))) continue;
+    rowKeys.forEach((key) => keys.add(key));
+  }
+
+  return keys;
+}
+
+function shouldSyncProjectionFinalMessage(projection = {}, final = {}, finalCount = 0) {
+  const turnId = compactText(final.turnId);
+  if (!turnId) return false;
+
+  const currentKeys = projectionCurrentTurnKeys(projection);
+  if (currentKeys.has(turnId)) return true;
+
+  const hasCurrentTurn = currentKeys.size > 0;
+  const terminalHistoricalTurn = (Array.isArray(projection.timeline) ? projection.timeline : []).some((row) => {
+    if (row?.kind !== "turn") return false;
+    return compactText(row.turnId) === turnId && isTerminalTurnTimelineRow(row);
+  });
+  if (hasCurrentTurn && terminalHistoricalTurn) return false;
+
+  // Event-only tests and very early streams may have a single final delta before
+  // the server has emitted a turn row. In that case it is still the live answer.
+  return finalCount === 1 && !terminalHistoricalTurn;
+}
+
+function buildSyntheticUserTaskCard(row = {}) {
+  if (isTerminalTurnTimelineRow(row)) return null;
+  const text = compactText(row.title || row.summary);
+  const rowId = compactText(row.id || row.clientMessageId || row.clientTurnId || row.turnId);
+  if (!text || !rowId) return null;
+  const timestamp = compactText(row.updatedAt) || new Date().toISOString();
+  return {
+    id: `agent-user-${rowId}`,
+    clientMessageId: compactText(row.clientMessageId || row.id),
+    clientTurnId: compactText(row.clientTurnId),
+    turnId: compactText(row.turnId),
+    type: "UserMessageCard",
+    role: "user",
+    text,
+    message: text,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    status: compactText(row.status || "running"),
+    syntheticUserTask: true,
+  };
 }
 
 function buildClientId(prefix) {
@@ -1411,6 +1498,7 @@ export const useAppStore = defineStore("app", {
       missingRequirements: [],
       turnPolicy: null,
       promptEnvelope: null,
+      agentEventProjection: null,
       toolInvocations: [],
       evidenceSummaries: [],
       config: {
@@ -1461,7 +1549,7 @@ export const useAppStore = defineStore("app", {
     },
     settings: {
       quota: "",
-      model: "gpt-4-turbo",
+      model: "gpt-5.4",
       reasoningEffort: "medium",
       models: [],
     },
@@ -1477,12 +1565,8 @@ export const useAppStore = defineStore("app", {
     agentProfilePreview: null,
     agentProfilePreviewLoading: false,
     agentProfileSaving: false,
+    agentEventState: createAgentEventState(),
     optimisticCardIds: [],
-    turnEventsById: {},
-    processItemsByTurnId: {},
-    phaseFoldsByTurnId: {},
-    assistantDraftsByTurnId: {},
-    finalMessagesByTurnId: {},
     sessionList: [],
     activeSessionId: "",
     workspaceReturnTargets: {},
@@ -1708,6 +1792,7 @@ export const useAppStore = defineStore("app", {
       this.snapshot.missingRequirements = Array.isArray(data.missingRequirements) ? data.missingRequirements : [];
       this.snapshot.turnPolicy = data.turnPolicy || null;
       this.snapshot.promptEnvelope = data.promptEnvelope || null;
+      this.snapshot.agentEventProjection = data.agentEventProjection || null;
       this.snapshot.toolInvocations = Array.isArray(data.toolInvocations) ? data.toolInvocations : [];
       this.snapshot.evidenceSummaries = Array.isArray(data.evidenceSummaries) ? data.evidenceSummaries : [];
       this.snapshot.config = data.config || this.snapshot.config;
@@ -1744,6 +1829,14 @@ export const useAppStore = defineStore("app", {
           ...(data.runtime.activity || {}),
         };
       }
+      if (data.agentEventProjection?.sessionId) {
+        const incomingProjection = data.agentEventProjection;
+        const existingProjection = this.agentEventState.projectionsBySession?.[incomingProjection.sessionId] || null;
+        if (!existingProjection || Number(incomingProjection.lastSeq || 0) >= Number(existingProjection.lastSeq || 0)) {
+          this.agentEventState = applyAgentProjectionSnapshot(this.agentEventState, incomingProjection);
+          this.syncAgentProjectionToRuntime(this.agentEventState.projectionsBySession[incomingProjection.sessionId]);
+        }
+      }
       const summary = deriveSessionSummary(this.snapshot, this.runtime);
       const index = this.sessionList.findIndex((session) => session.id === summary.id);
       if (index >= 0) {
@@ -1751,126 +1844,151 @@ export const useAppStore = defineStore("app", {
       }
       this.loading = false;
     },
-    applyTurnEvent(event) {
-      const normalized = normalizeTurnEvent(event);
-      if (!normalized) {
-        if (import.meta.env?.DEV || import.meta.env?.MODE === "test") {
-          console.debug?.("ignored unknown turn event", event);
-        }
-        return false;
+    applyAgentEvent(event) {
+      const before = this.agentEventState;
+      this.agentEventState = reduceAgentEvent(this.agentEventState, event);
+      const sessionId = compactText(event?.sessionId);
+      const projection = sessionId ? this.agentEventState.projectionsBySession?.[sessionId] : null;
+      if (projection) {
+        this.syncAgentProjectionToRuntime(projection);
       }
-      if (this.turnEventsById[normalized.eventId]) return false;
-
-      this.turnEventsById = {
-        ...this.turnEventsById,
-        [normalized.eventId]: normalized,
-      };
-
-      const turnId = normalized.turnId;
-      const existingItems = this.processItemsByTurnId[turnId] || [];
-      const payloadText = compactText(normalized.payload.text || normalized.payload.delta || normalized.payload.content);
-
-      if (normalized.type === "turn.started") {
-        this.runtime.turn = normalizeTurnRuntime(
-          {
-            ...this.runtime.turn,
-            active: true,
-            pendingStart: false,
-            phase: "thinking",
-            startedAt: normalized.createdAt,
-          },
-          this.snapshot.selectedHostId || "server-local",
-          this.runtime.turn,
-        );
-      } else if (normalized.type === "assistant.intent.delta") {
-        this.assistantDraftsByTurnId = {
-          ...this.assistantDraftsByTurnId,
-          [turnId]: `${this.assistantDraftsByTurnId[turnId] || ""}${payloadText}`,
-        };
-      } else if (normalized.type === "assistant.final.delta") {
-        const finalText = `${this.finalMessagesByTurnId[turnId] || ""}${payloadText}`;
-        this.finalMessagesByTurnId = {
-          ...this.finalMessagesByTurnId,
-          [turnId]: finalText,
-        };
-        const finalCardId = `event-final-${turnId}`;
+      return this.agentEventState !== before;
+    },
+    syncAgentProjectionToRuntime(projection = {}) {
+      const status = compactText(projection.status || "idle");
+      const active = status === "working" || status === "blocked";
+      this.runtime.turn = normalizeTurnRuntime(
+        {
+          ...this.runtime.turn,
+          active,
+          pendingStart: false,
+          phase:
+            status === "working"
+              ? "thinking"
+              : status === "blocked"
+                ? "waiting_input"
+                : status === "failed"
+                  ? "failed"
+                  : status === "canceled"
+                    ? "aborted"
+                    : "completed",
+          startedAt: this.runtime.turn.startedAt || new Date().toISOString(),
+          clientTurnId: projection.currentTurnId || this.runtime.turn.clientTurnId,
+        },
+        this.snapshot.selectedHostId || "server-local",
+        this.runtime.turn,
+      );
+      const turnRows = (projection.timeline || []).filter((row) => row?.kind === "turn");
+      if (turnRows.length) {
+        const liveSyntheticUserIds = new Set();
+        let nextCards = [...this.snapshot.cards];
+        for (const row of turnRows) {
+          const syntheticCard = buildSyntheticUserTaskCard(row);
+          if (!syntheticCard) continue;
+          liveSyntheticUserIds.add(syntheticCard.id);
+          const comparableText = normalizeComparableCardText(syntheticCard.text);
+          const matchingServerIndex = nextCards.findIndex((card) => {
+            if (!isUserCard(card) || isSyntheticUserTaskCard(card)) return false;
+            const cardClientMessageId = compactText(card.clientMessageId);
+            const cardClientTurnId = compactText(card.clientTurnId);
+            if (syntheticCard.clientMessageId && cardClientMessageId === syntheticCard.clientMessageId) return true;
+            if (syntheticCard.clientTurnId && cardClientTurnId === syntheticCard.clientTurnId) return true;
+            return normalizeComparableCardText(normalizeCardText(card)) === comparableText;
+          });
+          const syntheticIndex = nextCards.findIndex((card) => card?.id === syntheticCard.id);
+          if (matchingServerIndex >= 0) {
+            const matchedCard = nextCards[matchingServerIndex] || {};
+            const matchedByIdentity =
+              (syntheticCard.clientMessageId && compactText(matchedCard.clientMessageId) === syntheticCard.clientMessageId) ||
+              (syntheticCard.clientTurnId && compactText(matchedCard.clientTurnId) === syntheticCard.clientTurnId);
+            if (matchedByIdentity) {
+              nextCards.splice(matchingServerIndex, 1, {
+                ...matchedCard,
+                clientMessageId: compactText(matchedCard.clientMessageId || syntheticCard.clientMessageId),
+                clientTurnId: compactText(matchedCard.clientTurnId || syntheticCard.clientTurnId),
+                turnId: compactText(matchedCard.turnId || syntheticCard.turnId),
+              });
+            }
+            if (syntheticIndex >= 0) {
+              nextCards.splice(syntheticIndex, 1);
+            }
+            continue;
+          }
+          if (syntheticIndex >= 0) {
+            nextCards.splice(syntheticIndex, 1, {
+              ...nextCards[syntheticIndex],
+              ...syntheticCard,
+            });
+          } else {
+            nextCards.push(syntheticCard);
+          }
+        }
+        nextCards = nextCards.filter((card) => !isSyntheticUserTaskCard(card) || liveSyntheticUserIds.has(card.id));
+        this.snapshot.cards = nextCards;
+      }
+      const toolRows = (projection.timeline || []).filter((row) => row.kind === "tool");
+      for (const row of toolRows) {
+        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, {
+          id: row.toolCallId || row.id,
+          name: row.title,
+          toolName: row.title,
+          status: row.status === "completed" ? "completed" : row.status === "failed" ? "failed" : "running",
+          title: row.title,
+          summary: row.summary,
+          updatedAt: row.updatedAt,
+        });
+      }
+      const allFinalMessages = Object.values(projection.finalMessages || {});
+      const finalMessages = allFinalMessages.filter((final) =>
+        shouldSyncProjectionFinalMessage(projection, final, allFinalMessages.length),
+      );
+      const liveFinalIds = new Set();
+      let nextCards = [...this.snapshot.cards];
+      for (const final of finalMessages) {
+        const text = compactText(final.text);
+        if (!text || !final.turnId) continue;
+        const finalCardId = `agent-final-${final.turnId}`;
+        liveFinalIds.add(finalCardId);
+        const comparableText = normalizeComparableCardText(text);
+        const matchingServerIndex = nextCards.findIndex((card) => {
+          if (!isAssistantCard(card)) return false;
+          if (card?.id === finalCardId) return false;
+          return normalizeComparableCardText(normalizeCardText(card)) === comparableText;
+        });
+        const syntheticIndex = nextCards.findIndex((card) => card?.id === finalCardId);
+        if (matchingServerIndex >= 0) {
+          if (syntheticIndex >= 0) {
+            nextCards.splice(syntheticIndex, 1);
+          }
+          continue;
+        }
         const finalCard = {
           id: finalCardId,
+          turnId: final.turnId,
           type: "AssistantMessageCard",
           role: "assistant",
-          text: finalText,
-          message: finalText,
-          status: "streaming",
-          createdAt: normalized.createdAt,
-          updatedAt: normalized.createdAt,
+          text,
+          message: text,
+          status: active ? "inProgress" : "completed",
+          optimistic: active,
+          syntheticFinal: true,
+          createdAt: final.updatedAt || new Date().toISOString(),
+          updatedAt: final.updatedAt || new Date().toISOString(),
         };
-        const cardIndex = this.snapshot.cards.findIndex((card) => card?.id === finalCardId);
-        if (cardIndex >= 0) {
-          const nextCards = [...this.snapshot.cards];
-          nextCards.splice(cardIndex, 1, {
-            ...nextCards[cardIndex],
+        if (syntheticIndex >= 0) {
+          nextCards.splice(syntheticIndex, 1, {
+            ...nextCards[syntheticIndex],
             ...finalCard,
           });
-          this.snapshot.cards = nextCards;
         } else {
-          this.snapshot.cards = [...this.snapshot.cards, finalCard];
-        }
-      } else if (normalized.type === "tool.call.start") {
-        const item = processItemFromTurnEvent(normalized, "running");
-        this.processItemsByTurnId = {
-          ...this.processItemsByTurnId,
-          [turnId]: upsertProcessItem(existingItems, item),
-        };
-        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, toolInvocationFromTurnEvent(normalized, "running"));
-      } else if (normalized.type === "tool.status.delta") {
-        const item = processItemFromTurnEvent(normalized, compactText(normalized.payload.status || "running") || "running");
-        this.processItemsByTurnId = {
-          ...this.processItemsByTurnId,
-          [turnId]: upsertProcessItem(existingItems, item),
-        };
-        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, toolInvocationFromTurnEvent(normalized, item.status));
-      } else if (normalized.type === "tool.result.done") {
-        const item = processItemFromTurnEvent(normalized, "completed");
-        this.processItemsByTurnId = {
-          ...this.processItemsByTurnId,
-          [turnId]: upsertProcessItem(existingItems, item),
-        };
-        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, toolInvocationFromTurnEvent(normalized, "completed"));
-      } else if (normalized.type === "tool.result.error") {
-        const item = processItemFromTurnEvent(normalized, "failed");
-        this.processItemsByTurnId = {
-          ...this.processItemsByTurnId,
-          [turnId]: upsertProcessItem(existingItems, item),
-        };
-        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, toolInvocationFromTurnEvent(normalized, "failed"));
-      } else if (normalized.type === "phase.end" || normalized.type === "process.summary") {
-        const phaseId = compactText(normalized.payload.phaseId || `${turnId}:phase:${normalized.seq || normalized.eventId}`);
-        this.phaseFoldsByTurnId = {
-          ...this.phaseFoldsByTurnId,
-          [turnId]: upsertProcessItem(this.phaseFoldsByTurnId[turnId] || [], {
-            id: phaseId,
-            summary: compactText(normalized.payload.summary || normalized.payload.text),
-            status: "completed",
-            updatedAt: normalized.createdAt,
-          }),
-        };
-      } else if (normalized.type === "turn.done" || normalized.type === "turn.error" || normalized.type === "turn.aborted") {
-        const phase = normalized.type === "turn.done" ? "completed" : normalized.type === "turn.aborted" ? "aborted" : "failed";
-        this.runtime.turn = normalizeTurnRuntime(
-          {
-            ...this.runtime.turn,
-            active: false,
-            pendingStart: false,
-            phase,
-          },
-          this.snapshot.selectedHostId || "server-local",
-          this.runtime.turn,
-        );
-        if (normalized.type === "turn.error") {
-          this.errorMessage = compactText(normalized.payload.error || normalized.payload.message || "Turn failed");
+          nextCards.push(finalCard);
         }
       }
-      return true;
+      nextCards = nextCards.filter((card) => {
+        if (!card?.syntheticFinal) return true;
+        return liveFinalIds.has(card.id);
+      });
+      this.snapshot.cards = nextCards;
     },
     applySessions(data) {
       this.activeSessionId = data.activeSessionId || this.activeSessionId || this.snapshot.sessionId;
@@ -1914,41 +2032,51 @@ export const useAppStore = defineStore("app", {
       return this.activateSession(workspaceSession.id);
     },
     setTurnPhase(phase) {
-      this.runtime.turn = normalizeTurnRuntime(
-        {
-          ...this.runtime.turn,
-          phase,
-          active: !isTerminalTurnPhase(phase),
-        },
-        this.snapshot.selectedHostId || "server-local",
-        this.runtime.turn,
-      );
+      this.applyLocalTurnPhase(phase);
     },
     markTurnPendingStart(phase = "thinking") {
       this.startLocalPendingTurn({ phase });
     },
     startLocalPendingTurn(payload = {}) {
       const source = asObject(payload);
-      this.runtime.turn = normalizeTurnRuntime(
-        {
-          ...this.runtime.turn,
-          phase: compactText(source.phase || "thinking") || "thinking",
-          active: false,
-          pendingStart: true,
-          startedAt: source.startedAt || new Date().toISOString(),
-          clientTurnId: compactText(source.clientTurnId || this.runtime.turn.clientTurnId),
-          clientMessageId: compactText(source.clientMessageId || this.runtime.turn.clientMessageId),
-          hostId: compactText(source.hostId || this.snapshot.selectedHostId || this.runtime.turn.hostId || "server-local"),
-        },
-        this.snapshot.selectedHostId || "server-local",
-        this.runtime.turn,
-      );
+      const clientTurnId = compactText(source.clientTurnId || this.runtime.turn.clientTurnId || buildClientId("client-turn"));
+      const clientMessageId = compactText(source.clientMessageId || this.runtime.turn.clientMessageId || buildClientId("client-msg"));
+      const rowId = compactText(source.rowId || (clientMessageId ? `optimistic-user-${clientMessageId}` : ""));
+      this.applyLocalTurnPhase(compactText(source.phase || "thinking") || "thinking", {
+        turnId: clientTurnId,
+        clientTurnId,
+        clientMessageId,
+        title: compactText(source.title || source.message || "本地任务"),
+        summary: "正在发送请求",
+        hostId: compactText(source.hostId || this.snapshot.selectedHostId || this.runtime.turn.hostId || "server-local"),
+        createdAt: source.startedAt,
+        rowId,
+      });
     },
     appendOptimisticUserMessage(message) {
       const card = buildOptimisticUserMessageCard(message);
       if (!card) return "";
-      this.snapshot.cards = [...this.snapshot.cards, card];
-      this.optimisticCardIds = [...this.optimisticCardIds, card.id];
+      const sessionId = compactText(card.sessionId || this.activeSessionId || this.snapshot.sessionId || "local-session");
+      if (!this.snapshot.sessionId) this.snapshot.sessionId = sessionId;
+      if (!this.activeSessionId) this.activeSessionId = sessionId;
+      if (!this.snapshot.cards.some((item) => item?.id === card.id)) {
+        this.snapshot.cards = [...this.snapshot.cards, card];
+      }
+      if (!this.optimisticCardIds.includes(card.id)) {
+        this.optimisticCardIds = [...this.optimisticCardIds, card.id];
+      }
+      for (const event of createLocalSubmittedEvents({
+        sessionId,
+        turnId: card.clientTurnId,
+        clientTurnId: card.clientTurnId,
+        clientMessageId: card.clientMessageId,
+        text: card.text,
+        hostId: card.hostId || this.snapshot.selectedHostId,
+        createdAt: card.createdAt,
+        rowId: card.id,
+      })) {
+        this.applyAgentEvent(event);
+      }
       return card.id;
     },
     removeOptimisticCard(cardId) {
@@ -1965,8 +2093,23 @@ export const useAppStore = defineStore("app", {
     patchOptimisticCard(cardId, patch = {}) {
       const targetCardId = compactText(cardId);
       if (!targetCardId) return false;
+      const patchSource = asObject(patch);
+      const status = compactText(patchSource.status).toLowerCase();
       const index = this.snapshot.cards.findIndex((card) => card?.id === targetCardId);
-      if (index < 0) return false;
+      if (index < 0) {
+        const projection = this.agentEventState.projectionsBySession?.[this.snapshot.sessionId];
+        const row = (projection?.timeline || []).find((item) => item?.id === targetCardId);
+        if (!row) return false;
+        this.applyLocalTurnPhase(status === "failed" ? "failed" : "updated", {
+          turnId: row.turnId || row.clientTurnId || projection.currentTurnId,
+          clientTurnId: row.clientTurnId,
+          clientMessageId: targetCardId.replace(/^optimistic-user-/, ""),
+          rowId: targetCardId,
+          title: row.title,
+          summary: compactText(patchSource.lastError || patchSource.summary || row.summary),
+        });
+        return true;
+      }
       const currentCard = this.snapshot.cards[index];
       const nextCard = {
         ...currentCard,
@@ -1976,7 +2119,64 @@ export const useAppStore = defineStore("app", {
       const nextCards = [...this.snapshot.cards];
       nextCards.splice(index, 1, nextCard);
       this.snapshot.cards = nextCards;
+      if (status === "failed") {
+        this.applyLocalTurnPhase("failed", {
+          turnId: currentCard.clientTurnId || this.runtime.turn.clientTurnId || "",
+          clientTurnId: currentCard.clientTurnId || this.runtime.turn.clientTurnId || "",
+          clientMessageId: currentCard.clientMessageId || targetCardId.replace(/^optimistic-user-/, ""),
+          rowId: targetCardId,
+          title: compactText(currentCard.text || currentCard.message || currentCard.summary || "本地任务"),
+          summary: compactText(patchSource.lastError || patchSource.summary || ""),
+        });
+      }
       return true;
+    },
+    applyLocalTurnPhase(phase, payload = {}) {
+      const normalizedPhase = compactText(phase || "thinking").toLowerCase();
+      const source = asObject(payload);
+      const sessionId = compactText(source.sessionId || this.activeSessionId || this.snapshot.sessionId || "local-session");
+      if (!this.snapshot.sessionId) this.snapshot.sessionId = sessionId;
+      if (!this.activeSessionId) this.activeSessionId = sessionId;
+      const projection = this.agentEventState.projectionsBySession?.[sessionId] || null;
+      const turnId = compactText(
+        source.turnId ||
+          projection?.currentTurnId ||
+          this.runtime.turn.clientTurnId ||
+          this.runtime.turn.turnId ||
+          buildClientId("client-turn"),
+      );
+      const clientTurnId = compactText(source.clientTurnId || this.runtime.turn.clientTurnId || turnId);
+      const clientMessageId = compactText(source.clientMessageId || this.runtime.turn.clientMessageId || "");
+      const phaseMap = {
+        failed: ["failed", "failed"],
+        aborted: ["canceled", "canceled"],
+        canceled: ["canceled", "canceled"],
+        completed: ["completed", "completed"],
+        idle: ["completed", "completed"],
+        waiting_approval: ["blocked", "blocked"],
+        waiting_input: ["blocked", "blocked"],
+      };
+      const [eventPhase, status] = phaseMap[normalizedPhase] || ["updated", "running"];
+      this.applyAgentEvent({
+        eventId: `local:${turnId}:${eventPhase}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+        seq: 0,
+        sessionId,
+        turnId,
+        clientTurnId,
+        kind: "turn",
+        phase: eventPhase,
+        status,
+        visibility: "primary",
+        source: "ui",
+        createdAt: source.createdAt || new Date().toISOString(),
+        payload: {
+          title: compactText(source.title || this.runtime.turn.title || "本地任务"),
+          summary: compactText(source.summary || ""),
+          hostId: compactText(source.hostId || this.snapshot.selectedHostId || this.runtime.turn.hostId || "server-local"),
+          clientMessageId,
+          rowId: compactText(source.rowId || ""),
+        },
+      });
     },
     clearTurnPendingStart() {
       this.runtime.turn = normalizeTurnRuntime(
@@ -2558,8 +2758,11 @@ export const useAppStore = defineStore("app", {
             }, 48);
           }
         },
-        onTurnEvent: (event) => {
-          this.applyTurnEvent(event);
+        onAgentEvent: (event) => {
+          this.applyAgentEvent(event);
+        },
+        onProtocolError: () => {
+          this.runtime.codex.lastError = "websocket protocol error";
         },
         onError: () => {
           this.wsStatus = "error";

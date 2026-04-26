@@ -79,6 +79,13 @@ type HostRepository interface {
 	DeleteHost(id string) error
 }
 
+type AgentEventService interface {
+	Append(ctx context.Context, event AgentEvent) (AgentEvent, error)
+	Subscribe(ctx context.Context, sessionID string, afterSeq int64) (<-chan AgentEvent, func())
+	Projection(ctx context.Context, sessionID string) (AgentEventProjection, error)
+	Replay(ctx context.Context, sessionID string, afterSeq int64) ([]AgentEvent, error)
+}
+
 type servicesConfig struct {
 	settings SettingsRepository
 	hosts    HostRepository
@@ -198,17 +205,18 @@ type HTTPServices interface {
 
 // Services is the default first-party Web application service set.
 type Services struct {
-	chat      ChatService
-	state     StateService
-	sessions  SessionService
-	approvals ApprovalService
-	choices   ChoiceService
-	settings  SettingsService
-	hosts     HostService
-	mcps      MCPService
-	profiles  AgentProfileService
-	auth      AuthService
-	terminal  TerminalService
+	chat        ChatService
+	state       StateService
+	sessions    SessionService
+	approvals   ApprovalService
+	choices     ChoiceService
+	settings    SettingsService
+	hosts       HostService
+	mcps        MCPService
+	profiles    AgentProfileService
+	auth        AuthService
+	terminal    TerminalService
+	agentEvents AgentEventService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -231,18 +239,20 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	settingsService := NewSettingsService(cfg.settings, cfg.auth)
 	authService := NewAuthService(cfg.auth)
+	agentEvents := NewAgentEventService(nil)
 	return &Services{
-		chat:      NewChatService(runtime, sessions),
-		state:     NewStateService(sessions, builder),
-		sessions:  NewSessionService(sessions, sessionStore, builder),
-		approvals: NewApprovalService(runtime, sessions, builder),
-		choices:   NewChoiceService(runtime, sessions),
-		settings:  settingsService,
-		hosts:     NewHostService(sessions, sessionStore, cfg.hosts, builder),
-		mcps:      NewMCPService(cfg.mcps, registry),
-		profiles:  NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
-		auth:      authService,
-		terminal:  NewTerminalService(cfg.terminal, cfg.hosts),
+		chat:        NewChatService(runtime, sessions, agentEvents),
+		state:       NewStateService(sessions, builder),
+		sessions:    NewSessionService(sessions, sessionStore, builder),
+		approvals:   NewApprovalService(runtime, sessions, builder),
+		choices:     NewChoiceService(runtime, sessions),
+		settings:    settingsService,
+		hosts:       NewHostService(sessions, sessionStore, cfg.hosts, builder),
+		mcps:        NewMCPService(cfg.mcps, registry),
+		profiles:    NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
+		auth:        authService,
+		terminal:    NewTerminalService(cfg.terminal, cfg.hosts),
+		agentEvents: agentEvents,
 	}
 }
 
@@ -259,6 +269,9 @@ func (s *Services) AgentProfileService() AgentProfileService {
 }
 func (s *Services) AuthService() AuthService         { return s.auth }
 func (s *Services) TerminalService() TerminalService { return s.terminal }
+func (s *Services) AgentEventService() AgentEventService {
+	return s.agentEvents
+}
 
 type ChatCommand struct {
 	SessionID       string
@@ -348,26 +361,27 @@ type PhaseSummaryPayload struct {
 }
 
 type StateSnapshot struct {
-	SessionID           string                `json:"sessionId,omitempty"`
-	Kind                string                `json:"kind"`
-	SelectedHostID      string                `json:"selectedHostId"`
-	LastActivityAt      string                `json:"lastActivityAt,omitempty"`
-	Auth                AuthSummary           `json:"auth"`
-	Hosts               []HostSummary         `json:"hosts"`
-	Cards               []CardView            `json:"cards"`
-	Approvals           []ApprovalView        `json:"approvals"`
-	ToolInvocations     []ToolInvocationView  `json:"toolInvocations,omitempty"`
-	EvidenceSummaries   []EvidenceSummaryView `json:"evidenceSummaries,omitempty"`
-	CurrentMode         string                `json:"currentMode,omitempty"`
-	CurrentStage        string                `json:"currentStage,omitempty"`
-	CurrentLane         string                `json:"currentLane,omitempty"`
-	RequiredNextTool    string                `json:"requiredNextTool,omitempty"`
-	FinalGateStatus     string                `json:"finalGateStatus,omitempty"`
-	MissingRequirements []string              `json:"missingRequirements,omitempty"`
-	TurnPolicy          TurnPolicyView        `json:"turnPolicy"`
-	PromptEnvelope      PromptEnvelopeView    `json:"promptEnvelope"`
-	Config              map[string]any        `json:"config"`
-	Runtime             RuntimeSnapshot       `json:"runtime"`
+	SessionID            string                `json:"sessionId,omitempty"`
+	Kind                 string                `json:"kind"`
+	SelectedHostID       string                `json:"selectedHostId"`
+	LastActivityAt       string                `json:"lastActivityAt,omitempty"`
+	Auth                 AuthSummary           `json:"auth"`
+	Hosts                []HostSummary         `json:"hosts"`
+	Cards                []CardView            `json:"cards"`
+	Approvals            []ApprovalView        `json:"approvals"`
+	ToolInvocations      []ToolInvocationView  `json:"toolInvocations,omitempty"`
+	EvidenceSummaries    []EvidenceSummaryView `json:"evidenceSummaries,omitempty"`
+	CurrentMode          string                `json:"currentMode,omitempty"`
+	CurrentStage         string                `json:"currentStage,omitempty"`
+	CurrentLane          string                `json:"currentLane,omitempty"`
+	RequiredNextTool     string                `json:"requiredNextTool,omitempty"`
+	FinalGateStatus      string                `json:"finalGateStatus,omitempty"`
+	MissingRequirements  []string              `json:"missingRequirements,omitempty"`
+	TurnPolicy           TurnPolicyView        `json:"turnPolicy"`
+	PromptEnvelope       PromptEnvelopeView    `json:"promptEnvelope"`
+	AgentEventProjection *AgentEventProjection `json:"agentEventProjection,omitempty"`
+	Config               map[string]any        `json:"config"`
+	Runtime              RuntimeSnapshot       `json:"runtime"`
 }
 
 type AuthSummary struct {

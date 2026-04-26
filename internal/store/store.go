@@ -2,14 +2,17 @@
 package store
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
 )
@@ -65,6 +68,12 @@ type Store interface {
 	SaveAgentMCPCatalog(items []AgentMCPCatalogEntry) error
 	GetAgentProfiles() ([]AgentProfileRecord, error)
 	SaveAgentProfiles(items []AgentProfileRecord) error
+
+	// Agent event log and projection
+	AppendAgentEvent(sessionID string, event agentui.AgentEvent) error
+	ListAgentEvents(sessionID string, afterSeq int64) ([]agentui.AgentEvent, error)
+	SaveAgentEventProjection(sessionID string, projection agentui.AgentEventProjection) error
+	LoadAgentEventProjection(sessionID string) (agentui.AgentEventProjection, bool, error)
 
 	// Tool result spills
 	GetToolResultSpill(id string) (*tooling.ResultSpill, error)
@@ -626,6 +635,135 @@ func (s *JSONFileStore) SaveAgentProfiles(items []AgentProfileRecord) error {
 }
 
 // ---------------------------------------------------------------------------
+// Agent event log and projection
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) AppendAgentEvent(sessionID string, event agentui.AgentEvent) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(event.SessionID)
+	}
+	if err := validateAgentEventSessionID(sessionID); err != nil {
+		return err
+	}
+	if event.SessionID == "" {
+		event.SessionID = sessionID
+	}
+	if event.SessionID != sessionID {
+		return fmt.Errorf("event session %q does not match target session %q", event.SessionID, sessionID)
+	}
+	if err := event.Validate(); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	path := s.agentEventLogPath(sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *JSONFileStore) ListAgentEvents(sessionID string, afterSeq int64) ([]agentui.AgentEvent, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := validateAgentEventSessionID(sessionID); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	file, err := os.Open(s.agentEventLogPath(sessionID))
+	if os.IsNotExist(err) {
+		return []agentui.AgentEvent{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	events := []agentui.AgentEvent{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var event agentui.AgentEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, err
+		}
+		if event.Seq > afterSeq {
+			events = append(events, event)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].Seq < events[j].Seq
+	})
+	return events, nil
+}
+
+func (s *JSONFileStore) SaveAgentEventProjection(sessionID string, projection agentui.AgentEventProjection) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(projection.SessionID)
+	}
+	if err := validateAgentEventSessionID(sessionID); err != nil {
+		return err
+	}
+	if projection.SessionID == "" {
+		projection.SessionID = sessionID
+	}
+	if projection.SessionID != sessionID {
+		return fmt.Errorf("projection session %q does not match target session %q", projection.SessionID, sessionID)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeJSONLocked(s.agentEventProjectionRelPath(sessionID), projection)
+}
+
+func (s *JSONFileStore) LoadAgentEventProjection(sessionID string) (agentui.AgentEventProjection, bool, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if err := validateAgentEventSessionID(sessionID); err != nil {
+		return agentui.AgentEventProjection{}, false, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	raw, err := os.ReadFile(s.agentEventProjectionPath(sessionID))
+	if os.IsNotExist(err) {
+		return agentui.AgentEventProjection{}, false, nil
+	}
+	if err != nil {
+		return agentui.AgentEventProjection{}, false, err
+	}
+	var projection agentui.AgentEventProjection
+	if err := json.Unmarshal(raw, &projection); err != nil {
+		return agentui.AgentEventProjection{}, false, err
+	}
+	return projection, true, nil
+}
+
+// ---------------------------------------------------------------------------
 // Tool result spills
 // ---------------------------------------------------------------------------
 
@@ -834,6 +972,10 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 }
 
 func (s *JSONFileStore) writeJSON(relPath string, data interface{}) error {
+	return s.writeJSONLocked(relPath, data)
+}
+
+func (s *JSONFileStore) writeJSONLocked(relPath string, data interface{}) error {
 	path := filepath.Join(s.dataDir, relPath)
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -848,6 +990,32 @@ func (s *JSONFileStore) writeJSON(relPath string, data interface{}) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func validateAgentEventSessionID(sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session id is required")
+	}
+	if strings.Contains(sessionID, "..") || strings.ContainsAny(sessionID, `/\`) {
+		return fmt.Errorf("invalid session id %q", sessionID)
+	}
+	return nil
+}
+
+func (s *JSONFileStore) agentEventLogPath(sessionID string) string {
+	return filepath.Join(s.dataDir, s.agentEventLogRelPath(sessionID))
+}
+
+func (s *JSONFileStore) agentEventLogRelPath(sessionID string) string {
+	return filepath.Join("sessions", sessionID, "agent-events.jsonl")
+}
+
+func (s *JSONFileStore) agentEventProjectionPath(sessionID string) string {
+	return filepath.Join(s.dataDir, s.agentEventProjectionRelPath(sessionID))
+}
+
+func (s *JSONFileStore) agentEventProjectionRelPath(sessionID string) string {
+	return filepath.Join("sessions", sessionID, "agent-projection.json")
 }
 
 func (s *JSONFileStore) loadFromDisk() error {

@@ -4,6 +4,7 @@ import { ClipboardCheckIcon, FileTextIcon, FolderIcon, SearchIcon } from "lucide
 import Modal from "./Modal.vue";
 import { useAppStore } from "../store";
 import { resolveHostDisplay } from "../lib/hostDisplay";
+import { selectRuntimeBusy } from "../events/agentEventProjection";
 
 const props = defineProps({
   card: {
@@ -17,6 +18,8 @@ const props = defineProps({
 });
 
 const store = useAppStore();
+const activeSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const runtimeBusy = computed(() => selectRuntimeBusy(store.agentEventState, activeSessionId.value));
 const primarySummary = computed(() => props.card.summary || props.card.text || "");
 const auxiliaryNote = computed(() => (props.card.summary && props.card.text ? props.card.text : ""));
 const kvRows = computed(() => props.card.kvRows || []);
@@ -119,7 +122,7 @@ const structuredFileSections = computed(() => {
 });
 const hasStructuredFiles = computed(() => structuredFileSections.value.length > 0);
 const hasHighlights = computed(() => highlightPills.value.length > 0);
-const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && !repeatSearchBusy.value && !store.sending && !store.runtime.turn.active && store.canSend);
+const canRepeatSearch = computed(() => !!repeatSearchPrompt.value && !repeatSearchBusy.value && !store.sending && !runtimeBusy.value && store.canSend);
 const contextLabel = computed(() => (props.sessionKind === "workspace" ? "工作台结果投影" : "执行结果"));
 
 const previewOpen = ref(false);

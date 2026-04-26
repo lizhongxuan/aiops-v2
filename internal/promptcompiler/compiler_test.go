@@ -215,6 +215,36 @@ func TestCompile_DeveloperInstructions_ChatMode(t *testing.T) {
 	}
 }
 
+func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t *testing.T) {
+	compiler := NewCompiler()
+
+	ctx := CompileContext{
+		SessionType: "host",
+		Mode:        "chat",
+	}
+
+	result, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content := strings.ToLower(result.Developer.Content)
+	required := []string{
+		"before the first tool call",
+		"intent",
+		"current or latest",
+		"precise",
+		"cite source",
+		"machine-readable",
+		"curl",
+	}
+	for _, want := range required {
+		if !strings.Contains(content, want) {
+			t.Fatalf("developer instructions should include %q, got:\n%s", want, result.Developer.Content)
+		}
+	}
+}
+
 func TestCompile_DeveloperInstructions_ExecuteMode(t *testing.T) {
 	compiler := NewCompiler()
 
@@ -773,7 +803,7 @@ func TestCompile_DynamicPromptDelta_CarriesToolDeltaAndEvidenceReminders(t *test
 			"Pending evidence: capture config diff before remediation.",
 		},
 		ToolDelta: ToolPromptDelta{
-			NewlyAvailable:        []string{"remote.inspect"},
+			NewlyAvailable:         []string{"remote.inspect"},
 			TemporarilyUnavailable: []string{"remote.write"},
 		},
 		AssembledTools: []Tool{

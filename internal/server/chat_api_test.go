@@ -15,12 +15,16 @@ import (
 
 type interactionAPITestRuntime struct {
 	runReq    runtimekernel.TurnRequest
+	runCh     chan runtimekernel.TurnRequest
 	resumeReq runtimekernel.ResumeRequest
 	cancelReq runtimekernel.CancelRequest
 }
 
 func (r *interactionAPITestRuntime) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
 	r.runReq = req
+	if r.runCh != nil {
+		r.runCh <- req
+	}
 	return runtimekernel.TurnResult{
 		SessionType:     req.SessionType,
 		Mode:            req.Mode,
@@ -30,6 +34,20 @@ func (r *interactionAPITestRuntime) RunTurn(_ context.Context, req runtimekernel
 		ClientTurnID:    req.ClientTurnID,
 		Status:          "completed",
 	}, nil
+}
+
+func waitForAPIRunTurn(t *testing.T, runtime *interactionAPITestRuntime) runtimekernel.TurnRequest {
+	t.Helper()
+	if runtime.runCh == nil {
+		t.Fatal("runtime.runCh is nil")
+	}
+	select {
+	case req := <-runtime.runCh:
+		return req
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called")
+		return runtimekernel.TurnRequest{}
+	}
 }
 
 func (r *interactionAPITestRuntime) ResumeTurn(_ context.Context, req runtimekernel.ResumeRequest) (runtimekernel.TurnResult, error) {
@@ -208,7 +226,7 @@ func TestChatAPI_MessageAliasResumesPendingEvidenceTurn(t *testing.T) {
 }
 
 func TestChatAPI_MessageEchoesClientIDsAndPassesThemToRuntime(t *testing.T) {
-	runtime := &interactionAPITestRuntime{}
+	runtime := &interactionAPITestRuntime{runCh: make(chan runtimekernel.TurnRequest, 1)}
 	sessions := runtimekernel.NewSessionManager()
 	srv := NewHTTPServer(appui.NewServices(runtime, sessions))
 	ts := httptest.NewServer(srv.Handler())
@@ -233,16 +251,23 @@ func TestChatAPI_MessageEchoesClientIDsAndPassesThemToRuntime(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if runtime.runReq.ClientMessageID != "client-msg-1" {
-		t.Fatalf("RunTurn ClientMessageID = %q, want client-msg-1", runtime.runReq.ClientMessageID)
+	runReq := waitForAPIRunTurn(t, runtime)
+	if runReq.ClientMessageID != "client-msg-1" {
+		t.Fatalf("RunTurn ClientMessageID = %q, want client-msg-1", runReq.ClientMessageID)
 	}
-	if runtime.runReq.ClientTurnID != "client-turn-1" {
-		t.Fatalf("RunTurn ClientTurnID = %q, want client-turn-1", runtime.runReq.ClientTurnID)
+	if runReq.ClientTurnID != "client-turn-1" {
+		t.Fatalf("RunTurn ClientTurnID = %q, want client-turn-1", runReq.ClientTurnID)
 	}
 	if payload.ClientMessageID != "client-msg-1" {
 		t.Fatalf("response clientMessageId = %q, want client-msg-1", payload.ClientMessageID)
 	}
 	if payload.ClientTurnID != "client-turn-1" {
 		t.Fatalf("response clientTurnId = %q, want client-turn-1", payload.ClientTurnID)
+	}
+	if !payload.Accepted || payload.Status != "accepted" {
+		t.Fatalf("accepted/status = %v/%q, want true/accepted", payload.Accepted, payload.Status)
+	}
+	if payload.Output != "" {
+		t.Fatalf("response output = %q, want empty accepted-only response", payload.Output)
 	}
 }

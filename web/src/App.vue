@@ -9,6 +9,7 @@ import HostModal from "./components/HostModal.vue";
 import SessionHistoryDrawer from "./components/SessionHistoryDrawer.vue";
 import McpBundleHost from "./components/mcp/McpBundleHost.vue";
 import McpUiCardHost from "./components/mcp/McpUiCardHost.vue";
+import { selectApprovalDock, selectRuntimeBusy, selectRuntimeStatus } from "./events/agentEventProjection";
 
 import {
   MessageSquarePlusIcon,
@@ -56,6 +57,20 @@ function compactText(value) {
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
+
+const activeProjectionSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const appRuntimeStatus = computed(() => selectRuntimeStatus(store.agentEventState, activeProjectionSessionId.value));
+const appRuntimeBusy = computed(() => selectRuntimeBusy(store.agentEventState, activeProjectionSessionId.value) || store.sending);
+const appApprovalDock = computed(() => selectApprovalDock(store.agentEventState, activeProjectionSessionId.value));
+const appRuntimePhase = computed(() => {
+  const status = compactText(appRuntimeStatus.value).toLowerCase();
+  if (status === "working") return "executing";
+  if (status === "blocked") return appApprovalDock.value.length ? "waiting_approval" : "waiting_input";
+  if (status === "failed") return "failed";
+  if (status === "canceled") return "aborted";
+  if (status === "reviewing") return "finalizing";
+  return "idle";
+});
 
 const mcpDrawerActiveSurface = computed(() => store.mcpDrawer?.activeSurface || null);
 const mcpDrawerPinnedSurfaces = computed(() => store.mcpDrawer?.pinnedSurfaces || []);
@@ -173,7 +188,7 @@ async function syncChatRouteHostSelection() {
   if (route.name !== "chat" || isRouteHostSyncing.value) return;
   const requestedHostTarget = resolveRequestedHostTarget();
   if (!requestedHostTarget.hostId) return;
-  if (store.loading || store.sending || store.runtime.turn.active) return;
+  if (store.loading || appRuntimeBusy.value) return;
 
   isRouteHostSyncing.value = true;
   try {
@@ -341,13 +356,13 @@ const currentSession = computed(() => {
 });
 
 const canResetCurrentSession = computed(() => {
-  if (store.loading || store.sending || store.runtime.turn.active) return false;
+  if (store.loading || appRuntimeBusy.value) return false;
   return store.snapshot.cards.length > 0 || (store.snapshot.approvals || []).length > 0;
 });
 
 const resetButtonTitle = computed(() => {
   if (store.loading) return "正在加载当前会话";
-  if (store.runtime.turn.active) return "当前任务执行中，暂不能清空上下文";
+  if (appRuntimeBusy.value) return "当前任务执行中，暂不能清空上下文";
   if (!canResetCurrentSession.value) return "当前会话已经是空白";
   return "清空当前会话的消息、审批和运行态";
 });
@@ -368,7 +383,7 @@ async function resetCurrentSession() {
 }
 
 const currentSessionStatus = computed(() => {
-  if (store.runtime.turn.active) return "执行中";
+  if (appRuntimeBusy.value) return "执行中";
   if (currentSession.value.status === "failed") return "失败";
   if (currentSession.value.status === "completed") return "已保存";
   return "空白";
@@ -418,7 +433,7 @@ const workspaceNavTitle = computed(() => workspaceSession.value?.title || "协�
 const workspaceNavStatus = computed(() => {
   if (store.snapshot.kind === "workspace") {
     const pendingApprovals = (store.snapshot.approvals || []).filter((approval) => approval.status === "pending").length;
-    if (store.runtime.turn.active) return describeTurnPhase(store.runtime.turn.phase);
+    if (appRuntimeBusy.value) return describeTurnPhase(appRuntimePhase.value);
     if (pendingApprovals > 0) return `${pendingApprovals} 项待审批`;
     return workspaceSession.value?.status === "completed"
       ? "已完成"
@@ -577,8 +592,7 @@ watch(
     route.query.hostName,
     route.query.hostAddress,
     store.loading,
-    store.sending,
-    store.runtime.turn.active,
+    appRuntimeBusy.value,
     store.snapshot.kind,
     store.activeSessionId,
     store.snapshot.selectedHostId,
@@ -897,7 +911,7 @@ watch(
       :sessions="historyDrawerSessions"
       :active-session-id="store.activeSessionId"
       :loading="store.historyLoading"
-      :switching-disabled="store.runtime.turn.active"
+      :switching-disabled="appRuntimeBusy"
       :title="historyDrawerTitle"
       :session-kind="historyDrawerSessionKind"
       :scope-label="historyDrawerScopeLabel"

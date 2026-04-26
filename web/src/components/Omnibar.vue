@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import { usePasteAssist } from "../composables/usePasteAssist";
 import { NButton, NAutoComplete } from "naive-ui";
 import { resolveHostDisplay } from "../lib/hostDisplay";
+import { selectActiveProjection, selectRuntimeBusy, selectRuntimeStatus } from "../events/agentEventProjection";
 
 const props = defineProps({
   modelValue: {
@@ -75,16 +76,20 @@ const activeMentions = computed(() => {
 const pasteAssist = usePasteAssist(toRef(props, "modelValue"));
 const artifactPills = computed(() => pasteAssist.artifactPills.value);
 const showToolTags = computed(() => activeMentions.value.length || artifactPills.value.length);
-const turnPendingStart = computed(() => !!store.runtime.turn.pendingStart);
-const turnActive = computed(() => {
-  const phase = String(store.runtime.turn.phase || "").trim().toLowerCase();
-  return store.runtime.turn.active && !["idle", "completed", "failed", "aborted"].includes(phase);
+const activeSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const activeProjection = computed(() => selectActiveProjection(store.agentEventState, activeSessionId.value));
+const turnActive = computed(() => selectRuntimeBusy(store.agentEventState, activeSessionId.value) || props.busy);
+const turnPendingStart = computed(() => {
+  const projection = activeProjection.value;
+  const turnId = projection?.currentTurnId || "";
+  const currentTurn = (projection?.timeline || []).find((row) => row?.kind === "turn" && row?.turnId === turnId);
+  return currentTurn?.status === "queued";
 });
 
 const canStop = computed(() => {
   if (props.primaryActionOverride === "send") return false;
   if (props.primaryActionOverride === "stop") return true;
-  return turnPendingStart.value || turnActive.value;
+  return turnActive.value;
 });
 const forceSendAction = computed(() => props.primaryActionOverride === "send");
 
@@ -122,7 +127,7 @@ const sendDisabled = computed(
     props.busy ||
     !canSendMessage.value ||
     store.sending ||
-    (!forceSendAction.value && (turnActive.value || turnPendingStart.value)) ||
+    (!forceSendAction.value && turnActive.value) ||
     pasteAssist.sendBlocked.value ||
     !props.modelValue.trim(),
 );
@@ -425,8 +430,7 @@ function executeSlashStatus() {
   const hosts = store.snapshot.hosts || [];
   const onlineCount = hosts.filter((h) => h.status === "online").length;
   const pendingApprovals = (store.snapshot.approvals || []).filter((a) => a.status === "pending").length;
-  const turnPhase = store.runtime.turn.phase || "idle";
-  const turnActive = store.runtime.turn.active;
+  const runtimeStatus = selectRuntimeStatus(store.agentEventState, activeSessionId.value);
   const wsStatus = store.wsStatus || "unknown";
   const selectedHost = resolveHostDisplay(store.selectedHost) || "server-local";
 
@@ -434,7 +438,7 @@ function executeSlashStatus() {
     `WebSocket: ${wsStatus}`,
     `主机: ${onlineCount}/${hosts.length} 在线`,
     `当前主机: ${selectedHost}`,
-    `Turn: ${turnActive ? turnPhase : "空闲"}`,
+    `Turn: ${turnActive.value ? runtimeStatus : "空闲"}`,
     `待审批: ${pendingApprovals} 项`,
   ];
   showSlashResult(`系统状态：\n${lines.join("\n")}`);

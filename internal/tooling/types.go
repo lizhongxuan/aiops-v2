@@ -36,6 +36,15 @@ type MCPInfo struct {
 	Raw        json.RawMessage `json:"raw,omitempty"`
 }
 
+// ProviderNativeToolInfo describes an equivalent provider-hosted tool.
+// It keeps the unified Tool abstraction intact while allowing adapters/tools
+// to delegate to model-native capabilities such as OpenAI web_search.
+type ProviderNativeToolInfo struct {
+	Provider string `json:"provider,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Prefer   bool   `json:"prefer,omitempty"`
+}
+
 // ResultSpillPolicy controls how large tool results are externalized.
 type ResultSpillPolicy string
 
@@ -68,17 +77,18 @@ func (b ResultBudget) Normalize(defaultInlineBytes int) ResultBudget {
 
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
-	Name         string       `json:"name"`
-	Aliases      []string     `json:"aliases,omitempty"`
-	Description  string       `json:"description,omitempty"`
-	Origin       ToolOrigin   `json:"origin,omitempty"`
-	SearchHint   string       `json:"searchHint,omitempty"`
-	ShouldDefer  bool         `json:"shouldDefer,omitempty"`
-	AlwaysLoad   bool         `json:"alwaysLoad,omitempty"`
-	IsMCP        bool         `json:"isMCP,omitempty"`
-	IsLSP        bool         `json:"isLSP,omitempty"`
-	ResultBudget ResultBudget `json:"resultBudget,omitempty"`
-	MCPInfo      MCPInfo      `json:"mcpInfo,omitempty"`
+	Name           string                  `json:"name"`
+	Aliases        []string                `json:"aliases,omitempty"`
+	Description    string                  `json:"description,omitempty"`
+	Origin         ToolOrigin              `json:"origin,omitempty"`
+	SearchHint     string                  `json:"searchHint,omitempty"`
+	ShouldDefer    bool                    `json:"shouldDefer,omitempty"`
+	AlwaysLoad     bool                    `json:"alwaysLoad,omitempty"`
+	IsMCP          bool                    `json:"isMCP,omitempty"`
+	IsLSP          bool                    `json:"isLSP,omitempty"`
+	ResultBudget   ResultBudget            `json:"resultBudget,omitempty"`
+	MCPInfo        MCPInfo                 `json:"mcpInfo,omitempty"`
+	ProviderNative *ProviderNativeToolInfo `json:"providerNative,omitempty"`
 }
 
 // HasMCPSource reports whether the metadata identifies an MCP-backed tool.
