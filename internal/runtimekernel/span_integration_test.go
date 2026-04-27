@@ -453,8 +453,11 @@ func TestToolDispatcher_PermissionEngineDeniesExecution(t *testing.T) {
 	if executor.calls != 0 {
 		t.Fatalf("expected executor not to run, got %d calls", executor.calls)
 	}
-	if len(emitter.events) != 2 {
-		t.Fatalf("expected tool.started + tool.failed events, got %d", len(emitter.events))
+	if len(emitter.events) != 1 {
+		t.Fatalf("expected only tool.failed event for denied tool, got %d", len(emitter.events))
+	}
+	if emitter.events[0].Type != EventToolFailed {
+		t.Fatalf("event type = %q, want %q", emitter.events[0].Type, EventToolFailed)
 	}
 }
 

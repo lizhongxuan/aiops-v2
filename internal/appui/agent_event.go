@@ -17,6 +17,8 @@ const (
 	AgentEventArtifact  = agentui.AgentEventArtifact
 	AgentEventDiff      = agentui.AgentEventDiff
 	AgentEventBrowser   = agentui.AgentEventBrowser
+	AgentEventPlan      = agentui.AgentEventPlan
+	AgentEventEvidence  = agentui.AgentEventEvidence
 	AgentEventSystem    = agentui.AgentEventSystem
 )
 
@@ -67,6 +69,10 @@ type TurnPayload = agentui.TurnPayload
 type AgentPayload = agentui.AgentPayload
 type AssistantPayload = agentui.AssistantPayload
 type ToolPayload = agentui.ToolPayload
+type ProgressPayload = agentui.ProgressPayload
+type PlanPayload = agentui.PlanPayload
+type PlanStep = agentui.PlanStep
+type EvidencePayload = agentui.EvidencePayload
 type ApprovalPayload = agentui.ApprovalPayload
 type ArtifactPayload = agentui.ArtifactPayload
 type DiffFile = agentui.DiffFile

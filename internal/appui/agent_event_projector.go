@@ -43,6 +43,10 @@ func (p *AgentEventProjector) Apply(proj AgentEventProjection, event AgentEvent)
 		proj = applyApprovalEventToProjection(proj, event)
 	case AgentEventAssistant:
 		proj = applyAssistantEventToProjection(proj, event)
+	case AgentEventPlan:
+		proj = applyPlanEventToProjection(proj, event)
+	case AgentEventEvidence:
+		proj = applyEvidenceEventToProjection(proj, event)
 	case AgentEventDiff:
 		proj = applyDiffEventToProjection(proj, event)
 	case AgentEventArtifact:
@@ -99,12 +103,8 @@ func deriveProjectionStatus(l RuntimeLiveness, diff *DiffProjection, lastTermina
 
 func ensureAgentEventProjection(proj AgentEventProjection) AgentEventProjection {
 	proj.RuntimeLiveness = ensureRuntimeLiveness(proj.RuntimeLiveness)
-	if proj.FinalMessages == nil {
-		proj.FinalMessages = map[string]AssistantFinal{}
-	}
-	if proj.ProcessGroups == nil {
-		proj.ProcessGroups = map[string][]TimelineEntry{}
-	}
+	proj.FinalMessages = cloneAssistantFinalMap(proj.FinalMessages)
+	proj.ProcessGroups = cloneProcessGroups(proj.ProcessGroups)
 	if proj.Status == "" {
 		proj.Status = "idle"
 	}
@@ -112,22 +112,37 @@ func ensureAgentEventProjection(proj AgentEventProjection) AgentEventProjection 
 }
 
 func ensureRuntimeLiveness(l RuntimeLiveness) RuntimeLiveness {
-	if l.ActiveTurns == nil {
-		l.ActiveTurns = map[string]bool{}
+	return RuntimeLiveness{
+		ActiveTurns:          cloneBoolMap(l.ActiveTurns),
+		ActiveAgents:         cloneBoolMap(l.ActiveAgents),
+		PendingApprovals:     cloneBoolMap(l.PendingApprovals),
+		PendingUserInputs:    cloneBoolMap(l.PendingUserInputs),
+		ActiveCommandStreams: cloneBoolMap(l.ActiveCommandStreams),
 	}
-	if l.ActiveAgents == nil {
-		l.ActiveAgents = map[string]bool{}
+}
+
+func cloneBoolMap(values map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(values))
+	for key, value := range values {
+		out[key] = value
 	}
-	if l.PendingApprovals == nil {
-		l.PendingApprovals = map[string]bool{}
+	return out
+}
+
+func cloneAssistantFinalMap(values map[string]AssistantFinal) map[string]AssistantFinal {
+	out := make(map[string]AssistantFinal, len(values))
+	for key, value := range values {
+		out[key] = value
 	}
-	if l.PendingUserInputs == nil {
-		l.PendingUserInputs = map[string]bool{}
+	return out
+}
+
+func cloneProcessGroups(values map[string][]TimelineEntry) map[string][]TimelineEntry {
+	out := make(map[string][]TimelineEntry, len(values))
+	for key, value := range values {
+		out[key] = append([]TimelineEntry(nil), value...)
 	}
-	if l.ActiveCommandStreams == nil {
-		l.ActiveCommandStreams = map[string]bool{}
-	}
-	return l
+	return out
 }
 
 func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
@@ -267,23 +282,32 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 		id = event.EventID
 	}
 	title := payload.DisplayName
-	if title == "" {
+	if payload.Title != "" {
+		title = payload.Title
+	} else if title == "" {
 		title = payload.ToolName
 	}
 	summary := toolProjectionSummary(payload)
 	row := TimelineEntry{
-		ID:         id,
-		Kind:       event.Kind,
-		TurnID:     event.TurnID,
-		AgentID:    event.AgentID,
-		ToolCallID: id,
-		Phase:      event.Phase,
-		Status:     event.Status,
-		Visibility: event.Visibility,
-		Title:      title,
-		Summary:    summary,
-		UpdatedAt:  event.CreatedAt,
-		Seq:        event.Seq,
+		ID:           id,
+		Kind:         event.Kind,
+		TurnID:       event.TurnID,
+		AgentID:      event.AgentID,
+		ToolCallID:   id,
+		DisplayKind:  payload.DisplayKind,
+		Phase:        event.Phase,
+		Status:       event.Status,
+		Visibility:   event.Visibility,
+		Title:        title,
+		Summary:      summary,
+		Risk:         payload.Risk,
+		RawRef:       payload.RawRef,
+		Foldable:     payload.Foldable,
+		AutoCollapse: payload.AutoCollapse,
+		Collapsed:    payload.AutoCollapse && event.Status == AgentEventStatusCompleted,
+		DurationMs:   payload.DurationMs,
+		UpdatedAt:    event.CreatedAt,
+		Seq:          event.Seq,
 	}
 	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
 	if event.TurnID != "" {
@@ -294,6 +318,80 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 		proj.RuntimeLiveness.ActiveCommandStreams[id] = true
 	case AgentEventPhaseCompleted, AgentEventPhaseFailed, AgentEventPhaseCanceled:
 		delete(proj.RuntimeLiveness.ActiveCommandStreams, id)
+	}
+	return proj
+}
+
+func applyPlanEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	var payload PlanPayload
+	decodeAgentEventPayload(event.Payload, &payload)
+	id := event.EventID
+	if event.TurnID != "" {
+		id = event.TurnID + ":plan"
+	}
+	summary := ""
+	for _, step := range payload.Steps {
+		if step.Status == "running" {
+			summary = step.Text
+			break
+		}
+	}
+	if summary == "" && len(payload.Steps) > 0 {
+		summary = payload.Steps[len(payload.Steps)-1].Text
+	}
+	row := TimelineEntry{
+		ID:           id,
+		Kind:         event.Kind,
+		TurnID:       event.TurnID,
+		AgentID:      event.AgentID,
+		DisplayKind:  "plan",
+		Phase:        event.Phase,
+		Status:       event.Status,
+		Visibility:   event.Visibility,
+		Title:        payload.Title,
+		Summary:      summary,
+		Foldable:     true,
+		AutoCollapse: event.Status == AgentEventStatusCompleted,
+		Collapsed:    event.Status == AgentEventStatusCompleted,
+		UpdatedAt:    event.CreatedAt,
+		Seq:          event.Seq,
+	}
+	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
+	if event.TurnID != "" {
+		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
+	}
+	return proj
+}
+
+func applyEvidenceEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	var payload EvidencePayload
+	decodeAgentEventPayload(event.Payload, &payload)
+	id := payload.ID
+	if id == "" {
+		id = event.EventID
+	}
+	title := payload.Title
+	if title == "" {
+		title = payload.Kind
+	}
+	row := TimelineEntry{
+		ID:          id,
+		Kind:        event.Kind,
+		TurnID:      event.TurnID,
+		AgentID:     event.AgentID,
+		DisplayKind: "evidence." + payload.Kind,
+		Phase:       event.Phase,
+		Status:      event.Status,
+		Visibility:  event.Visibility,
+		Title:       title,
+		Summary:     payload.Summary,
+		RawRef:      payload.RawRef,
+		UpdatedAt:   event.CreatedAt,
+		Seq:         event.Seq,
+	}
+	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
+	if event.TurnID != "" {
+		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
 	}
 	return proj
 }

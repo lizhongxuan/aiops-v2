@@ -154,3 +154,30 @@ func TestAgentEventServiceProjectionMatchesReplay(t *testing.T) {
 		t.Fatalf("FinalMessages = %+v, want hello", serviceProjection.FinalMessages)
 	}
 }
+
+func TestAgentEventServiceProjectionSnapshotDoesNotShareMutableMaps(t *testing.T) {
+	ctx := context.Background()
+	service := NewAgentEventService(nil)
+
+	if _, err := service.Append(ctx, serviceTestEvent("session-a", "evt-1", 0)); err != nil {
+		t.Fatalf("Append(started) error = %v", err)
+	}
+	snapshot, err := service.Projection(ctx, "session-a")
+	if err != nil {
+		t.Fatalf("Projection() error = %v", err)
+	}
+	if !snapshot.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("snapshot ActiveTurns = %+v, want turn-1 active", snapshot.RuntimeLiveness.ActiveTurns)
+	}
+
+	completed := testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 0, TurnPayload{Summary: "done"})
+	completed.SessionID = "session-a"
+	completed.EventID = "evt-2"
+	if _, err := service.Append(ctx, completed); err != nil {
+		t.Fatalf("Append(completed) error = %v", err)
+	}
+
+	if !snapshot.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("previous projection snapshot was mutated after append: %+v", snapshot.RuntimeLiveness.ActiveTurns)
+	}
+}

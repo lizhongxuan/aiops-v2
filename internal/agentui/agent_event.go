@@ -20,6 +20,8 @@ const (
 	AgentEventArtifact  AgentEventKind = "artifact"
 	AgentEventDiff      AgentEventKind = "diff"
 	AgentEventBrowser   AgentEventKind = "browser"
+	AgentEventPlan      AgentEventKind = "plan"
+	AgentEventEvidence  AgentEventKind = "evidence"
 	AgentEventSystem    AgentEventKind = "system"
 )
 
@@ -132,15 +134,62 @@ type AssistantPayload struct {
 	MessageID string `json:"messageId,omitempty"`
 }
 
+type ProgressPayload struct {
+	Current   int64  `json:"current,omitempty"`
+	Total     int64  `json:"total,omitempty"`
+	Unit      string `json:"unit,omitempty"`
+	Percent   int    `json:"percent,omitempty"`
+	Completed bool   `json:"completed,omitempty"`
+}
+
 type ToolPayload struct {
-	ToolCallID    string `json:"toolCallId,omitempty"`
-	ToolName      string `json:"toolName,omitempty"`
-	DisplayName   string `json:"displayName,omitempty"`
-	InputSummary  string `json:"inputSummary,omitempty"`
-	OutputSummary string `json:"outputSummary,omitempty"`
-	Error         string `json:"error,omitempty"`
-	ArtifactID    string `json:"artifactId,omitempty"`
-	ExitCode      *int   `json:"exitCode,omitempty"`
+	ToolCallID    string            `json:"toolCallId,omitempty"`
+	ToolName      string            `json:"toolName,omitempty"`
+	DisplayName   string            `json:"displayName,omitempty"`
+	DisplayKind   string            `json:"displayKind,omitempty"`
+	Title         string            `json:"title,omitempty"`
+	InputSummary  string            `json:"inputSummary,omitempty"`
+	OutputSummary string            `json:"outputSummary,omitempty"`
+	InputPreview  json.RawMessage   `json:"inputPreview,omitempty"`
+	OutputPreview json.RawMessage   `json:"outputPreview,omitempty"`
+	Delta         string            `json:"delta,omitempty"`
+	Progress      *ProgressPayload  `json:"progress,omitempty"`
+	Evidence      []EvidencePayload `json:"evidence,omitempty"`
+	Risk          string            `json:"risk,omitempty"`
+	HostID        string            `json:"hostId,omitempty"`
+	Resource      string            `json:"resource,omitempty"`
+	Namespace     string            `json:"namespace,omitempty"`
+	Foldable      bool              `json:"foldable,omitempty"`
+	AutoCollapse  bool              `json:"autoCollapse,omitempty"`
+	RawRef        string            `json:"rawRef,omitempty"`
+	ArtifactID    string            `json:"artifactId,omitempty"`
+	ExitCode      *int              `json:"exitCode,omitempty"`
+	DurationMs    int64             `json:"durationMs,omitempty"`
+	Error         string            `json:"error,omitempty"`
+}
+
+type PlanPayload struct {
+	Title string     `json:"title,omitempty"`
+	Steps []PlanStep `json:"steps,omitempty"`
+}
+
+type PlanStep struct {
+	ID      string `json:"id"`
+	Text    string `json:"text"`
+	Status  string `json:"status"`
+	Summary string `json:"summary,omitempty"`
+}
+
+type EvidencePayload struct {
+	ID         string          `json:"id,omitempty"`
+	Kind       string          `json:"kind,omitempty"`
+	Title      string          `json:"title,omitempty"`
+	Summary    string          `json:"summary,omitempty"`
+	Source     string          `json:"source,omitempty"`
+	Confidence string          `json:"confidence,omitempty"`
+	Window     string          `json:"window,omitempty"`
+	RawRef     string          `json:"rawRef,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
 }
 
 type ApprovalPayload struct {
@@ -229,7 +278,7 @@ func (e AgentEvent) Validate() error {
 func (k AgentEventKind) IsValid() bool {
 	switch k {
 	case AgentEventTurn, AgentEventAgent, AgentEventAssistant, AgentEventTool, AgentEventApproval,
-		AgentEventArtifact, AgentEventDiff, AgentEventBrowser, AgentEventSystem:
+		AgentEventArtifact, AgentEventDiff, AgentEventBrowser, AgentEventPlan, AgentEventEvidence, AgentEventSystem:
 		return true
 	default:
 		return false

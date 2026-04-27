@@ -156,7 +156,7 @@ func (s *agentEventService) Projection(ctx context.Context, sessionID string) (A
 	proj, ok := s.projectionBySession[sessionID]
 	s.mu.RUnlock()
 	if ok {
-		return proj, nil
+		return ensureAgentEventProjection(proj), nil
 	}
 	if s.repo != nil {
 		loaded, found, err := s.repo.LoadAgentEventProjection(sessionID)
@@ -164,7 +164,7 @@ func (s *agentEventService) Projection(ctx context.Context, sessionID string) (A
 			return AgentEventProjection{}, err
 		}
 		if found {
-			return loaded, nil
+			return ensureAgentEventProjection(loaded), nil
 		}
 	}
 	return ensureAgentEventProjection(AgentEventProjection{SessionID: sessionID, Status: "idle"}), nil

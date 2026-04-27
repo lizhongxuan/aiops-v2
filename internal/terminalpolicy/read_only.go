@@ -12,6 +12,9 @@ import (
 // tools like curl where the executable alone is not enough to decide safety.
 func IsReadOnlyCommand(command string, args []string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
+	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
+		return IsReadOnlyCommand(wrappedCommand, wrappedArgs)
+	}
 	if base == "curl" {
 		return isReadOnlyCurlArgs(args)
 	}
@@ -26,6 +29,27 @@ func IsReadOnlyCommandName(command string) bool {
 	default:
 		return false
 	}
+}
+
+func unwrapReadOnlyShell(base string, args []string) (string, []string, bool) {
+	switch base {
+	case "bash", "sh", "zsh":
+	default:
+		return "", nil, false
+	}
+	if len(args) != 2 {
+		return "", nil, false
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "-c", "-lc":
+	default:
+		return "", nil, false
+	}
+	command, commandArgs, ok := SplitCommandLine(args[1])
+	if !ok {
+		return "", nil, false
+	}
+	return command, commandArgs, true
 }
 
 // SplitCommandLine parses the model-friendly single-string command form into

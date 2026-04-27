@@ -117,6 +117,8 @@ func TestAgentEventCanonicalEnumSets(t *testing.T) {
 		AgentEventArtifact,
 		AgentEventDiff,
 		AgentEventBrowser,
+		AgentEventPlan,
+		AgentEventEvidence,
 		AgentEventSystem,
 	} {
 		if !kind.IsValid() {

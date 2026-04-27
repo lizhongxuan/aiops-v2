@@ -87,15 +87,16 @@ type AgentEventService interface {
 }
 
 type servicesConfig struct {
-	settings SettingsRepository
-	hosts    HostRepository
-	mcps     MCPRepository
-	mcpReg   *mcp.Registry
-	auth     *auth.Manager
-	terminal *terminal.Manager
-	skills   SkillCatalogRepository
-	agentMCP AgentMCPCatalogRepository
-	profiles AgentProfileRepository
+	settings         SettingsRepository
+	hosts            HostRepository
+	mcps             MCPRepository
+	mcpReg           *mcp.Registry
+	auth             *auth.Manager
+	terminal         *terminal.Manager
+	skills           SkillCatalogRepository
+	agentMCP         AgentMCPCatalogRepository
+	profiles         AgentProfileRepository
+	lifecycleContext context.Context
 }
 
 // ServicesOption customizes first-party Web services.
@@ -188,6 +189,14 @@ func WithAgentProfileRepository(repo AgentProfileRepository) ServicesOption {
 	}
 }
 
+// WithLifecycleContext sets the application lifecycle context used by
+// background services that must outlive individual HTTP request contexts.
+func WithLifecycleContext(ctx context.Context) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.lifecycleContext = ctx
+	}
+}
+
 // HTTPServices is the interface consumed by internal/server handlers.
 type HTTPServices interface {
 	ChatService() ChatService
@@ -241,7 +250,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(nil)
 	return &Services{
-		chat:        NewChatService(runtime, sessions, agentEvents),
+		chat:        NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:       NewStateService(sessions, builder),
 		sessions:    NewSessionService(sessions, sessionStore, builder),
 		approvals:   NewApprovalService(runtime, sessions, builder),

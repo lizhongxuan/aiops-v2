@@ -245,6 +245,7 @@ func run() error {
 			appui.WithMCPRegistry(mcpRegistry),
 			appui.WithAuthManager(authManager),
 			appui.WithTerminalManager(terminalManager),
+			appui.WithLifecycleContext(ctx),
 		),
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),

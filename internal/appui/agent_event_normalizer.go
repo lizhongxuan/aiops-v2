@@ -46,29 +46,156 @@ func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error
 			createdAt = *inv.EndedAt
 		}
 	}
+	displayKind := displayKindForAgentTool(inv.ToolName)
+	inputSummary := summarizeAgentToolInput(inv.ToolName, inv.Args)
+	outputSummary := summarizeAgentToolOutput(inv.ToolName, inv.Result, inv.Error)
+	durationMs := int64(0)
+	completedAt := ""
+	if inv.EndedAt != nil {
+		durationMs = inv.EndedAt.Sub(inv.StartedAt).Milliseconds()
+		if durationMs < 0 {
+			durationMs = 0
+		}
+		completedAt = inv.EndedAt.UTC().Format(time.RFC3339Nano)
+	}
 	payload, _ := json.Marshal(ToolPayload{
 		ToolCallID:    inv.ID,
 		ToolName:      inv.ToolName,
-		InputSummary:  summarizeAgentToolInput(inv.ToolName, inv.Args),
-		OutputSummary: summarizeAgentToolOutput(inv.ToolName, inv.Result, inv.Error),
+		DisplayName:   displayNameForAgentTool(inv.ToolName),
+		DisplayKind:   displayKind,
+		Title:         titleForAgentTool(displayKind, phase, inputSummary),
+		InputSummary:  inputSummary,
+		OutputSummary: outputSummary,
+		Foldable:      true,
+		AutoCollapse:  status == AgentEventStatusCompleted,
+		RawRef:        rawRefForAgentTool(inv.TurnID, inv.ID),
+		DurationMs:    durationMs,
 		Error:         inv.Error,
 	})
 	event := AgentEvent{
-		EventID:    fmt.Sprintf("%s:tool:%s:%s:%d", inv.TurnID, inv.ID, phase, createdAt.UnixNano()),
-		SessionID:  inv.SessionID,
-		TurnID:     inv.TurnID,
-		Kind:       AgentEventTool,
-		Phase:      phase,
-		Status:     status,
-		Visibility: AgentEventVisibilitySecondary,
-		Source:     source,
-		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
-		Payload:    payload,
+		EventID:     stableToolEventID(inv.TurnID, inv.ID, phase, createdAt),
+		SessionID:   inv.SessionID,
+		TurnID:      inv.TurnID,
+		Kind:        AgentEventTool,
+		Phase:       phase,
+		Status:      status,
+		Visibility:  AgentEventVisibilitySecondary,
+		Source:      source,
+		CreatedAt:   createdAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt: completedAt,
+		DurationMs:  durationMs,
+		Payload:     payload,
 	}
 	if err := event.Validate(); err != nil {
 		return nil, err
 	}
 	return []AgentEvent{event}, nil
+}
+
+func stableToolEventID(turnID, toolCallID string, phase AgentEventPhase, createdAt time.Time) string {
+	base := fmt.Sprintf("%s:tool:%s:%s", turnID, toolCallID, phase)
+	if phase == AgentEventPhaseDelta || phase == AgentEventPhaseUpdated {
+		return fmt.Sprintf("%s:%d", base, createdAt.UnixNano())
+	}
+	return base
+}
+
+func displayKindForAgentTool(toolName string) string {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "exec_command", "shell_command", "execute_command", "execute_readonly_query", "code_mode":
+		return "host.command"
+	case "web_search", "search_web":
+		return "browser.search"
+	case "browse_url", "open_page":
+		return "browser.open"
+	case "find_in_page":
+		return "browser.find"
+	case "read_file":
+		return "file.read"
+	case "write_file", "apply_patch":
+		return "file.diff"
+	case "list_dir", "list_files":
+		return "file.list"
+	case "search_files":
+		return "file.search"
+	case "get_current_model_config", "current_model_config", "get_model_config":
+		return "system.inspect"
+	default:
+		return "mcp.tool"
+	}
+}
+
+func displayNameForAgentTool(toolName string) string {
+	switch displayKindForAgentTool(toolName) {
+	case "host.command":
+		return "执行主机命令"
+	case "browser.search":
+		return "搜索网页"
+	case "browser.open":
+		return "浏览网页"
+	case "browser.find":
+		return "检索页面"
+	case "file.read":
+		return "读取文件"
+	case "file.diff":
+		return "修改文件"
+	case "file.list":
+		return "浏览目录"
+	case "file.search":
+		return "搜索文件"
+	case "system.inspect":
+		return "读取系统配置"
+	default:
+		name := strings.TrimSpace(toolName)
+		if name == "" {
+			return "执行工具"
+		}
+		return name
+	}
+}
+
+func titleForAgentTool(displayKind string, phase AgentEventPhase, inputSummary string) string {
+	running := phase == AgentEventPhaseStarted || phase == AgentEventPhaseUpdated || phase == AgentEventPhaseDelta
+	switch displayKind {
+	case "host.command":
+		if running {
+			return "正在执行主机命令"
+		}
+		return "主机命令已完成"
+	case "browser.search":
+		if running {
+			return "正在搜索网页"
+		}
+		return "网页搜索已完成"
+	case "browser.open":
+		if running {
+			return "正在浏览网页"
+		}
+		return "网页浏览已完成"
+	case "file.read":
+		if running {
+			return "正在读取文件"
+		}
+		return "文件读取已完成"
+	case "file.diff":
+		if running {
+			return "正在修改文件"
+		}
+		return "文件修改已完成"
+	}
+	if inputSummary != "" && running {
+		return "正在执行工具"
+	}
+	return "工具执行完成"
+}
+
+func rawRefForAgentTool(turnID, toolCallID string) string {
+	turnID = strings.TrimSpace(turnID)
+	toolCallID = strings.TrimSpace(toolCallID)
+	if turnID == "" || toolCallID == "" {
+		return ""
+	}
+	return fmt.Sprintf("tool-result://%s/%s", turnID, toolCallID)
 }
 
 func summarizeAgentToolInput(toolName string, raw json.RawMessage) string {
@@ -369,7 +496,7 @@ func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
 		Targets:      []string{approval.HostID},
 	})
 	event := AgentEvent{
-		EventID:    fmt.Sprintf("%s:approval:%s:%s:%d", approval.TurnID, approval.ID, phase, createdAt.UnixNano()),
+		EventID:    fmt.Sprintf("%s:approval:%s:%s", approval.TurnID, approval.ID, phase),
 		SessionID:  approval.SessionID,
 		TurnID:     approval.TurnID,
 		Kind:       AgentEventApproval,
@@ -384,6 +511,63 @@ func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
 		return nil, err
 	}
 	return []AgentEvent{event}, nil
+}
+
+func NormalizeEvidenceAgentEvent(evidence projection.Evidence) AgentEvent {
+	events, _ := NormalizeEvidence(evidence)
+	if len(events) == 0 {
+		return AgentEvent{}
+	}
+	return events[0]
+}
+
+func NormalizeEvidence(evidence projection.Evidence) ([]AgentEvent, error) {
+	createdAt := evidence.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	payload, _ := json.Marshal(EvidencePayload{
+		ID:      evidence.ID,
+		Kind:    evidence.Type,
+		Title:   firstNonEmptyString(evidence.Type, evidence.ID),
+		Summary: strings.TrimSpace(evidence.Summary),
+		RawRef:  rawRefForAgentEvidence(evidence.TurnID, evidence.ID),
+		Data:    evidence.Data,
+	})
+	event := AgentEvent{
+		EventID:    fmt.Sprintf("%s:evidence:%s:completed", evidence.TurnID, evidence.ID),
+		SessionID:  evidence.SessionID,
+		TurnID:     evidence.TurnID,
+		Kind:       AgentEventEvidence,
+		Phase:      AgentEventPhaseCompleted,
+		Status:     AgentEventStatusCompleted,
+		Visibility: AgentEventVisibilityPrimary,
+		Source:     AgentEventSourceProjection,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func rawRefForAgentEvidence(turnID, evidenceID string) string {
+	turnID = strings.TrimSpace(turnID)
+	evidenceID = strings.TrimSpace(evidenceID)
+	if turnID == "" || evidenceID == "" {
+		return ""
+	}
+	return fmt.Sprintf("evidence://%s/%s", turnID, evidenceID)
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func normalizePayload(raw json.RawMessage) json.RawMessage {

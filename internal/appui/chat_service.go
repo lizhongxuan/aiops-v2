@@ -15,6 +15,7 @@ type defaultChatService struct {
 	sessions    SessionSource
 	agentEvents AgentEventService
 	turnRunner  AsyncTurnRunner
+	baseContext context.Context
 }
 
 type AsyncTurnRunner interface {
@@ -24,9 +25,14 @@ type AsyncTurnRunner interface {
 type defaultAsyncTurnRunner struct {
 	runtime     RuntimeGateway
 	agentEvents AgentEventService
+	baseContext context.Context
 }
 
 func NewChatService(runtime RuntimeGateway, sessions SessionSource, agentEvents ...AgentEventService) ChatService {
+	return NewChatServiceWithContext(context.Background(), runtime, sessions, agentEvents...)
+}
+
+func NewChatServiceWithContext(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, agentEvents ...AgentEventService) ChatService {
 	var eventService AgentEventService
 	if len(agentEvents) > 0 {
 		eventService = agentEvents[0]
@@ -34,15 +40,25 @@ func NewChatService(runtime RuntimeGateway, sessions SessionSource, agentEvents 
 	if eventService == nil {
 		eventService = NewAgentEventService(nil)
 	}
+	baseContext = normalizeBaseContext(baseContext)
 	return &defaultChatService{
 		runtime:     runtime,
 		sessions:    sessions,
 		agentEvents: eventService,
+		baseContext: baseContext,
 		turnRunner: defaultAsyncTurnRunner{
 			runtime:     runtime,
 			agentEvents: eventService,
+			baseContext: baseContext,
 		},
 	}
+}
+
+func normalizeBaseContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (TurnResponse, error) {
@@ -83,7 +99,10 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}
-	s.appendTurnAcceptedEvents(ctx, req)
+	if req.SessionID == "" {
+		req.SessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
+	}
+	s.appendTurnAcceptedEvents(req)
 	s.turnRunner.Start(ctx, req)
 	return TurnResponse{
 		SessionID:       req.SessionID,
@@ -94,10 +113,11 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	}, nil
 }
 
-func (s *defaultChatService) appendTurnAcceptedEvents(ctx context.Context, req runtimekernel.TurnRequest) {
+func (s *defaultChatService) appendTurnAcceptedEvents(req runtimekernel.TurnRequest) {
 	if s == nil || s.agentEvents == nil {
 		return
 	}
+	ctx := normalizeBaseContext(s.baseContext)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	turnPayload, _ := json.Marshal(TurnPayload{
 		Prompt:          req.Input,
@@ -131,35 +151,37 @@ func (r defaultAsyncTurnRunner) run(req runtimekernel.TurnRequest) {
 	if r.runtime == nil {
 		return
 	}
+	ctx := normalizeBaseContext(r.baseContext)
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			appendMainAgentEvent(context.Background(), r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", fmt.Sprintf("panic: %v", recovered))
-			appendTerminalAgentEvent(r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, fmt.Sprintf("panic: %v", recovered))
+			appendMainAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", fmt.Sprintf("panic: %v", recovered))
+			appendTerminalAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, fmt.Sprintf("panic: %v", recovered))
 		}
 	}()
-	result, err := r.runtime.RunTurn(context.Background(), req)
+	result, err := r.runtime.RunTurn(ctx, req)
 	if err != nil {
-		appendMainAgentEvent(context.Background(), r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", err.Error())
-		appendTerminalAgentEvent(r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, err.Error())
+		appendMainAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", err.Error())
+		appendTerminalAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, err.Error())
 		return
 	}
 	if strings.EqualFold(result.Status, "cancelled") || strings.EqualFold(result.Status, string(AgentEventStatusCanceled)) {
 		return
 	}
 	if strings.EqualFold(result.Status, "failed") || strings.TrimSpace(result.Error) != "" {
-		appendMainAgentEvent(context.Background(), r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", strings.TrimSpace(result.Error))
-		appendTerminalAgentEvent(r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, strings.TrimSpace(result.Error))
+		appendMainAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, "", strings.TrimSpace(result.Error))
+		appendTerminalAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseFailed, AgentEventStatusFailed, strings.TrimSpace(result.Error))
 		return
 	}
-	appendMainAgentEvent(context.Background(), r.agentEvents, req, AgentEventPhaseCompleted, AgentEventStatusCompleted, "", "任务已完成")
+	appendMainAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseCompleted, AgentEventStatusCompleted, "", "任务已完成")
 }
 
-func appendTerminalAgentEvent(agentEvents AgentEventService, req runtimekernel.TurnRequest, phase AgentEventPhase, status AgentEventStatus, message string) {
+func appendTerminalAgentEvent(ctx context.Context, agentEvents AgentEventService, req runtimekernel.TurnRequest, phase AgentEventPhase, status AgentEventStatus, message string) {
 	if agentEvents == nil {
 		return
 	}
+	ctx = normalizeBaseContext(ctx)
 	payload, _ := json.Marshal(TurnPayload{Error: message, Summary: message})
-	_, _ = agentEvents.Append(context.Background(), AgentEvent{
+	_, _ = agentEvents.Append(ctx, AgentEvent{
 		EventID:      fmt.Sprintf("%s:turn.%s.async", req.TurnID, phase),
 		SessionID:    req.SessionID,
 		TurnID:       req.TurnID,
@@ -205,7 +227,7 @@ func (s *defaultChatService) appendTerminalAgentEvent(req runtimekernel.TurnRequ
 	if s == nil {
 		return
 	}
-	appendTerminalAgentEvent(s.agentEvents, req, phase, status, message)
+	appendTerminalAgentEvent(s.baseContext, s.agentEvents, req, phase, status, message)
 }
 
 func (s *defaultChatService) buildPendingEvidenceResumeRequest(cmd ChatCommand, content string) (runtimekernel.ResumeRequest, bool) {
@@ -245,6 +267,9 @@ func (s *defaultChatService) buildPendingEvidenceResumeRequest(cmd ChatCommand, 
 }
 
 func (s *defaultChatService) resolveCommandSession(sessionID string) *runtimekernel.SessionState {
+	if s == nil || s.sessions == nil {
+		return nil
+	}
 	targetID := strings.TrimSpace(sessionID)
 	if targetID != "" {
 		return s.sessions.Get(targetID)
@@ -353,7 +378,8 @@ func (s *defaultChatService) appendCanceledEvent(result runtimekernel.TurnResult
 	if sessionID == "" || turnID == "" {
 		return
 	}
-	appendMainAgentEvent(context.Background(), s.agentEvents, runtimekernel.TurnRequest{
+	ctx := normalizeBaseContext(s.baseContext)
+	appendMainAgentEvent(ctx, s.agentEvents, runtimekernel.TurnRequest{
 		SessionID:       sessionID,
 		TurnID:          turnID,
 		ClientTurnID:    result.ClientTurnID,

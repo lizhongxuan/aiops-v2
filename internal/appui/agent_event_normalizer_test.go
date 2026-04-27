@@ -131,3 +131,75 @@ func TestNormalizeToolInvocationSummarizesToolPayloadsForAgentEvents(t *testing.
 		t.Fatalf("outputSummary = %q, should not expose raw JSON", payload.OutputSummary)
 	}
 }
+
+func TestNormalizeToolInvocationAddsCodexLikeDisplayMetadata(t *testing.T) {
+	events, err := NormalizeToolInvocation(projection.ToolInvocation{
+		ID:        "tool-exec-1",
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+		ToolName:  "exec_command",
+		Args:      json.RawMessage(`{"command":"printf ok"}`),
+		Result:    `ok`,
+		Status:    projection.ToolInvocationCompleted,
+		StartedAt: time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+		EndedAt:   ptrTime(time.Date(2026, 4, 24, 0, 0, 1, 500000000, time.UTC)),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeToolInvocation() error = %v", err)
+	}
+	got := events[0]
+	if got.EventID != "turn-1:tool:tool-exec-1:completed" {
+		t.Fatalf("eventId = %q, want stable completed id", got.EventID)
+	}
+	if got.DurationMs != 1500 {
+		t.Fatalf("durationMs = %d, want 1500", got.DurationMs)
+	}
+	var payload ToolPayload
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("payload decode error = %v", err)
+	}
+	if payload.DisplayKind != "host.command" {
+		t.Fatalf("displayKind = %q, want host.command", payload.DisplayKind)
+	}
+	if payload.Title == "" {
+		t.Fatal("title should be populated for codex-like tool rows")
+	}
+	if !payload.Foldable || !payload.AutoCollapse {
+		t.Fatalf("foldable/autoCollapse = %v/%v, want true/true", payload.Foldable, payload.AutoCollapse)
+	}
+	if payload.DurationMs != 1500 {
+		t.Fatalf("payload.durationMs = %d, want 1500", payload.DurationMs)
+	}
+}
+
+func TestNormalizeEvidenceProjectsAgentEvidenceEvent(t *testing.T) {
+	events, err := NormalizeEvidence(projection.Evidence{
+		ID:        "evidence-1",
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+		Type:      "log",
+		Summary:   "Redis connection refused 出现 12 次",
+		CreatedAt: time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeEvidence() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(events))
+	}
+	got := events[0]
+	if got.Kind != AgentEventEvidence || got.Phase != AgentEventPhaseCompleted || got.Status != AgentEventStatusCompleted {
+		t.Fatalf("event = %s/%s/%s, want evidence/completed/completed", got.Kind, got.Phase, got.Status)
+	}
+	var payload EvidencePayload
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("payload decode error = %v", err)
+	}
+	if payload.ID != "evidence-1" || payload.Kind != "log" || payload.Summary == "" {
+		t.Fatalf("payload = %#v, want populated evidence payload", payload)
+	}
+}
+
+func ptrTime(value time.Time) *time.Time {
+	return &value
+}

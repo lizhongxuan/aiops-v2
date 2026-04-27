@@ -268,17 +268,17 @@ func TestChatServiceMapsAppCommandsToRuntimeCalls(t *testing.T) {
 	if result.SessionID != "sess-1" || result.TurnID == "" || result.Status != "accepted" {
 		t.Fatalf("result = %+v, want accepted response for sess-1", result)
 	}
-	waitForRunTurn(t, runtime)
-	if runtime.runReq.SessionType != runtimekernel.SessionTypeWorkspace {
-		t.Fatalf("RunTurn sessionType = %q, want workspace", runtime.runReq.SessionType)
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace", runReq.SessionType)
 	}
-	if runtime.runReq.Mode != runtimekernel.ModeExecute {
-		t.Fatalf("RunTurn mode = %q, want execute", runtime.runReq.Mode)
+	if runReq.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("RunTurn mode = %q, want execute", runReq.Mode)
 	}
-	if runtime.runReq.SessionID != "sess-1" || runtime.runReq.HostID != "host-a" {
-		t.Fatalf("RunTurn target = %+v, want sess-1/host-a", runtime.runReq)
+	if runReq.SessionID != "sess-1" || runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn target = %+v, want sess-1/host-a", runReq)
 	}
-	if runtime.runReq.Input != "run it" {
-		t.Fatalf("RunTurn input = %q, want run it", runtime.runReq.Input)
+	if runReq.Input != "run it" {
+		t.Fatalf("RunTurn input = %q, want run it", runReq.Input)
 	}
 }

@@ -1,4 +1,16 @@
-export const AGENT_EVENT_KINDS = Object.freeze(["turn", "agent", "assistant", "tool", "approval", "artifact", "diff", "browser", "system"]);
+export const AGENT_EVENT_KINDS = Object.freeze([
+  "turn",
+  "agent",
+  "assistant",
+  "tool",
+  "approval",
+  "artifact",
+  "diff",
+  "browser",
+  "plan",
+  "evidence",
+  "system",
+]);
 export const AGENT_EVENT_PHASES = Object.freeze(["requested", "started", "delta", "updated", "completed", "failed", "canceled", "blocked", "resolved"]);
 export const AGENT_EVENT_STATUSES = Object.freeze(["queued", "running", "waiting", "blocked", "completed", "failed", "canceled", "skipped"]);
 export const AGENT_EVENT_VISIBILITIES = Object.freeze(["primary", "secondary", "debug", "hidden"]);

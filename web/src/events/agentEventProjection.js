@@ -86,7 +86,14 @@ function currentProjectionTurnIds(projection) {
 }
 
 function isActivityRow(row) {
-  return row?.kind === "assistant" || row?.kind === "tool" || row?.kind === "agent" || row?.kind === "system";
+  return (
+    row?.kind === "assistant" ||
+    row?.kind === "tool" ||
+    row?.kind === "agent" ||
+    row?.kind === "plan" ||
+    row?.kind === "evidence" ||
+    row?.kind === "system"
+  );
 }
 
 function isCurrentActivityRow(row, scopedTurnIds) {
@@ -112,21 +119,48 @@ function formatProjectionActivityLine(row = {}) {
       updatedAt: row?.updatedAt || "",
     };
   }
+  if (row?.kind === "plan") {
+    return {
+      id: compactText(row?.id),
+      kind: "plan",
+      text: compactText(summary || title),
+      status,
+      turnId: compactText(row?.turnId),
+      clientTurnId: compactText(row?.clientTurnId),
+      updatedAt: row?.updatedAt || "",
+    };
+  }
+  if (row?.kind === "evidence") {
+    return {
+      id: compactText(row?.id),
+      kind: "evidence",
+      text: compactText(title && summary ? `${title}（${summary}）` : title || summary),
+      status,
+      turnId: compactText(row?.turnId),
+      clientTurnId: compactText(row?.clientTurnId),
+      updatedAt: row?.updatedAt || "",
+    };
+  }
   const running = status === "running" || status === "queued" || status === "blocked";
   const failed = status === "failed";
   const wrap = (verb, fallback = title) => `${verb}${summary ? `（${summary}` + "）" : fallback ? ` ${fallback}` : ""}`;
 
   let text = "";
-  switch (title) {
+  const displayKind = compactText(row?.displayKind).toLowerCase();
+  switch (displayKind || title) {
+    case "browser.search":
     case "web_search":
       text = failed ? `搜索网页失败（${summary || "web"}）` : `${running ? "正在搜索网页" : "已搜索网页"}（${summary || "web"}）`;
       break;
+    case "browser.open":
     case "open_page":
       text = failed ? `浏览网页失败（${summary || "page"}）` : `${running ? "正在浏览网页" : "已浏览网页"}（${summary || "page"}）`;
       break;
+    case "browser.find":
     case "find_in_page":
       text = failed ? `检索页面失败（${summary || "content"}）` : `${running ? "正在检索页面内容" : "已在页面中搜索"}（${summary || "content"}）`;
       break;
+    case "host.command":
     case "shell_command":
     case "exec_command":
     case "execute_command":
@@ -134,17 +168,21 @@ function formatProjectionActivityLine(row = {}) {
     case "code_mode":
       text = `${failed ? "运行失败" : running ? "正在运行" : "已运行"} ${summary || title}`;
       break;
+    case "file.list":
     case "list_dir":
     case "list_files":
       text = failed ? `浏览目录失败（${summary || "dir"}）` : `${running ? "正在浏览目录" : "已浏览目录"}（${summary || "dir"}）`;
       break;
+    case "file.read":
     case "read_file":
       text = failed ? `读取文件失败（${summary || "file"}）` : `${running ? "正在读取文件" : "已读取文件"}（${summary || "file"}）`;
       break;
+    case "file.diff":
     case "write_file":
     case "apply_patch":
       text = failed ? `修改文件失败（${summary || "file"}）` : `${running ? "正在修改文件" : "已修改文件"}（${summary || "file"}）`;
       break;
+    case "file.search":
     case "search_files":
       text = failed ? `搜索文件失败（${summary || "query"}）` : `${running ? "正在搜索文件" : "已搜索文件"}（${summary || "query"}）`;
       break;

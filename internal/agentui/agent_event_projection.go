@@ -26,19 +26,26 @@ type AgentEventProjection struct {
 }
 
 type TimelineEntry struct {
-	ID         string               `json:"id"`
-	Kind       AgentEventKind       `json:"kind"`
-	TurnID     string               `json:"turnId,omitempty"`
-	AgentID    string               `json:"agentId,omitempty"`
-	ToolCallID string               `json:"toolCallId,omitempty"`
-	Phase      AgentEventPhase      `json:"phase"`
-	Status     AgentEventStatus     `json:"status"`
-	Visibility AgentEventVisibility `json:"visibility"`
-	Title      string               `json:"title,omitempty"`
-	Summary    string               `json:"summary,omitempty"`
-	Detail     string               `json:"detail,omitempty"`
-	UpdatedAt  string               `json:"updatedAt,omitempty"`
-	Seq        int64                `json:"seq"`
+	ID           string               `json:"id"`
+	Kind         AgentEventKind       `json:"kind"`
+	TurnID       string               `json:"turnId,omitempty"`
+	AgentID      string               `json:"agentId,omitempty"`
+	ToolCallID   string               `json:"toolCallId,omitempty"`
+	DisplayKind  string               `json:"displayKind,omitempty"`
+	Phase        AgentEventPhase      `json:"phase"`
+	Status       AgentEventStatus     `json:"status"`
+	Visibility   AgentEventVisibility `json:"visibility"`
+	Title        string               `json:"title,omitempty"`
+	Summary      string               `json:"summary,omitempty"`
+	Detail       string               `json:"detail,omitempty"`
+	Risk         string               `json:"risk,omitempty"`
+	RawRef       string               `json:"rawRef,omitempty"`
+	Foldable     bool                 `json:"foldable,omitempty"`
+	AutoCollapse bool                 `json:"autoCollapse,omitempty"`
+	Collapsed    bool                 `json:"collapsed,omitempty"`
+	DurationMs   int64                `json:"durationMs,omitempty"`
+	UpdatedAt    string               `json:"updatedAt,omitempty"`
+	Seq          int64                `json:"seq"`
 }
 
 type AgentProjection struct {

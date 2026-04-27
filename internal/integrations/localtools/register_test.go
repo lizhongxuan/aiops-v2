@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
@@ -149,6 +150,48 @@ func TestExecCommandToolAllowsSafeCurlGetCommandLineInCommandField(t *testing.T)
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if !strings.Contains(result.Content, `"source":"command-field"`) {
+		t.Fatalf("content = %q, want curl response body", result.Content)
+	}
+}
+
+func TestExecCommandToolAllowsShellWrappedSafeReadCommand(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	input := json.RawMessage(`{"command":"bash","args":["-lc","date '+%F %A %u %T %Z'"]}`)
+
+	if !tool.IsReadOnly(input) {
+		t.Fatal("bash -lc date should be classified read-only")
+	}
+	decision := tool.CheckPermissions(context.Background(), input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	}
+}
+
+func TestExecCommandToolAllowsShellWrappedSafeCurlGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %q, want GET", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"source":"shell-wrapped"}`))
+	}))
+	defer server.Close()
+
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	input := json.RawMessage(`{"command":"bash","args":["-lc","curl -L --max-time 5 -A 'Mozilla/5.0' '` + server.URL + `?symbol=000001&fields=f1,f2'"]}`)
+
+	if !tool.IsReadOnly(input) {
+		t.Fatal("bash -lc safe curl GET should be classified read-only")
+	}
+	decision := tool.CheckPermissions(context.Background(), input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	}
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"source":"shell-wrapped"`) {
 		t.Fatalf("content = %q, want curl response body", result.Content)
 	}
 }
@@ -370,6 +413,19 @@ func TestBrowseURLToolRejectsNonHTTPURL(t *testing.T) {
 	tool := NewBrowseURLTool(Options{})
 	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"url":"file:///etc/passwd"}`)); err == nil {
 		t.Fatal("Execute() should reject non-http URL")
+	}
+}
+
+func TestTruncateStringPreservesUTF8(t *testing.T) {
+	got := truncateString("中文内容abc", 5)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateString returned invalid UTF-8: %q", got)
+	}
+	if len(got) > 5 {
+		t.Fatalf("truncateString returned %d bytes, want at most 5: %q", len(got), got)
+	}
+	if got != "..." {
+		t.Fatalf("truncateString = %q, want byte-budget-safe ellipsis", got)
 	}
 }
 
@@ -653,6 +709,28 @@ func TestWebSearchToolParsesPublicSearchResultAfterLargeSearchChrome(t *testing.
 	}
 	if strings.Contains(result.Content, "provider returned no textual summary") {
 		t.Fatalf("result content = %q, should not return provider no-summary placeholder when late public result is available", result.Content)
+	}
+}
+
+func TestParseBingSearchResultsHandlesHTMLAttributeVariants(t *testing.T) {
+	results := parseBingSearchResults(`<html><body><ol id='b_results'>
+		<li data-id='1' class='result b_algo extra'>
+			<h2><a data-track='x' href='https://example.com/market'><span>Market</span> <strong>report</strong></a></h2>
+			<div class='b_caption'><p>Index <em>moved</em> higher.</p></div>
+		</li>
+	</ol></body></html>`, 5)
+
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1: %#v", len(results), results)
+	}
+	if results[0].Title != "Market report" {
+		t.Fatalf("Title = %q, want nested anchor text", results[0].Title)
+	}
+	if results[0].URL != "https://example.com/market" {
+		t.Fatalf("URL = %q, want href", results[0].URL)
+	}
+	if results[0].Snippet != "Index moved higher." {
+		t.Fatalf("Snippet = %q, want caption text", results[0].Snippet)
 	}
 }
 

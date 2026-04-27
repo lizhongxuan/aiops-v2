@@ -2,6 +2,7 @@ package appui
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 )
 
 type chatRuntimeCapture struct {
+	mu           sync.Mutex
 	runCalled    bool
 	runReq       runtimekernel.TurnRequest
 	resumeCalled bool
@@ -76,6 +78,33 @@ func (r *blockingChatRuntime) CancelTurn(context.Context, runtimekernel.CancelRe
 	return runtimekernel.TurnResult{}, nil
 }
 
+type lifecycleContextRuntime struct {
+	ctxErr chan error
+}
+
+func newLifecycleContextRuntime() *lifecycleContextRuntime {
+	return &lifecycleContextRuntime{ctxErr: make(chan error, 1)}
+}
+
+func (r *lifecycleContextRuntime) RunTurn(ctx context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
+	r.ctxErr <- ctx.Err()
+	return runtimekernel.TurnResult{
+		SessionID:       req.SessionID,
+		TurnID:          req.TurnID,
+		ClientMessageID: req.ClientMessageID,
+		ClientTurnID:    req.ClientTurnID,
+		Status:          "cancelled",
+	}, nil
+}
+
+func (r *lifecycleContextRuntime) ResumeTurn(context.Context, runtimekernel.ResumeRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
+func (r *lifecycleContextRuntime) CancelTurn(context.Context, runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
 func TestChatService_SendMessageAcceptedOnlyStartsRuntimeAsync(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := newBlockingChatRuntime()
@@ -127,6 +156,57 @@ func TestChatService_SendMessageAcceptedOnlyStartsRuntimeAsync(t *testing.T) {
 	}
 }
 
+func TestChatService_SendMessageRecordsAcceptedEventsWhenRequestContextCanceled(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	defer close(runtime.release)
+	events := NewAgentEventService(nil)
+	service := NewChatService(runtime, sessions, events)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := service.SendMessage(ctx, ChatCommand{
+		SessionID:       "sess-canceled-request",
+		Content:         "请求上下文已取消但 accepted 事件仍应记录",
+		ClientMessageID: "client-msg-canceled-request",
+		ClientTurnID:    "client-turn-canceled-request",
+		HostID:          "server-local",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	select {
+	case <-runtime.started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start asynchronously")
+	}
+	replayed := waitForAgentEvents(t, events, "sess-canceled-request", 2)
+	if replayed[0].Kind != AgentEventTurn || replayed[0].Phase != AgentEventPhaseRequested {
+		t.Fatalf("first event = %s/%s, want turn/requested", replayed[0].Kind, replayed[0].Phase)
+	}
+	if replayed[1].Kind != AgentEventAgent || replayed[1].Phase != AgentEventPhaseStarted {
+		t.Fatalf("second event = %s/%s, want agent/started", replayed[1].Kind, replayed[1].Phase)
+	}
+}
+
+func TestDefaultAsyncTurnRunnerUsesLifecycleContext(t *testing.T) {
+	baseCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runtime := newLifecycleContextRuntime()
+	runner := defaultAsyncTurnRunner{runtime: runtime, baseContext: baseCtx}
+
+	runner.run(runtimekernel.TurnRequest{SessionID: "sess-lifecycle", TurnID: "turn-lifecycle"})
+
+	select {
+	case err := <-runtime.ctxErr:
+		if err != context.Canceled {
+			t.Fatalf("RunTurn context error = %v, want context.Canceled", err)
+		}
+	default:
+		t.Fatal("RunTurn was not called")
+	}
+}
+
 func TestChatService_SendMessageCancelledRuntimeDoesNotEmitTerminalFailureOrCompletion(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := newCancelledChatRuntime()
@@ -162,8 +242,10 @@ func TestChatService_SendMessageCancelledRuntimeDoesNotEmitTerminalFailureOrComp
 }
 
 func (r *chatRuntimeCapture) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
+	r.mu.Lock()
 	r.runCalled = true
 	r.runReq = req
+	r.mu.Unlock()
 	return runtimekernel.TurnResult{
 		SessionID:       req.SessionID,
 		TurnID:          req.TurnID,
@@ -174,26 +256,49 @@ func (r *chatRuntimeCapture) RunTurn(_ context.Context, req runtimekernel.TurnRe
 }
 
 func (r *chatRuntimeCapture) ResumeTurn(_ context.Context, req runtimekernel.ResumeRequest) (runtimekernel.TurnResult, error) {
+	r.mu.Lock()
 	r.resumeCalled = true
 	r.resumeReq = req
+	r.mu.Unlock()
 	return runtimekernel.TurnResult{SessionID: req.SessionID, TurnID: req.TurnID, Status: "completed"}, nil
 }
 
 func (r *chatRuntimeCapture) CancelTurn(_ context.Context, req runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
+	r.mu.Lock()
 	r.cancelReq = req
+	r.mu.Unlock()
 	return runtimekernel.TurnResult{SessionID: req.SessionID, TurnID: req.TurnID, Status: "cancelled"}, nil
 }
 
-func waitForRunTurn(t *testing.T, runtime *chatRuntimeCapture) {
+func (r *chatRuntimeCapture) runSnapshot() (runtimekernel.TurnRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.runReq, r.runCalled
+}
+
+func (r *chatRuntimeCapture) resumeSnapshot() (runtimekernel.ResumeRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resumeReq, r.resumeCalled
+}
+
+func (r *chatRuntimeCapture) cancelSnapshot() runtimekernel.CancelRequest {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cancelReq
+}
+
+func waitForRunTurn(t *testing.T, runtime *chatRuntimeCapture) runtimekernel.TurnRequest {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if runtime.runCalled {
-			return
+		if req, ok := runtime.runSnapshot(); ok {
+			return req
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("RunTurn was not called")
+	return runtimekernel.TurnRequest{}
 }
 
 func waitForAgentEvents(t *testing.T, events AgentEventService, sessionID string, wantAtLeast int) []AgentEvent {
@@ -257,25 +362,26 @@ func TestChatService_SendMessageResumesPendingEvidenceTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
-	if runtime.runCalled {
+	if _, ok := runtime.runSnapshot(); ok {
 		t.Fatal("SendMessage() called RunTurn, want ResumeTurn for pending evidence")
 	}
-	if !runtime.resumeCalled {
+	resumeReq, resumeCalled := runtime.resumeSnapshot()
+	if !resumeCalled {
 		t.Fatal("SendMessage() did not call ResumeTurn")
 	}
-	if runtime.resumeReq.SessionID != "sess-evidence" || runtime.resumeReq.TurnID != "turn-evidence" {
-		t.Fatalf("ResumeTurn target = %+v, want sess-evidence/turn-evidence", runtime.resumeReq)
+	if resumeReq.SessionID != "sess-evidence" || resumeReq.TurnID != "turn-evidence" {
+		t.Fatalf("ResumeTurn target = %+v, want sess-evidence/turn-evidence", resumeReq)
 	}
-	if runtime.resumeReq.ResumeState != runtimekernel.TurnResumeStatePendingEvidence {
-		t.Fatalf("ResumeState = %q, want pending_evidence", runtime.resumeReq.ResumeState)
+	if resumeReq.ResumeState != runtimekernel.TurnResumeStatePendingEvidence {
+		t.Fatalf("ResumeState = %q, want pending_evidence", resumeReq.ResumeState)
 	}
-	if runtime.resumeReq.CheckpointID != "evidence-1" {
-		t.Fatalf("CheckpointID = %q, want evidence-1", runtime.resumeReq.CheckpointID)
+	if resumeReq.CheckpointID != "evidence-1" {
+		t.Fatalf("CheckpointID = %q, want evidence-1", resumeReq.CheckpointID)
 	}
-	if got := runtime.resumeReq.Metadata["resume.input"]; got != "这是补充证据和操作上下文" {
+	if got := resumeReq.Metadata["resume.input"]; got != "这是补充证据和操作上下文" {
 		t.Fatalf("metadata[resume.input] = %q, want follow-up content", got)
 	}
-	if got := runtime.resumeReq.Metadata["evidence.id"]; got != "evidence-1" {
+	if got := resumeReq.Metadata["evidence.id"]; got != "evidence-1" {
 		t.Fatalf("metadata[evidence.id] = %q, want evidence-1", got)
 	}
 }
@@ -299,12 +405,12 @@ func TestChatService_SendMessageDefaultsToLatestSessionWhenSessionIDMissing(t *t
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
-	waitForRunTurn(t, runtime)
-	if runtime.runReq.SessionID != latest.ID {
-		t.Fatalf("RunTurn sessionId = %q, want latest session %q", runtime.runReq.SessionID, latest.ID)
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.SessionID != latest.ID {
+		t.Fatalf("RunTurn sessionId = %q, want latest session %q", runReq.SessionID, latest.ID)
 	}
-	if runtime.runReq.HostID != "server-local" {
-		t.Fatalf("RunTurn hostId = %q, want server-local", runtime.runReq.HostID)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
 	}
 }
 
@@ -322,12 +428,12 @@ func TestChatService_SendMessageCarriesClientIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
-	waitForRunTurn(t, runtime)
-	if runtime.runReq.ClientMessageID != "client-msg-1" {
-		t.Fatalf("RunTurn ClientMessageID = %q, want client-msg-1", runtime.runReq.ClientMessageID)
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.ClientMessageID != "client-msg-1" {
+		t.Fatalf("RunTurn ClientMessageID = %q, want client-msg-1", runReq.ClientMessageID)
 	}
-	if runtime.runReq.ClientTurnID != "client-turn-1" {
-		t.Fatalf("RunTurn ClientTurnID = %q, want client-turn-1", runtime.runReq.ClientTurnID)
+	if runReq.ClientTurnID != "client-turn-1" {
+		t.Fatalf("RunTurn ClientTurnID = %q, want client-turn-1", runReq.ClientTurnID)
 	}
 	if result.ClientMessageID != "client-msg-1" {
 		t.Fatalf("TurnResponse ClientMessageID = %q, want client-msg-1", result.ClientMessageID)
@@ -430,8 +536,9 @@ func TestChatService_StopTurnCancelsAcceptedTurnByExplicitIDsWithoutCurrentTurn(
 	if result.Status != "cancelled" {
 		t.Fatalf("StopTurn status = %q, want cancelled", result.Status)
 	}
-	if runtime.cancelReq.SessionID != "sess-explicit-stop" || runtime.cancelReq.TurnID != "turn-explicit-stop" {
-		t.Fatalf("CancelTurn request = %+v, want explicit session/turn ids", runtime.cancelReq)
+	cancelReq := runtime.cancelSnapshot()
+	if cancelReq.SessionID != "sess-explicit-stop" || cancelReq.TurnID != "turn-explicit-stop" {
+		t.Fatalf("CancelTurn request = %+v, want explicit session/turn ids", cancelReq)
 	}
 
 	replayed, err := events.Replay(context.Background(), "sess-explicit-stop", 0)

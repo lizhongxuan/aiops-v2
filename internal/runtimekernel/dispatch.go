@@ -96,15 +96,15 @@ func (d *ToolDispatcher) WithProgressSink(sink ToolProgressSink) *ToolDispatcher
 
 // DispatchResult is the outcome of a tool dispatch.
 type DispatchResult struct {
-	ToolCallID string
-	Content    string
-	Error      string
-	Blocked    bool
-	Reason     string
-	Metadata   tooling.ToolMetadata
-	Result     tooling.ToolResult
-	Outcome    string
-	Source     string
+	ToolCallID  string
+	Content     string
+	Error       string
+	Blocked     bool
+	Reason      string
+	Metadata    tooling.ToolMetadata
+	Result      tooling.ToolResult
+	Outcome     string
+	Source      string
 	HiddenTools []string
 }
 
@@ -171,19 +171,6 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
 	}
-
-	// Emit tool.started event
-	startPayload, _ := json.Marshal(map[string]any{
-		"id":       tc.ID,
-		"toolName": tc.Name,
-	})
-	d.projector.Emit(LifecycleEvent{
-		Type:      EventToolStarted,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Timestamp: time.Now(),
-		Payload:   startPayload,
-	})
 
 	// Check PolicyEngine
 	if !approved && d.policy != nil {
@@ -295,6 +282,20 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 	}
 
+	// Emit tool.started only after permission and approval gates have passed.
+	startPayload, _ := json.Marshal(map[string]any{
+		"id":       tc.ID,
+		"toolName": tc.Name,
+		"args":     tc.Arguments,
+	})
+	d.projector.Emit(LifecycleEvent{
+		Type:      EventToolStarted,
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Timestamp: time.Now(),
+		Payload:   startPayload,
+	})
+
 	// Execute tool
 	if executor == nil {
 		result := d.emitToolFailed(sessionID, turnID, tc, "tool has no runtime implementation", "runtime", "tool_failed")
@@ -357,6 +358,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	completedPayload, _ := json.Marshal(map[string]any{
 		"id":                tc.ID,
 		"toolName":          tc.Name,
+		"args":              tc.Arguments,
 		"result":            content,
 		"additionalContext": append([]string(nil), toolEvent.AdditionalContext...),
 		"watchPaths":        append([]string(nil), toolEvent.WatchPaths...),
@@ -377,12 +379,12 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	}
 
 	return DispatchResult{
-		ToolCallID: tc.ID,
-		Content:    content,
-		Metadata:   desc.Metadata,
-		Result:     toolResult,
-		Outcome:    "tool_result",
-		Source:     "tool",
+		ToolCallID:  tc.ID,
+		Content:     content,
+		Metadata:    desc.Metadata,
+		Result:      toolResult,
+		Outcome:     "tool_result",
+		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
 	}
 }

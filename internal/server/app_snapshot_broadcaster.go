@@ -110,7 +110,9 @@ func (b *AppSnapshotBroadcaster) OnApproval(approval projection.Approval) {
 	_ = b.BroadcastLatest(context.Background())
 }
 
-func (b *AppSnapshotBroadcaster) OnEvidence(projection.Evidence) {
+func (b *AppSnapshotBroadcaster) OnEvidence(evidence projection.Evidence) {
+	events, err := appui.NormalizeEvidence(evidence)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 

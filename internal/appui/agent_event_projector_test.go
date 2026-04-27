@@ -368,3 +368,41 @@ func TestAgentEventProjector_TurnCompletedWithDiffReviewsOtherwiseIdle(t *testin
 		t.Fatalf("without diff Status = %q, want idle", withoutDiff.Status)
 	}
 }
+
+func TestAgentEventProjectorApplyDoesNotMutateInputMapFields(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj := ensureAgentEventProjection(AgentEventProjection{
+		SessionID: "session-1",
+		Status:    "working",
+	})
+	proj.RuntimeLiveness.ActiveTurns["turn-1"] = true
+	proj.RuntimeLiveness.ActiveAgents["agent-main"] = true
+	proj.FinalMessages["turn-1"] = AssistantFinal{TurnID: "turn-1", Text: "旧消息", Status: AgentEventStatusRunning}
+	proj.ProcessGroups["turn-1"] = []TimelineEntry{{
+		ID:     "existing",
+		Kind:   AgentEventTool,
+		TurnID: "turn-1",
+		Seq:    1,
+	}}
+
+	next, err := projector.Apply(proj, testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, TurnPayload{Summary: "done"}))
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if !proj.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("input ActiveTurns was mutated: %+v", proj.RuntimeLiveness.ActiveTurns)
+	}
+	if proj.FinalMessages["turn-1"].Status != AgentEventStatusRunning {
+		t.Fatalf("input FinalMessages was mutated: %+v", proj.FinalMessages["turn-1"])
+	}
+	if got := len(proj.ProcessGroups["turn-1"]); got != 1 {
+		t.Fatalf("input ProcessGroups length = %d, want unchanged 1", got)
+	}
+	if next.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("next ActiveTurns still contains completed turn: %+v", next.RuntimeLiveness.ActiveTurns)
+	}
+	if next.FinalMessages["turn-1"].Status != AgentEventStatusCompleted {
+		t.Fatalf("next FinalMessages status = %q, want completed", next.FinalMessages["turn-1"].Status)
+	}
+}

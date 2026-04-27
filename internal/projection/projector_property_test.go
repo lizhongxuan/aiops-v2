@@ -179,6 +179,7 @@ const (
 	cbApproval
 	cbEvidence
 	cbSnapshot
+	cbRuntimeLifecycle
 )
 
 type trackingSubscriber struct {
@@ -189,6 +190,7 @@ type trackingSubscriber struct {
 	approvals       []Approval
 	evidences       []Evidence
 	snapshots       []Snapshot
+	lifecycleEvents []runtimekernel.LifecycleEvent
 }
 
 func (s *trackingSubscriber) OnToolInvocation(inv ToolInvocation) {
@@ -215,7 +217,10 @@ func (s *trackingSubscriber) OnSnapshot(snapshot Snapshot) {
 	s.calls = append(s.calls, cbSnapshot)
 	s.snapshots = append(s.snapshots, snapshot)
 }
-
+func (s *trackingSubscriber) OnRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) {
+	s.calls = append(s.calls, cbRuntimeLifecycle)
+	s.lifecycleEvents = append(s.lifecycleEvents, event)
+}
 
 // ---------------------------------------------------------------------------
 // Property 19: Lifecycle 事件投影分类
@@ -254,6 +259,9 @@ func TestProperty19_LifecycleEventProjectionClassification(t *testing.T) {
 			expected = cbEvidence
 		case runtimekernel.EventTurnComplete:
 			expected = cbSnapshot
+		case runtimekernel.EventTurnStarted, runtimekernel.EventAssistantIntent, runtimekernel.EventAssistantFinalDelta,
+			runtimekernel.EventPhaseEnd, runtimekernel.EventProcessSummary, runtimekernel.EventTurnError, runtimekernel.EventTurnAborted:
+			expected = cbRuntimeLifecycle
 		default:
 			t.Fatalf("unexpected event type %q", event.Type)
 		}

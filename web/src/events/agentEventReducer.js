@@ -172,6 +172,8 @@ function applyEventToProjection(previous, event) {
   if (event.kind === "tool") projection = applyTool(projection, event);
   if (event.kind === "approval") projection = applyApproval(projection, event);
   if (event.kind === "agent") projection = applyAgent(projection, event);
+  if (event.kind === "plan") projection = applyPlan(projection, event);
+  if (event.kind === "evidence") projection = applyEvidence(projection, event);
   if (event.kind === "artifact") projection = applyArtifact(projection, event);
   if (event.kind === "diff") projection = applyDiff(projection, event);
 
@@ -305,15 +307,23 @@ function applyAssistant(projection, event) {
 
 function applyTool(projection, event) {
   const id = compactText(event.payload.toolCallId || event.eventId);
-  const title = compactText(event.payload.displayName || event.payload.toolName);
+  const title = compactText(event.payload.title || event.payload.displayName || event.payload.toolName);
   const summary = toolProjectionSummary(event.payload);
   const row = {
     id,
     kind: "tool",
     turnId: event.turnId,
     toolCallId: id,
+    displayKind: compactText(event.payload.displayKind),
     title,
     summary,
+    detail: compactText(event.payload.delta),
+    risk: compactText(event.payload.risk),
+    rawRef: compactText(event.payload.rawRef),
+    foldable: Boolean(event.payload.foldable),
+    autoCollapse: Boolean(event.payload.autoCollapse),
+    collapsed: Boolean(event.payload.autoCollapse && event.status === "completed"),
+    durationMs: Number.isFinite(Number(event.payload.durationMs)) ? Number(event.payload.durationMs) : event.durationMs,
     status: event.status,
     visibility: event.visibility,
     updatedAt: event.createdAt,
@@ -328,6 +338,56 @@ function applyTool(projection, event) {
   }
   if (["completed", "failed", "canceled"].includes(event.phase)) {
     delete projection.runtimeLiveness.activeCommandStreams[id];
+  }
+  return projection;
+}
+
+function applyPlan(projection, event) {
+  const steps = Array.isArray(event.payload.steps) ? event.payload.steps : [];
+  const runningStep = steps.find((step) => compactText(step?.status).toLowerCase() === "running");
+  const fallbackStep = steps.length ? steps[steps.length - 1] : null;
+  const id = compactText(event.payload.id || (event.turnId ? `${event.turnId}:plan` : event.eventId));
+  const row = {
+    id,
+    kind: "plan",
+    turnId: event.turnId,
+    displayKind: "plan",
+    title: compactText(event.payload.title || "计划"),
+    summary: compactText(runningStep?.text || fallbackStep?.text || event.payload.summary),
+    status: event.status,
+    visibility: event.visibility,
+    foldable: true,
+    autoCollapse: event.status === "completed",
+    collapsed: event.status === "completed",
+    updatedAt: event.createdAt,
+    seq: event.seq,
+  };
+  projection.timeline = upsertRow(projection.timeline, row);
+  if (event.turnId) {
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
+  }
+  return projection;
+}
+
+function applyEvidence(projection, event) {
+  const id = compactText(event.payload.id || event.eventId);
+  const kind = compactText(event.payload.kind);
+  const row = {
+    id,
+    kind: "evidence",
+    turnId: event.turnId,
+    displayKind: kind ? `evidence.${kind}` : "evidence",
+    title: compactText(event.payload.title || kind || "证据"),
+    summary: compactText(event.payload.summary),
+    rawRef: compactText(event.payload.rawRef),
+    status: event.status,
+    visibility: event.visibility,
+    updatedAt: event.createdAt,
+    seq: event.seq,
+  };
+  projection.timeline = upsertRow(projection.timeline, row);
+  if (event.turnId) {
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
   }
   return projection;
 }

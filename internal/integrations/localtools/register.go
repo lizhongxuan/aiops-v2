@@ -16,10 +16,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
+	nethtml "golang.org/x/net/html"
 )
 
 const (
@@ -659,7 +661,6 @@ var (
 	htmlScriptStyleRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<noscript\b[^>]*>.*?</noscript>`)
 	htmlTagRE         = regexp.MustCompile(`(?s)<[^>]+>`)
 	whitespaceRE      = regexp.MustCompile(`\s+`)
-	bingResultRE      = regexp.MustCompile(`(?is)<li\b[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>.*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?(?:<div[^>]*class="[^"]*\bb_caption\b[^"]*"[^>]*>\s*<p[^>]*>(.*?)</p>)?`)
 )
 
 func htmlToReadableText(value string) string {
@@ -677,25 +678,125 @@ func parseBingSearchResults(body string, limit int) []publicSearchResult {
 	if limit <= 0 {
 		limit = 5
 	}
-	matches := bingResultRE.FindAllStringSubmatch(body, limit)
-	results := make([]publicSearchResult, 0, len(matches))
-	for _, match := range matches {
-		if len(match) < 3 {
-			continue
-		}
-		result := publicSearchResult{
-			Title: compactWhitespace(html.UnescapeString(htmlToReadableText(match[2]))),
-			URL:   cleanSearchResultURL(html.UnescapeString(match[1])),
-		}
-		if len(match) > 3 {
-			result.Snippet = compactWhitespace(html.UnescapeString(htmlToReadableText(match[3])))
-		}
-		if result.Title == "" && result.Snippet == "" {
-			continue
-		}
-		results = append(results, result)
+	doc, err := nethtml.Parse(strings.NewReader(body))
+	if err != nil {
+		return nil
 	}
+	results := make([]publicSearchResult, 0, limit)
+	var walk func(*nethtml.Node)
+	walk = func(node *nethtml.Node) {
+		if node == nil || len(results) >= limit {
+			return
+		}
+		if isHTMLElement(node, "li") && htmlNodeHasClass(node, "b_algo") {
+			if result, ok := parseBingSearchResultNode(node); ok {
+				results = append(results, result)
+			}
+		}
+		for child := node.FirstChild; child != nil && len(results) < limit; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(doc)
 	return results
+}
+
+func parseBingSearchResultNode(node *nethtml.Node) (publicSearchResult, bool) {
+	anchor := firstSearchResultAnchor(node)
+	if anchor == nil {
+		return publicSearchResult{}, false
+	}
+	result := publicSearchResult{
+		Title: compactWhitespace(html.UnescapeString(htmlNodeText(anchor))),
+		URL:   cleanSearchResultURL(html.UnescapeString(htmlNodeAttr(anchor, "href"))),
+	}
+	if caption := firstDescendant(node, func(candidate *nethtml.Node) bool {
+		return isHTMLElement(candidate, "div") && htmlNodeHasClass(candidate, "b_caption")
+	}); caption != nil {
+		textNode := firstDescendant(caption, func(candidate *nethtml.Node) bool {
+			return isHTMLElement(candidate, "p")
+		})
+		if textNode == nil {
+			textNode = caption
+		}
+		result.Snippet = compactWhitespace(html.UnescapeString(htmlNodeText(textNode)))
+	}
+	return result, result.Title != "" || result.Snippet != ""
+}
+
+func firstSearchResultAnchor(node *nethtml.Node) *nethtml.Node {
+	if heading := firstDescendant(node, func(candidate *nethtml.Node) bool {
+		return isHTMLElement(candidate, "h2")
+	}); heading != nil {
+		if anchor := firstDescendant(heading, func(candidate *nethtml.Node) bool {
+			return isHTMLElement(candidate, "a") && htmlNodeAttr(candidate, "href") != ""
+		}); anchor != nil {
+			return anchor
+		}
+	}
+	return firstDescendant(node, func(candidate *nethtml.Node) bool {
+		return isHTMLElement(candidate, "a") && htmlNodeAttr(candidate, "href") != ""
+	})
+}
+
+func firstDescendant(node *nethtml.Node, match func(*nethtml.Node) bool) *nethtml.Node {
+	if node == nil || match == nil {
+		return nil
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if match(child) {
+			return child
+		}
+		if found := firstDescendant(child, match); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func isHTMLElement(node *nethtml.Node, tag string) bool {
+	return node != nil && node.Type == nethtml.ElementNode && strings.EqualFold(node.Data, tag)
+}
+
+func htmlNodeAttr(node *nethtml.Node, name string) string {
+	if node == nil {
+		return ""
+	}
+	for _, attr := range node.Attr {
+		if strings.EqualFold(attr.Key, name) {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func htmlNodeHasClass(node *nethtml.Node, class string) bool {
+	for _, part := range strings.Fields(htmlNodeAttr(node, "class")) {
+		if part == class {
+			return true
+		}
+	}
+	return false
+}
+
+func htmlNodeText(node *nethtml.Node) string {
+	var b strings.Builder
+	var walk func(*nethtml.Node)
+	walk = func(current *nethtml.Node) {
+		if current == nil {
+			return
+		}
+		if current.Type == nethtml.TextNode {
+			b.WriteString(current.Data)
+			b.WriteByte(' ')
+			return
+		}
+		for child := current.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(node)
+	return compactWhitespace(b.String())
 }
 
 func cleanSearchResultURL(raw string) string {
@@ -1246,7 +1347,22 @@ func truncateString(value string, maxBytes int) string {
 		return value
 	}
 	if maxBytes <= 3 {
-		return value[:maxBytes]
+		return utf8PrefixWithinBytes(value, maxBytes)
 	}
-	return value[:maxBytes-3] + "..."
+	return utf8PrefixWithinBytes(value, maxBytes-3) + "..."
+}
+
+func utf8PrefixWithinBytes(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	end := 0
+	for end < len(value) {
+		_, size := utf8.DecodeRuneInString(value[end:])
+		if size == 0 || end+size > maxBytes {
+			break
+		}
+		end += size
+	}
+	return value[:end]
 }
