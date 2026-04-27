@@ -339,8 +339,19 @@ function shouldSyncProjectionFinalMessage(projection = {}, final = {}, finalCoun
 }
 
 function buildSyntheticUserTaskCard(row = {}) {
-  if (isTerminalTurnTimelineRow(row)) return null;
-  const text = compactText(row.title || row.summary);
+  const status = compactText(row.status).toLowerCase();
+  const phase = compactText(row.phase).toLowerCase();
+  const terminal = isTerminalTurnTimelineRow(row);
+  const failedOrCanceledTerminal = terminal && (
+    status === "failed" ||
+    status === "canceled" ||
+    status === "cancelled" ||
+    phase === "failed" ||
+    phase === "canceled" ||
+    phase === "cancelled"
+  );
+  if (terminal && !failedOrCanceledTerminal) return null;
+  const text = failedOrCanceledTerminal ? compactText(row.title) : compactText(row.title || row.summary);
   const rowId = compactText(row.id || row.clientMessageId || row.clientTurnId || row.turnId);
   if (!text || !rowId) return null;
   const timestamp = compactText(row.updatedAt) || new Date().toISOString();
@@ -987,6 +998,27 @@ function profileHasHighRiskCombination(profile) {
   );
 }
 
+function normalizeAgentRuntimeSettings(runtime = {}, fallback = {}) {
+  const source = runtime || {};
+  const base = fallback || {};
+  return {
+    model: String(source.model || base.model || "gpt-5.4"),
+    reasoningEffort: String(source.reasoningEffort || source.reasoning_effort || base.reasoningEffort || "medium"),
+    approvalPolicy: String(source.approvalPolicy || source.approval_policy || base.approvalPolicy || "untrusted"),
+    sandboxMode: String(source.sandboxMode || source.sandbox_mode || base.sandboxMode || "workspace-write"),
+    planningPolicy: String(source.planningPolicy || source.planning_policy || base.planningPolicy || "structured_events"),
+    evidencePolicy: String(source.evidencePolicy || source.evidence_policy || base.evidencePolicy || "tool_sourced"),
+    answerStyle: String(source.answerStyle || source.answer_style || base.answerStyle || "aiops_rca"),
+    toolBudget: String(source.toolBudget || source.tool_budget || base.toolBudget || "bounded"),
+    reasoningSummary: String(source.reasoningSummary || source.reasoning_summary || base.reasoningSummary || "enabled"),
+    reasoningSummaryDisplay: String(source.reasoningSummaryDisplay || source.reasoning_summary_display || base.reasoningSummaryDisplay || "summary_only"),
+    showRawReasoning:
+      typeof source.showRawReasoning === "boolean"
+        ? source.showRawReasoning
+        : source.show_raw_reasoning ?? base.showRawReasoning ?? false,
+  };
+}
+
 function createDefaultAgentProfiles() {
   return [
     {
@@ -996,12 +1028,19 @@ function createDefaultAgentProfiles() {
       description: "系统默认主 Agent 配置，用于会话编排、规划和结果收敛。",
       updatedAt: "2026-03-28 00:00:00",
       updatedBy: "system",
-      runtime: {
+      runtime: normalizeAgentRuntimeSettings({
         model: "gpt-5.4",
         reasoningEffort: "medium",
         approvalPolicy: "untrusted",
         sandboxMode: "workspace-write",
-      },
+        planningPolicy: "structured_events",
+        evidencePolicy: "tool_sourced",
+        answerStyle: "aiops_rca",
+        toolBudget: "bounded",
+        reasoningSummary: "enabled",
+        reasoningSummaryDisplay: "summary_only",
+        showRawReasoning: false,
+      }),
       systemPrompt: {
         content:
           "你是主 Agent。优先收敛目标、分解任务、控制风险，并在输出中保持清晰、可执行和可回溯。遇到高风险变更时，先说明边界，再给出最小影响方案。",
@@ -1102,12 +1141,19 @@ function createDefaultAgentProfiles() {
       description: "默认 host-agent 静态配置，偏向安全读取和受限执行。",
       updatedAt: "2026-03-28 00:00:00",
       updatedBy: "system",
-      runtime: {
+      runtime: normalizeAgentRuntimeSettings({
         model: "gpt-5.4-mini",
         reasoningEffort: "low",
         approvalPolicy: "untrusted",
         sandboxMode: "workspace-write",
-      },
+        planningPolicy: "structured_events",
+        evidencePolicy: "tool_sourced",
+        answerStyle: "concise_ops",
+        toolBudget: "bounded",
+        reasoningSummary: "enabled",
+        reasoningSummaryDisplay: "summary_only",
+        showRawReasoning: false,
+      }),
       systemPrompt: {
         content:
           "你是 host-agent。只负责在受控边界内执行局部操作，优先只读、低风险和可回滚的动作。任何变更都要保持最小范围，并在必要时请求审批。",
@@ -1279,12 +1325,7 @@ function normalizeAgentProfile(rawProfile, fallbackProfile, catalogs = {}) {
     description: String(raw.description || fallback.description || ""),
     updatedAt: String(raw.updatedAt || raw.updated_at || fallback.updatedAt || ""),
     updatedBy: String(raw.updatedBy || raw.updated_by || fallback.updatedBy || ""),
-    runtime: {
-      model: String(runtime.model || fallback.runtime?.model || "gpt-5.4"),
-      reasoningEffort: String(runtime.reasoningEffort || runtime.reasoning_effort || fallback.runtime?.reasoningEffort || "medium"),
-      approvalPolicy: String(runtime.approvalPolicy || runtime.approval_policy || fallback.runtime?.approvalPolicy || "untrusted"),
-      sandboxMode: String(runtime.sandboxMode || runtime.sandbox_mode || fallback.runtime?.sandboxMode || "workspace-write"),
-    },
+    runtime: normalizeAgentRuntimeSettings(runtime, fallback.runtime || {}),
     systemPrompt: {
       content: String(systemPrompt.content || fallback.systemPrompt?.content || ""),
       preview: String(systemPrompt.preview || fallback.systemPrompt?.preview || ""),
@@ -1328,12 +1369,7 @@ function serializeAgentProfile(profile, options = {}) {
     name: String(normalized?.name || ""),
     type: String(normalized?.type || "main-agent"),
     description: String(normalized?.description || ""),
-    runtime: {
-      model: String(normalized?.runtime?.model || "gpt-5.4"),
-      reasoningEffort: String(normalized?.runtime?.reasoningEffort || "medium"),
-      approvalPolicy: String(normalized?.runtime?.approvalPolicy || "untrusted"),
-      sandboxMode: String(normalized?.runtime?.sandboxMode || "workspace-write"),
-    },
+    runtime: normalizeAgentRuntimeSettings(normalized?.runtime || {}),
     systemPrompt: {
       content: String(normalized?.systemPrompt?.content || ""),
       preview: String(normalized?.systemPrompt?.preview || ""),

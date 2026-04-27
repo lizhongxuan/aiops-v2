@@ -686,6 +686,7 @@ function classifyProcessSummaryGroup(item = {}) {
   if (/运行命令|已运行|正在运行|exec_command|terminal|shell|command/.test(haystack)) return "command";
   if (/修改文件|apply_patch|write_file|diff|patch/.test(haystack)) return "file_change";
   if (kind === "assistant" || kind === "assistant_message" || kind === "message") return "assistant_note";
+  if (kind === "activity" || kind === "status" || kind === "system" || processKind === "activity" || processKind === "status" || processKind === "system") return "";
   if (kind || processKind) return "tool";
   return "";
 }

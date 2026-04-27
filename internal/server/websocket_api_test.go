@@ -399,3 +399,58 @@ func TestAppWebSocket_PushesAgentEventEnvelopeWhenToolProjectionArrives(t *testi
 		break
 	}
 }
+
+func TestAppWebSocket_PushesAgentEventEnvelopeWhenActivityProjectionArrives(t *testing.T) {
+	sessionMgr := runtimekernel.NewSessionManager()
+	session := sessionMgr.GetOrCreate("", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	sessionMgr.Update(session)
+
+	httpServer := NewHTTPServer(appui.NewServices(websocketAPITestRuntime{}, sessionMgr), WithAppWebSocketHeartbeat(50*time.Millisecond))
+	ts := httptest.NewServer(httpServer.Handler())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, err := websocket.Dial(wsURL, "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial error = %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+
+	httpServer.ProjectionSubscriber().OnActivity(projection.ActivityStats{
+		SessionID: session.ID,
+		TurnID:    "turn-activity-1",
+		Iteration: 0,
+		Stage:     "call_model",
+	})
+
+	for {
+		var payload map[string]any
+		if err := websocket.JSON.Receive(conn, &payload); err != nil {
+			t.Fatalf("receive payload: %v", err)
+		}
+		if payload["type"] == "heartbeat" {
+			continue
+		}
+		if payload["type"] != "agent_event" {
+			continue
+		}
+		eventMap, ok := payload["event"].(map[string]any)
+		if !ok {
+			t.Fatalf("agent_event payload = %+v, want event object", payload)
+		}
+		if eventMap["kind"] != string(appui.AgentEventSystem) || eventMap["phase"] != string(appui.AgentEventPhaseUpdated) {
+			t.Fatalf("event kind/phase = %v/%v, want system/updated", eventMap["kind"], eventMap["phase"])
+		}
+		eventPayload, _ := eventMap["payload"].(map[string]any)
+		if eventPayload["displayKind"] != "runtime.activity" || eventPayload["stage"] != "call_model" {
+			t.Fatalf("event payload = %+v, want runtime.activity call_model", eventPayload)
+		}
+		break
+	}
+}

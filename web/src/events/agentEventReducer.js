@@ -107,6 +107,10 @@ export function applyAgentEvent(state, rawEvent) {
     connection.seqGaps[event.sessionId] = { expected: expectedSeq, received: event.seq };
   }
 
+  if (shouldIgnoreStaleLocalTurnEvent(previousProjection, event)) {
+    return base;
+  }
+
   const projection = applyEventToProjection(previousProjection, event);
   projectionsBySession[event.sessionId] = projection;
 
@@ -169,6 +173,8 @@ function applyEventToProjection(previous, event) {
 
   if (event.kind === "turn") projection = applyTurn(projection, event);
   if (event.kind === "assistant") projection = applyAssistant(projection, event);
+  if (event.kind === "reasoning") projection = applyReasoning(projection, event);
+  if (event.kind === "system") projection = applySystem(projection, event);
   if (event.kind === "tool") projection = applyTool(projection, event);
   if (event.kind === "approval") projection = applyApproval(projection, event);
   if (event.kind === "agent") projection = applyAgent(projection, event);
@@ -270,6 +276,26 @@ function resolveTurnRowId(projection, event) {
   return compactText(clientMessageId || event.clientTurnId || event.turnId || event.eventId);
 }
 
+function isTerminalTurnRow(row = {}) {
+  const status = compactText(row.status).toLowerCase();
+  const phase = compactText(row.phase).toLowerCase();
+  return ["completed", "failed", "canceled", "cancelled"].includes(status) ||
+    ["completed", "failed", "canceled", "cancelled"].includes(phase);
+}
+
+function shouldIgnoreStaleLocalTurnEvent(projection, event) {
+  if (event.kind !== "turn" || event.seq !== 0 || event.source !== "ui") return false;
+  if (!["requested", "started", "updated", "delta", "blocked"].includes(event.phase)) return false;
+  const rowId = resolveTurnRowId(projection, event);
+  return (projection.timeline || []).some((row) => {
+    if (row?.kind !== "turn") return false;
+    const sameTurn = compactText(row.id) === rowId ||
+      (event.turnId && row.turnId === event.turnId) ||
+      (event.clientTurnId && row.clientTurnId === event.clientTurnId);
+    return sameTurn && isTerminalTurnRow(row);
+  });
+}
+
 function applyAssistant(projection, event) {
   const channel = compactText(event.payload.channel || "final");
   if (channel === "intent" || channel === "summary") {
@@ -302,6 +328,55 @@ function applyAssistant(projection, event) {
     updatedAt: event.createdAt,
     seq: event.seq,
   };
+  return projection;
+}
+
+function applyReasoning(projection, event) {
+  const id = compactText(event.payload.itemId || event.eventId);
+  const completed = event.status === "completed" || event.phase === "completed";
+  const row = {
+    id,
+    kind: "reasoning",
+    turnId: event.turnId,
+    clientTurnId: event.clientTurnId,
+    displayKind: "reasoning.summary",
+    title: completed ? "思考摘要" : "正在思考",
+    summary: compactText(event.payload.summary || event.payload.delta),
+    status: completed ? "completed" : event.status,
+    visibility: event.visibility,
+    foldable: Boolean(event.payload.foldable || completed),
+    autoCollapse: Boolean(event.payload.autoCollapse || completed),
+    collapsed: Boolean((event.payload.autoCollapse || completed) && completed),
+    updatedAt: event.createdAt,
+    seq: event.seq,
+  };
+  projection.timeline = upsertRow(projection.timeline, row);
+  if (event.turnId) {
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
+  }
+  return projection;
+}
+
+function applySystem(projection, event) {
+  const id = compactText(event.payload.id || event.eventId);
+  const row = {
+    id,
+    kind: "system",
+    turnId: event.turnId,
+    clientTurnId: event.clientTurnId,
+    displayKind: compactText(event.payload.displayKind),
+    title: compactText(event.payload.title || "系统事件"),
+    summary: compactText(event.payload.summary),
+    detail: compactText(event.payload.detail),
+    status: event.status,
+    visibility: event.visibility,
+    updatedAt: event.createdAt,
+    seq: event.seq,
+  };
+  projection.timeline = upsertRow(projection.timeline, row);
+  if (event.turnId) {
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
+  }
   return projection;
 }
 
@@ -343,7 +418,7 @@ function applyTool(projection, event) {
 }
 
 function applyPlan(projection, event) {
-  const steps = Array.isArray(event.payload.steps) ? event.payload.steps : [];
+  const steps = normalizePlanSteps(event.payload.steps);
   const runningStep = steps.find((step) => compactText(step?.status).toLowerCase() === "running");
   const fallbackStep = steps.length ? steps[steps.length - 1] : null;
   const id = compactText(event.payload.id || (event.turnId ? `${event.turnId}:plan` : event.eventId));
@@ -354,6 +429,7 @@ function applyPlan(projection, event) {
     displayKind: "plan",
     title: compactText(event.payload.title || "计划"),
     summary: compactText(runningStep?.text || fallbackStep?.text || event.payload.summary),
+    steps,
     status: event.status,
     visibility: event.visibility,
     foldable: true,
@@ -369,6 +445,24 @@ function applyPlan(projection, event) {
   return projection;
 }
 
+function normalizePlanSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+  let runningSeen = false;
+  return steps.map((step) => {
+    const next = { ...(step || {}) };
+    let status = compactText(next.status).toLowerCase();
+    if (status === "in_progress") status = "running";
+    if (!status) status = "pending";
+    if (status === "running") {
+      if (runningSeen) status = "pending";
+      else runningSeen = true;
+    }
+    next.status = status;
+    next.text = compactText(next.text || next.summary || next.title);
+    return next;
+  });
+}
+
 function applyEvidence(projection, event) {
   const id = compactText(event.payload.id || event.eventId);
   const kind = compactText(event.payload.kind);
@@ -379,6 +473,8 @@ function applyEvidence(projection, event) {
     displayKind: kind ? `evidence.${kind}` : "evidence",
     title: compactText(event.payload.title || kind || "证据"),
     summary: compactText(event.payload.summary),
+    source: compactText(event.payload.source),
+    confidence: compactText(event.payload.confidence),
     rawRef: compactText(event.payload.rawRef),
     status: event.status,
     visibility: event.visibility,

@@ -12,6 +12,7 @@ export default defineConfig({
       "node_modules/**",
       "tests/chat-choice-ui.spec.js",
       "tests/chat-fixture-ui.spec.js",
+      "tests/chat-ui-snapshot.spec.js",
       "tests/chat-ui-visual.spec.js",
       "tests/layout-responsive.spec.js",
       "tests/omnibar-paste-ui.spec.js",

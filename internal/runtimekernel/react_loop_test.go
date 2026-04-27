@@ -76,6 +76,20 @@ func cloneSchemaMessage(msg *schema.Message) *schema.Message {
 	return &cp
 }
 
+func schemaMessagesText(messages []*schema.Message) string {
+	var builder strings.Builder
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		builder.WriteString(string(msg.Role))
+		builder.WriteString(": ")
+		builder.WriteString(msg.Content)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
 type fixedSummaryModel struct {
 	response string
 }
@@ -627,6 +641,76 @@ func TestRunTurn_SwitchesToSynthesisOnlyAfterEnoughToolEvidence(t *testing.T) {
 	}
 	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "web_search") {
 		t.Fatalf("second iteration unavailable tools = %v, want web_search", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+}
+
+func TestRunTurn_AddsEvidenceAwareFinalAnswerPromptAfterToolResults(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-nginx-log",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_log",
+						Arguments: `{"path":"/var/log/nginx/error.log"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("final answer", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_log",
+			Description: "Read log evidence",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "upstream timeout for service-a"}, nil
+		},
+	}
+
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-evidence-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-evidence-final",
+		Input:       "分析 nginx 故障根因",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Output != "final answer" {
+		t.Fatalf("output = %q, want final answer", result.Output)
+	}
+	if len(compiler.contexts) < 2 {
+		t.Fatalf("compiler contexts = %d, want second synthesis compile", len(compiler.contexts))
+	}
+	secondInput := strings.Join(compiler.contexts[1].SkillPromptAssets, "\n")
+	for _, want := range []string{
+		"Evidence-aware final answer",
+		"upstream timeout for service-a",
+		"根因：",
+		"证据：",
+		"影响面：",
+		"下一步：",
+	} {
+		if !strings.Contains(secondInput, want) {
+			t.Fatalf("second model input missing %q:\n%s", want, secondInput)
+		}
 	}
 }
 

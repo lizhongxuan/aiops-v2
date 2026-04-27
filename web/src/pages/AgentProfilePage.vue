@@ -34,6 +34,7 @@ function syncDraft(profile) {
 
 function normalizeDraftProfile(profile) {
   const next = deepClone(profile);
+  next.runtime = normalizeRuntimeSettings(next.runtime);
   next.skills = (next.skills || []).map((item) => ({
     ...item,
     enabled: item?.enabled !== false,
@@ -45,6 +46,23 @@ function normalizeDraftProfile(profile) {
     permission: normalizeMcpPermission(item?.permission),
   }));
   return next;
+}
+
+function normalizeRuntimeSettings(runtime = {}) {
+  return {
+    model: "gpt-5.4",
+    reasoningEffort: "medium",
+    approvalPolicy: "untrusted",
+    sandboxMode: "workspace-write",
+    planningPolicy: "structured_events",
+    evidencePolicy: "tool_sourced",
+    answerStyle: "aiops_rca",
+    toolBudget: "bounded",
+    reasoningSummary: "enabled",
+    reasoningSummaryDisplay: "summary_only",
+    showRawReasoning: false,
+    ...(runtime || {}),
+  };
 }
 
 function normalizeSkillActivationMode(value, enabled = true) {
@@ -833,6 +851,42 @@ onBeforeUnmount(() => {
                     <n-select v-model:value="draft.runtime.sandboxMode" :options="[{label:'workspace-write',value:'workspace-write'},{label:'read-only',value:'read-only'},{label:'danger-full-access',value:'danger-full-access'}]" />
                   </n-form-item>
                 </n-gi>
+                <n-gi>
+                  <n-form-item label="Planning Policy">
+                    <n-select v-model:value="draft.runtime.planningPolicy" :options="[{label:'structured_events',value:'structured_events'},{label:'off',value:'off'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Evidence Policy">
+                    <n-select v-model:value="draft.runtime.evidencePolicy" :options="[{label:'tool_sourced',value:'tool_sourced'},{label:'mark_inference',value:'mark_inference'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Answer Style">
+                    <n-select v-model:value="draft.runtime.answerStyle" :options="[{label:'aiops_rca',value:'aiops_rca'},{label:'concise_ops',value:'concise_ops'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Tool Budget">
+                    <n-select v-model:value="draft.runtime.toolBudget" :options="[{label:'bounded',value:'bounded'},{label:'verbose_debug',value:'verbose_debug'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Reasoning Summary">
+                    <n-select v-model:value="draft.runtime.reasoningSummary" :options="[{label:'enabled',value:'enabled'},{label:'disabled',value:'disabled'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="Reasoning Display">
+                    <n-select v-model:value="draft.runtime.reasoningSummaryDisplay" :options="[{label:'summary_only',value:'summary_only'},{label:'hidden',value:'hidden'}]" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi :span="2">
+                  <n-form-item label="Raw Reasoning Debug">
+                    <n-switch v-model:value="draft.runtime.showRawReasoning" />
+                    <span class="debug-only-note">debug-only，默认关闭</span>
+                  </n-form-item>
+                </n-gi>
               </n-grid>
             </n-form>
           </div>
@@ -1152,6 +1206,9 @@ onBeforeUnmount(() => {
                 <span class="preview-chip">{{ preview.runtime?.model || "gpt-5.4" }}</span>
                 <span class="preview-chip">{{ preview.runtime?.reasoningEffort || "medium" }}</span>
                 <span class="preview-chip">{{ preview.runtime?.approvalPolicy || "untrusted" }}</span>
+                <span class="preview-chip">{{ preview.runtime?.planningPolicy || "structured_events" }}</span>
+                <span class="preview-chip">{{ preview.runtime?.evidencePolicy || "tool_sourced" }}</span>
+                <span class="preview-chip">{{ preview.runtime?.reasoningSummaryDisplay || "summary_only" }}</span>
               </div>
             </div>
 
@@ -1732,6 +1789,15 @@ onBeforeUnmount(() => {
   background: rgba(30, 41, 59, 0.95);
   color: #bfdbfe;
   font-size: 12px;
+}
+
+.debug-only-note {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .preview-text {

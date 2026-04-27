@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"aiops-v2/internal/modelrouter"
+
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -25,7 +27,7 @@ func (m *emptyResponseModel) BindTools([]*schema.ToolInfo) error {
 }
 
 func TestGenerateModelResponseRejectsEmptyAssistantMessage(t *testing.T) {
-	_, err := generateModelResponse(context.Background(), &emptyResponseModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil)
+	_, err := generateModelResponse(context.Background(), &emptyResponseModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected empty model response error")
 	}
@@ -74,6 +76,7 @@ func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) 
 		func(delta string) {
 			deltas = append(deltas, delta)
 		},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("generateModelResponse returned error: %v", err)
@@ -109,11 +112,69 @@ func (m *noToolOptionModel) BindTools([]*schema.ToolInfo) error {
 }
 
 func TestGenerateModelResponseOmitsToolOptionsWhenNoTools(t *testing.T) {
-	msg, err := generateModelResponse(context.Background(), &noToolOptionModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil)
+	msg, err := generateModelResponse(context.Background(), &noToolOptionModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("generateModelResponse returned error: %v", err)
 	}
 	if msg.Content != "final" {
 		t.Fatalf("response content = %q, want final", msg.Content)
+	}
+}
+
+func TestGenerateModelResponseEmitsOnlyReasoningSummaryEvents(t *testing.T) {
+	model := &streamingResponseModel{
+		chunks: []*schema.Message{
+			{
+				Role: schema.Assistant,
+				Extra: map[string]any{
+					"method": "item/reasoning/summaryTextDelta",
+					"params": map[string]any{
+						"threadId":     "thread_1",
+						"turnId":       "turn_1",
+						"itemId":       "reasoning_1",
+						"summaryIndex": float64(0),
+						"delta":        "我会先查看项目结构。",
+					},
+				},
+			},
+			{
+				Role: schema.Assistant,
+				Extra: map[string]any{
+					"method": "item/reasoning/textDelta",
+					"params": map[string]any{
+						"threadId":     "thread_1",
+						"turnId":       "turn_1",
+						"itemId":       "reasoning_1",
+						"contentIndex": float64(0),
+						"delta":        "raw hidden",
+					},
+				},
+			},
+			schema.AssistantMessage("final", nil),
+		},
+	}
+
+	var reasoning []modelrouter.ReasoningStreamEvent
+	msg, err := generateModelResponse(
+		context.Background(),
+		model,
+		[]*schema.Message{schema.UserMessage("ping")},
+		nil,
+		nil,
+		func(event modelrouter.ReasoningStreamEvent) {
+			reasoning = append(reasoning, event)
+		},
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg.Content != "final" {
+		t.Fatalf("response content = %q, want final", msg.Content)
+	}
+	if len(reasoning) != 1 {
+		t.Fatalf("reasoning events length = %d, want 1: %+v", len(reasoning), reasoning)
+	}
+	if reasoning[0].Method != "item/reasoning/summaryTextDelta" || reasoning[0].Delta != "我会先查看项目结构。" {
+		t.Fatalf("reasoning[0] = %+v, want summary delta", reasoning[0])
 	}
 }

@@ -194,6 +194,128 @@ func TestAgentEventProjector_ToolProgressUpdatesOneTimelineRow(t *testing.T) {
 	}
 }
 
+func TestAgentEventProjector_ReasoningDeltaCreatesThinkingTimelineRow(t *testing.T) {
+	projector := NewAgentEventProjector()
+	reasoning := testAgentEvent(AgentEventReasoning, AgentEventPhaseDelta, AgentEventStatusRunning, 1, ReasoningPayload{
+		ItemID:       "reasoning-1",
+		SummaryIndex: 0,
+		Delta:        "我会先确认项目结构和事件流。",
+		Summary:      "我会先确认项目结构和事件流。",
+		Foldable:     true,
+		AutoCollapse: false,
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{reasoning})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("Timeline length = %d, want 1 row", len(proj.Timeline))
+	}
+	row := proj.Timeline[0]
+	if row.Kind != AgentEventReasoning {
+		t.Fatalf("row.Kind = %q, want reasoning", row.Kind)
+	}
+	if row.ID != "reasoning-1" {
+		t.Fatalf("row.ID = %q, want reasoning-1", row.ID)
+	}
+	if row.Title != "正在思考" {
+		t.Fatalf("row.Title = %q, want 正在思考", row.Title)
+	}
+	if row.Summary != "我会先确认项目结构和事件流。" {
+		t.Fatalf("row.Summary = %q", row.Summary)
+	}
+	if row.Status != AgentEventStatusRunning {
+		t.Fatalf("row.Status = %q, want running", row.Status)
+	}
+	if !row.Foldable || row.AutoCollapse || row.Collapsed {
+		t.Fatalf("row fold state = foldable:%v auto:%v collapsed:%v, want running expanded", row.Foldable, row.AutoCollapse, row.Collapsed)
+	}
+	if len(proj.ProcessGroups["turn-1"]) != 1 {
+		t.Fatalf("ProcessGroups[turn-1] length = %d, want 1", len(proj.ProcessGroups["turn-1"]))
+	}
+}
+
+func TestAgentEventProjector_ReasoningCompletedCollapsesSummary(t *testing.T) {
+	projector := NewAgentEventProjector()
+	delta := testAgentEvent(AgentEventReasoning, AgentEventPhaseDelta, AgentEventStatusRunning, 1, ReasoningPayload{
+		ItemID:       "reasoning-1",
+		SummaryIndex: 0,
+		Delta:        "我会先确认项目结构和事件流。",
+		Summary:      "我会先确认项目结构和事件流。",
+		Foldable:     true,
+	})
+	completed := testAgentEvent(AgentEventReasoning, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, ReasoningPayload{
+		ItemID:       "reasoning-1",
+		SummaryIndex: 0,
+		Summary:      "已确认需要检查项目结构和事件流实现。",
+		Foldable:     true,
+		AutoCollapse: true,
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{delta, completed})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("Timeline length = %d, want 1 row", len(proj.Timeline))
+	}
+	row := proj.Timeline[0]
+	if row.Title != "思考摘要" {
+		t.Fatalf("row.Title = %q, want 思考摘要", row.Title)
+	}
+	if row.Summary != "已确认需要检查项目结构和事件流实现。" {
+		t.Fatalf("row.Summary = %q", row.Summary)
+	}
+	if row.Status != AgentEventStatusCompleted {
+		t.Fatalf("row.Status = %q, want completed", row.Status)
+	}
+	if !row.Foldable || !row.AutoCollapse || !row.Collapsed {
+		t.Fatalf("row fold state = foldable:%v auto:%v collapsed:%v, want completed collapsed", row.Foldable, row.AutoCollapse, row.Collapsed)
+	}
+	if len(proj.ProcessGroups["turn-1"]) != 1 {
+		t.Fatalf("ProcessGroups[turn-1] length = %d, want 1", len(proj.ProcessGroups["turn-1"]))
+	}
+}
+
+func TestAgentEventProjector_PlanAllowsOnlyOneRunningStep(t *testing.T) {
+	projector := NewAgentEventProjector()
+	plan := testAgentEvent(AgentEventPlan, AgentEventPhaseUpdated, AgentEventStatusRunning, 1, PlanPayload{
+		Title: "修复计划",
+		Steps: []PlanStep{
+			{ID: "step-1", Text: "收集 nginx 日志证据", Status: "in_progress"},
+			{ID: "step-2", Text: "调整 upstream 超时配置", Status: "running"},
+			{ID: "step-3", Text: "验证 service-a 恢复", Status: "pending"},
+		},
+	})
+
+	proj, err := projector.Replay("session-1", []AgentEvent{plan})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	if len(proj.Timeline) != 1 {
+		t.Fatalf("Timeline length = %d, want 1 plan row", len(proj.Timeline))
+	}
+	row := proj.Timeline[0]
+	running := 0
+	for _, step := range row.Steps {
+		if step.Status == "running" || step.Status == "in_progress" {
+			running++
+		}
+	}
+	if running != 1 {
+		t.Fatalf("running plan steps = %d, want exactly 1: %+v", running, row.Steps)
+	}
+	if row.Steps[0].Status != "running" || row.Steps[1].Status != "pending" {
+		t.Fatalf("plan steps = %+v, want first running and second downgraded to pending", row.Steps)
+	}
+	if row.Summary != "收集 nginx 日志证据" {
+		t.Fatalf("row.Summary = %q, want first running step text", row.Summary)
+	}
+}
+
 func TestAgentEventProjector_FailedExecCommandKeepsCommandAndError(t *testing.T) {
 	projector := NewAgentEventProjector()
 	failed := testAgentEvent(AgentEventTool, AgentEventPhaseFailed, AgentEventStatusFailed, 1, ToolPayload{

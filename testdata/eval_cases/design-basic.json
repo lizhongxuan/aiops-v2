@@ -1,0 +1,12 @@
+{
+  "id": "design-basic",
+  "category": "方案设计",
+  "input": "请设计一个最小可用的本地 Agent Eval 框架，用 JSON case、runner、scorer 和 baseline 对比来判断输出质量是否退化。",
+  "expected": {
+    "mustInclude": ["CaseLoader", "Runner", "Scorer", "BaselineComparator"],
+    "mustNotInclude": ["复杂平台", "线上服务"],
+    "expectedToolCalls": [],
+    "mustMentionFiles": ["testdata/eval_cases"]
+  },
+  "scoreRules": {}
+}

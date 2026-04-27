@@ -49,6 +49,19 @@ func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error
 	displayKind := displayKindForAgentTool(inv.ToolName)
 	inputSummary := summarizeAgentToolInput(inv.ToolName, inv.Args)
 	outputSummary := summarizeAgentToolOutput(inv.ToolName, inv.Result, inv.Error)
+	budgetSummary, outputPreview, rawRef := summarizeToolResultForEvent(inv.TurnID, inv.ID, inv.Result)
+	if outputSummary == "" {
+		outputSummary = budgetSummary
+	}
+	if len(inv.OutputPreview) > 0 {
+		outputPreview = append(json.RawMessage(nil), inv.OutputPreview...)
+	}
+	if strings.TrimSpace(inv.OutputSummary) != "" {
+		outputSummary = truncateAgentEventSummary(inv.OutputSummary, 180)
+	}
+	if strings.TrimSpace(inv.RawRef) != "" {
+		rawRef = strings.TrimSpace(inv.RawRef)
+	}
 	durationMs := int64(0)
 	completedAt := ""
 	if inv.EndedAt != nil {
@@ -66,9 +79,10 @@ func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error
 		Title:         titleForAgentTool(displayKind, phase, inputSummary),
 		InputSummary:  inputSummary,
 		OutputSummary: outputSummary,
+		OutputPreview: outputPreview,
 		Foldable:      true,
 		AutoCollapse:  status == AgentEventStatusCompleted,
-		RawRef:        rawRefForAgentTool(inv.TurnID, inv.ID),
+		RawRef:        rawRef,
 		DurationMs:    durationMs,
 		Error:         inv.Error,
 	})
@@ -90,6 +104,104 @@ func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error
 		return nil, err
 	}
 	return []AgentEvent{event}, nil
+}
+
+func NormalizeActivity(activity projection.ActivityStats) ([]AgentEvent, error) {
+	stage := strings.TrimSpace(activity.Stage)
+	if strings.TrimSpace(activity.SessionID) == "" || strings.TrimSpace(activity.TurnID) == "" || stage == "" {
+		return nil, nil
+	}
+	createdAt := time.Now().UTC()
+	rowID := fmt.Sprintf("%s:activity:%d:%s", activity.TurnID, activity.Iteration, stage)
+	payload, _ := json.Marshal(SystemPayload{
+		ID:          rowID,
+		DisplayKind: "runtime.activity",
+		Title:       runtimeActivityStageTitle(stage),
+		Summary:     fmt.Sprintf("第 %d 轮", activity.Iteration+1),
+		Stage:       stage,
+		Iteration:   activity.Iteration,
+	})
+	event := AgentEvent{
+		EventID:    rowID,
+		SessionID:  activity.SessionID,
+		TurnID:     activity.TurnID,
+		Kind:       AgentEventSystem,
+		Phase:      AgentEventPhaseUpdated,
+		Status:     AgentEventStatusRunning,
+		Visibility: AgentEventVisibilitySecondary,
+		Source:     AgentEventSourceRuntime,
+		CreatedAt:  createdAt.Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func NormalizeCard(card projection.Card) ([]AgentEvent, error) {
+	if strings.TrimSpace(card.SessionID) == "" || strings.TrimSpace(card.TurnID) == "" {
+		return nil, nil
+	}
+	createdAt := card.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	cardID := strings.TrimSpace(card.ID)
+	if cardID == "" {
+		cardID = fmt.Sprintf("%s:card:%d", card.TurnID, createdAt.UnixNano())
+	}
+	cardType := strings.TrimSpace(card.Type)
+	title := strings.TrimSpace(card.Title)
+	if title == "" {
+		title = cardType
+	}
+	payload, _ := json.Marshal(SystemPayload{
+		ID:          cardID,
+		DisplayKind: "runtime.card",
+		Title:       "生成卡片",
+		Summary:     title,
+		CardID:      cardID,
+		CardType:    cardType,
+	})
+	event := AgentEvent{
+		EventID:    fmt.Sprintf("%s:card:%s", card.TurnID, cardID),
+		SessionID:  card.SessionID,
+		TurnID:     card.TurnID,
+		Kind:       AgentEventSystem,
+		Phase:      AgentEventPhaseCompleted,
+		Status:     AgentEventStatusCompleted,
+		Visibility: AgentEventVisibilitySecondary,
+		Source:     AgentEventSourceRuntime,
+		CreatedAt:  createdAt.UTC().Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+	if err := event.Validate(); err != nil {
+		return nil, err
+	}
+	return []AgentEvent{event}, nil
+}
+
+func runtimeActivityStageTitle(stage string) string {
+	switch strings.TrimSpace(stage) {
+	case "context_pipeline":
+		return "准备上下文"
+	case "compile_prompt":
+		return "编译提示词"
+	case "assemble_tools":
+		return "准备工具"
+	case "call_model":
+		return "调用模型"
+	case "dispatch_tools":
+		return "执行工具"
+	case "finalize_iteration":
+		return "整理工具结果"
+	default:
+		if stage == "" {
+			return "处理运行阶段"
+		}
+		return stage
+	}
 }
 
 func stableToolEventID(turnID, toolCallID string, phase AgentEventPhase, createdAt time.Time) string {
@@ -402,6 +514,18 @@ func NormalizeRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) ([]Agent
 		normalized.Status = AgentEventStatusRunning
 		normalized.Visibility = AgentEventVisibilityPrimary
 		normalized.Payload = normalizePayloadWithChannel(event.Payload, "final")
+	case runtimekernel.EventReasoningSummaryDelta:
+		normalized.Kind = AgentEventReasoning
+		normalized.Phase = AgentEventPhaseDelta
+		normalized.Status = AgentEventStatusRunning
+		normalized.Visibility = AgentEventVisibilitySecondary
+		normalized.Payload = normalizeReasoningSummaryPayload(event.Payload, false)
+	case runtimekernel.EventReasoningSummaryCompleted:
+		normalized.Kind = AgentEventReasoning
+		normalized.Phase = AgentEventPhaseCompleted
+		normalized.Status = AgentEventStatusCompleted
+		normalized.Visibility = AgentEventVisibilitySecondary
+		normalized.Payload = normalizeReasoningSummaryPayload(event.Payload, true)
 	case runtimekernel.EventPhaseEnd:
 		normalized.Kind = AgentEventSystem
 		normalized.Phase = AgentEventPhaseCompleted
@@ -433,6 +557,17 @@ func NormalizeRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) ([]Agent
 		return nil, err
 	}
 	return []AgentEvent{normalized}, nil
+}
+
+func normalizeReasoningSummaryPayload(raw json.RawMessage, completed bool) json.RawMessage {
+	var payload ReasoningPayload
+	decodeAgentEventPayload(raw, &payload)
+	payload.Foldable = true
+	if completed {
+		payload.AutoCollapse = true
+	}
+	normalized, _ := json.Marshal(payload)
+	return normalized
 }
 
 func NormalizeSnapshotCompletedAgentEvent(snapshot projection.Snapshot) AgentEvent {
@@ -527,12 +662,14 @@ func NormalizeEvidence(evidence projection.Evidence) ([]AgentEvent, error) {
 		createdAt = time.Now().UTC()
 	}
 	payload, _ := json.Marshal(EvidencePayload{
-		ID:      evidence.ID,
-		Kind:    evidence.Type,
-		Title:   firstNonEmptyString(evidence.Type, evidence.ID),
-		Summary: strings.TrimSpace(evidence.Summary),
-		RawRef:  rawRefForAgentEvidence(evidence.TurnID, evidence.ID),
-		Data:    evidence.Data,
+		ID:         evidence.ID,
+		Kind:       evidence.Type,
+		Title:      firstNonEmptyString(evidence.Title, evidence.Type, evidence.ID),
+		Summary:    strings.TrimSpace(evidence.Summary),
+		Source:     strings.TrimSpace(evidence.Source),
+		Confidence: strings.TrimSpace(evidence.Confidence),
+		RawRef:     firstNonEmptyString(evidence.RawRef, rawRefForAgentEvidence(evidence.TurnID, evidence.ID)),
+		Data:       evidence.Data,
 	})
 	event := AgentEvent{
 		EventID:    fmt.Sprintf("%s:evidence:%s:completed", evidence.TurnID, evidence.ID),

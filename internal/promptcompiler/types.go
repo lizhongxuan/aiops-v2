@@ -49,6 +49,27 @@ type CompileContext struct {
 	// RuntimePolicy is the active policy text for the current mode.
 	RuntimePolicy string
 
+	// PlanningPolicy controls whether structured plan events are preferred.
+	PlanningPolicy string
+
+	// EvidencePolicy controls source-bound evidence expectations.
+	EvidencePolicy string
+
+	// AnswerStyle controls final answer structure and density.
+	AnswerStyle string
+
+	// ToolBudget describes the tool result and dispatch budget profile.
+	ToolBudget string
+
+	// ReasoningSummary controls whether user-visible reasoning summaries are emitted.
+	ReasoningSummary string
+
+	// ReasoningSummaryDisplay controls how reasoning summaries are exposed in UI.
+	ReasoningSummaryDisplay string
+
+	// ShowRawReasoning is a debug-only flag; it must default to false.
+	ShowRawReasoning bool
+
 	// HostContext contains host-specific context (hostname, OS, etc.).
 	HostContext string
 

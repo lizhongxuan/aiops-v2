@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,81 @@ func TestNormalizeToolInvocationAddsCodexLikeDisplayMetadata(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolInvocationBudgetsToolResultPayloads(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      string
+		wantPreview bool
+		wantRawRef  bool
+		wantFull    bool
+	}{
+		{
+			name:        "inline result",
+			result:      "short result",
+			wantPreview: true,
+			wantRawRef:  false,
+			wantFull:    true,
+		},
+		{
+			name:        "medium result",
+			result:      strings.Repeat("m", inlineToolResultBytes+256),
+			wantPreview: true,
+			wantRawRef:  true,
+			wantFull:    false,
+		},
+		{
+			name:        "large result",
+			result:      strings.Repeat("l", maxAgentEventPayloadBytes+256),
+			wantPreview: false,
+			wantRawRef:  true,
+			wantFull:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events, err := NormalizeToolInvocation(projection.ToolInvocation{
+				ID:        "tool-budget-1",
+				SessionID: "session-1",
+				TurnID:    "turn-1",
+				ToolName:  "exec_command",
+				Args:      json.RawMessage(`{"command":"cat large.log"}`),
+				Result:    tt.result,
+				Status:    projection.ToolInvocationCompleted,
+				StartedAt: time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("NormalizeToolInvocation() error = %v", err)
+			}
+			var payload ToolPayload
+			if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+				t.Fatalf("payload decode error = %v", err)
+			}
+			if payload.OutputSummary == "" {
+				t.Fatal("outputSummary should always be populated for non-empty results")
+			}
+			if got := len(payload.OutputPreview) > 0; got != tt.wantPreview {
+				t.Fatalf("has outputPreview = %v, want %v", got, tt.wantPreview)
+			}
+			if got := payload.RawRef != ""; got != tt.wantRawRef {
+				t.Fatalf("has rawRef = %v, want %v", got, tt.wantRawRef)
+			}
+			if len(payload.OutputPreview) > 0 {
+				var preview string
+				if err := json.Unmarshal(payload.OutputPreview, &preview); err != nil {
+					t.Fatalf("outputPreview decode error = %v", err)
+				}
+				if tt.wantFull && preview != tt.result {
+					t.Fatalf("preview = %q, want full result", preview)
+				}
+				if !tt.wantFull && len(preview) >= len(tt.result) {
+					t.Fatalf("preview len = %d, want shorter than full result len %d", len(preview), len(tt.result))
+				}
+			}
+		})
+	}
+}
+
 func TestNormalizeEvidenceProjectsAgentEvidenceEvent(t *testing.T) {
 	events, err := NormalizeEvidence(projection.Evidence{
 		ID:        "evidence-1",
@@ -197,6 +273,39 @@ func TestNormalizeEvidenceProjectsAgentEvidenceEvent(t *testing.T) {
 	}
 	if payload.ID != "evidence-1" || payload.Kind != "log" || payload.Summary == "" {
 		t.Fatalf("payload = %#v, want populated evidence payload", payload)
+	}
+}
+
+func TestNormalizeEvidenceKeepsSourceConfidenceAndRawRef(t *testing.T) {
+	events, err := NormalizeEvidence(projection.Evidence{
+		ID:         "evidence-1",
+		SessionID:  "session-1",
+		TurnID:     "turn-1",
+		Type:       "tool_result",
+		Title:      "nginx 日志",
+		Summary:    "upstream timeout for service-a",
+		Source:     "tool:exec_command",
+		Confidence: "high",
+		CreatedAt:  time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NormalizeEvidence() error = %v", err)
+	}
+	var payload EvidencePayload
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("payload decode error = %v", err)
+	}
+	if payload.Title != "nginx 日志" {
+		t.Fatalf("title = %q, want nginx 日志", payload.Title)
+	}
+	if payload.Source != "tool:exec_command" {
+		t.Fatalf("source = %q, want tool:exec_command", payload.Source)
+	}
+	if payload.Confidence != "high" {
+		t.Fatalf("confidence = %q, want high", payload.Confidence)
+	}
+	if payload.RawRef != "evidence://turn-1/evidence-1" {
+		t.Fatalf("rawRef = %q, want evidence://turn-1/evidence-1", payload.RawRef)
 	}
 }
 

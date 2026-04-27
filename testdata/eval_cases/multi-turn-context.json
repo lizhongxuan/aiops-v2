@@ -1,0 +1,12 @@
+{
+  "id": "multi-turn-context",
+  "category": "多轮上下文",
+  "input": "上一轮用户要求必须支持 baseline vs current，本轮又强调不能依赖线上服务。请回答时同时保留这两个约束。",
+  "expected": {
+    "mustInclude": ["上一轮约束", "baseline vs current", "当前输入"],
+    "mustNotInclude": ["忘记上下文", "只能线上跑"],
+    "expectedToolCalls": [],
+    "mustMentionFiles": ["internal/eval/runner.go"]
+  },
+  "scoreRules": {}
+}

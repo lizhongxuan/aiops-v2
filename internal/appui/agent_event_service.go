@@ -25,6 +25,7 @@ type agentEventService struct {
 	eventsBySession     map[string][]AgentEvent
 	seenBySession       map[string]map[string]AgentEvent
 	projectionBySession map[string]AgentEventProjection
+	loadedBySession     map[string]bool
 	subscribers         map[int]agentEventSubscriber
 	nextSubscriberID    int
 }
@@ -36,6 +37,7 @@ func NewAgentEventService(repo AgentEventRepository) AgentEventService {
 		eventsBySession:     map[string][]AgentEvent{},
 		seenBySession:       map[string]map[string]AgentEvent{},
 		projectionBySession: map[string]AgentEventProjection{},
+		loadedBySession:     map[string]bool{},
 		subscribers:         map[int]agentEventSubscriber{},
 	}
 }
@@ -45,6 +47,9 @@ func (s *agentEventService) Append(ctx context.Context, event AgentEvent) (Agent
 		return AgentEvent{}, err
 	}
 	if err := event.Validate(); err != nil {
+		return AgentEvent{}, err
+	}
+	if err := s.ensureSessionLoaded(ctx, event.SessionID); err != nil {
 		return AgentEvent{}, err
 	}
 
@@ -58,7 +63,7 @@ func (s *agentEventService) Append(ctx context.Context, event AgentEvent) (Agent
 	}
 
 	events := s.eventsBySession[event.SessionID]
-	event.Seq = int64(len(events) + 1)
+	event.Seq = nextAgentEventSeq(events)
 	proj := s.projectionBySession[event.SessionID]
 	if proj.SessionID == "" {
 		proj = AgentEventProjection{SessionID: event.SessionID, Status: "idle"}
@@ -67,6 +72,17 @@ func (s *agentEventService) Append(ctx context.Context, event AgentEvent) (Agent
 	if err != nil {
 		s.mu.Unlock()
 		return AgentEvent{}, err
+	}
+	repo := s.repo
+	if repo != nil {
+		if err := repo.AppendAgentEvent(event.SessionID, event); err != nil {
+			s.mu.Unlock()
+			return AgentEvent{}, fmt.Errorf("append agent event repository: %w", err)
+		}
+		if err := repo.SaveAgentEventProjection(event.SessionID, nextProjection); err != nil {
+			s.mu.Unlock()
+			return AgentEvent{}, fmt.Errorf("save agent event projection: %w", err)
+		}
 	}
 	s.eventsBySession[event.SessionID] = append(events, event)
 	s.seenBySession[event.SessionID][event.EventID] = event
@@ -78,17 +94,7 @@ func (s *agentEventService) Append(ctx context.Context, event AgentEvent) (Agent
 			subscribers = append(subscribers, sub.ch)
 		}
 	}
-	repo := s.repo
 	s.mu.Unlock()
-
-	if repo != nil {
-		if err := repo.AppendAgentEvent(event.SessionID, event); err != nil {
-			return AgentEvent{}, fmt.Errorf("append agent event repository: %w", err)
-		}
-		if err := repo.SaveAgentEventProjection(event.SessionID, nextProjection); err != nil {
-			return AgentEvent{}, fmt.Errorf("save agent event projection: %w", err)
-		}
-	}
 
 	for _, ch := range subscribers {
 		select {
@@ -109,6 +115,10 @@ func (s *agentEventService) Append(ctx context.Context, event AgentEvent) (Agent
 
 func (s *agentEventService) Subscribe(ctx context.Context, sessionID string, afterSeq int64) (<-chan AgentEvent, func()) {
 	ch := make(chan AgentEvent, 32)
+	if err := s.ensureSessionLoaded(ctx, sessionID); err != nil {
+		close(ch)
+		return ch, func() {}
+	}
 
 	s.mu.Lock()
 	id := s.nextSubscriberID
@@ -152,20 +162,14 @@ func (s *agentEventService) Projection(ctx context.Context, sessionID string) (A
 	if err := ctx.Err(); err != nil {
 		return AgentEventProjection{}, err
 	}
+	if err := s.ensureSessionLoaded(ctx, sessionID); err != nil {
+		return AgentEventProjection{}, err
+	}
 	s.mu.RLock()
 	proj, ok := s.projectionBySession[sessionID]
 	s.mu.RUnlock()
 	if ok {
 		return ensureAgentEventProjection(proj), nil
-	}
-	if s.repo != nil {
-		loaded, found, err := s.repo.LoadAgentEventProjection(sessionID)
-		if err != nil {
-			return AgentEventProjection{}, err
-		}
-		if found {
-			return ensureAgentEventProjection(loaded), nil
-		}
 	}
 	return ensureAgentEventProjection(AgentEventProjection{SessionID: sessionID, Status: "idle"}), nil
 }
@@ -174,12 +178,12 @@ func (s *agentEventService) Replay(ctx context.Context, sessionID string, afterS
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := s.ensureSessionLoaded(ctx, sessionID); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	events := append([]AgentEvent(nil), s.eventsBySession[sessionID]...)
 	s.mu.RUnlock()
-	if len(events) == 0 && s.repo != nil {
-		return s.repo.ListAgentEvents(sessionID, afterSeq)
-	}
 	out := make([]AgentEvent, 0, len(events))
 	for _, event := range events {
 		if event.Seq > afterSeq {
@@ -187,4 +191,61 @@ func (s *agentEventService) Replay(ctx context.Context, sessionID string, afterS
 		}
 	}
 	return out, nil
+}
+
+func (s *agentEventService) ensureSessionLoaded(ctx context.Context, sessionID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.repo == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.RLock()
+	loaded := s.loadedBySession[sessionID]
+	s.mu.RUnlock()
+	if loaded {
+		return nil
+	}
+
+	events, err := s.repo.ListAgentEvents(sessionID, 0)
+	if err != nil {
+		return fmt.Errorf("list agent events repository: %w", err)
+	}
+	proj := AgentEventProjection{SessionID: sessionID, Status: "idle"}
+	if len(events) > 0 {
+		proj, err = s.projector.Replay(sessionID, events)
+		if err != nil {
+			return fmt.Errorf("replay agent event repository: %w", err)
+		}
+	} else if loadedProjection, found, err := s.repo.LoadAgentEventProjection(sessionID); err != nil {
+		return fmt.Errorf("load agent event projection repository: %w", err)
+	} else if found {
+		proj = loadedProjection
+	}
+
+	seen := map[string]AgentEvent{}
+	for _, event := range events {
+		seen[event.EventID] = event
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadedBySession[sessionID] {
+		return nil
+	}
+	s.eventsBySession[sessionID] = append([]AgentEvent(nil), events...)
+	s.seenBySession[sessionID] = seen
+	s.projectionBySession[sessionID] = ensureAgentEventProjection(proj)
+	s.loadedBySession[sessionID] = true
+	return nil
+}
+
+func nextAgentEventSeq(events []AgentEvent) int64 {
+	var maxSeq int64
+	for _, event := range events {
+		if event.Seq > maxSeq {
+			maxSeq = event.Seq
+		}
+	}
+	return maxSeq + 1
 }

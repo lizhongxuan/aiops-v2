@@ -37,6 +37,7 @@ type TimelineEntry struct {
 	Visibility   AgentEventVisibility `json:"visibility"`
 	Title        string               `json:"title,omitempty"`
 	Summary      string               `json:"summary,omitempty"`
+	Steps        []PlanStep           `json:"steps,omitempty"`
 	Detail       string               `json:"detail,omitempty"`
 	Risk         string               `json:"risk,omitempty"`
 	RawRef       string               `json:"rawRef,omitempty"`

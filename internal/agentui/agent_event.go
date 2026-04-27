@@ -22,6 +22,7 @@ const (
 	AgentEventBrowser   AgentEventKind = "browser"
 	AgentEventPlan      AgentEventKind = "plan"
 	AgentEventEvidence  AgentEventKind = "evidence"
+	AgentEventReasoning AgentEventKind = "reasoning"
 	AgentEventSystem    AgentEventKind = "system"
 )
 
@@ -192,6 +193,28 @@ type EvidencePayload struct {
 	Data       json.RawMessage `json:"data,omitempty"`
 }
 
+type ReasoningPayload struct {
+	ItemID       string `json:"itemId,omitempty"`
+	SummaryIndex int    `json:"summaryIndex,omitempty"`
+	Delta        string `json:"delta,omitempty"`
+	Summary      string `json:"summary,omitempty"`
+	Foldable     bool   `json:"foldable,omitempty"`
+	AutoCollapse bool   `json:"autoCollapse,omitempty"`
+	RawAvailable bool   `json:"rawAvailable,omitempty"`
+}
+
+type SystemPayload struct {
+	ID          string `json:"id,omitempty"`
+	DisplayKind string `json:"displayKind,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	Detail      string `json:"detail,omitempty"`
+	Stage       string `json:"stage,omitempty"`
+	Iteration   int    `json:"iteration,omitempty"`
+	CardID      string `json:"cardId,omitempty"`
+	CardType    string `json:"cardType,omitempty"`
+}
+
 type ApprovalPayload struct {
 	ApprovalID   string   `json:"approvalId,omitempty"`
 	ApprovalType string   `json:"approvalType,omitempty"`
@@ -278,7 +301,8 @@ func (e AgentEvent) Validate() error {
 func (k AgentEventKind) IsValid() bool {
 	switch k {
 	case AgentEventTurn, AgentEventAgent, AgentEventAssistant, AgentEventTool, AgentEventApproval,
-		AgentEventArtifact, AgentEventDiff, AgentEventBrowser, AgentEventPlan, AgentEventEvidence, AgentEventSystem:
+		AgentEventArtifact, AgentEventDiff, AgentEventBrowser, AgentEventPlan, AgentEventEvidence,
+		AgentEventReasoning, AgentEventSystem:
 		return true
 	default:
 		return false

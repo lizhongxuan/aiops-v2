@@ -1,0 +1,12 @@
+{
+  "id": "debug-basic",
+  "category": "Debug 排错",
+  "input": "一次 tool dispatch 没有产出结果。请给出排错路径、根因定位方式和验证命令。",
+  "expected": {
+    "mustInclude": ["复现", "根因", "ToolDispatcher"],
+    "mustNotInclude": ["直接重启", "不用验证"],
+    "expectedToolCalls": ["run_command"],
+    "mustMentionFiles": ["internal/runtimekernel/dispatch.go"]
+  },
+  "scoreRules": {}
+}

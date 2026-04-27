@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestCancelTurn_PersistsCanceledLifecycle(t *testing.T) {
 	}
 }
 
-func TestCancelTurn_EmitsTurnCompleteProjection(t *testing.T) {
+func TestCancelTurn_EmitsTurnAbortedProjection(t *testing.T) {
 	kernel := newTestKernel(nil)
 	emitter, ok := kernel.projector.(*testMockEventEmitter)
 	if !ok {
@@ -110,8 +111,8 @@ func TestCancelTurn_EmitsTurnCompleteProjection(t *testing.T) {
 		t.Fatal("expected projection event after cancel")
 	}
 	last := emitter.events[len(emitter.events)-1]
-	if last.Type != EventTurnComplete {
-		t.Fatalf("last event type = %q, want %q", last.Type, EventTurnComplete)
+	if last.Type != EventTurnAborted {
+		t.Fatalf("last event type = %q, want %q", last.Type, EventTurnAborted)
 	}
 	if last.SessionID != session.ID || last.TurnID != session.CurrentTurn.ID {
 		t.Fatalf("last event = %+v, want session %q turn %q", last, session.ID, session.CurrentTurn.ID)
@@ -271,8 +272,24 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	if len(emitter.events) == 0 {
 		t.Fatal("expected projection event after denied approval")
 	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("denied approval must not emit %s", EventToolStarted)
+		}
+	}
 	last := emitter.events[len(emitter.events)-1]
 	if last.Type != EventApprovalDecided {
 		t.Fatalf("last event type = %q, want %q", last.Type, EventApprovalDecided)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(last.Payload, &payload); err != nil {
+		t.Fatalf("approval.decided payload decode error = %v", err)
+	}
+	if payload["status"] != "denied" || payload["decision"] != "denied" {
+		t.Fatalf("approval.decided payload = %#v, want denied decision/status", payload)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if got := len(session.PendingApprovals); got != 0 {
+		t.Fatalf("pending approvals after denied decision = %d, want 0", got)
 	}
 }

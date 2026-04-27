@@ -96,11 +96,15 @@ func (b *AppSnapshotBroadcaster) OnToolInvocation(inv projection.ToolInvocation)
 	_ = b.BroadcastLatest(context.Background())
 }
 
-func (b *AppSnapshotBroadcaster) OnActivity(projection.ActivityStats) {
+func (b *AppSnapshotBroadcaster) OnActivity(activity projection.ActivityStats) {
+	events, err := appui.NormalizeActivity(activity)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 
-func (b *AppSnapshotBroadcaster) OnCard(projection.Card) {
+func (b *AppSnapshotBroadcaster) OnCard(card projection.Card) {
+	events, err := appui.NormalizeCard(card)
+	b.appendAgentEvents(context.Background(), events, err)
 	_ = b.BroadcastLatest(context.Background())
 }
 

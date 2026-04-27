@@ -2,10 +2,13 @@ package appui
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
@@ -96,6 +99,7 @@ type servicesConfig struct {
 	skills           SkillCatalogRepository
 	agentMCP         AgentMCPCatalogRepository
 	profiles         AgentProfileRepository
+	agentEvents      AgentEventRepository
 	lifecycleContext context.Context
 }
 
@@ -122,6 +126,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		}
 		if repo, ok := any(dataStore).(AgentProfileRepository); ok {
 			cfg.profiles = repo
+		}
+		if repo, ok := any(dataStore).(AgentEventRepository); ok {
+			cfg.agentEvents = repo
 		}
 	}
 }
@@ -248,7 +255,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	settingsService := NewSettingsService(cfg.settings, cfg.auth)
 	authService := NewAuthService(cfg.auth)
-	agentEvents := NewAgentEventService(nil)
+	agentEvents := NewAgentEventService(cfg.agentEvents)
 	return &Services{
 		chat:        NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:       NewStateService(sessions, builder),
@@ -727,6 +734,101 @@ type AgentProfilePreview struct {
 	EnabledSkills     []map[string]any `json:"enabledSkills,omitempty"`
 	EnabledMcps       []map[string]any `json:"enabledMcps,omitempty"`
 	Runtime           map[string]any   `json:"runtime,omitempty"`
+}
+
+type AgentRuntimePromptSettings struct {
+	Model                   string `json:"model,omitempty"`
+	ReasoningEffort         string `json:"reasoningEffort,omitempty"`
+	ApprovalPolicy          string `json:"approvalPolicy,omitempty"`
+	SandboxMode             string `json:"sandboxMode,omitempty"`
+	PlanningPolicy          string `json:"planningPolicy,omitempty"`
+	EvidencePolicy          string `json:"evidencePolicy,omitempty"`
+	AnswerStyle             string `json:"answerStyle,omitempty"`
+	ToolBudget              string `json:"toolBudget,omitempty"`
+	ReasoningSummary        string `json:"reasoningSummary,omitempty"`
+	ReasoningSummaryDisplay string `json:"reasoningSummaryDisplay,omitempty"`
+	ShowRawReasoning        bool   `json:"showRawReasoning,omitempty"`
+}
+
+func AgentRuntimePromptSettingsFromProfile(profile store.AgentProfileRecord) AgentRuntimePromptSettings {
+	runtime := mapField(profile, "runtime")
+	return AgentRuntimePromptSettings{
+		Model:                   runtimeStringField(runtime, "gpt-5.4", "model"),
+		ReasoningEffort:         runtimeStringField(runtime, "medium", "reasoningEffort", "reasoning_effort"),
+		ApprovalPolicy:          runtimeStringField(runtime, "untrusted", "approvalPolicy", "approval_policy"),
+		SandboxMode:             runtimeStringField(runtime, "workspace-write", "sandboxMode", "sandbox_mode"),
+		PlanningPolicy:          runtimeStringField(runtime, "structured_events", "planningPolicy", "planning_policy"),
+		EvidencePolicy:          runtimeStringField(runtime, "tool_sourced", "evidencePolicy", "evidence_policy"),
+		AnswerStyle:             runtimeStringField(runtime, "aiops_rca", "answerStyle", "answer_style"),
+		ToolBudget:              runtimeStringField(runtime, "bounded", "toolBudget", "tool_budget"),
+		ReasoningSummary:        runtimeStringField(runtime, "enabled", "reasoningSummary", "reasoning_summary"),
+		ReasoningSummaryDisplay: runtimeStringField(runtime, "summary_only", "reasoningSummaryDisplay", "reasoning_summary_display"),
+		ShowRawReasoning:        runtimeBoolField(runtime, false, "showRawReasoning", "show_raw_reasoning"),
+	}
+}
+
+func (s AgentRuntimePromptSettings) ApplyToCompileContext(ctx promptcompiler.CompileContext) promptcompiler.CompileContext {
+	normalized := normalizeAgentRuntimePromptSettings(s)
+	ctx.PlanningPolicy = normalized.PlanningPolicy
+	ctx.EvidencePolicy = normalized.EvidencePolicy
+	ctx.AnswerStyle = normalized.AnswerStyle
+	ctx.ToolBudget = normalized.ToolBudget
+	ctx.ReasoningSummary = normalized.ReasoningSummary
+	ctx.ReasoningSummaryDisplay = normalized.ReasoningSummaryDisplay
+	ctx.ShowRawReasoning = normalized.ShowRawReasoning
+	return ctx
+}
+
+func normalizeAgentRuntimePromptSettings(settings AgentRuntimePromptSettings) AgentRuntimePromptSettings {
+	profile := store.AgentProfileRecord{
+		"runtime": map[string]any{
+			"model":                   settings.Model,
+			"reasoningEffort":         settings.ReasoningEffort,
+			"approvalPolicy":          settings.ApprovalPolicy,
+			"sandboxMode":             settings.SandboxMode,
+			"planningPolicy":          settings.PlanningPolicy,
+			"evidencePolicy":          settings.EvidencePolicy,
+			"answerStyle":             settings.AnswerStyle,
+			"toolBudget":              settings.ToolBudget,
+			"reasoningSummary":        settings.ReasoningSummary,
+			"reasoningSummaryDisplay": settings.ReasoningSummaryDisplay,
+			"showRawReasoning":        settings.ShowRawReasoning,
+		},
+	}
+	return AgentRuntimePromptSettingsFromProfile(profile)
+}
+
+func runtimeStringField(runtime map[string]any, fallback string, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := runtime[key]; ok {
+			text := strings.TrimSpace(fmt.Sprint(value))
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return fallback
+}
+
+func runtimeBoolField(runtime map[string]any, fallback bool, keys ...string) bool {
+	for _, key := range keys {
+		value, ok := runtime[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return typed
+		case string:
+			switch strings.ToLower(strings.TrimSpace(typed)) {
+			case "true", "1", "yes", "on":
+				return true
+			case "false", "0", "no", "off":
+				return false
+			}
+		}
+	}
+	return fallback
 }
 
 type ActionResult struct {

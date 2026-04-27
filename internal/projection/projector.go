@@ -74,6 +74,7 @@ func (p *Projector) Emit(event runtimekernel.LifecycleEvent) {
 		}
 
 	case runtimekernel.EventTurnStarted, runtimekernel.EventAssistantIntent, runtimekernel.EventAssistantFinalDelta,
+		runtimekernel.EventReasoningSummaryDelta, runtimekernel.EventReasoningSummaryCompleted,
 		runtimekernel.EventPhaseEnd, runtimekernel.EventProcessSummary, runtimekernel.EventTurnError, runtimekernel.EventTurnAborted:
 		for _, s := range p.subscribers {
 			if receiver, ok := s.(TurnLifecycleSubscriber); ok {
@@ -117,16 +118,21 @@ const (
 
 // ToolInvocation represents a tool execution lifecycle projection.
 type ToolInvocation struct {
-	ID        string               `json:"id"`
-	SessionID string               `json:"sessionId"`
-	TurnID    string               `json:"turnId"`
-	ToolName  string               `json:"toolName"`
-	Status    ToolInvocationStatus `json:"status"`
-	Args      json.RawMessage      `json:"args,omitempty"`
-	Result    string               `json:"result,omitempty"`
-	Error     string               `json:"error,omitempty"`
-	StartedAt time.Time            `json:"startedAt"`
-	EndedAt   *time.Time           `json:"endedAt,omitempty"`
+	ID              string               `json:"id"`
+	SessionID       string               `json:"sessionId"`
+	TurnID          string               `json:"turnId"`
+	ToolName        string               `json:"toolName"`
+	Status          ToolInvocationStatus `json:"status"`
+	Args            json.RawMessage      `json:"args,omitempty"`
+	Result          string               `json:"result,omitempty"`
+	OutputSummary   string               `json:"outputSummary,omitempty"`
+	OutputPreview   json.RawMessage      `json:"outputPreview,omitempty"`
+	RawRef          string               `json:"rawRef,omitempty"`
+	ResultBytes     int                  `json:"resultBytes,omitempty"`
+	ResultTruncated bool                 `json:"resultTruncated,omitempty"`
+	Error           string               `json:"error,omitempty"`
+	StartedAt       time.Time            `json:"startedAt"`
+	EndedAt         *time.Time           `json:"endedAt,omitempty"`
 }
 
 // ActivityStats represents runtime.activity aggregation projection.
@@ -134,6 +140,8 @@ type ToolInvocation struct {
 type ActivityStats struct {
 	SessionID      string `json:"sessionId"`
 	TurnID         string `json:"turnId"`
+	Iteration      int    `json:"iteration,omitempty"`
+	Stage          string `json:"stage,omitempty"`
 	SearchCount    int    `json:"searchCount"`
 	BrowseCount    int    `json:"browseCount"`
 	CommandCount   int    `json:"commandCount"`
@@ -180,13 +188,17 @@ type Approval struct {
 // Evidence represents an evidence record projection, independent from
 // assistant text (Req 7.5).
 type Evidence struct {
-	ID        string          `json:"id"`
-	SessionID string          `json:"sessionId"`
-	TurnID    string          `json:"turnId"`
-	Type      string          `json:"type"`
-	Summary   string          `json:"summary,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	CreatedAt time.Time       `json:"createdAt"`
+	ID         string          `json:"id"`
+	SessionID  string          `json:"sessionId"`
+	TurnID     string          `json:"turnId"`
+	Type       string          `json:"type"`
+	Title      string          `json:"title,omitempty"`
+	Summary    string          `json:"summary,omitempty"`
+	Source     string          `json:"source,omitempty"`
+	Confidence string          `json:"confidence,omitempty"`
+	RawRef     string          `json:"rawRef,omitempty"`
+	Data       json.RawMessage `json:"data,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // Snapshot represents a state snapshot projection.
@@ -211,17 +223,27 @@ func projectToolInvocation(event runtimekernel.LifecycleEvent) ToolInvocation {
 	// Extract payload fields if present.
 	if event.Payload != nil {
 		var payload struct {
-			ID       string          `json:"id"`
-			ToolName string          `json:"toolName"`
-			Args     json.RawMessage `json:"args"`
-			Result   string          `json:"result"`
-			Error    string          `json:"error"`
+			ID              string          `json:"id"`
+			ToolName        string          `json:"toolName"`
+			Args            json.RawMessage `json:"args"`
+			Result          string          `json:"result"`
+			OutputSummary   string          `json:"outputSummary"`
+			OutputPreview   json.RawMessage `json:"outputPreview"`
+			RawRef          string          `json:"rawRef"`
+			ResultBytes     int             `json:"resultBytes"`
+			ResultTruncated bool            `json:"resultTruncated"`
+			Error           string          `json:"error"`
 		}
 		_ = json.Unmarshal(event.Payload, &payload)
 		inv.ID = payload.ID
 		inv.ToolName = payload.ToolName
 		inv.Args = payload.Args
 		inv.Result = payload.Result
+		inv.OutputSummary = payload.OutputSummary
+		inv.OutputPreview = payload.OutputPreview
+		inv.RawRef = payload.RawRef
+		inv.ResultBytes = payload.ResultBytes
+		inv.ResultTruncated = payload.ResultTruncated
 		inv.Error = payload.Error
 	}
 
@@ -319,15 +341,23 @@ func projectEvidence(event runtimekernel.LifecycleEvent) Evidence {
 	}
 	if event.Payload != nil {
 		var payload struct {
-			ID      string          `json:"id"`
-			Type    string          `json:"type"`
-			Summary string          `json:"summary"`
-			Data    json.RawMessage `json:"data"`
+			ID         string          `json:"id"`
+			Type       string          `json:"type"`
+			Title      string          `json:"title"`
+			Summary    string          `json:"summary"`
+			Source     string          `json:"source"`
+			Confidence string          `json:"confidence"`
+			RawRef     string          `json:"rawRef"`
+			Data       json.RawMessage `json:"data"`
 		}
 		_ = json.Unmarshal(event.Payload, &payload)
 		evidence.ID = payload.ID
 		evidence.Type = payload.Type
+		evidence.Title = payload.Title
 		evidence.Summary = payload.Summary
+		evidence.Source = payload.Source
+		evidence.Confidence = payload.Confidence
+		evidence.RawRef = payload.RawRef
 		evidence.Data = payload.Data
 	}
 	return evidence

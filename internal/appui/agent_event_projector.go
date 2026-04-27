@@ -3,6 +3,7 @@ package appui
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type AgentEventProjector struct{}
@@ -47,6 +48,10 @@ func (p *AgentEventProjector) Apply(proj AgentEventProjection, event AgentEvent)
 		proj = applyPlanEventToProjection(proj, event)
 	case AgentEventEvidence:
 		proj = applyEvidenceEventToProjection(proj, event)
+	case AgentEventReasoning:
+		proj = applyReasoningEventToProjection(proj, event)
+	case AgentEventSystem:
+		proj = applySystemEventToProjection(proj, event)
 	case AgentEventDiff:
 		proj = applyDiffEventToProjection(proj, event)
 	case AgentEventArtifact:
@@ -325,19 +330,20 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 func applyPlanEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
 	var payload PlanPayload
 	decodeAgentEventPayload(event.Payload, &payload)
+	steps := normalizePlanStepsForProjection(payload.Steps)
 	id := event.EventID
 	if event.TurnID != "" {
 		id = event.TurnID + ":plan"
 	}
 	summary := ""
-	for _, step := range payload.Steps {
+	for _, step := range steps {
 		if step.Status == "running" {
 			summary = step.Text
 			break
 		}
 	}
-	if summary == "" && len(payload.Steps) > 0 {
-		summary = payload.Steps[len(payload.Steps)-1].Text
+	if summary == "" && len(steps) > 0 {
+		summary = steps[len(steps)-1].Text
 	}
 	row := TimelineEntry{
 		ID:           id,
@@ -350,6 +356,7 @@ func applyPlanEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 		Visibility:   event.Visibility,
 		Title:        payload.Title,
 		Summary:      summary,
+		Steps:        steps,
 		Foldable:     true,
 		AutoCollapse: event.Status == AgentEventStatusCompleted,
 		Collapsed:    event.Status == AgentEventStatusCompleted,
@@ -361,6 +368,34 @@ func applyPlanEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
 	}
 	return proj
+}
+
+func normalizePlanStepsForProjection(steps []PlanStep) []PlanStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]PlanStep, 0, len(steps))
+	runningSeen := false
+	for _, step := range steps {
+		next := step
+		status := strings.ToLower(strings.TrimSpace(next.Status))
+		switch status {
+		case "in_progress":
+			status = "running"
+		case "":
+			status = "pending"
+		}
+		if status == "running" {
+			if runningSeen {
+				status = "pending"
+			} else {
+				runningSeen = true
+			}
+		}
+		next.Status = status
+		out = append(out, next)
+	}
+	return out
 }
 
 func applyEvidenceEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
@@ -386,6 +421,76 @@ func applyEvidenceEventToProjection(proj AgentEventProjection, event AgentEvent)
 		Title:       title,
 		Summary:     payload.Summary,
 		RawRef:      payload.RawRef,
+		UpdatedAt:   event.CreatedAt,
+		Seq:         event.Seq,
+	}
+	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
+	if event.TurnID != "" {
+		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
+	}
+	return proj
+}
+
+func applyReasoningEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	var payload ReasoningPayload
+	decodeAgentEventPayload(event.Payload, &payload)
+	id := payload.ItemID
+	if id == "" {
+		id = event.EventID
+	}
+	title := "正在思考"
+	if event.Phase == AgentEventPhaseCompleted || event.Status == AgentEventStatusCompleted {
+		title = "思考摘要"
+	}
+	summary := payload.Summary
+	if summary == "" {
+		summary = payload.Delta
+	}
+	foldable := payload.Foldable || event.Phase == AgentEventPhaseCompleted || event.Status == AgentEventStatusCompleted
+	autoCollapse := payload.AutoCollapse || event.Phase == AgentEventPhaseCompleted || event.Status == AgentEventStatusCompleted
+	row := TimelineEntry{
+		ID:           id,
+		Kind:         event.Kind,
+		TurnID:       event.TurnID,
+		AgentID:      event.AgentID,
+		DisplayKind:  "reasoning.summary",
+		Phase:        event.Phase,
+		Status:       event.Status,
+		Visibility:   event.Visibility,
+		Title:        title,
+		Summary:      summary,
+		Foldable:     foldable,
+		AutoCollapse: autoCollapse,
+		Collapsed:    autoCollapse && event.Status == AgentEventStatusCompleted,
+		UpdatedAt:    event.CreatedAt,
+		Seq:          event.Seq,
+	}
+	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
+	if event.TurnID != "" {
+		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
+	}
+	return proj
+}
+
+func applySystemEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	var payload SystemPayload
+	decodeAgentEventPayload(event.Payload, &payload)
+	id := payload.ID
+	if id == "" {
+		id = event.EventID
+	}
+	row := TimelineEntry{
+		ID:          id,
+		Kind:        event.Kind,
+		TurnID:      event.TurnID,
+		AgentID:     event.AgentID,
+		DisplayKind: payload.DisplayKind,
+		Phase:       event.Phase,
+		Status:      event.Status,
+		Visibility:  event.Visibility,
+		Title:       payload.Title,
+		Summary:     payload.Summary,
+		Detail:      payload.Detail,
 		UpdatedAt:   event.CreatedAt,
 		Seq:         event.Seq,
 	}

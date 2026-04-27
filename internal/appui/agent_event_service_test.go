@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/store"
 )
 
 func serviceTestEvent(sessionID, eventID string, seq int64) AgentEvent {
@@ -116,6 +118,86 @@ func TestAgentEventServiceReplayReturnsEventsAfterSeq(t *testing.T) {
 	}
 	if len(events) != 2 || events[0].EventID != "evt-2" || events[1].EventID != "evt-3" {
 		t.Fatalf("Replay(after 1) = %+v, want evt-2 and evt-3", events)
+	}
+}
+
+func TestAgentEventServiceAppendContinuesSeqAfterRepositoryRestart(t *testing.T) {
+	ctx := context.Background()
+	dataStore, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+
+	firstService := NewAgentEventService(dataStore)
+	first, err := firstService.Append(ctx, serviceTestEvent("session-a", "evt-a-1", 0))
+	if err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if first.Seq != 1 {
+		t.Fatalf("first seq = %d, want 1", first.Seq)
+	}
+
+	restartedService := NewAgentEventService(dataStore)
+	second, err := restartedService.Append(ctx, serviceTestEvent("session-a", "evt-a-2", 0))
+	if err != nil {
+		t.Fatalf("Append(second after restart) error = %v", err)
+	}
+	if second.Seq != 2 {
+		t.Fatalf("second seq after restart = %d, want 2", second.Seq)
+	}
+
+	replayed, err := restartedService.Replay(ctx, "session-a", 0)
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	if len(replayed) != 2 || replayed[0].EventID != "evt-a-1" || replayed[1].EventID != "evt-a-2" {
+		t.Fatalf("Replay() after restart = %+v, want persisted evt-a-1 and evt-a-2", replayed)
+	}
+}
+
+func TestAgentEventServiceSubscribeBackfillsRepositoryEventsAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	dataStore, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	firstService := NewAgentEventService(dataStore)
+	if _, err := firstService.Append(ctx, serviceTestEvent("session-a", "evt-a-1", 0)); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+
+	restartedService := NewAgentEventService(dataStore)
+	ch, unsubscribe := restartedService.Subscribe(ctx, "session-a", 0)
+	defer unsubscribe()
+
+	select {
+	case event := <-ch:
+		if event.EventID != "evt-a-1" || event.Seq != 1 {
+			t.Fatalf("backfilled event = %+v, want persisted evt-a-1 seq 1", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for repository-backed subscribe backlog")
+	}
+}
+
+func TestNewServicesWithStorePersistsAgentEvents(t *testing.T) {
+	ctx := context.Background()
+	dataStore, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	services := NewServices(runtimeStub{}, nil, WithStore(dataStore))
+	appended, err := services.AgentEventService().Append(ctx, serviceTestEvent("session-a", "evt-a-1", 0))
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	persisted, err := dataStore.ListAgentEvents("session-a", 0)
+	if err != nil {
+		t.Fatalf("ListAgentEvents() error = %v", err)
+	}
+	if len(persisted) != 1 || persisted[0].EventID != appended.EventID || persisted[0].Seq != appended.Seq {
+		t.Fatalf("persisted events = %+v, want appended %+v", persisted, appended)
 	}
 }
 

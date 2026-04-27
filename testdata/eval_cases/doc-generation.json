@@ -1,0 +1,12 @@
+{
+  "id": "doc-generation",
+  "category": "文档生成",
+  "input": "为本地 Agent Eval 框架生成一段简短使用说明，需要包含 case JSON、runner 参数、baseline 流程和 smoke 命令。",
+  "expected": {
+    "mustInclude": ["case JSON", "baseline", "mock agent", "smoke"],
+    "mustNotInclude": ["以后再补", "略"],
+    "expectedToolCalls": [],
+    "mustMentionFiles": ["README.md"]
+  },
+  "scoreRules": {}
+}

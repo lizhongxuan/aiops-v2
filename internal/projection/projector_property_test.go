@@ -138,6 +138,21 @@ func genLifecycleEvent() *rapid.Generator[runtimekernel.LifecycleEvent] {
 		case runtimekernel.EventToolStarted, runtimekernel.EventToolProgress,
 			runtimekernel.EventToolCompleted, runtimekernel.EventToolFailed:
 			payload = genToolPayload().Draw(t, "payload")
+		case runtimekernel.EventReasoningSummaryDelta:
+			payload, _ = json.Marshal(map[string]interface{}{
+				"itemId":       rapid.StringMatching(`reasoning-[a-z0-9]{4}`).Draw(t, "reasoningID"),
+				"summaryIndex": 0,
+				"delta":        "我会先查看项目结构。",
+				"summary":      "我会先查看项目结构。",
+			})
+		case runtimekernel.EventReasoningSummaryCompleted:
+			payload, _ = json.Marshal(map[string]interface{}{
+				"itemId":       rapid.StringMatching(`reasoning-[a-z0-9]{4}`).Draw(t, "reasoningID"),
+				"summaryIndex": 0,
+				"summary":      "已确认需要检查项目结构和事件流实现。",
+				"foldable":     true,
+				"autoCollapse": true,
+			})
 		case runtimekernel.EventActivityUpdate:
 			payload = genActivityPayload().Draw(t, "payload")
 		case runtimekernel.EventCardGenerated:
@@ -260,6 +275,7 @@ func TestProperty19_LifecycleEventProjectionClassification(t *testing.T) {
 		case runtimekernel.EventTurnComplete:
 			expected = cbSnapshot
 		case runtimekernel.EventTurnStarted, runtimekernel.EventAssistantIntent, runtimekernel.EventAssistantFinalDelta,
+			runtimekernel.EventReasoningSummaryDelta, runtimekernel.EventReasoningSummaryCompleted,
 			runtimekernel.EventPhaseEnd, runtimekernel.EventProcessSummary, runtimekernel.EventTurnError, runtimekernel.EventTurnAborted:
 			expected = cbRuntimeLifecycle
 		default:

@@ -1,0 +1,12 @@
+{
+  "id": "tool-calling",
+  "category": "工具调用",
+  "input": "请说明需要调用哪些本地工具完成 eval smoke，并要求保存 tool_calls.json 和 report.json。",
+  "expected": {
+    "mustInclude": ["read_file", "run_command", "tool_calls.json", "report.json"],
+    "mustNotInclude": ["不需要工具", "手工判断即可"],
+    "expectedToolCalls": ["read_file", "run_command"],
+    "mustMentionFiles": ["testdata/eval_cases"]
+  },
+  "scoreRules": {}
+}

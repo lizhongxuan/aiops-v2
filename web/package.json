@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:ui": "playwright test",
+    "test:ui:snapshots": "playwright test chat-ui-snapshot.spec.js --project=chromium",
+    "test:ui:snapshots:update": "playwright test chat-ui-snapshot.spec.js --project=chromium --update-snapshots"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

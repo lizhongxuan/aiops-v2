@@ -353,17 +353,26 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 	}
 	content := toolResult.Content
+	outputSummary, resultForEvent, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, content)
 
 	// Emit tool.completed event
-	completedPayload, _ := json.Marshal(map[string]any{
+	completedPayloadMap := map[string]any{
 		"id":                tc.ID,
 		"toolName":          tc.Name,
 		"args":              tc.Arguments,
-		"result":            content,
+		"result":            resultForEvent,
+		"outputSummary":     outputSummary,
+		"rawRef":            rawRef,
+		"resultBytes":       resultBytes,
+		"resultTruncated":   resultTruncated,
 		"additionalContext": append([]string(nil), toolEvent.AdditionalContext...),
 		"watchPaths":        append([]string(nil), toolEvent.WatchPaths...),
 		"hiddenTools":       append([]string(nil), toolEvent.HideTools...),
-	})
+	}
+	if len(outputPreview) > 0 {
+		completedPayloadMap["outputPreview"] = outputPreview
+	}
+	completedPayload, _ := json.Marshal(completedPayloadMap)
 	d.projector.Emit(LifecycleEvent{
 		Type:      EventToolCompleted,
 		SessionID: sessionID,
@@ -506,10 +515,19 @@ func (cb *RunnerCallback) OnToolStart(toolName string, args json.RawMessage) {
 
 // OnToolComplete is called when a tool execution completes successfully.
 func (cb *RunnerCallback) OnToolComplete(toolName, result string) {
-	payload, _ := json.Marshal(map[string]string{
-		"toolName": toolName,
-		"result":   result,
-	})
+	outputSummary, resultForEvent, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(cb.turnID, toolName, result)
+	payloadMap := map[string]any{
+		"toolName":        toolName,
+		"result":          resultForEvent,
+		"outputSummary":   outputSummary,
+		"rawRef":          rawRef,
+		"resultBytes":     resultBytes,
+		"resultTruncated": resultTruncated,
+	}
+	if len(outputPreview) > 0 {
+		payloadMap["outputPreview"] = outputPreview
+	}
+	payload, _ := json.Marshal(payloadMap)
 	cb.projector.Emit(LifecycleEvent{
 		Type:      EventToolCompleted,
 		SessionID: cb.sessionID,

@@ -946,29 +946,33 @@ func (c RuntimeContext) Validate() error {
 type EventType string
 
 const (
-	EventTurnStarted         EventType = "turn.started"
-	EventAssistantIntent     EventType = "assistant.intent.delta"
-	EventAssistantFinalDelta EventType = "assistant.final.delta"
-	EventToolStarted         EventType = "tool.started"
-	EventToolProgress        EventType = "tool.progress"
-	EventToolCompleted       EventType = "tool.completed"
-	EventToolFailed          EventType = "tool.failed"
-	EventPhaseEnd            EventType = "phase.end"
-	EventProcessSummary      EventType = "process.summary"
-	EventApprovalNeeded      EventType = "approval.needed"
-	EventApprovalDecided     EventType = "approval.decided"
-	EventEvidenceCollected   EventType = "evidence.collected"
-	EventTurnComplete        EventType = "turn.complete"
-	EventTurnError           EventType = "turn.error"
-	EventTurnAborted         EventType = "turn.aborted"
-	EventActivityUpdate      EventType = "activity.update"
-	EventCardGenerated       EventType = "card.generated"
+	EventTurnStarted               EventType = "turn.started"
+	EventAssistantIntent           EventType = "assistant.intent.delta"
+	EventAssistantFinalDelta       EventType = "assistant.final.delta"
+	EventReasoningSummaryDelta     EventType = "reasoning.summary.delta"
+	EventReasoningSummaryCompleted EventType = "reasoning.summary.completed"
+	EventToolStarted               EventType = "tool.started"
+	EventToolProgress              EventType = "tool.progress"
+	EventToolCompleted             EventType = "tool.completed"
+	EventToolFailed                EventType = "tool.failed"
+	EventPhaseEnd                  EventType = "phase.end"
+	EventProcessSummary            EventType = "process.summary"
+	EventApprovalNeeded            EventType = "approval.needed"
+	EventApprovalDecided           EventType = "approval.decided"
+	EventEvidenceCollected         EventType = "evidence.collected"
+	EventTurnComplete              EventType = "turn.complete"
+	EventTurnError                 EventType = "turn.error"
+	EventTurnAborted               EventType = "turn.aborted"
+	EventActivityUpdate            EventType = "activity.update"
+	EventCardGenerated             EventType = "card.generated"
 )
 
 var allEventTypes = []EventType{
 	EventTurnStarted,
 	EventAssistantIntent,
 	EventAssistantFinalDelta,
+	EventReasoningSummaryDelta,
+	EventReasoningSummaryCompleted,
 	EventToolStarted,
 	EventToolProgress,
 	EventToolCompleted,
@@ -996,6 +1000,7 @@ func AllEventTypes() []EventType {
 func (e EventType) IsValid() bool {
 	switch e {
 	case EventTurnStarted, EventAssistantIntent, EventAssistantFinalDelta,
+		EventReasoningSummaryDelta, EventReasoningSummaryCompleted,
 		EventToolStarted, EventToolProgress, EventToolCompleted, EventToolFailed,
 		EventPhaseEnd, EventProcessSummary,
 		EventApprovalNeeded, EventApprovalDecided, EventEvidenceCollected,

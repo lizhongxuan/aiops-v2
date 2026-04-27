@@ -89,6 +89,7 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	constraints = append(constraints, "For non-trivial or tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.")
 	constraints = append(constraints, "For current or latest factual requests, use precise self-contained web_search queries, verify recency, and cite source URLs in the final answer.")
 	constraints = append(constraints, "When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
+	constraints = append(constraints, agentProfileConstraints(ctx)...)
 
 	// Mode-specific constraints
 	switch ctx.Mode {
@@ -114,5 +115,27 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 		constraints = append(constraints, "Coordinate worker agents, do not execute host operations directly.")
 	}
 
+	return constraints
+}
+
+func agentProfileConstraints(ctx CompileContext) []string {
+	var constraints []string
+	if strings.TrimSpace(ctx.PlanningPolicy) != "" {
+		constraints = append(constraints, "Use structured plan events for complex, tool, and AIOps/RCA tasks.")
+	}
+	if strings.TrimSpace(ctx.EvidencePolicy) != "" {
+		constraints = append(constraints, "Evidence must come from tool results or be explicitly marked as inference.")
+	}
+	if strings.TrimSpace(ctx.AnswerStyle) != "" {
+		constraints = append(constraints, "For AIOps/RCA answers, prefer concise sections for root cause, evidence, impact, and next steps.")
+	}
+	if strings.TrimSpace(ctx.ToolBudget) != "" {
+		constraints = append(constraints, "Keep tool results within the configured budget; summarize large outputs and reference raw artifacts instead of pasting them.")
+	}
+	if ctx.ShowRawReasoning {
+		constraints = append(constraints, "Raw reasoning display is debug-only and must never be shown in normal user-facing chat.")
+	} else if strings.TrimSpace(ctx.ReasoningSummary) != "" || strings.TrimSpace(ctx.ReasoningSummaryDisplay) != "" {
+		constraints = append(constraints, "Show only reasoning summary to the user; do not expose raw chain-of-thought.")
+	}
 	return constraints
 }

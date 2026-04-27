@@ -345,6 +345,21 @@ const hasProjectionRows = computed(() =>
       projectionDiffSummary.value,
   ),
 );
+const projectionTerminalMessage = computed(() => {
+  const currentTurnId = compactText(activeAgentProjection.value?.currentTurnId || store.runtime.turn.turnId || store.runtime.turn.clientTurnId || "");
+  const rows = projectionTimelineRows.value.filter((row) => row?.kind === "turn");
+  const terminalRows = rows.filter((row) => {
+    const status = compactText(row?.status).toLowerCase();
+    const phase = compactText(row?.phase).toLowerCase();
+    return status === "failed" || status === "canceled" || phase === "failed" || phase === "canceled";
+  });
+  const matchesCurrent = (row) => {
+    if (!currentTurnId) return true;
+    return [row?.turnId, row?.clientTurnId, row?.id].map((value) => compactText(value)).includes(currentTurnId);
+  };
+  const row = [...terminalRows].reverse().find(matchesCurrent) || terminalRows[terminalRows.length - 1] || null;
+  return compactText(row?.summary || row?.detail);
+});
 const chatRuntimeBusy = computed(() => projectionRuntimeBusy.value || store.sending);
 const chatRuntimePhase = computed(() => {
   const status = compactText(projectionRuntimeStatus.value || "idle").toLowerCase();
@@ -1029,6 +1044,7 @@ const activeStreamingFinalMessageVisible = computed(() => {
 const mainChatActiveProcess = computed(() => {
   const terminalPhase = compactText(chatRuntimePhase.value).toLowerCase();
   const terminalState = terminalPhase === "failed" || terminalPhase === "aborted";
+  const terminalMessage = compactText(store.errorMessage || projectionTerminalMessage.value);
   const turnRunning = showThinkingCard.value || chatRuntimeBusy.value;
   const completed = !turnRunning || activeStreamingFinalMessageVisible.value;
   const latestUserCard = [...streamCards.value].reverse().find((card) => isUserConversationCard(card)) || null;
@@ -1040,7 +1056,7 @@ const mainChatActiveProcess = computed(() => {
     latestUserCard?.clientTurnId,
   ].map((value) => compactText(value)).filter(Boolean);
   let items = buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
-  const terminalStatusItem = buildTerminalStatusItem(terminalPhase, store.errorMessage);
+  const terminalStatusItem = buildTerminalStatusItem(terminalPhase, terminalMessage);
   if (terminalState && terminalStatusItem && !items.some((item) => item.id === terminalStatusItem.id)) {
     items = [...items, terminalStatusItem];
   }
@@ -1058,7 +1074,7 @@ const mainChatActiveProcess = computed(() => {
     summary: terminalState ? "" : (completed ? (activitySummary.value || "") : (summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""))),
     items,
     elapsedLabel: workingElapsedLabel.value,
-    statusCard: buildTerminalStatusCard(terminalPhase, store.errorMessage, workingElapsedLabel.value),
+    statusCard: buildTerminalStatusCard(terminalPhase, terminalMessage, workingElapsedLabel.value),
   };
 });
 

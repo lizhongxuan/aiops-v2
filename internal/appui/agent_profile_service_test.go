@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/store"
 )
 
@@ -70,10 +71,17 @@ func testAgentProfileRecord(id, name, profileType string) store.AgentProfileReco
 		"type":        profileType,
 		"description": fmt.Sprintf("%s description", name),
 		"runtime": map[string]any{
-			"model":           "gpt-5.4",
-			"reasoningEffort": "medium",
-			"approvalPolicy":  "untrusted",
-			"sandboxMode":     "workspace-write",
+			"model":                   "gpt-5.4",
+			"reasoningEffort":         "medium",
+			"approvalPolicy":          "untrusted",
+			"sandboxMode":             "workspace-write",
+			"planningPolicy":          "structured_events",
+			"evidencePolicy":          "tool_sourced",
+			"answerStyle":             "aiops_rca",
+			"toolBudget":              "bounded",
+			"reasoningSummary":        "enabled",
+			"reasoningSummaryDisplay": "summary_only",
+			"showRawReasoning":        false,
 		},
 		"systemPrompt": map[string]any{
 			"content": "line one\nline two",
@@ -99,6 +107,29 @@ func testAgentProfileRecord(id, name, profileType string) store.AgentProfileReco
 			map[string]any{"id": "filesystem", "name": "Filesystem MCP", "enabled": true, "permission": "readonly"},
 			map[string]any{"id": "docs", "name": "Docs MCP", "enabled": true, "permission": "readonly"},
 		},
+	}
+}
+
+func TestAgentRuntimePromptSettingsFromProfileAppliesCompileContext(t *testing.T) {
+	profile := testAgentProfileRecord("main-agent", "Primary Agent", "main-agent")
+	runtime := AgentRuntimePromptSettingsFromProfile(profile)
+
+	ctx := runtime.ApplyToCompileContext(promptcompiler.CompileContext{
+		SessionType: "host",
+		Mode:        "execute",
+	})
+
+	if ctx.PlanningPolicy != "structured_events" {
+		t.Fatalf("PlanningPolicy = %q, want structured_events", ctx.PlanningPolicy)
+	}
+	if ctx.EvidencePolicy != "tool_sourced" || ctx.AnswerStyle != "aiops_rca" || ctx.ToolBudget != "bounded" {
+		t.Fatalf("compile context prompt policies = %+v, want profile runtime policies", ctx)
+	}
+	if ctx.ReasoningSummary != "enabled" || ctx.ReasoningSummaryDisplay != "summary_only" {
+		t.Fatalf("compile context reasoning summary = %+v, want summary_only enabled", ctx)
+	}
+	if ctx.ShowRawReasoning {
+		t.Fatalf("ShowRawReasoning = true, want false by default")
 	}
 }
 

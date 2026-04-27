@@ -236,7 +236,7 @@ func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnaps
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		k.projector.Emit(LifecycleEvent{
-			Type:      EventTurnComplete,
+			Type:      EventTurnAborted,
 			SessionID: session.ID,
 			TurnID:    snapshot.ID,
 			Timestamp: now,
@@ -894,6 +894,9 @@ func (k *EinoKernel) runHostIterationLoop(
 		if len(additionalContext) > 0 {
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, additionalContext...)
 		}
+		if evidencePrompt := evidenceAwareFinalAnswerPromptAsset(snapshot); evidencePrompt != "" {
+			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, evidencePrompt)
+		}
 		compileCtx.EvidenceReminders = compileEvidenceReminders(req.Mode, session.PendingEvidence)
 		compileCtx.ToolDelta = iterationToolDelta(snapshot, compileCtx.AssembledTools)
 		compiled, compileErr := k.compiler.Compile(compileCtx)
@@ -911,13 +914,55 @@ func (k *EinoKernel) runHostIterationLoop(
 		if modelErr != nil {
 			return "", nil, modelErr
 		}
+		reasoningSummaries := map[string]modelrouter.ReasoningStreamEvent{}
+		reasoningOrder := make([]string, 0, 2)
 		response, genErr := generateModelResponse(ctx, chatModel, modelInput, toolPool, func(delta string) {
 			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
 				"text": delta,
 			})
+		}, func(event modelrouter.ReasoningStreamEvent) {
+			if event.Raw || event.PartAdded || strings.TrimSpace(event.Delta) == "" {
+				return
+			}
+			key := reasoningSummaryKey(event)
+			current, found := reasoningSummaries[key]
+			if !found {
+				current = event
+				current.Delta = ""
+				reasoningOrder = append(reasoningOrder, key)
+			}
+			current.Delta = event.Delta
+			current.Summary += event.Delta
+			current.ItemID = event.ItemID
+			current.ThreadID = event.ThreadID
+			current.TurnID = event.TurnID
+			current.SummaryIndex = event.SummaryIndex
+			current.Method = event.Method
+			reasoningSummaries[key] = current
+			k.emitRuntimeEvent(EventReasoningSummaryDelta, session.ID, turnID, map[string]any{
+				"itemId":       reasoningItemID(event),
+				"summaryIndex": event.SummaryIndex,
+				"delta":        event.Delta,
+				"summary":      current.Summary,
+				"foldable":     true,
+			})
 		})
 		if genErr != nil {
 			return "", nil, genErr
+		}
+		for _, key := range reasoningOrder {
+			event := reasoningSummaries[key]
+			summary := strings.TrimSpace(event.Summary)
+			if summary == "" {
+				continue
+			}
+			k.emitRuntimeEvent(EventReasoningSummaryCompleted, session.ID, turnID, map[string]any{
+				"itemId":       reasoningItemID(event),
+				"summaryIndex": event.SummaryIndex,
+				"summary":      summary,
+				"foldable":     true,
+				"autoCollapse": true,
+			})
 		}
 
 		checkpoint := newCheckpointMetadata(session.ID, turnID, iteration, len(snapshot.Iterations)+1, "assistant_response", TurnLifecycleRunning, TurnResumeStateNone)
@@ -1084,6 +1129,63 @@ func synthesisOnlyPromptAsset(toolDispatches int) string {
 		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户完整回答；如果证据不足，明确说明限制，不要等待更多工具。",
 		toolDispatches,
 	)
+}
+
+func evidenceAwareFinalAnswerPromptAsset(snapshot *TurnSnapshot) string {
+	summaries := collectedToolEvidenceSummaries(snapshot, 8)
+	if len(summaries) == 0 {
+		return ""
+	}
+	lines := []string{
+		"## Evidence-aware final answer",
+		"Use the collected tool evidence summaries below when preparing the final answer. Do not invent evidence; if evidence is incomplete, state the limitation briefly.",
+		"",
+		"Collected evidence summaries:",
+	}
+	lines = append(lines, summaries...)
+	lines = append(lines,
+		"",
+		"For AIOps/RCA or incident-analysis requests, structure the final answer with these exact section labels:",
+		"根因：",
+		"证据：",
+		"影响面：",
+		"下一步：",
+	)
+	return strings.Join(lines, "\n")
+}
+
+func collectedToolEvidenceSummaries(snapshot *TurnSnapshot, limit int) []string {
+	if snapshot == nil || limit <= 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	seen := map[string]bool{}
+	for _, iteration := range snapshot.Iterations {
+		for _, result := range iteration.ToolResults {
+			if len(out) >= limit {
+				return out
+			}
+			text := strings.TrimSpace(result.Summary)
+			if text == "" {
+				text = firstNonEmptyLine(result.Content)
+			}
+			if text == "" {
+				continue
+			}
+			text = truncateRunes(text, 220)
+			key := strings.TrimSpace(result.ToolCallID + ":" + text)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			label := strings.TrimSpace(result.ToolCallID)
+			if label == "" {
+				label = fmt.Sprintf("tool-%d", len(out)+1)
+			}
+			out = append(out, fmt.Sprintf("- %s: %s", label, text))
+		}
+	}
+	return out
 }
 
 func toolIntentPrelude(userInput string, assistantMsg Message) string {
@@ -1470,6 +1572,7 @@ func generateModelResponse(
 	input []*schema.Message,
 	toolPool []tool.BaseTool,
 	onFinalDelta func(string),
+	onReasoning func(modelrouter.ReasoningStreamEvent),
 ) (*schema.Message, error) {
 	toolInfos, err := toolInfosFromPool(ctx, toolPool)
 	if err != nil {
@@ -1491,6 +1594,15 @@ func generateModelResponse(
 			}
 			if msg == nil {
 				continue
+			}
+			if onReasoning != nil && len(msg.Extra) > 0 {
+				event, err := modelrouter.ParseOpenAIReasoningExtra(msg.Extra, false)
+				if err != nil {
+					return nil, err
+				}
+				if event != nil {
+					onReasoning(*event)
+				}
 			}
 			if onFinalDelta != nil && strings.TrimSpace(msg.Content) != "" {
 				onFinalDelta(msg.Content)
@@ -1531,6 +1643,23 @@ func modelOptionsForTools(toolInfos []*schema.ToolInfo) []einomodel.Option {
 		einomodel.WithTools(toolInfos),
 		einomodel.WithToolChoice(schema.ToolChoiceAllowed),
 	}
+}
+
+func reasoningSummaryKey(event modelrouter.ReasoningStreamEvent) string {
+	itemID := reasoningItemID(event)
+	return fmt.Sprintf("%s:%d", itemID, event.SummaryIndex)
+}
+
+func reasoningItemID(event modelrouter.ReasoningStreamEvent) string {
+	itemID := strings.TrimSpace(event.ItemID)
+	if itemID != "" {
+		return itemID
+	}
+	turnID := strings.TrimSpace(event.TurnID)
+	if turnID == "" {
+		turnID = "turn"
+	}
+	return fmt.Sprintf("%s:reasoning:%d", turnID, event.SummaryIndex)
 }
 
 func isEmptyAssistantResponse(msg *schema.Message) bool {

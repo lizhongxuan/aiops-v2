@@ -2,7 +2,9 @@ package modelrouter
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/components/model"
@@ -29,6 +31,113 @@ type OpenAIConfig struct {
 
 	// MaxTokens limits the response length.
 	MaxTokens int
+}
+
+const (
+	ReasoningSummaryTextDeltaMethod = "item/reasoning/summaryTextDelta"
+	ReasoningSummaryPartAddedMethod = "item/reasoning/summaryPartAdded"
+	ReasoningTextDeltaMethod        = "item/reasoning/textDelta"
+)
+
+type ReasoningStreamEvent struct {
+	Method       string
+	ThreadID     string
+	TurnID       string
+	ItemID       string
+	SummaryIndex int
+	ContentIndex int
+	Delta        string
+	Summary      string
+	PartAdded    bool
+	Raw          bool
+}
+
+type openAIReasoningEnvelope struct {
+	Method string `json:"method"`
+	Params struct {
+		ThreadID     string `json:"threadId"`
+		TurnID       string `json:"turnId"`
+		ItemID       string `json:"itemId"`
+		SummaryIndex int    `json:"summaryIndex"`
+		ContentIndex int    `json:"contentIndex"`
+		Delta        string `json:"delta"`
+	} `json:"params"`
+}
+
+func ParseOpenAIReasoningEvent(raw []byte, showRawReasoning bool) (*ReasoningStreamEvent, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var envelope openAIReasoningEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return nil, err
+	}
+	method := strings.TrimSpace(envelope.Method)
+	switch method {
+	case ReasoningSummaryTextDeltaMethod:
+		return &ReasoningStreamEvent{
+			Method:       method,
+			ThreadID:     envelope.Params.ThreadID,
+			TurnID:       envelope.Params.TurnID,
+			ItemID:       envelope.Params.ItemID,
+			SummaryIndex: envelope.Params.SummaryIndex,
+			Delta:        envelope.Params.Delta,
+		}, nil
+	case ReasoningSummaryPartAddedMethod:
+		return &ReasoningStreamEvent{
+			Method:       method,
+			ThreadID:     envelope.Params.ThreadID,
+			TurnID:       envelope.Params.TurnID,
+			ItemID:       envelope.Params.ItemID,
+			SummaryIndex: envelope.Params.SummaryIndex,
+			PartAdded:    true,
+		}, nil
+	case ReasoningTextDeltaMethod:
+		if !showRawReasoning {
+			return nil, nil
+		}
+		return &ReasoningStreamEvent{
+			Method:       method,
+			ThreadID:     envelope.Params.ThreadID,
+			TurnID:       envelope.Params.TurnID,
+			ItemID:       envelope.Params.ItemID,
+			ContentIndex: envelope.Params.ContentIndex,
+			Delta:        envelope.Params.Delta,
+			Raw:          true,
+		}, nil
+	default:
+		return nil, nil
+	}
+}
+
+func ParseOpenAIReasoningExtra(extra map[string]any, showRawReasoning bool) (*ReasoningStreamEvent, error) {
+	if len(extra) == 0 {
+		return nil, nil
+	}
+	if method, _ := extra["method"].(string); strings.HasPrefix(method, "item/reasoning/") {
+		raw, err := json.Marshal(extra)
+		if err != nil {
+			return nil, err
+		}
+		return ParseOpenAIReasoningEvent(raw, showRawReasoning)
+	}
+	for _, key := range []string{"openai_event", "event", "raw_event"} {
+		value, ok := extra[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			return ParseOpenAIReasoningEvent([]byte(typed), showRawReasoning)
+		case map[string]any:
+			raw, err := json.Marshal(typed)
+			if err != nil {
+				return nil, err
+			}
+			return ParseOpenAIReasoningEvent(raw, showRawReasoning)
+		}
+	}
+	return nil, nil
 }
 
 // NewOpenAIChatModel creates a real OpenAI ChatModel instance using eino-ext.

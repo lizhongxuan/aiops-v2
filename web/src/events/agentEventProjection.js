@@ -88,6 +88,7 @@ function currentProjectionTurnIds(projection) {
 function isActivityRow(row) {
   return (
     row?.kind === "assistant" ||
+    row?.kind === "reasoning" ||
     row?.kind === "tool" ||
     row?.kind === "agent" ||
     row?.kind === "plan" ||
@@ -130,6 +131,18 @@ function formatProjectionActivityLine(row = {}) {
       updatedAt: row?.updatedAt || "",
     };
   }
+  if (row?.kind === "reasoning") {
+    const completed = status === "completed";
+    return {
+      id: compactText(row?.id),
+      kind: "reasoning",
+      text: compactText(`${completed ? "思考摘要" : "正在思考"}：${summary || title}`),
+      status,
+      turnId: compactText(row?.turnId),
+      clientTurnId: compactText(row?.clientTurnId),
+      updatedAt: row?.updatedAt || "",
+    };
+  }
   if (row?.kind === "evidence") {
     return {
       id: compactText(row?.id),
@@ -148,6 +161,12 @@ function formatProjectionActivityLine(row = {}) {
   let text = "";
   const displayKind = compactText(row?.displayKind).toLowerCase();
   switch (displayKind || title) {
+    case "runtime.activity":
+      text = `${failed ? `${title}失败` : running ? `正在${title}` : `已${title}`}${summary ? `（${summary}）` : ""}`;
+      break;
+    case "runtime.card":
+      text = `${failed ? "生成卡片失败" : running ? "正在生成卡片" : "已生成卡片"}${summary ? `（${summary}）` : ""}`;
+      break;
     case "browser.search":
     case "web_search":
       text = failed ? `搜索网页失败（${summary || "web"}）` : `${running ? "正在搜索网页" : "已搜索网页"}（${summary || "web"}）`;

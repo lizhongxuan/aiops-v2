@@ -1,0 +1,12 @@
+{
+  "id": "code-analysis",
+  "category": "代码分析",
+  "input": "分析 RuntimeKernel 的 turn 主链和 AgentEvent trace 关系，并指出关键文件。",
+  "expected": {
+    "mustInclude": ["RuntimeKernel", "AgentEvent", "风险点"],
+    "mustNotInclude": ["无法判断", "随便"],
+    "expectedToolCalls": ["read_file"],
+    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go", "internal/agentui/agent_event.go"]
+  },
+  "scoreRules": {}
+}

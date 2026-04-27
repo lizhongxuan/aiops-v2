@@ -2,6 +2,7 @@ export const AGENT_EVENT_KINDS = Object.freeze([
   "turn",
   "agent",
   "assistant",
+  "reasoning",
   "tool",
   "approval",
   "artifact",

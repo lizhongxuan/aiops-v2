@@ -245,6 +245,36 @@ func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t
 	}
 }
 
+func TestCompile_DeveloperInstructions_AgentProfilePolicies(t *testing.T) {
+	compiler := NewCompiler()
+
+	result, err := compiler.Compile(CompileContext{
+		SessionType:             "host",
+		Mode:                    "execute",
+		PlanningPolicy:          "structured_events",
+		EvidencePolicy:          "tool_sourced",
+		AnswerStyle:             "aiops_rca",
+		ToolBudget:              "bounded",
+		ReasoningSummary:        "enabled",
+		ReasoningSummaryDisplay: "summary_only",
+		ShowRawReasoning:        false,
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	required := []string{
+		"Use structured plan events for complex, tool, and AIOps/RCA tasks.",
+		"Evidence must come from tool results or be explicitly marked as inference.",
+		"Show only reasoning summary to the user; do not expose raw chain-of-thought.",
+	}
+	for _, want := range required {
+		if !strings.Contains(result.Developer.Content, want) {
+			t.Fatalf("developer instructions missing %q:\n%s", want, result.Developer.Content)
+		}
+	}
+}
+
 func TestCompile_DeveloperInstructions_ExecuteMode(t *testing.T) {
 	compiler := NewCompiler()
 
