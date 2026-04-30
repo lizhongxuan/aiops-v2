@@ -177,6 +177,46 @@ describe("agent event projection UX shaping", () => {
     ]);
   });
 
+  it("keeps search result URLs and previews on activity lines", () => {
+    let state = createAgentEventState();
+    state = applyAgentEvent(state, event({ kind: "turn", phase: "started", status: "running", seq: 1 }));
+    state = applyAgentEvent(state, event({
+      kind: "tool",
+      phase: "completed",
+      status: "completed",
+      seq: 2,
+      payload: {
+        toolCallId: "search-rich",
+        toolName: "web_search",
+        displayKind: "browser.search",
+        inputSummary: "payment-api 5xx spike",
+        outputSummary: "已搜索网页",
+        results: [
+          {
+            title: "Incident report",
+            url: "https://status.example.test/incidents/payment-api",
+            snippet: "5xx increased after deployment.",
+          },
+        ],
+      },
+    }));
+
+    const lines = selectProjectionActivityLines(state, "session-1");
+
+    expect(lines[0]).toMatchObject({
+      kind: "search",
+      inputSummary: "payment-api 5xx spike",
+      queries: ["payment-api 5xx spike"],
+      results: [
+        {
+          title: "Incident report",
+          url: "https://status.example.test/incidents/payment-api",
+          snippet: "5xx increased after deployment.",
+        },
+      ],
+    });
+  });
+
   it("does not expose raw tool names as command titles", () => {
     let state = createAgentEventState();
     state = applyAgentEvent(state, event({ kind: "turn", phase: "started", status: "running", seq: 1 }));
@@ -232,6 +272,76 @@ describe("agent event projection UX shaping", () => {
     expect(lines[0].text).toBe("已搜索网页");
     expect(lines[0].text).not.toContain("{");
     expect(lines[0].text).not.toContain("content");
+  });
+
+  it("keeps evidence source, confidence, window and raw reference typed", () => {
+    let state = createAgentEventState();
+    state = applyAgentEvent(state, event({ kind: "turn", phase: "started", status: "running", seq: 1 }));
+    state = applyAgentEvent(state, event({
+      kind: "evidence",
+      phase: "completed",
+      status: "completed",
+      seq: 2,
+      payload: {
+        id: "evidence-1",
+        kind: "metric",
+        title: "支付服务 5xx 上升",
+        summary: "payment-api 5xx rate > 8%",
+        source: "prometheus",
+        confidence: "high",
+        window: "15m",
+        rawRef: "promql:sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+      },
+    }));
+
+    const lines = selectProjectionActivityLines(state, "session-1");
+
+    expect(lines[0]).toMatchObject({
+      id: "evidence-1",
+      kind: "evidence",
+      displayKind: "evidence.metric",
+      text: "支付服务 5xx 上升（payment-api 5xx rate > 8%）",
+      source: "prometheus",
+      confidence: "high",
+      window: "15m",
+      rawRef: "promql:sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+    });
+  });
+
+  it("projects approval requests into typed activity lines without using the tool name as command", () => {
+    let state = createAgentEventState();
+    state = applyAgentEvent(state, event({ kind: "turn", phase: "started", status: "running", seq: 1 }));
+    state = applyAgentEvent(state, event({
+      kind: "approval",
+      phase: "requested",
+      status: "blocked",
+      seq: 2,
+      payload: {
+        approvalId: "approval-1",
+        approvalType: "command",
+        title: "exec_command",
+        command: "kubectl rollout undo deploy/payment-api -n prod",
+        reason: "需要回滚最近导致 5xx 上升的发布。",
+        risk: "high",
+        targets: ["prod/payment-api"],
+      },
+    }));
+
+    const lines = selectProjectionActivityLines(state, "session-1");
+
+    expect(lines[0]).toMatchObject({
+      id: "approval-1",
+      kind: "approval",
+      displayKind: "approval.command",
+      text: "等待确认",
+      command: "kubectl rollout undo deploy/payment-api -n prod",
+      reason: "需要回滚最近导致 5xx 上升的发布。",
+      risk: "high",
+      targets: ["prod/payment-api"],
+      approvalId: "approval-1",
+      approvalType: "command",
+    });
+    expect(JSON.stringify(lines)).not.toContain("exec_command");
   });
 
   it("clears blocked approvals when a turn fails", () => {

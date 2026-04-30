@@ -41,6 +41,7 @@ const showSearchDetails = ref(false);
 const authCardCollapsed = ref(false);
 const approvalFollowupMode = ref(false);
 const localMcpApprovals = ref([]);
+const approvalDecisionInFlightIds = ref(new Set());
 const activeMcpSurface = ref(null);
 const mcpPinnedSurfaces = ref([]);
 const isMcpDrawerOpen = ref(false);
@@ -133,12 +134,26 @@ function buildPersistedProcessItems(lines = [], { completed = false } = {}) {
       text,
       summary: compactText(line?.summary || line?.outputSummary),
       inputSummary: compactText(line?.inputSummary || line?.query),
+      inputPreview: line?.inputPreview,
       queries: Array.isArray(line?.queries) ? line.queries : [],
       results: Array.isArray(line?.results) ? line.results : [],
+      steps: Array.isArray(line?.steps) ? line.steps : [],
       detail: compactText(line?.detail),
       command: compactText(line?.command),
       output: compactText(line?.output),
+      outputSummary: compactText(line?.outputSummary),
       outputPreview: line?.outputPreview,
+      exitCode: Number.isFinite(Number(line?.exitCode)) ? Number(line.exitCode) : undefined,
+      durationMs: Number.isFinite(Number(line?.durationMs)) ? Number(line.durationMs) : undefined,
+      source: compactText(line?.source),
+      confidence: compactText(line?.confidence),
+      window: compactText(line?.window),
+      rawRef: compactText(line?.rawRef),
+      approvalId: compactText(line?.approvalId),
+      approvalType: compactText(line?.approvalType),
+      reason: compactText(line?.reason),
+      risk: compactText(line?.risk),
+      targets: Array.isArray(line?.targets) ? line.targets : [],
       status: completed ? "completed" : compactText(line?.status),
     };
   }).filter(Boolean);
@@ -517,11 +532,30 @@ function approvalDisplayCommand(source = {}) {
   return "";
 }
 
+function approvalRequestId(source = {}) {
+  if (typeof source === "string") return compactText(source);
+  return compactText(source?.approval?.requestId || source?.approvalId || source?.id || source?.itemId);
+}
+
+function isApprovalDecisionInFlight(source = {}) {
+  const approvalId = approvalRequestId(source);
+  return approvalId ? approvalDecisionInFlightIds.value.has(approvalId) : false;
+}
+
+function setApprovalDecisionInFlight(approvalId, inFlight) {
+  const normalizedId = compactText(approvalId);
+  if (!normalizedId) return;
+  const next = new Set(approvalDecisionInFlightIds.value);
+  if (inFlight) next.add(normalizedId);
+  else next.delete(normalizedId);
+  approvalDecisionInFlightIds.value = next;
+}
+
 // Approval inline mode: single-host approvals replace the composer instead of
 // adding another card into the chat stream.
 const activeProjectionApproval = computed(() => {
   if (isWorkspaceSession.value) return null;
-  return projectionApprovalDock.value[0] || null;
+  return projectionApprovalDock.value.find((approval) => !isApprovalDecisionInFlight(approval)) || null;
 });
 
 const activeComposerApproval = computed(() => {
@@ -683,12 +717,13 @@ const activePlanCard = computed(() => {
 const pendingApprovalCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
     if (card.status !== "pending") return false;
+    if (isApprovalDecisionInFlight(card)) return false;
     return card.type === "CommandApprovalCard" || card.type === "FileChangeApprovalCard";
   });
 });
 
 const pendingApprovals = computed(() => {
-  return (store.snapshot.approvals || []).filter((approval) => approval.status === "pending");
+  return (store.snapshot.approvals || []).filter((approval) => approval.status === "pending" && !isApprovalDecisionInFlight(approval));
 });
 
 const reconnectErrorPattern = /^Reconnecting\.\.\.\s*\d+\s*\/\s*\d+$/i;
@@ -715,7 +750,7 @@ const activeApprovalCard = computed(() => {
 
 const activeApprovalQueueItems = computed(() => {
   if (activeApprovalCard.value) return pendingApprovals.value;
-  if (activeProjectionApproval.value) return projectionApprovalDock.value;
+  if (activeProjectionApproval.value) return projectionApprovalDock.value.filter((approval) => !isApprovalDecisionInFlight(approval));
   return [];
 });
 
@@ -1041,8 +1076,7 @@ const mainChatTurnByAnchorId = computed(() =>
 
 const showLiveThinkingEntry = computed(() => {
   if (!(showThinkingCard.value || chatRuntimeBusy.value)) return false;
-  if (isWorkspaceSession.value) return true;
-  return mainChatTurns.value.some((turn) => turn.active && turn.processTranscript?.showThinking);
+  return isWorkspaceSession.value;
 });
 
 const baseStreamEntries = computed(() => {
@@ -1441,9 +1475,11 @@ async function decideApproval({ approvalId, decision }) {
     completeLocalMcpApproval(localApproval, decision);
     return;
   }
+  const normalizedApprovalId = compactText(approvalId);
   try {
+    setApprovalDecisionInFlight(normalizedApprovalId, true);
     store.setTurnPhase("executing");
-    await submitApprovalDecisionApi(approvalId, decision);
+    await submitApprovalDecisionApi(normalizedApprovalId, decision);
     if (decision === "decline" || decision === "reject") {
       approvalFollowupMode.value = true;
     } else {
@@ -1451,6 +1487,7 @@ async function decideApproval({ approvalId, decision }) {
     }
     nextTick(() => jumpToLatest());
   } catch (e) {
+    setApprovalDecisionInFlight(normalizedApprovalId, false);
     console.error(e);
     store.errorMessage = e?.message || "approval failed";
   }
@@ -1721,7 +1758,7 @@ watch(
     :viewed-file-details="isWorkspaceSession ? viewedFileDetails : []"
     :show-search-details="isWorkspaceSession && showSearchDetails"
     :searched-query-details="isWorkspaceSession ? searchedQueryDetails : []"
-    :thinking-card="thinkingCard"
+    :thinking-card="showLiveThinkingEntry ? thinkingCard : null"
     :is-workspace-session="isWorkspaceSession"
     :get-row-class="getRowClass"
     @scroll="handleChatScroll"
@@ -1774,19 +1811,19 @@ watch(
           <code>{{ approvalCommand }}</code>
         </div>
         <div class="codex-approval-options">
-          <button class="codex-approval-option" @click="resolveCodexApproval('accept')">
+          <button type="button" class="codex-approval-option" @click="resolveCodexApproval('accept')">
             <span class="option-number">1.</span> 是
           </button>
-          <button class="codex-approval-option" @click="resolveCodexApproval('accept_session')">
+          <button type="button" class="codex-approval-option" @click="resolveCodexApproval('accept_session')">
             <span class="option-number">2.</span> 是，且对于后续类似命令不再询问
           </button>
-          <button class="codex-approval-option" @click="resolveCodexApproval('reject')">
+          <button type="button" class="codex-approval-option" @click="resolveCodexApproval('reject')">
             <span class="option-number">3.</span> 否，请告知如何调整
           </button>
         </div>
         <div class="codex-approval-actions">
-          <button class="codex-skip-btn" @click="resolveCodexApproval('reject')">跳过</button>
-          <button class="codex-submit-btn" @click="resolveCodexApproval('accept')">提交 ⏎</button>
+          <button type="button" class="codex-skip-btn" @click="resolveCodexApproval('reject')">跳过</button>
+          <button type="button" class="codex-submit-btn" @click="resolveCodexApproval('accept')">提交 ⏎</button>
         </div>
         <div v-if="activeApprovalQueueCount > 1" class="codex-approval-queue-note">
           {{ activeApprovalQueueLabel }}
@@ -2477,34 +2514,40 @@ watch(
 }
 
 .chat-container :deep(.stream-row) {
-  width: min(920px, 100%);
+  width: min(860px, 100%);
   margin-inline: auto;
 }
 
 .chat-container :deep(.message-content) {
-  max-width: min(92ch, 100%) !important;
+  max-width: min(78ch, 100%) !important;
 }
 
 .chat-container :deep(.relative-block) {
-  max-width: min(92ch, 100%) !important;
+  max-width: min(78ch, 100%) !important;
 }
 
 .chat-container :deep(.message-text) {
-  font-size: 14.5px !important;
+  font-size: 15px !important;
   line-height: 1.62 !important;
 }
 
 .chat-container :deep(.markdown-body p) {
-  margin: 0 0 1px;
+  margin: 0 0 8px;
 }
 
 .chat-container :deep(.markdown-body ul),
 .chat-container :deep(.markdown-body ol) {
-  margin: 0 0 2px;
+  margin: 3px 0 10px;
 }
 
 .chat-container :deep(.is-user .message-content) {
-  max-width: min(44ch, 60%) !important;
+  max-width: min(44ch, 58%) !important;
+}
+
+@media (max-width: 720px) {
+  .chat-container :deep(.is-user .message-content) {
+    max-width: min(100%, 80%) !important;
+  }
 }
 
 /* ---- Codex Inline Approval (Change 3) ---- */

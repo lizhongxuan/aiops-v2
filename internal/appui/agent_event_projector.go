@@ -179,6 +179,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 		}
 	case AgentEventPhaseCompleted, AgentEventPhaseCanceled:
 		delete(proj.RuntimeLiveness.ActiveTurns, event.TurnID)
+		proj.RuntimeLiveness.ActiveAgents = map[string]bool{}
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
 		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)
@@ -192,6 +193,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 		}
 	case AgentEventPhaseFailed:
 		delete(proj.RuntimeLiveness.ActiveTurns, event.TurnID)
+		proj.RuntimeLiveness.ActiveAgents = map[string]bool{}
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
 		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)

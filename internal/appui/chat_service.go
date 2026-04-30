@@ -71,18 +71,18 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		return mapTurnResponse(result), nil
 	}
 	sessionID := strings.TrimSpace(cmd.SessionID)
-	if sessionID == "" {
-		if session := s.resolveCommandSession(""); session != nil {
+	if session := s.resolveCommandSession(sessionID); session != nil {
+		if sessionID == "" {
 			sessionID = session.ID
-			if strings.TrimSpace(cmd.SessionType) == "" {
-				cmd.SessionType = string(session.Type)
-			}
-			if strings.TrimSpace(cmd.Mode) == "" {
-				cmd.Mode = string(session.Mode)
-			}
-			if strings.TrimSpace(cmd.HostID) == "" {
-				cmd.HostID = strings.TrimSpace(session.HostID)
-			}
+		}
+		if strings.TrimSpace(cmd.SessionType) == "" {
+			cmd.SessionType = string(session.Type)
+		}
+		if strings.TrimSpace(cmd.Mode) == "" {
+			cmd.Mode = string(session.Mode)
+		}
+		if strings.TrimSpace(cmd.HostID) == "" {
+			cmd.HostID = strings.TrimSpace(session.HostID)
 		}
 	}
 	req := runtimekernel.TurnRequest{
@@ -165,6 +165,10 @@ func (r defaultAsyncTurnRunner) run(req runtimekernel.TurnRequest) {
 		return
 	}
 	if strings.EqualFold(result.Status, "cancelled") || strings.EqualFold(result.Status, string(AgentEventStatusCanceled)) {
+		return
+	}
+	if strings.EqualFold(result.Status, "blocked") || strings.EqualFold(result.Status, string(AgentEventStatusBlocked)) {
+		appendMainAgentEvent(ctx, r.agentEvents, req, AgentEventPhaseBlocked, AgentEventStatusBlocked, "", strings.TrimSpace(result.Error))
 		return
 	}
 	if strings.EqualFold(result.Status, "failed") || strings.TrimSpace(result.Error) != "" {

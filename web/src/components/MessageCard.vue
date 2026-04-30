@@ -1332,9 +1332,6 @@ function autoResize(event) {
         <n-skeleton text :repeat="2" style="width: 60%" />
         <n-skeleton text style="width: 40%" />
       </div>
-      <div class="ghost-loader" v-else-if="card.status === 'inProgress' && !isUser">
-        <span class="streaming-cursor" />
-      </div>
     </div>
     
     <div class="avatar user-avatar" v-if="isUser">
@@ -1403,8 +1400,8 @@ function autoResize(event) {
 }
 
 .message-text {
-  font-size: var(--text-body, 13.25px);
-  line-height: var(--line-height-body, 1.5);
+  font-size: var(--text-body, 15px);
+  line-height: var(--line-height-body, 1.62);
   color: #0f172a;
   white-space: pre-wrap;
   letter-spacing: 0;
@@ -1461,15 +1458,15 @@ function autoResize(event) {
 }
 
 .user-message-bubble {
-  background: #f3f4f6;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  padding: 7px 12px;
-  border-radius: 16px;
+  background: #f8fafc;
+  border: 1px solid rgba(219, 226, 236, 0.95);
+  padding: 8px 13px;
+  border-radius: 18px;
   color: #0f172a;
   display: inline-block;
-  font-size: 13.25px;
+  font-size: 14px;
   line-height: 1.5;
-  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.02);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
 }
 
 .is-user .message-code {
@@ -1485,26 +1482,10 @@ function autoResize(event) {
   max-width: min(480px, 100%);
 }
 
-.streaming-cursor {
-  display: inline-block;
-  width: 2px;
-  height: 16px;
-  background: #3b82f6;
-  border-radius: 1px;
-  animation: blink-cursor 1s step-end infinite;
-  vertical-align: text-bottom;
-  margin-left: 1px;
-}
-
-@keyframes blink-cursor {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
 .relative-block {
   position: relative;
   display: block;
-  width: min(92ch, 100%);
+  width: min(78ch, 100%);
   max-width: 100%;
 }
 
@@ -1686,25 +1667,11 @@ function autoResize(event) {
 
 /* Markdown rendered content */
 .markdown-body {
-  font-size: 14.5px;
-  line-height: 1.52;
+  font-size: 15px;
+  line-height: 1.62;
   color: #111827;
   word-break: break-word;
   white-space: normal;
-}
-
-.markdown-body.is-streaming :deep(p:last-child::after),
-.markdown-body.is-streaming :deep(li:last-child::after),
-.markdown-body.is-streaming :deep(code:last-child::after) {
-  content: "";
-  display: inline-block;
-  width: 2px;
-  height: 0.9em;
-  background: #3b82f6;
-  border-radius: 1px;
-  margin-left: 1px;
-  vertical-align: text-bottom;
-  animation: blink-cursor 1s step-end infinite;
 }
 
 .markdown-body :deep(h1),
@@ -1713,10 +1680,19 @@ function autoResize(event) {
 .markdown-body :deep(h4),
 .markdown-body :deep(h5),
 .markdown-body :deep(h6) {
-  margin: 0 0 2px;
+  margin: 10px 0 5px;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.25;
   color: #0f172a;
+}
+
+.markdown-body :deep(h1:first-child),
+.markdown-body :deep(h2:first-child),
+.markdown-body :deep(h3:first-child),
+.markdown-body :deep(h4:first-child),
+.markdown-body :deep(h5:first-child),
+.markdown-body :deep(h6:first-child) {
+  margin-top: 0;
 }
 
 .markdown-body :deep(h1) { font-size: 1.22em; }
@@ -1724,8 +1700,8 @@ function autoResize(event) {
 .markdown-body :deep(h3) { font-size: 1.02em; }
 
 .markdown-body :deep(p) {
-  margin: 0 0 4px;
-  line-height: 1.52;
+  margin: 0 0 8px;
+  line-height: 1.62;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -1734,13 +1710,13 @@ function autoResize(event) {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 2px 0 6px;
-  padding-left: 18px;
+  margin: 3px 0 10px;
+  padding-left: 20px;
 }
 
 .markdown-body :deep(li) {
-  margin: 0 0 2px;
-  line-height: 1.5;
+  margin: 0 0 4px;
+  line-height: 1.58;
 }
 
 .markdown-body :deep(li p) {
@@ -1771,15 +1747,15 @@ function autoResize(event) {
 .markdown-body :deep(code) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.88em;
-  background: #f1f5f9;
-  padding: 1px 4px;
-  border-radius: 4px;
-  color: #334155;
+  background: #f3f4f6;
+  padding: 1px 5px;
+  border-radius: 5px;
+  color: #27364a;
 }
 
 .markdown-body :deep(pre) {
-  margin: 3px 0;
-  padding: 8px 12px;
+  margin: 6px 0 10px;
+  padding: 10px 12px;
   border-radius: 10px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -1796,8 +1772,8 @@ function autoResize(event) {
 }
 
 .markdown-body :deep(blockquote) {
-  margin: 4px 0;
-  padding: 3px 10px;
+  margin: 6px 0 10px;
+  padding: 4px 10px;
   border-left: 3px solid #cbd5e1;
   color: #475569;
 }
@@ -1808,7 +1784,7 @@ function autoResize(event) {
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
-  margin: 4px 0;
+  margin: 8px 0 12px;
   font-size: 12.5px;
 }
 
@@ -1843,12 +1819,12 @@ function autoResize(event) {
   display: inline-flex;
   align-items: center;
   margin: 0 1px;
-  padding: 0 7px;
+  padding: 0 6px;
   min-height: 1.45em;
   border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
+  background: rgba(243, 244, 246, 0.95);
   color: #334155;
-  font-size: 0.93em;
+  font-size: 0.9em;
   line-height: 1.35;
   vertical-align: baseline;
 }

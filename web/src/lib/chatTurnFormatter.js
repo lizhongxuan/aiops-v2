@@ -27,7 +27,6 @@ const STRUCTURED_LIST_PATTERN = /(?:^|\n)\s*(?:[-*]|[0-9]+\.)\s+/m;
 const USER_FACING_CONCLUSION_PATTERN = /(?:结论[:：]|结论是|根因[:：]|原因[:：]|建议[:：]|建议先|下一步[:：]|推荐[:：]|因此|意味着)/i;
 const MAIN_CHAT_PRELUDE_PATTERN = /^(?:我先|我会先|让我先|先帮你|先查|先看|先抓取|先交叉核对|我先交叉核对|我先整理|我先快速|我正在|先快速|先浏览|先读取)/u;
 const MAIN_CHAT_PROCESS_NARRATION_PATTERN = /^(?:我(?:先|会先|将|准备|继续|再|已|已经|马上)|接下来|随后|现在|先|已确认|已经确认|补查|为了)/u;
-const MAIN_CHAT_RESULT_PATTERN = /(截至|现价|24h|24小时|数据|结果|摘要|趋势|涨跌|百分比|市值|成交额|支撑|压力|来源[:：]|结论[:：]|建议[:：]|一句话判断|短判断[:：]|简判断[:：])/i;
 const MAIN_CHAT_PROCESS_NARRATION_MAX_LENGTH = 220;
 
 function asArray(value) {
@@ -169,8 +168,6 @@ function sortMessagesByChronology(messages = []) {
       const leftStamp = messageSortTimestamp(left.message);
       const rightStamp = messageSortTimestamp(right.message);
       if (leftStamp && rightStamp && leftStamp !== rightStamp) return leftStamp - rightStamp;
-      if (leftStamp && !rightStamp) return -1;
-      if (!leftStamp && rightStamp) return 1;
       return left.index - right.index;
     })
     .map((entry) => entry.message);
@@ -555,26 +552,13 @@ function looksLikeMainChatPrelude(text = "") {
   );
 }
 
-function looksLikeMainChatResult(text = "") {
-  const value = String(text || "");
-  if (!value.trim()) return false;
-  return (
-    MAIN_CHAT_RESULT_PATTERN.test(value) ||
-    (STRUCTURED_LIST_PATTERN.test(value) && value.trim().length >= 48) ||
-    /(?:^|\n)(?:来源[:：]|https?:\/\/|\[[^\]]+\]\([^)]+\))/m.test(value)
-  );
-}
-
 export function shouldExposeActiveFinalMessage(message = null) {
   const text = compactText(message?.card?.text || message?.text);
   if (!text) return false;
   if (looksLikeMainChatPrelude(text)) return false;
+  if (isConciseMainChatProcessNarration(text)) return false;
 
-  const status = compactText(message?.card?.status || message?.sourceCard?.status).toLowerCase();
-  if (status === "inprogress" || status === "streaming") {
-    return true;
-  }
-  return looksLikeMainChatResult(text) || text.length >= 96;
+  return true;
 }
 
 function isDuplicateAssistantDraft(text = "", finalText = "") {
@@ -1123,14 +1107,17 @@ export function formatMainChatTurns({
       ? asArray(activeProcess?.items).map((item, itemIndex) => ({
           id: compactText(item?.id || `activity-${itemIndex}`),
           kind: compactText(item?.kind || "activity"),
+          toolName: compactText(item?.toolName),
           displayKind: compactText(item?.displayKind),
           visibility: compactText(item?.visibility),
           processKind: compactText(item?.processKind) || inferProcessKind(`${item?.kind || ""} ${item?.text || item?.label || item?.value || ""}`),
           text: String(item?.text || item?.label || item?.value || "").trim(),
           summary: String(item?.summary || item?.outputSummary || "").trim(),
           inputSummary: String(item?.inputSummary || item?.query || "").trim(),
+          inputPreview: item?.inputPreview,
           queries: Array.isArray(item?.queries) ? item.queries : [],
           results: Array.isArray(item?.results) ? item.results : [],
+          steps: Array.isArray(item?.steps) ? item.steps : [],
           detail: String(item?.detail || "").trim(),
           display: buildToolDisplayModel(item?.detail),
           time: compactText(item?.time),
@@ -1140,9 +1127,21 @@ export function formatMainChatTurns({
           sortTimestamp: item?.updatedAt || item?.createdAt || "",
           command: compactText(item?.command),
           output: preserveOutputText(item?.output || item?.outputPreview),
+          outputSummary: compactText(item?.outputSummary),
           outputPreview: item?.outputPreview,
+          exitCode: Number.isFinite(Number(item?.exitCode)) ? Number(item.exitCode) : undefined,
+          durationMs: Number.isFinite(Number(item?.durationMs)) ? Number(item.durationMs) : undefined,
+          source: compactText(item?.source),
+          confidence: compactText(item?.confidence),
+          window: compactText(item?.window),
+          rawRef: compactText(item?.rawRef),
+          approvalId: compactText(item?.approvalId),
+          approvalType: compactText(item?.approvalType),
+          reason: compactText(item?.reason),
+          risk: compactText(item?.risk),
+          targets: Array.isArray(item?.targets) ? item.targets : [],
         }))
-          .filter((item) => item.text)
+          .filter((item) => item.text || item.kind === "plan" || item.kind === "evidence" || item.kind === "approval")
           .filter((item) => !isMainChatActivityProcessRedundant(item, { hideNarration: suppressLiveProcessNarration }))
       : [];
     // Include intermediate assistant messages with card property so ChatProcessFold
@@ -1211,12 +1210,15 @@ export function formatMainChatTurns({
     const elapsedLabel = firstTimestamp && lastTimestamp && lastTimestamp >= firstTimestamp
       ? formatDurationLabel(lastTimestamp - firstTimestamp)
       : "";
-    const resolvedElapsedLabel = isActiveTurn
-      ? compactText(activeProcess?.elapsedLabel) || elapsedLabel
-      : elapsedLabel;
-    const terminalProcessLabel = resolveTerminalProcessLabel(terminalPhase, resolvedElapsedLabel);
     const phase = compactText(activeProcess?.phase || "");
     const terminalPhaseForCollapse = compactText(terminalPhase || phase).toLowerCase();
+    const activeProcessElapsedLabel = processMatchesBucket && ["failed", "aborted"].includes(terminalPhaseForCollapse)
+      ? compactText(activeProcess?.elapsedLabel)
+      : "";
+    const resolvedElapsedLabel = isActiveTurn
+      ? compactText(activeProcess?.elapsedLabel) || elapsedLabel
+      : activeProcessElapsedLabel || elapsedLabel;
+    const terminalProcessLabel = resolveTerminalProcessLabel(terminalPhase, resolvedElapsedLabel);
     const showBottomThinking = isActiveTurn && (
       activeFinalIsStreaming ||
       terminalPhaseForCollapse === "thinking" ||

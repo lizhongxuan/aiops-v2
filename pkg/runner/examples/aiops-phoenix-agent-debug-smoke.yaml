@@ -1,0 +1,77 @@
+version: v0.1
+name: aiops-phoenix-agent-debug-smoke
+description: Short local smoke workflow for Phoenix trace and agent eval debugging. Run from pkg/runner after the Phoenix agent debug implementation is complete.
+inventory:
+  hosts:
+    local:
+      address: "127.0.0.1"
+steps:
+  - name: check aiops repo root
+    targets: [local]
+    action: shell.run
+    args:
+      dir: "../.."
+      script: |
+        set -eu
+        test -f go.mod
+        test -d internal/runtimekernel
+        test -d cmd/agent-eval
+        echo "aiops repo root ok"
+
+  - name: run focused package tests
+    targets: [local]
+    action: shell.run
+    timeout: 5m
+    args:
+      dir: "../.."
+      script: |
+        set -eu
+        if [ -d internal/observability ]; then
+          go test ./internal/observability ./internal/runtimekernel ./internal/eval ./cmd/agent-eval -count=1
+        else
+          go test ./internal/runtimekernel ./internal/eval ./cmd/agent-eval -count=1
+        fi
+
+  - name: run mock eval regression
+    targets: [local]
+    action: shell.run
+    timeout: 5m
+    args:
+      dir: "../.."
+      script: |
+        set -eu
+        go run ./cmd/agent-eval \
+          -agent mock \
+          -cases testdata/eval_cases \
+          -out .data/eval_runs/runner-phoenix-debug-mock
+
+  - name: check phoenix ui endpoint
+    targets: [local]
+    action: shell.run
+    continue_on_error: true
+    args:
+      dir: "../.."
+      script: |
+        set -eu
+        if command -v curl >/dev/null 2>&1 && curl -fsS http://localhost:6006 >/dev/null; then
+          echo "Phoenix UI is reachable at http://localhost:6006"
+        else
+          echo "Phoenix UI is not reachable. Start it manually:"
+          echo "docker run --rm -p 6006:6006 -p 4317:4317 arizephoenix/phoenix:latest"
+          exit 1
+        fi
+
+  - name: print manual trace verification
+    targets: [local]
+    action: shell.run
+    args:
+      dir: "../.."
+      script: |
+        cat <<'EOF'
+        Manual trace check:
+        1. Start aiops server with AIOPS_OTEL_ENABLED=1 and AIOPS_DEBUG_MODEL_INPUT_TRACE=1.
+        2. Run one chat turn.
+        3. Open http://localhost:6006.
+        4. Confirm agent.turn contains model_call and tool_call child spans.
+        5. Open trace.file and trace.diff under .data/model-input-traces.
+        EOF

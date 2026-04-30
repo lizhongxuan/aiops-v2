@@ -110,6 +110,110 @@ describe("buildCodexProcessTranscript", () => {
     expect(JSON.stringify(transcript)).not.toContain("exec_command");
   });
 
+  it("builds plan, evidence and inline approval blocks from typed process items", () => {
+    const transcript = buildCodexProcessTranscript({
+      turnId: "turn-structured",
+      active: true,
+      status: "blocked",
+      elapsedLabel: "11s",
+      assistantMessages: [
+        { id: "intent-1", text: "我先检查支付服务的错误率和最近发布记录。" },
+      ],
+      processItems: [
+        {
+          id: "plan-1",
+          kind: "plan",
+          displayKind: "plan",
+          status: "running",
+          text: "查 Loki 日志",
+          summary: "查 Loki 日志",
+          steps: [
+            { id: "step-1", text: "查 Prometheus metrics", status: "completed" },
+            { id: "step-2", text: "查 Loki 日志", status: "running" },
+          ],
+        },
+        {
+          id: "search-1",
+          kind: "search",
+          displayKind: "browser.search",
+          status: "completed",
+          inputSummary: "payment-api 5xx spike",
+          results: [{ title: "Incident", url: "https://status.example.test/payment-api" }],
+        },
+        {
+          id: "cmd-1",
+          kind: "command",
+          displayKind: "host.command",
+          status: "completed",
+          command: "kubectl get deploy/payment-api -n prod",
+          outputPreview: "payment-api  sha256:abc123",
+        },
+        {
+          id: "evidence-1",
+          kind: "evidence",
+          displayKind: "evidence.metric",
+          status: "completed",
+          text: "支付服务 5xx 上升（payment-api 5xx rate > 8%）",
+          source: "prometheus",
+          confidence: "high",
+          window: "15m",
+          rawRef: "promql:5xx",
+        },
+        {
+          id: "approval-1",
+          kind: "approval",
+          displayKind: "approval.command",
+          status: "blocked",
+          text: "等待确认",
+          approvalId: "approval-1",
+          approvalType: "command",
+          command: "kubectl rollout undo deploy/payment-api -n prod",
+          reason: "需要回滚最近导致 5xx 上升的发布。",
+          risk: "high",
+          targets: ["prod/payment-api"],
+        },
+      ],
+      finalText: "建议先回滚 payment-api 最近一次发布。",
+    });
+
+    expect(transcript.blocks.map((block) => block.kind)).toEqual([
+      "header",
+      "assistant-intent",
+      "plan-step",
+      "search-step",
+      "command-step",
+      "evidence-step",
+      "inline-approval",
+      "final-answer",
+    ]);
+    expect(transcript.blocks.find((block) => block.kind === "plan-step")).toMatchObject({
+      displayKind: "plan",
+      text: "查 Loki 日志",
+      steps: [
+        { id: "step-1", text: "查 Prometheus metrics", status: "completed" },
+        { id: "step-2", text: "查 Loki 日志", status: "running" },
+      ],
+    });
+    expect(transcript.blocks.find((block) => block.kind === "evidence-step")).toMatchObject({
+      displayKind: "evidence.metric",
+      text: "支付服务 5xx 上升（payment-api 5xx rate > 8%）",
+      source: "prometheus",
+      confidence: "high",
+      window: "15m",
+      rawRef: "promql:5xx",
+    });
+    expect(transcript.blocks.find((block) => block.kind === "inline-approval")).toMatchObject({
+      displayKind: "approval.command",
+      command: "kubectl rollout undo deploy/payment-api -n prod",
+      reason: "需要回滚最近导致 5xx 上升的发布。",
+      risk: "high",
+      targets: ["prod/payment-api"],
+      approvalId: "approval-1",
+      approvalType: "command",
+    });
+    expect(transcript.blocks.filter((block) => block.kind === "final-answer")).toHaveLength(1);
+  });
+
   it("uses stable block ids and exposes thinking state without rendering a fold placeholder", () => {
     const input = {
       turnId: "turn-stable",
@@ -142,7 +246,7 @@ describe("buildCodexProcessTranscript", () => {
     expect(second.blocks.map((block) => block.id)).toEqual(first.blocks.map((block) => block.id));
     expect(first.showThinking).toBe(true);
     expect(first.blocks.some((block) => block.text === "正在思考")).toBe(false);
-    expect(empty.showThinking).toBe(false);
+    expect(empty.showThinking).toBe(true);
     expect(empty.blocks.map((block) => block.kind)).not.toContain("reasoning-summary");
   });
 

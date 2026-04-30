@@ -24,15 +24,33 @@ const props = defineProps({
 const emit = defineEmits(["action", "detail", "pin", "refresh"]);
 const processExpanded = ref(false);
 
+function finalMessageId(turn = {}) {
+  return String(turn?.finalMessage?.id || turn?.finalMessage?.card?.id || "").trim();
+}
+
 function defaultProcessExpanded(turn = {}) {
   if (turn?.active) return true;
+  if (finalMessageId(turn)) return false;
   return !turn?.collapsedByDefault;
 }
 
 watch(
-  () => props.turn?.id,
-  () => {
-    processExpanded.value = defaultProcessExpanded(props.turn);
+  () => ({
+    id: String(props.turn?.id || "").trim(),
+    active: Boolean(props.turn?.active),
+    finalMessageId: finalMessageId(props.turn),
+  }),
+  (current, previous) => {
+    if (!previous || current.id !== previous.id) {
+      processExpanded.value = defaultProcessExpanded(props.turn);
+      return;
+    }
+
+    const finalArrived = !previous.finalMessageId && current.finalMessageId;
+    const justFinished = previous.active && !current.active;
+    if (current.finalMessageId && !current.active && (justFinished || finalArrived)) {
+      processExpanded.value = false;
+    }
   },
   { immediate: true },
 );
@@ -48,6 +66,11 @@ const showActionBar = computed(() => {
 
 const showRetryOnly = computed(() => !props.turn?.finalMessage && String(props.turn?.phase || "").trim().toLowerCase() === "failed");
 const showProcessFold = computed(() => Boolean(props.turn?.processTranscript));
+const finalMessageStreaming = computed(() => {
+  const status = String(props.turn?.finalMessage?.card?.status || "").trim().toLowerCase();
+  return status === "inprogress" || status === "streaming" || status === "running";
+});
+const showBottomThinkingStatus = computed(() => Boolean(props.turn?.processTranscript?.showThinking || finalMessageStreaming.value));
 const primaryPanelPayload = computed(() => {
   if (props.turn?.actionSurfaces?.length) return props.turn.actionSurfaces[0]?.model || props.turn.actionSurfaces[0];
   if (props.turn?.resultBundles?.length) return props.turn.resultBundles[0]?.model || props.turn.resultBundles[0];
@@ -182,6 +205,17 @@ function handleOpenPanel() {
         @refresh="emitRefresh"
       />
     </div>
+
+    <div
+      v-if="showBottomThinkingStatus"
+      class="chat-turn-thinking-row"
+      data-testid="turn-thinking-row"
+    >
+      <div class="chat-turn-thinking-status" data-testid="turn-thinking-status">
+        <span class="chat-turn-thinking-dot" aria-hidden="true" />
+        <span>正在思考</span>
+      </div>
+    </div>
   </article>
 </template>
 
@@ -189,19 +223,53 @@ function handleOpenPanel() {
 .chat-turn-group {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 240px;
 }
 
 .chat-turn-final {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   margin-top: 0;
 }
 
 .chat-turn-action-bar {
-  width: min(920px, 100%);
+  width: min(860px, 100%);
   margin: 0 auto;
+}
+
+.chat-turn-thinking-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: min(860px, 100%);
+  margin: 0;
+  color: #737373;
+  font-size: 13.5px;
+  line-height: 1.52;
+}
+
+.chat-turn-thinking-row {
+  display: flex;
+  justify-content: flex-start;
+  width: min(860px, 100%);
+  margin: -2px auto 0;
+}
+
+.chat-turn-thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #a3a3a3;
+  animation: chat-turn-thinking-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-turn-thinking-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
 }
 
 .chat-turn-bundles,
@@ -214,7 +282,7 @@ function handleOpenPanel() {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: min(920px, 100%);
+  width: min(860px, 100%);
   margin: 0 auto;
 }
 

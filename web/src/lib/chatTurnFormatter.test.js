@@ -285,6 +285,92 @@ describe("formatMainChatTurns", () => {
     });
   });
 
+  it("forwards typed plan, evidence and approval process fields without text parsing", () => {
+    const turns = formatMainChatTurns({
+      turnActive: true,
+      activeProcess: {
+        turnKeys: ["turn-1"],
+        phase: "waiting_approval",
+        items: [
+          {
+            id: "plan-1",
+            kind: "plan",
+            displayKind: "plan",
+            text: "检查支付服务 5xx",
+            summary: "检查支付服务 5xx",
+            status: "running",
+            steps: [
+              { id: "step-1", text: "查 Prometheus metrics", status: "completed" },
+              { id: "step-2", text: "查 Loki 日志", status: "running" },
+            ],
+          },
+          {
+            id: "evidence-1",
+            kind: "evidence",
+            displayKind: "evidence.metric",
+            text: "支付服务 5xx 上升（payment-api 5xx rate > 8%）",
+            status: "completed",
+            source: "prometheus",
+            confidence: "high",
+            window: "15m",
+            rawRef: "promql:5xx",
+          },
+          {
+            id: "approval-1",
+            kind: "approval",
+            displayKind: "approval.command",
+            text: "等待确认",
+            status: "blocked",
+            approvalId: "approval-1",
+            approvalType: "command",
+            command: "kubectl rollout undo deploy/payment-api -n prod",
+            reason: "需要回滚最近导致 5xx 上升的发布。",
+            risk: "high",
+            targets: ["prod/payment-api"],
+          },
+        ],
+      },
+      conversationCards: [
+        {
+          id: "user-1",
+          type: "UserMessageCard",
+          role: "user",
+          text: "分析支付服务 5xx",
+          turnId: "turn-1",
+          createdAt: "2026-04-29T00:00:00Z",
+        },
+      ],
+    });
+
+    expect(turns[0].processItems.find((item) => item.id === "plan-1")).toMatchObject({
+      kind: "plan",
+      displayKind: "plan",
+      steps: [
+        { id: "step-1", text: "查 Prometheus metrics", status: "completed" },
+        { id: "step-2", text: "查 Loki 日志", status: "running" },
+      ],
+    });
+    expect(turns[0].processItems.find((item) => item.id === "evidence-1")).toMatchObject({
+      kind: "evidence",
+      displayKind: "evidence.metric",
+      source: "prometheus",
+      confidence: "high",
+      window: "15m",
+      rawRef: "promql:5xx",
+    });
+    expect(turns[0].processItems.find((item) => item.id === "approval-1")).toMatchObject({
+      kind: "approval",
+      displayKind: "approval.command",
+      approvalId: "approval-1",
+      approvalType: "command",
+      command: "kubectl rollout undo deploy/payment-api -n prod",
+      reason: "需要回滚最近导致 5xx 上升的发布。",
+      risk: "high",
+      targets: ["prod/payment-api"],
+    });
+    expect(JSON.stringify(turns[0].processItems)).not.toContain("exec_command");
+  });
+
   it("keeps active single-host process rows in the transcript instead of relying on LiveStatusCard", () => {
     const turns = formatMainChatTurns({
       turnActive: true,
@@ -528,5 +614,212 @@ describe("formatMainChatTurns", () => {
     expect(turns[0].hasActiveFinalMessage).toBe(true);
     expect(turns[0].processTranscript.showThinking).toBe(true);
     expect(turns[0].processTranscript.blocks.some((block) => block.text === "正在思考")).toBe(false);
+  });
+
+  it("treats short active answer fragments as the final message so thinking stays below them", () => {
+    const partialAnswer = "目前仅从上交所和巨潮限定来源拿到部分盘面信息";
+    const turns = formatMainChatTurns({
+      turnActive: true,
+      activeProcess: {
+        turnKeys: ["turn-1"],
+        phase: "thinking",
+        elapsedLabel: "35s",
+        items: [
+          {
+            id: "search-1",
+            kind: "search",
+            displayKind: "browser.search",
+            status: "completed",
+            text: "已搜索网页",
+            inputSummary: "今天 A 股行情",
+          },
+          {
+            id: "search-2",
+            kind: "search",
+            displayKind: "browser.search",
+            status: "completed",
+            text: "已搜索网页",
+            inputSummary: "上交所 今日行情",
+          },
+        ],
+      },
+      conversationCards: [
+        {
+          id: "user-1",
+          type: "UserMessageCard",
+          role: "user",
+          text: "A股行情怎么样？",
+          turnId: "turn-1",
+          createdAt: "2026-04-30T00:00:00Z",
+        },
+        {
+          id: "assistant-process",
+          type: "AssistantMessageCard",
+          role: "assistant",
+          status: "completed",
+          text: "我先核实最新A股主要指数、涨跌表现和成交情况，再给你一个简明盘面总结。",
+          turnId: "turn-1",
+          createdAt: "2026-04-30T00:00:01Z",
+        },
+        {
+          id: "assistant-active-fragment",
+          type: "AssistantMessageCard",
+          role: "assistant",
+          status: "completed",
+          text: partialAnswer,
+          turnId: "turn-1",
+          createdAt: "2026-04-30T00:00:35Z",
+        },
+      ],
+    });
+
+    expect(turns[0].hasActiveFinalMessage).toBe(true);
+    expect(turns[0].finalMessage.card.text).toBe(partialAnswer);
+    expect(turns[0].processTranscript.showThinking).toBe(true);
+    const visibleProcessText = turns[0].processTranscript.blocks
+      .filter((block) => !["header", "final-answer"].includes(block.kind))
+      .map((block) => block.text)
+      .join("\n");
+    expect(visibleProcessText).not.toContain(partialAnswer);
+  });
+
+  it("keeps active process narration out of the final answer area", () => {
+    const turns = formatMainChatTurns({
+      turnActive: true,
+      activeProcess: {
+        turnKeys: ["turn-1"],
+        phase: "executing",
+        elapsedLabel: "2s",
+      },
+      conversationCards: [
+        {
+          id: "user-1",
+          type: "UserMessageCard",
+          role: "user",
+          text: "帮我启动docker,跑一个nginx的容器",
+          turnId: "turn-1",
+          createdAt: "2026-04-30T00:00:00Z",
+        },
+        {
+          id: "assistant-process",
+          type: "AssistantMessageCard",
+          role: "assistant",
+          status: "completed",
+          text: "我将先检查这台 macOS 主机上的 Docker 是否已安装且服务是否可用。",
+          turnId: "turn-1",
+          createdAt: "2026-04-30T00:00:01Z",
+        },
+      ],
+    });
+
+    expect(turns[0].hasActiveFinalMessage).toBe(false);
+    expect(turns[0].finalMessage).toBeNull();
+    expect(turns[0].processTranscript.blocks.map((block) => block.text).join("\n")).toContain("我将先检查");
+  });
+
+  it("keeps a timestamped streaming final answer with the preceding untimestamped user turn", () => {
+    const turns = formatMainChatTurns({
+      turnActive: true,
+      activeProcess: {
+        turnKeys: ["client-msg-1"],
+        phase: "thinking",
+        elapsedLabel: "3s",
+      },
+      conversationCards: [
+        {
+          id: "client-msg-1",
+          type: "UserMessageCard",
+          role: "user",
+          text: "查看今天BTC行情",
+          turnId: "client-msg-1",
+          clientTurnId: "client-msg-1",
+        },
+        {
+          id: "agent-final-turn-1",
+          type: "AssistantMessageCard",
+          role: "assistant",
+          status: "streaming",
+          text: "BTC 当前价格约 76500 美元。",
+          turnId: "turn-1",
+          createdAt: "2026-04-30T10:00:03Z",
+          updatedAt: "2026-04-30T10:00:03Z",
+        },
+      ],
+    });
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0].userMessage.id).toBe("client-msg-1");
+    expect(turns[0].finalMessage.id).toBe("agent-final-turn-1");
+    expect(turns[0].processTranscript.showThinking).toBe(true);
+  });
+
+  it("keeps older turn and block ids stable when the latest final answer streams", () => {
+    const makeCards = (latestText) => {
+      const cards = [];
+      for (let index = 0; index < 505; index += 1) {
+        cards.push({
+          id: `user-${index}`,
+          type: "UserMessageCard",
+          role: "user",
+          text: `问题 ${index}`,
+          turnId: `turn-${index}`,
+          createdAt: `2026-04-29T00:${String(index % 60).padStart(2, "0")}:00Z`,
+        });
+        cards.push({
+          id: `assistant-${index}`,
+          type: "AssistantMessageCard",
+          role: "assistant",
+          text: index === 504 ? latestText : `回答 ${index}`,
+          status: index === 504 ? "streaming" : "completed",
+          turnId: `turn-${index}`,
+          createdAt: `2026-04-29T00:${String(index % 60).padStart(2, "0")}:01Z`,
+        });
+      }
+      return cards;
+    };
+    const first = formatMainChatTurns({
+      turnActive: true,
+      conversationCards: makeCards("最新回答第一段"),
+      activeProcess: {
+        turnKeys: ["turn-504"],
+        phase: "finalizing",
+        items: [
+          {
+            id: "search-latest",
+            kind: "search",
+            displayKind: "browser.search",
+            status: "completed",
+            text: "已搜索网页",
+            inputSummary: "latest query",
+          },
+        ],
+      },
+    });
+    const second = formatMainChatTurns({
+      turnActive: true,
+      conversationCards: makeCards("最新回答第一段，继续追加 token"),
+      activeProcess: {
+        turnKeys: ["turn-504"],
+        phase: "finalizing",
+        items: [
+          {
+            id: "search-latest-updated",
+            kind: "search",
+            displayKind: "browser.search",
+            status: "completed",
+            text: "已搜索网页",
+            inputSummary: "latest query",
+          },
+        ],
+      },
+    });
+
+    expect(first).toHaveLength(505);
+    expect(second).toHaveLength(505);
+    expect(second.slice(0, 504).map((turn) => turn.id)).toEqual(first.slice(0, 504).map((turn) => turn.id));
+    expect(second.slice(0, 504).map((turn) => turn.processTranscript.blocks.map((block) => block.id))).toEqual(
+      first.slice(0, 504).map((turn) => turn.processTranscript.blocks.map((block) => block.id)),
+    );
+    expect(second[504].id).toBe(first[504].id);
   });
 });

@@ -205,11 +205,15 @@ export function cleanAssistantDisplayText(text, role = "assistant") {
     cleaned = cleaned.replace(
       /(?:^|\n)来源[:：]\s*\n((?:\[[^\]]+\]\([^)]+\)\s*\n?){1,4})/gu,
       (_match, linksBlock) => {
-        const labels = [...String(linksBlock || "").matchAll(/\[([^\]]+)\]\([^)]+\)/g)]
-          .map((match) => compactText(match[1]))
+        const links = [...String(linksBlock || "").matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)]
+          .map((match) => {
+            const label = compactText(match[1]);
+            const url = compactText(match[2]);
+            return label && url ? `[${label}](${url})` : "";
+          })
           .filter(Boolean)
           .slice(0, 2);
-        return labels.length ? `\n来源：${labels.join("；")}\n` : "\n";
+        return links.length ? `\n来源：\n${links.join("\n")}\n` : "\n";
       },
     );
   }

@@ -21,8 +21,7 @@ const headerBlock = computed(() => transcript.value?.header || transcript.value?
 const contentBlocks = computed(() => {
   return (transcript.value?.blocks || []).filter((block) => {
     if (!block || block.visibility === "hidden") return false;
-    if (isTransientThinkingPlaceholder(block)) return false;
-    return !["header", "final-answer", "inline-approval"].includes(block.kind);
+    return !["header", "final-answer"].includes(block.kind);
   });
 });
 
@@ -54,14 +53,21 @@ watch(
   },
 );
 
+watch(expanded, (value) => {
+  if (value) return;
+  expandedCommandIds.value = new Set();
+  expandedSearchIds.value = new Set();
+});
+
 const hasVisibleDetails = computed(() => contentBlocks.value.length > 0);
+const hasLiveThinking = computed(() => Boolean(transcript.value?.showThinking));
 const hasStatusOnlyContent = computed(() => {
   const status = String(headerBlock.value?.status || props.turn?.phase || "").trim().toLowerCase();
   return Boolean(props.turn?.active || ["failed", "aborted", "blocked"].includes(status));
 });
-const hasContent = computed(() => hasVisibleDetails.value || Boolean(headerBlock.value && hasStatusOnlyContent.value));
+const hasContent = computed(() => hasVisibleDetails.value || hasLiveThinking.value || Boolean(headerBlock.value && hasStatusOnlyContent.value));
 const headerLabel = computed(() => headerBlock.value?.text || props.turn?.processLabel || "已处理");
-const showDivider = computed(() => hasVisibleDetails.value);
+const showDivider = computed(() => hasVisibleDetails.value || hasLiveThinking.value);
 
 function toggleExpanded() {
   if (!hasVisibleDetails.value) return;
@@ -76,14 +82,6 @@ function blockText(block = {}) {
 
 function normalizeExpansionKey(value = "") {
   return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function isTransientThinkingPlaceholder(block = {}) {
-  if (block.kind !== "reasoning-summary") return false;
-  const status = String(block.status || "").toLowerCase();
-  if (status !== "running" && status !== "queued") return false;
-  const text = blockText(block).replace(/\s+/g, "");
-  return text === "正在思考";
 }
 
 function commandText(block = {}) {
@@ -137,6 +135,30 @@ function searchQueries(block = {}) {
 
 function searchResults(block = {}) {
   return Array.isArray(block.results) ? block.results : [];
+}
+
+function planSteps(block = {}) {
+  return Array.isArray(block.steps) ? block.steps : [];
+}
+
+function evidenceMeta(block = {}) {
+  return [
+    block.source ? `来源 ${block.source}` : "",
+    block.confidence ? `置信度 ${block.confidence}` : "",
+    block.window ? `窗口 ${block.window}` : "",
+    block.rawRef ? `引用 ${block.rawRef}` : "",
+  ].filter(Boolean);
+}
+
+function approvalCommand(block = {}) {
+  return String(block.command || "").trim();
+}
+
+function approvalMeta(block = {}) {
+  return [
+    block.risk ? `风险 ${block.risk}` : "",
+    Array.isArray(block.targets) && block.targets.length ? `目标 ${block.targets.join(", ")}` : "",
+  ].filter(Boolean);
 }
 
 function blockClass(block = {}) {
@@ -225,6 +247,32 @@ function blockClass(block = {}) {
           </div>
         </div>
 
+        <div v-else-if="block.kind === 'plan-step'" class="chat-process-plan chat-process-step" data-testid="process-step-plan">
+          <div class="chat-process-step-title">{{ blockText(block) }}</div>
+          <ol v-if="planSteps(block).length" class="chat-process-plan-list">
+            <li v-for="step in planSteps(block)" :key="step.id || step.text" :class="`is-${step.status || 'pending'}`">
+              <span class="chat-process-plan-status">{{ step.status || 'pending' }}</span>
+              <span>{{ step.text }}</span>
+            </li>
+          </ol>
+        </div>
+
+        <div v-else-if="block.kind === 'evidence-step'" class="chat-process-evidence chat-process-step" data-testid="process-step-evidence">
+          <div class="chat-process-step-title">{{ blockText(block) }}</div>
+          <div v-if="evidenceMeta(block).length" class="chat-process-meta">
+            <span v-for="item in evidenceMeta(block)" :key="item">{{ item }}</span>
+          </div>
+        </div>
+
+        <div v-else-if="block.kind === 'inline-approval'" class="chat-process-approval chat-process-step" data-testid="process-step-approval">
+          <div class="chat-process-step-title">{{ blockText(block) || '等待确认' }}</div>
+          <code v-if="approvalCommand(block)" class="chat-process-approval-command">{{ approvalCommand(block) }}</code>
+          <div v-if="block.reason" class="chat-process-approval-reason">{{ block.reason }}</div>
+          <div v-if="approvalMeta(block).length" class="chat-process-meta">
+            <span v-for="item in approvalMeta(block)" :key="item">{{ item }}</span>
+          </div>
+        </div>
+
         <div v-else :class="blockClass(block)" data-testid="process-step-generic">
           {{ blockText(block) }}
         </div>
@@ -237,15 +285,15 @@ function blockClass(block = {}) {
 .chat-process-fold {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  width: min(920px, 100%);
-  margin: 4px auto 8px;
+  gap: 8px;
+  width: min(860px, 100%);
+  margin: 2px auto 10px;
 }
 
 .chat-process-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .chat-process-toggle {
@@ -256,9 +304,9 @@ function blockClass(block = {}) {
   border: none;
   background: transparent;
   color: #737373;
-  font-size: 15px;
+  font-size: 13.5px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -282,20 +330,20 @@ function blockClass(block = {}) {
 .chat-process-transcript {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   padding: 0 0 2px;
 }
 
 .chat-process-narration {
   color: #171717;
-  font-size: 15.5px;
-  line-height: 1.65;
+  font-size: 14.5px;
+  line-height: 1.62;
 }
 
 .chat-process-step {
   color: #a3a3a3;
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 13.5px;
+  line-height: 1.52;
 }
 
 .chat-process-step.is-thinking {
@@ -320,8 +368,8 @@ function blockClass(block = {}) {
   border: none;
   background: transparent;
   color: #a3a3a3;
-  font-size: 15px;
-  line-height: 1.55;
+  font-size: 13.5px;
+  line-height: 1.52;
   text-align: left;
   cursor: pointer;
 }
@@ -337,7 +385,7 @@ function blockClass(block = {}) {
 
 .chat-process-command-code {
   min-width: 0;
-  max-width: min(760px, 100%);
+  max-width: min(700px, 100%);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -349,14 +397,14 @@ function blockClass(block = {}) {
 }
 
 .chat-process-detail-panel {
-  width: min(760px, 100%);
+  width: min(700px, 100%);
   max-height: 260px;
   overflow: auto;
-  border-radius: 14px;
-  background: #f4f4f5;
-  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f7f7f8;
+  padding: 10px 12px;
   color: #525252;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.55;
 }
 
@@ -391,5 +439,74 @@ function blockClass(block = {}) {
 .chat-process-result-snippet {
   margin-top: 2px;
   color: #737373;
+}
+
+.chat-process-plan,
+.chat-process-evidence,
+.chat-process-approval {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-process-step-title {
+  color: #525252;
+}
+
+.chat-process-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 20px;
+  color: #737373;
+}
+
+.chat-process-plan-list li.is-running,
+.chat-process-plan-list li.is-in_progress {
+  color: #404040;
+}
+
+.chat-process-plan-list li.is-completed {
+  color: #737373;
+}
+
+.chat-process-plan-status {
+  margin-right: 8px;
+  color: #a3a3a3;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.chat-process-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #737373;
+  font-size: 12px;
+}
+
+.chat-process-meta span {
+  border-radius: 999px;
+  background: #f4f4f5;
+  padding: 2px 8px;
+}
+
+.chat-process-approval-command {
+  width: fit-content;
+  max-width: min(700px, 100%);
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: #f4f4f5;
+  padding: 4px 7px;
+  color: #404040;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+
+.chat-process-approval-reason {
+  color: #737373;
+  font-size: 13px;
+  line-height: 1.5;
 }
 </style>

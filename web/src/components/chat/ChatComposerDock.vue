@@ -99,16 +99,16 @@ defineExpose({
   bottom: 0;
   z-index: 6;
   width: 100%;
-  padding: 0 0 16px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0), rgba(248, 250, 252, 0.92) 28%, #f8fafc 62%);
+  padding: 0 0 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96) 38%, #ffffff 74%);
 }
 
 .chat-composer-stack {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  width: 100%;
-  max-width: 820px;
+  gap: 8px;
+  width: min(860px, calc(100% - 40px));
+  max-width: 860px;
   margin: 0 auto;
 }
 
@@ -125,5 +125,15 @@ defineExpose({
   color: #1d4ed8;
   font-size: 12px;
   line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .chat-composer-dock {
+    padding-bottom: 10px;
+  }
+
+  .chat-composer-stack {
+    width: min(100% - 24px, 860px);
+  }
 }
 </style>

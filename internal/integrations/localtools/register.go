@@ -245,7 +245,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 }
 
 func execCommandDescription() string {
-	description := "Execute a local terminal command on the selected server-local host. Prefer explicit command + args. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands require approval. Host OS: " + runtime.GOOS + "."
+	description := "Execute a local terminal command on the selected server-local host. Prefer explicit command + args. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + "."
 	switch runtime.GOOS {
 	case "darwin":
 		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as nproc, free -h, and /proc/*."

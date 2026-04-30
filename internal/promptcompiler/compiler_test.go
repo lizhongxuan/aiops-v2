@@ -659,6 +659,9 @@ func TestCompile_RuntimePolicy_ExecuteMode(t *testing.T) {
 	if !strings.Contains(result.Policy.Content, "approval") {
 		t.Error("Execute policy should mention approval")
 	}
+	if !strings.Contains(result.Policy.Content, "Do not ask for approval in prose") {
+		t.Error("Execute policy should tell the model to use tool approval gates instead of prose approval")
+	}
 }
 
 func TestCompile_RuntimePolicy_CustomPolicy(t *testing.T) {

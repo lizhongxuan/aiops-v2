@@ -59,4 +59,41 @@ describe("MessageCard", () => {
     expect(wrapper.find(".message-text.markdown-body.is-streaming").exists()).toBe(true);
     expect(wrapper.find(".inline-entity-chip").exists()).toBe(false);
   });
+
+  it("renders an in-progress fenced code block before the closing fence arrives", () => {
+    const wrapper = mount(MessageCard, {
+      props: {
+        showCopyButton: false,
+        card: {
+          id: "assistant-streaming-code",
+          role: "assistant",
+          status: "inProgress",
+          text: "如果你自己执行，可以：\n\n```bash\nopen -a Docker",
+        },
+      },
+    });
+
+    const markdown = wrapper.find(".message-text.markdown-body.is-streaming");
+    expect(markdown.exists()).toBe(true);
+    expect(markdown.find("pre").exists()).toBe(true);
+    expect(markdown.find("pre").text()).toContain("open -a Docker");
+    expect(markdown.text()).not.toContain("```");
+  });
+
+  it("does not append a blue streaming cursor after assistant text", () => {
+    const wrapper = mount(MessageCard, {
+      props: {
+        showCopyButton: false,
+        card: {
+          id: "assistant-streaming-no-cursor",
+          role: "assistant",
+          status: "inProgress",
+          text: "我将检查主机 CPU、内存、磁盘与负载情况。",
+        },
+      },
+    });
+
+    expect(wrapper.find(".message-text.markdown-body.is-streaming").exists()).toBe(true);
+    expect(wrapper.find(".streaming-cursor").exists()).toBe(false);
+  });
 });

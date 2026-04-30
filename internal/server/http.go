@@ -277,6 +277,7 @@ func (s *HTTPServer) withAgentEventProjection(ctx context.Context, state appui.S
 	if err != nil {
 		return state
 	}
+	projection = appui.SanitizeAgentEventProjectionForSnapshot(projection, state)
 	state.AgentEventProjection = &projection
 	return state
 }

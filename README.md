@@ -164,6 +164,7 @@ SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 - 单机会话和协作工作台必须共用同一套 projection selector；允许布局不同，不允许状态模型不同
 - `snapshot.cards` 只能作为持久会话内容 / card artifact 输入，不能作为 running/busy/approval/tool progress 的真相源
 - `snapshot.toolInvocations` 只能作为历史证据/详情兼容输入，不能驱动主 Chat 工作流里的实时 process fold
+- 单机会话默认运行模式必须是 `ModeExecute`；前端发送消息通常只带 `sessionId`，后端 `SendMessage` 必须从 session 回填 `type/mode/host`，不能让单机会话回落到 `chat` 只读 prompt
 - 单机会话过程 UI 必须收敛到一套 Codex-style transcript projection；不能并行用 `LiveStatusCard`、`statusCard`、process cards 或 page-level activity label 生成同一轮运行过程
 - 命令、搜索、文件、MCP 等过程行必须使用 typed fields（例如 `displayKind`、`inputSummary`、`command`、`outputPreview`）渲染；不能靠 UI 文案正则重新分类
 - 过程行去重必须使用 typed semantic key（例如 `displayKind + command/inputSummary/queries/results`），不能只按可见文案去重，否则会把多次同名搜索或命令错误折叠掉
@@ -171,6 +172,7 @@ SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 - 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `RuntimeLiveness` 或 projection row 推导，不能靠 card title/status 文案正则
 - Codex 原生过程 UI 规范以 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md` 和 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-todo.zh.md` 为准；修改单机会话过程 UI 时必须同步更新对应验收项
 - 真实 LLM Playwright 回归只能通过 `AIOPS_TEST_LLM_BASE_URL`、`AIOPS_TEST_LLM_API_KEY`、`AIOPS_TEST_LLM_MODEL` 注入配置；API key 不允许写入源码、fixture、README、验收报告或截图命名
+- 真实 LLM Playwright 回归必须用临时 `AIOPS_DATA_DIR` 启动服务，并在测试结束后清理；不能把测试 API key 写入项目默认 `.data` 或可提交配置
 - 代码评审前必须运行：
 
 ```bash
@@ -179,6 +181,35 @@ rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phase
 ```
 
 第一条在生产代码中必须无匹配。第二条如果有匹配，必须证明它不是运行态真相源；否则先迁移到 `AgentEventProjection`。
+
+### 5.1 Codex-style 结构化流式输出规则
+
+`aiops-v2` 的结构化流式输出主路径固定为：
+
+```text
+model/tool/runtime -> TurnItem -> AgentEvent -> AgentEventProjection -> processTranscript -> Vue
+```
+
+这条路径覆盖 plan、tool/search/command、evidence、approval 和 final Markdown。以后新增运行过程 UI 时，只能扩展 `TurnItem.Payload.Data`、`AgentEvent` typed payload、`AgentEventProjection`、`codexProcessTranscript` 和 `ChatProcessFold`，不能新增并行结构化输出协议。
+
+硬约束：
+
+- 不允许新增 `StructuredResponsePatch`、`emit_response_events`、`StructuredResponsePanel` 作为主路径。
+- 不允许页面私有 `new WebSocket(...)`、SSE 或 polling 通道绕过主 `/ws` 和 `web/src/realtime/*`。
+- 不允许从 assistant final text 解析 `summary/steps/actions`、command、approval、completed、failed 或 plan 状态。
+- `update_plan` 只能落为结构化 plan item，再经 `AgentEventProjection` 进入 process transcript。
+- command/search/evidence/approval 必须使用 typed fields，例如 `displayKind`、`command`、`queries`、`results`、`source`、`confidence`、`rawRef`。
+- final answer 只由 `MessageCard.vue` 做 Markdown token streaming；过程区不能复制最终回答。
+- 高风险动作只能经 tool/policy/approval path 展示和执行，不能由模型正文伪造“已执行”状态。
+
+提交或评审结构化流式输出相关改动前必须运行：
+
+```bash
+rg -n "emit_response_events|StructuredResponsePatch|StructuredResponsePanel" internal web/src
+rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
+```
+
+第一条在生产主路径中必须无命中。第二条允许 settings、fixture、realtime envelope 等普通 JSON 解析，但不能出现从 assistant final text 解析结构化 UI 的实现。
 
 ### 6. Approval UX 单入口规则
 
@@ -201,12 +232,15 @@ rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phase
 - projection、snapshot、local optimistic approval 必须归一到同一个 composer approval selector；页面模板里不能再并行判断多套 pending approval 来源。
 - 同一个 approval id 在页面上只能有一个可点击决策入口；如果同时出现 `codex-approval-inline` 和 `approval-dock`，视为 P0 UI 回归。
 - 审批按钮提交必须继续走统一 decision API，不允许组件私有化决策逻辑或直接改 store 状态。
+- `ResumeTurn` 处理批准决策时必须发出 `approval.decided`/resolved 事件，再继续工具执行；不能只清 runtime pending state，否则旧 `approval.blocked` projection 会把同一命令重新推回底部审批栏。
+- `RunTurn` / `ResumeTurn` 返回 `blocked` 或 `pending_approval` 时，appui async runner 只能补 `agent.blocked` 或保持 approval projection；不能补 `turn.failed.async`，否则 pending approval 会被失败态清空并丢失可点击审核入口。
 
 修改审批相关代码时必须补或更新以下验证：
 
 - 前端单元测试要断言 single-host pending approval 时：`[data-testid="approval-dock"]` 不存在，`[data-testid="codex-approval-inline"]` 存在，`.omnibar-wrapper` 不存在。
 - 前端单元测试要断言显示真实 `command`，且不显示 `exec_command` 这类工具名。
 - reducer/projector 测试要覆盖 `approval.payload.command` 从后端事件进入 projection。
+- runtime 测试要覆盖批准路径会发 `approval.decided(status=approved)`，拒绝路径会发 `approval.decided(status=denied)`，两者都不能让 pending approval 留在 projection 中。
 - 后端 snapshot/projector 测试要覆盖 `PendingApproval.Command` 与 `Reason` 分离。
 - Playwright 验证要至少检查一次真实或 fixture pending approval：approval dock 数量为 0、inline 数量为 1、输入框被替换、点击同意会发送 `/api/v1/approvals/:id/decision`。
 

@@ -947,6 +947,72 @@ watch(
 </template>
 
 <style scoped>
+.main-header {
+  border-bottom-color: #edf0f3;
+}
+
+.header-right :deep(.n-button),
+.header-right :deep(.ops-button) {
+  --n-height: 34px !important;
+  --n-border-radius: 10px !important;
+  --n-font-size: 14px !important;
+}
+
+.header-right :deep(.n-button .n-button__content),
+.header-right :deep(.ops-button .ops-button__content) {
+  gap: 7px;
+}
+
+@media (max-width: 720px) {
+  .app-sidebar {
+    display: none !important;
+  }
+
+  .main-header {
+    gap: 10px;
+    padding: 0 14px;
+  }
+
+  .header-left {
+    min-width: 0;
+  }
+
+  .header-title {
+    overflow: hidden;
+    font-size: 15px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .header-right {
+    flex: 0 0 auto;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .header-right :deep(.n-button),
+  .header-right :deep(.ops-button) {
+    width: 32px;
+    min-width: 32px;
+    padding: 0 !important;
+  }
+
+  .header-right :deep(.n-button .n-button__content),
+  .header-right :deep(.ops-button .ops-button__content) {
+    gap: 0;
+    font-size: 0;
+  }
+
+  .header-right :deep(.n-button .n-button__icon),
+  .header-right :deep(.ops-button .ops-button__icon) {
+    margin: 0;
+  }
+
+  .header-host-content {
+    display: none;
+  }
+}
+
 .app-sidebar {
   display: flex;
   flex-direction: column;

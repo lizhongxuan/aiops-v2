@@ -84,7 +84,7 @@ func scoreExpectedTurnItemSummaries(name string, items []agentstate.TurnItem, ty
 		if item.Type != typ {
 			continue
 		}
-		values = append(values, item.ID, string(item.Status), item.Payload.Summary, string(item.Payload.Data))
+		values = append(values, turnItemMatchValues(item)...)
 	}
 	var matched, missing []string
 	for _, want := range expected {
@@ -100,6 +100,45 @@ func scoreExpectedTurnItemSummaries(name string, items []agentstate.TurnItem, ty
 		Detail:  fmt.Sprintf("%d/%d expected items found", len(matched), len(expected)),
 		Matched: matched,
 		Missing: missing,
+	}
+}
+
+func turnItemMatchValues(item agentstate.TurnItem) []string {
+	values := []string{
+		item.ID,
+		string(item.Status),
+		item.Payload.Kind,
+		item.Payload.Summary,
+		string(item.Payload.Data),
+	}
+	if len(item.Payload.Data) == 0 {
+		return values
+	}
+	var decoded any
+	if json.Unmarshal(item.Payload.Data, &decoded) != nil {
+		return values
+	}
+	collectDecodedValues(decoded, &values)
+	return values
+}
+
+func collectDecodedValues(value any, values *[]string) {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			*values = append(*values, typed)
+		}
+	case []any:
+		for _, item := range typed {
+			collectDecodedValues(item, values)
+		}
+	case map[string]any:
+		for key, item := range typed {
+			*values = append(*values, key)
+			collectDecodedValues(item, values)
+		}
+	case float64, bool:
+		*values = append(*values, fmt.Sprint(typed))
 	}
 }
 

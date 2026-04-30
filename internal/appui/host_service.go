@@ -175,7 +175,7 @@ func (s *defaultHostService) SelectHost(_ context.Context, hostID string) (State
 	}
 	active := s.writer.GetLatest()
 	if active == nil {
-		active = s.writer.GetOrCreate("", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+		active = s.writer.GetOrCreate("", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
 	}
 	active.HostID = targetID
 	s.writer.Update(active)

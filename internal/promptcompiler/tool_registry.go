@@ -183,7 +183,7 @@ func toolPromptConstraint(tool Tool, capability string) string {
 
 func toolApprovalNote(tool Tool) string {
 	if tool.IsDestructive(nil) {
-		return "Requires approval before execution."
+		return "Requires runtime tool approval; call the scoped tool and let the runtime approval gate pause execution."
 	}
 	if tool.IsReadOnly(nil) {
 		return "Generally no approval required."
@@ -193,7 +193,7 @@ func toolApprovalNote(tool Tool) string {
 
 func toolUsagePolicy(tool Tool) string {
 	if tool.IsDestructive(nil) {
-		return "Use only after confirming intent, risk, target scope, and approval requirements."
+		return "Use when the user requested the scoped change and the target is clear; do not ask for prose approval when the runtime approval gate can handle it."
 	}
 	if tool.IsReadOnly(nil) {
 		return "Use to gather evidence before answering claims that depend on local or current state."
@@ -204,7 +204,7 @@ func toolUsagePolicy(tool Tool) string {
 func toolUsageExample(tool Tool) string {
 	name := toolPromptSectionTitle(tool)
 	if tool.IsDestructive(nil) {
-		return fmt.Sprintf("%s after approval to apply a scoped change, then verify the result.", name)
+		return fmt.Sprintf("%s to request a scoped change through the runtime approval gate, then verify the result.", name)
 	}
 	if tool.IsReadOnly(nil) {
 		return fmt.Sprintf("%s to inspect evidence, then cite the observed result in the answer.", name)
@@ -214,7 +214,7 @@ func toolUsageExample(tool Tool) string {
 
 func toolFailureHandling(tool Tool) string {
 	if tool.IsDestructive(nil) {
-		return "Stop, report the failed mutation, and do not retry with broader scope without approval."
+		return "Stop, report the failed mutation, and do not retry with broader scope unless a new scoped tool call can go through the runtime approval gate."
 	}
 	if tool.IsReadOnly(nil) {
 		return "Report the missing evidence and try a narrower read-only query when useful."

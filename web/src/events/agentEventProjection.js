@@ -4,7 +4,7 @@ export function selectActiveProjection(state, sessionId) {
 }
 
 export function selectTimelineRows(state, sessionId) {
-  return selectActiveProjection(state, sessionId)?.timeline || [];
+  return (selectActiveProjection(state, sessionId)?.timeline || []).filter((row) => row?.kind !== "approval");
 }
 
 export function selectRuntimeStatus(state, sessionId) {
@@ -107,6 +107,7 @@ function isActivityRow(row) {
     row?.kind === "tool" ||
     row?.kind === "agent" ||
     row?.kind === "plan" ||
+    row?.kind === "approval" ||
     row?.kind === "evidence" ||
     row?.kind === "system"
   );
@@ -173,7 +174,10 @@ function formatProjectionActivityLine(row = {}) {
     return {
       id: compactText(row?.id),
       kind: "plan",
+      displayKind: compactText(row?.displayKind || "plan"),
       text: compactText(summary || title),
+      summary,
+      steps: Array.isArray(row?.steps) ? row.steps : [],
       status,
       turnId: compactText(row?.turnId),
       clientTurnId: compactText(row?.clientTurnId),
@@ -196,7 +200,32 @@ function formatProjectionActivityLine(row = {}) {
     return {
       id: compactText(row?.id),
       kind: "evidence",
+      displayKind: compactText(row?.displayKind),
       text: compactText(title && summary ? `${title}（${summary}）` : title || summary),
+      summary,
+      source: compactText(row?.source),
+      confidence: compactText(row?.confidence),
+      window: compactText(row?.window),
+      rawRef: compactText(row?.rawRef),
+      status,
+      turnId: compactText(row?.turnId),
+      clientTurnId: compactText(row?.clientTurnId),
+      updatedAt: row?.updatedAt || "",
+    };
+  }
+  if (row?.kind === "approval") {
+    const displayKind = compactText(row?.displayKind || "approval.command");
+    return {
+      id: compactText(row?.approvalId || row?.id),
+      kind: "approval",
+      displayKind,
+      text: status === "completed" ? "已确认" : status === "failed" ? "确认失败" : "等待确认",
+      command: compactText(row?.command),
+      reason: compactText(row?.reason || row?.summary),
+      risk: compactText(row?.risk),
+      targets: Array.isArray(row?.targets) ? row.targets : [],
+      approvalId: compactText(row?.approvalId || row?.id),
+      approvalType: compactText(row?.approvalType),
       status,
       turnId: compactText(row?.turnId),
       clientTurnId: compactText(row?.clientTurnId),
@@ -284,11 +313,17 @@ function formatProjectionActivityLine(row = {}) {
     output,
     outputPreview: output,
     inputSummary,
+    inputPreview: row?.inputPreview,
     queries,
     results,
     displayKind: compactText(row?.displayKind),
     visibility: compactText(row?.visibility || "primary"),
     summary,
+    outputSummary: compactText(row?.outputSummary),
+    exitCode: Number.isFinite(Number(row?.exitCode)) ? Number(row.exitCode) : undefined,
+    durationMs: Number.isFinite(Number(row?.durationMs)) ? Number(row.durationMs) : undefined,
+    risk: compactText(row?.risk),
+    rawRef: compactText(row?.rawRef),
     status,
     turnId: compactText(row?.turnId),
     clientTurnId: compactText(row?.clientTurnId),

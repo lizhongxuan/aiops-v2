@@ -157,10 +157,10 @@ func mockTurnItems(c Case, toolCalls []ToolCall, now time.Time) []agentstate.Tur
 		items = append(items, mockPlanItem(c, now))
 	}
 	for _, approval := range c.Expected.ExpectedApprovals {
-		items = append(items, mockTurnItem(c.ID+"-approval-"+sanitizePathComponent(approval), agentstate.TurnItemTypeApproval, agentstate.ItemStatusPending, approval, now))
+		items = append(items, mockApprovalItem(c, approval, now))
 	}
-	for _, evidence := range c.Expected.ExpectedEvidence {
-		items = append(items, mockTurnItem(c.ID+"-evidence-"+sanitizePathComponent(evidence), agentstate.TurnItemTypeEvidence, agentstate.ItemStatusCompleted, evidence, now))
+	for i, evidence := range c.Expected.ExpectedEvidence {
+		items = append(items, mockEvidenceItem(c, evidence, i, now))
 	}
 	items = append(items, mockTurnItem(c.ID+"-final", agentstate.TurnItemTypeFinalAnswer, agentstate.ItemStatusCompleted, "mock final answer", now))
 	return items
@@ -172,6 +172,79 @@ func mockTurnItem(id string, typ agentstate.TurnItemType, status agentstate.Item
 		Type:      typ,
 		Status:    status,
 		Payload:   agentstate.PayloadEnvelope{Summary: summary},
+		CreatedAt: ts,
+		UpdatedAt: ts,
+	}
+}
+
+func mockApprovalItem(c Case, approval string, ts time.Time) agentstate.TurnItem {
+	command := strings.TrimSpace(approval)
+	if command == "" {
+		command = "approval required"
+	}
+	payload := map[string]any{
+		"approvalId":   c.ID + "-approval-" + sanitizePathComponent(command),
+		"approvalType": "command",
+		"command":      command,
+		"reason":       "high risk action requires approval",
+		"risk":         "high",
+		"targets":      []string{"prod/payment-api"},
+	}
+	data, _ := json.Marshal(payload)
+	return agentstate.TurnItem{
+		ID:        c.ID + "-approval-" + sanitizePathComponent(command),
+		Type:      agentstate.TurnItemTypeApproval,
+		Status:    agentstate.ItemStatusPending,
+		Payload:   agentstate.PayloadEnvelope{Kind: "command", Summary: command, Data: data},
+		CreatedAt: ts,
+		UpdatedAt: ts,
+	}
+}
+
+func mockEvidenceItem(c Case, evidence string, index int, ts time.Time) agentstate.TurnItem {
+	kind := "metric"
+	source := "prometheus"
+	window := "15m"
+	rawRef := "promql:sum(rate(http_requests_total{status=~\"5..\"}[5m]))"
+	lower := strings.ToLower(evidence)
+	if strings.Contains(lower, "log") || strings.Contains(lower, "loki") || strings.Contains(evidence, "日志") {
+		kind = "log"
+		source = "loki"
+		window = "10m"
+		rawRef = `{app="payment-api"} |= "error"`
+	}
+	if strings.Contains(lower, "trace") || strings.Contains(evidence, "链路") {
+		kind = "trace"
+		source = "tempo"
+		window = "30m"
+		rawRef = "trace:payment-api:slow-request"
+	}
+	if strings.Contains(lower, "deploy") || strings.Contains(evidence, "发布") {
+		kind = "deployment"
+		source = "kubernetes"
+		window = "1h"
+		rawRef = "deployment/payment-api@sha256:abc123"
+	}
+	payload := map[string]any{
+		"id":         c.ID + "-evidence-" + sanitizePathComponent(evidence),
+		"kind":       kind,
+		"title":      evidence,
+		"summary":    evidence,
+		"source":     source,
+		"confidence": "high",
+		"window":     window,
+		"rawRef":     rawRef,
+		"data": map[string]any{
+			"caseId": c.ID,
+			"index":  index,
+		},
+	}
+	data, _ := json.Marshal(payload)
+	return agentstate.TurnItem{
+		ID:        c.ID + "-evidence-" + sanitizePathComponent(evidence),
+		Type:      agentstate.TurnItemTypeEvidence,
+		Status:    agentstate.ItemStatusCompleted,
+		Payload:   agentstate.PayloadEnvelope{Kind: kind, Summary: evidence, Data: data},
 		CreatedAt: ts,
 		UpdatedAt: ts,
 	}

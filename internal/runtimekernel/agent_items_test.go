@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -160,6 +161,47 @@ func TestRunTurn_UpdatePlanToolWritesPlanTurnItem(t *testing.T) {
 	}
 	if len(payload.Steps) != 2 || payload.Steps[0].Status != planning.StepStatusInProgress {
 		t.Fatalf("plan payload = %#v, want two steps with first in progress", payload)
+	}
+}
+
+func TestRunTurn_UpdatePlanDoesNotCreateResponsePatchItems(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "plan-call-1",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "update_plan",
+						Arguments: `{"steps":[{"id":"inspect","text":"Inspect service","status":"in_progress"}]}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("done", nil),
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{planning.NewUpdatePlanTool()}, nil, nil)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-plan-no-patch",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-plan-no-patch",
+		Input:       "triage",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	session := kernel.sessions.Get("sess-plan-no-patch")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
+	}
+	for _, item := range session.CurrentTurn.AgentItems {
+		itemType := string(item.Type)
+		if strings.Contains(itemType, "patch") || strings.Contains(item.Payload.Kind, "response_events") {
+			t.Fatalf("unexpected UI patch item: %#v", item)
+		}
 	}
 }
 

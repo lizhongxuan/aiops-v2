@@ -35,6 +35,9 @@ func TestSessionService_CreateSessionReturnsActiveListAndSnapshot(t *testing.T) 
 	if host.Snapshot.SelectedHostID != "server-local" {
 		t.Fatalf("host snapshot selectedHostId = %q, want server-local", host.Snapshot.SelectedHostID)
 	}
+	if host.Snapshot.CurrentMode != "execute" || host.Snapshot.CurrentLane != "execute" {
+		t.Fatalf("host snapshot mode/lane = %q/%q, want execute/execute", host.Snapshot.CurrentMode, host.Snapshot.CurrentLane)
+	}
 	if len(host.Sessions) != 2 {
 		t.Fatalf("len(host sessions) = %d, want 2", len(host.Sessions))
 	}

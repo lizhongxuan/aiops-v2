@@ -144,23 +144,23 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 		payload = TurnPayload{Prompt: summary, Summary: summary}
 	case agentstate.TurnItemTypeToolCall:
 		tool := decodeToolPayloadData(item.Payload.Data)
+		applyToolPayloadEnvelope(&tool, item.Payload, true)
 		if tool.ToolName == "" {
 			tool.ToolName = summary
 		}
-		tool.InputSummary = summary
 		payload = tool
 	case agentstate.TurnItemTypeToolResult:
 		tool := decodeToolPayloadData(item.Payload.Data)
-		tool.OutputSummary = summary
+		applyToolPayloadEnvelope(&tool, item.Payload, false)
 		payload = tool
 	case agentstate.TurnItemTypeFinalAnswer:
 		payload = AssistantPayload{Text: summary, Channel: "final"}
 	case agentstate.TurnItemTypePlan:
-		payload = PlanPayload{Title: summary}
+		payload = planPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeApproval:
-		payload = ApprovalPayload{Title: summary, Reason: summary}
+		payload = approvalPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeEvidence:
-		payload = EvidencePayload{Summary: summary}
+		payload = evidencePayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeError:
 		payload = TurnPayload{Summary: summary, Error: summary}
 	default:
@@ -170,16 +170,71 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 	return data
 }
 
+func planPayloadFromTurnItem(item agentstate.TurnItem) PlanPayload {
+	payload := PlanPayload{Title: strings.TrimSpace(item.Payload.Summary)}
+	if len(item.Payload.Data) == 0 {
+		return payload
+	}
+	var raw struct {
+		Title string `json:"title"`
+		Steps []struct {
+			ID      string `json:"id"`
+			Text    string `json:"text"`
+			Status  string `json:"status"`
+			Summary string `json:"summary"`
+		} `json:"steps"`
+	}
+	if err := json.Unmarshal(item.Payload.Data, &raw); err != nil {
+		return payload
+	}
+	if title := strings.TrimSpace(raw.Title); title != "" {
+		payload.Title = title
+	}
+	for i, step := range raw.Steps {
+		text := strings.TrimSpace(step.Text)
+		if text == "" {
+			continue
+		}
+		id := strings.TrimSpace(step.ID)
+		if id == "" {
+			id = fmt.Sprintf("step-%d", i+1)
+		}
+		payload.Steps = append(payload.Steps, PlanStep{
+			ID:      id,
+			Text:    text,
+			Status:  strings.TrimSpace(step.Status),
+			Summary: strings.TrimSpace(step.Summary),
+		})
+	}
+	return payload
+}
+
 func decodeToolPayloadData(data json.RawMessage) ToolPayload {
 	if len(data) == 0 {
 		return ToolPayload{}
 	}
 	var raw struct {
-		ID         string          `json:"id"`
-		Name       string          `json:"name"`
-		ToolCallID string          `json:"toolCallId"`
-		ToolName   string          `json:"toolName"`
-		Arguments  json.RawMessage `json:"arguments"`
+		ID            string          `json:"id"`
+		Name          string          `json:"name"`
+		ToolCallID    string          `json:"toolCallId"`
+		ToolName      string          `json:"toolName"`
+		DisplayName   string          `json:"displayName"`
+		DisplayKind   string          `json:"displayKind"`
+		Title         string          `json:"title"`
+		InputSummary  string          `json:"inputSummary"`
+		OutputSummary string          `json:"outputSummary"`
+		Arguments     json.RawMessage `json:"arguments"`
+		InputPreview  json.RawMessage `json:"inputPreview"`
+		OutputPreview json.RawMessage `json:"outputPreview"`
+		Risk          string          `json:"risk"`
+		HostID        string          `json:"hostId"`
+		Resource      string          `json:"resource"`
+		Namespace     string          `json:"namespace"`
+		RawRef        string          `json:"rawRef"`
+		ArtifactID    string          `json:"artifactId"`
+		ExitCode      *int            `json:"exitCode"`
+		DurationMs    int64           `json:"durationMs"`
+		Error         string          `json:"error"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return ToolPayload{}
@@ -192,11 +247,85 @@ func decodeToolPayloadData(data json.RawMessage) ToolPayload {
 	if toolName == "" {
 		toolName = strings.TrimSpace(raw.Name)
 	}
-	return ToolPayload{
-		ToolCallID:   toolCallID,
-		ToolName:     toolName,
-		InputPreview: raw.Arguments,
+	inputPreview := raw.InputPreview
+	if len(inputPreview) == 0 {
+		inputPreview = raw.Arguments
 	}
+	return ToolPayload{
+		ToolCallID:    toolCallID,
+		ToolName:      toolName,
+		DisplayName:   strings.TrimSpace(raw.DisplayName),
+		DisplayKind:   strings.TrimSpace(raw.DisplayKind),
+		Title:         strings.TrimSpace(raw.Title),
+		InputSummary:  strings.TrimSpace(raw.InputSummary),
+		OutputSummary: strings.TrimSpace(raw.OutputSummary),
+		InputPreview:  inputPreview,
+		OutputPreview: raw.OutputPreview,
+		Risk:          strings.TrimSpace(raw.Risk),
+		HostID:        strings.TrimSpace(raw.HostID),
+		Resource:      strings.TrimSpace(raw.Resource),
+		Namespace:     strings.TrimSpace(raw.Namespace),
+		RawRef:        strings.TrimSpace(raw.RawRef),
+		ArtifactID:    strings.TrimSpace(raw.ArtifactID),
+		ExitCode:      raw.ExitCode,
+		DurationMs:    raw.DurationMs,
+		Error:         strings.TrimSpace(raw.Error),
+	}
+}
+
+func applyToolPayloadEnvelope(tool *ToolPayload, envelope agentstate.PayloadEnvelope, input bool) {
+	if tool == nil {
+		return
+	}
+	if kind := strings.TrimSpace(envelope.Kind); kind != "" {
+		tool.DisplayKind = kind
+	}
+	summary := strings.TrimSpace(envelope.Summary)
+	if input {
+		if tool.InputSummary == "" {
+			tool.InputSummary = summary
+		}
+		return
+	}
+	if tool.OutputSummary == "" {
+		tool.OutputSummary = summary
+	}
+}
+
+func approvalPayloadFromTurnItem(item agentstate.TurnItem) ApprovalPayload {
+	summary := strings.TrimSpace(item.Payload.Summary)
+	payload := ApprovalPayload{Title: summary, Reason: summary}
+	if len(item.Payload.Data) != 0 {
+		_ = json.Unmarshal(item.Payload.Data, &payload)
+	}
+	if payload.ApprovalID == "" {
+		payload.ApprovalID = strings.TrimSpace(item.ID)
+	}
+	if payload.Title == "" {
+		payload.Title = summary
+	}
+	if payload.Reason == "" {
+		payload.Reason = summary
+	}
+	return payload
+}
+
+func evidencePayloadFromTurnItem(item agentstate.TurnItem) EvidencePayload {
+	summary := strings.TrimSpace(item.Payload.Summary)
+	payload := EvidencePayload{Summary: summary}
+	if len(item.Payload.Data) != 0 {
+		_ = json.Unmarshal(item.Payload.Data, &payload)
+	}
+	if payload.ID == "" {
+		payload.ID = strings.TrimSpace(item.ID)
+	}
+	if payload.Kind == "" {
+		payload.Kind = strings.TrimPrefix(strings.TrimSpace(item.Payload.Kind), "evidence.")
+	}
+	if payload.Summary == "" {
+		payload.Summary = summary
+	}
+	return payload
 }
 
 func timestampString(ts time.Time) string {

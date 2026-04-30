@@ -130,21 +130,69 @@ describe("ChatProcessFold", () => {
     expect(preview.text()).toContain("https://finance.example.test/a");
   });
 
-  it("does not render bottom thinking state inside the process fold", () => {
+  it("renders plan, evidence and inline approval blocks as structured process rows", () => {
+    const wrapper = mount(ChatProcessFold, {
+      props: {
+        turn: turnWithTranscript({
+          status: "blocked",
+          processItems: [
+            {
+              id: "plan-1",
+              kind: "plan",
+              displayKind: "plan",
+              status: "running",
+              text: "查 Loki 日志",
+              steps: [
+                { id: "step-1", text: "查 Prometheus metrics", status: "completed" },
+                { id: "step-2", text: "查 Loki 日志", status: "running" },
+              ],
+            },
+            {
+              id: "evidence-1",
+              kind: "evidence",
+              displayKind: "evidence.metric",
+              status: "completed",
+              text: "支付服务 5xx 上升（payment-api 5xx rate > 8%）",
+              source: "prometheus",
+              confidence: "high",
+              window: "15m",
+              rawRef: "promql:5xx",
+            },
+            {
+              id: "approval-1",
+              kind: "approval",
+              displayKind: "approval.command",
+              status: "blocked",
+              text: "等待确认",
+              approvalId: "approval-1",
+              approvalType: "command",
+              command: "kubectl rollout undo deploy/payment-api -n prod",
+              reason: "需要回滚最近导致 5xx 上升的发布。",
+              risk: "high",
+              targets: ["prod/payment-api"],
+            },
+          ],
+        }),
+      },
+    });
+
+    expect(wrapper.find('[data-testid="process-step-plan"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="process-step-plan"]').text()).toContain("查 Prometheus metrics");
+    expect(wrapper.find('[data-testid="process-step-evidence"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="process-step-evidence"]').text()).toContain("prometheus");
+    expect(wrapper.find('[data-testid="process-step-evidence"]').text()).toContain("15m");
+    expect(wrapper.find('[data-testid="process-step-approval"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="process-step-approval"]').text()).toContain("kubectl rollout undo deploy/payment-api -n prod");
+    expect(wrapper.find('[data-testid="process-step-approval"]').text()).toContain("high");
+  });
+
+  it("keeps thinking status out of the process fold while the model is running", () => {
     const turn = turnWithTranscript({
       active: true,
       status: "running",
       elapsedLabel: "20s",
       modelRunning: true,
-      processItems: [
-        {
-          id: "search-1",
-          kind: "search",
-          displayKind: "browser.search",
-          status: "completed",
-          inputSummary: "A股 大盘",
-        },
-      ],
+      processItems: [],
     });
     const wrapper = mount(ChatProcessFold, {
       props: {
@@ -153,6 +201,55 @@ describe("ChatProcessFold", () => {
     });
 
     expect(turn.processTranscript.showThinking).toBe(true);
+    expect(wrapper.find('[data-testid="process-thinking-status"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="process-step-reasoning"]').exists()).toBe(false);
+  });
+
+  it("filters persisted pure thinking placeholders from the process transcript", () => {
+    const turn = turnWithTranscript({
+      active: true,
+      status: "running",
+      elapsedLabel: "27s",
+      modelRunning: true,
+      assistantMessages: [
+        {
+          id: "intent-1",
+          text: "我先查询今天 A 股主要指数的最新收盘/盘中数据，并优先核验权威来源后再汇总给你。",
+        },
+      ],
+      processItems: [
+        {
+          id: "reasoning-placeholder-1",
+          kind: "reasoning",
+          displayKind: "reasoning.summary",
+          status: "completed",
+          text: "正在思考",
+        },
+        {
+          id: "search-1",
+          kind: "search",
+          displayKind: "browser.search",
+          status: "completed",
+          inputSummary: "今天 A 股行情",
+        },
+        {
+          id: "reasoning-placeholder-2",
+          kind: "reasoning",
+          displayKind: "reasoning.summary",
+          status: "",
+          text: "正在思考…",
+        },
+      ],
+    });
+
+    const wrapper = mount(ChatProcessFold, {
+      props: {
+        turn,
+      },
+    });
+
+    expect(turn.processTranscript.showThinking).toBe(true);
+    expect(wrapper.find('[data-testid="process-step-search"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="process-step-reasoning"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("正在思考");
   });

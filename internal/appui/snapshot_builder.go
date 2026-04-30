@@ -55,6 +55,9 @@ func (b *SnapshotBuilder) BuildStateSnapshot(session *runtimekernel.SessionState
 		snapshot.PromptEnvelope = buildPromptEnvelope(session, snapshot.CurrentLane)
 		if events := buildAgentItemEvents(session.CurrentTurn); len(events) > 0 {
 			snapshot.Config["agentItemEvents"] = events
+			if projection, ok := buildAgentItemProjection(session.ID, session.CurrentTurn, events); ok {
+				snapshot.AgentEventProjection = &projection
+			}
 		}
 	}
 	snapshot.SelectedHostID = selectedHostID
@@ -80,6 +83,105 @@ func buildAgentItemEvents(turn *runtimekernel.TurnSnapshot) []AgentEvent {
 		return nil
 	}
 	return agentuipkg.ProjectTurnItemsToAgentEvents(turn.SessionID, turn.ID, turn.AgentItems, 0)
+}
+
+func buildAgentItemProjection(sessionID string, turn *runtimekernel.TurnSnapshot, events []AgentEvent) (AgentEventProjection, bool) {
+	if strings.TrimSpace(sessionID) == "" || len(events) == 0 {
+		return AgentEventProjection{}, false
+	}
+	projection, err := NewAgentEventProjector().Replay(sessionID, events)
+	if err != nil {
+		return AgentEventProjection{}, false
+	}
+	projection = sanitizeAgentItemProjectionForTurn(projection, turn)
+	return projection, true
+}
+
+func sanitizeAgentItemProjectionForTurn(proj AgentEventProjection, turn *runtimekernel.TurnSnapshot) AgentEventProjection {
+	if turn == nil || !turn.Lifecycle.IsTerminal() {
+		return proj
+	}
+	status := terminalAgentEventStatusForTurnLifecycle(turn.Lifecycle)
+	updatedAt := isoStamp(turn.UpdatedAt)
+	if updatedAt == "" {
+		updatedAt = isoStamp(turn.StartedAt)
+	}
+	return sanitizeTerminalAgentEventProjection(proj, status, turn.Lifecycle == runtimekernel.TurnLifecycleFailed, updatedAt, turn.ID)
+}
+
+func SanitizeAgentEventProjectionForSnapshot(proj AgentEventProjection, snapshot StateSnapshot) AgentEventProjection {
+	if snapshot.Runtime.Turn.Active {
+		return proj
+	}
+	status, failed, ok := terminalAgentEventStatusForRuntimePhase(snapshot.Runtime.Turn.Phase)
+	if !ok {
+		return proj
+	}
+	if projectionSessionID := strings.TrimSpace(proj.SessionID); projectionSessionID != "" && strings.TrimSpace(snapshot.SessionID) != "" && projectionSessionID != strings.TrimSpace(snapshot.SessionID) {
+		return proj
+	}
+	return sanitizeTerminalAgentEventProjection(proj, status, failed, "", "")
+}
+
+func sanitizeTerminalAgentEventProjection(proj AgentEventProjection, status AgentEventStatus, terminalFailed bool, updatedAt string, turnID string) AgentEventProjection {
+	proj = ensureAgentEventProjection(proj)
+	if strings.TrimSpace(turnID) == "" {
+		turnID = strings.TrimSpace(proj.CurrentTurnID)
+	}
+	pending := cloneBoolMap(proj.RuntimeLiveness.PendingApprovals)
+	for id := range proj.RuntimeLiveness.PendingUserInputs {
+		pending[id] = true
+	}
+	proj.RuntimeLiveness.ActiveTurns = map[string]bool{}
+	proj.RuntimeLiveness.ActiveAgents = map[string]bool{}
+	proj.RuntimeLiveness.PendingApprovals = map[string]bool{}
+	proj.RuntimeLiveness.PendingUserInputs = map[string]bool{}
+	proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
+	for i := range proj.Approvals {
+		if proj.Approvals[i].Status != AgentEventStatusBlocked && !pending[proj.Approvals[i].ID] {
+			continue
+		}
+		proj.Approvals[i].Status = status
+		if updatedAt != "" {
+			proj.Approvals[i].UpdatedAt = updatedAt
+		}
+	}
+	if turnID != "" && proj.FinalMessages != nil {
+		if final, ok := proj.FinalMessages[turnID]; ok {
+			final.Status = status
+			if updatedAt != "" {
+				final.UpdatedAt = updatedAt
+			}
+			proj.FinalMessages[turnID] = final
+		}
+	}
+	proj.LastTerminalFailed = terminalFailed
+	proj.Status = deriveProjectionStatus(proj.RuntimeLiveness, proj.Diff, proj.LastTerminalFailed)
+	return proj
+}
+
+func terminalAgentEventStatusForTurnLifecycle(lifecycle runtimekernel.TurnLifecycleState) AgentEventStatus {
+	switch lifecycle {
+	case runtimekernel.TurnLifecycleFailed:
+		return AgentEventStatusFailed
+	case runtimekernel.TurnLifecycleCanceled:
+		return AgentEventStatusCanceled
+	default:
+		return AgentEventStatusCompleted
+	}
+}
+
+func terminalAgentEventStatusForRuntimePhase(phase string) (AgentEventStatus, bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "failed":
+		return AgentEventStatusFailed, true, true
+	case "aborted", "canceled", "cancelled":
+		return AgentEventStatusCanceled, false, true
+	case "completed":
+		return AgentEventStatusCompleted, false, true
+	default:
+		return "", false, false
+	}
 }
 
 func (b *SnapshotBuilder) BuildSessionSummary(session *runtimekernel.SessionState) SessionSummary {

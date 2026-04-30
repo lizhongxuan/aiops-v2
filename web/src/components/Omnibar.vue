@@ -621,16 +621,16 @@ function tryExecuteSlashSwitch(text) {
 <style scoped>
 .omnibar-wrapper {
   width: 100%;
-  max-width: 820px;
+  max-width: 860px;
   margin: 0 auto;
-  background: var(--omnibar-bg);
-  border: 1px solid var(--border-color);
-  border-radius: 26px;
-  padding: 12px 16px 10px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
+  background: #ffffff;
+  border: 1px solid #dbe3ee;
+  border-radius: 22px;
+  padding: 10px 12px 8px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
   transition: box-shadow 0.2s, border-color 0.2s;
   position: relative;
 }
@@ -654,7 +654,7 @@ function tryExecuteSlashSwitch(text) {
 
 .omnibar-wrapper:focus-within {
   border-color: #cbd5e1;
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.1);
+  box-shadow: 0 16px 38px rgba(15, 23, 42, 0.1);
   background: #ffffff;
 }
 
@@ -664,10 +664,10 @@ function tryExecuteSlashSwitch(text) {
   background: transparent;
   resize: none;
   outline: none;
-  min-height: 36px;
-  font-size: 14px;
-  line-height: 1.6;
-  padding: 4px 6px 0;
+  min-height: 32px;
+  font-size: 14.5px;
+  line-height: 1.55;
+  padding: 2px 4px 0;
   color: var(--text-main);
   font-family: inherit;
 }
@@ -690,7 +690,7 @@ function tryExecuteSlashSwitch(text) {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
 }
 
 .omnibar-tools.is-compact-stop {
@@ -700,7 +700,7 @@ function tryExecuteSlashSwitch(text) {
 
 .tools-left {
   display: flex;
-  gap: 6px;
+  gap: 5px;
   flex-wrap: wrap;
   align-items: center;
   flex: 1;
@@ -722,7 +722,7 @@ function tryExecuteSlashSwitch(text) {
 .tools-right {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-shrink: 0;
   margin-left: auto;
 }
@@ -739,7 +739,7 @@ function tryExecuteSlashSwitch(text) {
 .action-group {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .execution-controls {
@@ -747,7 +747,7 @@ function tryExecuteSlashSwitch(text) {
   align-items: center;
   gap: 6px;
   color: #7c8798;
-  font-size: 12px;
+  font-size: 11.5px;
   line-height: 1;
 }
 
@@ -756,7 +756,7 @@ function tryExecuteSlashSwitch(text) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
+  height: 26px;
   border: none;
   background: transparent;
   color: #7c8798;
@@ -779,17 +779,19 @@ function tryExecuteSlashSwitch(text) {
 }
 
 .composer-icon-btn {
-  width: 28px;
+  width: 26px;
   border-radius: 999px;
-  font-size: 20px;
+  font-size: 19px;
 }
 
 .tools-left > .composer-icon-btn {
   color: #64748b;
-  font-size: 22px;
+  font-size: 21px;
 }
 
 .omnibar-wrapper :deep(.omnibar-action-button.n-button) {
+  --n-width: 34px !important;
+  --n-height: 34px !important;
   --n-color: #111827 !important;
   --n-color-hover: #1f2937 !important;
   --n-color-pressed: #030712 !important;
@@ -808,7 +810,7 @@ function tryExecuteSlashSwitch(text) {
 }
 
 .hint-text {
-  font-size: 11.5px;
+  font-size: 11px;
   color: #94a3b8;
   line-height: 1.4;
   text-align: right;

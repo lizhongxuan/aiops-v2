@@ -417,10 +417,12 @@ function applyTool(projection, event) {
     kind: "tool",
     turnId: event.turnId,
     toolCallId: id,
+    toolName: compactText(event.payload.toolName) || existingRow.toolName || "",
     displayKind,
     title,
     summary,
     inputSummary,
+    inputPreview: event.payload.inputPreview ?? existingRow.inputPreview,
     command: compactText(event.payload.command) || existingRow.command || "",
     cwd: compactText(event.payload.cwd) || existingRow.cwd || "",
     outputSummary: compactText(event.payload.outputSummary) || existingRow.outputSummary || "",
@@ -535,6 +537,7 @@ function applyEvidence(projection, event) {
     summary: compactText(event.payload.summary),
     source: compactText(event.payload.source),
     confidence: compactText(event.payload.confidence),
+    window: compactText(event.payload.window),
     rawRef: compactText(event.payload.rawRef),
     status: event.status,
     visibility: event.visibility,
@@ -595,18 +598,41 @@ function resolveToolQueries(payload = {}, existingRow = {}, inputSummary = "", d
 
 function applyApproval(projection, event) {
   const id = compactText(event.payload.approvalId || event.eventId);
-  projection.approvals = upsertRow(projection.approvals, {
+  const approvalType = compactText(event.payload.approvalType);
+  const row = {
     id,
-    approvalType: compactText(event.payload.approvalType),
-    title: compactText(event.payload.title),
+    kind: "approval",
+    turnId: event.turnId,
+    clientTurnId: event.clientTurnId,
+    displayKind: approvalType ? `approval.${approvalType}` : "approval.command",
+    approvalId: id,
+    approvalType,
     command: compactText(event.payload.command),
     reason: compactText(event.payload.reason),
     risk: compactText(event.payload.risk),
     decision: compactText(event.payload.decision),
     targets: Array.isArray(event.payload.targets) ? event.payload.targets : [],
     status: event.status,
+    visibility: event.visibility,
+    updatedAt: event.createdAt,
+    seq: event.seq,
+  };
+  projection.approvals = upsertRow(projection.approvals, {
+    id,
+    approvalType,
+    title: compactText(event.payload.title),
+    command: row.command,
+    reason: row.reason,
+    risk: row.risk,
+    decision: row.decision,
+    targets: row.targets,
+    status: event.status,
     updatedAt: event.createdAt,
   });
+  projection.timeline = upsertRow(projection.timeline, row);
+  if (event.turnId) {
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
+  }
   if (event.phase === "requested" || event.phase === "blocked") {
     projection.runtimeLiveness.pendingApprovals[id] = true;
     if (event.payload.approvalType === "user_input" || event.payload.approvalType === "ask_user") {

@@ -699,6 +699,156 @@ func TestRunTurn_SwitchesToSynthesisOnlyAfterEnoughToolEvidence(t *testing.T) {
 	}
 }
 
+func TestRunTurn_UpdatePlanDoesNotConsumeSynthesisEvidenceBudget(t *testing.T) {
+	toolCalls := []schema.ToolCall{
+		{
+			ID:   "call-plan-a",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "update_plan",
+				Arguments: `{"steps":[{"id":"check","text":"Check Docker","status":"in_progress"}]}`,
+			},
+		},
+		{
+			ID:   "call-plan-b",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "update_plan",
+				Arguments: `{"steps":[{"id":"check","text":"Check Docker","status":"completed"},{"id":"run","text":"Run nginx","status":"in_progress"}]}`,
+			},
+		},
+	}
+	for i := 0; i < defaultSynthesisOnlyToolDispatches-2; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-evidence-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"public evidence"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("继续执行下一步，而不是提前收尾", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Aliases:     []string{"search_web"},
+			Description: "Search public web pages",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "evidence result"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range []tooling.Tool{planning.NewUpdatePlanTool(), toolDef} {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-plan-budget",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-plan-budget",
+		Input:       "run a multi-step task",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if len(compiler.contexts[1].AssembledTools) == 0 {
+		t.Fatal("second iteration should still expose tools because update_plan does not count as evidence")
+	}
+	if containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "web_search") {
+		t.Fatalf("second iteration unavailable tools = %v, did not expect synthesis-only", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+}
+
+func TestRunTurn_ExecuteModeDoesNotSwitchToSynthesisOnlyAtEvidenceThreshold(t *testing.T) {
+	toolCalls := make([]schema.ToolCall, 0, defaultSynthesisOnlyToolDispatches)
+	for i := 0; i < defaultSynthesisOnlyToolDispatches; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-evidence-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "read_status",
+				Arguments: `{"query":"status"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("继续执行变更步骤，而不是提前收尾", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_status",
+			Description: "Read status",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "status evidence"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-execute-budget",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-execute-budget",
+		Input:       "inspect then change",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if len(compiler.contexts[1].AssembledTools) == 0 {
+		t.Fatal("execute mode should keep tools available at the evidence synthesis threshold")
+	}
+	if containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "read_status") {
+		t.Fatalf("second iteration unavailable tools = %v, did not expect synthesis-only in execute mode", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+}
+
 func TestRunTurn_AddsEvidenceAwareFinalAnswerPromptAfterToolResults(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -1122,6 +1272,29 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if executed != 1 {
 		t.Fatalf("tool executions after resume = %d, want 1", executed)
 	}
+	foundApprovalApproved := false
+	foundTurnCompleteAfterApproval := false
+	for _, event := range emitter.events {
+		if event.Type == EventTurnComplete && event.TurnID == "turn-approval" {
+			foundTurnCompleteAfterApproval = true
+		}
+		if event.Type != EventApprovalDecided {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("approval.decided payload decode error = %v", err)
+		}
+		if payload["status"] == "approved" && payload["decision"] == "approved" {
+			foundApprovalApproved = true
+		}
+	}
+	if !foundApprovalApproved {
+		t.Fatalf("expected approval.decided approved event after resume, events = %#v", emitter.events)
+	}
+	if !foundTurnCompleteAfterApproval {
+		t.Fatalf("expected turn.complete event after approved resume, events = %#v", emitter.events)
+	}
 	session = kernel.sessions.Get("sess-approval")
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("expected current turn after resume")
@@ -1131,6 +1304,275 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 	if len(session.PendingApprovals) != 0 {
 		t.Fatalf("pending approvals after resume = %d, want 0", len(session.PendingApprovals))
+	}
+}
+
+func TestResumeTurn_ClearsPendingApprovalBeforeApprovedToolCompletes(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-approval",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("write complete", nil),
+		},
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce sync.Once
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "write_file",
+			Description: "Write a file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+				return tooling.ToolResult{Content: "wrote:" + string(input)}, nil
+			case <-ctx.Done():
+				return tooling.ToolResult{}, ctx.Err()
+			}
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-clear-approval",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-clear-approval",
+		Input:       "write the file",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+
+	done := make(chan struct{})
+	var resumed TurnResult
+	var resumeErr error
+	go func() {
+		defer close(done)
+		resumed, resumeErr = kernel.ResumeTurn(context.Background(), ResumeRequest{
+			SessionID: "sess-clear-approval",
+			TurnID:    "turn-clear-approval",
+			Decision:  "approved",
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("approved tool did not start")
+	}
+	session := kernel.sessions.Get("sess-clear-approval")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session while approved tool is running")
+	}
+	if len(session.PendingApprovals) != 0 || len(session.CurrentTurn.PendingApprovals) != 0 {
+		t.Fatalf("pending approvals while approved tool is running: session=%d turn=%d", len(session.PendingApprovals), len(session.CurrentTurn.PendingApprovals))
+	}
+
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ResumeTurn did not finish")
+	}
+	if resumeErr != nil {
+		t.Fatalf("ResumeTurn failed: %v", resumeErr)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("resume status = %q, want completed", resumed.Status)
+	}
+}
+
+func TestResumeTurn_DrainsRemainingToolCallsBeforeNextModelRequest(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-approval",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+					},
+				},
+				{
+					ID:   "call-read",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_info",
+						Arguments: `{"target":"docker"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("done", nil),
+		},
+	}
+
+	var writes int
+	var reads int
+	writeTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "write_file",
+			Description: "Write a file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			writes++
+			return tooling.ToolResult{Content: "wrote:" + string(input)}, nil
+		},
+	}
+	readTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_info",
+			Description: "Read info",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			reads++
+			return tooling.ToolResult{Content: "read:" + string(input)}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{writeTool, readTool}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-multi-tool-approval",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-multi-tool-approval",
+		Input:       "write then read",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: "sess-multi-tool-approval",
+		TurnID:    "turn-multi-tool-approval",
+		Decision:  "approved",
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn failed: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("resume status = %q, want completed", resumed.Status)
+	}
+	if writes != 1 || reads != 1 {
+		t.Fatalf("tool executions writes=%d reads=%d, want 1/1", writes, reads)
+	}
+	if len(model.inputs) < 2 {
+		t.Fatalf("model inputs = %d, want resume to call model after tool outputs", len(model.inputs))
+	}
+	lastInput := model.inputs[len(model.inputs)-1]
+	seenToolOutputs := map[string]bool{}
+	for _, msg := range lastInput {
+		if msg == nil || msg.Role != schema.Tool {
+			continue
+		}
+		seenToolOutputs[msg.ToolCallID] = true
+	}
+	if !seenToolOutputs["call-approval"] || !seenToolOutputs["call-read"] {
+		t.Fatalf("resume model input missing tool outputs: %#v", seenToolOutputs)
+	}
+}
+
+func TestResumeTurn_FeedsApprovedToolFailureBackToModel(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-approval",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "write_file",
+						Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("handled failure", nil),
+		},
+	}
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "write_file",
+			Description: "Write a file",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{}, errors.New("disk is read-only")
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-approved-failure",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-approved-failure",
+		Input:       "write the file",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: "sess-approved-failure",
+		TurnID:    "turn-approved-failure",
+		Decision:  "approved",
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn failed: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.Output != "handled failure" {
+		t.Fatalf("resume result = %#v, want completed handled failure", resumed)
+	}
+	if len(model.inputs) < 2 {
+		t.Fatalf("model inputs = %d, want resume model call", len(model.inputs))
+	}
+	lastInput := model.inputs[len(model.inputs)-1]
+	var failureToolMessage string
+	for _, msg := range lastInput {
+		if msg != nil && msg.Role == schema.Tool && msg.ToolCallID == "call-approval" {
+			failureToolMessage = msg.Content
+		}
+	}
+	if !strings.Contains(failureToolMessage, "disk is read-only") {
+		t.Fatalf("failure tool message = %q, want error content", failureToolMessage)
 	}
 }
 

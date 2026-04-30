@@ -36,9 +36,19 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 		"approval=required",
 		"resultBudget=2048",
 		"failure=fail_turn",
+		"runtime approval gate",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("tool prompt missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		"after approval",
+		"Requires approval before execution",
+		"Use only after confirming",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("tool prompt should not ask the model to wait for %q:\n%s", forbidden, content)
 		}
 	}
 }

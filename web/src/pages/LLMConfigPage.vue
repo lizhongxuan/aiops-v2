@@ -1,13 +1,10 @@
 <script setup>
 import { ref, onMounted, computed } from "vue";
 import { fetchLlmConfig, updateLlmConfig } from "../api/llm";
-import {
-  KeyIcon,
-  ServerIcon,
-  CheckCircleIcon,
-  AlertCircleIcon,
-  RefreshCwIcon,
-} from "lucide-vue-next";
+import { useAppStore } from "../store";
+import { RefreshCwIcon } from "lucide-vue-next";
+
+const store = useAppStore();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -19,10 +16,6 @@ const form = ref({
   model: "gpt-5.4",
   apiKey: "",
   baseURL: "",
-  fallbackProvider: "",
-  fallbackModel: "",
-  fallbackApiKey: "",
-  compactModel: "gpt-5.4-mini",
 });
 
 const currentConfig = ref(null);
@@ -82,6 +75,24 @@ const defaultBaseURL = computed(() => {
   }
 });
 
+function providerRequiresApiKey(provider) {
+  return String(provider || "").trim().toLowerCase() !== "ollama";
+}
+
+const modelConnectionReady = computed(() => {
+  const cfg = currentConfig.value;
+  if (!cfg?.bifrostActive) return false;
+  return !providerRequiresApiKey(cfg.provider) || !!cfg.apiKeySet;
+});
+
+const modelConnectionLabel = computed(() => {
+  const cfg = currentConfig.value;
+  if (!cfg) return "未知";
+  if (!cfg.bifrostActive) return "Runtime 未激活";
+  if (providerRequiresApiKey(cfg.provider) && !cfg.apiKeySet) return "未连接（缺少 API Key）";
+  return "✓ 已配置";
+});
+
 async function fetchConfig() {
   loading.value = true;
   try {
@@ -90,9 +101,6 @@ async function fetchConfig() {
     form.value.provider = data.provider || "openai";
     form.value.model = data.model || "gpt-5.4";
     form.value.baseURL = data.baseURL || "";
-    form.value.fallbackProvider = data.fallbackProvider || "";
-    form.value.fallbackModel = data.fallbackModel || "";
-    form.value.compactModel = data.compactModel || "gpt-5.4-mini";
     // Don't populate API key — it's masked
   } catch (e) {
     showMessage("error", "加载配置失败: " + e.message);
@@ -108,16 +116,14 @@ async function saveConfig() {
     const body = { ...form.value };
     // Don't send empty API key (would clear it)
     if (!body.apiKey) delete body.apiKey;
-    if (!body.fallbackApiKey) delete body.fallbackApiKey;
 
     const data = await updateLlmConfig(body);
     if (data.ok) {
       showMessage("success", data.message || "配置已保存，LLM 运行时已重启。");
-      await fetchConfig();
     } else {
       showMessage("warning", data.message || data.error || "保存成功但运行时未激活。");
-      await fetchConfig();
     }
+    await Promise.all([fetchConfig(), store.fetchState()]);
   } catch (e) {
     showMessage("error", "保存失败: " + e.message);
   } finally {
@@ -152,21 +158,6 @@ onMounted(fetchConfig);
 
 <template>
   <section class="llm-config-page">
-    <header class="page-header">
-      <div class="header-left">
-        <div class="page-kicker">
-          <KeyIcon :size="14" />
-          <span>LLM Configuration</span>
-        </div>
-        <h2>模型配置</h2>
-        <p>配置 LLM Provider、API Key 和模型参数。保存后运行时会自动重启。</p>
-      </div>
-      <div class="status-badge" :class="currentConfig?.bifrostActive ? 'active' : 'inactive'">
-        <component :is="currentConfig?.bifrostActive ? CheckCircleIcon : AlertCircleIcon" :size="16" />
-        <span>{{ currentConfig?.bifrostActive ? 'Runtime 运行中' : 'Runtime 未激活' }}</span>
-      </div>
-    </header>
-
     <!-- Alert message -->
     <n-alert v-if="message" :type="messageType" closable @close="message = null" style="margin-bottom: 16px;">
       {{ message }}
@@ -188,9 +179,9 @@ onMounted(fetchConfig);
           <strong>{{ currentConfig.apiKeySet ? currentConfig.apiKeyMasked : '未设置' }}</strong>
         </div>
         <div class="stat-item">
-          <span class="stat-label">状态</span>
-          <strong :style="{ color: currentConfig.bifrostActive ? '#16a34a' : '#dc2626' }">
-            {{ currentConfig.bifrostActive ? '✓ 已连接' : '✗ 未连接' }}
+          <span class="stat-label">模型状态</span>
+          <strong :style="{ color: modelConnectionReady ? '#16a34a' : '#dc2626' }">
+            {{ modelConnectionLabel }}
           </strong>
         </div>
       </div>
@@ -240,51 +231,19 @@ onMounted(fetchConfig);
       </n-form>
     </n-card>
 
-    <!-- Fallback config -->
-    <n-card title="Fallback 配置">
-      <template #header-extra>
-        <n-tag size="small" type="info">可选</n-tag>
-      </template>
-      <n-form label-placement="left" label-width="120">
-        <n-form-item label="Fallback Provider">
-          <n-select
-            v-model:value="form.fallbackProvider"
-            :options="[{ label: '无', value: '' }, ...providerOptions]"
-            placeholder="选择备用 Provider"
-          />
-        </n-form-item>
-
-        <n-form-item label="Fallback Model" v-if="form.fallbackProvider">
-          <n-input v-model:value="form.fallbackModel" placeholder="备用模型名称" />
-        </n-form-item>
-
-        <n-form-item label="Fallback Key" v-if="form.fallbackProvider && form.fallbackProvider !== 'ollama'">
-          <n-input
-            v-model:value="form.fallbackApiKey"
-            type="password"
-            show-password-on="click"
-            placeholder="备用 Provider 的 API Key"
-          />
-        </n-form-item>
-
-        <n-form-item label="压缩模型">
-          <n-input v-model:value="form.compactModel" placeholder="gpt-4o-mini" />
-          <template #feedback>
-            <span style="font-size: 12px; color: #94a3b8;">
-              用于上下文压缩的便宜模型，建议使用小模型以降低成本。
-            </span>
-          </template>
-        </n-form-item>
-      </n-form>
-    </n-card>
-
     <!-- Actions -->
     <div class="actions">
       <n-button @click="fetchConfig" :loading="loading" quaternary>
         <template #icon><RefreshCwIcon :size="16" /></template>
         刷新
       </n-button>
-      <n-button type="primary" @click="saveConfig" :loading="saving" :disabled="loading">
+      <n-button
+        type="primary"
+        data-testid="llm-save-button"
+        @click="saveConfig"
+        :loading="saving"
+        :disabled="loading"
+      >
         保存并重启 Runtime
       </n-button>
     </div>
@@ -300,44 +259,6 @@ onMounted(fetchConfig);
   flex-direction: column;
   gap: 12px;
 }
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.header-left h2 { margin: 6px 0 4px; font-size: 22px; }
-.header-left p { margin: 0; color: #475569; font-size: 13px; line-height: 1.5; }
-
-.page-kicker {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.status-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.status-badge.active { background: #dcfce7; color: #16a34a; }
-.status-badge.inactive { background: #fef2f2; color: #dc2626; }
 
 .status-grid {
   display: grid;

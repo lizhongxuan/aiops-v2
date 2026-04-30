@@ -45,6 +45,34 @@ func (r *cancelledChatRuntime) CancelTurn(context.Context, runtimekernel.CancelR
 	return runtimekernel.TurnResult{}, nil
 }
 
+type blockedChatRuntime struct {
+	started chan runtimekernel.TurnRequest
+}
+
+func newBlockedChatRuntime() *blockedChatRuntime {
+	return &blockedChatRuntime{started: make(chan runtimekernel.TurnRequest, 1)}
+}
+
+func (r *blockedChatRuntime) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
+	r.started <- req
+	return runtimekernel.TurnResult{
+		SessionID:       req.SessionID,
+		TurnID:          req.TurnID,
+		ClientMessageID: req.ClientMessageID,
+		ClientTurnID:    req.ClientTurnID,
+		Status:          "blocked",
+		Error:           "approval required",
+	}, nil
+}
+
+func (r *blockedChatRuntime) ResumeTurn(context.Context, runtimekernel.ResumeRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
+func (r *blockedChatRuntime) CancelTurn(context.Context, runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
 type blockingChatRuntime struct {
 	started chan runtimekernel.TurnRequest
 	release chan struct{}
@@ -241,6 +269,48 @@ func TestChatService_SendMessageCancelledRuntimeDoesNotEmitTerminalFailureOrComp
 	}
 }
 
+func TestChatService_SendMessageBlockedRuntimeDoesNotEmitTerminalFailure(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockedChatRuntime()
+	events := NewAgentEventService(nil)
+	service := NewChatService(runtime, sessions, events)
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-async-blocked",
+		Content:         "需要审批",
+		ClientMessageID: "client-msg-blocked",
+		ClientTurnID:    "client-turn-blocked",
+		HostID:          "server-local",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+
+	select {
+	case <-runtime.started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not start asynchronously")
+	}
+
+	replayed := waitForAgentEvents(t, events, "sess-async-blocked", 3)
+	if len(replayed) != 3 {
+		t.Fatalf("agent events = %+v, want requested + agent started + agent blocked", replayed)
+	}
+	if replayed[0].Kind != AgentEventTurn || replayed[0].Phase != AgentEventPhaseRequested {
+		t.Fatalf("first event = %s/%s, want turn/requested", replayed[0].Kind, replayed[0].Phase)
+	}
+	if replayed[1].Kind != AgentEventAgent || replayed[1].Phase != AgentEventPhaseStarted {
+		t.Fatalf("second event = %s/%s, want agent/started", replayed[1].Kind, replayed[1].Phase)
+	}
+	if replayed[2].Kind != AgentEventAgent || replayed[2].Phase != AgentEventPhaseBlocked || replayed[2].Status != AgentEventStatusBlocked {
+		t.Fatalf("third event = %s/%s/%s, want agent/blocked/blocked", replayed[2].Kind, replayed[2].Phase, replayed[2].Status)
+	}
+	for _, event := range replayed {
+		if event.Kind == AgentEventTurn && event.Phase == AgentEventPhaseFailed {
+			t.Fatalf("blocked runtime emitted terminal failure event: %+v", event)
+		}
+	}
+}
+
 func (r *chatRuntimeCapture) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
 	r.mu.Lock()
 	r.runCalled = true
@@ -411,6 +481,40 @@ func TestChatService_SendMessageDefaultsToLatestSessionWhenSessionIDMissing(t *t
 	}
 	if runReq.HostID != "server-local" {
 		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+}
+
+func TestChatService_SendMessageUsesSessionModeWhenSessionIDProvided(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-host-exec", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	session.HostID = "server-local"
+	sessions.Update(session)
+
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-host-exec",
+		Content:         "帮我启动 docker",
+		HostID:          "server-local",
+		ClientMessageID: "client-msg-1",
+		ClientTurnID:    "client-turn-1",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "accepted" {
+		t.Fatalf("result status = %q, want accepted", result.Status)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	}
+	if runReq.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("RunTurn mode = %q, want execute", runReq.Mode)
+	}
+	if runReq.SessionID != "sess-host-exec" {
+		t.Fatalf("RunTurn sessionID = %q, want sess-host-exec", runReq.SessionID)
 	}
 }
 

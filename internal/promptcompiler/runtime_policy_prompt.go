@@ -41,7 +41,7 @@ func (c *PromptCompilerImpl) defaultPolicyForMode(mode Mode) string {
 	case "plan":
 		return "Policy: Plan mode. Inspection and planning operations are permitted. Direct mutation execution is forbidden. Generate plans for review."
 	case "execute":
-		return "Policy: Execute mode. All operations are permitted subject to approval constraints. Mutations require explicit approval. Collect evidence before and after changes."
+		return "Policy: Execute mode. All operations are permitted subject to approval constraints. Mutations require explicit approval through the runtime tool approval gate. Do not ask for approval in prose when a tool call can trigger the approval gate; call the scoped tool and let runtime pause for the user. Collect evidence before and after changes."
 	default:
 		return "Policy: Unknown mode. Default to read-only operations only."
 	}

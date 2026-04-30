@@ -86,6 +86,7 @@ func (b *AppSnapshotBroadcaster) withAgentEventProjection(ctx context.Context, s
 	if err != nil {
 		return snapshot
 	}
+	projection = appui.SanitizeAgentEventProjectionForSnapshot(projection, snapshot)
 	snapshot.AgentEventProjection = &projection
 	return snapshot
 }

@@ -83,7 +83,7 @@ func (s *defaultSessionService) buildMutationResponse(active *runtimekernel.Sess
 func mapCreateKind(kind string) (runtimekernel.SessionType, runtimekernel.Mode, string, error) {
 	switch kind {
 	case "", "single_host":
-		return runtimekernel.SessionTypeHost, runtimekernel.ModeChat, "single_host", nil
+		return runtimekernel.SessionTypeHost, runtimekernel.ModeExecute, "single_host", nil
 	case "workspace":
 		return runtimekernel.SessionTypeWorkspace, runtimekernel.ModeExecute, "workspace", nil
 	default:

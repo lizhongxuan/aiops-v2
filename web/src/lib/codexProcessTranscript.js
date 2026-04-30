@@ -15,6 +15,11 @@ function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
 
+function isPureThinkingPlaceholder(value) {
+  const text = normalizeText(value).replace(/\s+/g, "");
+  return /^(?:正在思考|正在思考中)[。.!！…]*$/u.test(text);
+}
+
 function normalizeNarrationText(value) {
   return normalizeText(value)
     .replace(/\.\.\.$/u, "")
@@ -153,11 +158,58 @@ function toSearchBlock(turnId, item) {
 
 function toReasoningBlock(turnId, item) {
   const text = normalizeText(item.text || item.summary || item.inputSummary);
-  if (!text) return null;
+  if (!text || isPureThinkingPlaceholder(text)) return null;
   return {
     ...blockBase(turnId, "reasoning-summary", { ...item, text }),
     displayKind: item.displayKind || "reasoning.summary",
     text,
+  };
+}
+
+function normalizePlanSteps(steps = []) {
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .map((step, index) => {
+      const text = normalizeText(step?.text || step?.summary || step?.title);
+      if (!text) return null;
+      return {
+        id: step?.id || `step-${index + 1}`,
+        text,
+        status: normalizeText(step?.status || "pending"),
+        summary: normalizeText(step?.summary),
+      };
+    })
+    .filter(Boolean);
+}
+
+function toPlanBlock(turnId, item) {
+  const steps = normalizePlanSteps(item.steps);
+  const activeStep = steps.find((step) => step.status === "running") || steps.find((step) => step.status === "in_progress");
+  const fallbackStep = steps[steps.length - 1] || null;
+  const text = normalizeText(item.text || item.summary || activeStep?.text || fallbackStep?.text || "计划");
+  if (!text && steps.length === 0) return null;
+  return {
+    ...blockBase(turnId, "plan-step", { ...item, text }),
+    displayKind: item.displayKind || "plan",
+    text,
+    summary: normalizeText(item.summary),
+    steps,
+  };
+}
+
+function toEvidenceBlock(turnId, item) {
+  const title = normalizeText(item.title);
+  const summary = normalizeText(item.summary);
+  const text = normalizeText(item.text || (title && summary ? `${title}（${summary}）` : title || summary));
+  if (!text) return null;
+  return {
+    ...blockBase(turnId, "evidence-step", { ...item, text }),
+    displayKind: item.displayKind || "evidence",
+    text,
+    source: normalizeText(item.source),
+    confidence: normalizeText(item.confidence),
+    window: normalizeText(item.window),
+    rawRef: normalizeText(item.rawRef),
   };
 }
 
@@ -187,6 +239,9 @@ function itemToBlock(turnId, item) {
   if (!item || isHiddenItem(item)) return null;
   const kind = item.kind || "";
   const displayKind = item.displayKind || "";
+  if (kind === "plan" || displayKind === "plan") return toPlanBlock(turnId, item);
+  if (kind === "evidence" || displayKind.startsWith("evidence.")) return toEvidenceBlock(turnId, item);
+  if (kind === "approval" || displayKind.startsWith("approval.")) return approvalBlock(turnId, item);
   if (kind === "command" || displayKind === "host.command" || displayKind === "shell_command" || displayKind === "exec_command") {
     return toCommandBlock(turnId, item);
   }
@@ -241,7 +296,7 @@ function assistantBlocks(turnId, assistantMessages = [], finalText = "") {
       ...message,
       text: normalizeText(message?.text),
     }))
-    .filter((message) => message.text && !isFinalDuplicate(message.text, finalText));
+    .filter((message) => message.text && !isPureThinkingPlaceholder(message.text) && !isFinalDuplicate(message.text, finalText));
   if (visibleMessages.length === 0) return [];
 
   const [first, ...rest] = visibleMessages;
@@ -289,6 +344,8 @@ function approvalBlock(turnId, approval) {
     text: "等待确认",
     command,
     reason: approval.reason || approval.summary || "",
+    risk: approval.risk || "",
+    targets: Array.isArray(approval.targets) ? approval.targets : [],
     approvalId: approval.id || approval.approvalId,
     approvalType: approval.type || approval.approvalType || "command",
   };
@@ -315,8 +372,21 @@ export function buildCodexProcessTranscript(input = {}) {
     .filter(Boolean);
   const assistant = assistantBlocks(turnId, input.assistantMessages || [], input.finalText || "");
   const approval = approvalBlock(turnId, input.approval);
-  const visibleProcessBlocks = dedupeBlocks([...assistant, ...processBlocks]);
-  const showThinking = Boolean(input.modelRunning && visibleProcessBlocks.length > 0 && status !== "completed" && status !== "failed");
+  const liveHint = normalizeText(input.liveHint);
+  const liveHintBlock = liveHint && !isPureThinkingPlaceholder(liveHint) && processBlocks.length
+    ? {
+        ...blockBase(turnId, "reasoning-summary", {
+          id: "live-hint",
+          displayKind: "runtime.live_hint",
+          status,
+          text: liveHint,
+        }),
+        displayKind: "runtime.live_hint",
+        text: liveHint,
+      }
+    : null;
+  const visibleProcessBlocks = dedupeBlocks([...assistant, liveHintBlock, ...processBlocks]);
+  const showThinking = Boolean(input.modelRunning && status !== "completed" && status !== "failed");
   const finalText = normalizeText(input.finalText);
   const finalBlock = finalText
     ? {

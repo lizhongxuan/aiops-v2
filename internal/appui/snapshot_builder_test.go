@@ -273,6 +273,150 @@ func TestSnapshotBuilderExposesAgentItemEventsAsShadowDebugConfig(t *testing.T) 
 	}
 }
 
+func TestSnapshotBuilderProjectsAgentItemsIntoAgentEventProjection(t *testing.T) {
+	now := time.Date(2026, 4, 28, 9, 30, 0, 0, time.UTC)
+	planData := json.RawMessage(`{"steps":[{"id":"inspect","text":"Inspect payment-api","status":"in_progress"}]}`)
+	approvalData := json.RawMessage(`{"approvalId":"approval-1","approvalType":"command","command":"kubectl rollout undo deployment/payment-api -n prod","reason":"5xx rose after deploy","risk":"high","targets":["prod/payment-api"]}`)
+	evidenceData := json.RawMessage(`{"id":"metric-1","kind":"metric","title":"5xx rate","summary":"payment-api 5xx increased","source":"prometheus","window":"15m","rawRef":"promql:5xx"}`)
+	builder := NewSnapshotBuilder()
+	session := &runtimekernel.SessionState{
+		ID:        "sess-agent-items-projection",
+		Type:      runtimekernel.SessionTypeHost,
+		Mode:      runtimekernel.ModeInspect,
+		UpdatedAt: now,
+		CurrentTurn: &runtimekernel.TurnSnapshot{
+			ID:          "turn-agent-items-projection",
+			SessionID:   "sess-agent-items-projection",
+			SessionType: runtimekernel.SessionTypeHost,
+			Mode:        runtimekernel.ModeInspect,
+			Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+			ResumeState: runtimekernel.TurnResumeStateNone,
+			StartedAt:   now,
+			UpdatedAt:   now,
+			AgentItems: []agentstate.TurnItem{
+				{ID: "plan-1", Type: agentstate.TurnItemTypePlan, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "plan updated", Data: planData}, CreatedAt: now},
+				{ID: "tool-call-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "payment-api 5xx"}, CreatedAt: now},
+				{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "payment-api 5xx increased", Data: evidenceData}, CreatedAt: now},
+				{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{Summary: "Rollback payment-api", Data: approvalData}, CreatedAt: now},
+				{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "Final answer"}, CreatedAt: now},
+			},
+		},
+	}
+
+	snapshot := builder.BuildStateSnapshot(session)
+
+	if snapshot.AgentEventProjection == nil {
+		t.Fatal("AgentEventProjection is nil, want projection from AgentItems")
+	}
+	proj := snapshot.AgentEventProjection
+	if got := len(proj.ProcessGroups["turn-agent-items-projection"]); got < 3 {
+		t.Fatalf("ProcessGroups length = %d, want plan/tool/evidence rows", got)
+	}
+	if got := len(proj.Approvals); got != 1 {
+		t.Fatalf("Approvals length = %d, want 1", got)
+	}
+	if got := proj.Approvals[0].Command; got != "kubectl rollout undo deployment/payment-api -n prod" {
+		t.Fatalf("approval command = %q", got)
+	}
+	if got := proj.FinalMessages["turn-agent-items-projection"].Text; got != "Final answer" {
+		t.Fatalf("final text = %q", got)
+	}
+}
+
+func TestSnapshotBuilderTerminalTurnDoesNotExposeBlockedAgentItemApproval(t *testing.T) {
+	now := time.Date(2026, 4, 30, 6, 10, 0, 0, time.UTC)
+	approvalData := json.RawMessage(`{"approvalId":"approval-stale","approvalType":"command","command":"command -v docker && docker --version","reason":"needs command approval"}`)
+	builder := NewSnapshotBuilder()
+	session := &runtimekernel.SessionState{
+		ID:        "sess-stale-approval",
+		Type:      runtimekernel.SessionTypeHost,
+		Mode:      runtimekernel.ModeInspect,
+		UpdatedAt: now,
+		CurrentTurn: &runtimekernel.TurnSnapshot{
+			ID:          "turn-stale-approval",
+			SessionID:   "sess-stale-approval",
+			SessionType: runtimekernel.SessionTypeHost,
+			Mode:        runtimekernel.ModeInspect,
+			Lifecycle:   runtimekernel.TurnLifecycleFailed,
+			ResumeState: runtimekernel.TurnResumeStateNone,
+			StartedAt:   now.Add(-time.Minute),
+			UpdatedAt:   now,
+			AgentItems: []agentstate.TurnItem{
+				{ID: "approval-stale", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{Summary: "Docker check", Data: approvalData}, CreatedAt: now.Add(-30 * time.Second)},
+			},
+		},
+	}
+
+	snapshot := builder.BuildStateSnapshot(session)
+
+	if snapshot.Runtime.Turn.Active {
+		t.Fatal("runtime turn Active = true, want false for terminal failed turn")
+	}
+	if snapshot.Runtime.Turn.Phase != "failed" {
+		t.Fatalf("runtime turn Phase = %q, want failed", snapshot.Runtime.Turn.Phase)
+	}
+	if snapshot.AgentEventProjection == nil {
+		t.Fatal("AgentEventProjection is nil, want sanitized projection")
+	}
+	proj := snapshot.AgentEventProjection
+	if proj.Status == "blocked" {
+		t.Fatalf("projection status = blocked, want terminal turn to clear stale approval")
+	}
+	if len(proj.RuntimeLiveness.PendingApprovals) != 0 || len(proj.RuntimeLiveness.PendingUserInputs) != 0 {
+		t.Fatalf("pending liveness = approvals:%+v inputs:%+v, want cleared", proj.RuntimeLiveness.PendingApprovals, proj.RuntimeLiveness.PendingUserInputs)
+	}
+	if len(proj.RuntimeLiveness.ActiveTurns) != 0 || len(proj.RuntimeLiveness.ActiveAgents) != 0 || len(proj.RuntimeLiveness.ActiveCommandStreams) != 0 {
+		t.Fatalf("active liveness = turns:%+v agents:%+v commands:%+v, want cleared", proj.RuntimeLiveness.ActiveTurns, proj.RuntimeLiveness.ActiveAgents, proj.RuntimeLiveness.ActiveCommandStreams)
+	}
+	if len(proj.Approvals) != 1 {
+		t.Fatalf("Approvals length = %d, want 1 historical approval row", len(proj.Approvals))
+	}
+	if proj.Approvals[0].Status == AgentEventStatusBlocked {
+		t.Fatalf("historical approval status = blocked, want terminal status")
+	}
+}
+
+func TestSanitizeAgentEventProjectionForSnapshotClearsTerminalBlockedApproval(t *testing.T) {
+	projection := AgentEventProjection{
+		SessionID:          "sess-stale-projection",
+		CurrentTurnID:      "turn-stale-projection",
+		Status:             "blocked",
+		LastSeq:            42,
+		LastTerminalFailed: false,
+		RuntimeLiveness: RuntimeLiveness{
+			ActiveTurns:          map[string]bool{"turn-stale-projection": true},
+			ActiveAgents:         map[string]bool{"agent-main": true},
+			PendingApprovals:     map[string]bool{"approval-stale": true},
+			PendingUserInputs:    map[string]bool{},
+			ActiveCommandStreams: map[string]bool{},
+		},
+		Approvals: []ApprovalProjection{
+			{ID: "approval-stale", Status: AgentEventStatusBlocked, Command: "command -v docker && docker --version"},
+		},
+	}
+	snapshot := StateSnapshot{
+		SessionID: "sess-stale-projection",
+		Runtime: RuntimeSnapshot{
+			Turn: RuntimeTurnSnapshot{
+				Active: false,
+				Phase:  "failed",
+			},
+		},
+	}
+
+	sanitized := SanitizeAgentEventProjectionForSnapshot(projection, snapshot)
+
+	if sanitized.Status == "blocked" {
+		t.Fatalf("sanitized status = blocked, want terminal status")
+	}
+	if len(sanitized.RuntimeLiveness.PendingApprovals) != 0 || len(sanitized.RuntimeLiveness.ActiveTurns) != 0 || len(sanitized.RuntimeLiveness.ActiveAgents) != 0 {
+		t.Fatalf("sanitized liveness = %+v, want cleared", sanitized.RuntimeLiveness)
+	}
+	if len(sanitized.Approvals) != 1 || sanitized.Approvals[0].Status != AgentEventStatusFailed {
+		t.Fatalf("sanitized approvals = %+v, want failed historical approval", sanitized.Approvals)
+	}
+}
+
 func TestStateAndSessionServicesShareSnapshotBuilder(t *testing.T) {
 	now := time.Date(2026, 4, 22, 12, 30, 0, 0, time.UTC)
 	hostSession := &runtimekernel.SessionState{

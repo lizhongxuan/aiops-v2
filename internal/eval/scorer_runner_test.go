@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -184,13 +185,29 @@ func TestScoreCaseFailsWhenPlanIsForbidden(t *testing.T) {
 }
 
 func TestScoreCaseChecksApprovalsEvidenceAndBudgets(t *testing.T) {
+	approvalData, _ := json.Marshal(map[string]any{
+		"approvalId":   "approval-1",
+		"approvalType": "command",
+		"command":      "kubectl rollout undo deploy/payment-api -n prod",
+		"reason":       "restart approval",
+		"risk":         "high",
+		"targets":      []string{"prod/payment-api"},
+	})
+	evidenceData, _ := json.Marshal(map[string]any{
+		"kind":       "log",
+		"summary":    "error logs",
+		"source":     "loki",
+		"window":     "10m",
+		"rawRef":     `{app="payment-api"} |= "error"`,
+		"confidence": "high",
+	})
 	tc := Case{
 		ID:       "governance",
 		Category: "治理",
 		Input:    "检查审批和证据",
 		Expected: Expected{
-			ExpectedApprovals: []string{"restart approval"},
-			ExpectedEvidence:  []string{"error logs"},
+			ExpectedApprovals: []string{"restart approval", "kubectl rollout undo", "high"},
+			ExpectedEvidence:  []string{"error logs", "loki", "10m", `{app="payment-api"}`},
 			MaxIterations:     1,
 			MaxToolCalls:      1,
 		},
@@ -200,8 +217,8 @@ func TestScoreCaseChecksApprovalsEvidenceAndBudgets(t *testing.T) {
 		ToolCalls: []ToolCall{{ID: "call-1", Name: "read_logs"}},
 		TurnItems: []agentstate.TurnItem{
 			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
-			{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusPending, Payload: agentstate.PayloadEnvelope{Summary: "restart approval"}},
-			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "error logs"}},
+			{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusPending, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "restart approval", Data: approvalData}},
+			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "log", Summary: "error logs", Data: evidenceData}},
 		},
 	}
 
@@ -214,6 +231,82 @@ func TestScoreCaseChecksApprovalsEvidenceAndBudgets(t *testing.T) {
 		if check := findCheck(score.Checks, name); !check.Passed {
 			t.Fatalf("check %s = %#v, want pass", name, check)
 		}
+	}
+}
+
+func TestScoreCaseFailsWhenStructuredEvidenceOrApprovalIsMissing(t *testing.T) {
+	tc := Case{
+		ID:       "governance-missing",
+		Category: "治理",
+		Input:    "检查审批和证据",
+		Expected: Expected{
+			ExpectedApprovals: []string{"kubectl rollout undo"},
+			ExpectedEvidence:  []string{"prometheus", "rawRef"},
+		},
+	}
+	output := RunOutput{
+		Answer: "只有普通回答。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "5xx spike"}},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected missing structured evidence/approval to fail, got %#v", score)
+	}
+	for _, name := range []string{"expectedApprovals", "expectedEvidence"} {
+		check := findCheck(score.Checks, name)
+		if check.Passed || len(check.Missing) == 0 {
+			t.Fatalf("check %s = %#v, want missing structured field", name, check)
+		}
+	}
+}
+
+func TestMockAgentEmitsStructuredAIOpsEvidenceAndApproval(t *testing.T) {
+	tc := Case{
+		ID:       "aiops-structured-evidence",
+		Category: "aiops",
+		Input:    "支付服务 5xx 上升，判断是否需要回滚。",
+		Expected: Expected{
+			ExpectedApprovals: []string{"kubectl rollout undo deploy/payment-api -n prod"},
+			ExpectedEvidence:  []string{"payment-api 5xx metric", "loki error logs"},
+		},
+	}
+
+	output, err := MockAgent{}.Run(context.Background(), tc)
+	if err != nil {
+		t.Fatalf("run mock agent: %v", err)
+	}
+	score := ScoreCase(tc, output)
+	if !score.Passed {
+		t.Fatalf("expected mock aiops evidence case to pass, got %#v", score)
+	}
+
+	var evidenceSources []string
+	var approvalCommand string
+	for _, item := range output.TurnItems {
+		switch item.Type {
+		case agentstate.TurnItemTypeEvidence:
+			var payload map[string]any
+			if err := json.Unmarshal(item.Payload.Data, &payload); err != nil {
+				t.Fatalf("decode evidence payload: %v", err)
+			}
+			evidenceSources = append(evidenceSources, strings.TrimSpace(fmt.Sprint(payload["source"])))
+		case agentstate.TurnItemTypeApproval:
+			var payload map[string]any
+			if err := json.Unmarshal(item.Payload.Data, &payload); err != nil {
+				t.Fatalf("decode approval payload: %v", err)
+			}
+			approvalCommand = strings.TrimSpace(fmt.Sprint(payload["command"]))
+		}
+	}
+	if !stringSliceContainsFold(evidenceSources, "prometheus") || !stringSliceContainsFold(evidenceSources, "loki") {
+		t.Fatalf("evidence sources = %#v, want prometheus and loki", evidenceSources)
+	}
+	if !strings.Contains(approvalCommand, "kubectl rollout undo") {
+		t.Fatalf("approval command = %q, want rollout undo command", approvalCommand)
 	}
 }
 

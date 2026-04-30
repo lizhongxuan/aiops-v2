@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -191,6 +192,65 @@ func TestAgentEventProjector_ToolProgressUpdatesOneTimelineRow(t *testing.T) {
 	}
 	if len(proj.ProcessGroups["turn-1"]) != 1 {
 		t.Fatalf("ProcessGroups[turn-1] length = %d, want 1", len(proj.ProcessGroups["turn-1"]))
+	}
+}
+
+func TestAgentEventProjector_ReplayMatchesRealtimeApplyForStructuredTurn(t *testing.T) {
+	projector := NewAgentEventProjector()
+	events := []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "排查 payment-api"}),
+		testAgentEvent(AgentEventPlan, AgentEventPhaseUpdated, AgentEventStatusRunning, 2, PlanPayload{
+			Title: "排查计划",
+			Steps: []PlanStep{{ID: "inspect", Text: "Inspect payment-api", Status: "running"}},
+		}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, ToolPayload{
+			ToolCallID:    "search-1",
+			ToolName:      "web_search",
+			DisplayKind:   "browser.search",
+			InputSummary:  "payment-api 5xx",
+			OutputSummary: "found metrics",
+		}),
+		testAgentEvent(AgentEventEvidence, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, EvidencePayload{
+			ID:      "metric-1",
+			Kind:    "metric",
+			Title:   "5xx rate",
+			Summary: "payment-api 5xx increased",
+			RawRef:  "promql:5xx",
+		}),
+		testAgentEvent(AgentEventApproval, AgentEventPhaseRequested, AgentEventStatusBlocked, 5, ApprovalPayload{
+			ApprovalID:   "approval-1",
+			ApprovalType: "command",
+			Command:      "kubectl rollout undo deployment/payment-api -n prod",
+			Reason:       "5xx rose after deploy",
+			Risk:         "high",
+		}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseCompleted, AgentEventStatusCompleted, 6, AssistantPayload{
+			Channel: "final",
+			Text:    "Final answer",
+		}),
+	}
+
+	replay, err := projector.Replay("session-1", events)
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	realtime := AgentEventProjection{}
+	for _, event := range events {
+		next, err := projector.Apply(realtime, event)
+		if err != nil {
+			t.Fatalf("Apply(%s) error = %v", event.EventID, err)
+		}
+		realtime = next
+	}
+
+	if !reflect.DeepEqual(realtime.ProcessGroups, replay.ProcessGroups) {
+		t.Fatalf("ProcessGroups realtime=%#v replay=%#v", realtime.ProcessGroups, replay.ProcessGroups)
+	}
+	if !reflect.DeepEqual(realtime.Approvals, replay.Approvals) {
+		t.Fatalf("Approvals realtime=%#v replay=%#v", realtime.Approvals, replay.Approvals)
+	}
+	if !reflect.DeepEqual(realtime.FinalMessages, replay.FinalMessages) {
+		t.Fatalf("FinalMessages realtime=%#v replay=%#v", realtime.FinalMessages, replay.FinalMessages)
 	}
 }
 
@@ -617,6 +677,9 @@ func TestAgentEventProjectorApplyDoesNotMutateInputMapFields(t *testing.T) {
 	}
 	if next.RuntimeLiveness.ActiveTurns["turn-1"] {
 		t.Fatalf("next ActiveTurns still contains completed turn: %+v", next.RuntimeLiveness.ActiveTurns)
+	}
+	if next.RuntimeLiveness.ActiveAgents["agent-main"] {
+		t.Fatalf("next ActiveAgents still contains completed turn agent: %+v", next.RuntimeLiveness.ActiveAgents)
 	}
 	if next.FinalMessages["turn-1"].Status != AgentEventStatusCompleted {
 		t.Fatalf("next FinalMessages status = %q, want completed", next.FinalMessages["turn-1"].Status)
