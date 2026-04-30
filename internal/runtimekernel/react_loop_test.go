@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,9 +14,11 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/planning"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/spanstream"
@@ -42,6 +46,9 @@ func (m *sequentialLoopModel) Generate(_ context.Context, input []*schema.Messag
 }
 
 func (m *sequentialLoopModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	if m.generateErr != nil {
+		return nil, m.generateErr
+	}
 	return nil, errors.New("stream not implemented in test model")
 }
 
@@ -308,6 +315,54 @@ func newLoopKernelWithDeps(
 		Compressor:  compressor,
 		SpillRepo:   spillRepo,
 	})
+}
+
+func TestRunTurn_InjectsPlanStateIntoNextProtocolPrompt(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "plan-call-1",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "update_plan",
+						Arguments: `{"steps":[{"id":"inspect","text":"Inspect host symptoms","status":"in_progress"},{"id":"summarize","text":"Summarize findings","status":"pending"}]}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("plan noted", nil),
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(planning.NewUpdatePlanTool()); err != nil {
+		t.Fatalf("Register update_plan failed: %v", err)
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, compiler, model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-plan-protocol",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-plan-protocol",
+		Input:       "triage this incident",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if len(compiler.contexts) < 2 {
+		t.Fatalf("compiler contexts = %d, want at least 2", len(compiler.contexts))
+	}
+	if hasProtocolKind(compiler.contexts[0].ProtocolState, "plan") {
+		t.Fatalf("first model call should not include a plan state: %#v", compiler.contexts[0].ProtocolState)
+	}
+	second := compiler.contexts[1].ProtocolState
+	if !hasProtocolItem(second, "plan", "inspect", "in_progress", "Inspect host symptoms") {
+		t.Fatalf("second protocol state = %#v, want inspect plan item", second)
+	}
+	if !hasProtocolItem(second, "plan", "summarize", "pending", "Summarize findings") {
+		t.Fatalf("second protocol state = %#v, want summarize plan item", second)
+	}
 }
 
 func TestRunTurn_ExecutesMultiIterationToolLoop(t *testing.T) {
@@ -1393,6 +1448,136 @@ func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) 
 	}
 }
 
+func TestRunTurn_ReadOnlyConcurrencySafeToolsRunInParallel(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{ID: "call-a", Type: "function", Function: schema.FunctionCall{Name: "read_a", Arguments: `{}`}},
+				{ID: "call-b", Type: "function", Function: schema.FunctionCall{Name: "read_b", Arguments: `{}`}},
+			}),
+			schema.AssistantMessage("parallel reads complete", nil),
+		},
+	}
+
+	aStarted := make(chan struct{})
+	bStarted := make(chan struct{})
+	var closeA sync.Once
+	var closeB sync.Once
+	var overlapped atomic.Bool
+	readA := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "read_a", Description: "read A"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			closeA.Do(func() { close(aStarted) })
+			select {
+			case <-bStarted:
+				overlapped.Store(true)
+				return tooling.ToolResult{Content: "A"}, nil
+			case <-time.After(500 * time.Millisecond):
+				return tooling.ToolResult{}, errors.New("read_b did not overlap read_a")
+			}
+		},
+	}
+	readB := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "read_b", Description: "read B"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			<-aStarted
+			closeB.Do(func() { close(bStarted) })
+			return tooling.ToolResult{Content: "B"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{readA, readB}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-parallel",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-parallel",
+		Input:       "read both",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if !overlapped.Load() {
+		t.Fatal("read-only concurrency-safe tools did not overlap")
+	}
+}
+
+func TestRunTurn_MutatingToolsSerializeEvenWhenPolicyAllowsExecution(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{ID: "call-a", Type: "function", Function: schema.FunctionCall{Name: "mutate_a", Arguments: `{}`}},
+				{ID: "call-b", Type: "function", Function: schema.FunctionCall{Name: "mutate_b", Arguments: `{}`}},
+			}),
+			schema.AssistantMessage("mutations complete", nil),
+		},
+	}
+
+	var active int32
+	var maxActive int32
+	mutate := func(content string) func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+		return func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			current := atomic.AddInt32(&active, 1)
+			for {
+				seen := atomic.LoadInt32(&maxActive)
+				if current <= seen || atomic.CompareAndSwapInt32(&maxActive, seen, current) {
+					break
+				}
+			}
+			time.Sleep(25 * time.Millisecond)
+			atomic.AddInt32(&active, -1)
+			return tooling.ToolResult{Content: content}, nil
+		}
+	}
+	toolA := &tooling.StaticTool{
+		Meta:                tooling.ToolMetadata{Name: "mutate_a", Description: "mutate A", Mutating: true},
+		Visibility:          tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)}},
+		DestructiveFunc:     func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return false },
+		ExecuteFunc:         mutate("A"),
+	}
+	toolB := &tooling.StaticTool{
+		Meta:                tooling.ToolMetadata{Name: "mutate_b", Description: "mutate B", Mutating: true},
+		Visibility:          tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)}},
+		DestructiveFunc:     func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return false },
+		ExecuteFunc:         mutate("B"),
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolA, toolB}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-serialize",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-serialize",
+		Input:       "mutate both",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if got := atomic.LoadInt32(&maxActive); got != 1 {
+		t.Fatalf("mutating tools ran concurrently, max active = %d", got)
+	}
+}
+
 func TestRunTurn_ToolResultPreservesExplicitReferences(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -1686,6 +1871,48 @@ func TestRunTurn_PolicyDeniedToolPersistsFailureCheckpoint(t *testing.T) {
 	}
 	if last := latestIteration(session.CurrentTurn); last == nil || last.Checkpoint == nil || last.Checkpoint.Kind != "tool_denied" {
 		t.Fatalf("iteration checkpoint = %#v, want tool_denied", last)
+	}
+}
+
+func TestRunTurn_ModelGenerationErrorPersistsFailedTurn(t *testing.T) {
+	model := &sequentialLoopModel{generateErr: errors.New("429 cooling down")}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-model-error",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-model-error",
+		Input:       "call the model",
+	})
+	if err == nil {
+		t.Fatal("expected RunTurn to fail")
+	}
+
+	session := kernel.sessions.Get("sess-model-error")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn snapshot")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleFailed {
+		t.Fatalf("turn lifecycle = %q, want failed", session.CurrentTurn.Lifecycle)
+	}
+	if !strings.Contains(session.CurrentTurn.Error, "429 cooling down") {
+		t.Fatalf("turn error = %q, want model error", session.CurrentTurn.Error)
+	}
+	if session.CurrentTurn.LatestCheckpoint == nil {
+		t.Fatal("expected failure checkpoint")
+	}
+	if session.CurrentTurn.LatestCheckpoint.Kind != "model_call_failed" {
+		t.Fatalf("checkpoint kind = %q, want model_call_failed", session.CurrentTurn.LatestCheckpoint.Kind)
+	}
+	if session.CurrentTurn.LatestCheckpoint.Lifecycle != TurnLifecycleFailed {
+		t.Fatalf("checkpoint lifecycle = %q, want failed", session.CurrentTurn.LatestCheckpoint.Lifecycle)
+	}
+	if !hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeModelCall, agentstate.ItemStatusFailed) {
+		t.Fatalf("agent items = %#v, want failed model_call item", session.CurrentTurn.AgentItems)
+	}
+	if !hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeError, agentstate.ItemStatusFailed) {
+		t.Fatalf("agent items = %#v, want failed error item", session.CurrentTurn.AgentItems)
 	}
 }
 
@@ -2212,6 +2439,24 @@ func TestRunTurn_WorkspaceSessionIgnoresLegacyAgentManagerPath(t *testing.T) {
 func containsString(items []string, target string) bool {
 	for _, item := range items {
 		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProtocolKind(state promptcompiler.ProtocolPromptState, kind string) bool {
+	for _, item := range state.Items {
+		if item.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func hasProtocolItem(state promptcompiler.ProtocolPromptState, kind, id, status, text string) bool {
+	for _, item := range state.Items {
+		if item.Kind == kind && item.ID == id && item.Status == status && item.Text == text {
 			return true
 		}
 	}

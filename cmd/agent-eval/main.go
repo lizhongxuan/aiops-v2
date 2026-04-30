@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,10 @@ import (
 )
 
 func main() {
+	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr, time.Now))
+}
+
+func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	var casesDir string
 	var outputDir string
 	var agentName string
@@ -20,27 +25,34 @@ func main() {
 	var baselinePath string
 	var saveBaselinePath string
 
-	flag.StringVar(&casesDir, "cases", "testdata/eval_cases", "directory containing eval case JSON files")
-	flag.StringVar(&outputDir, "out", "", "directory for answers, traces, tool calls, and report.json")
-	flag.StringVar(&agentName, "agent", "mock", "agent adapter to run; currently supports mock")
-	flag.StringVar(&runID, "run-id", "", "optional run id")
-	flag.StringVar(&baselinePath, "baseline", "", "optional baseline report.json to compare against")
-	flag.StringVar(&saveBaselinePath, "save-baseline", "", "optional path to write the current report as a baseline")
-	flag.Parse()
+	flags := flag.NewFlagSet("agent-eval", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&casesDir, "cases", "testdata/eval_cases", "directory containing eval case JSON files")
+	flags.StringVar(&outputDir, "out", "", "directory for answers, traces, tool calls, and report.json")
+	flags.StringVar(&agentName, "agent", "mock", "agent adapter to run; currently supports mock")
+	flags.StringVar(&runID, "run-id", "", "optional run id")
+	flags.StringVar(&baselinePath, "baseline", "", "optional baseline report.json to compare against")
+	flags.StringVar(&saveBaselinePath, "save-baseline", "", "optional path to write the current report as a baseline")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
 
 	if outputDir == "" {
-		outputDir = filepath.Join(".data", "eval_runs", time.Now().UTC().Format("20060102T150405Z"))
+		if now == nil {
+			now = time.Now
+		}
+		outputDir = filepath.Join(".data", "eval_runs", now().UTC().Format("20060102T150405Z"))
 	}
 	agent, err := buildAgent(agentName)
 	if err != nil {
-		exitErr(err)
+		return printError(stderr, err)
 	}
 
 	var baseline *eval.Report
 	if strings.TrimSpace(baselinePath) != "" {
 		report, err := eval.LoadReport(baselinePath)
 		if err != nil {
-			exitErr(fmt.Errorf("load baseline: %w", err))
+			return printError(stderr, fmt.Errorf("load baseline: %w", err))
 		}
 		baseline = &report
 	}
@@ -52,16 +64,17 @@ func main() {
 		AgentName:      agentName,
 		RunID:          runID,
 		BaselineReport: baseline,
-	}.Run(context.Background())
+	}.Run(ctx)
 	if err != nil {
-		exitErr(err)
+		return printError(stderr, err)
 	}
 	if strings.TrimSpace(saveBaselinePath) != "" {
 		if err := eval.SaveReport(saveBaselinePath, report); err != nil {
-			exitErr(fmt.Errorf("save baseline: %w", err))
+			return printError(stderr, fmt.Errorf("save baseline: %w", err))
 		}
 	}
-	printReport(report)
+	printReportTo(stdout, report)
+	return 0
 }
 
 func buildAgent(name string) (eval.Agent, error) {
@@ -73,33 +86,33 @@ func buildAgent(name string) (eval.Agent, error) {
 	}
 }
 
-func printReport(report eval.Report) {
-	fmt.Printf("eval run: %s\n", report.RunID)
-	fmt.Printf("output: %s\n", report.OutputDir)
-	fmt.Printf("summary: %d/%d passed, avg score %.2f\n", report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore)
+func printReportTo(w io.Writer, report eval.Report) {
+	fmt.Fprintf(w, "eval run: %s\n", report.RunID)
+	fmt.Fprintf(w, "output: %s\n", report.OutputDir)
+	fmt.Fprintf(w, "summary: %d/%d passed, avg score %.2f\n", report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore)
 	for _, c := range report.Cases {
 		status := "PASS"
 		if !c.Passed {
 			status = "FAIL"
 		}
-		fmt.Printf("- %s [%s] %.2f (%d/%d checks)\n", c.CaseID, status, c.Score, c.PassedChecks, c.TotalChecks)
+		fmt.Fprintf(w, "- %s [%s] %.2f (%d/%d checks)\n", c.CaseID, status, c.Score, c.PassedChecks, c.TotalChecks)
 		if c.Error != "" {
-			fmt.Printf("  error: %s\n", c.Error)
+			fmt.Fprintf(w, "  error: %s\n", c.Error)
 		}
 	}
 	if report.BaselineComparison != nil {
 		s := report.BaselineComparison.Summary
-		fmt.Printf("baseline: better=%d worse=%d same=%d new=%d missing=%d\n", s.Better, s.Worse, s.Same, s.New, s.Missing)
+		fmt.Fprintf(w, "baseline: better=%d worse=%d same=%d new=%d missing=%d\n", s.Better, s.Worse, s.Same, s.New, s.Missing)
 		for _, c := range report.BaselineComparison.Cases {
 			if c.Status == eval.ComparisonSame {
 				continue
 			}
-			fmt.Printf("- %s: %s (%.2f -> %.2f, delta %.2f)\n", c.CaseID, c.Status, c.BaselineScore, c.CurrentScore, c.Delta)
+			fmt.Fprintf(w, "- %s: %s (%.2f -> %.2f, delta %.2f)\n", c.CaseID, c.Status, c.BaselineScore, c.CurrentScore, c.Delta)
 		}
 	}
 }
 
-func exitErr(err error) {
-	fmt.Fprintln(os.Stderr, "agent-eval:", err)
-	os.Exit(1)
+func printError(stderr io.Writer, err error) int {
+	fmt.Fprintln(stderr, "agent-eval:", err)
+	return 1
 }

@@ -724,31 +724,6 @@ const planOverviewRows = computed(() => [
   compactRow("回滚", planCardModel.value.rollback),
 ].filter(Boolean));
 
-const runtimePolicyCard = computed(() => {
-  const modeLabel = compactText(workspaceModel.value.incidentSummary?.modeLabel || "分析模式");
-  const stageLabel = compactText(workspaceModel.value.incidentSummary?.stageLabel || "待命");
-  const laneLabel = compactText(workspaceModel.value.currentLaneLabel || "分析中");
-  const gateLabel = compactText(workspaceModel.value.finalGateLabel || "待校验");
-  const missingRequirements = asArray(workspaceModel.value.missingRequirements).map((item) => compactText(item)).filter(Boolean);
-  const nextTool = compactText(workspaceModel.value.requiredNextTool);
-  const intentLabel = compactText(workspaceModel.value.turnIntentLabel || "事实问答");
-  const detail = missingRequirements.length
-    ? `当前回答被 final gate 拦截，需先补齐 ${missingRequirements.join(" / ")}。`
-    : compactText(workspaceModel.value.turnPolicy?.classificationReason || workspaceModel.value.incidentSummary?.detail || "当前没有额外 gate 限制。");
-  return {
-    modeLabel,
-    stageLabel,
-    laneLabel,
-    intentLabel,
-    gateLabel,
-    nextTool,
-    nextToolLabel: workspaceModel.value.requiredNextToolLabel || toolDisplayName(nextTool),
-    missingRequirements,
-    detail,
-    blocked: compactText(workspaceModel.value.finalGateStatus) === "blocked",
-  };
-});
-
 const planCards = computed(() => {
   const stepCards = asArray(planCardModel.value.stepItems).map((item) => ({
     id: item.id,
@@ -2409,34 +2384,6 @@ function handleMcpSurfaceEventRefresh(surface) {
             <span v-if="statusBanner.hint" class="workspace-status-banner-hint">{{ statusBanner.hint }}</span>
           </article>
 
-          <article v-if="!store.loading" class="workspace-runtime-policy-card" :class="{ blocked: runtimePolicyCard.blocked }" data-testid="protocol-runtime-policy">
-            <div class="workspace-runtime-policy-head">
-              <div class="workspace-runtime-policy-chips">
-                <span class="runtime-policy-chip">{{ runtimePolicyCard.modeLabel }}</span>
-                <span class="runtime-policy-chip">{{ runtimePolicyCard.stageLabel }}</span>
-                <span class="runtime-policy-chip strong">{{ runtimePolicyCard.laneLabel }}</span>
-                <span class="runtime-policy-chip" :class="{ blocked: runtimePolicyCard.blocked }">Final Gate · {{ runtimePolicyCard.gateLabel }}</span>
-              </div>
-              <span class="runtime-policy-intent">{{ runtimePolicyCard.intentLabel }}</span>
-            </div>
-            <p class="workspace-runtime-policy-detail">{{ runtimePolicyCard.detail }}</p>
-            <div class="workspace-runtime-policy-meta">
-              <span v-if="runtimePolicyCard.nextTool">
-                下一步工具：<strong>{{ runtimePolicyCard.nextToolLabel || runtimePolicyCard.nextTool }}</strong>
-              </span>
-              <span v-else>当前没有额外的强制下一步工具。</span>
-            </div>
-            <div v-if="runtimePolicyCard.missingRequirements.length" class="workspace-runtime-policy-missing">
-              <span
-                v-for="item in runtimePolicyCard.missingRequirements"
-                :key="item"
-                class="runtime-policy-missing-chip"
-              >
-                {{ item }}
-              </span>
-            </div>
-          </article>
-
           <ProtocolConversationPane
             v-if="!store.loading"
             title="Main Agent"
@@ -2626,7 +2573,7 @@ function handleMcpSurfaceEventRefresh(surface) {
 
 .protocol-workspace-toolbar {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   align-items: center;
   padding: 6px 16px;
@@ -2639,12 +2586,17 @@ function handleMcpSurfaceEventRefresh(surface) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .toolbar-notice {
   display: inline-flex;
   align-items: center;
+  flex: 1 1 auto;
   gap: 6px;
+  min-width: 0;
   padding: 0 10px;
   height: 32px;
   border-radius: 6px;
@@ -2653,6 +2605,12 @@ function handleMcpSurfaceEventRefresh(surface) {
   color: #334155;
   font-size: 12px;
   font-weight: 500;
+}
+
+.toolbar-notice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar-notice.danger {
@@ -2665,6 +2623,7 @@ function handleMcpSurfaceEventRefresh(surface) {
 .toolbar-refresh {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 4px;
   padding: 0 10px;
   height: 32px;
@@ -2736,102 +2695,6 @@ function handleMcpSurfaceEventRefresh(surface) {
   border-color: #fde68a;
   background: #fffbeb;
   color: #92400e;
-}
-
-.workspace-runtime-policy-card {
-  width: min(980px, calc(100% - 40px));
-  margin: 14px auto 0;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid rgba(191, 219, 254, 0.95);
-  background:
-    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 250, 252, 0.98));
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
-  flex-shrink: 0;
-}
-
-.workspace-runtime-policy-card.blocked {
-  border-color: rgba(253, 186, 116, 0.95);
-  background:
-    radial-gradient(circle at top right, rgba(249, 115, 22, 0.12), transparent 34%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 247, 237, 0.98));
-}
-
-.workspace-runtime-policy-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workspace-runtime-policy-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.runtime-policy-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(239, 246, 255, 0.95);
-  color: #1e3a8a;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.runtime-policy-chip.strong {
-  background: rgba(219, 234, 254, 0.98);
-}
-
-.runtime-policy-chip.blocked {
-  background: rgba(255, 237, 213, 0.98);
-  color: #9a3412;
-}
-
-.runtime-policy-intent {
-  color: #475569;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.workspace-runtime-policy-detail {
-  margin: 12px 0 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.workspace-runtime-policy-meta {
-  margin-top: 10px;
-  color: #475569;
-  font-size: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.workspace-runtime-policy-missing {
-  margin-top: 12px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.runtime-policy-missing-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: rgba(255, 237, 213, 0.98);
-  color: #9a3412;
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .workspace-status-banner-head {
@@ -3201,8 +3064,7 @@ function handleMcpSurfaceEventRefresh(surface) {
 
 @media (max-width: 720px) {
   .protocol-workspace-toolbar {
-    flex-direction: column;
-    align-items: stretch;
+    align-items: center;
   }
 
   .toolbar-refresh {

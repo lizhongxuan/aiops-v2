@@ -18,11 +18,36 @@ func TestIsReadOnlyCommandAllowsShellWrappedCurlGet(t *testing.T) {
 	}
 }
 
+func TestIsReadOnlyCommandAllowsHostResourceInspection(t *testing.T) {
+	cases := []struct {
+		command string
+		args    []string
+	}{
+		{command: "uptime"},
+		{command: "nproc"},
+		{command: "free", args: []string{"-h"}},
+		{command: "sysctl", args: []string{"-n", "hw.ncpu"}},
+		{command: "sysctl", args: []string{"hw.memsize"}},
+		{command: "vm_stat"},
+	}
+	for _, tc := range cases {
+		if !IsReadOnlyCommand(tc.command, tc.args) {
+			t.Fatalf("%s %v should be classified read-only", tc.command, tc.args)
+		}
+	}
+}
+
 func TestIsReadOnlyCommandRejectsShellWrappedMutation(t *testing.T) {
 	if IsReadOnlyCommand("bash", []string{"-lc", "curl -X POST https://example.com/api"}) {
 		t.Fatal("bash -lc curl POST must not be classified read-only")
 	}
 	if IsReadOnlyCommand("bash", []string{"-lc", "date && rm -rf /tmp/nope"}) {
 		t.Fatal("bash -lc command with shell operators must not be classified read-only")
+	}
+}
+
+func TestIsReadOnlyCommandRejectsMutatingSysctl(t *testing.T) {
+	if IsReadOnlyCommand("sysctl", []string{"-w", "kern.maxfiles=1024"}) {
+		t.Fatal("sysctl -w must not be classified read-only")
 	}
 }

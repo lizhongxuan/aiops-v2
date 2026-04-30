@@ -185,3 +185,98 @@ func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {
 		t.Fatal("large tool result should omit outputPreview")
 	}
 }
+
+func TestToolDispatcher_HighRiskMetadataRequiresApproval(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "secret"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"read_secret": {
+				desc: ToolDescriptor{Metadata: tooling.ToolMetadata{
+					Name:      "read_secret",
+					RiskLevel: tooling.ToolRiskHigh,
+				}},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-risk", "turn-risk", ToolCall{
+		ID:   "call-risk",
+		Name: "read_secret",
+	}, SessionTypeHost, ModeExecute)
+
+	if !result.Blocked || result.Outcome != "approval_needed" {
+		t.Fatalf("dispatch result = %#v, want approval_needed", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 before approval", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s before high-risk approval", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_MutatingMetadataDeniedInInspectMode(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "mutated"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"custom_probe": {
+				desc: ToolDescriptor{Metadata: tooling.ToolMetadata{
+					Name:     "custom_probe",
+					Mutating: true,
+				}},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-mut", "turn-mut", ToolCall{
+		ID:   "call-mut",
+		Name: "custom_probe",
+	}, SessionTypeHost, ModeInspect)
+
+	if result.Outcome != "tool_denied" || !strings.Contains(result.Error, "mutating") {
+		t.Fatalf("dispatch result = %#v, want metadata mutation denial", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 for denied mutation", executor.calls)
+	}
+}
+
+func TestToolDispatcher_FailurePolicyFailTurnDoesNotFeedFailureBackToModel(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"fragile_mutation": {
+				desc: ToolDescriptor{Metadata: tooling.ToolMetadata{
+					Name:          "fragile_mutation",
+					FailurePolicy: tooling.ToolFailurePolicyFailTurn,
+				}},
+				executor: &mockToolExecutor{err: assertErr("boom")},
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-fail", "turn-fail", ToolCall{
+		ID:   "call-fail",
+		Name: "fragile_mutation",
+	}, SessionTypeHost, ModeExecute)
+
+	if result.Error == "" {
+		t.Fatalf("dispatch result = %#v, want tool error", result)
+	}
+	if shouldFeedToolFailureBackToModel(result) {
+		t.Fatalf("failure policy should fail the turn, got feed-back result %#v", result)
+	}
+}
+
+type assertErr string
+
+func (e assertErr) Error() string { return string(e) }

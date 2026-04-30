@@ -34,9 +34,39 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 		unsubscribe := func() {}
 		var agentEvents <-chan appui.AgentEvent
 		unsubscribeAgentEvents := func() {}
+		subscribedAgentEventSessionID := ""
 		if s.appSnapshots != nil {
 			updates, unsubscribe = s.appSnapshots.Subscribe()
 			defer unsubscribe()
+		}
+		defer func() {
+			unsubscribeAgentEvents()
+		}()
+
+		subscribeAgentEventsForSnapshot := func(snapshot appui.StateSnapshot) {
+			if s.agentEvents == nil {
+				return
+			}
+			sessionID := snapshot.SessionID
+			if sessionID == "" {
+				if subscribedAgentEventSessionID != "" {
+					unsubscribeAgentEvents()
+					unsubscribeAgentEvents = func() {}
+					agentEvents = nil
+					subscribedAgentEventSessionID = ""
+				}
+				return
+			}
+			if sessionID == subscribedAgentEventSessionID && agentEvents != nil {
+				return
+			}
+			unsubscribeAgentEvents()
+			var afterSeq int64
+			if snapshot.AgentEventProjection != nil && snapshot.AgentEventProjection.SessionID == sessionID {
+				afterSeq = snapshot.AgentEventProjection.LastSeq
+			}
+			agentEvents, unsubscribeAgentEvents = s.agentEvents.Subscribe(ctx, sessionID, afterSeq)
+			subscribedAgentEventSessionID = sessionID
 		}
 
 		snapshot, err := s.ui.StateService().GetState(ctx)
@@ -45,14 +75,7 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 			return
 		}
 		snapshot = s.withAgentEventProjection(ctx, snapshot)
-		if s.agentEvents != nil {
-			var afterSeq int64
-			if snapshot.AgentEventProjection != nil {
-				afterSeq = snapshot.AgentEventProjection.LastSeq
-			}
-			agentEvents, unsubscribeAgentEvents = s.agentEvents.Subscribe(ctx, snapshot.SessionID, afterSeq)
-			defer unsubscribeAgentEvents()
-		}
+		subscribeAgentEventsForSnapshot(snapshot)
 		if err := sendJSON(snapshot); err != nil {
 			return
 		}
@@ -88,6 +111,8 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 					updates = nil
 					continue
 				}
+				snapshot = s.withAgentEventProjection(ctx, snapshot)
+				subscribeAgentEventsForSnapshot(snapshot)
 				if err := sendJSON(snapshot); err != nil {
 					return
 				}
@@ -102,6 +127,17 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 				}); err != nil {
 					return
 				}
+				if isTerminalTurnAgentEvent(event) {
+					snapshot, err := s.ui.StateService().GetState(ctx)
+					if err != nil {
+						continue
+					}
+					snapshot = s.withAgentEventProjection(ctx, snapshot)
+					subscribeAgentEventsForSnapshot(snapshot)
+					if err := sendJSON(snapshot); err != nil {
+						return
+					}
+				}
 			case <-ticker.C:
 				if err := sendJSON(map[string]any{
 					"type": "heartbeat",
@@ -112,6 +148,18 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 			}
 		}
 	})
+}
+
+func isTerminalTurnAgentEvent(event appui.AgentEvent) bool {
+	if event.Kind != appui.AgentEventTurn {
+		return false
+	}
+	switch event.Phase {
+	case appui.AgentEventPhaseCompleted, appui.AgentEventPhaseFailed, appui.AgentEventPhaseCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func encodeWebSocketMessage(payload any) json.RawMessage {

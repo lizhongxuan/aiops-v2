@@ -6,13 +6,15 @@ import (
 	"sort"
 	"strings"
 
+	agentuipkg "aiops-v2/internal/agentui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
 
 // SnapshotBuilder projects runtime sessions into first-party Web DTOs.
 type SnapshotBuilder struct {
-	hosts HostRepository
+	hosts    HostRepository
+	settings SettingsRepository
 }
 
 const serverLocalHostID = "server-local"
@@ -25,8 +27,13 @@ func NewSnapshotBuilder(hosts ...HostRepository) *SnapshotBuilder {
 	return &SnapshotBuilder{hosts: repo}
 }
 
+func NewSnapshotBuilderWithSettings(hosts HostRepository, settings SettingsRepository) *SnapshotBuilder {
+	return &SnapshotBuilder{hosts: hosts, settings: settings}
+}
+
 func (b *SnapshotBuilder) BuildStateSnapshot(session *runtimekernel.SessionState) StateSnapshot {
 	snapshot := defaultStateSnapshot()
+	b.applyLLMConfig(&snapshot)
 	selectedHostID := serverLocalHostID
 	if session != nil {
 		snapshot.SessionID = session.ID
@@ -46,10 +53,33 @@ func (b *SnapshotBuilder) BuildStateSnapshot(session *runtimekernel.SessionState
 		snapshot.FinalGateStatus = "pending"
 		snapshot.TurnPolicy = buildTurnPolicy(session, snapshot.CurrentLane)
 		snapshot.PromptEnvelope = buildPromptEnvelope(session, snapshot.CurrentLane)
+		if events := buildAgentItemEvents(session.CurrentTurn); len(events) > 0 {
+			snapshot.Config["agentItemEvents"] = events
+		}
 	}
 	snapshot.SelectedHostID = selectedHostID
 	snapshot.Hosts = b.buildHostSummaries(selectedHostID)
 	return snapshot
+}
+
+func (b *SnapshotBuilder) applyLLMConfig(snapshot *StateSnapshot) {
+	if b == nil || snapshot == nil || b.settings == nil {
+		return
+	}
+	cfg, err := b.settings.GetLLMConfig()
+	if err != nil || cfg == nil {
+		return
+	}
+	if model := strings.TrimSpace(cfg.Model); model != "" {
+		snapshot.Config["model"] = model
+	}
+}
+
+func buildAgentItemEvents(turn *runtimekernel.TurnSnapshot) []AgentEvent {
+	if turn == nil || len(turn.AgentItems) == 0 {
+		return nil
+	}
+	return agentuipkg.ProjectTurnItemsToAgentEvents(turn.SessionID, turn.ID, turn.AgentItems, 0)
 }
 
 func (b *SnapshotBuilder) BuildSessionSummary(session *runtimekernel.SessionState) SessionSummary {
@@ -191,7 +221,8 @@ func buildApprovals(pending []runtimekernel.PendingApproval) []ApprovalView {
 			SessionID: approval.SessionID,
 			TurnID:    approval.TurnID,
 			ToolName:  approval.ToolName,
-			Command:   strings.TrimSpace(firstNonEmpty(approval.Reason)),
+			Command:   strings.TrimSpace(firstNonEmpty(approval.Command, approval.Reason)),
+			Reason:    strings.TrimSpace(approval.Reason),
 			HostID:    approval.HostID,
 			Status:    "pending",
 			CreatedAt: isoStamp(approval.CreatedAt),

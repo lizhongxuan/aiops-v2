@@ -52,6 +52,7 @@ func CompareReports(baseline, current Report) ComparisonReport {
 			item.Delta = cur.Score - base.Score
 			item.BaselinePassed = base.Passed
 			item.CurrentPassed = cur.Passed
+			item.RegressedChecks, item.ImprovedChecks = compareChecks(base.Checks, cur.Checks)
 			switch {
 			case item.Delta > 0:
 				item.Status = ComparisonBetter
@@ -67,4 +68,36 @@ func CompareReports(baseline, current Report) ComparisonReport {
 		report.Cases = append(report.Cases, item)
 	}
 	return report
+}
+
+func compareChecks(baseline, current []CheckResult) (regressed, improved []string) {
+	baseByName := make(map[string]CheckResult, len(baseline))
+	currentByName := make(map[string]CheckResult, len(current))
+	names := make(map[string]bool, len(baseline)+len(current))
+	for _, check := range baseline {
+		baseByName[check.Name] = check
+		names[check.Name] = true
+	}
+	for _, check := range current {
+		currentByName[check.Name] = check
+		names[check.Name] = true
+	}
+	all := make([]string, 0, len(names))
+	for name := range names {
+		all = append(all, name)
+	}
+	sort.Strings(all)
+	for _, name := range all {
+		base, hasBase := baseByName[name]
+		cur, hasCur := currentByName[name]
+		if hasBase && hasCur {
+			if base.Passed && !cur.Passed {
+				regressed = append(regressed, name)
+			}
+			if !base.Passed && cur.Passed {
+				improved = append(improved, name)
+			}
+		}
+	}
+	return regressed, improved
 }

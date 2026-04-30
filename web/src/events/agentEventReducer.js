@@ -238,6 +238,7 @@ function applyTurn(projection, event) {
   if (["completed", "failed", "canceled"].includes(event.phase)) {
     delete projection.runtimeLiveness.activeTurns[event.turnId];
     projection.runtimeLiveness.activeCommandStreams = {};
+    projection = clearPendingApprovalsForTerminalTurn(projection, event.status, event.createdAt);
     projection.lastTerminalFailed = event.phase === "failed";
     projection.lastTerminalCanceled = event.phase === "canceled";
     const rowId = resolveTurnRowId(projection, event);
@@ -257,6 +258,25 @@ function applyTurn(projection, event) {
     });
   }
   return projection;
+}
+
+function clearPendingApprovalsForTerminalTurn(projection, status, updatedAt) {
+  const pendingIds = new Set([
+    ...Object.keys(projection.runtimeLiveness.pendingApprovals || {}),
+    ...Object.keys(projection.runtimeLiveness.pendingUserInputs || {}),
+  ]);
+  if (!pendingIds.size) return projection;
+  return {
+    ...projection,
+    runtimeLiveness: {
+      ...projection.runtimeLiveness,
+      pendingApprovals: {},
+      pendingUserInputs: {},
+    },
+    approvals: (projection.approvals || []).map((approval) =>
+      pendingIds.has(approval?.id) ? { ...approval, status, updatedAt } : approval,
+    ),
+  };
 }
 
 function resolveTurnRowId(projection, event) {
@@ -318,8 +338,12 @@ function applyAssistant(projection, event) {
     return projection;
   }
   if (channel && channel !== "final") return projection;
-  const text = compactText(event.payload.delta || event.payload.text);
-  if (!text || !event.turnId) return projection;
+  const text = typeof event.payload.delta === "string"
+    ? event.payload.delta
+    : typeof event.payload.text === "string"
+      ? event.payload.text
+      : "";
+  if (text === "" || !event.turnId) return projection;
   const current = projection.finalMessages[event.turnId] || { turnId: event.turnId, text: "", status: event.status };
   projection.finalMessages[event.turnId] = {
     ...current,
@@ -381,17 +405,29 @@ function applySystem(projection, event) {
 }
 
 function applyTool(projection, event) {
+  clearRunningFinalMessageForToolEvent(projection, event);
   const id = compactText(event.payload.toolCallId || event.eventId);
   const title = compactText(event.payload.title || event.payload.displayName || event.payload.toolName);
-  const summary = toolProjectionSummary(event.payload);
+  const existingRow = projection.timeline.find((row) => row?.id === id) || {};
+  const displayKind = inferToolDisplayKind(event.payload, existingRow);
+  const summary = toolProjectionSummary(event.payload) || existingRow.summary || "";
+  const inputSummary = resolveToolInputSummary(event.payload, existingRow, displayKind);
   const row = {
     id,
     kind: "tool",
     turnId: event.turnId,
     toolCallId: id,
-    displayKind: compactText(event.payload.displayKind),
+    displayKind,
     title,
     summary,
+    inputSummary,
+    command: compactText(event.payload.command) || existingRow.command || "",
+    cwd: compactText(event.payload.cwd) || existingRow.cwd || "",
+    outputSummary: compactText(event.payload.outputSummary) || existingRow.outputSummary || "",
+    outputPreview: event.payload.outputPreview ?? existingRow.outputPreview,
+    queries: resolveToolQueries(event.payload, existingRow, inputSummary, displayKind),
+    results: Array.isArray(event.payload.results) ? event.payload.results : Array.isArray(existingRow.results) ? existingRow.results : [],
+    exitCode: Number.isFinite(Number(event.payload.exitCode)) ? Number(event.payload.exitCode) : undefined,
     detail: compactText(event.payload.delta),
     risk: compactText(event.payload.risk),
     rawRef: compactText(event.payload.rawRef),
@@ -415,6 +451,30 @@ function applyTool(projection, event) {
     delete projection.runtimeLiveness.activeCommandStreams[id];
   }
   return projection;
+}
+
+function clearRunningFinalMessageForToolEvent(projection, event) {
+  if (!event.turnId) return;
+  const current = projection.finalMessages?.[event.turnId];
+  if (!current || current.status === "completed") return;
+  const summary = compactText(current.text);
+  if (summary) {
+    const row = {
+      id: compactText(`${event.turnId}:assistant-process:${event.seq}`),
+      kind: "assistant",
+      turnId: event.turnId,
+      clientTurnId: event.clientTurnId,
+      title: "summary",
+      summary,
+      status: "completed",
+      visibility: "secondary",
+      updatedAt: current.updatedAt || event.createdAt,
+      seq: current.seq || event.seq,
+    };
+    projection.timeline = upsertRow(projection.timeline, row);
+    projection.processGroups[event.turnId] = upsertRow(projection.processGroups[event.turnId] || [], row);
+  }
+  delete projection.finalMessages[event.turnId];
 }
 
 function applyPlan(projection, event) {
@@ -496,12 +556,50 @@ function toolProjectionSummary(payload = {}) {
   return output || input;
 }
 
+function inferToolDisplayKind(payload = {}, existingRow = {}) {
+  const explicit = compactText(payload.displayKind || existingRow.displayKind);
+  if (explicit) return explicit;
+  const name = compactText(payload.displayName || payload.toolName || existingRow.title).toLowerCase();
+  if (["web_search", "browser.search"].includes(name)) return "browser.search";
+  if (["exec_command", "shell_command", "execute_command", "execute_readonly_query", "code_mode"].includes(name)) return "host.command";
+  return "";
+}
+
+function extractSearchQuery(value = "") {
+  const text = compactText(value);
+  if (!text) return "";
+  const quoted = text.match(/\bquery\s+"([^"]+)"/i);
+  if (quoted?.[1]) return quoted[1].trim();
+  const parenthesized = text.match(/[（(]([^()（）]+)[)）]/u);
+  if (parenthesized?.[1] && !/已搜索|正在搜索|completed/i.test(parenthesized[1])) return parenthesized[1].trim();
+  return "";
+}
+
+function resolveToolInputSummary(payload = {}, existingRow = {}, displayKind = "") {
+  const explicit = compactText(payload.inputSummary);
+  if (explicit) return explicit;
+  const existing = compactText(existingRow.inputSummary);
+  if (existing) return existing;
+  if (displayKind === "browser.search") {
+    return extractSearchQuery(payload.outputSummary || payload.summary || existingRow.summary);
+  }
+  return "";
+}
+
+function resolveToolQueries(payload = {}, existingRow = {}, inputSummary = "", displayKind = "") {
+  if (Array.isArray(payload.queries) && payload.queries.length) return payload.queries;
+  if (Array.isArray(existingRow.queries) && existingRow.queries.length) return existingRow.queries;
+  if (displayKind === "browser.search" && inputSummary) return [inputSummary];
+  return [];
+}
+
 function applyApproval(projection, event) {
   const id = compactText(event.payload.approvalId || event.eventId);
   projection.approvals = upsertRow(projection.approvals, {
     id,
     approvalType: compactText(event.payload.approvalType),
     title: compactText(event.payload.title),
+    command: compactText(event.payload.command),
     reason: compactText(event.payload.reason),
     risk: compactText(event.payload.risk),
     decision: compactText(event.payload.decision),

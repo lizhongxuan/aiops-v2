@@ -30,6 +30,7 @@ import {
 const MCP_DRAWER_STORAGE_KEY = "codex:mcp-drawer:v1";
 const MCP_DRAWER_PIN_LIMIT = 8;
 const MCP_DRAWER_RECENT_LIMIT = 6;
+const PROJECTION_FINAL_PRELUDE_PATTERN = /^(?:我先|我会先|让我先|先帮你|先查|先看|先抓取|先交叉核对|我先交叉核对|我先整理|我先快速|我正在|先快速|先浏览|先读取)/u;
 
 function compactText(value) {
   return typeof value === "string" ? value.trim() : String(value || "").trim();
@@ -273,6 +274,16 @@ function normalizeCardText(card) {
 
 function normalizeComparableCardText(value) {
   return compactText(String(value || "").replace(/\*\*/g, "")).replace(/\s+/g, "");
+}
+
+function isProjectionFinalCoveredByAssistantText(finalText = "", assistantText = "") {
+  const finalComparable = normalizeComparableCardText(finalText);
+  const assistantComparable = normalizeComparableCardText(assistantText);
+  if (!finalComparable || !assistantComparable) return false;
+  if (finalComparable === assistantComparable) return true;
+  if (!PROJECTION_FINAL_PRELUDE_PATTERN.test(compactText(finalText))) return false;
+  if (assistantComparable.length < 16) return false;
+  return finalComparable.includes(assistantComparable);
 }
 
 function isUserCard(card) {
@@ -1828,17 +1839,28 @@ export const useAppStore = defineStore("app", {
       this.snapshot.missingRequirements = Array.isArray(data.missingRequirements) ? data.missingRequirements : [];
       this.snapshot.turnPolicy = data.turnPolicy || null;
       this.snapshot.promptEnvelope = data.promptEnvelope || null;
-      this.snapshot.agentEventProjection = data.agentEventProjection || null;
+      const incomingProjection = data.agentEventProjection?.sessionId ? data.agentEventProjection : null;
+      const existingProjection = incomingProjection
+        ? this.agentEventState.projectionsBySession?.[incomingProjection.sessionId] || null
+        : null;
+      const incomingProjectionSeq = Number(incomingProjection?.lastSeq || 0);
+      const existingProjectionSeq = Number(existingProjection?.lastSeq || 0);
+      const isStaleProjectionSnapshot = Boolean(existingProjection && incomingProjection && incomingProjectionSeq < existingProjectionSeq);
+      if (!isStaleProjectionSnapshot) {
+        this.snapshot.agentEventProjection = data.agentEventProjection || null;
+      }
       this.snapshot.toolInvocations = Array.isArray(data.toolInvocations) ? data.toolInvocations : [];
       this.snapshot.evidenceSummaries = Array.isArray(data.evidenceSummaries) ? data.evidenceSummaries : [];
       this.snapshot.config = data.config || this.snapshot.config;
       /* Merge runtime if server sends it */
       if (data.runtime) {
-        this.runtime.turn = normalizeTurnRuntime(
-          data.runtime.turn || {},
-          this.snapshot.selectedHostId || "server-local",
-          this.runtime.turn,
-        );
+        if (!isStaleProjectionSnapshot) {
+          this.runtime.turn = normalizeTurnRuntime(
+            data.runtime.turn || {},
+            this.snapshot.selectedHostId || "server-local",
+            this.runtime.turn,
+          );
+        }
         this.runtime.codex = {
           status: "connected",
           retryAttempt: this.runtime.codex.retryAttempt,
@@ -1865,10 +1887,8 @@ export const useAppStore = defineStore("app", {
           ...(data.runtime.activity || {}),
         };
       }
-      if (data.agentEventProjection?.sessionId) {
-        const incomingProjection = data.agentEventProjection;
-        const existingProjection = this.agentEventState.projectionsBySession?.[incomingProjection.sessionId] || null;
-        if (!existingProjection || Number(incomingProjection.lastSeq || 0) >= Number(existingProjection.lastSeq || 0)) {
+      if (incomingProjection) {
+        if (!isStaleProjectionSnapshot) {
           this.agentEventState = applyAgentProjectionSnapshot(this.agentEventState, incomingProjection);
           this.syncAgentProjectionToRuntime(this.agentEventState.projectionsBySession[incomingProjection.sessionId]);
         }
@@ -1981,15 +2001,14 @@ export const useAppStore = defineStore("app", {
       const liveFinalIds = new Set();
       let nextCards = [...this.snapshot.cards];
       for (const final of finalMessages) {
-        const text = compactText(final.text);
+        const text = String(final.text || "").trim();
         if (!text || !final.turnId) continue;
         const finalCardId = `agent-final-${final.turnId}`;
         liveFinalIds.add(finalCardId);
-        const comparableText = normalizeComparableCardText(text);
         const matchingServerIndex = nextCards.findIndex((card) => {
           if (!isAssistantCard(card)) return false;
           if (card?.id === finalCardId) return false;
-          return normalizeComparableCardText(normalizeCardText(card)) === comparableText;
+          return isProjectionFinalCoveredByAssistantText(text, normalizeCardText(card));
         });
         const syntheticIndex = nextCards.findIndex((card) => card?.id === finalCardId);
         if (matchingServerIndex >= 0) {

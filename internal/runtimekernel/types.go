@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"aiops-v2/internal/agentstate"
 )
 
 // ---------------------------------------------------------------------------
@@ -337,6 +339,7 @@ type PendingApproval struct {
 	ToolName   string     `json:"toolName"`
 	ToolCallID string     `json:"toolCallId,omitempty"`
 	HostID     string     `json:"hostId,omitempty"`
+	Command    string     `json:"command,omitempty"`
 	Reason     string     `json:"reason,omitempty"`
 	Status     string     `json:"status,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
@@ -480,31 +483,32 @@ func (s CompactedSegment) Validate() error {
 
 // TurnSnapshot freezes the turn-level state at a stable boundary.
 type TurnSnapshot struct {
-	ID                    string              `json:"id"`
-	ClientTurnID          string              `json:"clientTurnId,omitempty"`
-	ClientMessageID       string              `json:"clientMessageId,omitempty"`
-	SessionID             string              `json:"sessionId"`
-	SessionType           SessionType         `json:"sessionType"`
-	Mode                  Mode                `json:"mode"`
-	Lifecycle             TurnLifecycleState  `json:"lifecycle"`
-	ResumeState           TurnResumeState     `json:"resumeState"`
-	Iteration             int                 `json:"iteration"`
-	StartedAt             time.Time           `json:"startedAt"`
-	UpdatedAt             time.Time           `json:"updatedAt"`
-	CompletedAt           *time.Time          `json:"completedAt,omitempty"`
-	StablePromptHash      string              `json:"stablePromptHash,omitempty"`
-	StableToolFingerprint string              `json:"stableToolFingerprint,omitempty"`
-	GovernanceSnapshot    string              `json:"governanceSnapshot,omitempty"`
-	PromptSections        []string            `json:"promptSections,omitempty"`
-	LatestCheckpoint      *CheckpointMetadata `json:"latestCheckpoint,omitempty"`
-	Iterations            []IterationState    `json:"iterations,omitempty"`
-	PendingApprovals      []PendingApproval   `json:"pendingApprovals,omitempty"`
-	PendingEvidence       []PendingEvidence   `json:"pendingEvidence,omitempty"`
-	HiddenTools           []string            `json:"hiddenTools,omitempty"`
-	CompactedSegments     []CompactedSegment  `json:"compactedSegments,omitempty"`
-	ExternalReferences    []ExternalReference `json:"externalReferences,omitempty"`
-	FinalOutput           string              `json:"finalOutput,omitempty"`
-	Error                 string              `json:"error,omitempty"`
+	ID                    string                `json:"id"`
+	ClientTurnID          string                `json:"clientTurnId,omitempty"`
+	ClientMessageID       string                `json:"clientMessageId,omitempty"`
+	SessionID             string                `json:"sessionId"`
+	SessionType           SessionType           `json:"sessionType"`
+	Mode                  Mode                  `json:"mode"`
+	Lifecycle             TurnLifecycleState    `json:"lifecycle"`
+	ResumeState           TurnResumeState       `json:"resumeState"`
+	Iteration             int                   `json:"iteration"`
+	StartedAt             time.Time             `json:"startedAt"`
+	UpdatedAt             time.Time             `json:"updatedAt"`
+	CompletedAt           *time.Time            `json:"completedAt,omitempty"`
+	StablePromptHash      string                `json:"stablePromptHash,omitempty"`
+	StableToolFingerprint string                `json:"stableToolFingerprint,omitempty"`
+	GovernanceSnapshot    string                `json:"governanceSnapshot,omitempty"`
+	PromptSections        []string              `json:"promptSections,omitempty"`
+	LatestCheckpoint      *CheckpointMetadata   `json:"latestCheckpoint,omitempty"`
+	Iterations            []IterationState      `json:"iterations,omitempty"`
+	AgentItems            []agentstate.TurnItem `json:"agentItems,omitempty"`
+	PendingApprovals      []PendingApproval     `json:"pendingApprovals,omitempty"`
+	PendingEvidence       []PendingEvidence     `json:"pendingEvidence,omitempty"`
+	HiddenTools           []string              `json:"hiddenTools,omitempty"`
+	CompactedSegments     []CompactedSegment    `json:"compactedSegments,omitempty"`
+	ExternalReferences    []ExternalReference   `json:"externalReferences,omitempty"`
+	FinalOutput           string                `json:"finalOutput,omitempty"`
+	Error                 string                `json:"error,omitempty"`
 }
 
 // Validate checks the turn snapshot.
@@ -538,6 +542,11 @@ func (s TurnSnapshot) Validate() error {
 	for i := range s.Iterations {
 		if err := s.Iterations[i].Validate(); err != nil {
 			return fmt.Errorf("iteration[%d]: %w", i, err)
+		}
+	}
+	for i := range s.AgentItems {
+		if err := s.AgentItems[i].Validate(); err != nil {
+			return fmt.Errorf("agent item[%d]: %w", i, err)
 		}
 	}
 	for i := range s.PendingApprovals {

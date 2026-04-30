@@ -1,0 +1,13 @@
+{
+  "id": "tool-state-after-call",
+  "category": "Agent Loop",
+  "input": "每次工具调用后必须写入 tool_call 和 tool_result TurnItem，并能继续生成 final_answer。",
+  "expected": {
+    "mustInclude": ["tool_call", "tool_result", "final_answer", "验证方式"],
+    "mustNotInclude": ["只记录文本", "不保存状态"],
+    "expectedToolCalls": ["read_file"],
+    "mustMentionFiles": ["internal/runtimekernel/agent_items.go"],
+    "expectedTurnItems": ["user_message", "model_call", "tool_call", "tool_result", "final_answer"]
+  },
+  "scoreRules": {}
+}

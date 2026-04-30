@@ -18,6 +18,7 @@ import { adaptMcpUiPayloadFromCard } from "./mcpUiPayloadAdapter";
 import { normalizeMcpBundle, normalizeMcpPayloadSource, normalizeMcpUiCard } from "./mcpUiCardModel";
 import { resolveMcpBundlePreset } from "./mcpBundleResolver";
 import { normalizeToolDisplayPayload } from "./toolDisplayModel";
+import { buildCodexProcessTranscript } from "./codexProcessTranscript";
 
 const ACTIVE_PHASES = new Set(["planning", "thinking", "executing", "waiting_approval", "waiting_input", "finalizing"]);
 const PROTOCOL_SURFACE_OWNED_PATTERN = /审批|批准|授权|approval|派发|dispatch|host-agent|worker|时间线|timeline|step\s*->\s*host|host-agent 映射|编排执行计划|接管任务|执行位/i;
@@ -25,7 +26,9 @@ const PROTOCOL_SURFACE_DETAIL_PATTERN = /审批ID|风险级别|目标环境|目�
 const STRUCTURED_LIST_PATTERN = /(?:^|\n)\s*(?:[-*]|[0-9]+\.)\s+/m;
 const USER_FACING_CONCLUSION_PATTERN = /(?:结论[:：]|结论是|根因[:：]|原因[:：]|建议[:：]|建议先|下一步[:：]|推荐[:：]|因此|意味着)/i;
 const MAIN_CHAT_PRELUDE_PATTERN = /^(?:我先|我会先|让我先|先帮你|先查|先看|先抓取|先交叉核对|我先交叉核对|我先整理|我先快速|我正在|先快速|先浏览|先读取)/u;
+const MAIN_CHAT_PROCESS_NARRATION_PATTERN = /^(?:我(?:先|会先|将|准备|继续|再|已|已经|马上)|接下来|随后|现在|先|已确认|已经确认|补查|为了)/u;
 const MAIN_CHAT_RESULT_PATTERN = /(截至|现价|24h|24小时|数据|结果|摘要|趋势|涨跌|百分比|市值|成交额|支撑|压力|来源[:：]|结论[:：]|建议[:：]|一句话判断|短判断[:：]|简判断[:：])/i;
+const MAIN_CHAT_PROCESS_NARRATION_MAX_LENGTH = 220;
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -235,6 +238,39 @@ function displayCommand(value = "") {
   return raw;
 }
 
+function preserveOutputText(value = "") {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map((item) => preserveOutputText(item)).filter(Boolean).join("\n");
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2).trim();
+    } catch {
+      return "";
+    }
+  }
+  return String(value).trim();
+}
+
+function transcriptStatusFromPhase({ activeTurn = false, phase = "", failed = false, blocked = false } = {}) {
+  const normalized = compactText(phase).toLowerCase();
+  if (normalized === "aborted") return "aborted";
+  if (failed || normalized === "failed") return "failed";
+  if (blocked || normalized === "waiting_approval") return "blocked";
+  if (activeTurn) return "running";
+  return "completed";
+}
+
+function assistantMessagesForTranscript(messages = []) {
+  return asArray(messages).map((message) => ({
+    id: message?.id,
+    text: message?.card?.text || message?.text || "",
+    status: message?.card?.status || message?.sourceCard?.status || "",
+    createdAt: message?.createdAt,
+    updatedAt: message?.updatedAt,
+  }));
+}
+
 function formatDurationLabel(ms) {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   if (!totalSeconds) return "";
@@ -299,7 +335,7 @@ function buildAssistantProcessItems(messages = [], options = {}) {
     time: compactText(message.time),
     hostId: "",
     tone: "neutral",
-    status: "",
+    status: compactText(message.card?.status || message.sourceCard?.status) || "completed",
     sortTimestamp: message.updatedAt || message.createdAt || "",
   })).filter((item) => item.text && !exclude(item));
 }
@@ -547,13 +583,63 @@ function isDuplicateAssistantDraft(text = "", finalText = "") {
   return Boolean(left) && Boolean(right) && (left === right || right.includes(left) || left.includes(right));
 }
 
+function isConciseMainChatProcessNarration(text = "") {
+  const value = compactText(text);
+  if (!value) return false;
+  if (value.length > MAIN_CHAT_PROCESS_NARRATION_MAX_LENGTH) return false;
+  if (STRUCTURED_LIST_PATTERN.test(value)) return false;
+  if (value.split(/\n+/).filter(Boolean).length > 2) return false;
+  if (!MAIN_CHAT_PRELUDE_PATTERN.test(value) && !MAIN_CHAT_PROCESS_NARRATION_PATTERN.test(value)) return false;
+  return !/(?:^|\n)(?:来源[:：]|https?:\/\/|\[[^\]]+\]\([^)]+\))|(?:如下|结果|结论|建议)[:：]/m.test(value);
+}
+
+function selectMainChatFinalMessage(assistantMessages = []) {
+  const messages = asArray(assistantMessages);
+  const fallback = messages[messages.length - 1] || null;
+  const fallbackText = compactText(fallback?.card?.text || "");
+  if (!fallback || !looksLikeMainChatPrelude(fallbackText)) return fallback;
+
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const candidate = messages[index];
+    const candidateText = compactText(candidate?.card?.text || "");
+    if (!candidateText || looksLikeMainChatPrelude(candidateText)) continue;
+    if (isDuplicateAssistantDraft(fallbackText, candidateText)) {
+      return candidate;
+    }
+  }
+  return fallback;
+}
+
 function isMainChatAssistantProcessRedundant(message = {}, finalMessageText = "") {
   const text = compactText(message?.card?.text || message?.text);
   if (!text) return true;
-  if (looksLikeMainChatPrelude(text)) return false;
-  if (looksLikeMainChatResult(text)) return true;
   if (finalMessageText && isDuplicateAssistantDraft(text, finalMessageText)) return true;
-  return USER_FACING_CONCLUSION_PATTERN.test(text);
+  return !isConciseMainChatProcessNarration(text);
+}
+
+function isMainChatActivityProcessRedundant(item = {}, { hideNarration = false } = {}) {
+  if (!hideNarration) return false;
+  const kind = compactText(item?.kind).toLowerCase();
+  return kind === "assistant" || kind === "assistant_message" || kind === "message";
+}
+
+function dedupeMainChatProcessItems(items = []) {
+  const seen = new Set();
+  return asArray(items).filter((item) => {
+    const textKey = normalizeComparableMessageText(item?.text);
+    if (!textKey) return true;
+    const commandKey = normalizeComparableMessageText(item?.command);
+    const inputKey = normalizeComparableMessageText(item?.inputSummary || item?.query || asArray(item?.queries).join(" "));
+    const displayKindKey = normalizeComparableMessageText(item?.displayKind);
+    const key = commandKey
+      ? `${textKey}:cmd:${commandKey}`
+      : inputKey
+        ? `${textKey}:input:${displayKindKey}:${inputKey}`
+        : textKey;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isProtocolAssistantProcessRedundant(item = {}) {
@@ -583,21 +669,14 @@ function isProtocolProcessCardRedundant(item = {}, card = {}) {
   return ["wait", "approval", "progress", "running", "queued", "dispatch", "complete"].some((keyword) => status.includes(keyword));
 }
 
-function summarizeTurnProcess({ processItems = [], activeTurn = false, liveHint = "" } = {}) {
-  const assistantUpdates = asArray(processItems).filter((item) => item.kind === "assistant_message").length;
-  if (assistantUpdates > 1) {
-    return `已记录 ${assistantUpdates} 条过程消息`;
-  }
+function summarizeTurnProcess({ activeTurn = false, liveHint = "" } = {}) {
   if (!activeTurn && liveHint) return liveHint;
   return "";
 }
 
 function summarizeProtocolTurnProcess({ processItems = [], missionPhase = "", activeTurn = false, liveHint = "" } = {}) {
   if (!activeTurn) {
-    const itemCount = asArray(processItems).length;
-    if (!itemCount) return liveHint || "已完成";
-    if (itemCount === 1) return "已记录 1 条过程细项";
-    return `已记录 ${itemCount} 条过程细项`;
+    return liveHint || "";
   }
 
   const phase = compactText(missionPhase).toLowerCase();
@@ -610,123 +689,11 @@ function summarizeProtocolTurnProcess({ processItems = [], missionPhase = "", ac
   if (phase === "executing" || phase === "thinking" || phase === "finalizing") {
     return processItems.length ? "执行细节已收进右侧执行面板" : "";
   }
-  return liveHint ? "" : summarizeTurnProcess({ processItems, activeTurn, liveHint });
+  return liveHint ? "" : summarizeTurnProcess({ activeTurn, liveHint });
 }
 
-function summarizeMainChatProcess({ processItems = [], activeProcess = null, liveHint = "" } = {}) {
-  const explicitSummary = compactText(activeProcess?.summary);
-  const normalizedItems = asArray(processItems);
-  const itemCount = normalizedItems.length;
-  if (!itemCount) return explicitSummary || "";
-  const groupedSummary = summarizeProcessItemGroups(normalizedItems);
-  if (!liveHint && groupedSummary) return groupedSummary;
-  if (explicitSummary) return explicitSummary;
-  if (liveHint) return "";
-  const searchCount = normalizedItems.filter((item) => {
-    const kind = compactText(item?.kind || item?.processKind).toLowerCase();
-    const text = compactText(item?.text).toLowerCase();
-    return kind === "search" || text.includes("已搜索");
-  }).length;
-  if (searchCount) {
-    return `已搜索 ${searchCount} 次`;
-  }
-  const assistantCount = normalizedItems.filter((item) => {
-    const kind = compactText(item?.kind).toLowerCase();
-    return kind === "assistant" || kind === "assistant_message" || kind === "message";
-  }).length;
-  if (assistantCount) {
-    return `上 ${assistantCount} 条消息`;
-  }
-  const commandCount = normalizedItems.filter((item) => compactText(item?.kind).toLowerCase() === "command").length;
-  if (commandCount) {
-    return `已执行 ${commandCount} 个命令`;
-  }
-  if (itemCount === 1) return "已记录 1 条过程细项";
-  return `已记录 ${itemCount} 条过程细项`;
-}
-
-const PROCESS_SUMMARY_ORDER = [
-  "web_search",
-  "page_browse",
-  "page_search",
-  "content_search",
-  "file_read",
-  "directory_browse",
-  "command",
-  "file_change",
-  "assistant_note",
-  "tool",
-];
-
-const PROCESS_SUMMARY_LABELS = {
-  web_search: "搜索网页",
-  page_browse: "浏览网页",
-  page_search: "检索页面",
-  content_search: "搜索内容",
-  file_read: "读取文件",
-  directory_browse: "浏览目录",
-  command: "运行命令",
-  file_change: "修改文件",
-  assistant_note: "记录过程说明",
-  tool: "调用工具",
-};
-
-function classifyProcessSummaryGroup(item = {}) {
-  const text = compactText(item?.text || item?.detail);
-  const kind = compactText(item?.kind).toLowerCase();
-  const processKind = compactText(item?.processKind).toLowerCase();
-  const haystack = `${kind} ${processKind} ${text}`.toLowerCase();
-
-  if (/搜索网页|web[_\s-]?search|search_web/.test(haystack)) return "web_search";
-  if (/浏览网页|open_page|网页|url|https?:\/\//.test(haystack)) return "page_browse";
-  if (/检索页面|页面中搜索|find_in_page/.test(haystack)) return "page_search";
-  if (/搜索内容|搜索文件|search_files|grep|query/.test(haystack)) return "content_search";
-  if (/读取文件|read_file|file_read/.test(haystack)) return "file_read";
-  if (/浏览目录|列出|list_dir|list_files|\bls\b/.test(haystack)) return "directory_browse";
-  if (/运行命令|已运行|正在运行|exec_command|terminal|shell|command/.test(haystack)) return "command";
-  if (/修改文件|apply_patch|write_file|diff|patch/.test(haystack)) return "file_change";
-  if (kind === "assistant" || kind === "assistant_message" || kind === "message") return "assistant_note";
-  if (kind === "activity" || kind === "status" || kind === "system" || processKind === "activity" || processKind === "status" || processKind === "system") return "";
-  if (kind || processKind) return "tool";
+function summarizeMainChatProcess() {
   return "";
-}
-
-function statusVerbForProcessItems(items = []) {
-  const statuses = items.map((item) => compactText(item?.status).toLowerCase()).filter(Boolean);
-  if (statuses.some((status) => status.includes("fail") || status.includes("error") || status.includes("denied"))) {
-    return "失败";
-  }
-  if (statuses.some((status) => status.includes("run") || status.includes("progress") || status.includes("queued"))) {
-    return "正在";
-  }
-  return "已";
-}
-
-function summarizeProcessItemGroups(processItems = []) {
-  const grouped = new Map();
-  for (const item of asArray(processItems)) {
-    if (!compactText(item?.text) && !item?.display) continue;
-    const group = classifyProcessSummaryGroup(item);
-    if (!group) continue;
-    const bucket = grouped.get(group) || [];
-    bucket.push(item);
-    grouped.set(group, bucket);
-  }
-  if (!grouped.size) return "";
-  if ([...grouped.keys()].every((group) => group === "assistant_note")) return "";
-
-  const orderedGroups = PROCESS_SUMMARY_ORDER.filter((group) => grouped.has(group));
-  const extraGroups = [...grouped.keys()].filter((group) => !PROCESS_SUMMARY_ORDER.includes(group));
-  const phrases = [...orderedGroups, ...extraGroups].map((group) => {
-    const items = grouped.get(group) || [];
-    const verb = statusVerbForProcessItems(items);
-    const label = PROCESS_SUMMARY_LABELS[group] || "处理细项";
-    return `${verb}${label} ${items.length} 次`;
-  });
-  const visiblePhrases = phrases.slice(0, 3);
-  const hiddenCount = phrases.length - visiblePhrases.length;
-  const suffix = hiddenCount > 0 ? `，另有 ${hiddenCount} 类明细` : "";
-  return `${visiblePhrases.join("，")}${suffix}；明细已折叠。`;
 }
 
 function isAttentionPhase(phase = "") {
@@ -1025,6 +992,25 @@ export function formatProtocolChatTurns({
       liveHint,
     });
     const turnSurfaces = collectTurnMcpSurfaceGroups(assistantMessages.map((message) => message.sourceCard).filter(Boolean));
+    const processTranscript = buildCodexProcessTranscript({
+      turnId: bucket.id,
+      active: isActiveTurn,
+      status: transcriptStatusFromPhase({
+        activeTurn: isActiveTurn,
+        phase: normalizedPhase,
+        failed: normalizedPhase === "failed" || normalizedPhase === "aborted",
+        blocked: normalizedPhase === "waiting_approval",
+      }),
+      elapsedLabel,
+      assistantMessages: assistantMessagesForTranscript(assistantProcessMessages),
+      finalText: finalMessage?.card?.text || "",
+      processItems,
+      liveHint,
+      modelRunning: isActiveTurn && normalizedPhase === "thinking",
+      collapsedByDefault: isAttentionPhase(normalizedPhase)
+        ? false
+        : !isActiveTurn && Boolean(processItems.length),
+    });
 
     return {
       id: bucket.id,
@@ -1033,6 +1019,7 @@ export function formatProtocolChatTurns({
       userMessage: bucket.userMessage,
       finalMessage,
       processItems,
+      processTranscript,
       processLabel,
       finalLabel: finalMessage && (processItems.length || liveHint) ? "最终消息" : "",
       liveHint,
@@ -1097,18 +1084,20 @@ export function formatMainChatTurns({
     const isCurrentTurn = index === buckets.length - 1;
     const isActiveTurn = isCurrentTurn && Boolean(turnActive);
     const assistantMessages = asArray(bucket.assistantMessages);
-    const lastAssistantMessage = assistantMessages[assistantMessages.length - 1] || null;
-    const activeFinalMessage = isActiveTurn && shouldExposeActiveFinalMessage(lastAssistantMessage)
-      ? lastAssistantMessage
+    const selectedFinalMessage = selectMainChatFinalMessage(assistantMessages);
+    const activeFinalMessage = isActiveTurn && shouldExposeActiveFinalMessage(selectedFinalMessage)
+      ? selectedFinalMessage
       : null;
     const hasActiveFinalMessage = Boolean(activeFinalMessage);
-    const suppressLiveProcessNarration = Boolean(hideLiveProcessDetails) && isActiveTurn;
-    const suppressLiveProcessDetails = Boolean(hideLiveProcessDetails) && isActiveTurn && !hasActiveFinalMessage;
+    const activeFinalStatus = compactText(activeFinalMessage?.card?.status || activeFinalMessage?.sourceCard?.status).toLowerCase();
+    const activeFinalIsStreaming = ["inprogress", "streaming", "running"].includes(activeFinalStatus);
+    const suppressLiveProcessNarration = false;
+    const suppressLiveProcessDetails = false;
     const processMatchesBucket = activeProcessMatchesBucket(activeProcess, bucket);
-    const finalMessage = isActiveTurn ? activeFinalMessage : lastAssistantMessage;
+    const finalMessage = isActiveTurn ? activeFinalMessage : selectedFinalMessage;
     const rawAssistantProcessMessages = isActiveTurn
-      ? (activeFinalMessage ? assistantMessages.slice(0, -1) : assistantMessages)
-      : assistantMessages.slice(0, -1);
+      ? (activeFinalMessage ? assistantMessages.filter((message) => message.id !== activeFinalMessage.id) : assistantMessages)
+      : assistantMessages.filter((message) => message.id !== finalMessage?.id);
     const bucketStart = parseTimestamp(
       bucket.userMessage?.createdAt || bucket.userMessage?.updatedAt || assistantMessages[0]?.createdAt || assistantMessages[0]?.updatedAt,
     );
@@ -1134,8 +1123,14 @@ export function formatMainChatTurns({
       ? asArray(activeProcess?.items).map((item, itemIndex) => ({
           id: compactText(item?.id || `activity-${itemIndex}`),
           kind: compactText(item?.kind || "activity"),
-          processKind: inferProcessKind(`${item?.kind || ""} ${item?.text || item?.label || item?.value || ""}`),
+          displayKind: compactText(item?.displayKind),
+          visibility: compactText(item?.visibility),
+          processKind: compactText(item?.processKind) || inferProcessKind(`${item?.kind || ""} ${item?.text || item?.label || item?.value || ""}`),
           text: String(item?.text || item?.label || item?.value || "").trim(),
+          summary: String(item?.summary || item?.outputSummary || "").trim(),
+          inputSummary: String(item?.inputSummary || item?.query || "").trim(),
+          queries: Array.isArray(item?.queries) ? item.queries : [],
+          results: Array.isArray(item?.results) ? item.results : [],
           detail: String(item?.detail || "").trim(),
           display: buildToolDisplayModel(item?.detail),
           time: compactText(item?.time),
@@ -1143,7 +1138,12 @@ export function formatMainChatTurns({
           tone: compactText(item?.tone || "neutral"),
           status: compactText(item?.status),
           sortTimestamp: item?.updatedAt || item?.createdAt || "",
-        })).filter((item) => item.text)
+          command: compactText(item?.command),
+          output: preserveOutputText(item?.output || item?.outputPreview),
+          outputPreview: item?.outputPreview,
+        }))
+          .filter((item) => item.text)
+          .filter((item) => !isMainChatActivityProcessRedundant(item, { hideNarration: suppressLiveProcessNarration }))
       : [];
     // Include intermediate assistant messages with card property so ChatProcessFold
     // can render them via MessageCard (model's thinking text inside the fold)
@@ -1160,8 +1160,8 @@ export function formatMainChatTurns({
       time: compactText(msg.time),
       hostId: "",
       tone: "neutral",
-      status: "",
-      sortTimestamp: msg.updatedAt || msg.createdAt || "",
+      status: compactText(msg.card?.status || msg.sourceCard?.status) || "completed",
+      sortTimestamp: "",
       card: msg.card,
     }));
     const commandProcessItems = suppressLiveProcessDetails ? [] : buildCommandProcessItems(bucketCommandCards);
@@ -1173,11 +1173,15 @@ export function formatMainChatTurns({
         return command && compactText(item.text).includes(command);
       });
     });
-    const processItems = sortProcessDisplayItems([
+    const processItems = dedupeMainChatProcessItems(sortProcessDisplayItems([
       ...messageProcessItems,
       ...filteredActivityProcessItems,
       ...commandProcessItems,
-    ]);
+    ]));
+    const transcriptProcessItems = dedupeMainChatProcessItems(sortProcessDisplayItems([
+      ...filteredActivityProcessItems,
+      ...commandProcessItems,
+    ]));
     const liveHint = hasActiveFinalMessage
       ? ""
       : suppressLiveProcessDetails
@@ -1193,7 +1197,6 @@ export function formatMainChatTurns({
           liveHint,
         });
     const terminalPhase = compactText(activeProcess?.phase || "").toLowerCase();
-    const terminalProcessLabel = resolveTerminalProcessLabel(terminalPhase, compactText(activeProcess?.elapsedLabel));
     const statusCard = isCurrentTurn ? asObject(activeProcess?.statusCard) : null;
     const timestamps = [
       bucket.userMessage?.updatedAt,
@@ -1208,8 +1211,40 @@ export function formatMainChatTurns({
     const elapsedLabel = firstTimestamp && lastTimestamp && lastTimestamp >= firstTimestamp
       ? formatDurationLabel(lastTimestamp - firstTimestamp)
       : "";
+    const resolvedElapsedLabel = isActiveTurn
+      ? compactText(activeProcess?.elapsedLabel) || elapsedLabel
+      : elapsedLabel;
+    const terminalProcessLabel = resolveTerminalProcessLabel(terminalPhase, resolvedElapsedLabel);
     const phase = compactText(activeProcess?.phase || "");
+    const terminalPhaseForCollapse = compactText(terminalPhase || phase).toLowerCase();
+    const showBottomThinking = isActiveTurn && (
+      activeFinalIsStreaming ||
+      terminalPhaseForCollapse === "thinking" ||
+      terminalPhaseForCollapse === "finalizing"
+    );
+    const collapsedByDefault = terminalPhaseForCollapse === "failed"
+      ? true
+      : isAttentionPhase(terminalPhaseForCollapse)
+        ? false
+        : !isActiveTurn && Boolean(processItems.length || summary || liveHint);
     const turnSurfaces = collectTurnMcpSurfaceGroups(assistantMessages.map((message) => message.sourceCard).filter(Boolean));
+    const processTranscript = buildCodexProcessTranscript({
+      turnId: bucket.id,
+      active: isActiveTurn,
+      status: transcriptStatusFromPhase({
+        activeTurn: isActiveTurn,
+        phase: terminalPhase || phase,
+        failed: terminalPhaseForCollapse === "failed" || terminalPhaseForCollapse === "aborted",
+        blocked: terminalPhaseForCollapse === "waiting_approval",
+      }),
+      elapsedLabel: resolvedElapsedLabel,
+      assistantMessages: assistantMessagesForTranscript(assistantProcessMessages),
+      finalText: finalMessage?.card?.text || "",
+      processItems: transcriptProcessItems,
+      liveHint,
+      modelRunning: showBottomThinking,
+      collapsedByDefault,
+    });
 
     return {
       id: bucket.id,
@@ -1218,14 +1253,13 @@ export function formatMainChatTurns({
       userMessage: bucket.userMessage,
       finalMessage,
       processItems,
-      processLabel: terminalProcessLabel || [isActiveTurn ? activeProcessLabel(phase) : "已处理", elapsedLabel].filter(Boolean).join(" "),
+      processTranscript,
+      processLabel: terminalProcessLabel || [isActiveTurn ? activeProcessLabel(phase) : "已处理", resolvedElapsedLabel].filter(Boolean).join(" "),
       finalLabel: "",
       liveHint,
       summary,
-      statusCard: statusCard && Object.keys(statusCard).length ? statusCard : null,
-      collapsedByDefault: isAttentionPhase(terminalPhase || phase)
-        ? false
-        : !isActiveTurn && Boolean(processItems.length || summary || liveHint),
+      statusCard: null,
+      collapsedByDefault,
       active: isActiveTurn,
       hasActiveFinalMessage,
       phase,

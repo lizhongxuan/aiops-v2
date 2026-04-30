@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -39,13 +40,28 @@ func TestRegisterBuiltinsExposesChatTools(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.Metadata().Name] = tool
 	}
-	for _, name := range []string{"web_search", "browse_url", "exec_command", "get_current_model_config"} {
+	for _, name := range []string{"web_search", "browse_url", "exec_command", "get_current_model_config", "update_plan"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("assembled tools missing %q; got %v", name, toolNames(tools))
 		}
 	}
 	if native := names["web_search"].Metadata().ProviderNative; native == nil || !native.Prefer || native.Type != "web_search" {
 		t.Fatalf("web_search provider-native metadata = %#v, want preferred web_search", native)
+	}
+}
+
+func TestExecCommandToolDescriptionIncludesHostOSGuidance(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	description := tool.Metadata().Description
+
+	if !strings.Contains(description, "Host OS: "+runtime.GOOS) {
+		t.Fatalf("description = %q, want current host OS guidance", description)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(description, "vm_stat") {
+		t.Fatalf("description = %q, want macOS resource inspection guidance", description)
+	}
+	if runtime.GOOS == "darwin" && !strings.Contains(description, "avoid Linux-only commands") {
+		t.Fatalf("description = %q, want explicit Linux-only command avoidance on darwin", description)
 	}
 }
 

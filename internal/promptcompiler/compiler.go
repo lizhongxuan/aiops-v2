@@ -55,6 +55,10 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 	if toolDelta.Content != "" {
 		dynamicParts = append(dynamicParts, toolDelta.Content)
 	}
+	protocolState := normalizeProtocolState(ctx.ProtocolState)
+	if protocolContent := renderProtocolPromptState(protocolState); protocolContent != "" {
+		dynamicParts = append(dynamicParts, protocolContent)
+	}
 	dynamicContent := joinNonEmpty(append(dynamicParts, policy.Content)...)
 
 	return CompiledPrompt{
@@ -70,6 +74,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 			EvidenceReminders: append([]string(nil), ctx.EvidenceReminders...),
 			ExtraSections:     clonePromptSections(ctx.ExtraSections),
 			ToolDelta:         toolDelta,
+			ProtocolState:     protocolState,
 			Policy:            policy,
 		},
 		System:    system,

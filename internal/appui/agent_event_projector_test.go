@@ -374,6 +374,7 @@ func TestAgentEventProjector_ApprovalBlocksThenResolves(t *testing.T) {
 		ApprovalID:   "approval-1",
 		ApprovalType: "command",
 		Title:        "运行命令",
+		Command:      "free -h",
 		Reason:       "需要确认",
 	})
 	resolved := testAgentEvent(AgentEventApproval, AgentEventPhaseResolved, AgentEventStatusCompleted, 2, ApprovalPayload{
@@ -388,6 +389,9 @@ func TestAgentEventProjector_ApprovalBlocksThenResolves(t *testing.T) {
 	if proj.Status != "blocked" || !proj.RuntimeLiveness.PendingApprovals["approval-1"] {
 		t.Fatalf("requested projection = %+v, want blocked pending approval", proj)
 	}
+	if proj.Approvals[0].Command != "free -h" {
+		t.Fatalf("approval command = %q, want real command", proj.Approvals[0].Command)
+	}
 
 	proj, err = projector.Apply(proj, resolved)
 	if err != nil {
@@ -395,6 +399,34 @@ func TestAgentEventProjector_ApprovalBlocksThenResolves(t *testing.T) {
 	}
 	if proj.Status != "idle" || proj.RuntimeLiveness.PendingApprovals["approval-1"] {
 		t.Fatalf("resolved projection = %+v, want idle without pending approval", proj)
+	}
+}
+
+func TestAgentEventProjector_TurnFailureClearsBlockedApproval(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Title: "Working"}),
+		testAgentEvent(AgentEventApproval, AgentEventPhaseRequested, AgentEventStatusBlocked, 2, ApprovalPayload{
+			ApprovalID:   "approval-1",
+			ApprovalType: "command",
+			Title:        "exec_command",
+			Command:      "bash -lc free -h",
+			Reason:       "requires approval",
+		}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseFailed, AgentEventStatusFailed, 3, TurnPayload{Error: "command failed"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if proj.Status != "failed" {
+		t.Fatalf("Status = %q, want failed after terminal turn failure", proj.Status)
+	}
+	if len(proj.RuntimeLiveness.PendingApprovals) != 0 || len(proj.RuntimeLiveness.PendingUserInputs) != 0 {
+		t.Fatalf("pending approvals after failure = %+v / %+v, want cleared", proj.RuntimeLiveness.PendingApprovals, proj.RuntimeLiveness.PendingUserInputs)
+	}
+	if len(proj.Approvals) != 1 || proj.Approvals[0].Status != AgentEventStatusFailed {
+		t.Fatalf("Approvals = %+v, want stale blocked approval marked failed", proj.Approvals)
 	}
 }
 
@@ -410,6 +442,68 @@ func TestAgentEventProjector_AssistantFinalDeltaAppendsByTurn(t *testing.T) {
 
 	if got := proj.FinalMessages["turn-1"].Text; got != "第一段第二段" {
 		t.Fatalf("FinalMessages[turn-1].Text = %q, want concatenated chunks", got)
+	}
+}
+
+func TestAgentEventProjector_ToolCallClearsProvisionalAssistantFinal(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "查行情"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "我将先核实行情。"}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseStarted, AgentEventStatusRunning, 3, ToolPayload{
+			ToolCallID:   "search-1",
+			ToolName:     "web_search",
+			DisplayName:  "web_search",
+			InputSummary: "BTC price",
+		}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, ToolPayload{
+			ToolCallID:    "search-1",
+			ToolName:      "web_search",
+			DisplayName:   "web_search",
+			OutputSummary: "已搜索 BTC price",
+		}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 5, AssistantPayload{Channel: "final", Delta: "最终行情结论。"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 6, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if got := proj.FinalMessages["turn-1"].Text; got != "最终行情结论。" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want only post-tool final answer", got)
+	}
+}
+
+func TestAgentEventProjector_ToolProjectionPreservesInputAndOutputSummary(t *testing.T) {
+	projector := NewAgentEventProjector()
+	outputPreview := json.RawMessage(`"Filesystem      Size   Used  Avail Capacity Mounted on\n/dev/disk3s1s1   460Gi   12Gi  239Gi     5% /"`)
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "查看主机资源"}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, ToolPayload{
+			ToolCallID:    "cmd-1",
+			ToolName:      "exec_command",
+			DisplayKind:   "host.command",
+			InputSummary:  "df -h",
+			OutputSummary: "Filesystem Size Used Avail Capacity Mounted on",
+			OutputPreview: outputPreview,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	if len(proj.Timeline) < 2 {
+		t.Fatalf("Timeline length = %d, want tool row", len(proj.Timeline))
+	}
+	row := proj.Timeline[1]
+	if row.InputSummary != "df -h" {
+		t.Fatalf("InputSummary = %q, want command", row.InputSummary)
+	}
+	if row.OutputSummary != "Filesystem Size Used Avail Capacity Mounted on" {
+		t.Fatalf("OutputSummary = %q, want command output summary", row.OutputSummary)
+	}
+	if string(row.OutputPreview) != string(outputPreview) {
+		t.Fatalf("OutputPreview = %s, want %s", row.OutputPreview, outputPreview)
 	}
 }
 

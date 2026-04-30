@@ -198,6 +198,10 @@ export function cleanAssistantDisplayText(text, role = "assistant") {
   cleaned = cleaned.replace(/\{[^{}]*"route"\s*:\s*"[^"]*"[^{}]*\}/g, "").trim();
   if (/(BTC|比特币|CoinMarketCap|CoinGecko|Binance|Crypto\.com|24h|24小时|市值|成交额|A股|上证|深证|创业板|指数)/i.test(cleaned)) {
     cleaned = cleaned.replace(/(?:^|\n)\s*(?:短判断|一句话判断|简判断)[:：]\s*/gu, "\n");
+    cleaned = cleaned.replace(/[；;，,]?\s*(?:对应来源|来源)[:：]\s*(?:[-—–]\s*){1,4}(?=$|\n|[。；;，,])/gu, "");
+    cleaned = cleaned.replace(/[:：]\s*[；;]\s*/gu, "：");
+    cleaned = cleaned.replace(/[:：]\s*[，,]\s*/gu, "：");
+    cleaned = cleaned.replace(/[:：]\s*[:：]/gu, "：");
     cleaned = cleaned.replace(
       /(?:^|\n)来源[:：]\s*\n((?:\[[^\]]+\]\([^)]+\)\s*\n?){1,4})/gu,
       (_match, linksBlock) => {

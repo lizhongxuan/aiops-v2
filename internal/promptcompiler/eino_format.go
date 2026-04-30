@@ -33,27 +33,32 @@ func (c *PromptCompilerImpl) CompileForEino(ctx CompileContext) ([]*schema.Messa
 func CompiledPromptToMessages(compiled CompiledPrompt) []*schema.Message {
 	messages := make([]*schema.Message, 0, 4)
 
-	// Layer 1: System Prompt as system message
 	if system := compiled.effectiveSystemPrompt(); system.Content != "" {
-		messages = append(messages, schema.SystemMessage(system.Content))
+		messages = append(messages, semanticPromptMessage(system.Content, "system", "system"))
 	}
 
-	// Layer 2: Developer Instructions as system message
 	if developer := compiled.effectiveDeveloperInstructions(); developer.Content != "" {
-		messages = append(messages, schema.SystemMessage(developer.Content))
+		messages = append(messages, semanticPromptMessage(developer.Content, "developer", "developer"))
 	}
 
-	// Layer 3: Tool Prompt Set as system message
 	if tools := compiled.effectiveToolPromptSet(); tools.Content != "" {
-		messages = append(messages, schema.SystemMessage(tools.Content))
+		messages = append(messages, semanticPromptMessage(tools.Content, "tool_index", "tool"))
 	}
 
-	// Layer 4: Runtime Policy Prompt as system message
 	if policy := compiled.effectiveRuntimePolicyPrompt(); policy.Content != "" {
-		messages = append(messages, schema.SystemMessage(policy.Content))
+		messages = append(messages, semanticPromptMessage(policy.Content, "runtime_policy", "context"))
 	}
 
 	return messages
+}
+
+func semanticPromptMessage(content, layer, semanticRole string) *schema.Message {
+	msg := schema.SystemMessage(content)
+	msg.Extra = map[string]any{
+		"prompt_layer":  layer,
+		"semantic_role": semanticRole,
+	}
+	return msg
 }
 
 func (c CompiledPrompt) effectiveSystemPrompt() SystemPrompt {

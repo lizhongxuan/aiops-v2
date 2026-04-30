@@ -4,7 +4,6 @@ import { BotIcon } from "lucide-vue-next";
 import CardItem from "../CardItem.vue";
 import ThinkingCard from "../ThinkingCard.vue";
 import ChatTurnGroup from "./ChatTurnGroup.vue";
-import LiveStatusCard from "./LiveStatusCard.vue";
 import AgentEventTimelineRow from "./AgentEventTimelineRow.vue";
 import AgentStatusRail from "./AgentStatusRail.vue";
 import ApprovalDock from "./ApprovalDock.vue";
@@ -99,22 +98,6 @@ const props = defineProps({
   runtimeStatus: {
     type: String,
     default: "idle",
-  },
-  singleHostLiveTurnId: {
-    type: String,
-    default: "",
-  },
-  workingElapsedLabel: {
-    type: String,
-    default: "",
-  },
-  singleHostLiveActivityLines: {
-    type: Array,
-    default: () => [],
-  },
-  latestRunningCommandCard: {
-    type: Object,
-    default: null,
   },
   feedbackByMessageId: {
     type: Object,
@@ -306,24 +289,13 @@ function emitApprovalDecision(approval, decision) {
           <ChatTurnGroup
             v-else-if="entry.kind === 'turn'"
             :turn="entry.turn"
-            :show-live-status="!isWorkspaceSession && entry.turn?.id === singleHostLiveTurnId"
+            :show-live-status="false"
             :feedback="feedbackByMessageId?.[entry.turn?.finalMessage?.id || ''] || ''"
             @action="emitTurnAction"
             @detail="emitMcpDetail"
             @pin="emitMcpPin"
             @refresh="emitMcpRefresh"
-          >
-            <template #live-status>
-              <div class="stream-row row-assistant" data-testid="chat-live-status-card">
-                <LiveStatusCard
-                  :elapsed-label="workingElapsedLabel"
-                  phase-label="Working for"
-                  :activity-lines="singleHostLiveActivityLines"
-                  :command-card="latestRunningCommandCard"
-                />
-              </div>
-            </template>
-          </ChatTurnGroup>
+          />
 
           <div v-else-if="entry.kind === 'card'" class="stream-row" :class="getRowClass(entry.card)">
             <CardItem
@@ -336,7 +308,7 @@ function emitApprovalDecision(approval, decision) {
             />
           </div>
 
-          <div v-else-if="entry.kind === 'activity'" class="activity-summary">
+          <div v-else-if="entry.kind === 'activity' && isWorkspaceSession" class="activity-summary">
             <button
               v-if="activeActivityLine"
               type="button"
@@ -371,14 +343,7 @@ function emitApprovalDecision(approval, decision) {
           </div>
 
           <div v-else-if="entry.kind === 'thinking'" class="stream-row row-assistant" data-testid="chat-live-status-card">
-            <ThinkingCard v-if="isWorkspaceSession" :card="thinkingCard" />
-            <LiveStatusCard
-              v-else
-              :elapsed-label="workingElapsedLabel"
-              phase-label="Working for"
-              :activity-lines="singleHostLiveActivityLines"
-              :command-card="latestRunningCommandCard"
-            />
+            <ThinkingCard :card="thinkingCard" />
           </div>
         </template>
 
@@ -391,6 +356,7 @@ function emitApprovalDecision(approval, decision) {
         />
 
         <ApprovalDock
+          v-if="isWorkspaceSession"
           :approvals="approvalDock"
           @accept="emitApprovalDecision($event, 'accept')"
           @decline="emitApprovalDecision($event, 'reject')"

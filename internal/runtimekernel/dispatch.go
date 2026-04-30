@@ -160,7 +160,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	}
 	if d.hooks != nil {
 		if err := d.hooks.RunToolStage(ctx, hooks.StagePreToolUse, &toolEvent); err != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, "pre_tool_use: "+err.Error(), "hook", "tool_failed")
+			result := d.emitToolFailed(sessionID, turnID, tc, "pre_tool_use: "+err.Error(), "hook", "tool_failed", desc.Metadata)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "pre_tool_use: "+err.Error())
 			}
@@ -185,7 +185,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 
 		switch decision.Action {
 		case policyengine.PolicyActionDeny:
-			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "policy", "tool_denied")
+			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "policy", "tool_denied", desc.Metadata)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
 			}
@@ -201,6 +201,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 				ToolCallID: tc.ID,
 				Blocked:    true,
 				Reason:     decision.Reason,
+				Metadata:   desc.Metadata,
 				Outcome:    "approval_needed",
 				Source:     "policy",
 			}
@@ -213,6 +214,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 				ToolCallID: tc.ID,
 				Blocked:    true,
 				Reason:     "evidence required: " + decision.Reason,
+				Metadata:   desc.Metadata,
 				Outcome:    "evidence_needed",
 				Source:     "policy",
 			}
@@ -223,7 +225,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		if override := toolEvent.UpdatedPermissions; override != nil {
 			switch override.Action {
 			case tooling.PermissionActionDeny:
-				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+override.Reason, "hook", "tool_denied")
+				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+override.Reason, "hook", "tool_denied", desc.Metadata)
 				if d.spanSource != nil && toolSpanID != "" {
 					d.spanSource.FailSpan(toolSpanID, "denied: "+override.Reason)
 				}
@@ -236,6 +238,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 					ToolCallID: tc.ID,
 					Blocked:    true,
 					Reason:     override.Reason,
+					Metadata:   desc.Metadata,
 					Outcome:    "approval_needed",
 					Source:     "hook",
 				}
@@ -247,6 +250,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 					ToolCallID: tc.ID,
 					Blocked:    true,
 					Reason:     "evidence required: " + override.Reason,
+					Metadata:   desc.Metadata,
 					Outcome:    "evidence_needed",
 					Source:     "hook",
 				}
@@ -263,7 +267,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		})
 		switch decision.Action {
 		case permissions.ActionDeny:
-			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "permissions", "tool_denied")
+			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "permissions", "tool_denied", desc.Metadata)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
 			}
@@ -276,6 +280,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 				ToolCallID: tc.ID,
 				Blocked:    true,
 				Reason:     decision.Reason,
+				Metadata:   desc.Metadata,
 				Outcome:    "approval_needed",
 				Source:     "permissions",
 			}
@@ -298,7 +303,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 
 	// Execute tool
 	if executor == nil {
-		result := d.emitToolFailed(sessionID, turnID, tc, "tool has no runtime implementation", "runtime", "tool_failed")
+		result := d.emitToolFailed(sessionID, turnID, tc, "tool has no runtime implementation", "runtime", "tool_failed", desc.Metadata)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, "tool has no runtime implementation")
 		}
@@ -307,7 +312,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 
 	toolResult, execErr := executor.Execute(ctx, tc.Arguments)
 	if execErr != nil {
-		result := d.emitToolFailed(sessionID, turnID, tc, execErr.Error(), "tool", "tool_failed")
+		result := d.emitToolFailed(sessionID, turnID, tc, execErr.Error(), "tool", "tool_failed", desc.Metadata)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, execErr.Error())
 		}
@@ -317,7 +322,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		toolResult.ToolCallID = tc.ID
 	}
 	if toolResult.Error != "" {
-		result := d.emitToolFailed(sessionID, turnID, tc, toolResult.Error, "tool", "tool_failed")
+		result := d.emitToolFailed(sessionID, turnID, tc, toolResult.Error, "tool", "tool_failed", desc.Metadata)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, toolResult.Error)
 		}
@@ -326,7 +331,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if toolResult.HasStream() {
 		streamedResult, streamErr := d.consumeStreamingToolResult(sessionID, turnID, tc, toolSpanID, toolResult)
 		if streamErr != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, streamErr.Error(), "tool", "tool_failed")
+			result := d.emitToolFailed(sessionID, turnID, tc, streamErr.Error(), "tool", "tool_failed", desc.Metadata)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, streamErr.Error())
 			}
@@ -338,7 +343,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if d.hooks != nil {
 		toolEvent.Result = &toolResult
 		if err := d.hooks.RunToolStage(ctx, hooks.StagePostToolUse, &toolEvent); err != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, "post_tool_use: "+err.Error(), "hook", "tool_failed")
+			result := d.emitToolFailed(sessionID, turnID, tc, "post_tool_use: "+err.Error(), "hook", "tool_failed", desc.Metadata)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "post_tool_use: "+err.Error())
 			}
@@ -455,7 +460,7 @@ func (d *ToolDispatcher) consumeStreamingToolResult(sessionID, turnID string, tc
 }
 
 // emitToolFailed emits a tool.failed event and returns an error DispatchResult.
-func (d *ToolDispatcher) emitToolFailed(sessionID, turnID string, tc ToolCall, errMsg string, source string, outcome string) DispatchResult {
+func (d *ToolDispatcher) emitToolFailed(sessionID, turnID string, tc ToolCall, errMsg string, source string, outcome string, meta ...tooling.ToolMetadata) DispatchResult {
 	failPayload, _ := json.Marshal(map[string]string{
 		"id":       tc.ID,
 		"toolName": tc.Name,
@@ -468,12 +473,16 @@ func (d *ToolDispatcher) emitToolFailed(sessionID, turnID string, tc ToolCall, e
 		Timestamp: time.Now(),
 		Payload:   failPayload,
 	})
-	return DispatchResult{
+	result := DispatchResult{
 		ToolCallID: tc.ID,
 		Error:      errMsg,
 		Outcome:    outcome,
 		Source:     source,
 	}
+	if len(meta) > 0 {
+		result.Metadata = meta[0]
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

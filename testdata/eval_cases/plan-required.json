@@ -1,0 +1,17 @@
+{
+  "id": "plan-required",
+  "category": "plan",
+  "input": "复杂任务必须先生成结构化 plan，并在执行中更新状态。",
+  "expected": {
+    "mustInclude": ["结构化 plan", "in_progress"],
+    "expectedTurnItems": ["plan"],
+    "expectedPlanStatuses": ["in_progress"],
+    "mustHavePlan": true
+  },
+  "scoreRules": {
+    "weights": {
+      "plan": 3,
+      "answer": 1
+    }
+  }
+}

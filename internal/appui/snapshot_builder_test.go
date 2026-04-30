@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 )
 
 type sessionSourceStub struct {
@@ -58,7 +60,7 @@ func TestSnapshotBuilderProjectsRuntimeSessionToWebSnapshot(t *testing.T) {
 			{ID: "msg-assistant", Role: "assistant", Content: "world", Timestamp: now.Add(time.Second)},
 		},
 		PendingApprovals: []runtimekernel.PendingApproval{
-			{ID: "approval-1", SessionID: "sess-host", TurnID: "turn-1", ToolName: "exec_command", HostID: "host-a", Reason: "needs approval", CreatedAt: now},
+			{ID: "approval-1", SessionID: "sess-host", TurnID: "turn-1", ToolName: "exec_command", HostID: "host-a", Command: "free -h", Reason: "needs approval", CreatedAt: now},
 		},
 		CurrentTurn: &runtimekernel.TurnSnapshot{
 			ID:               "turn-1",
@@ -87,8 +89,29 @@ func TestSnapshotBuilderProjectsRuntimeSessionToWebSnapshot(t *testing.T) {
 	if len(snapshot.Approvals) != 1 || snapshot.Approvals[0].ToolName != "exec_command" {
 		t.Fatalf("Approvals = %+v, want exec_command approval", snapshot.Approvals)
 	}
+	if snapshot.Approvals[0].Command != "free -h" {
+		t.Fatalf("Approvals[0].Command = %q, want real command", snapshot.Approvals[0].Command)
+	}
+	if snapshot.Approvals[0].Reason != "needs approval" {
+		t.Fatalf("Approvals[0].Reason = %q, want policy reason", snapshot.Approvals[0].Reason)
+	}
 	if snapshot.Runtime.Turn.Phase != "waiting_approval" {
 		t.Fatalf("Runtime.Turn.Phase = %q, want waiting_approval", snapshot.Runtime.Turn.Phase)
+	}
+}
+
+func TestSnapshotBuilderExposesConfiguredLLMModelOnlyFromSettingsRepo(t *testing.T) {
+	builder := NewSnapshotBuilderWithSettings(nil, &settingsRepoStub{
+		llm: &store.LLMConfig{
+			Provider: "openai",
+			Model:    "claude-sonnet-4-20250514",
+		},
+	})
+
+	snapshot := builder.BuildStateSnapshot(nil)
+
+	if snapshot.Config["model"] != "claude-sonnet-4-20250514" {
+		t.Fatalf("Config[model] = %q, want configured model", snapshot.Config["model"])
 	}
 }
 
@@ -202,6 +225,51 @@ func TestSnapshotBuilderProjectsProtocolRuntimeFields(t *testing.T) {
 	}
 	if got := snapshot.PromptEnvelope.HiddenTools[0].Name; got != "write_file" {
 		t.Fatalf("PromptEnvelope.HiddenTools[0].Name = %q, want write_file", got)
+	}
+}
+
+func TestSnapshotBuilderExposesAgentItemEventsAsShadowDebugConfig(t *testing.T) {
+	now := time.Date(2026, 4, 28, 9, 30, 0, 0, time.UTC)
+	builder := NewSnapshotBuilder()
+	session := &runtimekernel.SessionState{
+		ID:        "sess-agent-items",
+		Type:      runtimekernel.SessionTypeHost,
+		Mode:      runtimekernel.ModeInspect,
+		UpdatedAt: now,
+		CurrentTurn: &runtimekernel.TurnSnapshot{
+			ID:          "turn-agent-items",
+			SessionID:   "sess-agent-items",
+			SessionType: runtimekernel.SessionTypeHost,
+			Mode:        runtimekernel.ModeInspect,
+			Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+			ResumeState: runtimekernel.TurnResumeStateNone,
+			StartedAt:   now,
+			UpdatedAt:   now,
+			AgentItems: []agentstate.TurnItem{
+				{ID: "tool-call-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "read_file"}, CreatedAt: now},
+				{ID: "tool-result-1", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "ok"}, CreatedAt: now},
+			},
+		},
+	}
+
+	snapshot := builder.BuildStateSnapshot(session)
+
+	raw, ok := snapshot.Config["agentItemEvents"]
+	if !ok {
+		t.Fatal("expected agentItemEvents in snapshot debug config")
+	}
+	events, ok := raw.([]AgentEvent)
+	if !ok {
+		t.Fatalf("agentItemEvents type = %T, want []AgentEvent", raw)
+	}
+	if len(events) != 2 {
+		t.Fatalf("agentItemEvents = %d, want 2", len(events))
+	}
+	if events[0].Kind != AgentEventTool || events[0].Phase != AgentEventPhaseStarted {
+		t.Fatalf("first event = %#v, want tool started", events[0])
+	}
+	if events[1].Kind != AgentEventTool || events[1].Phase != AgentEventPhaseCompleted {
+		t.Fatalf("second event = %#v, want tool completed", events[1])
 	}
 }
 

@@ -549,6 +549,7 @@ const menuOptions = computed(() => [
 ]);
 
 function handleMenuSelect(key) {
+  closeSettingsMenu();
   switch (key) {
     case "chat":
       router.push("/");
@@ -631,6 +632,7 @@ watch(
       show-trigger="bar"
       @update:collapsed="(val) => isSidebarCollapsed = val"
       class="app-sidebar"
+      :class="{ 'is-sidebar-collapsed': isSidebarCollapsed }"
     >
       <div class="sidebar-top">
         <div class="sidebar-actions">
@@ -657,10 +659,23 @@ watch(
 
       <div class="sidebar-bottom">
         <div ref="settingsMenuRef" class="settings-menu">
-          <n-button quaternary circle @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen" title="Settings">
+          <n-button
+            quaternary
+            circle
+            class="sidebar-settings-trigger"
+            :class="{ 'is-open': isSettingsMenuOpen }"
+            data-testid="sidebar-settings-button"
+            @click.stop="isSettingsMenuOpen = !isSettingsMenuOpen"
+            title="Settings"
+          >
             <template #icon><SettingsIcon size="20" /></template>
           </n-button>
-          <div v-if="isSettingsMenuOpen" class="settings-menu-popover" @click.stop>
+          <div
+            v-if="isSettingsMenuOpen"
+            class="settings-menu-popover"
+            data-testid="sidebar-settings-popover"
+            @click.stop
+          >
             <button class="settings-menu-item" @click="closeSettingsMenu(); router.push('/settings/llm')">
               <span class="settings-menu-title">LLM 配置</span>
               <span class="settings-menu-subtitle">Provider / API Key / Model</span>
@@ -935,6 +950,14 @@ watch(
 .app-sidebar {
   display: flex;
   flex-direction: column;
+  position: relative;
+  z-index: 30;
+}
+
+.app-sidebar :deep(.ops-layout-sider-scroll-container) {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .sidebar-top {
@@ -991,44 +1014,84 @@ watch(
 }
 
 .sidebar-bottom {
-  padding: 12px 16px;
+  padding: 10px 16px 16px;
   border-top: 1px solid var(--border-color, #e2e8f0);
   display: flex;
   align-items: center;
   gap: 12px;
   margin-top: auto;
+  background:
+    linear-gradient(180deg, rgba(236, 239, 243, 0), rgba(236, 239, 243, 0.92) 24%),
+    var(--sidebar-bg, #eceff3);
 }
 
 .settings-menu {
   position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-settings-trigger {
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.sidebar-settings-trigger:hover,
+.sidebar-settings-trigger.is-open {
+  border-color: rgba(37, 99, 235, 0.32);
+  background: #ffffff;
+  color: #1d4ed8;
+  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.14);
+  transform: translateY(-1px);
 }
 
 .settings-menu-popover {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 10px);
-  width: 260px;
-  padding: 8px;
-  border-radius: 16px;
-  background: rgba(15, 23, 42, 0.98);
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  box-shadow: 0 18px 60px rgba(2, 6, 23, 0.42);
-  z-index: 30;
+  position: fixed;
+  left: 276px;
+  bottom: 18px;
+  width: min(340px, calc(100vw - 300px));
+  max-height: min(520px, calc(100vh - 48px));
+  overflow-y: auto;
+  padding: 10px;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 16px 16px, rgba(59, 130, 246, 0.12), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.96));
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
+  z-index: 1200;
+}
+
+.app-sidebar.is-sidebar-collapsed .settings-menu-popover {
+  left: 80px;
+  width: min(320px, calc(100vw - 104px));
 }
 
 .settings-menu-item {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 4px;
   width: 100%;
   border: 0;
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 12px;
   text-align: left;
   background: transparent;
-  color: #e2e8f0;
+  color: #0f172a;
   cursor: pointer;
-  transition: background-color 0.18s ease, transform 0.18s ease;
+  transition:
+    background-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
 }
 
 .settings-menu-item + .settings-menu-item {
@@ -1036,20 +1099,21 @@ watch(
 }
 
 .settings-menu-item:hover {
-  background: rgba(148, 163, 184, 0.12);
-  transform: translateX(1px);
+  background: rgba(37, 99, 235, 0.08);
+  box-shadow: inset 3px 0 0 rgba(37, 99, 235, 0.72);
+  transform: translateX(2px);
 }
 
 .settings-menu-title {
   font-size: 14px;
-  font-weight: 600;
-  color: #f8fafc;
+  font-weight: 700;
+  color: #0f172a;
 }
 
 .settings-menu-subtitle {
   font-size: 12px;
   line-height: 1.4;
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .flex-spacer {

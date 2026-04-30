@@ -1,0 +1,71 @@
+package promptcompiler
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"aiops-v2/internal/tooling"
+)
+
+func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
+	compiler := NewCompiler()
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			governancePromptTool{
+				meta: tooling.ToolMetadata{
+					Name:             "restart_service",
+					Description:      "restart a service",
+					RiskLevel:        tooling.ToolRiskHigh,
+					Mutating:         true,
+					RequiresApproval: true,
+					ResultBudget:     tooling.ResultBudget{MaxInlineResultBytes: 2048},
+					FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	for _, want := range []string{
+		"Governance: risk=high",
+		"mutating=true",
+		"approval=required",
+		"resultBudget=2048",
+		"failure=fail_turn",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("tool prompt missing %q:\n%s", want, content)
+		}
+	}
+}
+
+type governancePromptTool struct {
+	meta tooling.ToolMetadata
+}
+
+func (t governancePromptTool) Metadata() tooling.ToolMetadata { return t.meta }
+func (t governancePromptTool) InputSchema() json.RawMessage   { return nil }
+func (t governancePromptTool) OutputSchema() json.RawMessage  { return nil }
+func (t governancePromptTool) Description(json.RawMessage, tooling.DescribeContext) string {
+	return t.meta.Description
+}
+func (t governancePromptTool) Prompt(tooling.PromptContext) string { return t.meta.Description }
+func (t governancePromptTool) IsEnabled(tooling.ToolContext) bool  { return true }
+func (t governancePromptTool) IsReadOnly(json.RawMessage) bool     { return false }
+func (t governancePromptTool) IsDestructive(json.RawMessage) bool  { return true }
+func (t governancePromptTool) IsConcurrencySafe(json.RawMessage) bool {
+	return false
+}
+func (t governancePromptTool) ValidateInput(context.Context, json.RawMessage) error {
+	return nil
+}
+func (t governancePromptTool) CheckPermissions(context.Context, json.RawMessage) tooling.PermissionDecision {
+	return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+}
+func (t governancePromptTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+	return tooling.ToolResult{}, nil
+}

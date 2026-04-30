@@ -40,12 +40,9 @@ func developerConstraintLines(constraints []string) []string {
 
 func dynamicPromptFragments(ctx CompileContext) []string {
 	var parts []string
-	for _, asset := range ctx.SkillPromptAssets {
-		asset = strings.TrimSpace(asset)
-		if asset == "" {
-			continue
-		}
-		parts = append(parts, asset)
+
+	if skillContext := activeSkillContext(ctx.SkillPromptAssets); skillContext != "" {
+		parts = append(parts, skillContext)
 	}
 
 	if len(ctx.EvidenceReminders) > 0 {
@@ -79,6 +76,29 @@ func dynamicPromptFragments(ctx CompileContext) []string {
 	return parts
 }
 
+func activeSkillContext(assets []string) string {
+	var cleaned []string
+	for _, asset := range assets {
+		asset = strings.TrimSpace(asset)
+		if asset == "" {
+			continue
+		}
+		cleaned = append(cleaned, asset)
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	lines := []string{
+		"## Active Skill Context",
+		"These fragments are from activated skills only. Do not infer that other skills are loaded; use the skill catalog or tool surface before relying on additional skill instructions.",
+	}
+	for i, asset := range cleaned {
+		lines = append(lines, fmt.Sprintf("### Activated skill asset %d", i+1))
+		lines = append(lines, asset)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // resolveConstraints determines the active constraints based on mode and agent kind.
 func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	var constraints []string
@@ -87,7 +107,9 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	constraints = append(constraints, "Always verify tool results before reporting to user.")
 	constraints = append(constraints, "Do not fabricate information not obtained from tools.")
 	constraints = append(constraints, "For non-trivial or tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.")
+	constraints = append(constraints, "After each tool result or batch of related tool results, briefly summarize what changed, what you learned, and the next action before calling more tools or finalizing.")
 	constraints = append(constraints, "For current or latest factual requests, use precise self-contained web_search queries, verify recency, and cite source URLs in the final answer.")
+	constraints = append(constraints, "In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.")
 	constraints = append(constraints, "When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
 	constraints = append(constraints, agentProfileConstraints(ctx)...)
 

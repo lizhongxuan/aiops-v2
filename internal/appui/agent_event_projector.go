@@ -180,6 +180,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 	case AgentEventPhaseCompleted, AgentEventPhaseCanceled:
 		delete(proj.RuntimeLiveness.ActiveTurns, event.TurnID)
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
+		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)
 		proj.LastTerminalFailed = false
 		if summary == "" {
@@ -192,6 +193,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 	case AgentEventPhaseFailed:
 		delete(proj.RuntimeLiveness.ActiveTurns, event.TurnID)
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
+		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)
 		proj.LastTerminalFailed = true
 		if summary == "" {
@@ -212,6 +214,26 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 			UpdatedAt:  event.CreatedAt,
 			Seq:        event.Seq,
 		})
+	}
+	return proj
+}
+
+func clearPendingApprovalsForTerminalTurn(proj AgentEventProjection, status AgentEventStatus, updatedAt string) AgentEventProjection {
+	if len(proj.RuntimeLiveness.PendingApprovals) == 0 && len(proj.RuntimeLiveness.PendingUserInputs) == 0 {
+		return proj
+	}
+	pending := cloneBoolMap(proj.RuntimeLiveness.PendingApprovals)
+	for id := range proj.RuntimeLiveness.PendingUserInputs {
+		pending[id] = true
+	}
+	proj.RuntimeLiveness.PendingApprovals = map[string]bool{}
+	proj.RuntimeLiveness.PendingUserInputs = map[string]bool{}
+	for i := range proj.Approvals {
+		if !pending[proj.Approvals[i].ID] {
+			continue
+		}
+		proj.Approvals[i].Status = status
+		proj.Approvals[i].UpdatedAt = updatedAt
 	}
 	return proj
 }
@@ -282,6 +304,7 @@ func applyAgentEventToProjection(proj AgentEventProjection, event AgentEvent) Ag
 func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
 	var payload ToolPayload
 	decodeAgentEventPayload(event.Payload, &payload)
+	proj = clearRunningFinalMessageForToolEvent(proj, event)
 	id := payload.ToolCallID
 	if id == "" {
 		id = event.EventID
@@ -294,25 +317,28 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 	}
 	summary := toolProjectionSummary(payload)
 	row := TimelineEntry{
-		ID:           id,
-		Kind:         event.Kind,
-		TurnID:       event.TurnID,
-		AgentID:      event.AgentID,
-		ToolCallID:   id,
-		DisplayKind:  payload.DisplayKind,
-		Phase:        event.Phase,
-		Status:       event.Status,
-		Visibility:   event.Visibility,
-		Title:        title,
-		Summary:      summary,
-		Risk:         payload.Risk,
-		RawRef:       payload.RawRef,
-		Foldable:     payload.Foldable,
-		AutoCollapse: payload.AutoCollapse,
-		Collapsed:    payload.AutoCollapse && event.Status == AgentEventStatusCompleted,
-		DurationMs:   payload.DurationMs,
-		UpdatedAt:    event.CreatedAt,
-		Seq:          event.Seq,
+		ID:            id,
+		Kind:          event.Kind,
+		TurnID:        event.TurnID,
+		AgentID:       event.AgentID,
+		ToolCallID:    id,
+		DisplayKind:   payload.DisplayKind,
+		Phase:         event.Phase,
+		Status:        event.Status,
+		Visibility:    event.Visibility,
+		Title:         title,
+		Summary:       summary,
+		InputSummary:  payload.InputSummary,
+		OutputSummary: payload.OutputSummary,
+		OutputPreview: payload.OutputPreview,
+		Risk:          payload.Risk,
+		RawRef:        payload.RawRef,
+		Foldable:      payload.Foldable,
+		AutoCollapse:  payload.AutoCollapse,
+		Collapsed:     payload.AutoCollapse && event.Status == AgentEventStatusCompleted,
+		DurationMs:    payload.DurationMs,
+		UpdatedAt:     event.CreatedAt,
+		Seq:           event.Seq,
 	}
 	proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
 	if event.TurnID != "" {
@@ -324,6 +350,18 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 	case AgentEventPhaseCompleted, AgentEventPhaseFailed, AgentEventPhaseCanceled:
 		delete(proj.RuntimeLiveness.ActiveCommandStreams, id)
 	}
+	return proj
+}
+
+func clearRunningFinalMessageForToolEvent(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	if event.TurnID == "" || proj.FinalMessages == nil {
+		return proj
+	}
+	final, ok := proj.FinalMessages[event.TurnID]
+	if !ok || final.Status == AgentEventStatusCompleted {
+		return proj
+	}
+	delete(proj.FinalMessages, event.TurnID)
 	return proj
 }
 
@@ -525,6 +563,7 @@ func applyApprovalEventToProjection(proj AgentEventProjection, event AgentEvent)
 		ID:           id,
 		ApprovalType: payload.ApprovalType,
 		Title:        payload.Title,
+		Command:      payload.Command,
 		Reason:       payload.Reason,
 		Risk:         payload.Risk,
 		Decision:     payload.Decision,
@@ -669,6 +708,9 @@ func mergeTimelineEntry(existing, row TimelineEntry) TimelineEntry {
 	}
 	if row.Detail == "" {
 		row.Detail = existing.Detail
+	}
+	if len(row.OutputPreview) == 0 {
+		row.OutputPreview = existing.OutputPreview
 	}
 	return row
 }

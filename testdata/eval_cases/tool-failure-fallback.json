@@ -1,0 +1,12 @@
+{
+  "id": "tool-failure-fallback",
+  "category": "工具失败",
+  "input": "工具调用失败后，请说明如何复现、如何按 FailurePolicy 选择 fallback，并明确不能盲目重试。",
+  "expected": {
+    "mustInclude": ["复现", "FailurePolicy", "fallback", "不能盲目重试"],
+    "mustNotInclude": ["无限重试", "忽略失败"],
+    "expectedToolCalls": ["run_command"],
+    "mustMentionFiles": ["internal/runtimekernel/dispatch.go"]
+  },
+  "scoreRules": {}
+}

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { UserIcon, BotIcon, CopyIcon, CheckIcon, ChevronDownIcon } from "lucide-vue-next";
 import { NSkeleton } from "naive-ui";
 import MarkdownIt from "markdown-it";
@@ -12,8 +12,8 @@ import python from "highlight.js/lib/languages/python";
 import go from "highlight.js/lib/languages/go";
 import "highlight.js/styles/github.css";
 import Modal from "./Modal.vue";
-import InlineEntityChip from "./chat/InlineEntityChip.vue";
 import { fetchFilePreview } from "../api/files";
+import { cleanAssistantDisplayText } from "../lib/workspaceViewModel";
 
 // Register highlight.js languages on-demand
 hljs.registerLanguage("bash", bash);
@@ -73,12 +73,16 @@ const props = defineProps({
 
 const isUser = computed(() => props.card.role === "user");
 const rawText = computed(() => props.card.text || props.card.title || "");
-const messageText = computed(() => isUser.value ? rawText.value : cleanDisplayText(rawText.value));
+const normalizedStatus = computed(() => String(props.card.status || "").trim().toLowerCase());
+const isStreaming = computed(() => ["inprogress", "streaming", "running"].includes(normalizedStatus.value));
+const messageText = computed(() => (
+  isUser.value ? rawText.value : cleanDisplayText(rawText.value, { streaming: isStreaming.value })
+));
 const mcpAppHtml = computed(() => {
   if (isUser.value) return "";
   return String(props.card?.detail?.mcpApp?.html || "").trim();
 });
-const showSkeleton = computed(() => !isUser.value && props.card.status === "inProgress" && !rawText.value.trim());
+const showSkeleton = computed(() => !isUser.value && isStreaming.value && !rawText.value.trim());
 
 const avatarIcon = computed(() => {
   return isUser.value ? UserIcon : BotIcon;
@@ -116,13 +120,15 @@ const displayText = computed(() => {
   return messageText.value;
 });
 
-// --- Render markdown only after streaming settles to keep final output smooth ---
-const isStreaming = computed(() => props.card.status === "inProgress");
-const useStreamingPlainText = computed(() => isStreaming.value && renderAsMarkdown.value);
+// Keep streaming and settled assistant output on the same Markdown path.
+// Otherwise the text visually jumps from plain text to formatted Markdown at completion.
 const throttledHtml = ref("");
+const STREAM_MARKDOWN_RENDER_THROTTLE_MS = 120;
+let markdownRenderTimer = null;
+let lastMarkdownRenderAt = 0;
 
 function updateRenderedHtml() {
-  if (!renderAsMarkdown.value || useStreamingPlainText.value) {
+  if (!renderAsMarkdown.value) {
     throttledHtml.value = "";
     return;
   }
@@ -133,10 +139,42 @@ function updateRenderedHtml() {
   }
 }
 
-watch(
-  [displayText, renderAsMarkdown, useStreamingPlainText],
-  () => {
+function clearMarkdownRenderTimer() {
+  if (markdownRenderTimer) {
+    clearTimeout(markdownRenderTimer);
+    markdownRenderTimer = null;
+  }
+}
+
+function scheduleRenderedHtmlUpdate() {
+  if (!isStreaming.value || !renderAsMarkdown.value || !throttledHtml.value) {
+    clearMarkdownRenderTimer();
     updateRenderedHtml();
+    lastMarkdownRenderAt = Date.now();
+    return;
+  }
+
+  const elapsed = Date.now() - lastMarkdownRenderAt;
+  if (elapsed >= STREAM_MARKDOWN_RENDER_THROTTLE_MS) {
+    clearMarkdownRenderTimer();
+    updateRenderedHtml();
+    lastMarkdownRenderAt = Date.now();
+    return;
+  }
+
+  if (!markdownRenderTimer) {
+    markdownRenderTimer = setTimeout(() => {
+      markdownRenderTimer = null;
+      updateRenderedHtml();
+      lastMarkdownRenderAt = Date.now();
+    }, STREAM_MARKDOWN_RENDER_THROTTLE_MS - elapsed);
+  }
+}
+
+watch(
+  [displayText, renderAsMarkdown],
+  () => {
+    scheduleRenderedHtmlUpdate();
   },
   { immediate: true },
 );
@@ -144,12 +182,20 @@ watch(
 // When streaming ends, do a final render to ensure we have the latest
 watch(isStreaming, (val, oldVal) => {
   if (oldVal && !val) {
+    clearMarkdownRenderTimer();
     updateRenderedHtml();
+    lastMarkdownRenderAt = Date.now();
   }
 });
 
+onBeforeUnmount(() => {
+  clearMarkdownRenderTimer();
+});
+
 const renderedMarkdown = computed(() => throttledHtml.value);
-const decoratedMarkdown = computed(() => decorateInlineEntitiesHtml(renderedMarkdown.value));
+const decoratedMarkdown = computed(() => (
+  isStreaming.value ? renderedMarkdown.value : decorateInlineEntitiesHtml(renderedMarkdown.value)
+));
 
 function containsMarkdownLinks(value) {
   return /\[([^\]]+)\]\(([^)]+)\)/.test(value || "");
@@ -184,8 +230,9 @@ function looksStructuredText(value) {
  * - Remove inline JSON routing objects
  * - Filter out system routing preamble lines
  */
-function cleanDisplayText(text) {
+function cleanDisplayText(text, options = {}) {
   if (!text) return text;
+  const streaming = Boolean(options.streaming);
   let cleaned = text;
   // Remove ```json ... ``` fenced blocks containing routing metadata (multiline)
   cleaned = cleaned.replace(/`{3}json[\s\S]*?`{3}/g, (match) => {
@@ -204,7 +251,11 @@ function cleanDisplayText(text) {
   cleaned = stripLeadingGenericConclusionHeading(cleaned);
   cleaned = stripCommandEvidenceSummary(cleaned);
   cleaned = stripMarketSnapshotSectionHeadings(cleaned);
-  cleaned = compactMarketSnapshotDisplay(cleaned);
+  cleaned = cleanAssistantDisplayText(cleaned, "assistant");
+  if (!streaming) {
+    cleaned = compactMarketSnapshotDisplay(cleaned);
+  }
+  cleaned = cleanAssistantDisplayText(cleaned, "assistant");
   // Normalize "1." / "-" lines that are separated from their actual content by blank lines,
   // which otherwise render as visually fragmented list items.
   cleaned = cleaned.replace(/^(\s*\d+\.)\s*\n+\s*(?=\S)/gm, "$1 ");
@@ -1008,8 +1059,6 @@ function decorateInlineEntitiesHtml(html) {
   return root.innerHTML;
 }
 
-const streamingEntityChunks = computed(() => tokenizeInlineEntities(displayText.value));
-
 function parseInlineChunks(text) {
   const regex = /\[([^\]]+)\]\(([^)]+)\)/g;
   let match;
@@ -1198,18 +1247,6 @@ function autoResize(event) {
         <pre v-if="renderAsCode" class="message-code">{{ messageText }}</pre>
         <template v-else-if="renderAsMarkdown">
           <div
-            v-if="useStreamingPlainText"
-            class="message-text streaming-plain-text"
-            data-testid="message-streaming-plain"
-          >
-            <template v-for="(chunk, idx) in streamingEntityChunks" :key="idx">
-              <span v-if="chunk.type === 'text'">{{ chunk.content }}</span>
-              <InlineEntityChip v-else :kind="chunk.kind" :text="chunk.content" />
-            </template>
-            <span class="streaming-cursor" aria-hidden="true"></span>
-          </div>
-          <div
-            v-else
             class="message-text markdown-body"
             :class="{ 'is-streaming': isStreaming }"
             v-html="decoratedMarkdown"
@@ -1377,12 +1414,6 @@ function autoResize(event) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.streaming-plain-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.58;
 }
 
 .message-line {
@@ -1656,9 +1687,10 @@ function autoResize(event) {
 /* Markdown rendered content */
 .markdown-body {
   font-size: 14.5px;
-  line-height: 1.62;
+  line-height: 1.52;
   color: #111827;
   word-break: break-word;
+  white-space: normal;
 }
 
 .markdown-body.is-streaming :deep(p:last-child::after),
@@ -1692,8 +1724,8 @@ function autoResize(event) {
 .markdown-body :deep(h3) { font-size: 1.02em; }
 
 .markdown-body :deep(p) {
-  margin: 0 0 6px;
-  line-height: 1.62;
+  margin: 0 0 4px;
+  line-height: 1.52;
 }
 
 .markdown-body :deep(p:last-child) {
@@ -1702,13 +1734,13 @@ function autoResize(event) {
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 0 0 8px;
+  margin: 2px 0 6px;
   padding-left: 18px;
 }
 
 .markdown-body :deep(li) {
-  margin: 0 0 4px;
-  line-height: 1.58;
+  margin: 0 0 2px;
+  line-height: 1.5;
 }
 
 .markdown-body :deep(li p) {
@@ -1721,7 +1753,7 @@ function autoResize(event) {
 
 .markdown-body :deep(li > p:first-child + p) {
   display: block;
-  margin-top: 1px;
+  margin-top: 0;
 }
 
 .markdown-body :deep(li > ul),

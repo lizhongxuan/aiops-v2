@@ -3,6 +3,9 @@ package spanstream
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +120,39 @@ func TestCompressSyncSuccess(t *testing.T) {
 	}
 	if mock.calls.Load() != 1 {
 		t.Fatalf("expected 1 model call, got %d", mock.calls.Load())
+	}
+}
+
+func TestCompressWritesModelInputTraceWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	mock := &mockSummaryModel{response: "summary"}
+	cc := NewContextCompressor(mock, 1)
+	span := &Span{ID: "span/trace", Type: SpanTypeSummary, Name: "summary"}
+
+	_, err := cc.Compress(context.Background(), span, []Message{{Role: "tool", Content: "verbose output"}})
+	if err != nil {
+		t.Fatalf("Compress returned error: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "spanstream_compressor", "span-trace", "*.json"))
+	if err != nil {
+		t.Fatalf("glob trace output: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one compressor trace, got %d", len(matches))
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"kind": "spanstream_compressor"`) || !strings.Contains(string(data), "Summarize the following conversation/output") {
+		t.Fatalf("trace missing compressor model input:\n%s", string(data))
+	}
+	if _, err := os.Stat(strings.TrimSuffix(matches[0], filepath.Ext(matches[0])) + ".md"); err != nil {
+		t.Fatalf("missing markdown trace: %v", err)
 	}
 }
 

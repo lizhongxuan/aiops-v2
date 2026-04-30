@@ -219,6 +219,7 @@ type ApprovalPayload struct {
 	ApprovalID   string   `json:"approvalId,omitempty"`
 	ApprovalType string   `json:"approvalType,omitempty"`
 	Title        string   `json:"title,omitempty"`
+	Command      string   `json:"command,omitempty"`
 	Reason       string   `json:"reason,omitempty"`
 	Risk         string   `json:"risk,omitempty"`
 	Decision     string   `json:"decision,omitempty"`

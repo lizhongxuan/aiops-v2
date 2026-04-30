@@ -232,6 +232,8 @@ func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t
 	required := []string{
 		"before the first tool call",
 		"intent",
+		"after each tool result",
+		"briefly summarize",
 		"current or latest",
 		"precise",
 		"cite source",
@@ -299,6 +301,26 @@ func TestCompile_DeveloperInstructions_ExecuteMode(t *testing.T) {
 	}
 	if strings.Contains(result.Stable.Content, "Collect pre/post evidence for this run.") {
 		t.Error("Stable prompt should not inline evidence collection reminder")
+	}
+}
+
+func TestCompile_DeveloperInstructions_AvoidsFinalAnswerPlaceholders(t *testing.T) {
+	compiler := NewCompiler()
+
+	result, err := compiler.Compile(CompileContext{SessionType: "host", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	required := []string{
+		"empty citation placeholders",
+		"failed search queries",
+		"omit unverifiable fields",
+	}
+	for _, want := range required {
+		if !strings.Contains(result.Developer.Content, want) {
+			t.Fatalf("developer instructions missing %q:\n%s", want, result.Developer.Content)
+		}
 	}
 }
 

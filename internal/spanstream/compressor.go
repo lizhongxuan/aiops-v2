@@ -7,6 +7,8 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/modeltrace"
 )
 
 // ContextCompressor performs asynchronous context compression by summarizing
@@ -112,6 +114,12 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 
 	// Build the prompt for summarization
 	prompt := cc.buildSummaryPrompt(span, messages)
+	_, _ = modeltrace.Write(modeltrace.Request{
+		Kind:       "spanstream_compressor",
+		TraceID:    compressorTraceID(span),
+		Prompt:     compressorPromptTrace(prompt),
+		ModelInput: prompt,
+	})
 
 	resp, err := cc.summaryModel.Generate(ctx, prompt)
 	if err != nil {
@@ -156,4 +164,25 @@ func (cc *ContextCompressor) buildSummaryPrompt(span *Span, messages []Message) 
 	}
 
 	return []*schema.Message{systemMsg, userMsg}
+}
+
+func compressorTraceID(span *Span) string {
+	if span == nil {
+		return ""
+	}
+	if strings.TrimSpace(span.ID) != "" {
+		return span.ID
+	}
+	return span.Name
+}
+
+func compressorPromptTrace(prompt []*schema.Message) modeltrace.Prompt {
+	trace := modeltrace.Prompt{}
+	if len(prompt) > 0 && prompt[0] != nil {
+		trace.System = prompt[0].Content
+	}
+	if len(prompt) > 1 && prompt[1] != nil {
+		trace.Dynamic = prompt[1].Content
+	}
+	return trace
 }

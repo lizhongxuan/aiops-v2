@@ -1,0 +1,10 @@
+{
+  "id": "context-compaction-goal",
+  "category": "context",
+  "input": "上下文压缩必须保留任务目标和关键引用，避免塞入完整大输出。",
+  "expected": {
+    "mustInclude": ["上下文压缩", "external reference"],
+    "maxIterations": 2
+  },
+  "scoreRules": {}
+}

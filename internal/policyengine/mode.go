@@ -8,6 +8,8 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+const defaultPolicyInlineBudgetBytes = 4096
+
 // ---------------------------------------------------------------------------
 // Tool classification helpers — pattern-based tool name classification.
 // ---------------------------------------------------------------------------
@@ -135,6 +137,9 @@ type ChatModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in chat mode.
 func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if decision, ok := governanceBoundaryDecision(input, false, "chat"); ok {
+		return decision
+	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -156,6 +161,9 @@ func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 	if isMutation(toolName) {
+		if isPlanTool(toolName) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
 		return PolicyDecision{
 			Action: PolicyActionDeny,
 			Reason: "chat mode does not allow mutation operations",
@@ -196,6 +204,9 @@ type InspectModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in inspect mode.
 func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if decision, ok := governanceBoundaryDecision(input, false, "inspect"); ok {
+		return decision
+	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -213,6 +224,9 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 	if isMutation(toolName) {
+		if isPlanTool(toolName) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
 		return PolicyDecision{
 			Action: PolicyActionDeny,
 			Reason: "inspect mode does not allow mutation operations",
@@ -255,6 +269,9 @@ func isPlanTool(name string) bool {
 // CheckTool determines whether the given tool is permitted in plan mode.
 func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if decision, ok := governanceBoundaryDecision(input, false, "plan"); ok {
+		return decision
+	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -308,6 +325,9 @@ type ExecuteModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in execute mode.
 func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
+	if decision, ok := governanceBoundaryDecision(input, true, "execute"); ok {
+		return decision
+	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -329,6 +349,9 @@ func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 	if isMutation(toolName) {
+		if isPlanTool(toolName) {
+			return PolicyDecision{Action: PolicyActionAllow}
+		}
 		return PolicyDecision{
 			Action: PolicyActionNeedApproval,
 			Reason: "execute mode requires approval for mutation operations",
@@ -340,6 +363,28 @@ func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	}
 
 	return PolicyDecision{Action: PolicyActionAllow}
+}
+
+func governanceBoundaryDecision(input PolicyInput, allowMutation bool, modeName string) (PolicyDecision, bool) {
+	toolName := normalizeToolName(input)
+	governance := input.Tool.EffectiveGovernance(defaultPolicyInlineBudgetBytes)
+	if governance.Mutating && !allowMutation && !isPlanTool(toolName) {
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: modeName + " mode does not allow mutating tools",
+		}, true
+	}
+	if governance.RequiresApproval && !isPlanTool(toolName) {
+		return PolicyDecision{
+			Action: PolicyActionNeedApproval,
+			Reason: "tool governance requires approval for high-risk or approval-required tool",
+			Approval: &ApprovalRequest{
+				ToolName: toolName,
+				Reason:   "tool governance requires approval",
+			},
+		}, true
+	}
+	return PolicyDecision{}, false
 }
 
 func normalizeToolName(input PolicyInput) string {

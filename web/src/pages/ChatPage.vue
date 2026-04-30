@@ -53,6 +53,7 @@ const terminalDockRef = ref(null);
 const terminalDockDragging = ref(false);
 let terminalDockDragState = null;
 let terminalDockMaxHeight = 560;
+const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
@@ -115,61 +116,32 @@ function normalizeCompletedActivityText(text = "") {
 }
 
 function buildPersistedProcessItems(lines = [], { completed = false } = {}) {
-  const seenText = new Set();
+  const seenKeys = new Set();
   return (lines || []).map((line, index) => {
     const text = completed ? normalizeCompletedActivityText(line?.text) : compactText(line?.text);
-    if (!text || seenText.has(text)) return null;
-    seenText.add(text);
+    if (!text) return null;
+    const inputKey = compactText(line?.inputSummary || line?.query || (Array.isArray(line?.queries) ? line.queries.join(" ") : ""));
+    const dedupeKey = [text, line?.displayKind || line?.kind || "", inputKey].map(compactText).join("\u0000");
+    if (seenKeys.has(dedupeKey)) return null;
+    seenKeys.add(dedupeKey);
     return {
       id: compactText(line?.id || `activity-line-${index}`),
       kind: compactText(line?.kind) || (text.startsWith("已搜索") ? "search" : "activity"),
+      displayKind: compactText(line?.displayKind),
+      visibility: compactText(line?.visibility),
+      processKind: compactText(line?.processKind || line?.kind),
       text,
+      summary: compactText(line?.summary || line?.outputSummary),
+      inputSummary: compactText(line?.inputSummary || line?.query),
+      queries: Array.isArray(line?.queries) ? line.queries : [],
+      results: Array.isArray(line?.results) ? line.results : [],
+      detail: compactText(line?.detail),
+      command: compactText(line?.command),
+      output: compactText(line?.output),
+      outputPreview: line?.outputPreview,
       status: completed ? "completed" : compactText(line?.status),
     };
   }).filter(Boolean);
-}
-
-function buildTerminalStatusItem(phase = "", message = "") {
-  const normalized = compactText(phase).toLowerCase();
-  if (normalized === "failed") {
-    const detail = compactText(message);
-    return {
-      id: "terminal-status-failed",
-      kind: "status",
-      text: detail ? `请求失败：${detail}` : "请求失败，请重试",
-      detail,
-      status: "failed",
-    };
-  }
-  if (normalized === "aborted") {
-    return {
-      id: "terminal-status-aborted",
-      kind: "status",
-      text: "已停止生成",
-      status: "aborted",
-    };
-  }
-  return null;
-}
-
-function buildTerminalStatusCard(phase = "", message = "", elapsedLabel = "") {
-  const normalized = compactText(phase).toLowerCase();
-  if (normalized === "failed") {
-    return {
-      state: "failed",
-      message: compactText(message) || "请求失败，请稍后重试。",
-      elapsedLabel: compactText(elapsedLabel) || "0s",
-      retryable: true,
-    };
-  }
-  if (normalized === "aborted") {
-    return {
-      state: "aborted",
-      message: "已停止生成，保留当前结果。",
-      elapsedLabel: compactText(elapsedLabel) || "0s",
-    };
-  }
-  return null;
 }
 
 function focusComposer() {
@@ -484,32 +456,7 @@ function safeTimestamp(value) {
   return Number.isFinite(stamp) ? stamp : 0;
 }
 
-function isFinalCommandState(status = "") {
-  const normalized = compactText(status).toLowerCase();
-  return (
-    normalized.includes("complete") ||
-    normalized.includes("done") ||
-    normalized.includes("fail") ||
-    normalized.includes("error") ||
-    normalized.includes("cancel") ||
-    normalized.includes("timeout") ||
-    normalized.includes("denied") ||
-    normalized.includes("disconnect")
-  );
-}
-
-const currentTurnStartTimestamp = computed(() => safeTimestamp(chatRuntimeStartedAt.value));
-
 const codexActivityLines = computed(() => projectionActivityLines.value);
-
-const isThinking = computed(() => {
-  const phase = compactText(chatRuntimePhase.value).toLowerCase();
-  return phase === "thinking" || phase === "planning" || phase === "finalizing";
-});
-
-const showCodexActivity = computed(() => {
-  return chatRuntimeBusy.value && !isWorkspaceSession.value;
-});
 
 // Accumulate activity lines during the turn so they survive the backend clearing current fields
 const accumulatedActivityLines = shallowRef([]);
@@ -558,35 +505,69 @@ watch(
   { immediate: true },
 );
 
-// Approval inline mode (Change 3)
+function isToolNameOnly(value = "") {
+  return ["exec_command", "shell_command", "execute_command", "code_mode"].includes(compactText(value).toLowerCase());
+}
+
+function approvalDisplayCommand(source = {}) {
+  const command = compactText(source.command || source.inputSummary || source.summary);
+  if (command && !isToolNameOnly(command)) return command;
+  const title = compactText(source.title || source.text);
+  if (title && !isToolNameOnly(title)) return title;
+  return "";
+}
+
+// Approval inline mode: single-host approvals replace the composer instead of
+// adding another card into the chat stream.
+const activeProjectionApproval = computed(() => {
+  if (isWorkspaceSession.value) return null;
+  return projectionApprovalDock.value[0] || null;
+});
+
+const activeComposerApproval = computed(() => {
+  const card = activeApprovalCard.value;
+  if (card) {
+    return {
+      id: compactText(card.approval?.requestId || card.id),
+      type: card.type,
+      command: approvalDisplayCommand(card),
+      reason: compactText(card.text || card.summary || ""),
+      source: "card",
+    };
+  }
+  const projectionApproval = activeProjectionApproval.value;
+  if (!projectionApproval) return null;
+  return {
+    id: compactText(projectionApproval.id || projectionApproval.approvalId),
+    type: compactText(projectionApproval.approvalType || projectionApproval.title),
+    command: approvalDisplayCommand(projectionApproval),
+    reason: compactText(projectionApproval.reason || ""),
+    source: "projection",
+  };
+});
+
 const hasCodexApproval = computed(() => {
-  return chatRuntimePhase.value === "waiting_approval" && activeApprovalCard.value && !isWorkspaceSession.value;
+  return chatRuntimePhase.value === "waiting_approval" && activeComposerApproval.value && !isWorkspaceSession.value;
 });
 
 const chatStreamApprovalDock = computed(() => {
-  if (hasCodexApproval.value && !isWorkspaceSession.value) return [];
+  if (!isWorkspaceSession.value) return [];
   return projectionApprovalDock.value;
 });
 
 const approvalQuestion = computed(() => {
-  const card = activeApprovalCard.value;
-  if (!card) return "是否允许执行此操作？";
-  if (card.type === "CommandApprovalCard") return "是否允许执行以下命令？";
-  if (card.type === "FileChangeApprovalCard") return "是否允许修改以下文件？";
-  return "是否允许执行此操作？";
+  const approval = activeComposerApproval.value;
+  if (!approval) return "是否允许执行此操作？";
+  if (approval.type === "FileChangeApprovalCard") return "是否允许修改以下文件？";
+  return "是否允许执行以下命令？";
 });
 
-const approvalCommand = computed(() => {
-  const card = activeApprovalCard.value;
-  if (!card) return "";
-  return compactText(card.command || card.title || card.summary || "");
-});
+const approvalCommand = computed(() => activeComposerApproval.value?.command || "");
 
 function resolveCodexApproval(decision) {
-  const card = activeApprovalCard.value;
-  if (!card) return;
-  const approvalId = card.approval?.requestId || card.id;
-  decideApproval({ approvalId, decision });
+  const approval = activeComposerApproval.value;
+  if (!approval?.id) return;
+  decideApproval({ approvalId: approval.id, decision });
 }
 
 function truncateLabel(value, max = 88) {
@@ -665,29 +646,6 @@ const summaryLine = computed(() => {
   return activitySummary.value;
 });
 const hasTopFeedback = computed(() => !!activeActivityLine.value || !!summaryLine.value);
-const singleHostLiveActivityLines = computed(() => {
-  const items = [];
-  const seenText = new Set();
-  const appendLine = (id, text, tone = "history") => {
-    const label = compactText(text);
-    if (!label || seenText.has(label)) return;
-    if (latestRunningCommandCard.value && /^正在运行\s+/u.test(label)) return;
-    seenText.add(label);
-    items.push({ id, text: label, tone });
-  };
-
-  if (activeActivityLine.value) {
-    appendLine("current-activity", activeActivityLine.value, "current");
-  } else if (summaryLine.value && !accumulatedActivityLines.value.length) {
-    appendLine("summary-activity", summaryLine.value, "summary");
-  }
-
-  accumulatedActivityLines.value.slice(-6).forEach((line, index) => {
-    appendLine(line.id || `accumulated-${index}`, line.text, line.status === "running" ? "current" : "history");
-  });
-
-  return items;
-});
 const activeLineExpandable = computed(() => {
   if (activeActivityKind.value === "files") return viewedFileDetails.value.length > 0;
   if (activeActivityKind.value === "search") return searchedQueryDetails.value.length > 0;
@@ -755,36 +713,42 @@ const activeApprovalCard = computed(() => {
   }) || pendingApprovalCards.value[0] || null;
 });
 
-const activeApprovalQueueIndex = computed(() => {
-  if (!activeApprovalCard.value?.approval?.requestId) return -1;
-  return pendingApprovals.value.findIndex((approval) => approval.id === activeApprovalCard.value.approval.requestId);
+const activeApprovalQueueItems = computed(() => {
+  if (activeApprovalCard.value) return pendingApprovals.value;
+  if (activeProjectionApproval.value) return projectionApprovalDock.value;
+  return [];
 });
 
-const activeApprovalQueueCount = computed(() => pendingApprovals.value.length);
+const activeApprovalQueueIndex = computed(() => {
+  const approvalId = activeComposerApproval.value?.id;
+  if (!approvalId) return -1;
+  return activeApprovalQueueItems.value.findIndex((approval) => approval.id === approvalId || approval.approvalId === approvalId);
+});
+
+const activeApprovalQueueCount = computed(() => activeApprovalQueueItems.value.length);
 
 const activeApprovalQueueLabel = computed(() => {
-  if (!activeApprovalCard.value) return "";
+  if (!activeComposerApproval.value) return "";
   if (activeApprovalQueueCount.value <= 1) return "当前仅 1 项待确认";
   const position = activeApprovalQueueIndex.value >= 0 ? activeApprovalQueueIndex.value + 1 : 1;
   return `当前 ${position}/${activeApprovalQueueCount.value} 项待确认`;
 });
 
 const activeApprovalQueueNote = computed(() => {
-  if (!activeApprovalCard.value || activeApprovalQueueCount.value <= 1) return "";
+  if (!activeComposerApproval.value || activeApprovalQueueCount.value <= 1) return "";
   const position = activeApprovalQueueIndex.value >= 0 ? activeApprovalQueueIndex.value + 1 : 1;
   const remaining = Math.max(activeApprovalQueueCount.value - position, 0);
   return remaining > 0 ? `后面还有 ${remaining} 项排队` : "";
 });
 
 const activeMcpApproval = computed(() => localMcpApprovals.value[0] || null);
-const hasActiveApprovalOverlay = computed(() => Boolean(activeApprovalCard.value || activeMcpApproval.value));
+const hasActiveApprovalOverlay = computed(() => Boolean(activeComposerApproval.value || activeMcpApproval.value));
 const allowFollowUpComposer = computed(
   () =>
     approvalFollowupMode.value &&
     !hasActiveApprovalOverlay.value &&
     !chatRuntimeBusy.value,
 );
-const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
 const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
 const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
 
@@ -935,19 +899,6 @@ const singleHostCommandCards = computed(() => {
   });
 });
 
-const latestRunningCommandCard = computed(() => {
-  if (hasProjectionRuntime.value) return null;
-  if (!chatRuntimeBusy.value) return null;
-  const turnStart = currentTurnStartTimestamp.value;
-  const cards = singleHostCommandCards.value.filter((card) => {
-    if (isFinalCommandState(card?.status)) return false;
-    const compareAt = safeTimestamp(card?.startedAt || card?.updatedAt || card?.createdAt || card?.completedAt);
-    if (!turnStart || !compareAt) return true;
-    return compareAt >= turnStart;
-  });
-  return cards[cards.length - 1] || null;
-});
-
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
     if (!isWorkspaceSession.value && card.type === "ThinkingCard") {
@@ -1055,11 +1006,7 @@ const mainChatActiveProcess = computed(() => {
     latestUserCard?.turnId,
     latestUserCard?.clientTurnId,
   ].map((value) => compactText(value)).filter(Boolean);
-  let items = buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
-  const terminalStatusItem = buildTerminalStatusItem(terminalPhase, terminalMessage);
-  if (terminalState && terminalStatusItem && !items.some((item) => item.id === terminalStatusItem.id)) {
-    items = [...items, terminalStatusItem];
-  }
+  const items = terminalState ? [] : buildPersistedProcessItems(accumulatedActivityLines.value, { completed });
 
   // Return process data when turn is active OR when there are accumulated items
   // so the "已处理" fold persists after the turn completes.
@@ -1071,10 +1018,10 @@ const mainChatActiveProcess = computed(() => {
     turnKeys: [...new Set(turnKeys)],
     phase: terminalState ? terminalPhase : thinkingDisplayPhase.value,
     liveHint: terminalState ? "" : (completed ? "" : (activeActivityLine.value || thinkingHint.value || "")),
-    summary: terminalState ? "" : (completed ? (activitySummary.value || "") : (summaryLine.value || (!activeActivityLine.value ? activitySummary.value : ""))),
+    summary: "",
     items,
     elapsedLabel: workingElapsedLabel.value,
-    statusCard: buildTerminalStatusCard(terminalPhase, terminalMessage, workingElapsedLabel.value),
+    statusCard: null,
   };
 });
 
@@ -1092,13 +1039,10 @@ const mainChatTurnByAnchorId = computed(() =>
   new Map(mainChatTurns.value.map((turn) => [turn.anchorMessageId, turn])),
 );
 
-const singleHostLiveTurnId = computed(() => {
-  if (isWorkspaceSession.value) return "";
-  if (!(showThinkingCard.value || chatRuntimeBusy.value)) {
-    return "";
-  }
-  const turns = mainChatTurns.value;
-  return turns.length ? turns[turns.length - 1].id : "";
+const showLiveThinkingEntry = computed(() => {
+  if (!(showThinkingCard.value || chatRuntimeBusy.value)) return false;
+  if (isWorkspaceSession.value) return true;
+  return mainChatTurns.value.some((turn) => turn.active && turn.processTranscript?.showThinking);
 });
 
 const baseStreamEntries = computed(() => {
@@ -1126,19 +1070,11 @@ const baseStreamEntries = computed(() => {
     });
   }
 
-  if (!mainChatTurns.value.length && showThinking.value && hasTopFeedback.value && !showThinkingCard.value) {
+  if (isWorkspaceSession.value && !mainChatTurns.value.length && showThinking.value && hasTopFeedback.value && !showThinkingCard.value) {
     entries.push({ id: "__activity__", kind: "activity" });
   }
-  if (showThinkingCard.value || chatRuntimeBusy.value) {
-    const hasVisibleSingleHostLiveTurn =
-      !isWorkspaceSession.value &&
-      !!singleHostLiveTurnId.value &&
-      entries.some((entry) => entry.kind === "turn" && entry.turn?.id === singleHostLiveTurnId.value);
-    // Single-host mode prefers rendering the live status inside the active turn,
-    // but keeps a standalone working row when the live turn is not yet materialized.
-    if (isWorkspaceSession.value || !hasVisibleSingleHostLiveTurn) {
-      entries.push({ id: "__thinking__", kind: "thinking" });
-    }
+  if (showLiveThinkingEntry.value) {
+    entries.push({ id: "__thinking__", kind: "thinking" });
   }
 
   return entries;
@@ -1312,6 +1248,7 @@ watch(
 const showReconnectBanner = computed(() => {
   return store.runtime.codex.status === "reconnecting" || isStopped.value;
 });
+const chatStreamErrorMessage = computed(() => (showReconnectBanner.value ? "" : store.errorMessage));
 
 const reconnectHostLabel = computed(() => {
   const host = store.selectedHost;
@@ -1761,7 +1698,7 @@ watch(
     :show-empty-state="showEmptyState"
     :notice-message="store.noticeMessage"
     :selected-host-alert="selectedHostAlert"
-    :error-message="store.errorMessage"
+    :error-message="chatStreamErrorMessage"
     :entries="renderedStreamEntries"
     :virtual-items="virtualizedStreamEntries"
     :unread-count="unreadCount"
@@ -1775,19 +1712,15 @@ watch(
     :artifact-rows="projectionArtifactRows"
     :diff-summary="projectionDiffSummary"
     :runtime-status="projectionRuntimeStatus"
-    :single-host-live-turn-id="singleHostLiveTurnId"
-    :working-elapsed-label="workingElapsedLabel"
-    :single-host-live-activity-lines="singleHostLiveActivityLines"
-    :latest-running-command-card="latestRunningCommandCard"
     :feedback-by-message-id="assistantFeedbackByMessageId"
-    :active-activity-line="activeActivityLine"
-    :active-line-expandable="activeLineExpandable"
-    :summary-line="summaryLine"
-    :summary-expandable="summaryExpandable"
-    :show-file-details="showFileDetails"
-    :viewed-file-details="viewedFileDetails"
-    :show-search-details="showSearchDetails"
-    :searched-query-details="searchedQueryDetails"
+    :active-activity-line="isWorkspaceSession ? activeActivityLine : ''"
+    :active-line-expandable="isWorkspaceSession && activeLineExpandable"
+    :summary-line="isWorkspaceSession ? summaryLine : ''"
+    :summary-expandable="isWorkspaceSession && summaryExpandable"
+    :show-file-details="isWorkspaceSession && showFileDetails"
+    :viewed-file-details="isWorkspaceSession ? viewedFileDetails : []"
+    :show-search-details="isWorkspaceSession && showSearchDetails"
+    :searched-query-details="isWorkspaceSession ? searchedQueryDetails : []"
     :thinking-card="thinkingCard"
     :is-workspace-session="isWorkspaceSession"
     :get-row-class="getRowClass"

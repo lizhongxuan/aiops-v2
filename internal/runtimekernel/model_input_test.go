@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/promptinput"
 )
 
 func TestBuildModelInputDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t *testing.T) {
@@ -65,4 +66,28 @@ func TestBuildModelInputDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t 
 	if !strings.Contains(got, "current-result: 板块排行数据") {
 		t.Fatalf("model input should keep current turn tool result:\n%s", got)
 	}
+}
+
+func TestBuildPromptInputReturnsSemanticTrace(t *testing.T) {
+	result, err := buildPromptInput([]Message{{Role: "user", Content: "triage"}}, promptcompiler.CompiledPrompt{
+		System: promptcompiler.SystemPrompt{Content: "system layer"},
+	})
+	if err != nil {
+		t.Fatalf("buildPromptInput() error = %v", err)
+	}
+	if len(result.Messages) == 0 {
+		t.Fatal("expected provider messages")
+	}
+	if !runtimeTraceHas(result.Trace, "stable_prompt", "system") || !runtimeTraceHas(result.Trace, "conversation", "user") {
+		t.Fatalf("semantic trace missing prompt or user item: %#v", result.Trace)
+	}
+}
+
+func runtimeTraceHas(trace promptinput.PromptInputTrace, source, role string) bool {
+	for _, item := range trace.Items {
+		if item.Source == source && item.SemanticRole == role {
+			return true
+		}
+	}
+	return false
 }

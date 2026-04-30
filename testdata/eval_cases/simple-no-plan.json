@@ -1,0 +1,10 @@
+{
+  "id": "simple-no-plan",
+  "category": "simple-chat",
+  "input": "简单问答不应强制生成 plan。",
+  "expected": {
+    "mustInclude": ["简单问答", "不强制 plan"],
+    "mustNotHavePlan": true
+  },
+  "scoreRules": {}
+}

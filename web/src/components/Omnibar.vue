@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick, computed, watch, toRef } from "vue";
+import { ref, nextTick, computed, watch, toRef, onBeforeUnmount } from "vue";
 import { useAppStore } from "../store";
 import { usePasteAssist } from "../composables/usePasteAssist";
 import { NButton, NAutoComplete } from "naive-ui";
@@ -45,6 +45,7 @@ const emit = defineEmits(["update:modelValue", "send", "stop"]);
 const store = useAppStore();
 
 const textareaRef = ref(null);
+const attachmentHintVisible = ref(false);
 const mentionPopover = ref({
   visible: false,
   query: "",
@@ -52,6 +53,7 @@ const mentionPopover = ref({
   y: 0,
   selectedIndex: 0,
 });
+let attachmentHintTimer = null;
 
 const mentionOptions = computed(() => {
   const query = mentionPopover.value.query.toLowerCase();
@@ -145,40 +147,48 @@ const compactStopMode = computed(() => {
   );
 });
 const hintTestId = computed(() => {
+  if (attachmentHintVisible.value) return "omnibar-attachment-hint";
   if (!pasteAssist.indicator.value) return "omnibar-hint";
   if (pasteAssist.indicator.value.kind === "focus") return "omnibar-focus-hint";
   if (pasteAssist.indicator.value.kind === "artifact") return "omnibar-attachment-indicator";
   return "omnibar-paste-indicator";
 });
 const hintText = computed(() => {
+  if (attachmentHintVisible.value) return "可粘贴文本/路径，或拖入图片作为上下文。";
   if (pasteAssist.indicator.value) return pasteAssist.indicator.value.text;
   if (primaryAction.value === "stop" || turnPendingStart.value) return "";
   return "Enter 发送";
 });
 const primaryActionLabel = computed(() => (primaryAction.value === "stop" ? "停止生成" : "发送"));
+const configuredModel = computed(() => String(store.snapshot?.config?.model || "").trim());
 const modelLabel = computed(() => {
-  const value = String(store.settings?.model || "gpt-5.4").trim();
-  if (!value) return "GPT-5.4";
+  const value = configuredModel.value;
+  if (!value) return "";
   return value.replace(/^gpt/i, "GPT").replace(/^o([0-9])/i, "O$1");
 });
-const reasoningLabel = computed(() => {
-  const value = String(store.settings?.reasoningEffort || store.settings?.reasoning_effort || "xhigh")
-    .trim()
-    .toLowerCase();
-  const map = {
-    none: "无",
-    minimal: "极低",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "超高",
-  };
-  return map[value] || value || "超高";
-});
+const showExecutionControls = computed(() => Boolean(modelLabel.value));
 
 function focus() {
   nextTick(() => textareaRef.value?.focus());
 }
+
+function showAttachmentHint() {
+  attachmentHintVisible.value = true;
+  if (attachmentHintTimer) {
+    clearTimeout(attachmentHintTimer);
+  }
+  attachmentHintTimer = setTimeout(() => {
+    attachmentHintVisible.value = false;
+    attachmentHintTimer = null;
+  }, 2600);
+  focus();
+}
+
+onBeforeUnmount(() => {
+  if (attachmentHintTimer) {
+    clearTimeout(attachmentHintTimer);
+  }
+});
 
 defineExpose({
   focus,
@@ -537,6 +547,7 @@ function tryExecuteSlashSwitch(text) {
            class="composer-icon-btn"
            data-testid="omnibar-attachment-action"
            aria-label="添加附件或上下文"
+           @click="showAttachmentHint"
          >
            +
          </button>
@@ -553,7 +564,7 @@ function tryExecuteSlashSwitch(text) {
            :class="{
              'is-paste-indicator': pasteAssist.indicator.value?.kind === 'buffering' || pasteAssist.indicator.value?.kind === 'ready',
              'is-artifact-indicator': pasteAssist.indicator.value?.kind === 'artifact',
-             'is-focus-indicator': pasteAssist.indicator.value?.kind === 'focus',
+             'is-focus-indicator': pasteAssist.indicator.value?.kind === 'focus' || attachmentHintVisible,
            }"
            :data-testid="hintTestId"
          >{{ hintText }}</span>
@@ -568,15 +579,12 @@ function tryExecuteSlashSwitch(text) {
          </button>
       </div>
       <div class="tools-right" :class="{ 'is-compact-stop': compactStopMode }">
-         <div class="execution-controls" aria-label="执行上下文">
-           <button
-             type="button"
-             class="execution-chip"
-             data-testid="omnibar-permission-control"
-             aria-label="权限模式：默认权限"
-           >
-             默认权限
-           </button>
+         <div
+           v-if="showExecutionControls"
+           class="execution-controls"
+           data-testid="omnibar-execution-controls"
+           aria-label="执行上下文"
+         >
            <button
              type="button"
              class="execution-chip"
@@ -584,22 +592,6 @@ function tryExecuteSlashSwitch(text) {
              :aria-label="`模型：${modelLabel}`"
            >
              {{ modelLabel }}
-           </button>
-           <button
-             type="button"
-             class="execution-chip"
-             data-testid="omnibar-reasoning-control"
-             :aria-label="`推理强度：${reasoningLabel}`"
-           >
-             {{ reasoningLabel }}
-           </button>
-           <button
-             type="button"
-             class="composer-icon-btn"
-             data-testid="omnibar-microphone-action"
-             aria-label="语音输入"
-           >
-             ◦
            </button>
          </div>
          <div class="action-group">

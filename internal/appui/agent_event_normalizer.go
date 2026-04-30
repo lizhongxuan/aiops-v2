@@ -626,7 +626,7 @@ func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
 		ApprovalID:   approval.ID,
 		ApprovalType: "tool",
 		Title:        approval.ToolName,
-		Reason:       approval.Command,
+		Command:      approval.Command,
 		Decision:     approval.Decision,
 		Targets:      []string{approval.HostID},
 	})

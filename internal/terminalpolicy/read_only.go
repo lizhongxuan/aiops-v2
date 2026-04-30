@@ -18,17 +18,44 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "curl" {
 		return isReadOnlyCurlArgs(args)
 	}
+	if base == "sysctl" {
+		return isReadOnlySysctlArgs(args)
+	}
 	return IsReadOnlyCommandName(command)
 }
 
 func IsReadOnlyCommandName(command string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
 	switch base {
-	case "cat", "date", "df", "du", "echo", "find", "grep", "head", "hostname", "id", "ls", "printf", "ps", "pwd", "rg", "stat", "tail", "top", "uname", "wc", "whoami":
+	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "tail", "top", "uname", "uptime", "vm_stat", "wc", "whoami":
 		return true
 	default:
 		return false
 	}
+}
+
+func isReadOnlySysctlArgs(args []string) bool {
+	for _, arg := range args {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" {
+			return false
+		}
+		if trimmed == "-w" || strings.HasPrefix(trimmed, "-w") || strings.Contains(trimmed, "=") {
+			return false
+		}
+		if strings.HasPrefix(trimmed, "-") {
+			switch trimmed {
+			case "-a", "-A", "-n":
+				continue
+			default:
+				return false
+			}
+		}
+		if strings.ContainsAny(trimmed, "\x00\n\r`$<>;|&") {
+			return false
+		}
+	}
+	return true
 }
 
 func unwrapReadOnlyShell(base string, args []string) (string, []string, bool) {

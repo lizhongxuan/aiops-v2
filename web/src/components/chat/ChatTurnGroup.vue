@@ -3,7 +3,6 @@ import { computed, ref, watch } from "vue";
 import MessageCard from "../MessageCard.vue";
 import ChatProcessFold from "./ChatProcessFold.vue";
 import AssistantActionBar from "./AssistantActionBar.vue";
-import LiveStatusCard from "./LiveStatusCard.vue";
 import McpBundleHost from "../mcp/McpBundleHost.vue";
 import McpUiCardHost from "../mcp/McpUiCardHost.vue";
 
@@ -31,7 +30,7 @@ function defaultProcessExpanded(turn = {}) {
 }
 
 watch(
-  () => [props.turn?.id, props.turn?.collapsedByDefault, props.turn?.phase, props.turn?.active],
+  () => props.turn?.id,
   () => {
     processExpanded.value = defaultProcessExpanded(props.turn);
   },
@@ -47,8 +46,8 @@ const showActionBar = computed(() => {
   return String(finalCard.status || "").toLowerCase() !== "inprogress";
 });
 
-const hasProcess = computed(() => Boolean(props.turn?.processItems?.length || props.turn?.summary || props.turn?.liveHint));
 const showRetryOnly = computed(() => !props.turn?.finalMessage && String(props.turn?.phase || "").trim().toLowerCase() === "failed");
+const showProcessFold = computed(() => Boolean(props.turn?.processTranscript));
 const primaryPanelPayload = computed(() => {
   if (props.turn?.actionSurfaces?.length) return props.turn.actionSurfaces[0]?.model || props.turn.actionSurfaces[0];
   if (props.turn?.resultBundles?.length) return props.turn.resultBundles[0]?.model || props.turn.resultBundles[0];
@@ -93,10 +92,6 @@ function handleFeedback(value) {
   });
 }
 
-function handleToggleProcess() {
-  processExpanded.value = !processExpanded.value;
-}
-
 function handleOpenPanel() {
   if (!primaryPanelPayload.value) return;
   emitDetail(primaryPanelPayload.value);
@@ -109,20 +104,12 @@ function handleOpenPanel() {
       <MessageCard :card="turn.userMessage.card" />
     </div>
 
-    <div v-if="showLiveStatus" class="chat-turn-live-status">
-      <slot name="live-status" />
-    </div>
-
-    <ChatProcessFold :turn="turn" :expanded="processExpanded" @update:expanded="processExpanded = $event" />
-
-    <div v-if="turn.statusCard" class="stream-row row-assistant chat-turn-status">
-      <LiveStatusCard
-        :state="turn.statusCard.state || 'working'"
-        :elapsed-label="turn.statusCard.elapsedLabel || ''"
-        phase-label="Working for"
-        :message="turn.statusCard.message || ''"
-      />
-    </div>
+    <ChatProcessFold
+      v-if="showProcessFold"
+      :turn="turn"
+      :expanded="processExpanded"
+      @update:expanded="processExpanded = $event"
+    />
 
     <div v-if="turn.finalMessage" class="chat-turn-final">
       <div v-if="turn.finalLabel" class="chat-turn-final-divider">
@@ -147,11 +134,8 @@ function handleOpenPanel() {
           :allow-feedback="false"
           :regenerate-label="showRetryOnly ? '重试' : '重新生成'"
           :feedback="feedback"
-          :has-process="hasProcess"
-          :process-expanded="processExpanded"
           :can-open-panel="!!primaryPanelPayload"
           @regenerate="handleRegenerate"
-          @toggle-process="handleToggleProcess"
           @open-panel="handleOpenPanel"
           @update:feedback="handleFeedback"
         />
@@ -170,11 +154,8 @@ function handleOpenPanel() {
         :allow-feedback="false"
         regenerate-label="重试"
         :feedback="feedback"
-        :has-process="hasProcess"
-        :process-expanded="processExpanded"
         :can-open-panel="!!primaryPanelPayload"
         @regenerate="handleRegenerate"
-        @toggle-process="handleToggleProcess"
         @open-panel="handleOpenPanel"
         @update:feedback="handleFeedback"
       />
@@ -221,17 +202,6 @@ function handleOpenPanel() {
 .chat-turn-action-bar {
   width: min(920px, 100%);
   margin: 0 auto;
-}
-
-.chat-turn-status {
-  width: min(920px, 100%);
-  margin: 0 auto;
-}
-
-.chat-turn-live-status {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
 
 .chat-turn-bundles,

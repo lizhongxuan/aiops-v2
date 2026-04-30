@@ -164,7 +164,13 @@ SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 - 单机会话和协作工作台必须共用同一套 projection selector；允许布局不同，不允许状态模型不同
 - `snapshot.cards` 只能作为持久会话内容 / card artifact 输入，不能作为 running/busy/approval/tool progress 的真相源
 - `snapshot.toolInvocations` 只能作为历史证据/详情兼容输入，不能驱动主 Chat 工作流里的实时 process fold
+- 单机会话过程 UI 必须收敛到一套 Codex-style transcript projection；不能并行用 `LiveStatusCard`、`statusCard`、process cards 或 page-level activity label 生成同一轮运行过程
+- 命令、搜索、文件、MCP 等过程行必须使用 typed fields（例如 `displayKind`、`inputSummary`、`command`、`outputPreview`）渲染；不能靠 UI 文案正则重新分类
+- 过程行去重必须使用 typed semantic key（例如 `displayKind + command/inputSummary/queries/results`），不能只按可见文案去重，否则会把多次同名搜索或命令错误折叠掉
+- `已记录 X 条过程细项`、`明细已折叠`、`处理失败 X 条明细`、`准备上下文`、`编译提示词`、`准备工具`、`调用模型` 这类不面向用户的过程文案不得从上游生成；不得用组件条件或 CSS 隐藏作为修复
 - 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `RuntimeLiveness` 或 projection row 推导，不能靠 card title/status 文案正则
+- Codex 原生过程 UI 规范以 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md` 和 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-todo.zh.md` 为准；修改单机会话过程 UI 时必须同步更新对应验收项
+- 真实 LLM Playwright 回归只能通过 `AIOPS_TEST_LLM_BASE_URL`、`AIOPS_TEST_LLM_API_KEY`、`AIOPS_TEST_LLM_MODEL` 注入配置；API key 不允许写入源码、fixture、README、验收报告或截图命名
 - 代码评审前必须运行：
 
 ```bash
@@ -174,7 +180,37 @@ rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phase
 
 第一条在生产代码中必须无匹配。第二条如果有匹配，必须证明它不是运行态真相源；否则先迁移到 `AgentEventProjection`。
 
-### 6. 正式域边界
+### 6. Approval UX 单入口规则
+
+这次出现“已经有底部 `codex-approval-inline`，但仍显示对话审核 UI 卡片”的根因不是缺组件，而是审批展示路径没有归口：
+
+- `ChatStream` 内有 `ApprovalDock`，会根据 `approvalDock` 渲染对话流里的审核卡片。
+- `ChatPage` 底部 composer slot 内有 `codex-approval-inline`，设计目标是替换输入框。
+- 旧 fallback `auth-overlay-dock` 仍保留，用于部分历史 card/MCP 审核场景。
+- projection approval 和 snapshot approval 曾经分别走不同 computed，导致单机会话里同一个 pending approval 可以同时进入 `ChatStream` 和 composer。
+- 早期 approval payload 只有 `title/reason`，真实命令被混在 reason 或缺失，UI 只能显示 `exec_command` 这类工具名。
+
+以后任何审批 UX 改动必须遵守：
+
+- 单机会话的用户审核入口只能是底部 `codex-approval-inline`，并替换输入框；不能在对话流中再渲染 `ApprovalDock` 或其他审核卡片。
+- 协作工作台可以保留右侧/流程区审批视图，但必须显式由 workspace layout 消费，不能复用到 single-host 主聊天流。
+- `ChatStream.approvalDock` 在 single-host 场景必须为空；如果需要展示等待审批状态，只能通过 composer approval 或轻量状态文案表达。
+- `auth-overlay-dock` 只能作为 workspace 或特殊 MCP fallback；新增 single-host approval 不允许接入它。
+- 审批展示必须使用真实业务对象：命令审批显示 `command`，文件审批显示 file/path/diff 摘要；禁止把 `exec_command`、`shell_command`、`code_mode` 等工具名当成用户可审内容。
+- 后端 approval contract 必须分离 `command` 和 `reason`：`command` 给用户审核，`reason` 给策略解释；不能把策略原因塞进 command，也不能把 command 塞进 reason。
+- projection、snapshot、local optimistic approval 必须归一到同一个 composer approval selector；页面模板里不能再并行判断多套 pending approval 来源。
+- 同一个 approval id 在页面上只能有一个可点击决策入口；如果同时出现 `codex-approval-inline` 和 `approval-dock`，视为 P0 UI 回归。
+- 审批按钮提交必须继续走统一 decision API，不允许组件私有化决策逻辑或直接改 store 状态。
+
+修改审批相关代码时必须补或更新以下验证：
+
+- 前端单元测试要断言 single-host pending approval 时：`[data-testid="approval-dock"]` 不存在，`[data-testid="codex-approval-inline"]` 存在，`.omnibar-wrapper` 不存在。
+- 前端单元测试要断言显示真实 `command`，且不显示 `exec_command` 这类工具名。
+- reducer/projector 测试要覆盖 `approval.payload.command` 从后端事件进入 projection。
+- 后端 snapshot/projector 测试要覆盖 `PendingApproval.Command` 与 `Reason` 分离。
+- Playwright 验证要至少检查一次真实或 fixture pending approval：approval dock 数量为 0、inline 数量为 1、输入框被替换、点击同意会发送 `/api/v1/approvals/:id/decision`。
+
+### 7. 正式域边界
 
 - auth 真相源只能来自 `internal/auth`
 - terminal 真相源只能来自 `internal/terminal`
@@ -187,7 +223,7 @@ rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phase
 2. 再在 `internal/appui` 定义 service/DTO/command translation
 3. 最后在 `internal/server` 补 transport handler
 4. 如果涉及 chat/protocol 中断恢复，必须补 runtimekernel resume/cancel 测试
-5. 如果涉及运行过程展示，必须先扩展 [`docs/codex-native-chat-ui-ux-design_0424.md`](./docs/codex-native-chat-ui-ux-design_0424.md) 定义的 `AgentEvent` contract，再实现 normalizer/projector/reducer
+5. 如果涉及运行过程展示，必须先扩展 [`docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md`](./docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md)（中文验收规范）或 [`docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.md`](./docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.md) 定义的 `AgentEvent` contract，再实现 normalizer/projector/reducer；不要用组件条件或 CSS 隐藏旧模块来替代上游数据清理
 
 ---
 

@@ -1,0 +1,10 @@
+{
+  "id": "stale-memory-ignored",
+  "category": "memory",
+  "input": "stale memory 不能覆盖当前证据。",
+  "expected": {
+    "mustInclude": ["stale memory ignored", "当前证据"],
+    "mustNotInclude": ["stale runbook"]
+  },
+  "scoreRules": {}
+}

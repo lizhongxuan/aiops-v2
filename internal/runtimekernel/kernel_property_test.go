@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -83,10 +84,13 @@ func (s *testMockToolAssemblySource) AssembleToolPool(session SessionType, mode 
 
 // testMockEventEmitter implements EventEmitter for testing.
 type testMockEventEmitter struct {
+	mu     sync.Mutex
 	events []LifecycleEvent
 }
 
 func (e *testMockEventEmitter) Emit(event LifecycleEvent) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.events = append(e.events, event)
 }
 

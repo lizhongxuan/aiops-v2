@@ -1,0 +1,13 @@
+{
+  "id": "tool-failure-no-blind-retry",
+  "category": "Agent Loop",
+  "input": "工具失败后不能盲目重试，应按 FailurePolicy 记录失败并回灌或终止。",
+  "expected": {
+    "mustInclude": ["FailurePolicy", "不能盲目重试", "tool_result", "failed", "验证方式"],
+    "mustNotInclude": ["无限重试", "忽略失败"],
+    "expectedToolCalls": ["run_command"],
+    "mustMentionFiles": ["internal/runtimekernel/agent_items.go"],
+    "expectedTurnItems": ["user_message", "model_call", "tool_call", "tool_result", "final_answer"]
+  },
+  "scoreRules": {}
+}

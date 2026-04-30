@@ -53,6 +53,7 @@ export function selectProjectionActivityLines(state, sessionId) {
   const scopedTurnIds = currentProjectionTurnIds(projection);
   return timeline
     .filter((row) => isCurrentActivityRow(row, scopedTurnIds))
+    .filter((row) => !isInternalRuntimeActivityRow(row))
     .map((row) => formatProjectionActivityLine(row))
     .filter((line) => line.id && line.text);
 }
@@ -66,6 +67,20 @@ export function selectProjectionStartedAt(state, sessionId) {
 
 function compactText(value) {
   return typeof value === "string" ? value.trim() : String(value || "").trim();
+}
+
+function previewText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map((item) => previewText(item)).filter(Boolean).join("\n");
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2).trim();
+    } catch {
+      return "";
+    }
+  }
+  return String(value).trim();
 }
 
 function currentProjectionTurnIds(projection) {
@@ -105,10 +120,44 @@ function isCurrentActivityRow(row, scopedTurnIds) {
   return scopedTurnIds.has(rowTurnId);
 }
 
+function isInternalRuntimeActivityRow(row = {}) {
+  const displayKind = compactText(row?.displayKind || row?.payload?.displayKind).toLowerCase();
+  if (displayKind === "runtime.activity") return true;
+  return false;
+}
+
+function isVerboseToolSummary(value = "") {
+  const text = compactText(value);
+  if (!text) return false;
+  if (/^[{[]/.test(text) && /"content"|"result"|"data"|"query"/.test(text)) return true;
+  if (text.length > 140 && /\\n|https?:\/\/|"content"|^\{/.test(text)) return true;
+  return false;
+}
+
+function activitySummary(row = {}) {
+  const summary = compactText(row?.summary || row?.text || "");
+  if (row?.kind === "tool" && isVerboseToolSummary(summary)) return "";
+  return summary;
+}
+
+function isGenericSearchSummary(value = "") {
+  return /^(?:已|正在)?搜索(?:网页|页面|内容)?(?:完成|成功)?$/u.test(compactText(value));
+}
+
+function formatSearchActivityLine({ running = false, failed = false, results = [], queries = [] } = {}) {
+  const prefix = failed ? "搜索网页失败" : running ? "正在搜索网页" : "已搜索网页";
+  const count = Array.isArray(queries) && queries.length > 1
+    ? queries.length
+    : Array.isArray(results) && results.length > 1
+      ? results.length
+      : 0;
+  return count > 1 && !running && !failed ? `${prefix} ${count} 次` : prefix;
+}
+
 function formatProjectionActivityLine(row = {}) {
   const status = String(row?.status || "").trim().toLowerCase();
   const title = compactText(row?.title || row?.toolName || row?.kind || "任务");
-  const summary = compactText(row?.summary || row?.text || "");
+  const summary = activitySummary(row);
   if (row?.kind === "assistant") {
     return {
       id: compactText(row?.id),
@@ -159,7 +208,13 @@ function formatProjectionActivityLine(row = {}) {
   const wrap = (verb, fallback = title) => `${verb}${summary ? `（${summary}` + "）" : fallback ? ` ${fallback}` : ""}`;
 
   let text = "";
+  let lineKind = compactText(row?.kind || "activity");
+  let command = "";
+  let output = "";
   const displayKind = compactText(row?.displayKind).toLowerCase();
+  let inputSummary = compactText(row?.inputSummary);
+  let queries = Array.isArray(row?.queries) ? row.queries : [];
+  let results = Array.isArray(row?.results) ? row.results : [];
   switch (displayKind || title) {
     case "runtime.activity":
       text = `${failed ? `${title}失败` : running ? `正在${title}` : `已${title}`}${summary ? `（${summary}）` : ""}`;
@@ -169,7 +224,14 @@ function formatProjectionActivityLine(row = {}) {
       break;
     case "browser.search":
     case "web_search":
-      text = failed ? `搜索网页失败（${summary || "web"}）` : `${running ? "正在搜索网页" : "已搜索网页"}（${summary || "web"}）`;
+      lineKind = "search";
+      if (!queries.length && inputSummary) queries = [inputSummary];
+      text = formatSearchActivityLine({
+        running,
+        failed,
+        queries,
+        results,
+      });
       break;
     case "browser.open":
     case "open_page":
@@ -185,7 +247,12 @@ function formatProjectionActivityLine(row = {}) {
     case "execute_command":
     case "execute_readonly_query":
     case "code_mode":
-      text = `${failed ? "运行失败" : running ? "正在运行" : "已运行"} ${summary || title}`;
+      lineKind = "command";
+      command = compactText(row?.command || row?.inputSummary);
+      output = previewText(row?.outputPreview) || compactText(row?.outputSummary || row?.summary || row?.detail);
+      text = command
+        ? `${failed ? "运行失败" : running ? "正在运行" : "已运行"} ${command}`
+        : `${failed ? "运行失败" : running ? "正在运行" : "已运行"}命令`;
       break;
     case "file.list":
     case "list_dir":
@@ -211,7 +278,17 @@ function formatProjectionActivityLine(row = {}) {
 
   return {
     id: compactText(row?.toolCallId || row?.id),
+    kind: lineKind,
     text: compactText(text),
+    command,
+    output,
+    outputPreview: output,
+    inputSummary,
+    queries,
+    results,
+    displayKind: compactText(row?.displayKind),
+    visibility: compactText(row?.visibility || "primary"),
+    summary,
     status,
     turnId: compactText(row?.turnId),
     clientTurnId: compactText(row?.clientTurnId),

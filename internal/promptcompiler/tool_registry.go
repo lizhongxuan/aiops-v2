@@ -9,9 +9,11 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+const defaultToolPromptInlineBudgetBytes = 4096
+
 // ---------------------------------------------------------------------------
-// Layer 3: Tool Prompt Set — capability descriptions for visible tools
-// Per Req 3.5: only capability, constraints, result shape, and approval note.
+// Layer 3: Tool Prompt Set — capability descriptions and usage guidance for
+// visible tools.
 // ---------------------------------------------------------------------------
 
 // buildToolPromptSet compiles Layer 3: the tool prompt set containing
@@ -75,8 +77,7 @@ func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPrompt
 	return delta
 }
 
-// buildToolPromptEntry creates a ToolPromptEntry from an assembled tool,
-// extracting only the four allowed fields: capability, constraints, result shape, approval note.
+// buildToolPromptEntry creates a ToolPromptEntry from an assembled tool.
 func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 	capability := toolCapabilityDescription(tool)
 	te := ToolPromptEntry{Capability: capability}
@@ -100,16 +101,50 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 		te.ResultShape = resultShape
 	}
 
+	te.Governance = toolGovernanceSummary(tool)
 	te.ApprovalNote = toolApprovalNote(tool)
+	te.UsagePolicy = toolUsagePolicy(tool)
+	te.Example = toolUsageExample(tool)
+	te.FailureHandling = toolFailureHandling(tool)
 
 	return te
 }
 
 func (c *PromptCompilerImpl) formatToolIndexLine(name string, entry ToolPromptEntry) string {
-	if entry.Capability == "" {
-		return "- " + name
+	lines := []string{"- " + name}
+	if entry.Capability != "" {
+		lines[0] = fmt.Sprintf("- %s: %s", name, entry.Capability)
 	}
-	return fmt.Sprintf("- %s: %s", name, entry.Capability)
+	if entry.UsagePolicy != "" {
+		lines = append(lines, "  Usage policy: "+entry.UsagePolicy)
+	}
+	if entry.Governance != "" {
+		lines = append(lines, "  Governance: "+entry.Governance)
+	}
+	if entry.Example != "" {
+		lines = append(lines, "  Example: "+entry.Example)
+	}
+	if entry.FailureHandling != "" {
+		lines = append(lines, "  Failure handling: "+entry.FailureHandling)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func toolGovernanceSummary(tool Tool) string {
+	meta := tool.Metadata()
+	governance := meta.EffectiveGovernance(defaultToolPromptInlineBudgetBytes)
+	approval := "not_required"
+	if governance.RequiresApproval {
+		approval = "required"
+	}
+	return fmt.Sprintf(
+		"risk=%s, mutating=%t, approval=%s, resultBudget=%d, failure=%s",
+		governance.RiskLevel,
+		governance.Mutating,
+		approval,
+		governance.ResultBudget.MaxInlineResultBytes,
+		governance.FailurePolicy,
+	)
 }
 
 func toolPromptSectionTitle(tool Tool) string {
@@ -154,6 +189,37 @@ func toolApprovalNote(tool Tool) string {
 		return "Generally no approval required."
 	}
 	return "May require approval depending on policy."
+}
+
+func toolUsagePolicy(tool Tool) string {
+	if tool.IsDestructive(nil) {
+		return "Use only after confirming intent, risk, target scope, and approval requirements."
+	}
+	if tool.IsReadOnly(nil) {
+		return "Use to gather evidence before answering claims that depend on local or current state."
+	}
+	return "Use when the user request requires this capability and cheaper context is insufficient."
+}
+
+func toolUsageExample(tool Tool) string {
+	name := toolPromptSectionTitle(tool)
+	if tool.IsDestructive(nil) {
+		return fmt.Sprintf("%s after approval to apply a scoped change, then verify the result.", name)
+	}
+	if tool.IsReadOnly(nil) {
+		return fmt.Sprintf("%s to inspect evidence, then cite the observed result in the answer.", name)
+	}
+	return fmt.Sprintf("%s with minimal arguments needed for the current task.", name)
+}
+
+func toolFailureHandling(tool Tool) string {
+	if tool.IsDestructive(nil) {
+		return "Stop, report the failed mutation, and do not retry with broader scope without approval."
+	}
+	if tool.IsReadOnly(nil) {
+		return "Report the missing evidence and try a narrower read-only query when useful."
+	}
+	return "Surface the error, keep prior evidence separate from inference, and ask for missing input if needed."
 }
 
 func toolResultShape(tool Tool) string {

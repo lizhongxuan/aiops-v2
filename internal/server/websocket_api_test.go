@@ -454,3 +454,247 @@ func TestAppWebSocket_PushesAgentEventEnvelopeWhenActivityProjectionArrives(t *t
 		break
 	}
 }
+
+func TestAppWebSocket_PushesTerminalSnapshotAfterTerminalAgentEvent(t *testing.T) {
+	sessionMgr := runtimekernel.NewSessionManager()
+	session := sessionMgr.GetOrCreate("", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:              "turn-terminal-1",
+		ClientTurnID:    "client-turn-terminal-1",
+		ClientMessageID: "client-msg-terminal-1",
+		SessionID:       session.ID,
+		SessionType:     runtimekernel.SessionTypeHost,
+		Mode:            runtimekernel.ModeChat,
+		Lifecycle:       runtimekernel.TurnLifecycleRunning,
+		ResumeState:     runtimekernel.TurnResumeStateNone,
+		StartedAt:       now,
+		UpdatedAt:       now,
+	}
+	sessionMgr.Update(session)
+	services := appui.NewServices(websocketAPITestRuntime{}, sessionMgr)
+
+	if _, err := services.AgentEventService().Append(context.Background(), appui.AgentEvent{
+		EventID:      "turn-terminal-1:turn.started",
+		SessionID:    session.ID,
+		TurnID:       "turn-terminal-1",
+		ClientTurnID: "client-turn-terminal-1",
+		Kind:         appui.AgentEventTurn,
+		Phase:        appui.AgentEventPhaseStarted,
+		Status:       appui.AgentEventStatusRunning,
+		Visibility:   appui.AgentEventVisibilityPrimary,
+		Source:       appui.AgentEventSourceRuntime,
+		CreatedAt:    now.Format(time.RFC3339Nano),
+		Payload:      json.RawMessage(`{"title":"will fail","clientMessageId":"client-msg-terminal-1"}`),
+	}); err != nil {
+		t.Fatalf("append started event: %v", err)
+	}
+
+	httpServer := NewHTTPServer(services, WithAppWebSocketHeartbeat(time.Hour))
+	ts := httptest.NewServer(httpServer.Handler())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, err := websocket.Dial(wsURL, "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial error = %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+	if initial.AgentEventProjection == nil || initial.AgentEventProjection.Status != "working" {
+		t.Fatalf("initial projection = %+v, want working", initial.AgentEventProjection)
+	}
+
+	completedAt := now.Add(time.Second)
+	session.CurrentTurn.Lifecycle = runtimekernel.TurnLifecycleFailed
+	session.CurrentTurn.Error = "model provider returned 429"
+	session.CurrentTurn.UpdatedAt = completedAt
+	session.CurrentTurn.CompletedAt = &completedAt
+	sessionMgr.Update(session)
+
+	if _, err := services.AgentEventService().Append(context.Background(), appui.AgentEvent{
+		EventID:      "turn-terminal-1:turn.failed.async",
+		SessionID:    session.ID,
+		TurnID:       "turn-terminal-1",
+		ClientTurnID: "client-turn-terminal-1",
+		Kind:         appui.AgentEventTurn,
+		Phase:        appui.AgentEventPhaseFailed,
+		Status:       appui.AgentEventStatusFailed,
+		Visibility:   appui.AgentEventVisibilityPrimary,
+		Source:       appui.AgentEventSourceSystem,
+		CreatedAt:    completedAt.Format(time.RFC3339Nano),
+		Payload:      json.RawMessage(`{"summary":"model provider returned 429","error":"model provider returned 429"}`),
+	}); err != nil {
+		t.Fatalf("append terminal event: %v", err)
+	}
+
+	var sawTerminalEvent bool
+	for {
+		var payload map[string]any
+		if err := websocket.JSON.Receive(conn, &payload); err != nil {
+			t.Fatalf("receive terminal stream payload: %v", err)
+		}
+		if payload["type"] == "heartbeat" {
+			continue
+		}
+		if payload["type"] == "agent_event" {
+			eventMap, _ := payload["event"].(map[string]any)
+			if eventMap["eventId"] == "turn-terminal-1:turn.failed.async" {
+				sawTerminalEvent = true
+			}
+			continue
+		}
+		raw, _ := json.Marshal(payload)
+		var snapshot appui.StateSnapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			t.Fatalf("decode terminal snapshot: %v, payload %+v", err, payload)
+		}
+		if !sawTerminalEvent {
+			t.Fatalf("received snapshot before terminal event: %+v", payload)
+		}
+		if snapshot.Runtime.Turn.Active || snapshot.Runtime.Turn.Phase != "failed" {
+			t.Fatalf("terminal snapshot runtime.turn = %+v, want inactive failed", snapshot.Runtime.Turn)
+		}
+		if snapshot.AgentEventProjection == nil || snapshot.AgentEventProjection.Status != "failed" {
+			t.Fatalf("terminal snapshot projection = %+v, want failed", snapshot.AgentEventProjection)
+		}
+		break
+	}
+}
+
+func TestAppWebSocket_ResubscribesAgentEventsWhenSnapshotSessionChanges(t *testing.T) {
+	sessionMgr := runtimekernel.NewSessionManager()
+	services := appui.NewServices(websocketAPITestRuntime{}, sessionMgr)
+	httpServer := NewHTTPServer(services, WithAppWebSocketHeartbeat(time.Hour))
+	ts := httptest.NewServer(httpServer.Handler())
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	conn, err := websocket.Dial(wsURL, "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial error = %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+
+	session := sessionMgr.GetOrCreate("session-after-snapshot", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:              "turn-after-snapshot",
+		ClientTurnID:    "client-turn-after-snapshot",
+		ClientMessageID: "client-msg-after-snapshot",
+		SessionID:       session.ID,
+		SessionType:     runtimekernel.SessionTypeHost,
+		Mode:            runtimekernel.ModeChat,
+		Lifecycle:       runtimekernel.TurnLifecycleRunning,
+		ResumeState:     runtimekernel.TurnResumeStateNone,
+		StartedAt:       now,
+		UpdatedAt:       now,
+	}
+	sessionMgr.Update(session)
+
+	if _, err := services.AgentEventService().Append(context.Background(), appui.AgentEvent{
+		EventID:      "turn-after-snapshot:turn.started",
+		SessionID:    session.ID,
+		TurnID:       "turn-after-snapshot",
+		ClientTurnID: "client-turn-after-snapshot",
+		Kind:         appui.AgentEventTurn,
+		Phase:        appui.AgentEventPhaseStarted,
+		Status:       appui.AgentEventStatusRunning,
+		Visibility:   appui.AgentEventVisibilityPrimary,
+		Source:       appui.AgentEventSourceRuntime,
+		CreatedAt:    now.Format(time.RFC3339Nano),
+		Payload:      json.RawMessage(`{"title":"new session","clientMessageId":"client-msg-after-snapshot"}`),
+	}); err != nil {
+		t.Fatalf("append started event: %v", err)
+	}
+	proj, err := services.AgentEventService().Projection(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("projection: %v", err)
+	}
+	httpServer.appSnapshots.Broadcast(appui.StateSnapshot{
+		SessionID:      session.ID,
+		Kind:           "single_host",
+		SelectedHostID: "server-local",
+		Runtime: appui.RuntimeSnapshot{
+			Turn: appui.RuntimeTurnSnapshot{
+				Active:          true,
+				Phase:           "executing",
+				HostID:          "server-local",
+				ClientTurnID:    "client-turn-after-snapshot",
+				ClientMessageID: "client-msg-after-snapshot",
+			},
+			Codex:    map[string]any{"status": "connected"},
+			Activity: map[string]any{},
+		},
+		AgentEventProjection: &proj,
+	})
+
+	var sessionSnapshot appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &sessionSnapshot); err != nil {
+		t.Fatalf("receive session snapshot: %v", err)
+	}
+	if sessionSnapshot.SessionID != session.ID || sessionSnapshot.AgentEventProjection == nil || sessionSnapshot.AgentEventProjection.LastSeq != 1 {
+		t.Fatalf("session snapshot = %+v, want session %q projection seq 1", sessionSnapshot, session.ID)
+	}
+
+	completedAt := now.Add(time.Second)
+	session.CurrentTurn.Lifecycle = runtimekernel.TurnLifecycleFailed
+	session.CurrentTurn.Error = "model provider returned 429"
+	session.CurrentTurn.UpdatedAt = completedAt
+	session.CurrentTurn.CompletedAt = &completedAt
+	sessionMgr.Update(session)
+
+	if _, err := services.AgentEventService().Append(context.Background(), appui.AgentEvent{
+		EventID:      "turn-after-snapshot:turn.failed.async",
+		SessionID:    session.ID,
+		TurnID:       "turn-after-snapshot",
+		ClientTurnID: "client-turn-after-snapshot",
+		Kind:         appui.AgentEventTurn,
+		Phase:        appui.AgentEventPhaseFailed,
+		Status:       appui.AgentEventStatusFailed,
+		Visibility:   appui.AgentEventVisibilityPrimary,
+		Source:       appui.AgentEventSourceSystem,
+		CreatedAt:    completedAt.Format(time.RFC3339Nano),
+		Payload:      json.RawMessage(`{"summary":"model provider returned 429","error":"model provider returned 429"}`),
+	}); err != nil {
+		t.Fatalf("append terminal event: %v", err)
+	}
+
+	var sawTerminalEvent bool
+	for {
+		var payload map[string]any
+		if err := websocket.JSON.Receive(conn, &payload); err != nil {
+			t.Fatalf("receive changed-session terminal payload: %v", err)
+		}
+		if payload["type"] == "agent_event" {
+			eventMap, _ := payload["event"].(map[string]any)
+			if eventMap["eventId"] == "turn-after-snapshot:turn.failed.async" {
+				sawTerminalEvent = true
+			}
+			continue
+		}
+		raw, _ := json.Marshal(payload)
+		var snapshot appui.StateSnapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			t.Fatalf("decode changed-session snapshot: %v, payload %+v", err, payload)
+		}
+		if !sawTerminalEvent {
+			t.Fatalf("received terminal snapshot before terminal event: %+v", payload)
+		}
+		if snapshot.SessionID != session.ID || snapshot.Runtime.Turn.Active || snapshot.Runtime.Turn.Phase != "failed" {
+			t.Fatalf("terminal snapshot = %+v, want failed snapshot for %q", snapshot, session.ID)
+		}
+		break
+	}
+}

@@ -244,7 +244,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 			opt(&cfg)
 		}
 	}
-	builder := NewSnapshotBuilder(cfg.hosts)
+	builder := NewSnapshotBuilderWithSettings(cfg.hosts, cfg.settings)
 	var sessionStore SessionStore
 	if cast, ok := sessions.(SessionStore); ok {
 		sessionStore = cast
@@ -443,6 +443,7 @@ type ApprovalView struct {
 	TurnID    string `json:"turnId,omitempty"`
 	ToolName  string `json:"toolName,omitempty"`
 	Command   string `json:"command,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 	HostID    string `json:"hostId,omitempty"`
 	Status    string `json:"status"`
 	CreatedAt string `json:"createdAt,omitempty"`

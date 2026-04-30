@@ -1,0 +1,13 @@
+{
+  "id": "loop-max-iterations",
+  "category": "Agent Loop",
+  "input": "如果模型连续请求同一个工具导致循环，应在达到最大迭代次数后停止并报告失败状态。",
+  "expected": {
+    "mustInclude": ["最大循环", "停止", "iteration limit", "验证方式"],
+    "mustNotInclude": ["继续无限重试", "一直执行"],
+    "expectedToolCalls": [],
+    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go"],
+    "expectedTurnItems": ["user_message", "model_call", "error"]
+  },
+  "scoreRules": {}
+}

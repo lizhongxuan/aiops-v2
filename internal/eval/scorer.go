@@ -1,10 +1,14 @@
 package eval
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/planning"
 )
 
 var verificationHints = []string{
@@ -17,12 +21,28 @@ var vaguePhrases = []string{
 
 var concreteTokenPattern = regexp.MustCompile("`[^`]+`|[[:alnum:]_./-]+\\.(go|js|ts|vue|json|md|yaml|yml|py)|go test|npm test|pytest")
 
+var defaultScoreWeights = map[string]float64{
+	"answer":     0.20,
+	"tools":      0.20,
+	"plan":       0.20,
+	"evidence":   0.15,
+	"safety":     0.15,
+	"efficiency": 0.10,
+}
+
 // ScoreCase evaluates one run output against deterministic case expectations.
 func ScoreCase(c Case, output RunOutput) CaseScore {
 	checks := []CheckResult{
 		scoreMustInclude(output.Answer, c.Expected.MustInclude),
 		scoreMustNotInclude(output.Answer, c.Expected.MustNotInclude),
 		scoreExpectedToolCalls(output.ToolCalls, c.Expected.ExpectedToolCalls),
+		scoreExpectedTurnItems(output.TurnItems, c.Expected.ExpectedTurnItems),
+		scorePlanPresence(output.TurnItems, c.Expected.MustHavePlan, c.Expected.MustNotHavePlan),
+		scoreExpectedPlanStatuses(output.TurnItems, c.Expected.ExpectedPlanStatuses),
+		scoreExpectedApprovals(output.TurnItems, c.Expected.ExpectedApprovals),
+		scoreExpectedEvidence(output.TurnItems, c.Expected.ExpectedEvidence),
+		scoreMaxIterations(output.TurnItems, c.Expected.MaxIterations),
+		scoreMaxToolCalls(output.ToolCalls, output.TurnItems, c.Expected.MaxToolCalls),
 		scoreMustMentionFiles(output.Answer, c.Expected.MustMentionFiles),
 		scoreNotVague(output.Answer),
 		scoreHasVerification(output.Answer),
@@ -34,19 +54,187 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 			passed++
 		}
 	}
-	score := 0.0
-	if len(checks) > 0 {
-		score = float64(passed) / float64(len(checks))
-	}
+	score, weights := weightedScore(checks, c.ScoreRules)
 	return CaseScore{
 		CaseID:       c.ID,
 		Category:     c.Category,
 		Passed:       passed == len(checks),
 		Score:        score,
+		ScoreWeights: weights,
 		PassedChecks: passed,
 		TotalChecks:  len(checks),
 		Checks:       checks,
 	}
+}
+
+func scoreExpectedApprovals(items []agentstate.TurnItem, expected []string) CheckResult {
+	return scoreExpectedTurnItemSummaries("expectedApprovals", items, agentstate.TurnItemTypeApproval, expected)
+}
+
+func scoreExpectedEvidence(items []agentstate.TurnItem, expected []string) CheckResult {
+	return scoreExpectedTurnItemSummaries("expectedEvidence", items, agentstate.TurnItemTypeEvidence, expected)
+}
+
+func scoreExpectedTurnItemSummaries(name string, items []agentstate.TurnItem, typ agentstate.TurnItemType, expected []string) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: name, Passed: true, Detail: "no expectation configured"}
+	}
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Type != typ {
+			continue
+		}
+		values = append(values, item.ID, string(item.Status), item.Payload.Summary, string(item.Payload.Data))
+	}
+	var matched, missing []string
+	for _, want := range expected {
+		if containsAnyFold(values, want) {
+			matched = append(matched, want)
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	return CheckResult{
+		Name:    name,
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d expected items found", len(matched), len(expected)),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func scoreMaxIterations(items []agentstate.TurnItem, max int) CheckResult {
+	if max <= 0 {
+		return CheckResult{Name: "maxIterations", Passed: true, Detail: "no iteration budget configured"}
+	}
+	count := 0
+	for _, item := range items {
+		if item.Type == agentstate.TurnItemTypeModelCall {
+			count++
+		}
+	}
+	return CheckResult{
+		Name:   "maxIterations",
+		Passed: count <= max,
+		Detail: fmt.Sprintf("%d/%d model-call iterations used", count, max),
+	}
+}
+
+func scoreMaxToolCalls(calls []ToolCall, items []agentstate.TurnItem, max int) CheckResult {
+	if max <= 0 {
+		return CheckResult{Name: "maxToolCalls", Passed: true, Detail: "no tool-call budget configured"}
+	}
+	count := len(calls)
+	if count == 0 {
+		for _, item := range items {
+			if item.Type == agentstate.TurnItemTypeToolCall {
+				count++
+			}
+		}
+	}
+	return CheckResult{
+		Name:   "maxToolCalls",
+		Passed: count <= max,
+		Detail: fmt.Sprintf("%d/%d tool calls used", count, max),
+	}
+}
+
+func scoreExpectedTurnItems(items []agentstate.TurnItem, expected []string) CheckResult {
+	types := make([]string, 0, len(items))
+	for _, item := range items {
+		types = append(types, string(item.Type))
+	}
+	var matched, missing []string
+	for _, typ := range expected {
+		if stringSliceContainsFold(types, typ) {
+			matched = append(matched, typ)
+		} else {
+			missing = append(missing, typ)
+		}
+	}
+	return CheckResult{
+		Name:    "expectedTurnItems",
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d expected turn items found", len(matched), len(expected)),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func scorePlanPresence(items []agentstate.TurnItem, mustHave, mustNotHave bool) CheckResult {
+	if !mustHave && !mustNotHave {
+		return CheckResult{Name: "planPresence", Passed: true, Detail: "no plan presence expectation configured"}
+	}
+	if mustHave && mustNotHave {
+		return CheckResult{Name: "planPresence", Passed: false, Detail: "conflicting plan presence expectations", Missing: []string{"unambiguous plan expectation"}}
+	}
+	hasPlan := hasPlanTurnItem(items)
+	result := CheckResult{Name: "planPresence", Passed: true, Detail: "plan presence expectation satisfied"}
+	if mustHave && !hasPlan {
+		result.Passed = false
+		result.Detail = "expected a plan TurnItem"
+		result.Missing = []string{"plan"}
+	}
+	if mustNotHave && hasPlan {
+		result.Passed = false
+		result.Detail = "plan TurnItem is forbidden for this case"
+		result.Unexpected = []string{"plan"}
+	}
+	return result
+}
+
+func scoreExpectedPlanStatuses(items []agentstate.TurnItem, expected []string) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: "expectedPlanStatuses", Passed: true, Detail: "no plan status expectation configured"}
+	}
+	statuses := planStatuses(items)
+	var matched, missing []string
+	for _, status := range expected {
+		if stringSliceContainsFold(statuses, status) {
+			matched = append(matched, status)
+		} else {
+			missing = append(missing, status)
+		}
+	}
+	return CheckResult{
+		Name:    "expectedPlanStatuses",
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d expected plan statuses found", len(matched), len(expected)),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func hasPlanTurnItem(items []agentstate.TurnItem) bool {
+	for _, item := range items {
+		if item.Type == agentstate.TurnItemTypePlan {
+			return true
+		}
+	}
+	return false
+}
+
+func planStatuses(items []agentstate.TurnItem) []string {
+	var statuses []string
+	for _, item := range items {
+		if item.Type != agentstate.TurnItemTypePlan {
+			continue
+		}
+		var plan planning.PlanState
+		if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &plan) == nil {
+			for _, step := range plan.Steps {
+				statuses = append(statuses, string(step.Status))
+			}
+			if plan.Status != "" {
+				statuses = append(statuses, string(plan.Status))
+			}
+			continue
+		}
+		if item.Status != "" {
+			statuses = append(statuses, string(item.Status))
+		}
+	}
+	return statuses
 }
 
 func scoreMustInclude(answer string, expected []string) CheckResult {
@@ -76,6 +264,9 @@ func scoreMustNotInclude(answer string, forbidden []string) CheckResult {
 }
 
 func scoreExpectedToolCalls(calls []ToolCall, expected []string) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: "expectedToolCalls", Passed: true, Detail: "no tool call expectation configured"}
+	}
 	names := make([]string, 0, len(calls))
 	for _, call := range calls {
 		names = append(names, call.Name)
@@ -185,4 +376,87 @@ func stringSliceContainsFold(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func containsAnyFold(values []string, needle string) bool {
+	for _, value := range values {
+		if containsFold(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func weightedScore(checks []CheckResult, rules ScoreRules) (float64, map[string]float64) {
+	if len(checks) == 0 {
+		return 0, nil
+	}
+	byCategory := make(map[string][]CheckResult)
+	for _, check := range checks {
+		category := checkCategory(check.Name)
+		byCategory[category] = append(byCategory[category], check)
+	}
+	weights := effectiveScoreWeights(rules.Weights, byCategory)
+	score := 0.0
+	for category, categoryChecks := range byCategory {
+		if len(categoryChecks) == 0 {
+			continue
+		}
+		passed := 0
+		for _, check := range categoryChecks {
+			if check.Passed {
+				passed++
+			}
+		}
+		score += weights[category] * (float64(passed) / float64(len(categoryChecks)))
+	}
+	return score, weights
+}
+
+func effectiveScoreWeights(overrides map[string]float64, categories map[string][]CheckResult) map[string]float64 {
+	raw := make(map[string]float64, len(defaultScoreWeights))
+	for category, weight := range defaultScoreWeights {
+		raw[category] = weight
+	}
+	for category, weight := range overrides {
+		category = strings.TrimSpace(category)
+		if category == "" || weight <= 0 {
+			continue
+		}
+		raw[category] = weight
+	}
+	total := 0.0
+	for category := range categories {
+		total += raw[category]
+	}
+	if total <= 0 {
+		even := 1.0 / float64(len(categories))
+		out := make(map[string]float64, len(categories))
+		for category := range categories {
+			out[category] = even
+		}
+		return out
+	}
+	out := make(map[string]float64, len(categories))
+	for category := range categories {
+		out[category] = raw[category] / total
+	}
+	return out
+}
+
+func checkCategory(name string) string {
+	switch name {
+	case "expectedToolCalls":
+		return "tools"
+	case "expectedTurnItems", "planPresence", "expectedPlanStatuses":
+		return "plan"
+	case "expectedEvidence":
+		return "evidence"
+	case "mustNotInclude", "expectedApprovals":
+		return "safety"
+	case "maxIterations", "maxToolCalls":
+		return "efficiency"
+	default:
+		return "answer"
+	}
 }

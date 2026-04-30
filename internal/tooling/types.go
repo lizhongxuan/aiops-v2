@@ -45,6 +45,55 @@ type ProviderNativeToolInfo struct {
 	Prefer   bool   `json:"prefer,omitempty"`
 }
 
+// ToolRiskLevel classifies operational risk for governance and prompting.
+type ToolRiskLevel string
+
+const (
+	ToolRiskLow      ToolRiskLevel = "low"
+	ToolRiskMedium   ToolRiskLevel = "medium"
+	ToolRiskHigh     ToolRiskLevel = "high"
+	ToolRiskCritical ToolRiskLevel = "critical"
+)
+
+// Normalize fills missing or unknown risk levels with the conservative default.
+func (r ToolRiskLevel) Normalize() ToolRiskLevel {
+	switch r {
+	case ToolRiskLow, ToolRiskMedium, ToolRiskHigh, ToolRiskCritical:
+		return r
+	default:
+		return ToolRiskMedium
+	}
+}
+
+// RequiresApproval reports whether this risk level must cross an approval gate.
+func (r ToolRiskLevel) RequiresApproval() bool {
+	switch r.Normalize() {
+	case ToolRiskHigh, ToolRiskCritical:
+		return true
+	default:
+		return false
+	}
+}
+
+// ToolFailurePolicy controls how runtime handles tool execution failure.
+type ToolFailurePolicy string
+
+const (
+	ToolFailurePolicyFeedBackToModel ToolFailurePolicy = "feed_back_to_model"
+	ToolFailurePolicyFailTurn        ToolFailurePolicy = "fail_turn"
+)
+
+// Normalize fills missing or unknown failure policies with the compatible
+// default: feed the failure back to the model as a tool result.
+func (p ToolFailurePolicy) Normalize() ToolFailurePolicy {
+	switch p {
+	case ToolFailurePolicyFeedBackToModel, ToolFailurePolicyFailTurn:
+		return p
+	default:
+		return ToolFailurePolicyFeedBackToModel
+	}
+}
+
 // ResultSpillPolicy controls how large tool results are externalized.
 type ResultSpillPolicy string
 
@@ -75,20 +124,33 @@ func (b ResultBudget) Normalize(defaultInlineBytes int) ResultBudget {
 	return b
 }
 
+// ToolGovernance is the normalized policy-facing governance view for a tool.
+type ToolGovernance struct {
+	RiskLevel        ToolRiskLevel     `json:"riskLevel"`
+	Mutating         bool              `json:"mutating"`
+	RequiresApproval bool              `json:"requiresApproval"`
+	ResultBudget     ResultBudget      `json:"resultBudget"`
+	FailurePolicy    ToolFailurePolicy `json:"failurePolicy"`
+}
+
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
-	Name           string                  `json:"name"`
-	Aliases        []string                `json:"aliases,omitempty"`
-	Description    string                  `json:"description,omitempty"`
-	Origin         ToolOrigin              `json:"origin,omitempty"`
-	SearchHint     string                  `json:"searchHint,omitempty"`
-	ShouldDefer    bool                    `json:"shouldDefer,omitempty"`
-	AlwaysLoad     bool                    `json:"alwaysLoad,omitempty"`
-	IsMCP          bool                    `json:"isMCP,omitempty"`
-	IsLSP          bool                    `json:"isLSP,omitempty"`
-	ResultBudget   ResultBudget            `json:"resultBudget,omitempty"`
-	MCPInfo        MCPInfo                 `json:"mcpInfo,omitempty"`
-	ProviderNative *ProviderNativeToolInfo `json:"providerNative,omitempty"`
+	Name             string                  `json:"name"`
+	Aliases          []string                `json:"aliases,omitempty"`
+	Description      string                  `json:"description,omitempty"`
+	Origin           ToolOrigin              `json:"origin,omitempty"`
+	SearchHint       string                  `json:"searchHint,omitempty"`
+	ShouldDefer      bool                    `json:"shouldDefer,omitempty"`
+	AlwaysLoad       bool                    `json:"alwaysLoad,omitempty"`
+	IsMCP            bool                    `json:"isMCP,omitempty"`
+	IsLSP            bool                    `json:"isLSP,omitempty"`
+	RiskLevel        ToolRiskLevel           `json:"riskLevel,omitempty"`
+	Mutating         bool                    `json:"mutating,omitempty"`
+	RequiresApproval bool                    `json:"requiresApproval,omitempty"`
+	ResultBudget     ResultBudget            `json:"resultBudget,omitempty"`
+	FailurePolicy    ToolFailurePolicy       `json:"failurePolicy,omitempty"`
+	MCPInfo          MCPInfo                 `json:"mcpInfo,omitempty"`
+	ProviderNative   *ProviderNativeToolInfo `json:"providerNative,omitempty"`
 }
 
 // HasMCPSource reports whether the metadata identifies an MCP-backed tool.
@@ -119,6 +181,19 @@ func (m ToolMetadata) HasSource(source ToolSource) bool {
 // EffectiveResultBudget returns the configured result budget or runtime defaults.
 func (m ToolMetadata) EffectiveResultBudget(defaultInlineBytes int) ResultBudget {
 	return m.ResultBudget.Normalize(defaultInlineBytes)
+}
+
+// EffectiveGovernance returns the normalized governance metadata used by prompt
+// rendering and dispatch policy.
+func (m ToolMetadata) EffectiveGovernance(defaultInlineBytes int) ToolGovernance {
+	risk := m.RiskLevel.Normalize()
+	return ToolGovernance{
+		RiskLevel:        risk,
+		Mutating:         m.Mutating,
+		RequiresApproval: m.RequiresApproval || risk.RequiresApproval(),
+		ResultBudget:     m.EffectiveResultBudget(defaultInlineBytes),
+		FailurePolicy:    m.FailurePolicy.Normalize(),
+	}
 }
 
 // ToolDisplayPayload is a simple structured payload for human-facing tool output.

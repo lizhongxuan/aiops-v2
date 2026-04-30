@@ -67,6 +67,7 @@ func (r Runner) Run(ctx context.Context) (Report, error) {
 		answerPath := filepath.Join(caseDir, "answer.txt")
 		eventsPath := filepath.Join(caseDir, "agent_events.json")
 		toolCallsPath := filepath.Join(caseDir, "tool_calls.json")
+		turnItemsPath := filepath.Join(caseDir, "turn_items.json")
 
 		if err := os.WriteFile(answerPath, []byte(output.Answer), 0o644); err != nil {
 			return Report{}, fmt.Errorf("write answer for %s: %w", c.ID, err)
@@ -77,11 +78,15 @@ func (r Runner) Run(ctx context.Context) (Report, error) {
 		if err := writeJSONFile(toolCallsPath, output.ToolCalls); err != nil {
 			return Report{}, fmt.Errorf("write tool calls for %s: %w", c.ID, err)
 		}
+		if err := writeJSONFile(turnItemsPath, output.TurnItems); err != nil {
+			return Report{}, fmt.Errorf("write turn items for %s: %w", c.ID, err)
+		}
 
 		score := ScoreCase(c, output)
 		score.AnswerPath = answerPath
 		score.EventsPath = eventsPath
 		score.ToolCallsPath = toolCallsPath
+		score.TurnItemsPath = turnItemsPath
 		if runErr != nil {
 			score.Passed = false
 			score.Error = runErr.Error()
@@ -97,6 +102,9 @@ func (r Runner) Run(ctx context.Context) (Report, error) {
 	}
 	if err := SaveReport(filepath.Join(r.OutputDir, "report.json"), report); err != nil {
 		return Report{}, err
+	}
+	if err := os.WriteFile(filepath.Join(r.OutputDir, "report.md"), []byte(RenderMarkdownReport(report)), 0o644); err != nil {
+		return Report{}, fmt.Errorf("write markdown report: %w", err)
 	}
 	return report, nil
 }

@@ -1,0 +1,15 @@
+{
+  "id": "finish-criteria-required",
+  "category": "Agent Loop",
+  "input": "存在 pending approval/evidence/tool 或 plan in_progress 时不能标记 completed。",
+  "expected": {
+    "mustInclude": ["完成条件", "pending", "不能标记 completed", "验证方式"],
+    "mustNotInclude": ["直接完成", "无条件 completed"],
+    "expectedToolCalls": [],
+    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go"],
+    "expectedTurnItems": ["user_message", "model_call", "error"],
+    "mustHavePlan": true,
+    "expectedPlanStatuses": ["in_progress"]
+  },
+  "scoreRules": {}
+}

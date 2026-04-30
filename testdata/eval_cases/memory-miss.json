@@ -1,0 +1,10 @@
+{
+  "id": "memory-miss",
+  "category": "memory",
+  "input": "没有 memory 命中时，普通回答不应受影响。",
+  "expected": {
+    "mustInclude": ["memory miss", "普通回答"],
+    "mustNotInclude": ["stale runbook"]
+  },
+  "scoreRules": {}
+}

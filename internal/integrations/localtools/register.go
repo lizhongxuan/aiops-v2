@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"aiops-v2/internal/planning"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
@@ -73,6 +75,7 @@ func RegisterBuiltins(registry *tooling.Registry, repo LLMConfigRepository, opts
 		NewBrowseURLTool(opts),
 		NewExecCommandTool(opts),
 		NewCurrentModelConfigTool(repo),
+		planning.NewUpdatePlanTool(),
 	} {
 		if err := registry.Register(tool); err != nil {
 			return err
@@ -141,7 +144,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			Name:        "exec_command",
 			Aliases:     []string{"terminal_command", "shell_command"},
 			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Execute a local terminal command on the selected server-local host. Prefer explicit command + args. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands require approval.",
+			Description: execCommandDescription(),
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: opts.MaxOutputBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
@@ -238,6 +241,18 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 				},
 			}, nil
 		},
+	}
+}
+
+func execCommandDescription() string {
+	description := "Execute a local terminal command on the selected server-local host. Prefer explicit command + args. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands require approval. Host OS: " + runtime.GOOS + "."
+	switch runtime.GOOS {
+	case "darwin":
+		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as nproc, free -h, and /proc/*."
+	case "linux":
+		return description + " For host resource inspection on Linux, prefer uptime, nproc, free -h, df -hT -x tmpfs -x devtmpfs, and cat /proc/loadavg."
+	default:
+		return description + " Choose commands compatible with this OS; avoid Linux-only commands unless Host OS is linux."
 	}
 }
 

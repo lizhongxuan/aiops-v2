@@ -1,0 +1,9 @@
+{
+  "id": "memory-hit",
+  "category": "memory",
+  "input": "相关历史 memory 命中时，应注入摘要并写 trace。",
+  "expected": {
+    "mustInclude": ["memory hit", "source=memory", "当前工具证据优先"]
+  },
+  "scoreRules": {}
+}

@@ -1,8 +1,7 @@
 <script setup>
-import { computed, ref } from "vue";
+import { ref } from "vue";
 import {
   CheckIcon,
-  ChevronDownIcon,
   CopyIcon,
   PanelRightOpenIcon,
   RefreshCwIcon,
@@ -35,23 +34,14 @@ const props = defineProps({
     type: String,
     default: "",
   },
-  hasProcess: {
-    type: Boolean,
-    default: false,
-  },
-  processExpanded: {
-    type: Boolean,
-    default: false,
-  },
   canOpenPanel: {
     type: Boolean,
     default: false,
   },
 });
 
-const emit = defineEmits(["regenerate", "toggle-process", "open-panel", "update:feedback"]);
+const emit = defineEmits(["regenerate", "open-panel", "update:feedback"]);
 const copied = ref(false);
-const processLabel = computed(() => (props.processExpanded ? "收起过程" : "展开过程"));
 
 async function handleCopy() {
   if (!props.copyText || copied.value) return;
@@ -76,13 +66,13 @@ function toggleFeedback(value) {
     <button
       v-if="allowCopy"
       type="button"
-      class="assistant-action-btn"
+      class="assistant-action-btn assistant-action-copy-btn"
       data-testid="assistant-action-copy"
       @click="handleCopy"
     >
       <CheckIcon v-if="copied" size="14" />
       <CopyIcon v-else size="14" />
-      <span>{{ copied ? "已复制" : "复制" }}</span>
+      <span class="assistant-action-label">{{ copied ? "已复制" : "复制" }}</span>
     </button>
 
     <button
@@ -120,17 +110,6 @@ function toggleFeedback(value) {
     >
       <ThumbsDownIcon size="14" />
       <span>不满意</span>
-    </button>
-
-    <button
-      v-if="hasProcess"
-      type="button"
-      class="assistant-action-btn"
-      data-testid="assistant-action-toggle-process"
-      @click="$emit('toggle-process')"
-    >
-      <ChevronDownIcon size="14" :class="{ 'is-rotated': processExpanded }" />
-      <span>{{ processLabel }}</span>
     </button>
 
     <button
@@ -176,11 +155,31 @@ function toggleFeedback(value) {
   color: #111827;
 }
 
+.assistant-action-copy-btn .assistant-action-label {
+  display: inline-block;
+  max-width: 0;
+  margin-left: -6px;
+  opacity: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transform: translateX(-2px);
+  transition:
+    max-width 0.16s ease,
+    margin-left 0.16s ease,
+    opacity 0.14s ease,
+    transform 0.16s ease;
+}
+
+.assistant-action-copy-btn:hover .assistant-action-label,
+.assistant-action-copy-btn:focus-visible .assistant-action-label {
+  max-width: 4em;
+  margin-left: 0;
+  opacity: 1;
+  transform: translateX(0);
+}
+
 .assistant-action-btn :deep(svg) {
   flex-shrink: 0;
 }
 
-.assistant-action-btn :deep(.is-rotated) {
-  transform: rotate(180deg);
-}
 </style>

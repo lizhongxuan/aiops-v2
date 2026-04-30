@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/planning"
 )
 
 func TestScoreCaseAppliesContentToolFileAndQualityChecks(t *testing.T) {
@@ -18,12 +22,18 @@ func TestScoreCaseAppliesContentToolFileAndQualityChecks(t *testing.T) {
 			MustNotInclude:    []string{"不知道"},
 			ExpectedToolCalls: []string{"read_file"},
 			MustMentionFiles:  []string{"internal/runtimekernel/eino_kernel.go"},
+			ExpectedTurnItems: []string{"user_message", "model_call", "final_answer"},
 		},
 	}
 	output := RunOutput{
 		Answer: "结论：RuntimeKernel 通过 internal/runtimekernel/eino_kernel.go 驱动 turn，并把 AgentEvent 作为验证链路。验证方式：go test ./internal/runtimekernel ./internal/eval。",
 		ToolCalls: []ToolCall{
 			{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/eino_kernel.go"}`)},
+		},
+		TurnItems: []agentstate.TurnItem{
+			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
 		},
 	}
 
@@ -77,6 +87,165 @@ func TestScoreCaseDetectsRegressions(t *testing.T) {
 	}
 }
 
+func TestScoreCaseDetectsMissingExpectedTurnItems(t *testing.T) {
+	tc := Case{
+		ID:       "turn-items",
+		Category: "协议状态",
+		Input:    "检查 turn item",
+		Expected: Expected{
+			ExpectedTurnItems: []string{"user_message", "model_call", "tool_call", "tool_result", "final_answer"},
+		},
+	}
+	output := RunOutput{
+		Answer: "已记录 user_message 和 model_call，验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected missing turn items to fail: %#v", score)
+	}
+	found := false
+	for _, check := range score.Checks {
+		if check.Name == "expectedTurnItems" {
+			found = true
+			if check.Passed {
+				t.Fatalf("expectedTurnItems should fail: %#v", check)
+			}
+			if len(check.Missing) != 3 {
+				t.Fatalf("missing turn items = %#v, want 3 missing", check.Missing)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected expectedTurnItems check, got %#v", score.Checks)
+	}
+}
+
+func TestScoreCaseChecksPlanPresenceAndStatuses(t *testing.T) {
+	planPayload, _ := json.Marshal(planning.PlanState{
+		Status: planning.PlanStatusActive,
+		Steps: []planning.PlanStep{
+			{ID: "inspect", Text: "Inspect host", Status: planning.StepStatusInProgress},
+			{ID: "summarize", Text: "Summarize", Status: planning.StepStatusPending},
+		},
+	})
+	tc := Case{
+		ID:       "plan-required",
+		Category: "计划协议",
+		Input:    "复杂任务必须有 plan",
+		Expected: Expected{
+			MustHavePlan:         true,
+			ExpectedPlanStatuses: []string{"in_progress", "pending"},
+		},
+	}
+	output := RunOutput{
+		Answer: "复杂任务已经生成结构化 plan。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "plan-1", Type: agentstate.TurnItemTypePlan, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: planPayload}},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("expected plan checks to pass, got %#v", score)
+	}
+}
+
+func TestScoreCaseFailsWhenPlanIsForbidden(t *testing.T) {
+	tc := Case{
+		ID:       "simple-no-plan",
+		Category: "简单问答",
+		Input:    "简单问答不应强制 plan",
+		Expected: Expected{
+			MustNotHavePlan: true,
+		},
+	}
+	output := RunOutput{
+		Answer: "简单问答直接回答。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "plan-1", Type: agentstate.TurnItemTypePlan, Status: agentstate.ItemStatusCompleted},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected forbidden plan to fail, got %#v", score)
+	}
+	if check := findCheck(score.Checks, "planPresence"); check.Passed || len(check.Unexpected) == 0 {
+		t.Fatalf("planPresence check = %#v, want unexpected plan", check)
+	}
+}
+
+func TestScoreCaseChecksApprovalsEvidenceAndBudgets(t *testing.T) {
+	tc := Case{
+		ID:       "governance",
+		Category: "治理",
+		Input:    "检查审批和证据",
+		Expected: Expected{
+			ExpectedApprovals: []string{"restart approval"},
+			ExpectedEvidence:  []string{"error logs"},
+			MaxIterations:     1,
+			MaxToolCalls:      1,
+		},
+	}
+	output := RunOutput{
+		Answer:    "已收集 error logs 并等待 restart approval。验证方式：go test ./internal/eval。",
+		ToolCalls: []ToolCall{{ID: "call-1", Name: "read_logs"}},
+		TurnItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
+			{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusPending, Payload: agentstate.PayloadEnvelope{Summary: "restart approval"}},
+			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "error logs"}},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("expected governance checks to pass, got %#v", score)
+	}
+	for _, name := range []string{"expectedApprovals", "expectedEvidence", "maxIterations", "maxToolCalls"} {
+		if check := findCheck(score.Checks, name); !check.Passed {
+			t.Fatalf("check %s = %#v, want pass", name, check)
+		}
+	}
+}
+
+func TestScoreCaseUsesNormalizedScoreWeights(t *testing.T) {
+	tc := Case{
+		ID:       "weights",
+		Category: "评分",
+		Input:    "检查权重",
+		Expected: Expected{
+			MustInclude:       []string{"required-answer"},
+			ExpectedToolCalls: []string{"read_file"},
+		},
+		ScoreRules: ScoreRules{Weights: map[string]float64{
+			"answer": 3,
+			"tools":  1,
+		}},
+	}
+	output := RunOutput{
+		Answer:    "缺少关键内容，但有验证方式：go test ./internal/eval。",
+		ToolCalls: []ToolCall{{ID: "call-1", Name: "read_file"}},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.ScoreWeights["answer"] <= score.ScoreWeights["tools"] {
+		t.Fatalf("score weights = %#v, want answer weight greater than tools", score.ScoreWeights)
+	}
+	if score.Score <= 0 || score.Score >= 1 {
+		t.Fatalf("weighted score = %f, want partial score", score.Score)
+	}
+}
+
 func TestRunnerWritesArtifactsAndReport(t *testing.T) {
 	casesDir := t.TempDir()
 	outDir := t.TempDir()
@@ -106,13 +275,57 @@ func TestRunnerWritesArtifactsAndReport(t *testing.T) {
 	}
 
 	caseDir := filepath.Join(outDir, "code-analysis")
-	for _, name := range []string{"answer.txt", "agent_events.json", "tool_calls.json"} {
+	for _, name := range []string{"answer.txt", "agent_events.json", "tool_calls.json", "turn_items.json"} {
 		if _, err := os.Stat(filepath.Join(caseDir, name)); err != nil {
 			t.Fatalf("expected artifact %s: %v", name, err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "report.json")); err != nil {
 		t.Fatalf("expected report.json: %v", err)
+	}
+}
+
+func TestP0SmokeCasesExistAndPassMockAgent(t *testing.T) {
+	casesDir := filepath.Clean("../../testdata/eval_cases")
+	outDir := t.TempDir()
+
+	report, err := Runner{
+		CasesDir:  casesDir,
+		OutputDir: outDir,
+		Agent:     MockAgent{},
+		RunID:     "p0-smoke",
+	}.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run p0 smoke eval cases: %v", err)
+	}
+
+	required := map[string]bool{
+		"approval-blocked":        false,
+		"approval-denied":         false,
+		"context-compaction-goal": false,
+		"high-risk-blocked":       false,
+		"plan-required":           false,
+		"prompt-trace-diff":       false,
+		"simple-no-plan":          false,
+		"memory-hit":              false,
+		"memory-miss":             false,
+		"stale-memory-ignored":    false,
+		"tool-failure-fallback":   false,
+		"synthesis-only":          false,
+		"simple-chat-no-plan":     false,
+	}
+	for _, c := range report.Cases {
+		if _, ok := required[c.CaseID]; ok {
+			required[c.CaseID] = true
+			if !c.Passed {
+				t.Fatalf("required P0 smoke case %s did not pass: %#v", c.CaseID, c)
+			}
+		}
+	}
+	for id, found := range required {
+		if !found {
+			t.Fatalf("required P0 smoke case %s was not loaded; report cases=%#v", id, report.Cases)
+		}
 	}
 }
 
@@ -145,6 +358,31 @@ func TestCompareReportsFlagsBetterWorseAndSame(t *testing.T) {
 	}
 }
 
+func TestCompareReportsIncludesRegressedChecksAndMarkdown(t *testing.T) {
+	baseline := Report{RunID: "base", Cases: []CaseScore{{
+		CaseID: "case-1",
+		Score:  1,
+		Passed: true,
+		Checks: []CheckResult{{Name: "mustInclude", Passed: true}},
+	}}}
+	current := Report{RunID: "current", Cases: []CaseScore{{
+		CaseID: "case-1",
+		Score:  0,
+		Passed: false,
+		Checks: []CheckResult{{Name: "mustInclude", Passed: false}},
+	}}}
+
+	comparison := CompareReports(baseline, current)
+	if len(comparison.Cases) != 1 || len(comparison.Cases[0].RegressedChecks) != 1 || comparison.Cases[0].RegressedChecks[0] != "mustInclude" {
+		t.Fatalf("comparison = %#v, want regressed mustInclude check", comparison)
+	}
+	current.BaselineComparison = &comparison
+	markdown := RenderMarkdownReport(current)
+	if !strings.Contains(markdown, "mustInclude") || !strings.Contains(markdown, "worse") {
+		t.Fatalf("markdown report missing regression detail:\n%s", markdown)
+	}
+}
+
 func writeJSON(t *testing.T, path string, value any) {
 	t.Helper()
 	data, err := json.MarshalIndent(value, "", "  ")
@@ -154,4 +392,13 @@ func writeJSON(t *testing.T, path string, value any) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatalf("write json: %v", err)
 	}
+}
+
+func findCheck(checks []CheckResult, name string) CheckResult {
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	return CheckResult{}
 }

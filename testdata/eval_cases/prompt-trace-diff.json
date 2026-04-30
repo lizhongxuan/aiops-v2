@@ -1,0 +1,10 @@
+{
+  "id": "prompt-trace-diff",
+  "category": "prompt-trace",
+  "input": "相邻模型调用需要生成 prompt trace diff。",
+  "expected": {
+    "mustInclude": ["PromptInputTrace", "input.diff.md", "tool_result"],
+    "maxIterations": 2
+  },
+  "scoreRules": {}
+}

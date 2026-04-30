@@ -93,6 +93,11 @@ type CompileContext struct {
 	// ToolDelta carries per-iteration availability/approval changes for Layer 3.
 	ToolDelta ToolPromptDelta
 
+	// ProtocolState carries dynamic protocol items such as plan/todo/approval
+	// state. It is rendered separately from ad hoc text fragments so prompt
+	// traces can show state changes between model calls.
+	ProtocolState ProtocolPromptState
+
 	// AgentKind identifies the type of agent being compiled for.
 	AgentKind AgentKind
 }
@@ -129,10 +134,22 @@ type DeveloperInstructions struct {
 }
 
 // ToolPromptEntry describes a single tool's prompt information.
-// Per Req 3.5: only capability, constraints, result shape, and approval note.
 type ToolPromptEntry struct {
 	// Capability describes what the tool can do.
 	Capability string
+
+	// Governance summarizes risk, approval, budgeting, and failure policy.
+	Governance string
+
+	// UsagePolicy describes when the model should choose this tool.
+	UsagePolicy string
+
+	// Example gives one compact usage example.
+	Example string
+
+	// FailureHandling describes how to recover when the tool fails or returns
+	// insufficient evidence.
+	FailureHandling string
 
 	// Constraints describes usage limitations and preconditions.
 	Constraints string
@@ -160,6 +177,20 @@ type ToolPromptDelta struct {
 	NewlyAvailable         []string
 	TemporarilyUnavailable []string
 	ApprovalRequired       []string
+}
+
+// ProtocolPromptItem is one dynamic protocol-state item visible to the model.
+type ProtocolPromptItem struct {
+	Kind   string
+	ID     string
+	Status string
+	Text   string
+}
+
+// ProtocolPromptState groups dynamic state items that should be visible as
+// state rather than free-form appended prompt text.
+type ProtocolPromptState struct {
+	Items []ProtocolPromptItem
 }
 
 // RuntimePolicyPrompt is Layer 4: policy constraints based on current mode.
@@ -213,6 +244,9 @@ type DynamicPromptDelta struct {
 
 	// ToolDelta captures availability/approval changes for the current iteration.
 	ToolDelta ToolPromptDelta
+
+	// ProtocolState captures dynamic item/plan/todo/approval state.
+	ProtocolState ProtocolPromptState
 
 	// Policy is Layer 4: mode-specific policy constraints.
 	Policy RuntimePolicyPrompt

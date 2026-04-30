@@ -51,6 +51,24 @@ func TestChatModePolicy_AllowsWebSearch(t *testing.T) {
 	}
 }
 
+func TestModePoliciesAllowUpdatePlanWithoutApproval(t *testing.T) {
+	cases := []struct {
+		name   string
+		policy ModePolicy
+		mode   Mode
+	}{
+		{name: "chat", policy: &ChatModePolicy{}, mode: "chat"},
+		{name: "inspect", policy: &InspectModePolicy{}, mode: "inspect"},
+		{name: "plan", policy: &PlanModePolicy{}, mode: "plan"},
+		{name: "execute", policy: &ExecuteModePolicy{}, mode: "execute"},
+	}
+	for _, tc := range cases {
+		input := toolInput("update_plan")
+		input.Mode = tc.mode
+		assertDecision(t, tc.name+"/update_plan", tc.policy.CheckTool(input), PolicyActionAllow)
+	}
+}
+
 func TestChatModePolicy_DeniesMutation(t *testing.T) {
 	p := &ChatModePolicy{}
 	mutationTools := []string{"file_write", "host_delete", "service_restart", "process_kill", "container_remove", "task_create", "config_update", "command_exec", "script_run", "service_stop"}
