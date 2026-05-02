@@ -30,30 +30,32 @@ type Prompt struct {
 }
 
 type Request struct {
-	Kind             string
-	TraceID          string
-	SessionID        string
-	TurnID           string
-	Iteration        int
-	VisibleTools     []string
-	Prompt           Prompt
-	ModelInput       []*schema.Message
-	PromptInputTrace promptinput.PromptInputTrace
-	PromptInputDiff  *promptinput.TraceDiff
+	Kind              string
+	TraceID           string
+	SessionID         string
+	TurnID            string
+	Iteration         int
+	VisibleTools      []string
+	PromptFingerprint map[string]string
+	Prompt            Prompt
+	ModelInput        []*schema.Message
+	PromptInputTrace  promptinput.PromptInputTrace
+	PromptInputDiff   *promptinput.TraceDiff
 }
 
 type payload struct {
-	SchemaVersion    int                          `json:"schemaVersion"`
-	Kind             string                       `json:"kind,omitempty"`
-	CreatedAt        string                       `json:"createdAt"`
-	TraceID          string                       `json:"traceId,omitempty"`
-	SessionID        string                       `json:"sessionId,omitempty"`
-	TurnID           string                       `json:"turnId,omitempty"`
-	Iteration        int                          `json:"iteration,omitempty"`
-	VisibleTools     []string                     `json:"visibleTools,omitempty"`
-	Prompt           Prompt                       `json:"prompt"`
-	ModelInput       []traceMessage               `json:"modelInput"`
-	PromptInputTrace promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
+	SchemaVersion     int                          `json:"schemaVersion"`
+	Kind              string                       `json:"kind,omitempty"`
+	CreatedAt         string                       `json:"createdAt"`
+	TraceID           string                       `json:"traceId,omitempty"`
+	SessionID         string                       `json:"sessionId,omitempty"`
+	TurnID            string                       `json:"turnId,omitempty"`
+	Iteration         int                          `json:"iteration,omitempty"`
+	VisibleTools      []string                     `json:"visibleTools,omitempty"`
+	PromptFingerprint map[string]string            `json:"promptFingerprint,omitempty"`
+	Prompt            Prompt                       `json:"prompt"`
+	ModelInput        []traceMessage               `json:"modelInput"`
+	PromptInputTrace  promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
 }
 
 type traceMessage struct {
@@ -117,17 +119,18 @@ func Enabled() bool {
 
 func buildPayload(req Request) payload {
 	return payload{
-		SchemaVersion:    1,
-		Kind:             strings.TrimSpace(req.Kind),
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
-		TraceID:          strings.TrimSpace(req.TraceID),
-		SessionID:        strings.TrimSpace(req.SessionID),
-		TurnID:           strings.TrimSpace(req.TurnID),
-		Iteration:        req.Iteration,
-		VisibleTools:     append([]string(nil), req.VisibleTools...),
-		Prompt:           req.Prompt,
-		ModelInput:       traceMessages(req.ModelInput),
-		PromptInputTrace: req.PromptInputTrace,
+		SchemaVersion:     1,
+		Kind:              strings.TrimSpace(req.Kind),
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		TraceID:           strings.TrimSpace(req.TraceID),
+		SessionID:         strings.TrimSpace(req.SessionID),
+		TurnID:            strings.TrimSpace(req.TurnID),
+		Iteration:         req.Iteration,
+		VisibleTools:      append([]string(nil), req.VisibleTools...),
+		PromptFingerprint: copyStringMap(req.PromptFingerprint),
+		Prompt:            req.Prompt,
+		ModelInput:        traceMessages(req.ModelInput),
+		PromptInputTrace:  req.PromptInputTrace,
 	}
 }
 
@@ -172,7 +175,7 @@ func traceDirectory(req Request) (string, error) {
 }
 
 func traceFileBase(req Request, stamp string) string {
-	if req.Iteration > 0 {
+	if strings.TrimSpace(req.SessionID) != "" || strings.TrimSpace(req.TurnID) != "" || req.Iteration > 0 {
 		return fmt.Sprintf("iteration-%03d-%s", req.Iteration, stamp)
 	}
 	return fmt.Sprintf("%s-%s", sanitizePath(firstNonEmpty(req.Kind, "model-call")), stamp)
@@ -201,6 +204,11 @@ func renderMarkdown(payload payload) string {
 	if len(payload.VisibleTools) > 0 {
 		fmt.Fprintf(&b, "- Visible tools: `%s`\n", strings.Join(payload.VisibleTools, "`, `"))
 	}
+	if len(payload.PromptFingerprint) > 0 {
+		if stable := strings.TrimSpace(payload.PromptFingerprint["stableHash"]); stable != "" {
+			fmt.Fprintf(&b, "- Prompt fingerprint: `%s`\n", stable)
+		}
+	}
 	fmt.Fprintf(&b, "\n## Prompt Delta\n\n```text\n%s\n```\n", payload.Prompt.Dynamic)
 	fmt.Fprintf(&b, "\n## Model Input\n")
 	for _, msg := range payload.ModelInput {
@@ -220,6 +228,23 @@ func renderMarkdown(payload payload) string {
 		fmt.Fprintf(&b, "\n%s", traceMarkdown)
 	}
 	return b.String()
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

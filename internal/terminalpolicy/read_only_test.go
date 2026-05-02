@@ -29,11 +29,27 @@ func TestIsReadOnlyCommandAllowsHostResourceInspection(t *testing.T) {
 		{command: "sysctl", args: []string{"-n", "hw.ncpu"}},
 		{command: "sysctl", args: []string{"hw.memsize"}},
 		{command: "vm_stat"},
+		{command: "which", args: []string{"go"}},
 	}
 	for _, tc := range cases {
 		if !IsReadOnlyCommand(tc.command, tc.args) {
 			t.Fatalf("%s %v should be classified read-only", tc.command, tc.args)
 		}
+	}
+}
+
+func TestIsReadOnlyCommandAllowsSedPrintRange(t *testing.T) {
+	if !IsReadOnlyCommand("sed", []string{"-n", "1,220p", "testdata/eval_cases/high-risk-approval-required.json"}) {
+		t.Fatal("sed -n line-range print should be classified read-only")
+	}
+}
+
+func TestIsReadOnlyCommandRejectsMutatingSed(t *testing.T) {
+	if IsReadOnlyCommand("sed", []string{"-i", "s/a/b/", "file.txt"}) {
+		t.Fatal("sed -i must not be classified read-only")
+	}
+	if IsReadOnlyCommand("sed", []string{"-n", "1,10w", "out.txt", "file.txt"}) {
+		t.Fatal("sed write command must not be classified read-only")
 	}
 }
 

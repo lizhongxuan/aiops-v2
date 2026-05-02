@@ -61,7 +61,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 	}
 	dynamicContent := joinNonEmpty(append(dynamicParts, policy.Content)...)
 
-	return CompiledPrompt{
+	compiled := CompiledPrompt{
 		Stable: StablePromptEnvelope{
 			Content:   stableContent,
 			System:    system,
@@ -81,7 +81,9 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 		Developer: developer,
 		Tools:     tools,
 		Policy:    policy,
-	}, nil
+	}
+	compiled.Fingerprint = buildPromptFingerprint(compiled)
+	return compiled, nil
 }
 
 func joinNonEmpty(parts ...string) string {

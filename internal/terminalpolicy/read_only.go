@@ -18,6 +18,9 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "curl" {
 		return isReadOnlyCurlArgs(args)
 	}
+	if base == "sed" {
+		return isReadOnlySedArgs(args)
+	}
 	if base == "sysctl" {
 		return isReadOnlySysctlArgs(args)
 	}
@@ -27,7 +30,7 @@ func IsReadOnlyCommand(command string, args []string) bool {
 func IsReadOnlyCommandName(command string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
 	switch base {
-	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "tail", "top", "uname", "uptime", "vm_stat", "wc", "whoami":
+	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "tail", "top", "uname", "uptime", "vm_stat", "wc", "which", "whoami":
 		return true
 	default:
 		return false
@@ -52,6 +55,46 @@ func isReadOnlySysctlArgs(args []string) bool {
 			}
 		}
 		if strings.ContainsAny(trimmed, "\x00\n\r`$<>;|&") {
+			return false
+		}
+	}
+	return true
+}
+
+func isReadOnlySedArgs(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	scriptIndex := 0
+	if strings.TrimSpace(args[0]) == "-n" {
+		scriptIndex = 1
+	}
+	if scriptIndex >= len(args)-1 {
+		return false
+	}
+	if !isSafeSedPrintScript(args[scriptIndex]) {
+		return false
+	}
+	for _, arg := range args[scriptIndex+1:] {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" || strings.HasPrefix(trimmed, "-") || strings.ContainsAny(trimmed, "\x00\n\r`$<>;|&") {
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeSedPrintScript(script string) bool {
+	script = strings.TrimSpace(script)
+	if !strings.HasSuffix(script, "p") || strings.Contains(script, "w") || strings.Contains(script, "W") {
+		return false
+	}
+	body := strings.TrimSuffix(script, "p")
+	if body == "" {
+		return false
+	}
+	for _, r := range body {
+		if !(unicode.IsDigit(r) || r == ',' || r == '$') {
 			return false
 		}
 	}

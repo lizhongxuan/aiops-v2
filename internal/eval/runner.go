@@ -18,6 +18,7 @@ type Runner struct {
 	Agent     Agent
 	AgentName string
 	RunID     string
+	Priority  string
 
 	BaselineReport *Report
 }
@@ -36,6 +37,13 @@ func (r Runner) Run(ctx context.Context) (Report, error) {
 	cases, err := LoadCases(r.CasesDir)
 	if err != nil {
 		return Report{}, err
+	}
+	if priority := strings.TrimSpace(r.Priority); priority != "" {
+		normalized := normalizePriority(priority)
+		if _, ok := allowedPriorities[normalized]; !ok {
+			return Report{}, fmt.Errorf("invalid priority filter %q", r.Priority)
+		}
+		cases = filterCasesByPriority(cases, normalized)
 	}
 	if len(cases) == 0 {
 		return Report{}, fmt.Errorf("no eval cases found in %s", r.CasesDir)
@@ -107,6 +115,20 @@ func (r Runner) Run(ctx context.Context) (Report, error) {
 		return Report{}, fmt.Errorf("write markdown report: %w", err)
 	}
 	return report, nil
+}
+
+func filterCasesByPriority(cases []Case, priority string) []Case {
+	if strings.TrimSpace(priority) == "" {
+		return cases
+	}
+	priority = normalizePriority(priority)
+	filtered := make([]Case, 0, len(cases))
+	for _, c := range cases {
+		if normalizePriority(c.Priority) == priority {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }
 
 func summarizeCases(cases []CaseScore) ReportSummary {

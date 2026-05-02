@@ -161,6 +161,8 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 		payload = approvalPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeEvidence:
 		payload = evidencePayloadFromTurnItem(item)
+	case agentstate.TurnItemTypeModelCall:
+		payload = modelCallPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeError:
 		payload = TurnPayload{Summary: summary, Error: summary}
 	default:
@@ -168,6 +170,18 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 	}
 	data, _ := json.Marshal(payload)
 	return data
+}
+
+func modelCallPayloadFromTurnItem(item agentstate.TurnItem) map[string]any {
+	payload := map[string]any{}
+	if len(item.Payload.Data) > 0 {
+		_ = json.Unmarshal(item.Payload.Data, &payload)
+	}
+	payload["title"] = "model_call"
+	if summary := strings.TrimSpace(item.Payload.Summary); summary != "" {
+		payload["summary"] = summary
+	}
+	return payload
 }
 
 func planPayloadFromTurnItem(item agentstate.TurnItem) PlanPayload {

@@ -27,11 +27,32 @@ import (
 type testMockCompiler struct{}
 
 func (m *testMockCompiler) Compile(_ promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
+	stable := "system\n\ndev\n\ntools"
 	return promptcompiler.CompiledPrompt{
+		Stable: promptcompiler.StablePromptEnvelope{
+			Content:   stable,
+			System:    promptcompiler.SystemPrompt{Content: "system"},
+			Developer: promptcompiler.DeveloperInstructions{Content: "dev"},
+			Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
+		},
+		Dynamic: promptcompiler.DynamicPromptDelta{
+			Content: "policy",
+			Policy:  promptcompiler.RuntimePolicyPrompt{Content: "policy"},
+		},
 		System:    promptcompiler.SystemPrompt{Content: "system"},
 		Developer: promptcompiler.DeveloperInstructions{Content: "dev"},
 		Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
 		Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy"},
+		Fingerprint: promptcompiler.PromptFingerprint{
+			Version:           "prompt-fingerprint-v1",
+			CompilerVersion:   "prompt-fingerprint-v1",
+			StableHash:        "mock-stable-hash",
+			SystemHash:        "mock-system-hash",
+			DeveloperHash:     "mock-developer-hash",
+			ToolRegistryHash:  "mock-tool-registry-hash",
+			RuntimePolicyHash: "mock-runtime-policy-hash",
+			ProtocolStateHash: "mock-protocol-state-hash",
+		},
 	}, nil
 }
 

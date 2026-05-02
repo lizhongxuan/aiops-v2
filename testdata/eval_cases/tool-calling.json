@@ -1,11 +1,12 @@
 {
   "id": "tool-calling",
   "category": "工具调用",
-  "input": "请说明需要调用哪些本地工具完成 eval smoke，并要求保存 tool_calls.json 和 report.json。",
+  "priority": "P0",
+  "input": "请实际调用本地只读命令检查 eval smoke 需要的本地工具和 case 目录，然后说明应使用 exec_command，且必须保存 tool_calls.json 和 report.json。",
   "expected": {
-    "mustInclude": ["read_file", "run_command", "tool_calls.json", "report.json"],
+    "mustInclude": ["exec_command", "tool_calls.json", "report.json"],
     "mustNotInclude": ["不需要工具", "手工判断即可"],
-    "expectedToolCalls": ["read_file", "run_command"],
+    "expectedToolCalls": ["exec_command"],
     "mustMentionFiles": ["testdata/eval_cases"]
   },
   "scoreRules": {}

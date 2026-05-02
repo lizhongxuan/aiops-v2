@@ -141,3 +141,38 @@ func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 		t.Fatalf("diff markdown missing semantic delta or leaked secret:\n%s", string(diffMarkdown))
 	}
 }
+
+func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-1",
+		TurnID:    "turn-1",
+		PromptFingerprint: map[string]string{
+			"version":       "prompt-fingerprint-v1",
+			"stableHash":    "stable-hash",
+			"developerHash": "developer-hash",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"promptFingerprint"`) || !strings.Contains(string(data), `"developerHash": "developer-hash"`) {
+		t.Fatalf("json trace missing prompt fingerprint:\n%s", string(data))
+	}
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	if !strings.Contains(string(markdown), "- Prompt fingerprint: `stable-hash`") {
+		t.Fatalf("markdown trace missing prompt fingerprint summary:\n%s", string(markdown))
+	}
+}

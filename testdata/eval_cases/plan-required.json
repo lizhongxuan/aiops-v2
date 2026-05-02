@@ -1,7 +1,8 @@
 {
   "id": "plan-required",
   "category": "plan",
-  "input": "复杂任务必须先生成结构化 plan，并在执行中更新状态。",
+  "priority": "P0",
+  "input": "这是一个需要状态跟踪的复杂任务：请实际生成结构化 plan，并把当前执行步骤更新为 in_progress，然后说明验证方式。",
   "expected": {
     "mustInclude": ["结构化 plan", "in_progress"],
     "expectedTurnItems": ["plan"],

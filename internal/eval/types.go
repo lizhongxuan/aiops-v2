@@ -11,11 +11,13 @@ import (
 
 // Case is the on-disk JSON format for one agent evaluation case.
 type Case struct {
-	ID         string     `json:"id"`
-	Category   string     `json:"category"`
-	Input      string     `json:"input"`
-	Expected   Expected   `json:"expected"`
-	ScoreRules ScoreRules `json:"scoreRules,omitempty"`
+	ID                string     `json:"id"`
+	Category          string     `json:"category"`
+	RootCauseCategory string     `json:"rootCauseCategory,omitempty"`
+	Priority          string     `json:"priority,omitempty"`
+	Input             string     `json:"input"`
+	Expected          Expected   `json:"expected"`
+	ScoreRules        ScoreRules `json:"scoreRules,omitempty"`
 }
 
 // ScoreRules configures case-level scoring behavior.
@@ -71,19 +73,22 @@ type CheckResult struct {
 
 // CaseScore is one scored case in a report.
 type CaseScore struct {
-	CaseID        string             `json:"caseId"`
-	Category      string             `json:"category,omitempty"`
-	Passed        bool               `json:"passed"`
-	Score         float64            `json:"score"`
-	ScoreWeights  map[string]float64 `json:"scoreWeights,omitempty"`
-	PassedChecks  int                `json:"passedChecks"`
-	TotalChecks   int                `json:"totalChecks"`
-	Checks        []CheckResult      `json:"checks"`
-	AnswerPath    string             `json:"answerPath,omitempty"`
-	EventsPath    string             `json:"eventsPath,omitempty"`
-	ToolCallsPath string             `json:"toolCallsPath,omitempty"`
-	TurnItemsPath string             `json:"turnItemsPath,omitempty"`
-	Error         string             `json:"error,omitempty"`
+	CaseID             string              `json:"caseId"`
+	Category           string              `json:"category,omitempty"`
+	RootCauseCategory  string              `json:"rootCauseCategory,omitempty"`
+	Priority           string              `json:"priority,omitempty"`
+	Passed             bool                `json:"passed"`
+	Score              float64             `json:"score"`
+	ScoreWeights       map[string]float64  `json:"scoreWeights,omitempty"`
+	PassedChecks       int                 `json:"passedChecks"`
+	TotalChecks        int                 `json:"totalChecks"`
+	Checks             []CheckResult       `json:"checks"`
+	AnswerPath         string              `json:"answerPath,omitempty"`
+	EventsPath         string              `json:"eventsPath,omitempty"`
+	ToolCallsPath      string              `json:"toolCallsPath,omitempty"`
+	TurnItemsPath      string              `json:"turnItemsPath,omitempty"`
+	PromptFingerprints []map[string]string `json:"promptFingerprints,omitempty"`
+	Error              string              `json:"error,omitempty"`
 }
 
 // ReportSummary aggregates a run.

@@ -108,6 +108,11 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	constraints = append(constraints, "Do not fabricate information not obtained from tools.")
 	constraints = append(constraints, "For non-trivial or tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.")
 	constraints = append(constraints, "After each tool result or batch of related tool results, briefly summarize what changed, what you learned, and the next action before calling more tools or finalizing.")
+	constraints = append(constraints, "When using exec_command for read-only inspection, pass the executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining. Use narrower commands or native flags instead.")
+	constraints = append(constraints, "When the user asks to validate local agent, eval, runtime, trace, tool, or prompt behavior, gather local evidence with available read-only tools before finalizing; do not only acknowledge the rule or describe future intent.")
+	constraints = append(constraints, "When the user explicitly asks for read-only local inspection, do not execute build, test, server-start, package-install, or other non-read-only commands; mention those commands only as verification methods unless the user asks you to run them.")
+	constraints = append(constraints, "When the user explicitly requires a structured plan or status tracking, use the available planning tool and keep at least one current step status such as in_progress visible until the work completes.")
+	constraints = append(constraints, "For simple direct questions about whether planning is required, answer directly and avoid internal tool names unless the user asks for implementation-level detail.")
 	constraints = append(constraints, "For current or latest factual requests, use precise self-contained web_search queries, verify recency, and cite source URLs in the final answer.")
 	constraints = append(constraints, "In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.")
 	constraints = append(constraints, "When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
@@ -116,6 +121,7 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	// Mode-specific constraints
 	switch ctx.Mode {
 	case "chat":
+		constraints = append(constraints, "For simple direct questions, answer directly without forcing a structured plan.")
 		constraints = append(constraints, "Only use read-only tools and web search in chat mode.")
 		constraints = append(constraints, "Do not attempt any mutation operations.")
 	case "inspect":

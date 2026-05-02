@@ -256,6 +256,19 @@ type DynamicPromptDelta struct {
 // the more explicit envelope/delta naming.
 type DynamicPrompt = DynamicPromptDelta
 
+// PromptFingerprint is a privacy-safe digest of compiled prompt layers.
+// It intentionally carries hashes and versions only, never full prompt text.
+type PromptFingerprint struct {
+	Version           string `json:"version,omitempty"`
+	CompilerVersion   string `json:"compilerVersion,omitempty"`
+	StableHash        string `json:"stableHash,omitempty"`
+	SystemHash        string `json:"systemHash,omitempty"`
+	DeveloperHash     string `json:"developerHash,omitempty"`
+	ToolRegistryHash  string `json:"toolRegistryHash,omitempty"`
+	RuntimePolicyHash string `json:"runtimePolicyHash,omitempty"`
+	ProtocolStateHash string `json:"protocolStateHash,omitempty"`
+}
+
 // CompiledPrompt is the promptcompiler output. It preserves the legacy
 // flattened four-layer view for compatibility and also exposes a stable /
 // dynamic split for long-running turn reuse.
@@ -277,6 +290,9 @@ type CompiledPrompt struct {
 
 	// Policy is Layer 4: mode-specific policy constraints.
 	Policy RuntimePolicyPrompt
+
+	// Fingerprint identifies prompt-layer changes without exposing prompt text.
+	Fingerprint PromptFingerprint
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 package runtimekernel
 
 import (
+	"strings"
+
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modeltrace"
@@ -115,11 +117,12 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 
 func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
 	return modeltrace.Write(modeltrace.Request{
-		Kind:         "runtime_model_input",
-		SessionID:    req.SessionID,
-		TurnID:       req.TurnID,
-		Iteration:    req.Iteration,
-		VisibleTools: req.VisibleTools,
+		Kind:              "runtime_model_input",
+		SessionID:         req.SessionID,
+		TurnID:            req.TurnID,
+		Iteration:         req.Iteration,
+		VisibleTools:      req.VisibleTools,
+		PromptFingerprint: promptFingerprintMap(req.Compiled.Fingerprint),
 		Prompt: modeltrace.Prompt{
 			StableHash: promptContentHash(req.Compiled.Stable.Content),
 			Stable:     req.Compiled.Stable.Content,
@@ -133,6 +136,27 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		PromptInputTrace: req.PromptInputTrace,
 		PromptInputDiff:  req.PromptInputDiff,
 	})
+}
+
+func promptFingerprintMap(fp promptcompiler.PromptFingerprint) map[string]string {
+	out := map[string]string{}
+	add := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	add("version", fp.Version)
+	add("compilerVersion", fp.CompilerVersion)
+	add("stableHash", fp.StableHash)
+	add("systemHash", fp.SystemHash)
+	add("developerHash", fp.DeveloperHash)
+	add("toolRegistryHash", fp.ToolRegistryHash)
+	add("runtimePolicyHash", fp.RuntimePolicyHash)
+	add("protocolStateHash", fp.ProtocolStateHash)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func effectiveSystemPrompt(compiled promptcompiler.CompiledPrompt) promptcompiler.SystemPrompt {

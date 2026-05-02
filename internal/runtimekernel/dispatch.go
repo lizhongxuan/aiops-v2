@@ -54,6 +54,7 @@ type ToolDispatcher struct {
 	hooks        *hooks.Registry
 	projector    EventEmitter
 	spanSource   SpanStreamSource // optional: span tracking for tool calls
+	observer     Observer
 	progressSink ToolProgressSink
 }
 
@@ -63,6 +64,7 @@ func NewToolDispatcher(lookup ToolLookup, policy *policyengine.Engine, projector
 		lookup:    lookup,
 		policy:    policy,
 		projector: projector,
+		observer:  NoopObserver{},
 	}
 }
 
@@ -73,6 +75,7 @@ func NewToolDispatcherWithSpans(lookup ToolLookup, policy *policyengine.Engine, 
 		policy:     policy,
 		projector:  projector,
 		spanSource: spanSource,
+		observer:   NoopObserver{},
 	}
 }
 
@@ -88,10 +91,26 @@ func (d *ToolDispatcher) WithHooks(registry *hooks.Registry) *ToolDispatcher {
 	return d
 }
 
+// WithObserver attaches runtime-owned observability hooks to the dispatcher.
+func (d *ToolDispatcher) WithObserver(observer Observer) *ToolDispatcher {
+	if observer == nil {
+		observer = NoopObserver{}
+	}
+	d.observer = observer
+	return d
+}
+
 // WithProgressSink attaches an incremental progress sink to the dispatcher.
 func (d *ToolDispatcher) WithProgressSink(sink ToolProgressSink) *ToolDispatcher {
 	d.progressSink = sink
 	return d
+}
+
+func (d *ToolDispatcher) runtimeObserver() Observer {
+	if d == nil || d.observer == nil {
+		return NoopObserver{}
+	}
+	return d.observer
 }
 
 // DispatchResult is the outcome of a tool dispatch.
@@ -132,7 +151,7 @@ func (d *ToolDispatcher) DispatchWithParentSpan(ctx context.Context, sessionID, 
 	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, parentSpanID, false)
 }
 
-func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool) DispatchResult {
+func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool) (result DispatchResult) {
 	// Create tool span if span source is available
 	var toolSpanID string
 	if d.spanSource != nil && parentSpanID != "" {
@@ -148,6 +167,19 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 		return errResult
 	}
+	observedCtx, observedToolSpan := d.runtimeObserver().StartToolCall(ctx, ToolCallSpanAttrs{
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		ToolName:   firstNonEmpty(tc.Name, desc.Metadata.Name),
+		ToolCallID: tc.ID,
+		Risk:       string(desc.Metadata.RiskLevel.Normalize()),
+	})
+	if observedCtx != nil {
+		ctx = observedCtx
+	}
+	defer func() {
+		finishObservedToolSpan(observedToolSpan, turnID, tc, result)
+	}()
 
 	toolEvent := hooks.ToolEvent{
 		ToolCallID:  tc.ID,
@@ -401,6 +433,43 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
 	}
+}
+
+func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, result DispatchResult) {
+	if span == nil {
+		return
+	}
+	_, _, _, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, result.Content)
+	outcome := result.Outcome
+	if outcome == "" {
+		switch {
+		case result.Blocked:
+			outcome = "blocked"
+		case result.Error != "":
+			outcome = "tool_failed"
+		default:
+			outcome = "tool_result"
+		}
+	}
+	attrs := map[string]any{
+		"tool.outcome":          outcome,
+		"tool.result_bytes":     resultBytes,
+		"tool.result_truncated": resultTruncated,
+		"tool.raw_ref":          rawRef,
+	}
+	if result.Error != "" {
+		attrs["error"] = result.Error
+	}
+	span.SetAttributes(attrs)
+	switch {
+	case result.Error != "":
+		span.SetStatus("failed", result.Error)
+	case result.Blocked:
+		span.SetStatus("blocked", result.Reason)
+	default:
+		span.SetStatus("completed", "")
+	}
+	span.End()
 }
 
 func (d *ToolDispatcher) consumeStreamingToolResult(sessionID, turnID string, tc ToolCall, toolSpanID string, result tooling.ToolResult) (tooling.ToolResult, error) {

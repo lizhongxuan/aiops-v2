@@ -1,12 +1,13 @@
 {
   "id": "tool-failure-fallback",
   "category": "工具失败",
-  "input": "工具调用失败后，请说明如何复现、如何按 FailurePolicy 选择 fallback，并明确不能盲目重试。",
+  "priority": "P0",
+  "input": "请实际调用本地只读命令检查工具失败处理实现，然后说明如何复现、如何按 FailurePolicy 选择 fallback，并明确不能盲目重试。",
   "expected": {
     "mustInclude": ["复现", "FailurePolicy", "fallback", "不能盲目重试"],
-    "mustNotInclude": ["无限重试", "忽略失败"],
-    "expectedToolCalls": ["run_command"],
-    "mustMentionFiles": ["internal/runtimekernel/dispatch.go"]
+    "mustNotInclude": ["可以无限重试", "应该忽略失败继续"],
+    "expectedToolCalls": ["exec_command"],
+    "mustMentionFiles": ["internal/tooling/types.go"]
   },
   "scoreRules": {}
 }

@@ -45,6 +45,34 @@ func TestProjectTurnItemsToAgentEventsIsStable(t *testing.T) {
 	}
 }
 
+func TestProjectTurnItemsToAgentEventsPreservesModelCallDebugData(t *testing.T) {
+	data := json.RawMessage(`{"iteration":0,"promptFingerprint":{"stableHash":"stable-hash","developerHash":"developer-hash"}}`)
+	events := ProjectTurnItemsToAgentEvents("session-1", "turn-1", []agentstate.TurnItem{{
+		ID:      "model-1",
+		Type:    agentstate.TurnItemTypeModelCall,
+		Status:  agentstate.ItemStatusCompleted,
+		Payload: agentstate.PayloadEnvelope{Summary: "model response received", Data: data},
+	}}, 0)
+
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Kind != AgentEventSystem {
+		t.Fatalf("kind = %q, want system", events[0].Kind)
+	}
+	var payload struct {
+		Title             string            `json:"title"`
+		Summary           string            `json:"summary"`
+		PromptFingerprint map[string]string `json:"promptFingerprint"`
+	}
+	if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Title != "model_call" || payload.PromptFingerprint["developerHash"] != "developer-hash" {
+		t.Fatalf("payload = %#v, want model_call title and prompt fingerprint", payload)
+	}
+}
+
 func TestProjectTurnItemsToAgentEventsDeduplicatesFinalAnswer(t *testing.T) {
 	items := []agentstate.TurnItem{
 		{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "first"}},

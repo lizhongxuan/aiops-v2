@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/agentmgr"
 	"aiops-v2/internal/agents"
@@ -15,6 +16,7 @@ import (
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/observability"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
@@ -25,10 +27,44 @@ import (
 )
 
 type registryAdapterMockTool struct {
-	name         string
-	meta tooling.ToolMetadata
-	sessions     []string
-	modes        []string
+	name     string
+	meta     tooling.ToolMetadata
+	sessions []string
+	modes    []string
+}
+
+func TestBuildRuntimeObserverDisabledReturnsNoop(t *testing.T) {
+	observer, provider := buildRuntimeObserver(context.Background(), func(string) string { return "" })
+	defer provider.Shutdown(context.Background())
+	if !isNoopRuntimeObserver(observer) {
+		t.Fatalf("observer type = %T, want runtimekernel.NoopObserver", observer)
+	}
+	if provider.Enabled() {
+		t.Fatal("provider should be disabled")
+	}
+}
+
+func TestBuildRuntimeObserverEnabledReturnsOTelObserver(t *testing.T) {
+	env := map[string]string{
+		"AIOPS_OTEL_ENABLED":      "1",
+		"AIOPS_OTEL_ENDPOINT":     "http://127.0.0.1:9/v1/traces",
+		"AIOPS_OTEL_SERVICE_NAME": "aiops-v2-agent-test",
+	}
+	observer, provider := buildRuntimeObserver(context.Background(), func(key string) string { return env[key] })
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	defer provider.Shutdown(shutdownCtx)
+	if _, ok := observer.(observability.RuntimeObserver); !ok {
+		t.Fatalf("observer type = %T, want observability.RuntimeObserver", observer)
+	}
+	if !provider.Enabled() {
+		t.Fatal("provider should be enabled")
+	}
+}
+
+func isNoopRuntimeObserver(observer runtimekernel.Observer) bool {
+	_, ok := observer.(runtimekernel.NoopObserver)
+	return ok
 }
 
 func (m *registryAdapterMockTool) Metadata() tooling.ToolMetadata {
@@ -49,7 +85,9 @@ func (m *registryAdapterMockTool) OutputSchema() json.RawMessage { return nil }
 func (m *registryAdapterMockTool) Description(json.RawMessage, tooling.DescribeContext) string {
 	return m.Metadata().Description
 }
-func (m *registryAdapterMockTool) Prompt(tooling.PromptContext) string { return m.Metadata().Description }
+func (m *registryAdapterMockTool) Prompt(tooling.PromptContext) string {
+	return m.Metadata().Description
+}
 func (m *registryAdapterMockTool) IsEnabled(ctx tooling.ToolContext) bool {
 	return matchRegistryAdapterValue(m.sessions, ctx.SessionType) && matchRegistryAdapterValue(m.modes, ctx.Mode)
 }

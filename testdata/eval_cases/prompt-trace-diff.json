@@ -1,10 +1,11 @@
 {
   "id": "prompt-trace-diff",
   "category": "prompt-trace",
-  "input": "相邻模型调用需要生成 prompt trace diff。",
+  "priority": "P0",
+  "input": "请基于本地 trace 设计说明相邻模型调用如何生成 prompt trace diff，回答必须覆盖 PromptInputTrace、input.diff.md、tool_result 和验证方式。",
   "expected": {
     "mustInclude": ["PromptInputTrace", "input.diff.md", "tool_result"],
-    "maxIterations": 2
+    "maxIterations": 8
   },
   "scoreRules": {}
 }

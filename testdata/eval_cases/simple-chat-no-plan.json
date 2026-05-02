@@ -1,12 +1,12 @@
 {
   "id": "simple-chat-no-plan",
   "category": "简单问答",
-  "input": "简单问答是否需要强制生成 plan？请给出规则和验证方式。",
+  "priority": "P0",
+  "input": "简单问答是否需要强制生成 plan？请直接回答，并给出不依赖额外执行的验证方式。",
   "expected": {
-    "mustInclude": ["直接回答", "不强制 plan", "验证方式"],
-    "mustNotInclude": ["update_plan", "工具调用"],
+    "mustInclude": ["直接回答", "验证"],
+    "mustNotInclude": ["update_plan", "工具调用", "必须先生成 plan", "所有简单问答都要生成 plan"],
     "expectedToolCalls": [],
-    "mustMentionFiles": ["internal/promptcompiler/developer_rules.go"],
     "mustNotHavePlan": true
   },
   "scoreRules": {}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +113,96 @@ func TestRunCLIUsesClockForDefaultOutputDir(t *testing.T) {
 	}
 }
 
+func TestRunCLIFiltersCasesByPriority(t *testing.T) {
+	casesDir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLIRawCase(t, filepath.Join(casesDir, "p0.json"), `{"id":"p0-case","category":"CLI","priority":"P0","input":"Run P0","expected":{"mustInclude":["MockAgent"]}}`)
+	writeCLIRawCase(t, filepath.Join(casesDir, "p1.json"), `{"id":"p1-case","category":"CLI","priority":"P1","input":"Run P1","expected":{"mustInclude":["MockAgent"]}}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesDir,
+		"-priority", "P0",
+		"-out", outDir,
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- p0-case") || strings.Contains(stdout.String(), "p1-case") {
+		t.Fatalf("stdout did not show P0-only run:\n%s", stdout.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if len(report.Cases) != 1 || report.Cases[0].CaseID != "p0-case" || report.Cases[0].Priority != "P0" {
+		t.Fatalf("report cases = %#v, want only P0 case", report.Cases)
+	}
+}
+
+func writeCLIRawCase(t *testing.T, path, data string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create case dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(data+"\n"), 0o644); err != nil {
+		t.Fatalf("write raw case: %v", err)
+	}
+}
+
+func TestRunCLIExecutesServerAgent(t *testing.T) {
+	casesDir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLICase(t, casesDir, "server-basic")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/chat/message":
+			writeCLIJSONResponse(t, w, map[string]any{
+				"accepted":  true,
+				"sessionId": "sess-cli-server",
+				"turnId":    "turn-cli-server",
+				"status":    "accepted",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/state":
+			writeCLIJSONResponse(t, w, map[string]any{
+				"sessionId": "sess-cli-server",
+				"cards": []map[string]any{
+					{"role": "assistant", "text": "server adapter completed the local turn through /api/v1/state, with verification: go test ./internal/eval"},
+				},
+				"runtime": map[string]any{
+					"turn": map[string]any{"active": false, "phase": "completed"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "server",
+		"-server-url", server.URL,
+		"-poll-timeout", "1s",
+		"-poll-interval", "1ms",
+		"-cases", casesDir,
+		"-out", outDir,
+		"-run-id", "server-run",
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "eval run: server-run") || !strings.Contains(stdout.String(), "summary: 1/1 passed") {
+		t.Fatalf("stdout missing server eval summary:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "server-basic", "answer.txt")); err != nil {
+		t.Fatalf("expected server answer artifact: %v", err)
+	}
+}
+
 func TestRunCLIReturnsErrorForUnsupportedAgent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runCLI(context.Background(), []string{"-agent", "real"}, &stdout, &stderr, fixedEvalNow)
@@ -150,5 +242,13 @@ func writeCLIJSON(t *testing.T, path string, value any) {
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
 		t.Fatalf("write json %s: %v", path, err)
+	}
+}
+
+func writeCLIJSONResponse(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Fatalf("encode response json: %v", err)
 	}
 }

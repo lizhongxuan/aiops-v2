@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -111,6 +113,7 @@ type EinoKernel struct {
 	sessions    *SessionManager
 	agentMgr    AgentManagerSource
 	spanSource  SpanStreamSource // optional: span tree integration for conversation tracking
+	observer    Observer
 	compressor  *spanstream.ContextCompressor
 	spillRepo   ToolResultSpillRepository
 
@@ -132,6 +135,7 @@ type EinoKernelConfig struct {
 	Sessions    *SessionManager
 	SessionRepo SessionRepository
 	SpanSource  SpanStreamSource // optional: if nil, span tracking is disabled
+	Observer    Observer
 	Compressor  *spanstream.ContextCompressor
 	SpillRepo   ToolResultSpillRepository
 }
@@ -141,6 +145,10 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 	sessions := cfg.Sessions
 	if sessions == nil {
 		sessions = NewSessionManager(cfg.SessionRepo)
+	}
+	observer := cfg.Observer
+	if observer == nil {
+		observer = NoopObserver{}
 	}
 	return &EinoKernel{
 		tools:              cfg.ToolSource,
@@ -153,11 +161,19 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 		sessions:           sessions,
 		agentMgr:           cfg.AgentMgr,
 		spanSource:         cfg.SpanSource,
+		observer:           observer,
 		compressor:         cfg.Compressor,
 		spillRepo:          cfg.SpillRepo,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
 	}
+}
+
+func (k *EinoKernel) runtimeObserver() Observer {
+	if k == nil || k.observer == nil {
+		return NoopObserver{}
+	}
+	return k.observer
 }
 
 func turnExecutionKey(sessionID, turnID string) string {
@@ -312,6 +328,26 @@ func (r *PipelineRecorder) Record(step PipelineStep) {
 //  10. Final gate check via PolicyEngine.CompletionPolicy
 //  11. Return TurnResult
 func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnResult, err error) {
+	var observedTurnSpan ObservedSpan
+	observedTurnDone := false
+	finishObservedTurn := func(status, message string) {
+		if observedTurnSpan == nil || observedTurnDone {
+			return
+		}
+		attrs := map[string]any{"turn.status": status}
+		if strings.TrimSpace(message) != "" {
+			attrs["error"] = message
+		}
+		observedTurnSpan.SetAttributes(attrs)
+		observedTurnSpan.SetStatus(status, message)
+		observedTurnSpan.End()
+		observedTurnDone = true
+	}
+	defer func() {
+		status, message := observedTurnStatus(result, err)
+		finishObservedTurn(status, message)
+	}()
+
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
@@ -355,6 +391,28 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 		req.HostID = hostID
 	}
 	runCtx, runCancel := context.WithCancel(ctx)
+	if observedCtx, span := k.runtimeObserver().StartTurn(runCtx, TurnSpanAttrs{
+		SessionID:       session.ID,
+		TurnID:          turnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		SessionType:     string(req.SessionType),
+		Mode:            string(req.Mode),
+		HostID:          req.HostID,
+		Input:           req.Input,
+	}); observedCtx != nil {
+		runCtx = observedCtx
+		observedTurnSpan = span
+	} else {
+		observedTurnSpan = span
+	}
+	if observedTurnSpan != nil {
+		if carrier := observedTurnSpan.TraceContext(); len(carrier) > 0 {
+			snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
+			snapshot.TraceContext = copyTraceContextCarrier(carrier)
+			k.persistTurnSnapshot(session, snapshot)
+		}
+	}
 	pendingCancelReason := k.registerTurnExecution(session.ID, turnID, runCancel)
 	defer func() {
 		k.releaseTurnExecution(session.ID, turnID, runCancel)
@@ -530,6 +588,96 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	}, nil
 }
 
+func observedTurnStatus(result TurnResult, err error) (string, string) {
+	if err != nil {
+		return "failed", err.Error()
+	}
+	status := strings.TrimSpace(result.Status)
+	message := strings.TrimSpace(result.Error)
+	switch status {
+	case "":
+		return "completed", message
+	case "completed":
+		return "completed", message
+	case "failed", "error":
+		return "failed", firstNonEmpty(message, "turn failed")
+	default:
+		return status, message
+	}
+}
+
+func finishObservedSpan(span ObservedSpan, status, message string, attrs map[string]any) {
+	if span == nil {
+		return
+	}
+	if attrs != nil {
+		span.SetAttributes(attrs)
+	}
+	span.SetStatus(status, message)
+	span.End()
+}
+
+func modelNameForTrace(chatModel modelrouter.ChatModel) string {
+	if chatModel == nil {
+		return ""
+	}
+	return strings.TrimPrefix(fmt.Sprintf("%T", chatModel), "*")
+}
+
+func modelTraceMarkdownPath(tracePath string) string {
+	tracePath = strings.TrimSpace(tracePath)
+	if tracePath == "" {
+		return ""
+	}
+	if strings.HasSuffix(tracePath, ".json") {
+		return strings.TrimSuffix(tracePath, ".json") + ".md"
+	}
+	return tracePath
+}
+
+func modelTraceDiffPath(tracePath string) string {
+	tracePath = strings.TrimSpace(tracePath)
+	if tracePath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(tracePath), "input.diff.md")
+}
+
+type modelInputTracePayload struct {
+	PromptInputTrace promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
+}
+
+func latestModelInputPromptTrace(snapshot *TurnSnapshot) *promptinput.PromptInputTrace {
+	if snapshot == nil {
+		return nil
+	}
+	for i := len(snapshot.Iterations) - 1; i >= 0; i-- {
+		trace, err := readModelInputPromptTrace(snapshot.Iterations[i].ModelInputTraceFile)
+		if err != nil || trace == nil || len(trace.Items) == 0 {
+			continue
+		}
+		return trace
+	}
+	return nil
+}
+
+func readModelInputPromptTrace(path string) (*promptinput.PromptInputTrace, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var payload modelInputTracePayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	trace := payload.PromptInputTrace
+	return &trace, nil
+}
+
 // ---------------------------------------------------------------------------
 // ResumeTurn resumes a turn that was interrupted (e.g. by approval).
 // Uses adk.Runner.Resume via checkpoint store.
@@ -558,6 +706,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	}
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
+	}
+	if len(snapshot.TraceContext) > 0 {
+		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
 	if req.Decision != "" && req.Decision != "approved" {
 		now := time.Now()
@@ -935,7 +1086,7 @@ func (k *EinoKernel) runHostIterationLoop(
 	snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
 	const maxIterations = 16
 	toolDispatches := countActualToolDispatches(snapshot)
-	var previousPromptInputTrace *promptinput.PromptInputTrace
+	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 
 	for iteration := len(snapshot.Iterations); iteration < maxIterations; iteration++ {
 		k.emitIterationStage(session.ID, turnID, iteration, "context_pipeline", turnSpanID)
@@ -977,6 +1128,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			return "", nil, fmt.Errorf("compile prompt: %w", compileErr)
 		}
 		stablePromptHash := promptContentHash(compiled.Stable.Content)
+		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
 		toolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
@@ -995,7 +1147,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)
 			promptInputDiff = &diff
 		}
-		_, _ = writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		tracePath, _ := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
 			SessionID:        session.ID,
 			TurnID:           turnID,
 			Iteration:        iteration,
@@ -1005,6 +1157,11 @@ func (k *EinoKernel) runHostIterationLoop(
 			PromptInputTrace: promptBuild.Trace,
 			PromptInputDiff:  promptInputDiff,
 		})
+		traceFile := modelTraceMarkdownPath(tracePath)
+		traceDiffFile := ""
+		if promptInputDiff != nil {
+			traceDiffFile = modelTraceDiffPath(tracePath)
+		}
 		traceCopy := promptBuild.Trace
 		previousPromptInputTrace = &traceCopy
 		modelItemID := modelCallItemID(turnID, iteration)
@@ -1013,12 +1170,34 @@ func (k *EinoKernel) runHostIterationLoop(
 			agentstate.TurnItemTypeModelCall,
 			agentstate.ItemStatusRunning,
 			"calling model",
-			map[string]any{"iteration": iteration, "visibleTools": toolNames(compileCtx.AssembledTools)},
+			map[string]any{
+				"iteration":         iteration,
+				"visibleTools":      toolNames(compileCtx.AssembledTools),
+				"traceFile":         traceFile,
+				"traceDiffFile":     traceDiffFile,
+				"promptFingerprint": promptFingerprint,
+			},
 		))
 		k.persistTurnSnapshot(session, snapshot)
 		reasoningSummaries := map[string]modelrouter.ReasoningStreamEvent{}
 		reasoningOrder := make([]string, 0, 2)
-		response, genErr := generateModelResponse(ctx, chatModel, modelInput, toolPool, func(delta string) {
+		modelCtx := ctx
+		modelSpanCtx, modelSpan := k.runtimeObserver().StartModelCall(ctx, ModelCallSpanAttrs{
+			SessionID:         session.ID,
+			TurnID:            turnID,
+			Iteration:         iteration,
+			ModelName:         modelNameForTrace(chatModel),
+			PromptStableHash:  stablePromptHash,
+			PromptFingerprint: promptFingerprint,
+			VisibleTools:      toolNames(compileCtx.AssembledTools),
+			MessageCount:      len(modelInput),
+			TraceFile:         traceFile,
+			TraceDiffFile:     traceDiffFile,
+		})
+		if modelSpanCtx != nil {
+			modelCtx = modelSpanCtx
+		}
+		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
 			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
 				"text": delta,
 			})
@@ -1050,11 +1229,20 @@ func (k *EinoKernel) runHostIterationLoop(
 			})
 		})
 		if genErr != nil {
+			finishObservedSpan(modelSpan, "failed", genErr.Error(), map[string]any{"error": genErr.Error()})
 			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, genErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, genErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, genErr
 		}
+		toolCallCount := 0
+		if response != nil {
+			toolCallCount = len(response.ToolCalls)
+		}
+		finishObservedSpan(modelSpan, "completed", "", map[string]any{
+			"output.has_tool_calls":  toolCallCount > 0,
+			"output.tool_call_count": toolCallCount,
+		})
 		updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCompleted, "model response received")
 		for _, key := range reasoningOrder {
 			event := reasoningSummaries[key]
@@ -1073,23 +1261,25 @@ func (k *EinoKernel) runHostIterationLoop(
 
 		checkpoint := newCheckpointMetadata(session.ID, turnID, iteration, len(snapshot.Iterations)+1, "assistant_response", TurnLifecycleRunning, TurnResumeStateNone)
 		iterState := IterationState{
-			ID:                 fmt.Sprintf("%s-iter-%d", turnID, iteration),
-			SessionID:          session.ID,
-			TurnID:             turnID,
-			Iteration:          iteration,
-			Lifecycle:          TurnLifecycleRunning,
-			ResumeState:        TurnResumeStateNone,
-			MessagesForModel:   append([]Message(nil), contextMessages...),
-			ToolProgress:       nil,
-			VisibleTools:       toolNames(compileCtx.AssembledTools),
-			RefreshedTools:     refreshedTools,
-			PromptDelta:        compiled.Dynamic.Content,
-			TokenBudget:        session.Context.MaxTokens,
-			Checkpoint:         checkpoint,
-			CompactedSegments:  append([]CompactedSegment(nil), contextState.CompactedSegments...),
-			ExternalReferences: append([]ExternalReference(nil), contextState.ExternalReferences...),
-			StartedAt:          time.Now(),
-			UpdatedAt:          time.Now(),
+			ID:                  fmt.Sprintf("%s-iter-%d", turnID, iteration),
+			SessionID:           session.ID,
+			TurnID:              turnID,
+			Iteration:           iteration,
+			Lifecycle:           TurnLifecycleRunning,
+			ResumeState:         TurnResumeStateNone,
+			MessagesForModel:    append([]Message(nil), contextMessages...),
+			ToolProgress:        nil,
+			VisibleTools:        toolNames(compileCtx.AssembledTools),
+			RefreshedTools:      refreshedTools,
+			PromptDelta:         compiled.Dynamic.Content,
+			PromptFingerprint:   promptFingerprint,
+			ModelInputTraceFile: tracePath,
+			TokenBudget:         session.Context.MaxTokens,
+			Checkpoint:          checkpoint,
+			CompactedSegments:   append([]CompactedSegment(nil), contextState.CompactedSegments...),
+			ExternalReferences:  append([]ExternalReference(nil), contextState.ExternalReferences...),
+			StartedAt:           time.Now(),
+			UpdatedAt:           time.Now(),
 		}
 
 		assistantMsg := runtimeMessageFromSchema(response)
@@ -1690,7 +1880,7 @@ func enrichCompileContext(
 		),
 	})
 	compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
-		Title: "Server-local Port Safety",
+		Title:   "Server-local Port Safety",
 		Content: "The AIOps UI/API for this session may be served on 127.0.0.1:8080. For service/container changes on server-local, check host ports with lsof before binding and do not bind new workloads to 127.0.0.1:8080 or host port 8080. Choose a free alternate port such as 18080 when exposing test services.",
 	})
 	return compileCtx
@@ -1930,11 +2120,15 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 			lookup.byName[alias] = toolDef
 		}
 	}
-	dispatcher := NewToolDispatcher(lookup, k.policy, k.projector).WithPermissions(k.permissions).WithHooks(k.hooks)
+	dispatcher := NewToolDispatcher(lookup, k.policy, k.projector)
 	if k.spanSource != nil {
-		dispatcher = NewToolDispatcherWithSpans(lookup, k.policy, k.projector, k.spanSource).WithPermissions(k.permissions).WithHooks(k.hooks)
+		dispatcher = NewToolDispatcherWithSpans(lookup, k.policy, k.projector, k.spanSource)
 	}
-	dispatcher = dispatcher.WithProgressSink(k.progressSink(session, snapshot, iteration))
+	dispatcher = dispatcher.
+		WithPermissions(k.permissions).
+		WithHooks(k.hooks).
+		WithObserver(k.runtimeObserver()).
+		WithProgressSink(k.progressSink(session, snapshot, iteration))
 	return dispatcher
 }
 

@@ -49,17 +49,17 @@ func mockAnswer(c Case) string {
 	case "multi-turn-context":
 		return "多轮上下文：回答必须引用上一轮约束、当前输入和最终决策，避免丢失用户指定的 baseline vs current。相关文件是 internal/eval/runner.go。验证方式：go test ./internal/eval -run TestRunner。"
 	case "tool-calling":
-		return "工具调用：需要先用 read_file 查看 testdata/eval_cases，再用 run_command 执行 go test ./internal/eval；toolCalls 会写入 tool_calls.json。验证方式：检查 report.json 中 expectedToolCalls 全部命中。"
+		return "工具调用：需要用 exec_command 检查 testdata/eval_cases，并执行 go test ./internal/eval；toolCalls 会写入 tool_calls.json。验证方式：检查 report.json 中 expectedToolCalls 全部命中。"
 	case "approval-blocked":
 		return "审批阻断：高风险动作必须先进入 approval blocked 状态，审批通过前未执行工具，也不能发出 tool completed；关键检查点在 internal/runtimekernel/dispatch.go。验证方式：go test ./internal/runtimekernel -run TestApproval。"
 	case "tool-failure-fallback":
-		return "工具失败 fallback：先用 run_command 复现失败，再按 FailurePolicy 判断是否回灌模型、终止 turn 或改用 fallback，不能盲目重试。关键文件是 internal/runtimekernel/dispatch.go。验证方式：go test ./internal/runtimekernel -run TestToolFailure。"
+		return "工具失败 fallback：先用 exec_command 复现失败，再按 internal/tooling/types.go 里的 FailurePolicy 判断是否回灌模型、终止 turn；再结合 internal/integrations/localtools/register.go 的工具内 fallback 条件决定是否降级，不能盲目重试。验证方式：go test ./internal/runtimekernel -run TestToolFailure。"
 	case "synthesis-only":
 		return "synthesis-only：达到 tool budget 后隐藏工具，停止继续调用工具，基于已收集证据回答；如果证据不足要说明限制。关键文件是 internal/runtimekernel/eino_kernel.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_SwitchesToSynthesisOnly。"
 	case "simple-chat-no-plan":
-		return "简单问答：直接回答即可，不强制 plan，也不使用工具；plan 只应用在复杂任务、工具任务或多步任务。相关规则在 internal/promptcompiler/developer_rules.go。验证方式：go test ./internal/promptcompiler。"
+		return "简单问答：直接回答即可，不强制生成 plan，也不使用额外执行；plan 只应用在复杂任务或多步任务。相关规则在 internal/promptcompiler/developer_rules.go。验证方式：go test ./internal/promptcompiler。"
 	case "simple-no-plan":
-		return "简单问答：直接回答即可，不强制 plan，也不使用工具；结构化计划只应用在复杂任务。相关规则在 internal/promptcompiler/developer_rules.go。验证方式：go test ./internal/promptcompiler。"
+		return "简单问答：直接回答即可，不应强制生成 plan，也不使用额外执行；结构化计划只应用在复杂任务。相关规则在 internal/promptcompiler/developer_rules.go。验证方式：go test ./internal/promptcompiler。"
 	case "plan-required":
 		return "复杂任务必须生成结构化 plan，并至少包含 in_progress 步骤，后续根据 tool_result 更新状态。关键文件是 internal/planning/tool.go。验证方式：go test ./internal/planning ./internal/eval。"
 	case "approval-denied":
@@ -77,11 +77,11 @@ func mockAnswer(c Case) string {
 	case "stale-memory-ignored":
 		return "stale memory ignored：过期 memory 必须被过滤，不能覆盖当前证据；当前证据来自 tool_result 或用户输入。关键文件是 internal/memory/store.go。验证方式：go test ./internal/memory -run TestJSONStoreSearchFiltersStaleAndLimitsResults。"
 	case "loop-max-iterations":
-		return "最大循环保护：模型持续请求工具时必须在 iteration limit 停止，写入 failed error TurnItem，避免无上限重复执行。关键文件是 internal/runtimekernel/eino_kernel.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_MaxIterationsWritesFailedAgentError。"
+		return "最大迭代保护：模型持续请求工具时必须在 iteration limit 停止，写入 failed error TurnItem，避免无上限重复执行。关键文件是 internal/runtimekernel/eino_kernel.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_MaxIterationsWritesFailedAgentError。"
 	case "tool-state-after-call":
 		return "工具状态更新：每次工具请求先记录 tool_call，materialize 后记录 tool_result，最终无工具调用时记录 final_answer。关键文件是 internal/runtimekernel/agent_items.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_WritesAgentItemsForToolTurn。"
 	case "high-risk-approval-required":
-		return "高风险审批：审批前 tool_call 必须是 blocked，工具未执行，也不能写 completed tool_result；通过 approval 后才能继续。关键文件是 internal/runtimekernel/agent_items.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_ApprovalBlockedAgentItemsDoNotCompleteTool。"
+		return "高风险审批：审批前 tool_call 必须是 blocked，工具未执行，也不能写 completed tool_result；通过 approval 后才能继续。关键文件是 internal/runtimekernel/dispatch.go 和 internal/runtimekernel/agent_items.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_ApprovalBlockedAgentItemsDoNotCompleteTool。"
 	case "tool-failure-no-blind-retry":
 		return "工具失败策略：按 FailurePolicy 处理失败，记录 failed tool_result，不能盲目重试；可回灌模型生成 final_answer 或终止 turn。关键文件是 internal/runtimekernel/agent_items.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_ToolFailureWritesFailedToolResultWithoutBlindRetry。"
 	case "finish-criteria-required":
@@ -103,11 +103,14 @@ func mockToolCalls(c Case) []ToolCall {
 		return []ToolCall{{ID: "mock-call-1", Name: "run_command", Arguments: json.RawMessage(`{"cmd":"go test ./internal/runtimekernel -run TestToolDispatcher"}`)}}
 	case "tool-calling":
 		return []ToolCall{
-			{ID: "mock-call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"testdata/eval_cases/tool-calling.json"}`)},
-			{ID: "mock-call-2", Name: "run_command", Arguments: json.RawMessage(`{"cmd":"go test ./internal/eval"}`)},
+			{ID: "mock-call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"rg -n \"expectedToolCalls\" testdata/eval_cases && go test ./internal/eval"}`)},
 		}
 	case "tool-failure-fallback":
-		return []ToolCall{{ID: "mock-call-1", Name: "run_command", Arguments: json.RawMessage(`{"cmd":"go test ./internal/runtimekernel -run TestToolFailure"}`)}}
+		return []ToolCall{{ID: "mock-call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"go test ./internal/runtimekernel -run TestToolFailure"}`)}}
+	case "loop-max-iterations":
+		return []ToolCall{{ID: "mock-call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"rg -n \"iteration limit|max\" internal/runtimekernel/eino_kernel.go"}`)}}
+	case "high-risk-approval-required":
+		return []ToolCall{{ID: "mock-call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"rg -n \"approval|blocked\" internal/runtimekernel/agent_items.go"}`)}}
 	case "tool-state-after-call":
 		return []ToolCall{{ID: "mock-call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/agent_items.go"}`)}}
 	case "tool-failure-no-blind-retry":
@@ -123,6 +126,12 @@ func mockTurnItems(c Case, toolCalls []ToolCall, now time.Time) []agentstate.Tur
 		items := []agentstate.TurnItem{
 			mockTurnItem(c.ID+"-user", agentstate.TurnItemTypeUserMessage, agentstate.ItemStatusCompleted, "mock user input", now),
 			mockTurnItem(c.ID+"-model-0", agentstate.TurnItemTypeModelCall, agentstate.ItemStatusCompleted, "mock model call", now),
+		}
+		for _, call := range toolCalls {
+			items = append(items,
+				mockTurnItem(c.ID+"-tool-call-"+call.ID, agentstate.TurnItemTypeToolCall, agentstate.ItemStatusCompleted, call.Name, now),
+				mockTurnItem(c.ID+"-tool-result-"+call.ID, agentstate.TurnItemTypeToolResult, agentstate.ItemStatusCompleted, call.Name+" result", now),
+			)
 		}
 		if c.Expected.MustHavePlan || len(c.Expected.ExpectedPlanStatuses) > 0 {
 			items = append(items, mockPlanItem(c, now))

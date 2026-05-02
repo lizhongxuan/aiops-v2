@@ -88,6 +88,34 @@ func TestScoreCaseDetectsRegressions(t *testing.T) {
 	}
 }
 
+func TestScoreCaseExpectedToolCallsAllowExtraTools(t *testing.T) {
+	tc := Case{
+		ID:       "tool-subset",
+		Category: "工具调用",
+		Input:    "检查工具调用",
+		Expected: Expected{
+			ExpectedToolCalls: []string{"exec_command"},
+		},
+	}
+	output := RunOutput{
+		Answer: "已用 exec_command 检查，并补充验证方式：go test ./internal/eval。",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "update_plan"},
+			{ID: "call-2", Name: "exec_command"},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	check := findCheck(score.Checks, "expectedToolCalls")
+	if !check.Passed {
+		t.Fatalf("expectedToolCalls should pass when required tool is present: %#v", check)
+	}
+	if len(check.Unexpected) != 1 || check.Unexpected[0] != "update_plan" {
+		t.Fatalf("expected unexpected tool to be recorded for diagnostics: %#v", check)
+	}
+}
+
 func TestScoreCaseDetectsMissingExpectedTurnItems(t *testing.T) {
 	tc := Case{
 		ID:       "turn-items",

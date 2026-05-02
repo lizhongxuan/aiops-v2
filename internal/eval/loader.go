@@ -9,6 +9,21 @@ import (
 	"strings"
 )
 
+var allowedRootCauseCategories = map[string]struct{}{
+	"prompt":          {},
+	"tool":            {},
+	"policy":          {},
+	"context":         {},
+	"model":           {},
+	"completion_gate": {},
+}
+
+var allowedPriorities = map[string]struct{}{
+	"P0": {},
+	"P1": {},
+	"P2": {},
+}
+
 // LoadCases reads all *.json files in dir and returns them sorted by id.
 func LoadCases(dir string) ([]Case, error) {
 	entries, err := os.ReadDir(dir)
@@ -32,6 +47,7 @@ func LoadCases(dir string) ([]Case, error) {
 		if err := validateCase(c, path); err != nil {
 			return nil, err
 		}
+		c.Priority = normalizePriority(c.Priority)
 		cases = append(cases, c)
 	}
 	sort.Slice(cases, func(i, j int) bool {
@@ -50,7 +66,24 @@ func validateCase(c Case, path string) error {
 	if strings.TrimSpace(c.Input) == "" {
 		return fmt.Errorf("case %s: input is required", path)
 	}
+	if rootCause := strings.TrimSpace(c.RootCauseCategory); rootCause != "" {
+		if _, ok := allowedRootCauseCategories[rootCause]; !ok {
+			return fmt.Errorf("case %s: invalid rootCauseCategory %q", path, c.RootCauseCategory)
+		}
+	}
+	priority := normalizePriority(c.Priority)
+	if _, ok := allowedPriorities[priority]; !ok {
+		return fmt.Errorf("case %s: invalid priority %q", path, c.Priority)
+	}
 	return nil
+}
+
+func normalizePriority(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "P1"
+	}
+	return value
 }
 
 // LoadReport reads a JSON report from disk.

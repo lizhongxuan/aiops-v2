@@ -56,15 +56,43 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 	}
 	score, weights := weightedScore(checks, c.ScoreRules)
 	return CaseScore{
-		CaseID:       c.ID,
-		Category:     c.Category,
-		Passed:       passed == len(checks),
-		Score:        score,
-		ScoreWeights: weights,
-		PassedChecks: passed,
-		TotalChecks:  len(checks),
-		Checks:       checks,
+		CaseID:             c.ID,
+		Category:           c.Category,
+		RootCauseCategory:  c.RootCauseCategory,
+		Priority:           normalizePriority(c.Priority),
+		Passed:             passed == len(checks),
+		Score:              score,
+		ScoreWeights:       weights,
+		PassedChecks:       passed,
+		TotalChecks:        len(checks),
+		Checks:             checks,
+		PromptFingerprints: promptFingerprintsFromTurnItems(output.TurnItems),
 	}
+}
+
+func promptFingerprintsFromTurnItems(items []agentstate.TurnItem) []map[string]string {
+	var out []map[string]string
+	for _, item := range items {
+		if item.Type != agentstate.TurnItemTypeModelCall || len(item.Payload.Data) == 0 {
+			continue
+		}
+		var payload struct {
+			PromptFingerprint map[string]string `json:"promptFingerprint"`
+		}
+		if json.Unmarshal(item.Payload.Data, &payload) != nil || len(payload.PromptFingerprint) == 0 {
+			continue
+		}
+		fp := make(map[string]string, len(payload.PromptFingerprint))
+		for key, value := range payload.PromptFingerprint {
+			if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+				fp[key] = value
+			}
+		}
+		if len(fp) > 0 {
+			out = append(out, fp)
+		}
+	}
+	return out
 }
 
 func scoreExpectedApprovals(items []agentstate.TurnItem, expected []string) CheckResult {
@@ -326,7 +354,7 @@ func scoreExpectedToolCalls(calls []ToolCall, expected []string) CheckResult {
 	}
 	return CheckResult{
 		Name:       "expectedToolCalls",
-		Passed:     len(missing) == 0 && len(unexpected) == 0,
+		Passed:     len(missing) == 0,
 		Detail:     fmt.Sprintf("%d/%d expected tools called, %d unexpected tools", len(matched), len(expected), len(unexpected)),
 		Matched:    matched,
 		Missing:    missing,

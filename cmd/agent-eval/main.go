@@ -24,15 +24,23 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	var runID string
 	var baselinePath string
 	var saveBaselinePath string
+	var priority string
+	var serverURL string
+	var pollTimeout time.Duration
+	var pollInterval time.Duration
 
 	flags := flag.NewFlagSet("agent-eval", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&casesDir, "cases", "testdata/eval_cases", "directory containing eval case JSON files")
 	flags.StringVar(&outputDir, "out", "", "directory for answers, traces, tool calls, and report.json")
-	flags.StringVar(&agentName, "agent", "mock", "agent adapter to run; currently supports mock")
+	flags.StringVar(&agentName, "agent", "mock", "agent adapter to run; supports mock or server")
 	flags.StringVar(&runID, "run-id", "", "optional run id")
 	flags.StringVar(&baselinePath, "baseline", "", "optional baseline report.json to compare against")
 	flags.StringVar(&saveBaselinePath, "save-baseline", "", "optional path to write the current report as a baseline")
+	flags.StringVar(&priority, "priority", "", "optional case priority filter: P0, P1, or P2")
+	flags.StringVar(&serverURL, "server-url", "http://localhost:8080", "base URL for -agent server")
+	flags.DurationVar(&pollTimeout, "poll-timeout", 2*time.Minute, "maximum time to poll /api/v1/state for -agent server")
+	flags.DurationVar(&pollInterval, "poll-interval", 500*time.Millisecond, "poll interval for /api/v1/state with -agent server")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -43,7 +51,12 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		}
 		outputDir = filepath.Join(".data", "eval_runs", now().UTC().Format("20060102T150405Z"))
 	}
-	agent, err := buildAgent(agentName)
+	agent, err := buildAgent(agentName, eval.ServerAgentConfig{
+		BaseURL:      serverURL,
+		RunID:        runID,
+		PollTimeout:  pollTimeout,
+		PollInterval: pollInterval,
+	})
 	if err != nil {
 		return printError(stderr, err)
 	}
@@ -63,6 +76,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		Agent:          agent,
 		AgentName:      agentName,
 		RunID:          runID,
+		Priority:       priority,
 		BaselineReport: baseline,
 	}.Run(ctx)
 	if err != nil {
@@ -77,12 +91,14 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	return 0
 }
 
-func buildAgent(name string) (eval.Agent, error) {
+func buildAgent(name string, serverConfig eval.ServerAgentConfig) (eval.Agent, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "mock":
 		return eval.MockAgent{}, nil
+	case "server":
+		return eval.ServerAgent{Config: serverConfig}, nil
 	default:
-		return nil, fmt.Errorf("unsupported agent %q; use -agent mock for local smoke tests", name)
+		return nil, fmt.Errorf("unsupported agent %q; use -agent mock or -agent server", name)
 	}
 }
 

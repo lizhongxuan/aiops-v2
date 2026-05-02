@@ -1,9 +1,10 @@
 {
   "id": "simple-no-plan",
   "category": "simple-chat",
-  "input": "简单问答不应强制生成 plan。",
+  "priority": "P0",
+  "input": "简单问答不应强制生成 plan。请直接回答，并给出一句验证方式。",
   "expected": {
-    "mustInclude": ["简单问答", "不强制 plan"],
+    "mustInclude": ["简单问答", "不应强制生成 plan"],
     "mustNotHavePlan": true
   },
   "scoreRules": {}

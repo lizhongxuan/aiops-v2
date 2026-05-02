@@ -498,6 +498,7 @@ type TurnSnapshot struct {
 	StablePromptHash      string                `json:"stablePromptHash,omitempty"`
 	StableToolFingerprint string                `json:"stableToolFingerprint,omitempty"`
 	GovernanceSnapshot    string                `json:"governanceSnapshot,omitempty"`
+	TraceContext          TraceContextCarrier   `json:"traceContext,omitempty"`
 	PromptSections        []string              `json:"promptSections,omitempty"`
 	LatestCheckpoint      *CheckpointMetadata   `json:"latestCheckpoint,omitempty"`
 	Iterations            []IterationState      `json:"iterations,omitempty"`
@@ -574,29 +575,31 @@ func (s TurnSnapshot) Validate() error {
 
 // IterationState captures a single model/tool iteration within a turn.
 type IterationState struct {
-	ID                 string               `json:"id"`
-	SessionID          string               `json:"sessionId"`
-	TurnID             string               `json:"turnId"`
-	Iteration          int                  `json:"iteration"`
-	Lifecycle          TurnLifecycleState   `json:"lifecycle"`
-	ResumeState        TurnResumeState      `json:"resumeState"`
-	MessagesForModel   []Message            `json:"messagesForModel,omitempty"`
-	ToolCalls          []ToolCall           `json:"toolCalls,omitempty"`
-	ToolProgress       []ToolProgressUpdate `json:"toolProgress,omitempty"`
-	ToolResults        []ToolResult         `json:"toolResults,omitempty"`
-	VisibleTools       []string             `json:"visibleTools,omitempty"`
-	RefreshedTools     []string             `json:"refreshedTools,omitempty"`
-	PromptDelta        string               `json:"promptDelta,omitempty"`
-	TokenBudget        int                  `json:"tokenBudget,omitempty"`
-	ResultBudget       int                  `json:"resultBudget,omitempty"`
-	Checkpoint         *CheckpointMetadata  `json:"checkpoint,omitempty"`
-	PendingApprovals   []PendingApproval    `json:"pendingApprovals,omitempty"`
-	PendingEvidence    []PendingEvidence    `json:"pendingEvidence,omitempty"`
-	CompactedSegments  []CompactedSegment   `json:"compactedSegments,omitempty"`
-	ExternalReferences []ExternalReference  `json:"externalReferences,omitempty"`
-	StartedAt          time.Time            `json:"startedAt"`
-	UpdatedAt          time.Time            `json:"updatedAt"`
-	CompletedAt        *time.Time           `json:"completedAt,omitempty"`
+	ID                  string               `json:"id"`
+	SessionID           string               `json:"sessionId"`
+	TurnID              string               `json:"turnId"`
+	Iteration           int                  `json:"iteration"`
+	Lifecycle           TurnLifecycleState   `json:"lifecycle"`
+	ResumeState         TurnResumeState      `json:"resumeState"`
+	MessagesForModel    []Message            `json:"messagesForModel,omitempty"`
+	ToolCalls           []ToolCall           `json:"toolCalls,omitempty"`
+	ToolProgress        []ToolProgressUpdate `json:"toolProgress,omitempty"`
+	ToolResults         []ToolResult         `json:"toolResults,omitempty"`
+	VisibleTools        []string             `json:"visibleTools,omitempty"`
+	RefreshedTools      []string             `json:"refreshedTools,omitempty"`
+	PromptDelta         string               `json:"promptDelta,omitempty"`
+	PromptFingerprint   map[string]string    `json:"promptFingerprint,omitempty"`
+	ModelInputTraceFile string               `json:"modelInputTraceFile,omitempty"`
+	TokenBudget         int                  `json:"tokenBudget,omitempty"`
+	ResultBudget        int                  `json:"resultBudget,omitempty"`
+	Checkpoint          *CheckpointMetadata  `json:"checkpoint,omitempty"`
+	PendingApprovals    []PendingApproval    `json:"pendingApprovals,omitempty"`
+	PendingEvidence     []PendingEvidence    `json:"pendingEvidence,omitempty"`
+	CompactedSegments   []CompactedSegment   `json:"compactedSegments,omitempty"`
+	ExternalReferences  []ExternalReference  `json:"externalReferences,omitempty"`
+	StartedAt           time.Time            `json:"startedAt"`
+	UpdatedAt           time.Time            `json:"updatedAt"`
+	CompletedAt         *time.Time           `json:"completedAt,omitempty"`
 }
 
 // Validate checks the iteration state.

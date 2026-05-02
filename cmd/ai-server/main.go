@@ -27,6 +27,7 @@ import (
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/observability"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/plugins"
@@ -196,6 +197,14 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 9. EinoKernel (RuntimeKernel)
 	// ---------------------------------------------------------------------------
+	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("otel shutdown: %v", err)
+		}
+	}()
 	kernelCfg := runtimekernel.EinoKernelConfig{
 		ToolSource:  newRegistryAdapter(toolAssembler, commandRegistry, flags),
 		Compiler:    compiler,
@@ -208,6 +217,7 @@ func run() error {
 		Sessions:    sessionManager,
 		SessionRepo: dataStore,
 		SpillRepo:   dataStore,
+		Observer:    runtimeObserver,
 	}
 	kernel := runtimekernel.NewEinoKernel(kernelCfg)
 
@@ -337,6 +347,22 @@ func envOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {
+	otelCfg := observability.ConfigFromEnv(getenv)
+	otelProvider, err := observability.Init(ctx, otelCfg)
+	if err != nil {
+		log.Printf("ai-server: observability disabled: %v", err)
+		otelProvider, _ = observability.Init(ctx, observability.Config{})
+	}
+	if otelProvider == nil {
+		return runtimekernel.NoopObserver{}, &observability.Provider{}
+	}
+	if otelProvider.Enabled() {
+		return observability.NewRuntimeObserver(otelProvider.Tracer(), otelCfg), otelProvider
+	}
+	return runtimekernel.NoopObserver{}, otelProvider
 }
 
 // buildProviders creates ChatModel instances for configured providers.
