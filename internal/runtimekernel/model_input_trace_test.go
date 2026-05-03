@@ -34,6 +34,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
 		Iteration:  2,
+		Metadata:   map[string]string{"eval.caseId": "case-runtime"},
 		Compiled:   compiled,
 		ModelInput: input,
 		VisibleTools: []string{
@@ -55,7 +56,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("trace json should be readable: %v", err)
 	}
-	if payload["sessionId"] != "sess-1" || payload["turnId"] != "turn-1" {
+	if payload["sessionId"] != "sess-1" || payload["turnId"] != "turn-1" || payload["caseId"] != "case-runtime" {
 		t.Fatalf("trace metadata missing: %#v", payload)
 	}
 	if !strings.Contains(string(data), "dynamic prompt delta") {

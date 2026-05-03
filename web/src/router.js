@@ -18,6 +18,7 @@ const LLMConfigPage = () => import("./pages/LLMConfigPage.vue");
 const CorootOverviewPage = () => import("./pages/CorootOverviewPage.vue");
 const LabEnvironmentPage = () => import("./pages/LabEnvironmentPage.vue");
 const GeneratorWorkshopPage = () => import("./pages/GeneratorWorkshopPage.vue");
+const PromptTracePage = () => import("./pages/PromptTracePage.vue");
 
 const routes = [
   {
@@ -118,6 +119,11 @@ const routes = [
     path: "/generator",
     name: "generator",
     component: GeneratorWorkshopPage,
+  },
+  {
+    path: "/debug/prompts",
+    name: "prompt-traces",
+    component: PromptTracePage,
   },
 ];
 

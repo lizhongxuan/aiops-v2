@@ -35,6 +35,8 @@ type Request struct {
 	SessionID         string
 	TurnID            string
 	Iteration         int
+	CaseID            string
+	Metadata          map[string]string
 	VisibleTools      []string
 	PromptFingerprint map[string]string
 	Prompt            Prompt
@@ -51,6 +53,8 @@ type payload struct {
 	SessionID         string                       `json:"sessionId,omitempty"`
 	TurnID            string                       `json:"turnId,omitempty"`
 	Iteration         int                          `json:"iteration,omitempty"`
+	CaseID            string                       `json:"caseId,omitempty"`
+	Metadata          map[string]string            `json:"metadata,omitempty"`
 	VisibleTools      []string                     `json:"visibleTools,omitempty"`
 	PromptFingerprint map[string]string            `json:"promptFingerprint,omitempty"`
 	Prompt            Prompt                       `json:"prompt"`
@@ -126,6 +130,8 @@ func buildPayload(req Request) payload {
 		SessionID:         strings.TrimSpace(req.SessionID),
 		TurnID:            strings.TrimSpace(req.TurnID),
 		Iteration:         req.Iteration,
+		CaseID:            firstNonEmpty(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]),
+		Metadata:          copyStringMap(req.Metadata),
 		VisibleTools:      append([]string(nil), req.VisibleTools...),
 		PromptFingerprint: copyStringMap(req.PromptFingerprint),
 		Prompt:            req.Prompt,
@@ -199,6 +205,9 @@ func renderMarkdown(payload payload) string {
 	}
 	if payload.Iteration > 0 {
 		fmt.Fprintf(&b, "- Iteration: `%d`\n", payload.Iteration)
+	}
+	if payload.CaseID != "" {
+		fmt.Fprintf(&b, "- Eval case: `%s`\n", payload.CaseID)
 	}
 	fmt.Fprintf(&b, "- Created: `%s`\n", payload.CreatedAt)
 	if len(payload.VisibleTools) > 0 {

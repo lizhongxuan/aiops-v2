@@ -151,6 +151,7 @@ func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 		Kind:      "runtime_model_input",
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
+		Metadata:  map[string]string{"eval.caseId": "case-1"},
 		PromptFingerprint: map[string]string{
 			"version":       "prompt-fingerprint-v1",
 			"stableHash":    "stable-hash",
@@ -164,7 +165,7 @@ func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read json trace: %v", err)
 	}
-	if !strings.Contains(string(data), `"promptFingerprint"`) || !strings.Contains(string(data), `"developerHash": "developer-hash"`) {
+	if !strings.Contains(string(data), `"promptFingerprint"`) || !strings.Contains(string(data), `"developerHash": "developer-hash"`) || !strings.Contains(string(data), `"caseId": "case-1"`) {
 		t.Fatalf("json trace missing prompt fingerprint:\n%s", string(data))
 	}
 	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
@@ -172,7 +173,7 @@ func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read markdown trace: %v", err)
 	}
-	if !strings.Contains(string(markdown), "- Prompt fingerprint: `stable-hash`") {
+	if !strings.Contains(string(markdown), "- Prompt fingerprint: `stable-hash`") || !strings.Contains(string(markdown), "- Eval case: `case-1`") {
 		t.Fatalf("markdown trace missing prompt fingerprint summary:\n%s", string(markdown))
 	}
 }

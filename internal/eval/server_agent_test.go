@@ -216,6 +216,33 @@ func TestServerAgentRunReturnsClearErrorForFailedTurn(t *testing.T) {
 	}
 }
 
+func TestServerAgentRunTimesOutBlockedChatPost(t *testing.T) {
+	started := time.Now()
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})}
+	agent := ServerAgent{Config: ServerAgentConfig{
+		BaseURL:      "http://eval.local",
+		PollTimeout:  30 * time.Millisecond,
+		PollInterval: time.Millisecond,
+		HTTPClient:   client,
+	}}
+	_, err := agent.Run(context.Background(), Case{ID: "blocked-post", Category: "server", Input: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Run elapsed %s, want bounded by poll timeout", elapsed)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestServerRunErrorIgnoresRecoveredToolFailureWithFinalAnswer(t *testing.T) {
 	state := serverStateSnapshot{
 		Runtime: serverRuntimeSnapshot{Turn: serverRuntimeTurnSnapshot{Active: false, Phase: "completed"}},

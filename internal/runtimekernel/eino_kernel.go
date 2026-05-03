@@ -1151,6 +1151,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			SessionID:        session.ID,
 			TurnID:           turnID,
 			Iteration:        iteration,
+			Metadata:         req.Metadata,
 			Compiled:         compiled,
 			ModelInput:       modelInput,
 			VisibleTools:     toolNames(compileCtx.AssembledTools),

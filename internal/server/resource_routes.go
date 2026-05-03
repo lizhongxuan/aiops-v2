@@ -20,6 +20,7 @@ func registerResourceRoutes(mux *http.ServeMux, rs *ResourceServer) {
 	mux.HandleFunc("/api/v1/lab-environments/", rs.handleLabEnvironments)
 
 	// Coroot Proxy (Req 6.7)
+	mux.HandleFunc("/api/v1/coroot", rs.handleCorootProxy)
 	mux.HandleFunc("/api/v1/coroot/", rs.handleCorootProxy)
 
 	// Generator Workshop API (Req 6.7)

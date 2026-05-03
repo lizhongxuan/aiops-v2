@@ -9,8 +9,6 @@ import {
   AlertTriangleIcon,
   RefreshCwIcon,
   SparklesIcon,
-  LayoutDashboardIcon,
-  ListIcon,
 } from "lucide-vue-next";
 import CorootEmbedPanel from "../components/coroot/CorootEmbedPanel.vue";
 import MonitorAIDrawer from "../components/monitor-ai/MonitorAIDrawer.vue";
@@ -36,6 +34,21 @@ const corootBaseUrl = ref("/api/v1/coroot/");
 // Dashboard iframe state
 const dashboardLoading = ref(true);
 const dashboardError = ref(false);
+
+function normalizeServicesPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.services)) return payload.services;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
+function normalizeServiceStatus(status = "") {
+  const value = String(status || "").trim().toLowerCase();
+  if (value === "healthy") return "ok";
+  if (value === "error") return "critical";
+  return value || "unknown";
+}
 
 const monitorContext = computed(() => ({
   source: "coroot",
@@ -90,7 +103,7 @@ async function fetchServices() {
   loading.value = true;
   try {
     const data = await fetchCorootServicesApi();
-    services.value = Array.isArray(data) ? data : [];
+    services.value = normalizeServicesPayload(data);
   } catch {
     services.value = [];
   } finally {
@@ -98,20 +111,47 @@ async function fetchServices() {
   }
 }
 
-const healthyCount = computed(() => services.value.filter((s) => s.status === "ok" || s.status === "healthy").length);
-const warningCount = computed(() => services.value.filter((s) => s.status === "warning").length);
-const criticalCount = computed(() => services.value.filter((s) => s.status === "critical" || s.status === "error").length);
-
-function statusBadgeClass(status) {
-  if (status === "ok" || status === "healthy") return "badge-ok";
-  if (status === "warning") return "badge-warn";
-  if (status === "critical" || status === "error") return "badge-crit";
-  return "badge-unknown";
-}
+const healthyCount = computed(() => services.value.filter((s) => normalizeServiceStatus(s.status) === "ok").length);
+const warningCount = computed(() => services.value.filter((s) => normalizeServiceStatus(s.status) === "warning").length);
+const criticalCount = computed(() => services.value.filter((s) => normalizeServiceStatus(s.status) === "critical").length);
+const unknownCount = computed(() => Math.max(services.value.length - healthyCount.value - warningCount.value - criticalCount.value, 0));
+const configStateLabel = computed(() => {
+  if (corootConfigLoading.value) return "检测中";
+  return corootConfigured.value ? "已连接" : "未配置";
+});
+const configStateClass = computed(() => {
+  if (corootConfigLoading.value) return "state-loading";
+  return corootConfigured.value ? "state-ok" : "state-warn";
+});
+const serviceTableColumns = computed(() => [
+  { title: "ID", key: "id", ellipsis: { tooltip: true } },
+  { title: "名称", key: "name", ellipsis: { tooltip: true } },
+  {
+    title: "状态",
+    key: "status",
+    render: (row) => h(NBadge, {
+      type: normalizeServiceStatus(row.status) === "ok"
+        ? "success"
+        : normalizeServiceStatus(row.status) === "warning"
+          ? "warning"
+          : normalizeServiceStatus(row.status) === "critical"
+            ? "error"
+            : "default",
+      value: row.status || "unknown",
+      processing: normalizeServiceStatus(row.status) === "warning" || normalizeServiceStatus(row.status) === "critical",
+    }),
+  },
+  {
+    title: "操作",
+    key: "actions",
+    width: 96,
+    render: (row) => h(NButton, { size: "small", quaternary: true, onClick: () => openServiceEmbed(row) }, { default: () => "详情" }),
+  },
+]);
 
 function openServiceEmbed(service) {
   embedTitle.value = service.name || service.id;
-  embedUrl.value = `/api/v1/coroot/api/v1/services/${service.id}/overview`;
+  embedUrl.value = `/api/v1/coroot/api/v1/services/${encodeURIComponent(service.id)}/overview`;
   embedVisible.value = true;
 }
 
@@ -135,6 +175,17 @@ function onDashboardIframeError() {
   dashboardError.value = true;
 }
 
+function openDashboardTab() {
+  activeTab.value = "dashboard";
+  dashboardError.value = false;
+}
+
+function openTopologyPanel() {
+  embedTitle.value = "服务拓扑";
+  embedUrl.value = "/api/v1/coroot/api/v1/topology";
+  embedVisible.value = true;
+}
+
 let previousTitle = "";
 
 onMounted(() => {
@@ -151,40 +202,57 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="coroot-page">
-    <header class="coroot-hero">
-      <div class="coroot-hero-copy">
+    <header class="coroot-header">
+      <div class="coroot-title-block">
         <button class="back-link" type="button" @click="goBack">
           <ArrowLeftIcon :size="16" />
           <span>返回首页</span>
         </button>
-        <div class="coroot-kicker">Monitoring / Coroot</div>
-        <h1>Coroot 监控总览</h1>
-        <p>查看 Coroot 监控的服务健康状态、拓扑和告警。</p>
+        <div class="title-row">
+          <div>
+            <div class="coroot-kicker">Monitoring / Coroot</div>
+            <h1>Coroot 监控总览</h1>
+          </div>
+          <span class="config-state" :class="configStateClass">{{ configStateLabel }}</span>
+        </div>
+        <p>服务健康、拓扑、告警和完整 Coroot Dashboard 的统一入口。</p>
       </div>
-      <n-grid :cols="3" :x-gap="12">
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="健康" :value="healthyCount">
-              <template #prefix><ActivityIcon :size="18" style="color:#16a34a" /></template>
-            </n-statistic>
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="告警" :value="warningCount">
-              <template #prefix><AlertTriangleIcon :size="18" style="color:#d97706" /></template>
-            </n-statistic>
-          </n-card>
-        </n-gi>
-        <n-gi>
-          <n-card size="small">
-            <n-statistic label="异常" :value="criticalCount">
-              <template #prefix><AlertTriangleIcon :size="18" style="color:#dc2626" /></template>
-            </n-statistic>
-          </n-card>
-        </n-gi>
-      </n-grid>
+      <div class="coroot-actions">
+        <n-button size="small" @click="fetchServices" :disabled="loading || !corootConfigured">
+          <template #icon><RefreshCwIcon :size="14" :class="{ spinning: loading }" /></template>
+          刷新
+        </n-button>
+        <n-button size="small" @click="openDashboardTab" :disabled="!corootConfigured">
+          <template #icon><ActivityIcon :size="14" /></template>
+          Dashboard
+        </n-button>
+        <n-button size="small" type="primary" @click="aiDrawerVisible = true">
+          <template #icon><SparklesIcon :size="14" /></template>
+          AI 助手
+        </n-button>
+      </div>
     </header>
+
+    <section class="status-strip" aria-label="Coroot 服务状态">
+      <div class="status-cell">
+        <n-statistic label="健康" :value="healthyCount">
+          <template #prefix><ActivityIcon :size="18" style="color:#16a34a" /></template>
+        </n-statistic>
+      </div>
+      <div class="status-cell">
+        <n-statistic label="告警" :value="warningCount">
+          <template #prefix><AlertTriangleIcon :size="18" style="color:#d97706" /></template>
+        </n-statistic>
+      </div>
+      <div class="status-cell">
+        <n-statistic label="异常" :value="criticalCount">
+          <template #prefix><AlertTriangleIcon :size="18" style="color:#dc2626" /></template>
+        </n-statistic>
+      </div>
+      <div class="status-cell">
+        <n-statistic label="未知" :value="unknownCount" />
+      </div>
+    </section>
 
     <!-- Degraded state: Coroot not configured -->
     <div v-if="!corootConfigLoading && !corootConfigured" class="config-warning" data-testid="coroot-not-configured">
@@ -196,17 +264,6 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-if="corootConfigured || corootConfigLoading">
-      <n-space align="center" style="margin-bottom:12px;">
-        <n-button size="small" @click="fetchServices" :disabled="loading">
-          <template #icon><RefreshCwIcon :size="14" :class="{ spinning: loading }" /></template>
-          刷新
-        </n-button>
-        <n-button size="small" type="primary" @click="aiDrawerVisible = true">
-          <template #icon><SparklesIcon :size="14" /></template>
-          AI 助手
-        </n-button>
-      </n-space>
-
       <div v-if="loading" class="loading-hint">加载中…</div>
 
       <n-tabs v-model:value="activeTab" type="line" data-testid="coroot-tab-bar">
@@ -221,12 +278,7 @@ onBeforeUnmount(() => {
             <template #header>服务列表</template>
             <n-data-table
               v-if="services.length"
-              :columns="[
-                { title: 'ID', key: 'id' },
-                { title: '名称', key: 'name' },
-                { title: '状态', key: 'status', render: (row) => h(NBadge, { type: row.status === 'ok' || row.status === 'healthy' ? 'success' : row.status === 'warning' ? 'warning' : row.status === 'critical' || row.status === 'error' ? 'error' : 'default', value: row.status || 'unknown', processing: row.status === 'warning' || row.status === 'critical' }) },
-                { title: '操作', key: 'actions', render: (row) => h(NButton, { size: 'small', quaternary: true, onClick: () => openServiceEmbed(row) }, { default: () => '详情' }) },
-              ]"
+              :columns="serviceTableColumns"
               :data="services"
               :row-key="(row) => row.id"
               :bordered="false"
@@ -265,8 +317,8 @@ onBeforeUnmount(() => {
               <NetworkIcon :size="18" style="vertical-align: middle; margin-right: 6px;" />
               服务拓扑
             </template>
-            <p class="topology-hint">拓扑视图通过 Coroot 嵌入面板展示。点击下方按钮打开。</p>
-            <n-button @click="embedTitle = '服务拓扑'; embedUrl = '/api/v1/coroot/api/v1/topology'; embedVisible = true;">
+            <p class="topology-hint">在侧边面板查看 Coroot 拓扑数据，适合和当前服务列表并行对照。</p>
+            <n-button @click="openTopologyPanel">
               打开拓扑视图
             </n-button>
           </n-card>
@@ -301,21 +353,39 @@ onBeforeUnmount(() => {
   padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
+  gap: 14px;
+  background: #f6f8fb;
 }
 
-.coroot-hero {
+.coroot-header {
   display: flex;
   justify-content: space-between;
-  gap: 18px;
-  padding: 22px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.88);
+  align-items: flex-start;
+  gap: 16px;
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: #fff;
   border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.05);
+}
+
+.coroot-title-block {
+  min-width: 0;
+  flex: 1;
+}
+
+.title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.coroot-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .back-link {
@@ -331,49 +401,58 @@ onBeforeUnmount(() => {
 }
 
 .coroot-kicker {
-  display: inline-flex;
-  margin-top: 12px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 11px;
+  color: #64748b;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
-.coroot-hero h1 { margin: 12px 0 8px; font-size: 30px; }
-.coroot-hero p { margin: 0; color: #475569; line-height: 1.7; }
-
-.coroot-hero-stats {
-  display: flex;
-  gap: 12px;
-  align-self: end;
+.coroot-header h1 {
+  margin: 4px 0 0;
+  font-size: 24px;
+  line-height: 1.2;
 }
+.coroot-header p { margin: 8px 0 0; color: #475569; line-height: 1.6; }
 
-.coroot-stat {
-  padding: 14px 16px;
-  border-radius: 18px;
-  background: #f8fafc;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  display: flex;
-  flex-direction: column;
+.config-state {
+  display: inline-flex;
   align-items: center;
-  min-width: 80px;
+  min-height: 24px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
-.coroot-stat span { color: #64748b; font-size: 12px; margin-top: 4px; }
-.coroot-stat strong { font-size: 20px; color: #0f172a; margin-top: 4px; }
-.stat-ok strong { color: #16a34a; }
-.stat-warn strong { color: #d97706; }
-.stat-crit strong { color: #dc2626; }
+.state-ok { background: #dcfce7; color: #166534; }
+.state-warn { background: #fef3c7; color: #92400e; }
+.state-loading { background: #e0f2fe; color: #075985; }
+
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  background: #fff;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.status-cell {
+  min-width: 0;
+  padding: 14px 16px;
+  border-right: 1px solid rgba(226, 232, 240, 0.9);
+}
+.status-cell:last-child {
+  border-right: 0;
+}
 
 .config-warning {
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  padding: 18px 22px;
-  border-radius: 16px;
+  padding: 14px 16px;
+  border-radius: 10px;
   background: #fef3c7;
   border: 1px solid #fcd34d;
   color: #92400e;
@@ -434,75 +513,18 @@ onBeforeUnmount(() => {
 .cards-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: 12px;
+  margin-bottom: 14px;
 }
-
-.section-card {
-  padding: 18px;
-  border-radius: 20px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
-}
-
-.section-card h2 { margin: 0 0 14px; font-size: 18px; }
-
-.data-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.data-table th,
-.data-table td {
-  padding: 10px 12px;
-  text-align: left;
-  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
-  font-size: 13px;
-}
-
-.data-table th {
-  color: #64748b;
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.data-table tbody tr:hover { background: #f8fafc; }
-
-.status-badge {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-}
-.badge-ok { background: #dcfce7; color: #16a34a; }
-.badge-warn { background: #fef3c7; color: #d97706; }
-.badge-crit { background: #fee2e2; color: #dc2626; }
-.badge-unknown { background: #f1f5f9; color: #64748b; }
-
-.action-btn {
-  padding: 6px 14px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  background: #fff;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  color: #1d4ed8;
-}
-.action-btn:hover { background: #eff6ff; }
 
 .topology-hint { color: #64748b; font-size: 13px; margin: 0 0 12px; }
-.empty-hint { color: #64748b; font-size: 13px; margin: 14px 0 0; }
 
 /* Dashboard Tab - inline iframe container */
 .dashboard-container {
   position: relative;
-  border-radius: 20px;
+  border-radius: 10px;
   background: #fff;
   border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
   overflow: hidden;
   min-height: 600px;
 }
@@ -553,8 +575,11 @@ onBeforeUnmount(() => {
 
 @media (max-width: 760px) {
   .coroot-page { padding: 16px; }
-  .coroot-hero { flex-direction: column; }
-  .coroot-hero-stats { flex-wrap: wrap; }
+  .coroot-header { flex-direction: column; }
+  .title-row { flex-direction: column; }
+  .status-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .status-cell:nth-child(2) { border-right: 0; }
+  .status-cell:nth-child(-n + 2) { border-bottom: 1px solid rgba(226, 232, 240, 0.9); }
   .cards-grid { grid-template-columns: 1fr; }
 }
 </style>

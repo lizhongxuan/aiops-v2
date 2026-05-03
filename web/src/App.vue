@@ -25,6 +25,7 @@ import {
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   ActivityIcon,
+  FileSearchIcon,
 } from "lucide-vue-next";
 
 const store = useAppStore();
@@ -469,6 +470,7 @@ const mainHeaderTitle = computed(() => {
   if (route.name === "chat") return "单机会话";
   if (route.name === "protocol") return "协作工作台";
   if (route.name === "mcp") return "MCP";
+  if (route.name === "prompt-traces") return "Prompt Trace";
   if (route.path.startsWith("/settings")) return "设置";
   return "Codex Workspace";
 });
@@ -512,6 +514,7 @@ const menuActiveKey = computed(() => {
   if (route.name === "protocol") return "protocol";
   if (route.name === "mcp") return "mcp";
   if (route.name === "coroot") return "coroot";
+  if (route.name === "prompt-traces") return "prompt-traces";
   if (route.name === "settings-hosts") return "hosts";
   return "";
 });
@@ -542,6 +545,11 @@ const menuOptions = computed(() => [
     icon: renderMenuIcon(ActivityIcon),
   },
   {
+    label: "Prompt Trace",
+    key: "prompt-traces",
+    icon: renderMenuIcon(FileSearchIcon),
+  },
+  {
     label: "主机列表",
     key: "hosts",
     icon: renderMenuIcon(ServerIcon),
@@ -562,6 +570,9 @@ function handleMenuSelect(key) {
       break;
     case "mcp":
       router.push("/mcp");
+      break;
+    case "prompt-traces":
+      router.push("/debug/prompts");
       break;
     case "hosts":
       router.push("/settings/hosts");

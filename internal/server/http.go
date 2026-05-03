@@ -94,6 +94,7 @@ type HTTPServer struct {
 	appWSHeartbeatTick time.Duration
 	appSnapshots       *AppSnapshotBroadcaster
 	agentEvents        appui.AgentEventService
+	promptTraces       appui.PromptTraceService
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -123,6 +124,12 @@ func WithTerminalManager(manager *terminal.Manager) HTTPServerOption {
 	}
 }
 
+func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.promptTraces = service
+	}
+}
+
 // NewHTTPServer creates a new HTTPServer wired to the given application services.
 func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer {
 	agentEvents := appui.NewAgentEventService(nil)
@@ -139,6 +146,7 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
 		agentEvents:        agentEvents,
+		promptTraces:       appui.NewPromptTraceService(""),
 		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {
@@ -171,6 +179,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/sessions/", s.handleSessions)
 	s.mux.HandleFunc("/api/v1/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/v1/llm-config", s.handleLLMConfig)
+	s.mux.HandleFunc("/api/v1/debug/model-input-traces", s.handlePromptTraces)
+	s.mux.HandleFunc("/api/v1/debug/model-input-traces/file", s.handlePromptTraceFile)
 	s.mux.HandleFunc("/api/v1/hosts", s.handleHosts)
 	s.mux.HandleFunc("/api/v1/hosts/", s.handleHosts)
 	s.mux.HandleFunc("/api/v1/mcp/servers", s.handleMCPServers)

@@ -14,6 +14,7 @@ type ModelInputDebugTraceRequest struct {
 	SessionID        string
 	TurnID           string
 	Iteration        int
+	Metadata         map[string]string
 	Compiled         promptcompiler.CompiledPrompt
 	ModelInput       []*schema.Message
 	VisibleTools     []string
@@ -121,6 +122,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		SessionID:         req.SessionID,
 		TurnID:            req.TurnID,
 		Iteration:         req.Iteration,
+		Metadata:          req.Metadata,
 		VisibleTools:      req.VisibleTools,
 		PromptFingerprint: promptFingerprintMap(req.Compiled.Fingerprint),
 		Prompt: modeltrace.Prompt{

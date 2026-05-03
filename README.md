@@ -23,6 +23,9 @@ internal/
 ├── modelrouter/                # ModelRouter — LLM Provider 路由与 Fallback
 ├── agentmgr/                   # AgentManager — Multi-Agent 编排（ADK）
 ├── spanstream/                 # SpanTree + MultiplexedStream 多路复用流
+├── modeltrace/                 # 本地模型输入 trace 文件与 prompt fingerprint
+├── observability/              # OpenTelemetry observer（本地 Phoenix trace UI）
+├── eval/                       # 本地 agent eval case / runner / scorer
 ├── server/                     # HTTP/WebSocket/gRPC API 兼容层
 ├── store/                      # 数据持久化（内存 + JSON 异步写盘）
 ├── settings/                   # settings precedence / governance 聚合
@@ -59,6 +62,263 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 AIOPS_HTTP_ADDR=:18080 ./scripts/start.sh
 SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 ./scripts/start.sh --dry-run
+```
+
+---
+
+## 本地 Agent 调试与 Eval 闭环
+
+当前本地调试链路固定为：Phoenix 看时间线，`/debug/prompts` 或 `.data/model-input-traces` 看完整模型输入，`cmd/agent-eval` 做回归。不要再为同一目标新增第二套 trace 存储、第二套 eval runner 或第二套 prompt 调试格式。
+
+### 1. Phoenix Trace UI（可选、本地）
+
+Phoenix 只作为本地 OpenTelemetry trace UI，不是生产依赖，也不保存完整 prompt。完整 prompt 仍只写入本地 model input trace 文件。
+
+```bash
+uvx --from arize-phoenix phoenix serve
+```
+
+启动 aiops server 时开启 trace：
+
+```bash
+AIOPS_HTTP_ADDR=:18080 \
+AIOPS_OTEL_ENABLED=1 \
+AIOPS_OTEL_ENDPOINT=http://localhost:6006/v1/traces \
+AIOPS_OTEL_SERVICE_NAME=aiops-v2-agent \
+AIOPS_DEBUG_MODEL_INPUT_TRACE=1 \
+AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=.data/model-input-traces \
+./scripts/start.sh
+```
+
+Phoenix 中应能看到：
+
+- `agent.turn` root span
+- `model_call` child span
+- 有工具调用时的 `tool_call.<tool_name>` child span
+- `model_call` 上的 `prompt.stable_hash`、`trace.file`，以及存在相邻输入 diff 时的 `trace.diff`
+
+默认禁止把完整 prompt 写入 span attribute。`AIOPS_OTEL_INCLUDE_PROMPT` 即使存在，也只能本地临时排查使用，不能写入源码、fixture、README 或报告。
+
+### 2. 本地模型输入 Trace
+
+开启 `AIOPS_DEBUG_MODEL_INPUT_TRACE=1` 后，每次模型调用会在 `.data/model-input-traces/<session>/<turn>/` 下生成 iteration trace。用于排查 prompt 优化时，先从 Phoenix 的 `trace.file` 或 `/debug/prompts` 定位到本轮输入，再看：
+
+- 当前 iteration 的完整模型输入
+- `promptFingerprint` / `prompt.stable_hash`
+- 非首轮或 resume 后生成的 `input.diff.md`
+- visible tools、developer rules、runtime policy 是否符合预期
+
+Phoenix 负责定位“哪一轮慢、哪一步错、哪个 tool 失败”；本地 trace 文件负责看“模型到底看到了什么 prompt 和 tool surface”。
+
+也可以直接打开 Web 页面：
+
+```text
+http://127.0.0.1:18080/debug/prompts
+```
+
+这个页面只读 `.data/model-input-traces`，会按时间列出最近的模型输入 trace。右侧默认是 Cards-first 视图，支持 `概览`、`Prompt 层`、`Messages`、`Tools`、`Diff`、`Raw`：先用卡片看完整 prompt 分层、message 顺序、visible tools 和 prompt hash，最后再用 `Raw` 查看原始 Markdown/JSON 兜底。它不创建新 trace、不修改 prompt、不替代 Phoenix；只是把原来需要手动找文件和翻 JSON 的步骤收敛成一个本地调试界面。
+
+详细用法见 `docs/agent-trace-eval-guide.zh.md`。
+
+真实 LLM smoke 验证方式：
+
+```bash
+# 前提：已在 设置 -> LLM 配置 中配置本地 provider，或通过 /api/v1/llm-config 写入。
+# API key 只能来自本地环境变量或 UI 输入，不写入源码/README/fixture。
+curl -sS -X POST http://127.0.0.1:18080/api/v1/chat/message \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"请只回复这一行：PROMPT_TRACE_REAL_LLM_SMOKE"}'
+
+curl -sS 'http://127.0.0.1:18080/api/v1/debug/model-input-traces?limit=1'
+```
+
+验收点：
+
+- 最新 trace 的 `markdownPath` 指向刚才 turn 的 `iteration-000-*.md`。
+- 打开 `/debug/prompts` 后，左侧最新项是刚才的 session/turn。
+- 右侧默认 `概览` 能看到本次 LLM 输入、message/tool 数、prompt size、user message、prompt fingerprint、visible tools 和异常提示。
+- `Prompt 层` 能按 system/developer/tool/runtime/conversation 分层查看完整 prompt。
+- `Messages` 能按 provider 真实顺序查看发给 LLM 的 message。
+- `Tools` 能确认 visible tools、工具描述和 tool registry prompt。
+- `Raw` 仍能查看原始 Markdown/JSON；如果一轮内有第二次模型调用，`Diff` 能看到相邻输入变化。
+
+### 3. Agent Eval
+
+快速 mock 回归：
+
+```bash
+go run ./cmd/agent-eval \
+  -agent mock \
+  -priority P0 \
+  -cases testdata/eval_cases \
+  -out .data/eval_runs/prompt-p0-mock
+```
+
+真实本地 server E2E：
+
+```bash
+go run ./cmd/agent-eval \
+  -agent server \
+  -server-url http://127.0.0.1:18080 \
+  -priority P0 \
+  -cases testdata/eval_cases \
+  -out .data/eval_runs/prompt-p0-server \
+  -poll-timeout 2m \
+  -poll-interval 1s
+```
+
+`cmd/agent-eval` 会生成：
+
+- `report.json`：机器可读分数、checks、baseline comparison、prompt fingerprints
+- `report.md`：人工可读失败原因、缺失项、异常工具调用、prompt fingerprint 摘要
+- 每个 case 的 `answer.txt`、`events.json`、`tool_calls.json`、`turn_items.json`
+
+常用参数：
+
+- `-priority P0|P1|P2`：只跑指定优先级 case
+- `-baseline <report.json>`：和旧报告对比，标出 better/worse/same/new/missing
+- `-save-baseline <path>`：把当前报告保存成后续 baseline
+- `-agent server`：通过真实 `/api/v1/chat/message` 和 `/api/v1/state` 跑本地 aiops server
+
+Server eval 会把 `eval.caseId`、`eval.rootCauseCategory`、`eval.priority` 写入 chat metadata，并把真实 `AgentEvent` 还原成现有 `eval.RunOutput`。失败的 tool result 会保留为 `tool_result(status=failed)`，不能误归类成新的 `tool_call`。如果真实模型触发审批阻断或长请求，`-poll-timeout` 会作为端到端上限让 case 有界失败，避免无人值守回归一直挂住。
+
+### 4. Prompt Diagnose 自动归因
+
+改 prompt 后不要只看单次输出。推荐职责边界是：Phoenix trace 负责看时间线，Prompt Trace 负责看完整模型输入，`cmd/agent-eval` 负责打分，`cmd/prompt-diagnose` 负责把 report、artifacts 和 trace 汇总成“为什么失败、该改哪一层、有没有回归”。
+
+只诊断已有 eval report：
+
+```bash
+go run ./cmd/prompt-diagnose \
+  -report .data/eval_runs/prompt-p0-server/report.json \
+  -cases testdata/eval_cases \
+  -trace-dir .data/model-input-traces \
+  -out .data/prompt_optimization/prompt-p0-server
+```
+
+带 baseline/current 对比：
+
+```bash
+go run ./cmd/prompt-diagnose \
+  -report .data/eval_runs/prompt-p0-server-current/report.json \
+  -baseline .data/eval_runs/prompt-p0-server-baseline/report.json \
+  -cases testdata/eval_cases \
+  -trace-dir .data/model-input-traces \
+  -out .data/prompt_optimization/prompt-p0-server-current \
+  -fail-on-regression
+```
+
+一键跑 eval + 诊断：
+
+```bash
+./scripts/prompt-regression.sh \
+  --agent server \
+  --server-url http://127.0.0.1:18080 \
+  --priority P0 \
+  --cases testdata/eval_cases \
+  --trace-dir .data/model-input-traces \
+  --baseline .data/eval_runs/prompt-p0-server-baseline/report.json \
+  --out .data/prompt_optimization/server-current \
+  --fail-on-regression
+```
+
+定向重跑：
+
+```bash
+# 只重跑一个 case
+./scripts/prompt-regression.sh \
+  --agent server \
+  --server-url http://127.0.0.1:18080 \
+  --case-id tool-calling \
+  --cases testdata/eval_cases \
+  --trace-dir .data/model-input-traces \
+  --out .data/prompt_optimization/tool-calling-current
+
+# 从旧报告中抽失败 case 重跑
+./scripts/prompt-regression.sh \
+  --agent server \
+  --server-url http://127.0.0.1:18080 \
+  --failed-from .data/eval_runs/prompt-p0-server/report.json \
+  --cases testdata/eval_cases \
+  --trace-dir .data/model-input-traces \
+  --out .data/prompt_optimization/failed-rerun
+```
+
+为失败或退化 case 生成草稿：
+
+```bash
+go run ./cmd/prompt-diagnose \
+  -report .data/eval_runs/prompt-p0-server-current/report.json \
+  -baseline .data/eval_runs/prompt-p0-server-baseline/report.json \
+  -cases testdata/eval_cases \
+  -trace-dir .data/model-input-traces \
+  -out .data/prompt_optimization/prompt-p0-server-current \
+  -draft-cases-out .data/prompt_optimization/prompt-p0-server-current/draft-cases
+```
+
+输出文件：
+
+- `diagnosis.json`：机器可读诊断摘要。
+- `diagnosis.zh.md`：中文失败归因和证据摘要。
+- `compare.zh.md`：baseline/current 的 better/worse/same/new/missing。
+- `trace-links.md`：case 到 Prompt Trace 文件的映射，包含可打开 `/debug/prompts?trace=...&caseId=...` 的本地深链。
+- `suggestions.zh.md`：人工修改建议。
+- `failed-cases.json`：失败或退化 case 子集。
+- `run-metadata.json` / `trend.zh.md`：本次 run 摘要和最近历史趋势；默认追加到 `.data/prompt_optimization/history.json`。
+
+`prompt-diagnose` 是只读诊断层：不修改 prompt、不启动新 runner、不新增 trace 存储、不把完整 prompt 正文写入报告。
+`scripts/prompt-regression.sh` 会把最近一次输出目录写到 `.data/prompt_optimization/latest_run.txt`，方便回看。
+
+可选 LLM 辅助建议默认关闭，只发送 diagnosis 摘要，不发送完整 prompt：
+
+```bash
+AIOPS_LLM_BASE_URL=http://127.0.0.1:8317/v1 \
+AIOPS_LLM_API_KEY=... \
+AIOPS_LLM_MODEL=gpt-5.4 \
+./scripts/prompt-regression.sh \
+  --agent server \
+  --server-url http://127.0.0.1:18080 \
+  --priority P0 \
+  --cases testdata/eval_cases \
+  --trace-dir .data/model-input-traces \
+  --out .data/prompt_optimization/server-current \
+  --llm-suggestions
+```
+
+### 5. 从失败结果固化 Eval Case
+
+当一次真实运行暴露 prompt/tool/policy/model 问题时，用 eval artifacts 草拟 case：
+
+```bash
+go run ./cmd/agent-eval-case \
+  -id my-regression-case \
+  -category prompt \
+  -input "原始用户输入" \
+  -answer-file .data/eval_runs/<run>/<case>/answer.txt \
+  -tool-calls-file .data/eval_runs/<run>/<case>/tool_calls.json \
+  -turn-items-file .data/eval_runs/<run>/<case>/turn_items.json \
+  -out testdata/eval_cases/my-regression-case.json
+```
+
+生成的 `.draft.md` 只作为人工审核辅助。正式 case 必须人工收敛到稳定断言，避免把一次模型措辞直接固化成脆弱测试。
+
+### 6. 调试顺序
+
+1. 跑一次真实 turn，在 Phoenix 找最新 `agent.turn`。
+2. 看 `model_call` 是否耗时异常、是否有错误状态、是否缺少工具调用。
+3. 打开 `/debug/prompts` 或 `trace.file`，检查 prompt、developer rules、tool surface、runtime policy。
+4. 如果不是首轮，打开 `trace.diff`，确认 resume/approval 后上下文变化。
+5. 把失败固化成 eval case，再修改 prompt/tool/policy/model。
+6. 先跑 `-agent mock -priority P0`，再跑 `-agent server -priority P0`。
+7. 跑 `cmd/prompt-diagnose` 或 `scripts/prompt-regression.sh`，确认目标 case 变好、其他 P0 没退化，并看诊断建议该改 prompt/tool/context/policy/completion_gate 哪一层。
+
+提交前建议：
+
+```bash
+./scripts/check-agent-tuning.sh HEAD
+./scripts/check-agent-tuning.sh --run HEAD
+./scripts/phoenix-smoke.sh
+go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diagnose ./internal/observability ./internal/runtimekernel -count=1
 ```
 
 ---
@@ -481,7 +741,7 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 ## 📚 扩展文档
 
 - [注册规则升级设计方案](docs/registration-upgrade-design.md) — 基于 claude code 源码分析的注册机制增强计划
-- [Agent 调优指南](docs/agent-tuning-guide.md) — prompt/tool/policy/model 调优流程与 eval 框架
+- [Agent Trace / Eval / Prompt 优化主指南](docs/agent-trace-eval-guide.zh.md) — 本地 trace、Prompt Trace、eval、诊断和 prompt 优化闭环
 
 ## 测试
 

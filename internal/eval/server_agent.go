@@ -41,17 +41,19 @@ func (a ServerAgent) Run(ctx context.Context, c Case) (RunOutput, error) {
 	if strings.TrimSpace(cfg.RunID) == "" {
 		cfg.RunID = time.Now().UTC().Format("20060102T150405.000000000Z")
 	}
+	runCtx, cancel := context.WithTimeout(ctx, cfg.PollTimeout)
+	defer cancel()
 	client := cfg.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
 	}
 	turnID := defaultServerEvalID(cfg, c)
 	messageID := turnID + "-message"
-	resp, err := postServerChatMessage(ctx, client, cfg, c, turnID, messageID)
+	resp, err := postServerChatMessage(runCtx, client, cfg, c, turnID, messageID)
 	if err != nil {
 		return RunOutput{}, err
 	}
-	state, err := pollServerState(ctx, client, cfg, resp)
+	state, err := pollServerState(runCtx, client, cfg, resp)
 	if err != nil {
 		return RunOutput{}, err
 	}
