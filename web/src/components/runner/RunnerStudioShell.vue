@@ -89,7 +89,9 @@ const saveStateLabel = computed(() => {
   if (state.status === "pending") return state.message || "未保存";
   if (state.status === "saving") return state.message || "正在保存";
   if (state.status === "saved") return state.lastSavedAt ? `已保存 ${state.lastSavedAt}` : state.message || "已保存";
-  if (state.status === "error") return state.message || "保存失败";
+  if (state.status === "local_draft") return state.message || "本地草稿，未同步";
+  if (state.status === "blocked") return state.message || "操作被阻止";
+  if (state.status === "failed" || state.status === "error") return state.message || "操作失败";
   if (state.status === "conflict") return state.message || "保存冲突";
   return state.message || "草稿";
 });
@@ -131,9 +133,9 @@ const isRunActive = computed(() => {
   if (["queued", "running"].includes(runState.value.status)) return true;
   return Object.values(runState.value.nodes || {}).some((node) => ["queued", "running"].includes(node.status));
 });
-const serverActionKeys = new Set(["save", "validate", "dry-run", "run", "stop-run", "publish"]);
+const serverActionKeys = new Set(["dry-run", "run", "stop-run", "publish"]);
 const serverActionDisabledReason = computed(
-  () => props.serverActionsDisabledReason || "Runner Studio API 不可用，保存、校验、运行和发布暂不可用。",
+  () => props.serverActionsDisabledReason || "Runner Studio API 不可用，运行和发布暂不可用；保存会落本地草稿。",
 );
 const toolbarActions = computed(() => [
   { key: "save", label: "保存", icon: SaveIcon },

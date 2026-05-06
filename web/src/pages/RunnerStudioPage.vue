@@ -20,7 +20,15 @@ import {
 } from "../api/runnerStudioClient";
 import RunnerStudioShell from "../components/runner/RunnerStudioShell.vue";
 import RunnerVersionHistoryPanel from "../components/runner/RunnerVersionHistoryPanel.vue";
+import RunnerReadinessModal from "../components/runner/RunnerReadinessModal.vue";
+import RunnerRunPreparationModal from "../components/runner/RunnerRunPreparationModal.vue";
 import WorkflowManagerModal from "../components/runner/WorkflowManagerModal.vue";
+import {
+  listLocalWorkflowDrafts,
+  loadLocalWorkflowDraft,
+  saveLocalWorkflowDraft,
+} from "../components/runner/localWorkflowDraftStore";
+import { checkRunnerWorkflowReadiness } from "../components/runner/runnerReadiness";
 import {
   createWorkflowManagerState,
   readWorkflowManagerState,
@@ -41,6 +49,14 @@ const workflowUiState = ref(createWorkflowManagerState());
 const managerOpen = ref(false);
 const dirty = ref(false);
 const saveState = ref({ status: "idle", message: "", lastSavedAt: "", error: "" });
+const readinessModalOpen = ref(false);
+const readinessModalResult = ref(null);
+const readinessModalServerReason = ref("");
+const runPreparationOpen = ref(false);
+const runPreparationMode = ref("run");
+const runPreparationReadiness = ref(null);
+const runPreparationServerReason = ref("");
+const runPreparationWorkflowName = ref("");
 const draftConflict = ref(null);
 const runEvents = ref([]);
 const activeRunId = ref("");
@@ -56,7 +72,6 @@ const router = useRouter();
 const AUTOSAVE_DELAY_MS = 2000;
 let autosaveTimer = null;
 let graphLoadToken = 0;
-const serverRequiredToolbarActions = new Set(["save", "validate", "dry-run", "run", "stop-run", "publish"]);
 const serverActionsDisabled = computed(() => Boolean(apiNotice.value));
 const serverActionsDisabledReason = computed(() => {
   if (!apiNotice.value) return "";
@@ -91,6 +106,19 @@ function normalizeActionCatalog(payload) {
   return Array.isArray(items) ? items : [];
 }
 
+function mergeWorkflowLists(remoteWorkflows, localDrafts) {
+  const remote = Array.isArray(remoteWorkflows) ? remoteWorkflows : [];
+  const locals = Array.isArray(localDrafts) ? localDrafts : [];
+  const localKeys = new Set(locals.map((workflow) => workflowKey(workflow)).filter(Boolean));
+  return [
+    ...locals,
+    ...remote.filter((workflow) => {
+      const key = workflowKey(workflow);
+      return key && !localKeys.has(key);
+    }),
+  ];
+}
+
 async function loadRunnerStudio() {
   loading.value = true;
   error.value = null;
@@ -110,9 +138,9 @@ async function loadRunnerStudio() {
     return;
   }
   if (workflowResult.status === "fulfilled") {
-    workflows.value = normalizeWorkflowList(workflowResult.value);
+    workflows.value = mergeWorkflowLists(normalizeWorkflowList(workflowResult.value), listLocalWorkflowDrafts());
   } else {
-    workflows.value = [];
+    workflows.value = listLocalWorkflowDrafts();
   }
   if (catalogResult.status === "fulfilled") {
     const catalogActions = normalizeActionCatalog(catalogResult.value);
@@ -228,14 +256,6 @@ const versionPanelCurrentYaml = computed(() => {
   return "";
 });
 
-function nextBlankWorkflowName() {
-  const used = new Set(workflows.value.map((workflow) => workflowKey(workflow)).filter(Boolean));
-  if (!used.has("runner-blank")) return "runner-blank";
-  let index = 2;
-  while (used.has(`runner-blank-${index}`)) index += 1;
-  return `runner-blank-${index}`;
-}
-
 function normalizeGraph(graph, name) {
   return {
     version: graph?.version || "v1",
@@ -249,10 +269,10 @@ function normalizeGraph(graph, name) {
   };
 }
 
-function createBlankWorkflowGraph(name) {
+function createBlankWorkflowGraph(name, title = name) {
   return normalizeGraph(
     {
-      workflow: { name },
+      workflow: { name, title },
       nodes: [
         {
           id: "start",
@@ -305,6 +325,61 @@ function setSaveState(status, patch = {}) {
     error: "",
     ...patch,
   };
+}
+
+function persistLocalWorkflowDraft(name, graph, patch = {}) {
+  const key = String(name || graph?.workflow?.name || "").trim();
+  if (!key) return null;
+  const current = workflows.value.find((workflow) => workflowKey(workflow) === key);
+  const draft = saveLocalWorkflowDraft({
+    ...(current || {}),
+    ...patch,
+    id: key,
+    name: key,
+    slug: key,
+    title: patch.title || current?.title || graph?.workflow?.title || key,
+    status: patch.status || current?.status || "draft",
+    graph: normalizeGraph(graph, key),
+  });
+  upsertWorkflow(key, draft);
+  return draft;
+}
+
+function readinessResultFor(workflow, graph) {
+  return checkRunnerWorkflowReadiness({
+    workflow: { name: workflowKey(workflow), title: workflow?.title || workflowKey(workflow) },
+    graph,
+    actions: actions.value,
+  });
+}
+
+function readinessErrorText(readiness) {
+  return (readiness?.blockers || []).map((item) => item.message || item.code).filter(Boolean).join("；");
+}
+
+function readinessValidationPayload(readiness) {
+  return {
+    valid: Boolean(readiness?.ready),
+    status: readiness?.ready ? "validated" : "draft",
+    errors: (readiness?.blockers || []).map((item) => item.message || item.code),
+    warnings: (readiness?.warnings || []).map((item) => item.message || item.code),
+    infos: (readiness?.infos || []).map((item) => item.message || item.code),
+    local: true,
+  };
+}
+
+function showReadinessModal(readiness, options = {}) {
+  readinessModalResult.value = readiness || { ready: false, blockers: [], warnings: [], infos: [] };
+  readinessModalServerReason.value = String(options.serverReason || "");
+  readinessModalOpen.value = true;
+}
+
+function showRunPreparationModal(readiness, options = {}) {
+  runPreparationReadiness.value = readiness || { ready: false, blockers: [], warnings: [], infos: [] };
+  runPreparationMode.value = options.mode || "run";
+  runPreparationServerReason.value = String(options.serverReason || "");
+  runPreparationWorkflowName.value = String(options.workflowName || selectedWorkflowName.value || "");
+  runPreparationOpen.value = true;
 }
 
 function saveNoteForReason(reason) {
@@ -429,6 +504,18 @@ async function ensureWorkflowGraphLoaded(name) {
     replaceWorkflow(key, { graph });
     return graph;
   }
+  const localDraft = loadLocalWorkflowDraft(key);
+  if (localDraft?.graph) {
+    const graph = normalizeGraph(localDraft.graph, key);
+    replaceWorkflow(key, {
+      ...localDraft,
+      graph,
+      local_draft: true,
+      status: localDraft.status || workflow?.status || "draft",
+    });
+    setSaveState("local_draft", { message: "本地草稿", lastSavedAt: formatSaveTime() });
+    return graph;
+  }
   const loadToken = (graphLoadToken += 1);
   try {
     const payload = await getRunnerStudioWorkflowGraph(key);
@@ -451,7 +538,8 @@ async function ensureWorkflowGraphLoaded(name) {
         local_draft: true,
         status: workflow?.status || "draft",
       });
-      setSaveState("idle", { message: "本地草稿" });
+      persistLocalWorkflowDraft(key, fallbackGraph, { title: workflow?.title || key });
+      setSaveState("local_draft", { message: "本地草稿", lastSavedAt: formatSaveTime() });
       return fallbackGraph;
     }
     if (isRecoverableApiFailure(err)) {
@@ -462,7 +550,8 @@ async function ensureWorkflowGraphLoaded(name) {
         local_draft: true,
         status: workflow?.status || "draft",
       });
-      setSaveState("idle", { message: "本地草稿" });
+      persistLocalWorkflowDraft(key, fallbackGraph, { title: workflow?.title || key });
+      setSaveState("local_draft", { message: "本地草稿", lastSavedAt: formatSaveTime() });
       return fallbackGraph;
     }
     setSaveState("error", { message: "加载失败", error: formatAPIError(err) });
@@ -555,26 +644,31 @@ function openCreateWorkflow() {
   managerOpen.value = true;
 }
 
-function createBlankWorkflow() {
-  const name = nextBlankWorkflowName();
+function createBlankWorkflow(payload = {}) {
+  const name = String(payload.slug || payload.name || "").trim();
+  if (!name) return;
+  const title = String(payload.title || payload.name || name).trim();
   const workflow = {
     name,
-    title: name,
+    title,
     status: "draft",
-    graph: createBlankWorkflowGraph(name),
+    graph: createBlankWorkflowGraph(name, title),
     local_draft: true,
     diff_summary: {},
     risk_summary: { level: "low", items: [] },
     validation_result: { valid: false, errors: [], warnings: [] },
   };
-  workflows.value = [workflow, ...workflows.value];
+  const draft = saveLocalWorkflowDraft(workflow);
+  workflows.value = [draft, ...workflows.value.filter((item) => workflowKey(item) !== name)];
   void selectWorkflow(name);
   managerOpen.value = false;
+  setSaveState("local_draft", { message: "本地草稿", lastSavedAt: formatSaveTime() });
 }
 
-function handleCreateWorkflow(mode) {
-  if (mode === "blank") {
-    createBlankWorkflow();
+function handleCreateWorkflow(request) {
+  const mode = typeof request === "string" ? request : request?.mode;
+  if (mode === "blank" || mode === "template") {
+    createBlankWorkflow(request);
     return;
   }
   if (mode === "yaml") {
@@ -614,6 +708,16 @@ async function flushSelectedWorkflowDraft(reason = "save") {
   const graph = normalizeGraph(workflow.graph, name);
   const saveNote = saveNoteForReason(reason);
   setSaveState("saving", { message: "正在保存" });
+  if (serverActionsDisabled.value) {
+    const draft = persistLocalWorkflowDraft(name, graph);
+    dirty.value = false;
+    setSaveState("local_draft", {
+      message: "本地草稿，未同步",
+      lastSavedAt: formatSaveTime(),
+      error: "",
+    });
+    return draft?.graph || graph;
+  }
   try {
     const saved = workflow.local_draft
       ? await createRunnerStudioWorkflowGraph({ graph, save_note: saveNote })
@@ -635,7 +739,18 @@ async function flushSelectedWorkflowDraft(reason = "save") {
       await openDraftConflict(name, graph, err);
       return null;
     }
-    setSaveState("error", { message: "保存失败", error: formatAPIError(err) });
+    if (isRecoverableApiFailure(err)) {
+      apiNotice.value = formatRunnerStudioNotice(err);
+      const draft = persistLocalWorkflowDraft(name, graph);
+      dirty.value = false;
+      setSaveState("local_draft", {
+        message: "本地草稿，未同步",
+        lastSavedAt: formatSaveTime(),
+        error: "",
+      });
+      return draft?.graph || graph;
+    }
+    setSaveState("failed", { message: "保存失败", error: formatAPIError(err) });
     return null;
   }
 }
@@ -646,8 +761,32 @@ async function validateSelectedWorkflow() {
   const name = workflowKey(workflow);
   setSaveState("saving", { message: "正在校验" });
   try {
+    const currentGraph = normalizeGraph(workflow.graph, name);
+    const readiness = readinessResultFor(workflow, currentGraph);
+    if (!readiness.ready) {
+      showReadinessModal(readiness);
+      replaceWorkflow(name, {
+        status: "draft",
+        validation_result: readinessValidationPayload(readiness),
+      });
+      setSaveState("blocked", { message: "校验未通过", error: readinessErrorText(readiness) });
+      return;
+    }
     const graph = await flushSelectedWorkflowDraft("validate");
     if (!graph) return;
+    if (serverActionsDisabled.value) {
+      showReadinessModal(readiness, { serverReason: serverActionsDisabledReason.value });
+      replaceWorkflow(name, {
+        status: "draft",
+        validation_result: readinessValidationPayload(readiness),
+      });
+      setSaveState("saved", {
+        message: "本地校验通过",
+        lastSavedAt: formatSaveTime(),
+        error: serverActionsDisabledReason.value,
+      });
+      return;
+    }
     const result = await validateRunnerStudioWorkflow(name);
     const validation = result?.data || result || {};
     replaceWorkflow(name, {
@@ -659,9 +798,10 @@ async function validateSelectedWorkflow() {
       validation_result: validation,
     });
     dirty.value = false;
+    showReadinessModal(readiness);
     setSaveState("saved", { message: "校验通过", lastSavedAt: formatSaveTime() });
   } catch (err) {
-    setSaveState("error", { message: "校验失败", error: formatAPIError(err) });
+    setSaveState("failed", { message: "校验失败", error: formatAPIError(err) });
   }
 }
 
@@ -671,8 +811,28 @@ async function dryRunSelectedWorkflow() {
   const name = workflowKey(workflow);
   setSaveState("saving", { message: "正在 Dry Run" });
   try {
+    const currentGraph = normalizeGraph(workflow.graph, name);
+    const readiness = readinessResultFor(workflow, currentGraph);
+    if (!readiness.ready) {
+      showRunPreparationModal(readiness, { mode: "dry-run", workflowName: name });
+      replaceWorkflow(name, { validation_result: readinessValidationPayload(readiness) });
+      setSaveState("blocked", { message: "Dry Run 被阻止", error: readinessErrorText(readiness) });
+      return;
+    }
     const graph = await flushSelectedWorkflowDraft("dry-run");
     if (!graph) return;
+    if (serverActionsDisabled.value) {
+      showRunPreparationModal(readiness, {
+        mode: "dry-run",
+        workflowName: name,
+        serverReason: serverActionsDisabledReason.value,
+      });
+      setSaveState("blocked", {
+        message: "Dry Run 需要服务端",
+        error: serverActionsDisabledReason.value,
+      });
+      return;
+    }
     const validationResponse = await validateRunnerStudioWorkflow(name);
     const validation = validationResponse?.data || validationResponse || {};
     const dryRunResponse = await dryRunRunnerStudioWorkflowGraph({ workflow_name: name, graph, vars: {}, triggered_by: "ui" });
@@ -694,7 +854,7 @@ async function dryRunSelectedWorkflow() {
     dirty.value = false;
     setSaveState("saved", { message: "Dry Run 通过", lastSavedAt: formatSaveTime() });
   } catch (err) {
-    setSaveState("error", { message: "Dry Run 失败", error: formatAPIError(err) });
+    setSaveState("failed", { message: "Dry Run 失败", error: formatAPIError(err) });
   }
 }
 
@@ -719,8 +879,28 @@ async function submitSelectedWorkflowRun(options = {}) {
   const nodeId = String(options.nodeId || "").trim();
   setSaveState("saving", { message: nodeId ? "正在运行节点" : "正在运行" });
   try {
+    const currentGraph = normalizeGraph(workflow.graph, name);
+    const readiness = readinessResultFor(workflow, currentGraph);
+    if (!readiness.ready) {
+      showRunPreparationModal(readiness, { mode: nodeId ? "single-node" : "run", workflowName: name });
+      replaceWorkflow(name, { validation_result: readinessValidationPayload(readiness) });
+      setSaveState("blocked", { message: "运行被阻止", error: readinessErrorText(readiness) });
+      return;
+    }
     const graph = await flushSelectedWorkflowDraft("run");
     if (!graph) return;
+    if (serverActionsDisabled.value) {
+      showRunPreparationModal(readiness, {
+        mode: nodeId ? "single-node" : "run",
+        workflowName: name,
+        serverReason: serverActionsDisabledReason.value,
+      });
+      setSaveState("blocked", {
+        message: "运行需要服务端",
+        error: serverActionsDisabledReason.value,
+      });
+      return;
+    }
     const payload = {
       workflow_name: name,
       graph,
@@ -746,7 +926,7 @@ async function submitSelectedWorkflowRun(options = {}) {
     await replayRunHistory(runId);
     setSaveState("saved", { message: "运行已提交", lastSavedAt: formatSaveTime() });
   } catch (err) {
-    setSaveState("error", { message: "运行失败", error: formatAPIError(err) });
+    setSaveState("failed", { message: "运行失败", error: formatAPIError(err) });
   }
 }
 
@@ -772,13 +952,6 @@ async function cancelSelectedRun() {
 }
 
 function handleToolbarAction(actionKey) {
-  if (serverRequiredToolbarActions.has(actionKey) && serverActionsDisabled.value) {
-    setSaveState("error", {
-      message: "Runner Studio API 不可用",
-      error: serverActionsDisabledReason.value,
-    });
-    return;
-  }
   if (actionKey === "save") {
     void flushSelectedWorkflowDraft("manual");
   }
@@ -795,6 +968,10 @@ function handleToolbarAction(actionKey) {
     void cancelSelectedRun();
   }
   if (actionKey === "publish") {
+    if (serverActionsDisabled.value) {
+      setSaveState("blocked", { message: "发布需要服务端", error: serverActionsDisabledReason.value });
+      return;
+    }
     void flushSelectedWorkflowDraft("publish");
   }
 }
@@ -802,8 +979,8 @@ function handleToolbarAction(actionKey) {
 function handleNodeAction(action, nodeId) {
   if (action === "run-node") {
     if (serverActionsDisabled.value) {
-      setSaveState("error", {
-        message: "Runner Studio API 不可用",
+      setSaveState("blocked", {
+        message: "单节点运行需要服务端",
         error: serverActionsDisabledReason.value,
       });
       return;
@@ -1063,6 +1240,22 @@ onBeforeUnmount(() => {
       @node-action="handleNodeAction"
       @toolbar-action="handleToolbarAction"
       @workflow-published="handleWorkflowPublished"
+    />
+
+    <RunnerReadinessModal
+      :show="readinessModalOpen"
+      :result="readinessModalResult"
+      :server-reason="readinessModalServerReason"
+      @close="readinessModalOpen = false"
+    />
+
+    <RunnerRunPreparationModal
+      :show="runPreparationOpen"
+      :mode="runPreparationMode"
+      :workflow-name="runPreparationWorkflowName"
+      :readiness="runPreparationReadiness"
+      :server-reason="runPreparationServerReason"
+      @close="runPreparationOpen = false"
     />
 
     <WorkflowManagerModal

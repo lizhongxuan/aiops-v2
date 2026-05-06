@@ -52,7 +52,7 @@ vi.mock("../api/runnerStudioClient", () => ({
 
 describe("RunnerStudioPage", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     routerMock.route.name = "runner-ui";
     routerMock.route.params = {};
     routerMock.push.mockResolvedValue(undefined);
@@ -220,6 +220,8 @@ describe("RunnerStudioPage", () => {
     expect(wrapper.get('[data-testid="runner-studio-api-notice"]').text()).toContain("本地编排模式");
     await wrapper.get('[data-testid="runner-open-manager"]').trigger("click");
     await wrapper.get('[data-testid="workflow-create-blank"]').trigger("click");
+    await wrapper.get('[data-testid="workflow-create-name"]').setValue("检查主机资源");
+    await wrapper.get('[data-testid="workflow-create-submit"]').trigger("click");
     await flushPromises();
 
     await wrapper.get('[data-testid="runner-node-picker-toggle"]').trigger("click");
@@ -228,16 +230,22 @@ describe("RunnerStudioPage", () => {
     expect(picker.text()).toContain("Shell Script");
     expect(picker.text()).toContain("条件分支");
     expect(wrapper.get('[data-testid="runner-toolbar-save"]').attributes("disabled")).toBeUndefined();
-    expect(wrapper.get('[data-testid="runner-toolbar-save"]').attributes("title")).toContain("保存、校验、运行和发布需要");
+    expect(wrapper.get('[data-testid="runner-toolbar-save"]').attributes("title")).not.toContain("保存、校验、运行和发布需要");
     await wrapper.get('[data-testid="runner-toolbar-save"]').trigger("click");
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="runner-toolbar-save-feedback"]').text()).toContain("Runner Studio API 不可用");
-    expect(wrapper.get('[data-testid="runner-toolbar-save-error"]').text()).toContain("重启最新 ai-server");
+    expect(wrapper.get('[data-testid="runner-toolbar-save-feedback"]').text()).toContain("本地草稿");
+    expect(wrapper.find('[data-testid="runner-toolbar-save-error"]').exists()).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem("runner.studio.localDrafts"))).toMatchObject({
+      "host-resource-check": expect.objectContaining({
+        title: "检查主机资源",
+        local_draft: true,
+      }),
+    });
     expect(wrapper.get('[data-testid="runner-toolbar-run"]').attributes("disabled")).toBeUndefined();
   });
 
-  it("creates a blank workflow inside the native Studio and records it as recent", async () => {
+  it("requires a workflow name before opening a new workflow editor", async () => {
     listRunnerStudioWorkflows.mockResolvedValueOnce({ workflows: [] });
     const wrapper = mount(RunnerStudioPage);
     await flushPromises();
@@ -246,8 +254,16 @@ describe("RunnerStudioPage", () => {
     await wrapper.get('[data-testid="workflow-create-blank"]').trigger("click");
     await flushPromises();
 
-    expect(wrapper.get('[data-testid="runner-studio-topbar"]').text()).toContain("runner-blank");
-    expect(wrapper.find('[data-testid="runner-workflow-runner-blank"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="workflow-create-form"]').text()).toContain("新建工作流");
+    expect(wrapper.get('[data-testid="workflow-create-name"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="runner-studio-topbar"]').exists()).toBe(false);
+
+    await wrapper.get('[data-testid="workflow-create-name"]').setValue("检查主机资源");
+    await wrapper.get('[data-testid="workflow-create-submit"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="runner-studio-topbar"]').text()).toContain("检查主机资源");
+    expect(wrapper.find('[data-testid="runner-workflow-host-resource-check"]').exists()).toBe(false);
     expect(wrapper.findComponent(RunnerStudioShell).props("workflows")[0].graph.nodes).toMatchObject([
       {
         id: "start",
@@ -266,10 +282,42 @@ describe("RunnerStudioPage", () => {
     ]);
     expect(routerMock.push).toHaveBeenCalledWith({
       name: "runner-workflow",
-      params: { workflowName: "runner-blank" },
+      params: { workflowName: "host-resource-check" },
     });
     expect(JSON.parse(window.localStorage.getItem("runner.studio.workflowManager"))).toMatchObject({
-      recent: ["runner-blank"],
+      recent: ["host-resource-check"],
+    });
+  });
+
+  it("keeps recoverable API save failures as local drafts instead of generic save failures", async () => {
+    const upstreamUnavailable = Object.assign(new Error("runner studio upstream is not configured"), {
+      status: 503,
+      url: "/api/runner-studio/workflows/graph",
+      payload: { error: "runner studio upstream is not configured", code: "runner_upstream_unavailable" },
+    });
+    listRunnerStudioWorkflows.mockRejectedValueOnce(upstreamUnavailable);
+    getRunnerStudioActionCatalog.mockResolvedValueOnce({ items: [{ action: "shell.run" }] });
+    createRunnerStudioWorkflowGraph.mockRejectedValueOnce(upstreamUnavailable);
+
+    const wrapper = mount(RunnerStudioPage);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="runner-open-manager"]').trigger("click");
+    await wrapper.get('[data-testid="workflow-create-blank"]').trigger("click");
+    await wrapper.get('[data-testid="workflow-create-name"]').setValue("检查主机资源");
+    await wrapper.get('[data-testid="workflow-create-submit"]').trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="runner-toolbar-save"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="runner-save-state"]').text()).toContain("本地草稿");
+    expect(wrapper.get('[data-testid="runner-toolbar-save-feedback"]').text()).toContain("本地草稿");
+    expect(JSON.parse(window.localStorage.getItem("runner.studio.localDrafts"))).toMatchObject({
+      "host-resource-check": expect.objectContaining({
+        title: "检查主机资源",
+        local_draft: true,
+      }),
     });
   });
 
@@ -309,6 +357,45 @@ describe("RunnerStudioPage", () => {
       { id: "start", type: "start", label: "Start", ports: [{ id: "next", type: "output" }] },
       { id: "end", type: "end", label: "End", ports: [{ id: "in", type: "input" }] },
     ]);
+  });
+
+  it("opens a readiness result modal when validation is blocked locally", async () => {
+    const wrapper = mount(RunnerStudioPage);
+    await flushPromises();
+
+    await wrapper.get('[data-testid="runner-workflow-pg-restore"]').trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="runner-toolbar-validate"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="runner-readiness-modal"]').text()).toContain("校验未通过");
+    expect(wrapper.get('[data-testid="runner-readiness-modal"]').text()).toContain("至少需要一个节点");
+    expect(validateRunnerStudioWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("opens a run preparation modal when local drafts cannot run without Runner API", async () => {
+    const upstreamUnavailable = Object.assign(new Error("runner studio upstream is not configured"), {
+      status: 503,
+      url: "/api/runner-studio/workflows",
+      payload: { error: "runner studio upstream is not configured" },
+    });
+    listRunnerStudioWorkflows.mockRejectedValueOnce(upstreamUnavailable);
+    getRunnerStudioActionCatalog.mockRejectedValueOnce(upstreamUnavailable);
+
+    const wrapper = mount(RunnerStudioPage);
+    await flushPromises();
+    await wrapper.get('[data-testid="runner-open-manager"]').trigger("click");
+    await wrapper.get('[data-testid="workflow-create-blank"]').trigger("click");
+    await wrapper.get('[data-testid="workflow-create-name"]').setValue("检查主机资源");
+    await wrapper.get('[data-testid="workflow-create-submit"]').trigger("click");
+    await flushPromises();
+
+    await wrapper.get('[data-testid="runner-toolbar-run"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get('[data-testid="runner-run-preparation-modal"]').text()).toContain("运行准备检查");
+    expect(wrapper.get('[data-testid="runner-run-preparation-modal"]').text()).toContain("Runner API upstream");
+    expect(runRunnerStudioWorkflowGraph).not.toHaveBeenCalled();
   });
 
   it("pushes the workflow editor route when users select a workflow from the management list", async () => {
@@ -689,6 +776,7 @@ describe("RunnerStudioPage", () => {
 
     await wrapper.get('[data-testid="runner-version-rollback-v-1"]').trigger("click");
     await flushPromises();
+    await flushPromises();
     expect(rollbackRunnerStudioWorkflowVersion).toHaveBeenCalledWith("pg-restore", "v-1", {
       save_note: "rollback from Runner Studio",
     });
@@ -697,6 +785,7 @@ describe("RunnerStudioPage", () => {
     await wrapper.get('[data-testid="runner-version-import-mode"]').setValue("yaml");
     await wrapper.get('[data-testid="runner-version-import-text"]').setValue("name: imported-yaml\nsteps: []\n");
     await wrapper.get('[data-testid="runner-version-import-submit"]').trigger("click");
+    await flushPromises();
     await flushPromises();
 
     expect(parseRunnerStudioWorkflowYaml).toHaveBeenCalledWith({ yaml: "name: imported-yaml\nsteps: []" });

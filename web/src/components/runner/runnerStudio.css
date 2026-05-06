@@ -110,13 +110,16 @@
   color: #1d4ed8;
 }
 
-.runner-studio-save-state.status-saved {
+.runner-studio-save-state.status-saved,
+.runner-studio-save-state.status-local_draft {
   border-color: #bbf7d0;
   background: #ecfdf5;
   color: #047857;
 }
 
 .runner-studio-save-state.status-error,
+.runner-studio-save-state.status-failed,
+.runner-studio-save-state.status-blocked,
 .runner-studio-save-state.status-conflict {
   border-color: #fecaca;
   background: #fff7f7;
@@ -161,13 +164,16 @@
   color: #1d4ed8;
 }
 
-.runner-toolbar-save-feedback.status-saved {
+.runner-toolbar-save-feedback.status-saved,
+.runner-toolbar-save-feedback.status-local_draft {
   border-color: #bbf7d0;
   background: #ecfdf5;
   color: #047857;
 }
 
 .runner-toolbar-save-feedback.status-error,
+.runner-toolbar-save-feedback.status-failed,
+.runner-toolbar-save-feedback.status-blocked,
 .runner-toolbar-save-feedback.status-conflict {
   border-color: #fecaca;
   background: #fff7f7;
@@ -2649,6 +2655,253 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.workflow-create-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  padding: 14px 16px;
+}
+
+.workflow-create-form > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.workflow-create-form strong {
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.workflow-create-form span,
+.workflow-create-form p {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.workflow-create-form label {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 700;
+}
+
+.workflow-create-form input {
+  min-height: 40px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #0f172a;
+  font: inherit;
+  padding: 8px 10px;
+}
+
+.workflow-create-form > div:last-child {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.workflow-create-form button {
+  min-height: 36px;
+  border: 1px solid #0f766e;
+  border-radius: 8px;
+  background: #047857;
+  color: #fff;
+  font-weight: 800;
+  padding: 8px 12px;
+}
+
+.workflow-create-form button.secondary {
+  border-color: #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+
+.workflow-create-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.runner-readiness-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.runner-readiness-modal {
+  width: min(640px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #d8e2ef;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.22);
+}
+
+.runner-readiness-head,
+.runner-readiness-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5edf7;
+}
+
+.runner-readiness-footer {
+  justify-content: flex-end;
+  border-top: 1px solid #e5edf7;
+  border-bottom: 0;
+}
+
+.runner-readiness-head p {
+  margin: 0 0 6px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.runner-readiness-head h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 24px;
+}
+
+.runner-readiness-head span {
+  display: block;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.runner-readiness-body {
+  display: grid;
+  gap: 16px;
+  padding: 20px 24px;
+  overflow: auto;
+}
+
+.runner-readiness-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+  color: #991b1b;
+  background: #fff5f5;
+}
+
+.runner-readiness-status.ready {
+  border-color: #bbf7d0;
+  color: #166534;
+  background: #f0fdf4;
+}
+
+.runner-readiness-status strong {
+  display: block;
+  margin-bottom: 4px;
+  color: inherit;
+  font-size: 15px;
+}
+
+.runner-readiness-status span {
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.runner-readiness-section {
+  display: grid;
+  gap: 8px;
+}
+
+.runner-readiness-section h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.runner-readiness-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  color: #334155;
+  background: #f8fafc;
+  font-size: 13px;
+}
+
+.runner-readiness-item.blocker {
+  border-color: #fecaca;
+  color: #991b1b;
+  background: #fff7f7;
+}
+
+.runner-readiness-item.warning {
+  border-color: #fde68a;
+  color: #92400e;
+  background: #fffbeb;
+}
+
+.runner-readiness-item.info {
+  border-color: #dbeafe;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.runner-readiness-item button,
+.runner-readiness-footer button {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #0f172a;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.runner-readiness-item button {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.runner-readiness-footer button {
+  min-height: 40px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
+.runner-readiness-footer button.primary {
+  border-color: #0f8b5f;
+  background: #0f8b5f;
+  color: #ffffff;
+}
+
+.runner-readiness-empty {
+  padding: 18px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 14px;
+  color: #64748b;
+  background: #f8fafc;
+  font-size: 14px;
 }
 
 .workflow-manager-list {

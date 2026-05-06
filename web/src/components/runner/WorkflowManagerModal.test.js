@@ -41,7 +41,7 @@ describe("WorkflowManagerModal", () => {
     expect(wrapper.emitted("view-versions")?.[0]).toEqual(["legacy-archived"]);
   });
 
-  it("offers all create modes from the manager modal", async () => {
+  it("requires a name for blank workflow creation and keeps utility create modes available", async () => {
     const wrapper = mount(WorkflowManagerModal, {
       props: {
         show: true,
@@ -51,11 +51,28 @@ describe("WorkflowManagerModal", () => {
       },
     });
 
-    for (const mode of ["blank", "template", "yaml", "clone", "ai"]) {
+    await wrapper.get('[data-testid="workflow-create-blank"]').trigger("click");
+    expect(wrapper.get('[data-testid="workflow-create-form"]').text()).toContain("工作流名称");
+    await wrapper.get('[data-testid="workflow-create-name"]').setValue("检查主机资源");
+    await wrapper.get('[data-testid="workflow-create-submit"]').trigger("click");
+
+    for (const mode of ["yaml", "clone", "ai"]) {
       await wrapper.get(`[data-testid="workflow-create-${mode}"]`).trigger("click");
     }
 
-    expect(wrapper.emitted("create-workflow")).toEqual([["blank"], ["template"], ["yaml"], ["clone"], ["ai"]]);
+    expect(wrapper.emitted("create-workflow")).toEqual([
+      [
+        {
+          mode: "blank",
+          name: "检查主机资源",
+          slug: "host-resource-check",
+          title: "检查主机资源",
+        },
+      ],
+      ["yaml"],
+      ["clone"],
+      ["ai"],
+    ]);
   });
 
   it("requests dirty confirmation before switching workflows", async () => {

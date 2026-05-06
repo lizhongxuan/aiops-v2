@@ -45,6 +45,8 @@ const emit = defineEmits([
 const query = ref("");
 const status = ref("");
 const includeArchived = ref(false);
+const createIntent = ref("");
+const workflowName = ref("");
 
 const normalizedState = computed(() => createWorkflowManagerState(props.uiState));
 const filteredWorkflows = computed(() =>
@@ -65,6 +67,58 @@ const createModes = [
 
 function isFavorite(name) {
   return normalizedState.value.favorites.includes(name);
+}
+
+function slugBaseForName(value) {
+  const text = String(value || "").trim();
+  if (/检查/.test(text) && /主机/.test(text) && /资源/.test(text)) {
+    return "host-resource-check";
+  }
+  const ascii = text
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return ascii || "runner-workflow";
+}
+
+function uniqueWorkflowSlug(value) {
+  const used = new Set(props.workflows.map((workflow) => workflowKey(workflow)).filter(Boolean));
+  const base = slugBaseForName(value);
+  if (!used.has(base)) return base;
+  let index = 2;
+  while (used.has(`${base}-${index}`)) index += 1;
+  return `${base}-${index}`;
+}
+
+const createWorkflowSlug = computed(() => uniqueWorkflowSlug(workflowName.value));
+const canSubmitCreate = computed(() => workflowName.value.trim().length > 0);
+
+function beginCreateWorkflow(mode) {
+  if (mode === "blank" || mode === "template") {
+    createIntent.value = mode;
+    workflowName.value = "";
+    return;
+  }
+  emit("create-workflow", mode);
+}
+
+function cancelCreateWorkflow() {
+  createIntent.value = "";
+  workflowName.value = "";
+}
+
+function submitCreateWorkflow() {
+  if (!canSubmitCreate.value || !createIntent.value) return;
+  const title = workflowName.value.trim();
+  emit("create-workflow", {
+    mode: createIntent.value,
+    name: title,
+    title,
+    slug: createWorkflowSlug.value,
+  });
+  cancelCreateWorkflow();
 }
 
 function selectWorkflow(name) {
@@ -96,11 +150,40 @@ function selectWorkflow(name) {
           :key="mode.key"
           type="button"
           :data-testid="`workflow-create-${mode.key}`"
-          @click="emit('create-workflow', mode.key)"
+          @click="beginCreateWorkflow(mode.key)"
         >
           {{ mode.label }}
         </button>
       </section>
+
+      <form
+        v-if="createIntent"
+        class="workflow-create-form"
+        data-testid="workflow-create-form"
+        @submit.prevent="submitCreateWorkflow"
+      >
+        <div>
+          <strong>新建工作流</strong>
+          <span>{{ createIntent === "template" ? "从模板创建前先命名" : "先命名，再进入编排画布" }}</span>
+        </div>
+        <label>
+          工作流名称
+          <input
+            v-model="workflowName"
+            type="text"
+            placeholder="例如：检查主机资源"
+            data-testid="workflow-create-name"
+            autofocus
+          />
+        </label>
+        <p>路径：/runner/{{ createWorkflowSlug }}</p>
+        <div>
+          <button type="button" class="secondary" @click="cancelCreateWorkflow">取消</button>
+          <button type="submit" :disabled="!canSubmitCreate" data-testid="workflow-create-submit" @click="submitCreateWorkflow">
+            创建并打开
+          </button>
+        </div>
+      </form>
 
       <section class="workflow-manager-controls">
         <input
