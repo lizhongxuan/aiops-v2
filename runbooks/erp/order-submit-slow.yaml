@@ -1,0 +1,63 @@
+id: order-submit-slow
+name: 订单提交慢诊断
+description: 订单提交失败率或延迟升高时，先读取 Coroot、业务影响和主机只读证据，再生成受控动作提案。
+scope:
+  modules: ["module.order"]
+  capabilities: ["capability.order.submit", "订单提交"]
+  services: ["order-api", "service.order-api"]
+  environments: ["prod", "staging"]
+risk: medium
+steps:
+  - id: check-order-slo
+    title: 检查订单服务 SLO
+    tool: coroot.slo_status
+    input:
+      service: "{{ service }}"
+      timeRange: "{{ timeRange }}"
+    risk: low
+    approvalRequired: false
+    expectedEffect: "确认订单服务是否存在 SLO 违约。"
+    verify:
+      - tool: coroot.slo_status
+        input:
+          service: "{{ service }}"
+          timeRange: 5m
+  - id: check-topology
+    title: 检查订单服务下游依赖
+    tool: coroot.service_topology
+    input:
+      service: "{{ service }}"
+      depth: 2
+    risk: low
+    approvalRequired: false
+  - id: check-business-impact
+    title: 检查订单业务影响
+    tool: opsgraph.business_impact
+    input:
+      entityId: capability.order.submit
+    risk: low
+    approvalRequired: false
+  - id: check-host-disk
+    title: 检查应用节点磁盘
+    tool: exec_command
+    input:
+      command: df
+      args: ["-h"]
+    risk: low
+    approvalRequired: false
+  - id: restart-report-service
+    title: 重启报表服务释放数据库连接
+    condition: "evidence.db_connection_pressure == true && evidence.report_job_active == true"
+    tool: exec_command
+    input:
+      command: systemctl
+      args: ["restart", "erp-report.service"]
+    risk: high
+    approvalRequired: true
+    expectedEffect: "释放报表服务占用的数据库连接，订单提交延迟应下降。"
+    rollback: "若 5 分钟内 SLO 未恢复或服务重启失败，立即停止继续动作并转人工接管，保留 systemctl status 与 journalctl 证据。"
+    verify:
+      - tool: coroot.slo_status
+        input:
+          service: "{{ service }}"
+          timeRange: 5m

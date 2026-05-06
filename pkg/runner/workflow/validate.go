@@ -33,8 +33,11 @@ func (w *Workflow) Validate() error {
 	if w.Plan.Mode != "" && w.Plan.Mode != "manual-approve" && w.Plan.Mode != "auto" {
 		issues = append(issues, fmt.Sprintf("plan.mode must be manual-approve or auto, got %q", w.Plan.Mode))
 	}
-	if w.Plan.Strategy != "" && w.Plan.Strategy != "sequential" {
-		issues = append(issues, fmt.Sprintf("plan.strategy must be sequential, got %q", w.Plan.Strategy))
+	if w.Plan.Strategy != "" && w.Plan.Strategy != "sequential" && w.Plan.Strategy != "graph" {
+		issues = append(issues, fmt.Sprintf("plan.strategy must be sequential or graph, got %q", w.Plan.Strategy))
+	}
+	if w.Plan.Strategy == "graph" && w.XRunnerGraph == nil {
+		issues = append(issues, "plan.strategy graph requires x_runner_graph")
 	}
 
 	handlerNames := map[string]struct{}{}
@@ -53,8 +56,15 @@ func (w *Workflow) Validate() error {
 	}
 
 	stepNames := map[string]struct{}{}
+	stepIDs := map[string]struct{}{}
 	for i, s := range w.Steps {
 		stepLabel := fmt.Sprintf("steps[%d]", i)
+		if s.ID != "" {
+			if _, exists := stepIDs[s.ID]; exists {
+				issues = append(issues, fmt.Sprintf("step id %q is duplicated", s.ID))
+			}
+			stepIDs[s.ID] = struct{}{}
+		}
 		if s.Name == "" {
 			issues = append(issues, fmt.Sprintf("%s name is required", stepLabel))
 		} else {

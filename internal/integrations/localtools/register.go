@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/planning"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminalpolicy"
@@ -39,12 +41,15 @@ type LLMConfigRepository interface {
 
 // Options configures builtin local tools.
 type Options struct {
-	WorkingDir          string
-	HTTPClient          *http.Client
-	CommandTimeout      time.Duration
-	WebTimeout          time.Duration
-	MaxOutputBytes      int
-	PublicSearchBaseURL string
+	WorkingDir                    string
+	HTTPClient                    *http.Client
+	CommandTimeout                time.Duration
+	WebTimeout                    time.Duration
+	MaxOutputBytes                int
+	PublicSearchBaseURL           string
+	ActionTokenSecret             []byte
+	Now                           func() time.Time
+	RequireApprovalForLowRiskExec bool
 }
 
 func (o Options) normalize() Options {
@@ -61,6 +66,14 @@ func (o Options) normalize() Options {
 	}
 	if o.MaxOutputBytes <= 0 {
 		o.MaxOutputBytes = defaultMaxOutputBytes
+	}
+	if len(o.ActionTokenSecret) == 0 {
+		if secret := strings.TrimSpace(os.Getenv("AIOPS_ACTION_TOKEN_SECRET")); secret != "" {
+			o.ActionTokenSecret = []byte(secret)
+		}
+	}
+	if o.Now == nil {
+		o.Now = time.Now
 	}
 	return o
 }
@@ -139,6 +152,7 @@ func NewCurrentModelConfigTool(repo LLMConfigRepository) tooling.Tool {
 // by the tool itself; non-read-only commands must pass policy/approval first.
 func NewExecCommandTool(opts Options) tooling.Tool {
 	opts = opts.normalize()
+	signer := actionproposal.NewSigner(opts.ActionTokenSecret, opts.Now)
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
 			Name:        "exec_command",
@@ -159,7 +173,9 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 				"args": {"type": "array", "items": {"type": "string"}, "description": "Command arguments. Prefer this over shell syntax."},
 				"cmd": {"type": "string", "description": "Compatibility command line. Shell operators are rejected."},
 				"workingDir": {"type": "string", "description": "Optional working directory."},
-				"timeoutMs": {"type": "integer", "description": "Optional timeout in milliseconds, max 60000."}
+				"timeoutMs": {"type": "integer", "description": "Optional timeout in milliseconds, max 60000."},
+				"actionToken": {"type": "string", "description": "Optional signed ActionToken for governed non-read-only actions."},
+				"intent": {"type": "string", "description": "Audit-only human intent. It is never used as authorization evidence."}
 			}
 		}`),
 		OutputSchemaData: json.RawMessage(`{
@@ -182,7 +198,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			req, err := parseCommandInput(input)
 			return err == nil && terminalpolicy.IsReadOnlyCommand(req.command, req.args)
 		},
-		CheckPermissionsFunc: func(_ context.Context, input json.RawMessage) tooling.PermissionDecision {
+		CheckPermissionsFunc: func(ctx context.Context, input json.RawMessage) tooling.PermissionDecision {
 			req, err := parseCommandInput(input)
 			if err != nil {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
@@ -190,10 +206,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
-			return tooling.PermissionDecision{
-				Action: tooling.PermissionActionNeedApproval,
-				Reason: "local terminal command may mutate host state",
-			}
+			return checkExecCommandActionToken(ctx, input, req, opts, signer)
 		},
 		ValidateInputFunc: func(_ context.Context, input json.RawMessage) error {
 			_, err := parseCommandInput(input)
@@ -409,14 +422,209 @@ func NewWebSearchTool(repo LLMConfigRepository, opts Options) tooling.Tool {
 }
 
 type commandInput struct {
-	Command    string   `json:"command"`
-	Args       []string `json:"args"`
-	Cmd        string   `json:"cmd"`
-	WorkingDir string   `json:"workingDir"`
-	TimeoutMs  int      `json:"timeoutMs"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+	Cmd         string   `json:"cmd"`
+	WorkingDir  string   `json:"workingDir"`
+	TimeoutMs   int      `json:"timeoutMs"`
+	ActionToken string   `json:"actionToken"`
+	Intent      string   `json:"intent"`
 
 	command string
 	args    []string
+}
+
+func checkExecCommandActionToken(ctx context.Context, input json.RawMessage, req commandInput, opts Options, signer *actionproposal.Signer) tooling.PermissionDecision {
+	if isForbiddenExecCommand(req.command, req.args) {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionDeny,
+			Reason: "forbidden terminal command is blocked by policy",
+		}
+	}
+	token := strings.TrimSpace(req.ActionToken)
+	execCtx, hasExecCtx := tooling.ToolExecutionContextFrom(ctx)
+	if hasExecCtx && strings.TrimSpace(execCtx.ActionToken) != "" {
+		token = strings.TrimSpace(execCtx.ActionToken)
+	}
+	if token == "" {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "non-read-only terminal command requires a signed ActionToken from runbook, fallback, or break_glass",
+		}
+	}
+	hashInput := input
+	if hasExecCtx && len(execCtx.SanitizedInput) > 0 {
+		hashInput = execCtx.SanitizedInput
+	}
+	inputHash, err := actionproposal.NormalizedInputHash(hashInput)
+	if err != nil {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "unable to normalize terminal command for ActionToken verification: " + err.Error(),
+		}
+	}
+	expected := actionproposal.ActionTokenClaims{
+		ToolName:  "exec_command",
+		InputHash: inputHash,
+	}
+	if hasExecCtx {
+		expected.SessionID = execCtx.SessionID
+		expected.TurnID = execCtx.TurnID
+		expected.IncidentID = execCtx.IncidentID
+	}
+	claims, err := signer.Verify(token, expected)
+	if err != nil {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "invalid ActionToken for terminal command: " + err.Error(),
+		}
+	}
+	if !isAllowedActionTokenSource(claims.Source) {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionDeny,
+			Reason: "ActionToken source is not allowed for terminal command",
+		}
+	}
+	if execRiskRank(claims.Risk) == 0 {
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "ActionToken risk is required for terminal command",
+		}
+	}
+	if claims.Risk == actionproposal.RiskLow && !opts.RequireApprovalForLowRiskExec {
+		return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+	}
+	approval := buildExecApprovalPayload(req, claims)
+	return tooling.PermissionDecision{
+		Action:   tooling.PermissionActionNeedApproval,
+		Reason:   approvalReason(approval),
+		Approval: approval,
+	}
+}
+
+func isAllowedActionTokenSource(source actionproposal.Source) bool {
+	switch source {
+	case actionproposal.SourceRunbook, actionproposal.SourceFallback, actionproposal.SourceBreakGlass:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildExecApprovalPayload(req commandInput, claims actionproposal.ActionTokenClaims) *tooling.PermissionApprovalPayload {
+	reason := strings.TrimSpace(claims.Reason)
+	if reason == "" {
+		reason = "local terminal command requires approval"
+	}
+	runbookStep := strings.TrimSpace(claims.RunbookStepID)
+	if strings.TrimSpace(claims.RunbookStepTitle) != "" {
+		if runbookStep != "" {
+			runbookStep += " · "
+		}
+		runbookStep += strings.TrimSpace(claims.RunbookStepTitle)
+	}
+	return &tooling.PermissionApprovalPayload{
+		Command:        displayCommand(req.command, req.args),
+		Reason:         reason,
+		Risk:           string(claims.Risk),
+		Source:         string(claims.Source),
+		RunbookID:      claims.RunbookID,
+		RunbookStep:    runbookStep,
+		ExpectedEffect: strings.TrimSpace(claims.ExpectedEffect),
+		Rollback:       strings.TrimSpace(claims.Rollback),
+	}
+}
+
+func approvalReason(payload *tooling.PermissionApprovalPayload) string {
+	if payload == nil {
+		return "local terminal command requires approval"
+	}
+	parts := []string{
+		firstNonEmptyString(payload.Reason, "local terminal command requires approval"),
+		"command=" + payload.Command,
+		"risk=" + payload.Risk,
+		"source=" + payload.Source,
+	}
+	if payload.RunbookStep != "" {
+		parts = append(parts, "runbookStep="+payload.RunbookStep)
+	}
+	if payload.ExpectedEffect != "" {
+		parts = append(parts, "expectedEffect="+payload.ExpectedEffect)
+	}
+	if payload.Rollback != "" {
+		parts = append(parts, "rollback="+payload.Rollback)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func displayCommand(command string, args []string) string {
+	parts := []string{strings.TrimSpace(command)}
+	for _, arg := range args {
+		parts = append(parts, strings.TrimSpace(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func isForbiddenExecCommand(command string, args []string) bool {
+	base := filepath.Base(strings.TrimSpace(command))
+	if wrappedCommand, wrappedArgs, ok := unwrapShellCommand(base, args); ok {
+		return isForbiddenExecCommand(wrappedCommand, wrappedArgs)
+	}
+	switch base {
+	case "rm", "reboot", "shutdown", "halt", "poweroff", "mkfs", "dd", "chmod", "chown":
+		return true
+	}
+	for _, arg := range args {
+		if strings.ContainsAny(arg, "\x00\n\r`$<>;|") {
+			return true
+		}
+	}
+	return false
+}
+
+func unwrapShellCommand(base string, args []string) (string, []string, bool) {
+	switch base {
+	case "bash", "sh", "zsh":
+	default:
+		return "", nil, false
+	}
+	if len(args) != 2 {
+		return "", nil, false
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "-c", "-lc":
+	default:
+		return "", nil, false
+	}
+	command, commandArgs, ok := terminalpolicy.SplitCommandLine(args[1])
+	if !ok {
+		return "", nil, false
+	}
+	return command, commandArgs, true
+}
+
+func execRiskRank(risk actionproposal.Risk) int {
+	switch risk {
+	case actionproposal.RiskLow:
+		return 1
+	case actionproposal.RiskMedium:
+		return 2
+	case actionproposal.RiskHigh:
+		return 3
+	case actionproposal.RiskCritical:
+		return 4
+	default:
+		return 0
+	}
 }
 
 func parseCommandInput(input json.RawMessage) (commandInput, error) {

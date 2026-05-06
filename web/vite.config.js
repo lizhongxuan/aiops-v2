@@ -45,6 +45,9 @@ export default defineConfig({
           if (id.includes("/node_modules/@xterm/")) {
             return "xterm";
           }
+          if (id.includes("/node_modules/@vue-flow/")) {
+            return "vue-flow";
+          }
           return undefined;
         },
       },

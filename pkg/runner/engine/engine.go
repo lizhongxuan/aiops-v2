@@ -25,6 +25,8 @@ type Engine struct {
 	NotifyDelay      time.Duration
 	Verbose          bool
 	Out              io.Writer
+	ApprovalRuntime  executor.ApprovalRuntime
+	SubflowRuntime   executor.SubflowRuntime
 	fallbackWarnOnce sync.Once
 	dispatcher       scheduler.Dispatcher
 }
@@ -93,13 +95,23 @@ func (e *Engine) ApplyWithRun(ctx context.Context, wf workflow.Workflow, opts Ru
 			opts.NotifyDelay = 300 * time.Millisecond
 		}
 	}
+	approvalRuntime := opts.ApprovalRuntime
+	if approvalRuntime == nil {
+		approvalRuntime = e.ApprovalRuntime
+	}
+	subflowRuntime := opts.SubflowRuntime
+	if subflowRuntime == nil {
+		subflowRuntime = e.SubflowRuntime
+	}
 
 	tracker, err := newRunTracker(wf, RunOptions{
-		RunID:       opts.RunID,
-		Store:       store,
-		Notifier:    notifier,
-		NotifyRetry: opts.NotifyRetry,
-		NotifyDelay: opts.NotifyDelay,
+		RunID:           opts.RunID,
+		Store:           store,
+		Notifier:        notifier,
+		NotifyRetry:     opts.NotifyRetry,
+		NotifyDelay:     opts.NotifyDelay,
+		ApprovalRuntime: approvalRuntime,
+		SubflowRuntime:  subflowRuntime,
 	}, store)
 	if err != nil {
 		return state.RunState{}, err
@@ -123,11 +135,19 @@ func (e *Engine) ApplyWithRun(ctx context.Context, wf workflow.Workflow, opts Ru
 		env:        env,
 		runID:      tracker.RunID(),
 	}
-	exec := &executor.Executor{
-		Runner:   runner,
-		Observer: recorder,
+	if strings.TrimSpace(wf.Plan.Strategy) == "graph" {
+		err = (&executor.GraphExecutor{
+			Runner:    runner,
+			Observer:  recorder,
+			Approvals: approvalRuntime,
+			Subflows:  subflowRuntime,
+		}).Run(ctx, wf)
+	} else {
+		err = (&executor.Executor{
+			Runner:   runner,
+			Observer: recorder,
+		}).Run(ctx, wf)
 	}
-	err = exec.Run(ctx, wf)
 	if err != nil {
 		status := state.RunStatusFailed
 		if ctx.Err() != nil {

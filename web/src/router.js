@@ -19,6 +19,14 @@ const CorootOverviewPage = () => import("./pages/CorootOverviewPage.vue");
 const LabEnvironmentPage = () => import("./pages/LabEnvironmentPage.vue");
 const GeneratorWorkshopPage = () => import("./pages/GeneratorWorkshopPage.vue");
 const PromptTracePage = () => import("./pages/PromptTracePage.vue");
+const IncidentListPage = () => import("./pages/IncidentListPage.vue");
+const IncidentWorkbenchPage = () => import("./pages/IncidentWorkbenchPage.vue");
+const ERPHealthPage = () => import("./pages/ERPHealthPage.vue");
+const OpsGraphPage = () => import("./pages/OpsGraphPage.vue");
+const RunbookCatalogPage = () => import("./pages/RunbookCatalogPage.vue");
+const RunbookDetailPage = () => import("./pages/RunbookDetailPage.vue");
+const PostmortemPage = () => import("./pages/PostmortemPage.vue");
+const RunnerStudioPage = () => import("./pages/RunnerStudioPage.vue");
 
 const routes = [
   {
@@ -38,6 +46,55 @@ const routes = [
     path: "/protocol",
     name: "protocol",
     component: ProtocolWorkspacePage,
+  },
+  {
+    path: "/incidents",
+    name: "incidents",
+    component: IncidentListPage,
+  },
+  {
+    path: "/incidents/:incidentId",
+    name: "incident-detail",
+    component: IncidentWorkbenchPage,
+    props: true,
+  },
+  {
+    path: "/erp",
+    name: "erp-health",
+    component: ERPHealthPage,
+  },
+  {
+    path: "/opsgraph",
+    name: "opsgraph",
+    component: OpsGraphPage,
+  },
+  {
+    path: "/runbooks",
+    name: "runbooks",
+    component: RunbookCatalogPage,
+  },
+  {
+    path: "/runbooks/:runbookId",
+    name: "runbook-detail",
+    component: RunbookDetailPage,
+    props: true,
+  },
+  {
+    path: "/runner",
+    name: "runner-ui",
+    component: RunnerStudioPage,
+  },
+  {
+    path: "/runner/:workflowName",
+    name: "runner-workflow",
+    component: RunnerStudioPage,
+    props: true,
+  },
+  {
+    path: "/postmortems/:postmortemId",
+    name: "postmortem",
+    component: PostmortemPage,
+    props: true,
   },
   {
     path: "/terminal/:hostId",

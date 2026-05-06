@@ -8,10 +8,8 @@ import {
   NetworkIcon,
   AlertTriangleIcon,
   RefreshCwIcon,
-  SparklesIcon,
 } from "lucide-vue-next";
 import CorootEmbedPanel from "../components/coroot/CorootEmbedPanel.vue";
-import MonitorAIDrawer from "../components/monitor-ai/MonitorAIDrawer.vue";
 import McpUiCardHost from "../components/mcp/McpUiCardHost.vue";
 import { adaptServiceStats, adaptAlerts, adaptServiceOverview } from "../lib/corootCardAdapter";
 import { fetchCorootConfig as fetchCorootConfigApi, fetchCorootServices as fetchCorootServicesApi } from "../api/coroot";
@@ -24,7 +22,6 @@ const activeTab = ref("services");
 const embedVisible = ref(false);
 const embedUrl = ref("");
 const embedTitle = ref("");
-const aiDrawerVisible = ref(false);
 
 // Coroot config state
 const corootConfigured = ref(true);
@@ -49,16 +46,6 @@ function normalizeServiceStatus(status = "") {
   if (value === "error") return "critical";
   return value || "unknown";
 }
-
-const monitorContext = computed(() => ({
-  source: "coroot",
-  resourceType: "cluster",
-  resourceId: "overview",
-  timeRange: "latest",
-  alerts: services.value
-    .filter((s) => s.status === "critical" || s.status === "error" || s.status === "warning")
-    .map((s) => ({ id: s.id, name: s.name, status: s.status })),
-}));
 
 // MCP UI card payloads derived from services data
 const kpiCard = computed(() => adaptServiceStats(services.value));
@@ -162,7 +149,7 @@ function closeEmbed() {
 }
 
 function goBack() {
-  router.push("/");
+  router.push("/erp");
 }
 
 function onDashboardIframeLoad() {
@@ -190,7 +177,7 @@ let previousTitle = "";
 
 onMounted(() => {
   previousTitle = typeof document !== "undefined" ? document.title : "";
-  document.title = "Coroot 监控总览";
+  document.title = "Coroot 高级详情";
   void fetchCorootConfig();
   void fetchServices();
 });
@@ -211,11 +198,11 @@ onBeforeUnmount(() => {
         <div class="title-row">
           <div>
             <div class="coroot-kicker">Monitoring / Coroot</div>
-            <h1>Coroot 监控总览</h1>
+            <h1>Coroot 高级详情</h1>
           </div>
           <span class="config-state" :class="configStateClass">{{ configStateLabel }}</span>
         </div>
-        <p>服务健康、拓扑、告警和完整 Coroot Dashboard 的统一入口。</p>
+        <p>保留 Coroot 原始服务、拓扑和 Dashboard 入口，作为事故页面的高级排查详情。</p>
       </div>
       <div class="coroot-actions">
         <n-button size="small" @click="fetchServices" :disabled="loading || !corootConfigured">
@@ -225,10 +212,6 @@ onBeforeUnmount(() => {
         <n-button size="small" @click="openDashboardTab" :disabled="!corootConfigured">
           <template #icon><ActivityIcon :size="14" /></template>
           Dashboard
-        </n-button>
-        <n-button size="small" type="primary" @click="aiDrawerVisible = true">
-          <template #icon><SparklesIcon :size="14" /></template>
-          AI 助手
         </n-button>
       </div>
     </header>
@@ -334,16 +317,6 @@ onBeforeUnmount(() => {
       @close="closeEmbed"
     />
 
-    <!-- Monitor AI Drawer -->
-    <n-drawer v-model:show="aiDrawerVisible" :width="400" placement="right">
-      <n-drawer-content title="AI 助手" closable>
-        <MonitorAIDrawer
-          v-if="aiDrawerVisible"
-          :monitorContext="monitorContext"
-          @close="aiDrawerVisible = false"
-        />
-      </n-drawer-content>
-    </n-drawer>
   </section>
 </template>
 

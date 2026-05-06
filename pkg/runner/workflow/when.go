@@ -157,12 +157,12 @@ func parseOperand(raw string, vars map[string]any) any {
 	}
 	if strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}") {
 		key := strings.TrimSuffix(strings.TrimPrefix(trimmed, "${"), "}")
-		if value, ok := lookupVar(vars, strings.TrimSpace(key)); ok {
+		if value, ok := lookupExpressionVar(vars, strings.TrimSpace(key)); ok {
 			return value
 		}
 		return ""
 	}
-	if value, ok := lookupVar(vars, trimmed); ok {
+	if value, ok := lookupExpressionVar(vars, trimmed); ok {
 		return value
 	}
 	if lowered := strings.ToLower(trimmed); lowered == "true" || lowered == "false" {
@@ -172,6 +172,17 @@ func parseOperand(raw string, vars map[string]any) any {
 		return num
 	}
 	return trimmed
+}
+
+func lookupExpressionVar(vars map[string]any, key string) (any, bool) {
+	key = strings.TrimSpace(key)
+	if value, ok := lookupVar(vars, key); ok {
+		return value, true
+	}
+	if strings.HasPrefix(key, "vars.") {
+		return lookupVar(vars, strings.TrimPrefix(key, "vars."))
+	}
+	return nil, false
 }
 
 func isQuoted(value string) bool {

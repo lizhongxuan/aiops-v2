@@ -37,6 +37,7 @@ type RunService struct {
 	queue       queue.Queue
 	events      *events.Hub
 	metrics     *metrics.Collector
+	approvals   *approvalCoordinator
 
 	maxOutputBytes     int
 	agentDispatchToken string
@@ -92,6 +93,7 @@ func NewRunService(cfg RunServiceConfig, workflowSvc *WorkflowService, pre *Prep
 		queue:              q,
 		events:             hub,
 		metrics:            collector,
+		approvals:          newApprovalCoordinator(),
 		maxOutputBytes:     cfg.MaxOutputBytes,
 		agentDispatchToken: strings.TrimSpace(cfg.AgentDispatchToken),
 		workerCtx:          workerCtx,
@@ -194,6 +196,14 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 	s.jobs[runID] = job
 	s.mu.Unlock()
 
+	s.publishEvent(runID, events.Event{
+		Type:      "run_queued",
+		RunID:     runID,
+		Workflow:  wf.Name,
+		Status:    state.RunStatusQueued,
+		Message:   meta.Summary,
+		Timestamp: createdAt,
+	})
 	if err := s.queue.Enqueue(ctx, queue.Job{RunID: runID}); err != nil {
 		s.mu.Lock()
 		delete(s.jobs, runID)
@@ -208,14 +218,6 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 
 	s.metrics.ObserveRunSubmitted()
 	s.metrics.SetQueueDepth(s.queue.Len())
-	s.publishEvent(runID, events.Event{
-		Type:      "run_queued",
-		RunID:     runID,
-		Workflow:  wf.Name,
-		Status:    state.RunStatusQueued,
-		Message:   meta.Summary,
-		Timestamp: createdAt,
-	})
 	logging.L().Info("run submitted",
 		zap.String("run_id", runID),
 		zap.String("workflow", wf.Name),
@@ -478,20 +480,38 @@ func (s *RunService) processJob(runID string) {
 	if strings.TrimSpace(s.agentDispatchToken) != "" {
 		dispatcher := scheduler.NewHybridDispatcher(eng.Registry)
 		dispatcher.Token = s.agentDispatchToken
+		dispatcher.OnOutput = func(taskID, step, host, stream, chunk string) {
+			s.publishEvent(runID, events.Event{
+				Type:      "output_delta",
+				RunID:     runID,
+				Workflow:  job.Workflow.Name,
+				Step:      step,
+				Host:      host,
+				Status:    state.RunStatusRunning,
+				Message:   fmt.Sprintf("%s output received", stream),
+				Output:    map[string]any{"task_id": taskID, "stream": stream, "chunk": chunk},
+				Timestamp: time.Now().UTC(),
+			})
+		}
 		eng.SetDispatcher(dispatcher)
 	}
 	eng.RunStore = s.runStore
 	recorder := &runEventRecorder{
-		runID:    runID,
-		workflow: job.Workflow.Name,
+		runID:           runID,
+		workflow:        job.Workflow.Name,
+		metrics:         s.metrics,
+		nodeStartedAt:   map[string]time.Time{},
+		approvalNodeIDs: approvalNodeIDs(job.Workflow),
 		publish: func(evt events.Event) {
 			s.publishEvent(runID, evt)
 		},
 	}
 	runCtx := engine.WithRecorder(ctx, recorder)
 	snapshot, execErr := eng.ApplyWithRun(runCtx, job.Workflow, engine.RunOptions{
-		RunID: runID,
-		Store: s.runStore,
+		RunID:           runID,
+		Store:           s.runStore,
+		ApprovalRuntime: s.approvals.Runtime(runID),
+		SubflowRuntime:  newWorkflowSubflowRuntime(s.workflowSvc),
 	})
 	finished := time.Now().UTC()
 	status := snapshot.Status
@@ -522,6 +542,9 @@ func (s *RunService) processJob(runID string) {
 
 	s.persistMetaAsync(enrichMetaWithRun(meta, snapshot))
 	s.metrics.ObserveRunFinished(status, finished.Sub(start))
+	if isGraphWorkflow(job.Workflow) {
+		s.metrics.ObserveGraphRunFinished(status, finished.Sub(start))
+	}
 	s.publishEvent(runID, events.Event{
 		Type:      "run_finish",
 		RunID:     runID,
@@ -660,6 +683,13 @@ func buildRunDetail(meta RunMeta, run *state.RunState) RunDetail {
 	detail.UpdatedAt = run.UpdatedAt
 	detail.Args = cloneAnyMap(run.Args)
 	detail.Steps = append([]state.StepState{}, run.Steps...)
+	if run.Graph != nil {
+		graph := state.CloneRunState(*run).Graph
+		detail.Graph = graph
+		if len(detail.Steps) == 0 {
+			detail.Steps = state.SynthesizeStepStatesFromGraph(graph)
+		}
+	}
 	if len(run.Resources) > 0 {
 		detail.Resources = make(map[string]state.ResourceState, len(run.Resources))
 		for key, value := range run.Resources {
@@ -857,9 +887,13 @@ func cloneAnyMap(input map[string]any) map[string]any {
 }
 
 type runEventRecorder struct {
-	runID    string
-	workflow string
-	publish  func(events.Event)
+	runID           string
+	workflow        string
+	metrics         *metrics.Collector
+	nodeStartedAt   map[string]time.Time
+	approvalNodeIDs map[string]struct{}
+	mu              sync.Mutex
+	publish         func(events.Event)
 }
 
 func (r *runEventRecorder) StepStart(step workflow.Step, _ []workflow.HostSpec) {
@@ -914,6 +948,192 @@ func (r *runEventRecorder) HostResult(step workflow.Step, host workflow.HostSpec
 		Output:    cloneAnyMap(result.Output),
 		Timestamp: time.Now().UTC(),
 	})
+}
+
+func (r *runEventRecorder) GraphNodeStart(nodeID string) {
+	if r.publish == nil {
+		return
+	}
+	trimmedNodeID := strings.TrimSpace(nodeID)
+	now := time.Now().UTC()
+	r.recordGraphNodeStart(trimmedNodeID, now)
+	r.publish(events.Event{
+		Type:      "node_started",
+		RunID:     r.runID,
+		Workflow:  r.workflow,
+		Status:    state.RunStatusRunning,
+		Message:   fmt.Sprintf("node %s started", trimmedNodeID),
+		Output:    map[string]any{"node_id": trimmedNodeID},
+		Timestamp: now,
+	})
+}
+
+func (r *runEventRecorder) GraphNodeFinish(nodeID, status, message string) {
+	if r.publish == nil {
+		return
+	}
+	trimmedNodeID := strings.TrimSpace(nodeID)
+	trimmedStatus := strings.TrimSpace(status)
+	trimmedMessage := strings.TrimSpace(message)
+	if trimmedMessage == "" {
+		trimmedMessage = fmt.Sprintf("node %s finished with status=%s", trimmedNodeID, trimmedStatus)
+	}
+	now := time.Now().UTC()
+	duration := r.graphNodeDuration(trimmedNodeID, now)
+	r.metrics.ObserveGraphNodeFinished(trimmedStatus, duration)
+	if r.isApprovalNode(trimmedNodeID) {
+		r.metrics.ObserveGraphApprovalWait(duration)
+	}
+	r.publish(events.Event{
+		Type:      "node_finished",
+		RunID:     r.runID,
+		Workflow:  r.workflow,
+		Status:    trimmedStatus,
+		Message:   trimmedMessage,
+		Output:    map[string]any{"node_id": trimmedNodeID},
+		Timestamp: now,
+	})
+}
+
+func (r *runEventRecorder) GraphApprovalWaiting(nodeID string) {
+	if r.publish == nil {
+		return
+	}
+	trimmedNodeID := strings.TrimSpace(nodeID)
+	r.publish(events.Event{
+		Type:      "approval_waiting",
+		RunID:     r.runID,
+		Workflow:  r.workflow,
+		Status:    "waiting",
+		Message:   fmt.Sprintf("node %s is waiting for approval", trimmedNodeID),
+		Output:    map[string]any{"node_id": trimmedNodeID},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+func (r *runEventRecorder) GraphApprovalResolved(nodeID, status, message string) {
+	if r.publish == nil {
+		return
+	}
+	trimmedNodeID := strings.TrimSpace(nodeID)
+	trimmedStatus := strings.TrimSpace(status)
+	trimmedMessage := strings.TrimSpace(message)
+	if trimmedMessage == "" {
+		trimmedMessage = fmt.Sprintf("node %s approval resolved with status=%s", trimmedNodeID, trimmedStatus)
+	}
+	r.publish(events.Event{
+		Type:      "approval_resolved",
+		RunID:     r.runID,
+		Workflow:  r.workflow,
+		Status:    trimmedStatus,
+		Message:   trimmedMessage,
+		Output:    map[string]any{"node_id": trimmedNodeID},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+func (r *runEventRecorder) recordGraphNodeStart(nodeID string, now time.Time) {
+	if nodeID == "" {
+		return
+	}
+	r.mu.Lock()
+	if r.nodeStartedAt == nil {
+		r.nodeStartedAt = map[string]time.Time{}
+	}
+	r.nodeStartedAt[nodeID] = now
+	r.mu.Unlock()
+}
+
+func (r *runEventRecorder) graphNodeDuration(nodeID string, now time.Time) time.Duration {
+	if nodeID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	startedAt, ok := r.nodeStartedAt[nodeID]
+	if ok {
+		delete(r.nodeStartedAt, nodeID)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return 0
+	}
+	return now.Sub(startedAt)
+}
+
+func (r *runEventRecorder) isApprovalNode(nodeID string) bool {
+	if nodeID == "" || len(r.approvalNodeIDs) == 0 {
+		return false
+	}
+	_, ok := r.approvalNodeIDs[nodeID]
+	return ok
+}
+
+func (r *runEventRecorder) GraphEdgeSelected(edge workflow.GraphEdgeSpec) {
+	if r.publish == nil {
+		return
+	}
+	r.publish(events.Event{
+		Type:     "edge_selected",
+		RunID:    r.runID,
+		Workflow: r.workflow,
+		Status:   "selected",
+		Message:  fmt.Sprintf("edge %s selected", strings.TrimSpace(edge.ID)),
+		Output: map[string]any{
+			"edge_id": edge.ID,
+			"source":  edge.Source,
+			"target":  edge.Target,
+			"kind":    edge.Kind,
+		},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+func isGraphWorkflow(wf workflow.Workflow) bool {
+	return strings.TrimSpace(wf.Plan.Strategy) == "graph" || wf.XRunnerGraph != nil
+}
+
+func approvalNodeIDs(wf workflow.Workflow) map[string]struct{} {
+	if wf.XRunnerGraph == nil {
+		return nil
+	}
+	actionByStepName := map[string]string{}
+	actionByStepID := map[string]string{}
+	for _, step := range wf.Steps {
+		if name := strings.TrimSpace(step.Name); name != "" {
+			actionByStepName[name] = strings.TrimSpace(step.Action)
+		}
+		if id := strings.TrimSpace(step.ID); id != "" {
+			actionByStepID[id] = strings.TrimSpace(step.Action)
+		}
+	}
+	out := map[string]struct{}{}
+	for _, node := range wf.XRunnerGraph.Nodes {
+		nodeID := strings.TrimSpace(node.ID)
+		if nodeID == "" {
+			continue
+		}
+		if strings.TrimSpace(node.Type) == "manual_approval" || node.Data.Approval != nil {
+			out[nodeID] = struct{}{}
+			continue
+		}
+		stepRef := firstNonEmptyString(node.StepName, node.Data.StepName, node.Step)
+		if actionByStepName[stepRef] == "manual.approval" || actionByStepID[strings.TrimSpace(node.StepID)] == "manual.approval" {
+			out[nodeID] = struct{}{}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func latestFailedStep(run state.RunState) string {

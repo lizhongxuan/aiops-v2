@@ -1453,7 +1453,8 @@ func (k *EinoKernel) runHostIterationLoop(
 					wg.Add(1)
 					go func(index int, call ToolCall) {
 						defer wg.Done()
-						results[index] = dispatcher.DispatchWithParentSpan(ctx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+						results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
 					}(j, batchCall)
 				}
 				wg.Wait()
@@ -1479,7 +1480,8 @@ func (k *EinoKernel) runHostIterationLoop(
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			} else {
-				dispatchResult = dispatcher.DispatchWithParentSpan(ctx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
+				dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
 					toolDispatches++
 				}
@@ -1895,7 +1897,8 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	k.markSnapshotResuming(session, snapshot, "resume_tool_approval")
 	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
-	result := dispatcher.DispatchApproved(ctx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
+	dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
 	if result.Blocked {
 		k.markTurnBlocked(session, snapshot, toolCall, result)
 		return blockedTurnResult(session, snapshot, result.Reason), nil
@@ -1963,7 +1966,8 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		))
 		k.persistTurnSnapshot(session, snapshot)
 
-		dispatchResult := dispatcher.DispatchWithParentSpan(ctx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
+		dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+		dispatchResult := dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
 		if dispatchResult.ToolCallID == "" {
 			dispatchResult.ToolCallID = tc.ID
 		}
@@ -2775,6 +2779,10 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 	now := time.Now()
 	reason := result.Reason
 	command := approvalCommandForToolCall(tc)
+	if result.Approval != nil {
+		command = firstNonEmpty(result.Approval.Command, command)
+		reason = firstNonEmpty(result.Approval.Reason, reason)
+	}
 	resumeState := TurnResumeStatePendingApproval
 	if result.Outcome == "evidence_needed" || containsPhrase(reason, "evidence") {
 		resumeState = TurnResumeStatePendingEvidence
@@ -2832,6 +2840,14 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
+		if result.Approval != nil {
+			approval.Risk = result.Approval.Risk
+			approval.Source = result.Approval.Source
+			approval.RunbookID = result.Approval.RunbookID
+			approval.RunbookStep = result.Approval.RunbookStep
+			approval.ExpectedEffect = result.Approval.ExpectedEffect
+			approval.Rollback = result.Approval.Rollback
+		}
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
 		session.PendingApprovals = []PendingApproval{approval}
@@ -2841,11 +2857,17 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		payload, _ := json.Marshal(map[string]any{
-			"id":       currentBlockedID(snapshot),
-			"toolName": tc.Name,
-			"command":  command,
-			"reason":   reason,
-			"status":   "pending",
+			"id":             currentBlockedID(snapshot),
+			"toolName":       tc.Name,
+			"command":        command,
+			"reason":         reason,
+			"risk":           approvalPayloadField(result.Approval, "risk"),
+			"source":         approvalPayloadField(result.Approval, "source"),
+			"runbookId":      approvalPayloadField(result.Approval, "runbookId"),
+			"runbookStep":    approvalPayloadField(result.Approval, "runbookStep"),
+			"expectedEffect": approvalPayloadField(result.Approval, "expectedEffect"),
+			"rollback":       approvalPayloadField(result.Approval, "rollback"),
+			"status":         "pending",
 		})
 		eventType := EventApprovalNeeded
 		if resumeState == TurnResumeStatePendingEvidence {
@@ -3255,6 +3277,28 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+func approvalPayloadField(payload *tooling.PermissionApprovalPayload, field string) string {
+	if payload == nil {
+		return ""
+	}
+	switch field {
+	case "risk":
+		return payload.Risk
+	case "source":
+		return payload.Source
+	case "runbookId":
+		return payload.RunbookID
+	case "runbookStep":
+		return payload.RunbookStep
+	case "expectedEffect":
+		return payload.ExpectedEffect
+	case "rollback":
+		return payload.Rollback
+	default:
+		return ""
+	}
+}
+
 func filterHiddenTools(tools []promptcompiler.Tool, hidden []string) []promptcompiler.Tool {
 	if len(tools) == 0 || len(hidden) == 0 {
 		return tools
@@ -3452,11 +3496,15 @@ func (l assembledToolLookup) LookupTool(name string) (ToolDescriptor, ToolExecut
 	if !ok {
 		return ToolDescriptor{}, nil, false
 	}
-	return ToolDescriptor{Metadata: toolDef.Metadata()}, toolExecutorAdapter{tool: toolDef}, true
+	return ToolDescriptor{Metadata: toolDef.Metadata(), InputSchema: toolDef.InputSchema()}, toolExecutorAdapter{tool: toolDef}, true
 }
 
 type toolExecutorAdapter struct {
 	tool tooling.Tool
+}
+
+func (a toolExecutorAdapter) CheckPermissions(ctx context.Context, args json.RawMessage) tooling.PermissionDecision {
+	return a.tool.CheckPermissions(ctx, args)
 }
 
 func (a toolExecutorAdapter) Execute(ctx context.Context, args json.RawMessage) (tooling.ToolResult, error) {

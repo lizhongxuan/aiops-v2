@@ -87,14 +87,15 @@ func chatRequestContent(req ChatMessageRequest) string {
 
 // HTTPServer provides the first-party HTTP REST API and WebSocket entrypoints.
 type HTTPServer struct {
-	ui                 appui.HTTPServices
-	mux                *http.ServeMux
-	web                http.Handler
-	terminalManager    *terminal.Manager
-	appWSHeartbeatTick time.Duration
-	appSnapshots       *AppSnapshotBroadcaster
-	agentEvents        appui.AgentEventService
-	promptTraces       appui.PromptTraceService
+	ui                      appui.HTTPServices
+	mux                     *http.ServeMux
+	web                     http.Handler
+	runnerStudioUpstreamURL string
+	terminalManager         *terminal.Manager
+	appWSHeartbeatTick      time.Duration
+	appSnapshots            *AppSnapshotBroadcaster
+	agentEvents             appui.AgentEventService
+	promptTraces            appui.PromptTraceService
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -127,6 +128,14 @@ func WithTerminalManager(manager *terminal.Manager) HTTPServerOption {
 func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
 	return func(s *HTTPServer) {
 		s.promptTraces = service
+	}
+}
+
+// WithRunnerStudioUpstreamURL configures the server-side runner API upstream
+// used by same-origin /api/runner-studio/* aggregation routes.
+func WithRunnerStudioUpstreamURL(rawURL string) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.runnerStudioUpstreamURL = strings.TrimSpace(rawURL)
 	}
 }
 
@@ -190,6 +199,17 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.Handle("/api/v1/auth/", buildAuthRouter(s.ui, http.NotFoundHandler()))
 	s.mux.HandleFunc("/api/v1/terminal/sessions", s.handleTerminalSessions)
 	s.mux.Handle("/api/v1/terminal/ws", s.handleTerminalWebSocket())
+	s.mux.HandleFunc("/api/v1/incidents", s.handleIncidents)
+	s.mux.HandleFunc("/api/v1/incidents/", s.handleIncidents)
+	s.mux.HandleFunc("/api/v1/coroot/webhook", s.handleCorootWebhook)
+	s.mux.HandleFunc("/api/v1/opsgraph/lookup", s.handleOpsGraphLookup)
+	s.mux.HandleFunc("/api/v1/opsgraph/entities/", s.handleOpsGraphEntity)
+	s.mux.HandleFunc("/api/v1/runbooks", s.handleRunbooks)
+	s.mux.HandleFunc("/api/v1/runbooks/", s.handleRunbooks)
+	s.mux.HandleFunc("/api/v1/erp/", s.handleERPContext)
+	s.mux.HandleFunc("/api/v1/changes/", s.handleChanges)
+	s.mux.HandleFunc("/api/runner-studio/ai/", s.handleRunnerStudioAI)
+	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 
 	NewResourceServer().RegisterOnMux(s.mux)
 

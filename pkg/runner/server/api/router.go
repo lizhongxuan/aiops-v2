@@ -9,7 +9,30 @@ type WorkflowHandler interface {
 	Update(w http.ResponseWriter, r *http.Request)
 	Delete(w http.ResponseWriter, r *http.Request)
 	Validate(w http.ResponseWriter, r *http.Request)
+	Publish(w http.ResponseWriter, r *http.Request)
+	ListVersions(w http.ResponseWriter, r *http.Request)
+	GetVersion(w http.ResponseWriter, r *http.Request)
+	Rollback(w http.ResponseWriter, r *http.Request)
+	ExportBundle(w http.ResponseWriter, r *http.Request)
+	ImportBundle(w http.ResponseWriter, r *http.Request)
 	DryRun(w http.ResponseWriter, r *http.Request)
+}
+
+type VisualWorkflowHandler interface {
+	GetGraph(w http.ResponseWriter, r *http.Request)
+	CreateGraph(w http.ResponseWriter, r *http.Request)
+	UpdateGraph(w http.ResponseWriter, r *http.Request)
+	Compile(w http.ResponseWriter, r *http.Request)
+	ParseYAML(w http.ResponseWriter, r *http.Request)
+	Validate(w http.ResponseWriter, r *http.Request)
+	DryRun(w http.ResponseWriter, r *http.Request)
+	SubmitRun(w http.ResponseWriter, r *http.Request)
+	ResolveVariables(w http.ResponseWriter, r *http.Request)
+	ActionCatalog(w http.ResponseWriter, r *http.Request)
+	AIDraft(w http.ResponseWriter, r *http.Request)
+	RunGraph(w http.ResponseWriter, r *http.Request)
+	ApproveNode(w http.ResponseWriter, r *http.Request)
+	RejectNode(w http.ResponseWriter, r *http.Request)
 }
 
 type ScriptHandler interface {
@@ -77,22 +100,23 @@ type SystemInfoHandler interface {
 }
 
 type RouterOptions struct {
-	AuthEnabled    bool
-	AuthToken      string
-	CORSOrigins    []string
-	UIBasePath     string
+	AuthEnabled bool
+	AuthToken   string
+	CORSOrigins []string
+	UIBasePath  string
 
 	Health *HealthHandler
 
-	Workflow    WorkflowHandler
-	Script      ScriptHandler
-	Run         RunHandler
-	Agent       AgentHandler
-	Skill       SkillHandler
-	Environment EnvironmentHandler
-	MCP         MCPHandler
-	Dashboard   DashboardHandler
-	System      SystemInfoHandler
+	Workflow       WorkflowHandler
+	VisualWorkflow VisualWorkflowHandler
+	Script         ScriptHandler
+	Run            RunHandler
+	Agent          AgentHandler
+	Skill          SkillHandler
+	Environment    EnvironmentHandler
+	MCP            MCPHandler
+	Dashboard      DashboardHandler
+	System         SystemInfoHandler
 
 	MetricsHandler http.Handler
 	UI             http.Handler
@@ -112,10 +136,33 @@ func NewRouter(opts RouterOptions) http.Handler {
 		mux.HandleFunc("GET /api/v1/workflows", opts.Workflow.List)
 		mux.HandleFunc("GET /api/v1/workflows/{name}", opts.Workflow.Get)
 		mux.HandleFunc("POST /api/v1/workflows", opts.Workflow.Create)
+		mux.HandleFunc("POST /api/v1/workflows/bundles/import", opts.Workflow.ImportBundle)
 		mux.HandleFunc("POST /api/v1/workflows/dry-run", opts.Workflow.DryRun)
 		mux.HandleFunc("PUT /api/v1/workflows/{name}", opts.Workflow.Update)
 		mux.HandleFunc("DELETE /api/v1/workflows/{name}", opts.Workflow.Delete)
 		mux.HandleFunc("POST /api/v1/workflows/{name}/validate", opts.Workflow.Validate)
+		mux.HandleFunc("POST /api/v1/workflows/{name}/publish", opts.Workflow.Publish)
+		mux.HandleFunc("GET /api/v1/workflows/{name}/bundle", opts.Workflow.ExportBundle)
+		mux.HandleFunc("GET /api/v1/workflows/{name}/versions", opts.Workflow.ListVersions)
+		mux.HandleFunc("GET /api/v1/workflows/{name}/versions/{version_id}", opts.Workflow.GetVersion)
+		mux.HandleFunc("POST /api/v1/workflows/{name}/versions/{version_id}/rollback", opts.Workflow.Rollback)
+	}
+	if opts.VisualWorkflow != nil {
+		mux.HandleFunc("GET /api/v1/workflows/{name}/graph", opts.VisualWorkflow.GetGraph)
+		mux.HandleFunc("POST /api/v1/workflows/graph", opts.VisualWorkflow.CreateGraph)
+		mux.HandleFunc("PUT /api/v1/workflows/{name}/graph", opts.VisualWorkflow.UpdateGraph)
+		mux.HandleFunc("POST /api/v1/workflows/graph/compile", opts.VisualWorkflow.Compile)
+		mux.HandleFunc("POST /api/v1/workflows/graph/parse", opts.VisualWorkflow.ParseYAML)
+		mux.HandleFunc("POST /api/v1/workflows/graph/validate", opts.VisualWorkflow.Validate)
+		mux.HandleFunc("POST /api/v1/workflows/graph/dry-run", opts.VisualWorkflow.DryRun)
+		mux.HandleFunc("POST /api/v1/workflows/graph/runs", opts.VisualWorkflow.SubmitRun)
+		mux.HandleFunc("POST /api/v1/workflows/graph/variables/resolve", opts.VisualWorkflow.ResolveVariables)
+		mux.HandleFunc("POST /api/v1/workflows/ai/draft", opts.VisualWorkflow.AIDraft)
+		mux.HandleFunc("GET /api/v1/actions", opts.VisualWorkflow.ActionCatalog)
+		mux.HandleFunc("GET /api/v1/actions/catalog", opts.VisualWorkflow.ActionCatalog)
+		mux.HandleFunc("GET /api/v1/runs/{id}/graph", opts.VisualWorkflow.RunGraph)
+		mux.HandleFunc("POST /api/v1/runs/{id}/nodes/{node_id}/approve", opts.VisualWorkflow.ApproveNode)
+		mux.HandleFunc("POST /api/v1/runs/{id}/nodes/{node_id}/reject", opts.VisualWorkflow.RejectNode)
 	}
 	if opts.Script != nil {
 		mux.HandleFunc("GET /api/v1/scripts", opts.Script.List)

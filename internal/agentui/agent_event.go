@@ -204,26 +204,106 @@ type ReasoningPayload struct {
 }
 
 type SystemPayload struct {
-	ID          string `json:"id,omitempty"`
-	DisplayKind string `json:"displayKind,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	Detail      string `json:"detail,omitempty"`
-	Stage       string `json:"stage,omitempty"`
-	Iteration   int    `json:"iteration,omitempty"`
-	CardID      string `json:"cardId,omitempty"`
-	CardType    string `json:"cardType,omitempty"`
+	ID             string `json:"id,omitempty"`
+	DisplayKind    string `json:"displayKind,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	Stage          string `json:"stage,omitempty"`
+	Iteration      int    `json:"iteration,omitempty"`
+	CardID         string `json:"cardId,omitempty"`
+	CardType       string `json:"cardType,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	RunbookID      string `json:"runbookId,omitempty"`
+	RunbookStep    string `json:"runbookStep,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
+	Confidence     string `json:"confidence,omitempty"`
+	Window         string `json:"window,omitempty"`
+	RawRef         string `json:"rawRef,omitempty"`
+}
+
+type RunbookPayload struct {
+	ID             string `json:"id,omitempty"`
+	RunbookID      string `json:"runbookId,omitempty"`
+	InstanceID     string `json:"instanceId,omitempty"`
+	StepID         string `json:"stepId,omitempty"`
+	Title          string `json:"title,omitempty"`
+	Summary        string `json:"summary,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Score          int    `json:"score,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
+}
+
+type ActionProposalPayload struct {
+	ID             string   `json:"id,omitempty"`
+	ToolName       string   `json:"toolName,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Risk           string   `json:"risk,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	RunbookID      string   `json:"runbookId,omitempty"`
+	RunbookStep    string   `json:"runbookStep,omitempty"`
+	ExpectedEffect string   `json:"expectedEffect,omitempty"`
+	Rollback       string   `json:"rollback,omitempty"`
+	EvidenceRefs   []string `json:"evidenceRefs,omitempty"`
+}
+
+type FallbackPlanPayload struct {
+	ID           string   `json:"id,omitempty"`
+	IncidentID   string   `json:"incidentId,omitempty"`
+	Goal         string   `json:"goal,omitempty"`
+	WhyNoRunbook string   `json:"whyNoRunbook,omitempty"`
+	Risk         string   `json:"risk,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
+}
+
+type VerificationPayload struct {
+	ID      string `json:"id,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Source  string `json:"source,omitempty"`
+	RawRef  string `json:"rawRef,omitempty"`
+	Window  string `json:"window,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
+type IncidentPayload struct {
+	ID         string   `json:"id,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
+	Severity   string   `json:"severity,omitempty"`
+	Status     string   `json:"status,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	EntityID   string   `json:"entityId,omitempty"`
+	Evidence   []string `json:"evidence,omitempty"`
+	Hypothesis string   `json:"hypothesis,omitempty"`
+	RawRef     string   `json:"rawRef,omitempty"`
 }
 
 type ApprovalPayload struct {
-	ApprovalID   string   `json:"approvalId,omitempty"`
-	ApprovalType string   `json:"approvalType,omitempty"`
-	Title        string   `json:"title,omitempty"`
-	Command      string   `json:"command,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
-	Risk         string   `json:"risk,omitempty"`
-	Decision     string   `json:"decision,omitempty"`
-	Targets      []string `json:"targets,omitempty"`
+	ApprovalID     string   `json:"approvalId,omitempty"`
+	ApprovalType   string   `json:"approvalType,omitempty"`
+	Title          string   `json:"title,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Risk           string   `json:"risk,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	RunbookID      string   `json:"runbookId,omitempty"`
+	RunbookStep    string   `json:"runbookStep,omitempty"`
+	ExpectedEffect string   `json:"expectedEffect,omitempty"`
+	Rollback       string   `json:"rollback,omitempty"`
+	Decision       string   `json:"decision,omitempty"`
+	Targets        []string `json:"targets,omitempty"`
 }
 
 type ArtifactPayload struct {

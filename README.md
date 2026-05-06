@@ -372,6 +372,40 @@ go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diag
 
 ---
 
+## ERP SRE Runtime Guardrails
+
+本节约束 ERP 生产事故处理主链。ERP SRE 不是“会 SSH 的聊天页面”，它必须收敛到同一条受治理的 runtime/tool/approval/checkpoint 路径。
+
+### 1. 主链不变量
+
+- Runbook 不执行工具，只匹配、规划、推进状态，并生成 `ActionProposal`。
+- fallback 不执行命令，只在无合适 Runbook 时生成受治理的 `ActionProposal`。
+- 真实执行只能通过模型 `tool_use -> ToolDispatcher -> Policy / Approval -> checkpoint`。
+- 非只读生产 `exec_command` 必须先有有效 `ActionToken`，再进入 approval。
+- 任何 feature 代码都不能直接调用 tool executor、K8s client、Coroot tool 或 shell executor 绕过 `ToolDispatcher`。
+- Coroot、ERP 图谱、Runbook、Incident、K8s、exec 都只能作为同一 tool surface 下的能力，不允许新增第二套 runtime loop、tool registry、approval 入口或 capability pool。
+
+### 2. 前端运行态约束
+
+- 事故页面不能新增私有 WebSocket、SSE、EventSource 或 polling 运行态。
+- ERP SRE 页面 HTTP 只能经 `web/src/api/*`，实时过程只能经主 `/ws` 和 `web/src/realtime/*`。
+- 事故工作台只能消费 `AgentEventProjection` 推导 runbook、proposal、tool、approval、verification 和 postmortem 过程态。
+- 页面不能从 assistant final text、Markdown、`snapshot.toolInvocations` 或局部 running flag 推断真实执行状态。
+
+### 3. 统一命名
+
+| 名称 | 语义 |
+| --- | --- |
+| `ActionProposal` | Runbook、fallback、manual 或 break-glass 生成的动作提案，只描述将要调用的真实 tool、输入、风险、证据、预期效果和验证方式 |
+| `ActionToken` | 绑定 session/turn/incident/toolName/normalized input/risk/expiry 的执行授权，非只读生产动作必须携带 |
+| `IncidentCase` | ERP 事故主对象，聚合来源、严重级别、业务影响、证据、动作、审批和复盘 |
+| `RunbookInstance` | 某个事故中一次 Runbook 执行状态，只推进步骤和生成下一步 proposal |
+| `FallbackPlan` | 无合适 Runbook 时的受治理临时处置计划，输出一个或多个 `ActionProposal` |
+
+新增 ERP SRE 功能前，先确认它能落入这些对象和主链；如果需要新对象，先更新设计文档和本节。
+
+---
+
 ## Web Product Surface Guardrails
 
 本节约束 `web/` 与 `ai-server` 的正式产品面。新增页面、接口、实时事件、登录、terminal、settings、hosts、MCP、agent profile 时必须遵守这里，不允许重新把旧项目协议当成永久兼容层。

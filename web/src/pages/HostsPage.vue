@@ -1,421 +1,801 @@
 <script setup>
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import { PlusIcon, SearchIcon, SlidersHorizontalIcon } from "lucide-vue-next";
 import { useAppStore } from "../store";
 import HostEditorModal from "../components/HostEditorModal.vue";
-import HostBatchTagModal from "../components/HostBatchTagModal.vue";
-import { hostCapabilityLabel, labelList, normalizeHostRecord } from "../data/opsWorkspace";
-import { createHost, deleteHost, fetchHostSessions as fetchHostSessionsApi, updateHost, updateHostTags } from "../api/hosts";
-import { NTag, NBadge, NButtonGroup, NButton } from "naive-ui";
-import { SearchIcon, TerminalIcon, EditIcon, Trash2Icon } from "lucide-vue-next";
+import { createHost, updateHost } from "../api/hosts";
+import { fetchTerminalSessions } from "../api/terminal";
+import { buildHostListViewModel } from "../lib/hostListViewModel";
+
+const PAGE_SIZE = 20;
 
 const store = useAppStore();
 const router = useRouter();
 
 const searchQuery = ref("");
-const selectedHostId = ref(store.snapshot.selectedHostId || "");
-const checkedRowKeys = ref([]);
-const hostSessions = ref([]);
-const hostSessionsLoading = ref(false);
+const filters = ref({
+  heartbeat: "all",
+  source: "all",
+  ssh: "all",
+});
+const page = ref(1);
+const now = ref(new Date());
+const terminalSessions = ref([]);
+const terminalSessionsLoading = ref(false);
+const filterOpen = ref(false);
 const editorHost = ref(null);
+const editorIntent = ref("create");
 const showHostEditor = ref(false);
-const showTagModal = ref(false);
 const pageError = ref("");
 const pageNotice = ref("");
 const busyAction = ref("");
+
+const heartbeatFilters = [
+  { label: "全部", value: "all" },
+  { label: "在线", value: "online" },
+  { label: "待安装", value: "installing" },
+  { label: "离线", value: "offline" },
+  { label: "超时", value: "stale" },
+];
+const sourceFilters = [
+  { label: "全部", value: "all" },
+  { label: "client", value: "client" },
+  { label: "手动", value: "手动" },
+  { label: "local", value: "local" },
+];
+const sshFilters = [
+  { label: "全部", value: "all" },
+  { label: "可 SSH", value: "可 SSH" },
+  { label: "无密码", value: "无密码" },
+];
+
+const hostModel = computed(() =>
+  buildHostListViewModel({
+    hosts: store.snapshot.hosts || [],
+    sessions: store.sessionList || [],
+    terminalSessions: terminalSessions.value,
+    query: searchQuery.value,
+    filters: filters.value,
+    now: now.value,
+    page: page.value,
+    pageSize: PAGE_SIZE,
+  }),
+);
+
+const activeFilterCount = computed(() =>
+  ["heartbeat", "source", "ssh"].filter((key) => filters.value[key] && filters.value[key] !== "all").length,
+);
+
+const emptyHostMessage = computed(() =>
+  hostModel.value.allRows.length ? "暂无符合条件的主机。" : "暂无主机，点击接入主机添加。",
+);
 
 function clearMessage(kind = "all") {
   if (kind === "all" || kind === "error") pageError.value = "";
   if (kind === "all" || kind === "notice") pageNotice.value = "";
 }
-function pushError(message) { pageNotice.value = ""; pageError.value = message; }
-function pushNotice(message) { pageError.value = ""; pageNotice.value = message; }
 
-function parseIsoTime(value) {
-  if (!value || value === "offline") return null;
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return null;
-  return timestamp;
+function pushError(message) {
+  pageNotice.value = "";
+  pageError.value = message;
 }
 
-function formatLastSeen(value, status) {
-  if (!value) return status === "online" ? "刚注册" : "未建立控制通道";
-  if (value === "offline") return "未建立控制通道";
-  const timestamp = parseIsoTime(value);
-  if (!timestamp) return value;
-  const diffSeconds = Math.max(1, Math.floor((Date.now() - timestamp) / 1000));
-  if (diffSeconds < 60) return `${diffSeconds}s 前`;
-  if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m 前`;
-  if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h 前`;
-  return `${Math.floor(diffSeconds / 86400)}d 前`;
+function pushNotice(message) {
+  pageError.value = "";
+  pageNotice.value = message;
 }
 
-function statusLabel(host) {
-  switch (host.status) {
-    case "online": return "控制通道活跃";
-    case "connecting": return "安装完成，等待回连";
-    case "installing": return "SSH 安装中";
-    case "pending_install": return "待安装 agent";
-    default: return host.status || "未接入";
+async function refreshInventory() {
+  clearMessage();
+  terminalSessionsLoading.value = true;
+  try {
+    const [, , terminalPayload] = await Promise.all([
+      store.fetchState(),
+      store.fetchSessions(),
+      fetchTerminalSessions(),
+    ]);
+    terminalSessions.value = terminalPayload?.sessions || terminalPayload?.items || [];
+    now.value = new Date();
+  } catch (_err) {
+    pushError("加载主机列表失败");
+  } finally {
+    terminalSessionsLoading.value = false;
   }
 }
 
-function transportLabel(host) {
-  switch (host.transport) {
-    case "local": return "本机";
-    case "grpc_reverse": return "反向 gRPC";
-    case "ssh_bootstrap": return "SSH 引导";
-    default: return host.transport || host.kind || "inventory";
-  }
+function openCreateModal() {
+  editorHost.value = null;
+  editorIntent.value = "create";
+  showHostEditor.value = true;
 }
 
-function statusBadgeType(host) {
-  if (host.status === "online") return "success";
-  if (host.status === "installing" || host.status === "connecting") return "info";
-  if (host.installState === "install_failed") return "error";
-  return "warning";
+function openInstallModal(row) {
+  editorHost.value = row.raw;
+  editorIntent.value = "install";
+  showHostEditor.value = true;
 }
 
-const hostRecords = computed(() => {
-  return (store.snapshot.hosts || []).map((host, index) => {
-    const normalized = normalizeHostRecord(host, index);
-    return { ...normalized, lastSeenText: formatLastSeen(normalized.lastHeartbeat, normalized.status) };
-  });
-});
-
-const filteredHosts = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-  if (!query) return hostRecords.value;
-  return hostRecords.value.filter((host) => {
-    const labelText = labelList(host.labels).join(" ").toLowerCase();
-    return [host.id, host.name, host.address, host.kind, host.status, host.transport, labelText]
-      .filter(Boolean).some((item) => String(item).toLowerCase().includes(query));
-  });
-});
-
-const selectedHost = computed(() => {
-  return filteredHosts.value.find((host) => host.id === selectedHostId.value) || filteredHosts.value[0] || null;
-});
-
-const metrics = computed(() => {
-  const hosts = hostRecords.value.filter((host) => host.id !== "server-local");
-  const online = hosts.filter((host) => host.status === "online").length;
-  const executable = hosts.filter((host) => host.executable).length;
-  const waitingInstall = hosts.filter((host) => host.installState !== "installed").length;
-  const sessions = store.sessionList.filter((s) => s.selectedHostId && s.selectedHostId !== "server-local").length;
-  return [
-    { label: "控制通道活跃", value: online, meta: `${Math.max(hosts.length - online, 0)} 台不活跃`, type: "success" },
-    { label: "待安装 / 待回连", value: waitingInstall, meta: "SSH 安装或等待 agent 回连", type: "warning" },
-    { label: "可执行主机", value: executable, meta: `${Math.max(hosts.length - executable, 0)} 台仅在册`, type: "info" },
-    { label: "远程会话数", value: sessions, meta: "每个子 agent 对应一个会话", type: "default" },
-  ];
-});
-
-// n-data-table columns
-const tableColumns = computed(() => [
-  { type: "selection" },
-  {
-    title: "名称",
-    key: "name",
-    render(row) {
-      return h("div", { style: "display:flex;align-items:center;gap:8px" }, [
-        h(NBadge, { dot: true, type: statusBadgeType(row), offset: [0, 0] }),
-        h("div", {}, [
-          h("strong", {}, row.name),
-          h("div", { style: "font-size:12px;color:#64748b" }, statusLabel(row)),
-        ]),
-      ]);
-    },
-  },
-  {
-    title: "HOST ID",
-    key: "id",
-    render(row) {
-      return h(NTag, { size: "small", bordered: false }, { default: () => row.id });
-    },
-  },
-  {
-    title: "接入方式",
-    key: "transport",
-    render(row) {
-      return h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [
-        h(NTag, { size: "small", type: "info" }, { default: () => transportLabel(row) }),
-        h(NTag, { size: "small", type: row.installState === "installed" ? "success" : "warning" }, { default: () => row.installState || "inventory" }),
-      ]);
-    },
-  },
-  { title: "OS", key: "os", width: 120 },
-  { title: "最近握手", key: "lastSeenText", width: 120, align: "right" },
-  {
-    title: "操作",
-    key: "actions",
-    width: 200,
-    render(row) {
-      return h(NButtonGroup, { size: "small" }, {
-        default: () => [
-          h(NButton, {
-            size: "small",
-            disabled: !(row.status === "online" && (row.terminalCapable || row.executable)),
-            onClick: (e) => { e.stopPropagation(); openTerminal(row); },
-          }, { icon: () => h(TerminalIcon, { size: 14 }), default: () => "终端" }),
-          h(NButton, {
-            size: "small",
-            disabled: row.id === "server-local",
-            onClick: (e) => { e.stopPropagation(); openEditModal(row); },
-          }, { icon: () => h(EditIcon, { size: 14 }), default: () => "编辑" }),
-          h(NButton, {
-            size: "small",
-            disabled: row.id === "server-local",
-            onClick: (e) => { e.stopPropagation(); removeHost(row); },
-          }, { icon: () => h(Trash2Icon, { size: 14 }), default: () => "删除" }),
-        ],
-      });
-    },
-  },
-]);
-
-const rowKey = (row) => row.id;
-
-function handleRowClick(row) {
-  selectHost(row);
+function openReinstallModal(row) {
+  editorHost.value = row.raw;
+  editorIntent.value = "reinstall";
+  showHostEditor.value = true;
 }
 
-watch(filteredHosts, (hosts) => {
-  if (!hosts.length) { selectedHostId.value = ""; return; }
-  if (!hosts.some((h) => h.id === selectedHostId.value)) {
-    selectedHostId.value = store.snapshot.selectedHostId || hosts[0].id;
-  }
-  checkedRowKeys.value = checkedRowKeys.value.filter((id) => hosts.some((h) => h.id === id));
-}, { immediate: true });
-
-watch(() => store.snapshot.selectedHostId, (nextHostId) => { if (nextHostId) selectedHostId.value = nextHostId; });
-
-const selectedSessionsCount = computed(() => hostSessions.value.length);
-
-async function refreshInventory() { await Promise.all([store.fetchState(), store.fetchSessions()]); }
-
-async function loadHostSessions(hostId) {
-  if (!hostId) { hostSessions.value = []; return; }
-  hostSessionsLoading.value = true;
-  try {
-    const data = await fetchHostSessionsApi(hostId, { limit: 8 });
-    hostSessions.value = data.items || [];
-  } catch (_err) { pushError("加载主机会话失败"); }
-  finally { hostSessionsLoading.value = false; }
+async function openTerminal(row) {
+  if (!row?.canOpenSsh) return;
+  const selected = await store.selectHost(row.id);
+  if (selected === false) return;
+  router.push(`/terminal/${row.id}`);
 }
 
-watch(selectedHostId, async (hostId) => { await loadHostSessions(hostId); }, { immediate: true });
-
-async function selectHost(host) { selectedHostId.value = host.id; await store.selectHost(host.id); }
-async function openTerminal(host) { await selectHost(host); router.push(`/terminal/${host.id}`); }
-
-function openCreateModal() { editorHost.value = null; showHostEditor.value = true; }
-function openEditModal(host) { editorHost.value = host; showHostEditor.value = true; }
-
-async function saveHost(payload) {
-  clearMessage();
-  const isEditing = !!editorHost.value?.id;
-  busyAction.value = isEditing ? `update:${editorHost.value.id}` : "create";
-  try {
-    const data = isEditing ? await updateHost(editorHost.value.id, payload) : await createHost(payload);
-    showHostEditor.value = false;
-    await refreshInventory();
-    selectedHostId.value = data.host?.id || payload.id;
-    await loadHostSessions(selectedHostId.value);
-    pushNotice(payload.installViaSsh ? "主机已创建，并已触发 SSH 安装。" : "主机信息已保存。");
-  } catch (_err) { pushError("保存主机失败"); }
-  finally { busyAction.value = ""; }
-}
-
-async function applyBatchTags(payload) {
-  clearMessage();
-  busyAction.value = "tags";
-  try {
-    await updateHostTags({ hostIds: checkedRowKeys.value, add: payload.add, remove: payload.remove });
-    showTagModal.value = false;
-    await refreshInventory();
-    await loadHostSessions(selectedHostId.value);
-    pushNotice(`已更新 ${checkedRowKeys.value.length} 台主机标签。`);
-  } catch (_err) { pushError("批量标签失败"); }
-  finally { busyAction.value = ""; }
-}
-
-async function removeHost(host) {
-  if (!host?.id || host.id === "server-local") return;
-  const confirmed = window.confirm(`确认删除主机 ${host.name || host.id} 吗？`);
-  if (!confirmed) return;
-  clearMessage();
-  busyAction.value = `delete:${host.id}`;
-  try {
-    await deleteHost(host.id);
-    await refreshInventory();
-    checkedRowKeys.value = checkedRowKeys.value.filter((id) => id !== host.id);
-    pushNotice("主机已删除。");
-  } catch (_err) { pushError("删除主机失败"); }
-  finally { busyAction.value = ""; }
-}
-
-async function jumpToSession(sessionId) {
-  const ok = await store.activateSession(sessionId);
-  if (!ok) return;
+async function openHostSession(row) {
+  const ok = await store.createOrActivateSingleHostSessionForHost(row.id, row.raw);
+  if (ok === false) return;
   router.push("/");
 }
 
-onMounted(async () => { await refreshInventory(); });
+function handlePrimaryAction(row) {
+  if (row.primaryAction === "session") {
+    void openHostSession(row);
+    return;
+  }
+  if (row.primaryAction === "install") {
+    openInstallModal(row);
+    return;
+  }
+  openReinstallModal(row);
+}
+
+function primaryActionLabel(row) {
+  if (row.primaryAction === "session") return "会话";
+  if (row.primaryAction === "install") return "安装";
+  return "重装";
+}
+
+async function saveHost(payload) {
+  clearMessage();
+  const isExistingHost = Boolean(editorHost.value?.id);
+  busyAction.value = isExistingHost ? `update:${editorHost.value.id}` : "create";
+  try {
+    await (isExistingHost ? updateHost(editorHost.value.id, payload) : createHost(payload));
+    showHostEditor.value = false;
+    await refreshInventory();
+    pushNotice(payload.installViaSsh ? "主机已保存，并已触发 SSH 安装。" : "主机信息已保存。");
+  } catch (_err) {
+    pushError("保存主机失败");
+  } finally {
+    busyAction.value = "";
+  }
+}
+
+function setFilter(kind, value) {
+  filters.value = { ...filters.value, [kind]: value };
+}
+
+function prevPage() {
+  if (hostModel.value.canPrev) {
+    page.value -= 1;
+  }
+}
+
+function nextPage() {
+  if (hostModel.value.canNext) {
+    page.value += 1;
+  }
+}
+
+watch([searchQuery, filters], () => {
+  page.value = 1;
+}, { deep: true });
+
+onMounted(async () => {
+  await refreshInventory();
+});
 </script>
 
 <template>
-  <section class="ops-page">
-    <div class="ops-page-inner">
-      <header class="ops-page-header">
-        <div>
-          <h2 class="ops-page-title">主机管理</h2>
-          <p class="ops-page-subtitle">主机清单、SSH 引导安装、批量标签，以及每台子 agent 对应会话都收敛在一个 inventory 视图里。</p>
-        </div>
-      </header>
+  <section class="hosts-redesign-page">
+    <div class="hosts-redesign-inner">
+      <div v-if="pageNotice" class="hosts-alert is-success">
+        <span>{{ pageNotice }}</span>
+        <button type="button" @click="clearMessage('notice')">关闭</button>
+      </div>
+      <div v-if="pageError" class="hosts-alert is-error">
+        <span>{{ pageError }}</span>
+        <button type="button" @click="clearMessage('error')">关闭</button>
+      </div>
 
-      <div class="ops-scope-bar">
-        <div class="ops-scope-left">
-          <span class="ops-scope-label">Connection Semantics</span>
-          <n-tag type="info" size="small">状态 = 控制通道活跃度</n-tag>
-          <n-tag size="small">接入 = reverse gRPC</n-tag>
-          <n-tag size="small">安装 = SSH 引导</n-tag>
-        </div>
-        <div class="ops-actions">
-          <n-button quaternary @click="showTagModal = true" :disabled="!checkedRowKeys.length">批量标签</n-button>
-          <n-button type="primary" @click="openCreateModal">新增主机</n-button>
+      <div class="hosts-stats-grid" aria-label="主机统计">
+        <article v-for="stat in hostModel.stats" :key="stat.label" class="hosts-stat-card">
+          <strong>{{ stat.value }}</strong>
+          <span>{{ stat.label }}</span>
+        </article>
+      </div>
+
+      <div class="hosts-toolbar">
+        <label class="hosts-search-field">
+          <SearchIcon :size="18" />
+          <input
+            v-model="searchQuery"
+            type="search"
+            placeholder="按 IP + 用户名检索，例如 10.0.2.15 root"
+            aria-label="搜索主机"
+          />
+        </label>
+        <div class="hosts-toolbar-actions">
+          <div class="hosts-filter-wrap">
+            <button class="hosts-filter-button" type="button" @click="filterOpen = !filterOpen">
+              <SlidersHorizontalIcon :size="16" />
+              <span>筛选</span>
+              <span v-if="activeFilterCount" class="hosts-filter-count">{{ activeFilterCount }}</span>
+            </button>
+            <div v-if="filterOpen" class="hosts-filter-popover">
+              <div class="hosts-filter-group">
+                <span>心跳</span>
+                <div>
+                  <button
+                    v-for="item in heartbeatFilters"
+                    :key="item.value"
+                    type="button"
+                    :class="{ active: filters.heartbeat === item.value }"
+                    @click="setFilter('heartbeat', item.value)"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+              </div>
+              <div class="hosts-filter-group">
+                <span>来源</span>
+                <div>
+                  <button
+                    v-for="item in sourceFilters"
+                    :key="item.value"
+                    type="button"
+                    :class="{ active: filters.source === item.value }"
+                    @click="setFilter('source', item.value)"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+              </div>
+              <div class="hosts-filter-group">
+                <span>SSH</span>
+                <div>
+                  <button
+                    v-for="item in sshFilters"
+                    :key="item.value"
+                    type="button"
+                    :class="{ active: filters.ssh === item.value }"
+                    @click="setFilter('ssh', item.value)"
+                  >
+                    {{ item.label }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <button class="hosts-connect-button" type="button" @click="openCreateModal">
+            <PlusIcon :size="16" />
+            <span>接入主机</span>
+          </button>
         </div>
       </div>
 
-      <n-alert v-if="pageNotice" type="success" closable @close="pageNotice = ''">{{ pageNotice }}</n-alert>
-      <n-alert v-if="pageError" type="error" closable @close="pageError = ''">{{ pageError }}</n-alert>
-
-      <n-grid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" :item-responsive="true">
-        <n-gi v-for="metric in metrics" :key="metric.label" span="4 m:1">
-          <n-card size="small">
-            <n-statistic :label="metric.label" :value="metric.value">
-              <template #suffix>
-                <n-text depth="3" style="font-size:12px;">{{ metric.meta }}</n-text>
-              </template>
-            </n-statistic>
-          </n-card>
-        </n-gi>
-      </n-grid>
-
-      <div class="ops-grid ops-grid-hosts">
-        <n-card>
-          <template #header>
-            <div class="hosts-toolbar">
-              <div>
-                <h3 style="margin:0;">主机清单</h3>
-                <n-text depth="3">支持新增主机、SSH 安装、批量打标签，以及查看子会话。</n-text>
-              </div>
-              <n-input
-                v-model:value="searchQuery"
-                placeholder="搜索主机 / 标签 / 地址"
-                clearable
-                style="width:280px;"
-              >
-                <template #prefix><SearchIcon :size="14" /></template>
-              </n-input>
-            </div>
-          </template>
-
-          <n-data-table
-            :columns="tableColumns"
-            :data="filteredHosts"
-            :row-key="rowKey"
-            v-model:checked-row-keys="checkedRowKeys"
-            :row-props="(row) => ({ style: 'cursor:pointer', onClick: () => handleRowClick(row) })"
-            :bordered="false"
-            size="small"
-            :pagination="{ pageSize: 20 }"
-          />
-        </n-card>
-
-        <n-card v-if="selectedHost" class="ops-sidebar-card">
-          <template #header>
-            <h3 style="margin:0;">主机详情</h3>
-            <n-text depth="3">{{ selectedHost.name }} · {{ selectedHost.id }}</n-text>
-          </template>
-
-          <div class="ops-badge-row">
-            <n-tag :type="statusBadgeType(selectedHost)" size="small">{{ statusLabel(selectedHost) }}</n-tag>
-            <n-tag size="small">{{ transportLabel(selectedHost) }}</n-tag>
-            <n-tag :type="selectedHost.installState === 'installed' ? 'success' : 'warning'" size="small">{{ selectedHost.installState || "inventory" }}</n-tag>
-          </div>
-
-          <div class="ops-detail-block">
-            <h4>{{ selectedHost.os }} · {{ selectedHost.arch }}</h4>
-            <n-text depth="3">target {{ selectedHost.address || "server-local" }} · agent {{ selectedHost.agentVersion || "未注册" }}</n-text>
-            <br />
-            <n-text depth="3">最近握手 {{ selectedHost.lastSeenText }} · 模式 {{ selectedHost.controlMode || "inventory" }}</n-text>
-          </div>
-
-          <div class="ops-subcard">
-            <span class="ops-subcard-label">标签</span>
-            <div class="ops-chip-row">
-              <n-tag v-for="label in labelList(selectedHost.labels)" :key="label" size="small">{{ label }}</n-tag>
-              <n-text v-if="!labelList(selectedHost.labels).length" depth="3">暂无标签</n-text>
-            </div>
-          </div>
-
-          <div class="ops-subcard">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-              <span class="ops-subcard-label">主 Agent / 子会话</span>
-              <n-text depth="3">{{ selectedSessionsCount }} 个会话</n-text>
-            </div>
-            <div v-if="hostSessionsLoading"><n-text depth="3">正在加载会话...</n-text></div>
-            <div v-else-if="!hostSessions.length"><n-text depth="3">该主机还没有独立子会话。</n-text></div>
-            <div v-else class="host-session-list">
-              <n-card v-for="session in hostSessions" :key="session.sessionId" size="small" embedded>
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                  <strong>{{ session.title || session.sessionId }}</strong>
-                  <n-tag size="small">{{ session.status }}</n-tag>
+      <div class="hosts-table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>主机 IP / 用户名</th>
+              <th>心跳情况</th>
+              <th>会话</th>
+              <th>来源 / SSH</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in hostModel.pageRows" :key="row.id">
+              <td>
+                <div class="hosts-main-cell">
+                  <strong>{{ row.title }}</strong>
+                  <span>{{ row.subtitle }}</span>
                 </div>
-                <p class="host-session-copy"><span class="host-session-label">主 Agent 任务</span>{{ session.taskSummary || "暂无任务摘要" }}</p>
-                <p class="host-session-copy"><span class="host-session-label">子会话回复</span>{{ session.replySummary || "暂无回复摘要" }}</p>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-                  <n-text depth="3">{{ session.messageCount }} 条消息 · {{ formatLastSeen(session.lastActivityAt, session.status) }}</n-text>
-                  <n-button size="tiny" quaternary @click="jumpToSession(session.sessionId)">切到该会话</n-button>
+              </td>
+              <td>
+                <span class="hosts-status-pill" :class="`is-${row.heartbeat}`">
+                  <span></span>
+                  {{ row.heartbeatLabel }}
+                </span>
+              </td>
+              <td class="hosts-session-count">{{ row.sessionCount }}</td>
+              <td>
+                <div class="hosts-source-cell">
+                  <strong>{{ row.sourceLabel }}</strong>
+                  <span>{{ row.sshLabel }}</span>
                 </div>
-              </n-card>
-            </div>
-          </div>
+              </td>
+              <td>
+                <div class="hosts-row-actions">
+                  <button
+                    type="button"
+                    class="hosts-action-button is-ssh"
+                    :class="{ disabled: !row.canOpenSsh }"
+                    :disabled="!row.canOpenSsh"
+                    @click="openTerminal(row)"
+                  >
+                    {{ row.canOpenSsh ? "SSH" : "禁用" }}
+                  </button>
+                  <button type="button" class="hosts-action-button" @click="handlePrimaryAction(row)">
+                    {{ primaryActionLabel(row) }}
+                  </button>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!hostModel.pageRows.length">
+              <td colspan="5">
+                <div class="hosts-empty-state">{{ emptyHostMessage }}</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
-          <div class="ops-card-actions">
-            <n-button-group>
-              <n-button type="primary" @click="openTerminal(selectedHost)" :disabled="!(selectedHost.status === 'online' && (selectedHost.terminalCapable || selectedHost.executable))">进入终端</n-button>
-              <n-button @click="selectHost(selectedHost)">设为当前上下文</n-button>
-              <n-button @click="openEditModal(selectedHost)" :disabled="selectedHost.id === 'server-local'">编辑主机</n-button>
-              <n-button type="error" @click="removeHost(selectedHost)" :disabled="selectedHost.id === 'server-local'">删除主机</n-button>
-            </n-button-group>
-          </div>
-        </n-card>
+      <div class="hosts-pagination">
+        <span>共 {{ hostModel.total }} 台主机</span>
+        <div>
+          <button type="button" :disabled="!hostModel.canPrev" @click="prevPage">上一页</button>
+          <button type="button" :disabled="!hostModel.canNext" @click="nextPage">下一页</button>
+        </div>
       </div>
     </div>
   </section>
 
-  <HostEditorModal v-if="showHostEditor" :host="editorHost" @close="showHostEditor = false" @save="saveHost" />
-  <HostBatchTagModal v-if="showTagModal" :count="checkedRowKeys.length" @close="showTagModal = false" @save="applyBatchTags" />
+  <HostEditorModal
+    v-if="showHostEditor"
+    :host="editorHost"
+    :intent="editorIntent"
+    @close="showHostEditor = false"
+    @save="saveHost"
+  />
 </template>
 
 <style scoped>
-.hosts-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
-.ops-scope-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-.ops-scope-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.ops-scope-label { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; }
-.ops-actions { display: flex; gap: 8px; }
-.ops-badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-.ops-detail-block { margin: 12px 0; }
-.ops-detail-block h4 { margin: 0 0 4px; }
-.ops-subcard { margin-top: 16px; }
-.ops-subcard-label { font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; display: block; margin-bottom: 8px; }
-.ops-chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
-.ops-card-actions { margin-top: 16px; }
-.ops-grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; margin-top: 16px; }
-.host-session-list { display: flex; flex-direction: column; gap: 10px; }
-.host-session-copy { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: #1e293b; }
-.host-session-label { display: inline-block; min-width: 88px; color: #64748b; font-weight: 600; }
-@media (max-width: 960px) { .ops-grid { grid-template-columns: 1fr; } }
+.hosts-redesign-page {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #f7f8f6;
+  color: #111;
+}
+
+.hosts-redesign-inner {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  width: min(100%, 1460px);
+  margin: 0 auto;
+  padding: 22px 38px 20px;
+}
+
+.hosts-connect-button,
+.hosts-filter-button,
+.hosts-pagination button,
+.hosts-action-button,
+.hosts-filter-group button,
+.hosts-alert button {
+  border: 1px solid #d5d8d2;
+  background: #fff;
+  color: #111;
+  cursor: pointer;
+  font: inherit;
+}
+
+.hosts-connect-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 116px;
+  height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: #8bd3a7;
+  color: #fff;
+  font-weight: 700;
+}
+
+.hosts-alert {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid #d5d8d2;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.hosts-alert.is-success {
+  background: #eef8f1;
+  color: #176b36;
+}
+
+.hosts-alert.is-error {
+  background: #fff0f0;
+  color: #9f2424;
+}
+
+.hosts-alert button {
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.hosts-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hosts-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #f1f3f0;
+}
+
+.hosts-stat-card strong {
+  display: block;
+  min-width: 28px;
+  font-size: 24px;
+  line-height: 1.1;
+  font-weight: 800;
+}
+
+.hosts-stat-card span {
+  color: #6b6f69;
+  font-size: 14px;
+}
+
+.hosts-toolbar {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.hosts-search-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid #c9cdc6;
+  border-radius: 8px;
+  background: #f7f8f6;
+  color: #6b6f69;
+}
+
+.hosts-search-field input {
+  width: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #111;
+  font: inherit;
+}
+
+.hosts-search-field input::placeholder {
+  color: #6b6f69;
+}
+
+.hosts-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hosts-filter-wrap {
+  position: relative;
+}
+
+.hosts-filter-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 76px;
+  height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(17, 17, 17, 0.05);
+  font-weight: 700;
+}
+
+.hosts-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #8bd3a7;
+  color: #fff;
+  font-size: 12px;
+}
+
+.hosts-filter-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  padding: 14px;
+  border: 1px solid #d5d8d2;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(17, 17, 17, 0.14);
+}
+
+.hosts-filter-group + .hosts-filter-group {
+  margin-top: 12px;
+}
+
+.hosts-filter-group > span {
+  display: block;
+  margin-bottom: 8px;
+  color: #6b6f69;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.hosts-filter-group div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hosts-filter-group button {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.hosts-filter-group button.active {
+  border-color: #8bd3a7;
+  background: #e6f5eb;
+  color: #08652b;
+  font-weight: 700;
+}
+
+.hosts-table-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d5d8d2;
+  border-radius: 8px;
+  background: #f1f3f0;
+}
+
+.hosts-table-shell table {
+  width: 100%;
+  min-width: 700px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.hosts-table-shell th {
+  height: 48px;
+  border-bottom: 1px solid #d5d8d2;
+  color: #6b6f69;
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.hosts-table-shell th,
+.hosts-table-shell td {
+  padding: 0 14px;
+}
+
+.hosts-table-shell th:nth-child(1) { width: auto; }
+.hosts-table-shell th:nth-child(2) { width: 118px; }
+.hosts-table-shell th:nth-child(3) { width: 64px; }
+.hosts-table-shell th:nth-child(4) { width: 124px; }
+.hosts-table-shell th:nth-child(5) { width: 166px; }
+
+.hosts-table-shell td {
+  height: 76px;
+  border-bottom: 1px solid #d5d8d2;
+  vertical-align: middle;
+}
+
+.hosts-table-shell tr:last-child td {
+  border-bottom: 0;
+}
+
+.hosts-main-cell,
+.hosts-source-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.hosts-main-cell strong {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 18px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hosts-main-cell span,
+.hosts-source-cell span {
+  overflow: hidden;
+  color: #6b6f69;
+  font-size: 13px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hosts-source-cell strong {
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.hosts-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 64px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.hosts-status-pill span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #2ec46d;
+}
+
+.hosts-status-pill.is-online {
+  color: #08652b;
+  background: #e9f8ef;
+}
+
+.hosts-status-pill.is-stale,
+.hosts-status-pill.is-installing {
+  color: #9a5b00;
+  background: #fff4dc;
+}
+
+.hosts-status-pill.is-stale span,
+.hosts-status-pill.is-installing span {
+  background: #f5a623;
+}
+
+.hosts-status-pill.is-offline {
+  color: #ad2222;
+  background: #ffe8e8;
+}
+
+.hosts-status-pill.is-offline span {
+  background: #ef5b5b;
+}
+
+.hosts-session-count {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.hosts-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.hosts-action-button {
+  min-width: 64px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: #fff;
+  font-weight: 700;
+}
+
+.hosts-action-button.is-ssh:not(.disabled) {
+  border-color: #8bd3a7;
+  background: #8bd3a7;
+  color: #fff;
+}
+
+.hosts-action-button.disabled,
+.hosts-pagination button:disabled {
+  cursor: not-allowed;
+  border-color: transparent;
+  background: #e9ebe7;
+  color: #6b6f69;
+}
+
+.hosts-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+  color: #6b6f69;
+}
+
+.hosts-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  flex: 0 0 auto;
+  margin-top: 10px;
+  color: #6b6f69;
+  font-size: 13px;
+}
+
+.hosts-pagination div {
+  display: flex;
+  gap: 10px;
+}
+
+.hosts-pagination button {
+  min-width: 84px;
+  height: 40px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .hosts-redesign-inner {
+    padding: 16px 16px 18px;
+  }
+
+  .hosts-stats-grid,
+  .hosts-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .hosts-toolbar-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .hosts-filter-button,
+  .hosts-connect-button {
+    width: 100%;
+  }
+
+  .hosts-stat-card {
+    min-height: 52px;
+  }
+
+  .hosts-filter-popover {
+    left: 0;
+    right: auto;
+    width: min(320px, calc(100vw - 32px));
+  }
+}
 </style>

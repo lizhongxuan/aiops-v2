@@ -62,6 +62,37 @@ func TestBuildRuntimeObserverEnabledReturnsOTelObserver(t *testing.T) {
 	}
 }
 
+func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
+	t.Run("prefers runner studio specific env", func(t *testing.T) {
+		env := map[string]string{
+			"AIOPS_RUNNER_STUDIO_UPSTREAM_URL": " http://runner-studio.internal ",
+			"RUNNER_STUDIO_UPSTREAM_URL":       "http://runner-fallback.internal",
+			"AIOPS_RUNNER_API_BASE_URL":        "http://runner-api.internal",
+		}
+		got := runnerStudioUpstreamFromEnv(func(key string) string { return env[key] })
+		if got != "http://runner-studio.internal" {
+			t.Fatalf("upstream = %q, want runner studio specific env", got)
+		}
+	})
+
+	t.Run("falls back to runner api base url", func(t *testing.T) {
+		env := map[string]string{
+			"AIOPS_RUNNER_API_BASE_URL": "http://runner-api.internal",
+		}
+		got := runnerStudioUpstreamFromEnv(func(key string) string { return env[key] })
+		if got != "http://runner-api.internal" {
+			t.Fatalf("upstream = %q, want runner API base URL", got)
+		}
+	})
+
+	t.Run("returns empty when unset", func(t *testing.T) {
+		got := runnerStudioUpstreamFromEnv(func(string) string { return "" })
+		if got != "" {
+			t.Fatalf("upstream = %q, want empty", got)
+		}
+	})
+}
+
 func isNoopRuntimeObserver(observer runtimekernel.Observer) bool {
 	_, ok := observer.(runtimekernel.NoopObserver)
 	return ok

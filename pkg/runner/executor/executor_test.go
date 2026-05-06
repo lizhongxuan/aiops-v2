@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"runner/workflow"
@@ -37,12 +38,15 @@ func TestMergeExportedVars(t *testing.T) {
 }
 
 type fakeRunner struct {
+	mu     sync.Mutex
 	failOn string
 	calls  []string
 }
 
 func (r *fakeRunner) Run(ctx context.Context, step workflow.Step, host workflow.HostSpec, vars map[string]any) (RunResult, error) {
+	r.mu.Lock()
 	r.calls = append(r.calls, step.Name)
+	r.mu.Unlock()
 	if step.Name == r.failOn {
 		return RunResult{}, errors.New("boom")
 	}

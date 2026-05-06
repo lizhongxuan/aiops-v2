@@ -21,7 +21,8 @@ func (cfg corootProxyConfig) configured() bool {
 	return strings.TrimSpace(cfg.BaseURL) != ""
 }
 
-// Coroot Proxy - read-only reverse proxy to Coroot (Req 6.7).
+// Coroot Proxy - read-only reverse proxy to Coroot for human UI access.
+// Model evidence collection must use internal/integrations/coroot tools instead.
 func (rs *ResourceServer) handleCorootProxy(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeResourceJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed: coroot proxy is read-only"})
@@ -124,6 +125,7 @@ func isAllowedCorootPath(upstreamPath string) bool {
 	}
 
 	allowedReadAPIs := []string{
+		"/api/project",
 		"/api/v1/services",
 		"/api/v1/topology",
 		"/api/v1/incidents",

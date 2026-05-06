@@ -50,7 +50,7 @@ func TestWorkflowValidate_PlanAndDuplicates(t *testing.T) {
 		t.Fatalf("expected ValidationError, got %T", err)
 	}
 	assertIssue(t, verr.Issues, `plan.mode must be manual-approve or auto, got "fast"`)
-	assertIssue(t, verr.Issues, `plan.strategy must be sequential, got "parallel"`)
+	assertIssue(t, verr.Issues, `plan.strategy must be sequential or graph, got "parallel"`)
 	assertIssue(t, verr.Issues, `handler name "restart" is duplicated`)
 	assertIssue(t, verr.Issues, `step name "deploy" is duplicated`)
 	assertIssue(t, verr.Issues, `steps[0] notify handler "missing" not found`)

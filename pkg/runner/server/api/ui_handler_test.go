@@ -9,6 +9,27 @@ import (
 	"testing"
 )
 
+func TestUIHandlerServesBuiltRunnerWorkflowDist(t *testing.T) {
+	handler, err := NewUIHandler(filepath.Join("..", "ui", "dist"), "/runner-web/", nil, nil)
+	if err != nil {
+		t.Fatalf("new ui handler from built dist: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/workflows/new", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected built dist spa route 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Runner Workflow") {
+		t.Fatalf("expected visual workflow dist, got body: %s", body)
+	}
+	if !strings.Contains(body, `<base href="/runner-web/">`) {
+		t.Fatalf("missing base path injection in built dist: %s", body)
+	}
+}
+
 func TestUIHandlerServesFileAndSPAFallback(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>runner-web</html>"), 0o644); err != nil {

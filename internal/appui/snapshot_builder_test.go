@@ -100,6 +100,31 @@ func TestSnapshotBuilderProjectsRuntimeSessionToWebSnapshot(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilderDoesNotUseApprovalReasonAsCommandFallback(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	builder := NewSnapshotBuilder()
+	session := &runtimekernel.SessionState{
+		ID:        "sess-host",
+		Type:      runtimekernel.SessionTypeHost,
+		UpdatedAt: now,
+		PendingApprovals: []runtimekernel.PendingApproval{
+			{ID: "approval-1", SessionID: "sess-host", TurnID: "turn-1", ToolName: "exec_command", Reason: "needs approval", CreatedAt: now},
+		},
+	}
+
+	snapshot := builder.BuildStateSnapshot(session)
+
+	if len(snapshot.Approvals) != 1 {
+		t.Fatalf("Approvals = %+v, want one approval", snapshot.Approvals)
+	}
+	if snapshot.Approvals[0].Command != "" {
+		t.Fatalf("Approvals[0].Command = %q, want empty command when runtime did not provide a real command", snapshot.Approvals[0].Command)
+	}
+	if snapshot.Approvals[0].Reason != "needs approval" {
+		t.Fatalf("Approvals[0].Reason = %q, want reason preserved", snapshot.Approvals[0].Reason)
+	}
+}
+
 func TestSnapshotBuilderExposesConfiguredLLMModelOnlyFromSettingsRepo(t *testing.T) {
 	builder := NewSnapshotBuilderWithSettings(nil, &settingsRepoStub{
 		llm: &store.LLMConfig{

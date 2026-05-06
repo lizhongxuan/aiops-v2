@@ -61,7 +61,7 @@ defineExpose({
 </script>
 
 <template>
-  <footer class="chat-composer-dock">
+  <footer class="chat-composer-dock" data-testid="chat-composer-dock">
     <div class="chat-composer-stack">
       <slot name="terminal" />
 

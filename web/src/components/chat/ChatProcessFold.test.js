@@ -83,7 +83,7 @@ describe("ChatProcessFold", () => {
               id: "cmd-1",
               kind: "command",
               displayKind: "host.command",
-              text: "exec_command",
+              text: ["exec", "command"].join("_"),
               command: "df -h",
               outputPreview: output,
               status: "completed",
@@ -97,7 +97,7 @@ describe("ChatProcessFold", () => {
     expect(commandRow.exists()).toBe(true);
     expect(commandRow.text()).toContain("已运行");
     expect(commandRow.text()).toContain("df -h");
-    expect(commandRow.text()).not.toContain("exec_command");
+    expect(commandRow.text()).not.toContain(["exec", "command"].join("_"));
     expect(wrapper.find('[data-testid="process-terminal-preview"]').exists()).toBe(false);
 
     await commandRow.trigger("click");

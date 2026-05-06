@@ -1,0 +1,33 @@
+id: report-job-pressure
+name: 报表任务压力诊断
+description: 报表任务积压、数据库连接压力或财务报表生成延迟时使用。
+scope:
+  modules: ["module.reporting", "module.finance"]
+  capabilities: ["capability.report.job", "报表任务"]
+  services: ["report-worker", "service.report-worker"]
+  environments: ["prod", "staging"]
+risk: medium
+steps:
+  - id: check-report-impact
+    title: 检查报表业务影响
+    tool: opsgraph.business_impact
+    input:
+      entityId: capability.report.job
+    risk: low
+    approvalRequired: false
+  - id: check-report-topology
+    title: 检查报表 worker 拓扑
+    tool: coroot.service_topology
+    input:
+      service: "{{ service }}"
+      depth: 2
+    risk: low
+    approvalRequired: false
+  - id: check-report-host
+    title: 检查报表节点资源
+    tool: exec_command
+    input:
+      command: uptime
+      args: []
+    risk: low
+    approvalRequired: false

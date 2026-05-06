@@ -2,6 +2,14 @@ package config
 
 import "testing"
 
+func TestDefaultUIDistDirPointsAtRunnerEmbeddedDist(t *testing.T) {
+	cfg := Default()
+
+	if cfg.UI.DistDir != "./server/ui/dist" {
+		t.Fatalf("expected default ui dist to point at runner embedded dist, got %q", cfg.UI.DistDir)
+	}
+}
+
 func TestLoadAppliesUIBasePathEnvOverride(t *testing.T) {
 	t.Setenv("RUNNER_UI_BASE_PATH", "/runner-abc")
 

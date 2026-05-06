@@ -133,6 +133,13 @@ func Main(opts Options) {
 		AgentDispatchToken: cfg.Agent.DispatchToken,
 	}, workflowSvc, preprocessor, runStore, runQueue, eventHub, collector)
 	defer runSvc.Close()
+	actionCatalog := service.NewActionCatalog()
+	visualWorkflowSvc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{
+		WorkflowService: workflowSvc,
+		RunService:      runSvc,
+		Preprocessor:    preprocessor,
+		ActionCatalog:   actionCatalog,
+	})
 	dashboardSvc := service.NewDashboardService(runSvc, agentSvc)
 	systemSvc := service.NewSystemService(runSvc, agentSvc)
 
@@ -148,19 +155,20 @@ func Main(opts Options) {
 	}
 
 	router := api.NewRouter(api.RouterOptions{
-		AuthEnabled: cfg.Auth.Enabled,
-		AuthToken:   cfg.Auth.Token,
-		CORSOrigins: cfg.UI.CORSOrigins,
-		UIBasePath:  cfg.UI.BasePath,
-		Health:      readiness,
-		Workflow:    api.NewWorkflowHandler(workflowSvc),
-		Script:      api.NewScriptHandler(scriptSvc),
-		Run:         api.NewRunHandler(runSvc),
-		Agent:       api.NewAgentHandler(agentSvc),
-		Skill:       api.NewSkillHandler(skillSvc),
-		Environment: api.NewEnvironmentHandler(environmentSvc),
-		MCP:         api.NewMcpHandler(mcpSvc),
-		Dashboard:   api.NewDashboardHandler(dashboardSvc),
+		AuthEnabled:    cfg.Auth.Enabled,
+		AuthToken:      cfg.Auth.Token,
+		CORSOrigins:    cfg.UI.CORSOrigins,
+		UIBasePath:     cfg.UI.BasePath,
+		Health:         readiness,
+		Workflow:       api.NewWorkflowHandler(workflowSvc),
+		VisualWorkflow: api.NewVisualWorkflowHandler(visualWorkflowSvc),
+		Script:         api.NewScriptHandler(scriptSvc),
+		Run:            api.NewRunHandler(runSvc),
+		Agent:          api.NewAgentHandler(agentSvc),
+		Skill:          api.NewSkillHandler(skillSvc),
+		Environment:    api.NewEnvironmentHandler(environmentSvc),
+		MCP:            api.NewMcpHandler(mcpSvc),
+		Dashboard:      api.NewDashboardHandler(dashboardSvc),
 		System: api.NewSystemHandler(api.SystemInfo{
 			Version:     Version,
 			BuildTime:   BuildTime,

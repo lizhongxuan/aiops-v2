@@ -100,6 +100,13 @@ func newAcceptanceApp(t *testing.T, opts appOptions) *acceptanceApp {
 		EventStore:        eventstore.NewFileStore(eventstore.DeriveRunEventDir(app.stores.runStateFile)),
 	}, workflowSvc, preprocessor, runStore, runQueue, hub, collector)
 	app.runSvc = runSvc
+	actionCatalog := service.NewActionCatalog()
+	visualWorkflowSvc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{
+		WorkflowService: workflowSvc,
+		RunService:      runSvc,
+		Preprocessor:    preprocessor,
+		ActionCatalog:   actionCatalog,
+	})
 	dashboardSvc := service.NewDashboardService(runSvc, agentSvc)
 	systemSvc := service.NewSystemService(runSvc, agentSvc)
 
@@ -108,6 +115,7 @@ func newAcceptanceApp(t *testing.T, opts appOptions) *acceptanceApp {
 		AuthToken:      app.token,
 		Health:         &api.HealthHandler{},
 		Workflow:       api.NewWorkflowHandler(workflowSvc),
+		VisualWorkflow: api.NewVisualWorkflowHandler(visualWorkflowSvc),
 		Script:         api.NewScriptHandler(scriptSvc),
 		Run:            api.NewRunHandler(runSvc),
 		Agent:          api.NewAgentHandler(agentSvc),

@@ -69,6 +69,37 @@ const entryCards = [
   },
 ];
 
+const developerToolCards = [
+  {
+    key: "capability",
+    title: "Capability Center",
+    subtitle: "能力绑定与调试",
+    description: "保留给开发和排障使用，不作为 ERP 事故主路径入口。",
+    href: "/capability-center",
+  },
+  {
+    key: "ui-cards",
+    title: "UI Cards",
+    subtitle: "卡片协议调试",
+    description: "验证 MCP/只读卡片渲染协议，避免进入一线生产导航。",
+    href: "/ui-cards",
+  },
+  {
+    key: "script-configs",
+    title: "Script Configs",
+    subtitle: "脚本配置实验区",
+    description: "仅用于配置管理和 dry-run 调试，生产动作从 Runbook 审批流进入。",
+    href: "/script-configs",
+  },
+  {
+    key: "generator",
+    title: "Generator",
+    subtitle: "草稿生成器",
+    description: "用于开发期生成 MCP、脚本和卡片草稿，不在主导航暴露。",
+    href: "/generator",
+  },
+];
+
 function phaseLabel(phase) {
   switch (phase) {
     case "thinking": return "主 Agent 思考中";
@@ -172,6 +203,29 @@ function openRoute(href) {
       </n-gi>
     </n-grid>
 
+    <section class="developer-tools">
+      <div>
+        <span class="stat-label">Developer Tools</span>
+        <h3>开发工具</h3>
+        <p class="context-desc">这些页面仍可访问，但只作为调试和配置入口，不进入 ERP 事故处理主链路。</p>
+      </div>
+      <div class="developer-tool-grid">
+        <button
+          v-for="tool in developerToolCards"
+          :key="tool.key"
+          type="button"
+          class="developer-tool-card"
+          @click="openRoute(tool.href)"
+        >
+          <span>
+            <strong>{{ tool.title }}</strong>
+            <small>{{ tool.subtitle }}</small>
+          </span>
+          <p>{{ tool.description }}</p>
+        </button>
+      </div>
+    </section>
+
     <footer class="settings-footer">
       <n-button quaternary @click="openRoute('/')">回到对话</n-button>
       <n-button quaternary @click="openRoute('/protocol')">打开工作台</n-button>
@@ -243,9 +297,49 @@ function openRoute(href) {
 .settings-entry-copy strong { display: block; font-size: 18px; margin-top: 6px; color: #0f172a; }
 .settings-entry-copy p { margin: 12px 0 0; }
 
+.developer-tools {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.developer-tools h3 { margin: 4px 0 4px; color: #0f172a; }
+
+.developer-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.developer-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.developer-tool-card:hover { border-color: #94a3b8; background: #f1f5f9; }
+.developer-tool-card strong { display: block; }
+.developer-tool-card small { color: #64748b; }
+.developer-tool-card p { margin: 0; color: #64748b; line-height: 1.6; }
+
 .settings-footer { display: flex; flex-wrap: wrap; gap: 10px; }
 
 @media (max-width: 960px) {
   .settings-hero { flex-direction: column; }
+  .developer-tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .developer-tool-grid { grid-template-columns: 1fr; }
 }
 </style>

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { RefreshCcwIcon, PlusIcon, PowerIcon, SaveIcon, Trash2Icon } from "lucide-vue-next";
+import { RefreshCcwIcon, PlusIcon, PowerIcon, SaveIcon, Trash2Icon, XIcon, SettingsIcon } from "lucide-vue-next";
 import {
   createServer as createServerApi,
   deleteServer as deleteServerApi,
@@ -16,6 +16,7 @@ const saving = ref(false);
 const formError = ref("");
 const selectedName = ref("");
 const configPath = ref("");
+const editorOpen = ref(false);
 let previousTitle = "";
 
 const draft = reactive(createBlankDraft());
@@ -180,6 +181,7 @@ function createNewServer() {
   Object.assign(draft, fresh);
   selectedName.value = "";
   formError.value = "";
+  editorOpen.value = true;
 }
 
 async function saveServer() {
@@ -194,6 +196,7 @@ async function saveServer() {
     if (originalName && originalName === payload.name) {
       const data = await updateServerApi(originalName, payload);
       applyItems(data?.items || [], payload.name);
+      editorOpen.value = false;
       return;
     }
     const data = await createServerApi(payload);
@@ -201,6 +204,7 @@ async function saveServer() {
       await deleteServerApi(originalName);
     }
     applyItems(data?.items || [], payload.name);
+    editorOpen.value = false;
   } catch (error) {
     formError.value = String(error?.message || error || "保存 MCP 失败");
   } finally {
@@ -217,6 +221,7 @@ async function deleteServer() {
   try {
     const data = await deleteServerApi(target);
     applyItems(data?.items || []);
+    editorOpen.value = false;
   } catch (error) {
     formError.value = String(error?.message || error || "删除 MCP 失败");
   } finally {
@@ -257,6 +262,16 @@ function selectItem(item) {
   setDraftFromItem(item);
 }
 
+function editItem(item) {
+  selectItem(item);
+  editorOpen.value = true;
+}
+
+function closeEditor() {
+  editorOpen.value = false;
+  formError.value = "";
+}
+
 function discardDraft() {
   if (selectedItem.value) {
     setDraftFromItem(selectedItem.value);
@@ -277,7 +292,9 @@ watch(
   items,
   (list) => {
     if (!list.length && !draft.name) {
-      createNewServer();
+      const fresh = createBlankDraft();
+      fresh.name = uniqueServerName(items.value);
+      Object.assign(draft, fresh);
     }
   },
   { immediate: true },
@@ -285,7 +302,7 @@ watch(
 
 onMounted(() => {
   previousTitle = typeof document !== "undefined" ? document.title : "";
-  document.title = "MCP · aiops-codex";
+  document.title = "MCP 服务器 · aiops-codex";
   void fetchServers();
 });
 
@@ -298,239 +315,152 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="mcp-runtime-page">
-    <header class="runtime-hero">
-      <div>
-        <div class="runtime-kicker">Runtime / MCP</div>
-        <h1>MCP</h1>
-        <p>查看当前 MCP server 列表，并对工作区配置执行新增、删除、打开、关闭和刷新。</p>
-        <p v-if="configPath" class="config-path">写入路径：{{ configPath }}</p>
-      </div>
-      <div class="runtime-hero-actions">
-        <button class="header-btn secondary" type="button" :disabled="saving" @click="createNewServer">
-          <PlusIcon size="15" />
-          <span>新增</span>
-        </button>
-        <button class="header-btn primary" type="button" :disabled="saving || loading" @click="refreshAll">
-          <RefreshCcwIcon size="15" />
-          <span>{{ saving ? "处理中..." : "刷新全部" }}</span>
-        </button>
-      </div>
-    </header>
+    <div class="mcp-settings-shell">
+      <div v-if="formError" class="page-alert error">{{ formError }}</div>
+      <div v-else-if="loading" class="page-alert info">正在加载 MCP 服务器...</div>
+      <div v-else-if="editorOpen && isDirty" class="page-alert warn">当前有未保存修改，保存后会写入工作区 MCP 配置。</div>
 
-    <div v-if="formError" class="page-alert error">{{ formError }}</div>
-    <div v-else-if="loading" class="page-alert info">正在加载 MCP 列表...</div>
-    <div v-else-if="isDirty" class="page-alert warn">当前有未保存修改，点击保存后才会写入工作区 MCP 配置。</div>
-
-    <section class="runtime-layout">
-      <aside class="runtime-sidebar">
-        <div class="sidebar-card">
-          <div class="sidebar-head">
-            <div>
-              <h2>MCP Servers</h2>
-              <p>当前 runtime 已知的 MCP server。</p>
-            </div>
-          </div>
-          <label class="search-field">
-            <input v-model="searchText" type="search" placeholder="搜索名称 / transport / 状态" />
-          </label>
-          <div class="runtime-list">
-            <button
-              v-for="item in filteredItems"
-              :key="item.name"
-              type="button"
-              class="runtime-list-item"
-              :class="{ active: item.name === selectedName }"
-              @click="selectItem(item)"
-            >
-              <div class="runtime-list-title-row">
-                <strong>{{ item.name }}</strong>
-                <span class="status-dot" :class="statusTone(item.status)">{{ item.status }}</span>
-              </div>
-              <div class="runtime-list-meta">
-                <span>{{ item.transport }}</span>
-                <span>{{ item.toolCount }} tools</span>
-                <span>{{ item.resourceCount }} resources</span>
-              </div>
-              <div v-if="item.error" class="runtime-list-error">{{ item.error }}</div>
+      <section class="mcp-server-panel">
+        <div class="mcp-section-header">
+          <h2>服务器</h2>
+          <div class="mcp-header-actions">
+            <button class="compact-btn" type="button" :disabled="saving || loading" @click="refreshAll">
+              <RefreshCcwIcon size="15" />
+              <span>{{ saving ? "处理中..." : "刷新" }}</span>
+            </button>
+            <button class="compact-btn primary" type="button" :disabled="saving" @click="createNewServer">
+              <PlusIcon size="15" />
+              <span>添加服务器</span>
             </button>
           </div>
-          <p v-if="!filteredItems.length" class="empty-hint">当前没有 MCP server。</p>
         </div>
-      </aside>
 
-      <main class="runtime-main">
-        <section class="section-card">
-          <div class="section-head">
-            <div>
-              <h2>连接配置</h2>
-              <p>这里维护的是工作区 MCP runtime 配置，保存后会立即写入并尝试重连。</p>
-            </div>
-            <div class="header-actions">
-              <button class="header-btn secondary" type="button" :disabled="saving" @click="discardDraft">恢复</button>
-              <button class="header-btn secondary" type="button" :disabled="saving || !selectedItem" @click="deleteServer">
-                <Trash2Icon size="15" />
-                <span>删除</span>
-              </button>
-              <button class="header-btn primary" type="button" :disabled="saving" @click="saveServer">
-                <SaveIcon size="15" />
-                <span>{{ saving ? "保存中..." : "保存" }}</span>
-              </button>
-            </div>
-          </div>
+        <label class="search-field">
+          <input v-model="searchText" type="search" placeholder="搜索名称 / transport / 状态" />
+        </label>
 
-          <div class="form-grid two-col">
-            <label class="field">
-              <span>名称</span>
-              <input v-model="draft.name" type="text" class="text-input" />
-            </label>
-            <label class="field">
-              <span>Transport</span>
-              <select v-model="draft.transport" class="text-input">
-                <option value="http">http</option>
-                <option value="stdio">stdio</option>
-              </select>
-            </label>
-            <label class="field" v-if="draft.transport === 'stdio'">
-              <span>Command</span>
-              <input v-model="draft.command" type="text" class="text-input" placeholder="npx / uvx / binary" />
-            </label>
-            <label class="field" v-else>
-              <span>URL</span>
-              <input v-model="draft.url" type="text" class="text-input" placeholder="http://127.0.0.1:8088/mcp" />
-            </label>
-            <label class="field">
-              <span>状态</span>
-              <select v-model="draft.disabled" class="text-input">
-                <option :value="false">open</option>
-                <option :value="true">closed</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="form-grid">
-            <label class="field">
-              <span>Args（每行一个）</span>
-              <textarea v-model="draft.argsText" class="text-input textarea-input" rows="4" placeholder="arg1&#10;arg2" />
-            </label>
-            <label class="field">
-              <span>Env（JSON）</span>
-              <textarea v-model="draft.envText" class="text-input textarea-input" rows="4" placeholder="{&#10;  &quot;TOKEN&quot;: &quot;...&quot;&#10;}" />
-            </label>
-          </div>
-        </section>
-
-        <section v-if="selectedItem" class="section-card">
-          <div class="section-head">
-            <div>
-              <h2>运行时操作</h2>
-              <p>直接控制当前 MCP server 的连接状态。</p>
-            </div>
-            <div class="header-actions">
-              <button class="header-btn secondary" type="button" :disabled="saving" @click="runServerAction(selectedItem.name, 'refresh')">
+        <div class="runtime-list">
+          <article
+            v-for="item in filteredItems"
+            :key="item.name"
+            class="runtime-list-item"
+            :class="{ active: item.name === selectedName }"
+          >
+            <button type="button" class="server-summary" @click="selectItem(item)">
+              <strong>{{ item.name }}</strong>
+              <span>{{ item.transport }} · {{ item.toolCount }} tools · {{ item.resourceCount }} resources</span>
+              <span v-if="item.error" class="runtime-list-error">{{ item.error }}</span>
+            </button>
+            <div class="server-row-actions">
+              <span class="status-dot" :class="statusTone(item.status)">{{ item.status }}</span>
+              <button class="icon-btn" type="button" title="刷新当前" :disabled="saving" @click="runServerAction(item.name, 'refresh')">
                 <RefreshCcwIcon size="15" />
-                <span>刷新当前</span>
+              </button>
+              <button class="icon-btn" type="button" title="编辑配置" :disabled="saving" @click="editItem(item)">
+                <SettingsIcon size="15" />
               </button>
               <button
-                v-if="selectedItem.disabled || selectedItem.status !== 'connected'"
-                class="header-btn primary"
+                class="switch-btn"
                 type="button"
+                :class="{ enabled: !item.disabled && item.status === 'connected' }"
                 :disabled="saving"
-                @click="runServerAction(selectedItem.name, 'open')"
+                @click="runServerAction(item.name, item.disabled || item.status !== 'connected' ? 'open' : 'close')"
               >
-                <PowerIcon size="15" />
-                <span>打开</span>
-              </button>
-              <button v-else class="header-btn secondary" type="button" :disabled="saving" @click="runServerAction(selectedItem.name, 'close')">
-                <PowerIcon size="15" />
-                <span>关闭</span>
+                <PowerIcon size="14" />
+                <span>{{ item.disabled || item.status !== "connected" ? "打开" : "关闭" }}</span>
               </button>
             </div>
-          </div>
+          </article>
+        </div>
+        <p v-if="!filteredItems.length" class="empty-hint">当前没有 MCP 服务器，点击添加服务器创建。</p>
+      </section>
 
-          <div class="preview-group">
-            <div class="preview-label">当前状态</div>
-            <div class="preview-chip-row">
-              <span class="preview-chip">{{ selectedItem.name }}</span>
-              <span class="preview-chip">{{ selectedItem.transport }}</span>
-              <span class="preview-chip">{{ selectedItem.status }}</span>
-              <span class="preview-chip">{{ selectedItem.toolCount }} tools</span>
-              <span class="preview-chip">{{ selectedItem.resourceCount }} resources</span>
-            </div>
-            <p v-if="selectedItem.error" class="runtime-error-text">{{ selectedItem.error }}</p>
+      <section v-if="editorOpen" class="mcp-editor-panel">
+        <div class="mcp-section-header">
+          <div>
+            <h2>{{ draft.originalName ? `更新 ${draft.originalName}` : "连接至自定义 MCP" }}</h2>
+            <p>只填写当前 transport 必需字段，其他选项可留空。</p>
           </div>
-        </section>
-      </main>
-    </section>
+          <div class="mcp-header-actions">
+            <button class="compact-btn" type="button" :disabled="saving" @click="discardDraft">恢复</button>
+            <button class="compact-btn danger" type="button" :disabled="saving || !selectedItem" @click="deleteServer">
+              <Trash2Icon size="15" />
+              <span>删除</span>
+            </button>
+            <button class="compact-btn primary" type="button" :disabled="saving" @click="saveServer">
+              <SaveIcon size="15" />
+              <span>{{ saving ? "保存中..." : "保存" }}</span>
+            </button>
+            <button class="icon-btn" type="button" title="关闭编辑" :disabled="saving" @click="closeEditor">
+              <XIcon size="16" />
+            </button>
+          </div>
+        </div>
+
+        <div class="form-grid two-col">
+          <label class="field">
+            <span>名称</span>
+            <input v-model="draft.name" type="text" class="text-input" placeholder="MCP server name" />
+          </label>
+          <label class="field">
+            <span>Transport</span>
+            <select v-model="draft.transport" class="text-input">
+              <option value="http">http</option>
+              <option value="stdio">stdio</option>
+            </select>
+          </label>
+          <label class="field" v-if="draft.transport === 'stdio'">
+            <span>启动命令</span>
+            <input v-model="draft.command" type="text" class="text-input" placeholder="npx / uvx / binary" />
+          </label>
+          <label class="field" v-else>
+            <span>URL</span>
+            <input v-model="draft.url" type="text" class="text-input" placeholder="http://127.0.0.1:8088/mcp" />
+          </label>
+          <label class="field">
+            <span>状态</span>
+            <select v-model="draft.disabled" class="text-input">
+              <option :value="false">open</option>
+              <option :value="true">closed</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Args（每行一个）</span>
+            <textarea v-model="draft.argsText" class="text-input textarea-input" rows="3" placeholder="arg1&#10;arg2" />
+          </label>
+          <label class="field">
+            <span>Env（JSON）</span>
+            <textarea v-model="draft.envText" class="text-input textarea-input" rows="3" placeholder="{&#10;  &quot;TOKEN&quot;: &quot;...&quot;&#10;}" />
+          </label>
+        </div>
+      </section>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .mcp-runtime-page {
-  min-height: 100%;
-  padding: 24px;
   display: flex;
-  flex-direction: column;
-  gap: 18px;
-  background:
-    radial-gradient(circle at top right, rgba(37, 99, 235, 0.08), transparent 28%),
-    linear-gradient(180deg, #f8fbff 0%, #f8fafc 100%);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: #ffffff;
+  color: #202124;
 }
 
-.runtime-hero,
-.sidebar-card,
-.section-card {
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.05);
-}
-
-.runtime-hero {
-  border-radius: 24px;
-  padding: 22px;
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.runtime-kicker {
-  display: inline-flex;
-  padding: 6px 10px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.runtime-hero h1 {
-  margin: 12px 0 8px;
-  font-size: 30px;
-}
-
-.runtime-hero p,
-.config-path {
-  margin: 0;
-  color: #475569;
-}
-
-.config-path {
-  margin-top: 8px;
-  font-size: 12px;
-}
-
-.runtime-hero-actions,
-.header-actions {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  flex-wrap: wrap;
+.mcp-settings-shell {
+  width: min(100%, 980px);
+  margin: 0 auto;
+  padding: 32px 32px 56px;
 }
 
 .page-alert {
-  border-radius: 14px;
-  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  padding: 10px 12px;
   font-size: 14px;
 }
 
@@ -549,100 +479,138 @@ onBeforeUnmount(() => {
   color: #1d4ed8;
 }
 
-.runtime-layout {
-  display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 18px;
+.mcp-server-panel,
+.mcp-editor-panel {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
 }
 
-.sidebar-card,
-.section-card {
-  border-radius: 22px;
-  padding: 20px;
+.mcp-server-panel {
+  overflow: hidden;
 }
 
-.sidebar-head,
-.section-head {
+.mcp-editor-panel {
+  margin-top: 18px;
+  padding: 18px;
+}
+
+.mcp-section-header {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  padding: 14px 18px;
 }
 
-.sidebar-head h2,
-.section-head h2 {
+.mcp-editor-panel .mcp-section-header {
+  padding: 0 0 16px;
+}
+
+.mcp-section-header h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 700;
 }
 
-.sidebar-head p,
-.section-head p {
+.mcp-section-header p {
   margin: 4px 0 0;
-  color: #64748b;
+  color: #62666d;
   font-size: 13px;
+}
+
+.mcp-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .search-field input,
 .text-input {
   width: 100%;
-  border-radius: 14px;
-  border: 1px solid rgba(203, 213, 225, 0.95);
+  border-radius: 9px;
+  border: 1px solid #e5e7eb;
   background: #fff;
-  padding: 11px 12px;
+  padding: 10px 12px;
   font: inherit;
   box-sizing: border-box;
 }
 
+.search-field {
+  display: block;
+  padding: 0 18px 14px;
+}
+
+.search-field input {
+  height: 42px;
+}
+
 .textarea-input {
   resize: vertical;
-  min-height: 96px;
+  min-height: 78px;
 }
 
 .runtime-list {
-  margin-top: 14px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 
 .runtime-list-item {
-  width: 100%;
-  text-align: left;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(248, 250, 252, 0.92);
-  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 66px;
+  padding: 0 18px;
+  border-top: 1px solid #eef0f2;
+  background: #fff;
 }
 
 .runtime-list-item.active {
-  border-color: rgba(59, 130, 246, 0.5);
-  background: rgba(239, 246, 255, 0.95);
+  background: #fafafa;
 }
 
-.runtime-list-title-row,
-.runtime-list-meta,
-.preview-chip-row,
-.form-grid {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
+.server-summary {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
 }
 
-.runtime-list-title-row {
-  justify-content: space-between;
-  align-items: center;
+.server-summary strong {
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.runtime-list-meta {
-  margin-top: 8px;
-  color: #64748b;
+.server-summary span {
+  overflow: hidden;
+  color: #62666d;
   font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
 }
 
 .runtime-list-error,
 .runtime-error-text {
-  margin-top: 8px;
   color: #b91c1c;
   font-size: 12px;
 }
@@ -650,9 +618,11 @@ onBeforeUnmount(() => {
 .status-dot {
   display: inline-flex;
   align-items: center;
-  padding: 4px 8px;
+  min-width: 88px;
+  justify-content: center;
+  padding: 5px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -677,15 +647,22 @@ onBeforeUnmount(() => {
 }
 
 .empty-hint {
-  margin: 14px 0 0;
-  color: #64748b;
-  font-size: 13px;
+  margin: 0;
+  padding: 30px 18px;
+  border-top: 1px solid #eef0f2;
+  color: #62666d;
+  font-size: 14px;
+  text-align: center;
 }
 
-.runtime-main {
+.form-grid {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-grid + .form-grid {
+  margin-top: 12px;
 }
 
 .field {
@@ -696,61 +673,111 @@ onBeforeUnmount(() => {
   flex: 1 1 280px;
 }
 
-.field > span,
-.preview-label {
-  font-size: 12px;
+.field > span {
+  font-size: 13px;
   font-weight: 700;
-  color: #475569;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  color: #202124;
 }
 
-.preview-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.preview-chip {
+.compact-btn,
+.icon-btn,
+.switch-btn {
   display: inline-flex;
   align-items: center;
-  padding: 7px 10px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.header-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 12px;
-  padding: 10px 14px;
-  border: 1px solid transparent;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  border-radius: 9px;
+  border: 1px solid #e5e7eb;
+  background: #f7f7f8;
+  color: #202124;
   font: inherit;
   cursor: pointer;
 }
 
-.header-btn.primary {
-  background: #2563eb;
+.compact-btn {
+  padding: 0 12px;
+  font-weight: 600;
+}
+
+.compact-btn.primary {
+  border-color: #f1f3f4;
+  background: #f1f3f4;
+}
+
+.compact-btn.danger {
+  border-color: #fde2e2;
+  background: #fff1f1;
+  color: #d93025;
+}
+
+.icon-btn {
+  width: 34px;
+  padding: 0;
+}
+
+.switch-btn {
+  min-width: 76px;
+  padding: 0 10px;
+  background: #f1f3f4;
+}
+
+.switch-btn.enabled {
+  border-color: #d2e3fc;
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.compact-btn:disabled,
+.icon-btn:disabled,
+.switch-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.compact-btn:hover:not(:disabled),
+.icon-btn:hover:not(:disabled),
+.switch-btn:hover:not(:disabled) {
+  background: #eceff3;
+}
+
+.compact-btn.primary:hover:not(:disabled) {
+  background: #e8eaed;
+}
+
+.mcp-editor-panel .compact-btn.primary {
+  border-color: #5f6368;
+  background: #5f6368;
   color: #fff;
 }
 
-.header-btn.secondary {
-  background: #fff;
-  color: #0f172a;
-  border-color: rgba(203, 213, 225, 0.95);
+.mcp-editor-panel .compact-btn.primary:hover:not(:disabled) {
+  background: #4b4f55;
 }
 
 @media (max-width: 980px) {
-  .runtime-layout {
-    grid-template-columns: 1fr;
+  .mcp-settings-shell {
+    padding: 28px 18px 36px;
   }
 
-  .runtime-hero {
+  .runtime-list-item {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    padding: 12px 14px;
+  }
+
+  .server-row-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .mcp-section-header {
     flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mcp-header-actions {
+    justify-content: flex-start;
   }
 }
 </style>

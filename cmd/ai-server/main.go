@@ -65,6 +65,7 @@ func run() error {
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
+	runnerStudioUpstreamURL := runnerStudioUpstreamFromEnv(os.Getenv)
 
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
@@ -259,6 +260,7 @@ func run() error {
 		),
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
+		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
 	)
 	if subscriber := httpServer.ProjectionSubscriber(); subscriber != nil {
 		projector.AddSubscriber(subscriber)
@@ -347,6 +349,19 @@ func envOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
+	for _, key := range []string{
+		"AIOPS_RUNNER_STUDIO_UPSTREAM_URL",
+		"RUNNER_STUDIO_UPSTREAM_URL",
+		"AIOPS_RUNNER_API_BASE_URL",
+	} {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {

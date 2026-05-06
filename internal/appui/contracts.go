@@ -221,18 +221,25 @@ type HTTPServices interface {
 
 // Services is the default first-party Web application service set.
 type Services struct {
-	chat        ChatService
-	state       StateService
-	sessions    SessionService
-	approvals   ApprovalService
-	choices     ChoiceService
-	settings    SettingsService
-	hosts       HostService
-	mcps        MCPService
-	profiles    AgentProfileService
-	auth        AuthService
-	terminal    TerminalService
-	agentEvents AgentEventService
+	chat           ChatService
+	state          StateService
+	sessions       SessionService
+	approvals      ApprovalService
+	choices        ChoiceService
+	settings       SettingsService
+	hosts          HostService
+	mcps           MCPService
+	profiles       AgentProfileService
+	auth           AuthService
+	terminal       TerminalService
+	agentEvents    AgentEventService
+	incidents      IncidentService
+	postmortems    PostmortemService
+	corootWebhooks CorootWebhookService
+	runbooks       RunbookService
+	opsgraph       OpsGraphService
+	erp            ERPContextService
+	changes        ChangeContextService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -256,19 +263,27 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	settingsService := NewSettingsService(cfg.settings, cfg.auth)
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(cfg.agentEvents)
+	incidentService := NewIncidentService(nil)
 	return &Services{
-		chat:        NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
-		state:       NewStateService(sessions, builder),
-		sessions:    NewSessionService(sessions, sessionStore, builder),
-		approvals:   NewApprovalService(runtime, sessions, builder),
-		choices:     NewChoiceService(runtime, sessions),
-		settings:    settingsService,
-		hosts:       NewHostService(sessions, sessionStore, cfg.hosts, builder),
-		mcps:        NewMCPService(cfg.mcps, registry),
-		profiles:    NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
-		auth:        authService,
-		terminal:    NewTerminalService(cfg.terminal, cfg.hosts),
-		agentEvents: agentEvents,
+		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
+		state:          NewStateService(sessions, builder),
+		sessions:       NewSessionService(sessions, sessionStore, builder),
+		approvals:      NewApprovalService(runtime, sessions, builder),
+		choices:        NewChoiceService(runtime, sessions),
+		settings:       settingsService,
+		hosts:          NewHostService(sessionStore, cfg.hosts, builder),
+		mcps:           NewMCPService(cfg.mcps, registry),
+		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
+		auth:           authService,
+		terminal:       NewTerminalService(cfg.terminal, cfg.hosts),
+		agentEvents:    agentEvents,
+		incidents:      incidentService,
+		postmortems:    NewPostmortemService(incidentService),
+		corootWebhooks: NewCorootWebhookService(incidentService),
+		runbooks:       NewRunbookService("", nil),
+		opsgraph:       NewOpsGraphService(""),
+		erp:            NewERPContextService(),
+		changes:        NewChangeContextService(),
 	}
 }
 
@@ -288,6 +303,13 @@ func (s *Services) TerminalService() TerminalService { return s.terminal }
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
+func (s *Services) IncidentService() IncidentService           { return s.incidents }
+func (s *Services) PostmortemService() PostmortemService       { return s.postmortems }
+func (s *Services) CorootWebhookService() CorootWebhookService { return s.corootWebhooks }
+func (s *Services) RunbookService() RunbookService             { return s.runbooks }
+func (s *Services) OpsGraphService() OpsGraphService           { return s.opsgraph }
+func (s *Services) ERPContextService() ERPContextService       { return s.erp }
+func (s *Services) ChangeContextService() ChangeContextService { return s.changes }
 
 type ChatCommand struct {
 	SessionID       string
@@ -438,15 +460,21 @@ type CardView struct {
 }
 
 type ApprovalView struct {
-	ID        string `json:"id"`
-	SessionID string `json:"sessionId,omitempty"`
-	TurnID    string `json:"turnId,omitempty"`
-	ToolName  string `json:"toolName,omitempty"`
-	Command   string `json:"command,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	HostID    string `json:"hostId,omitempty"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"createdAt,omitempty"`
+	ID             string `json:"id"`
+	SessionID      string `json:"sessionId,omitempty"`
+	TurnID         string `json:"turnId,omitempty"`
+	ToolName       string `json:"toolName,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	RunbookID      string `json:"runbookId,omitempty"`
+	RunbookStep    string `json:"runbookStep,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
+	HostID         string `json:"hostId,omitempty"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"createdAt,omitempty"`
 }
 
 type ToolInvocationView struct {
@@ -622,22 +650,6 @@ type HostUpsert struct {
 	SSHPort       int               `json:"sshPort"`
 	Labels        map[string]string `json:"labels"`
 	InstallViaSSH bool              `json:"installViaSsh"`
-}
-
-type HostTagMutation struct {
-	HostIDs []string          `json:"hostIds"`
-	Add     map[string]string `json:"add"`
-	Remove  []string          `json:"remove"`
-}
-
-type HostSessionView struct {
-	SessionID      string `json:"sessionId"`
-	Title          string `json:"title"`
-	Status         string `json:"status"`
-	TaskSummary    string `json:"taskSummary,omitempty"`
-	ReplySummary   string `json:"replySummary,omitempty"`
-	MessageCount   int    `json:"messageCount"`
-	LastActivityAt string `json:"lastActivityAt,omitempty"`
 }
 
 type HostMutationResponse struct {
@@ -876,8 +888,6 @@ type HostService interface {
 	CreateHost(ctx context.Context, payload HostUpsert) (HostMutationResponse, error)
 	UpdateHost(ctx context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error)
 	DeleteHost(ctx context.Context, hostID string) error
-	UpdateTags(ctx context.Context, payload HostTagMutation) ([]HostSummary, error)
-	ListHostSessions(ctx context.Context, hostID string, limit int) ([]HostSessionView, error)
 	SelectHost(ctx context.Context, hostID string) (StateSnapshot, error)
 }
 

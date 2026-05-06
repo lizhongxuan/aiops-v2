@@ -20,12 +20,12 @@ import {
   PanelsTopLeftIcon,
   TerminalIcon,
   HistoryIcon,
-  ArrowLeftIcon,
   EraserIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
   ActivityIcon,
   FileSearchIcon,
+  WorkflowIcon,
 } from "lucide-vue-next";
 
 const store = useAppStore();
@@ -185,22 +185,36 @@ function resolveRequestedHostTarget() {
   };
 }
 
+function resolveCurrentChatHostTarget() {
+  const selectedHostId = compactText(store.snapshot.selectedHostId || "server-local");
+  const host = store.snapshot.hosts.find((item) =>
+    selectedHostId === item.id || selectedHostId === item.name || selectedHostId === item.address,
+  );
+  const hostId = compactText(host?.id || selectedHostId || "server-local");
+  return {
+    hostId,
+    hostMeta: host || { id: hostId, name: hostId },
+  };
+}
+
 async function syncChatRouteHostSelection() {
   if (route.name !== "chat" || isRouteHostSyncing.value) return;
   const requestedHostTarget = resolveRequestedHostTarget();
-  if (!requestedHostTarget.hostId) return;
+  const hasRequestedHost = Boolean(requestedHostTarget.hostId);
+  if (!hasRequestedHost && store.snapshot.kind === "single_host") return;
   if (store.loading || appRuntimeBusy.value) return;
 
   isRouteHostSyncing.value = true;
   try {
-    const alreadySingleHost = store.snapshot.kind === "single_host" && requestedHostTarget.hostId === store.snapshot.selectedHostId;
+    const target = hasRequestedHost ? requestedHostTarget : resolveCurrentChatHostTarget();
+    const alreadySingleHost = store.snapshot.kind === "single_host" && target.hostId === store.snapshot.selectedHostId;
     if (alreadySingleHost) {
-      clearRouteHostQuery();
+      if (hasRequestedHost) clearRouteHostQuery();
       return;
     }
 
-    const ok = await store.createOrActivateSingleHostSessionForHost(requestedHostTarget.hostId, requestedHostTarget.hostMeta || {});
-    if (ok) {
+    const ok = await store.createOrActivateSingleHostSessionForHost(target.hostId, target.hostMeta || {});
+    if (ok && hasRequestedHost) {
       clearRouteHostQuery();
     }
   } finally {
@@ -250,7 +264,7 @@ function openSkillCatalog() {
 
 function openMcpCatalog() {
   closeSettingsMenu();
-  router.push("/settings/mcp");
+  router.push("/mcp");
 }
 
 const authBadgeLabel = computed(() => {
@@ -424,10 +438,7 @@ const workspaceSession = computed(() => {
   if (store.snapshot.kind === "workspace") {
     return store.activeSessionSummary?.kind === "workspace" ? store.activeSessionSummary : null;
   }
-  if (store.workspaceReturnSession) {
-    return store.workspaceReturnSession;
-  }
-  return store.activeSessionSummary?.kind === "workspace" ? store.activeSessionSummary : null;
+  return null;
 });
 
 const workspaceNavTitle = computed(() => workspaceSession.value?.title || "协作工作台");
@@ -442,10 +453,8 @@ const workspaceNavStatus = computed(() => {
         ? "失败"
         : "可用";
   }
-  return workspaceSession.value ? "返回工作台" : "规划 / 调度 / 审批";
+  return "规划 / 调度 / 审批";
 });
-
-const canReturnToWorkspace = computed(() => store.snapshot.kind === "single_host" && !!store.workspaceReturnSession?.id);
 
 const settingsNavTitle = computed(() => {
   if (route.path.startsWith("/settings/agent")) return "Agent Profile";
@@ -467,16 +476,27 @@ const settingsNavStatus = computed(() => {
 });
 
 const mainHeaderTitle = computed(() => {
+  if (route.name === "incidents") return "事故工作台";
+  if (route.name === "incident-detail") return "事故详情";
+  if (route.name === "erp-health") return "ERP 健康";
+  if (route.name === "opsgraph") return "ERP 图谱";
+  if (route.name === "runbooks") return "Runbook";
+  if (route.name === "runbook-detail") return "Runbook 详情";
+  if (route.name === "runner-ui" || route.name === "runner-workflow") return "Runner 编排";
+  if (route.name === "postmortem") return "复盘草稿";
   if (route.name === "chat") return "单机会话";
   if (route.name === "protocol") return "协作工作台";
-  if (route.name === "mcp") return "MCP";
+  if (route.name === "mcp") return "MCP 服务器";
   if (route.name === "prompt-traces") return "Prompt Trace";
+  if (route.name === "coroot") return "Coroot 高级详情";
+  if (route.name === "settings-hosts") return "主机管理";
   if (route.path.startsWith("/settings")) return "设置";
   return "Codex Workspace";
 });
 
 const isChatRoute = computed(() => route.name === "chat");
 const isProtocolRoute = computed(() => route.name === "protocol");
+const isHostsRoute = computed(() => route.name === "settings-hosts");
 
 const headerHistoryLabel = computed(() => (isProtocolRoute.value ? "历史工作台" : "历史会话"));
 const historyDrawerTitle = computed(() => (historyDrawerMode.value === "workspace" ? "历史工作台" : "历史会话"));
@@ -506,15 +526,17 @@ const historyDrawerSessions = computed(() => {
   });
 });
 const showHeaderHistoryButton = computed(() => isChatRoute.value || isProtocolRoute.value);
-const showHeaderHostControls = computed(() => isChatRoute.value);
+const showHeaderHostControls = computed(() => isChatRoute.value || isHostsRoute.value);
+const showHeaderResetButton = computed(() => isChatRoute.value || isProtocolRoute.value);
 
 /* --- n-menu integration --- */
 const menuActiveKey = computed(() => {
+  if (route.name === "incidents" || route.name === "incident-detail" || route.name === "postmortem") return "incidents";
+  if (route.name === "erp-health" || route.name === "opsgraph" || route.name === "coroot") return "erp";
+  if (route.name === "runbooks" || route.name === "runbook-detail") return "runbooks";
+  if (route.name === "runner-ui" || route.name === "runner-workflow") return "runner-ui";
   if (route.name === "chat") return "chat";
   if (route.name === "protocol") return "protocol";
-  if (route.name === "mcp") return "mcp";
-  if (route.name === "coroot") return "coroot";
-  if (route.name === "prompt-traces") return "prompt-traces";
   if (route.name === "settings-hosts") return "hosts";
   return "";
 });
@@ -524,6 +546,16 @@ function renderMenuIcon(icon) {
 }
 
 const menuOptions = computed(() => [
+  {
+    label: "事故工作台",
+    key: "incidents",
+    icon: renderMenuIcon(FileSearchIcon),
+  },
+  {
+    label: "ERP 健康",
+    key: "erp",
+    icon: renderMenuIcon(ActivityIcon),
+  },
   {
     label: "单机会话",
     key: "chat",
@@ -535,47 +567,45 @@ const menuOptions = computed(() => [
     icon: renderMenuIcon(PanelsTopLeftIcon),
   },
   {
-    label: "MCP",
-    key: "mcp",
-    icon: renderMenuIcon(ServerIcon),
-  },
-  {
-    label: "Coroot 监控",
-    key: "coroot",
-    icon: renderMenuIcon(ActivityIcon),
-  },
-  {
-    label: "Prompt Trace",
-    key: "prompt-traces",
-    icon: renderMenuIcon(FileSearchIcon),
-  },
-  {
     label: "主机列表",
     key: "hosts",
     icon: renderMenuIcon(ServerIcon),
+  },
+  {
+    label: "Runbook",
+    key: "runbooks",
+    icon: renderMenuIcon(MessageSquarePlusIcon),
+  },
+  {
+    label: "Runner 编排",
+    key: "runner-ui",
+    icon: renderMenuIcon(WorkflowIcon),
   },
 ]);
 
 function handleMenuSelect(key) {
   closeSettingsMenu();
   switch (key) {
+    case "incidents":
+      router.push("/incidents");
+      break;
+    case "erp":
+      router.push("/erp");
+      break;
     case "chat":
       router.push("/");
       break;
     case "protocol":
       openWorkspaceEntry();
       break;
-    case "coroot":
-      router.push("/coroot");
-      break;
-    case "mcp":
-      router.push("/mcp");
-      break;
-    case "prompt-traces":
-      router.push("/debug/prompts");
-      break;
     case "hosts":
       router.push("/settings/hosts");
+      break;
+    case "runbooks":
+      router.push("/runbooks");
+      break;
+    case "runner-ui":
+      router.push("/runner");
       break;
   }
 }
@@ -704,8 +734,12 @@ watch(
               <span class="settings-menu-subtitle">Skill catalog / 默认值 / 激活方式</span>
             </button>
             <button class="settings-menu-item" @click="openMcpCatalog">
-              <span class="settings-menu-title">MCP 管理</span>
-              <span class="settings-menu-subtitle">MCP catalog / 默认值 / 权限</span>
+              <span class="settings-menu-title">MCP 服务器</span>
+              <span class="settings-menu-subtitle">连接外部工具和数据源</span>
+            </button>
+            <button class="settings-menu-item" @click="closeSettingsMenu(); router.push('/debug/prompts')">
+              <span class="settings-menu-title">Prompt Trace</span>
+              <span class="settings-menu-subtitle">开发调试入口</span>
             </button>
             <button class="settings-menu-item" @click="closeSettingsMenu(); router.push('/settings/experience-packs')">
               <span class="settings-menu-title">Experience Packs</span>
@@ -739,6 +773,7 @@ watch(
           </n-button>
 
           <n-button
+            v-if="showHeaderResetButton"
             quaternary
             size="small"
             :disabled="!canResetCurrentSession"
@@ -747,17 +782,6 @@ watch(
           >
             <template #icon><EraserIcon size="14" /></template>
             清空上下文
-          </n-button>
-
-          <n-button
-            v-if="canReturnToWorkspace && isChatRoute"
-            quaternary
-            size="small"
-            :title="`返回到 ${workspaceSession?.title || '工作台'}`"
-            @click="openWorkspaceEntry"
-          >
-            <template #icon><ArrowLeftIcon size="14" /></template>
-            返回工作台
           </n-button>
 
           <n-button
@@ -1134,24 +1158,23 @@ watch(
 
 .settings-menu-popover {
   position: fixed;
-  left: 276px;
-  bottom: 18px;
-  width: min(340px, calc(100vw - 300px));
-  max-height: min(520px, calc(100vh - 48px));
+  left: 16px;
+  bottom: 70px;
+  width: min(300px, calc(100vw - 32px));
+  max-height: min(520px, calc(100vh - 92px));
   overflow-y: auto;
-  padding: 10px;
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 16px 16px, rgba(59, 130, 246, 0.12), transparent 32%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.96));
+  padding: 8px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(148, 163, 184, 0.28);
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(18px);
   z-index: 1200;
 }
 
 .app-sidebar.is-sidebar-collapsed .settings-menu-popover {
-  left: 80px;
-  width: min(320px, calc(100vw - 104px));
+  left: 12px;
+  width: min(288px, calc(100vw - 24px));
 }
 
 .settings-menu-item {
@@ -1160,7 +1183,7 @@ watch(
   width: 100%;
   border: 0;
   border-radius: 14px;
-  padding: 12px;
+  padding: 11px 12px;
   text-align: left;
   background: transparent;
   color: #0f172a;

@@ -4,7 +4,9 @@ export function selectActiveProjection(state, sessionId) {
 }
 
 export function selectTimelineRows(state, sessionId) {
-  return (selectActiveProjection(state, sessionId)?.timeline || []).filter((row) => row?.kind !== "approval");
+  return (selectActiveProjection(state, sessionId)?.timeline || [])
+    .filter((row) => row?.kind !== "approval")
+    .filter((row) => !isInternalRuntimeRow(row));
 }
 
 export function selectRuntimeStatus(state, sessionId) {
@@ -123,8 +125,29 @@ function isCurrentActivityRow(row, scopedTurnIds) {
 
 function isInternalRuntimeActivityRow(row = {}) {
   const displayKind = compactText(row?.displayKind || row?.payload?.displayKind).toLowerCase();
-  if (displayKind === "runtime.activity") return true;
-  return false;
+  return isInternalRuntimeDisplayKind(displayKind);
+}
+
+function isInternalRuntimeRow(row = {}) {
+  const displayKind = compactText(row?.displayKind || row?.payload?.displayKind).toLowerCase();
+  if (isInternalRuntimeDisplayKind(displayKind)) return true;
+  const stage = compactText(row?.stage || row?.payload?.stage).toLowerCase();
+  return [
+    "context_pipeline",
+    "compile_prompt",
+    "assemble_tools",
+    "call_model",
+  ].includes(stage);
+}
+
+function isInternalRuntimeDisplayKind(displayKind = "") {
+  if (displayKind === "runtime.activity" || displayKind === "runtime.card") return true;
+  return [
+    "runtime.prepare_context",
+    "runtime.compile_prompt",
+    "runtime.prepare_tools",
+    "runtime.call_model",
+  ].includes(displayKind);
 }
 
 function isVerboseToolSummary(value = "") {
@@ -159,6 +182,7 @@ function formatProjectionActivityLine(row = {}) {
   const status = String(row?.status || "").trim().toLowerCase();
   const title = compactText(row?.title || row?.toolName || row?.kind || "任务");
   const summary = activitySummary(row);
+  const displayKind = compactText(row?.displayKind).toLowerCase();
   if (row?.kind === "assistant") {
     return {
       id: compactText(row?.id),
@@ -223,6 +247,11 @@ function formatProjectionActivityLine(row = {}) {
       command: compactText(row?.command),
       reason: compactText(row?.reason || row?.summary),
       risk: compactText(row?.risk),
+      source: compactText(row?.source),
+      runbookId: compactText(row?.runbookId),
+      runbookStep: compactText(row?.runbookStep),
+      expectedEffect: compactText(row?.expectedEffect),
+      rollback: compactText(row?.rollback),
       targets: Array.isArray(row?.targets) ? row.targets : [],
       approvalId: compactText(row?.approvalId || row?.id),
       approvalType: compactText(row?.approvalType),
@@ -240,10 +269,41 @@ function formatProjectionActivityLine(row = {}) {
   let lineKind = compactText(row?.kind || "activity");
   let command = "";
   let output = "";
-  const displayKind = compactText(row?.displayKind).toLowerCase();
   let inputSummary = compactText(row?.inputSummary);
   let queries = Array.isArray(row?.queries) ? row.queries : [];
   let results = Array.isArray(row?.results) ? row.results : [];
+  if (displayKind.startsWith("runbook.")) {
+    return typedProcessLine(row, {
+      kind: "runbook",
+      text: compactText(title || summary || "Runbook"),
+      status,
+      summary,
+    });
+  }
+  if (displayKind === "action.proposal" || displayKind === "fallback.plan" || displayKind.startsWith("proposal.")) {
+    return typedProcessLine(row, {
+      kind: "proposal",
+      text: compactText(title || summary || "Action proposal"),
+      status,
+      summary,
+    });
+  }
+  if (displayKind.startsWith("verification.")) {
+    return typedProcessLine(row, {
+      kind: "verification",
+      text: compactText(title || summary || "Verification"),
+      status,
+      summary,
+    });
+  }
+  if (displayKind.startsWith("incident.")) {
+    return typedProcessLine(row, {
+      kind: "incident",
+      text: compactText(title || summary || "Incident"),
+      status,
+      summary,
+    });
+  }
   switch (displayKind || title) {
     case "runtime.activity":
       text = `${failed ? `${title}失败` : running ? `正在${title}` : `已${title}`}${summary ? `（${summary}）` : ""}`;
@@ -323,8 +383,39 @@ function formatProjectionActivityLine(row = {}) {
     exitCode: Number.isFinite(Number(row?.exitCode)) ? Number(row.exitCode) : undefined,
     durationMs: Number.isFinite(Number(row?.durationMs)) ? Number(row.durationMs) : undefined,
     risk: compactText(row?.risk),
+    source: compactText(row?.source),
+    runbookId: compactText(row?.runbookId),
+    runbookStep: compactText(row?.runbookStep),
+    expectedEffect: compactText(row?.expectedEffect),
+    rollback: compactText(row?.rollback),
     rawRef: compactText(row?.rawRef),
     status,
+    turnId: compactText(row?.turnId),
+    clientTurnId: compactText(row?.clientTurnId),
+    updatedAt: row?.updatedAt || "",
+  };
+}
+
+function typedProcessLine(row = {}, base = {}) {
+  return {
+    id: compactText(row?.id || row?.eventId),
+    kind: base.kind,
+    text: compactText(base.text),
+    summary: compactText(base.summary),
+    command: compactText(row?.command || row?.inputSummary),
+    reason: compactText(row?.reason),
+    risk: compactText(row?.risk),
+    source: compactText(row?.source),
+    runbookId: compactText(row?.runbookId),
+    runbookStep: compactText(row?.runbookStep),
+    expectedEffect: compactText(row?.expectedEffect),
+    rollback: compactText(row?.rollback),
+    confidence: compactText(row?.confidence),
+    window: compactText(row?.window),
+    rawRef: compactText(row?.rawRef),
+    displayKind: compactText(row?.displayKind),
+    visibility: compactText(row?.visibility || "primary"),
+    status: base.status,
     turnId: compactText(row?.turnId),
     clientTurnId: compactText(row?.clientTurnId),
     updatedAt: row?.updatedAt || "",

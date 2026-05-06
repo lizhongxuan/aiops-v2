@@ -31,6 +31,10 @@ func TestEvalWhenVars(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("expected missing var to compare as empty")
 	}
+	ok, err = EvalWhen("vars.deploy == true", map[string]any{"deploy": true})
+	if err != nil || !ok {
+		t.Fatalf("expected vars.* alias expression to be true")
+	}
 }
 
 func TestEvalWhenLogical(t *testing.T) {

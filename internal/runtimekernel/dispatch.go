@@ -30,9 +30,16 @@ type ToolExecutor interface {
 	Execute(ctx context.Context, args json.RawMessage) (result tooling.ToolResult, err error)
 }
 
+// ToolPermissionChecker is implemented by tool executors that expose the
+// unified tool-scoped permission gate in addition to their execution function.
+type ToolPermissionChecker interface {
+	CheckPermissions(ctx context.Context, args json.RawMessage) tooling.PermissionDecision
+}
+
 // ToolDescriptor carries the unified metadata used across policy, hooks, and permissions.
 type ToolDescriptor struct {
-	Metadata tooling.ToolMetadata
+	Metadata    tooling.ToolMetadata
+	InputSchema json.RawMessage
 }
 
 // EventEmitter is the interface for emitting lifecycle events.
@@ -124,6 +131,7 @@ type DispatchResult struct {
 	Result      tooling.ToolResult
 	Outcome     string
 	Source      string
+	Approval    *tooling.PermissionApprovalPayload
 	HiddenTools []string
 }
 
@@ -202,6 +210,48 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if len(toolEvent.UpdatedInput) > 0 {
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
+	}
+
+	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc)
+	toolEvent.Arguments = tc.Arguments
+
+	if !approved {
+		if checker, ok := executor.(ToolPermissionChecker); ok {
+			decision := checker.CheckPermissions(ctx, tc.Arguments)
+			switch decision.Action {
+			case tooling.PermissionActionDeny:
+				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "tool", "tool_denied", desc.Metadata)
+				if d.spanSource != nil && toolSpanID != "" {
+					d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
+				}
+				return result
+			case tooling.PermissionActionNeedApproval:
+				if d.spanSource != nil && toolSpanID != "" {
+					d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
+				}
+				return DispatchResult{
+					ToolCallID: tc.ID,
+					Blocked:    true,
+					Reason:     decision.Reason,
+					Metadata:   desc.Metadata,
+					Outcome:    "approval_needed",
+					Source:     "tool",
+					Approval:   decision.Approval,
+				}
+			case tooling.PermissionActionNeedEvidence:
+				if d.spanSource != nil && toolSpanID != "" {
+					d.spanSource.FailSpan(toolSpanID, "evidence required: "+decision.Reason)
+				}
+				return DispatchResult{
+					ToolCallID: tc.ID,
+					Blocked:    true,
+					Reason:     "evidence required: " + decision.Reason,
+					Metadata:   desc.Metadata,
+					Outcome:    "evidence_needed",
+					Source:     "tool",
+				}
+			}
+		}
 	}
 
 	// Check PolicyEngine

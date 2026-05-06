@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyAgentEvent, createAgentEventState } from "./agentEventReducer";
-import { selectProjectionActivityLines } from "./agentEventProjection";
+import { selectProjectionActivityLines, selectTimelineRows } from "./agentEventProjection";
 
 function event(overrides = {}) {
   return {
@@ -130,6 +130,38 @@ describe("agent event projection UX shaping", () => {
       outputPreview: "Filesystem      Size   Used  Avail Capacity Mounted on\n/dev/disk3s1s1   460Gi   12Gi  239Gi     5% /",
       displayKind: "host.command",
     });
+  });
+
+  it("keeps internal runtime activity out of timeline rows", () => {
+    let state = createAgentEventState();
+    state = applyAgentEvent(state, event({
+      kind: "turn",
+      phase: "started",
+      status: "running",
+      seq: 1,
+      visibility: "primary",
+      payload: { title: "11" },
+    }));
+    state = applyAgentEvent(state, event({
+      eventId: "runtime-compile-prompt",
+      kind: "system",
+      phase: "updated",
+      status: "running",
+      seq: 2,
+      payload: {
+        id: "turn-1:activity:0:compile_prompt",
+        displayKind: "runtime.activity",
+        title: "编译提示词",
+        summary: "第 1 轮",
+        stage: "compile_prompt",
+      },
+    }));
+
+    const timelineRows = selectTimelineRows(state, "session-1");
+
+    expect(timelineRows.map((row) => row.title)).toEqual(["11"]);
+    expect(JSON.stringify(timelineRows)).not.toContain("编译提示词");
+    expect(JSON.stringify(timelineRows)).not.toContain("第 1 轮");
   });
 
   it("keeps completed search rows distinct by showing the searched query", () => {

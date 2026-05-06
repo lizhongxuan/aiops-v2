@@ -1725,13 +1725,27 @@ watch(
       return;
     }
 
-    const timer = window.setInterval(() => {
-      if (refreshBusy.value || decisionBusy.value) return;
-      void store.fetchState();
-    }, state.stepCount > 0 ? 5000 : 3000);
+    const delayMs = state.stepCount > 0 ? 5000 : 3000;
+    let canceled = false;
+    let timer = null;
+
+    const scheduleRefresh = () => {
+      timer = window.setTimeout(() => {
+        if (canceled) return;
+        if (!refreshBusy.value && !decisionBusy.value) {
+          void store.fetchState();
+        }
+        scheduleRefresh();
+      }, delayMs);
+    };
+
+    scheduleRefresh();
 
     onCleanup(() => {
-      window.clearInterval(timer);
+      canceled = true;
+      if (timer) {
+        window.clearTimeout(timer);
+      }
     });
   },
   { immediate: true },
@@ -2423,7 +2437,7 @@ function handleMcpSurfaceEventRefresh(surface) {
           />
         </section>
 
-        <aside class="workspace-side-rail">
+        <aside class="workspace-side-rail" :class="{ 'has-approval-items': approvalItems.length > 0 }">
           <section class="workspace-side-panel approval-panel" data-testid="protocol-side-panel-approval">
             <ProtocolApprovalRail
               title="待审批决策"
@@ -2655,9 +2669,10 @@ function handleMcpSurfaceEventRefresh(surface) {
 
 .protocol-workspace-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(420px, 1fr) minmax(300px, 340px);
   gap: 0;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -2743,13 +2758,23 @@ function handleMcpSurfaceEventRefresh(surface) {
 
 .workspace-side-rail {
   display: grid;
-  grid-template-rows: minmax(320px, 340px) minmax(0, 1fr) auto;
+  grid-template-rows: minmax(168px, auto) minmax(0, 1fr) auto;
   gap: 0;
+  min-width: 0;
   min-height: 0;
   height: 100%;
   overflow: hidden;
   border-left: 1px solid #e8ecf1;
   background: #f8fafc;
+}
+
+.workspace-side-rail.has-approval-items {
+  grid-template-rows: minmax(320px, 340px) minmax(0, 1fr) auto;
+}
+
+.workspace-side-rail:not(.has-approval-items) :deep(.protocol-approval-rail) {
+  flex: 0 0 auto;
+  height: auto;
 }
 
 .workspace-side-panel {
@@ -3039,26 +3064,45 @@ function handleMcpSurfaceEventRefresh(surface) {
   }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 960px) {
+  .protocol-workspace-page {
+    overflow: auto;
+  }
+
   .protocol-workspace-shell {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(420px, min-content) auto;
+    overflow: visible;
   }
 
   .workspace-stage-card {
     min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid #e8ecf1;
   }
 
-  .workspace-side-rail {
-    grid-template-rows: auto auto auto;
+  .workspace-side-rail,
+  .workspace-side-rail.has-approval-items {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: minmax(0, auto) auto;
+    height: auto;
     overflow: visible;
+    border-left: 0;
+    border-top: 1px solid #e8ecf1;
   }
 
   .approval-panel {
-    min-height: 320px;
+    max-height: 280px;
+    border-right: 1px solid #e8ecf1;
+    border-bottom: 0;
   }
 
   .timeline-panel {
-    min-height: 360px;
+    max-height: 280px;
+  }
+
+  .runtime-pill {
+    grid-column: 1 / -1;
   }
 }
 
@@ -3077,7 +3121,17 @@ function handleMcpSurfaceEventRefresh(surface) {
   }
 
   .workspace-side-panel {
-    min-height: 280px;
+    min-height: 220px;
+    max-height: none;
+  }
+
+  .workspace-side-rail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .approval-panel {
+    border-right: 0;
+    border-bottom: 1px solid #e8ecf1;
   }
 
   .runtime-pill {

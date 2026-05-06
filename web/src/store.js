@@ -11,6 +11,12 @@ import {
 import { fetchState as fetchStateApi, resetThread as resetThreadApi, selectHost as selectHostApi } from "./api/state";
 import { activateSession as activateSessionApi, createSession as createSessionApi, fetchSessions as fetchSessionsApi } from "./api/sessions";
 import { fetchSettings as fetchSettingsApi, updateSettings as updateSettingsApi } from "./api/settings";
+import { submitApprovalDecision as submitApprovalDecisionApi } from "./api/approvals";
+import { listIncidents as listIncidentsApi, getIncident as getIncidentApi, createIncident as createIncidentApi, updateIncident as updateIncidentApi, addIncidentEvidence as addIncidentEvidenceApi, closeIncident as closeIncidentApi } from "./api/incidents";
+import { lookupOpsGraph as lookupOpsGraphApi, getOpsGraphNeighborhood as getOpsGraphNeighborhoodApi, getOpsGraphBusinessImpact as getOpsGraphBusinessImpactApi } from "./api/opsgraph";
+import { listRunbooks as listRunbooksApi, getRunbook as getRunbookApi, matchRunbooks as matchRunbooksApi, listRunbookInstances as listRunbookInstancesApi } from "./api/runbooks";
+import { getERPHealthSummary as getERPHealthSummaryApi, getERPBusinessMetrics as getERPBusinessMetricsApi, getERPTenantImpact as getERPTenantImpactApi } from "./api/erp";
+import { getRecentDeployments as getRecentDeploymentsApi, getRecentConfigChanges as getRecentConfigChangesApi } from "./api/changes";
 import {
   deleteMcpCatalogItem as deleteMcpCatalogItemApi,
   deleteSkillCatalogItem as deleteSkillCatalogItemApi,
@@ -1613,6 +1619,40 @@ export const useAppStore = defineStore("app", {
     agentProfilePreviewLoading: false,
     agentProfileSaving: false,
     agentEventState: createAgentEventState(),
+    incidents: {
+      items: [],
+      active: null,
+      loading: false,
+      error: "",
+    },
+    opsgraph: {
+      lookup: [],
+      neighborhood: null,
+      businessImpact: null,
+      loading: false,
+      error: "",
+    },
+    runbooks: {
+      items: [],
+      active: null,
+      matches: [],
+      instances: [],
+      loading: false,
+      error: "",
+    },
+    erp: {
+      health: null,
+      businessMetrics: null,
+      tenantImpact: null,
+      loading: false,
+      error: "",
+    },
+    changes: {
+      deployments: [],
+      configChanges: [],
+      loading: false,
+      error: "",
+    },
     optimisticCardIds: [],
     sessionList: [],
     activeSessionId: "",
@@ -1709,6 +1749,115 @@ export const useAppStore = defineStore("app", {
     },
     getEnabledMcpEntries() {
       return this.enabledMcpEntries;
+    },
+    async loadIncidents(params = {}) {
+      this.incidents.loading = true;
+      this.incidents.error = "";
+      try {
+        const payload = await listIncidentsApi(params);
+        this.incidents.items = Array.isArray(payload?.incidents) ? payload.incidents : [];
+        return this.incidents.items;
+      } catch (error) {
+        this.incidents.error = error?.message || "Failed to load incidents";
+        throw error;
+      } finally {
+        this.incidents.loading = false;
+      }
+    },
+    async loadIncident(incidentId) {
+      const payload = await getIncidentApi(incidentId);
+      this.incidents.active = payload?.incident || null;
+      return this.incidents.active;
+    },
+    async createIncident(payload = {}) {
+      const result = await createIncidentApi(payload);
+      if (result?.incident) {
+        this.incidents.active = result.incident;
+        this.incidents.items = [result.incident, ...this.incidents.items.filter((item) => item.id !== result.incident.id)];
+      }
+      return result;
+    },
+    async updateIncident(incidentId, payload = {}) {
+      const result = await updateIncidentApi(incidentId, payload);
+      if (result?.incident) {
+        this.incidents.active = result.incident;
+        this.incidents.items = this.incidents.items.map((item) => (item.id === result.incident.id ? result.incident : item));
+      }
+      return result;
+    },
+    async addIncidentEvidence(incidentId, payload = {}) {
+      return addIncidentEvidenceApi(incidentId, payload);
+    },
+    async closeIncident(incidentId, payload = {}) {
+      const result = await closeIncidentApi(incidentId, payload);
+      if (result?.incident) {
+        this.incidents.active = result.incident;
+        this.incidents.items = this.incidents.items.map((item) => (item.id === result.incident.id ? result.incident : item));
+      }
+      return result;
+    },
+    async lookupOpsGraph(payload = {}) {
+      const result = await lookupOpsGraphApi(payload);
+      this.opsgraph.lookup = Array.isArray(result?.matches) ? result.matches : [];
+      return result;
+    },
+    async loadOpsGraphNeighborhood(entityId, params = {}) {
+      const result = await getOpsGraphNeighborhoodApi(entityId, params);
+      this.opsgraph.neighborhood = result?.neighborhood || result || null;
+      return result;
+    },
+    async loadOpsGraphBusinessImpact(entityId) {
+      const result = await getOpsGraphBusinessImpactApi(entityId);
+      this.opsgraph.businessImpact = result?.impact || result || null;
+      return result;
+    },
+    async loadRunbooks(params = {}) {
+      const result = await listRunbooksApi(params);
+      this.runbooks.items = Array.isArray(result?.runbooks) ? result.runbooks : [];
+      return result;
+    },
+    async loadRunbook(runbookId) {
+      const result = await getRunbookApi(runbookId);
+      this.runbooks.active = result?.runbook || result || null;
+      return result;
+    },
+    async matchRunbooks(payload = {}) {
+      const result = await matchRunbooksApi(payload);
+      this.runbooks.matches = Array.isArray(result?.matches) ? result.matches : [];
+      return result;
+    },
+    async loadRunbookInstances(params = {}) {
+      const result = await listRunbookInstancesApi(params);
+      this.runbooks.instances = Array.isArray(result?.instances) ? result.instances : [];
+      return result;
+    },
+    async loadERPHealth(params = {}) {
+      const result = await getERPHealthSummaryApi(params);
+      this.erp.health = result?.health || result || null;
+      return result;
+    },
+    async loadERPBusinessMetrics(params = {}) {
+      const result = await getERPBusinessMetricsApi(params);
+      this.erp.businessMetrics = result?.metrics || result || null;
+      return result;
+    },
+    async loadERPTenantImpact(params = {}) {
+      const result = await getERPTenantImpactApi(params);
+      this.erp.tenantImpact = result?.tenants || result || null;
+      return result;
+    },
+    async loadRecentDeployments(params = {}) {
+      const result = await getRecentDeploymentsApi(params);
+      this.changes.deployments = Array.isArray(result?.deployments) ? result.deployments : [];
+      return result;
+    },
+    async loadRecentConfigChanges(params = {}) {
+      const result = await getRecentConfigChangesApi(params);
+      this.changes.configChanges = Array.isArray(result?.changes) ? result.changes : [];
+      return result;
+    },
+    async submitApprovalDecision(approvalId, decision) {
+      return submitApprovalDecisionApi(approvalId, decision);
     },
     openMcpDrawerSurface(payload, options = {}) {
       const surface = normalizeMcpDrawerSurfacePayload(payload);
@@ -1981,18 +2130,6 @@ export const useAppStore = defineStore("app", {
         }
         nextCards = nextCards.filter((card) => !isSyntheticUserTaskCard(card) || liveSyntheticUserIds.has(card.id));
         this.snapshot.cards = nextCards;
-      }
-      const toolRows = (projection.timeline || []).filter((row) => row.kind === "tool");
-      for (const row of toolRows) {
-        this.snapshot.toolInvocations = upsertProcessItem(this.snapshot.toolInvocations, {
-          id: row.toolCallId || row.id,
-          name: row.title,
-          toolName: row.title,
-          status: row.status === "completed" ? "completed" : row.status === "failed" ? "failed" : "running",
-          title: row.title,
-          summary: row.summary,
-          updatedAt: row.updatedAt,
-        });
       }
       const allFinalMessages = Object.values(projection.finalMessages || {});
       const finalMessages = allFinalMessages.filter((final) =>

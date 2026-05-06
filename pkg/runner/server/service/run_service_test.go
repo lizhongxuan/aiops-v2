@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,71 @@ steps:
 	}
 	if first.RunID != second.RunID {
 		t.Fatalf("idempotency mismatch: %s != %s", first.RunID, second.RunID)
+	}
+}
+
+func TestBuildRunDetailSynthesizesStepsFromGraphState(t *testing.T) {
+	now := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	run := state.RunState{
+		RunID:        "run-graph-only",
+		WorkflowName: "graph-only",
+		Status:       state.RunStatusRunning,
+		Graph: &state.GraphRunState{
+			Nodes: map[string]state.NodeState{
+				"start": {ID: "start", Name: "Start", Type: "start", Status: state.RunStatusSuccess},
+				"restore": {
+					ID:        "restore",
+					Name:      "restore-db",
+					Type:      "action",
+					Status:    state.RunStatusRunning,
+					StartedAt: now,
+				},
+			},
+		},
+	}
+
+	detail := buildRunDetail(synthesizeMetaFromRun(run), &run)
+	if got, want := len(detail.Steps), 1; got != want {
+		t.Fatalf("detail steps = %d, want %d: %+v", got, want, detail.Steps)
+	}
+	if detail.Steps[0].Name != "restore-db" || detail.Steps[0].Status != state.RunStatusRunning {
+		t.Fatalf("unexpected synthesized step: %+v", detail.Steps[0])
+	}
+	if detail.Graph == nil || detail.Graph.Nodes["restore"].Name != "restore-db" {
+		t.Fatalf("detail should still include graph state: %+v", detail.Graph)
+	}
+}
+
+func TestRunEventRecorderPublishesApprovalEvents(t *testing.T) {
+	var published []events.Event
+	recorder := &runEventRecorder{
+		runID:           "run-approval",
+		workflow:        "approval-demo",
+		metrics:         metrics.NewCollector(),
+		nodeStartedAt:   map[string]time.Time{},
+		approvalNodeIDs: map[string]struct{}{"approve": {}},
+		publish: func(event events.Event) {
+			published = append(published, event)
+		},
+	}
+
+	recorder.GraphNodeStart("approve")
+	recorder.GraphApprovalWaiting("approve")
+	recorder.GraphNodeFinish("approve", state.RunStatusSuccess, "approved by sre")
+	recorder.GraphApprovalResolved("approve", state.RunStatusSuccess, "approved by sre")
+
+	var types []string
+	for _, event := range published {
+		types = append(types, event.Type)
+	}
+	if strings.Join(types, ",") != "node_started,approval_waiting,node_finished,approval_resolved" {
+		t.Fatalf("approval event sequence = %v", types)
+	}
+	if published[1].Status != "waiting" || published[1].Output["node_id"] != "approve" {
+		t.Fatalf("approval_waiting event mismatch: %+v", published[1])
+	}
+	if published[3].Status != state.RunStatusSuccess || published[3].Message != "approved by sre" {
+		t.Fatalf("approval_resolved event mismatch: %+v", published[3])
 	}
 }
 

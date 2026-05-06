@@ -82,6 +82,13 @@ const emit = defineEmits(["detail", "authorize", "reject", "accept"]);
 const now = ref(Date.now());
 let timer = null;
 
+function scheduleTimer() {
+  timer = window.setTimeout(() => {
+    now.value = Date.now();
+    scheduleTimer();
+  }, 1000);
+}
+
 const normalizedQueue = computed(() => {
   const queue = Array.isArray(props.queueItems) ? props.queueItems : [];
   const source = queue.length ? queue : props.approval ? [props.approval] : [];
@@ -183,14 +190,12 @@ function startTimer() {
   stopTimer();
   const deadline = normalizedQueue.value[0]?.deadlineAt || normalizedQueue.value[0]?.expiresAt || props.countdownSource;
   if (!deadline) return;
-  timer = window.setInterval(() => {
-    now.value = Date.now();
-  }, 1000);
+  scheduleTimer();
 }
 
 function stopTimer() {
   if (timer) {
-    window.clearInterval(timer);
+    window.clearTimeout(timer);
     timer = null;
   }
 }

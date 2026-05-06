@@ -1,273 +1,593 @@
 # Runner Studio 实施工作清单
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to execute one task at a time. Every completed checkbox must be updated in this file before moving to the next task.
 
-**Goal:** 将 `/runner` 落地为主应用原生一体化的 Runner Studio，提供简洁的 Dify 风格工作流编排体验、结构化参数输入输出编辑、AI 辅助、发布治理和运行闭环。
+**Goal:** 将 `/runner` 落地为主应用原生一体化的 Runner Studio，提供简洁的 Dify 风格工作流编排体验、结构化参数输入输出、AI 辅助、发布治理和运行闭环。
 
-**Architecture:** 主应用前端直接承载 `workflow shell + canvas + modal/drawer`，复用现有 runner graph/API 语义，不再保留单独 Runner UI 作为用户入口。参数模型改为结构化输入输出定义，YAML 退回为兼容视图与导入导出格式。
+**Architecture:** 后端 graph/schema/变量作用域/API 契约先行，主应用前端只调用同源 `/api/runner-studio/*`。前端组件基于服务端契约渲染，不维护私有编排 DSL；旧 `pkg/runner/server/ui/frontend` 只作为迁移参考，不再作为主入口。
 
-**Tech Stack:** Vue 3、现有 `web/` 路由与状态管理、Runner graph API、Naive UI、拖拽画布组件、Monaco YAML、现有 LLM 接口。
+**Tech Stack:** Go runner graph/service/API、Vue 3、现有 `web/`、Naive UI、Vue Flow、Monaco YAML、现有 LLM 配置。
 
 ---
 
-## 0. 范围与约束
+## 执行规则
 
-- [ ] `http://127.0.0.1:8080/runner` 必须成为最终产品入口。
-- [ ] 旧的 `RunnerUiEntryPage` 只能作为临时过渡代码，不再作为最终交互方案。
-- [ ] 不保留“主应用入口页 + 外部 Runner UI”这套长期形态。
-- [ ] 主页面必须简洁，复杂配置统一改为弹窗和抽屉。
-- [ ] `graph` 是唯一编排语义，YAML 只作为兼容视图。
-- [ ] AI 生成和 AI 修改只能生成 `draft`，允许 `dry-run`，不允许直接发布。
+- [x] 每完成一个任务，必须将对应复选框改为 `[x]`。
+- [x] 每个任务先写测试，再实现，再运行指定验证命令。
+- [x] 多 agent 并行时只允许按任务边界拆分，不能两个 agent 同时改同一个文件。
+- [x] 前端不得直接调用外部 `:8090` Runner UI。
+- [x] 前端不得维护私有 graph/input/output schema。
+- [x] 文档、测试、页面状态必须一致，不允许标记完成但真实浏览器不可用。
 
-验收：
-
-- [ ] 不再出现“点击 Runner 编排后不知道如何拖拽”的问题。
-- [ ] 主界面默认只聚焦工作流选择、画布编排、运行三个主任务。
-
-## 1. 主应用 Runner Shell 收敛
+## 0. Review 修正闭环
 
 **Files:**
-- Modify: `aiops-v2/web/src/router.js`
-- Modify: `aiops-v2/web/src/App.vue`
-- Create: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/pages/RunnerStudioPage.test.js`
-- Test: `aiops-v2/web/tests/router.erp-sre.spec.js`
+- Modify: `pkg/runner/RUNNER_STUDIO_DESIGN.md`
+- Modify: `pkg/runner/RUNNER_STUDIO_TODO.md`
 
-- [ ] 把 `/runner` 路由指向新的 `RunnerStudioPage`。
-- [ ] 移除当前“打开 Runner UI / 启动 runner server”的跳板式说明内容。
-- [ ] 在主应用内建立 Runner Studio 顶层壳层，包括顶栏、左栏、画布区、底部抽屉挂载点。
-- [ ] 保留对后端不可用状态的明确反馈，但不能退回为跳板式页面。
-- [ ] 更新路由与页面测试，验证 `/runner` 渲染的是 Studio 页面而非外部入口说明。
+- [x] 确认结构化 I/O 后端契约排在前端 I/O 组件之前。
+- [x] 确认 `loop` 首版有完整后端、执行、run state、YAML 映射任务。
+- [x] 确认实施清单不再是大模块清单，每个任务都有文件边界、测试和验证命令。
+- [x] 确认主应用 API 只使用 `/api/runner-studio/*`。
+- [x] 确认发布状态机绑定 `graph_hash`。
+- [x] 确认旧 Runner UI 生命周期有明确处理任务。
 
-验收：
+验证：
 
-- [ ] 进入 `/runner` 直接看到工作流编排主界面。
-- [ ] 页面在 Runner API 不可用时会显示可恢复错误态，而不是要求用户自行理解双入口。
+```bash
+rg -n "T[B]D|待[定]|或迁移[后]|Modify [o]r migrate|Replace [o]r rename" pkg/runner/RUNNER_STUDIO_DESIGN.md pkg/runner/RUNNER_STUDIO_TODO.md
+```
 
-## 2. 工作流选择与管理弹窗
+期望：除说明历史问题的正文外，不出现模糊占位和双入口实施路径。
 
-**Files:**
-- Create: `aiops-v2/web/src/components/runner/WorkflowManagerModal.vue`
-- Create: `aiops-v2/web/src/components/runner/WorkflowQuickList.vue`
-- Create: `aiops-v2/web/src/components/runner/workflowManagerState.js`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Modify: `aiops-v2/web/src/api/runnerUi.js`
-- Test: `aiops-v2/web/src/components/runner/WorkflowManagerModal.test.js`
-
-- [ ] 主界面左侧只显示最近使用 / 收藏工作流。
-- [ ] 完整工作流列表、搜索、筛选、归档、克隆、历史版本统一进入 `WorkflowManagerModal`。
-- [ ] 新建入口固定为：空白、模板、YAML 导入、克隆、AI 生成。
-- [ ] 当前工作流切换时处理脏状态确认，不允许静默丢失草稿。
-- [ ] 支持最近使用排序和收藏固定。
-
-验收：
-
-- [ ] 用户在主界面不会被完整列表淹没。
-- [ ] 工作流切换、创建、克隆都有清晰入口。
-
-## 3. 画布主界面简化
+## 1. 主应用 API 边界
 
 **Files:**
-- Create: `aiops-v2/web/src/components/runner/RunnerCanvas.vue`
-- Create: `aiops-v2/web/src/components/runner/CanvasToolbar.vue`
-- Create: `aiops-v2/web/src/components/runner/NodeActionMenu.vue`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/components/runner/RunnerCanvas.test.js`
+- Modify: `cmd/ai-server/main.go`
+- Modify: `cmd/ai-server/main_test.go`
+- Create: `internal/server/runner_studio_api.go`
+- Create: `internal/server/runner_studio_api_test.go`
+- Modify: `internal/server/http.go`
+- Create: `web/src/api/runnerStudioClient.js`
+- Create: `web/src/api/runnerStudioClient.test.js`
+- Modify: `web/src/api/runnerUi.js`
+- Create: `web/src/pages/RunnerStudioPage.vue`
+- Create: `web/src/pages/RunnerStudioPage.test.js`
+- Modify: `web/src/router.js`
 
-- [ ] 复用现有拖拽、连线、缩放、自动布局能力，但收敛为主应用组件。
-- [ ] 主画布默认不显示复杂右栏参数面板。
-- [ ] 单击节点只显示摘要。
-- [ ] 双击节点打开配置弹窗。
-- [ ] 右键节点打开动作菜单：复制、删除、禁用/启用、单节点试跑、查看最近运行、AI 修复参数。
-- [ ] 左侧保留节点库和模板片段，不在画布周围堆叠二级控制面板。
+- [x] 写失败测试：`runner_studio_api_test.go` 覆盖 `/api/runner-studio/actions/catalog`、`/api/runner-studio/workflows`、`/api/runner-studio/workflows/{name}/graph` 的路由注册。
+- [x] 实现 `internal/server/runner_studio_api.go`，统一挂载 `/api/runner-studio/*`。
+- [x] 在 `internal/server/http.go` 注册 Runner Studio API。
+- [x] 创建 `runnerStudioClient.js`，只允许调用 `/api/runner-studio/*`。
+- [x] 将 `runnerUi.js` 收敛为 legacy 兼容文件，不再作为 `/runner` 主页面依赖。
+- [x] 在 `cmd/ai-server` 接入 `AIOPS_RUNNER_STUDIO_UPSTREAM_URL` 等环境变量，生产启动时可配置同源聚合上游。
+- [x] 将 `/runner` 路由切到主应用内 `RunnerStudioPage`，避免继续展示外部 Runner UI 跳板。
 
-验收：
+验证：
 
-- [ ] 新用户打开页面后能直觉理解“从左拖到中间，再双击配置”。
-- [ ] 画布主视野不会被右侧大面板压缩。
+```bash
+go test ./internal/server -run 'TestRunnerStudio' -count=1
+go test ./cmd/ai-server -run 'TestRunnerStudioUpstreamFromEnv' -count=1
+cd web && npm test -- runnerStudioClient.test.js
+```
 
-## 4. 节点配置弹窗
+期望：主应用同源 API 可测试，前端 client 不包含 `:8090` 或外部 Runner UI 地址。
 
-**Files:**
-- Create: `aiops-v2/web/src/components/runner/NodeConfigModal.vue`
-- Create: `aiops-v2/web/src/components/runner/node-config/BasicTab.vue`
-- Create: `aiops-v2/web/src/components/runner/node-config/InputTab.vue`
-- Create: `aiops-v2/web/src/components/runner/node-config/OutputTab.vue`
-- Create: `aiops-v2/web/src/components/runner/node-config/AdvancedTab.vue`
-- Create: `aiops-v2/web/src/components/runner/node-config/RunAiTab.vue`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/components/runner/NodeConfigModal.test.js`
-
-- [ ] 节点配置统一收敛到一个弹窗，固定五个页签：基础、输入、输出、高级、运行与 AI。
-- [ ] `基础` 页签支持 `name/action/targets/retries/timeout`。
-- [ ] `高级` 页签默认折叠低频项：`when`、`continue_on_error`、`env`、`workdir`、`failure edge`、`join/loop/subflow`。
-- [ ] 节点标题和说明在弹窗内统一编辑，不在画布上直接承载复杂文字。
-- [ ] 节点级校验问题在弹窗内就地展示。
-
-验收：
-
-- [ ] 节点配置不再依赖常驻右栏。
-- [ ] 同一节点的高频字段和低频字段分层明确。
-
-## 5. 结构化输入参数编辑器
+## 2. Graph 结构化 I/O 契约
 
 **Files:**
-- Create: `aiops-v2/web/src/components/runner/io/InputParamList.vue`
-- Create: `aiops-v2/web/src/components/runner/io/InputParamRow.vue`
-- Create: `aiops-v2/web/src/components/runner/io/ValueSourceSwitch.vue`
-- Create: `aiops-v2/web/src/components/runner/io/VariableReferencePicker.vue`
-- Create: `aiops-v2/web/src/components/runner/io/MixedVariableTextInput.vue`
-- Create: `aiops-v2/web/src/components/runner/io/ioTypes.js`
-- Test: `aiops-v2/web/src/components/runner/io/InputParamList.test.js`
+- Modify: `pkg/runner/workflow/model.go`
+- Modify: `pkg/runner/workflow/visual/model.go`
+- Modify: `pkg/runner/workflow/visual/validate.go`
+- Modify: `pkg/runner/workflow/visual/compile.go`
+- Modify: `pkg/runner/workflow/visual/parse.go`
+- Modify: `pkg/runner/workflow/visual/visual_test.go`
+- Create: `pkg/runner/workflow/visual/io_test.go`
 
-- [ ] 输入参数改为列表行编辑，不再以 YAML 大文本块为主入口。
-- [ ] 每行至少支持：`key`、`label`、`type`、`value_source`、`value`、`required`、`description`。
-- [ ] `value_source` 固定为 `constant`、`variable_reference`、`expression`。
-- [ ] 变量引用必须通过 picker 选择，而非手写路径。
-- [ ] 文本型字段支持混合变量高亮。
-- [ ] 支持排序、复制、删除、重复名校验。
+- [x] 写失败测试：graph node 可 round-trip `inputs`、`outputs`、`value_source`、`extract_source`。
+- [x] 在 `model.go` 增加 `InputParamSpec`、`OutputParamSpec`、`ValueSource`、`ExtractSource`、`VariableRef`。
+- [x] 在 `validate.go` 校验输入 key、输出 key、类型、值来源、提取来源和重复名。
+- [x] 在 `compile.go` 保证 Graph -> YAML 不丢结构化 I/O。
+- [x] 在 `parse.go` 保证 YAML -> Graph 能还原结构化 I/O。
 
-验收：
+验证：
 
-- [ ] 配置 `cmd.run` 或 `shell.run` 的常见参数时，不需要直接编辑 YAML。
-- [ ] 用户可以用 picker 选择上游变量填入参数。
+```bash
+cd pkg/runner && go test ./workflow/visual -run 'Test.*IO|Test.*RoundTrip' -count=1
+```
 
-## 6. 结构化输出参数编辑器
+期望：结构化 I/O 是后端 graph 契约的一部分，不是前端私有状态。
 
-**Files:**
-- Create: `aiops-v2/web/src/components/runner/io/OutputParamList.vue`
-- Create: `aiops-v2/web/src/components/runner/io/OutputParamRow.vue`
-- Create: `aiops-v2/web/src/components/runner/io/ExtractSourceSelect.vue`
-- Create: `aiops-v2/web/src/components/runner/io/JsonPathEditor.vue`
-- Test: `aiops-v2/web/src/components/runner/io/OutputParamList.test.js`
-
-- [ ] 输出变量改为显式声明，不依赖隐式 `expect_vars` 约定。
-- [ ] 每行至少支持：`key`、`type`、`extract_source`、`extract_rule`、`description`。
-- [ ] 首版支持的 `extract_source`：`stdout_text`、`stdout_jsonpath`、`stderr_text`、`exit_code`、`export_var`、`approval_result`、`subflow_output`。
-- [ ] 输出变量支持命名冲突校验和类型校验。
-- [ ] 输出变量可用于下游变量引用选择器。
-
-验收：
-
-- [ ] 用户能在 UI 上直接声明某个节点输出什么变量、从哪里提取。
-- [ ] 下游节点配置参数时能引用这些输出变量。
-
-## 7. YAML / Diff 弹窗
+## 3. 变量作用域解析
 
 **Files:**
-- Create: `aiops-v2/web/src/components/runner/YamlDiffModal.vue`
-- Create: `aiops-v2/web/src/components/runner/YamlEditorPane.vue`
-- Create: `aiops-v2/web/src/components/runner/GraphDiffSummary.vue`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/components/runner/YamlDiffModal.test.js`
+- Create: `pkg/runner/workflow/visual/variables.go`
+- Create: `pkg/runner/workflow/visual/variables_test.go`
+- Modify: `pkg/runner/workflow/visual/validate.go`
+- Modify: `pkg/runner/server/api/visual_workflow_handler.go`
+- Modify: `pkg/runner/server/api/visual_workflow_handler_test.go`
+- Modify: `internal/server/runner_studio_api.go`
+- Modify: `internal/server/runner_studio_api_test.go`
+- Modify: `web/src/api/runnerStudioClient.js`
+- Modify: `web/src/api/runnerStudioClient.test.js`
 
-- [ ] YAML 作为兼容视图保留，但不常驻主界面。
-- [ ] 提供 `Graph -> YAML` 和 `YAML -> Graph` 双向预览与校验。
-- [ ] 在弹窗内集中展示 diff、编译错误和语义冲突。
-- [ ] 不可线性化的 graph 不得伪装成顺序 YAML。
+- [x] 写失败测试：下游节点只能引用拓扑上游输出。
+- [x] 写失败测试：分支变量经过 `join` 后只有显式 join output 可见。
+- [x] 写失败测试：loop scope 内变量默认不泄漏到 loop 外。
+- [x] 实现变量作用域解析器，返回 system、workflow_input、workflow_var、inventory、node_output、approval、subflow 变量。
+- [x] 增加服务端 API：`POST /api/v1/workflows/graph/variables/resolve`。
+- [x] 在主应用 API 中映射为 `POST /api/runner-studio/workflows/graph/variables/resolve`。
 
-验收：
+验证：
 
-- [ ] 高级用户仍可检查和编辑 YAML。
-- [ ] 普通用户不被 YAML 文本打断主流程。
+```bash
+cd pkg/runner && go test ./workflow/visual -run 'Test.*Variable' -count=1
+cd pkg/runner && go test ./server/api -run 'TestVisualWorkflow.*Variable' -count=1
+```
 
-## 8. 底部运行抽屉与节点运行详情
+期望：变量 picker 只消费服务端作用域结果。
 
-**Files:**
-- Create: `aiops-v2/web/src/components/runner/RunLogDrawer.vue`
-- Create: `aiops-v2/web/src/components/runner/VariableInspectDrawer.vue`
-- Create: `aiops-v2/web/src/components/runner/NodeRunDetailModal.vue`
-- Create: `aiops-v2/web/src/components/runner/runStateReducer.js`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/components/runner/RunLogDrawer.test.js`
-
-- [ ] 日志抽屉显示：stdout、stderr、SSE、审批事件、重试轨迹。
-- [ ] 变量检查抽屉显示：输入变量、输出变量、运行态导出变量、最近节点结果。
-- [ ] 单击节点显示最近一次运行摘要。
-- [ ] 节点详情弹窗显示单节点详细执行结果。
-- [ ] 抽屉默认收起，运行时可自动展开。
-
-验收：
-
-- [ ] 运行态信息不再和画布抢占主视野。
-- [ ] 用户能从画布快速钻取到单节点执行详情。
-
-## 9. AI 助手
+## 4. Action Catalog 输入输出 Schema
 
 **Files:**
-- Create: `aiops-v2/web/src/components/runner/ai/RunnerAiAssistantModal.vue`
-- Create: `aiops-v2/web/src/components/runner/ai/AiDiffPreview.vue`
-- Create: `aiops-v2/web/src/components/runner/ai/aiRunnerApi.js`
-- Modify: `aiops-v2/web/src/pages/RunnerStudioPage.vue`
-- Test: `aiops-v2/web/src/components/runner/ai/RunnerAiAssistantModal.test.js`
+- Modify: `pkg/runner/server/service/action_catalog.go`
+- Modify: `pkg/runner/server/service/action_catalog_test.go`
+- Modify: `pkg/runner/server/api/visual_workflow_handler.go`
+- Modify: `pkg/runner/server/api/visual_workflow_handler_test.go`
 
-- [ ] 页面级支持自然语言生成工作流草稿。
-- [ ] 节点级支持补齐参数和修复校验问题。
-- [ ] 运行后支持解释失败原因。
-- [ ] AI 修改只生成 draft diff，不得静默改已发布版本。
-- [ ] AI 操作结果必须带可审计说明。
+- [x] 写失败测试：`cmd.run`、`shell.run`、`script.shell` 返回结构化 input schema 和 output schema。
+- [x] 扩展 `ActionSpec`，明确 `inputs_schema`、`outputs_schema`、`input_examples`、`output_examples`。
+- [x] 保留现有 `args_schema` 兼容字段，避免旧 UI 和已有 API 断裂。
+- [x] 在 catalog API capabilities 中声明 `structured_io_schema=true`。
 
-验收：
+验证：
 
-- [ ] AI 可以帮助用户从空白工作流起步。
-- [ ] AI 结果不会越过发布门禁。
+```bash
+cd pkg/runner && go test ./server/service -run 'TestActionCatalog' -count=1
+cd pkg/runner && go test ./server/api -run 'TestVisualWorkflowActionCatalog' -count=1
+```
 
-## 10. 发布审阅与审计
+期望：前端节点配置表单完全由 catalog schema 驱动。
 
-**Files:**
-- Create: `aiops-v2/web/src/components/runner/PublishReviewModal.vue`
-- Modify: `aiops-v2/internal/server/erp_sre_api.go`
-- Modify: `aiops-v2/internal/server/http.go`
-- Modify: `aiops-v2/pkg/runner/server/api/router.go`
-- Modify: `aiops-v2/pkg/runner/server/service/` 下发布与审计相关服务
-- Test: `aiops-v2/pkg/runner/server/api/visual_workflow_audit_test.go`
-- Test: `aiops-v2/web/src/components/runner/PublishReviewModal.test.js`
-
-- [ ] 发布前统一进入审阅弹窗。
-- [ ] 审阅弹窗集中展示：diff、风险摘要、校验结果、发布说明。
-- [ ] AI 变更、YAML 导入、结构化表单改动都进入统一审计。
-- [ ] 审计数据至少包含：操作者、时间、动作、结构化 diff。
-
-验收：
-
-- [ ] 发布与审计是一套机制，而不是多个分散开关。
-- [ ] 高风险工作流发布前能看到完整变更摘要。
-
-## 11. 后端参数 schema 与变量契约
+## 5. Loop Graph 与执行语义
 
 **Files:**
-- Modify: `aiops-v2/pkg/runner/workflow/visual/**`
-- Modify: `aiops-v2/pkg/runner/server/api/visual_workflow_handler.go`
-- Modify: `aiops-v2/pkg/runner/server/service/**`
-- Create: `aiops-v2/web/src/api/runnerStudioClient.js`
-- Test: `aiops-v2/pkg/runner/server/api/visual_workflow_handler_test.go`
-- Test: `aiops-v2/pkg/runner/workflow/visual/**` 对应单测
+- Modify: `pkg/runner/workflow/visual/model.go`
+- Modify: `pkg/runner/workflow/visual/validate.go`
+- Modify: `pkg/runner/workflow/visual/compile.go`
+- Modify: `pkg/runner/workflow/visual/parse.go`
+- Modify: `pkg/runner/executor/graph_executor.go`
+- Modify: `pkg/runner/executor/graph_executor_test.go`
+- Modify: `pkg/runner/state/model.go`
+- Modify: `pkg/runner/state/runstate.go`
+- Modify: `pkg/runner/state/runstate_graph_test.go`
+- Modify: `pkg/runner/engine/run_tracker.go`
+- Modify: `pkg/runner/engine/recorder.go`
+- Modify: `pkg/runner/engine/engine_runstate_test.go`
 
-- [ ] 为 action catalog 增加输入输出 schema 描述能力。
-- [ ] 为 graph node 增加结构化输入输出字段映射。
-- [ ] 将 UI 的结构化参数编辑与后端 graph schema 对齐。
-- [ ] 保证 Graph <-> YAML round-trip 不丢失输入输出语义。
+- [x] 写失败测试：graph 支持 `loop` 节点 round-trip。
+- [x] 写失败测试：loop 必须配置 `mode` 和 `max_iterations`。
+- [x] 写失败测试：loop 执行记录每次 iteration 的 node state。
+- [x] 增加 `NodeTypeLoop` 和 `LoopSpec`。
+- [x] 实现 `for_each` 与 `while_condition` 的受控执行语义。
+- [x] run state 增加 iteration 维度，取消 run 时停止当前和后续 iteration。
 
-验收：
+验证：
 
-- [ ] 前端结构化表单不是前端私有状态，而是后端契约的一部分。
-- [ ] YAML 导入后能还原输入输出结构。
+```bash
+cd pkg/runner && go test ./workflow/visual -run 'Test.*Loop' -count=1
+cd pkg/runner && go test ./executor -run 'TestGraphExecutor.*Loop|TestGraphExecutor.*Cancel' -count=1
+```
 
-## 12. 测试与验收
+期望：`loop` 作为首版节点时不是 UI 占位，而是完整可执行语义。
+
+## 6. 发布状态机与 Graph Hash
 
 **Files:**
-- Modify: `aiops-v2/web/tests/` 下 Runner 相关 e2e
-- Modify: `aiops-v2/web/src/components/runner/**` 对应测试目录
-- Modify: `aiops-v2/pkg/runner/server/api/` 测试
-- Modify: `aiops-v2/pkg/runner/workflow/visual/` 测试
+- Modify: `pkg/runner/server/service/types.go`
+- Modify: `pkg/runner/server/service/workflow_service.go`
+- Modify: `pkg/runner/server/service/workflow_service_test.go`
+- Modify: `pkg/runner/server/service/visual_workflow_service.go`
+- Modify: `pkg/runner/server/service/visual_workflow_service_test.go`
+- Modify: `pkg/runner/server/api/workflow_handler.go`
+- Modify: `pkg/runner/server/api/workflow_handler_test.go`
+- Modify: `pkg/runner/server/api/visual_workflow_audit_test.go`
 
-- [ ] 组件测试覆盖：工作流管理、节点配置、输入输出编辑器、变量 picker、发布弹窗。
-- [ ] 流程测试覆盖：新建 -> 拖拽 -> 配输入输出 -> 校验 -> Dry Run -> 运行。
-- [ ] e2e 测试覆盖：从空白工作流到成功运行。
-- [ ] 使用真实 LLM 配置验证 AI 生成、AI 补参数和失败解释链路。
-- [ ] 用 Playwright 回归验证 `/runner` 首屏和关键主流程。
+- [x] 写失败测试：校验通过后持久化 `validated_graph_hash`、`validated_at`、`validated_by`。
+- [x] 写失败测试：执行语义变化会让 validated 失效。
+- [x] 写失败测试：布局变化不让 validated 失效。
+- [x] 写失败测试：发布只能发布当前 `validated_graph_hash`。
+- [x] 写失败测试：AI generated draft 不能绕过发布审阅。
+- [x] 实现 graph hash 计算，区分执行语义 hash 和 UI layout hash。
+- [x] 实现 `POST /api/v1/workflows/{name}/publish`，写入审计。
 
-验收：
+验证：
 
-- [ ] 主流程在真实浏览器里可跑通。
-- [ ] 文档状态与页面实际状态一致，不再出现“文档完成但入口不可用”的偏差。
+```bash
+cd pkg/runner && go test ./server/service -run 'TestVisualWorkflow.*Publish|TestVisualWorkflow.*GraphHash' -count=1
+cd pkg/runner && go test ./server/api -run 'TestVisualWorkflowAudit.*Publish' -count=1
+```
+
+期望：`draft -> validated -> published` 是可执行服务端状态机。
+
+## 7. 旧 Runner UI 生命周期
+
+**Files:**
+- Modify: `pkg/runner/server/ui/frontend/README.md`
+- Modify: `pkg/runner/server/ui/frontend/src/api/client.ts`
+- Modify: `web/src/api/runnerUi.js`
+- Modify: `web/src/api/runnerStudioClient.test.js`
+- Modify: `web/src/pages/RunnerStudioPage.test.js`
+- Modify: `web/src/pages/RunnerUiEntryPage.vue`
+- Modify: `web/src/pages/RunnerUiEntryPage.test.js`
+- Modify: `web/src/router.js`
+
+- [x] 标记 `pkg/runner/server/ui/frontend` 为 legacy/debug UI，不再作为主应用产品入口。
+- [x] 梳理可迁移代码清单：workflow templates、graph utils、mock fixtures、canvas interaction。
+- [x] `/runner` 路由切到 `RunnerStudioPage` 后，旧 `RunnerUiEntryPage` 测试改为 legacy 删除或不再路由引用。
+- [x] 确认主导航不再出现外部 Runner UI 跳板文案。
+
+验证：
+
+```bash
+cd web && npm test -- RunnerUiEntryPage.test.js App.route-session.test.js RunnerStudioPage.test.js runnerStudioClient.test.js
+! rg -n ":8090|打开 Runner UI|启动 Runner UI" web/src
+```
+
+期望：主应用没有外部 Runner UI 主流程入口；legacy 只保留调试说明。
+
+## 8. Runner Studio Shell
+
+**Files:**
+- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.test.js`
+- Modify: `web/src/router.js`
+- Modify: `web/src/App.vue`
+- Create: `web/src/components/runner/RunnerStudioShell.vue`
+- Create: `web/src/components/runner/RunnerStudioShell.test.js`
+- Create: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：访问 `/runner` 渲染 Runner Studio shell，而不是入口跳板。
+- [x] 建立顶栏、左侧栏、画布区、底部抽屉挂载点。
+- [x] 顶栏只展示工作流名称、状态、保存、校验、Dry Run、运行、发布、AI 生成。
+- [x] 后端不可用时显示同页错误态，不跳转外部 URL。
+- [x] 响应式布局覆盖桌面和平板宽度。
+
+验证：
+
+```bash
+cd web && npm test -- RunnerStudioPage.test.js RunnerStudioShell.test.js App.route-session.test.js
+```
+
+期望：`/runner` 已是主应用内原生页面。
+
+## 9. 工作流选择与管理
+
+**Files:**
+- Create: `web/src/components/runner/WorkflowQuickList.vue`
+- Create: `web/src/components/runner/WorkflowQuickList.test.js`
+- Create: `web/src/components/runner/WorkflowManagerModal.vue`
+- Create: `web/src/components/runner/WorkflowManagerModal.test.js`
+- Create: `web/src/components/runner/workflowManagerState.js`
+- Create: `web/src/components/runner/workflowManagerState.test.js`
+- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.test.js`
+- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.test.js`
+- Modify: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：左侧只显示最近使用和收藏工作流。
+- [x] 写失败测试：完整列表、搜索、筛选、归档、克隆、历史版本只在管理弹窗中出现。
+- [x] 实现新建入口：空白、模板、YAML 导入、克隆、AI 生成。
+- [x] 切换工作流时处理 dirty confirm。
+- [x] 最近使用排序和收藏状态写入本地 UI state，不影响 graph 语义。
+
+验证：
+
+```bash
+cd web && npm test -- WorkflowQuickList.test.js WorkflowManagerModal.test.js workflowManagerState.test.js
+```
+
+期望：主界面不被完整工作流列表淹没。
+
+## 10. 画布与节点动作
+
+**Files:**
+- Create: `web/src/components/runner/RunnerCanvas.vue`
+- Create: `web/src/components/runner/RunnerCanvas.test.js`
+- Create: `web/src/components/runner/CanvasToolbar.vue`
+- Create: `web/src/components/runner/CanvasToolbar.test.js`
+- Create: `web/src/components/runner/NodeActionMenu.vue`
+- Create: `web/src/components/runner/NodeActionMenu.test.js`
+- Create: `web/src/components/runner/canvasGraphAdapter.js`
+- Create: `web/src/components/runner/canvasGraphAdapter.test.js`
+- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.test.js`
+- Modify: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：catalog action 可拖入画布生成 graph node。
+- [x] 写失败测试：节点连线生成 graph edge。
+- [x] 写失败测试：单击节点只更新 summary selection。
+- [x] 写失败测试：双击节点触发 config modal open event。
+- [x] 写失败测试：右键菜单包含复制、删除、禁用、单节点试跑、最近运行、AI 修复。
+- [x] 实现 canvas graph adapter，隔离 Vue Flow 节点格式和后端 graph 格式。
+
+验证：
+
+```bash
+cd web && npm test -- RunnerCanvas.test.js CanvasToolbar.test.js NodeActionMenu.test.js canvasGraphAdapter.test.js
+```
+
+期望：画布交互可测试，UI graph 格式不会污染后端 graph 契约。
+
+## 11. 节点配置弹窗
+
+**Files:**
+- Create: `web/src/components/runner/NodeConfigModal.vue`
+- Create: `web/src/components/runner/NodeConfigModal.test.js`
+- Create: `web/src/components/runner/node-config/BasicTab.vue`
+- Create: `web/src/components/runner/node-config/BasicTab.test.js`
+- Create: `web/src/components/runner/node-config/InputTab.vue`
+- Create: `web/src/components/runner/node-config/OutputTab.vue`
+- Create: `web/src/components/runner/node-config/AdvancedTab.vue`
+- Create: `web/src/components/runner/node-config/RunAiTab.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：双击 action 节点打开五页签弹窗。
+- [x] 基础页签编辑 `name`、`action`、`targets`、`retries`、`timeout`。
+- [x] 输入页签挂载结构化输入编辑器。
+- [x] 输出页签挂载结构化输出编辑器。
+- [x] 高级页签默认折叠 `when`、`continue_on_error`、`env`、`workdir`、`failure edge`、`join/loop/subflow`。
+- [x] 运行与 AI 页签展示最近试跑、校验问题、AI diff。
+
+验证：
+
+```bash
+cd web && npm test -- NodeConfigModal.test.js BasicTab.test.js
+```
+
+期望：节点配置不依赖常驻右栏。
+
+## 12. 结构化输入参数编辑器
+
+**Files:**
+- Create: `web/src/components/runner/io/ioTypes.js`
+- Create: `web/src/components/runner/io/ioTypes.test.js`
+- Create: `web/src/components/runner/io/InputParamList.vue`
+- Create: `web/src/components/runner/io/InputParamList.test.js`
+- Create: `web/src/components/runner/io/InputParamRow.vue`
+- Create: `web/src/components/runner/io/ValueSourceSwitch.vue`
+- Create: `web/src/components/runner/io/VariableReferencePicker.vue`
+- Create: `web/src/components/runner/io/VariableReferencePicker.test.js`
+- Create: `web/src/components/runner/io/MixedVariableTextInput.vue`
+- Create: `web/src/components/runner/io/MixedVariableTextInput.test.js`
+- Modify: `web/src/components/runner/node-config/InputTab.vue`
+- Modify: `web/src/components/runner/NodeConfigModal.vue`
+- Modify: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：输入参数行支持 `key`、`label`、`type`、`value_source`、`value`、`required`、`description`。
+- [x] 写失败测试：`value_source` 只允许 `constant`、`variable_reference`、`expression`。
+- [x] 写失败测试：变量引用必须来自服务端变量作用域结果。
+- [x] 实现排序、复制、删除、重复名校验。
+- [x] 混合变量文本显示变量高亮。
+
+验证：
+
+```bash
+cd web && npm test -- ioTypes.test.js InputParamList.test.js VariableReferencePicker.test.js MixedVariableTextInput.test.js
+```
+
+期望：配置 `cmd.run` 或 `shell.run` 常见参数时不需要直接编辑 YAML。
+
+## 13. 结构化输出参数编辑器
+
+**Files:**
+- Create: `web/src/components/runner/io/OutputParamList.vue`
+- Create: `web/src/components/runner/io/OutputParamList.test.js`
+- Create: `web/src/components/runner/io/OutputParamRow.vue`
+- Create: `web/src/components/runner/io/ExtractSourceSelect.vue`
+- Create: `web/src/components/runner/io/JsonPathEditor.vue`
+- Create: `web/src/components/runner/io/JsonPathEditor.test.js`
+- Create: `web/src/components/runner/io/outputTypes.js`
+- Modify: `web/src/components/runner/node-config/OutputTab.vue`
+- Modify: `web/src/components/runner/NodeConfigModal.vue`
+- Modify: `web/src/components/runner/runnerStudio.css`
+
+- [x] 写失败测试：输出变量行支持 `key`、`type`、`extract_source`、`extract_rule`、`description`。
+- [x] 写失败测试：`extract_source` 只允许 `stdout_text`、`stdout_jsonpath`、`stderr_text`、`exit_code`、`export_var`、`approval_result`、`subflow_output`。
+- [x] 写失败测试：JSONPath 提取规则非法时字段级报错。
+- [x] 输出变量写回 graph node outputs。
+- [x] 输出变量可被下游变量 picker 使用。
+
+验证：
+
+```bash
+cd web && npm test -- OutputParamList.test.js JsonPathEditor.test.js
+```
+
+期望：节点输出显式可见、可校验、可被下游引用。
+
+## 14. YAML 与 Diff 弹窗
+
+**Files:**
+- Create: `web/src/components/runner/YamlDiffModal.vue`
+- Create: `web/src/components/runner/YamlDiffModal.test.js`
+- Create: `web/src/components/runner/YamlEditorPane.vue`
+- Create: `web/src/components/runner/GraphDiffSummary.vue`
+- Create: `web/src/components/runner/GraphDiffSummary.test.js`
+
+- [x] 写失败测试：YAML 弹窗不会常驻主页面。
+- [x] 写失败测试：Graph -> YAML 和 YAML -> Graph 调用同源 Runner Studio API。
+- [x] 展示执行语义 diff 和 UI layout diff。
+- [x] 不可线性化 graph 必须显示语义冲突，不允许生成顺序假象。
+
+验证：
+
+```bash
+cd web && npm test -- YamlDiffModal.test.js GraphDiffSummary.test.js
+```
+
+期望：YAML 是兼容视图，不打断普通用户主流程。
+
+## 15. 运行抽屉与变量检查
+
+**Files:**
+- Create: `web/src/components/runner/runStateReducer.js`
+- Create: `web/src/components/runner/runStateReducer.test.js`
+- Create: `web/src/components/runner/RunLogDrawer.vue`
+- Create: `web/src/components/runner/RunLogDrawer.test.js`
+- Create: `web/src/components/runner/VariableInspectDrawer.vue`
+- Create: `web/src/components/runner/VariableInspectDrawer.test.js`
+- Create: `web/src/components/runner/NodeRunDetailModal.vue`
+
+- [x] 写失败测试：SSE run event 可归并成 node/edge/host/log state。
+- [x] 日志抽屉显示 stdout、stderr、SSE、审批事件、重试轨迹。
+- [x] 变量检查抽屉显示输入变量、输出变量、运行态导出变量、最近节点结果。
+- [x] 单击节点显示最近运行摘要。
+- [x] 节点详情弹窗显示单节点完整结果。
+
+验证：
+
+```bash
+cd web && npm test -- runStateReducer.test.js RunLogDrawer.test.js VariableInspectDrawer.test.js
+```
+
+期望：运行态信息不和画布争抢主视野。
+
+## 16. AI 助手
+
+**Files:**
+- Create: `web/src/components/runner/ai/aiRunnerApi.js`
+- Create: `web/src/components/runner/ai/aiRunnerApi.test.js`
+- Create: `web/src/components/runner/ai/RunnerAiAssistantModal.vue`
+- Create: `web/src/components/runner/ai/RunnerAiAssistantModal.test.js`
+- Create: `web/src/components/runner/ai/AiDiffPreview.vue`
+- Create: `internal/server/runner_studio_ai.go`
+- Create: `internal/server/runner_studio_ai_test.go`
+
+- [x] 写失败测试：AI 生成 workflow 返回结构化 `graph_patch` 和 `diff_summary`。
+- [x] 写失败测试：AI patch node 只能写入 draft。
+- [x] 写失败测试：AI 失败解释不修改 graph。
+- [x] 使用现有 LLM 配置，不在前端硬编码 URL、apikey、model。
+- [x] AI 结果应用前展示 diff，应用后调用 graph validate。
+
+验证：
+
+```bash
+go test ./internal/server -run 'TestRunnerStudioAI' -count=1
+cd web && npm test -- aiRunnerApi.test.js RunnerAiAssistantModal.test.js
+```
+
+期望：AI 产物可审计、可校验、不可绕过发布门禁。
+
+## 17. 发布审阅与审计
+
+**Files:**
+- Create: `web/src/components/runner/PublishReviewModal.vue`
+- Create: `web/src/components/runner/PublishReviewModal.test.js`
+- Modify: `pkg/runner/server/api/visual_workflow_audit_test.go`
+- Modify: `internal/server/runner_studio_api.go`
+- Modify: `internal/server/runner_studio_api_test.go`
+
+- [x] 写失败测试：发布弹窗展示 diff、风险摘要、校验结果、发布说明。
+- [x] 写失败测试：没有当前 `validated_graph_hash` 时发布按钮不可用。
+- [x] 写失败测试：AI draft 未人工确认时不可发布。
+- [x] 发布 API 写审计：actor、time、action、graph_hash、diff。
+- [x] 发布成功后刷新 workflow 状态为 `published`。
+
+验证：
+
+```bash
+go test ./internal/server -run 'TestRunnerStudio.*Publish' -count=1
+cd pkg/runner && go test ./server/api -run 'TestVisualWorkflowAudit.*Publish' -count=1
+cd web && npm test -- PublishReviewModal.test.js
+```
+
+期望：发布与审计是一套机制。
+
+## 18. 浏览器 E2E 与真实流程
+
+**Files:**
+- Create: `web/tests/runner-studio.spec.js`
+- Modify: `web/tests/App.navigation.erp-sre.spec.js`
+- Modify: `web/tests/router.erp-sre.spec.js`
+
+- [x] 写 Playwright 用例：打开 `/runner`，看到 Runner Studio 而不是入口跳板。
+- [x] 用例覆盖：新建空白 workflow -> 拖入 3 个节点 -> 配输入输出 -> 校验 -> Dry Run。
+- [x] 用例覆盖：AI 生成 workflow draft -> 查看 diff -> 应用 -> 校验失败时不覆盖当前 graph。
+- [x] 用例覆盖：发布审阅弹窗要求 graph hash 和发布说明。
+
+验证：
+
+```bash
+cd web && npm run test:ui -- tests/runner-studio.spec.js --project=chromium
+```
+
+期望：真实浏览器主流程可跑通。
+
+## 19. 全量验证
+
+**Files:**
+- Modify: `pkg/runner/RUNNER_STUDIO_TODO.md`
+
+- [x] 标记所有已完成任务状态。
+- [x] 跑 Go 后端验证。
+- [x] 跑前端单测。
+- [x] 跑前端构建。
+- [x] 跑 Playwright 主流程。
+
+验证：
+
+```bash
+cd pkg/runner && go test ./... -count=1
+go test ./internal/server -count=1
+cd web && npm test
+cd web && npm run build
+cd web && npm run test:ui -- tests/runner-studio.spec.js --project=chromium
+```
+
+期望：所有验证通过，`/runner` 主应用原生 Runner Studio 可用，文档状态与实际实现一致。
+
+## 20. 2026-05-05 浏览器批注修复
+
+**Files:**
+- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.test.js`
+- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.test.js`
+- Modify: `web/src/components/runner/RunnerCanvas.vue`
+- Modify: `web/src/components/runner/RunnerCanvas.test.js`
+- Modify: `web/src/components/runner/CanvasToolbar.vue`
+- Modify: `web/src/components/runner/CanvasToolbar.test.js`
+- Modify: `web/src/components/runner/WorkflowQuickList.vue`
+- Create: `web/src/components/runner/fallbackActionCatalog.js`
+- Modify: `web/src/components/runner/runnerStudio.css`
+- Modify: `web/tests/runner-studio.spec.js`
+
+- [x] 404 错误不再裸露 `Request failed with status 404`，改为解释主应用 API 未接入、旧 ai-server 二进制或路由未重载，并给出重启/上游配置提示。
+- [x] `/runner` 初始只显示工作流库，不自动打开未选择工作流的空画布和运行抽屉。
+- [x] 选择或新建工作流后进入编辑态，隐藏工作流列表，只保留返回工作流库按钮。
+- [x] 画布连线改为基于节点端口坐标绘制，并提供输出端口到输入端口的手动连接交互。
+- [x] 运行抽屉从固定底部区域改为右侧运行详情侧拉框，不再占用或覆盖画布主区域。
+- [x] 补齐组件测试、页面测试、Playwright 回归测试和 in-app browser 实操验证。
+- [x] Runner Studio API 404/503 时进入“本地编排模式”，不阻断工作流创建和画布编辑。
+- [x] 本地编排模式提示支持手动关闭，避免长期占用首屏空间。
+- [x] API action catalog 不可用时启用内置生产节点库，至少包含 Command、Shell Script、Stored Script、人工审批、条件分支、等待事件。
+- [x] 节点库改为参考 Dify 的画布左侧浮动加号；点击后弹出可搜索节点面板，避免空白“动作”栏。
+- [x] 外层页面改为纵向 flex 布局，Shell 填满剩余高度，运行详情改为 overlay 侧拉层且不再覆盖节点库按钮。
+- [x] 删除画布内重复的 workflow/status/count 头部行，编辑页只保留顶部工作流标题和状态。
+- [x] 画布左侧工具栏支持全屏编排/退出全屏，适合复杂工作流横向展开。
+- [x] 重新构建并重启 8080 ai-server，确认 `/api/runner-studio/*` 已接入主应用路由；当前若无 Runner upstream，返回明确 503 配置提示而不是旧路由 404。
+
+验证：
+
+```bash
+go test ./internal/server -run 'TestRunnerStudio' -count=1
+cd web && npm test -- RunnerStudioPage.test.js RunnerStudioShell.test.js RunnerCanvas.test.js CanvasToolbar.test.js
+cd web && npm test
+cd web && npm run build
+cd web && npm run test:ui -- tests/runner-studio.spec.js --project=chromium
+```
+
+期望：批注中的问题都有测试覆盖；真实 8080 页面进入 `/runner` 时先展示工作流库，新建后进入编排页，画布可全屏，运行详情通过侧拉框查看，返回按钮可回到列表。

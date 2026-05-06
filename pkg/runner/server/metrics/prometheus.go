@@ -9,18 +9,27 @@ import (
 )
 
 type Collector struct {
-	submitted   atomic.Int64
-	started     atomic.Int64
-	finished    atomic.Int64
-	succeeded   atomic.Int64
-	failed      atomic.Int64
-	canceled    atomic.Int64
-	interrupted atomic.Int64
-	queueDepth  atomic.Int64
+	submitted       atomic.Int64
+	started         atomic.Int64
+	finished        atomic.Int64
+	succeeded       atomic.Int64
+	failed          atomic.Int64
+	canceled        atomic.Int64
+	interrupted     atomic.Int64
+	queueDepth      atomic.Int64
+	graphRuns       atomic.Int64
+	graphFailed     atomic.Int64
+	graphNodeFailed atomic.Int64
 
-	mu          sync.Mutex
-	durationSum float64
-	durationCnt int64
+	mu                   sync.Mutex
+	durationSum          float64
+	durationCnt          int64
+	graphDurationSum     float64
+	graphDurationCnt     int64
+	graphNodeDurationSum float64
+	graphNodeDurationCnt int64
+	approvalWaitSum      float64
+	approvalWaitCnt      int64
 }
 
 func NewCollector() *Collector {
@@ -62,6 +71,47 @@ func (c *Collector) ObserveRunFinished(status string, duration time.Duration) {
 	}
 }
 
+func (c *Collector) ObserveGraphRunFinished(status string, duration time.Duration) {
+	if c == nil {
+		return
+	}
+	c.graphRuns.Add(1)
+	if status == "failed" {
+		c.graphFailed.Add(1)
+	}
+	if duration > 0 {
+		c.mu.Lock()
+		c.graphDurationSum += duration.Seconds()
+		c.graphDurationCnt++
+		c.mu.Unlock()
+	}
+}
+
+func (c *Collector) ObserveGraphNodeFinished(status string, duration time.Duration) {
+	if c == nil {
+		return
+	}
+	if status == "failed" {
+		c.graphNodeFailed.Add(1)
+	}
+	if duration > 0 {
+		c.mu.Lock()
+		c.graphNodeDurationSum += duration.Seconds()
+		c.graphNodeDurationCnt++
+		c.mu.Unlock()
+	}
+}
+
+func (c *Collector) ObserveGraphApprovalWait(duration time.Duration) {
+	if c == nil || duration <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.approvalWaitSum += duration.Seconds()
+	c.approvalWaitCnt++
+	c.mu.Unlock()
+}
+
 func (c *Collector) SetQueueDepth(depth int) {
 	if c != nil {
 		c.queueDepth.Store(int64(depth))
@@ -75,6 +125,33 @@ func (c *Collector) averageDuration() float64 {
 		return 0
 	}
 	return c.durationSum / float64(c.durationCnt)
+}
+
+func (c *Collector) averageGraphDuration() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.graphDurationCnt == 0 {
+		return 0
+	}
+	return c.graphDurationSum / float64(c.graphDurationCnt)
+}
+
+func (c *Collector) averageGraphNodeDuration() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.graphNodeDurationCnt == 0 {
+		return 0
+	}
+	return c.graphNodeDurationSum / float64(c.graphNodeDurationCnt)
+}
+
+func (c *Collector) averageApprovalWait() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.approvalWaitCnt == 0 {
+		return 0
+	}
+	return c.approvalWaitSum / float64(c.approvalWaitCnt)
 }
 
 func (c *Collector) RenderPrometheus() string {
@@ -108,7 +185,25 @@ func (c *Collector) RenderPrometheus() string {
 			"runner_server_queue_depth %d\n"+
 			"# HELP runner_server_run_duration_seconds_avg Average run duration in seconds\n"+
 			"# TYPE runner_server_run_duration_seconds_avg gauge\n"+
-			"runner_server_run_duration_seconds_avg %.6f\n",
+			"runner_server_run_duration_seconds_avg %.6f\n"+
+			"# HELP runner_server_graph_runs_finished_total Total finished graph runs\n"+
+			"# TYPE runner_server_graph_runs_finished_total counter\n"+
+			"runner_server_graph_runs_finished_total %d\n"+
+			"# HELP runner_server_graph_runs_failed_total Total failed graph runs\n"+
+			"# TYPE runner_server_graph_runs_failed_total counter\n"+
+			"runner_server_graph_runs_failed_total %d\n"+
+			"# HELP runner_server_graph_run_duration_seconds_avg Average graph run duration in seconds\n"+
+			"# TYPE runner_server_graph_run_duration_seconds_avg gauge\n"+
+			"runner_server_graph_run_duration_seconds_avg %.6f\n"+
+			"# HELP runner_server_graph_node_failures_total Total failed graph nodes\n"+
+			"# TYPE runner_server_graph_node_failures_total counter\n"+
+			"runner_server_graph_node_failures_total %d\n"+
+			"# HELP runner_server_graph_node_duration_seconds_avg Average graph node duration in seconds\n"+
+			"# TYPE runner_server_graph_node_duration_seconds_avg gauge\n"+
+			"runner_server_graph_node_duration_seconds_avg %.6f\n"+
+			"# HELP runner_server_graph_approval_wait_seconds_avg Average approval node wait duration in seconds\n"+
+			"# TYPE runner_server_graph_approval_wait_seconds_avg gauge\n"+
+			"runner_server_graph_approval_wait_seconds_avg %.6f\n",
 		c.submitted.Load(),
 		c.started.Load(),
 		c.finished.Load(),
@@ -118,6 +213,12 @@ func (c *Collector) RenderPrometheus() string {
 		c.interrupted.Load(),
 		c.queueDepth.Load(),
 		c.averageDuration(),
+		c.graphRuns.Load(),
+		c.graphFailed.Load(),
+		c.averageGraphDuration(),
+		c.graphNodeFailed.Load(),
+		c.averageGraphNodeDuration(),
+		c.averageApprovalWait(),
 	)
 }
 

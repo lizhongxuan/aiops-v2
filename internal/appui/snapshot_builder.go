@@ -319,15 +319,21 @@ func buildApprovals(pending []runtimekernel.PendingApproval) []ApprovalView {
 	approvals := make([]ApprovalView, 0, len(pending))
 	for _, approval := range pending {
 		approvals = append(approvals, ApprovalView{
-			ID:        approval.ID,
-			SessionID: approval.SessionID,
-			TurnID:    approval.TurnID,
-			ToolName:  approval.ToolName,
-			Command:   strings.TrimSpace(firstNonEmpty(approval.Command, approval.Reason)),
-			Reason:    strings.TrimSpace(approval.Reason),
-			HostID:    approval.HostID,
-			Status:    "pending",
-			CreatedAt: isoStamp(approval.CreatedAt),
+			ID:             approval.ID,
+			SessionID:      approval.SessionID,
+			TurnID:         approval.TurnID,
+			ToolName:       approval.ToolName,
+			Command:        strings.TrimSpace(approval.Command),
+			Reason:         strings.TrimSpace(approval.Reason),
+			Risk:           strings.TrimSpace(approval.Risk),
+			Source:         strings.TrimSpace(approval.Source),
+			RunbookID:      strings.TrimSpace(approval.RunbookID),
+			RunbookStep:    strings.TrimSpace(approval.RunbookStep),
+			ExpectedEffect: strings.TrimSpace(approval.ExpectedEffect),
+			Rollback:       strings.TrimSpace(approval.Rollback),
+			HostID:         approval.HostID,
+			Status:         "pending",
+			CreatedAt:      isoStamp(approval.CreatedAt),
 		})
 	}
 	return approvals

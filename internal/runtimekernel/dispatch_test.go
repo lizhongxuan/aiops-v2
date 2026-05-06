@@ -120,6 +120,58 @@ func TestToolDispatcher_DispatchApprovedEmitsStartedAfterApprovalGate(t *testing
 	}
 }
 
+func TestToolDispatcher_UsesToolPermissionGateBeforePolicyAndExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &permissionCheckingExecutor{
+		decision: tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "missing action token",
+		},
+	}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"exec_command": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "exec_command",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+					InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`),
+				},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{
+		ModePolicy: map[string]policyengine.ModePolicy{},
+	}, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-tool-permission",
+		"turn-tool-permission",
+		ToolCall{
+			ID:        "tool-exec-1",
+			Name:      "exec_command",
+			Arguments: json.RawMessage(`{"command":"systemctl","args":["restart","erp-report.service"]}`),
+		},
+		SessionTypeHost,
+		ModeExecute,
+	)
+
+	if !result.Blocked || result.Outcome != "evidence_needed" || result.Source != "tool" {
+		t.Fatalf("dispatch result = %#v, want tool evidence_needed", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 before tool permission gate is resolved", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s before tool permission gate was resolved", EventToolStarted)
+		}
+	}
+}
+
 func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	largeResult := strings.Repeat("x", 20*1024)
@@ -275,6 +327,20 @@ func TestToolDispatcher_FailurePolicyFailTurnDoesNotFeedFailureBackToModel(t *te
 	if shouldFeedToolFailureBackToModel(result) {
 		t.Fatalf("failure policy should fail the turn, got feed-back result %#v", result)
 	}
+}
+
+type permissionCheckingExecutor struct {
+	decision tooling.PermissionDecision
+	calls    int
+}
+
+func (e *permissionCheckingExecutor) CheckPermissions(context.Context, json.RawMessage) tooling.PermissionDecision {
+	return e.decision
+}
+
+func (e *permissionCheckingExecutor) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+	e.calls++
+	return tooling.ToolResult{Content: "should-not-run"}, nil
 }
 
 type assertErr string

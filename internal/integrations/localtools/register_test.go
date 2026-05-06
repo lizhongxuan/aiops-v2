@@ -8,10 +8,13 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
+	"pgregory.net/rapid"
 )
 
 type fakeLLMRepo struct {
@@ -62,6 +65,17 @@ func TestExecCommandToolDescriptionIncludesHostOSGuidance(t *testing.T) {
 	}
 	if runtime.GOOS == "darwin" && !strings.Contains(description, "avoid Linux-only commands") {
 		t.Fatalf("description = %q, want explicit Linux-only command avoidance on darwin", description)
+	}
+}
+
+func TestExecCommandToolSchemaIncludesActionTokenAndIntent(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	schema := string(tool.InputSchema())
+
+	for _, field := range []string{`"actionToken"`, `"intent"`, `"cmd"`} {
+		if !strings.Contains(schema, field) {
+			t.Fatalf("schema missing %s: %s", field, schema)
+		}
 	}
 }
 
@@ -213,15 +227,15 @@ func TestExecCommandToolAllowsShellWrappedSafeCurlGet(t *testing.T) {
 }
 
 func TestExecCommandToolRequiresApprovalForUnsafeCurlArgs(t *testing.T) {
-	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir(), ActionTokenSecret: []byte("localtools-secret")})
 	input := json.RawMessage(`{"command":"curl","args":["-sS","-X","POST","https://example.com/api"]}`)
 
 	if tool.IsReadOnly(input) {
 		t.Fatal("curl with mutation method must not be classified read-only")
 	}
 	decision := tool.CheckPermissions(context.Background(), input)
-	if decision.Action != tooling.PermissionActionNeedApproval {
-		t.Fatalf("CheckPermissions() = %#v, want need approval", decision)
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
 	}
 }
 
@@ -242,16 +256,244 @@ func TestExecCommandToolRejectsShellOperators(t *testing.T) {
 }
 
 func TestExecCommandToolRequiresApprovalForNonReadOnlyCommand(t *testing.T) {
-	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir(), ActionTokenSecret: []byte("localtools-secret")})
 	input := json.RawMessage(`{"command":"touch","args":["marker"]}`)
 
 	if tool.IsReadOnly(input) {
 		t.Fatal("touch command must not be read-only")
 	}
 	decision := tool.CheckPermissions(context.Background(), input)
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
+	}
+}
+
+func TestExecCommandToolValidHighRiskTokenNeedsApprovalWithPayload(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"systemctl","args":["restart","erp-report.service"],"intent":"restart report worker after runbook diagnosis"}`)
+	token := signExecActionToken(t, secret, now, input, actionproposal.SourceRunbook, actionproposal.RiskHigh)
+	withToken := injectActionToken(t, input, token)
+
+	decision := tool.CheckPermissions(context.Background(), withToken)
 	if decision.Action != tooling.PermissionActionNeedApproval {
 		t.Fatalf("CheckPermissions() = %#v, want need approval", decision)
 	}
+	if decision.Approval == nil {
+		t.Fatalf("CheckPermissions() approval payload = nil")
+	}
+	if decision.Approval.Command != "systemctl restart erp-report.service" {
+		t.Fatalf("approval command = %q", decision.Approval.Command)
+	}
+	if decision.Approval.Risk != string(actionproposal.RiskHigh) || decision.Approval.Source != string(actionproposal.SourceRunbook) {
+		t.Fatalf("approval payload = %#v, want high/runbook", decision.Approval)
+	}
+	if decision.Approval.ExpectedEffect == "" || decision.Approval.Rollback == "" || decision.Approval.RunbookStep == "" {
+		t.Fatalf("approval payload missing governed fields: %#v", decision.Approval)
+	}
+}
+
+func TestExecCommandToolValidLowRiskTokenFollowsLocalPolicyAllow(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"touch","args":["marker"]}`)
+	token := signExecActionToken(t, secret, now, input, actionproposal.SourceFallback, actionproposal.RiskLow)
+	withToken := injectActionToken(t, input, token)
+
+	decision := tool.CheckPermissions(context.Background(), withToken)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	}
+}
+
+func TestExecCommandToolRejectsWrongToolToken(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"systemctl","args":["restart","erp-report.service"]}`)
+	hash, err := actionproposal.NormalizedInputHash(input)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	token, err := actionproposal.NewSigner(secret, func() time.Time { return now }).Sign(actionproposal.ActionTokenClaims{
+		ToolName:  "k8s.restart_workload",
+		InputHash: hash,
+		Source:    actionproposal.SourceRunbook,
+		Risk:      actionproposal.RiskHigh,
+		ExpiresAt: now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	decision := tool.CheckPermissions(context.Background(), injectActionToken(t, input, token))
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
+	}
+}
+
+func TestExecCommandToolRejectsUnknownTokenSource(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"systemctl","args":["restart","erp-report.service"]}`)
+	token := signExecActionToken(t, secret, now, input, actionproposal.Source("manual"), actionproposal.RiskHigh)
+
+	decision := tool.CheckPermissions(context.Background(), injectActionToken(t, input, token))
+	if decision.Action != tooling.PermissionActionDeny {
+		t.Fatalf("CheckPermissions() = %#v, want deny", decision)
+	}
+}
+
+func TestExecCommandToolRejectsForbiddenCommandEvenWithToken(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"rm","args":["-rf","/tmp/aiops-danger"]}`)
+	token := signExecActionToken(t, secret, now, input, actionproposal.SourceBreakGlass, actionproposal.RiskCritical)
+
+	decision := tool.CheckPermissions(context.Background(), injectActionToken(t, input, token))
+	if decision.Action != tooling.PermissionActionDeny {
+		t.Fatalf("CheckPermissions() = %#v, want deny", decision)
+	}
+}
+
+func TestExecCommandToolPropertyTamperedCommandArgsInvalidateToken(t *testing.T) {
+	workingDir := t.TempDir()
+	rapid.Check(t, func(rt *rapid.T) {
+		now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+		secret := []byte("localtools-secret")
+		tool := NewExecCommandTool(Options{
+			WorkingDir:        workingDir,
+			ActionTokenSecret: secret,
+			Now:               func() time.Time { return now },
+		})
+		command := rapid.SampledFrom([]string{"systemctl", "touch", "kubectl", "curl"}).Draw(rt, "command")
+		arg := rapid.StringMatching(`[a-zA-Z0-9._/-]{1,24}`).Draw(rt, "arg")
+		input := mustMarshalRaw(t, map[string]any{"command": command, "args": []string{arg}})
+		token := signExecActionToken(t, secret, now, input, actionproposal.SourceRunbook, actionproposal.RiskHigh)
+		tampered := mustMarshalRaw(t, map[string]any{"command": command, "args": []string{arg, "tampered"}, "actionToken": token})
+
+		decision := tool.CheckPermissions(context.Background(), tampered)
+		if decision.Action == tooling.PermissionActionAllow || decision.Action == tooling.PermissionActionNeedApproval {
+			t.Fatalf("tampered token decision = %#v, want not allow/approval", decision)
+		}
+	})
+}
+
+func TestExecCommandToolPropertyReadOnlyCommandsDoNotNeedToken(t *testing.T) {
+	workingDir := t.TempDir()
+	rapid.Check(t, func(rt *rapid.T) {
+		command := rapid.SampledFrom([]string{"date", "pwd", "whoami", "printf", "df"}).Draw(rt, "command")
+		args := []string{}
+		if command == "printf" {
+			args = []string{"ok"}
+		}
+		if command == "df" {
+			args = []string{"-h"}
+		}
+		tool := NewExecCommandTool(Options{WorkingDir: workingDir})
+		input := mustMarshalRaw(t, map[string]any{"command": command, "args": args})
+
+		if tool.IsDestructive(input) {
+			t.Fatalf("%s should not be destructive", command)
+		}
+		decision := tool.CheckPermissions(context.Background(), input)
+		if decision.Action != tooling.PermissionActionAllow {
+			t.Fatalf("CheckPermissions(%s) = %#v, want allow", command, decision)
+		}
+	})
+}
+
+func TestExecCommandToolPropertyForbiddenCommandsAlwaysDeny(t *testing.T) {
+	workingDir := t.TempDir()
+	rapid.Check(t, func(rt *rapid.T) {
+		now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+		secret := []byte("localtools-secret")
+		tool := NewExecCommandTool(Options{
+			WorkingDir:        workingDir,
+			ActionTokenSecret: secret,
+			Now:               func() time.Time { return now },
+		})
+		command := rapid.SampledFrom([]string{"rm", "reboot", "shutdown", "halt", "poweroff", "mkfs", "dd", "chmod", "chown"}).Draw(rt, "command")
+		arg := rapid.StringMatching(`[a-zA-Z0-9._/-]{1,24}`).Draw(rt, "arg")
+		input := mustMarshalRaw(t, map[string]any{"command": command, "args": []string{arg}})
+		token := signExecActionToken(t, secret, now, input, actionproposal.SourceBreakGlass, actionproposal.RiskCritical)
+
+		decision := tool.CheckPermissions(context.Background(), injectActionToken(t, input, token))
+		if decision.Action != tooling.PermissionActionDeny {
+			t.Fatalf("CheckPermissions(%s) = %#v, want deny", command, decision)
+		}
+	})
+}
+
+func signExecActionToken(t testing.TB, secret []byte, now time.Time, input json.RawMessage, source actionproposal.Source, risk actionproposal.Risk) string {
+	t.Helper()
+	hash, err := actionproposal.NormalizedInputHash(input)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	token, err := actionproposal.NewSigner(secret, func() time.Time { return now }).Sign(actionproposal.ActionTokenClaims{
+		SessionID:        "sess-1",
+		TurnID:           "turn-1",
+		IncidentID:       "inc-1",
+		ToolName:         "exec_command",
+		InputHash:        hash,
+		Source:           source,
+		Risk:             risk,
+		Reason:           "runbook guarded terminal action",
+		RunbookID:        "order-submit-slow",
+		RunbookStepID:    "restart-report-service",
+		RunbookStepTitle: "重启报表服务释放数据库连接",
+		ExpectedEffect:   "释放报表服务占用的数据库连接，订单提交延迟应下降。",
+		Rollback:         "验证服务状态；失败时回退到人工接管。",
+		ExpiresAt:        now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return token
+}
+
+func injectActionToken(t testing.TB, input json.RawMessage, token string) json.RawMessage {
+	t.Helper()
+	var payload map[string]any
+	if err := json.Unmarshal(input, &payload); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+	payload["actionToken"] = token
+	return mustMarshalRaw(t, payload)
+}
+
+func mustMarshalRaw(t testing.TB, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return json.RawMessage(data)
 }
 
 func TestWebSearchToolUsesProviderNativeResponsesAPI(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"runner/executor"
 	"runner/logging"
 	"runner/scheduler"
 	"runner/state"
@@ -15,21 +16,29 @@ import (
 )
 
 type RunOptions struct {
-	RunID       string
-	Store       state.RunStateStore
-	Notifier    state.RunStateNotifier
-	NotifyRetry int
-	NotifyDelay time.Duration
+	RunID           string
+	Store           state.RunStateStore
+	Notifier        state.RunStateNotifier
+	NotifyRetry     int
+	NotifyDelay     time.Duration
+	ApprovalRuntime executor.ApprovalRuntime
+	SubflowRuntime  executor.SubflowRuntime
 }
 
 type runTracker struct {
-	mu          sync.Mutex
-	store       state.RunStateStore
-	notifier    state.RunStateNotifier
-	notifyRetry int
-	notifyDelay time.Duration
-	run         state.RunState
-	started     bool
+	mu                   sync.Mutex
+	store                state.RunStateStore
+	notifier             state.RunStateNotifier
+	notifyRetry          int
+	notifyDelay          time.Duration
+	run                  state.RunState
+	started              bool
+	activeLoopIterations map[string]loopIterationContext
+}
+
+type loopIterationContext struct {
+	LoopID string
+	Index  int
 }
 
 func newRunTracker(wf workflow.Workflow, opts RunOptions, fallbackStore state.RunStateStore) (*runTracker, error) {
@@ -67,9 +76,58 @@ func newRunTracker(wf workflow.Workflow, opts RunOptions, fallbackStore state.Ru
 			StartedAt:       now,
 			UpdatedAt:       now,
 			Steps:           []state.StepState{},
+			Graph:           initialGraphRunState(wf, now),
 		},
 	}
 	return tracker, nil
+}
+
+func initialGraphRunState(wf workflow.Workflow, now time.Time) *state.GraphRunState {
+	if wf.XRunnerGraph == nil {
+		return nil
+	}
+	graph := &state.GraphRunState{
+		GraphVersion: wf.XRunnerGraph.Version,
+		Nodes:        map[string]state.NodeState{},
+		Edges:        map[string]state.EdgeState{},
+		UpdatedAt:    now,
+	}
+	for _, node := range wf.XRunnerGraph.Nodes {
+		id := strings.TrimSpace(node.ID)
+		if id == "" {
+			continue
+		}
+		graph.Nodes[id] = state.NodeState{
+			ID:       id,
+			Name:     graphNodeName(node),
+			Type:     strings.TrimSpace(node.Type),
+			ParentID: strings.TrimSpace(node.ParentID),
+			Status:   state.RunStatusQueued,
+		}
+	}
+	for _, edge := range wf.XRunnerGraph.Edges {
+		id := strings.TrimSpace(edge.ID)
+		if id == "" {
+			continue
+		}
+		graph.Edges[id] = state.EdgeState{
+			ID:     id,
+			Source: strings.TrimSpace(edge.Source),
+			Target: strings.TrimSpace(edge.Target),
+			Kind:   strings.TrimSpace(edge.Kind),
+			Status: state.RunStatusQueued,
+		}
+	}
+	return graph
+}
+
+func graphNodeName(node workflow.GraphNodeSpec) string {
+	for _, value := range []string{node.Step, node.StepName, node.Data.StepName, node.StepID, node.Handler, node.HandlerName, node.Data.HandlerName, node.Label, node.ID} {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return strings.TrimSpace(node.ID)
 }
 
 func (t *runTracker) Start(ctx context.Context) error {
@@ -117,6 +175,13 @@ func (t *runTracker) StepStart(step workflow.Step, targets []workflow.HostSpec) 
 	t.mu.Lock()
 	now := time.Now().UTC()
 	t.run.UpsertStepStart(step.Name, now)
+	if nodeID, ok := t.graphNodeIDForStepLocked(step.Name, step.ID); ok {
+		if ctx, ok := t.activeLoopIterationForNodeLocked(nodeID); ok {
+			t.run.UpsertGraphNodeIterationNodeStartByID(ctx.LoopID, ctx.Index, nodeID, now)
+		} else {
+			t.run.UpsertGraphNodeStartByID(nodeID, now)
+		}
+	}
 	t.run.UpdatedAt = now
 	t.run.Version++
 	run := state.CloneRunState(t.run)
@@ -149,6 +214,13 @@ func (t *runTracker) StepFinish(step workflow.Step, status string) {
 	now := time.Now().UTC()
 	stepStatus := strings.ToLower(strings.TrimSpace(status))
 	t.run.UpsertStepFinish(step.Name, stepStatus, "", now)
+	if nodeID, ok := t.graphNodeIDForStepLocked(step.Name, step.ID); ok {
+		if ctx, ok := t.activeLoopIterationForNodeLocked(nodeID); ok {
+			t.run.UpsertGraphNodeIterationNodeFinishByID(ctx.LoopID, ctx.Index, nodeID, stepStatus, "", now)
+		} else {
+			t.run.UpsertGraphNodeFinishByID(nodeID, stepStatus, "", now)
+		}
+	}
 	t.run.UpdatedAt = now
 	t.run.Version++
 	run := state.CloneRunState(t.run)
@@ -185,7 +257,16 @@ func (t *runTracker) HostResult(step workflow.Step, host workflow.HostSpec, resu
 	if strings.TrimSpace(result.Status) != state.RunStatusRunning {
 		hostResult.FinishedAt = now
 	}
-	t.run.UpsertHostResult(step.Name, hostResult)
+	if nodeID, ok := t.graphNodeIDForStepLocked(step.Name, step.ID); ok {
+		if ctx, ok := t.activeLoopIterationForNodeLocked(nodeID); ok {
+			t.run.UpsertStepHostResult(step.Name, hostResult)
+			t.run.UpsertGraphNodeIterationHostResultByID(ctx.LoopID, ctx.Index, nodeID, hostResult)
+		} else {
+			t.run.UpsertHostResult(step.Name, hostResult)
+		}
+	} else {
+		t.run.UpsertStepHostResult(step.Name, hostResult)
+	}
 	t.run.Args = mergeRunArgs(t.run.Args, result.Output)
 	if strings.EqualFold(hostResult.Status, state.RunStatusFailed) && hostResult.Message != "" {
 		t.run.LastError = hostResult.Message
@@ -214,6 +295,186 @@ func (t *runTracker) HostResult(step workflow.Step, host workflow.HostSpec, resu
 		Error:        hostResult.Message,
 		Version:      run.Version,
 	})
+}
+
+func (t *runTracker) GraphNodeStart(nodeID string) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	nodeID = strings.TrimSpace(nodeID)
+	if ctx, ok := t.activeLoopIterationForNodeLocked(nodeID); ok {
+		t.run.UpsertGraphNodeIterationNodeStartByID(ctx.LoopID, ctx.Index, nodeID, now)
+	} else {
+		t.run.UpsertGraphNodeStartByID(nodeID, now)
+	}
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph node start failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphNodeFinish(nodeID, status, message string) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	nodeID = strings.TrimSpace(nodeID)
+	if ctx, ok := t.activeLoopIterationForNodeLocked(nodeID); ok {
+		t.run.UpsertGraphNodeIterationNodeFinishByID(ctx.LoopID, ctx.Index, nodeID, strings.ToLower(strings.TrimSpace(status)), strings.TrimSpace(message), now)
+	} else {
+		t.run.UpsertGraphNodeFinishByID(nodeID, strings.ToLower(strings.TrimSpace(status)), strings.TrimSpace(message), now)
+	}
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph node finish failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphApprovalWaiting(nodeID string) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	t.run.UpsertGraphNodeWaitingByID(strings.TrimSpace(nodeID), now)
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph approval waiting failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphApprovalResolved(nodeID, status, message string) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	t.run.UpsertGraphNodeFinishByID(strings.TrimSpace(nodeID), strings.ToLower(strings.TrimSpace(status)), strings.TrimSpace(message), now)
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph approval resolved failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphNodeIterationStart(nodeID string, iteration int, item any) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	nodeID = strings.TrimSpace(nodeID)
+	t.run.UpsertGraphNodeIterationStartByID(nodeID, iteration, item, now)
+	if t.activeLoopIterations == nil {
+		t.activeLoopIterations = map[string]loopIterationContext{}
+	}
+	t.activeLoopIterations[nodeID] = loopIterationContext{LoopID: nodeID, Index: iteration}
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph node iteration start failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Int("iteration", iteration),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphNodeIterationFinish(nodeID string, iteration int, status, message string) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	nodeID = strings.TrimSpace(nodeID)
+	t.run.UpsertGraphNodeIterationFinishByID(nodeID, iteration, strings.ToLower(strings.TrimSpace(status)), strings.TrimSpace(message), now)
+	delete(t.activeLoopIterations, nodeID)
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph node iteration finish failed",
+			zap.String("run_id", run.RunID),
+			zap.String("node_id", nodeID),
+			zap.Int("iteration", iteration),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) GraphEdgeSelected(edge workflow.GraphEdgeSpec) {
+	t.mu.Lock()
+	now := time.Now().UTC()
+	t.run.UpsertGraphEdgeSelected(strings.TrimSpace(edge.ID), now)
+	t.run.UpdatedAt = now
+	t.run.Version++
+	run := state.CloneRunState(t.run)
+	t.mu.Unlock()
+
+	if err := t.store.UpdateRun(context.Background(), run); err != nil {
+		logging.L().Warn("run tracker persist graph edge selected failed",
+			zap.String("run_id", run.RunID),
+			zap.String("edge_id", edge.ID),
+			zap.Error(err),
+		)
+	}
+}
+
+func (t *runTracker) graphNodeIDForStepLocked(stepName, stepID string) (string, bool) {
+	if t.run.Graph == nil {
+		return "", false
+	}
+	stepName = strings.TrimSpace(stepName)
+	stepID = strings.TrimSpace(stepID)
+	if stepID != "" {
+		if _, ok := t.run.Graph.Nodes[stepID]; ok {
+			return stepID, true
+		}
+	}
+	for id, node := range t.run.Graph.Nodes {
+		if node.Name == stepName || node.Name == stepID || id == stepID {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func (t *runTracker) activeLoopIterationForNodeLocked(nodeID string) (loopIterationContext, bool) {
+	if t.run.Graph == nil || len(t.activeLoopIterations) == 0 {
+		return loopIterationContext{}, false
+	}
+	node, ok := t.run.Graph.Nodes[strings.TrimSpace(nodeID)]
+	if !ok {
+		return loopIterationContext{}, false
+	}
+	parentID := strings.TrimSpace(node.ParentID)
+	if parentID == "" {
+		return loopIterationContext{}, false
+	}
+	ctx, ok := t.activeLoopIterations[parentID]
+	return ctx, ok
 }
 
 func (t *runTracker) transitionRun(ctx context.Context, status, message, runErr string) error {

@@ -23,6 +23,7 @@ export default defineConfig({
       "tests/protocol-stale-approval.spec.js",
       "tests/protocol-ux-fixes.spec.js",
       "tests/protocol-workspace.spec.js",
+      "tests/runner-studio.spec.js",
       "tests/sidebar-and-layout.spec.js",
     ],
   },

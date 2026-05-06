@@ -33,6 +33,17 @@ func (d fakeDispatcher) Dispatch(ctx context.Context, task scheduler.Task) (sche
 	return res, d.err
 }
 
+type itemEchoDispatcher struct{}
+
+func (d itemEchoDispatcher) Dispatch(ctx context.Context, task scheduler.Task) (scheduler.Result, error) {
+	_ = ctx
+	return scheduler.Result{
+		TaskID: task.ID,
+		Status: "success",
+		Output: map[string]any{"stdout": task.Vars["item"]},
+	}, nil
+}
+
 type failingNotifier struct{}
 
 func (f failingNotifier) NotifyRunState(ctx context.Context, payload state.RunStateCallback) error {
@@ -186,6 +197,122 @@ func TestApplyWithStateIncludesExportedArgs(t *testing.T) {
 	}
 	if persisted.Args["BACKUP_LABEL"] != "20260227-104500F" {
 		t.Fatalf("unexpected persisted BACKUP_LABEL: %#v", persisted.Args["BACKUP_LABEL"])
+	}
+}
+
+func TestApplyWithRunPersistsGraphStateAndEvents(t *testing.T) {
+	eng := New()
+	eng.dispatcher = fakeDispatcher{result: scheduler.Result{Status: "success"}}
+	store := state.NewInMemoryRunStore()
+	runID := "run-graph-state-0001"
+	wf := workflow.Workflow{
+		Version: "v0.1",
+		Name:    "graph-wf",
+		Plan:    workflow.Plan{Mode: "auto", Strategy: "graph"},
+		Inventory: workflow.Inventory{
+			Hosts: map[string]workflow.Host{"local": {Address: "local"}},
+		},
+		Steps: []workflow.Step{
+			{ID: "run", Name: "run", Action: "cmd.run", Targets: []string{"local"}},
+		},
+		XRunnerGraph: &workflow.GraphSpec{
+			Version: "v1",
+			Nodes: []workflow.GraphNodeSpec{
+				{ID: "start", Type: "start"},
+				{ID: "run", Type: "action", StepID: "run", Step: "run"},
+			},
+			Edges: []workflow.GraphEdgeSpec{
+				{ID: "start-run", Source: "start", Target: "run", Kind: "next"},
+			},
+		},
+	}
+
+	if _, err := eng.ApplyWithRun(context.Background(), wf, RunOptions{RunID: runID, Store: store}); err != nil {
+		t.Fatalf("apply graph workflow: %v", err)
+	}
+	persisted, err := store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if persisted.Graph == nil {
+		t.Fatal("expected graph state")
+	}
+	if persisted.Graph.Nodes["run"].Status != state.RunStatusSuccess {
+		t.Fatalf("expected graph node success, got %+v", persisted.Graph.Nodes["run"])
+	}
+	if persisted.Graph.Edges["start-run"].Status != "selected" {
+		t.Fatalf("expected graph edge selected, got %+v", persisted.Graph.Edges["start-run"])
+	}
+}
+
+func TestApplyWithRunPersistsLoopIterationState(t *testing.T) {
+	eng := New()
+	eng.dispatcher = itemEchoDispatcher{}
+	store := state.NewInMemoryRunStore()
+	runID := "run-loop-state-0001"
+	wf := workflow.Workflow{
+		Version: "v0.1",
+		Name:    "graph-loop-wf",
+		Plan:    workflow.Plan{Mode: "auto", Strategy: "graph"},
+		Inventory: workflow.Inventory{
+			Hosts: map[string]workflow.Host{"local": {Address: "local"}},
+		},
+		Steps: []workflow.Step{
+			{ID: "body", Name: "body", Action: "cmd.run", Targets: []string{"local"}},
+		},
+		XRunnerGraph: &workflow.GraphSpec{
+			Version: "v1",
+			Nodes: []workflow.GraphNodeSpec{
+				{ID: "start", Type: "start"},
+				{ID: "loop", Type: "loop", Data: workflow.GraphNodeDataSpec{Loop: &workflow.GraphLoopSpec{
+					Mode:          "for_each",
+					Items:         []any{"a", "b"},
+					MaxIterations: 2,
+				}}},
+				{ID: "body", Type: "action", ParentID: "loop", StepID: "body", Step: "body"},
+				{ID: "end", Type: "end"},
+			},
+			Edges: []workflow.GraphEdgeSpec{
+				{ID: "start-loop", Source: "start", Target: "loop", Kind: "next"},
+				{ID: "loop-body", Source: "loop", Target: "body", Kind: "next"},
+				{ID: "loop-end", Source: "loop", Target: "end", Kind: "success"},
+			},
+		},
+	}
+
+	if _, err := eng.ApplyWithRun(context.Background(), wf, RunOptions{RunID: runID, Store: store}); err != nil {
+		t.Fatalf("apply graph loop workflow: %v", err)
+	}
+	persisted, err := store.GetRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	loop := persisted.Graph.Nodes["loop"]
+	if loop.Status != state.RunStatusSuccess {
+		t.Fatalf("expected loop success, got %+v", loop)
+	}
+	if got := len(loop.Iterations); got != 2 {
+		t.Fatalf("loop iterations = %d, want 2: %+v", got, loop.Iterations)
+	}
+	if loop.Iterations[0].Status != state.RunStatusSuccess || loop.Iterations[1].Item != "b" {
+		t.Fatalf("loop iteration states mismatch: %+v", loop.Iterations)
+	}
+	topLevelBody := persisted.Graph.Nodes["body"]
+	if topLevelBody.Status != state.RunStatusQueued || !topLevelBody.StartedAt.IsZero() || len(topLevelBody.Hosts) != 0 {
+		t.Fatalf("loop body state should stay iteration-scoped, got top-level body %+v", topLevelBody)
+	}
+	for i, iteration := range loop.Iterations {
+		body := iteration.Nodes["body"]
+		if body.Status != state.RunStatusSuccess {
+			t.Fatalf("iteration %d body status mismatch: %+v", i, iteration.Nodes)
+		}
+		host, ok := body.Hosts["local"]
+		if !ok {
+			t.Fatalf("iteration %d body host result missing: %+v", i, body)
+		}
+		if want := []any{"a", "b"}[i]; host.Output["stdout"] != want {
+			t.Fatalf("iteration %d body host output = %v, want %v", i, host.Output["stdout"], want)
+		}
 	}
 }
 

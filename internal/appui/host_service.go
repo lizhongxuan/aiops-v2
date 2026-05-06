@@ -10,18 +10,16 @@ import (
 )
 
 type defaultHostService struct {
-	sessions SessionSource
-	writer   SessionStore
-	repo     HostRepository
-	builder  *SnapshotBuilder
+	writer  SessionStore
+	repo    HostRepository
+	builder *SnapshotBuilder
 }
 
-func NewHostService(sessions SessionSource, writer SessionStore, repo HostRepository, builder *SnapshotBuilder) HostService {
+func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotBuilder) HostService {
 	return &defaultHostService{
-		sessions: sessions,
-		writer:   writer,
-		repo:     repo,
-		builder:  builder,
+		writer:  writer,
+		repo:    repo,
+		builder: builder,
 	}
 }
 
@@ -105,64 +103,6 @@ func (s *defaultHostService) DeleteHost(_ context.Context, hostID string) error 
 	return s.repo.DeleteHost(targetID)
 }
 
-func (s *defaultHostService) UpdateTags(_ context.Context, payload HostTagMutation) ([]HostSummary, error) {
-	if s.repo == nil {
-		return nil, fmt.Errorf("host repository is not configured")
-	}
-	for _, hostID := range payload.HostIDs {
-		record, err := s.repo.GetHost(strings.TrimSpace(hostID))
-		if err != nil || record == nil {
-			continue
-		}
-		if record.Labels == nil {
-			record.Labels = map[string]string{}
-		}
-		for key, value := range payload.Add {
-			if trimmed := strings.TrimSpace(key); trimmed != "" {
-				record.Labels[trimmed] = strings.TrimSpace(value)
-			}
-		}
-		for _, key := range payload.Remove {
-			delete(record.Labels, strings.TrimSpace(key))
-		}
-		if err := s.repo.SaveHost(record); err != nil {
-			return nil, err
-		}
-	}
-	return s.ListHosts(context.Background())
-}
-
-func (s *defaultHostService) ListHostSessions(_ context.Context, hostID string, limit int) ([]HostSessionView, error) {
-	if s.sessions == nil {
-		return []HostSessionView{}, nil
-	}
-	targetID := strings.TrimSpace(hostID)
-	if targetID == "" {
-		return []HostSessionView{}, nil
-	}
-	all := s.builder.SortSessions(s.sessions.List())
-	items := make([]HostSessionView, 0, len(all))
-	for _, session := range all {
-		if session == nil || strings.TrimSpace(session.HostID) != targetID {
-			continue
-		}
-		summary := s.builder.BuildSessionSummary(session)
-		items = append(items, HostSessionView{
-			SessionID:      summary.ID,
-			Title:          summary.Title,
-			Status:         summary.Status,
-			TaskSummary:    latestSessionText(session, "user"),
-			ReplySummary:   latestSessionText(session, "assistant"),
-			MessageCount:   summary.MessageCount,
-			LastActivityAt: summary.LastActivityAt,
-		})
-		if limit > 0 && len(items) >= limit {
-			break
-		}
-	}
-	return items, nil
-}
-
 func (s *defaultHostService) SelectHost(_ context.Context, hostID string) (StateSnapshot, error) {
 	targetID := strings.TrimSpace(firstNonEmpty(hostID, serverLocalHostID))
 	if targetID != serverLocalHostID && s.repo != nil {
@@ -238,19 +178,6 @@ func mapHostRecord(record store.HostRecord) HostSummary {
 		InstallState:    record.InstallState,
 		ControlMode:     record.ControlMode,
 	}
-}
-
-func latestSessionText(session *runtimekernel.SessionState, role string) string {
-	if session == nil {
-		return ""
-	}
-	for i := len(session.Messages) - 1; i >= 0; i-- {
-		msg := session.Messages[i]
-		if strings.EqualFold(strings.TrimSpace(msg.Role), strings.TrimSpace(role)) {
-			return truncateText(strings.TrimSpace(msg.Content), 80)
-		}
-	}
-	return ""
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

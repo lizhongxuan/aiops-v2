@@ -213,6 +213,71 @@ function toEvidenceBlock(turnId, item) {
   };
 }
 
+function typedProcessText(item = {}, fallback = "步骤") {
+  return normalizeText(item.text || item.title || item.summary || item.reason || fallback);
+}
+
+function typedProcessMeta(item = {}) {
+  return {
+    summary: normalizeText(item.summary),
+    command: normalizeText(item.command || item.inputSummary),
+    reason: normalizeText(item.reason),
+    risk: normalizeText(item.risk),
+    source: normalizeText(item.source),
+    runbookId: normalizeText(item.runbookId),
+    runbookStep: normalizeText(item.runbookStep),
+    expectedEffect: normalizeText(item.expectedEffect),
+    rollback: normalizeText(item.rollback),
+    confidence: normalizeText(item.confidence),
+    window: normalizeText(item.window),
+    rawRef: normalizeText(item.rawRef),
+  };
+}
+
+function toRunbookBlock(turnId, item) {
+  const text = typedProcessText(item, "Runbook");
+  if (!text) return null;
+  return {
+    ...blockBase(turnId, "runbook-step", { ...item, text }),
+    displayKind: item.displayKind || "runbook.step",
+    text,
+    ...typedProcessMeta(item),
+  };
+}
+
+function toProposalBlock(turnId, item) {
+  const text = typedProcessText(item, "Action proposal");
+  if (!text) return null;
+  return {
+    ...blockBase(turnId, "proposal-step", { ...item, text }),
+    displayKind: item.displayKind || "action.proposal",
+    text,
+    ...typedProcessMeta(item),
+  };
+}
+
+function toVerificationBlock(turnId, item) {
+  const text = typedProcessText(item, "Verification");
+  if (!text) return null;
+  return {
+    ...blockBase(turnId, "verification-step", { ...item, text }),
+    displayKind: item.displayKind || "verification.metric",
+    text,
+    ...typedProcessMeta(item),
+  };
+}
+
+function toIncidentBlock(turnId, item) {
+  const text = typedProcessText(item, "Incident");
+  if (!text) return null;
+  return {
+    ...blockBase(turnId, "incident-step", { ...item, text }),
+    displayKind: item.displayKind || "incident.evidence",
+    text,
+    ...typedProcessMeta(item),
+  };
+}
+
 function toFileBlock(turnId, item) {
   const text = normalizeText(item.text || item.summary || item.inputSummary || item.path);
   if (!text) return null;
@@ -239,6 +304,13 @@ function itemToBlock(turnId, item) {
   if (!item || isHiddenItem(item)) return null;
   const kind = item.kind || "";
   const displayKind = item.displayKind || "";
+  const normalizedDisplayKind = displayKind.toLowerCase();
+  if (kind === "runbook" || normalizedDisplayKind.startsWith("runbook.")) return toRunbookBlock(turnId, item);
+  if (kind === "proposal" || normalizedDisplayKind === "action.proposal" || normalizedDisplayKind === "fallback.plan" || normalizedDisplayKind.startsWith("proposal.")) {
+    return toProposalBlock(turnId, item);
+  }
+  if (kind === "verification" || normalizedDisplayKind.startsWith("verification.")) return toVerificationBlock(turnId, item);
+  if (kind === "incident" || normalizedDisplayKind.startsWith("incident.")) return toIncidentBlock(turnId, item);
   if (kind === "plan" || displayKind === "plan") return toPlanBlock(turnId, item);
   if (kind === "evidence" || displayKind.startsWith("evidence.")) return toEvidenceBlock(turnId, item);
   if (kind === "approval" || displayKind.startsWith("approval.")) return approvalBlock(turnId, item);

@@ -332,20 +332,26 @@ func (m CheckpointMetadata) Validate() error {
 
 // PendingApproval represents a structured approval gate waiting to be resumed.
 type PendingApproval struct {
-	ID         string     `json:"id"`
-	SessionID  string     `json:"sessionId"`
-	TurnID     string     `json:"turnId"`
-	Iteration  int        `json:"iteration"`
-	ToolName   string     `json:"toolName"`
-	ToolCallID string     `json:"toolCallId,omitempty"`
-	HostID     string     `json:"hostId,omitempty"`
-	Command    string     `json:"command,omitempty"`
-	Reason     string     `json:"reason,omitempty"`
-	Status     string     `json:"status,omitempty"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
-	DecidedAt  *time.Time `json:"decidedAt,omitempty"`
-	Decision   string     `json:"decision,omitempty"`
+	ID             string     `json:"id"`
+	SessionID      string     `json:"sessionId"`
+	TurnID         string     `json:"turnId"`
+	Iteration      int        `json:"iteration"`
+	ToolName       string     `json:"toolName"`
+	ToolCallID     string     `json:"toolCallId,omitempty"`
+	HostID         string     `json:"hostId,omitempty"`
+	Command        string     `json:"command,omitempty"`
+	Reason         string     `json:"reason,omitempty"`
+	Risk           string     `json:"risk,omitempty"`
+	Source         string     `json:"source,omitempty"`
+	RunbookID      string     `json:"runbookId,omitempty"`
+	RunbookStep    string     `json:"runbookStep,omitempty"`
+	ExpectedEffect string     `json:"expectedEffect,omitempty"`
+	Rollback       string     `json:"rollback,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	DecidedAt      *time.Time `json:"decidedAt,omitempty"`
+	Decision       string     `json:"decision,omitempty"`
 }
 
 // Validate checks the approval record.

@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"aiops-v2/internal/appui"
@@ -30,27 +29,6 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/hosts/tags":
-		var req appui.HostTagMutation
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-			return
-		}
-		items, err := s.ui.HostService().UpdateTags(r.Context(), req)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
-	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/sessions"):
-		hostID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/hosts/"), "/sessions")
-		limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
-		items, err := s.ui.HostService().ListHostSessions(r.Context(), strings.Trim(hostID, "/"), limit)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case r.Method == http.MethodPut:
 		hostID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/hosts/"), "/")
 		var req appui.HostUpsert

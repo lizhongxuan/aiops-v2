@@ -6,14 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
 
-func TestHostAPI_CRUDSessionsAndSelect(t *testing.T) {
+func TestHostAPI_CRUDRemovedEndpointsAndSelect(t *testing.T) {
 	dataDir := t.TempDir()
 	dataStore, err := store.NewJSONFileStore(dataDir, 10)
 	if err != nil {
@@ -22,13 +21,6 @@ func TestHostAPI_CRUDSessionsAndSelect(t *testing.T) {
 	defer dataStore.Close()
 
 	sessionMgr := runtimekernel.NewSessionManager(dataStore)
-	session := sessionMgr.GetOrCreate("sess-host", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
-	session.HostID = "host-a"
-	session.Messages = []runtimekernel.Message{
-		{ID: "u-1", Role: "user", Content: "检查服务", Timestamp: time.Now().UTC()},
-		{ID: "a-1", Role: "assistant", Content: "服务正常", Timestamp: time.Now().UTC()},
-	}
-	sessionMgr.Update(session)
 
 	srv := NewHTTPServer(appui.NewServices(sessionAPITestRuntime{}, sessionMgr, appui.WithStore(dataStore)))
 	ts := httptest.NewServer(srv.Handler())
@@ -57,14 +49,17 @@ func TestHostAPI_CRUDSessionsAndSelect(t *testing.T) {
 		t.Fatalf("GET /api/v1/hosts/:id/sessions error = %v", err)
 	}
 	defer hostSessionsResp.Body.Close()
-	var hostSessions struct {
-		Items []map[string]any `json:"items"`
+	if hostSessionsResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /api/v1/hosts/:id/sessions status = %d, want 404", hostSessionsResp.StatusCode)
 	}
-	if err := json.NewDecoder(hostSessionsResp.Body).Decode(&hostSessions); err != nil {
-		t.Fatalf("decode host sessions response error = %v", err)
+
+	tagsResp, err := http.Post(ts.URL+"/api/v1/hosts/tags", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("POST /api/v1/hosts/tags error = %v", err)
 	}
-	if len(hostSessions.Items) != 1 {
-		t.Fatalf("host sessions = %+v, want one session", hostSessions.Items)
+	defer tagsResp.Body.Close()
+	if tagsResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /api/v1/hosts/tags status = %d, want 404", tagsResp.StatusCode)
 	}
 
 	selectBody, _ := json.Marshal(map[string]string{"hostId": "host-a"})

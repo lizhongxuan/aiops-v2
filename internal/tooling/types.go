@@ -292,8 +292,22 @@ const (
 
 // PermissionDecision is the result returned by a permission check.
 type PermissionDecision struct {
-	Action PermissionAction `json:"action"`
-	Reason string           `json:"reason,omitempty"`
+	Action   PermissionAction           `json:"action"`
+	Reason   string                     `json:"reason,omitempty"`
+	Approval *PermissionApprovalPayload `json:"approval,omitempty"`
+}
+
+// PermissionApprovalPayload carries the structured approval context that must
+// survive from a guarded tool permission check into runtime projection.
+type PermissionApprovalPayload struct {
+	Command        string `json:"command,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	RunbookID      string `json:"runbookId,omitempty"`
+	RunbookStep    string `json:"runbookStep,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
 }
 
 // DescribeContext carries contextual data for Description generation.

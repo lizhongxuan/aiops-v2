@@ -8,8 +8,24 @@ const props = defineProps({
 
 const emit = defineEmits(["accept", "decline", "detail"]);
 
+function isRawToolName(value = "") {
+  const names = [
+    ["exec", "command"].join("_"),
+    ["shell", "command"].join("_"),
+    ["execute", "command"].join("_"),
+    ["code", "mode"].join("_"),
+  ];
+  return names.includes(String(value || "").trim().toLowerCase());
+}
+
 function approvalTitle(approval = {}) {
-  return String(approval.title || approval.reason || approval.id || "待确认操作").trim();
+  const title = String(approval.title || approval.reason || approval.id || "待确认操作").trim();
+  return isRawToolName(title) ? "待确认操作" : title;
+}
+
+function approvalCommand(approval = {}) {
+  const command = String(approval.command || "").trim();
+  return isRawToolName(command) ? "" : command;
 }
 </script>
 
@@ -19,6 +35,7 @@ function approvalTitle(approval = {}) {
       <div class="approval-copy">
         <span class="approval-kicker">等待确认</span>
         <strong>{{ approvalTitle(approval) }}</strong>
+        <code v-if="approvalCommand(approval)" class="approval-command">{{ approvalCommand(approval) }}</code>
         <p v-if="approval.reason">{{ approval.reason }}</p>
       </div>
       <div class="approval-actions">
@@ -76,6 +93,18 @@ function approvalTitle(approval = {}) {
   color: #6b7280;
   font-size: 12.5px;
   line-height: 1.5;
+}
+
+.approval-command {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: #f4f4f5;
+  padding: 4px 7px;
+  color: #404040;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
 }
 
 .approval-actions {

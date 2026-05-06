@@ -123,7 +123,7 @@ func Default() Config {
 		},
 		UI: UIConfig{
 			Enabled:     false,
-			DistDir:     "./runner-web/frontend/dist",
+			DistDir:     "./server/ui/dist",
 			BasePath:    "/",
 			DocsURL:     "https://kdcloud.io/kme/docs",
 			RepoURL:     "https://github.com/kdcloud-io/kme",

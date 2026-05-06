@@ -161,6 +161,22 @@ function approvalMeta(block = {}) {
   ].filter(Boolean);
 }
 
+function typedProcessMeta(block = {}) {
+  return [
+    block.source ? `来源 ${block.source}` : "",
+    block.risk ? `风险 ${block.risk}` : "",
+    block.runbookId ? `Runbook ${block.runbookId}` : "",
+    block.runbookStep ? `步骤 ${block.runbookStep}` : "",
+    block.confidence ? `置信度 ${block.confidence}` : "",
+    block.window ? `窗口 ${block.window}` : "",
+    block.rawRef ? `引用 ${block.rawRef}` : "",
+  ].filter(Boolean);
+}
+
+function isTypedProcessBlock(block = {}) {
+  return ["runbook-step", "proposal-step", "verification-step", "incident-step"].includes(block.kind);
+}
+
 function blockClass(block = {}) {
   return {
     "chat-process-narration": block.kind === "assistant-intent" || block.kind === "assistant-result",
@@ -261,6 +277,17 @@ function blockClass(block = {}) {
           <div class="chat-process-step-title">{{ blockText(block) }}</div>
           <div v-if="evidenceMeta(block).length" class="chat-process-meta">
             <span v-for="item in evidenceMeta(block)" :key="item">{{ item }}</span>
+          </div>
+        </div>
+
+        <div v-else-if="isTypedProcessBlock(block)" class="chat-process-typed chat-process-step" :data-testid="`process-step-${block.kind.replace('-step', '')}`">
+          <div class="chat-process-step-title">{{ blockText(block) }}</div>
+          <code v-if="block.command" class="chat-process-typed-command">{{ block.command }}</code>
+          <div v-if="block.summary" class="chat-process-typed-summary">{{ block.summary }}</div>
+          <div v-if="block.expectedEffect" class="chat-process-typed-summary">预期效果：{{ block.expectedEffect }}</div>
+          <div v-if="block.rollback" class="chat-process-typed-summary">回退：{{ block.rollback }}</div>
+          <div v-if="typedProcessMeta(block).length" class="chat-process-meta">
+            <span v-for="item in typedProcessMeta(block)" :key="item">{{ item }}</span>
           </div>
         </div>
 
@@ -443,7 +470,8 @@ function blockClass(block = {}) {
 
 .chat-process-plan,
 .chat-process-evidence,
-.chat-process-approval {
+.chat-process-approval,
+.chat-process-typed {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -502,6 +530,24 @@ function blockClass(block = {}) {
   color: #404040;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 12.5px;
+}
+
+.chat-process-typed-command {
+  width: fit-content;
+  max-width: min(700px, 100%);
+  overflow-wrap: anywhere;
+  border-radius: 6px;
+  background: #f4f4f5;
+  padding: 4px 7px;
+  color: #404040;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+
+.chat-process-typed-summary {
+  color: #737373;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .chat-process-approval-reason {

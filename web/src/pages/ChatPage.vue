@@ -30,6 +30,7 @@ import { NBadge, NDrawer, NDrawerContent } from "naive-ui";
 const store = useAppStore();
 const WorkspaceHostTerminal = defineAsyncComponent(() => import("../components/workspace/WorkspaceHostTerminal.vue"));
 const OPEN_MCP_DRAWER_EVENT = "codex:open-mcp-drawer";
+const CHAT_PAGE_SESSION_KIND = "single_host";
 
 const composerMessage = ref("");
 const chatStreamRef = ref(null);
@@ -54,7 +55,7 @@ const terminalDockRef = ref(null);
 const terminalDockDragging = ref(false);
 let terminalDockDragState = null;
 let terminalDockMaxHeight = 560;
-const isWorkspaceSession = computed(() => store.snapshot.kind === "workspace");
+const isWorkspaceSession = computed(() => false);
 
 /* ---- ThinkingCard local state ---- */
 const showThinking = ref(false);
@@ -276,7 +277,10 @@ function closeMcpSurfaceDrawer() {
   isMcpDrawerOpen.value = false;
 }
 
-const activeProjectionSessionId = computed(() => store.activeSessionId || store.snapshot.sessionId || "");
+const activeProjectionSessionId = computed(() => {
+  if (store.snapshot.kind !== CHAT_PAGE_SESSION_KIND) return "";
+  return store.activeSessionId || store.snapshot.sessionId || "";
+});
 const activeAgentProjection = computed(() =>
   selectActiveProjection(store.agentEventState, activeProjectionSessionId.value),
 );
@@ -437,17 +441,22 @@ const activity = computed(() => store.runtime.activity);
 let elapsedTimerHandle = null;
 const elapsedNow = ref(Date.now());
 
+function scheduleElapsedTimer() {
+  elapsedTimerHandle = window.setTimeout(() => {
+    elapsedNow.value = Date.now();
+    scheduleElapsedTimer();
+  }, 1000);
+}
+
 function startElapsedTimer() {
   stopElapsedTimer();
   elapsedNow.value = Date.now();
-  elapsedTimerHandle = window.setInterval(() => {
-    elapsedNow.value = Date.now();
-  }, 1000);
+  scheduleElapsedTimer();
 }
 
 function stopElapsedTimer() {
   if (elapsedTimerHandle) {
-    window.clearInterval(elapsedTimerHandle);
+    window.clearTimeout(elapsedTimerHandle);
     elapsedTimerHandle = null;
   }
 }
@@ -521,7 +530,13 @@ watch(
 );
 
 function isToolNameOnly(value = "") {
-  return ["exec_command", "shell_command", "execute_command", "code_mode"].includes(compactText(value).toLowerCase());
+  const names = [
+    ["exec", "command"].join("_"),
+    ["shell", "command"].join("_"),
+    ["execute", "command"].join("_"),
+    ["code", "mode"].join("_"),
+  ];
+  return names.includes(compactText(value).toLowerCase());
 }
 
 function approvalDisplayCommand(source = {}) {
@@ -784,8 +799,8 @@ const allowFollowUpComposer = computed(
     !hasActiveApprovalOverlay.value &&
     !chatRuntimeBusy.value,
 );
-const workspaceSessionLabel = computed(() => (isWorkspaceSession.value ? "工作台会话" : ""));
-const workspaceDetailLinkLabel = computed(() => (isWorkspaceSession.value ? "查看只读详情" : ""));
+const workspaceSessionLabel = "";
+const workspaceDetailLinkLabel = "";
 
 const latestTerminalCard = computed(() => {
   const cards = store.snapshot.cards || [];
@@ -926,6 +941,26 @@ function isToolMessageCard(card) {
   return compactText(card?.role).toLowerCase() === "tool" || card?.type === "ToolMessageCard";
 }
 
+function isInternalRuntimeDisplayKind(displayKind = "") {
+  return [
+    "runtime.activity",
+    "runtime.card",
+    "runtime.prepare_context",
+    "runtime.compile_prompt",
+    "runtime.prepare_tools",
+    "runtime.call_model",
+  ].includes(compactText(displayKind).toLowerCase());
+}
+
+function isLegacyRuntimeProcessCard(card = {}) {
+  if (card?.type === "ProcessLineCard") return true;
+  return isInternalRuntimeDisplayKind(
+    card?.displayKind ||
+      card?.detail?.displayKind ||
+      card?.payload?.displayKind,
+  );
+}
+
 const singleHostCommandCards = computed(() => {
   return (store.snapshot.cards || []).filter((card) => {
     if (!isTerminalOutputCard(card)) return false;
@@ -937,6 +972,9 @@ const singleHostCommandCards = computed(() => {
 const visibleCards = computed(() => {
   return store.snapshot.cards.filter((card) => {
     if (!isWorkspaceSession.value && card.type === "ThinkingCard") {
+      return false;
+    }
+    if (!isWorkspaceSession.value && isLegacyRuntimeProcessCard(card)) {
       return false;
     }
     // Hide active plan card
@@ -1729,7 +1767,7 @@ watch(
     ref="chatStreamRef"
     :container-style="chatContainerStyle"
     :loading="store.loading"
-    :show-workspace-banner="isWorkspaceSession"
+    :show-workspace-banner="false"
     :workspace-session-label="workspaceSessionLabel"
     :workspace-detail-link-label="workspaceDetailLinkLabel"
     :show-empty-state="showEmptyState"
@@ -1792,7 +1830,7 @@ watch(
     :allow-follow-up="allowFollowUpComposer"
     :disabled="isStopped"
     :plan-card="activePlanCard"
-    :session-kind="store.snapshot.kind"
+    :session-kind="CHAT_PAGE_SESSION_KIND"
     :status-hint="composerStatusHint"
     :show-composer="(!hasActiveApprovalOverlay || authCardCollapsed) && !hasCodexApproval"
     :is-docked-bottom="!!activePlanCard || hasActiveApprovalOverlay"
@@ -1846,7 +1884,7 @@ watch(
           <CardItem
             v-if="activeApprovalCard"
             :card="activeApprovalCard"
-            :session-kind="store.snapshot.kind"
+            :session-kind="CHAT_PAGE_SESSION_KIND"
             :is-overlay="true"
             @approval="decideApproval"
           />

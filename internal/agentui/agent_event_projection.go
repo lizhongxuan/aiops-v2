@@ -28,30 +28,39 @@ type AgentEventProjection struct {
 }
 
 type TimelineEntry struct {
-	ID            string               `json:"id"`
-	Kind          AgentEventKind       `json:"kind"`
-	TurnID        string               `json:"turnId,omitempty"`
-	AgentID       string               `json:"agentId,omitempty"`
-	ToolCallID    string               `json:"toolCallId,omitempty"`
-	DisplayKind   string               `json:"displayKind,omitempty"`
-	Phase         AgentEventPhase      `json:"phase"`
-	Status        AgentEventStatus     `json:"status"`
-	Visibility    AgentEventVisibility `json:"visibility"`
-	Title         string               `json:"title,omitempty"`
-	Summary       string               `json:"summary,omitempty"`
-	InputSummary  string               `json:"inputSummary,omitempty"`
-	OutputSummary string               `json:"outputSummary,omitempty"`
-	OutputPreview json.RawMessage      `json:"outputPreview,omitempty"`
-	Steps         []PlanStep           `json:"steps,omitempty"`
-	Detail        string               `json:"detail,omitempty"`
-	Risk          string               `json:"risk,omitempty"`
-	RawRef        string               `json:"rawRef,omitempty"`
-	Foldable      bool                 `json:"foldable,omitempty"`
-	AutoCollapse  bool                 `json:"autoCollapse,omitempty"`
-	Collapsed     bool                 `json:"collapsed,omitempty"`
-	DurationMs    int64                `json:"durationMs,omitempty"`
-	UpdatedAt     string               `json:"updatedAt,omitempty"`
-	Seq           int64                `json:"seq"`
+	ID             string               `json:"id"`
+	Kind           AgentEventKind       `json:"kind"`
+	TurnID         string               `json:"turnId,omitempty"`
+	AgentID        string               `json:"agentId,omitempty"`
+	ToolCallID     string               `json:"toolCallId,omitempty"`
+	DisplayKind    string               `json:"displayKind,omitempty"`
+	Phase          AgentEventPhase      `json:"phase"`
+	Status         AgentEventStatus     `json:"status"`
+	Visibility     AgentEventVisibility `json:"visibility"`
+	Title          string               `json:"title,omitempty"`
+	Summary        string               `json:"summary,omitempty"`
+	InputSummary   string               `json:"inputSummary,omitempty"`
+	OutputSummary  string               `json:"outputSummary,omitempty"`
+	OutputPreview  json.RawMessage      `json:"outputPreview,omitempty"`
+	Steps          []PlanStep           `json:"steps,omitempty"`
+	Command        string               `json:"command,omitempty"`
+	Reason         string               `json:"reason,omitempty"`
+	Source         string               `json:"source,omitempty"`
+	Confidence     string               `json:"confidence,omitempty"`
+	Window         string               `json:"window,omitempty"`
+	RunbookID      string               `json:"runbookId,omitempty"`
+	RunbookStep    string               `json:"runbookStep,omitempty"`
+	ExpectedEffect string               `json:"expectedEffect,omitempty"`
+	Rollback       string               `json:"rollback,omitempty"`
+	Detail         string               `json:"detail,omitempty"`
+	Risk           string               `json:"risk,omitempty"`
+	RawRef         string               `json:"rawRef,omitempty"`
+	Foldable       bool                 `json:"foldable,omitempty"`
+	AutoCollapse   bool                 `json:"autoCollapse,omitempty"`
+	Collapsed      bool                 `json:"collapsed,omitempty"`
+	DurationMs     int64                `json:"durationMs,omitempty"`
+	UpdatedAt      string               `json:"updatedAt,omitempty"`
+	Seq            int64                `json:"seq"`
 }
 
 type AgentProjection struct {
@@ -68,16 +77,21 @@ type AgentProjection struct {
 }
 
 type ApprovalProjection struct {
-	ID           string           `json:"id"`
-	ApprovalType string           `json:"approvalType,omitempty"`
-	Title        string           `json:"title,omitempty"`
-	Command      string           `json:"command,omitempty"`
-	Reason       string           `json:"reason,omitempty"`
-	Risk         string           `json:"risk,omitempty"`
-	Decision     string           `json:"decision,omitempty"`
-	Targets      []string         `json:"targets,omitempty"`
-	Status       AgentEventStatus `json:"status"`
-	UpdatedAt    string           `json:"updatedAt,omitempty"`
+	ID             string           `json:"id"`
+	ApprovalType   string           `json:"approvalType,omitempty"`
+	Title          string           `json:"title,omitempty"`
+	Command        string           `json:"command,omitempty"`
+	Reason         string           `json:"reason,omitempty"`
+	Risk           string           `json:"risk,omitempty"`
+	Source         string           `json:"source,omitempty"`
+	RunbookID      string           `json:"runbookId,omitempty"`
+	RunbookStep    string           `json:"runbookStep,omitempty"`
+	ExpectedEffect string           `json:"expectedEffect,omitempty"`
+	Rollback       string           `json:"rollback,omitempty"`
+	Decision       string           `json:"decision,omitempty"`
+	Targets        []string         `json:"targets,omitempty"`
+	Status         AgentEventStatus `json:"status"`
+	UpdatedAt      string           `json:"updatedAt,omitempty"`
 }
 
 type ArtifactProjection struct {

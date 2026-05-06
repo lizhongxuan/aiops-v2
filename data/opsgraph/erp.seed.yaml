@@ -1,0 +1,147 @@
+entities:
+  - id: module.order
+    type: erp_module
+    name: 订单中心
+    aliases: ["订单", "order"]
+  - id: module.inventory
+    type: erp_module
+    name: 库存中心
+    aliases: ["库存", "inventory"]
+  - id: module.finance
+    type: erp_module
+    name: 财务中心
+    aliases: ["财务", "finance"]
+  - id: module.reporting
+    type: erp_module
+    name: 报表中心
+    aliases: ["报表", "reporting"]
+  - id: capability.order.submit
+    type: business_capability
+    name: 订单提交
+    aliases: ["submit order", "create order", "下单"]
+  - id: capability.inventory.deduct
+    type: business_capability
+    name: 库存扣减
+    aliases: ["deduct stock", "库存预占", "扣库存"]
+  - id: capability.report.job
+    type: business_capability
+    name: 报表任务
+    aliases: ["report job", "daily report", "财务报表"]
+  - id: service.order-api
+    type: service
+    name: order-api
+    aliases: ["订单服务", "order service"]
+  - id: service.inventory-api
+    type: service
+    name: inventory-api
+    aliases: ["库存服务", "inventory service"]
+  - id: service.report-worker
+    type: service
+    name: report-worker
+    aliases: ["报表 worker", "report worker"]
+  - id: db.order-postgres
+    type: db
+    name: order-postgres
+  - id: db.inventory-postgres
+    type: db
+    name: inventory-postgres
+  - id: redis.inventory-lock
+    type: redis
+    name: inventory-lock
+  - id: mq.erp-events
+    type: mq
+    name: erp-events
+  - id: host.erp-node-a
+    type: host
+    name: erp-node-a
+  - id: pod.order-api-0
+    type: pod
+    name: order-api-0
+  - id: tenant.core-retail
+    type: tenant
+    name: 核心零售租户
+  - id: tenant.finance-shared
+    type: tenant
+    name: 财务共享租户
+  - id: runbook.order-submit-degraded
+    type: runbook
+    name: 订单提交降级排查
+    aliases: ["order submit degraded"]
+  - id: runbook.inventory-deduct-latency
+    type: runbook
+    name: 库存扣减延迟排查
+    aliases: ["inventory deduct latency"]
+  - id: runbook.report-job-backlog
+    type: runbook
+    name: 报表任务积压排查
+    aliases: ["report job backlog"]
+relationships:
+  - from: module.order
+    type: owns
+    to: capability.order.submit
+  - from: module.inventory
+    type: owns
+    to: capability.inventory.deduct
+  - from: module.reporting
+    type: owns
+    to: capability.report.job
+  - from: module.finance
+    type: depends_on
+    to: capability.report.job
+  - from: capability.order.submit
+    type: depends_on
+    to: service.order-api
+  - from: capability.order.submit
+    type: depends_on
+    to: capability.inventory.deduct
+  - from: capability.inventory.deduct
+    type: depends_on
+    to: service.inventory-api
+  - from: capability.report.job
+    type: depends_on
+    to: service.report-worker
+  - from: service.order-api
+    type: depends_on
+    to: db.order-postgres
+  - from: service.order-api
+    type: depends_on
+    to: mq.erp-events
+  - from: service.inventory-api
+    type: depends_on
+    to: db.inventory-postgres
+  - from: service.inventory-api
+    type: depends_on
+    to: redis.inventory-lock
+  - from: service.report-worker
+    type: depends_on
+    to: db.order-postgres
+  - from: service.report-worker
+    type: depends_on
+    to: mq.erp-events
+  - from: service.order-api
+    type: runs_on
+    to: pod.order-api-0
+  - from: pod.order-api-0
+    type: runs_on
+    to: host.erp-node-a
+  - from: capability.order.submit
+    type: affects
+    to: tenant.core-retail
+  - from: capability.inventory.deduct
+    type: affects
+    to: tenant.core-retail
+  - from: capability.report.job
+    type: affects
+    to: tenant.finance-shared
+  - from: capability.order.submit
+    type: handled_by
+    to: runbook.order-submit-degraded
+    reason: 订单提交失败、延迟或下单链路异常
+  - from: capability.inventory.deduct
+    type: handled_by
+    to: runbook.inventory-deduct-latency
+    reason: 库存扣减延迟、锁等待或库存服务异常
+  - from: capability.report.job
+    type: handled_by
+    to: runbook.report-job-backlog
+    reason: 报表任务积压、调度延迟或财务报表生成失败

@@ -101,6 +101,30 @@ func TestResourceServer_ApprovalAndProxyHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("coroot proxy forwards project scoped read api", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/coroot/api/project/prod/overview/applications" {
+				http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+				return
+			}
+			writeResourceJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"applications": []string{"checkout"}}})
+		}))
+		defer upstream.Close()
+		t.Setenv("AIOPS_COROOT_BASE_URL", upstream.URL+"/coroot")
+		rs := NewResourceServer()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/coroot/api/project/prod/overview/applications", nil)
+		rr := httptest.NewRecorder()
+
+		rs.handleCorootProxy(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d want=%d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "checkout") {
+			t.Fatalf("body=%s want project scoped API payload", rr.Body.String())
+		}
+	})
+
 	t.Run("coroot proxy rejects non-whitelisted paths", func(t *testing.T) {
 		t.Setenv("AIOPS_COROOT_BASE_URL", "http://coroot.internal")
 		rs := NewResourceServer()

@@ -68,3 +68,63 @@ func (r *multiRecorder) HostResult(step workflow.Step, host workflow.HostSpec, r
 		recorder.HostResult(step, host, result)
 	}
 }
+
+func (r *multiRecorder) GraphNodeStart(nodeID string) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface{ GraphNodeStart(string) }); ok {
+			graphRecorder.GraphNodeStart(nodeID)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphNodeFinish(nodeID, status, message string) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface{ GraphNodeFinish(string, string, string) }); ok {
+			graphRecorder.GraphNodeFinish(nodeID, status, message)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphEdgeSelected(edge workflow.GraphEdgeSpec) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface{ GraphEdgeSelected(workflow.GraphEdgeSpec) }); ok {
+			graphRecorder.GraphEdgeSelected(edge)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphApprovalWaiting(nodeID string) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface{ GraphApprovalWaiting(string) }); ok {
+			graphRecorder.GraphApprovalWaiting(nodeID)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphApprovalResolved(nodeID, status, message string) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface{ GraphApprovalResolved(string, string, string) }); ok {
+			graphRecorder.GraphApprovalResolved(nodeID, status, message)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphNodeIterationStart(nodeID string, iteration int, item any) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface {
+			GraphNodeIterationStart(string, int, any)
+		}); ok {
+			graphRecorder.GraphNodeIterationStart(nodeID, iteration, item)
+		}
+	}
+}
+
+func (r *multiRecorder) GraphNodeIterationFinish(nodeID string, iteration int, status, message string) {
+	for _, recorder := range r.recorders {
+		if graphRecorder, ok := recorder.(interface {
+			GraphNodeIterationFinish(string, int, string, string)
+		}); ok {
+			graphRecorder.GraphNodeIterationFinish(nodeID, iteration, status, message)
+		}
+	}
+}

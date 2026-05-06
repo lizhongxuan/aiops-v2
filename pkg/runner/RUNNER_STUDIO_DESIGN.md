@@ -155,6 +155,8 @@ AI 创建的结果直接形成 `draft graph`，并附带生成说明与 diff 摘
 - `loop`
 - `handler`
 
+`loop` 属于首版正式范围，但不能只做 UI 占位。落地时必须同时补齐 graph model、校验、执行器、run state、YAML round-trip 和运行态展示；否则不得在节点库里作为可执行节点出现。
+
 模板片段用于拖入常见组合：
 
 - 审批后执行
@@ -213,26 +215,38 @@ AI 创建的结果直接形成 `draft graph`，并附带生成说明与 diff 摘
 - AI 补参数建议
 - 变更 diff
 
-## 6.4 发布与运行
+## 6.4 版本与发布状态机
 
 工作流生命周期统一为：
 
 `draft -> validated -> published`
 
+状态契约：
+
+- `draft`：任意未发布编辑态，包括人工修改、YAML 导入、AI 生成和 AI 修复结果。
+- `validated`：服务端校验通过后的草稿状态，必须绑定 `graph_hash`、`validated_at`、`validated_by` 和校验摘要。
+- `published`：可被生产运行入口直接选择的版本，必须来自当前 `validated graph_hash`。
+
+失效规则：
+
+- 执行语义变化会立即清空 `validated_graph_hash`，回到 `draft`。
+- 布局变化、视口变化、画布折叠状态变化不应让 `validated` 失效。
+- AI 生成或 AI 修改后的草稿默认带 `ai_generated=true` 或 `ai_modified=true` 标记。发布前必须人工打开发布审阅弹窗并确认 diff。
+
 发布流程：
 
-1. 保存草稿
-2. 校验
-3. Dry Run
-4. 打开发布审阅弹窗
-5. 填写发布说明
-6. 发布
+1. 保存草稿。
+2. 校验并写入 `validated_graph_hash`。
+3. Dry Run。包含高风险 action、审批、子流程、循环或并行节点的 workflow，发布前必须有同一 `graph_hash` 的成功 Dry Run 记录。
+4. 打开发布审阅弹窗。
+5. 填写发布说明。
+6. 发布当前 `validated graph_hash`。
 
 运行流程：
 
-- 已发布工作流可直接运行
-- `draft` 工作流可 `dry-run`
-- AI 产物不可直接发布
+- 已发布工作流可直接运行。
+- `draft` 工作流只能 `dry-run`。
+- AI 产物不可绕过人工发布确认。
 
 ## 7. 参数输入输出模型
 
@@ -318,6 +332,27 @@ echo {{ vars.backup_id }}
 - 变量引用可达性校验
 - 提取规则合法性校验
 
+## 7.7 变量作用域
+
+变量引用选择器必须基于服务端返回的变量作用域，而不是前端临时推断。
+
+首版变量来源：
+
+- `system`：系统运行变量，例如 run id、operator、timestamp。
+- `workflow_input`：Start 节点定义的工作流输入。
+- `workflow_var`：工作流级变量。
+- `inventory`：主机、主机组、标签、环境信息。
+- `node_output`：上游节点显式声明的输出变量。
+- `approval`：审批节点的 decision、actor、comment、resolved_at。
+- `subflow`：子流程显式声明的输出变量。
+
+可见性规则：
+
+- 节点只能引用拓扑上游已可达节点的输出。
+- 分支内变量默认只在分支后续路径可见，经过 `join` 后只有显式声明为 join output 的变量可见。
+- 循环内部变量默认只在 loop scope 内可见，循环输出必须显式声明。
+- secret/env 类变量只能以引用形式使用，不在 UI 中明文展开。
+
 ## 8. AI 辅助策略
 
 AI 入口有三类：
@@ -331,6 +366,42 @@ AI 入口有三类：
 - AI 输出必须是结构化草稿和 diff。
 - AI 不得静默修改已发布版本。
 - AI 修改必须可审计。
+
+## 8.1 AI 输出契约
+
+AI 服务不得直接返回自由文本让前端自行猜测。AI 结果必须符合统一结构：
+
+- `intent`：`create_workflow`、`patch_node`、`explain_failure`。
+- `graph_patch`：结构化 graph patch。
+- `node_patch`：节点级结构化 patch。
+- `diff_summary`：面向用户的变更摘要。
+- `risk_summary`：风险说明。
+- `validation_hint`：AI 自身发现但无法确认的问题。
+- `prompt_trace_id`：用于审计和排查。
+
+AI 结果应用规则：
+
+- 先在前端展示 diff。
+- 用户确认后写入 `draft`。
+- 写入后必须调用服务端校验。
+- 校验失败时保留 AI 建议，不覆盖当前可用草稿。
+
+## 8.2 Loop 节点契约
+
+Loop 节点首版必须支持明确边界，不做隐式无限循环：
+
+- `mode`：`for_each` 或 `while_condition`。
+- `max_iterations`：必填，防止无界循环。
+- `item_var`：当前循环项变量名。
+- `break_condition`：可选提前退出条件。
+- `output_mapping`：循环结束后显式导出的变量。
+
+执行要求：
+
+- loop 内部节点属于独立 scope。
+- 每次迭代必须写入 run state。
+- 取消 run 时必须能停止当前迭代和待执行迭代。
+- loop 运行日志必须可按 iteration 展开。
 
 ## 9. 运行态与审计
 
@@ -405,23 +476,53 @@ AI 入口有三类：
 - `YAML` 是兼容视图
 - 不维护第二套编排 DSL
 
+## 10.4 API 边界
+
+主应用前端只调用同源 Runner Studio API：
+
+```text
+/api/runner-studio/*
+```
+
+主应用服务端负责把这些 API 映射到 runner graph/service 能力。前端不得直接依赖外部 `:8090` Runner UI 服务，也不得混用 `/api/v1/workflows/*` 和 `/api/runner-studio/*` 两套入口。
+
+推荐聚合 API：
+
+- `GET /api/runner-studio/workflows`
+- `GET /api/runner-studio/workflows/{name}/graph`
+- `POST /api/runner-studio/workflows/graph`
+- `PUT /api/runner-studio/workflows/{name}/graph`
+- `POST /api/runner-studio/workflows/graph/validate`
+- `POST /api/runner-studio/workflows/graph/dry-run`
+- `POST /api/runner-studio/workflows/{name}/publish`
+- `POST /api/runner-studio/runs`
+- `GET /api/runner-studio/runs/{id}/graph`
+- `GET /api/runner-studio/actions/catalog`
+- `POST /api/runner-studio/ai/generate`
+- `POST /api/runner-studio/ai/patch-node`
+- `POST /api/runner-studio/ai/explain-run`
+
+## 10.5 旧 Runner UI 生命周期
+
+`pkg/runner/server/ui/frontend` 已有不少可复用实现，但不能继续作为用户主入口。
+
+处理策略：
+
+- 可迁移的逻辑迁入主应用或抽成共享模块：graph store、workflow templates、action catalog client、canvas 转换工具。
+- 旧 UI 标记为 legacy，不再新增产品能力。
+- 主导航和 `/runner` 不再跳转外部 Runner UI。
+- `pkg/runner/server/ui/dist` 是否保留只作为 runner server 调试入口，由服务端 README 说明，不影响主应用产品体验。
+
 ## 11. Dify 参考点
 
 本方案参考了 Dify 的交互模式，而非照抄产品功能：
 
-- 工作流顶栏的轻量操作分层：
-  [header-in-normal.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/header/header-in-normal.tsx)
-- 节点选中时按需出现的面板体系：
-  [panel/index.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/panel/index.tsx)
-- 变量检查底部面板：
-  [variable-inspect/index.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/variable-inspect/index.tsx)
-- Start / End 节点输入输出列表设计：
-  [start/panel.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/nodes/start/panel.tsx)
-  [end/panel.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/nodes/end/panel.tsx)
-- 变量引用选择器：
-  [var-reference-picker.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/nodes/_base/components/variable/var-reference-picker.tsx)
-- 支持变量高亮的文本输入：
-  [support-var-input/index.tsx](/Users/lizhongxuan/Desktop/aiops/dify/web/app/components/workflow/nodes/_base/components/support-var-input/index.tsx)
+- 工作流顶栏的轻量操作分层：`dify/web/app/components/workflow/header/header-in-normal.tsx`
+- 节点选中时按需出现的面板体系：`dify/web/app/components/workflow/panel/index.tsx`
+- 变量检查底部面板：`dify/web/app/components/workflow/variable-inspect/index.tsx`
+- Start / End 节点输入输出列表设计：`dify/web/app/components/workflow/nodes/start/panel.tsx`、`dify/web/app/components/workflow/nodes/end/panel.tsx`
+- 变量引用选择器：`dify/web/app/components/workflow/nodes/_base/components/variable/var-reference-picker.tsx`
+- 支持变量高亮的文本输入：`dify/web/app/components/workflow/nodes/_base/components/support-var-input/index.tsx`
 
 ## 12. 验收标准
 
