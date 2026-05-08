@@ -81,7 +81,7 @@ describe("canvasGraphAdapter", () => {
     expect(next.nodes[0].step.targets).toEqual(["local"]);
   });
 
-  it("reads backend port arrays when converting graph nodes to VueFlow data", () => {
+  it("reads backend port arrays when converting graph nodes to flow canvas data", () => {
     const flow = graphToFlowModel({
       ...graph,
       nodes: [
@@ -138,7 +138,7 @@ describe("canvasGraphAdapter", () => {
     expect(next.nodes.find((node) => node.id === "pre-check")).not.toHaveProperty("positionAbsolute");
   });
 
-  it("converts backend graph into VueFlow nodes and semantic handles", () => {
+  it("converts backend graph into flow canvas nodes and semantic handles", () => {
     const flow = graphToFlowModel(graph, { selectedNodeId: "start" });
 
     expect(flow.nodes[0]).toMatchObject({
@@ -157,7 +157,7 @@ describe("canvasGraphAdapter", () => {
     expect(flow.nodes[0].data.node).toMatchObject({ id: "start", type: "start" });
   });
 
-  it("turns VueFlow connections into graph edges without duplicating existing semantic edges", () => {
+  it("turns flow canvas connections into graph edges without duplicating existing semantic edges", () => {
     const empty = { ...graph, edges: [] };
     const next = flowConnectionToGraphEdge(empty, {
       source: "start",
@@ -183,7 +183,7 @@ describe("canvasGraphAdapter", () => {
     expect(duplicate.edges).toHaveLength(1);
   });
 
-  it("rejects invalid VueFlow connections with actionable validation errors", () => {
+  it("rejects invalid flow canvas connections with actionable validation errors", () => {
     const validation = validateGraphConnection(graph, {
       source: "pre-check",
       target: "pre-check",
@@ -208,7 +208,7 @@ describe("canvasGraphAdapter", () => {
     });
   });
 
-  it("does not treat an existing edge as a duplicate of itself during VueFlow rendering", () => {
+  it("does not treat an existing edge as a duplicate of itself during flow canvas rendering", () => {
     const graphWithEdge = {
       ...graph,
       edges: [
@@ -269,7 +269,7 @@ describe("canvasGraphAdapter", () => {
     expect(getGraphUpstreamNodeIds(branchingGraph, "start")).toEqual([]);
   });
 
-  it("maps condition and approval nodes to semantic VueFlow handles", () => {
+  it("maps condition and approval nodes to semantic flow canvas handles", () => {
     const semanticGraph = {
       version: "v1",
       workflow: { name: "demo" },

@@ -147,6 +147,31 @@ func (m *streamingFinalLoopModel) BindTools(tools []*schema.ToolInfo) error {
 	return nil
 }
 
+type gatedStreamingFinalLoopModel struct {
+	firstSent chan struct{}
+	release   chan struct{}
+}
+
+func (m *gatedStreamingFinalLoopModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate should not be called for gated streaming final responses")
+}
+
+func (m *gatedStreamingFinalLoopModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(schema.AssistantMessage("第一段", nil), nil)
+		close(m.firstSent)
+		<-m.release
+		sw.Send(schema.AssistantMessage("第二段", nil), nil)
+	}()
+	return sr, nil
+}
+
+func (m *gatedStreamingFinalLoopModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
 type memoryToolResultSpillRepo struct {
 	spills map[string]*tooling.ResultSpill
 }
@@ -1174,6 +1199,63 @@ func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
 	}
 	if !(finalAt >= 0 && finalAt < completeAt) {
 		t.Fatalf("assistant final delta should arrive before turn.complete, events = %v", emitter.events)
+	}
+}
+
+func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
+	model := &gatedStreamingFinalLoopModel{
+		firstSent: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := kernel.RunTurn(context.Background(), TurnRequest{
+			SessionID:   "sess-streaming-snapshot",
+			SessionType: SessionTypeHost,
+			Mode:        ModeChat,
+			TurnID:      "turn-streaming-snapshot",
+			Input:       "stream directly",
+		})
+		done <- err
+	}()
+
+	select {
+	case <-model.firstSent:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first streaming final chunk")
+	}
+
+	var session *SessionState
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		session = kernel.sessions.Get("sess-streaming-snapshot")
+		if session != nil && session.CurrentTurn != nil && session.CurrentTurn.FinalOutput == "第一段" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing current turn after first streaming chunk")
+	}
+	if got := session.CurrentTurn.FinalOutput; got != "第一段" {
+		close(model.release)
+		t.Fatalf("CurrentTurn.FinalOutput = %q, want first streamed chunk before completion", got)
+	}
+	if len(session.CurrentTurn.AgentItems) == 0 || !hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeFinalAnswer, agentstate.ItemStatusRunning) {
+		close(model.release)
+		t.Fatalf("expected running final answer agent item after first chunk, got %+v", session.CurrentTurn.AgentItems)
+	}
+
+	close(model.release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunTurn failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for streaming run to complete")
 	}
 }
 

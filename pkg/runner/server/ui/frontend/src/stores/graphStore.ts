@@ -1,4 +1,3 @@
-import { computed, reactive } from "vue";
 import { mockApi, runnerApi } from "../api/client";
 import { mockRunEvents } from "../fixtures/mockGraph";
 import { buildGraphDiffSummary } from "../utils/graphDiff";
@@ -69,7 +68,15 @@ interface GraphStoreState {
   clipboardNode: WorkflowNode | null;
 }
 
-const state = reactive<GraphStoreState>(initialGraphStoreState());
+const state: GraphStoreState = new Proxy(initialGraphStoreState(), {
+  set(target, property: keyof GraphStoreState, value) {
+    target[property] = value as never;
+    scheduleEmitChange();
+    return true;
+  },
+});
+const listeners = new Set<() => void>();
+let emitScheduled = false;
 
 let unsubscribeRunEvents: (() => void) | null = null;
 let compilePreviewTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,15 +85,9 @@ const lastRunStorageKey = "runner.visual.lastRunId";
 const autoCompilePreviewDelayMs = 250;
 
 export function useGraphStore() {
-  const selectedNode = computed(() => {
-    return state.graph?.nodes.find((node) => node.id === state.selectedNodeId) || state.graph?.nodes[0] || null;
-  });
-
-  const graphWithRunState = computed(() => {
-    return state.graph ? applyRunStateToGraph(state.graph, state.run) : null;
-  });
-
-  const waitingApprovalNodes = computed(() => {
+  const selectedNode = computedRef(() => state.graph?.nodes.find((node) => node.id === state.selectedNodeId) || state.graph?.nodes[0] || null);
+  const graphWithRunState = computedRef(() => (state.graph ? applyRunStateToGraph(state.graph, state.run) : null));
+  const waitingApprovalNodes = computedRef(() => {
     const graph = graphWithRunState.value;
     if (!graph) return [];
     return graph.nodes
@@ -96,8 +97,7 @@ export function useGraphStore() {
         label: node.label || node.step?.name || node.step_name || node.id,
       }));
   });
-
-  const executionSemanticsChanged = computed(() => hasExecutionSemanticChanges());
+  const executionSemanticsChanged = computedRef(() => hasExecutionSemanticChanges());
 
   async function load(workflowName = "service-restart-candidate") {
     state.loading = true;
@@ -794,7 +794,36 @@ export function useGraphStore() {
     rejectNode,
     replayRunHistory,
     pushRunEvent,
+    subscribe,
   };
+}
+
+function computedRef<T>(read: () => T): { readonly value: T } {
+  return {
+    get value() {
+      return read();
+    },
+  };
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function emitChange() {
+  for (const listener of listeners) {
+    listener();
+  }
+}
+
+function scheduleEmitChange() {
+  if (emitScheduled) return;
+  emitScheduled = true;
+  queueMicrotask(() => {
+    emitScheduled = false;
+    emitChange();
+  });
 }
 
 function initialGraphStoreState(): GraphStoreState {

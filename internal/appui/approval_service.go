@@ -2,22 +2,29 @@ package appui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"aiops-v2/internal/runtimekernel"
 )
 
 type defaultApprovalService struct {
-	runtime  RuntimeGateway
-	sessions SessionSource
-	builder  *SnapshotBuilder
+	runtime     RuntimeGateway
+	sessions    SessionSource
+	builder     *SnapshotBuilder
+	baseContext context.Context
 }
 
 func NewApprovalService(runtime RuntimeGateway, sessions SessionSource, builder *SnapshotBuilder) ApprovalService {
+	return NewApprovalServiceWithContext(context.Background(), runtime, sessions, builder)
+}
+
+func NewApprovalServiceWithContext(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, builder *SnapshotBuilder) ApprovalService {
 	return &defaultApprovalService{
-		runtime:  runtime,
-		sessions: sessions,
-		builder:  builder,
+		runtime:     runtime,
+		sessions:    sessions,
+		builder:     builder,
+		baseContext: normalizeBaseContext(baseContext),
 	}
 }
 
@@ -49,18 +56,14 @@ func (s *defaultApprovalService) List(context.Context) ([]ApprovalView, error) {
 }
 
 func (s *defaultApprovalService) Decide(ctx context.Context, decision ApprovalDecision) (ActionResult, error) {
-	session, approval, err := findApprovalTarget(s.sessions, decision.ID)
+	_, req, err := s.approvalResumeRequest(decision)
 	if err != nil {
 		return ActionResult{}, err
 	}
-	result, err := s.runtime.ResumeTurn(ctx, runtimekernel.ResumeRequest{
-		SessionID:   session.ID,
-		TurnID:      firstNonEmpty(strings.TrimSpace(approval.TurnID), currentTurnID(session)),
-		ApprovalID:  approval.ID,
-		CheckpointID: currentCheckpointID(session),
-		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
-		Decision:    normalizeApprovalDecision(decision.Decision),
-	})
+	if s.runtime == nil {
+		return ActionResult{}, fmt.Errorf("runtime is not configured")
+	}
+	result, err := s.runtime.ResumeTurn(ctx, req)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -68,6 +71,52 @@ func (s *defaultApprovalService) Decide(ctx context.Context, decision ApprovalDe
 		Status:    result.Status,
 		SessionID: result.SessionID,
 		TurnID:    result.TurnID,
+	}, nil
+}
+
+func (s *defaultApprovalService) DecideAsync(_ context.Context, decision ApprovalDecision) (ActionResult, error) {
+	session, req, err := s.approvalResumeRequest(decision)
+	if err != nil {
+		return ActionResult{}, err
+	}
+	if s.runtime == nil {
+		return ActionResult{}, fmt.Errorf("runtime is not configured")
+	}
+	go s.resumeApprovalDecision(req)
+	return ActionResult{
+		Status:    "accepted",
+		SessionID: session.ID,
+		TurnID:    req.TurnID,
+	}, nil
+}
+
+func (s *defaultApprovalService) resumeApprovalDecision(req runtimekernel.ResumeRequest) {
+	if s == nil || s.runtime == nil {
+		return
+	}
+	ctx := normalizeBaseContext(s.baseContext)
+	defer func() {
+		_ = recover()
+	}()
+	_, _ = s.runtime.ResumeTurn(ctx, req)
+}
+
+func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision) (*runtimekernel.SessionState, runtimekernel.ResumeRequest, error) {
+	session, approval, err := findApprovalTarget(s.sessions, decision.ID)
+	if err != nil {
+		return nil, runtimekernel.ResumeRequest{}, err
+	}
+	resumeState := runtimekernel.TurnResumeStatePendingApproval
+	if strings.EqualFold(strings.TrimSpace(approval.Source), "pending_evidence") {
+		resumeState = runtimekernel.TurnResumeStatePendingEvidence
+	}
+	return session, runtimekernel.ResumeRequest{
+		SessionID:    session.ID,
+		TurnID:       firstNonEmpty(strings.TrimSpace(approval.TurnID), currentTurnID(session)),
+		ApprovalID:   approval.ID,
+		CheckpointID: currentCheckpointID(session),
+		ResumeState:  resumeState,
+		Decision:     normalizeApprovalDecision(decision.Decision),
 	}, nil
 }
 

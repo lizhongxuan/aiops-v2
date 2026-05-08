@@ -224,6 +224,7 @@ type Services struct {
 	chat           ChatService
 	state          StateService
 	sessions       SessionService
+	sessionSource  SessionSource
 	approvals      ApprovalService
 	choices        ChoiceService
 	settings       SettingsService
@@ -268,7 +269,8 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),
 		sessions:       NewSessionService(sessions, sessionStore, builder),
-		approvals:      NewApprovalService(runtime, sessions, builder),
+		sessionSource:  sessions,
+		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
 		choices:        NewChoiceService(runtime, sessions),
 		settings:       settingsService,
 		hosts:          NewHostService(sessionStore, cfg.hosts, builder),
@@ -290,6 +292,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 func (s *Services) ChatService() ChatService         { return s.chat }
 func (s *Services) StateService() StateService       { return s.state }
 func (s *Services) SessionService() SessionService   { return s.sessions }
+func (s *Services) SessionSource() SessionSource     { return s.sessionSource }
 func (s *Services) ApprovalService() ApprovalService { return s.approvals }
 func (s *Services) ChoiceService() ChoiceService     { return s.choices }
 func (s *Services) SettingsService() SettingsService { return s.settings }

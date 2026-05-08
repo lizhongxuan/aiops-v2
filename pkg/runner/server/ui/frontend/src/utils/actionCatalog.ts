@@ -176,7 +176,7 @@ function cloneValue<T>(value: T): T {
     try {
       return structuredClone(value);
     } catch {
-      // Vue reactive proxies cannot be structured-cloned; JSON is sufficient for catalog defaults.
+      // UI state proxies cannot always be structured-cloned; JSON is sufficient for catalog defaults.
     }
   }
   return JSON.parse(JSON.stringify(value)) as T;

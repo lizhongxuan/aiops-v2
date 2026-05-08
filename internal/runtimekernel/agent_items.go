@@ -42,6 +42,29 @@ func updateAgentItem(snapshot *TurnSnapshot, itemID string, status agentstate.It
 	snapshot.UpdatedAt = time.Now()
 }
 
+func removeAgentItem(snapshot *TurnSnapshot, itemID string) {
+	if snapshot == nil || strings.TrimSpace(itemID) == "" {
+		return
+	}
+	next := snapshot.AgentItems[:0]
+	for _, item := range snapshot.AgentItems {
+		if item.ID != itemID {
+			next = append(next, item)
+		}
+	}
+	snapshot.AgentItems = next
+	snapshot.UpdatedAt = time.Now()
+}
+
+func hasAgentItemID(items []agentstate.TurnItem, itemID string) bool {
+	for _, item := range items {
+		if item.ID == itemID {
+			return true
+		}
+	}
+	return false
+}
+
 func agentStateFromSnapshot(snapshot *TurnSnapshot) agentstate.AgentState {
 	return agentstate.AgentState{
 		SessionID: snapshot.SessionID,

@@ -205,8 +205,8 @@
 ## 5. 前端源码与工程化
 
 - [x] 建立 runner UI 可维护源码目录。
-- [x] 使用 Vue 3 + Naive UI + lucide。
-- [x] 引入 Vue Flow 或同等级画布库。
+- [x] 使用 React + Vite。
+- [x] 引入轻量 React/SVG 画布。
 - [x] 引入 Monaco YAML 编辑。
 - [x] 建立 runner workflow API client。
 - [x] 建立 graph store/composable。

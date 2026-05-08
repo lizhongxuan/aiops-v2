@@ -21,21 +21,24 @@ npm run test:ui:snapshots:update
 
 Use `test:ui:snapshots:update` only when the UI change is intentional and the new baseline has been reviewed.
 
-## Codex-Style Structured Streaming
+## AssistantTransport Structured Streaming
 
-Structured streaming in `aiops-v2` has one production path:
+Structured streaming in `aiops-v2` has one React Chat production path:
 
 ```text
-TurnItem -> AgentEvent -> AgentEventProjection -> codexProcessTranscript -> ChatProcessFold
+TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React
 ```
 
-Agents working on chat, protocol, process UI, runtime items, or replay must extend that path directly. Do not add `StructuredResponsePatch`, `emit_response_events`, `StructuredResponsePanel`, page-local SSE/WebSocket streams, or assistant-final-text parsers for `summary/steps/actions`.
+Agents working on chat, protocol, process UI, runtime items, approval, MCP surfaces, or replay must extend `AiopsTransportState` and AssistantTransport state ops directly. Do not add `StructuredResponsePatch`, `emit_response_events`, `StructuredResponsePanel`, page-local SSE/WebSocket streams, legacy `agent_event` reducers, `AgentEventProjection` selectors, `codexProcessTranscript`, `ChatProcessFold`, or assistant-final-text parsers for `summary/steps/actions`.
+
+`AiopsTransportState.schemaVersion` is `aiops.transport.v2`. React Chat production transcript has one shape: `turn.blockOrder + turn.blocksById`. Do not reintroduce `turn.process`, `turn.final`, `metadata.unstable_state` transcript payloads, page-local chat SSE/WebSocket streams, or final Markdown/text parsing for process UI.
 
 Before handing off structured streaming work, run:
 
 ```bash
 rg -n "emit_response_events|StructuredResponsePatch|StructuredResponsePanel" internal web/src
+rg -n "AgentEventProjection|agent_event|codexProcessTranscript|ChatProcessFold" web/src
 rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 ```
 
-The first command should have no production hits. The second command may find normal JSON parsing for settings, fixtures, or realtime envelopes, but it must not find code that derives process UI from assistant final Markdown/text.
+The first two commands should have no React Chat production hits. The JSON/Markdown command may find normal JSON parsing for settings, fixtures, transport envelopes, or API clients, but it must not find code that derives process UI from assistant final Markdown/text.

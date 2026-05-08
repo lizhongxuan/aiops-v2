@@ -1,0 +1,91 @@
+import "@/assistant.config";
+
+import {
+  AssistantRuntimeProvider,
+  useAssistantApi,
+  useAssistantState,
+  useAssistantTransportRuntime,
+} from "@assistant-ui/react";
+import type { PropsWithChildren } from "react";
+import { useEffect, useMemo, useRef } from "react";
+
+import { createAiopsTransportConverter } from "./aiopsTransportConverter";
+import {
+  createInitialAiopsTransportState,
+  markAiopsTransportCanceled,
+  markAiopsTransportFailed,
+} from "./aiopsTransportRuntime";
+import type { AiopsTransportState } from "./aiopsTransportTypes";
+
+type ChatTransportProviderProps = PropsWithChildren<{
+  autoResume?: boolean;
+  initialState?: AiopsTransportState;
+  threadId?: string;
+}>;
+
+export function ChatTransportProvider({
+  autoResume = false,
+  children,
+  initialState,
+  threadId = "default",
+}: ChatTransportProviderProps) {
+  const initialTransportState = useMemo(
+    () => initialState ?? createInitialAiopsTransportState(threadId),
+    [initialState, threadId],
+  );
+  const converter = useMemo(() => createAiopsTransportConverter(), []);
+  const runtime = useAssistantTransportRuntime<AiopsTransportState>({
+    initialState: initialTransportState,
+    api: "/api/v1/assistant/transport",
+    resumeApi: "/api/v1/assistant/resume",
+    protocol: "data-stream",
+    converter,
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/plain",
+    },
+    onError(error, { updateState }) {
+      updateState((state) => markAiopsTransportFailed(state, error.message));
+    },
+    onCancel({ updateState, error }) {
+      if (error) {
+        return;
+      }
+      updateState((state) => markAiopsTransportCanceled(state, "client canceled"));
+    },
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <AssistantTransportReady threadId={threadId} shouldAutoResume={autoResume}>
+        {children}
+      </AssistantTransportReady>
+    </AssistantRuntimeProvider>
+  );
+}
+
+function AssistantTransportReady({
+  children,
+  threadId,
+  shouldAutoResume,
+}: PropsWithChildren<{ threadId: string; shouldAutoResume: boolean }>) {
+  const api = useAssistantApi();
+  const resumedThreadRef = useRef("");
+  const ready = useAssistantState(({ thread }) => {
+    const extras = thread.extras as { state?: unknown } | undefined;
+    return !!extras && typeof extras === "object" && "state" in extras;
+  });
+
+  useEffect(() => {
+    if (!ready || !shouldAutoResume || resumedThreadRef.current === threadId) {
+      return;
+    }
+    resumedThreadRef.current = threadId;
+    api.thread().unstable_resumeRun({});
+  }, [api, ready, shouldAutoResume, threadId]);
+
+  if (!ready) {
+    return <div className="flex min-h-[240px] items-center justify-center text-sm text-zinc-500">Loading chat...</div>;
+  }
+  return <>{children}</>;
+}

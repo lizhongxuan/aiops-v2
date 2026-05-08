@@ -1,1 +1,0 @@
-class h{constructor(t,e,i,r,s,n,o){this.id=t,this.label=e,this.alias=i,this.metadata=r,this._precondition=s,this._run=n,this._contextKeyService=o}isSupported(){return this._contextKeyService.contextMatchesRules(this._precondition)}run(t){return this.isSupported()?this._run(t):Promise.resolve(void 0)}}export{h as I};

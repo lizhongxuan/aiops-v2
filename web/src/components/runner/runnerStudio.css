@@ -634,32 +634,32 @@
   background: #fbfcfd;
 }
 
-.runner-canvas-flow .vue-flow__background {
+.runner-canvas-react .react-flow__background {
   color: #dbe4ef;
 }
 
-.runner-canvas-flow .vue-flow__edge-path {
+.runner-canvas-react .react-flow__edge-path {
   stroke: #94a3b8;
   stroke-width: 2;
 }
 
-.runner-canvas-flow .vue-flow__edge.selected .vue-flow__edge-path,
-.runner-canvas-flow .vue-flow__edge:hover .vue-flow__edge-path {
+.runner-canvas-react .react-flow__edge.selected .react-flow__edge-path,
+.runner-canvas-react .react-flow__edge:hover .react-flow__edge-path {
   stroke: #2563eb;
 }
 
-.runner-canvas-flow .vue-flow__edges,
-.runner-canvas-flow .vue-flow__edge,
-.runner-canvas-flow .vue-flow__edge-labels {
+.runner-canvas-react .react-flow__edges,
+.runner-canvas-react .react-flow__edge,
+.runner-canvas-react .react-flow__edge-labels {
   pointer-events: auto !important;
 }
 
-.runner-canvas-flow .vue-flow__edges,
-.runner-canvas-flow .vue-flow__edge-labels {
+.runner-canvas-react .react-flow__edges,
+.runner-canvas-react .react-flow__edge-labels {
   z-index: 8 !important;
 }
 
-.runner-canvas-flow .vue-flow__nodes {
+.runner-canvas-react .react-flow__nodes {
   z-index: 9;
 }
 
@@ -672,7 +672,7 @@
   pointer-events: all !important;
 }
 
-.runner-canvas-flow .vue-flow__edge-labels {
+.runner-canvas-react .react-flow__edge-labels {
   pointer-events: none !important;
 }
 
@@ -775,14 +775,14 @@
   stroke: #dc2626;
 }
 
-.runner-canvas-flow .vue-flow__controls {
+.runner-canvas-react .react-flow__controls {
   border: 1px solid #d9e1ec;
   border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
 }
 
-.runner-canvas-flow .vue-flow__minimap {
+.runner-canvas-react .react-flow__minimap {
   border: 1px solid #d9e1ec;
   border-radius: 10px;
   overflow: hidden;
@@ -3773,4 +3773,189 @@
   .ai-diff-preview {
     grid-template-columns: 1fr;
   }
+}
+
+.runner-canvas-react {
+  position: relative;
+  height: 100%;
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.runner-canvas-react .react-flow {
+  width: 100%;
+  height: 100%;
+}
+
+.runner-canvas-react .react-flow__edge-path,
+.runner-flow-edge-path {
+  stroke: #94a3b8;
+  stroke-width: 2;
+}
+
+.runner-canvas-react .react-flow__edge.selected .react-flow__edge-path,
+.runner-canvas-react .react-flow__edge:hover .react-flow__edge-path {
+  stroke: #2563eb;
+}
+
+.runner-canvas-toolbar > button,
+.runner-node-picker > button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  cursor: pointer;
+  font-weight: 800;
+  pointer-events: auto;
+  padding: 8px 10px;
+}
+
+.runner-node-picker {
+  position: absolute;
+  z-index: 45;
+  top: 58px;
+  left: 14px;
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.runner-node-picker > button {
+  display: grid;
+  justify-content: stretch;
+  text-align: left;
+}
+
+.runner-node-picker > button span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.runner-canvas-node-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.runner-canvas-node-head strong,
+.runner-canvas-node-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-canvas-node-icon {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.runner-canvas-node-foot {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.runner-canvas-node-foot span {
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+}
+
+.runner-canvas-handle {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #fff;
+  background: #2563eb;
+}
+
+.runner-canvas-handle.input {
+  background: #64748b;
+}
+
+.runner-flow-edge-label {
+  position: absolute;
+  z-index: 46;
+  border: 1px solid #d9e1ec;
+  border-radius: 999px;
+  background: #fff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 6px 10px;
+  pointer-events: all;
+  text-transform: uppercase;
+  box-shadow: 0 6px 10px rgba(15, 23, 42, 0.1);
+}
+
+.runner-studio-api-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #9a3412;
+  padding: 10px 12px;
+}
+
+.runner-studio-api-notice span {
+  flex: 1;
+  color: #9a3412;
+  font-size: 13px;
+}
+
+.runner-studio-api-notice button,
+.runner-schema-editor button,
+.runner-run-panel button {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.runner-schema-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.runner-schema-editor label,
+.node-config-form label {
+  display: grid;
+  gap: 6px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.runner-schema-editor input,
+.node-config-form input {
+  min-height: 36px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
 }

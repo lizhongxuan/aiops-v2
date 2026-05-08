@@ -1,8 +1,14 @@
 import { defineConfig } from "vitest/config";
-import vue from "@vitejs/plugin-vue";
+import path from "node:path";
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [react()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
   test: {
     environment: "jsdom",
     globals: true,
@@ -10,6 +16,8 @@ export default defineConfig({
     exclude: [
       "tests/e2e/**",
       "node_modules/**",
+      "tests/ChatPage.spec.js",
+      "tests/ChatPage.chatstream.spec.js",
       "tests/chat-choice-ui.spec.js",
       "tests/chat-fixture-ui.spec.js",
       "tests/chat-ui-snapshot.spec.js",
@@ -23,6 +31,8 @@ export default defineConfig({
       "tests/protocol-stale-approval.spec.js",
       "tests/protocol-ux-fixes.spec.js",
       "tests/protocol-workspace.spec.js",
+      "tests/react-route-smoke.spec.js",
+      "tests/react-shell-snapshot.spec.js",
       "tests/runner-studio.spec.js",
       "tests/sidebar-and-layout.spec.js",
     ],

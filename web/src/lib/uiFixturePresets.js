@@ -34,107 +34,112 @@ function normalizeActivityLabel(item, fields = []) {
   return compactText(item);
 }
 
-function createFixtureToolRow({ id, turnId, title, summary, status = "completed", updatedAt, seq }) {
+function isApprovalCard(card = {}) {
+  return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard";
+}
+
+function createProcessBlock({ id, kind = "tool", status = "completed", text, command, updatedAt }) {
   return {
     id,
-    kind: "tool",
-    turnId,
-    toolCallId: id,
-    title,
-    summary,
+    kind,
     status,
-    visibility: "secondary",
+    text: compactText(text || command || id),
+    command: compactText(command),
     updatedAt,
-    seq,
   };
 }
 
-function createChatFixtureActivityRows({ runtime = {}, cards = [], turnId = "" } = {}) {
+function createActivityProcessBlocks({ runtime = {}, cards = [], updatedAt = "2026-04-16T10:00:00Z" } = {}) {
   const activity = runtime.activity || {};
   const turn = runtime.turn || {};
   const phase = compactText(turn.phase || "idle").toLowerCase();
   const active = Boolean(turn.active);
   const finalizing = phase === "finalizing";
-  const updatedAt = resolveFixtureUpdatedAt(runtime, cards);
-  const rows = [];
+  const blocks = [];
   const seen = new Set();
-  let seq = 2;
 
-  const appendTool = ({ key, title, summary, status = "completed" }) => {
-    const label = compactText(summary);
+  const appendBlock = ({ key, kind = "tool", text, command, status = "completed" }) => {
+    const label = compactText(text || command);
     if (!label || seen.has(key)) return;
     seen.add(key);
-    rows.push(createFixtureToolRow({
-      id: key,
-      turnId,
-      title,
-      summary: label,
-      status,
-      updatedAt,
-      seq: seq++,
-    }));
+    blocks.push(createProcessBlock({ id: key, kind, status, text: label, command, updatedAt }));
   };
-
-  const currentQuery = compactText(activity.currentSearchQuery || activity.currentWebSearchQuery);
-  const currentKind = compactText(activity.currentSearchKind || (activity.currentWebSearchQuery ? "web" : "")).toLowerCase();
-  const currentTitle = currentKind === "content" ? "search_files" : "web_search";
-  const currentStatus = active && currentQuery && !finalizing ? "running" : "completed";
 
   (Array.isArray(activity.searchedWebQueries) ? activity.searchedWebQueries : []).forEach((item, index) => {
     const query = normalizeActivityLabel(item, ["query", "label", "text"]);
-    if (!query) return;
-    if (currentQuery && query === currentQuery && currentStatus === "running") return;
-    appendTool({ key: `activity-web-${index}`, title: "web_search", summary: query, status: "completed" });
+    appendBlock({ key: `activity-web-${index}`, kind: "search", text: query, command: "web_search" });
   });
 
   (Array.isArray(activity.searchedContentQueries) ? activity.searchedContentQueries : []).forEach((item, index) => {
     const query = normalizeActivityLabel(item, ["query", "label", "text"]);
-    if (!query) return;
-    if (currentQuery && query === currentQuery && currentStatus === "running") return;
-    appendTool({ key: `activity-content-${index}`, title: "search_files", summary: query, status: "completed" });
+    appendBlock({ key: `activity-content-${index}`, kind: "search", text: query, command: "search_files" });
   });
 
   (Array.isArray(activity.viewedFiles) ? activity.viewedFiles : []).forEach((item, index) => {
     const target = normalizeActivityLabel(item, ["path", "url", "label", "text"]);
-    appendTool({ key: `activity-view-${index}`, title: "open_page", summary: target, status: "completed" });
+    appendBlock({ key: `activity-view-${index}`, kind: "file", text: target, command: "open_page" });
   });
 
+  cards.forEach((card, index) => {
+    if (card?.type === "PlanCard") {
+      blocks.push({
+        id: compactText(card.id) || `plan-${index}`,
+        kind: "plan",
+        status: "running",
+        text: compactText(card.title || card.text || "执行计划"),
+        steps: (Array.isArray(card.items) ? card.items : []).map((item, stepIndex) => ({
+          id: `${card.id || "plan"}:step:${stepIndex}`,
+          text: compactText(item?.step || item?.text || item),
+          status: compactText(item?.status),
+        })),
+        updatedAt: compactText(card.updatedAt || updatedAt),
+      });
+    }
+    if (card?.type === "CommandCard") {
+      appendBlock({
+        key: compactText(card.id) || `command-${index}`,
+        kind: "command",
+        text: compactText(card.summary || card.title || card.command),
+        command: compactText(card.command || card.title),
+      });
+    }
+    if (card?.type === "ProcessLineCard") {
+      appendBlock({
+        key: compactText(card.id) || `process-${index}`,
+        kind: "tool",
+        text: compactText(card.summary || card.text || card.title),
+        command: compactText(card.title),
+        status: card.status === "inProgress" ? "running" : "completed",
+      });
+    }
+  });
+
+  const currentQuery = compactText(activity.currentSearchQuery || activity.currentWebSearchQuery);
+  const currentStatus = active && currentQuery && !finalizing ? "running" : "completed";
   if (currentQuery) {
-    appendTool({
-      key: "activity-current-search",
-      title: currentTitle,
-      summary: currentQuery,
-      status: currentStatus,
-    });
+    appendBlock({ key: "activity-current-search", kind: "search", text: currentQuery, command: "web_search", status: currentStatus });
   }
 
-  return rows;
+  return blocks;
 }
 
-function isApprovalCard(card = {}) {
-  return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard";
-}
-
-function createChatFixtureApprovalRows({ approvals = [], cards = [], updatedAt = "2026-04-16T10:00:00Z" } = {}) {
-  const rows = [];
-  const seen = new Set();
+function createPendingApprovals({ approvals = [], cards = [], turnId = "", updatedAt = "2026-04-16T10:00:00Z" } = {}) {
+  const rows = {};
   const pendingApprovals = (Array.isArray(approvals) ? approvals : []).filter((approval) => approval?.status === "pending");
   const pendingCards = cards.filter((card) => card?.status === "pending" && isApprovalCard(card));
 
   const appendApproval = (approval = {}, card = {}) => {
     const id = compactText(approval.id || card?.approval?.requestId || card?.id);
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    rows.push({
+    if (!id || rows[id]) return;
+    rows[id] = {
       id,
-      approvalType: compactText(approval.type || approval.approvalType || (card?.type === "FileChangeApprovalCard" ? "file_change" : "operation")),
-      title: compactText(card?.command || card?.title || card?.text || approval.title || "待确认操作"),
+      turnId,
+      type: compactText(approval.type || approval.approvalType || (card?.type === "FileChangeApprovalCard" ? "file_change" : "operation")),
+      status: "pending",
+      command: compactText(card?.command || card?.title || approval.command),
       reason: compactText(card?.text || card?.summary || approval.reason || card?.command),
-      risk: compactText(approval.risk || card?.risk),
-      targets: [approval.hostId || card?.hostId || card?.target].filter(Boolean),
-      status: "blocked",
-      updatedAt: compactText(card?.updatedAt || card?.createdAt || approval.requestedAt || approval.updatedAt) || updatedAt,
-    });
+      requestedAt: compactText(card?.createdAt || approval.requestedAt || updatedAt),
+    };
   };
 
   pendingApprovals.forEach((approval) => {
@@ -142,74 +147,67 @@ function createChatFixtureApprovalRows({ approvals = [], cards = [], updatedAt =
     appendApproval(approval, card);
   });
   pendingCards.forEach((card) => appendApproval({}, card));
-
   return rows;
 }
 
-function createChatFixtureAgentEventProjection({ sessionId = "single-1", runtime = {}, cards = [], approvals = [] } = {}) {
-  const turn = runtime.turn || {};
-  const phase = String(turn.phase || "idle").trim().toLowerCase();
-  const active = Boolean(turn.active) && !["idle", "completed", "failed", "aborted", "canceled"].includes(phase);
-  const blocked = phase === "waiting_approval" || phase === "waiting_input";
-  const canceled = phase === "aborted" || phase === "canceled";
-  const failed = phase === "failed";
-  const userCard = latestUserCard(cards);
-  const turnId = resolveFixtureTurnId(turn, cards);
+function createFixtureTransportState({ sessionId, threadId, status, cards = [], runtime = {}, approvals = [], finalText = "" }) {
   const updatedAt = resolveFixtureUpdatedAt(runtime, cards);
-  const activityRows = createChatFixtureActivityRows({ runtime, cards, turnId });
-  const approvalRows = createChatFixtureApprovalRows({ approvals, cards, updatedAt });
-  const hasProjectionPayload = active || blocked || canceled || failed || activityRows.length || approvalRows.length;
-  if (!hasProjectionPayload) return null;
-  const status = approvalRows.length || blocked ? "blocked" : failed ? "failed" : canceled ? "canceled" : active ? "working" : "idle";
-  const turnRow = userCard
-    ? {
-        id: userCard.clientMessageId || userCard.id,
-        kind: "turn",
-        turnId,
-        title: userCard.text || userCard.message || "",
-        summary: canceled ? "已停止生成" : failed ? "请求失败" : approvalRows.length || blocked ? "等待处理" : active ? "正在执行" : "已完成",
-        status: canceled ? "canceled" : failed ? "failed" : active || blocked || approvalRows.length ? "running" : "completed",
-        visibility: "primary",
-        updatedAt: userCard.updatedAt || userCard.createdAt || updatedAt,
-        seq: 1,
-      }
-    : null;
-  const timeline = [
-    ...(turnRow ? [turnRow] : []),
-    ...activityRows,
-  ];
+  const turn = runtime.turn || {};
+  const turnId = resolveFixtureTurnId(turn, cards);
+  const userCard = latestUserCard(cards);
+  const pendingApprovals = createPendingApprovals({ approvals, cards, turnId, updatedAt });
+  const process = createActivityProcessBlocks({ runtime, cards, updatedAt });
+  const phase = compactText(turn.phase || "idle").toLowerCase();
+  const blocked = Object.keys(pendingApprovals).length > 0 || phase === "waiting_approval" || phase === "waiting_input";
+  const failed = phase === "failed";
+  const canceled = phase === "aborted" || phase === "canceled";
+  const active = Boolean(turn.active) && !failed && !canceled;
+  const resolvedStatus = status || (blocked ? "blocked" : failed ? "failed" : canceled ? "canceled" : active ? "working" : "idle");
+  const turnStatus = blocked ? "blocked" : failed ? "failed" : canceled ? "canceled" : active ? "working" : "completed";
+  const assistantText = finalText || [...cards].reverse().find((card) => card?.type === "AssistantMessageCard")?.text || "";
+
   return {
+    schemaVersion: "aiops.transport.v1",
     sessionId,
+    threadId,
+    status: resolvedStatus,
     currentTurnId: turnId,
-    status,
-    phase,
-    lastSeq: timeline.length,
-    runtimeLiveness: {
-      activeTurns: active || blocked || approvalRows.length ? { [turnId]: true } : {},
-      activeAgents: active ? { "agent-main": true } : {},
-      pendingApprovals: Object.fromEntries(approvalRows.map((approval) => [approval.id, true])),
-      pendingUserInputs: phase === "waiting_input" ? { [turnId]: true } : {},
-      activeCommandStreams: Object.fromEntries(activityRows.filter((row) => row.status === "running").map((row) => [row.toolCallId, true])),
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: turnStatus,
+        startedAt: compactText(userCard?.createdAt || updatedAt),
+        user: userCard
+          ? {
+              id: compactText(userCard.id) || `${turnId}:user`,
+              text: compactText(userCard.text || userCard.message),
+              createdAt: compactText(userCard.createdAt || updatedAt),
+            }
+          : undefined,
+        intent: { text: compactText(userCard?.text || userCard?.message), status: phase || resolvedStatus },
+        process,
+        final: assistantText
+          ? {
+              id: `${turnId}:final`,
+              text: assistantText,
+              status: active || blocked ? "running" : failed ? "failed" : "completed",
+            }
+          : undefined,
+      },
     },
-    timeline,
-    agents: active
-      ? [{
-          id: "agent-main",
-          handle: "main",
-          name: "Main Agent",
-          role: "assistant",
-          status: "running",
-          lastAction: "正在处理当前请求",
-          updatedAt,
-          stats: { commandsRun: Number(runtime.activity?.commandsRun || 0), filesRead: 0, filesChanged: 0, toolsCalled: 0 },
-        }]
-      : [],
-    approvals: approvalRows,
-    artifacts: [],
-    diff: null,
-    finalMessages: {},
-    processGroups: activityRows.length ? { [turnId]: activityRows } : {},
-    clientTurnMap: {},
+    turnOrder: [turnId],
+    pendingApprovals,
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: active || blocked ? { [turnId]: true } : {},
+      activeAgents: active ? { "agent-main": true } : {},
+      pendingApprovals: Object.fromEntries(Object.keys(pendingApprovals).map((id) => [id, true])),
+      pendingUserInputs: phase === "waiting_input" ? { [turnId]: true } : {},
+      activeCommandStreams: Object.fromEntries(process.filter((block) => block.status === "running").map((block) => [block.id, true])),
+    },
+    seq: process.length + Object.keys(pendingApprovals).length + 1,
+    updatedAt,
   };
 }
 
@@ -257,9 +255,17 @@ export function createChatFixtureState(overrides = {}) {
   const cards = overrides.cards || defaultCards;
   const runtime = overrides.runtime || defaultRuntime;
   const approvals = overrides.approvals || [];
-  const hasAgentEventProjectionOverride = Object.prototype.hasOwnProperty.call(overrides, "agentEventProjection");
+  const state = createFixtureTransportState({
+    sessionId: overrides.sessionId || "single-1",
+    threadId: overrides.threadId || "single-1",
+    status: overrides.status,
+    cards,
+    runtime,
+    approvals,
+    finalText: overrides.finalText || "",
+  });
   return {
-    sessionId: "single-1",
+    ...state,
     kind: "single_host",
     selectedHostId: "web-01",
     auth: { connected: true, pending: false, planType: "plus" },
@@ -267,9 +273,6 @@ export function createChatFixtureState(overrides = {}) {
     approvals,
     cards,
     runtime,
-    agentEventProjection: hasAgentEventProjectionOverride
-      ? overrides.agentEventProjection
-      : createChatFixtureAgentEventProjection({ sessionId: overrides.sessionId || "single-1", runtime, cards, approvals }),
     lastActivityAt: "2026-04-03T10:00:10Z",
     config: { codexAlive: true },
     ...overrides,
@@ -295,230 +298,82 @@ export function createChatFixtureSessions(overrides = {}) {
   };
 }
 
-export function createProtocolFixtureAgentEventProjection(overrides = {}) {
-  return {
-    sessionId: "workspace-1",
-    currentTurnId: "turn-workspace-1",
-    status: "blocked",
-    lastSeq: 7,
-    runtimeLiveness: {
-      activeTurns: { "turn-workspace-1": true },
-      activeAgents: { "agent-main": true, "agent-web-01": true },
-      pendingApprovals: { "approval-1": true },
-      pendingUserInputs: {},
-      activeCommandStreams: { "tool-nginx-log": true },
-    },
-    timeline: [
-      {
-        id: "turn-workspace-1",
-        kind: "turn",
-        turnId: "turn-workspace-1",
-        title: "我想知道 nginx 中间件的情况，最好直接给我相关工作台。",
-        summary: "正在等待 Agent 启动",
-        status: "queued",
-        visibility: "primary",
-        updatedAt: "2026-04-03T11:00:00Z",
-        seq: 1,
-      },
-      {
-        id: "plan-nginx",
-        kind: "agent",
-        turnId: "turn-workspace-1",
-        agentId: "agent-main",
-        title: "生成 nginx 巡检计划",
-        summary: "已将巡检拆给 web-01 和 web-02",
-        status: "completed",
-        visibility: "secondary",
-        updatedAt: "2026-04-03T11:00:20Z",
-        seq: 2,
-      },
-      {
-        id: "tool-nginx-log",
-        kind: "tool",
-        turnId: "turn-workspace-1",
-        agentId: "agent-web-01",
-        toolCallId: "tool-nginx-log",
-        title: "readonly_host_inspect",
-        summary: "采集 web-01 nginx 错误日志",
-        status: "running",
-        visibility: "secondary",
-        updatedAt: "2026-04-03T11:00:30Z",
-        seq: 3,
-      },
-      {
-        id: "approval-1",
-        kind: "approval",
-        turnId: "turn-workspace-1",
-        agentId: "agent-web-02",
-        title: "等待 reload 审批",
-        summary: "systemctl reload nginx",
-        status: "blocked",
-        visibility: "primary",
-        updatedAt: "2026-04-03T11:00:40Z",
-        seq: 4,
-      },
-    ],
-    agents: [
-      {
-        id: "agent-main",
-        handle: "main",
-        name: "Main Agent",
-        role: "orchestrator",
-        status: "running",
-        lastAction: "编排 nginx 巡检计划",
-        updatedAt: "2026-04-03T11:00:25Z",
-        stats: { commandsRun: 0, filesRead: 0, filesChanged: 0, toolsCalled: 1 },
-      },
-      {
-        id: "agent-web-01",
-        handle: "web-01",
-        name: "web-01",
-        role: "host-agent",
-        status: "running",
-        lastAction: "采集 nginx 错误日志",
-        updatedAt: "2026-04-03T11:00:30Z",
-        stats: { commandsRun: 1, filesRead: 0, filesChanged: 0, toolsCalled: 1 },
-      },
-      {
-        id: "agent-web-02",
-        handle: "web-02",
-        name: "web-02",
-        role: "host-agent",
-        status: "blocked",
-        lastAction: "等待 reload 审批",
-        updatedAt: "2026-04-03T11:00:40Z",
-        stats: { commandsRun: 0, filesRead: 0, filesChanged: 0, toolsCalled: 0 },
-      },
-    ],
-    approvals: [
-      {
-        id: "approval-1",
-        approvalType: "operation",
-        title: "批准 web-02 reload nginx",
-        reason: "systemctl reload nginx",
-        risk: "reload 前需要确认错误日志采集完成，避免掩盖现场。",
-        targets: ["web-02"],
-        status: "blocked",
-        updatedAt: "2026-04-03T11:00:40Z",
-      },
-    ],
-    artifacts: [],
-    diff: null,
-    finalMessages: {},
-    processGroups: {
-      "turn-workspace-1": [
-        {
-          id: "tool-nginx-log",
-          kind: "tool",
-          turnId: "turn-workspace-1",
-          agentId: "agent-web-01",
-          toolCallId: "tool-nginx-log",
-          title: "readonly_host_inspect",
-          summary: "采集 web-01 nginx 错误日志",
-          status: "running",
-          visibility: "secondary",
-          updatedAt: "2026-04-03T11:00:30Z",
-          seq: 3,
-        },
-      ],
-    },
-    clientTurnMap: {},
-    ...overrides,
-  };
-}
-
 export function createProtocolFixtureState(overrides = {}) {
+  const cards = overrides.cards || [
+    {
+      id: "user-1",
+      type: "UserMessageCard",
+      role: "user",
+      text: "我想知道 nginx 中间件的情况，最好直接给我相关工作台。",
+      createdAt: "2026-04-03T11:00:00Z",
+      updatedAt: "2026-04-03T11:00:00Z",
+    },
+    {
+      id: "assistant-1",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: "好的，我已经接管任务，正在为您编排执行计划。",
+      createdAt: "2026-04-03T11:00:10Z",
+      updatedAt: "2026-04-03T11:00:10Z",
+    },
+    {
+      id: "workspace-plan-1",
+      type: "PlanCard",
+      title: "nginx 巡检计划",
+      text: "巡检计划已生成，准备派发到 host-agent。",
+      items: [
+        { step: "web-01 [task-1] 采集 nginx 错误日志", status: "running" },
+        { step: "web-02 [task-2] 执行 systemctl reload nginx", status: "waiting_approval" },
+      ],
+      createdAt: "2026-04-03T11:00:20Z",
+      updatedAt: "2026-04-03T11:00:20Z",
+    },
+    {
+      id: "process-web-01",
+      type: "ProcessLineCard",
+      title: "web-01",
+      text: "正在分析 nginx 错误日志",
+      summary: "采集错误日志并回传摘要",
+      status: "inProgress",
+      hostId: "web-01",
+      createdAt: "2026-04-03T11:00:30Z",
+      updatedAt: "2026-04-03T11:00:30Z",
+    },
+    {
+      id: "approval-card-1",
+      type: "CommandApprovalCard",
+      status: "pending",
+      hostId: "web-02",
+      text: "需要批准 web-02 reload nginx",
+      command: "systemctl reload nginx",
+      approval: { requestId: "approval-1", decisions: ["accept", "accept_session", "decline"] },
+      createdAt: "2026-04-03T11:00:40Z",
+      updatedAt: "2026-04-03T11:00:40Z",
+    },
+  ];
+  const runtime = overrides.runtime || {
+    turn: { active: true, phase: "waiting_approval", hostId: "server-local" },
+    codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+    activity: {},
+  };
+  const approvals = overrides.approvals || [{ id: "approval-1", status: "pending", itemId: "approval-card-1" }];
+  const state = createFixtureTransportState({
+    sessionId: overrides.sessionId || "workspace-1",
+    threadId: overrides.threadId || "workspace-1",
+    status: overrides.status,
+    cards,
+    runtime,
+    approvals,
+  });
   return {
-    sessionId: "workspace-1",
+    ...state,
     kind: "workspace",
     selectedHostId: "server-local",
     auth: { connected: true, pending: false, planType: "plus" },
     hosts: createBaseHosts(),
-    approvals: [{ id: "approval-1", status: "pending", itemId: "approval-card-1" }],
-    cards: [
-      {
-        id: "user-1",
-        type: "UserMessageCard",
-        role: "user",
-        text: "我想知道 nginx 中间件的情况，最好直接给我相关工作台。",
-        createdAt: "2026-04-03T11:00:00Z",
-        updatedAt: "2026-04-03T11:00:00Z",
-      },
-      {
-        id: "assistant-1",
-        type: "AssistantMessageCard",
-        role: "assistant",
-        text: "好的，我已经接管任务，正在为您编排执行计划。",
-        createdAt: "2026-04-03T11:00:10Z",
-        updatedAt: "2026-04-03T11:00:10Z",
-      },
-      {
-        id: "workspace-plan-1",
-        type: "PlanCard",
-        title: "nginx 巡检计划",
-        text: "巡检计划已生成，准备派发到 host-agent。",
-        items: [
-          { step: "web-01 [task-1] 采集 nginx 错误日志", status: "running" },
-          { step: "web-02 [task-2] 执行 systemctl reload nginx", status: "waiting_approval" },
-        ],
-        detail: {
-          goal: "帮我执行一轮全网 nginx 巡检，重点关注错误日志。",
-          version: "plan-v3",
-          structured_process: [
-            "task-1 [running] @web-01 采集 nginx 错误日志",
-            "task-2 [waiting_approval] @web-02 执行 systemctl reload nginx",
-          ],
-          task_host_bindings: [
-            { taskId: "task-1", hostId: "web-01", status: "running", title: "采集 nginx 错误日志" },
-            { taskId: "task-2", hostId: "web-02", status: "waiting_approval", title: "执行 systemctl reload nginx" },
-          ],
-        },
-        createdAt: "2026-04-03T11:00:20Z",
-        updatedAt: "2026-04-03T11:00:20Z",
-      },
-      {
-        id: "process-web-01",
-        type: "ProcessLineCard",
-        title: "web-01",
-        text: "正在分析 nginx 错误日志",
-        summary: "采集错误日志并回传摘要",
-        status: "inProgress",
-        hostId: "web-01",
-        createdAt: "2026-04-03T11:00:30Z",
-        updatedAt: "2026-04-03T11:00:30Z",
-      },
-      {
-        id: "process-web-02",
-        type: "ProcessLineCard",
-        title: "web-02",
-        text: "等待 reload 审批",
-        summary: "执行 systemctl reload nginx",
-        status: "inProgress",
-        hostId: "web-02",
-        createdAt: "2026-04-03T11:00:35Z",
-        updatedAt: "2026-04-03T11:00:35Z",
-      },
-      {
-        id: "approval-card-1",
-        type: "CommandApprovalCard",
-        status: "pending",
-        hostId: "web-02",
-        text: "需要批准 web-02 reload nginx",
-        command: "systemctl reload nginx",
-        approval: {
-          requestId: "approval-1",
-          decisions: ["accept", "accept_session", "decline"],
-        },
-        createdAt: "2026-04-03T11:00:40Z",
-        updatedAt: "2026-04-03T11:00:40Z",
-      },
-    ],
-    runtime: {
-      turn: { active: true, phase: "waiting_approval", hostId: "server-local" },
-      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
-      activity: {},
-    },
-    agentEventProjection: createProtocolFixtureAgentEventProjection(overrides.agentEventProjection || {}),
+    approvals,
+    cards,
+    runtime,
     lastActivityAt: "2026-04-03T11:00:40Z",
     config: { codexAlive: true },
     ...overrides,

@@ -180,6 +180,8 @@ func (s *HTTPServer) registerRoutes() {
 	// Core chat endpoint
 	s.mux.HandleFunc("/api/v1/chat/message", s.handleChatMessage)
 	s.mux.HandleFunc("/api/v1/chat/stop", s.handleChatStop)
+	s.mux.HandleFunc("/api/v1/assistant/transport", s.handleAssistantTransport)
+	s.mux.HandleFunc("/api/v1/assistant/resume", s.handleAssistantTransportResume)
 
 	// State endpoint
 	s.mux.HandleFunc("/api/v1/state", s.handleGetState)

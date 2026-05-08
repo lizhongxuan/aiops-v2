@@ -31,6 +31,31 @@ func (s *approvalRuntimeStub) CancelTurn(context.Context, runtimekernel.CancelRe
 	return runtimekernel.TurnResult{}, nil
 }
 
+type blockingApprovalRuntimeStub struct {
+	reqCh     chan runtimekernel.ResumeRequest
+	releaseCh chan struct{}
+}
+
+func (s *blockingApprovalRuntimeStub) RunTurn(context.Context, runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
+func (s *blockingApprovalRuntimeStub) ResumeTurn(_ context.Context, req runtimekernel.ResumeRequest) (runtimekernel.TurnResult, error) {
+	s.reqCh <- req
+	<-s.releaseCh
+	return runtimekernel.TurnResult{
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		SessionID:   req.SessionID,
+		TurnID:      req.TurnID,
+		Status:      "completed",
+	}, nil
+}
+
+func (s *blockingApprovalRuntimeStub) CancelTurn(context.Context, runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{}, nil
+}
+
 func TestApprovalService_DecideResumesMatchingApproval(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()
@@ -97,5 +122,123 @@ func TestApprovalService_DecideResumesMatchingApproval(t *testing.T) {
 	}
 	if result.Status != "completed" {
 		t.Fatalf("ActionResult status = %q, want completed", result.Status)
+	}
+}
+
+func TestApprovalService_DecideAsyncReturnsBeforeRuntimeCompletes(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-approval-async", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-approval-async",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		PendingApprovals: []runtimekernel.PendingApproval{{
+			ID:        "approval-async",
+			SessionID: session.ID,
+			TurnID:    "turn-approval-async",
+			Iteration: 1,
+			ToolName:  "exec_command",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}
+	session.PendingApprovals = append([]runtimekernel.PendingApproval(nil), session.CurrentTurn.PendingApprovals...)
+	sessions.Update(session)
+
+	runtime := &blockingApprovalRuntimeStub{
+		reqCh:     make(chan runtimekernel.ResumeRequest, 1),
+		releaseCh: make(chan struct{}),
+	}
+	service := NewApprovalService(runtime, sessions, NewSnapshotBuilder())
+	asyncService, ok := service.(interface {
+		DecideAsync(context.Context, ApprovalDecision) (ActionResult, error)
+	})
+	if !ok {
+		t.Fatal("ApprovalService does not implement DecideAsync")
+	}
+
+	started := time.Now()
+	result, err := asyncService.DecideAsync(context.Background(), ApprovalDecision{
+		ID:       "approval-async",
+		Decision: "accept",
+	})
+	if err != nil {
+		t.Fatalf("DecideAsync() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 50*time.Millisecond {
+		t.Fatalf("DecideAsync() took %s, want immediate return before runtime completes", elapsed)
+	}
+	if result.Status != "accepted" || result.SessionID != session.ID || result.TurnID != "turn-approval-async" {
+		t.Fatalf("ActionResult = %+v, want accepted async target", result)
+	}
+
+	select {
+	case req := <-runtime.reqCh:
+		if req.SessionID != session.ID || req.TurnID != "turn-approval-async" || req.ApprovalID != "approval-async" || req.Decision != "approved" {
+			t.Fatalf("ResumeTurn request = %+v, want approval async resume request", req)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("runtime ResumeTurn was not started asynchronously")
+	}
+	close(runtime.releaseCh)
+}
+
+func TestApprovalService_DecideResumesMatchingPendingEvidence(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-evidence-approval", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-evidence-approval",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingEvidence,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		PendingEvidence: []runtimekernel.PendingEvidence{{
+			ID:         "evidence-1",
+			SessionID:  session.ID,
+			TurnID:     "turn-evidence-approval",
+			Iteration:  1,
+			ToolName:   "exec_command",
+			ToolCallID: "call-ifconfig-down",
+			Reason:     "needs evidence approval",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
+	}
+	session.PendingEvidence = append([]runtimekernel.PendingEvidence(nil), session.CurrentTurn.PendingEvidence...)
+	sessions.Update(session)
+
+	runtime := &approvalRuntimeStub{}
+	service := NewApprovalService(runtime, sessions, NewSnapshotBuilder())
+	_, err := service.Decide(context.Background(), ApprovalDecision{
+		ID:       "evidence-1",
+		Decision: "accept",
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+
+	if runtime.resumeReq.SessionID != session.ID || runtime.resumeReq.TurnID != "turn-evidence-approval" {
+		t.Fatalf("ResumeTurn target = %+v, want evidence session/turn", runtime.resumeReq)
+	}
+	if runtime.resumeReq.ApprovalID != "evidence-1" {
+		t.Fatalf("ResumeTurn approvalId = %q, want evidence-1", runtime.resumeReq.ApprovalID)
+	}
+	if runtime.resumeReq.ResumeState != runtimekernel.TurnResumeStatePendingEvidence {
+		t.Fatalf("ResumeTurn resumeState = %q, want pending_evidence", runtime.resumeReq.ResumeState)
+	}
+	if runtime.resumeReq.Decision != "approved" {
+		t.Fatalf("ResumeTurn decision = %q, want approved", runtime.resumeReq.Decision)
 	}
 }

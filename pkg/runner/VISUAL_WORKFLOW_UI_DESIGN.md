@@ -281,7 +281,7 @@ type ActionSpec struct {
 
 - 顶栏：workflow 名、版本、状态、YAML、校验、试运行、发布。
 - 左侧：节点库，按 catalog 分组，支持搜索和风险提示。
-- 中间：Vue Flow 画布，支持拖拽、连线、自动布局、缩放、小地图。
+- 中间：React/SVG 画布，支持拖拽、连线、自动布局。
 - 右侧：当前节点配置，包含配置、高级、YAML diff、运行态。
 - 底部：运行抽屉，展示状态、step-host、stdout/stderr、导出变量、SSE 事件。
 
@@ -411,5 +411,4 @@ POST /api/v1/workflows/graph
 - Dify workflow 文档：<https://docs.dify.ai/en/guides/workflow/node/start>
 - Dify Output node 文档：<https://docs.dify.ai/en/use-dify/nodes/output>
 - Dify Variable Aggregator 文档：<https://docs.dify.ai/en/use-dify/nodes/variable-aggregator>
-- Vue Flow 官方文档：<https://vueflow.dev/>
-- Vue Flow Drag & Drop 示例：<https://vue-flow-docs.netlify.app/examples/dnd>
+- React 官方文档：<https://react.dev/>

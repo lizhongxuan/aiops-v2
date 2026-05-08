@@ -429,10 +429,44 @@ small {
 }
 
 .workflow-canvas {
+  position: relative;
+  overflow: auto;
   background: #0f141b;
 }
 
-.vue-flow__node.runner-node {
+.react-workflow-canvas {
+  min-height: 100%;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgb(148 163 184 / 16%) 1px, transparent 0);
+  background-size: 18px 18px;
+}
+
+.workflow-edge-layer {
+  position: absolute;
+  inset: 0;
+  width: 2200px;
+  height: 1400px;
+  pointer-events: none;
+}
+
+.runner-edge path {
+  fill: none;
+  stroke: #53647a;
+  stroke-width: 2;
+}
+
+.runner-edge text {
+  fill: #8fa3b8;
+  font-size: 11px;
+}
+
+.runner-edge.is-selected path {
+  stroke: #76b7f0;
+  stroke-width: 2.5;
+}
+
+.runner-node {
+  position: absolute;
   width: 168px;
   padding: 10px 12px;
   border: 1px solid #344052;
@@ -443,44 +477,29 @@ small {
   box-shadow: 0 8px 20px rgb(0 0 0 / 22%);
 }
 
-.vue-flow__node.runner-node.is-selected {
+.runner-node strong,
+.runner-node small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runner-node.is-selected {
   border-color: #76b7f0;
   box-shadow: 0 0 0 2px rgb(118 183 240 / 18%);
 }
 
-.vue-flow__node.runner-node.is-running {
+.runner-node.is-running {
   border-color: #f0b35a;
 }
 
-.vue-flow__node.runner-node.is-success {
+.runner-node.is-success {
   border-color: #50b984;
 }
 
-.vue-flow__node.runner-node.is-waiting {
+.runner-node.is-waiting {
   border-color: #b894f6;
-}
-
-.vue-flow__edge.runner-edge.is-selected .vue-flow__edge-path {
-  stroke: #76b7f0;
-  stroke-width: 2.5;
-}
-
-.vue-flow__controls {
-  border: 1px solid #2a3544;
-  background: #151a21;
-  box-shadow: none;
-}
-
-.vue-flow__controls-button {
-  border-bottom: 1px solid #2a3544;
-  background: #151a21;
-  color: #dce5ef;
-}
-
-.vue-flow__minimap {
-  border: 1px solid #2a3544;
-  border-radius: 6px;
-  background: #111821;
 }
 
 .field-block {

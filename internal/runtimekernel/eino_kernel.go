@@ -1087,6 +1087,7 @@ func (k *EinoKernel) runHostIterationLoop(
 	const maxIterations = 16
 	toolDispatches := countActualToolDispatches(snapshot)
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
+	var lastReasoningPersist time.Time
 
 	for iteration := len(snapshot.Iterations); iteration < maxIterations; iteration++ {
 		k.emitIterationStage(session.ID, turnID, iteration, "context_pipeline", turnSpanID)
@@ -1198,7 +1199,24 @@ func (k *EinoKernel) runHostIterationLoop(
 		if modelSpanCtx != nil {
 			modelCtx = modelSpanCtx
 		}
+		finalItemID := fmt.Sprintf("%s-final-answer", turnID)
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
+			if strings.TrimSpace(delta) != "" {
+				snapshot.FinalOutput += delta
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, truncateString(snapshot.FinalOutput, 240))
+				} else {
+					appendAgentItem(snapshot, newAgentItem(
+						finalItemID,
+						agentstate.TurnItemTypeFinalAnswer,
+						agentstate.ItemStatusRunning,
+						truncateString(snapshot.FinalOutput, 240),
+						nil,
+					))
+				}
+				snapshot.UpdatedAt = time.Now()
+				k.persistTurnSnapshot(session, snapshot)
+			}
 			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
 				"text": delta,
 			})
@@ -1221,6 +1239,15 @@ func (k *EinoKernel) runHostIterationLoop(
 			current.SummaryIndex = event.SummaryIndex
 			current.Method = event.Method
 			reasoningSummaries[key] = current
+			// Update the in-memory TurnSnapshot reasoning AgentItem with accumulated text.
+			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusRunning, current.Summary)
+			// Throttled persistence: persist at most every 100ms so the transport
+			// polling loop detects fingerprint changes without overwhelming storage.
+			if time.Since(lastReasoningPersist) >= 100*time.Millisecond {
+				snapshot.UpdatedAt = time.Now()
+				k.persistTurnSnapshot(session, snapshot)
+				lastReasoningPersist = time.Now()
+			}
 			k.emitRuntimeEvent(EventReasoningSummaryDelta, session.ID, turnID, map[string]any{
 				"itemId":       reasoningItemID(event),
 				"summaryIndex": event.SummaryIndex,
@@ -1244,7 +1271,11 @@ func (k *EinoKernel) runHostIterationLoop(
 			"output.has_tool_calls":  toolCallCount > 0,
 			"output.tool_call_count": toolCallCount,
 		})
-		updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCompleted, "model response received")
+		// Mark the reasoning AgentItem as completed, preserving the accumulated
+		// reasoning summary text (pass empty summary so updateAgentItem keeps existing).
+		updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCompleted, "")
+		snapshot.UpdatedAt = time.Now()
+		k.persistTurnSnapshot(session, snapshot)
 		for _, key := range reasoningOrder {
 			event := reasoningSummaries[key]
 			summary := strings.TrimSpace(event.Summary)
@@ -1310,13 +1341,17 @@ func (k *EinoKernel) runHostIterationLoop(
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
 			snapshot.FinalOutput = assistantMsg.Content
-			appendAgentItem(snapshot, newAgentItem(
-				fmt.Sprintf("%s-final-answer", turnID),
-				agentstate.TurnItemTypeFinalAnswer,
-				agentstate.ItemStatusCompleted,
-				truncateString(assistantMsg.Content, 240),
-				map[string]string{"messageId": assistantMsg.ID},
-			))
+			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, truncateString(assistantMsg.Content, 240))
+			} else {
+				appendAgentItem(snapshot, newAgentItem(
+					finalItemID,
+					agentstate.TurnItemTypeFinalAnswer,
+					agentstate.ItemStatusCompleted,
+					truncateString(assistantMsg.Content, 240),
+					map[string]string{"messageId": assistantMsg.ID},
+				))
+			}
 			snapshot.UpdatedAt = now
 			snapshot.CompletedAt = &now
 			if last := latestIteration(snapshot); last != nil {
@@ -1329,6 +1364,13 @@ func (k *EinoKernel) runHostIterationLoop(
 			session.PendingEvidence = nil
 			k.persistTurnSnapshot(session, snapshot)
 			return assistantMsg.Content, nil, nil
+		}
+
+		if snapshot.FinalOutput != "" {
+			snapshot.FinalOutput = ""
+			removeAgentItem(snapshot, finalItemID)
+			snapshot.UpdatedAt = time.Now()
+			k.persistTurnSnapshot(session, snapshot)
 		}
 
 		if intentText := toolIntentPrelude(req.Input, assistantMsg); intentText != "" {
@@ -1399,7 +1441,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				agentstate.TurnItemTypeToolResult,
 				toolResultItemStatus(recordedResult),
 				truncateString(recordedResult.Content, 240),
-				map[string]string{"toolCallId": tc.ID, "toolName": tc.Name},
+				toolResultAgentItemData(turnID, tc, recordedResult),
 			))
 			if planItem, ok := planItemFromToolCall(turnID, tc); ok {
 				appendAgentItem(snapshot, planItem)
@@ -2005,7 +2047,7 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 			agentstate.TurnItemTypeToolResult,
 			toolResultItemStatus(recordedResult),
 			truncateString(recordedResult.Content, 240),
-			map[string]string{"toolCallId": tc.ID, "toolName": tc.Name},
+			toolResultAgentItemData(snapshot.ID, tc, recordedResult),
 		))
 		if planItem, ok := planItemFromToolCall(snapshot.ID, tc); ok {
 			appendAgentItem(snapshot, planItem)
@@ -2025,6 +2067,31 @@ func iterationHasToolResult(iter *IterationState, toolCallID string) bool {
 		}
 	}
 	return false
+}
+
+func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[string]any {
+	outputSummary, _, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, result.Content)
+	payload := map[string]any{
+		"toolCallId":      tc.ID,
+		"toolName":        tc.Name,
+		"outputSummary":   outputSummary,
+		"rawRef":          rawRef,
+		"resultBytes":     resultBytes,
+		"resultTruncated": resultTruncated,
+	}
+	if inputSummary := strings.TrimSpace(approvalCommandForToolCall(tc)); inputSummary != "" {
+		payload["inputSummary"] = inputSummary
+	}
+	if len(tc.Arguments) > 0 {
+		payload["arguments"] = json.RawMessage(append([]byte(nil), tc.Arguments...))
+	}
+	if len(outputPreview) > 0 {
+		payload["outputPreview"] = outputPreview
+	}
+	if result.Error != "" {
+		payload["error"] = result.Error
+	}
+	return payload
 }
 
 func (k *EinoKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {
@@ -2160,6 +2227,11 @@ func generateModelResponse(
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
+				}
+				// Fast exit on context cancellation — propagate immediately so
+				// the caller (runHostIterationLoop) can mark the turn cancelled.
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, err
 				}
 				return nil, err
 			}

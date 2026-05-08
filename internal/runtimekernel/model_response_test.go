@@ -178,3 +178,38 @@ func TestGenerateModelResponseEmitsOnlyReasoningSummaryEvents(t *testing.T) {
 		t.Fatalf("reasoning[0] = %+v, want summary delta", reasoning[0])
 	}
 }
+
+// cancelStreamModel simulates a streaming model that blocks until context is canceled.
+type cancelStreamModel struct{}
+
+func (m *cancelStreamModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate should not be called")
+}
+
+func (m *cancelStreamModel) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer sw.Close()
+		// Block until context is canceled, then send the context error.
+		<-ctx.Done()
+		sw.Send(nil, ctx.Err())
+	}()
+	return sr, nil
+}
+
+func (m *cancelStreamModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func TestGenerateModelResponseReturnsContextCanceledImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := generateModelResponse(ctx, &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected error from canceled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}

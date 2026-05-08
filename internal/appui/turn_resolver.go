@@ -61,6 +61,11 @@ func findApprovalTarget(sessions SessionSource, approvalID string) (*runtimekern
 				return session, approval, nil
 			}
 		}
+		for _, evidence := range session.PendingEvidence {
+			if evidence.ID == target {
+				return session, pendingEvidenceAsApproval(evidence), nil
+			}
+		}
 		if session.CurrentTurn == nil {
 			continue
 		}
@@ -69,8 +74,29 @@ func findApprovalTarget(sessions SessionSource, approvalID string) (*runtimekern
 				return session, approval, nil
 			}
 		}
+		for _, evidence := range session.CurrentTurn.PendingEvidence {
+			if evidence.ID == target {
+				return session, pendingEvidenceAsApproval(evidence), nil
+			}
+		}
 	}
 	return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval %q not found", target)
+}
+
+func pendingEvidenceAsApproval(evidence runtimekernel.PendingEvidence) runtimekernel.PendingApproval {
+	return runtimekernel.PendingApproval{
+		ID:         evidence.ID,
+		SessionID:  evidence.SessionID,
+		TurnID:     evidence.TurnID,
+		Iteration:  evidence.Iteration,
+		ToolName:   firstNonEmpty(strings.TrimSpace(evidence.ToolName), "tool"),
+		ToolCallID: evidence.ToolCallID,
+		Reason:     evidence.Reason,
+		Source:     "pending_evidence",
+		Status:     evidence.Status,
+		CreatedAt:  evidence.CreatedAt,
+		UpdatedAt:  evidence.UpdatedAt,
+	}
 }
 
 func resolveChoiceTarget(sessions SessionSource, requestID string) (*runtimekernel.SessionState, *runtimekernel.TurnSnapshot, string, error) {

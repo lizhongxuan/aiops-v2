@@ -18,6 +18,9 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "curl" {
 		return isReadOnlyCurlArgs(args)
 	}
+	if base == "ifconfig" {
+		return isReadOnlyIfconfigArgs(args)
+	}
 	if base == "sed" {
 		return isReadOnlySedArgs(args)
 	}
@@ -30,11 +33,46 @@ func IsReadOnlyCommand(command string, args []string) bool {
 func IsReadOnlyCommandName(command string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
 	switch base {
-	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "tail", "top", "uname", "uptime", "vm_stat", "wc", "which", "whoami":
+	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "sw_vers", "tail", "top", "uname", "uptime", "vm_stat", "wc", "which", "whoami":
 		return true
 	default:
 		return false
 	}
+}
+
+func isReadOnlyIfconfigArgs(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	seenInterface := false
+	for _, arg := range args {
+		trimmed := strings.TrimSpace(arg)
+		if trimmed == "" || strings.ContainsAny(trimmed, "\x00\n\r`$<>;|&=") {
+			return false
+		}
+		if strings.HasPrefix(trimmed, "-") {
+			switch trimmed {
+			case "-a", "-l", "-m", "-v":
+				continue
+			default:
+				return false
+			}
+		}
+		if seenInterface || !isSafeInterfaceName(trimmed) {
+			return false
+		}
+		seenInterface = true
+	}
+	return true
+}
+
+func isSafeInterfaceName(value string) bool {
+	for _, r := range value {
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' || r == ':') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func isReadOnlySysctlArgs(args []string) bool {

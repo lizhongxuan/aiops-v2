@@ -23,6 +23,38 @@ func TestChatModeAllowsReadOnlyTerminalCommand(t *testing.T) {
 	}
 }
 
+func TestChatModeAllowsMacOSVersionReadOnlyTerminalCommand(t *testing.T) {
+	policy := &ChatModePolicy{}
+	decision := policy.CheckTool(PolicyInput{
+		ToolName: "exec_command",
+		Tool:     tooling.ToolMetadata{Name: "exec_command"},
+		Mode:     ModeChat,
+		Arguments: json.RawMessage(`{
+			"command": "sw_vers",
+			"args": []
+		}`),
+	})
+	if decision.Action != PolicyActionAllow {
+		t.Fatalf("CheckTool() = %#v, want allow", decision)
+	}
+}
+
+func TestChatModeAllowsReadOnlyNetworkInfoTerminalCommand(t *testing.T) {
+	policy := &ChatModePolicy{}
+	decision := policy.CheckTool(PolicyInput{
+		ToolName: "exec_command",
+		Tool:     tooling.ToolMetadata{Name: "exec_command"},
+		Mode:     ModeChat,
+		Arguments: json.RawMessage(`{
+			"command": "ifconfig",
+			"args": []
+		}`),
+	})
+	if decision.Action != PolicyActionAllow {
+		t.Fatalf("CheckTool() = %#v, want allow", decision)
+	}
+}
+
 func TestChatModeAllowsSafeCurlGetTerminalCommand(t *testing.T) {
 	policy := &ChatModePolicy{}
 	decision := policy.CheckTool(PolicyInput{
@@ -61,6 +93,19 @@ func TestChatModeRequiresApprovalForUnsafeCurlTerminalCommand(t *testing.T) {
 		Tool:      tooling.ToolMetadata{Name: "exec_command"},
 		Mode:      ModeChat,
 		Arguments: json.RawMessage(`{"command":"curl","args":["-sS","-X","POST","https://example.com/api"]}`),
+	})
+	if decision.Action != PolicyActionNeedApproval {
+		t.Fatalf("CheckTool() = %#v, want need approval", decision)
+	}
+}
+
+func TestChatModeRequiresApprovalForUnsafeNetworkInfoTerminalCommand(t *testing.T) {
+	policy := &ChatModePolicy{}
+	decision := policy.CheckTool(PolicyInput{
+		ToolName:  "exec_command",
+		Tool:      tooling.ToolMetadata{Name: "exec_command"},
+		Mode:      ModeChat,
+		Arguments: json.RawMessage(`{"command":"ifconfig","args":["en0","down"]}`),
 	})
 	if decision.Action != PolicyActionNeedApproval {
 		t.Fatalf("CheckTool() = %#v, want need approval", decision)

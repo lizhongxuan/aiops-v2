@@ -112,6 +112,30 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 	}
 }
 
+func TestToolResultAgentItemDataPreservesInputSummary(t *testing.T) {
+	tc := ToolCall{
+		ID:        "call-cpu-count",
+		Name:      "exec_command",
+		Arguments: json.RawMessage(`{"cmd":"sysctl","args":["-n","hw.ncpu"]}`),
+	}
+	result := ToolResult{
+		ToolCallID: "call-cpu-count",
+		Content:    "10",
+	}
+
+	data := toolResultAgentItemData("turn-1", tc, result)
+
+	if got := data["inputSummary"]; got != "sysctl -n hw.ncpu" {
+		t.Fatalf("inputSummary = %#v, want command arguments", got)
+	}
+	if got := strings.TrimSpace(string(data["arguments"].(json.RawMessage))); got != `{"cmd":"sysctl","args":["-n","hw.ncpu"]}` {
+		t.Fatalf("arguments = %s, want original arguments", got)
+	}
+	if got := data["outputSummary"]; got != "10" {
+		t.Fatalf("outputSummary = %#v, want terminal output", got)
+	}
+}
+
 func TestRunTurn_UpdatePlanToolWritesPlanTurnItem(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

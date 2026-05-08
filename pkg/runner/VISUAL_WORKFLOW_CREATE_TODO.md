@@ -14,7 +14,7 @@
 
 - [x] 确认当前后端已有 YAML 创建接口：`POST /api/v1/workflows`，实现位于 `pkg/runner/server/api/workflow_handler.go`。
 - [x] 确认当前后端 graph API 已有读取、更新、解析、编译、校验、dry-run、运行能力，缺少 graph create。
-- [x] 确认当前前端 `RunnerWorkbench.vue` 只有加载、保存、发布、导入、导出、历史、dry-run、运行入口，缺少 `新建工作流`。
+- [x] 确认当前前端 `RunnerWorkbench.tsx` 只有加载、保存、发布、导入、导出、历史、dry-run、运行入口，缺少 `新建工作流`。
 - [x] 确认当前 `graphStore.ts` 的 `load()` 默认加载 `service-restart-candidate`，缺少 `createWorkflowFromGraph` / `cloneWorkflow` / `switchWorkflow`。
 - [x] 确认 `workflowOptions` 已可承载工作流选择器和重复 name 校验。
 - [x] 确认 `importWorkflowBundle()` 是 bundle 导入能力，不等价于生产级新建工作流。
@@ -28,7 +28,7 @@
 
 ### 1.1 顶部工具栏入口
 
-- [x] 在 `pkg/runner/server/ui/frontend/src/components/RunnerWorkbench.vue` 顶部工具栏左侧增加工作流选择器。
+- [x] 在 `pkg/runner/server/ui/frontend/src/components/RunnerWorkbench.tsx` 顶部工具栏左侧增加工作流选择器。
 - [x] 工作流选择器展示 `name`、`version`、`status`，优先按 `updated_at` 或 `name` 稳定排序。
 - [x] 在工作流选择器旁增加 `新建` 按钮。
 - [x] 在更多操作区增加 `克隆当前工作流`。
@@ -42,7 +42,7 @@
 
 ### 1.2 新建工作流弹窗
 
-- [x] 新增 `pkg/runner/server/ui/frontend/src/components/NewWorkflowModal.vue`。
+- [x] 新增 `pkg/runner/server/ui/frontend/src/components/NewWorkflowModal.tsx`。
 - [x] 弹窗字段包含 `name`、`description`、`version`、`labels`、`template`、`save_note`。
 - [x] `name` 必填，默认不自动生成随机名称；可提供基于模板的建议名称。
 - [x] `version` 默认 `v0.1`。
@@ -346,7 +346,7 @@ async function createWorkflowFromGraph(graph: WorkflowGraph, options: { labels?:
 
 ### 5.1 新建弹窗接入
 
-- [x] 在 `RunnerWorkbench.vue` 引入 `NewWorkflowModal.vue`。
+- [x] 在 `RunnerWorkbench.tsx` 引入 `NewWorkflowModal.tsx`。
 - [x] 增加本地状态 `showNewWorkflowModal`。
 - [x] 点击 `新建` 打开弹窗。
 - [x] 弹窗提交时调用 `store.createWorkflowFromGraph()`。
@@ -495,7 +495,7 @@ npm run build
 验收：
 
 - [x] Vitest 全部通过。
-- [x] `vue-tsc --noEmit` 通过。
+- [x] `tsc --noEmit` 通过。
 - [x] Vite build 成功生成 runner UI dist。
 
 ## 8. 浏览器与端到端验证

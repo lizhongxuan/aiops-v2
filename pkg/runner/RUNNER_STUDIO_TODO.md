@@ -6,7 +6,7 @@
 
 **Architecture:** 后端 graph/schema/变量作用域/API 契约先行，主应用前端只调用同源 `/api/runner-studio/*`。前端组件基于服务端契约渲染，不维护私有编排 DSL；旧 `pkg/runner/server/ui/frontend` 只作为迁移参考，不再作为主入口。
 
-**Tech Stack:** Go runner graph/service/API、Vue 3、现有 `web/`、Naive UI、Vue Flow、Monaco YAML、现有 LLM 配置。
+**Tech Stack:** Go runner graph/service/API、React、现有 `web/`、shadcn/ui、React/SVG workflow canvas、Monaco YAML、现有 LLM 配置。
 
 ---
 
@@ -51,7 +51,7 @@ rg -n "T[B]D|待[定]|或迁移[后]|Modify [o]r migrate|Replace [o]r rename" pk
 - Create: `web/src/api/runnerStudioClient.js`
 - Create: `web/src/api/runnerStudioClient.test.js`
 - Modify: `web/src/api/runnerUi.js`
-- Create: `web/src/pages/RunnerStudioPage.vue`
+- Create: `web/src/pages/RunnerStudioPage.tsx`
 - Create: `web/src/pages/RunnerStudioPage.test.js`
 - Modify: `web/src/router.js`
 
@@ -218,7 +218,7 @@ cd pkg/runner && go test ./server/api -run 'TestVisualWorkflowAudit.*Publish' -c
 - Modify: `web/src/api/runnerUi.js`
 - Modify: `web/src/api/runnerStudioClient.test.js`
 - Modify: `web/src/pages/RunnerStudioPage.test.js`
-- Modify: `web/src/pages/RunnerUiEntryPage.vue`
+- Modify: `web/src/pages/RunnerUiEntryPage.tsx`
 - Modify: `web/src/pages/RunnerUiEntryPage.test.js`
 - Modify: `web/src/router.js`
 
@@ -239,11 +239,11 @@ cd web && npm test -- RunnerUiEntryPage.test.js App.route-session.test.js Runner
 ## 8. Runner Studio Shell
 
 **Files:**
-- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.tsx`
 - Modify: `web/src/pages/RunnerStudioPage.test.js`
 - Modify: `web/src/router.js`
-- Modify: `web/src/App.vue`
-- Create: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/App.tsx`
+- Create: `web/src/components/runner/RunnerStudioShell.tsx`
 - Create: `web/src/components/runner/RunnerStudioShell.test.js`
 - Create: `web/src/components/runner/runnerStudio.css`
 
@@ -264,15 +264,15 @@ cd web && npm test -- RunnerStudioPage.test.js RunnerStudioShell.test.js App.rou
 ## 9. 工作流选择与管理
 
 **Files:**
-- Create: `web/src/components/runner/WorkflowQuickList.vue`
+- Create: `web/src/components/runner/WorkflowQuickList.tsx`
 - Create: `web/src/components/runner/WorkflowQuickList.test.js`
-- Create: `web/src/components/runner/WorkflowManagerModal.vue`
+- Create: `web/src/components/runner/WorkflowManagerModal.tsx`
 - Create: `web/src/components/runner/WorkflowManagerModal.test.js`
 - Create: `web/src/components/runner/workflowManagerState.js`
 - Create: `web/src/components/runner/workflowManagerState.test.js`
-- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.tsx`
 - Modify: `web/src/pages/RunnerStudioPage.test.js`
-- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.tsx`
 - Modify: `web/src/components/runner/RunnerStudioShell.test.js`
 - Modify: `web/src/components/runner/runnerStudio.css`
 
@@ -293,15 +293,15 @@ cd web && npm test -- WorkflowQuickList.test.js WorkflowManagerModal.test.js wor
 ## 10. 画布与节点动作
 
 **Files:**
-- Create: `web/src/components/runner/RunnerCanvas.vue`
+- Create: `web/src/components/runner/RunnerCanvas.tsx`
 - Create: `web/src/components/runner/RunnerCanvas.test.js`
-- Create: `web/src/components/runner/CanvasToolbar.vue`
+- Create: `web/src/components/runner/CanvasToolbar.tsx`
 - Create: `web/src/components/runner/CanvasToolbar.test.js`
-- Create: `web/src/components/runner/NodeActionMenu.vue`
+- Create: `web/src/components/runner/NodeActionMenu.tsx`
 - Create: `web/src/components/runner/NodeActionMenu.test.js`
 - Create: `web/src/components/runner/canvasGraphAdapter.js`
 - Create: `web/src/components/runner/canvasGraphAdapter.test.js`
-- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.tsx`
 - Modify: `web/src/components/runner/RunnerStudioShell.test.js`
 - Modify: `web/src/components/runner/runnerStudio.css`
 
@@ -310,7 +310,7 @@ cd web && npm test -- WorkflowQuickList.test.js WorkflowManagerModal.test.js wor
 - [x] 写失败测试：单击节点只更新 summary selection。
 - [x] 写失败测试：双击节点触发 config modal open event。
 - [x] 写失败测试：右键菜单包含复制、删除、禁用、单节点试跑、最近运行、AI 修复。
-- [x] 实现 canvas graph adapter，隔离 Vue Flow 节点格式和后端 graph 格式。
+- [x] 实现 canvas graph adapter，隔离画布节点格式和后端 graph 格式。
 
 验证：
 
@@ -323,15 +323,15 @@ cd web && npm test -- RunnerCanvas.test.js CanvasToolbar.test.js NodeActionMenu.
 ## 11. 节点配置弹窗
 
 **Files:**
-- Create: `web/src/components/runner/NodeConfigModal.vue`
+- Create: `web/src/components/runner/NodeConfigModal.tsx`
 - Create: `web/src/components/runner/NodeConfigModal.test.js`
-- Create: `web/src/components/runner/node-config/BasicTab.vue`
+- Create: `web/src/components/runner/node-config/BasicTab.tsx`
 - Create: `web/src/components/runner/node-config/BasicTab.test.js`
-- Create: `web/src/components/runner/node-config/InputTab.vue`
-- Create: `web/src/components/runner/node-config/OutputTab.vue`
-- Create: `web/src/components/runner/node-config/AdvancedTab.vue`
-- Create: `web/src/components/runner/node-config/RunAiTab.vue`
-- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Create: `web/src/components/runner/node-config/InputTab.tsx`
+- Create: `web/src/components/runner/node-config/OutputTab.tsx`
+- Create: `web/src/components/runner/node-config/AdvancedTab.tsx`
+- Create: `web/src/components/runner/node-config/RunAiTab.tsx`
+- Modify: `web/src/components/runner/RunnerStudioShell.tsx`
 - Modify: `web/src/components/runner/runnerStudio.css`
 
 - [x] 写失败测试：双击 action 节点打开五页签弹窗。
@@ -354,16 +354,16 @@ cd web && npm test -- NodeConfigModal.test.js BasicTab.test.js
 **Files:**
 - Create: `web/src/components/runner/io/ioTypes.js`
 - Create: `web/src/components/runner/io/ioTypes.test.js`
-- Create: `web/src/components/runner/io/InputParamList.vue`
+- Create: `web/src/components/runner/io/InputParamList.tsx`
 - Create: `web/src/components/runner/io/InputParamList.test.js`
-- Create: `web/src/components/runner/io/InputParamRow.vue`
-- Create: `web/src/components/runner/io/ValueSourceSwitch.vue`
-- Create: `web/src/components/runner/io/VariableReferencePicker.vue`
+- Create: `web/src/components/runner/io/InputParamRow.tsx`
+- Create: `web/src/components/runner/io/ValueSourceSwitch.tsx`
+- Create: `web/src/components/runner/io/VariableReferencePicker.tsx`
 - Create: `web/src/components/runner/io/VariableReferencePicker.test.js`
-- Create: `web/src/components/runner/io/MixedVariableTextInput.vue`
+- Create: `web/src/components/runner/io/MixedVariableTextInput.tsx`
 - Create: `web/src/components/runner/io/MixedVariableTextInput.test.js`
-- Modify: `web/src/components/runner/node-config/InputTab.vue`
-- Modify: `web/src/components/runner/NodeConfigModal.vue`
+- Modify: `web/src/components/runner/node-config/InputTab.tsx`
+- Modify: `web/src/components/runner/NodeConfigModal.tsx`
 - Modify: `web/src/components/runner/runnerStudio.css`
 
 - [x] 写失败测试：输入参数行支持 `key`、`label`、`type`、`value_source`、`value`、`required`、`description`。
@@ -383,15 +383,15 @@ cd web && npm test -- ioTypes.test.js InputParamList.test.js VariableReferencePi
 ## 13. 结构化输出参数编辑器
 
 **Files:**
-- Create: `web/src/components/runner/io/OutputParamList.vue`
+- Create: `web/src/components/runner/io/OutputParamList.tsx`
 - Create: `web/src/components/runner/io/OutputParamList.test.js`
-- Create: `web/src/components/runner/io/OutputParamRow.vue`
-- Create: `web/src/components/runner/io/ExtractSourceSelect.vue`
-- Create: `web/src/components/runner/io/JsonPathEditor.vue`
+- Create: `web/src/components/runner/io/OutputParamRow.tsx`
+- Create: `web/src/components/runner/io/ExtractSourceSelect.tsx`
+- Create: `web/src/components/runner/io/JsonPathEditor.tsx`
 - Create: `web/src/components/runner/io/JsonPathEditor.test.js`
 - Create: `web/src/components/runner/io/outputTypes.js`
-- Modify: `web/src/components/runner/node-config/OutputTab.vue`
-- Modify: `web/src/components/runner/NodeConfigModal.vue`
+- Modify: `web/src/components/runner/node-config/OutputTab.tsx`
+- Modify: `web/src/components/runner/NodeConfigModal.tsx`
 - Modify: `web/src/components/runner/runnerStudio.css`
 
 - [x] 写失败测试：输出变量行支持 `key`、`type`、`extract_source`、`extract_rule`、`description`。
@@ -411,10 +411,10 @@ cd web && npm test -- OutputParamList.test.js JsonPathEditor.test.js
 ## 14. YAML 与 Diff 弹窗
 
 **Files:**
-- Create: `web/src/components/runner/YamlDiffModal.vue`
+- Create: `web/src/components/runner/YamlDiffModal.tsx`
 - Create: `web/src/components/runner/YamlDiffModal.test.js`
-- Create: `web/src/components/runner/YamlEditorPane.vue`
-- Create: `web/src/components/runner/GraphDiffSummary.vue`
+- Create: `web/src/components/runner/YamlEditorPane.tsx`
+- Create: `web/src/components/runner/GraphDiffSummary.tsx`
 - Create: `web/src/components/runner/GraphDiffSummary.test.js`
 
 - [x] 写失败测试：YAML 弹窗不会常驻主页面。
@@ -435,11 +435,11 @@ cd web && npm test -- YamlDiffModal.test.js GraphDiffSummary.test.js
 **Files:**
 - Create: `web/src/components/runner/runStateReducer.js`
 - Create: `web/src/components/runner/runStateReducer.test.js`
-- Create: `web/src/components/runner/RunLogDrawer.vue`
+- Create: `web/src/components/runner/RunLogDrawer.tsx`
 - Create: `web/src/components/runner/RunLogDrawer.test.js`
-- Create: `web/src/components/runner/VariableInspectDrawer.vue`
+- Create: `web/src/components/runner/VariableInspectDrawer.tsx`
 - Create: `web/src/components/runner/VariableInspectDrawer.test.js`
-- Create: `web/src/components/runner/NodeRunDetailModal.vue`
+- Create: `web/src/components/runner/NodeRunDetailModal.tsx`
 
 - [x] 写失败测试：SSE run event 可归并成 node/edge/host/log state。
 - [x] 日志抽屉显示 stdout、stderr、SSE、审批事件、重试轨迹。
@@ -460,9 +460,9 @@ cd web && npm test -- runStateReducer.test.js RunLogDrawer.test.js VariableInspe
 **Files:**
 - Create: `web/src/components/runner/ai/aiRunnerApi.js`
 - Create: `web/src/components/runner/ai/aiRunnerApi.test.js`
-- Create: `web/src/components/runner/ai/RunnerAiAssistantModal.vue`
+- Create: `web/src/components/runner/ai/RunnerAiAssistantModal.tsx`
 - Create: `web/src/components/runner/ai/RunnerAiAssistantModal.test.js`
-- Create: `web/src/components/runner/ai/AiDiffPreview.vue`
+- Create: `web/src/components/runner/ai/AiDiffPreview.tsx`
 - Create: `internal/server/runner_studio_ai.go`
 - Create: `internal/server/runner_studio_ai_test.go`
 
@@ -484,7 +484,7 @@ cd web && npm test -- aiRunnerApi.test.js RunnerAiAssistantModal.test.js
 ## 17. 发布审阅与审计
 
 **Files:**
-- Create: `web/src/components/runner/PublishReviewModal.vue`
+- Create: `web/src/components/runner/PublishReviewModal.tsx`
 - Create: `web/src/components/runner/PublishReviewModal.test.js`
 - Modify: `pkg/runner/server/api/visual_workflow_audit_test.go`
 - Modify: `internal/server/runner_studio_api.go`
@@ -552,15 +552,15 @@ cd web && npm run test:ui -- tests/runner-studio.spec.js --project=chromium
 ## 20. 2026-05-05 浏览器批注修复
 
 **Files:**
-- Modify: `web/src/pages/RunnerStudioPage.vue`
+- Modify: `web/src/pages/RunnerStudioPage.tsx`
 - Modify: `web/src/pages/RunnerStudioPage.test.js`
-- Modify: `web/src/components/runner/RunnerStudioShell.vue`
+- Modify: `web/src/components/runner/RunnerStudioShell.tsx`
 - Modify: `web/src/components/runner/RunnerStudioShell.test.js`
-- Modify: `web/src/components/runner/RunnerCanvas.vue`
+- Modify: `web/src/components/runner/RunnerCanvas.tsx`
 - Modify: `web/src/components/runner/RunnerCanvas.test.js`
-- Modify: `web/src/components/runner/CanvasToolbar.vue`
+- Modify: `web/src/components/runner/CanvasToolbar.tsx`
 - Modify: `web/src/components/runner/CanvasToolbar.test.js`
-- Modify: `web/src/components/runner/WorkflowQuickList.vue`
+- Modify: `web/src/components/runner/WorkflowQuickList.tsx`
 - Create: `web/src/components/runner/fallbackActionCatalog.js`
 - Modify: `web/src/components/runner/runnerStudio.css`
 - Modify: `web/tests/runner-studio.spec.js`

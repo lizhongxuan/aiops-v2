@@ -64,6 +64,7 @@ function matchesQuery(row, query) {
     row.raw?.name,
     row.sourceLabel,
     row.sshLabel,
+    row.labelText,
   ].map(normalizedText).join(" ");
   return haystack.includes(query);
 }
@@ -81,6 +82,13 @@ function matchesFilters(row, filters) {
 function buildSubtitle({ sourceLabel, version, ip, user }) {
   const source = version ? `${sourceLabel} ${version}` : sourceLabel;
   return `${source} · key ${ip}:${user}`;
+}
+
+function labelPairs(host) {
+  return Object.entries(host?.labels || {})
+    .map(([key, value]) => [compactText(key), compactText(value)])
+    .filter(([key, value]) => key && value)
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`));
 }
 
 export function buildHostListViewModel({
@@ -113,6 +121,7 @@ export function buildHostListViewModel({
           : Boolean(host.terminalCapable || host.executable);
       const sshLabel = canUseSsh ? "可 SSH" : "无密码";
       const heartbeat = resolveHeartbeat(host, now instanceof Date ? now : new Date(now));
+      const labels = labelPairs(host).map(([key, value]) => ({ key, value, label: `${key}=${value}` }));
       return {
         raw: host,
         id,
@@ -129,6 +138,8 @@ export function buildHostListViewModel({
         sessionCount: sessionCountByHost.get(id) || 0,
         sourceLabel,
         sshLabel,
+        labels,
+        labelText: labels.map((item) => item.label).join(" "),
         canOpenSsh: canUseSsh,
         primaryAction: resolvePrimaryAction(heartbeat.heartbeat),
       };

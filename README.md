@@ -41,6 +41,45 @@ internal/
 - `AgentDefinition`、`MCPServerConfig`、`settings / hooks / permissions` 都不是 tool；它们分别进入独立 registry 或治理层。
 - 旧 `capability` 兼容层已经删除；主运行链只认 `tooling.Tool`、`tooling.Registry`、`mcp.Registry`、`commands/skills/agents/...` 各自独立 registry。
 
+## React Chat v2 终态规则（2026-05）
+
+React Chat 的终态生产规则固定为 Codex 式 `Interleaved Transcript Blocks`。本次改造是从旧版本 `process[] + final + metadata.unstable_state` 一步迁到 React v2，不保留过渡规则，不保留 v1/v2 双生产路径。
+
+assistant-ui 只负责 transport、runtime 和 UI primitives；AIOps 自己的 runtime、tool registry、skills、MCP、agent registry、policy、approval、artifact 语义仍由 AIOps 后端和 appui 管理。不要把 tool / skills / MCP / agent registry 搬进 assistant-ui，也不要用 assistant-ui 的通用 tool bubble 替代 AIOps 的过程时间线。
+
+生产链路固定为：
+
+```text
+TurnItem / runtime event
+-> AiopsTransportState(v2).turns[turnId].blockOrder + blocksById
+-> AssistantTransport data stream state ops
+-> React Chat 按 blockOrder 原序渲染
+```
+
+所有 assistant 可见输出都必须进入同一条有序时间线：正文、命令、搜索、文件操作、MCP 工具、审批、变更摘要引用和最终回答按真实事件到达顺序交错展示。前端不得再把内容分成“AI 正文区、工具区、最终答案区”；后端不得从 assistant final Markdown/text 解析过程 UI。
+
+固定交互规则：
+
+- 单个命令或工具在 `queued/running` 时自动展开，并实时追加 stdout/stderr 或工具输出。
+- 单个命令或工具 `completed` 后自动折叠成一行灰色摘要。
+- 单个命令或工具 `failed/blocked/rejected` 后保持展开，直接暴露错误、审批或阻断原因。
+- 连续成功的短工具动作只在原时间线位置聚合成低噪音摘要，例如 `已探索 14 个文件,1 次搜索,2 个列表`；聚合不得跨越正文、审批或失败工具。
+- 最终回答是普通 `TextBlock`，不是特殊 `final.text` 区域。
+- `正在思考` 是时间线末尾的轻量状态 block，不和正在展开的工具同时竞争主视觉。
+
+终态实现边界：
+
+- Assistant message metadata 使用稳定自定义命名空间 `metadata.custom.aiops`，不使用 `metadata.unstable_state` 承载生产 transcript。
+- 长命令 stdout/stderr、长 tool output、多工具并发必须通过 `blocksById` 路径的 `append-text` 追加，不靠整 turn `set` 刷新。
+- `/api/v1/assistant/transport` 不能长期依赖固定高频轮询；终态必须使用事件驱动订阅，或至少使用动态 backoff 并在有输出时立即恢复短间隔。
+- `mcpSurfaces` / `artifacts` 使用 AIOps typed schema 表达 Agent-to-UI 卡片、artifact preview、iframe/app surface、command binding 和 lifecycle state；transcript block 只引用这些对象，不内联大体积产物。
+- Approval 的 UI 文案、transport decision 和 runtime decision 必须通过一套映射收敛，避免 `accept/reject/approved/denied/rejected` 多套表达扩散。
+
+设计和实施文档：
+
+- `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-design.md`
+- `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-todo.md`
+
 ## 快速开始
 
 ```bash
@@ -388,8 +427,8 @@ go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diag
 ### 2. 前端运行态约束
 
 - 事故页面不能新增私有 WebSocket、SSE、EventSource 或 polling 运行态。
-- ERP SRE 页面 HTTP 只能经 `web/src/api/*`，实时过程只能经主 `/ws` 和 `web/src/realtime/*`。
-- 事故工作台只能消费 `AgentEventProjection` 推导 runbook、proposal、tool、approval、verification 和 postmortem 过程态。
+- ERP SRE 页面 HTTP 只能经 `web/src/api/*`；Chat / Protocol 运行过程只能经 `AssistantTransport` 写入 `AiopsTransportState`。
+- 事故工作台只能消费 `AiopsTransportState` 或对应 API view-model；runbook、proposal、tool、approval、verification 和 postmortem 过程态不能再从旧 projection 推导。
 - 页面不能从 assistant final text、Markdown、`snapshot.toolInvocations` 或局部 running flag 推断真实执行状态。
 
 ### 3. 统一命名
@@ -412,11 +451,10 @@ go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diag
 
 ### 1. 前端只有一套数据入口
 
-- 页面、组件、`store.js` 不允许直接 `fetch(...)`
-- 页面、组件、`store.js` 不允许直接 `new WebSocket(...)`
-- HTTP 只能经由 `web/src/api/*`
-- realtime 只能经由 `web/src/realtime/*`
-- `store.js` 是状态中心，不是协议中心；它只能调用 `api/realtime` client
+- 页面和组件不允许直接 `fetch(...)` 调业务 API，必须经由 `web/src/pages/*Api.ts`、`web/src/lib/*` 或专用 API client。
+- Chat / Protocol 不允许直接 `new WebSocket(...)`、SSE、polling 或 page-local stream；生产流式入口只有 `AssistantTransport`。
+- 旧 `store.js`、Vue entry、Vue router 与 `web/src/realtime/appSocket.js` 已删除；不能作为兼容层重新引入。
+- 非 Chat 的专用实时能力必须有明确域边界，例如 terminal 只能使用 `/api/v1/terminal/ws`。
 
 ### 2. 后端只有一套 Web API 应用层
 
@@ -434,66 +472,67 @@ go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diag
 
 ### 4. Snapshot / WS 只有一套真相源
 
-- `/api/v1/state` 与主 `/ws` 必须共享 `appui.SnapshotBuilder`
-- 主 `/ws` 只推前端可消费的 `appui.StateSnapshot`、规范化 `agent_event` 和 heartbeat
-- terminal 必须使用独立 `/api/v1/terminal/ws`，不能混进主 `/ws`
-- 已删除的 legacy `WebSocketPusher` / `LegacyMessage` 不能重新引入
+- Chat 生产状态只能来自 `/api/v1/assistant/transport` 与 `/api/v1/assistant/resume`，并落入 `AiopsTransportState`。
+- `/api/v1/state` 只能作为非 Chat 页面 API view-model 或历史兼容输入，不能驱动 React Chat 过程 UI。
+- terminal 必须使用独立 `/api/v1/terminal/ws`，不能混进 AssistantTransport。
+- 已删除的 legacy `WebSocketPusher`、`LegacyMessage`、Vue router/store、旧 realtime app socket 不能重新引入。
 
-### 5. Agent Event 是唯一实时运行事件
+### 5. AssistantTransport 是 React Chat 唯一生产运行态
 
-- Chat、Protocol、host-agent、subagent、tool、MCP、approval、diff、browser 验证的运行过程只能进入统一 `AgentEvent`
-- 旧 `turn_event` 必须在 AgentEvent 切换同批删除，不能作为生产 adapter 或新功能依赖
-- 运行态 UI 只能由 `AgentEventProjection` 推导，页面不能直接从 `cards/toolInvocations` 猜 `Working`、agent 状态或 process fold
-- `AgentEvent` 必须有 `eventId`、`seq`、`kind`、`phase`、`status`、`visibility` 和 typed payload，不能靠文案正则判断状态
-- `internal/server` 不允许拼业务事件；事件 normalize、append、replay、projection 只能放在 `internal/appui`
-- 前端只能有一套运行事件 reducer；本地 optimistic 状态也必须表示成同一套 `AgentEvent`
-- Busy/Working 必须由 liveness 集合推导：active turns、active agents、active command streams、pending approvals、pending user inputs
-- 主 UI 不显示 UUID/call-id/raw id，只显示 agent handle/name、阶段摘要、diff stats、approval/artifact 入口
+- React Chat、Protocol、host-agent、tool、MCP、approval、diff、browser 验证的生产过程 UI 只能进入 `AiopsTransportState`。
+- 后端 `TurnItem` / `AgentEvent` 可以作为 runtime typed fact 或兼容内部模型保留，但不能作为 React Chat 生产 truth source 暴露给页面。
+- 旧 `turn_event`、`agent_event` WebSocket reducer、`AgentEventProjection` selector、`codexProcessTranscript`、`ChatProcessFold` 不能作为 React Chat 生产路径重新引入。
+- `AiopsTransportState.schemaVersion` 固定使用 `aiops.transport.v2`；旧 `process[] + final` schema 只能作为被删除对象，不能作为生产兼容路径保留。
+- `internal/server` 不允许拼页面私有运行态；AssistantTransport command decode、state ops、resume/cancel 必须经 `internal/appui` / runtime 主链。
+- 前端只能有一套 Chat 运行态 reducer：assistant-ui transport runtime；本地 optimistic、send pending、stop、failed、approval blocked、tool progress 都必须表示成 transport state ops。
+- Busy/Working 必须由 `AiopsTransportState.status` 与 `runtimeLiveness` 推导：active turns、active agents、active command streams、pending approvals、pending user inputs。
+- 主 UI 不显示 UUID/call-id/raw id，只显示 agent handle/name、阶段摘要、diff stats、approval/artifact 入口。
 
 新增或修改 Chat / Protocol / 工作台 UI 时必须同时满足：
 
-- 后端新增运行过程：先扩展 `internal/appui/agent_event*.go` 的 event contract / normalizer / projector，再由 `/ws` 推 `agent_event`
-- 前端新增运行过程：先扩展 `web/src/events/agentEventReducer.js` 和 `web/src/events/agentEventProjection.js`，页面只消费 projection selector
-- 本地 optimistic、send pending、stop、failed、approval blocked、tool progress 都必须写成本地或后端 `AgentEvent`，不能只改页面局部变量或 `runtime.turn`
-- 单机会话和协作工作台必须共用同一套 projection selector；允许布局不同，不允许状态模型不同
+- 后端新增运行过程：只扩展 v2 `AiopsTransportState` 相关 DTO、projector/state op 和 AssistantTransport stream writer；不得回写旧 `process[] + final`。
+- 前端新增运行过程：先扩展 `web/src/transport/aiopsTransportTypes.ts`、runtime/converter 和对应 UI part；页面只消费 `useAssistantTransportState()`，assistant message 自定义数据只放在 `metadata.custom.aiops`。
+- 本地 optimistic、send pending、stop、failed、approval blocked、tool progress 都必须写成 transport command 或 state op，不能只改页面局部变量或 legacy runtime flags。
+- 单机会话和协作工作台必须共用 `AiopsTransportState`；允许布局不同，不允许状态模型不同。
 - `snapshot.cards` 只能作为持久会话内容 / card artifact 输入，不能作为 running/busy/approval/tool progress 的真相源
 - `snapshot.toolInvocations` 只能作为历史证据/详情兼容输入，不能驱动主 Chat 工作流里的实时 process fold
 - 单机会话默认运行模式必须是 `ModeExecute`；前端发送消息通常只带 `sessionId`，后端 `SendMessage` 必须从 session 回填 `type/mode/host`，不能让单机会话回落到 `chat` 只读 prompt
-- 单机会话过程 UI 必须收敛到一套 Codex-style transcript projection；不能并行用 `LiveStatusCard`、`statusCard`、process cards 或 page-level activity label 生成同一轮运行过程
+- 单机会话过程 UI 必须收敛到一套 assistant-ui transport projection；不能并行用 `LiveStatusCard`、`statusCard`、legacy process cards 或 page-level activity label 生成同一轮运行过程
 - 命令、搜索、文件、MCP 等过程行必须使用 typed fields（例如 `displayKind`、`inputSummary`、`command`、`outputPreview`）渲染；不能靠 UI 文案正则重新分类
 - 过程行去重必须使用 typed semantic key（例如 `displayKind + command/inputSummary/queries/results`），不能只按可见文案去重，否则会把多次同名搜索或命令错误折叠掉
 - `已记录 X 条过程细项`、`明细已折叠`、`处理失败 X 条明细`、`准备上下文`、`编译提示词`、`准备工具`、`调用模型` 这类不面向用户的过程文案不得从上游生成；不得用组件条件或 CSS 隐藏作为修复
-- 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `RuntimeLiveness` 或 projection row 推导，不能靠 card title/status 文案正则
-- Codex 原生过程 UI 规范以 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md` 和 `docs/superpowers/specs/2026-04-29-codex-native-process-ux-todo.zh.md` 为准；修改单机会话过程 UI 时必须同步更新对应验收项
+- 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `AiopsTransportState.status`、turn status 或 `runtimeLiveness` 推导，不能靠 card title/status 文案正则
+- Codex 原生过程 UI 终态以 `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-design.md` 和 `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-todo.md` 为准；修改单机会话过程 UI 时必须同步更新对应验收项
 - 真实 LLM Playwright 回归只能通过 `AIOPS_TEST_LLM_BASE_URL`、`AIOPS_TEST_LLM_API_KEY`、`AIOPS_TEST_LLM_MODEL` 注入配置；API key 不允许写入源码、fixture、README、验收报告或截图命名
 - 真实 LLM Playwright 回归必须用临时 `AIOPS_DATA_DIR` 启动服务，并在测试结束后清理；不能把测试 API key 写入项目默认 `.data` 或可提交配置
 - 代码评审前必须运行：
 
 ```bash
-rg "turn_event|applyTurnEvent|turnEventsById|processItemsByTurnId|phaseFoldsByTurnId|assistantDraftsByTurnId|finalMessagesByTurnId" web/src internal/server internal/appui
-rg "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phaseFoldsByTurnId" web/src/App.vue web/src/pages web/src/components
+rg -n "emit_response_events|StructuredResponsePatch|StructuredResponsePanel" internal web/src
+rg -n "AgentEventProjection|agent_event|codexProcessTranscript|ChatProcessFold" web/src
+rg -n "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|phaseFoldsByTurnId" web/src
 ```
 
-第一条在生产代码中必须无匹配。第二条如果有匹配，必须证明它不是运行态真相源；否则先迁移到 `AgentEventProjection`。
+以上命令在生产 `web/src` 中必须无旧 Chat truth source 命中；如有测试/fixture/debug 命中，必须明确不参与 React Chat 生产路径，否则先迁移到 `AiopsTransportState`。
 
 ### 5.1 Codex-style 结构化流式输出规则
 
 `aiops-v2` 的结构化流式输出主路径固定为：
 
 ```text
-model/tool/runtime -> TurnItem -> AgentEvent -> AgentEventProjection -> processTranscript -> Vue
+model/tool/runtime -> TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React
 ```
 
-这条路径覆盖 plan、tool/search/command、evidence、approval 和 final Markdown。以后新增运行过程 UI 时，只能扩展 `TurnItem.Payload.Data`、`AgentEvent` typed payload、`AgentEventProjection`、`codexProcessTranscript` 和 `ChatProcessFold`，不能新增并行结构化输出协议。
+这条路径覆盖 plan、tool/search/command、evidence、approval 和 final answer。以后新增运行过程 UI 时，只能扩展 `AiopsTransportState` typed fields、AssistantTransport command/state op、converter 和对应 React part，不能新增并行结构化输出协议。
 
 硬约束：
 
 - 不允许新增 `StructuredResponsePatch`、`emit_response_events`、`StructuredResponsePanel` 作为主路径。
-- 不允许页面私有 `new WebSocket(...)`、SSE 或 polling 通道绕过主 `/ws` 和 `web/src/realtime/*`。
+- 不允许页面私有 `new WebSocket(...)`、SSE 或 polling 通道绕过 AssistantTransport；专用终端 WebSocket 只能用于 terminal 域。
 - 不允许从 assistant final text 解析 `summary/steps/actions`、command、approval、completed、failed 或 plan 状态。
-- `update_plan` 只能落为结构化 plan item，再经 `AgentEventProjection` 进入 process transcript。
+- `update_plan` 只能落为结构化 `TextBlock` 或 `ToolBlock` 元数据，再经 `AiopsTransportState.turns[*].blockOrder + blocksById` 进入 React Chat。
 - command/search/evidence/approval 必须使用 typed fields，例如 `displayKind`、`command`、`queries`、`results`、`source`、`confidence`、`rawRef`。
-- final answer 只由 `MessageCard.vue` 做 Markdown token streaming；过程区不能复制最终回答。
+- final answer 只能作为普通 `TextBlock` 按原始到达顺序流式展示，不能复制到特殊 final 区或过程区。
 - 高风险动作只能经 tool/policy/approval path 展示和执行，不能由模型正文伪造“已执行”状态。
 
 提交或评审结构化流式输出相关改动前必须运行：
@@ -523,17 +562,17 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - `auth-overlay-dock` 只能作为 workspace 或特殊 MCP fallback；新增 single-host approval 不允许接入它。
 - 审批展示必须使用真实业务对象：命令审批显示 `command`，文件审批显示 file/path/diff 摘要；禁止把 `exec_command`、`shell_command`、`code_mode` 等工具名当成用户可审内容。
 - 后端 approval contract 必须分离 `command` 和 `reason`：`command` 给用户审核，`reason` 给策略解释；不能把策略原因塞进 command，也不能把 command 塞进 reason。
-- projection、snapshot、local optimistic approval 必须归一到同一个 composer approval selector；页面模板里不能再并行判断多套 pending approval 来源。
+- transport state、snapshot 兼容输入、local optimistic approval 必须归一到同一个 composer approval selector；页面模板里不能再并行判断多套 pending approval 来源。
 - 同一个 approval id 在页面上只能有一个可点击决策入口；如果同时出现 `codex-approval-inline` 和 `approval-dock`，视为 P0 UI 回归。
 - 审批按钮提交必须继续走统一 decision API，不允许组件私有化决策逻辑或直接改 store 状态。
-- `ResumeTurn` 处理批准决策时必须发出 `approval.decided`/resolved 事件，再继续工具执行；不能只清 runtime pending state，否则旧 `approval.blocked` projection 会把同一命令重新推回底部审批栏。
-- `RunTurn` / `ResumeTurn` 返回 `blocked` 或 `pending_approval` 时，appui async runner 只能补 `agent.blocked` 或保持 approval projection；不能补 `turn.failed.async`，否则 pending approval 会被失败态清空并丢失可点击审核入口。
+- `ResumeTurn` 处理批准决策时必须更新 approval resolved state op，再继续工具执行；不能只清 runtime pending state，否则旧 pending approval 会把同一命令重新推回底部审批栏。
+- `RunTurn` / `ResumeTurn` 返回 `blocked` 或 `pending_approval` 时，appui async runner 只能保持 transport `blocked` 与 pending approval；不能补 failed state，否则 pending approval 会被失败态清空并丢失可点击审核入口。
 
 修改审批相关代码时必须补或更新以下验证：
 
 - 前端单元测试要断言 single-host pending approval 时：`[data-testid="approval-dock"]` 不存在，`[data-testid="codex-approval-inline"]` 存在，`.omnibar-wrapper` 不存在。
 - 前端单元测试要断言显示真实 `command`，且不显示 `exec_command` 这类工具名。
-- reducer/projector 测试要覆盖 `approval.payload.command` 从后端事件进入 projection。
+- transport projector/runtime 测试要覆盖 approval `command` 从后端 typed fact 进入 `AiopsTransportState.pendingApprovals`。
 - runtime 测试要覆盖批准路径会发 `approval.decided(status=approved)`，拒绝路径会发 `approval.decided(status=denied)`，两者都不能让 pending approval 留在 projection 中。
 - 后端 snapshot/projector 测试要覆盖 `PendingApproval.Command` 与 `Reason` 分离。
 - Playwright 验证要至少检查一次真实或 fixture pending approval：approval dock 数量为 0、inline 数量为 1、输入框被替换、点击同意会发送 `/api/v1/approvals/:id/decision`。
@@ -547,11 +586,11 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 
 新增 Web 功能的最小接入顺序：
 
-1. 先在 `web/src/api/*` 或 `web/src/realtime/*` 定义唯一前端入口
+1. 先在 `web/src/pages/*Api.ts`、`web/src/lib/*` 或 `AssistantTransport` 定义唯一前端入口
 2. 再在 `internal/appui` 定义 service/DTO/command translation
 3. 最后在 `internal/server` 补 transport handler
 4. 如果涉及 chat/protocol 中断恢复，必须补 runtimekernel resume/cancel 测试
-5. 如果涉及运行过程展示，必须先扩展 [`docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md`](./docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.zh.md)（中文验收规范）或 [`docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.md`](./docs/superpowers/specs/2026-04-29-codex-native-process-ux-design.md) 定义的 `AgentEvent` contract，再实现 normalizer/projector/reducer；不要用组件条件或 CSS 隐藏旧模块来替代上游数据清理
+5. 如果涉及运行过程展示，必须先扩展 `AiopsTransportState` schema 与 AssistantTransport state op，再实现 projector/runtime/converter；不要用组件条件或 CSS 隐藏旧模块来替代上游数据清理
 
 ---
 

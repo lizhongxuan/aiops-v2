@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [react()],
   build: {
     outDir: "../dist",
     emptyOutDir: true,
@@ -10,11 +10,8 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes("/node_modules/@vue-flow/")) return "vue-flow";
-          if (id.includes("/node_modules/naive-ui/") || id.includes("/node_modules/vueuc/")) return "naive-ui";
-          if (id.includes("/node_modules/lucide-vue-next/")) return "icons";
+          if (id.includes("/node_modules/react/") || id.includes("/node_modules/react-dom/")) return "react-vendor";
           if (id.includes("/node_modules/monaco-editor/")) return "monaco-editor";
-          if (id.includes("/node_modules/vue/") || id.includes("/node_modules/@vue/")) return "vue-vendor";
           return undefined;
         },
       },
