@@ -73,7 +73,7 @@ func TestProjectTurnItemsToAgentEventsPreservesModelCallDebugData(t *testing.T) 
 	}
 }
 
-func TestProjectTurnItemsToAgentEventsDeduplicatesFinalAnswer(t *testing.T) {
+func TestProjectTurnItemsToAgentEventsKeepsAssistantFinalItemsDistinct(t *testing.T) {
 	items := []agentstate.TurnItem{
 		{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "first"}},
 		{ID: "final-2", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "second"}},
@@ -81,11 +81,14 @@ func TestProjectTurnItemsToAgentEventsDeduplicatesFinalAnswer(t *testing.T) {
 
 	events := ProjectTurnItemsToAgentEvents("session-1", "turn-1", items, 0)
 
-	if len(events) != 1 {
-		t.Fatalf("events = %d, want one final answer event", len(events))
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want two assistant events", len(events))
 	}
-	if events[0].Kind != AgentEventAssistant {
-		t.Fatalf("final event kind = %q, want assistant", events[0].Kind)
+	if events[0].Kind != AgentEventAssistant || events[1].Kind != AgentEventAssistant {
+		t.Fatalf("events = %#v, want assistant events", events)
+	}
+	if events[0].EventID == events[1].EventID {
+		t.Fatalf("event IDs should be distinct: %#v", events)
 	}
 }
 

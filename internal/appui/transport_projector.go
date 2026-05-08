@@ -33,6 +33,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	if projectedTurn.ID == "" {
 		projectedTurn.ID = turnID
 	}
+	projectedTurn.Process = nil
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
 	projectedTurn.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), projectedTurn.UpdatedAt)
 	if turn.CompletedAt != nil {

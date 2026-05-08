@@ -581,6 +581,57 @@ func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *tes
 	}
 }
 
+func TestTransportProjectorReordersProcessFromLatestAgentItems(t *testing.T) {
+	now := time.Date(2026, 5, 8, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	searchData := json.RawMessage(`{
+		"toolCallId":"search-1",
+		"toolName":"web_search",
+		"displayKind":"browser.search",
+		"inputSummary":"BTC current price USD 24h change"
+	}`)
+	firstSnapshot := &runtimekernel.TurnSnapshot{
+		ID:        "turn-process-order",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "search-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "BTC current price USD 24h change", Data: searchData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+	projected, err := projector.ProjectTurnSnapshot(state, firstSnapshot)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot(first) error = %v", err)
+	}
+	if len(projected.Turns["turn-process-order"].Process) != 1 || projected.Turns["turn-process-order"].Process[0].Kind != AiopsTransportProcessKindSearch {
+		t.Fatalf("first process = %#v, want only search", projected.Turns["turn-process-order"].Process)
+	}
+
+	secondSnapshot := *firstSnapshot
+	secondSnapshot.UpdatedAt = now.Add(2 * time.Second)
+	secondSnapshot.AgentItems = []agentstate.TurnItem{
+		{ID: "final-prelude", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "我将先用实时网页搜索获取当前BTC价格、24小时涨跌与主要来源报价，并据此给你一个简明行情摘要。"}, CreatedAt: now.Add(500 * time.Millisecond)},
+		{ID: "search-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "BTC current price USD 24h change", Data: searchData}, CreatedAt: now.Add(time.Second)},
+	}
+	projected, err = projector.ProjectTurnSnapshot(projected, &secondSnapshot)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot(second) error = %v", err)
+	}
+
+	process := projected.Turns["turn-process-order"].Process
+	if len(process) != 2 {
+		t.Fatalf("len(process) = %d, want assistant and search: %#v", len(process), process)
+	}
+	if process[0].Kind != AiopsTransportProcessKindAssistant || process[0].Text == "" {
+		t.Fatalf("process[0] = %+v, want assistant prelude", process[0])
+	}
+	if process[1].Kind != AiopsTransportProcessKindSearch {
+		t.Fatalf("process[1] = %+v, want search after assistant", process[1])
+	}
+}
+
 func TestTransportProjectorDedupesProviderNativeWebSearchBlocks(t *testing.T) {
 	now := time.Date(2026, 5, 7, 10, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()

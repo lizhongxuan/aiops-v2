@@ -360,8 +360,35 @@ func clearRunningFinalMessageForToolEvent(proj AgentEventProjection, event Agent
 		return proj
 	}
 	final, ok := proj.FinalMessages[event.TurnID]
-	if !ok || final.Status == AgentEventStatusCompleted {
+	if !ok || (final.Status == AgentEventStatusCompleted && event.Phase != AgentEventPhaseStarted) {
 		return proj
+	}
+	if text := strings.TrimSpace(final.Text); text != "" {
+		sourceID := strings.TrimSpace(event.EventID)
+		if sourceID == "" {
+			sourceID = fmt.Sprintf("%d", event.Seq)
+		}
+		id := fmt.Sprintf("%s:assistant-before-tool:%s", event.TurnID, sourceID)
+		seq := event.Seq
+		if seq > 0 {
+			seq--
+		}
+		row := TimelineEntry{
+			ID:          id,
+			Kind:        AgentEventAssistant,
+			TurnID:      event.TurnID,
+			AgentID:     event.AgentID,
+			DisplayKind: "assistant.process",
+			Phase:       AgentEventPhaseCompleted,
+			Status:      AgentEventStatusCompleted,
+			Visibility:  AgentEventVisibilityPrimary,
+			Title:       "assistant",
+			Summary:     text,
+			UpdatedAt:   firstNonEmptyString(final.UpdatedAt, event.CreatedAt),
+			Seq:         seq,
+		}
+		proj.Timeline = upsertTimelineEntry(proj.Timeline, row)
+		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
 	}
 	delete(proj.FinalMessages, event.TurnID)
 	return proj
