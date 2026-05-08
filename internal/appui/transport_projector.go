@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -29,7 +30,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	next.CurrentTurnID = turnID
 	next.TurnOrder = appendTurnOrder(next.TurnOrder, turnID)
 
-	projectedTurn := next.Turns[turnID]
+	projectedTurn := removeAggregateBlocks(EnsureAiopsTransportTurnBlocks(next.Turns[turnID]))
 	if projectedTurn.ID == "" {
 		projectedTurn.ID = turnID
 	}
@@ -46,34 +47,33 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		activeApprovalIDs = snapshotPendingApprovalIDs(turn.PendingApprovals, turn.PendingEvidence)
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
+
+	hasFinalAnswerItem := false
 	for _, item := range turn.AgentItems {
+		if item.Type == agentstate.TurnItemTypeFinalAnswer {
+			hasFinalAnswerItem = true
+		}
 		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item)
 	}
+
 	if turn.Lifecycle.IsTerminal() {
-		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
+		projectedTurn = normalizeTerminalTranscriptBlocks(projectedTurn, turn.Lifecycle, turn.Error)
 		pruneTransportPendingApprovalsForTurn(&next, turnID, map[string]bool{})
 	} else {
 		projectedTurn = projectSnapshotPendingApprovals(projectedTurn, &next, turnID, turn.PendingApprovals)
 		projectedTurn = projectSnapshotPendingEvidence(projectedTurn, &next, turnID, turn.PendingEvidence)
 	}
-	if finalText := strings.TrimSpace(turn.FinalOutput); finalText != "" {
-		finalStatus := mapTurnStatusToFinalStatus(mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0))
-		if projectedTurn.Final == nil {
-			projectedTurn.Final = &AiopsTransportFinal{ID: TransportProcessBlockStableID(turnID, "final", "output")}
-		}
-		if strings.TrimSpace(projectedTurn.Final.ID) == "" {
-			projectedTurn.Final.ID = TransportProcessBlockStableID(turnID, "final", "output")
-		}
-		projectedTurn.Final.Text = finalText
-		projectedTurn.Final.Status = finalStatus
-	}
 
+	if finalText := strings.TrimSpace(turn.FinalOutput); finalText != "" && !hasFinalAnswerItem {
+		projectedTurn = projectSyntheticFinalTextBlock(projectedTurn, turnID, finalText, turn.UpdatedAt, turn.Lifecycle.IsTerminal())
+	}
 	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
-	if projectedTurn.Final != nil && projectedTurn.Final.Status == "" {
-		projectedTurn.Final.Status = mapTurnStatusToFinalStatus(projectedTurn.Status)
+	if len(projectedTurn.BlockOrder) == 0 && !turn.Lifecycle.IsTerminal() {
+		projectedTurn = projectThinkingBlock(projectedTurn, turnID, "thinking", transportTimestamp(turn.UpdatedAt))
 	}
-	next.Turns[turnID] = projectedTurn
+	projectedTurn = aggregateTranscriptBlocks(projectedTurn)
 
+	next.Turns[turnID] = projectedTurn
 	applyTurnLiveness(&next, turnID, projectedTurn.Status)
 	if errText := firstNonEmptyString(strings.TrimSpace(turn.Error), strings.TrimSpace(next.LastError)); errText != "" && projectedTurn.Status == AiopsTransportTurnStatusFailed {
 		next.LastError = errText
@@ -135,18 +135,9 @@ func projectSnapshotPendingApprovals(turn AiopsTransportTurn, state *AiopsTransp
 		if command != "" || strings.EqualFold(strings.TrimSpace(approval.ToolName), "exec_command") {
 			approvalType = "command"
 		}
-		updatedAt := firstNonEmptyString(transportTimestamp(approval.UpdatedAt), transportTimestamp(approval.CreatedAt))
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindApproval), approvalID),
-			Kind:        AiopsTransportProcessKindApproval,
-			DisplayKind: "approval",
-			Status:      AiopsTransportProcessStatusBlocked,
-			Text:        firstNonEmptyString(reason, command, "等待审批"),
-			Command:     command,
-			ApprovalID:  approvalID,
-			UpdatedAt:   updatedAt,
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
+		requestedAt := transportTimestamp(approval.CreatedAt)
+		updatedAt := firstNonEmptyString(transportTimestamp(approval.UpdatedAt), requestedAt)
+		turn = upsertApprovalTranscriptBlock(turn, turnID, approvalID, approvalType, firstNonEmptyString(reason, command, "等待审批"), command, status, requestedAt, "", updatedAt)
 		state.PendingApprovals[approvalID] = AiopsTransportApproval{
 			ID:          approvalID,
 			TurnID:      firstNonEmptyString(strings.TrimSpace(approval.TurnID), turnID),
@@ -154,7 +145,7 @@ func projectSnapshotPendingApprovals(turn AiopsTransportTurn, state *AiopsTransp
 			Status:      status,
 			Command:     command,
 			Reason:      reason,
-			RequestedAt: transportTimestamp(approval.CreatedAt),
+			RequestedAt: requestedAt,
 		}
 		state.RuntimeLiveness.PendingApprovals[approvalID] = true
 	}
@@ -174,34 +165,12 @@ func projectSnapshotPendingEvidence(turn AiopsTransportTurn, state *AiopsTranspo
 		if status == "" || status == "pending" {
 			status = string(AiopsTransportProcessStatusBlocked)
 		}
-		command := pendingEvidenceCommand(turn.Process, evidence)
+		command := firstNonEmptyString(findCommandForToolCall(turn, evidence.ToolCallID), strings.TrimSpace(evidence.ToolName), strings.TrimSpace(evidence.Reason))
 		reason := strings.TrimSpace(evidence.Reason)
-		updatedAt := firstNonEmptyString(transportTimestamp(evidence.UpdatedAt), transportTimestamp(evidence.CreatedAt))
-		for i := range turn.Process {
-			if !pendingEvidenceMatchesProcessBlock(turn.Process[i], evidence) {
-				continue
-			}
-			if turn.Process[i].Kind == AiopsTransportProcessKindCommand && turn.Process[i].Status == AiopsTransportProcessStatusBlocked {
-				turn.Process[i].ApprovalID = evidenceID
-				if strings.TrimSpace(turn.Process[i].Command) == "" {
-					turn.Process[i].Command = command
-				}
-				if strings.TrimSpace(turn.Process[i].Text) == "" {
-					turn.Process[i].Text = command
-				}
-			}
-		}
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindApproval), evidenceID),
-			Kind:        AiopsTransportProcessKindApproval,
-			DisplayKind: "approval",
-			Status:      AiopsTransportProcessStatusBlocked,
-			Text:        firstNonEmptyString(reason, command, "等待审批"),
-			Command:     command,
-			ApprovalID:  evidenceID,
-			UpdatedAt:   updatedAt,
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
+		requestedAt := transportTimestamp(evidence.CreatedAt)
+		updatedAt := firstNonEmptyString(transportTimestamp(evidence.UpdatedAt), requestedAt)
+		turn = attachApprovalToMatchingTool(turn, evidence.ToolCallID, evidenceID, status, updatedAt)
+		turn = upsertApprovalTranscriptBlock(turn, turnID, evidenceID, "command", firstNonEmptyString(reason, command, "等待审批"), command, status, requestedAt, "", updatedAt)
 		state.PendingApprovals[evidenceID] = AiopsTransportApproval{
 			ID:          evidenceID,
 			TurnID:      firstNonEmptyString(strings.TrimSpace(evidence.TurnID), turnID),
@@ -209,7 +178,7 @@ func projectSnapshotPendingEvidence(turn AiopsTransportTurn, state *AiopsTranspo
 			Status:      status,
 			Command:     command,
 			Reason:      reason,
-			RequestedAt: transportTimestamp(evidence.CreatedAt),
+			RequestedAt: requestedAt,
 		}
 		state.RuntimeLiveness.PendingApprovals[evidenceID] = true
 	}
@@ -228,174 +197,281 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			}
 		}
 	case agentstate.TurnItemTypePlan:
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindPlan), item.ID),
-			Kind:        AiopsTransportProcessKindPlan,
-			DisplayKind: "plan",
-			Status:      mapItemStatusToTransportProcessStatus(item.Status),
-			Text:        strings.TrimSpace(item.Payload.Summary),
-			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+		turn = projectPlanTextBlock(turn, turnID, item)
+	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
+		turn = projectToolTranscriptBlock(turn, state, turnID, item)
+	case agentstate.TurnItemTypeEvidence:
+		turn = projectEvidenceTranscriptBlock(turn, turnID, item)
+	case agentstate.TurnItemTypeApproval:
+		turn = projectApprovalItemBlock(turn, state, turnID, item)
+	case agentstate.TurnItemTypeFinalAnswer:
+		status := AiopsTranscriptTextStatusStreaming
+		if item.Status == agentstate.ItemStatusCompleted {
+			status = AiopsTranscriptTextStatusCompleted
 		}
-		var payload struct {
-			Title string `json:"title"`
-			Steps []struct {
-				ID      string `json:"id"`
-				Text    string `json:"text"`
-				Status  string `json:"status"`
-				Summary string `json:"summary"`
-			} `json:"steps"`
-		}
-		if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil {
-			if title := strings.TrimSpace(payload.Title); title != "" {
-				block.Text = title
+		turn = projectTextBlock(turn, turnID, item, strings.TrimSpace(item.Payload.Summary), status)
+	case agentstate.TurnItemTypeModelCall:
+		text := strings.TrimSpace(item.Payload.Summary)
+		if isGenericModelSummary(text) {
+			if item.Status == agentstate.ItemStatusRunning {
+				turn = projectThinkingBlock(turn, turnID, item.ID, transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)))
 			}
+			return turn
+		}
+		status := AiopsTranscriptTextStatusStreaming
+		if item.Status == agentstate.ItemStatusCompleted {
+			status = AiopsTranscriptTextStatusCompleted
+		}
+		turn = projectTextBlock(turn, turnID, item, text, status)
+	case agentstate.TurnItemTypeError:
+		if state != nil {
+			state.LastError = strings.TrimSpace(item.Payload.Summary)
+		}
+		turn = projectErrorTextBlock(turn, turnID, item)
+	}
+	return turn
+}
+
+func projectPlanTextBlock(turn AiopsTransportTurn, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+	text := strings.TrimSpace(item.Payload.Summary)
+	var payload struct {
+		Title string `json:"title"`
+		Steps []struct {
+			Text    string `json:"text"`
+			Status  string `json:"status"`
+			Summary string `json:"summary"`
+		} `json:"steps"`
+	}
+	if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil {
+		text = firstNonEmptyString(strings.TrimSpace(payload.Title), text)
+		if len(payload.Steps) > 0 {
+			lines := []string{text}
 			for _, step := range payload.Steps {
-				if text := strings.TrimSpace(step.Text); text != "" {
-					block.Steps = append(block.Steps, AiopsTransportPlanStep{
-						ID:      strings.TrimSpace(step.ID),
-						Text:    text,
-						Status:  strings.TrimSpace(step.Status),
-						Summary: strings.TrimSpace(step.Summary),
-					})
+				if stepText := strings.TrimSpace(firstNonEmptyString(step.Text, step.Summary)); stepText != "" {
+					lines = append(lines, stepText)
 				}
 			}
+			text = strings.Join(nonEmptyStrings(lines...), "\n")
 		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
-	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
-		tool := decodeTransportToolPayload(item.Payload)
-		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
-		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
+	}
+	return projectTextBlock(turn, turnID, item, text, AiopsTranscriptTextStatusCompleted)
+}
 
-		// For search blocks, Text is a query string (not HTML) — skip sanitization.
-		// For other tool blocks, sanitize both Text and OutputPreview to strip HTML/truncate.
-		toolText := summarizeTransportToolText(blockKind, tool, item.Payload)
-		if blockKind != AiopsTransportProcessKindSearch {
-			toolText = sanitizeOutputPreview(toolText)
-		}
+func projectTextBlock(turn AiopsTransportTurn, turnID string, item agentstate.TurnItem, text string, status AiopsTranscriptTextStatus) AiopsTransportTurn {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return turn
+	}
+	blockID := TransportProcessBlockStableID(turnID, "text", item.ID)
+	block := AiopsTranscriptBlock{
+		ID:   blockID,
+		Type: AiopsTranscriptBlockTypeText,
+		Text: &AiopsTextBlock{
+			Role:   "assistant",
+			Text:   trimmed,
+			Status: status,
+		},
+		CreatedAt: transportTimestamp(item.CreatedAt),
+		UpdatedAt: transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+	}
+	return UpsertAiopsTranscriptBlock(turn, block)
+}
 
-		block := AiopsProcessBlock{
-			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
-			Kind:          blockKind,
-			DisplayKind:   displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
-			Status:        mapItemStatusToTransportProcessStatus(item.Status),
-			Text:          toolText,
-			InputSummary:  tool.InputSummary,
-			OutputPreview: sanitizeOutputPreview(outputPreviewForTransportToolBlock(blockKind, tool)),
-			RawRef:        tool.RawRef,
-			ExitCode:      tool.ExitCode,
-			DurationMs:    tool.DurationMs,
-			UpdatedAt:     transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+func projectSyntheticFinalTextBlock(turn AiopsTransportTurn, turnID, text string, updatedAt time.Time, terminal bool) AiopsTransportTurn {
+	status := AiopsTranscriptTextStatusStreaming
+	if terminal {
+		status = AiopsTranscriptTextStatusCompleted
+	}
+	item := agentstate.TurnItem{
+		ID:        "final-output",
+		CreatedAt: updatedAt,
+		UpdatedAt: updatedAt,
+	}
+	return projectTextBlock(turn, turnID, item, text, status)
+}
+
+func projectErrorTextBlock(turn AiopsTransportTurn, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+	return projectTextBlock(turn, turnID, item, strings.TrimSpace(item.Payload.Summary), AiopsTranscriptTextStatusCompleted)
+}
+
+func projectThinkingBlock(turn AiopsTransportTurn, turnID, sourceID, updatedAt string) AiopsTransportTurn {
+	blockID := TransportProcessBlockStableID(turnID, "thinking", sourceID)
+	return UpsertAiopsTranscriptBlock(turn, AiopsTranscriptBlock{
+		ID:   blockID,
+		Type: AiopsTranscriptBlockTypeThinking,
+		Thinking: &AiopsThinkingBlock{
+			Text:   "正在思考",
+			Status: string(AiopsTransportProcessStatusRunning),
+		},
+		UpdatedAt: updatedAt,
+	})
+}
+
+func projectToolTranscriptBlock(turn AiopsTransportTurn, state *AiopsTransportState, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+	tool := decodeTransportToolPayload(item.Payload)
+	toolKind := detectTranscriptToolKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
+	sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
+	blockID := TransportProcessBlockStableID(turnID, "tool", sourceID)
+	status := mapItemStatusToTransportProcessStatus(item.Status)
+	outputText := outputTextForTranscriptTool(toolKind, tool)
+	command := commandForTranscriptTool(toolKind, tool)
+	summary := summaryForTranscriptTool(toolKind, status, command, tool)
+	block := AiopsTranscriptBlock{
+		ID:   blockID,
+		Type: AiopsTranscriptBlockTypeTool,
+		Tool: &AiopsToolBlock{
+			ToolKind:     toolKind,
+			ToolName:     tool.ToolName,
+			Title:        titleForTranscriptTool(toolKind),
+			Summary:      summary,
+			Status:       status,
+			Command:      command,
+			InputSummary: tool.InputSummary,
+			Output: AiopsToolOutput{
+				Stdout:    stdoutForTranscriptTool(toolKind, outputText),
+				Stderr:    stderrForTranscriptTool(tool, outputText),
+				Text:      outputText,
+				Truncated: outputWasTruncated(outputText, tool),
+				RawRef:    strings.TrimSpace(tool.RawRef),
+			},
+			ExitCode:    tool.ExitCode,
+			DurationMs:  tool.DurationMs,
+			StartedAt:   transportTimestamp(item.CreatedAt),
+			CompletedAt: completedAtForToolItem(item),
+		},
+		CreatedAt: transportTimestamp(item.CreatedAt),
+		UpdatedAt: transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+	}
+	if sourceID != "" && state != nil {
+		if item.Status == agentstate.ItemStatusRunning {
+			state.RuntimeLiveness.ActiveCommandStreams[sourceID] = true
+		} else {
+			delete(state.RuntimeLiveness.ActiveCommandStreams, sourceID)
 		}
-		switch blockKind {
-		case AiopsTransportProcessKindSearch:
-			query := firstNonEmptyString(tool.InputSummary, strings.TrimSpace(item.Payload.Summary))
-			if query != "" {
-				block.Queries = []string{query}
-			}
-			block.Results = decodeTransportSearchResults(tool.OutputPreview)
-		case AiopsTransportProcessKindCommand:
-			block.Command = firstNonEmptyString(tool.InputSummary, tool.ToolName)
-			if block.Text == "" || block.Text == tool.OutputSummary {
-				block.Text = block.Command
-			}
+	}
+	return UpsertAiopsTranscriptBlock(turn, block)
+}
+
+func projectEvidenceTranscriptBlock(turn AiopsTransportTurn, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+	var payload struct {
+		ID         string `json:"id"`
+		Kind       string `json:"kind"`
+		Title      string `json:"title"`
+		Summary    string `json:"summary"`
+		Source     string `json:"source"`
+		Confidence string `json:"confidence"`
+		Window     string `json:"window"`
+		RawRef     string `json:"rawRef"`
+	}
+	_ = json.Unmarshal(item.Payload.Data, &payload)
+	text := firstNonEmptyString(strings.TrimSpace(payload.Summary), strings.TrimSpace(item.Payload.Summary), strings.TrimSpace(payload.Title))
+	if text == "" {
+		return turn
+	}
+	blockID := TransportProcessBlockStableID(turnID, "tool", firstNonEmptyString(payload.ID, item.ID))
+	details := []string{}
+	for _, value := range []string{payload.Source, payload.Confidence, payload.Window, payload.RawRef} {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			details = append(details, trimmed)
 		}
-		if sourceID != "" {
-			if item.Status == agentstate.ItemStatusRunning {
-				state.RuntimeLiveness.ActiveCommandStreams[sourceID] = true
-			} else {
-				delete(state.RuntimeLiveness.ActiveCommandStreams, sourceID)
-			}
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
-	case agentstate.TurnItemTypeEvidence:
-		var payload struct {
-			ID         string `json:"id"`
-			Kind       string `json:"kind"`
-			Title      string `json:"title"`
-			Summary    string `json:"summary"`
-			Source     string `json:"source"`
-			Confidence string `json:"confidence"`
-			Window     string `json:"window"`
-			RawRef     string `json:"rawRef"`
-		}
-		_ = json.Unmarshal(item.Payload.Data, &payload)
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindEvidence), firstNonEmptyString(payload.ID, item.ID)),
-			Kind:        AiopsTransportProcessKindEvidence,
-			DisplayKind: "evidence",
-			Status:      mapItemStatusToTransportProcessStatus(item.Status),
-			Text:        firstNonEmptyString(strings.TrimSpace(payload.Summary), strings.TrimSpace(item.Payload.Summary), strings.TrimSpace(payload.Title)),
-			Source:      strings.TrimSpace(payload.Source),
-			Confidence:  strings.TrimSpace(payload.Confidence),
-			Window:      strings.TrimSpace(payload.Window),
-			RawRef:      strings.TrimSpace(payload.RawRef),
-			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
-	case agentstate.TurnItemTypeApproval:
-		var payload struct {
-			ApprovalID   string `json:"approvalId"`
-			ApprovalType string `json:"approvalType"`
-			Command      string `json:"command"`
-			Reason       string `json:"reason"`
-		}
-		_ = json.Unmarshal(item.Payload.Data, &payload)
-		approvalID := firstNonEmptyString(strings.TrimSpace(payload.ApprovalID), item.ID)
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindApproval), approvalID),
-			Kind:        AiopsTransportProcessKindApproval,
-			DisplayKind: "approval",
-			Status:      mapItemStatusToTransportProcessStatus(item.Status),
-			Text:        firstNonEmptyString(strings.TrimSpace(item.Payload.Summary), strings.TrimSpace(payload.Reason), strings.TrimSpace(payload.Command)),
-			Command:     strings.TrimSpace(payload.Command),
-			ApprovalID:  approvalID,
-			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
+	}
+	output := strings.Join(details, "\n")
+	block := AiopsTranscriptBlock{
+		ID:   blockID,
+		Type: AiopsTranscriptBlockTypeTool,
+		Tool: &AiopsToolBlock{
+			ToolKind:     AiopsTranscriptToolKindOther,
+			ToolName:     "evidence",
+			Title:        firstNonEmptyString(payload.Title, "Evidence"),
+			Summary:      text,
+			Status:       mapItemStatusToTransportProcessStatus(item.Status),
+			InputSummary: text,
+			Output:       AiopsToolOutput{Text: output},
+		},
+		CreatedAt: transportTimestamp(item.CreatedAt),
+		UpdatedAt: transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+	}
+	return UpsertAiopsTranscriptBlock(turn, block)
+}
+
+func projectApprovalItemBlock(turn AiopsTransportTurn, state *AiopsTransportState, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+	var payload struct {
+		ApprovalID   string `json:"approvalId"`
+		ApprovalType string `json:"approvalType"`
+		Command      string `json:"command"`
+		Reason       string `json:"reason"`
+	}
+	_ = json.Unmarshal(item.Payload.Data, &payload)
+	approvalID := firstNonEmptyString(strings.TrimSpace(payload.ApprovalID), item.ID)
+	status := string(mapItemStatusToTransportProcessStatus(item.Status))
+	if item.Status == agentstate.ItemStatusBlocked {
+		status = string(AiopsTransportProcessStatusBlocked)
+	}
+	command := strings.TrimSpace(payload.Command)
+	reason := strings.TrimSpace(payload.Reason)
+	requestedAt := transportTimestamp(item.CreatedAt)
+	updatedAt := transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt))
+	turn = upsertApprovalTranscriptBlock(turn, turnID, approvalID, strings.TrimSpace(payload.ApprovalType), firstNonEmptyString(strings.TrimSpace(item.Payload.Summary), reason, command, "等待审批"), command, status, requestedAt, resolvedAtForApprovalItem(item), updatedAt)
+	if state != nil {
 		if item.Status == agentstate.ItemStatusBlocked {
 			state.PendingApprovals[approvalID] = AiopsTransportApproval{
 				ID:          approvalID,
 				TurnID:      turnID,
 				Type:        strings.TrimSpace(payload.ApprovalType),
-				Status:      string(block.Status),
-				Command:     strings.TrimSpace(payload.Command),
-				Reason:      strings.TrimSpace(payload.Reason),
-				RequestedAt: transportTimestamp(item.CreatedAt),
+				Status:      status,
+				Command:     command,
+				Reason:      reason,
+				RequestedAt: requestedAt,
 			}
 			state.RuntimeLiveness.PendingApprovals[approvalID] = true
 		} else {
 			delete(state.PendingApprovals, approvalID)
 			delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 		}
-	case agentstate.TurnItemTypeFinalAnswer:
-		turn.Final = &AiopsTransportFinal{
-			ID:     item.ID,
-			Text:   strings.TrimSpace(item.Payload.Summary),
-			Status: mapItemStatusToTransportFinalStatus(item.Status),
-		}
-	case agentstate.TurnItemTypeModelCall:
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindReasoning), item.ID),
-			Kind:        AiopsTransportProcessKindReasoning,
-			DisplayKind: "reasoning",
-			Status:      mapItemStatusToTransportProcessStatus(item.Status),
-			Text:        strings.TrimSpace(item.Payload.Summary),
-			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
-	case agentstate.TurnItemTypeError:
-		state.LastError = strings.TrimSpace(item.Payload.Summary)
 	}
-
 	return turn
+}
+
+func upsertApprovalTranscriptBlock(turn AiopsTransportTurn, turnID, approvalID, approvalKind, summary, command, status, requestedAt, resolvedAt, updatedAt string) AiopsTransportTurn {
+	approvalID = strings.TrimSpace(approvalID)
+	if approvalID == "" {
+		return turn
+	}
+	if approvalKind == "" {
+		approvalKind = "tool"
+	}
+	if status == "" {
+		status = string(AiopsTransportProcessStatusBlocked)
+	}
+	block := AiopsTranscriptBlock{
+		ID:   TransportProcessBlockStableID(turnID, "approval", approvalID),
+		Type: AiopsTranscriptBlockTypeApproval,
+		Approval: &AiopsApprovalBlock{
+			ApprovalID:   approvalID,
+			ApprovalKind: approvalKind,
+			Title:        "等待审批",
+			Summary:      firstNonEmptyString(summary, command, "等待审批"),
+			Command:      command,
+			Status:       status,
+			RequestedAt:  requestedAt,
+			ResolvedAt:   resolvedAt,
+		},
+		CreatedAt: requestedAt,
+		UpdatedAt: updatedAt,
+	}
+	return UpsertAiopsTranscriptBlock(turn, block)
 }
 
 func ensureAiopsTransportState(state AiopsTransportState) AiopsTransportState {
 	if state.SchemaVersion == "" {
 		state = NewAiopsTransportState(state.SessionID, state.ThreadID)
 	}
+	state.SchemaVersion = AiopsTransportSchemaVersion
 	if state.Turns == nil {
 		state.Turns = map[string]AiopsTransportTurn{}
+	}
+	if state.TurnOrder == nil {
+		state.TurnOrder = []string{}
 	}
 	if state.PendingApprovals == nil {
 		state.PendingApprovals = map[string]AiopsTransportApproval{}
@@ -424,6 +500,9 @@ func ensureAiopsTransportState(state AiopsTransportState) AiopsTransportState {
 	if state.UpdatedAt == "" {
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	for id, turn := range state.Turns {
+		state.Turns[id] = EnsureAiopsTransportTurnBlocks(turn)
+	}
 	return state
 }
 
@@ -436,25 +515,38 @@ func appendTurnOrder(order []string, turnID string) []string {
 	return append(order, turnID)
 }
 
-func upsertTransportProcessBlock(blocks []AiopsProcessBlock, block AiopsProcessBlock) []AiopsProcessBlock {
-	for i := range blocks {
-		if blocks[i].ID == block.ID {
-			blocks[i] = mergeTransportProcessBlock(blocks[i], block)
-			return blocks
-		}
-	}
-	return append(blocks, block)
-}
-
-func normalizeTerminalProcessBlocks(blocks []AiopsProcessBlock, lifecycle runtimekernel.TurnLifecycleState, errorText string) []AiopsProcessBlock {
+func normalizeTerminalTranscriptBlocks(turn AiopsTransportTurn, lifecycle runtimekernel.TurnLifecycleState, errorText string) AiopsTransportTurn {
 	status := terminalProcessStatus(lifecycle, errorText)
-	for i := range blocks {
-		switch blocks[i].Status {
-		case AiopsTransportProcessStatusBlocked, AiopsTransportProcessStatusRunning, AiopsTransportProcessStatusQueued:
-			blocks[i].Status = status
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	for id, block := range turn.BlocksByID {
+		switch block.Type {
+		case AiopsTranscriptBlockTypeTool:
+			if block.Tool == nil {
+				continue
+			}
+			switch block.Tool.Status {
+			case AiopsTransportProcessStatusBlocked, AiopsTransportProcessStatusRunning, AiopsTransportProcessStatusQueued:
+				nextTool := *block.Tool
+				nextTool.Status = status
+				block.Tool = &nextTool
+				block.UpdatedAt = firstNonEmptyString(block.UpdatedAt, time.Now().UTC().Format(time.RFC3339Nano))
+				turn.BlocksByID[id] = block
+			}
+		case AiopsTranscriptBlockTypeApproval:
+			if block.Approval != nil && status != AiopsTransportProcessStatusCompleted {
+				nextApproval := *block.Approval
+				nextApproval.Status = string(status)
+				block.Approval = &nextApproval
+				turn.BlocksByID[id] = block
+			}
+		case AiopsTranscriptBlockTypeThinking:
+			if block.Thinking != nil {
+				delete(turn.BlocksByID, id)
+				turn.BlockOrder = removeString(turn.BlockOrder, id)
+			}
 		}
 	}
-	return blocks
+	return turn
 }
 
 func terminalProcessStatus(lifecycle runtimekernel.TurnLifecycleState, errorText string) AiopsTransportProcessStatus {
@@ -470,21 +562,6 @@ func terminalProcessStatus(lifecycle runtimekernel.TurnLifecycleState, errorText
 func isApprovalDeniedError(errorText string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(errorText))
 	return normalized == "approval denied" || normalized == "approval rejected" || normalized == "user denied approval"
-}
-
-func mergeTransportProcessBlock(existing, next AiopsProcessBlock) AiopsProcessBlock {
-	if existing.Kind == AiopsTransportProcessKindCommand && next.Kind == AiopsTransportProcessKindCommand {
-		if strings.TrimSpace(existing.Command) != "" {
-			next.Command = existing.Command
-		}
-		if strings.TrimSpace(existing.InputSummary) != "" {
-			next.InputSummary = existing.InputSummary
-		}
-		if strings.TrimSpace(next.Text) == "" || strings.TrimSpace(next.Text) == strings.TrimSpace(next.OutputPreview) {
-			next.Text = firstNonEmptyString(existing.Text, next.Command, next.Text)
-		}
-	}
-	return next
 }
 
 func mapTurnLifecycleToTransportTurnStatus(lifecycle runtimekernel.TurnLifecycleState, resume runtimekernel.TurnResumeState, blocked bool) AiopsTransportTurnStatus {
@@ -522,17 +599,6 @@ func mapTurnStatusToTransportStatus(status AiopsTransportTurnStatus) AiopsTransp
 	}
 }
 
-func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportFinalStatus {
-	switch status {
-	case AiopsTransportTurnStatusFailed, AiopsTransportTurnStatusCanceled:
-		return AiopsTransportFinalStatusFailed
-	case AiopsTransportTurnStatusCompleted:
-		return AiopsTransportFinalStatusCompleted
-	default:
-		return AiopsTransportFinalStatusRunning
-	}
-}
-
 func mapItemStatusToTransportProcessStatus(status agentstate.ItemStatus) AiopsTransportProcessStatus {
 	switch status {
 	case agentstate.ItemStatusPending:
@@ -550,17 +616,6 @@ func mapItemStatusToTransportProcessStatus(status agentstate.ItemStatus) AiopsTr
 	}
 }
 
-func mapItemStatusToTransportFinalStatus(status agentstate.ItemStatus) AiopsTransportFinalStatus {
-	switch status {
-	case agentstate.ItemStatusCompleted:
-		return AiopsTransportFinalStatusCompleted
-	case agentstate.ItemStatusFailed, agentstate.ItemStatusCancelled:
-		return AiopsTransportFinalStatusFailed
-	default:
-		return AiopsTransportFinalStatusRunning
-	}
-}
-
 func applyTurnLiveness(state *AiopsTransportState, turnID string, status AiopsTransportTurnStatus) {
 	if state == nil || turnID == "" {
 		return
@@ -574,20 +629,6 @@ func applyTurnLiveness(state *AiopsTransportState, turnID string, status AiopsTr
 	if status != AiopsTransportTurnStatusBlocked {
 		state.RuntimeLiveness.PendingApprovals = cloneBoolMap(state.RuntimeLiveness.PendingApprovals)
 	}
-}
-
-func decodeUserMessageText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var payload struct {
-		Prompt string `json:"prompt"`
-		Text   string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return ""
-	}
-	return firstNonEmptyString(strings.TrimSpace(payload.Prompt), strings.TrimSpace(payload.Text))
 }
 
 type transportToolPayload struct {
@@ -636,23 +677,29 @@ func decodeTransportToolPayload(envelope agentstate.PayloadEnvelope) transportTo
 	return payload
 }
 
-func detectTransportToolBlockKind(envelopeKind, displayKind, toolName string) AiopsTransportProcessKind {
+func detectTranscriptToolKind(envelopeKind, displayKind, toolName string) AiopsTranscriptToolKind {
 	kind := strings.ToLower(firstNonEmptyString(displayKind, envelopeKind))
 	name := strings.ToLower(strings.TrimSpace(toolName))
 	switch {
 	case strings.Contains(kind, "browser.search"), name == "web_search":
-		return AiopsTransportProcessKindSearch
+		return AiopsTranscriptToolKindSearch
 	case kind == "command", name == "exec_command":
-		return AiopsTransportProcessKindCommand
+		return AiopsTranscriptToolKindCommand
+	case strings.Contains(kind, "list"):
+		return AiopsTranscriptToolKindList
 	case strings.HasPrefix(kind, "file"), strings.Contains(name, "file"):
-		return AiopsTransportProcessKindFile
+		return AiopsTranscriptToolKindFile
+	case strings.Contains(kind, "mcp"):
+		return AiopsTranscriptToolKindMCP
+	case strings.Contains(kind, "browser"):
+		return AiopsTranscriptToolKindBrowser
 	default:
-		return AiopsTransportProcessKindTool
+		return AiopsTranscriptToolKindOther
 	}
 }
 
 func isTransportSearchTool(tool transportToolPayload) bool {
-	return detectTransportToolBlockKind(tool.DisplayKind, tool.DisplayKind, tool.ToolName) == AiopsTransportProcessKindSearch
+	return detectTranscriptToolKind(tool.DisplayKind, tool.DisplayKind, tool.ToolName) == AiopsTranscriptToolKindSearch
 }
 
 func normalizeTransportToolSourceID(toolName, inputSummary string) string {
@@ -667,33 +714,107 @@ func normalizeTransportToolSourceID(toolName, inputSummary string) string {
 	return ""
 }
 
-func displayKindForTransportToolBlock(blockKind AiopsTransportProcessKind, values ...string) string {
-	if blockKind == AiopsTransportProcessKindSearch {
-		return "web_search"
+func titleForTranscriptTool(kind AiopsTranscriptToolKind) string {
+	switch kind {
+	case AiopsTranscriptToolKindCommand:
+		return "Shell"
+	case AiopsTranscriptToolKindSearch:
+		return "Search"
+	case AiopsTranscriptToolKindFile:
+		return "File"
+	case AiopsTranscriptToolKindList:
+		return "List"
+	case AiopsTranscriptToolKindMCP:
+		return "MCP"
+	case AiopsTranscriptToolKindBrowser:
+		return "Browser"
+	default:
+		return "Tool"
 	}
-	return firstNonEmptyString(values...)
 }
 
-func summarizeTransportToolText(blockKind AiopsTransportProcessKind, tool transportToolPayload, envelope agentstate.PayloadEnvelope) string {
-	if blockKind == AiopsTransportProcessKindSearch {
-		query := firstNonEmptyString(tool.InputSummary, strings.TrimSpace(envelope.Summary))
-		if strings.EqualFold(strings.TrimSpace(tool.OutputSummary), query) {
-			return query
+func commandForTranscriptTool(kind AiopsTranscriptToolKind, tool transportToolPayload) string {
+	if kind != AiopsTranscriptToolKindCommand {
+		return ""
+	}
+	return firstNonEmptyString(strings.TrimSpace(tool.InputSummary), strings.TrimSpace(tool.ToolName))
+}
+
+func summaryForTranscriptTool(kind AiopsTranscriptToolKind, status AiopsTransportProcessStatus, command string, tool transportToolPayload) string {
+	switch kind {
+	case AiopsTranscriptToolKindCommand:
+		switch status {
+		case AiopsTransportProcessStatusRunning, AiopsTransportProcessStatusQueued:
+			return "正在运行 " + firstNonEmptyString(command, strings.TrimSpace(tool.ToolName), "命令")
+		case AiopsTransportProcessStatusFailed:
+			return "运行失败 " + firstNonEmptyString(command, strings.TrimSpace(tool.ToolName), "命令")
+		default:
+			return "已运行 " + firstNonEmptyString(command, strings.TrimSpace(tool.ToolName), "命令")
 		}
-		output := cleanProviderNativeSearchSummary(tool.OutputSummary)
-		return firstNonEmptyString(output, query, tool.ToolName)
+	case AiopsTranscriptToolKindSearch:
+		if status == AiopsTransportProcessStatusRunning || status == AiopsTransportProcessStatusQueued {
+			return "正在搜索 " + firstNonEmptyString(tool.InputSummary, "网页")
+		}
+		return "已搜索 1 次"
+	case AiopsTranscriptToolKindFile:
+		if isFileEditSummary(tool.OutputSummary, tool.InputSummary) {
+			return "已编辑 1 个文件"
+		}
+		return "已探索 1 个文件"
+	case AiopsTranscriptToolKindList:
+		return "已列出 1 个列表"
+	case AiopsTranscriptToolKindMCP:
+		return "已调用 MCP 工具"
+	case AiopsTranscriptToolKindBrowser:
+		return "已浏览 1 次"
+	default:
+		return firstNonEmptyString(strings.TrimSpace(tool.OutputSummary), strings.TrimSpace(tool.InputSummary), strings.TrimSpace(tool.ToolName), "已处理 1 个操作")
 	}
-	if blockKind == AiopsTransportProcessKindCommand {
-		return firstNonEmptyString(tool.InputSummary, tool.ToolName)
-	}
-	return firstNonEmptyString(tool.OutputSummary, tool.InputSummary, strings.TrimSpace(envelope.Summary), tool.ToolName)
 }
 
-func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, tool transportToolPayload) string {
-	if blockKind == AiopsTransportProcessKindSearch {
+func outputTextForTranscriptTool(kind AiopsTranscriptToolKind, tool transportToolPayload) string {
+	if kind == AiopsTranscriptToolKindSearch {
+		if lines := searchResultLines(tool.OutputPreview); len(lines) > 0 {
+			return strings.Join(lines, "\n")
+		}
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
-	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.OutputSummary, tool.Error)
+	return sanitizeOutputPreview(firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.OutputSummary, tool.Error))
+}
+
+func stdoutForTranscriptTool(kind AiopsTranscriptToolKind, output string) string {
+	if kind == AiopsTranscriptToolKindCommand {
+		return output
+	}
+	return ""
+}
+
+func stderrForTranscriptTool(tool transportToolPayload, output string) string {
+	if strings.TrimSpace(tool.Error) == "" {
+		return ""
+	}
+	return output
+}
+
+func outputWasTruncated(output string, tool transportToolPayload) bool {
+	raw := firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.OutputSummary, tool.Error)
+	return len([]rune(raw)) > len([]rune(output))
+}
+
+func completedAtForToolItem(item agentstate.TurnItem) string {
+	switch item.Status {
+	case agentstate.ItemStatusCompleted, agentstate.ItemStatusFailed, agentstate.ItemStatusCancelled:
+		return transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt))
+	default:
+		return ""
+	}
+}
+
+func resolvedAtForApprovalItem(item agentstate.TurnItem) string {
+	if item.Status == agentstate.ItemStatusBlocked || item.Status == agentstate.ItemStatusPending || item.Status == agentstate.ItemStatusRunning {
+		return ""
+	}
+	return transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt))
 }
 
 func jsonStringValue(raw json.RawMessage) string {
@@ -705,6 +826,21 @@ func jsonStringValue(raw json.RawMessage) string {
 		return strings.TrimSpace(value)
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+func searchResultLines(raw json.RawMessage) []string {
+	results := decodeTransportSearchResults(raw)
+	if len(results) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(results))
+	for _, result := range results {
+		line := strings.TrimSpace(strings.Join(nonEmptyStrings(result.Title, result.URL, result.Snippet), " "))
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 func cleanProviderNativeSearchSummary(value string) string {
@@ -764,29 +900,209 @@ func transportToolSummaryLooksGeneric(toolName, value string) bool {
 	return false
 }
 
-func pendingEvidenceCommand(blocks []AiopsProcessBlock, evidence runtimekernel.PendingEvidence) string {
-	for _, block := range blocks {
-		if !pendingEvidenceMatchesProcessBlock(block, evidence) {
+func aggregateTranscriptBlocks(turn AiopsTransportTurn) AiopsTransportTurn {
+	turn = removeAggregateBlocks(EnsureAiopsTransportTurnBlocks(turn))
+	nextOrder := make([]string, 0, len(turn.BlockOrder))
+	flushRun := func(run []string) {
+		if len(run) == 0 {
+			return
+		}
+		if len(run) == 1 {
+			nextOrder = append(nextOrder, run[0])
+			return
+		}
+		blocks := make([]AiopsTranscriptBlock, 0, len(run))
+		for _, id := range run {
+			blocks = append(blocks, turn.BlocksByID[id])
+		}
+		summary, counts := aggregateSummaryForBlocks(blocks)
+		aggregateID := TransportProcessBlockStableID(turn.ID, "aggregate", strings.Join(run, "-"))
+		turn.BlocksByID[aggregateID] = AiopsTranscriptBlock{
+			ID:   aggregateID,
+			Type: AiopsTranscriptBlockTypeAggregate,
+			Aggregate: &AiopsAggregateBlock{
+				Summary:       summary,
+				Status:        string(AiopsTransportProcessStatusCompleted),
+				ChildBlockIDs: append([]string(nil), run...),
+				Counts:        counts,
+			},
+			UpdatedAt: latestBlockUpdatedAt(blocks),
+		}
+		nextOrder = append(nextOrder, aggregateID)
+	}
+
+	run := []string{}
+	for _, id := range turn.BlockOrder {
+		block, ok := turn.BlocksByID[id]
+		if !ok {
 			continue
 		}
-		if block.Kind == AiopsTransportProcessKindCommand {
-			return firstNonEmptyString(strings.TrimSpace(block.Command), strings.TrimSpace(block.InputSummary), strings.TrimSpace(block.Text))
+		if isAggregatableToolBlock(block) {
+			run = append(run, id)
+			continue
+		}
+		flushRun(run)
+		run = nil
+		nextOrder = append(nextOrder, id)
+	}
+	flushRun(run)
+	turn.BlockOrder = nextOrder
+	return turn
+}
+
+func removeAggregateBlocks(turn AiopsTransportTurn) AiopsTransportTurn {
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	nextOrder := make([]string, 0, len(turn.BlockOrder))
+	for _, id := range turn.BlockOrder {
+		block := turn.BlocksByID[id]
+		if block.Type == AiopsTranscriptBlockTypeAggregate && block.Aggregate != nil {
+			for _, childID := range block.Aggregate.ChildBlockIDs {
+				if _, ok := turn.BlocksByID[childID]; ok {
+					nextOrder = append(nextOrder, childID)
+				}
+			}
+			delete(turn.BlocksByID, id)
+			continue
+		}
+		nextOrder = append(nextOrder, id)
+	}
+	turn.BlockOrder = nextOrder
+	return turn
+}
+
+func isAggregatableToolBlock(block AiopsTranscriptBlock) bool {
+	if block.Type != AiopsTranscriptBlockTypeTool || block.Tool == nil {
+		return false
+	}
+	if block.Tool.Status != AiopsTransportProcessStatusCompleted {
+		return false
+	}
+	return block.Tool.ToolKind != AiopsTranscriptToolKindCommand || len([]rune(block.Tool.Output.Text)) < 200
+}
+
+func aggregateSummaryForBlocks(blocks []AiopsTranscriptBlock) (string, AiopsAggregateCounts) {
+	counts := AiopsAggregateCounts{}
+	for _, block := range blocks {
+		if block.Tool == nil {
+			continue
+		}
+		switch block.Tool.ToolKind {
+		case AiopsTranscriptToolKindCommand:
+			counts.Command++
+		case AiopsTranscriptToolKindSearch:
+			counts.Search++
+		case AiopsTranscriptToolKindList:
+			counts.List++
+		case AiopsTranscriptToolKindFile:
+			if isFileEditSummary(block.Tool.Summary, block.Tool.InputSummary) {
+				counts.FileEdit++
+			} else {
+				counts.FileRead++
+			}
+		case AiopsTranscriptToolKindMCP:
+			counts.MCP++
+		case AiopsTranscriptToolKindBrowser:
+			counts.Browser++
+		default:
+			counts.Other++
 		}
 	}
-	return firstNonEmptyString(strings.TrimSpace(evidence.ToolName), strings.TrimSpace(evidence.Reason))
-}
-
-func pendingEvidenceMatchesProcessBlock(block AiopsProcessBlock, evidence runtimekernel.PendingEvidence) bool {
-	toolCallID := strings.TrimSpace(evidence.ToolCallID)
-	if toolCallID == "" {
-		return block.Kind == AiopsTransportProcessKindCommand && block.Status == AiopsTransportProcessStatusBlocked
+	parts := []string{}
+	if counts.FileRead > 0 {
+		parts = append(parts, fmt.Sprintf("已探索 %d 个文件", counts.FileRead))
 	}
-	return strings.Contains(block.ID, toolCallID) || strings.Contains(block.RawRef, toolCallID)
+	if counts.FileEdit > 0 {
+		parts = append(parts, fmt.Sprintf("已编辑 %d 个文件", counts.FileEdit))
+	}
+	if counts.Search > 0 {
+		parts = append(parts, fmt.Sprintf("%d 次搜索", counts.Search))
+	}
+	if counts.List > 0 {
+		parts = append(parts, fmt.Sprintf("%d 个列表", counts.List))
+	}
+	if counts.Command > 0 {
+		parts = append(parts, fmt.Sprintf("已运行 %d 条命令", counts.Command))
+	}
+	if counts.Browser > 0 {
+		parts = append(parts, fmt.Sprintf("已浏览 %d 次", counts.Browser))
+	}
+	if counts.MCP > 0 {
+		parts = append(parts, fmt.Sprintf("已调用 %d 个 MCP 工具", counts.MCP))
+	}
+	if counts.Other > 0 {
+		parts = append(parts, fmt.Sprintf("已处理 %d 个操作", counts.Other))
+	}
+	return strings.Join(parts, ","), counts
 }
 
-// sanitizeOutputPreview sanitizes content for display as an output preview.
-// HTML content is stripped of tags and truncated to 200 runes with "…" appended.
-// Non-HTML content is truncated to 500 runes with "…" appended.
+func isFileEditSummary(values ...string) bool {
+	combined := strings.ToLower(strings.Join(values, " "))
+	return strings.Contains(combined, "edit") || strings.Contains(combined, "write") || strings.Contains(combined, "修改") || strings.Contains(combined, "编辑")
+}
+
+func attachApprovalToMatchingTool(turn AiopsTransportTurn, toolCallID, approvalID, status, updatedAt string) AiopsTransportTurn {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return turn
+	}
+	for id, block := range turn.BlocksByID {
+		if block.Type != AiopsTranscriptBlockTypeTool || block.Tool == nil {
+			continue
+		}
+		if !strings.Contains(id, toolCallID) {
+			continue
+		}
+		nextTool := *block.Tool
+		nextTool.ApprovalID = approvalID
+		nextTool.Status = AiopsTransportProcessStatus(status)
+		block.Tool = &nextTool
+		block.UpdatedAt = updatedAt
+		turn.BlocksByID[id] = block
+	}
+	return turn
+}
+
+func findCommandForToolCall(turn AiopsTransportTurn, toolCallID string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	for id, block := range turn.BlocksByID {
+		if toolCallID != "" && !strings.Contains(id, toolCallID) {
+			continue
+		}
+		if block.Type == AiopsTranscriptBlockTypeTool && block.Tool != nil && block.Tool.ToolKind == AiopsTranscriptToolKindCommand {
+			return firstNonEmptyString(block.Tool.Command, block.Tool.InputSummary, block.Tool.Summary)
+		}
+	}
+	return ""
+}
+
+func latestBlockUpdatedAt(blocks []AiopsTranscriptBlock) string {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i].UpdatedAt != "" {
+			return blocks[i].UpdatedAt
+		}
+	}
+	return ""
+}
+
+func decodeUserMessageText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		Prompt string `json:"prompt"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return firstNonEmptyString(strings.TrimSpace(payload.Prompt), strings.TrimSpace(payload.Text))
+}
+
+func isGenericModelSummary(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return normalized == "" || normalized == "model response received" || normalized == "calling model"
+}
+
 func sanitizeOutputPreview(content string) string {
 	if isHTMLContent(content) {
 		stripped := stripHTMLTags(content)
@@ -803,9 +1119,6 @@ func sanitizeOutputPreview(content string) string {
 	return content
 }
 
-// isHTMLContent detects whether a string contains HTML content by checking
-// if it starts with a DOCTYPE declaration or html tags (case variations),
-// supporting leading whitespace.
 func isHTMLContent(s string) bool {
 	trimmed := strings.TrimSpace(s)
 	return strings.HasPrefix(trimmed, "<!DOCTYPE") ||
@@ -813,23 +1126,13 @@ func isHTMLContent(s string) bool {
 		strings.HasPrefix(trimmed, "<HTML")
 }
 
-// htmlTagPattern matches any HTML tag (opening, closing, or self-closing).
 var htmlTagPattern = regexp.MustCompile(`<[^>]*>`)
-
-// multiSpacePattern matches two or more consecutive whitespace characters.
 var multiSpacePattern = regexp.MustCompile(`\s{2,}`)
-
 var providerNativeSearchQueryPattern = regexp.MustCompile(`provider-native web_search completed for query\s+"([^"]+)"`)
 
-// stripHTMLTags removes all HTML tags from the input string, preserves text
-// content between tags, collapses multiple whitespace into a single space,
-// and trims leading/trailing whitespace.
 func stripHTMLTags(s string) string {
-	// Remove all HTML tags
 	text := htmlTagPattern.ReplaceAllString(s, " ")
-	// Collapse multiple whitespace into a single space
 	text = multiSpacePattern.ReplaceAllString(text, " ")
-	// Trim leading/trailing whitespace
 	return strings.TrimSpace(text)
 }
 
@@ -860,4 +1163,24 @@ func firstNonZeroTime(values ...time.Time) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func removeString(values []string, needle string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if value != needle {
+			out = append(out, value)
+		}
+	}
+	return out
 }

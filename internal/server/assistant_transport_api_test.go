@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -153,7 +154,7 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        "",
 			"threadId":         "thread-1",
 			"status":           "idle",
@@ -201,6 +202,12 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	if !strings.Contains(text, "append-text") {
 		t.Fatalf("response = %q, want append-text for final text", text)
 	}
+	if strings.Contains(text, "\"final\",\"text\"") {
+		t.Fatalf("response = %q, must not append to final.text", text)
+	}
+	if !strings.Contains(text, "\"blocksById\"") {
+		t.Fatalf("response = %q, want v2 blocksById updates", text)
+	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
 	}
@@ -243,22 +250,29 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 
 	payload := map[string]any{
 		"state": map[string]any{
-			"schemaVersion": "aiops.transport.v1",
+			"schemaVersion": "aiops.transport.v2",
 			"sessionId":     session.ID,
 			"threadId":      session.ID,
 			"status":        "blocked",
 			"currentTurnId": "turn-approval-ack",
 			"turns": map[string]any{
 				"turn-approval-ack": map[string]any{
-					"id":     "turn-approval-ack",
-					"status": "blocked",
-					"process": []map[string]any{
-						{
-							"id":         "cmd-approval-ack",
-							"kind":       "command",
-							"status":     "blocked",
-							"command":    "ifconfig en0 down",
-							"approvalId": "approval-ack",
+					"id":         "turn-approval-ack",
+					"status":     "blocked",
+					"blockOrder": []string{"cmd-approval-ack"},
+					"blocksById": map[string]any{
+						"cmd-approval-ack": map[string]any{
+							"id":   "cmd-approval-ack",
+							"type": "tool",
+							"tool": map[string]any{
+								"toolKind":   "command",
+								"title":      "Shell",
+								"summary":    "needs approval",
+								"status":     "blocked",
+								"command":    "ifconfig en0 down",
+								"output":     map[string]any{"stdout": "", "stderr": "", "text": "", "truncated": false},
+								"approvalId": "approval-ack",
+							},
 						},
 					},
 				},
@@ -330,32 +344,30 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 	close(runtime.release)
 }
 
-func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *testing.T) {
+func TestAssistantTransportDiffAppendsTextBlockTextWithoutSettingWholeTurn(t *testing.T) {
 	start := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
 	prev := appui.NewAiopsTransportState("sess-1", "thread-1")
 	prev.TurnOrder = []string{"turn-1"}
 	prev.Turns["turn-1"] = appui.AiopsTransportTurn{
-		ID:        "turn-1",
-		Status:    appui.AiopsTransportTurnStatusWorking,
-		StartedAt: start.Format(time.RFC3339Nano),
-		UpdatedAt: start.Format(time.RFC3339Nano),
-		Final: &appui.AiopsTransportFinal{
-			ID:     "final-1",
-			Text:   "第一段",
-			Status: appui.AiopsTransportFinalStatusRunning,
+		ID:         "turn-1",
+		Status:     appui.AiopsTransportTurnStatusWorking,
+		StartedAt:  start.Format(time.RFC3339Nano),
+		UpdatedAt:  start.Format(time.RFC3339Nano),
+		BlockOrder: []string{"block-1"},
+		BlocksByID: map[string]appui.AiopsTranscriptBlock{
+			"block-1": assistantTransportTextBlock("block-1", "第一段", appui.AiopsTranscriptTextStatusStreaming),
 		},
 	}
 	next := prev
 	next.Turns = map[string]appui.AiopsTransportTurn{
 		"turn-1": {
-			ID:        "turn-1",
-			Status:    appui.AiopsTransportTurnStatusWorking,
-			StartedAt: start.Format(time.RFC3339Nano),
-			UpdatedAt: start.Add(time.Second).Format(time.RFC3339Nano),
-			Final: &appui.AiopsTransportFinal{
-				ID:     "final-1",
-				Text:   "第一段第二段",
-				Status: appui.AiopsTransportFinalStatusRunning,
+			ID:         "turn-1",
+			Status:     appui.AiopsTransportTurnStatusWorking,
+			StartedAt:  start.Format(time.RFC3339Nano),
+			UpdatedAt:  start.Format(time.RFC3339Nano),
+			BlockOrder: []string{"block-1"},
+			BlocksByID: map[string]appui.AiopsTranscriptBlock{
+				"block-1": assistantTransportTextBlock("block-1", "第一段第二段", appui.AiopsTranscriptTextStatusCompleted),
 			},
 		},
 	}
@@ -363,20 +375,113 @@ func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *test
 	ops := assistantTransportDiffStateOps(prev, next)
 
 	if len(ops) != 2 {
-		t.Fatalf("ops length = %d, want metadata set + append-text: %+v", len(ops), ops)
+		t.Fatalf("ops length = %d, want block set + append-text: %+v", len(ops), ops)
 	}
-	if ops[0].Type != assistantTransportStreamOpSet {
-		t.Fatalf("first op = %+v, want set", ops[0])
+	if ops[0].Type != assistantTransportStreamOpSet || !reflect.DeepEqual(ops[0].Path, []any{"turns", "turn-1", "blocksById", "block-1"}) {
+		t.Fatalf("first op = %+v, want block set", ops[0])
 	}
-	turn, ok := ops[0].Value.(appui.AiopsTransportTurn)
+	block, ok := ops[0].Value.(appui.AiopsTranscriptBlock)
 	if !ok {
-		t.Fatalf("first op value = %T, want AiopsTransportTurn", ops[0].Value)
+		t.Fatalf("first op value = %T, want AiopsTranscriptBlock", ops[0].Value)
 	}
-	if turn.Final == nil || turn.Final.Text != "第一段" {
-		t.Fatalf("set turn final text = %+v, want previous text preserved", turn.Final)
+	if block.Text == nil || block.Text.Text != "第一段" || block.Text.Status != appui.AiopsTranscriptTextStatusCompleted {
+		t.Fatalf("set block text = %+v, want previous text with completed status", block.Text)
 	}
-	if ops[1].Type != assistantTransportStreamOpAppendText || ops[1].Value != "第二段" {
+	if ops[1].Type != assistantTransportStreamOpAppendText || !reflect.DeepEqual(ops[1].Path, []any{"turns", "turn-1", "blocksById", "block-1", "text", "text"}) || ops[1].Value != "第二段" {
 		t.Fatalf("second op = %+v, want append second chunk", ops[1])
+	}
+}
+
+func TestAssistantTransportDiffAppendsToolOutputFields(t *testing.T) {
+	prev := appui.NewAiopsTransportState("sess-1", "thread-1")
+	prev.TurnOrder = []string{"turn-1"}
+	prev.Turns["turn-1"] = appui.AiopsTransportTurn{
+		ID:         "turn-1",
+		Status:     appui.AiopsTransportTurnStatusWorking,
+		BlockOrder: []string{"cmd-1"},
+		BlocksByID: map[string]appui.AiopsTranscriptBlock{
+			"cmd-1": assistantTransportToolBlock("cmd-1", "line 1\n"),
+		},
+	}
+	next := assistantTransportCloneState(prev)
+	nextTurn := next.Turns["turn-1"]
+	nextBlock := nextTurn.BlocksByID["cmd-1"]
+	nextBlock.Tool.Output.Stdout = "line 1\nline 2\n"
+	nextBlock.Tool.Output.Text = "line 1\nline 2\n"
+	nextTurn.BlocksByID["cmd-1"] = nextBlock
+	next.Turns["turn-1"] = nextTurn
+
+	ops := assistantTransportDiffStateOps(prev, next)
+
+	if len(ops) != 2 {
+		t.Fatalf("ops length = %d, want stdout/text append ops: %+v", len(ops), ops)
+	}
+	if ops[0].Type != assistantTransportStreamOpAppendText || !reflect.DeepEqual(ops[0].Path, []any{"turns", "turn-1", "blocksById", "cmd-1", "tool", "output", "stdout"}) || ops[0].Value != "line 2\n" {
+		t.Fatalf("first op = %+v, want stdout append", ops[0])
+	}
+	if ops[1].Type != assistantTransportStreamOpAppendText || !reflect.DeepEqual(ops[1].Path, []any{"turns", "turn-1", "blocksById", "cmd-1", "tool", "output", "text"}) || ops[1].Value != "line 2\n" {
+		t.Fatalf("second op = %+v, want text append", ops[1])
+	}
+}
+
+func TestAssistantTransportDiffDoesNotSetWholeBlocksByIDWhenBlockDisappears(t *testing.T) {
+	prev := appui.NewAiopsTransportState("sess-1", "thread-1")
+	prev.TurnOrder = []string{"turn-1"}
+	prev.Turns["turn-1"] = appui.AiopsTransportTurn{
+		ID:         "turn-1",
+		Status:     appui.AiopsTransportTurnStatusWorking,
+		BlockOrder: []string{"cmd-1", "thinking-1"},
+		BlocksByID: map[string]appui.AiopsTranscriptBlock{
+			"cmd-1": assistantTransportToolBlock("cmd-1", strings.Repeat("line\n", 1000)),
+			"thinking-1": {
+				ID:   "thinking-1",
+				Type: appui.AiopsTranscriptBlockTypeThinking,
+				Thinking: &appui.AiopsThinkingBlock{
+					Text:   "正在思考",
+					Status: "running",
+				},
+			},
+		},
+	}
+	next := assistantTransportCloneState(prev)
+	nextTurn := next.Turns["turn-1"]
+	nextTurn.BlockOrder = []string{"cmd-1"}
+	delete(nextTurn.BlocksByID, "thinking-1")
+	nextBlock := nextTurn.BlocksByID["cmd-1"]
+	nextBlock.Tool.Output.Stdout += "tail\n"
+	nextBlock.Tool.Output.Text += "tail\n"
+	nextTurn.BlocksByID["cmd-1"] = nextBlock
+	next.Turns["turn-1"] = nextTurn
+
+	ops := assistantTransportDiffStateOps(prev, next)
+
+	for _, op := range ops {
+		if op.Type == assistantTransportStreamOpSet && reflect.DeepEqual(op.Path, []any{"turns", "turn-1", "blocksById"}) {
+			t.Fatalf("unexpected whole blocksById set for disappearing block: %+v", ops)
+		}
+	}
+	if !hasAssistantTransportOp(ops, assistantTransportStreamOpSet, []any{"turns", "turn-1", "blockOrder"}, []string{"cmd-1"}) {
+		t.Fatalf("ops = %+v, want blockOrder update", ops)
+	}
+	if !hasAssistantTransportOp(ops, assistantTransportStreamOpAppendText, []any{"turns", "turn-1", "blocksById", "cmd-1", "tool", "output", "stdout"}, "tail\n") {
+		t.Fatalf("ops = %+v, want stdout append", ops)
+	}
+}
+
+func TestAssistantTransportPollBackoffIncreasesWhenIdleAndResetsOnChange(t *testing.T) {
+	interval := assistantTransportPollInitialInterval
+	next := assistantTransportNextPollInterval(interval, false)
+	if next <= interval {
+		t.Fatalf("next idle interval = %v, want greater than %v", next, interval)
+	}
+	for i := 0; i < 20; i++ {
+		interval = assistantTransportNextPollInterval(interval, false)
+	}
+	if interval != assistantTransportPollMaxInterval {
+		t.Fatalf("idle interval = %v, want capped at %v", interval, assistantTransportPollMaxInterval)
+	}
+	if got := assistantTransportNextPollInterval(interval, true); got != assistantTransportPollInitialInterval {
+		t.Fatalf("changed interval = %v, want reset to %v", got, assistantTransportPollInitialInterval)
 	}
 }
 
@@ -404,7 +509,7 @@ func TestAssistantTransportAPIStreamsFailedStateAndErrorRecordOnBackendError(t *
 
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        "",
 			"threadId":         "thread-1",
 			"status":           "idle",
@@ -570,8 +675,8 @@ func TestAssistantTransportStreamProjectsTerminalTurnFromHistory(t *testing.T) {
 	if next.Status != appui.AiopsTransportStatusIdle {
 		t.Fatalf("next.Status = %q, want idle", next.Status)
 	}
-	if next.Turns["turn-history-terminal"].Final == nil || next.Turns["turn-history-terminal"].Final.Text != "历史 turn 的最终回答" {
-		t.Fatalf("projected final = %+v, want history final output", next.Turns["turn-history-terminal"].Final)
+	if !assistantTransportTurnContainsText(next.Turns["turn-history-terminal"], "历史 turn 的最终回答") {
+		t.Fatalf("projected blocks = %+v, want history final output", next.Turns["turn-history-terminal"].BlocksByID)
 	}
 	text := writer.String()
 	if !strings.Contains(text, "\"path\":[\"status\"],\"value\":\"idle\"") || !strings.Contains(text, "历史 turn 的最终回答") {
@@ -616,10 +721,9 @@ func TestAssistantTransportStreamWaitsForAcceptedTurnBeforeProjectingPreviousTer
 		Status:      appui.AiopsTransportTurnStatusCompleted,
 		StartedAt:   now.Add(-5 * time.Second).Format(time.RFC3339Nano),
 		CompletedAt: oldCompletedAt.Format(time.RFC3339Nano),
-		Final: &appui.AiopsTransportFinal{
-			ID:     "turn-old-final",
-			Text:   "旧 turn 输出",
-			Status: appui.AiopsTransportFinalStatusCompleted,
+		BlockOrder:  []string{"turn-old-final"},
+		BlocksByID: map[string]appui.AiopsTranscriptBlock{
+			"turn-old-final": assistantTransportTextBlock("turn-old-final", "旧 turn 输出", appui.AiopsTranscriptTextStatusCompleted),
 		},
 	}
 	initial.Turns["turn-new"] = appui.AiopsTransportTurn{
@@ -682,8 +786,8 @@ func TestAssistantTransportStreamWaitsForAcceptedTurnBeforeProjectingPreviousTer
 	if next.CurrentTurnID != "turn-new" {
 		t.Fatalf("next.CurrentTurnID = %q, want turn-new", next.CurrentTurnID)
 	}
-	if next.Turns["turn-new"].Final == nil || next.Turns["turn-new"].Final.Text != "第二次请求已完成" {
-		t.Fatalf("projected new turn final = %+v, want second turn final output", next.Turns["turn-new"].Final)
+	if !assistantTransportTurnContainsText(next.Turns["turn-new"], "第二次请求已完成") {
+		t.Fatalf("projected new turn blocks = %+v, want second turn final output", next.Turns["turn-new"].BlocksByID)
 	}
 	text := writer.String()
 	if strings.Contains(text, "\"path\":[\"currentTurnId\"],\"value\":\"turn-old\"") {
@@ -820,11 +924,59 @@ func TestAssistantTransportStreamClearsApprovalWithoutTransportErrorOnDeniedAppr
 	}
 }
 
+func assistantTransportTextBlock(id, text string, status appui.AiopsTranscriptTextStatus) appui.AiopsTranscriptBlock {
+	return appui.AiopsTranscriptBlock{
+		ID:   id,
+		Type: appui.AiopsTranscriptBlockTypeText,
+		Text: &appui.AiopsTextBlock{
+			Role:   "assistant",
+			Text:   text,
+			Status: status,
+		},
+	}
+}
+
+func assistantTransportToolBlock(id, output string) appui.AiopsTranscriptBlock {
+	return appui.AiopsTranscriptBlock{
+		ID:   id,
+		Type: appui.AiopsTranscriptBlockTypeTool,
+		Tool: &appui.AiopsToolBlock{
+			ToolKind: appui.AiopsTranscriptToolKindCommand,
+			Title:    "Shell",
+			Summary:  "running command",
+			Status:   appui.AiopsTransportProcessStatusRunning,
+			Command:  "echo test",
+			Output: appui.AiopsToolOutput{
+				Stdout: output,
+				Text:   output,
+			},
+		},
+	}
+}
+
+func hasAssistantTransportOp(ops []assistantTransportStreamStateOp, opType string, path []any, value any) bool {
+	for _, op := range ops {
+		if op.Type == opType && reflect.DeepEqual(op.Path, path) && reflect.DeepEqual(op.Value, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantTransportTurnContainsText(turn appui.AiopsTransportTurn, text string) bool {
+	for _, block := range turn.BlocksByID {
+		if block.Type == appui.AiopsTranscriptBlockTypeText && block.Text != nil && block.Text.Text == text {
+			return true
+		}
+	}
+	return false
+}
+
 func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, message string) []byte {
 	t.Helper()
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        sessionID,
 			"threadId":         threadID,
 			"status":           "idle",

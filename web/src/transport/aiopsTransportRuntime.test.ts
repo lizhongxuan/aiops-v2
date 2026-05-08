@@ -5,15 +5,16 @@ import {
   createInitialAiopsTransportState,
   markAiopsTransportCanceled,
   markAiopsTransportFailed,
+  toAiopsApprovalCommandDecision,
 } from "./aiopsTransportRuntime";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
 describe("aiopsTransportRuntime", () => {
-  it("creates a fully initialized transport state for assistant-ui", () => {
+  it("creates v2 transport state with empty transcript blocks", () => {
     const state = createInitialAiopsTransportState("thread-1");
 
     expect(state).toMatchObject({
-      schemaVersion: "aiops.transport.v1",
+      schemaVersion: "aiops.transport.v2",
       sessionId: "",
       threadId: "thread-1",
       status: "idle",
@@ -45,7 +46,8 @@ describe("aiopsTransportRuntime", () => {
 
     actions.stop("user requested stop");
     actions.retry();
-    actions.approvalDecision("approval-1", "reject");
+    actions.approvalDecision("approval-1", "deny");
+    actions.approvalDecision("approval-2", "approve");
     actions.choiceAnswer("choice-1", "continue");
     actions.mcpAction("filesystem", "open", { path: "/tmp" });
     actions.mcpRefresh("filesystem");
@@ -55,11 +57,17 @@ describe("aiopsTransportRuntime", () => {
       { type: "aiops.stop", sessionId: "sess-1", turnId: "turn-1", reason: "user requested stop" },
       { type: "aiops.retry", sessionId: "sess-1", turnId: "turn-1" },
       { type: "aiops.approval-decision", approvalId: "approval-1", decision: "reject" },
+      { type: "aiops.approval-decision", approvalId: "approval-2", decision: "accept" },
       { type: "aiops.choice-answer", requestId: "choice-1", answer: "continue" },
       { type: "aiops.mcp-action", surfaceId: "filesystem", action: "open", params: { path: "/tmp" } },
       { type: "aiops.mcp-refresh", surfaceId: "filesystem" },
       { type: "aiops.mcp-pin", surfaceId: "filesystem", pinned: true },
     ]);
+  });
+
+  it("maps the single frontend approval vocabulary to transport command decisions", () => {
+    expect(toAiopsApprovalCommandDecision("approve")).toBe("accept");
+    expect(toAiopsApprovalCommandDecision("deny")).toBe("reject");
   });
 
   it("marks local state failed or canceled without mutating the previous state", () => {
@@ -68,7 +76,7 @@ describe("aiopsTransportRuntime", () => {
       status: "working",
       currentTurnId: "turn-1",
       turns: {
-        "turn-1": { id: "turn-1", status: "working" },
+        "turn-1": { id: "turn-1", status: "working", blockOrder: [], blocksById: {} },
       },
     } satisfies AiopsTransportState;
 

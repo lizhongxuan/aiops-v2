@@ -36,7 +36,7 @@ func TestAssistantTransportResumeIdleReturnsCurrentStateWithoutStartingTurn(t *t
 	if !strings.Contains(text, "aui-state:") {
 		t.Fatalf("response = %q, want aui-state frame", text)
 	}
-	if !strings.Contains(text, "\"path\":[],\"value\":{\"schemaVersion\":\"aiops.transport.v1\",\"sessionId\":\"sess-idle\"") {
+	if !strings.Contains(text, "\"path\":[],\"value\":{\"schemaVersion\":\"aiops.transport.v2\",\"sessionId\":\"sess-idle\"") {
 		t.Fatalf("response = %q, want full idle state set", text)
 	}
 	if session.CurrentTurn != nil {
@@ -149,7 +149,7 @@ func assistantTransportResumePayload(t *testing.T, sessionID, threadID string) [
 	body := map[string]any{
 		"threadId": threadID,
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        sessionID,
 			"threadId":         threadID,
 			"status":           "idle",

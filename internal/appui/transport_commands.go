@@ -216,9 +216,7 @@ func (h *TransportCommandHandler) applyStop(ctx context.Context, state AiopsTran
 	turnID := strings.TrimSpace(firstNonEmptyString(resp.TurnID, command.TurnID, state.CurrentTurnID))
 	if turn := state.Turns[turnID]; turn.ID != "" {
 		turn.Status = AiopsTransportTurnStatusCanceled
-		if turn.Final != nil {
-			turn.Final.Status = AiopsTransportFinalStatusFailed
-		}
+		turn = markActiveToolBlocksTerminal(turn, AiopsTransportProcessStatusRejected)
 		state.Turns[turnID] = turn
 	}
 	if turnID != "" {
@@ -236,9 +234,13 @@ func (h *TransportCommandHandler) applyApprovalDecision(ctx context.Context, sta
 	}
 	approvalID := strings.TrimSpace(command.ApprovalID)
 	approval := state.PendingApprovals[approvalID]
+	normalizedDecision, err := normalizeApprovalDecision(command.Decision)
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
 	decision := ApprovalDecision{
 		ID:       approvalID,
-		Decision: strings.TrimSpace(command.Decision),
+		Decision: normalizedDecision,
 	}
 	result, err := h.applyApprovalDecisionCommand(ctx, decision)
 	if err != nil {
@@ -247,7 +249,7 @@ func (h *TransportCommandHandler) applyApprovalDecision(ctx context.Context, sta
 	delete(state.PendingApprovals, approvalID)
 	delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 	turnID := strings.TrimSpace(firstNonEmptyString(result.TurnID, approval.TurnID, state.CurrentTurnID))
-	if isTransportRejectedDecision(command.Decision) || strings.EqualFold(result.Status, "failed") || strings.EqualFold(result.Status, "denied") {
+	if normalizedDecision == "denied" || strings.EqualFold(result.Status, "failed") || strings.EqualFold(result.Status, "denied") {
 		state.Status = AiopsTransportStatusFailed
 		if turnID != "" {
 			delete(state.RuntimeLiveness.ActiveTurns, turnID)
@@ -284,23 +286,55 @@ func markApprovalDecisionOnTurn(turn AiopsTransportTurn, approvalID string, reje
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if rejected {
 		turn.Status = AiopsTransportTurnStatusFailed
-		if turn.Final != nil {
-			turn.Final.Status = AiopsTransportFinalStatusFailed
-		}
 	} else {
 		turn.Status = AiopsTransportTurnStatusWorking
 	}
 	turn.UpdatedAt = now
-	for idx := range turn.Process {
-		if strings.TrimSpace(turn.Process[idx].ApprovalID) != strings.TrimSpace(approvalID) {
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	for id, block := range turn.BlocksByID {
+		if block.Type == AiopsTranscriptBlockTypeTool && block.Tool != nil && strings.TrimSpace(block.Tool.ApprovalID) == strings.TrimSpace(approvalID) {
+			nextTool := *block.Tool
+			if rejected {
+				nextTool.Status = AiopsTransportProcessStatusRejected
+			} else {
+				nextTool.Status = AiopsTransportProcessStatusRunning
+			}
+			block.Tool = &nextTool
+			block.UpdatedAt = now
+			turn.BlocksByID[id] = block
 			continue
 		}
-		if rejected {
-			turn.Process[idx].Status = AiopsTransportProcessStatusRejected
-		} else {
-			turn.Process[idx].Status = AiopsTransportProcessStatusRunning
+		if block.Type == AiopsTranscriptBlockTypeApproval && block.Approval != nil && strings.TrimSpace(block.Approval.ApprovalID) == strings.TrimSpace(approvalID) {
+			nextApproval := *block.Approval
+			if rejected {
+				nextApproval.Status = string(AiopsTransportProcessStatusRejected)
+			} else {
+				nextApproval.Status = "approved"
+			}
+			nextApproval.ResolvedAt = now
+			block.Approval = &nextApproval
+			block.UpdatedAt = now
+			turn.BlocksByID[id] = block
 		}
-		turn.Process[idx].UpdatedAt = now
+	}
+	return turn
+}
+
+func markActiveToolBlocksTerminal(turn AiopsTransportTurn, status AiopsTransportProcessStatus) AiopsTransportTurn {
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for id, block := range turn.BlocksByID {
+		if block.Type != AiopsTranscriptBlockTypeTool || block.Tool == nil {
+			continue
+		}
+		nextTool := *block.Tool
+		switch nextTool.Status {
+		case AiopsTransportProcessStatusQueued, AiopsTransportProcessStatusRunning, AiopsTransportProcessStatusBlocked:
+			nextTool.Status = status
+			block.Tool = &nextTool
+			block.UpdatedAt = now
+			turn.BlocksByID[id] = block
+		}
 	}
 	return turn
 }
@@ -397,13 +431,4 @@ func validateTransportMCPSurface(state AiopsTransportState, surfaceID string, ac
 		return fmt.Errorf("mcp surface %q is not available in transport state", surfaceID)
 	}
 	return nil
-}
-
-func isTransportRejectedDecision(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "accept", "accept_session", "approve", "approved", "allow", "yes":
-		return false
-	default:
-		return true
-	}
 }

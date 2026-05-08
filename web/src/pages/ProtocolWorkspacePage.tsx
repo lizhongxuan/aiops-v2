@@ -13,7 +13,7 @@ import { EmptyPanel, RiskBadge } from "@/pages/complexPageComponents";
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type {
-  AiopsProcessBlock,
+  AiopsTranscriptBlock,
   AiopsTransportApproval,
   AiopsTransportMcpSurface,
   AiopsTransportState,
@@ -52,7 +52,9 @@ function ProtocolWorkspaceContent() {
   const commands = useAiopsTransportCommands();
   const turns = state.turnOrder.map((turnId) => state.turns[turnId]).filter(Boolean);
   const currentTurn = state.currentTurnId ? state.turns[state.currentTurnId] : turns[turns.length - 1];
-  const process = currentTurn?.process || [];
+  const transcriptBlocks = currentTurn
+    ? currentTurn.blockOrder.map((blockId) => currentTurn.blocksById[blockId]).filter(Boolean)
+    : [];
   const approvals = Object.values(state.pendingApprovals || {});
   const surfaces = Object.values(state.mcpSurfaces || {});
   const artifacts = Object.values(state.artifacts || {});
@@ -112,9 +114,7 @@ function ProtocolWorkspaceContent() {
               {currentTurn ? (
                 <div className="grid gap-3">
                   {currentTurn.user?.text ? <MessageBlock tone="dark" text={currentTurn.user.text} /> : null}
-                  {currentTurn.intent?.text ? <MessageBlock tone="info" text={currentTurn.intent.text} /> : null}
-                  {process.length ? <ProcessBlocks items={process} /> : null}
-                  {currentTurn.final?.text ? <MessageBlock tone="light" text={currentTurn.final.text} /> : null}
+                  {transcriptBlocks.length ? <ProcessBlocks items={transcriptBlocks} /> : null}
                 </div>
               ) : (
                 <EmptyPanel title="暂无 protocol turn" description="发送消息后，主 Agent 的过程和结论会显示在这里。" />
@@ -222,23 +222,50 @@ function MessageBlock({ tone, text }: { tone: "dark" | "info" | "light"; text: s
   );
 }
 
-function ProcessBlocks({ items }: { items: AiopsProcessBlock[] }) {
+function ProcessBlocks({ items }: { items: AiopsTranscriptBlock[] }) {
   return (
     <div className="grid gap-2">
       {items.map((block) => (
         <div key={block.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm">
           <div className="flex items-center gap-2">
-            <RiskBadge value={block.status} />
-            <span className="font-medium text-slate-900">{block.displayKind || block.kind}</span>
+            <RiskBadge value={statusForTranscriptBlock(block)} />
+            <span className="font-medium text-slate-900">{titleForTranscriptBlock(block)}</span>
           </div>
-          <p className="mt-2 leading-6 text-slate-600">{block.text}</p>
-          {block.command ? (
-            <pre className="mt-2 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-50">{block.command}</pre>
+          <p className="mt-2 leading-6 text-slate-600">{summaryForTranscriptBlock(block)}</p>
+          {block.type === "tool" && block.tool?.command ? (
+            <pre className="mt-2 overflow-auto rounded-xl bg-slate-950 p-3 text-xs text-slate-50">{block.tool.command}</pre>
           ) : null}
         </div>
       ))}
     </div>
   );
+}
+
+function statusForTranscriptBlock(block: AiopsTranscriptBlock) {
+  if (block.type === "tool") return block.tool.status;
+  if (block.type === "text") return block.text.status;
+  if (block.type === "approval") return block.approval.status;
+  if (block.type === "aggregate") return block.aggregate.status;
+  if (block.type === "thinking") return block.thinking.status;
+  return "ready";
+}
+
+function titleForTranscriptBlock(block: AiopsTranscriptBlock) {
+  if (block.type === "tool") return block.tool.title || block.tool.toolKind;
+  if (block.type === "approval") return block.approval.title || "审批";
+  if (block.type === "aggregate") return "聚合摘要";
+  if (block.type === "thinking") return "思考";
+  if (block.type === "artifact") return block.artifact.title || block.artifact.kind;
+  return "Assistant";
+}
+
+function summaryForTranscriptBlock(block: AiopsTranscriptBlock) {
+  if (block.type === "text") return block.text.text;
+  if (block.type === "tool") return block.tool.summary || block.tool.output.text;
+  if (block.type === "approval") return block.approval.summary || block.approval.command || "等待审批";
+  if (block.type === "aggregate") return block.aggregate.summary;
+  if (block.type === "thinking") return block.thinking.text;
+  return block.artifact.summary || block.artifact.title;
 }
 
 function ApprovalRailItem({ approval }: { approval: AiopsTransportApproval }) {
@@ -250,13 +277,13 @@ function ApprovalRailItem({ approval }: { approval: AiopsTransportApproval }) {
         <span className="font-medium">{approval.command || approval.reason || approval.id}</span>
       </div>
       <div className="mt-2 flex gap-2">
-        <Button variant="outline" onClick={() => commands.approvalDecision(approval.id, "reject")}>
+        <Button variant="outline" onClick={() => commands.approvalDecision(approval.id, "deny")}>
           <X />
-          Reject
+          拒绝
         </Button>
-        <Button onClick={() => commands.approvalDecision(approval.id, "accept")}>
+        <Button onClick={() => commands.approvalDecision(approval.id, "approve")}>
           <Check />
-          Approve
+          同意
         </Button>
       </div>
     </div>

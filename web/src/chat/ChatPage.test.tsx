@@ -29,7 +29,7 @@ describe("ChatPage", () => {
     container.remove();
   });
 
-  it("renders assistant-ui chat state with typed process and approval blocks", async () => {
+  it("renders assistant-ui chat state with interleaved transcript blocks and approval controls", async () => {
     await act(async () => {
       root.render(<ChatPage initialState={sampleState()} />);
     });
@@ -39,9 +39,9 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("payment-api is waiting for rollout approval.");
     expect(container.textContent).toContain("等待审批");
     expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
-    expect(container.textContent).toContain("1. 批准");
+    expect(container.textContent).toContain("1. 同意");
     expect(container.textContent).toContain("2. 拒绝");
-    expect(container.textContent).toContain("提交");
+    expect(container.textContent).toContain("同意");
     expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="codex-approval-command"]')).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
@@ -101,28 +101,47 @@ function sampleState(): AiopsTransportState {
           text: "Investigate payment-api saturation",
           createdAt: "2026-05-06T00:00:00Z",
         },
-        process: [
-          {
+        blockOrder: ["cmd-1", "text-1", "approval-block-1"],
+        blocksById: {
+          "cmd-1": {
             id: "cmd-1",
-            kind: "command",
-            status: "completed",
-            text: "Rollout status",
-            command: "kubectl rollout status deploy/payment-api",
-            outputPreview: "deployment is waiting for approval",
+            type: "tool",
+            tool: {
+              toolKind: "command",
+              title: "Shell",
+              summary: "kubectl rollout status deploy/payment-api",
+              status: "completed",
+              command: "kubectl rollout status deploy/payment-api",
+              output: {
+                stdout: "deployment is waiting for approval",
+                stderr: "",
+                text: "deployment is waiting for approval",
+                truncated: false,
+              },
+            },
           },
-          {
+          "text-1": {
+            id: "text-1",
+            type: "text",
+            text: {
+              role: "assistant",
+              text: "payment-api is waiting for rollout approval.",
+              status: "streaming",
+            },
+          },
+          "approval-block-1": {
             id: "approval-block-1",
-            kind: "approval",
-            status: "blocked",
-            text: "Needs approval",
-            command: "kubectl rollout restart deploy/payment-api",
-            approvalId: "approval-1",
+            type: "approval",
+            approval: {
+              approvalId: "approval-1",
+              approvalKind: "command",
+              title: "等待审批",
+              summary: "Needs approval",
+              command: "kubectl rollout restart deploy/payment-api",
+              status: "blocked",
+              requestedAt: "2026-05-06T00:00:00Z",
+            },
           },
-        ],
-        final: {
-          id: "final-1",
-          text: "payment-api is waiting for rollout approval.",
-          status: "running",
         },
       },
     },

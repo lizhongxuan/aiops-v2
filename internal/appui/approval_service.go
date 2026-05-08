@@ -106,6 +106,10 @@ func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision
 	if err != nil {
 		return nil, runtimekernel.ResumeRequest{}, err
 	}
+	normalizedDecision, err := normalizeApprovalDecision(decision.Decision)
+	if err != nil {
+		return nil, runtimekernel.ResumeRequest{}, err
+	}
 	resumeState := runtimekernel.TurnResumeStatePendingApproval
 	if strings.EqualFold(strings.TrimSpace(approval.Source), "pending_evidence") {
 		resumeState = runtimekernel.TurnResumeStatePendingEvidence
@@ -116,16 +120,18 @@ func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision
 		ApprovalID:   approval.ID,
 		CheckpointID: currentCheckpointID(session),
 		ResumeState:  resumeState,
-		Decision:     normalizeApprovalDecision(decision.Decision),
+		Decision:     normalizedDecision,
 	}, nil
 }
 
-func normalizeApprovalDecision(value string) string {
+func normalizeApprovalDecision(value string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "accept", "accept_session", "approve", "approved", "allow", "yes":
-		return "approved"
+		return "approved", nil
+	case "reject", "rejected", "deny", "denied", "no":
+		return "denied", nil
 	default:
-		return "denied"
+		return "", fmt.Errorf("invalid approval decision %q", value)
 	}
 }
 

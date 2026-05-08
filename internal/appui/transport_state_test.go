@@ -57,22 +57,31 @@ func TestTransportStateJSONRoundTripPreservesFields(t *testing.T) {
 					Text:   "validate rollback target",
 					Status: string(AiopsTransportProcessStatusRunning),
 				},
-				Process: []AiopsProcessBlock{
-					{
-						ID:            "block-1",
-						Kind:          AiopsTransportProcessKindApproval,
-						DisplayKind:   "approval",
-						Status:        AiopsTransportProcessStatusBlocked,
-						Text:          "Rollback payment-api deployment",
-						ApprovalID:    "approval-1",
-						OutputPreview: "kubectl rollout undo deployment/payment-api -n prod",
-						UpdatedAt:     "2026-05-06T10:00:01Z",
+				BlockOrder: []string{"approval-1", "text-1"},
+				BlocksByID: map[string]AiopsTranscriptBlock{
+					"approval-1": {
+						ID:   "approval-1",
+						Type: AiopsTranscriptBlockTypeApproval,
+						Approval: &AiopsApprovalBlock{
+							ApprovalID:   "approval-1",
+							ApprovalKind: "command",
+							Title:        "等待审批",
+							Summary:      "Rollback payment-api deployment",
+							Command:      "kubectl rollout undo deployment/payment-api -n prod",
+							Status:       string(AiopsTransportProcessStatusBlocked),
+							RequestedAt:  "2026-05-06T10:00:01Z",
+						},
+						UpdatedAt: "2026-05-06T10:00:01Z",
 					},
-				},
-				Final: &AiopsTransportFinal{
-					ID:     "final-1",
-					Text:   "waiting for approval",
-					Status: AiopsTransportFinalStatusRunning,
+					"text-1": {
+						ID:   "text-1",
+						Type: AiopsTranscriptBlockTypeText,
+						Text: &AiopsTextBlock{
+							Role:   "assistant",
+							Text:   "waiting for approval",
+							Status: AiopsTranscriptTextStatusStreaming,
+						},
+					},
 				},
 			},
 		},
@@ -94,18 +103,62 @@ func TestTransportStateJSONRoundTripPreservesFields(t *testing.T) {
 				Kind:      "bundle",
 				Title:     "Kubernetes remediation",
 				Status:    "ready",
+				Lifecycle: AiopsTransportLifecycleReady,
 				Pinned:    true,
-				UpdatedAt: "2026-05-06T10:00:02Z",
+				Cards: []AiopsAgentUICard{{
+					ID:         "card-1",
+					Kind:       "agent_to_ui",
+					Title:      "Rollback diff",
+					Summary:    "Review rollback artifact",
+					Status:     "ready",
+					ArtifactID: "artifact-1",
+					Actions: []AiopsTransportActionBinding{{
+						ID:               "approve-rollback",
+						Label:            "同意",
+						Command:          "aiops.approval-decision",
+						Target:           "approval-1",
+						Params:           map[string]any{"decision": "accept"},
+						RequiresApproval: true,
+					}},
+				}},
+				App: &AiopsIframeAppSurface{
+					URL:         "app://mcp/kubernetes-remediation",
+					Sandbox:     "allow-scripts",
+					Height:      640,
+					Width:       960,
+					Permissions: []string{"clipboard-read"},
+				},
+				Actions: []AiopsTransportActionBinding{{
+					ID:      "refresh",
+					Label:   "刷新",
+					Command: "aiops.mcp-refresh",
+					Target:  "surface-1",
+				}},
+				ArtifactIDs: []string{"artifact-1"},
+				UpdatedAt:   "2026-05-06T10:00:02Z",
 			},
 		},
 		Artifacts: map[string]AiopsTransportArtifact{
 			"artifact-1": {
-				ID:         "artifact-1",
-				TurnID:     "turn-1",
-				Kind:       "diff",
-				Title:      "rollback diff",
-				Preview:    "1 file changed",
-				RawRef:     "artifact://turn-1/diff-1",
+				ID:      "artifact-1",
+				TurnID:  "turn-1",
+				Kind:    "diff",
+				Title:   "rollback diff",
+				Preview: "1 file changed",
+				PreviewData: &AiopsArtifactPreview{
+					ContentType: "text/markdown",
+					Text:        "1 file changed",
+					RawRef:      "artifact://turn-1/diff-1",
+					Metadata:    map[string]string{"format": "diff"},
+				},
+				RawRef:    "artifact://turn-1/diff-1",
+				Lifecycle: AiopsTransportLifecycleReady,
+				Actions: []AiopsTransportActionBinding{{
+					ID:      "open-diff",
+					Label:   "查看变更",
+					Command: "aiops.artifact-open",
+					Target:  "artifact-1",
+				}},
 				CreatedAt:  "2026-05-06T10:00:03Z",
 				ModifiedAt: "2026-05-06T10:00:03Z",
 			},
@@ -151,5 +204,57 @@ func TestTransportStableIDsAreRepeatable(t *testing.T) {
 	}
 	if blockA == TransportProcessBlockStableID("turn-1", "approval", "approval-2") {
 		t.Fatalf("expected different block IDs for different source IDs")
+	}
+}
+
+func TestUpsertAiopsTranscriptBlockAppendsOrderOnce(t *testing.T) {
+	turn := AiopsTransportTurn{ID: "turn-1"}
+	block := AiopsTranscriptBlock{
+		ID:   "block-1",
+		Type: AiopsTranscriptBlockTypeText,
+		Text: &AiopsTextBlock{Text: "hello"},
+	}
+
+	turn = UpsertAiopsTranscriptBlock(turn, block)
+	turn = UpsertAiopsTranscriptBlock(turn, block)
+
+	if got := len(turn.BlockOrder); got != 1 {
+		t.Fatalf("BlockOrder length = %d, want 1: %+v", got, turn.BlockOrder)
+	}
+	if turn.BlockOrder[0] != "block-1" {
+		t.Fatalf("BlockOrder[0] = %q, want block-1", turn.BlockOrder[0])
+	}
+	if turn.BlocksByID["block-1"].ID != "block-1" {
+		t.Fatalf("BlocksByID missing block: %+v", turn.BlocksByID)
+	}
+}
+
+func TestReplaceVisibleBlocksWithAggregateKeepsTimelinePosition(t *testing.T) {
+	turn := AiopsTransportTurn{
+		ID:         "turn-1",
+		BlockOrder: []string{"text-1", "cmd-1", "cmd-2", "text-2"},
+		BlocksByID: map[string]AiopsTranscriptBlock{
+			"text-1": {ID: "text-1", Type: AiopsTranscriptBlockTypeText},
+			"cmd-1":  {ID: "cmd-1", Type: AiopsTranscriptBlockTypeTool},
+			"cmd-2":  {ID: "cmd-2", Type: AiopsTranscriptBlockTypeTool},
+			"text-2": {ID: "text-2", Type: AiopsTranscriptBlockTypeText},
+		},
+	}
+	aggregate := AiopsTranscriptBlock{
+		ID:   "agg-1",
+		Type: AiopsTranscriptBlockTypeAggregate,
+		Aggregate: &AiopsAggregateBlock{
+			ChildBlockIDs: []string{"cmd-1", "cmd-2"},
+		},
+	}
+
+	turn = ReplaceVisibleBlocksWithAggregate(turn, []string{"cmd-1", "cmd-2"}, aggregate)
+
+	want := []string{"text-1", "agg-1", "text-2"}
+	if !reflect.DeepEqual(turn.BlockOrder, want) {
+		t.Fatalf("BlockOrder = %+v, want %+v", turn.BlockOrder, want)
+	}
+	if _, ok := turn.BlocksByID["cmd-1"]; !ok {
+		t.Fatalf("child cmd-1 should remain in BlocksByID for detail lookup")
 	}
 }

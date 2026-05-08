@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { isAiopsTransportRunning } from "@/transport/aiopsTransportConverter";
+import type { AiopsApprovalAction } from "@/transport/aiopsTransportRuntime";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 import type { AiopsTransportApproval, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
@@ -238,7 +239,7 @@ function TargetAwareSendButton({
 
 function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApproval }) {
   const commands = useAiopsTransportCommands();
-  const [decision, setDecision] = useState<"accept" | "reject">("accept");
+  const [decision, setDecision] = useState<AiopsApprovalAction>("approve");
   const commandText = approval.command || approval.reason || approval.id;
 
   function submitDecision() {
@@ -265,48 +266,39 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
             <button
               type="button"
               role="radio"
-              aria-checked={decision === "accept"}
+              aria-checked={decision === "approve"}
               className={[
                 "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
-                decision === "accept" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
+                decision === "approve" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
               ].join(" ")}
-              onClick={() => setDecision("accept")}
+              onClick={() => setDecision("approve")}
             >
-              <span>1. 批准</span>
-              {decision === "accept" ? <Check className="h-4 w-4 text-slate-500" /> : null}
+              <span>1. 同意</span>
+              {decision === "approve" ? <Check className="h-4 w-4 text-slate-500" /> : null}
             </button>
             <button
               type="button"
               role="radio"
-              aria-checked={decision === "reject"}
+              aria-checked={decision === "deny"}
               className={[
                 "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
-                decision === "reject" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
+                decision === "deny" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
               ].join(" ")}
-              onClick={() => setDecision("reject")}
+              onClick={() => setDecision("deny")}
             >
               <span>2. 拒绝</span>
-              {decision === "reject" ? <X className="h-4 w-4 text-slate-500" /> : null}
+              {decision === "deny" ? <X className="h-4 w-4 text-slate-500" /> : null}
             </button>
           </div>
         </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="rounded-full border-slate-200 bg-white px-4"
-            onClick={() => commands.approvalDecision(approval.id, "reject")}
-          >
-            跳过
-          </Button>
+        <div className="mt-4 flex justify-end">
           <Button
             type="button"
             size="sm"
             className="rounded-full bg-slate-950 px-4 text-white hover:bg-slate-800"
             onClick={submitDecision}
           >
-            提交
+            {decision === "approve" ? "同意" : "拒绝"}
           </Button>
         </div>
       </div>

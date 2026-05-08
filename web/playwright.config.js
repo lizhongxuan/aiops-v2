@@ -10,7 +10,6 @@ export default defineConfig({
     "e2e/**/*.spec.js",
     "protocol-chat-ui.spec.js",
     "chat-ui-visual.spec.js",
-    "chat-ui-snapshot.spec.js",
     "react-route-smoke.spec.js",
     "react-shell-snapshot.spec.js",
     "runner-studio.spec.js",

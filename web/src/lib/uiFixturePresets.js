@@ -38,18 +38,26 @@ function isApprovalCard(card = {}) {
   return card?.type === "CommandApprovalCard" || card?.type === "FileChangeApprovalCard";
 }
 
-function createProcessBlock({ id, kind = "tool", status = "completed", text, command, updatedAt }) {
+function createTranscriptToolBlock({ id, kind = "other", status = "completed", text, command, updatedAt }) {
+  const toolKind = kind === "command" || kind === "search" || kind === "file" || kind === "list" ? kind : "other";
+  const summary = compactText(text || command || id);
   return {
     id,
-    kind,
-    status,
-    text: compactText(text || command || id),
-    command: compactText(command),
+    type: "tool",
+    tool: {
+      toolKind,
+      title: toolKind === "command" ? "Shell" : toolKind === "search" ? "Search" : toolKind === "file" ? "File" : "Tool",
+      summary,
+      status,
+      command: toolKind === "command" ? compactText(command || text) : undefined,
+      inputSummary: compactText(command || text),
+      output: { stdout: "", stderr: "", text: toolKind === "command" ? "" : summary, truncated: false },
+    },
     updatedAt,
   };
 }
 
-function createActivityProcessBlocks({ runtime = {}, cards = [], updatedAt = "2026-04-16T10:00:00Z" } = {}) {
+function createActivityTranscriptBlocks({ runtime = {}, cards = [], updatedAt = "2026-04-16T10:00:00Z" } = {}) {
   const activity = runtime.activity || {};
   const turn = runtime.turn || {};
   const phase = compactText(turn.phase || "idle").toLowerCase();
@@ -62,7 +70,7 @@ function createActivityProcessBlocks({ runtime = {}, cards = [], updatedAt = "20
     const label = compactText(text || command);
     if (!label || seen.has(key)) return;
     seen.add(key);
-    blocks.push(createProcessBlock({ id: key, kind, status, text: label, command, updatedAt }));
+    blocks.push(createTranscriptToolBlock({ id: key, kind, status, text: label, command, updatedAt }));
   };
 
   (Array.isArray(activity.searchedWebQueries) ? activity.searchedWebQueries : []).forEach((item, index) => {
@@ -84,14 +92,15 @@ function createActivityProcessBlocks({ runtime = {}, cards = [], updatedAt = "20
     if (card?.type === "PlanCard") {
       blocks.push({
         id: compactText(card.id) || `plan-${index}`,
-        kind: "plan",
-        status: "running",
-        text: compactText(card.title || card.text || "执行计划"),
-        steps: (Array.isArray(card.items) ? card.items : []).map((item, stepIndex) => ({
-          id: `${card.id || "plan"}:step:${stepIndex}`,
-          text: compactText(item?.step || item?.text || item),
-          status: compactText(item?.status),
-        })),
+        type: "text",
+        text: {
+          role: "assistant",
+          text: [compactText(card.title || card.text || "执行计划")]
+            .concat((Array.isArray(card.items) ? card.items : []).map((item) => compactText(item?.step || item?.text || item)).filter(Boolean))
+            .filter(Boolean)
+            .join("\n"),
+          status: "streaming",
+        },
         updatedAt: compactText(card.updatedAt || updatedAt),
       });
     }
@@ -156,7 +165,7 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
   const turnId = resolveFixtureTurnId(turn, cards);
   const userCard = latestUserCard(cards);
   const pendingApprovals = createPendingApprovals({ approvals, cards, turnId, updatedAt });
-  const process = createActivityProcessBlocks({ runtime, cards, updatedAt });
+  const blocks = createActivityTranscriptBlocks({ runtime, cards, updatedAt });
   const phase = compactText(turn.phase || "idle").toLowerCase();
   const blocked = Object.keys(pendingApprovals).length > 0 || phase === "waiting_approval" || phase === "waiting_input";
   const failed = phase === "failed";
@@ -167,7 +176,7 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
   const assistantText = finalText || [...cards].reverse().find((card) => card?.type === "AssistantMessageCard")?.text || "";
 
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId,
     threadId,
     status: resolvedStatus,
@@ -184,15 +193,21 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
               createdAt: compactText(userCard.createdAt || updatedAt),
             }
           : undefined,
-        intent: { text: compactText(userCard?.text || userCard?.message), status: phase || resolvedStatus },
-        process,
-        final: assistantText
-          ? {
-              id: `${turnId}:final`,
-              text: assistantText,
-              status: active || blocked ? "running" : failed ? "failed" : "completed",
-            }
-          : undefined,
+        blockOrder: blocks.concat(assistantText ? [{ id: `${turnId}:final` }] : []).map((block) => block.id),
+        blocksById: Object.fromEntries(
+          blocks
+            .concat(
+              assistantText
+                ? [{
+                    id: `${turnId}:final`,
+                    type: "text",
+                    text: { role: "assistant", text: assistantText, status: active || blocked ? "streaming" : "completed" },
+                    updatedAt,
+                  }]
+                : [],
+            )
+            .map((block) => [block.id, block]),
+        ),
       },
     },
     turnOrder: [turnId],
@@ -204,9 +219,9 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
       activeAgents: active ? { "agent-main": true } : {},
       pendingApprovals: Object.fromEntries(Object.keys(pendingApprovals).map((id) => [id, true])),
       pendingUserInputs: phase === "waiting_input" ? { [turnId]: true } : {},
-      activeCommandStreams: Object.fromEntries(process.filter((block) => block.status === "running").map((block) => [block.id, true])),
+      activeCommandStreams: Object.fromEntries(blocks.filter((block) => block.tool?.status === "running").map((block) => [block.id, true])),
     },
-    seq: process.length + Object.keys(pendingApprovals).length + 1,
+    seq: blocks.length + Object.keys(pendingApprovals).length + 1,
     updatedAt,
   };
 }

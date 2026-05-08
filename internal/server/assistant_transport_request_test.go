@@ -9,7 +9,7 @@ import (
 func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	body := strings.NewReader(`{
 		"state": {
-			"schemaVersion": "aiops.transport.v1",
+			"schemaVersion": "aiops.transport.v2",
 			"sessionId": "sess-1",
 			"threadId": "thread-1",
 			"status": "idle",

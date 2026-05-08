@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const AiopsTransportSchemaVersion = "aiops.transport.v1"
+const AiopsTransportSchemaVersion = "aiops.transport.v2"
 
 type AiopsTransportStatus string
 
@@ -29,21 +29,6 @@ const (
 	AiopsTransportTurnStatusCanceled  AiopsTransportTurnStatus = "canceled"
 )
 
-type AiopsTransportProcessKind string
-
-const (
-	AiopsTransportProcessKindPlan      AiopsTransportProcessKind = "plan"
-	AiopsTransportProcessKindReasoning AiopsTransportProcessKind = "reasoning"
-	AiopsTransportProcessKindSearch    AiopsTransportProcessKind = "search"
-	AiopsTransportProcessKindCommand   AiopsTransportProcessKind = "command"
-	AiopsTransportProcessKindFile      AiopsTransportProcessKind = "file"
-	AiopsTransportProcessKindTool      AiopsTransportProcessKind = "tool"
-	AiopsTransportProcessKindEvidence  AiopsTransportProcessKind = "evidence"
-	AiopsTransportProcessKindApproval  AiopsTransportProcessKind = "approval"
-	AiopsTransportProcessKindMCP       AiopsTransportProcessKind = "mcp"
-	AiopsTransportProcessKindSystem    AiopsTransportProcessKind = "system"
-)
-
 type AiopsTransportProcessStatus string
 
 const (
@@ -53,14 +38,6 @@ const (
 	AiopsTransportProcessStatusFailed    AiopsTransportProcessStatus = "failed"
 	AiopsTransportProcessStatusBlocked   AiopsTransportProcessStatus = "blocked"
 	AiopsTransportProcessStatusRejected  AiopsTransportProcessStatus = "rejected"
-)
-
-type AiopsTransportFinalStatus string
-
-const (
-	AiopsTransportFinalStatusRunning   AiopsTransportFinalStatus = "running"
-	AiopsTransportFinalStatusCompleted AiopsTransportFinalStatus = "completed"
-	AiopsTransportFinalStatusFailed    AiopsTransportFinalStatus = "failed"
 )
 
 type AiopsTransportState struct {
@@ -81,15 +58,15 @@ type AiopsTransportState struct {
 }
 
 type AiopsTransportTurn struct {
-	ID          string                   `json:"id"`
-	User        *AiopsTransportMessage   `json:"user,omitempty"`
-	Intent      *AiopsTransportIntent    `json:"intent,omitempty"`
-	Process     []AiopsProcessBlock      `json:"process,omitempty"`
-	Final       *AiopsTransportFinal     `json:"final,omitempty"`
-	Status      AiopsTransportTurnStatus `json:"status"`
-	StartedAt   string                   `json:"startedAt,omitempty"`
-	CompletedAt string                   `json:"completedAt,omitempty"`
-	UpdatedAt   string                   `json:"updatedAt,omitempty"`
+	ID          string                          `json:"id"`
+	User        *AiopsTransportMessage          `json:"user,omitempty"`
+	Intent      *AiopsTransportIntent           `json:"intent,omitempty"`
+	BlockOrder  []string                        `json:"blockOrder"`
+	BlocksByID  map[string]AiopsTranscriptBlock `json:"blocksById"`
+	Status      AiopsTransportTurnStatus        `json:"status"`
+	StartedAt   string                          `json:"startedAt,omitempty"`
+	CompletedAt string                          `json:"completedAt,omitempty"`
+	UpdatedAt   string                          `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportMessage struct {
@@ -101,34 +78,6 @@ type AiopsTransportMessage struct {
 type AiopsTransportIntent struct {
 	Text   string `json:"text"`
 	Status string `json:"status"`
-}
-
-type AiopsTransportFinal struct {
-	ID     string                    `json:"id"`
-	Text   string                    `json:"text"`
-	Status AiopsTransportFinalStatus `json:"status"`
-}
-
-type AiopsProcessBlock struct {
-	ID            string                      `json:"id"`
-	Kind          AiopsTransportProcessKind   `json:"kind"`
-	DisplayKind   string                      `json:"displayKind,omitempty"`
-	Status        AiopsTransportProcessStatus `json:"status"`
-	Text          string                      `json:"text"`
-	Command       string                      `json:"command,omitempty"`
-	InputSummary  string                      `json:"inputSummary,omitempty"`
-	OutputPreview string                      `json:"outputPreview,omitempty"`
-	Steps         []AiopsTransportPlanStep    `json:"steps,omitempty"`
-	Queries       []string                    `json:"queries,omitempty"`
-	Results       []AiopsSearchResult         `json:"results,omitempty"`
-	ApprovalID    string                      `json:"approvalId,omitempty"`
-	Source        string                      `json:"source,omitempty"`
-	Confidence    string                      `json:"confidence,omitempty"`
-	Window        string                      `json:"window,omitempty"`
-	RawRef        string                      `json:"rawRef,omitempty"`
-	ExitCode      *int                        `json:"exitCode,omitempty"`
-	DurationMs    int64                       `json:"durationMs,omitempty"`
-	UpdatedAt     string                      `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportPlanStep struct {
@@ -144,6 +93,130 @@ type AiopsSearchResult struct {
 	Snippet string `json:"snippet,omitempty"`
 }
 
+type AiopsTranscriptBlockType string
+
+const (
+	AiopsTranscriptBlockTypeText      AiopsTranscriptBlockType = "text"
+	AiopsTranscriptBlockTypeTool      AiopsTranscriptBlockType = "tool"
+	AiopsTranscriptBlockTypeAggregate AiopsTranscriptBlockType = "aggregate"
+	AiopsTranscriptBlockTypeApproval  AiopsTranscriptBlockType = "approval"
+	AiopsTranscriptBlockTypeThinking  AiopsTranscriptBlockType = "thinking"
+	AiopsTranscriptBlockTypeArtifact  AiopsTranscriptBlockType = "artifact"
+)
+
+type AiopsTranscriptBlock struct {
+	ID        string                   `json:"id"`
+	Type      AiopsTranscriptBlockType `json:"type"`
+	Text      *AiopsTextBlock          `json:"text,omitempty"`
+	Tool      *AiopsToolBlock          `json:"tool,omitempty"`
+	Aggregate *AiopsAggregateBlock     `json:"aggregate,omitempty"`
+	Approval  *AiopsApprovalBlock      `json:"approval,omitempty"`
+	Thinking  *AiopsThinkingBlock      `json:"thinking,omitempty"`
+	Artifact  *AiopsArtifactBlock      `json:"artifact,omitempty"`
+	CreatedAt string                   `json:"createdAt,omitempty"`
+	UpdatedAt string                   `json:"updatedAt,omitempty"`
+}
+
+type AiopsTranscriptTextStatus string
+
+const (
+	AiopsTranscriptTextStatusStreaming AiopsTranscriptTextStatus = "streaming"
+	AiopsTranscriptTextStatusCompleted AiopsTranscriptTextStatus = "completed"
+)
+
+type AiopsTextBlock struct {
+	Role   string                    `json:"role"`
+	Text   string                    `json:"text"`
+	Status AiopsTranscriptTextStatus `json:"status"`
+}
+
+type AiopsTranscriptToolKind string
+
+const (
+	AiopsTranscriptToolKindCommand AiopsTranscriptToolKind = "command"
+	AiopsTranscriptToolKindSearch  AiopsTranscriptToolKind = "search"
+	AiopsTranscriptToolKindFile    AiopsTranscriptToolKind = "file"
+	AiopsTranscriptToolKindMCP     AiopsTranscriptToolKind = "mcp"
+	AiopsTranscriptToolKindBrowser AiopsTranscriptToolKind = "browser"
+	AiopsTranscriptToolKindList    AiopsTranscriptToolKind = "list"
+	AiopsTranscriptToolKindOther   AiopsTranscriptToolKind = "other"
+)
+
+type AiopsToolOutput struct {
+	Stdout    string `json:"stdout"`
+	Stderr    string `json:"stderr"`
+	Text      string `json:"text"`
+	Truncated bool   `json:"truncated"`
+	RawRef    string `json:"rawRef,omitempty"`
+}
+
+type AiopsToolBlock struct {
+	ToolKind     AiopsTranscriptToolKind     `json:"toolKind"`
+	ToolName     string                      `json:"toolName,omitempty"`
+	Title        string                      `json:"title"`
+	Summary      string                      `json:"summary"`
+	Status       AiopsTransportProcessStatus `json:"status"`
+	Command      string                      `json:"command,omitempty"`
+	InputSummary string                      `json:"inputSummary,omitempty"`
+	Output       AiopsToolOutput             `json:"output"`
+	ExitCode     *int                        `json:"exitCode,omitempty"`
+	DurationMs   int64                       `json:"durationMs,omitempty"`
+	StartedAt    string                      `json:"startedAt,omitempty"`
+	CompletedAt  string                      `json:"completedAt,omitempty"`
+	ApprovalID   string                      `json:"approvalId,omitempty"`
+}
+
+type AiopsAggregateCounts struct {
+	Command  int `json:"command,omitempty"`
+	Search   int `json:"search,omitempty"`
+	FileRead int `json:"fileRead,omitempty"`
+	FileEdit int `json:"fileEdit,omitempty"`
+	List     int `json:"list,omitempty"`
+	MCP      int `json:"mcp,omitempty"`
+	Browser  int `json:"browser,omitempty"`
+	Other    int `json:"other,omitempty"`
+}
+
+type AiopsAggregateBlock struct {
+	Summary       string               `json:"summary"`
+	Status        string               `json:"status"`
+	ChildBlockIDs []string             `json:"childBlockIds"`
+	Counts        AiopsAggregateCounts `json:"counts"`
+}
+
+type AiopsApprovalBlock struct {
+	ApprovalID   string `json:"approvalId"`
+	ApprovalKind string `json:"approvalKind"`
+	Title        string `json:"title"`
+	Summary      string `json:"summary"`
+	Command      string `json:"command,omitempty"`
+	Status       string `json:"status"`
+	RequestedAt  string `json:"requestedAt"`
+	ResolvedAt   string `json:"resolvedAt,omitempty"`
+}
+
+type AiopsThinkingBlock struct {
+	Text   string `json:"text"`
+	Status string `json:"status"`
+}
+
+type AiopsArtifactBlock struct {
+	ArtifactID string `json:"artifactId"`
+	Kind       string `json:"kind"`
+	Title      string `json:"title"`
+	Summary    string `json:"summary"`
+}
+
+type AiopsTransportLifecycleState string
+
+const (
+	AiopsTransportLifecycleCreated  AiopsTransportLifecycleState = "created"
+	AiopsTransportLifecycleLoading  AiopsTransportLifecycleState = "loading"
+	AiopsTransportLifecycleReady    AiopsTransportLifecycleState = "ready"
+	AiopsTransportLifecycleFailed   AiopsTransportLifecycleState = "failed"
+	AiopsTransportLifecycleDisposed AiopsTransportLifecycleState = "disposed"
+)
+
 type AiopsTransportApproval struct {
 	ID          string `json:"id"`
 	TurnID      string `json:"turnId,omitempty"`
@@ -156,23 +229,68 @@ type AiopsTransportApproval struct {
 }
 
 type AiopsTransportMcpSurface struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Status    string `json:"status,omitempty"`
-	Pinned    bool   `json:"pinned,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
+	ID          string                        `json:"id"`
+	Kind        string                        `json:"kind,omitempty"`
+	Title       string                        `json:"title,omitempty"`
+	Status      string                        `json:"status,omitempty"`
+	Lifecycle   AiopsTransportLifecycleState  `json:"lifecycle,omitempty"`
+	Pinned      bool                          `json:"pinned,omitempty"`
+	Cards       []AiopsAgentUICard            `json:"cards,omitempty"`
+	App         *AiopsIframeAppSurface        `json:"app,omitempty"`
+	Actions     []AiopsTransportActionBinding `json:"actions,omitempty"`
+	ArtifactIDs []string                      `json:"artifactIds,omitempty"`
+	UpdatedAt   string                        `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportArtifact struct {
-	ID         string `json:"id"`
-	TurnID     string `json:"turnId,omitempty"`
-	Kind       string `json:"kind,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Preview    string `json:"preview,omitempty"`
-	RawRef     string `json:"rawRef,omitempty"`
-	CreatedAt  string `json:"createdAt,omitempty"`
-	ModifiedAt string `json:"modifiedAt,omitempty"`
+	ID          string                        `json:"id"`
+	TurnID      string                        `json:"turnId,omitempty"`
+	Kind        string                        `json:"kind,omitempty"`
+	Title       string                        `json:"title,omitempty"`
+	Preview     string                        `json:"preview,omitempty"`
+	PreviewData *AiopsArtifactPreview         `json:"previewData,omitempty"`
+	RawRef      string                        `json:"rawRef,omitempty"`
+	Lifecycle   AiopsTransportLifecycleState  `json:"lifecycle,omitempty"`
+	Actions     []AiopsTransportActionBinding `json:"actions,omitempty"`
+	CreatedAt   string                        `json:"createdAt,omitempty"`
+	ModifiedAt  string                        `json:"modifiedAt,omitempty"`
+}
+
+type AiopsAgentUICard struct {
+	ID         string                        `json:"id"`
+	Kind       string                        `json:"kind,omitempty"`
+	Title      string                        `json:"title,omitempty"`
+	Summary    string                        `json:"summary,omitempty"`
+	Status     string                        `json:"status,omitempty"`
+	ArtifactID string                        `json:"artifactId,omitempty"`
+	SurfaceID  string                        `json:"surfaceId,omitempty"`
+	Actions    []AiopsTransportActionBinding `json:"actions,omitempty"`
+}
+
+type AiopsArtifactPreview struct {
+	ContentType string            `json:"contentType,omitempty"`
+	Text        string            `json:"text,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	RawRef      string            `json:"rawRef,omitempty"`
+	Truncated   bool              `json:"truncated,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+}
+
+type AiopsIframeAppSurface struct {
+	URL         string   `json:"url,omitempty"`
+	Sandbox     string   `json:"sandbox,omitempty"`
+	Height      int      `json:"height,omitempty"`
+	Width       int      `json:"width,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
+}
+
+type AiopsTransportActionBinding struct {
+	ID               string         `json:"id"`
+	Label            string         `json:"label,omitempty"`
+	Command          string         `json:"command,omitempty"`
+	Target           string         `json:"target,omitempty"`
+	Params           map[string]any `json:"params,omitempty"`
+	RequiresApproval bool           `json:"requiresApproval,omitempty"`
 }
 
 type AiopsRuntimeLiveness struct {
@@ -212,6 +330,67 @@ func TransportTurnStableID(threadID, turnID string) string {
 
 func TransportProcessBlockStableID(turnID, kind, sourceID string) string {
 	return stableTransportID("block", turnID, kind, sourceID)
+}
+
+func EnsureAiopsTransportTurnBlocks(turn AiopsTransportTurn) AiopsTransportTurn {
+	if turn.BlockOrder == nil {
+		turn.BlockOrder = []string{}
+	}
+	if turn.BlocksByID == nil {
+		turn.BlocksByID = map[string]AiopsTranscriptBlock{}
+	}
+	return turn
+}
+
+func UpsertAiopsTranscriptBlock(turn AiopsTransportTurn, block AiopsTranscriptBlock) AiopsTransportTurn {
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	block.ID = strings.TrimSpace(block.ID)
+	if block.ID == "" {
+		return turn
+	}
+	turn.BlocksByID[block.ID] = block
+	for _, existing := range turn.BlockOrder {
+		if existing == block.ID {
+			return turn
+		}
+	}
+	turn.BlockOrder = append(turn.BlockOrder, block.ID)
+	return turn
+}
+
+func ReplaceVisibleBlocksWithAggregate(turn AiopsTransportTurn, childIDs []string, aggregate AiopsTranscriptBlock) AiopsTransportTurn {
+	turn = EnsureAiopsTransportTurnBlocks(turn)
+	aggregate.ID = strings.TrimSpace(aggregate.ID)
+	if aggregate.ID == "" || len(childIDs) == 0 {
+		return turn
+	}
+	childSet := map[string]bool{}
+	for _, id := range childIDs {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			childSet[trimmed] = true
+		}
+	}
+	if len(childSet) == 0 {
+		return turn
+	}
+	nextOrder := make([]string, 0, len(turn.BlockOrder)-len(childSet)+1)
+	inserted := false
+	for _, id := range turn.BlockOrder {
+		if !childSet[id] {
+			nextOrder = append(nextOrder, id)
+			continue
+		}
+		if !inserted {
+			nextOrder = append(nextOrder, aggregate.ID)
+			inserted = true
+		}
+	}
+	if !inserted {
+		nextOrder = append(nextOrder, aggregate.ID)
+	}
+	turn.BlockOrder = nextOrder
+	turn.BlocksByID[aggregate.ID] = aggregate
+	return turn
 }
 
 func stableTransportID(prefix string, parts ...string) string {

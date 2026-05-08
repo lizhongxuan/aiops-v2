@@ -125,6 +125,46 @@ func TestApprovalService_DecideResumesMatchingApproval(t *testing.T) {
 	}
 }
 
+func TestApprovalService_DecideRejectsUnknownDecision(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-approval-invalid", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-approval-invalid",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		PendingApprovals: []runtimekernel.PendingApproval{{
+			ID:        "approval-invalid",
+			SessionID: session.ID,
+			TurnID:    "turn-approval-invalid",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}
+	session.PendingApprovals = append([]runtimekernel.PendingApproval(nil), session.CurrentTurn.PendingApprovals...)
+	sessions.Update(session)
+
+	runtime := &approvalRuntimeStub{}
+	service := NewApprovalService(runtime, sessions, NewSnapshotBuilder())
+
+	_, err := service.Decide(context.Background(), ApprovalDecision{
+		ID:       "approval-invalid",
+		Decision: "maybe",
+	})
+
+	if err == nil {
+		t.Fatal("Decide() error = nil, want invalid decision error")
+	}
+	if runtime.resumeReq.SessionID != "" {
+		t.Fatalf("runtime ResumeTurn request = %+v, want no resume", runtime.resumeReq)
+	}
+}
+
 func TestApprovalService_DecideAsyncReturnsBeforeRuntimeCompletes(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()

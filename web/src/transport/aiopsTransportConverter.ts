@@ -4,6 +4,7 @@ import type {
 } from "@assistant-ui/react";
 
 import type {
+  AiopsTranscriptBlock,
   AiopsTransportState,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
@@ -75,48 +76,87 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
-  // For failed turns without final text, show the error as content
-  let content: ThreadMessage["content"] = [];
-  if (turn.final?.text) {
-    content = [{ type: "text", text: turn.final.text }];
-  } else if (turn.status === "failed" && lastError) {
-    content = [{ type: "text", text: lastError }];
-  }
+  const transcript = transcriptForAssistantMessage(turn, lastError);
   return {
     id: `${turn.id}:assistant`,
     role: "assistant",
-    createdAt: parseDate(turn.completedAt || turn.startedAt),
-    content,
-    status: assistantMessageStatus(turn),
+    createdAt: parseDate(turn.startedAt || turn.completedAt),
+    content: [],
+    status: assistantMessageStatus(turn, lastError),
     metadata: {
-      unstable_state: {
-        turnId: turn.id,
-        turnStatus: turn.status,
-        turnStartedAt: turn.startedAt,
-        turnCompletedAt: turn.completedAt,
-        turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
-        process: turn.process || [],
-        intent: turn.intent || null,
-      },
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
       custom: {
         source: "aiops.transport.assistant",
+        aiops: {
+          turnId: turn.id,
+          turnStatus: turn.status,
+          turnStartedAt: turn.startedAt,
+          turnCompletedAt: turn.completedAt,
+          turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
+          blocks: transcript.blocks,
+          blockOrder: transcript.blockOrder,
+          blocksById: transcript.blocksById,
+        },
       },
     },
   };
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
-  if (turn.final?.text || turn.intent?.text || (turn.process || []).length > 0) {
+  if (orderedTurnBlocks(turn).length > 0) {
     return true;
   }
-  // Always show the message for failed/canceled turns so the error is visible
   if (turn.status === "failed" || turn.status === "canceled") {
     return true;
   }
   return turn.status === "submitted" || turn.status === "working" || turn.status === "blocked";
+}
+
+function transcriptForAssistantMessage(turn: AiopsTransportTurn, lastError?: string) {
+  const blocks = orderedTurnBlocks(turn);
+  if (blocks.length > 0) {
+    return {
+      blocks,
+      blockOrder: turn.blockOrder || blocks.map((block) => block.id),
+      blocksById: turn.blocksById || blocksByIdFromBlocks(blocks),
+    };
+  }
+  if (turn.status !== "failed") {
+    return {
+      blocks,
+      blockOrder: [],
+      blocksById: {},
+    };
+  }
+  const timestamp = turn.updatedAt || turn.completedAt || turn.startedAt;
+  const errorBlock = {
+    id: `${turn.id}:error`,
+    type: "text",
+    text: {
+      role: "assistant",
+      text: lastError || "turn failed",
+      status: "completed",
+    },
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  } satisfies AiopsTranscriptBlock;
+  return {
+    blocks: [errorBlock],
+    blockOrder: [errorBlock.id],
+    blocksById: { [errorBlock.id]: errorBlock },
+  };
+}
+
+function orderedTurnBlocks(turn: AiopsTransportTurn): AiopsTranscriptBlock[] {
+  return (turn.blockOrder || [])
+    .map((id) => turn.blocksById?.[id])
+    .filter((block): block is AiopsTranscriptBlock => Boolean(block));
+}
+
+function blocksByIdFromBlocks(blocks: AiopsTranscriptBlock[]) {
+  return Object.fromEntries(blocks.map((block) => [block.id, block]));
 }
 
 function optimisticPendingUserMessages(connectionMetadata: AssistantTransportConnectionMetadata) {
@@ -145,14 +185,14 @@ function optimisticPendingUserMessages(connectionMetadata: AssistantTransportCon
   });
 }
 
-function assistantMessageStatus(turn: AiopsTransportTurn): ThreadMessage["status"] {
+function assistantMessageStatus(turn: AiopsTransportTurn, lastError?: string): ThreadMessage["status"] {
   switch (turn.status) {
     case "completed":
       return { type: "complete", reason: "stop" };
     case "blocked":
       return { type: "requires-action", reason: "interrupt" };
     case "failed":
-      return { type: "incomplete", reason: "error", error: turn.final?.text || "turn failed" };
+      return { type: "incomplete", reason: "error", error: lastError || "turn failed" };
     case "canceled":
       return { type: "incomplete", reason: "cancelled" };
     default:

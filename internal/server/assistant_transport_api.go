@@ -13,7 +13,10 @@ import (
 	"aiops-v2/internal/runtimekernel"
 )
 
-const assistantTransportPollInterval = 10 * time.Millisecond
+const (
+	assistantTransportPollInitialInterval = 10 * time.Millisecond
+	assistantTransportPollMaxInterval     = 250 * time.Millisecond
+)
 
 type assistantTransportSessionSourceProvider interface {
 	SessionSource() appui.SessionSource
@@ -101,6 +104,7 @@ func assistantTransportInitialState(req *assistantTransportRequest) appui.AiopsT
 	if strings.TrimSpace(state.SchemaVersion) == "" {
 		state = appui.NewAiopsTransportState(strings.TrimSpace(state.SessionID), strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)))
 	}
+	state.SchemaVersion = appui.AiopsTransportSchemaVersion
 	if strings.TrimSpace(state.ThreadID) == "" {
 		state.ThreadID = strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.SessionID))
 	}
@@ -109,6 +113,9 @@ func assistantTransportInitialState(req *assistantTransportRequest) appui.AiopsT
 	}
 	if state.Turns == nil {
 		state.Turns = map[string]appui.AiopsTransportTurn{}
+	}
+	for turnID, turn := range state.Turns {
+		state.Turns[turnID] = appui.EnsureAiopsTransportTurnBlocks(turn)
 	}
 	if state.TurnOrder == nil {
 		state.TurnOrder = []string{}
@@ -293,14 +300,14 @@ func (s *HTTPServer) streamAssistantTransportState(
 	chat appui.ChatService,
 	state appui.AiopsTransportState,
 ) (appui.AiopsTransportState, error) {
-	ticker := time.NewTicker(assistantTransportPollInterval)
-	defer ticker.Stop()
-
 	current := state
 	lastFingerprint := ""
+	pollInterval := assistantTransportPollInitialInterval
+
 	for {
 		session := source.Get(current.SessionID)
 		waitingForAcceptedApproval := false
+		changed := false
 		if session != nil {
 			latestTurn := assistantTransportLatestSessionTurn(session)
 			waitingForAcceptedTurn := assistantTransportShouldWaitForAcceptedTurn(current, latestTurn)
@@ -321,6 +328,7 @@ func (s *HTTPServer) streamAssistantTransportState(
 				}
 				current = next
 				lastFingerprint = fingerprint
+				changed = true
 			}
 			if assistantTransportSessionTurnShouldCloseStream(session) {
 				if !waitingForAcceptedTurn && !waitingForAcceptedApproval && current.Status != appui.AiopsTransportStatusWorking && current.Status != appui.AiopsTransportStatusBlocked {
@@ -331,16 +339,30 @@ func (s *HTTPServer) streamAssistantTransportState(
 				}
 			}
 		}
+		pollInterval = assistantTransportNextPollInterval(pollInterval, changed)
+		timer := time.NewTimer(pollInterval)
 
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			if !waitingForAcceptedApproval && shouldCancelAssistantTransportOnContextDone(current, session) {
 				_ = cancelAssistantTransportTurn(context.Background(), chat, current, session)
 			}
 			return current, ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+func assistantTransportNextPollInterval(current time.Duration, changed bool) time.Duration {
+	if changed || current <= 0 {
+		return assistantTransportPollInitialInterval
+	}
+	next := current * 2
+	if next > assistantTransportPollMaxInterval {
+		return assistantTransportPollMaxInterval
+	}
+	return next
 }
 
 func assistantTransportShouldWaitForAcceptedTurn(state appui.AiopsTransportState, latest *runtimekernel.TurnSnapshot) bool {
@@ -538,16 +560,6 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 			Value: value,
 		})
 	}
-	appendText := func(path []any, value string) {
-		if value == "" {
-			return
-		}
-		ops = append(ops, assistantTransportStreamStateOp{
-			Type:  assistantTransportStreamOpAppendText,
-			Path:  path,
-			Value: value,
-		})
-	}
 
 	if prev.SchemaVersion != next.SchemaVersion {
 		appendSet([]any{"schemaVersion"}, next.SchemaVersion)
@@ -592,49 +604,166 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 	seenTurns := map[string]struct{}{}
 	for _, turnID := range next.TurnOrder {
 		seenTurns[turnID] = struct{}{}
-		nextTurn := next.Turns[turnID]
-		prevTurn := prev.Turns[turnID]
-
-		nextTurnForSet := nextTurn
-		prevTurnForSet := prevTurn
-		nextFinalText := ""
-		prevFinalText := ""
-		if prevTurnForSet.Final != nil {
-			prevFinalText = prevTurnForSet.Final.Text
-			finalCopy := *prevTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			prevTurnForSet.Final = &finalCopy
-		}
-		if nextTurnForSet.Final != nil {
-			nextFinalText = nextTurnForSet.Final.Text
-			finalCopy := *nextTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			nextTurnForSet.Final = &finalCopy
-		}
-		if !reflect.DeepEqual(prevTurnForSet, nextTurnForSet) {
-			appendSet([]any{"turns", turnID}, nextTurnForSet)
-		}
-		if nextFinalText != prevFinalText {
-			if strings.HasPrefix(nextFinalText, prevFinalText) {
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText[len(prevFinalText):])
-			} else {
-				appendSet([]any{"turns", turnID, "final", "text"}, "")
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText)
-			}
-		}
+		prevTurn, prevExists := prev.Turns[turnID]
+		ops = append(ops, assistantTransportDiffTurnOps(turnID, prevTurn, next.Turns[turnID], prevExists)...)
 	}
 	for turnID := range next.Turns {
 		if _, ok := seenTurns[turnID]; ok {
 			continue
 		}
-		nextTurn := next.Turns[turnID]
-		prevTurn := prev.Turns[turnID]
-		if !reflect.DeepEqual(prevTurn, nextTurn) {
-			appendSet([]any{"turns", turnID}, nextTurn)
-		}
+		prevTurn, prevExists := prev.Turns[turnID]
+		ops = append(ops, assistantTransportDiffTurnOps(turnID, prevTurn, next.Turns[turnID], prevExists)...)
 	}
 
 	return ops
+}
+
+func assistantTransportDiffTurnOps(turnID string, prevTurn, nextTurn appui.AiopsTransportTurn, prevExists bool) []assistantTransportStreamStateOp {
+	appendSet := func(ops *[]assistantTransportStreamStateOp, path []any, value any) {
+		*ops = append(*ops, assistantTransportStreamStateOp{
+			Type:  assistantTransportStreamOpSet,
+			Path:  path,
+			Value: value,
+		})
+	}
+
+	ops := []assistantTransportStreamStateOp{}
+	nextTurn = appui.EnsureAiopsTransportTurnBlocks(nextTurn)
+	if !prevExists {
+		appendSet(&ops, []any{"turns", turnID}, nextTurn)
+		return ops
+	}
+	prevTurn = appui.EnsureAiopsTransportTurnBlocks(prevTurn)
+
+	if prevTurn.ID != nextTurn.ID {
+		appendSet(&ops, []any{"turns", turnID, "id"}, nextTurn.ID)
+	}
+	if !reflect.DeepEqual(prevTurn.User, nextTurn.User) {
+		appendSet(&ops, []any{"turns", turnID, "user"}, nextTurn.User)
+	}
+	if !reflect.DeepEqual(prevTurn.Intent, nextTurn.Intent) {
+		appendSet(&ops, []any{"turns", turnID, "intent"}, nextTurn.Intent)
+	}
+	if prevTurn.Status != nextTurn.Status {
+		appendSet(&ops, []any{"turns", turnID, "status"}, nextTurn.Status)
+	}
+	if prevTurn.StartedAt != nextTurn.StartedAt {
+		appendSet(&ops, []any{"turns", turnID, "startedAt"}, nextTurn.StartedAt)
+	}
+	if prevTurn.CompletedAt != nextTurn.CompletedAt {
+		appendSet(&ops, []any{"turns", turnID, "completedAt"}, nextTurn.CompletedAt)
+	}
+	if prevTurn.UpdatedAt != nextTurn.UpdatedAt {
+		appendSet(&ops, []any{"turns", turnID, "updatedAt"}, nextTurn.UpdatedAt)
+	}
+	if !reflect.DeepEqual(prevTurn.BlockOrder, nextTurn.BlockOrder) {
+		appendSet(&ops, []any{"turns", turnID, "blockOrder"}, nextTurn.BlockOrder)
+	}
+
+	seenBlocks := map[string]struct{}{}
+	for _, blockID := range nextTurn.BlockOrder {
+		seenBlocks[blockID] = struct{}{}
+		prevBlock, prevBlockExists := prevTurn.BlocksByID[blockID]
+		ops = append(ops, assistantTransportDiffBlockOps(turnID, blockID, prevBlock, nextTurn.BlocksByID[blockID], prevBlockExists)...)
+	}
+	for blockID, nextBlock := range nextTurn.BlocksByID {
+		if _, ok := seenBlocks[blockID]; ok {
+			continue
+		}
+		prevBlock, prevBlockExists := prevTurn.BlocksByID[blockID]
+		ops = append(ops, assistantTransportDiffBlockOps(turnID, blockID, prevBlock, nextBlock, prevBlockExists)...)
+	}
+
+	return ops
+}
+
+func assistantTransportDiffBlockOps(turnID, blockID string, prevBlock, nextBlock appui.AiopsTranscriptBlock, prevExists bool) []assistantTransportStreamStateOp {
+	appendSet := func(ops *[]assistantTransportStreamStateOp, path []any, value any) {
+		*ops = append(*ops, assistantTransportStreamStateOp{
+			Type:  assistantTransportStreamOpSet,
+			Path:  path,
+			Value: value,
+		})
+	}
+	appendText := func(ops *[]assistantTransportStreamStateOp, path []any, value string) {
+		if value == "" {
+			return
+		}
+		*ops = append(*ops, assistantTransportStreamStateOp{
+			Type:  assistantTransportStreamOpAppendText,
+			Path:  path,
+			Value: value,
+		})
+	}
+
+	ops := []assistantTransportStreamStateOp{}
+	blockPath := []any{"turns", turnID, "blocksById", blockID}
+	if !prevExists {
+		appendSet(&ops, blockPath, nextBlock)
+		return ops
+	}
+
+	nextBlockForSet := assistantTransportBlockForMetadataSet(prevBlock, nextBlock)
+	if !reflect.DeepEqual(prevBlock, nextBlockForSet) {
+		appendSet(&ops, blockPath, nextBlockForSet)
+	}
+
+	if prevBlock.Text != nil && nextBlock.Text != nil {
+		assistantTransportAppendTextDiff(&ops, append(blockPath, "text", "text"), prevBlock.Text.Text, nextBlock.Text.Text, appendSet, appendText)
+	}
+	if prevBlock.Tool != nil && nextBlock.Tool != nil {
+		assistantTransportAppendTextDiff(&ops, append(blockPath, "tool", "output", "stdout"), prevBlock.Tool.Output.Stdout, nextBlock.Tool.Output.Stdout, appendSet, appendText)
+		assistantTransportAppendTextDiff(&ops, append(blockPath, "tool", "output", "stderr"), prevBlock.Tool.Output.Stderr, nextBlock.Tool.Output.Stderr, appendSet, appendText)
+		assistantTransportAppendTextDiff(&ops, append(blockPath, "tool", "output", "text"), prevBlock.Tool.Output.Text, nextBlock.Tool.Output.Text, appendSet, appendText)
+	}
+	if prevBlock.Thinking != nil && nextBlock.Thinking != nil {
+		assistantTransportAppendTextDiff(&ops, append(blockPath, "thinking", "text"), prevBlock.Thinking.Text, nextBlock.Thinking.Text, appendSet, appendText)
+	}
+
+	return ops
+}
+
+func assistantTransportBlockForMetadataSet(prevBlock, nextBlock appui.AiopsTranscriptBlock) appui.AiopsTranscriptBlock {
+	block := nextBlock
+	if prevBlock.Text != nil && block.Text != nil {
+		textCopy := *block.Text
+		textCopy.Text = prevBlock.Text.Text
+		block.Text = &textCopy
+	}
+	if prevBlock.Tool != nil && block.Tool != nil {
+		toolCopy := *block.Tool
+		outputCopy := toolCopy.Output
+		outputCopy.Stdout = prevBlock.Tool.Output.Stdout
+		outputCopy.Stderr = prevBlock.Tool.Output.Stderr
+		outputCopy.Text = prevBlock.Tool.Output.Text
+		toolCopy.Output = outputCopy
+		block.Tool = &toolCopy
+	}
+	if prevBlock.Thinking != nil && block.Thinking != nil {
+		thinkingCopy := *block.Thinking
+		thinkingCopy.Text = prevBlock.Thinking.Text
+		block.Thinking = &thinkingCopy
+	}
+	return block
+}
+
+func assistantTransportAppendTextDiff(
+	ops *[]assistantTransportStreamStateOp,
+	path []any,
+	prevText string,
+	nextText string,
+	appendSet func(*[]assistantTransportStreamStateOp, []any, any),
+	appendText func(*[]assistantTransportStreamStateOp, []any, string),
+) {
+	if prevText == nextText {
+		return
+	}
+	if strings.HasPrefix(nextText, prevText) {
+		appendText(ops, path, nextText[len(prevText):])
+		return
+	}
+	appendSet(ops, path, "")
+	appendText(ops, path, nextText)
 }
 
 func firstAssistantTransportValue(values ...string) string {
@@ -683,11 +812,11 @@ func assistantTransportCloneState(state appui.AiopsTransportState) appui.AiopsTr
 	}
 	cloned.McpSurfaces = make(map[string]appui.AiopsTransportMcpSurface, len(state.McpSurfaces))
 	for key, surface := range state.McpSurfaces {
-		cloned.McpSurfaces[key] = surface
+		cloned.McpSurfaces[key] = assistantTransportCloneMcpSurface(surface)
 	}
 	cloned.Artifacts = make(map[string]appui.AiopsTransportArtifact, len(state.Artifacts))
 	for key, artifact := range state.Artifacts {
-		cloned.Artifacts[key] = artifact
+		cloned.Artifacts[key] = assistantTransportCloneArtifact(artifact)
 	}
 	cloned.RuntimeLiveness = appui.AiopsRuntimeLiveness{
 		ActiveTurns:          cloneTransportBoolMap(state.RuntimeLiveness.ActiveTurns),
@@ -695,6 +824,60 @@ func assistantTransportCloneState(state appui.AiopsTransportState) appui.AiopsTr
 		PendingApprovals:     cloneTransportBoolMap(state.RuntimeLiveness.PendingApprovals),
 		PendingUserInputs:    cloneTransportBoolMap(state.RuntimeLiveness.PendingUserInputs),
 		ActiveCommandStreams: cloneTransportBoolMap(state.RuntimeLiveness.ActiveCommandStreams),
+	}
+	return cloned
+}
+
+func assistantTransportCloneMcpSurface(surface appui.AiopsTransportMcpSurface) appui.AiopsTransportMcpSurface {
+	cloned := surface
+	if len(surface.Cards) > 0 {
+		cloned.Cards = make([]appui.AiopsAgentUICard, len(surface.Cards))
+		for idx, card := range surface.Cards {
+			cloned.Cards[idx] = assistantTransportCloneAgentUICard(card)
+		}
+	}
+	if surface.App != nil {
+		appCopy := *surface.App
+		if len(surface.App.Permissions) > 0 {
+			appCopy.Permissions = append([]string(nil), surface.App.Permissions...)
+		}
+		cloned.App = &appCopy
+	}
+	if len(surface.Actions) > 0 {
+		cloned.Actions = assistantTransportCloneActionBindings(surface.Actions)
+	}
+	if len(surface.ArtifactIDs) > 0 {
+		cloned.ArtifactIDs = append([]string(nil), surface.ArtifactIDs...)
+	}
+	return cloned
+}
+
+func assistantTransportCloneArtifact(artifact appui.AiopsTransportArtifact) appui.AiopsTransportArtifact {
+	cloned := artifact
+	if artifact.PreviewData != nil {
+		previewCopy := *artifact.PreviewData
+		previewCopy.Metadata = cloneTransportMetadata(artifact.PreviewData.Metadata)
+		cloned.PreviewData = &previewCopy
+	}
+	if len(artifact.Actions) > 0 {
+		cloned.Actions = assistantTransportCloneActionBindings(artifact.Actions)
+	}
+	return cloned
+}
+
+func assistantTransportCloneAgentUICard(card appui.AiopsAgentUICard) appui.AiopsAgentUICard {
+	cloned := card
+	if len(card.Actions) > 0 {
+		cloned.Actions = assistantTransportCloneActionBindings(card.Actions)
+	}
+	return cloned
+}
+
+func assistantTransportCloneActionBindings(actions []appui.AiopsTransportActionBinding) []appui.AiopsTransportActionBinding {
+	cloned := make([]appui.AiopsTransportActionBinding, len(actions))
+	for idx, action := range actions {
+		cloned[idx] = action
+		cloned[idx].Params = cloneTransportAnyMap(action.Params)
 	}
 	return cloned
 }
@@ -709,33 +892,50 @@ func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTrans
 		intentCopy := *turn.Intent
 		cloned.Intent = &intentCopy
 	}
-	if turn.Final != nil {
-		finalCopy := *turn.Final
-		cloned.Final = &finalCopy
+	if len(turn.BlockOrder) > 0 {
+		cloned.BlockOrder = append([]string(nil), turn.BlockOrder...)
+	} else if turn.BlockOrder != nil {
+		cloned.BlockOrder = []string{}
 	}
-	if len(turn.Process) > 0 {
-		cloned.Process = make([]appui.AiopsProcessBlock, len(turn.Process))
-		for idx, block := range turn.Process {
-			cloned.Process[idx] = assistantTransportCloneProcessBlock(block)
-		}
+	cloned.BlocksByID = make(map[string]appui.AiopsTranscriptBlock, len(turn.BlocksByID))
+	for blockID, block := range turn.BlocksByID {
+		cloned.BlocksByID[blockID] = assistantTransportCloneTranscriptBlock(block)
 	}
 	return cloned
 }
 
-func assistantTransportCloneProcessBlock(block appui.AiopsProcessBlock) appui.AiopsProcessBlock {
+func assistantTransportCloneTranscriptBlock(block appui.AiopsTranscriptBlock) appui.AiopsTranscriptBlock {
 	cloned := block
-	if len(block.Steps) > 0 {
-		cloned.Steps = append([]appui.AiopsTransportPlanStep(nil), block.Steps...)
+	if block.Text != nil {
+		textCopy := *block.Text
+		cloned.Text = &textCopy
 	}
-	if len(block.Queries) > 0 {
-		cloned.Queries = append([]string(nil), block.Queries...)
+	if block.Tool != nil {
+		toolCopy := *block.Tool
+		if block.Tool.ExitCode != nil {
+			exitCode := *block.Tool.ExitCode
+			toolCopy.ExitCode = &exitCode
+		}
+		cloned.Tool = &toolCopy
 	}
-	if len(block.Results) > 0 {
-		cloned.Results = append([]appui.AiopsSearchResult(nil), block.Results...)
+	if block.Aggregate != nil {
+		aggregateCopy := *block.Aggregate
+		if len(block.Aggregate.ChildBlockIDs) > 0 {
+			aggregateCopy.ChildBlockIDs = append([]string(nil), block.Aggregate.ChildBlockIDs...)
+		}
+		cloned.Aggregate = &aggregateCopy
 	}
-	if block.ExitCode != nil {
-		exitCode := *block.ExitCode
-		cloned.ExitCode = &exitCode
+	if block.Approval != nil {
+		approvalCopy := *block.Approval
+		cloned.Approval = &approvalCopy
+	}
+	if block.Thinking != nil {
+		thinkingCopy := *block.Thinking
+		cloned.Thinking = &thinkingCopy
+	}
+	if block.Artifact != nil {
+		artifactCopy := *block.Artifact
+		cloned.Artifact = &artifactCopy
 	}
 	return cloned
 }

@@ -33,12 +33,15 @@ Agents working on chat, protocol, process UI, runtime items, approval, MCP surfa
 
 `AiopsTransportState.schemaVersion` is `aiops.transport.v2`. React Chat production transcript has one shape: `turn.blockOrder + turn.blocksById`. Do not reintroduce `turn.process`, `turn.final`, `metadata.unstable_state` transcript payloads, page-local chat SSE/WebSocket streams, or final Markdown/text parsing for process UI.
 
+Playwright Chat snapshots are v2-only through `web/tests/react-shell-snapshot.spec.js`. Do not restore old `chat-ui-snapshot.spec.js`, `chat-native-process` fixtures, `chat-process-*`, `.chat-turn-final`, `processRows`, or `processGroups` test assets.
+
 Before handing off structured streaming work, run:
 
 ```bash
 rg -n "emit_response_events|StructuredResponsePatch|StructuredResponsePanel" internal web/src
 rg -n "AgentEventProjection|agent_event|codexProcessTranscript|ChatProcessFold" web/src
 rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
+rg -n "chat-process-|aiops-process-transcript|processRows|processGroups|\\.chat-turn-final|process-step" web/tests
 ```
 
 The first two commands should have no React Chat production hits. The JSON/Markdown command may find normal JSON parsing for settings, fixtures, transport envelopes, or API clients, but it must not find code that derives process UI from assistant final Markdown/text.

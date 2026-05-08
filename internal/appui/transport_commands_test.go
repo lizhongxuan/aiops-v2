@@ -278,8 +278,8 @@ func TestTransportCommandsApprovalRejectUsesApprovalService(t *testing.T) {
 		t.Fatalf("Apply() error = %v", err)
 	}
 
-	if approvals.decision.ID != "approval-1" || approvals.decision.Decision != "reject" {
-		t.Fatalf("approval decision = %+v, want approval-1/reject", approvals.decision)
+	if approvals.decision.ID != "approval-1" || approvals.decision.Decision != "denied" {
+		t.Fatalf("approval decision = %+v, want approval-1/denied", approvals.decision)
 	}
 	if _, ok := nextState.PendingApprovals["approval-1"]; ok {
 		t.Fatalf("PendingApprovals still contains approval-1: %#v", nextState.PendingApprovals)
@@ -301,15 +301,20 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 	state.Status = AiopsTransportStatusBlocked
 	state.CurrentTurnID = "turn-1"
 	state.Turns["turn-1"] = AiopsTransportTurn{
-		ID:     "turn-1",
-		Status: AiopsTransportTurnStatusBlocked,
-		Process: []AiopsProcessBlock{
-			{
-				ID:         "cmd-1",
-				Kind:       AiopsTransportProcessKindCommand,
-				Status:     AiopsTransportProcessStatusBlocked,
-				Command:    "ifconfig en0 down",
-				ApprovalID: "approval-1",
+		ID:         "turn-1",
+		Status:     AiopsTransportTurnStatusBlocked,
+		BlockOrder: []string{"cmd-1"},
+		BlocksByID: map[string]AiopsTranscriptBlock{
+			"cmd-1": {
+				ID:   "cmd-1",
+				Type: AiopsTranscriptBlockTypeTool,
+				Tool: &AiopsToolBlock{
+					ToolKind:   AiopsTranscriptToolKindCommand,
+					Status:     AiopsTransportProcessStatusBlocked,
+					Command:    "ifconfig en0 down",
+					ApprovalID: "approval-1",
+					Output:     AiopsToolOutput{},
+				},
 			},
 		},
 	}
@@ -327,8 +332,8 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 		t.Fatalf("Apply() error = %v", err)
 	}
 
-	if approvals.decision.ID != "approval-1" || approvals.decision.Decision != "accept" {
-		t.Fatalf("approval decision = %+v, want approval-1/accept", approvals.decision)
+	if approvals.decision.ID != "approval-1" || approvals.decision.Decision != "approved" {
+		t.Fatalf("approval decision = %+v, want approval-1/approved", approvals.decision)
 	}
 	if result.Status != "accepted" {
 		t.Fatalf("result.Status = %q, want accepted", result.Status)
@@ -349,8 +354,40 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 	if turn.Status != AiopsTransportTurnStatusWorking {
 		t.Fatalf("turn status = %q, want working", turn.Status)
 	}
-	if len(turn.Process) != 1 || turn.Process[0].Status != AiopsTransportProcessStatusRunning {
-		t.Fatalf("process = %+v, want approved command marked running while backend resumes", turn.Process)
+	block := turn.BlocksByID["cmd-1"]
+	if block.Tool == nil || block.Tool.Status != AiopsTransportProcessStatusRunning {
+		t.Fatalf("tool block = %+v, want approved command marked running while backend resumes", block)
+	}
+}
+
+func TestTransportCommandsApprovalDecisionRejectsUnknownDecision(t *testing.T) {
+	approvals := &transportCommandApprovalServiceStub{
+		result: ActionResult{Status: "accepted", SessionID: "sess-1", TurnID: "turn-1"},
+	}
+	handler := NewTransportCommandHandler(nil, approvals, nil, nil)
+	state := NewAiopsTransportState("sess-1", "thread-1")
+	state.Status = AiopsTransportStatusBlocked
+	state.CurrentTurnID = "turn-1"
+	state.Turns["turn-1"] = AiopsTransportTurn{ID: "turn-1", Status: AiopsTransportTurnStatusBlocked}
+	state.PendingApprovals["approval-1"] = AiopsTransportApproval{ID: "approval-1", TurnID: "turn-1", Status: "blocked"}
+	state.RuntimeLiveness.PendingApprovals["approval-1"] = true
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeApprovalDecision,
+		ApprovalDecision: &TransportApprovalDecisionCommand{
+			ApprovalID: "approval-1",
+			Decision:   "maybe",
+		},
+	})
+
+	if err == nil {
+		t.Fatal("Apply() error = nil, want invalid decision error")
+	}
+	if approvals.decision.ID != "" {
+		t.Fatalf("approval service was called with %+v, want no call", approvals.decision)
+	}
+	if _, ok := nextState.PendingApprovals["approval-1"]; !ok {
+		t.Fatalf("PendingApprovals = %#v, want approval retained after invalid decision", nextState.PendingApprovals)
 	}
 }
 

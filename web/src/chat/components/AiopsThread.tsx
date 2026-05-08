@@ -2,22 +2,33 @@ import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessa
 import { ArrowDown, Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
-import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
+import { cn } from "@/lib/utils";
+import type { AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
+import { AiopsTranscript, type AiopsTranscriptBlock } from "./AiopsTranscript";
 import { McpSurfacePart } from "./McpSurfacePart";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { ProcessTranscript } from "./ProcessTranscript";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
+import { useSmartScrollAnchor } from "./useSmartScrollAnchor";
 
 type AssistantMessageMeta = {
-  process?: AiopsProcessBlock[];
-  intent?: { text?: string; status?: string } | null;
+  turnId?: string;
   turnStatus?: string;
   turnStartedAt?: string;
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
+  blocks: AiopsTranscriptBlock[];
+  blockOrder?: string[];
+  blocksById?: Record<string, AiopsTranscriptBlock | undefined>;
+};
+
+type AssistantMetadataMessage = {
+  metadata?: {
+    custom?: {
+      aiops?: Partial<AssistantMessageMeta>;
+    };
+  };
 };
 
 export function AiopsThread() {
@@ -25,10 +36,16 @@ export function AiopsThread() {
   const surfaces = Object.values(state.mcpSurfaces || {});
   const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
+  const scrollAnchor = useSmartScrollAnchor([state.seq, state.updatedAt, state.currentTurnId]);
 
   return (
     <ThreadPrimitive.Root className="relative h-full min-h-0 bg-white">
-      <ThreadPrimitive.Viewport autoScroll scrollToBottomOnInitialize className="h-full overflow-y-auto scroll-smooth">
+      <ThreadPrimitive.Viewport
+        ref={scrollAnchor.scrollRef}
+        onScroll={scrollAnchor.handleScroll}
+        onWheel={scrollAnchor.handleWheel}
+        className="h-full overflow-y-auto scroll-smooth"
+      >
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-6 md:px-6">
           <ThreadPrimitive.Empty>
             <div className="flex min-h-full flex-1 items-center justify-center pb-10">
@@ -58,17 +75,19 @@ export function AiopsThread() {
           </div>
         </div>
       </ThreadPrimitive.Viewport>
-      <ThreadPrimitive.ScrollToBottom asChild>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon"
-          className="absolute bottom-6 left-1/2 h-9 w-9 -translate-x-1/2 rounded-full border-slate-200 bg-white shadow-sm disabled:invisible"
-          aria-label="scroll to latest"
-        >
-          <ArrowDown className="h-4 w-4" />
-        </Button>
-      </ThreadPrimitive.ScrollToBottom>
+      <Button
+        type="button"
+        variant="outline"
+        size="icon"
+        className={cn(
+          "absolute bottom-6 left-1/2 h-9 w-9 -translate-x-1/2 rounded-full border-slate-200 bg-white shadow-sm transition-opacity",
+          !scrollAnchor.showScrollToBottom && "pointer-events-none opacity-0",
+        )}
+        aria-label="scroll to latest"
+        onClick={scrollAnchor.scrollToBottom}
+      >
+        <ArrowDown className="h-4 w-4" />
+      </Button>
     </ThreadPrimitive.Root>
   );
 }
@@ -86,53 +105,47 @@ function UserMessage() {
 
 function AssistantMessage() {
   const message = useMessage();
-  const commands = useAiopsTransportCommands();
-  const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
-  const process = (meta.process || []).filter(shouldRenderProcessBlock);
+  const meta = getAssistantAiopsTranscriptMeta(message);
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
-      <div className="w-full space-y-3">
-        {meta.intent?.text ? (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            {meta.intent.text}
-          </div>
-        ) : null}
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
-          <ProcessTranscript
-            process={process}
-            turnStatus={meta.turnStatus}
-            turnStartedAt={meta.turnStartedAt}
-            turnCompletedAt={meta.turnCompletedAt}
-            turnUpdatedAt={meta.turnUpdatedAt}
-            onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
-          />
-        ) : null}
-        {message.content.length > 0 ? (
-          <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900">
-            <MessageMarkdown text={messageText(message.content)} />
-          </div>
-        ) : null}
+      <div className="w-full">
+        <AiopsTranscript
+          blocks={meta.blocks}
+          blockOrder={meta.blockOrder}
+          blocksById={meta.blocksById}
+          turnStatus={meta.turnStatus}
+          turnStartedAt={meta.turnStartedAt}
+          turnCompletedAt={meta.turnCompletedAt}
+          turnUpdatedAt={meta.turnUpdatedAt}
+        />
       </div>
     </MessagePrimitive.Root>
   );
 }
 
-function isPendingAssistantTurn(turnStatus?: string) {
-  return turnStatus === "submitted" || turnStatus === "working" || turnStatus === "blocked";
+export function getAssistantAiopsTranscriptMeta(message: AssistantMetadataMessage): AssistantMessageMeta {
+  const aiops = message.metadata?.custom?.aiops || {};
+  const blocks = Array.isArray(aiops.blocks) ? aiops.blocks : [];
+  const blocksById = isBlocksById(aiops.blocksById) ? aiops.blocksById : blocksByIdFromBlocks(blocks);
+  return {
+    turnId: aiops.turnId,
+    turnStatus: aiops.turnStatus,
+    turnStartedAt: aiops.turnStartedAt,
+    turnCompletedAt: aiops.turnCompletedAt,
+    turnUpdatedAt: aiops.turnUpdatedAt,
+    blocks,
+    blockOrder: Array.isArray(aiops.blockOrder) ? aiops.blockOrder : blocks.map((block) => block.id),
+    blocksById,
+  };
 }
 
-function shouldRenderProcessBlock(block: AiopsProcessBlock) {
-  if (block.kind !== "reasoning") {
-    return true;
-  }
+function isBlocksById(value: unknown): value is Record<string, AiopsTranscriptBlock | undefined> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
 
-  const text = (block.text || "").trim().toLowerCase();
-  if (!text) {
-    return false;
-  }
-
-  return text !== "model response received";
+function blocksByIdFromBlocks(blocks: AiopsTranscriptBlock[]) {
+  return Object.fromEntries(blocks.map((block) => [block.id, block]));
 }
 
 function McpSurfaceList({ surfaces }: { surfaces: AiopsTransportMcpSurface[] }) {

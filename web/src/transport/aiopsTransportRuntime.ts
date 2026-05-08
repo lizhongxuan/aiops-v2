@@ -5,10 +5,13 @@ import type {
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
 
+export type AiopsApprovalAction = "approve" | "deny";
+export type AiopsApprovalCommandDecision = "accept" | "reject";
+
 export type AiopsTransportCommandActions = {
   stop: (reason?: string) => void;
   retry: (turnId?: string) => void;
-  approvalDecision: (approvalId: string, decision: "accept" | "reject" | string) => void;
+  approvalDecision: (approvalId: string, action: AiopsApprovalAction) => void;
   choiceAnswer: (requestId: string, answer: string) => void;
   mcpAction: (surfaceId: string, action: string, params?: Record<string, unknown>, target?: string) => void;
   mcpRefresh: (surfaceId: string) => void;
@@ -17,7 +20,7 @@ export type AiopsTransportCommandActions = {
 
 export function createInitialAiopsTransportState(threadId = "default"): AiopsTransportState {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "",
     threadId,
     status: "idle",
@@ -61,11 +64,11 @@ export function createAiopsTransportCommandActions(
         turnId,
       }));
     },
-    approvalDecision(approvalId, decision) {
+    approvalDecision(approvalId, action) {
       sendCommand({
         type: "aiops.approval-decision",
         approvalId,
-        decision,
+        decision: toAiopsApprovalCommandDecision(action),
       });
     },
     choiceAnswer(requestId, answer) {
@@ -98,6 +101,15 @@ export function createAiopsTransportCommandActions(
       });
     },
   };
+}
+
+export function toAiopsApprovalCommandDecision(action: AiopsApprovalAction): AiopsApprovalCommandDecision {
+  switch (action) {
+    case "approve":
+      return "accept";
+    case "deny":
+      return "reject";
+  }
 }
 
 export function markAiopsTransportFailed(state: AiopsTransportState, message: string): AiopsTransportState {
@@ -139,12 +151,6 @@ function markTurnTerminal(turn: AiopsTransportTurn, status: "failed" | "canceled
   return {
     ...turn,
     status,
-    final: turn.final
-      ? {
-          ...turn.final,
-          status: "failed",
-        }
-      : turn.final,
   };
 }
 

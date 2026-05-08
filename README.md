@@ -73,7 +73,8 @@ TurnItem / runtime event
 - 长命令 stdout/stderr、长 tool output、多工具并发必须通过 `blocksById` 路径的 `append-text` 追加，不靠整 turn `set` 刷新。
 - `/api/v1/assistant/transport` 不能长期依赖固定高频轮询；终态必须使用事件驱动订阅，或至少使用动态 backoff 并在有输出时立即恢复短间隔。
 - `mcpSurfaces` / `artifacts` 使用 AIOps typed schema 表达 Agent-to-UI 卡片、artifact preview、iframe/app surface、command binding 和 lifecycle state；transcript block 只引用这些对象，不内联大体积产物。
-- Approval 的 UI 文案、transport decision 和 runtime decision 必须通过一套映射收敛，避免 `accept/reject/approved/denied/rejected` 多套表达扩散。
+- Approval 的 React Chat UI 只使用 `approve/deny` 用户动作和 `同意/拒绝/已同意/已拒绝` 中文文案；transport runtime 是唯一把它映射到 `accept/reject` 命令协议的位置，后端再统一归一到 `approved/denied`。
+- Playwright Chat 快照入口固定为 `web/tests/react-shell-snapshot.spec.js`；不要恢复旧 `chat-ui-snapshot.spec.js`、`chat-native-process` fixture、`chat-process-*`、`.chat-turn-final`、`processRows` 或 `processGroups` 测试资产。
 
 设计和实施文档：
 
@@ -565,7 +566,7 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - transport state、snapshot 兼容输入、local optimistic approval 必须归一到同一个 composer approval selector；页面模板里不能再并行判断多套 pending approval 来源。
 - 同一个 approval id 在页面上只能有一个可点击决策入口；如果同时出现 `codex-approval-inline` 和 `approval-dock`，视为 P0 UI 回归。
 - 审批按钮提交必须继续走统一 decision API，不允许组件私有化决策逻辑或直接改 store 状态。
-- `ResumeTurn` 处理批准决策时必须更新 approval resolved state op，再继续工具执行；不能只清 runtime pending state，否则旧 pending approval 会把同一命令重新推回底部审批栏。
+- `ResumeTurn` 处理审批同意决策时必须更新 approval resolved state op，再继续工具执行；不能只清 runtime pending state，否则旧 pending approval 会把同一命令重新推回底部审批栏。
 - `RunTurn` / `ResumeTurn` 返回 `blocked` 或 `pending_approval` 时，appui async runner 只能保持 transport `blocked` 与 pending approval；不能补 failed state，否则 pending approval 会被失败态清空并丢失可点击审核入口。
 
 修改审批相关代码时必须补或更新以下验证：
@@ -573,7 +574,7 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - 前端单元测试要断言 single-host pending approval 时：`[data-testid="approval-dock"]` 不存在，`[data-testid="codex-approval-inline"]` 存在，`.omnibar-wrapper` 不存在。
 - 前端单元测试要断言显示真实 `command`，且不显示 `exec_command` 这类工具名。
 - transport projector/runtime 测试要覆盖 approval `command` 从后端 typed fact 进入 `AiopsTransportState.pendingApprovals`。
-- runtime 测试要覆盖批准路径会发 `approval.decided(status=approved)`，拒绝路径会发 `approval.decided(status=denied)`，两者都不能让 pending approval 留在 projection 中。
+- runtime 测试要覆盖同意路径会发 `approval.decided(status=approved)`，拒绝路径会发 `approval.decided(status=denied)`，两者都不能让 pending approval 留在 projection 中。
 - 后端 snapshot/projector 测试要覆盖 `PendingApproval.Command` 与 `Reason` 分离。
 - Playwright 验证要至少检查一次真实或 fixture pending approval：approval dock 数量为 0、inline 数量为 1、输入框被替换、点击同意会发送 `/api/v1/approvals/:id/decision`。
 

@@ -42,7 +42,7 @@ func TestAssistantTransportStreamWritesAppendTextStateOp(t *testing.T) {
 	err := encoder.WriteStateOps([]assistantTransportStreamStateOp{
 		{
 			Type:  assistantTransportStreamOpAppendText,
-			Path:  []any{"turns", 0, "final", "text"},
+			Path:  []any{"turns", "turn-1", "blocksById", "block-1", "text", "text"},
 			Value: "hello",
 		},
 	})
@@ -50,7 +50,7 @@ func TestAssistantTransportStreamWritesAppendTextStateOp(t *testing.T) {
 		t.Fatalf("WriteStateOps() error = %v", err)
 	}
 
-	want := "aui-state:[{\"type\":\"append-text\",\"path\":[\"turns\",0,\"final\",\"text\"],\"value\":\"hello\"}]\n"
+	want := "aui-state:[{\"type\":\"append-text\",\"path\":[\"turns\",\"turn-1\",\"blocksById\",\"block-1\",\"text\",\"text\"],\"value\":\"hello\"}]\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("WriteStateOps() = %q, want %q", got, want)
 	}
@@ -77,7 +77,7 @@ func TestAssistantTransportStreamJSONEncodesUnicodeQuotesAndNewlines(t *testing.
 	err := encoder.WriteStateOps([]assistantTransportStreamStateOp{
 		{
 			Type:  assistantTransportStreamOpAppendText,
-			Path:  []any{"turns", "turn-1", "final", "text"},
+			Path:  []any{"turns", "turn-1", "blocksById", "block-1", "text", "text"},
 			Value: "中文 \"quoted\"\nline-2",
 		},
 	})
@@ -85,7 +85,7 @@ func TestAssistantTransportStreamJSONEncodesUnicodeQuotesAndNewlines(t *testing.
 		t.Fatalf("WriteStateOps() error = %v", err)
 	}
 
-	want := "aui-state:[{\"type\":\"append-text\",\"path\":[\"turns\",\"turn-1\",\"final\",\"text\"],\"value\":\"中文 \\\"quoted\\\"\\nline-2\"}]\n"
+	want := "aui-state:[{\"type\":\"append-text\",\"path\":[\"turns\",\"turn-1\",\"blocksById\",\"block-1\",\"text\",\"text\"],\"value\":\"中文 \\\"quoted\\\"\\nline-2\"}]\n"
 	if got := buf.String(); got != want {
 		t.Fatalf("WriteStateOps() = %q, want %q", got, want)
 	}
