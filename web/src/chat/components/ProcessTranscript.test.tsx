@@ -178,6 +178,11 @@ describe("ProcessTranscript", () => {
 
     expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.className).toContain("text-[15px]");
     expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("text-[15px]");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-5");
+    const searchToggle = container.querySelector('[data-testid="aiops-search-toggle"]');
+    const searchIcon = container.querySelector('[data-testid="aiops-search-icon"]');
+    expect(searchIcon).toBeTruthy();
+    expect(searchToggle?.firstElementChild).toBe(searchIcon);
   });
 
   it("wraps long searched urls instead of truncating them", async () => {
@@ -490,6 +495,9 @@ describe("ProcessTranscript", () => {
     const labelRegion = container.querySelector('[data-testid="aiops-command-label-region-cmd-label-chevron"]');
     expect(row?.textContent).toBe("已运行 pwd");
     expect(labelRegion?.textContent).toBe("已运行 pwd");
+    const commandIcon = labelRegion?.querySelector('[data-testid="aiops-command-icon-cmd-label-chevron"]');
+    expect(commandIcon).toBeTruthy();
+    expect(labelRegion?.firstElementChild).toBe(commandIcon);
     expect(labelRegion?.querySelector('[data-testid="aiops-command-chevron-cmd-label-chevron"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="aiops-command-status-cmd-label-chevron"]')).toBeNull();
   });
@@ -641,6 +649,7 @@ describe("ProcessTranscript", () => {
     const reasoning = text.indexOf("拿到第一批证据。");
     const laterFile = text.indexOf("Read package.json");
     expect(mixed).toBeGreaterThanOrEqual(0);
+    expect(container.querySelector('[data-testid="aiops-merged-mixed-icon"]')).toBeTruthy();
     expect(reasoning).toBeGreaterThan(mixed);
     expect(laterFile).toBeGreaterThan(reasoning);
   });
@@ -816,6 +825,104 @@ describe("ProcessTranscript", () => {
     expect(command).toBeGreaterThan(first);
     expect(second).toBeGreaterThan(command);
     expect(search).toBeGreaterThan(second);
+  });
+
+  it("keeps assistant narration in order around grouped commands and grouped searches", async () => {
+    const process = [
+      makeBlock({
+        id: "assistant-next",
+        kind: "assistant",
+        status: "completed",
+        text: "接下来我要检查运行环境和最近任务状态。",
+      }),
+      makeBlock({
+        id: "cmd-order-1",
+        kind: "command",
+        status: "completed",
+        command: "pwd",
+        outputPreview: "/Users/lizhongxuan/Desktop/aiops-v2",
+      }),
+      makeBlock({
+        id: "cmd-order-2",
+        kind: "command",
+        status: "completed",
+        command: "git status --short",
+        outputPreview: "",
+      }),
+      makeBlock({
+        id: "assistant-after-commands",
+        kind: "assistant",
+        status: "completed",
+        text: "命令结果已经拿到，我会继续核对相关页面信息。",
+      }),
+      makeBlock({
+        id: "search-order-1",
+        kind: "tool",
+        status: "completed",
+        displayKind: "web_search",
+        inputSummary: "aiops-v2 AssistantTransport 顺序",
+        queries: ["aiops-v2 AssistantTransport 顺序"],
+      }),
+      makeBlock({
+        id: "search-order-2",
+        kind: "tool",
+        status: "completed",
+        displayKind: "browse_url",
+        inputSummary: "https://example.com/aiops-v2-order",
+      }),
+      makeBlock({
+        id: "assistant-after-search",
+        kind: "assistant",
+        status: "completed",
+        text: "页面也确认过了，最终回答会基于上面的命令和搜索结果。",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.className).not.toContain("px-1");
+    const mergedCommandIcon = container.querySelector('[data-testid="aiops-merged-command-icon"]');
+    const searchIcon = container.querySelector('[data-testid="aiops-search-icon"]');
+    expect(mergedCommandIcon).toBeTruthy();
+    expect(mergedCommandIcon?.parentElement?.firstElementChild).toBe(mergedCommandIcon);
+    expect(searchIcon).toBeTruthy();
+    expect(searchIcon?.parentElement?.firstElementChild).toBe(searchIcon);
+    const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    const next = bodyText.indexOf("接下来我要检查运行环境和最近任务状态。");
+    const commandSummary = bodyText.indexOf("已运行 2 条命令");
+    const firstCommand = bodyText.indexOf("已运行 pwd");
+    const secondCommand = bodyText.indexOf("已运行 git status --short");
+    const afterCommands = bodyText.indexOf("命令结果已经拿到，我会继续核对相关页面信息。");
+    const searchSummary = bodyText.indexOf("网页检索 2 项");
+    const afterSearch = bodyText.indexOf("页面也确认过了，最终回答会基于上面的命令和搜索结果。");
+
+    expect(next).toBeGreaterThanOrEqual(0);
+    expect(commandSummary).toBeGreaterThan(next);
+    expect(firstCommand).toBeGreaterThan(commandSummary);
+    expect(secondCommand).toBeGreaterThan(firstCommand);
+    expect(afterCommands).toBeGreaterThan(secondCommand);
+    expect(searchSummary).toBeGreaterThan(afterCommands);
+    expect(afterSearch).toBeGreaterThan(searchSummary);
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-search-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const expandedBodyText =
+      container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    const expandedSearchSummary = expandedBodyText.indexOf("网页检索 2 项");
+    const searchQuery = expandedBodyText.indexOf("aiops-v2 AssistantTransport 顺序");
+    const searchedPage = expandedBodyText.indexOf("https://example.com/aiops-v2-order");
+    const expandedAfterSearch = expandedBodyText.indexOf("页面也确认过了，最终回答会基于上面的命令和搜索结果。");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-5");
+    expect(searchQuery).toBeGreaterThan(expandedSearchSummary);
+    expect(searchedPage).toBeGreaterThan(searchQuery);
+    expect(expandedAfterSearch).toBeGreaterThan(searchedPage);
   });
 
   it("keeps running command terminal output visible", async () => {
@@ -1005,7 +1112,7 @@ describe("groupConsecutiveBlocks", () => {
 
 describe("getMergedSummaryText", () => {
   it("returns file summary with count", () => {
-    expect(getMergedSummaryText("file", 6)).toBe("📂 已探索 6 个文件");
+    expect(getMergedSummaryText("file", 6)).toBe("已探索 6 个文件");
   });
 
   it("returns command summary with count", () => {
@@ -1013,15 +1120,15 @@ describe("getMergedSummaryText", () => {
   });
 
   it("returns tool summary with count", () => {
-    expect(getMergedSummaryText("tool", 4)).toBe("⚙️ 已调用 4 个工具");
+    expect(getMergedSummaryText("tool", 4)).toBe("已调用 4 个工具");
   });
 
   it("returns mcp summary with count (same as tool)", () => {
-    expect(getMergedSummaryText("mcp", 2)).toBe("⚙️ 已调用 2 个工具");
+    expect(getMergedSummaryText("mcp", 2)).toBe("已调用 2 个工具");
   });
 
   it("returns fallback for unknown kind", () => {
-    expect(getMergedSummaryText("unknown", 5)).toBe("⚙️ 已处理 5 个操作");
+    expect(getMergedSummaryText("unknown", 5)).toBe("已处理 5 个操作");
   });
 });
 

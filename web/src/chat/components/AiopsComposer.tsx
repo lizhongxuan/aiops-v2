@@ -114,7 +114,7 @@ function ComposerBody({
           disabled={Boolean(workspace.composerDisabledReason) || isRunning}
           className={
             variant === "chat"
-              ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[15px] leading-7 shadow-none focus-visible:ring-0"
+              ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
               : "max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm"
           }
         />

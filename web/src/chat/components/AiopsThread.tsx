@@ -36,7 +36,7 @@ export function AiopsThread() {
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm">
                   <Bot className="h-5 w-5" />
                 </div>
-                <h1 className="mt-5 text-2xl font-semibold tracking-tight text-slate-950">
+                <h1 className="mt-5 text-2xl font-semibold text-slate-950">
                   {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : `要对 ${target.targetLabel} 做什么？`}
                 </h1>
                 <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
@@ -77,7 +77,7 @@ function UserMessage() {
   const message = useMessage();
   return (
     <MessagePrimitive.Root className="flex justify-end px-1">
-      <div className="max-w-[78%] rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-7 text-slate-950">
+      <div className="max-w-[78%] rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[16px] leading-8 text-slate-950">
         <MessageMarkdown text={messageText(message.content)} />
       </div>
     </MessagePrimitive.Root>
@@ -111,7 +111,7 @@ function AssistantMessage() {
           />
         ) : null}
         {message.content.length > 0 && process.length === 0 && !isPendingAssistantTurn(meta.turnStatus) ? (
-          <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900">
+          <div className="max-w-none px-1 py-1 text-[16px] leading-8 text-slate-950">
             <MessageMarkdown text={finalText} />
           </div>
         ) : null}

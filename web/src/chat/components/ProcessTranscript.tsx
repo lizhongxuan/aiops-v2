@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -122,7 +122,7 @@ export function ProcessTranscript({
             onClick={() => setOpen((value) => !value)}
             data-testid="aiops-process-header"
           >
-            <span className="font-medium tracking-[-0.01em] text-slate-500">
+            <span className="font-medium text-slate-500">
               {running ? `处理中${timeLabel}` : `已处理${timeLabel}`}
             </span>
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
@@ -268,16 +268,37 @@ function mergedKindForBlocks(blocks: AiopsProcessBlock[]) {
 export function getMergedSummaryText(mergedKind: string, count: number): string {
   switch (mergedKind) {
     case "file":
-      return `📂 已探索 ${count} 个文件`;
+      return `已探索 ${count} 个文件`;
     case "command":
       return count > 1 ? `已运行 ${count} 条命令` : "已运行命令";
     case "search":
       return `网页检索 ${count} 项`;
     case "tool":
     case "mcp":
-      return `⚙️ 已调用 ${count} 个工具`;
+      return `已调用 ${count} 个工具`;
     default:
-  return `⚙️ 已处理 ${count} 个操作`;
+      return `已处理 ${count} 个操作`;
+  }
+}
+
+function ToolSummaryIcon({ kind, testId }: { kind: string; testId?: string }) {
+  const Icon = toolSummaryIconForKind(kind);
+  return <Icon className="h-4 w-4 shrink-0 text-slate-400" data-testid={testId} aria-hidden="true" />;
+}
+
+function toolSummaryIconForKind(kind: string): LucideIcon {
+  switch (kind) {
+    case "command":
+      return SquareTerminal;
+    case "search":
+      return Search;
+    case "file":
+      return FileSearch;
+    case "tool":
+    case "mcp":
+      return Wrench;
+    default:
+      return ListChecks;
   }
 }
 
@@ -346,8 +367,9 @@ function MergedToolSummary({
   const [open, setOpen] = useState(group.mergedKind === "command" || group.blocks.some(isBlockActive));
   if (!details.length) {
     return (
-      <div className="truncate text-[15px] leading-7 text-slate-400">
-        {text}
+      <div className="flex min-w-0 items-center gap-1.5 text-[15px] leading-7 text-slate-400">
+        <ToolSummaryIcon kind={group.mergedKind} testId={`aiops-merged-${group.mergedKind}-icon`} />
+        <span className="min-w-0 truncate">{text}</span>
       </div>
     );
   }
@@ -360,6 +382,7 @@ function MergedToolSummary({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
+        <ToolSummaryIcon kind={group.mergedKind} testId={`aiops-merged-${group.mergedKind}-icon`} />
         <span className="min-w-0 truncate">{text}</span>
         <DisclosureChevron open={open} testId={`aiops-merged-${group.mergedKind}-chevron`} />
       </button>
@@ -383,8 +406,10 @@ function MergedToolSummary({
 
 function ToolDetailRow({
   detail,
+  showSummaryIcon = false,
 }: {
   detail: ReturnType<typeof mergedBlockDetail>;
+  showSummaryIcon?: boolean;
 }) {
   const hasOutput = Boolean(detail.output);
   const toolRunning = detail.status === "running" || detail.status === "queued";
@@ -403,7 +428,12 @@ function ToolDetailRow({
         aria-expanded={open}
         data-testid={`aiops-tool-row-${detail.id}`}
       >
-        <span className="min-w-0 flex-1 truncate">{toolDetailSummaryLabel(detail)}</span>
+        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+          {showSummaryIcon ? (
+            <ToolSummaryIcon kind={detail.kind} testId={`aiops-tool-icon-${detail.id}`} />
+          ) : null}
+          <span className="min-w-0 truncate">{toolDetailSummaryLabel(detail)}</span>
+        </span>
         <span className="shrink-0 text-[13px] text-slate-400">{statusLabel(detail.status)}</span>
         <DisclosureChevron open={open} testId={`aiops-tool-chevron-${detail.id}`} />
       </button>
@@ -421,8 +451,10 @@ function ToolDetailRow({
 
 function CommandDetailRow({
   detail,
+  showSummaryIcon = false,
 }: {
   detail: ReturnType<typeof mergedBlockDetail>;
+  showSummaryIcon?: boolean;
 }) {
   const hasOutput = Boolean(detail.output);
   const commandRunning = detail.status === "running" || detail.status === "queued";
@@ -446,6 +478,9 @@ function CommandDetailRow({
           className="flex min-w-0 flex-1 items-center gap-1.5"
           data-testid={`aiops-command-label-region-${detail.id}`}
         >
+          {showSummaryIcon ? (
+            <ToolSummaryIcon kind={detail.kind} testId={`aiops-command-icon-${detail.id}`} />
+          ) : null}
           <span className="min-w-0 truncate">{commandSummaryLabel(detail)}</span>
           <DisclosureChevron open={open} testId={`aiops-command-chevron-${detail.id}`} />
         </span>
@@ -642,17 +677,17 @@ function NativeProcessText({
     return <ThinkingText block={block} />;
   }
   if (block.kind === "command") {
-    return <CommandDetailRow detail={mergedBlockDetail(block)} />;
+    return <CommandDetailRow detail={mergedBlockDetail(block)} showSummaryIcon />;
   }
   if (isToolSummaryBlock(block)) {
-    return <ToolDetailRow detail={mergedBlockDetail(block)} />;
+    return <ToolDetailRow detail={mergedBlockDetail(block)} showSummaryIcon />;
   }
   const text = readableBlockSummary(block);
   if (!text) {
     return null;
   }
   return (
-    <div className="whitespace-pre-wrap break-words text-[15px] font-medium leading-7 tracking-[-0.01em] text-slate-900">
+    <div className="whitespace-pre-wrap break-words text-[16px] font-medium leading-8 text-slate-950">
       {text}
     </div>
   );
@@ -660,7 +695,7 @@ function NativeProcessText({
 
 function AssistantFinalText({ text }: { text: string }) {
   return (
-    <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900" data-testid="aiops-final-text">
+    <div className="max-w-none py-1 text-[16px] leading-8 text-slate-950" data-testid="aiops-final-text">
       <MessageMarkdown text={text} />
     </div>
   );
@@ -727,7 +762,7 @@ function ThinkingText({ block }: { block: AiopsProcessBlock }) {
     return null;
   }
   return (
-    <div className="whitespace-pre-wrap break-words text-[15px] font-medium leading-7 tracking-[-0.01em] text-slate-900">
+    <div className="whitespace-pre-wrap break-words text-[16px] font-medium leading-8 text-slate-950">
       {text}
     </div>
   );
@@ -806,16 +841,17 @@ function SearchTranscript({
     <div className="space-y-1">
       <button
         type="button"
-        className="group flex items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className="group flex min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         data-testid="aiops-search-toggle"
       >
-        <span>{searchTranscriptLabel(running, count, query)}</span>
+        <ToolSummaryIcon kind="search" testId="aiops-search-icon" />
+        <span className="min-w-0 truncate">{searchTranscriptLabel(running, count, query)}</span>
         <DisclosureChevron open={open} testId="aiops-search-chevron" />
       </button>
       {open && lines.length ? (
-        <div className="space-y-1 text-[15px] leading-7 text-slate-400" data-testid="aiops-search-details">
+        <div className="space-y-1 pl-5 text-[15px] leading-7 text-slate-400" data-testid="aiops-search-details">
           {lines.map((line, index) => (
             <div key={`${line}:${index}`} className="whitespace-normal break-all">
               {line}
