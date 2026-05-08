@@ -66,6 +66,14 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		}
 		projectedTurn.Final.Text = finalText
 		projectedTurn.Final.Status = finalStatus
+		projectedTurn = projectAssistantFinalProcessBlock(
+			projectedTurn,
+			turnID,
+			projectedTurn.Final.ID,
+			finalText,
+			mapFinalStatusToTransportProcessStatus(finalStatus),
+			turn.UpdatedAt,
+		)
 	}
 
 	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
@@ -368,11 +376,20 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 		}
 	case agentstate.TurnItemTypeFinalAnswer:
+		text := strings.TrimSpace(item.Payload.Summary)
 		turn.Final = &AiopsTransportFinal{
 			ID:     item.ID,
-			Text:   strings.TrimSpace(item.Payload.Summary),
+			Text:   text,
 			Status: mapItemStatusToTransportFinalStatus(item.Status),
 		}
+		turn = projectAssistantFinalProcessBlock(
+			turn,
+			turnID,
+			item.ID,
+			text,
+			mapItemStatusToTransportProcessStatus(item.Status),
+			firstNonZeroTime(item.UpdatedAt, item.CreatedAt),
+		)
 	case agentstate.TurnItemTypeModelCall:
 		block := AiopsProcessBlock{
 			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindReasoning), item.ID),
@@ -387,6 +404,30 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 		state.LastError = strings.TrimSpace(item.Payload.Summary)
 	}
 
+	return turn
+}
+
+func projectAssistantFinalProcessBlock(
+	turn AiopsTransportTurn,
+	turnID string,
+	sourceID string,
+	text string,
+	status AiopsTransportProcessStatus,
+	updatedAt time.Time,
+) AiopsTransportTurn {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return turn
+	}
+	block := AiopsProcessBlock{
+		ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindAssistant), firstNonEmptyString(sourceID, "output")),
+		Kind:        AiopsTransportProcessKindAssistant,
+		DisplayKind: "assistant.final",
+		Status:      status,
+		Text:        text,
+		UpdatedAt:   transportTimestamp(updatedAt),
+	}
+	turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	return turn
 }
 
@@ -530,6 +571,17 @@ func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportF
 		return AiopsTransportFinalStatusCompleted
 	default:
 		return AiopsTransportFinalStatusRunning
+	}
+}
+
+func mapFinalStatusToTransportProcessStatus(status AiopsTransportFinalStatus) AiopsTransportProcessStatus {
+	switch status {
+	case AiopsTransportFinalStatusCompleted:
+		return AiopsTransportProcessStatusCompleted
+	case AiopsTransportFinalStatusFailed:
+		return AiopsTransportProcessStatusFailed
+	default:
+		return AiopsTransportProcessStatusRunning
 	}
 }
 

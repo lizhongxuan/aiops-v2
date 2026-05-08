@@ -31,6 +31,14 @@ describe("ProcessTranscript", () => {
     container.remove();
   });
 
+  async function expandProcessTranscript() {
+    const header = container.querySelector('[data-testid="aiops-process-header"]');
+    expect(header).toBeTruthy();
+    await act(async () => {
+      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
   it("shows the active web search query in the running search summary", async () => {
     const process = [
       makeBlock({
@@ -130,12 +138,7 @@ describe("ProcessTranscript", () => {
     await act(async () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     expect(container.textContent).toContain("网页检索 3 项");
     const searchButton = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("网页检索"),
@@ -175,6 +178,64 @@ describe("ProcessTranscript", () => {
 
     expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.className).toContain("text-[15px]");
     expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("text-[15px]");
+  });
+
+  it("wraps long searched urls instead of truncating them", async () => {
+    const url =
+      "https://www.coingecko.com/en/coins/bitcoin?utm_source=aiops&include_market_cap=true&include_24hr_change=true";
+    const process = [
+      makeBlock({
+        id: "search-long-url",
+        kind: "tool",
+        status: "running",
+        displayKind: "web_search",
+        inputSummary: "BTC current price USD",
+        queries: ["BTC current price USD"],
+        results: [{ url }],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    const detail = container.querySelector('[data-testid="aiops-search-details"]')?.children.item(1);
+    expect(detail?.textContent).toBe(url);
+    expect(detail?.className).toContain("break-all");
+    expect(detail?.className).not.toContain("truncate");
+  });
+
+  it("keeps streaming assistant prelude before the following search block", async () => {
+    const prelude = "我将先通过实时网页搜索核实BTC当前行情与主要价格来源，然后返回简洁结果并附上来源。";
+    const process = [
+      makeBlock({
+        id: "assistant-prelude",
+        kind: "assistant",
+        status: "running",
+        displayKind: "assistant.final",
+        text: prelude,
+      }),
+      makeBlock({
+        id: "search-after-prelude",
+        kind: "tool",
+        status: "running",
+        displayKind: "web_search",
+        text: "正在搜索网页",
+        inputSummary: "BTC current price USD 24h change",
+        queries: ["BTC current price USD 24h change"],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" finalText={prelude} />);
+    });
+
+    const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    const preludeIndex = bodyText.indexOf(prelude);
+    const searchIndex = bodyText.indexOf("正在搜索网页（BTC current price USD 24h change）");
+    expect(preludeIndex).toBeGreaterThanOrEqual(0);
+    expect(searchIndex).toBeGreaterThan(preludeIndex);
+    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(1);
   });
 
   it("points the search disclosure arrow down while expanded", async () => {
@@ -225,12 +286,7 @@ describe("ProcessTranscript", () => {
     await act(async () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     const text = container.textContent || "";
     expect(text).toContain("已运行 2 条命令");
     expect(text).toContain("kubectl get pods -n prod");
@@ -267,12 +323,7 @@ describe("ProcessTranscript", () => {
     await act(async () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     const mergedDetails = container.querySelector('[data-testid="aiops-merged-command-details"]');
     expect(mergedDetails).toBeTruthy();
     expect(mergedDetails?.className).not.toContain("max-h-64");
@@ -318,7 +369,7 @@ describe("ProcessTranscript", () => {
     expect(decisions).toEqual([]);
   });
 
-  it("uses turn timestamps for completed elapsed time and starts collapsed", async () => {
+  it("uses turn timestamps for completed elapsed time and starts process details collapsed", async () => {
     const process = [
       makeBlock({
         id: "cmd-duration",
@@ -341,7 +392,297 @@ describe("ProcessTranscript", () => {
     });
 
     expect(container.textContent).toContain("已处理 12s");
+    const header = container.querySelector('[data-testid="aiops-process-header"]');
+    expect(header?.tagName).toBe("BUTTON");
+    expect(header?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
+  });
+
+  it("keeps final answer visible while the completed process details are folded", async () => {
+    const process = [
+      makeBlock({
+        id: "reason-folded-final",
+        kind: "reasoning",
+        text: "我先检查本机状态。",
+      }),
+      makeBlock({
+        id: "cmd-folded-final",
+        kind: "command",
+        status: "completed",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          turnStartedAt="2026-05-07T10:00:00Z"
+          turnCompletedAt="2026-05-07T10:00:12Z"
+          finalText="本机当前运行正常。"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("已处理 12s");
+    expect(container.textContent).toContain("本机当前运行正常。");
+    expect(container.textContent).not.toContain("我先检查本机状态。");
+    expect(container.textContent).not.toContain("已运行 uptime");
+
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    const reasoning = text.indexOf("我先检查本机状态。");
+    const command = text.indexOf("已运行 uptime");
+    const final = text.indexOf("本机当前运行正常。");
+    expect(reasoning).toBeGreaterThanOrEqual(0);
+    expect(command).toBeGreaterThan(reasoning);
+    expect(final).toBeGreaterThan(command);
+  });
+
+  it("adds hover/focus disclosure chevrons to collapsible labels", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-chevron-1",
+        kind: "command",
+        status: "completed",
+        command: "pwd",
+        outputPreview: "/tmp",
+      }),
+      makeBlock({
+        id: "cmd-chevron-2",
+        kind: "command",
+        status: "completed",
+        command: "date",
+        outputPreview: "Fri May 8",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+
+    expect(container.querySelector('[data-testid="aiops-process-header-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
+    await expandProcessTranscript();
+    expect(container.querySelector('[data-testid="aiops-merged-command-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
+    expect(container.querySelector('[data-testid="aiops-command-chevron-cmd-chevron-1"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
+  });
+
+  it("keeps command disclosure chevron next to the command label and removes success status text", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-label-chevron",
+        kind: "command",
+        status: "completed",
+        command: "pwd",
+        outputPreview: "/tmp",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    const row = container.querySelector('[data-testid="aiops-command-row-cmd-label-chevron"]');
+    const labelRegion = container.querySelector('[data-testid="aiops-command-label-region-cmd-label-chevron"]');
+    expect(row?.textContent).toBe("已运行 pwd");
+    expect(labelRegion?.textContent).toBe("已运行 pwd");
+    expect(labelRegion?.querySelector('[data-testid="aiops-command-chevron-cmd-label-chevron"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-command-status-cmd-label-chevron"]')).toBeNull();
+  });
+
+  it("renders final answer text inside the same transcript flow", async () => {
+    const process = [
+      makeBlock({
+        id: "reason-before-final",
+        kind: "reasoning",
+        text: "我先检查本机状态。",
+      }),
+      makeBlock({
+        id: "cmd-before-final",
+        kind: "command",
+        status: "completed",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+    ];
+    const props = {
+      process,
+      turnStatus: "completed",
+      turnStartedAt: "2026-05-07T10:00:00Z",
+      turnCompletedAt: "2026-05-07T10:00:12Z",
+      finalText: "本机当前运行正常。",
+    } as unknown as Parameters<typeof ProcessTranscript>[0];
+
+    await act(async () => {
+      root.render(<ProcessTranscript {...props} />);
+    });
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    const reasoning = text.indexOf("我先检查本机状态。");
+    const command = text.indexOf("已运行 uptime");
+    const final = text.indexOf("本机当前运行正常。");
+    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).not.toBeNull();
+    expect(reasoning).toBeGreaterThanOrEqual(0);
+    expect(command).toBeGreaterThan(reasoning);
+    expect(final).toBeGreaterThan(command);
+  });
+
+  it("renders assistant process text inline without duplicating fallback final text", async () => {
+    const process = [
+      makeBlock({
+        id: "reason-before-inline-final",
+        kind: "reasoning",
+        text: "我先检查本机状态。",
+      }),
+      makeBlock({
+        id: "assistant-inline-final",
+        kind: "assistant",
+        status: "completed",
+        text: "本机当前运行正常。",
+      }),
+      makeBlock({
+        id: "cmd-after-inline-final",
+        kind: "command",
+        status: "completed",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText="本机当前运行正常。" />);
+    });
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    expect(text.indexOf("我先检查本机状态。")).toBeGreaterThanOrEqual(0);
+    expect(text.indexOf("本机当前运行正常。")).toBeGreaterThan(text.indexOf("我先检查本机状态。"));
+    expect(text.indexOf("已运行 uptime")).toBeGreaterThan(text.indexOf("本机当前运行正常。"));
+    expect(text.match(/本机当前运行正常。/g) || []).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(1);
+  });
+
+  it("folds process assistant text under the elapsed-time header while keeping the final answer visible", async () => {
+    const process = [
+      makeBlock({
+        id: "assistant-before-commands",
+        kind: "assistant",
+        status: "completed",
+        text: "我先在本机读取当前工作路径。",
+      }),
+      makeBlock({
+        id: "cmd-after-assistant",
+        kind: "command",
+        status: "completed",
+        command: "pwd",
+        outputPreview: "/Users/lizhongxuan/Desktop/aiops/aiops-v2",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          turnStartedAt="2026-05-07T10:00:00Z"
+          turnCompletedAt="2026-05-07T10:00:25Z"
+          finalText="当前工作路径已确认。"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("已处理 25s");
+    expect(container.textContent).toContain("当前工作路径已确认。");
+    expect(container.textContent).not.toContain("我先在本机读取当前工作路径。");
+    expect(container.textContent).not.toContain("已运行 pwd");
+
+    await expandProcessTranscript();
+
+    expect(container.textContent).toContain("我先在本机读取当前工作路径。");
+    expect(container.textContent).toContain("已运行 pwd");
+    const header = container.querySelector('[data-testid="aiops-process-header"]');
+    expect(header?.tagName).toBe("BUTTON");
+  });
+
+  it("aggregates adjacent mixed tool actions without crossing assistant text", async () => {
+    const process = [
+      makeBlock({ id: "file-a", kind: "file", text: "Read README.md" }),
+      makeBlock({
+        id: "search-a",
+        kind: "tool",
+        displayKind: "web_search",
+        text: "Searching the web",
+        inputSummary: "BTC 行情",
+        queries: ["BTC 行情"],
+      }),
+      makeBlock({
+        id: "cmd-a",
+        kind: "command",
+        status: "completed",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+      makeBlock({ id: "assistant-break", kind: "assistant", text: "拿到第一批证据。" }),
+      makeBlock({ id: "file-b", kind: "file", text: "Read package.json" }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    const mixed = text.indexOf("已探索 1 个文件,1 次搜索,已运行 1 条命令");
+    const reasoning = text.indexOf("拿到第一批证据。");
+    const laterFile = text.indexOf("Read package.json");
+    expect(mixed).toBeGreaterThanOrEqual(0);
+    expect(reasoning).toBeGreaterThan(mixed);
+    expect(laterFile).toBeGreaterThan(reasoning);
+  });
+
+  it("expands a single running generic tool and collapses its output after completion", async () => {
+    const runningProcess = [
+      makeBlock({
+        id: "tool-running-output",
+        kind: "tool",
+        status: "running",
+        displayKind: "mcp.action",
+        text: "Collect host metrics",
+        outputPreview: "cpu idle 72%",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={runningProcess} turnStatus="working" />);
+    });
+
+    expect(container.textContent).toContain("Collect host metrics");
+    expect(container.textContent).toContain("cpu idle 72%");
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            {
+              ...runningProcess[0],
+              status: "completed",
+            },
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    expect(container.textContent).not.toContain("Collect host metrics");
+    expect(container.textContent).not.toContain("cpu idle 72%");
+    await expandProcessTranscript();
+    expect(container.textContent).toContain("Collect host metrics");
+    expect(container.textContent).not.toContain("cpu idle 72%");
   });
 
   it("does not keep a canceled turn running because of historical blocked blocks", async () => {
@@ -392,12 +733,7 @@ describe("ProcessTranscript", () => {
     await act(async () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     expect(container.textContent).toContain("uptime");
     expect(container.textContent).toContain("sysctl -n hw.ncpu");
     expect(container.textContent).not.toContain("22:38 up 22 days");
@@ -425,16 +761,11 @@ describe("ProcessTranscript", () => {
     await act(async () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     expect(container.textContent).toContain("已运行 git diff -- internal/appui/transport_projector.go");
     expect(container.textContent).not.toContain("Shell");
     expect(container.textContent).not.toContain("$ git diff -- internal/appui/transport_projector.go");
-    expect(container.textContent).toContain("✓ 成功");
+    expect(container.textContent).not.toContain("✓ 成功");
     expect(container.querySelector('[data-testid="aiops-terminal-card-cmd-native-card"]')).toBeNull();
     expect(container.textContent).not.toContain("diff --git");
 
@@ -445,6 +776,7 @@ describe("ProcessTranscript", () => {
     });
 
     expect(container.textContent).toContain("Shell");
+    expect(container.textContent).toContain("✓ 成功");
     expect(container.textContent).toContain("$ git diff -- internal/appui/transport_projector.go");
     expect(container.querySelector('[data-testid="aiops-command-output-cmd-native-card"]')?.className).toContain("bg-slate-100");
     expect(container.textContent).toContain("diff --git");
@@ -547,12 +879,7 @@ describe("ProcessTranscript", () => {
         />,
       );
     });
-    await act(async () => {
-      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
+    await expandProcessTranscript();
     expect(container.textContent).toContain("hostname");
     expect(container.textContent).not.toContain("server-local");
   });
@@ -619,7 +946,7 @@ describe("groupConsecutiveBlocks", () => {
     }
   });
 
-  it("does NOT merge different kinds together", () => {
+  it("merges adjacent mixed tool kinds into one process group", () => {
     const blocks = [
       makeBlock({ id: "f1", kind: "file", text: "read a.ts" }),
       makeBlock({ id: "f2", kind: "file", text: "read b.ts" }),
@@ -628,18 +955,11 @@ describe("groupConsecutiveBlocks", () => {
       makeBlock({ id: "c3", kind: "command", text: "npm lint" }),
     ];
     const groups = groupConsecutiveBlocks(blocks);
-    expect(groups).toHaveLength(2);
-    // First: merged file group
+    expect(groups).toHaveLength(1);
     expect(groups[0].kind).toBe("merged");
     if (groups[0].kind === "merged") {
-      expect(groups[0].mergedKind).toBe("file");
-      expect(groups[0].blocks).toHaveLength(2);
-    }
-    // Second: merged command group
-    expect(groups[1].kind).toBe("merged");
-    if (groups[1].kind === "merged") {
-      expect(groups[1].mergedKind).toBe("command");
-      expect(groups[1].blocks).toHaveLength(3);
+      expect(groups[0].mergedKind).toBe("mixed");
+      expect(groups[0].blocks).toHaveLength(5);
     }
   });
 

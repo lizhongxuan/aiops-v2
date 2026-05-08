@@ -104,8 +104,8 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if transportTurn.Final == nil || transportTurn.Final.Text != "等待审批完成后执行回滚" {
 		t.Fatalf("turn.Final = %+v, want final text", transportTurn.Final)
 	}
-	if len(transportTurn.Process) != 6 {
-		t.Fatalf("len(turn.Process) = %d, want 6", len(transportTurn.Process))
+	if len(transportTurn.Process) != 7 {
+		t.Fatalf("len(turn.Process) = %d, want 7", len(transportTurn.Process))
 	}
 
 	reasoningBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindReasoning)
@@ -151,6 +151,10 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	approvalBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindApproval)
 	if approvalBlock.ApprovalID != "approval-1" || approvalBlock.Status != AiopsTransportProcessStatusBlocked {
 		t.Fatalf("approval block = %+v, want blocked approval", approvalBlock)
+	}
+	assistantBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindAssistant)
+	if assistantBlock.Text != "等待审批完成后执行回滚" || assistantBlock.DisplayKind != "assistant.final" {
+		t.Fatalf("assistant final block = %+v, want inline final answer block", assistantBlock)
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
@@ -409,12 +413,12 @@ func TestTransportProjectorIgnoresSnapshotPendingGatesForTerminalTurn(t *testing
 			UpdatedAt: now,
 		}},
 		PendingEvidence: []runtimekernel.PendingEvidence{{
-			ID:        "evidence-stale",
-			TurnID:    "turn-denied-approval",
+			ID:         "evidence-stale",
+			TurnID:     "turn-denied-approval",
 			ToolCallID: "tool-call-1",
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
+			Status:     "pending",
+			CreatedAt:  now,
+			UpdatedAt:  now,
 		}},
 		AgentItems: []agentstate.TurnItem{
 			{
@@ -570,6 +574,10 @@ func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *tes
 	}
 	if final.Status != AiopsTransportFinalStatusRunning {
 		t.Fatalf("final status = %q, want running", final.Status)
+	}
+	assistantBlock := findTransportProcessBlock(t, projected.Turns["turn-streaming-final"].Process, AiopsTransportProcessKindAssistant)
+	if assistantBlock.Text != "第一段第二段完整流式输出" {
+		t.Fatalf("assistant final block text = %q, want full streaming FinalOutput", assistantBlock.Text)
 	}
 }
 

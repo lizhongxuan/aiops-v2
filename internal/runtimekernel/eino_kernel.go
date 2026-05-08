@@ -1199,18 +1199,20 @@ func (k *EinoKernel) runHostIterationLoop(
 		if modelSpanCtx != nil {
 			modelCtx = modelSpanCtx
 		}
-		finalItemID := fmt.Sprintf("%s-final-answer", turnID)
+		finalItemID := fmt.Sprintf("%s-final-answer-%d", turnID, iteration)
+		iterationAssistantOutput := ""
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
 			if strings.TrimSpace(delta) != "" {
+				iterationAssistantOutput += delta
 				snapshot.FinalOutput += delta
 				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, truncateString(snapshot.FinalOutput, 240))
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, iterationAssistantOutput)
 				} else {
 					appendAgentItem(snapshot, newAgentItem(
 						finalItemID,
 						agentstate.TurnItemTypeFinalAnswer,
 						agentstate.ItemStatusRunning,
-						truncateString(snapshot.FinalOutput, 240),
+						iterationAssistantOutput,
 						nil,
 					))
 				}
@@ -1336,19 +1338,24 @@ func (k *EinoKernel) runHostIterationLoop(
 		session.LatestCheckpoint = checkpoint
 		k.persistTurnSnapshot(session, snapshot)
 
+		assistantContent := strings.TrimSpace(assistantMsg.Content)
+		if assistantContent == "" {
+			assistantContent = strings.TrimSpace(iterationAssistantOutput)
+		}
+
 		if len(assistantMsg.ToolCalls) == 0 {
 			now := time.Now()
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
-			snapshot.FinalOutput = assistantMsg.Content
+			snapshot.FinalOutput = assistantContent
 			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, truncateString(assistantMsg.Content, 240))
+				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
 			} else {
 				appendAgentItem(snapshot, newAgentItem(
 					finalItemID,
 					agentstate.TurnItemTypeFinalAnswer,
 					agentstate.ItemStatusCompleted,
-					truncateString(assistantMsg.Content, 240),
+					assistantContent,
 					map[string]string{"messageId": assistantMsg.ID},
 				))
 			}
@@ -1363,12 +1370,24 @@ func (k *EinoKernel) runHostIterationLoop(
 			session.PendingApprovals = nil
 			session.PendingEvidence = nil
 			k.persistTurnSnapshot(session, snapshot)
-			return assistantMsg.Content, nil, nil
+			return assistantContent, nil, nil
 		}
 
+		if assistantContent != "" {
+			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
+			} else {
+				appendAgentItem(snapshot, newAgentItem(
+					finalItemID,
+					agentstate.TurnItemTypeFinalAnswer,
+					agentstate.ItemStatusCompleted,
+					assistantContent,
+					map[string]string{"messageId": assistantMsg.ID},
+				))
+			}
+		}
 		if snapshot.FinalOutput != "" {
 			snapshot.FinalOutput = ""
-			removeAgentItem(snapshot, finalItemID)
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
 		}

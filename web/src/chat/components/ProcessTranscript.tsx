@@ -1,8 +1,10 @@
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { AiopsProcessBlock } from "@/transport/aiopsTransportTypes";
+
+import { MessageMarkdown } from "./MessageMarkdown";
 
 /**
  * Strips HTML content to plain text for display purposes.
@@ -25,6 +27,7 @@ type ProcessTranscriptProps = {
   turnStartedAt?: string;
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
+  finalText?: string;
   onApprovalDecision?: ApprovalDecisionHandler;
 };
 
@@ -44,13 +47,31 @@ export function ProcessTranscript({
   turnStartedAt,
   turnCompletedAt,
   turnUpdatedAt,
+  finalText,
 }: ProcessTranscriptProps) {
   const visibleProcess = useMemo(() => process.filter(shouldShowInTranscript), [process]);
   const running = isProcessRunning(visibleProcess, turnStatus);
-  const hasMeaningful = hasMeaningfulContent(visibleProcess);
+  const explicitFinalText = finalText?.trim() || "";
+  const finalAssistantIndex = terminalFinalAssistantIndex(visibleProcess, explicitFinalText);
+  const finalAssistantText =
+    finalAssistantIndex >= 0 ? visibleProcess[finalAssistantIndex]?.text?.trim() || "" : "";
+  const processBlocks = visibleProcess.filter((_, index) => index !== finalAssistantIndex);
+  const retainedAssistantTexts = new Set(
+    processBlocks
+      .filter((block) => block.kind === "assistant")
+      .map((block) => block.text?.trim() || "")
+      .filter(Boolean),
+  );
+  const renderedFinalText = (
+    explicitFinalText && !retainedAssistantTexts.has(explicitFinalText) ? explicitFinalText : finalAssistantText
+  ).trim();
+  const hasMeaningful = hasMeaningfulContent(processBlocks);
+  const shouldRenderProcess = processBlocks.length > 0 || running;
 
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
+  const [open, setOpen] = useState(running);
+  const prevRunningRef = useRef(running);
 
   useEffect(() => {
     if (!running) {
@@ -60,32 +81,27 @@ export function ProcessTranscript({
     return () => clearInterval(interval);
   }, [running]);
 
-  // Collapsible: auto-collapse when turn completes, user can toggle
-  const [open, setOpen] = useState(running);
-  const prevRunningRef = useRef(running);
   useEffect(() => {
-    // When turn transitions from running → completed, auto-collapse
     if (prevRunningRef.current && !running) {
       setOpen(false);
     }
     prevRunningRef.current = running;
   }, [running]);
 
-  // While running, keep expanded
   useEffect(() => {
     if (running) {
       setOpen(true);
     }
   }, [running]);
 
-  if (visibleProcess.length === 0 && !running) {
+  if (!shouldRenderProcess && !renderedFinalText) {
     return null;
   }
 
-  const processGroups = groupConsecutiveBlocks(visibleProcess);
+  const processGroups = groupConsecutiveBlocks(processBlocks);
 
   const elapsed = elapsedSecondsForTranscript({
-    process: visibleProcess,
+    process: processBlocks,
     running,
     startedAt: turnStartedAt,
     completedAt: turnCompletedAt,
@@ -97,42 +113,64 @@ export function ProcessTranscript({
 
   return (
     <div className="text-[15px] leading-7 text-slate-500" data-testid="aiops-process-transcript" aria-live="polite">
-      {/* Codex-style collapsible header with timer + underline */}
-      <button
-        type="button"
-        className="group flex w-full items-center gap-1.5 border-b border-slate-200 pb-2 pt-1 text-left"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-        data-testid="aiops-process-header"
-      >
-        <ChevronRight className={cn("h-3.5 w-3.5 text-slate-400 transition-transform", open && "rotate-90")} />
-        <span className="font-medium tracking-[-0.01em] text-slate-500">
-          {running ? `处理中${timeLabel}` : `已处理${timeLabel}`}
-        </span>
-      </button>
+      {shouldRenderProcess ? (
+        <>
+          <button
+            type="button"
+            className="group flex w-full items-center gap-1.5 border-b border-slate-200 pb-2 pt-1 text-left"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+            data-testid="aiops-process-header"
+          >
+            <span className="font-medium tracking-[-0.01em] text-slate-500">
+              {running ? `处理中${timeLabel}` : `已处理${timeLabel}`}
+            </span>
+            <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
+          </button>
 
-      {/* Collapsible body */}
-      {open ? (
-        <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
-          {processGroups.length ? (
-            <div className="space-y-2">
-              {processGroups.map((group) => (
-                <ProcessGroupView
-                  key={group.kind === "merged" ? group.blocks.map((block) => block.id).join(":") : group.block.id}
-                  group={group}
-                  turnRunning={running}
-                />
-              ))}
+          {open ? (
+            <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
+              {processGroups.length ? (
+                <div className="space-y-2">
+                  {processGroups.map((group) => (
+                    <ProcessGroupView
+                      key={group.kind === "merged" ? group.blocks.map((block) => block.id).join(":") : group.block.id}
+                      group={group}
+                      turnRunning={running}
+                    />
+                  ))}
+                </div>
+              ) : null}
+              {/* Bottom status indicator: only when running AND has meaningful content */}
+              {running && hasMeaningful ? (
+                <InlineStatusIndicator blocks={processBlocks} />
+              ) : null}
             </div>
           ) : null}
-          {/* Bottom status indicator: only when running AND has meaningful content */}
-          {running && hasMeaningful ? (
-            <InlineStatusIndicator blocks={visibleProcess} />
-          ) : null}
-        </div>
+        </>
       ) : null}
+      {renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
     </div>
   );
+}
+
+function terminalFinalAssistantIndex(blocks: AiopsProcessBlock[], finalText?: string) {
+  const lastIndex = blocks.length - 1;
+  if (lastIndex < 0) {
+    return -1;
+  }
+  return isFinalAssistantBlock(blocks[lastIndex], finalText) ? lastIndex : -1;
+}
+
+function isFinalAssistantBlock(block: AiopsProcessBlock, finalText?: string) {
+  if (block.kind !== "assistant") {
+    return false;
+  }
+  if (block.displayKind === "assistant.final") {
+    return true;
+  }
+  const blockText = (block.text || "").trim();
+  return Boolean(blockText && finalText?.trim() && blockText === finalText.trim());
 }
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
@@ -186,7 +224,6 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
   while (i < blocks.length) {
     const block = blocks[i];
-    const mergedKind = groupingKindForBlock(block);
 
     if (block.kind === "reasoning" || !isGroupedProcessBlock(block)) {
       groups.push({ kind: "single", block });
@@ -196,13 +233,13 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
     const consecutive: AiopsProcessBlock[] = [block];
     let j = i + 1;
-    while (j < blocks.length && groupingKindForBlock(blocks[j]) === mergedKind && isGroupedProcessBlock(blocks[j])) {
+    while (j < blocks.length && isGroupedProcessBlock(blocks[j])) {
       consecutive.push(blocks[j]);
       j += 1;
     }
 
     if (consecutive.length >= 2) {
-      groups.push({ kind: "merged", blocks: consecutive, mergedKind });
+      groups.push({ kind: "merged", blocks: consecutive, mergedKind: mergedKindForBlocks(consecutive) });
     } else {
       groups.push({ kind: "single", block });
     }
@@ -223,6 +260,11 @@ function isGroupedProcessBlock(block: AiopsProcessBlock): boolean {
   return isSearchLikeBlock(block) || isToolSummaryBlock(block);
 }
 
+function mergedKindForBlocks(blocks: AiopsProcessBlock[]) {
+  const kinds = Array.from(new Set(blocks.map(groupingKindForBlock).filter(Boolean)));
+  return kinds.length === 1 ? kinds[0] : "mixed";
+}
+
 export function getMergedSummaryText(mergedKind: string, count: number): string {
   switch (mergedKind) {
     case "file":
@@ -237,6 +279,19 @@ export function getMergedSummaryText(mergedKind: string, count: number): string 
     default:
   return `⚙️ 已处理 ${count} 个操作`;
   }
+}
+
+function DisclosureChevron({ open, testId }: { open: boolean; testId?: string }) {
+  return (
+    <ChevronDown
+      className={cn(
+        "h-3.5 w-3.5 shrink-0 text-slate-400 opacity-0 transition-all group-hover:opacity-100 group-focus-visible:opacity-100",
+        open ? "rotate-0 opacity-100" : "-rotate-90",
+      )}
+      data-testid={testId}
+      aria-hidden="true"
+    />
+  );
 }
 
 function ProcessGroupView({
@@ -301,12 +356,12 @@ function MergedToolSummary({
     <div className="space-y-1">
       <button
         type="button"
-        className="group flex w-full items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className="group flex w-full min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <ChevronDown className={cn("h-3.5 w-3.5 transition-transform", open ? "rotate-0" : "-rotate-90")} />
-        <span className="truncate">{text}</span>
+        <span className="min-w-0 truncate">{text}</span>
+        <DisclosureChevron open={open} testId={`aiops-merged-${group.mergedKind}-chevron`} />
       </button>
       {open ? (
         <div
@@ -314,19 +369,50 @@ function MergedToolSummary({
           data-testid={`aiops-merged-${group.mergedKind}-details`}
         >
           {details.map((detail, index) =>
-            group.mergedKind === "command" ? (
+            detail.kind === "command" ? (
               <CommandDetailRow key={`${detail.id}:${index}`} detail={detail} />
             ) : (
-              <div key={`${detail.text}:${index}`} className="flex min-w-0 items-start gap-2">
-                <span className={cn("mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[11px] leading-4", statusBadgeClass(detail.status))}>
-                  {statusLabel(detail.status)}
-                </span>
-                <code className="min-w-0 flex-1 truncate rounded bg-slate-50 px-1.5 py-0.5 font-mono text-[12px] text-slate-600">
-                  {detail.text}
-                </code>
-              </div>
+              <ToolDetailRow key={`${detail.id}:${index}`} detail={detail} />
             ),
           )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ToolDetailRow({
+  detail,
+}: {
+  detail: ReturnType<typeof mergedBlockDetail>;
+}) {
+  const hasOutput = Boolean(detail.output);
+  const toolRunning = detail.status === "running" || detail.status === "queued";
+  const [open, setOpen] = useState(toolRunning);
+  useEffect(() => {
+    if (!toolRunning) {
+      setOpen(false);
+    }
+  }, [toolRunning, detail.id]);
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        className="group flex w-full min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        data-testid={`aiops-tool-row-${detail.id}`}
+      >
+        <span className="min-w-0 flex-1 truncate">{toolDetailSummaryLabel(detail)}</span>
+        <span className="shrink-0 text-[13px] text-slate-400">{statusLabel(detail.status)}</span>
+        <DisclosureChevron open={open} testId={`aiops-tool-chevron-${detail.id}`} />
+      </button>
+      {open && hasOutput ? (
+        <div
+          className="rounded-lg bg-slate-100 px-3 py-2 font-mono text-[13px] leading-6 text-slate-500"
+          data-testid={`aiops-tool-output-${detail.id}`}
+        >
+          {detail.output}
         </div>
       ) : null}
     </div>
@@ -340,6 +426,7 @@ function CommandDetailRow({
 }) {
   const hasOutput = Boolean(detail.output);
   const commandRunning = detail.status === "running" || detail.status === "queued";
+  const rowStatus = commandRowStatusLabel(detail.status);
   const [open, setOpen] = useState(commandRunning);
   useEffect(() => {
     if (!commandRunning) {
@@ -355,9 +442,18 @@ function CommandDetailRow({
         aria-expanded={open}
         data-testid={`aiops-command-row-${detail.id}`}
       >
-        <span className="min-w-0 flex-1 truncate">{commandSummaryLabel(detail)}</span>
-        <span className="shrink-0 text-[13px] text-slate-400">{terminalStatusLabel(detail.status)}</span>
-        <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open ? "rotate-0" : "-rotate-90")} />
+        <span
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+          data-testid={`aiops-command-label-region-${detail.id}`}
+        >
+          <span className="min-w-0 truncate">{commandSummaryLabel(detail)}</span>
+          <DisclosureChevron open={open} testId={`aiops-command-chevron-${detail.id}`} />
+        </span>
+        {rowStatus ? (
+          <span className="shrink-0 text-[13px] text-slate-400" data-testid={`aiops-command-status-${detail.id}`}>
+            {rowStatus}
+          </span>
+        ) : null}
       </button>
       {open ? (
         <div
@@ -385,16 +481,48 @@ function CommandDetailRow({
   );
 }
 
+function commandRowStatusLabel(status?: AiopsProcessBlock["status"]) {
+  if (status === "completed") {
+    return "";
+  }
+  return terminalStatusLabel(status);
+}
+
 function getMergedGroupSummaryText(group: Extract<ProcessGroup, { kind: "merged" }>) {
+  if (group.mergedKind === "mixed") {
+    return getMixedMergedSummaryText(group.blocks);
+  }
   if (group.mergedKind === "command") {
     return getMergedSummaryText(group.mergedKind, group.blocks.length);
   }
   return getMergedSummaryText(group.mergedKind, group.blocks.length);
 }
 
+function getMixedMergedSummaryText(blocks: AiopsProcessBlock[]) {
+  const counts = blocks.reduce(
+    (acc, block) => {
+      const kind = groupingKindForBlock(block);
+      if (kind === "file") acc.file += 1;
+      else if (kind === "search") acc.search += 1;
+      else if (kind === "command") acc.command += 1;
+      else acc.tool += 1;
+      return acc;
+    },
+    { file: 0, search: 0, command: 0, tool: 0 },
+  );
+  return [
+    counts.file ? `已探索 ${counts.file} 个文件` : "",
+    counts.search ? `${counts.search} 次搜索` : "",
+    counts.command ? `已运行 ${counts.command} 条命令` : "",
+    counts.tool ? `已调用 ${counts.tool} 个工具` : "",
+  ].filter(Boolean).join(",");
+}
+
 function mergedBlockDetail(block: AiopsProcessBlock) {
   let text = "";
-  if (block.kind === "command") {
+  if (isSearchLikeBlock(block)) {
+    text = searchLines(block)[0] || searchQueryForBlock(block) || "搜索网页";
+  } else if (block.kind === "command") {
     text = block.command || block.inputSummary || stripHtml(block.text || "");
   } else if (block.kind === "file") {
     text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
@@ -403,10 +531,13 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
   }
   return {
     id: block.id,
+    kind: groupingKindForBlock(block),
     status: block.status,
     approvalId: block.approvalId,
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
-    output: block.kind === "command" ? cleanCommandOutput(block.outputPreview) : "",
+    output: block.kind === "command" || block.kind === "tool" || block.kind === "mcp"
+      ? cleanCommandOutput(block.outputPreview)
+      : "",
   };
 }
 
@@ -481,11 +612,32 @@ function commandSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
   }
 }
 
+function toolDetailSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
+  const text = detail.text || "工具调用";
+  switch (detail.status) {
+    case "blocked":
+      return `等待审核 ${text}`;
+    case "failed":
+      return `执行失败 ${text}`;
+    case "running":
+      return `正在执行 ${text}`;
+    case "queued":
+      return `排队中 ${text}`;
+    case "rejected":
+      return `已拒绝 ${text}`;
+    default:
+      return text;
+  }
+}
+
 function NativeProcessText({
   block,
 }: {
   block: AiopsProcessBlock;
 }) {
+  if (block.kind === "assistant") {
+    return <AssistantFinalText text={block.text} />;
+  }
   if (block.kind === "reasoning") {
     return <ThinkingText block={block} />;
   }
@@ -493,7 +645,7 @@ function NativeProcessText({
     return <CommandDetailRow detail={mergedBlockDetail(block)} />;
   }
   if (isToolSummaryBlock(block)) {
-    return <ToolSummaryLine block={block} />;
+    return <ToolDetailRow detail={mergedBlockDetail(block)} />;
   }
   const text = readableBlockSummary(block);
   if (!text) {
@@ -502,6 +654,14 @@ function NativeProcessText({
   return (
     <div className="whitespace-pre-wrap break-words text-[15px] font-medium leading-7 tracking-[-0.01em] text-slate-900">
       {text}
+    </div>
+  );
+}
+
+function AssistantFinalText({ text }: { text: string }) {
+  return (
+    <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900" data-testid="aiops-final-text">
+      <MessageMarkdown text={text} />
     </div>
   );
 }
@@ -652,15 +812,12 @@ function SearchTranscript({
         data-testid="aiops-search-toggle"
       >
         <span>{searchTranscriptLabel(running, count, query)}</span>
-        <ChevronDown
-          className={cn("h-3.5 w-3.5 transition-transform", open ? "rotate-0" : "-rotate-90")}
-          data-testid="aiops-search-chevron"
-        />
+        <DisclosureChevron open={open} testId="aiops-search-chevron" />
       </button>
       {open && lines.length ? (
-        <div className="max-h-40 overflow-y-auto space-y-1 text-[15px] leading-7 text-slate-400" data-testid="aiops-search-details">
+        <div className="space-y-1 text-[15px] leading-7 text-slate-400" data-testid="aiops-search-details">
           {lines.map((line, index) => (
-            <div key={`${line}:${index}`} className="truncate">
+            <div key={`${line}:${index}`} className="whitespace-normal break-all">
               {line}
             </div>
           ))}

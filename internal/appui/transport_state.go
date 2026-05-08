@@ -33,6 +33,7 @@ type AiopsTransportProcessKind string
 
 const (
 	AiopsTransportProcessKindPlan      AiopsTransportProcessKind = "plan"
+	AiopsTransportProcessKindAssistant AiopsTransportProcessKind = "assistant"
 	AiopsTransportProcessKindReasoning AiopsTransportProcessKind = "reasoning"
 	AiopsTransportProcessKindSearch    AiopsTransportProcessKind = "search"
 	AiopsTransportProcessKindCommand   AiopsTransportProcessKind = "command"

@@ -76,8 +76,9 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
-			Modes:        []string{string(ModeInspect)},
+			Modes:        []string{string(ModeExecute)},
 		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
 		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			return tooling.ToolResult{Content: "ok:" + string(input)}, nil
 		},
@@ -109,6 +110,76 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 	}
 	if got := agentItemTypes(session.CurrentTurn.AgentItems); !sameTurnItemTypes(got, want) {
 		t.Fatalf("agent item types = %v, want %v", got, want)
+	}
+}
+
+func TestRunTurn_PreservesAssistantTextBeforeToolCalls(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("我先在本机读取当前工作路径。", []schema.ToolCall{
+				{
+					ID:   "call-pwd",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "exec_readonly",
+						Arguments: `{"cmd":"pwd"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("我再看下时间。", []schema.ToolCall{
+				{
+					ID:   "call-date",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "exec_readonly",
+						Arguments: `{"cmd":"date"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("检查完成。", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "exec_readonly",
+			Description: "Run a read-only command",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "ok:" + string(input)}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-agent-items-assistant-tool-text",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-agent-items-assistant-tool-text",
+		Input:       "查看路径和时间",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	session := kernel.sessions.Get("sess-agent-items-assistant-tool-text")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
+	}
+	items := session.CurrentTurn.AgentItems
+	firstText := findAgentItemBySummary(items, agentstate.TurnItemTypeFinalAnswer, "我先在本机读取当前工作路径。")
+	firstTool := findAgentItemBySummary(items, agentstate.TurnItemTypeToolCall, "exec_readonly")
+	secondText := findAgentItemBySummary(items, agentstate.TurnItemTypeFinalAnswer, "我再看下时间。")
+	secondToolIndex := indexAgentItemByID(items, "turn-agent-items-assistant-tool-text-tool-call-call-date")
+	if firstText < 0 || firstTool < 0 || secondText < 0 || secondToolIndex < 0 {
+		t.Fatalf("agent items = %#v, want assistant text items before each tool call", items)
+	}
+	if !(firstText < firstTool && firstTool < secondText && secondText < secondToolIndex) {
+		t.Fatalf("agent item order firstText=%d firstTool=%d secondText=%d secondTool=%d, want text/tool/text/tool", firstText, firstTool, secondText, secondToolIndex)
 	}
 }
 
@@ -513,6 +584,24 @@ func findAgentItem(items []agentstate.TurnItem, typ agentstate.TurnItemType) age
 		}
 	}
 	return agentstate.TurnItem{}
+}
+
+func findAgentItemBySummary(items []agentstate.TurnItem, typ agentstate.TurnItemType, summary string) int {
+	for idx, item := range items {
+		if item.Type == typ && item.Payload.Summary == summary {
+			return idx
+		}
+	}
+	return -1
+}
+
+func indexAgentItemByID(items []agentstate.TurnItem, id string) int {
+	for idx, item := range items {
+		if item.ID == id {
+			return idx
+		}
+	}
+	return -1
 }
 
 func sameTurnItemTypes(a, b []agentstate.TurnItemType) bool {

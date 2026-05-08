@@ -4,6 +4,7 @@ export type AiopsTransportTurnStatus = "submitted" | "working" | "blocked" | "co
 
 export type AiopsTransportProcessKind =
   | "plan"
+  | "assistant"
   | "reasoning"
   | "search"
   | "command"

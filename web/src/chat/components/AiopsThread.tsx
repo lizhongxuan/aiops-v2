@@ -89,6 +89,7 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
+  const finalText = messageText(message.content);
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
@@ -105,12 +106,13 @@ function AssistantMessage() {
             turnStartedAt={meta.turnStartedAt}
             turnCompletedAt={meta.turnCompletedAt}
             turnUpdatedAt={meta.turnUpdatedAt}
+            finalText={finalText}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
         ) : null}
-        {message.content.length > 0 ? (
+        {message.content.length > 0 && process.length === 0 && !isPendingAssistantTurn(meta.turnStatus) ? (
           <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900">
-            <MessageMarkdown text={messageText(message.content)} />
+            <MessageMarkdown text={finalText} />
           </div>
         ) : null}
       </div>
