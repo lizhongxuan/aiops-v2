@@ -37,7 +37,7 @@ export function AiopsThread() {
                   <Bot className="h-5 w-5" />
                 </div>
                 <h1 className="mt-5 text-2xl font-semibold text-slate-950">
-                  {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : `要对 ${target.targetLabel} 做什么？`}
+                  {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : "Hello there"}
                 </h1>
                 <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
                   {workspace.kind === "workspace"

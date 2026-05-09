@@ -49,6 +49,113 @@ func TestSemanticPromptSimpleChatDoesNotForcePlan(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptDeveloperInstructionsUseClaudeCodeStyleSections(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType:    "host",
+		Mode:           "execute",
+		PlanningPolicy: "structured_events",
+		EvidencePolicy: "tool_sourced",
+		AnswerStyle:    "aiops_rca",
+		ToolBudget:     "bounded",
+		AgentKind:      AgentKindWorker,
+	})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"## Operating Contract",
+		"## Task Triage",
+		"## Planning and Status Tracking",
+		"## Responsiveness",
+		"## Evidence and Inference",
+		"## AIOps Investigation Loop",
+		"## Tool Use Boundaries",
+		"## Risk and Approval Boundaries",
+		"## Final Answer Shape",
+		"## Mode-Specific Rules",
+		"## Agent Role Rules",
+		"verify tool results",
+		"structured plan events",
+		"Evidence must come from tool results",
+		"Layer 3 tool details",
+		"symptom, affected scope, and time window",
+		"before mutation, capture pre-change state",
+		"after mutation, verify",
+		"Low risk",
+		"Medium risk",
+		"High risk",
+		"Only operate on your designated host",
+		"Root Cause",
+		"Evidence",
+		"Impact",
+		"Next Steps",
+	})
+}
+
+func TestSemanticPromptResponsivenessUsesCommunicationModes(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"Use three communication modes",
+		"Silent mode",
+		"Preamble mode",
+		"Milestone mode",
+		"quick factual lookups",
+		"trivial reads",
+		"substantial grouped tool work",
+		"evidence changes direction",
+		"narrows the cause",
+		"exposes a blocker",
+		"I'll compare recent alerts with host metrics",
+		"I found the prompt assembly path",
+		"The tool index is clear",
+	})
+}
+
+func TestSemanticPromptAIOpsInvestigationLoopIsOperational(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "execute",
+		AnswerStyle: "aiops_rca",
+	})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"user-visible symptom",
+		"affected scope",
+		"time window",
+		"direct evidence",
+		"narrowing hypotheses",
+		"observed facts from inference",
+		"pre-change state",
+		"rollback or recovery path",
+		"symptom, metric, log, or service state",
+	})
+}
+
+func TestSemanticPromptRiskBoundariesUseBlastRadius(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"destructive",
+		"hard to reverse",
+		"shared systems",
+		"production state",
+		"hide diagnostic evidence",
+		"Low risk",
+		"Medium risk",
+		"High risk",
+		"runtime approval",
+		"Do not broaden scope after a denial or failure",
+	})
+}
+
 func TestSemanticPromptProgressUpdatesAreScoped(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {

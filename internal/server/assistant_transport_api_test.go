@@ -703,6 +703,14 @@ func TestAssistantTransportStreamWaitsForRuntimeAfterApprovalAcceptedLocally(t *
 	initial.Turns["turn-approved-local"] = appui.AiopsTransportTurn{
 		ID:     "turn-approved-local",
 		Status: appui.AiopsTransportTurnStatusWorking,
+		Process: []appui.AiopsProcessBlock{{
+			ID:         "cmd-approved-local",
+			Kind:       appui.AiopsTransportProcessKindCommand,
+			Status:     appui.AiopsTransportProcessStatusRunning,
+			Command:    "ifconfig en0 down",
+			Text:       "ifconfig en0 down",
+			ApprovalID: "approval-stale",
+		}},
 	}
 	initial.RuntimeLiveness.ActiveTurns["turn-approved-local"] = true
 
@@ -729,6 +737,51 @@ func TestAssistantTransportStreamWaitsForRuntimeAfterApprovalAcceptedLocally(t *
 	}
 }
 
+func TestAssistantTransportStreamDoesNotWaitWhenRuntimeFirstReportsPendingApproval(t *testing.T) {
+	now := time.Now().UTC()
+	initial := appui.NewAiopsTransportState("sess-new-approval", "thread-new-approval")
+	initial.Status = appui.AiopsTransportStatusWorking
+	initial.CurrentTurnID = "turn-new-approval"
+	initial.TurnOrder = []string{"turn-new-approval"}
+	initial.Turns["turn-new-approval"] = appui.AiopsTransportTurn{
+		ID:     "turn-new-approval",
+		Status: appui.AiopsTransportTurnStatusWorking,
+		Process: []appui.AiopsProcessBlock{{
+			ID:      "cmd-launchctl",
+			Kind:    appui.AiopsTransportProcessKindCommand,
+			Status:  appui.AiopsTransportProcessStatusRunning,
+			Command: "launchctl print system/com.docker.helper",
+			Text:    "launchctl print system/com.docker.helper",
+		}},
+	}
+	initial.RuntimeLiveness.ActiveTurns["turn-new-approval"] = true
+
+	latest := &runtimekernel.TurnSnapshot{
+		ID:          "turn-new-approval",
+		SessionID:   "sess-new-approval",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingEvidence,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		PendingEvidence: []runtimekernel.PendingEvidence{{
+			ID:         "evidence-new",
+			SessionID:  "sess-new-approval",
+			TurnID:     "turn-new-approval",
+			ToolName:   "exec_command",
+			ToolCallID: "call-launchctl",
+			Reason:     "non-read-only terminal command requires a signed ActionToken",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
+	}
+
+	if assistantTransportShouldWaitForAcceptedApproval(initial, latest) {
+		t.Fatal("assistantTransportShouldWaitForAcceptedApproval() = true, want false so the blocked approval state is projected")
+	}
+}
+
 func TestAssistantTransportStreamWaitsForRuntimeAfterApprovalRejectedLocally(t *testing.T) {
 	now := time.Now().UTC()
 	initial := appui.NewAiopsTransportState("sess-rejected-local", "thread-rejected-local")
@@ -738,6 +791,14 @@ func TestAssistantTransportStreamWaitsForRuntimeAfterApprovalRejectedLocally(t *
 	initial.Turns["turn-rejected-local"] = appui.AiopsTransportTurn{
 		ID:     "turn-rejected-local",
 		Status: appui.AiopsTransportTurnStatusFailed,
+		Process: []appui.AiopsProcessBlock{{
+			ID:         "cmd-rejected-local",
+			Kind:       appui.AiopsTransportProcessKindCommand,
+			Status:     appui.AiopsTransportProcessStatusRejected,
+			Command:    "ifconfig en0 down",
+			Text:       "ifconfig en0 down",
+			ApprovalID: "approval-stale",
+		}},
 	}
 
 	latest := &runtimekernel.TurnSnapshot{

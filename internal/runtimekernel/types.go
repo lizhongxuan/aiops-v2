@@ -14,22 +14,46 @@ import (
 
 // SessionState represents the full state of a session (host or workspace).
 type SessionState struct {
-	ID                 string              `json:"id"`
-	Type               SessionType         `json:"type"`
-	Mode               Mode                `json:"mode"`
-	HostID             string              `json:"hostId,omitempty"`
-	Messages           []Message           `json:"messages"`
-	Context            ContextWindow       `json:"context"`
-	Activity           ActivityStats       `json:"activity"`
-	CurrentTurn        *TurnSnapshot       `json:"currentTurn,omitempty"`
-	TurnHistory        []TurnSnapshot      `json:"turnHistory,omitempty"`
-	PendingApprovals   []PendingApproval   `json:"pendingApprovals,omitempty"`
-	PendingEvidence    []PendingEvidence   `json:"pendingEvidence,omitempty"`
-	LatestCheckpoint   *CheckpointMetadata `json:"latestCheckpoint,omitempty"`
-	CompactedSegments  []CompactedSegment  `json:"compactedSegments,omitempty"`
-	ExternalReferences []ExternalReference `json:"externalReferences,omitempty"`
-	CreatedAt          time.Time           `json:"createdAt"`
-	UpdatedAt          time.Time           `json:"updatedAt"`
+	ID                 string                 `json:"id"`
+	Type               SessionType            `json:"type"`
+	Mode               Mode                   `json:"mode"`
+	HostID             string                 `json:"hostId,omitempty"`
+	Messages           []Message              `json:"messages"`
+	Context            ContextWindow          `json:"context"`
+	Activity           ActivityStats          `json:"activity"`
+	CurrentTurn        *TurnSnapshot          `json:"currentTurn,omitempty"`
+	TurnHistory        []TurnSnapshot         `json:"turnHistory,omitempty"`
+	PendingApprovals   []PendingApproval      `json:"pendingApprovals,omitempty"`
+	PendingEvidence    []PendingEvidence      `json:"pendingEvidence,omitempty"`
+	ApprovalGrants     []SessionApprovalGrant `json:"approvalGrants,omitempty"`
+	LatestCheckpoint   *CheckpointMetadata    `json:"latestCheckpoint,omitempty"`
+	CompactedSegments  []CompactedSegment     `json:"compactedSegments,omitempty"`
+	ExternalReferences []ExternalReference    `json:"externalReferences,omitempty"`
+	CreatedAt          time.Time              `json:"createdAt"`
+	UpdatedAt          time.Time              `json:"updatedAt"`
+}
+
+// SessionApprovalGrant records an explicit "approve for this session" decision
+// for one normalized tool input.
+type SessionApprovalGrant struct {
+	ID        string    `json:"id,omitempty"`
+	ToolName  string    `json:"toolName"`
+	InputHash string    `json:"inputHash"`
+	Command   string    `json:"command,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	CreatedAt time.Time `json:"createdAt,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt,omitempty"`
+}
+
+// Validate checks that the session-level grant can be matched safely.
+func (g SessionApprovalGrant) Validate() error {
+	if g.ToolName == "" {
+		return fmt.Errorf("tool name is required")
+	}
+	if g.InputHash == "" {
+		return fmt.Errorf("input hash is required")
+	}
+	return nil
 }
 
 // Validate checks that the session state has valid session type and mode.
@@ -68,6 +92,11 @@ func (s SessionState) Validate() error {
 	for i := range s.PendingEvidence {
 		if err := s.PendingEvidence[i].Validate(); err != nil {
 			return fmt.Errorf("pending evidence[%d]: %w", i, err)
+		}
+	}
+	for i := range s.ApprovalGrants {
+		if err := s.ApprovalGrants[i].Validate(); err != nil {
+			return fmt.Errorf("approval grant[%d]: %w", i, err)
 		}
 	}
 	if s.LatestCheckpoint != nil {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/tooling"
@@ -169,6 +170,59 @@ func TestToolDispatcher_UsesToolPermissionGateBeforePolicyAndExecution(t *testin
 		if event.Type == EventToolStarted {
 			t.Fatalf("emitted %s before tool permission gate was resolved", EventToolStarted)
 		}
+	}
+}
+
+func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &permissionCheckingExecutor{
+		decision: tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedEvidence,
+			Reason: "missing action token",
+		},
+	}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"exec_command": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "exec_command",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+				},
+				executor: executor,
+			},
+		},
+	}
+	input := json.RawMessage(`{"cmd":"systemctl restart erp-report.service"}`)
+	hash, err := actionproposal.NormalizedInputHash(input)
+	if err != nil {
+		t.Fatalf("hash input: %v", err)
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter).WithSessionApprovalGrants([]SessionApprovalGrant{{
+		ToolName:  "exec_command",
+		InputHash: hash,
+		Command:   "systemctl restart erp-report.service",
+	}})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-tool-grant",
+		"turn-tool-grant",
+		ToolCall{
+			ID:        "tool-exec-1",
+			Name:      "exec_command",
+			Arguments: input,
+		},
+		SessionTypeHost,
+		ModeExecute,
+	)
+
+	if result.Blocked || result.Error != "" || result.Content != "should-not-run" {
+		t.Fatalf("dispatch result = %#v, want execution via session approval grant", result)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1 when session grant matches", executor.calls)
 	}
 }
 

@@ -125,6 +125,47 @@ func TestApprovalService_DecideResumesMatchingApproval(t *testing.T) {
 	}
 }
 
+func TestApprovalService_AcceptSessionPreservesSessionDecision(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-approval-session", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-approval-session",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		PendingApprovals: []runtimekernel.PendingApproval{{
+			ID:        "approval-session",
+			SessionID: session.ID,
+			TurnID:    "turn-approval-session",
+			Iteration: 1,
+			ToolName:  "exec_command",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}},
+	}
+	session.PendingApprovals = append([]runtimekernel.PendingApproval(nil), session.CurrentTurn.PendingApprovals...)
+	sessions.Update(session)
+
+	runtime := &approvalRuntimeStub{}
+	service := NewApprovalService(runtime, sessions, NewSnapshotBuilder())
+	_, err := service.Decide(context.Background(), ApprovalDecision{
+		ID:       "approval-session",
+		Decision: "accept_session",
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if runtime.resumeReq.Decision != "approved_for_session" {
+		t.Fatalf("ResumeTurn decision = %q, want approved_for_session", runtime.resumeReq.Decision)
+	}
+}
+
 func TestApprovalService_DecideAsyncReturnsBeforeRuntimeCompletes(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()

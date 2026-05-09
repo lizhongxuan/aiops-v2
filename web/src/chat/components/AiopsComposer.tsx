@@ -7,7 +7,7 @@ import {
   useComposerRuntime,
   useThread,
 } from "@assistant-ui/react";
-import { ArrowUp, Check, LoaderCircle, Square, X } from "lucide-react";
+import { ArrowUp, Check, LoaderCircle, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -238,7 +238,7 @@ function TargetAwareSendButton({
 
 function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApproval }) {
   const commands = useAiopsTransportCommands();
-  const [decision, setDecision] = useState<"accept" | "reject">("accept");
+  const [decision, setDecision] = useState<"accept" | "accept_session" | "reject">("accept");
   const commandText = approval.command || approval.reason || approval.id;
 
   function submitDecision() {
@@ -262,32 +262,22 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
             {commandText}
           </div>
           <div className="space-y-1" role="radiogroup" aria-label="审批选项">
-            <button
-              type="button"
-              role="radio"
-              aria-checked={decision === "accept"}
-              className={[
-                "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
-                decision === "accept" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
-              ].join(" ")}
+            <ApprovalChoice
+              selected={decision === "accept"}
               onClick={() => setDecision("accept")}
-            >
-              <span>1. 批准</span>
-              {decision === "accept" ? <Check className="h-4 w-4 text-slate-500" /> : null}
-            </button>
-            <button
-              type="button"
-              role="radio"
-              aria-checked={decision === "reject"}
-              className={[
-                "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
-                decision === "reject" ? "bg-slate-100 text-slate-950" : "text-slate-500 hover:bg-slate-50",
-              ].join(" ")}
+              label="1. 是"
+            />
+            <ApprovalChoice
+              selected={decision === "accept_session"}
+              onClick={() => setDecision("accept_session")}
+              label="2. 是，且对于以后类似命令不再询问"
+            />
+            <ApprovalChoice
+              selected={decision === "reject"}
               onClick={() => setDecision("reject")}
-            >
-              <span>2. 拒绝</span>
-              {decision === "reject" ? <X className="h-4 w-4 text-slate-500" /> : null}
-            </button>
+              label="3. 否，请告知 AIOps 如何调整"
+              tone="muted"
+            />
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">
@@ -311,5 +301,37 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
         </div>
       </div>
     </div>
+  );
+}
+
+function ApprovalChoice({
+  selected,
+  onClick,
+  label,
+  tone = "default",
+}: {
+  selected: boolean;
+  onClick: () => void;
+  label: string;
+  tone?: "default" | "muted";
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      className={[
+        "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
+        selected
+          ? "bg-slate-100 text-slate-950"
+          : tone === "muted"
+            ? "text-slate-400 hover:bg-slate-50"
+            : "text-slate-500 hover:bg-slate-50",
+      ].join(" ")}
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      {selected ? <Check className="h-4 w-4 text-slate-500" /> : null}
+    </button>
   );
 }

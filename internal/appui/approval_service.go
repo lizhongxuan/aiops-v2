@@ -122,7 +122,9 @@ func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision
 
 func normalizeApprovalDecision(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "accept", "accept_session", "approve", "approved", "allow", "yes":
+	case "accept_session", "approved_for_session":
+		return "approved_for_session"
+	case "accept", "approve", "approved", "allow", "yes":
 		return "approved"
 	default:
 		return "denied"

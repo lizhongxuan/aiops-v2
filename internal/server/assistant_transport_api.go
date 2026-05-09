@@ -382,6 +382,9 @@ func assistantTransportShouldWaitForAcceptedApproval(state appui.AiopsTransportS
 	if len(pendingIDs) == 0 {
 		return false
 	}
+	if !assistantTransportHasLocalApprovalDecision(state, latestTurnID, pendingIDs) {
+		return false
+	}
 	for approvalID := range pendingIDs {
 		if _, ok := state.PendingApprovals[approvalID]; ok {
 			return false
@@ -391,6 +394,26 @@ func assistantTransportShouldWaitForAcceptedApproval(state appui.AiopsTransportS
 		}
 	}
 	return true
+}
+
+func assistantTransportHasLocalApprovalDecision(state appui.AiopsTransportState, turnID string, pendingIDs map[string]bool) bool {
+	turn, ok := state.Turns[strings.TrimSpace(turnID)]
+	if !ok {
+		return false
+	}
+	for _, block := range turn.Process {
+		approvalID := strings.TrimSpace(block.ApprovalID)
+		if approvalID == "" || !pendingIDs[approvalID] {
+			continue
+		}
+		switch block.Status {
+		case appui.AiopsTransportProcessStatusRunning,
+			appui.AiopsTransportProcessStatusRejected,
+			appui.AiopsTransportProcessStatusFailed:
+			return true
+		}
+	}
+	return false
 }
 
 func assistantTransportPendingApprovalIDs(turn *runtimekernel.TurnSnapshot) map[string]bool {

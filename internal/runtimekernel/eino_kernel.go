@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
@@ -710,7 +711,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
-	if req.Decision != "" && req.Decision != "approved" {
+	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
 		now := time.Now()
 		snapshot.Lifecycle = TurnLifecycleFailed
 		snapshot.ResumeState = TurnResumeStateNone
@@ -758,8 +759,11 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if resumeInput != "" {
 		appendResumeInputMessage(session, resumeInput)
 		k.markSnapshotResuming(session, snapshot, "resume_user_input")
-	} else if _, ok := pendingToolCall(snapshot); ok {
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, "approved", "approved", time.Now())
+	} else if toolCall, ok := pendingToolCall(snapshot); ok {
+		if isSessionApprovalResumeDecision(req.Decision) {
+			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
+		}
+		k.emitApprovalDecided(session, snapshot, req.ApprovalID, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
 		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot)
 		if err != nil {
 			return TurnResult{}, err
@@ -866,6 +870,61 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 		}
 	}
 	return PendingApproval{}
+}
+
+func isApprovedResumeDecision(decision string) bool {
+	switch strings.ToLower(strings.TrimSpace(decision)) {
+	case "", "approved", "approved_for_session":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSessionApprovalResumeDecision(decision string) bool {
+	return strings.EqualFold(strings.TrimSpace(decision), "approved_for_session")
+}
+
+func approvedResumeDecisionLabel(decision string) string {
+	if isSessionApprovalResumeDecision(decision) {
+		return "approved_for_session"
+	}
+	return "approved"
+}
+
+func rememberSessionApprovalGrant(session *SessionState, toolCall ToolCall, approvalID string) {
+	if session == nil {
+		return
+	}
+	inputHash, err := actionproposal.NormalizedInputHash(toolCall.Arguments)
+	if err != nil || strings.TrimSpace(inputHash) == "" {
+		return
+	}
+	toolName := strings.TrimSpace(toolCall.Name)
+	if toolName == "" {
+		return
+	}
+	now := time.Now()
+	command := strings.TrimSpace(approvalCommandForToolCall(toolCall))
+	for idx := range session.ApprovalGrants {
+		grant := &session.ApprovalGrants[idx]
+		if strings.TrimSpace(grant.ToolName) != toolName || strings.TrimSpace(grant.InputHash) != inputHash {
+			continue
+		}
+		grant.Command = firstNonEmpty(command, grant.Command)
+		grant.Source = "session"
+		grant.UpdatedAt = now
+		return
+	}
+	session.ApprovalGrants = append(session.ApprovalGrants, SessionApprovalGrant{
+		ID:        firstNonEmpty(strings.TrimSpace(approvalID), strings.TrimSpace(toolCall.ID)),
+		ToolName:  toolName,
+		InputHash: inputHash,
+		Command:   command,
+		Source:    "session",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -2219,6 +2278,7 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 	}
 	dispatcher = dispatcher.
 		WithPermissions(k.permissions).
+		WithSessionApprovalGrants(session.ApprovalGrants).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))

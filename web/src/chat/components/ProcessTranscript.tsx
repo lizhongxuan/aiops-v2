@@ -54,6 +54,7 @@ export function ProcessTranscript({
 }: ProcessTranscriptProps) {
   const visibleProcess = useMemo(() => process.filter(shouldShowInTranscript), [process]);
   const running = isProcessRunning(visibleProcess, turnStatus);
+  const waiting = isProcessWaiting(visibleProcess, turnStatus);
   const explicitFinalText = finalText?.trim() || "";
   const finalAssistantIndex = terminalFinalAssistantIndex(visibleProcess, explicitFinalText);
   const finalAssistantText =
@@ -70,12 +71,13 @@ export function ProcessTranscript({
   ).trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const shouldRenderProcess = processBlocks.length > 0 || running || hasTurnTiming;
+  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming;
+  const live = running || waiting;
 
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
-  const [open, setOpen] = useState(running);
-  const prevRunningRef = useRef(running);
+  const [open, setOpen] = useState(live);
+  const prevLiveRef = useRef(live);
 
   useEffect(() => {
     if (!running) {
@@ -86,17 +88,17 @@ export function ProcessTranscript({
   }, [running]);
 
   useEffect(() => {
-    if (prevRunningRef.current && !running) {
+    if (prevLiveRef.current && !live) {
       setOpen(false);
     }
-    prevRunningRef.current = running;
-  }, [running]);
+    prevLiveRef.current = live;
+  }, [live]);
 
   useEffect(() => {
-    if (running) {
+    if (live) {
       setOpen(true);
     }
-  }, [running]);
+  }, [live]);
 
   if (!shouldRenderProcess && !renderedFinalText) {
     return null;
@@ -113,7 +115,8 @@ export function ProcessTranscript({
     nowMs,
     fallbackStartMs: fallbackStartRef.current,
   });
-  const timeLabel = elapsed ? ` ${elapsed}s` : "";
+  const timeLabel = elapsed ? ` ${formatElapsedDuration(elapsed)}` : "";
+  const headerLabel = processHeaderLabel({ running, waiting });
 
   return (
     <div className="text-[15px] leading-7 text-slate-500" data-testid="aiops-process-transcript" aria-live="polite">
@@ -127,7 +130,7 @@ export function ProcessTranscript({
             data-testid="aiops-process-header"
           >
             <span className="font-medium text-slate-500">
-              {running ? `处理中${timeLabel}` : `已处理${timeLabel}`}
+              {`${headerLabel}${timeLabel}`}
             </span>
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
           </button>
@@ -177,6 +180,16 @@ function isFinalAssistantBlock(block: AiopsProcessBlock, finalText?: string) {
   return Boolean(blockText && finalText?.trim() && blockText === finalText.trim());
 }
 
+function processHeaderLabel({ running, waiting }: { running: boolean; waiting: boolean }) {
+  if (running) {
+    return "处理中";
+  }
+  if (waiting) {
+    return "等待审核";
+  }
+  return "已处理";
+}
+
 function shouldShowInTranscript(block: AiopsProcessBlock) {
   if (block.kind === "approval") {
     return false;
@@ -203,10 +216,20 @@ function isProcessRunning(process: AiopsProcessBlock[], turnStatus?: string) {
   if (turnStatus === "completed" || turnStatus === "failed" || turnStatus === "canceled") {
     return false;
   }
-  if (turnStatus === "working" || turnStatus === "submitted" || turnStatus === "blocked") {
+  if (turnStatus === "working" || turnStatus === "submitted") {
     return true;
   }
-  return process.some((block) => block.status === "running" || block.status === "queued" || block.status === "blocked");
+  return process.some((block) => block.status === "running" || block.status === "queued");
+}
+
+function isProcessWaiting(process: AiopsProcessBlock[], turnStatus?: string) {
+  if (turnStatus === "completed" || turnStatus === "failed" || turnStatus === "canceled") {
+    return false;
+  }
+  if (turnStatus === "blocked") {
+    return true;
+  }
+  return process.some((block) => block.status === "blocked");
 }
 
 function hasMeaningfulContent(blocks: AiopsProcessBlock[]): boolean {
@@ -358,7 +381,7 @@ function SearchTranscriptFromBlocks({
 }
 
 function isBlockActive(block: AiopsProcessBlock) {
-  return block.status === "running" || block.status === "queued" || block.status === "blocked";
+  return block.status === "running" || block.status === "queued";
 }
 
 function MergedToolSummary({
@@ -472,6 +495,7 @@ function CommandDetailRow({
   const hasOutput = Boolean(detail.output);
   const commandRunning = detail.status === "running" || detail.status === "queued";
   const rowStatus = commandRowStatusLabel(detail.status);
+  const cardStatus = terminalCardStatusLabel(detail.status);
   const [open, setOpen] = useState(commandRunning);
   useEffect(() => {
     if (!commandRunning) {
@@ -523,9 +547,11 @@ function CommandDetailRow({
               {detail.output}
             </pre>
           ) : null}
-          <div className="mt-2 flex shrink-0 justify-end text-[13px] leading-5 text-slate-500">
-            {terminalStatusLabel(detail.status)}
-          </div>
+          {cardStatus ? (
+            <div className="mt-2 flex shrink-0 justify-end text-[13px] leading-5 text-slate-500">
+              {cardStatus}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -533,7 +559,14 @@ function CommandDetailRow({
 }
 
 function commandRowStatusLabel(status?: AiopsProcessBlock["status"]) {
-  if (status === "completed") {
+  if (status === "completed" || status === "running" || status === "blocked") {
+    return "";
+  }
+  return terminalStatusLabel(status);
+}
+
+function terminalCardStatusLabel(status?: AiopsProcessBlock["status"]) {
+  if (status === "running" || status === "queued" || status === "blocked") {
     return "";
   }
   return terminalStatusLabel(status);
@@ -712,7 +745,7 @@ function NativeProcessText({
 
 function AssistantFinalText({ text }: { text: string }) {
   return (
-    <div className="max-w-none py-1 text-[16px] leading-8 text-slate-950" data-testid="aiops-final-text">
+    <div className="max-w-none py-1 text-[15px] leading-7 text-slate-950" data-testid="aiops-final-text">
       <MessageMarkdown text={text} />
     </div>
   );
@@ -1204,6 +1237,22 @@ function elapsedSecondsForTranscript({
     return Math.max(1, Math.round((endMs - startMs) / 1000));
   }
   return estimateElapsedSeconds(process);
+}
+
+function formatElapsedDuration(totalSeconds: number) {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  const parts: string[] = [];
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0 || hours > 0) {
+    parts.push(`${minutes}m`);
+  }
+  parts.push(`${remainingSeconds}s`);
+  return parts.join(" ");
 }
 
 function estimateElapsedSeconds(process: AiopsProcessBlock[]) {

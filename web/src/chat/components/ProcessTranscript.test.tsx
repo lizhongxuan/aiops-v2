@@ -62,6 +62,34 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML).toBe(streamingFinalMarkup);
   });
 
+  it("renders final answer text one step smaller without changing tool transcript text", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-font-baseline",
+        kind: "command",
+        status: "completed",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          finalText="正文回答应该比之前小一号。"
+        />,
+      );
+    });
+    await expandProcessTranscript();
+
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.className).toContain("text-[15px]");
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.className).toContain("leading-7");
+    expect(container.querySelector('[data-testid="aiops-command-row-cmd-font-baseline"]')?.className).toContain("text-[14px]");
+    expect(container.querySelector('[data-testid="aiops-command-row-cmd-font-baseline"]')?.className).toContain("leading-6");
+  });
+
   it("keeps the running process header visible when assistant text streams before tool blocks", async () => {
     await act(async () => {
       root.render(
@@ -442,6 +470,60 @@ describe("ProcessTranscript", () => {
     expect(header?.tagName).toBe("BUTTON");
     expect(header?.getAttribute("aria-expanded")).toBe("false");
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
+  });
+
+  it("formats long elapsed times with hours minutes and seconds", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-long-duration",
+        kind: "command",
+        command: "uptime",
+        outputPreview: "up 22 days",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          turnStartedAt="2026-05-07T10:00:00Z"
+          turnCompletedAt="2026-05-07T13:04:20Z"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("已处理 3h 4m 20s");
+    expect(container.textContent).not.toContain("11060s");
+  });
+
+  it("shows blocked command turns as waiting instead of running", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-blocked-launchctl",
+        kind: "command",
+        status: "blocked",
+        command: "launchctl print system/com.docker.helper",
+        approvalId: "evidence-1",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="blocked"
+          turnStartedAt="2026-05-07T10:00:00Z"
+          turnUpdatedAt="2026-05-07T10:15:49Z"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("等待审核 15m 49s");
+    expect(container.textContent).toContain("等待审核 launchctl print system/com.docker.helper");
+    expect(container.textContent).not.toContain("处理中");
+    expect(container.textContent).not.toContain("正在运行");
+    expect(container.querySelector('[data-testid="aiops-command-status-cmd-blocked-launchctl"]')).toBeNull();
   });
 
   it("keeps final answer visible while the completed process details are folded", async () => {
@@ -1054,6 +1136,8 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("Processes: 808 total");
     expect(container.textContent).toContain("uptime");
     expect(container.textContent).not.toContain("up 22 days");
+    expect(container.querySelector('[data-testid="aiops-command-status-cmd-running-output"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-terminal-card-cmd-running-output"]')?.textContent).not.toContain("正在运行");
   });
 
   it("collapses terminal output when a running command completes", async () => {
