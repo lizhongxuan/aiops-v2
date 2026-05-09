@@ -63,6 +63,7 @@ func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) 
 	model := &streamingResponseModel{
 		chunks: []*schema.Message{
 			schema.AssistantMessage("第一段", nil),
+			schema.AssistantMessage("\n\n", nil),
 			schema.AssistantMessage("第二段", nil),
 		},
 	}
@@ -81,10 +82,10 @@ func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) 
 	if err != nil {
 		t.Fatalf("generateModelResponse returned error: %v", err)
 	}
-	if msg.Content != "第一段第二段" {
+	if msg.Content != "第一段\n\n第二段" {
 		t.Fatalf("response content = %q, want concatenated stream", msg.Content)
 	}
-	if got, want := strings.Join(deltas, "|"), "第一段|第二段"; got != want {
+	if got, want := strings.Join(deltas, "|"), "第一段|\n\n|第二段"; got != want {
 		t.Fatalf("stream deltas = %q, want %q", got, want)
 	}
 }

@@ -115,13 +115,93 @@ const sessionsPayload = {
   ],
 };
 
+const markdownFinalText = [
+  "本机资源总览如下：",
+  "",
+  "- CPU",
+  "  - 型号：Apple M5",
+  "  - 当前使用率：user 10.99%，sys 15.54%，idle 73.45%",
+  "  - Load Average：2.88 / 2.84 / 2.92",
+  "- 内存",
+  "  - 总内存：32 GB",
+  "  - 当前物理内存：31 GB 已用，552 MB 未用",
+  "  - Compressor：约 7.3 GB",
+  "- 磁盘",
+  "  - 系统盘容量：460 Gi",
+  "  - 使用率：49%",
+  "",
+  "数据为实时快照。",
+].join("\n");
+
+function finalMarkdownState(status) {
+  const running = status === "working";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: `markdown-final-${status}`,
+    threadId: `markdown-final-${status}`,
+    status: running ? "working" : "idle",
+    currentTurnId: `turn-markdown-final-${status}`,
+    turns: {
+      [`turn-markdown-final-${status}`]: {
+        id: `turn-markdown-final-${status}`,
+        status,
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: running ? undefined : "2026-05-08T02:00:12.000Z",
+        updatedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: `user-markdown-final-${status}`,
+          text: "看下本机的资源情况",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [
+          {
+            id: `cmd-markdown-final-${status}`,
+            kind: "command",
+            status: running ? "running" : "completed",
+            text: "top -l 1",
+            command: "top -l 1",
+            outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
+            updatedAt: "2026-05-08T02:00:05.000Z",
+          },
+          {
+            id: `assistant-markdown-final-${status}`,
+            kind: "assistant",
+            displayKind: "assistant.final",
+            status: running ? "running" : "completed",
+            text: markdownFinalText,
+            updatedAt: "2026-05-08T02:00:12.000Z",
+          },
+        ],
+        final: {
+          id: `final-markdown-${status}`,
+          text: markdownFinalText,
+          status: running ? "running" : "completed",
+        },
+      },
+    },
+    turnOrder: [`turn-markdown-final-${status}`],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: running ? { [`turn-markdown-final-${status}`]: true } : {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: running ? 4 : 8,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
 function dataStreamForState(state) {
   return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
 }
 
-async function installChatFixtureRoutes(page, state, sessions = sessionsPayload) {
+async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
-    await route.fulfill({ json: sessions });
+    await route.fulfill({ json: sessionsPayload });
   });
   await page.route("**/api/v1/hosts", async (route) => {
     await route.fulfill({
@@ -149,6 +229,7 @@ async function installChatFixtureRoutes(page, state, sessions = sessionsPayload)
     });
   });
   await page.route("**/api/v1/assistant/resume", async (route) => {
+    const state = typeof stateOrGetState === "function" ? stateOrGetState() : stateOrGetState;
     await route.fulfill({
       status: 200,
       contentType: "text/plain; charset=utf-8",
@@ -158,8 +239,7 @@ async function installChatFixtureRoutes(page, state, sessions = sessionsPayload)
 }
 
 test("process transcript keeps narration and expanded search details aligned", async ({ page }) => {
-  await installChatFixtureRoutes(page, transportState);
-
+  await routeShellApis(page, transportState);
   await page.goto("/");
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
   await page.getByTestId("aiops-process-header").click();
@@ -172,35 +252,18 @@ test("process transcript keeps narration and expanded search details aligned", a
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
 
-test("streaming final answer renders markdown before turn completion", async ({ page }) => {
-  const markdownState = {
-    ...transportState,
-    status: "working",
-    turns: {
-      "turn-browser-flow": {
-        ...transportState.turns["turn-browser-flow"],
-        status: "working",
-        completedAt: undefined,
-        process: [],
-        final: {
-          id: "final-browser-flow",
-          text: "检查结果如下：\n\n1. **Nginx 正常**\n2. **CPU 负载稳定**",
-          status: "running",
-        },
-      },
-    },
-    runtimeLiveness: {
-      ...transportState.runtimeLiveness,
-      activeTurns: { "turn-browser-flow": true },
-    },
-  };
-
-  await installChatFixtureRoutes(page, markdownState);
+test("assistant final markdown keeps the same layout while running and after completion", async ({ page }) => {
+  let resumeState = finalMarkdownState("working");
+  await routeShellApis(page, () => resumeState);
 
   await page.goto("/");
-  const finalText = page.getByTestId("aiops-final-text");
-  await expect(finalText.locator("ol li")).toHaveCount(2);
-  await expect(finalText.locator("strong").first()).toHaveText("Nginx 正常");
-  await expect(finalText).not.toContainText("**Nginx 正常**");
-  await expect(finalText).toHaveScreenshot("streaming-final-markdown.png");
+  const runningFinal = page.getByTestId("aiops-final-text");
+  await expect(runningFinal).toBeVisible();
+  await expect(runningFinal).toHaveScreenshot("assistant-final-markdown-running.png");
+
+  resumeState = finalMarkdownState("completed");
+  await page.reload();
+  const completedFinal = page.getByTestId("aiops-final-text");
+  await expect(completedFinal).toBeVisible();
+  await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });

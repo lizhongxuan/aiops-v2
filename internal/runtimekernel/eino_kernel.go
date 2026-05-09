@@ -1202,19 +1202,21 @@ func (k *EinoKernel) runHostIterationLoop(
 		finalItemID := fmt.Sprintf("%s-final-answer-%d", turnID, iteration)
 		iterationAssistantOutput := ""
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
-			if strings.TrimSpace(delta) != "" {
+			if delta != "" {
 				iterationAssistantOutput += delta
 				snapshot.FinalOutput += delta
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, iterationAssistantOutput)
-				} else {
-					appendAgentItem(snapshot, newAgentItem(
-						finalItemID,
-						agentstate.TurnItemTypeFinalAnswer,
-						agentstate.ItemStatusRunning,
-						iterationAssistantOutput,
-						nil,
-					))
+				if strings.TrimSpace(iterationAssistantOutput) != "" {
+					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, iterationAssistantOutput)
+					} else {
+						appendAgentItem(snapshot, newAgentItem(
+							finalItemID,
+							agentstate.TurnItemTypeFinalAnswer,
+							agentstate.ItemStatusRunning,
+							iterationAssistantOutput,
+							nil,
+						))
+					}
 				}
 				snapshot.UpdatedAt = time.Now()
 				k.persistTurnSnapshot(session, snapshot)
@@ -1338,9 +1340,9 @@ func (k *EinoKernel) runHostIterationLoop(
 		session.LatestCheckpoint = checkpoint
 		k.persistTurnSnapshot(session, snapshot)
 
-		assistantContent := strings.TrimSpace(assistantMsg.Content)
+		assistantContent := strings.TrimSpace(iterationAssistantOutput)
 		if assistantContent == "" {
-			assistantContent = strings.TrimSpace(iterationAssistantOutput)
+			assistantContent = strings.TrimSpace(assistantMsg.Content)
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
@@ -2266,7 +2268,7 @@ func generateModelResponse(
 					onReasoning(*event)
 				}
 			}
-			if onFinalDelta != nil && strings.TrimSpace(msg.Content) != "" {
+			if onFinalDelta != nil && msg.Content != "" {
 				onFinalDelta(msg.Content)
 			}
 			chunks = append(chunks, msg)
@@ -2291,7 +2293,7 @@ func generateModelResponse(
 	if isEmptyAssistantResponse(response) {
 		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
 	}
-	if onFinalDelta != nil && strings.TrimSpace(response.Content) != "" {
+	if onFinalDelta != nil && response.Content != "" {
 		onFinalDelta(response.Content)
 	}
 	return response, nil

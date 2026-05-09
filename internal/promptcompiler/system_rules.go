@@ -17,6 +17,7 @@ func (c *PromptCompilerImpl) buildSystemPrompt(ctx CompileContext) (SystemPrompt
 	// Role based on agent kind
 	role := c.resolveRole(ctx)
 	parts = append(parts, fmt.Sprintf("# Role\n%s", role))
+	parts = append(parts, "You are expected to be precise, safe, and helpful.")
 
 	// Environment context based on session type
 	env := c.resolveEnvironment(ctx)
