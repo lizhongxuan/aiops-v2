@@ -61,7 +61,7 @@ func run() error {
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
 	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	corootEndpoint := envOrDefault("AIOPS_COROOT_ENDPOINT", "")
+	corootEndpoint := corootEndpointFromEnv(os.Getenv)
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
@@ -356,6 +356,19 @@ func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 		"AIOPS_RUNNER_STUDIO_UPSTREAM_URL",
 		"RUNNER_STUDIO_UPSTREAM_URL",
 		"AIOPS_RUNNER_API_BASE_URL",
+	} {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func corootEndpointFromEnv(getenv func(string) string) string {
+	for _, key := range []string{
+		"AIOPS_COROOT_ENDPOINT",
+		"AIOPS_COROOT_BASE_URL",
+		"COROOT_BASE_URL",
 	} {
 		if value := strings.TrimSpace(getenv(key)); value != "" {
 			return value

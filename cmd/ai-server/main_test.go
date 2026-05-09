@@ -93,6 +93,53 @@ func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
 	})
 }
 
+func TestCorootEndpointFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "prefers explicit endpoint",
+			env: map[string]string{
+				"AIOPS_COROOT_ENDPOINT": " http://coroot-endpoint.internal ",
+				"AIOPS_COROOT_BASE_URL": "http://coroot-base.internal",
+				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
+			},
+			want: "http://coroot-endpoint.internal",
+		},
+		{
+			name: "falls back to aiops base url",
+			env: map[string]string{
+				"AIOPS_COROOT_BASE_URL": " http://127.0.0.1:18180 ",
+				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
+			},
+			want: "http://127.0.0.1:18180",
+		},
+		{
+			name: "falls back to coroot base url",
+			env: map[string]string{
+				"COROOT_BASE_URL": " http://coroot.local ",
+			},
+			want: "http://coroot.local",
+		},
+		{
+			name: "returns empty when unset",
+			env:  map[string]string{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := corootEndpointFromEnv(func(key string) string { return tt.env[key] })
+			if got != tt.want {
+				t.Fatalf("corootEndpointFromEnv() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func isNoopRuntimeObserver(observer runtimekernel.Observer) bool {
 	_, ok := observer.(runtimekernel.NoopObserver)
 	return ok
