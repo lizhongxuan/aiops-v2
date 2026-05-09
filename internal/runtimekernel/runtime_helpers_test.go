@@ -81,8 +81,15 @@ func TestToolLifecyclePayloadBudgetBoundaries(t *testing.T) {
 
 	huge := strings.Repeat("x", maxToolLifecyclePayloadBytes+10)
 	_, _, preview, rawRef, _, truncated = summarizeToolLifecycleResultForEvent("turn-1", "call-1", huge)
-	if len(preview) != 0 || rawRef == "" || !truncated {
-		t.Fatalf("huge result preview=%d rawRef=%q truncated=%v, want no preview with raw ref", len(preview), rawRef, truncated)
+	if len(preview) == 0 || rawRef == "" || !truncated {
+		t.Fatalf("huge result preview=%d rawRef=%q truncated=%v, want preview with raw ref", len(preview), rawRef, truncated)
+	}
+	var previewText string
+	if err := json.Unmarshal(preview, &previewText); err != nil {
+		t.Fatalf("huge preview decode error = %v", err)
+	}
+	if len([]byte(previewText)) > inlineToolLifecycleResultBytes+len("...") {
+		t.Fatalf("huge preview len = %d, want bounded preview", len([]byte(previewText)))
 	}
 	if got := rawToolLifecycleRef("", "call-1"); got != "" {
 		t.Fatalf("rawToolLifecycleRef with missing turn = %q, want empty", got)

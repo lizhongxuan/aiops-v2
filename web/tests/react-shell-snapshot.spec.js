@@ -133,6 +133,10 @@ const markdownFinalText = [
   "数据为实时快照。",
 ].join("\n");
 
+const runningPreludeText = "我先复查主机当前的 CPU、内存、磁盘和负载情况，再给你一个最新快照。";
+const runningPreludeStartedAt = "2026-05-08T02:00:00.000Z";
+const runningPreludeRenderedAt = "2026-05-08T02:00:01.000Z";
+
 function finalMarkdownState(status) {
   const running = status === "working";
   return {
@@ -191,6 +195,107 @@ function finalMarkdownState(status) {
       activeCommandStreams: {},
     },
     seq: running ? 4 : 8,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
+function runningPreludeBeforeToolsState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "running-prelude-before-tools",
+    threadId: "running-prelude-before-tools",
+    status: "working",
+    currentTurnId: "turn-running-prelude-before-tools",
+    turns: {
+      "turn-running-prelude-before-tools": {
+        id: "turn-running-prelude-before-tools",
+        status: "working",
+        startedAt: runningPreludeStartedAt,
+        updatedAt: runningPreludeStartedAt,
+        user: {
+          id: "user-running-prelude-before-tools",
+          text: "再看下主机资源",
+          createdAt: runningPreludeStartedAt,
+        },
+        process: [],
+        final: {
+          id: "final-running-prelude-before-tools",
+          text: runningPreludeText,
+          status: "running",
+        },
+      },
+    },
+    turnOrder: ["turn-running-prelude-before-tools"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: { "turn-running-prelude-before-tools": true },
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 3,
+    updatedAt: "2026-05-08T02:00:04.000Z",
+  };
+}
+
+function longTerminalOutputState() {
+  const outputPreview = [
+    "RSS   PID COMM",
+    ...Array.from({ length: 80 }, (_, index) => {
+      const line = index + 1;
+      return `${String(100000 + line).padStart(6, " ")} ${String(64000 + line).padStart(5, " ")} process-${line}`;
+    }),
+  ].join("\n");
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "long-terminal-output",
+    threadId: "long-terminal-output",
+    status: "idle",
+    currentTurnId: "turn-long-terminal-output",
+    turns: {
+      "turn-long-terminal-output": {
+        id: "turn-long-terminal-output",
+        status: "completed",
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: "user-long-terminal-output",
+          text: "看下进程内存",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [
+          {
+            id: "cmd-long-terminal-output",
+            kind: "command",
+            status: "completed",
+            text: "ps -arc -o rss,pid,comm",
+            command: "ps -arc -o rss,pid,comm",
+            outputPreview,
+            updatedAt: "2026-05-08T02:00:05.000Z",
+          },
+        ],
+        final: {
+          id: "final-long-terminal-output",
+          text: "进程列表已获取。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: ["turn-long-terminal-output"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 8,
     updatedAt: "2026-05-08T02:00:12.000Z",
   };
 }
@@ -266,4 +371,39 @@ test("assistant final markdown keeps the same layout while running and after com
   const completedFinal = page.getByTestId("aiops-final-text");
   await expect(completedFinal).toBeVisible();
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
+});
+
+test("running assistant text keeps the process header before tool blocks arrive", async ({ page }) => {
+  await page.clock.setFixedTime(runningPreludeRenderedAt);
+  await routeShellApis(page, runningPreludeBeforeToolsState());
+
+  await page.goto("/");
+  const transcript = page.getByTestId("aiops-process-transcript");
+  await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
+  await expect(transcript).toContainText(runningPreludeText);
+  await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
+  await expect(transcript).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
+});
+
+test("long terminal output stays inside a scrollable output box", async ({ page }) => {
+  await routeShellApis(page, longTerminalOutputState());
+
+  await page.goto("/");
+  await page.getByTestId("aiops-process-header").click();
+  await page.getByTestId("aiops-command-row-cmd-long-terminal-output").click();
+
+  const terminalCard = page.getByTestId("aiops-terminal-card-cmd-long-terminal-output");
+  const terminalOutput = page.getByTestId("aiops-command-output-cmd-long-terminal-output");
+  await expect(terminalCard).toHaveClass(/max-h-72/);
+  await expect(terminalCard).toHaveClass(/overflow-hidden/);
+  await expect(terminalOutput).toHaveClass(/max-h-48/);
+  await expect(terminalOutput).toHaveClass(/overflow-y-auto/);
+
+  const sizes = await terminalOutput.evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(sizes.clientHeight).toBeGreaterThan(0);
+  expect(sizes.clientHeight).toBeLessThanOrEqual(192);
+  expect(sizes.scrollHeight).toBeGreaterThan(sizes.clientHeight);
 });

@@ -133,8 +133,8 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if commandBlock.Command == "exec_command" {
 		t.Fatal("command block should not expose tool name as user-visible command")
 	}
-	if commandBlock.OutputPreview != "rollout undo started" {
-		t.Fatalf("command block output = %q, want output summary", commandBlock.OutputPreview)
+	if commandBlock.OutputPreview != "" {
+		t.Fatalf("command block output = %q, want no preview without explicit outputPreview", commandBlock.OutputPreview)
 	}
 	if commandBlock.ExitCode == nil || *commandBlock.ExitCode != 0 {
 		t.Fatalf("command exit code = %#v, want 0", commandBlock.ExitCode)
@@ -198,8 +198,65 @@ func TestTransportProjectorPreservesCommandWhenToolResultOnlyHasOutput(t *testin
 	if commandBlock.Command != "uptime" {
 		t.Fatalf("command block command = %q, want real command", commandBlock.Command)
 	}
-	if commandBlock.OutputPreview != "22:38 up 22 days, 8:23, 1 user" {
-		t.Fatalf("command block output = %q, want terminal output", commandBlock.OutputPreview)
+	if commandBlock.OutputPreview != "" {
+		t.Fatalf("command block output = %q, want no preview when tool result only has summary", commandBlock.OutputPreview)
+	}
+}
+
+func TestTransportProjectorBackfillsCommandPreviewFromSnapshotToolResult(t *testing.T) {
+	now := time.Date(2026, 5, 7, 14, 39, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	fullOutput := "PID PPID %MEM RSS STAT COMM\n1 0 0.1 1024 S launchd\n2 1 1.3 204800 S Google Chrome Helper"
+	toolCallData := json.RawMessage(`{
+		"id":"call-ps",
+		"name":"exec_command",
+		"arguments":{"command":"ps","args":["-axo","pid,ppid,%mem,rss,state,comm"]}
+	}`)
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-ps",
+		"toolName":"exec_command",
+		"outputSummary":"PID PPID %MEM RSS STAT COMM"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-command-preview",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(2 * time.Second),
+		CompletedAt: ptrTime(now.Add(2 * time.Second)),
+		Iterations: []runtimekernel.IterationState{
+			{
+				ID:          "iter-1",
+				SessionID:   "session-1",
+				TurnID:      "turn-command-preview",
+				Iteration:   0,
+				Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+				ResumeState: runtimekernel.TurnResumeStateNone,
+				ToolResults: []runtimekernel.ToolResult{{ToolCallID: "call-ps", Content: fullOutput}},
+				StartedAt:   now,
+				UpdatedAt:   now.Add(2 * time.Second),
+			},
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "cmd-call", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "exec_command", Data: toolCallData}, CreatedAt: now},
+			{ID: "cmd-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "PID PPID %MEM RSS STAT COMM", Data: toolResultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	commandBlock := findTransportProcessBlock(t, projected.Turns["turn-command-preview"].Process, AiopsTransportProcessKindCommand)
+	if commandBlock.Command != "ps -axo pid,ppid,%mem,rss,state,comm" {
+		t.Fatalf("command block command = %q, want real command", commandBlock.Command)
+	}
+	if !strings.Contains(commandBlock.OutputPreview, "launchd") || !strings.Contains(commandBlock.OutputPreview, "Google Chrome Helper") {
+		t.Fatalf("command block output preview = %q, want full multi-line preview", commandBlock.OutputPreview)
 	}
 }
 
@@ -892,7 +949,8 @@ func TestTransportProjectorSanitizesHTMLInToolOutput(t *testing.T) {
 		"toolName":"fetch_page",
 		"displayKind":"tool",
 		"inputSummary":"https://example.com",
-		"outputSummary":"` + rawHTML + `"
+		"outputSummary":"` + rawHTML + `",
+		"outputPreview":"` + rawHTML + `"
 	}`)
 
 	turn := &runtimekernel.TurnSnapshot{

@@ -63,6 +63,24 @@ func TestSemanticPromptProgressUpdatesAreScoped(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptResponsivenessPreambles(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"Responsiveness",
+		"progress update or preamble",
+		"1-2 sentences",
+		"immediate tangible next steps",
+		"connect the next preamble",
+		"momentum and clarity",
+		"light, friendly, and curious",
+		"I've explored the repo; now checking the API route definitions.",
+		"Next, I'll patch the config and update the related tests.",
+	})
+}
+
 func TestSemanticPromptQuickFactualLookupsStayCompact(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
 	if err != nil {

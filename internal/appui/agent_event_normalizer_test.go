@@ -198,7 +198,7 @@ func TestNormalizeToolInvocationBudgetsToolResultPayloads(t *testing.T) {
 		{
 			name:        "large result",
 			result:      strings.Repeat("l", maxAgentEventPayloadBytes+256),
-			wantPreview: false,
+			wantPreview: true,
 			wantRawRef:  true,
 			wantFull:    false,
 		},
@@ -242,6 +242,9 @@ func TestNormalizeToolInvocationBudgetsToolResultPayloads(t *testing.T) {
 				}
 				if !tt.wantFull && len(preview) >= len(tt.result) {
 					t.Fatalf("preview len = %d, want shorter than full result len %d", len(preview), len(tt.result))
+				}
+				if !tt.wantFull && len([]byte(preview)) > inlineToolResultBytes+len("...") {
+					t.Fatalf("preview bytes = %d, want bounded preview", len([]byte(preview)))
 				}
 			}
 		})

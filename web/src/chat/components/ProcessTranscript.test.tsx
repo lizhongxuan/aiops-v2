@@ -46,17 +46,38 @@ describe("ProcessTranscript", () => {
       root.render(<ProcessTranscript process={[]} turnStatus="working" finalText={markdown} />);
     });
 
-    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
+    expect(container.textContent).toContain("处理中");
+    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
     expect(container.querySelectorAll("ol li")).toHaveLength(2);
     expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
     expect(container.textContent).not.toContain("**Nginx 正常**");
-    const streamingMarkup = container.innerHTML;
+    const streamingFinalMarkup = container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML;
 
     await act(async () => {
       root.render(<ProcessTranscript process={[]} turnStatus="completed" finalText={markdown} />);
     });
 
-    expect(container.innerHTML).toBe(streamingMarkup);
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML).toBe(streamingFinalMarkup);
+  });
+
+  it("keeps the running process header visible when assistant text streams before tool blocks", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[]}
+          turnStatus="working"
+          turnStartedAt="2026-05-07T10:00:00Z"
+          finalText="我先复查主机当前的 CPU、内存、磁盘和负载情况，再给你一个最新快照。"
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
+    expect(container.textContent).toContain("处理中");
+    expect(container.textContent).toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
+    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
   it("shows the active web search query in the running search summary", async () => {
@@ -809,6 +830,66 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("$ git diff -- internal/appui/transport_projector.go");
     expect(container.querySelector('[data-testid="aiops-command-output-cmd-native-card"]')?.className).toContain("bg-slate-100");
     expect(container.textContent).toContain("diff --git");
+  });
+
+  it("keeps long terminal output inside a bounded scroll area", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-long-output",
+        kind: "command",
+        status: "completed",
+        command: "ps -arc -o rss,pid,comm",
+        text: "ps -arc -o rss,pid,comm",
+        outputPreview: Array.from({ length: 40 }, (_, index) => `${index + 1} 12345 process-${index + 1}`).join("\n"),
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-command-row-cmd-long-output"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const terminalCard = container.querySelector('[data-testid="aiops-terminal-card-cmd-long-output"]');
+    const terminalOutput = container.querySelector('[data-testid="aiops-command-output-cmd-long-output"]');
+    expect(terminalCard?.className).toContain("max-h-72");
+    expect(terminalCard?.className).toContain("overflow-hidden");
+    expect(terminalOutput?.className).toContain("min-h-0");
+    expect(terminalOutput?.className).toContain("max-h-48");
+    expect(terminalOutput?.className).toContain("flex-1");
+    expect(terminalOutput?.className).toContain("overflow-y-auto");
+    expect(container.textContent).toContain("40 12345 process-40");
+  });
+
+  it("does not render output summary as terminal output without an output preview", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-summary-only",
+        kind: "command",
+        status: "completed",
+        command: "ps -axo pid,ppid,%mem,rss,state,comm",
+        text: "ps -axo pid,ppid,%mem,rss,state,comm",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-command-row-cmd-summary-only"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.textContent).toContain("$ ps -axo pid,ppid,%mem,rss,state,comm");
+    expect(container.querySelector('[data-testid="aiops-command-output-cmd-summary-only"]')).toBeNull();
   });
 
   it("preserves process order across reasoning, command, reasoning, and search blocks", async () => {

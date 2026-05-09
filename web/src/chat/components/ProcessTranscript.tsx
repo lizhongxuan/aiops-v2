@@ -69,7 +69,8 @@ export function ProcessTranscript({
     explicitFinalText && !retainedAssistantTexts.has(explicitFinalText) ? explicitFinalText : finalAssistantText
   ).trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
-  const shouldRenderProcess = processBlocks.length > 0 || (running && !renderedFinalText);
+  const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
+  const shouldRenderProcess = processBlocks.length > 0 || running || hasTurnTiming;
 
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
@@ -131,7 +132,7 @@ export function ProcessTranscript({
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
           </button>
 
-          {open ? (
+          {open && (processGroups.length || (running && hasMeaningful)) ? (
             <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
               {processGroups.length ? (
                 <div className="space-y-2">
@@ -507,22 +508,22 @@ function CommandDetailRow({
       </button>
       {open ? (
         <div
-          className="rounded-lg bg-slate-100 px-3 py-2 text-slate-500"
+          className="flex max-h-72 flex-col overflow-hidden rounded-lg bg-slate-100 px-3 py-2 text-slate-500"
           data-testid={`aiops-terminal-card-${detail.id}`}
         >
-          <div className="text-[13px] leading-5 text-slate-500">Shell</div>
-          <div className="mt-2 whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-slate-950">
+          <div className="shrink-0 text-[13px] leading-5 text-slate-500">Shell</div>
+          <div className="mt-2 shrink-0 whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-slate-950">
             $ {detail.text}
           </div>
           {hasOutput ? (
             <pre
-              className="mt-3 max-h-48 overflow-auto rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
+              className="mt-3 min-h-0 max-h-48 flex-1 overflow-x-auto overflow-y-auto overscroll-contain rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
               data-testid={`aiops-command-output-${detail.id}`}
             >
               {detail.output}
             </pre>
           ) : null}
-          <div className="mt-2 flex justify-end text-[13px] leading-5 text-slate-500">
+          <div className="mt-2 flex shrink-0 justify-end text-[13px] leading-5 text-slate-500">
             {terminalStatusLabel(detail.status)}
           </div>
         </div>
@@ -570,6 +571,7 @@ function getMixedMergedSummaryText(blocks: AiopsProcessBlock[]) {
 
 function mergedBlockDetail(block: AiopsProcessBlock) {
   let text = "";
+  const hasOutputPreview = typeof block.outputPreview === "string" && block.outputPreview.trim() !== "";
   if (isSearchLikeBlock(block)) {
     text = searchLines(block)[0] || searchQueryForBlock(block) || "搜索网页";
   } else if (block.kind === "command") {
@@ -585,7 +587,7 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
     status: block.status,
     approvalId: block.approvalId,
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
-    output: block.kind === "command" || block.kind === "tool" || block.kind === "mcp"
+    output: hasOutputPreview && (block.kind === "command" || block.kind === "tool" || block.kind === "mcp")
       ? cleanCommandOutput(block.outputPreview)
       : "",
   };

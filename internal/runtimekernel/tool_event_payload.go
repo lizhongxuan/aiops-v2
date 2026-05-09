@@ -23,10 +23,8 @@ func summarizeToolLifecycleResultForEvent(turnID, toolCallID, result string) (su
 	rawRef = rawToolLifecycleRef(turnID, toolCallID)
 	truncated = true
 	resultForEvent = summary
-	if resultBytes <= maxToolLifecyclePayloadBytes {
-		preview := truncateToolLifecycleBytes(result, inlineToolLifecycleResultBytes)
-		outputPreview, _ = json.Marshal(preview)
-	}
+	preview := truncateToolLifecycleBytes(result, inlineToolLifecycleResultBytes)
+	outputPreview, _ = json.Marshal(preview)
 	return summary, resultForEvent, outputPreview, rawRef, resultBytes, truncated
 }
 

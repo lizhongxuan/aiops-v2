@@ -47,8 +47,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		activeApprovalIDs = snapshotPendingApprovalIDs(turn.PendingApprovals, turn.PendingEvidence)
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
+	resultPreviews := transportToolResultPreviews(turn)
 	for _, item := range turn.AgentItems {
-		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item)
+		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews)
 	}
 	if turn.Lifecycle.IsTerminal() {
 		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
@@ -107,6 +108,29 @@ func snapshotPendingApprovalIDs(approvals []runtimekernel.PendingApproval, evide
 		}
 	}
 	return ids
+}
+
+func transportToolResultPreviews(turn *runtimekernel.TurnSnapshot) map[string]string {
+	previews := map[string]string{}
+	if turn == nil {
+		return previews
+	}
+	for _, iteration := range turn.Iterations {
+		for _, result := range iteration.ToolResults {
+			toolCallID := strings.TrimSpace(result.ToolCallID)
+			if toolCallID == "" || strings.TrimSpace(result.Content) == "" {
+				continue
+			}
+			if _, exists := previews[toolCallID]; exists {
+				continue
+			}
+			_, outputPreview, _ := summarizeToolResultForEvent(turn.ID, toolCallID, result.Content)
+			if preview := jsonStringValue(outputPreview); preview != "" {
+				previews[toolCallID] = preview
+			}
+		}
+	}
+	return previews
 }
 
 func pruneTransportPendingApprovalsForTurn(state *AiopsTransportState, turnID string, activeIDs map[string]bool) {
@@ -225,7 +249,13 @@ func projectSnapshotPendingEvidence(turn AiopsTransportTurn, state *AiopsTranspo
 	return turn
 }
 
-func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+func projectTurnItem(
+	turn AiopsTransportTurn,
+	state *AiopsTransportState,
+	turnID string,
+	item agentstate.TurnItem,
+	resultPreviews map[string]string,
+) AiopsTransportTurn {
 	switch item.Type {
 	case agentstate.TurnItemTypeUserMessage:
 		text := firstNonEmptyString(strings.TrimSpace(item.Payload.Summary), decodeUserMessageText(item.Payload.Data))
@@ -282,6 +312,10 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			toolText = sanitizeOutputPreview(toolText)
 		}
 
+		outputPreview := outputPreviewForTransportToolBlock(blockKind, tool)
+		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
+			outputPreview = resultPreviews[tool.ToolCallID]
+		}
 		block := AiopsProcessBlock{
 			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
 			Kind:          blockKind,
@@ -289,7 +323,7 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			Status:        mapItemStatusToTransportProcessStatus(item.Status),
 			Text:          toolText,
 			InputSummary:  tool.InputSummary,
-			OutputPreview: sanitizeOutputPreview(outputPreviewForTransportToolBlock(blockKind, tool)),
+			OutputPreview: sanitizeOutputPreview(outputPreview),
 			RawRef:        tool.RawRef,
 			ExitCode:      tool.ExitCode,
 			DurationMs:    tool.DurationMs,
@@ -746,7 +780,7 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 	if blockKind == AiopsTransportProcessKindSearch {
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
-	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.OutputSummary, tool.Error)
+	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
 }
 
 func jsonStringValue(raw json.RawMessage) string {

@@ -233,8 +233,8 @@ func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {
 	if payload["rawRef"] == "" {
 		t.Fatal("tool.completed payload should include rawRef for large results")
 	}
-	if payload["outputPreview"] != nil {
-		t.Fatal("large tool result should omit outputPreview")
+	if payload["outputPreview"] == nil {
+		t.Fatal("large tool result should include a bounded outputPreview")
 	}
 }
 
