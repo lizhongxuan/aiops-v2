@@ -1202,6 +1202,49 @@ func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
 	}
 }
 
+func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
+	model := &streamingFinalLoopModel{
+		chunks: []*schema.Message{
+			schema.AssistantMessage("当前资源总览：\n", nil),
+			schema.AssistantMessage("- CPU：空闲 73%\n", nil),
+			schema.AssistantMessage("- 内存：32 GB，总体偏高\n", nil),
+			schema.AssistantMessage("\n", nil),
+			schema.AssistantMessage("数据为实时快照。", nil),
+		},
+	}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-streaming-final-canonical",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-streaming-final-canonical",
+		Input:       "stream directly",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	want := "当前资源总览：\n- CPU：空闲 73%\n- 内存：32 GB，总体偏高\n\n数据为实时快照。"
+	if result.Output != want {
+		t.Fatalf("RunTurn output = %q, want streamed text", result.Output)
+	}
+	session := kernel.sessions.Get("sess-streaming-final-canonical")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed turn")
+	}
+	if session.CurrentTurn.FinalOutput != want {
+		t.Fatalf("FinalOutput = %q, want streamed text", session.CurrentTurn.FinalOutput)
+	}
+	finalItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeFinalAnswer)
+	if finalItem.ID == "" {
+		t.Fatalf("agent items = %+v, want final answer item", session.CurrentTurn.AgentItems)
+	}
+	if finalItem.Payload.Summary != want {
+		t.Fatalf("final item summary = %q, want streamed text", finalItem.Payload.Summary)
+	}
+}
+
 func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
 	model := &gatedStreamingFinalLoopModel{
 		firstSent: make(chan struct{}),
