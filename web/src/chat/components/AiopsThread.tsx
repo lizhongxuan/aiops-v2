@@ -99,7 +99,7 @@ function AssistantMessage() {
             {meta.intent.text}
           </div>
         ) : null}
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
+        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) || finalText ? (
           <ProcessTranscript
             process={process}
             turnStatus={meta.turnStatus}
@@ -109,11 +109,6 @@ function AssistantMessage() {
             finalText={finalText}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
-        ) : null}
-        {message.content.length > 0 && process.length === 0 && !isPendingAssistantTurn(meta.turnStatus) ? (
-          <div className="max-w-none px-1 py-1 text-[16px] leading-8 text-slate-950">
-            <MessageMarkdown text={finalText} />
-          </div>
         ) : null}
       </div>
     </MessagePrimitive.Root>

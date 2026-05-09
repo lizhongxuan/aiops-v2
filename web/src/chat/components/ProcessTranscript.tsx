@@ -33,6 +33,9 @@ type ProcessTranscriptProps = {
 
 type ApprovalDecisionHandler = (approvalId: string, decision: "accept" | "reject") => void;
 
+const TOOL_TRANSCRIPT_TEXT_CLASS = "text-[14px] leading-6";
+const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
+
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
  * of consecutive same-kind tool blocks.
@@ -66,7 +69,7 @@ export function ProcessTranscript({
     explicitFinalText && !retainedAssistantTexts.has(explicitFinalText) ? explicitFinalText : finalAssistantText
   ).trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
-  const shouldRenderProcess = processBlocks.length > 0 || running;
+  const shouldRenderProcess = processBlocks.length > 0 || (running && !renderedFinalText);
 
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
@@ -367,7 +370,7 @@ function MergedToolSummary({
   const [open, setOpen] = useState(group.mergedKind === "command" || group.blocks.some(isBlockActive));
   if (!details.length) {
     return (
-      <div className="flex min-w-0 items-center gap-1.5 text-[15px] leading-7 text-slate-400">
+      <div className={cn("flex min-w-0 items-center gap-1.5 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}>
         <ToolSummaryIcon kind={group.mergedKind} testId={`aiops-merged-${group.mergedKind}-icon`} />
         <span className="min-w-0 truncate">{text}</span>
       </div>
@@ -378,7 +381,10 @@ function MergedToolSummary({
     <div className="space-y-1">
       <button
         type="button"
-        className="group flex w-full min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className={cn(
+          "group flex w-full min-w-0 items-center gap-1.5 text-left text-slate-400 transition-colors hover:text-slate-600",
+          TOOL_TRANSCRIPT_TEXT_CLASS,
+        )}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
@@ -388,7 +394,10 @@ function MergedToolSummary({
       </button>
       {open ? (
         <div
-          className="space-y-2 overflow-visible pl-5 text-[13px] leading-6 text-slate-500"
+          className={cn(
+            "space-y-2 overflow-visible text-[13px] leading-6 text-slate-500",
+            TOOL_TRANSCRIPT_CHILD_INDENT_CLASS,
+          )}
           data-testid={`aiops-merged-${group.mergedKind}-details`}
         >
           {details.map((detail, index) =>
@@ -423,7 +432,10 @@ function ToolDetailRow({
     <div className="space-y-2">
       <button
         type="button"
-        className="group flex w-full min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className={cn(
+          "group flex w-full min-w-0 items-center gap-1.5 text-left text-slate-400 transition-colors hover:text-slate-600",
+          TOOL_TRANSCRIPT_TEXT_CLASS,
+        )}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-testid={`aiops-tool-row-${detail.id}`}
@@ -469,7 +481,10 @@ function CommandDetailRow({
     <div className="space-y-2">
       <button
         type="button"
-        className="group flex w-full min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className={cn(
+          "group flex w-full min-w-0 items-center gap-1.5 text-left text-slate-400 transition-colors hover:text-slate-600",
+          TOOL_TRANSCRIPT_TEXT_CLASS,
+        )}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-testid={`aiops-command-row-${detail.id}`}
@@ -747,7 +762,7 @@ function ToolSummaryLine({ block }: { block: AiopsProcessBlock }) {
 
   return (
     <div
-      className="truncate text-[15px] leading-7 text-slate-400"
+      className={cn("truncate text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}
       title={full.length > 80 ? full : undefined}
     >
       {display}
@@ -841,7 +856,10 @@ function SearchTranscript({
     <div className="space-y-1">
       <button
         type="button"
-        className="group flex min-w-0 items-center gap-1.5 text-left text-[15px] leading-7 text-slate-400 transition-colors hover:text-slate-600"
+        className={cn(
+          "group flex min-w-0 items-center gap-1.5 text-left text-slate-400 transition-colors hover:text-slate-600",
+          TOOL_TRANSCRIPT_TEXT_CLASS,
+        )}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         data-testid="aiops-search-toggle"
@@ -851,7 +869,10 @@ function SearchTranscript({
         <DisclosureChevron open={open} testId="aiops-search-chevron" />
       </button>
       {open && lines.length ? (
-        <div className="space-y-1 pl-5 text-[15px] leading-7 text-slate-400" data-testid="aiops-search-details">
+        <div
+          className={cn("space-y-1 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS, TOOL_TRANSCRIPT_CHILD_INDENT_CLASS)}
+          data-testid="aiops-search-details"
+        >
           {lines.map((line, index) => (
             <div key={`${line}:${index}`} className="whitespace-normal break-all">
               {line}

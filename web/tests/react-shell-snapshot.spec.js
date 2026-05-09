@@ -119,9 +119,9 @@ function dataStreamForState(state) {
   return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
 }
 
-test("process transcript keeps narration and expanded search details aligned", async ({ page }) => {
+async function installChatFixtureRoutes(page, state, sessions = sessionsPayload) {
   await page.route("**/api/v1/sessions", async (route) => {
-    await route.fulfill({ json: sessionsPayload });
+    await route.fulfill({ json: sessions });
   });
   await page.route("**/api/v1/hosts", async (route) => {
     await route.fulfill({
@@ -152,9 +152,13 @@ test("process transcript keeps narration and expanded search details aligned", a
     await route.fulfill({
       status: 200,
       contentType: "text/plain; charset=utf-8",
-      body: dataStreamForState(transportState),
+      body: dataStreamForState(state),
     });
   });
+}
+
+test("process transcript keeps narration and expanded search details aligned", async ({ page }) => {
+  await installChatFixtureRoutes(page, transportState);
 
   await page.goto("/");
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
@@ -166,4 +170,37 @@ test("process transcript keeps narration and expanded search details aligned", a
   await expect(transcript).toContainText("网页检索 2 项");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
+});
+
+test("streaming final answer renders markdown before turn completion", async ({ page }) => {
+  const markdownState = {
+    ...transportState,
+    status: "working",
+    turns: {
+      "turn-browser-flow": {
+        ...transportState.turns["turn-browser-flow"],
+        status: "working",
+        completedAt: undefined,
+        process: [],
+        final: {
+          id: "final-browser-flow",
+          text: "检查结果如下：\n\n1. **Nginx 正常**\n2. **CPU 负载稳定**",
+          status: "running",
+        },
+      },
+    },
+    runtimeLiveness: {
+      ...transportState.runtimeLiveness,
+      activeTurns: { "turn-browser-flow": true },
+    },
+  };
+
+  await installChatFixtureRoutes(page, markdownState);
+
+  await page.goto("/");
+  const finalText = page.getByTestId("aiops-final-text");
+  await expect(finalText.locator("ol li")).toHaveCount(2);
+  await expect(finalText.locator("strong").first()).toHaveText("Nginx 正常");
+  await expect(finalText).not.toContainText("**Nginx 正常**");
+  await expect(finalText).toHaveScreenshot("streaming-final-markdown.png");
 });

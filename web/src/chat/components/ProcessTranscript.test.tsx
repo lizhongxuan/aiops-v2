@@ -39,6 +39,26 @@ describe("ProcessTranscript", () => {
     });
   }
 
+  it("renders streaming final answer markdown immediately and keeps completed markup stable", async () => {
+    const markdown = "检查结果如下：\n\n1. **Nginx 正常**\n2. **CPU 负载稳定**";
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={[]} turnStatus="working" finalText={markdown} />);
+    });
+
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeNull();
+    expect(container.querySelectorAll("ol li")).toHaveLength(2);
+    expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
+    expect(container.textContent).not.toContain("**Nginx 正常**");
+    const streamingMarkup = container.innerHTML;
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={[]} turnStatus="completed" finalText={markdown} />);
+    });
+
+    expect(container.innerHTML).toBe(streamingMarkup);
+  });
+
   it("shows the active web search query in the running search summary", async () => {
     const process = [
       makeBlock({
@@ -160,7 +180,7 @@ describe("ProcessTranscript", () => {
     expect(text).not.toContain('"bitcoin"');
   });
 
-  it("uses one font size for running search labels and details", async () => {
+  it("uses compact text and reduced indent for running search labels and details", async () => {
     const process = [
       makeBlock({
         id: "search-font",
@@ -176,9 +196,9 @@ describe("ProcessTranscript", () => {
       root.render(<ProcessTranscript process={process} turnStatus="working" />);
     });
 
-    expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.className).toContain("text-[15px]");
-    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("text-[15px]");
-    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-5");
+    expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.className).toContain("text-[14px]");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("text-[14px]");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-3");
     const searchToggle = container.querySelector('[data-testid="aiops-search-toggle"]');
     const searchIcon = container.querySelector('[data-testid="aiops-search-icon"]');
     expect(searchIcon).toBeTruthy();
@@ -919,7 +939,7 @@ describe("ProcessTranscript", () => {
     const searchQuery = expandedBodyText.indexOf("aiops-v2 AssistantTransport 顺序");
     const searchedPage = expandedBodyText.indexOf("https://example.com/aiops-v2-order");
     const expandedAfterSearch = expandedBodyText.indexOf("页面也确认过了，最终回答会基于上面的命令和搜索结果。");
-    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-5");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-3");
     expect(searchQuery).toBeGreaterThan(expandedSearchSummary);
     expect(searchedPage).toBeGreaterThan(searchQuery);
     expect(expandedAfterSearch).toBeGreaterThan(searchedPage);

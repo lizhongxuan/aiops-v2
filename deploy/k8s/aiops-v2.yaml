@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aiops
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-v2-config
+  namespace: aiops
+data:
+  AIOPS_HTTP_ADDR: ":8080"
+  AIOPS_GRPC_ADDR: ":18090"
+  AIOPS_DATA_DIR: "/var/lib/aiops"
+  AIOPS_WEB_DIST_DIR: "/app/web/dist"
+  AIOPS_BOOTSTRAP_LLM_CONFIG: "if-missing"
+  AIOPS_LLM_PROVIDER: "openai"
+  AIOPS_LLM_MODEL: "gpt-5.4"
+  AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
+  # OpenAI-compatible gateway example:
+  # AIOPS_LLM_BASE_URL: "https://api.openai.com/v1"
+  # Optional Coroot integration:
+  # AIOPS_COROOT_BASE_URL: "http://coroot.coroot.svc.cluster.local:8080"
+  # AIOPS_COROOT_PROJECT: "default"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aiops-v2-secret
+  namespace: aiops
+type: Opaque
+stringData:
+  AIOPS_LLM_API_KEY: "replace-with-your-api-key"
+  AIOPS_ACTION_TOKEN_SECRET: "replace-with-a-random-long-secret"
+  # Optional Coroot token:
+  # AIOPS_COROOT_TOKEN: "replace-with-coroot-token"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aiops-v2-data
+  namespace: aiops
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # storageClassName: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-v2
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: aiops-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aiops-v2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aiops-v2
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: aiops-v2
+          image: registry.example.com/aiops-v2:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: aiops-v2-config
+            - secretRef:
+                name: aiops-v2-secret
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 18090
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/aiops
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: aiops-v2-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-v2
+  namespace: aiops
+  labels:
+    app.kubernetes.io/name: aiops-v2
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: aiops-v2
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    - name: grpc
+      port: 18090
+      targetPort: grpc
