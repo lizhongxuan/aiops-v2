@@ -53,6 +53,8 @@ flowchart TD
 | 01a | Incident Control Plane Frontend | [2026-05-11-aiops-v2-01a-incident-control-plane-frontend-design.zh.md](2026-05-11-aiops-v2-01a-incident-control-plane-frontend-design.zh.md) | 如何设计 case 队列、case 工作台、证据、动作、验证和资产沉淀页面 |
 | 01b | Incident Control Plane Frontend TODO | [2026-05-11-aiops-v2-01b-incident-control-plane-frontend-todo.zh.md](2026-05-11-aiops-v2-01b-incident-control-plane-frontend-todo.zh.md) | 如何按任务落地 Incident Control Plane 前端 |
 | 02 | Governed Action & Multi-user RBAC | [2026-05-11-aiops-v2-02-governed-action-rbac-module-design.zh.md](2026-05-11-aiops-v2-02-governed-action-rbac-module-design.zh.md) | 如何把动作、权限、审批、主机锁和审计做成生产硬边界 |
+| 02a | Governed Action & RBAC Frontend | [2026-05-11-aiops-v2-02a-governed-action-rbac-frontend-design.zh.md](2026-05-11-aiops-v2-02a-governed-action-rbac-frontend-design.zh.md) | 如何设计动作治理中心、审批、主机锁、RBAC、审计和 break-glass 页面 |
+| 02b | Governed Action & RBAC Frontend TODO | [2026-05-11-aiops-v2-02b-governed-action-rbac-frontend-todo.zh.md](2026-05-11-aiops-v2-02b-governed-action-rbac-frontend-todo.zh.md) | 如何按任务落地动作治理和多入口复用的前端 |
 | 03 | OpsGraph & ERP Business Context | [2026-05-11-aiops-v2-03-opsgraph-business-context-module-design.zh.md](2026-05-11-aiops-v2-03-opsgraph-business-context-module-design.zh.md) | 如何把业务、服务、资源、trace、经验和 ERP 闭环连接成推理图谱 |
 | 04 | Observability, Coroot & Debug Trace | [2026-05-11-aiops-v2-04-observability-debug-trace-module-design.zh.md](2026-05-11-aiops-v2-04-observability-debug-trace-module-design.zh.md) | 如何从 Coroot 和用户侧 Debug Mode 获得可治理证据 |
 | 05 | AI Reasoning & Prompt Trace | [2026-05-11-aiops-v2-05-ai-reasoning-prompt-trace-module-design.zh.md](2026-05-11-aiops-v2-05-ai-reasoning-prompt-trace-module-design.zh.md) | AI 如何基于证据推理、生成计划，并留下可回放治理记录 |
