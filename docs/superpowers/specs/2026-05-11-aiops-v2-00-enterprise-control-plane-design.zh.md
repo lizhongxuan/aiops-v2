@@ -47,22 +47,22 @@ flowchart TD
 
 总纲只保留目标、边界和跨模块约束。详细设计按模块拆分：
 
-| 模块 | 文档 | 主要问题 |
-| --- | --- | --- |
-| Incident Control Plane | [2026-05-11-aiops-v2-incident-control-plane-module-design.zh.md](2026-05-11-aiops-v2-incident-control-plane-module-design.zh.md) | 如何把告警、对话、调试、ERP 和中间件异常统一成 case |
-| OpsGraph & ERP Business Context | [2026-05-11-aiops-v2-opsgraph-business-context-module-design.zh.md](2026-05-11-aiops-v2-opsgraph-business-context-module-design.zh.md) | 如何把业务、服务、资源、trace、经验和 ERP 闭环连接成推理图谱 |
-| Observability, Coroot & Debug Trace | [2026-05-11-aiops-v2-observability-debug-trace-module-design.zh.md](2026-05-11-aiops-v2-observability-debug-trace-module-design.zh.md) | 如何从 Coroot 和用户侧 Debug Mode 获得可治理证据 |
-| AI Reasoning & Prompt Trace | [2026-05-11-aiops-v2-ai-reasoning-prompt-trace-module-design.zh.md](2026-05-11-aiops-v2-ai-reasoning-prompt-trace-module-design.zh.md) | AI 如何基于证据推理、生成计划，并留下可回放治理记录 |
-| Governed Action & Multi-user RBAC | [2026-05-11-aiops-v2-governed-action-rbac-module-design.zh.md](2026-05-11-aiops-v2-governed-action-rbac-module-design.zh.md) | 如何把动作、权限、审批、主机锁和审计做成生产硬边界 |
-| Execution Fabric, Runbook & Workflow | [2026-05-11-aiops-v2-execution-fabric-runbook-workflow-module-design.zh.md](2026-05-11-aiops-v2-execution-fabric-runbook-workflow-module-design.zh.md) | 如何统一执行本地、远程、MCP、K8s、ERP action 和 Runner workflow |
-| Verification & Recovery | [2026-05-11-aiops-v2-verification-recovery-module-design.zh.md](2026-05-11-aiops-v2-verification-recovery-module-design.zh.md) | 如何证明修复有效、失败可收敛、恢复可解释 |
-| Middleware Repair | [2026-05-11-aiops-v2-middleware-repair-module-design.zh.md](2026-05-11-aiops-v2-middleware-repair-module-design.zh.md) | 如何处理 PG、Redis、MQ 等中间件异常的 RCA、修复和经验沉淀 |
-| Learning, Experience Pack, Memory & Eval | [2026-05-11-aiops-v2-learning-memory-eval-module-design.zh.md](2026-05-11-aiops-v2-learning-memory-eval-module-design.zh.md) | 如何把真实运维过程转成经验包、记忆、图谱补丁和评测用例 |
-| Multi-Agent Collaboration | [2026-05-11-aiops-v2-multi-agent-module-design.zh.md](2026-05-11-aiops-v2-multi-agent-module-design.zh.md) | 多 Agent 如何协作但不分裂事实源、权限和审计 |
+| 顺序 | 模块 | 文档 | 主要问题 |
+| --- | --- | --- | --- |
+| 01 | Incident Control Plane | [2026-05-11-aiops-v2-01-incident-control-plane-module-design.zh.md](2026-05-11-aiops-v2-01-incident-control-plane-module-design.zh.md) | 如何把告警、对话、调试、ERP 和中间件异常统一成 case |
+| 02 | Governed Action & Multi-user RBAC | [2026-05-11-aiops-v2-02-governed-action-rbac-module-design.zh.md](2026-05-11-aiops-v2-02-governed-action-rbac-module-design.zh.md) | 如何把动作、权限、审批、主机锁和审计做成生产硬边界 |
+| 03 | OpsGraph & ERP Business Context | [2026-05-11-aiops-v2-03-opsgraph-business-context-module-design.zh.md](2026-05-11-aiops-v2-03-opsgraph-business-context-module-design.zh.md) | 如何把业务、服务、资源、trace、经验和 ERP 闭环连接成推理图谱 |
+| 04 | Observability, Coroot & Debug Trace | [2026-05-11-aiops-v2-04-observability-debug-trace-module-design.zh.md](2026-05-11-aiops-v2-04-observability-debug-trace-module-design.zh.md) | 如何从 Coroot 和用户侧 Debug Mode 获得可治理证据 |
+| 05 | AI Reasoning & Prompt Trace | [2026-05-11-aiops-v2-05-ai-reasoning-prompt-trace-module-design.zh.md](2026-05-11-aiops-v2-05-ai-reasoning-prompt-trace-module-design.zh.md) | AI 如何基于证据推理、生成计划，并留下可回放治理记录 |
+| 06 | Execution Fabric, Runbook & Workflow | [2026-05-11-aiops-v2-06-execution-fabric-runbook-workflow-module-design.zh.md](2026-05-11-aiops-v2-06-execution-fabric-runbook-workflow-module-design.zh.md) | 如何统一执行本地、远程、MCP、K8s、ERP action 和 Runner workflow |
+| 07 | Verification & Recovery | [2026-05-11-aiops-v2-07-verification-recovery-module-design.zh.md](2026-05-11-aiops-v2-07-verification-recovery-module-design.zh.md) | 如何证明修复有效、失败可收敛、恢复可解释 |
+| 08 | Middleware Repair | [2026-05-11-aiops-v2-08-middleware-repair-module-design.zh.md](2026-05-11-aiops-v2-08-middleware-repair-module-design.zh.md) | 如何处理 PG、Redis、MQ 等中间件异常的 RCA、修复和经验沉淀 |
+| 09 | Learning, Experience Pack, Memory & Eval | [2026-05-11-aiops-v2-09-learning-memory-eval-module-design.zh.md](2026-05-11-aiops-v2-09-learning-memory-eval-module-design.zh.md) | 如何把真实运维过程转成经验包、记忆、图谱补丁和评测用例 |
+| 10 | Experience Pack 自我演化详设 | [2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md) | 如何从真实运维、Debug Trace 和中间件修复中沉淀可审核经验 |
+| 11 | Multi-Agent Collaboration | [2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md](2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md) | 多 Agent 如何协作但不分裂事实源、权限和审计 |
 
 已有专题文档继续作为局部设计来源：
 
-- [2026-05-11-aiops-experience-packs-design.zh.md](2026-05-11-aiops-experience-packs-design.zh.md)：经验包自我演化详细设计。
 - [2026-05-11-runner-embedded-runtime-design.md](2026-05-11-runner-embedded-runtime-design.md)：Runner Embedded Runtime 设计。
 - [2026-05-10-local-coroot-mcp-aiops-v2-design.zh.md](2026-05-10-local-coroot-mcp-aiops-v2-design.zh.md)：Coroot MCP 接入设计。
 - [2026-05-03-erp-sre-runtime-design.zh.md](2026-05-03-erp-sre-runtime-design.zh.md)：ERP SRE runtime 设计。

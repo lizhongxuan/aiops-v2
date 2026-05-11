@@ -2,8 +2,8 @@
 
 日期：2026-05-11
 状态：模块详细设计
-所属总纲：[2026-05-11-aiops-v2-enterprise-control-plane-design.zh.md](2026-05-11-aiops-v2-enterprise-control-plane-design.zh.md)
-专题文档：[2026-05-11-aiops-experience-packs-design.zh.md](2026-05-11-aiops-experience-packs-design.zh.md)
+所属总纲：[2026-05-11-aiops-v2-00-enterprise-control-plane-design.zh.md](2026-05-11-aiops-v2-00-enterprise-control-plane-design.zh.md)
+专题文档：[2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md)
 
 ## 1. 模块定位
 
