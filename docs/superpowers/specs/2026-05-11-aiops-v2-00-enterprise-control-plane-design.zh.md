@@ -71,6 +71,8 @@ flowchart TD
 | 07a | Verification & Recovery Frontend | [2026-05-11-aiops-v2-07a-verification-recovery-frontend-design.zh.md](2026-05-11-aiops-v2-07a-verification-recovery-frontend-design.zh.md) | 如何设计恢复队列、验证记录、观察窗口、证据对比、回滚验证和关闭门禁页面 |
 | 07b | Verification & Recovery Frontend TODO | [2026-05-11-aiops-v2-07b-verification-recovery-frontend-todo.zh.md](2026-05-11-aiops-v2-07b-verification-recovery-frontend-todo.zh.md) | 如何按任务落地 Verification & Recovery 前端和跨模块验证集成 |
 | 08 | Middleware Repair | [2026-05-11-aiops-v2-08-middleware-repair-module-design.zh.md](2026-05-11-aiops-v2-08-middleware-repair-module-design.zh.md) | 如何处理 PG、Redis、MQ 等中间件异常的 RCA、修复和经验沉淀 |
+| 08a | Middleware Repair Frontend | [2026-05-11-aiops-v2-08a-middleware-repair-frontend-design.zh.md](2026-05-11-aiops-v2-08a-middleware-repair-frontend-design.zh.md) | 如何设计中间件资源、诊断基线、经验匹配、RepairPlan、执行验证和经验候选页面 |
+| 08b | Middleware Repair Frontend TODO | [2026-05-11-aiops-v2-08b-middleware-repair-frontend-todo.zh.md](2026-05-11-aiops-v2-08b-middleware-repair-frontend-todo.zh.md) | 如何按任务落地 Middleware Repair 前端和跨模块修复闭环 |
 | 09 | Learning, Experience Pack, Memory & Eval | [2026-05-11-aiops-v2-09-learning-memory-eval-module-design.zh.md](2026-05-11-aiops-v2-09-learning-memory-eval-module-design.zh.md) | 如何把真实运维过程转成经验包、记忆、图谱补丁和评测用例 |
 | 10 | Experience Pack 自我演化详设 | [2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md) | 如何从真实运维、Debug Trace 和中间件修复中沉淀可审核经验 |
 | 11 | Multi-Agent Collaboration | [2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md](2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md) | 多 Agent 如何协作但不分裂事实源、权限和审计 |
