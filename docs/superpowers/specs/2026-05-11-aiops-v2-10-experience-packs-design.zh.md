@@ -6,6 +6,8 @@
 前端设计：[2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md](2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md](2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md)
 
+关系：本专题是 09 Learning 的 Experience Pack 细化，不新建第二套 Learning 控制面。Candidate Store、Activation Index、Review Queue、Memory 和 Eval 仍按 09 的统一契约实现。
+
 ## 1. 背景与现状
 
 当前 `aiops-v2` 已具备以下基础：
@@ -230,8 +232,7 @@ Next AI Chat / Debug / Repair recommendation
 - `internal/evolutionmap`：EvolutionEvent、Evolution Map、Activation Index、fitness 计算和 lineage 查询。
 - `internal/appui/experience_service.go`：appui 层服务接口，供 HTTP 和前端使用。
 - `internal/server/experience_api.go`：`/api/v1/experience-packs/*` API。
-- `internal/debugtrace`：DebugEvent、TraceContext、trace 归一化和脱敏摘要。
-- `internal/middlewareops`：MiddlewareResource、RepairPlan、RecoveryAttempt 和中间件修复证据归一化。
+- Debug Trace 与 Middleware Repair 不在本专题内新建事实源。如果现有代码需要适配层，可增加 thin adapter，但 `DebugEvent` / `TraceContext` 仍归 04，`MiddlewareResource` / `RepairPlan` / `RecoveryAttempt` 仍归 08。
 - `web/src/pages/ExperiencePacksPage.tsx`：从静态数据改为后端 API 驱动。
 - Runner Studio 增加“从经验包生成/打开 Workflow Draft”的入口。
 

@@ -11,6 +11,8 @@
 
 Learning 模块负责把真实运维过程沉淀为可审核、可复用、可评测的资产：Experience Pack、Runbook、Workflow、Memory、OpsGraph patch 和 Eval case。它不是让系统自由修改自己，而是把运行历史变成受治理的候选资产。
 
+本模块是 Learning 总控制面。Experience Pack 的详细对象、环境变体、fitness、lineage 和 Artifact Studio 由专题文档 [2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md) 细化；实现时不能因此产生第二套 Candidate Store、Activation Index 或 Review Queue。
+
 ## 2. 设计目标
 
 - 自动生成内容只能进入 candidate 或 draft。
@@ -107,6 +109,8 @@ Candidate Store 不能进入推荐。
 - 慢请求 trace -> Debug RCA candidate。
 - 中间件修复 -> RepairPlan draft。
 - 失败或误用 -> Anti-pattern、disabled condition、incompatibility edge。
+
+Synthesizer 只创建候选或 draft。正式 Runbook/Workflow 发布仍由 Execution Fabric 的 catalog、validate、dry-run 和 publish 生命周期负责；OpsGraph 关系变更只能生成 OpsGraphPatch candidate。
 
 ## 8. Eval case
 

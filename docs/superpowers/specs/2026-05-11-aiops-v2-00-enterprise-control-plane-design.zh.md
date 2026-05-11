@@ -49,6 +49,7 @@ flowchart TD
 
 | 顺序 | 模块 | 文档 | 主要问题 |
 | --- | --- | --- | --- |
+| 00a | Module Boundary & Closure Review | [2026-05-11-aiops-v2-00a-module-boundary-closure-review.zh.md](2026-05-11-aiops-v2-00a-module-boundary-closure-review.zh.md) | 如何审查总纲和模块文档的一致性、去冗余、闭环和改动范围 |
 | 01 | Incident Control Plane | [2026-05-11-aiops-v2-01-incident-control-plane-module-design.zh.md](2026-05-11-aiops-v2-01-incident-control-plane-module-design.zh.md) | 如何把告警、对话、调试、ERP 和中间件异常统一成 case |
 | 01a | Incident Control Plane Frontend | [2026-05-11-aiops-v2-01a-incident-control-plane-frontend-design.zh.md](2026-05-11-aiops-v2-01a-incident-control-plane-frontend-design.zh.md) | 如何设计 case 队列、case 工作台、证据、动作、验证和资产沉淀页面 |
 | 01b | Incident Control Plane Frontend TODO | [2026-05-11-aiops-v2-01b-incident-control-plane-frontend-todo.zh.md](2026-05-11-aiops-v2-01b-incident-control-plane-frontend-todo.zh.md) | 如何按任务落地 Incident Control Plane 前端 |
@@ -89,7 +90,46 @@ flowchart TD
 - [2026-05-10-local-coroot-mcp-aiops-v2-design.zh.md](2026-05-10-local-coroot-mcp-aiops-v2-design.zh.md)：Coroot MCP 接入设计。
 - [2026-05-03-erp-sre-runtime-design.zh.md](2026-05-03-erp-sre-runtime-design.zh.md)：ERP SRE runtime 设计。
 
-## 4. 跨模块系统不变量
+## 4. 一致性审查结论
+
+对总纲和 01-11 主模块审查后，当前设计没有硬性架构冲突，但有 6 个容易实现成重复系统的交界。总纲统一按以下裁剪处理：
+
+| 交界 | 风险 | 总纲裁剪 |
+| --- | --- | --- |
+| 09 Learning 与 10 Experience Pack | 两套 Candidate Store、Activation Index、Review Queue | 09 是 Learning 总控制面，10 是 Experience Pack 专题详设；实现时只保留一套 Candidate Store、Activation Index 和 Review Queue |
+| 05 AI Reasoning 与 08 Middleware Repair | AI 直接拥有 RepairPlan 或执行修复 | 05 只输出 `repair_plan_draft`，08 拥有 `RepairPlan` 生命周期，02/06 执行治理动作 |
+| 01 Incident Control Plane 与 11 Multi-Agent | Agent 私自维护 case 状态 | 01 是 case 状态和 timeline 事实源；11 只做协作投影和 AgentMessage，不新增私有 case |
+| 02 Governed Action 与 06 Execution Fabric | Workflow/ToolDispatcher 重复做授权 | 02 签发 ActionToken、RBAC、Policy、HostLease；06 只校验并执行已授权动作 |
+| 03 OpsGraph 与 09/10 Experience | 经验资产直接改图谱 | 03 拥有图谱和 patch 审核；09/10 只能生成 OpsGraphPatch candidate |
+| 04 Observability 与 05 AI Reasoning | Coroot RCA 或 trace 直接变成最终根因 | 04 只产 EvidenceRef 和质量评分；05 基于证据生成 Hypothesis，并保留反证和置信度 |
+
+产品形态也按简化原则收敛：普通用户主要使用 **AI Chat / Case 工作台 / 审批确认 / 验证结果** 四个入口；Coroot、Prompt Trace、Workflow Studio、Experience Pack、Multi-Agent 等页面是可钻取的专家视图，不作为普通用户必经路径。
+
+## 5. 模块 ownership 与改动范围
+
+| 模块 | 负责改动范围 | 只消费/引用 | 明确不做 |
+| --- | --- | --- | --- |
+| 01 Incident Control Plane | Case、EvidenceRef、TimelineEvent、case 状态机、合并关联、关闭门禁 | AI 输出、ActionProposal、WorkflowRun、Verification、Experience candidate 引用 | 不诊断、不执行、不生成经验内容 |
+| 02 Governed Action & RBAC | User/Team/Role/Permission、PolicyDecision、ActionProposal、ActionToken、HostLease、Approval、Audit | Case、Evidence、VerificationSpec、Workflow node、Experience review state | 不执行工具、不编排 DAG、不判断恢复 |
+| 03 OpsGraph & ERP Context | 业务图谱节点/边、影响查询、根因路径查询、ERP 闭环、OpsGraphPatch 审核 | Evidence、Case、Trace signature、Experience asset metadata | 不当静态 CMDB、不因 AI 推理直接改图、不执行修复 |
+| 04 Observability & Debug Trace | Coroot/trace/log/debug/middleware probe 归一化、TraceContext、DebugEvent、EvidenceQuality | Case、OpsGraph entity、Verification check | 不给最终根因、不执行修复、不保存敏感原文 |
+| 05 AI Reasoning & Prompt Trace | PromptCompiler、ReasoningOutput、Hypothesis update、计划草稿、PromptTrace、Eval 运行入口 | Case、Evidence、OpsGraph、Activation Index、Tool visibility、RBAC scope | 不直接执行工具、不拥有 RepairPlan/Workflow/Experience 生命周期 |
+| 06 Execution Fabric, Runbook & Workflow | Tool schema、ToolDispatcher 执行面、Runbook/RunbookInstance、Workflow/WorkflowRun、Runner state、fanout、输出回调 | ActionToken、HostLease、PolicyDecision、VerificationSpec、Case | 不签发授权、不替代审批、不绕过 02 |
+| 07 Verification & Recovery | VerificationSpec、VerificationRecord、RecoveryStatus、Observation Window、回滚验证、恢复判定 | ToolResult、Workflow output、Coroot/ERP/Trace/K8s/Host/Middleware evidence | 不执行修复、不关闭 case，只给 01 提供关闭依据 |
+| 08 Middleware Repair | MiddlewareResource、RepairPlan、RecoveryAttempt、中间件 RCA 流程、PG/Redis/MQ 等诊断基线 | Case、Evidence、Activation Index、ActionProposal、Workflow、Verification | 不把自然语言直接变成写动作、不绕过 02/06/07 |
+| 09 Learning, Memory & Eval | Learning 总控制面、Memory、EvalCase、Activation Index 契约、候选审核总流程 | Case、Verification、PromptTrace、Audit、Experience Pack 专题对象 | 不自由修改生产资产、不维护第二套经验包实现 |
+| 10 Experience Pack 自我演化 | ExperiencePack、Gene、Capsule、Debug RCA、RepairPlan candidate、环境变体、fitness、lineage | 09 的 Candidate Store/Activation Index/Review Queue、06 的 Runbook/Workflow 发布、03 的 OpsGraphPatch | 不新建执行系统、不原地修改已发布资产、不让候选进推荐 |
+| 11 Multi-Agent Collaboration | AgentTask、AgentMessage、AgentConflict、SharedCaseContext 投影、协作回放 | Case、Evidence、Policy、HostLease、PromptTrace、Audit、ActionToken | 不新增事实源、不绕过 02、不让 Agent 私自关闭 case |
+
+闭环必须走同一条主路径：
+
+```text
+Input -> Case -> Evidence/OpsGraph -> AI Reasoning -> ActionProposal/Workflow Draft
+  -> Policy/RBAC/Approval/HostLease -> Execution -> Verification
+  -> Case Recovery/Close -> Learning Candidate -> Review -> Activation/Runbook/Workflow/OpsGraphPatch/Eval
+```
+
+## 6. 跨模块系统不变量
 
 这些规则高于任何单模块实现：
 
@@ -109,7 +149,7 @@ flowchart TD
 14. 中间件修复必须先完成根因分析和 `RepairPlan`；不得把自然语言“修复集群”直接映射为重启、failover、删数据或配置写入。
 15. 经验包只能作为已审核路径被复用；未审核经验、候选经验和生成计划不能跳过用户确认、审批和验证。
 
-## 5. 终态成功判据
+## 7. 终态成功判据
 
 当 `aiops-v2` 达到目标形态时，它应该能完成以下闭环：
 
@@ -125,7 +165,7 @@ flowchart TD
 10. 事故关闭时生成复盘草稿。
 11. 成功和失败经验进入经验包候选，经审核后发布为 Runbook、Workflow、Memory、OpsGraph patch 或 Eval case。
 
-## 6. 非目标
+## 8. 非目标
 
 - 不把 `aiops-v2` 设计成单纯 ChatOps UI。
 - 不把 MCP 接入数量当作核心目标。
