@@ -193,7 +193,7 @@ Overview 是第一屏核心：
 
 - Coroot。
 - ERP。
-- Frontend Debug。
+- Browser Plugin Debug。
 - Trace。
 - Tool。
 - Workflow。

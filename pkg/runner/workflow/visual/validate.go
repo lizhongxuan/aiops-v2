@@ -123,6 +123,9 @@ func validateGraph(g Graph) (graphIndex, error) {
 				issues = append(issues, issue("subflow_workflow_required", fmt.Sprintf("node %q subflow workflow_name is required", id), id, "", field+".subflow.workflow_name"))
 			}
 		}
+		if node.Type == NodeTypeVariableAggregator {
+			issues = append(issues, validateVariableAggregatorSpec(id, field, node.Aggregator)...)
+		}
 		if node.Type == NodeTypeJoin {
 			strategy := ""
 			if node.Join != nil {
@@ -346,6 +349,30 @@ func validateLoopSpec(nodeID, field string, loop *LoopSpec) []Issue {
 	}
 	if loop.MaxIterations <= 0 {
 		issues = append(issues, issue("loop_max_iterations_required", fmt.Sprintf("node %q loop max_iterations must be greater than zero", nodeID), nodeID, "", field+".loop.max_iterations"))
+	}
+	return issues
+}
+
+func validateVariableAggregatorSpec(nodeID, field string, aggregator *VariableAggregatorSpec) []Issue {
+	if aggregator == nil {
+		return []Issue{issue("aggregator_required", fmt.Sprintf("node %q variable aggregator spec is required", nodeID), nodeID, "", field+".aggregator")}
+	}
+	var issues []Issue
+	if strings.TrimSpace(aggregator.OutputKey) == "" {
+		issues = append(issues, issue("aggregator_output_key_required", fmt.Sprintf("node %q aggregator output_key is required", nodeID), nodeID, "", field+".aggregator.output_key"))
+	}
+	switch strings.TrimSpace(aggregator.Strategy) {
+	case "", "first_non_empty", "prefer_success", "array":
+	default:
+		issues = append(issues, issue("aggregator_strategy_invalid", fmt.Sprintf("node %q aggregator strategy %q is not supported", nodeID, aggregator.Strategy), nodeID, "", field+".aggregator.strategy"))
+	}
+	if len(aggregator.Sources) == 0 {
+		issues = append(issues, issue("aggregator_sources_required", fmt.Sprintf("node %q aggregator requires at least one source", nodeID), nodeID, "", field+".aggregator.sources"))
+	}
+	for i, source := range aggregator.Sources {
+		if strings.TrimSpace(source.Expression) == "" && (source.Variable == nil || strings.TrimSpace(source.Variable.Name) == "") {
+			issues = append(issues, issue("aggregator_source_required", fmt.Sprintf("node %q aggregator source %d is empty", nodeID, i+1), nodeID, "", fmt.Sprintf("%s.aggregator.sources[%d]", field, i)))
+		}
 	}
 	return issues
 }
@@ -643,7 +670,7 @@ func suggestionForIssue(code string) string {
 	case "nodes_required", "start_required", "start_duplicate":
 		return "Ensure the graph has exactly one start node and at least one executable node."
 	case "executable_node_required":
-		return "Add at least one executable action, condition, approval, subflow, loop, join, or end node."
+		return "Add at least one executable action, condition, approval, subflow, variable aggregator, loop, join, or end node."
 	case "node_id_required", "node_id_duplicate":
 		return "Use a stable unique node id."
 	case "node_type_invalid":
@@ -658,6 +685,8 @@ func suggestionForIssue(code string) string {
 		return "Configure approvers, timeout, and timeout policy on the approval node."
 	case "subflow_workflow_required":
 		return "Select the child workflow this subflow node should run."
+	case "aggregator_required", "aggregator_output_key_required", "aggregator_strategy_invalid", "aggregator_sources_required", "aggregator_source_required":
+		return "Configure the variable aggregator output key, strategy, and at least one upstream source."
 	case "join_strategy_invalid", "join_requires_multiple_inputs":
 		return "Use a supported join strategy and connect at least two upstream branches."
 	case "loop_required", "loop_mode_required", "loop_items_required", "loop_while_condition_required", "loop_mode_invalid", "loop_max_iterations_required", "loop_body_step_loop_unsupported":

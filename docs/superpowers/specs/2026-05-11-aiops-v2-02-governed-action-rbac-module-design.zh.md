@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-02a-governed-action-rbac-frontend-design.zh.md](2026-05-11-aiops-v2-02a-governed-action-rbac-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-02b-governed-action-rbac-frontend-todo.zh.md](2026-05-11-aiops-v2-02b-governed-action-rbac-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段只要求生产写动作具备最小硬边界：`ActionProposal`、风险分级、审批、`ActionToken`、必要资源锁和 Audit。完整组织 RBAC、策略编辑中心、break-glass 控制台和多团队治理报表不是浏览器插件调试和 PG 修复闭环的前置条件。
+
+对两个核心场景的要求是：慢请求自动化修复和 PG 修复都必须确认具体动作后才能执行；PG 高风险动作必须 DBA 或 service owner 审批；已审核经验不能绕过审批、备份检查、回滚和验证。
+
 ## 1. 模块定位
 
 Governed Action 模块是生产写动作的硬边界。它把 AI 建议、Runbook 下一步、Workflow 节点和人工操作统一转成 `ActionProposal`，再通过 RBAC、Policy、Approval、HostLease、ActionToken 和 Audit 决定是否允许执行。

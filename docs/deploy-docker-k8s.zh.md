@@ -40,6 +40,36 @@ docker buildx build \
 docker push registry.example.com/aiops-v2:0.1.0
 ```
 
+## 生成离线部署包
+
+如果目标 Kubernetes 环境不能访问公网，可先在一台能联网的构建机上生成离线包。离线包会包含：
+
+- `docker save | gzip` 生成的镜像归档
+- 已替换镜像 tag 的 Kubernetes YAML
+- 导入 Docker/containerd/nerdctl 的脚本
+- 推送到内网镜像仓库的脚本
+
+默认生成 Linux amd64 镜像：
+
+```bash
+./scripts/package-offline.sh
+```
+
+常用覆盖：
+
+```bash
+PLATFORM=linux/arm64 ./scripts/package-offline.sh
+IMAGE_REPOSITORY=registry.intra.example.com/aiops/aiops-v2 ./scripts/package-offline.sh
+IMAGE_TAG=offline-20260511-a2688d8 ./scripts/package-offline.sh
+```
+
+产物位于 `output/aiops-v2-<image-tag>-<arch>/`，并同时生成同名 `.tar.gz`。内网部署有两种方式：
+
+1. 有内网镜像仓库：解压离线包后执行 `./scripts/push-to-registry.sh registry.intra.example.com/aiops`，把打印出的镜像地址写入 `kubernetes/aiops-v2.yaml`。
+2. 没有内网镜像仓库：把离线包复制到每个 Kubernetes 节点，按节点运行时执行 `sudo ./scripts/load-image.sh containerd` 或 `./scripts/load-image.sh docker`，保持 YAML 中 `imagePullPolicy: IfNotPresent`。
+
+部署前仍需替换 `kubernetes/aiops-v2.yaml` 中的 Secret 占位值；如果使用内网 OpenAI-compatible 网关，同时在 ConfigMap 中设置 `AIOPS_LLM_BASE_URL`。
+
 ## 本地运行
 
 ```bash

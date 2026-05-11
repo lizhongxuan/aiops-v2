@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-06a-execution-fabric-runbook-workflow-frontend-design.zh.md](2026-05-11-aiops-v2-06a-execution-fabric-runbook-workflow-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-06b-execution-fabric-runbook-workflow-frontend-todo.zh.md](2026-05-11-aiops-v2-06b-execution-fabric-runbook-workflow-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段只需要承载已确认动作的执行：`ToolDispatcher`、Runbook step、既有 Runner WorkflowRun、结果回写 case/evidence/audit。完整 Workflow Studio、复杂 fanout、多主机批次策略、插件市场和独立执行控制台不是浏览器插件调试和 PG 修复闭环的前置条件。
+
+关键约束是执行前必须校验 `ActionToken` 和动作 hash；Runbook 只生成下一步动作提案；Workflow 只能执行已授权节点，不能绕过 02。本方案复用现有 Runner 工作流页面和功能，不要求改 Runner Studio UI。
+
 ## 1. 模块定位
 
 Execution Fabric 是 `aiops-v2` 的统一执行面。它承载本地命令、远程主机、Host Agent、MCP tools、Coroot、K8s、ERP action、脚本和 Runner workflow。Runbook 提供知识型处置路径，Workflow 提供可执行编排，但两者都必须通过 Governed Action 模块进入生产写动作。

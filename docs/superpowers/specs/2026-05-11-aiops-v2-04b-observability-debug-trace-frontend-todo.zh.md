@@ -140,9 +140,9 @@ Observability API view-model
 
 ## 10. Task 7：实现 DebugEvent 创建和列表
 
-- [ ] 新增 `DebugModeLauncher.tsx`。
+- [ ] 新增 `DebugModeLauncher.tsx`，用于创建或查看浏览器插件 debug session；业务页面不接入前端 SDK。
 - [ ] 表单字段包括 Case、Target App、Route Name、Action Name、Environment、TTL、Capture Mode、Expected Slow Threshold。
-- [ ] 创建成功后展示 DebugEvent id、signed debug marker 状态、traceparent 注入状态、TTL 和 capture 状态。
+- [ ] 创建成功后展示 DebugEvent id、signed debug marker 状态、browser extension traceparent 注入状态、TTL 和 capture 状态。
 - [ ] 新增 `DebugEventTable.tsx`。
 - [ ] 表格列包括 DebugEvent、Status、Trace、Frontend、Backend、Quality、Action。
 - [ ] 支持 `created`、`armed`、`captured`、`captured_without_trace_backend`、`analyzing`、`diagnosis_ready`、`awaiting_approval`、`remediating`、`verifying`、`verified`、`failed`、`expired`、`header_rejected`。

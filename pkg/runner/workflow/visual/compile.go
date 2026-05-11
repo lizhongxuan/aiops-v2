@@ -173,18 +173,19 @@ type xRunnerNode struct {
 }
 
 type xRunnerData struct {
-	StepName    string             `json:"stepName,omitempty" yaml:"stepName,omitempty"`
-	HandlerName string             `json:"handlerName,omitempty" yaml:"handlerName,omitempty"`
-	Label       string             `json:"label,omitempty" yaml:"label,omitempty"`
-	Collapsed   bool               `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
-	Approval    *ApprovalSpec      `json:"approval,omitempty" yaml:"approval,omitempty"`
-	Condition   *ConditionSpec     `json:"condition,omitempty" yaml:"condition,omitempty"`
-	Subflow     *SubflowSpec       `json:"subflow,omitempty" yaml:"subflow,omitempty"`
-	Join        *JoinSpec          `json:"join,omitempty" yaml:"join,omitempty"`
-	Loop        *LoopSpec          `json:"loop,omitempty" yaml:"loop,omitempty"`
-	Inputs      *[]InputParamSpec  `json:"inputs,omitempty" yaml:"inputs,omitempty"`
-	Outputs     *[]OutputParamSpec `json:"outputs,omitempty" yaml:"outputs,omitempty"`
-	UI          map[string]any     `json:"ui,omitempty" yaml:"ui,omitempty"`
+	StepName    string                  `json:"stepName,omitempty" yaml:"stepName,omitempty"`
+	HandlerName string                  `json:"handlerName,omitempty" yaml:"handlerName,omitempty"`
+	Label       string                  `json:"label,omitempty" yaml:"label,omitempty"`
+	Collapsed   bool                    `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
+	Approval    *ApprovalSpec           `json:"approval,omitempty" yaml:"approval,omitempty"`
+	Condition   *ConditionSpec          `json:"condition,omitempty" yaml:"condition,omitempty"`
+	Subflow     *SubflowSpec            `json:"subflow,omitempty" yaml:"subflow,omitempty"`
+	Aggregator  *VariableAggregatorSpec `json:"aggregator,omitempty" yaml:"aggregator,omitempty"`
+	Join        *JoinSpec               `json:"join,omitempty" yaml:"join,omitempty"`
+	Loop        *LoopSpec               `json:"loop,omitempty" yaml:"loop,omitempty"`
+	Inputs      *[]InputParamSpec       `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Outputs     *[]OutputParamSpec      `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	UI          map[string]any          `json:"ui,omitempty" yaml:"ui,omitempty"`
 }
 
 type xRunnerEdge struct {
@@ -264,13 +265,14 @@ func xRunnerGraphFromGraph(g Graph) xRunnerGraph {
 			Outputs:   outputsPtr(node.Outputs),
 			UI:        cloneMap(node.UI),
 			Data: xRunnerData{
-				Approval:  cloneApproval(node.Approval),
-				Condition: cloneCondition(node.Condition),
-				Subflow:   cloneSubflow(node.Subflow),
-				Join:      cloneJoin(node.Join),
-				Loop:      cloneLoop(node.Loop),
-				Inputs:    inputsPtr(node.Inputs),
-				Outputs:   outputsPtr(node.Outputs),
+				Approval:   cloneApproval(node.Approval),
+				Condition:  cloneCondition(node.Condition),
+				Subflow:    cloneSubflow(node.Subflow),
+				Aggregator: cloneAggregator(node.Aggregator),
+				Join:       cloneJoin(node.Join),
+				Loop:       cloneLoop(node.Loop),
+				Inputs:     inputsPtr(node.Inputs),
+				Outputs:    outputsPtr(node.Outputs),
 			},
 		})
 	}
@@ -346,6 +348,7 @@ func workflowGraphNodesFromGraph(g Graph) []workflow.GraphNodeSpec {
 				Approval:    workflowApproval(node.Approval),
 				Condition:   workflowCondition(node.Condition),
 				Subflow:     workflowSubflow(node.Subflow),
+				Aggregator:  workflowAggregator(node.Aggregator),
 				Join:        workflowJoin(node.Join),
 				Loop:        workflowLoop(node.Loop),
 				Inputs:      workflowInputs(node.Inputs),
@@ -516,6 +519,27 @@ func workflowSubflow(input *SubflowSpec) *workflow.GraphSubflowSpec {
 	}
 }
 
+func workflowAggregator(input *VariableAggregatorSpec) *workflow.GraphVariableAggregatorSpec {
+	if input == nil {
+		return nil
+	}
+	out := &workflow.GraphVariableAggregatorSpec{
+		OutputKey: input.OutputKey,
+		Strategy:  input.Strategy,
+		UI:        cloneMap(input.UI),
+	}
+	if len(input.Sources) > 0 {
+		out.Sources = make([]workflow.GraphVariableAggregatorSourceSpec, len(input.Sources))
+		for i, source := range input.Sources {
+			out.Sources[i] = workflow.GraphVariableAggregatorSourceSpec{
+				Expression: source.Expression,
+				Variable:   workflowVariableRef(source.Variable),
+			}
+		}
+	}
+	return out
+}
+
 func workflowJoin(input *JoinSpec) *workflow.GraphJoinSpec {
 	if input == nil {
 		return nil
@@ -594,6 +618,7 @@ func (n xRunnerNode) toNode() Node {
 		Approval:    cloneApproval(n.Data.Approval),
 		Condition:   cloneCondition(n.Data.Condition),
 		Subflow:     cloneSubflow(n.Data.Subflow),
+		Aggregator:  cloneAggregator(n.Data.Aggregator),
 		Join:        cloneJoin(n.Data.Join),
 		Loop:        cloneLoop(n.Data.Loop),
 		UI:          ui,
@@ -742,11 +767,16 @@ func cloneOutputs(input []OutputParamSpec) []OutputParamSpec {
 
 func cloneValueSource(input ValueSource) ValueSource {
 	out := input
-	if input.Variable != nil {
-		variable := *input.Variable
-		out.Variable = &variable
-	}
+	out.Variable = cloneVariableRef(input.Variable)
 	return out
+}
+
+func cloneVariableRef(input *VariableRef) *VariableRef {
+	if input == nil {
+		return nil
+	}
+	out := *input
+	return &out
 }
 
 func inputsPtr(input []InputParamSpec) *[]InputParamSpec {
@@ -816,6 +846,24 @@ func cloneSubflow(input *SubflowSpec) *SubflowSpec {
 	out := *input
 	out.Vars = cloneMap(input.Vars)
 	out.UI = cloneMap(input.UI)
+	return &out
+}
+
+func cloneAggregator(input *VariableAggregatorSpec) *VariableAggregatorSpec {
+	if input == nil {
+		return nil
+	}
+	out := *input
+	out.UI = cloneMap(input.UI)
+	if len(input.Sources) > 0 {
+		out.Sources = make([]VariableAggregatorSourceSpec, len(input.Sources))
+		for i, source := range input.Sources {
+			out.Sources[i] = VariableAggregatorSourceSpec{
+				Expression: source.Expression,
+				Variable:   cloneVariableRef(source.Variable),
+			}
+		}
+	}
 	return &out
 }
 

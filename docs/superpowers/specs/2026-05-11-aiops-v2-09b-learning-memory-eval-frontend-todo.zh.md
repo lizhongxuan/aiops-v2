@@ -26,7 +26,7 @@ Learning API view-model
   -> Tests and visual checks
 ```
 
-先建立 `learningAssets.ts` 和 view-model，再迁移 `ExperiencePacksPage.tsx`。不要让 Chat、Case、Middleware、Runner 页面各自读取 Candidate Store 或拼接推荐状态。
+先建立 `learningAssets.ts` 和 view-model，再迁移 `ExperiencePacksPage.tsx`。不要让 Chat、Case、Middleware、Runner 页面各自读取 Candidate Store 或拼接推荐状态；现有 AI Chat 页面和 Runner 工作流页面不作为本阶段改动范围。
 
 ## 3. 文件地图
 
@@ -57,7 +57,7 @@ Learning API view-model
 - `web/src/components/learning/ReviewQueueTable.tsx`：审核队列表。
 - `web/src/components/learning/ReviewGateResultPanel.tsx`：Gate Result。
 - `web/src/components/learning/ReviewDecisionPanel.tsx`：审核决策。
-- `web/src/components/learning/ArtifactDiffPanel.tsx`：Gene/Capsule/Runbook/Workflow/RepairPlan/Memory/OpsGraph patch diff。
+- `web/src/components/learning/ArtifactDiffPanel.tsx`：SkillCard/Debug RCA/RepairPlan/Runbook/Workflow/Memory/OpsGraph patch diff；Gene/Capsule 后续实现时再补充。
 - `web/src/components/learning/ActivationIndexTable.tsx`：Activation Index 列表。
 - `web/src/components/learning/ActivationExplainDrawer.tsx`：匹配解释。
 - `web/src/components/learning/MemoryRecordTable.tsx`：Memory 表格。
@@ -82,7 +82,7 @@ Learning API view-model
 - `web/src/pages/PromptTracePage.tsx` 或 AI Reasoning 页面：展示 activatedExperienceRefs、memoryRefs、evalLabels、candidate leakage warning。
 - `web/src/pages/CorootOverviewPage.tsx` / Observability 页面：Debug Trace 生成 Debug RCA candidate。
 - `web/src/pages/MiddlewareRepairCasePage.tsx` 或后续 08 页面：Repair case 生成 RepairPlan/Capsule candidate。
-- `web/src/pages/RunnerStudioPage.tsx`：Workflow draft 来源为 experience-pack 时展示 source、review、environment、evidence。
+- 现有 Runner workflow metadata：Workflow draft 来源为 experience-pack 时写入 source、review、environment、evidence；不要求改 Runner 页面。
 - `web/src/pages/RunbookCatalogPage.tsx`：只展示 approved/published Runbook，candidate 不进入正式目录。
 - `web/src/pages/OpsGraphPage.tsx`：展示 Experience / Memory / Eval asset，并接入 OpsGraph patch review。
 - `web/src/pages/PostmortemPage.tsx`：引用 Experience candidate、Eval case、Memory candidate。
@@ -278,7 +278,7 @@ Learning API view-model
 - [ ] DebugEvent / Observability 页面提供从 Debug Trace 生成 Debug RCA candidate 和 Eval case。
 - [ ] Middleware Repair 页面提供生成 RepairPlan candidate、Capsule candidate、Eval case 和查看派生经验包。
 - [ ] Workflow Run Detail 提供从成功 run 生成 Workflow draft / Capsule candidate，从失败 run 生成 anti-pattern / Eval case。
-- [ ] RunnerStudioPage 对 source=experience-pack 的 workflow 展示 experience_pack_id、variant_key、review_record_id、evidence chain、environment scope。
+- [ ] 经验服务把 source=experience-pack、experience_pack_id、variant_key、review_record_id、evidence chain、environment scope 写入现有 Runner workflow metadata。
 - [ ] PromptTracePage 展示 activatedExperienceRefs、memoryRefs、evalLabels、candidate leakage warning、experience activation diff。
 - [ ] Chat 回复只展示已激活经验来源，不展示 candidate 的具体推荐内容。
 - [ ] OpsGraphPage 的 Asset Map 展示 approved runbooks、workflows、experience packs、memory snippets、Eval cases。

@@ -53,7 +53,7 @@ governance API view-model
 - `web/src/pages/complexPagesApi.ts`：停止新增治理 API；逐步迁移到 `governance.ts`。
 - `web/src/chat/components/ApprovalBlockPart.tsx`：复用 ActionProposal 摘要/详情入口。
 - `web/src/pages/IncidentWorkbenchPage.tsx` 或后续 incidents 组件：复用 governance 组件展示 actions。
-- `web/src/pages/RunnerStudioPage.tsx` 或 runner 节点详情组件：展示节点 ActionProposal / Approval / HostLease。
+- `web/src/pages/ExecutionRunDetailPage.tsx` 或 runner 节点详情组件：展示节点 ActionProposal / Approval / HostLease；不要求修改现有 Runner 页面。
 - `web/src/app/navigation.ts`：将 `/approval-management` 文案调整为“动作治理”或“Action Governance”。
 - `web/src/pages/complexPages.test.tsx`：更新审批管理页面测试。
 
@@ -149,7 +149,7 @@ governance API view-model
 
 - [ ] 更新 `web/src/chat/components/ApprovalBlockPart.tsx`，使用 governance view-model 展示 action proposal 摘要和详情入口。
 - [ ] 更新 Incident Control Plane 的 Actions panel 计划，明确复用 `ActionProposalTable` 和 `ActionProposalDetailDrawer`。
-- [ ] 更新 Runner Studio 节点详情计划，展示节点绑定的 ActionProposal、Approval、HostLease。
+- [ ] 更新 Execution Run Detail 或 runner 节点详情计划，展示节点绑定的 ActionProposal、Approval、HostLease；不要求修改现有 Runner 页面。
 - [ ] 确保三个入口的 approve/reject 最终调用同一个 governance API 函数。
 - [ ] 单测覆盖 Chat approval block 不出现绕过审批的“直接执行”按钮。
 

@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-05a-ai-reasoning-prompt-trace-frontend-design.zh.md](2026-05-11-aiops-v2-05a-ai-reasoning-prompt-trace-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-05b-ai-reasoning-prompt-trace-frontend-todo.zh.md](2026-05-11-aiops-v2-05b-ai-reasoning-prompt-trace-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段要求 AI 在浏览器插件 `DebugCase` 和 PG `middleware_repair` case 内完成证据解释、根因假设、计划草稿、用户可读报告和输出路由。Prompt Trace 保留必要治理记录：输入层、证据引用、工具可见性、模型输出、动作治理决策和输出去向。
+
+完整 Eval 工作台、Prompt diff 页面、多模型治理和复杂 prompt 优化闭环保留为后续能力。AI 不能直接执行工具，不能拥有 `RepairPlan`、Workflow 或 Experience Pack 生命周期；现有 AI Chat 页面不作为本方案改动范围。
+
 ## 1. 模块定位
 
 AI Reasoning Plane 负责在 case 上下文中完成证据理解、根因假设、Runbook/Workflow/经验匹配、计划生成和结果解释。Prompt Trace 负责把每轮推理的输入、工具可见性、系统规则、上下文拼装、模型输出、工具调用和治理决策完整记录下来，形成可回放的 AI 治理证据。

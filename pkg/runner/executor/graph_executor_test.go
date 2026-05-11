@@ -81,6 +81,85 @@ func TestGraphExecutorConditionEdgeUsesExportedVars(t *testing.T) {
 	}
 }
 
+func TestGraphExecutorIfElseEdgesUseConditionNodeExpression(t *testing.T) {
+	runner := &captureRunner{
+		outputByStep: map[string]map[string]any{
+			"pre": {"vars": map[string]any{"deploy": false}},
+		},
+	}
+	exec := &GraphExecutor{Runner: runner}
+	wf := graphWorkflow(
+		[]workflow.Step{
+			{ID: "pre", Name: "pre", Action: "cmd.run", Targets: []string{"local"}},
+			{ID: "gate", Name: "gate", Action: "condition.evaluate", Targets: []string{"local"}},
+			{ID: "deploy", Name: "deploy", Action: "cmd.run", Targets: []string{"local"}},
+			{ID: "notify", Name: "notify", Action: "cmd.run", Targets: []string{"local"}},
+		},
+		[]workflow.GraphNodeSpec{
+			{ID: "start", Type: "start"},
+			{ID: "pre", Type: "action", StepID: "pre", Step: "pre"},
+			{ID: "gate", Type: "condition", StepID: "gate", Step: "gate", Data: workflow.GraphNodeDataSpec{Condition: &workflow.GraphConditionSpec{If: "deploy == true", Else: true}}},
+			{ID: "deploy", Type: "action", StepID: "deploy", Step: "deploy"},
+			{ID: "notify", Type: "action", StepID: "notify", Step: "notify"},
+		},
+		[]workflow.GraphEdgeSpec{
+			{ID: "start-pre", Source: "start", Target: "pre", Kind: "next"},
+			{ID: "pre-gate", Source: "pre", Target: "gate", Kind: "next"},
+			{ID: "gate-deploy", Source: "gate", SourcePort: "if", Target: "deploy", Kind: "if"},
+			{ID: "gate-notify", Source: "gate", SourcePort: "else", Target: "notify", Kind: "else"},
+		},
+	)
+
+	if err := exec.Run(context.Background(), wf); err != nil {
+		t.Fatalf("graph run failed: %v", err)
+	}
+	if _, ok := runner.varsByStep["deploy"]; ok {
+		t.Fatalf("deploy should not run when IF expression is false, calls=%v", runner.varsByStep)
+	}
+	if _, ok := runner.varsByStep["notify"]; !ok {
+		t.Fatalf("notify should run through ELSE edge, calls=%v", runner.varsByStep)
+	}
+}
+
+func TestGraphExecutorVariableAggregatorExportsSelectedValue(t *testing.T) {
+	runner := &captureRunner{
+		outputByStep: map[string]map[string]any{
+			"pre": {"vars": map[string]any{"candidate_host": "db-primary"}},
+		},
+	}
+	exec := &GraphExecutor{Runner: runner}
+	wf := graphWorkflow(
+		[]workflow.Step{
+			{ID: "pre", Name: "pre", Action: "cmd.run", Targets: []string{"local"}},
+			{ID: "finish", Name: "finish", Action: "cmd.run", Targets: []string{"local"}},
+		},
+		[]workflow.GraphNodeSpec{
+			{ID: "start", Type: "start"},
+			{ID: "pre", Type: "action", StepID: "pre", Step: "pre"},
+			{ID: "aggregate", Type: "variable_aggregator", Data: workflow.GraphNodeDataSpec{Aggregator: &workflow.GraphVariableAggregatorSpec{
+				OutputKey: "restore_host",
+				Strategy:  "first_non_empty",
+				Sources: []workflow.GraphVariableAggregatorSourceSpec{
+					{Expression: "candidate_host"},
+				},
+			}}},
+			{ID: "finish", Type: "action", StepID: "finish", Step: "finish"},
+		},
+		[]workflow.GraphEdgeSpec{
+			{ID: "start-pre", Source: "start", Target: "pre", Kind: "next"},
+			{ID: "pre-aggregate", Source: "pre", Target: "aggregate", Kind: "next"},
+			{ID: "aggregate-finish", Source: "aggregate", Target: "finish", Kind: "next"},
+		},
+	)
+
+	if err := exec.Run(context.Background(), wf); err != nil {
+		t.Fatalf("graph run failed: %v", err)
+	}
+	if got := runner.varsByStep["finish"]["restore_host"]; got != "db-primary" {
+		t.Fatalf("finish should receive aggregated restore_host, got %v in vars %+v", got, runner.varsByStep["finish"])
+	}
+}
+
 func TestGraphExecutorFailureEdgeHandlesFailedBranch(t *testing.T) {
 	runner := &fakeRunner{failOn: "restore"}
 	exec := &GraphExecutor{Runner: runner}

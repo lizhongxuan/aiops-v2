@@ -14,12 +14,12 @@ Middleware Repair 的前端不是“数据库管理页面”，也不是把 DBA 
 - 识别 PG、Redis、MQ、Elasticsearch、Kafka、MySQL 等中间件资源、角色、拓扑、业务影响和安全画像。
 - 对每个修复请求先做只读诊断和 RCA，不把自然语言请求直接映射为重启、failover、删数据或配置写入。
 - 在 PG 场景中清楚展示 primary、standby、replica、proxy、replication lag、WAL、slot、锁等待、连接、磁盘、备份、PITR 和 failover 风险。
-- 命中已审核经验包、Capsule、Runbook、Workflow 或 RepairPlan 时，展示来源、适用环境、成功率、最近失败、禁用条件、权限、风险、回滚和验证项。
+- 命中已审核 SkillCard、Debug RCA、RepairPlan、Runbook 或 Workflow metadata 时，展示来源、适用环境、成功率、最近失败、禁用条件、权限、风险、回滚和验证项。
 - 未命中经验时生成 RepairPlan draft，并让用户确认假设、诊断步骤、修复步骤、风险、审批、回滚、验证和禁用条件。
 - 高风险和破坏性步骤只能生成 ActionProposal 或 Workflow run，必须走 RBAC、HostLease、审批、ActionToken 和 Verification。
 - 展示 RecoveryAttempt 的每步结果、失败点、回滚结果、验证记录和下一步建议。
 - 修复成功或失败后生成经验包候选，保留环境画像、证据链、失败点、验证结果和禁用条件。
-- 从 AI Chat、Incident、OpsGraph、Observability、Execution、Verification、Experience Pack 页面跳入同一个修复 case。
+- 从现有 AI Chat、Incident、OpsGraph、Observability、Execution、Verification、Experience Pack 页面跳入同一个修复 case；AI Chat 页面本身不新增专用修复入口。
 
 设计原则：
 
@@ -49,7 +49,7 @@ Middleware Repair 的前端不是“数据库管理页面”，也不是把 DBA 
 主要不足：
 
 - 当前没有独立 Middleware Repair 导航、资源目录、修复 case 列表和 RepairPlan 工作台。
-- AI Chat 产生的 `repair_plan_draft` 没有稳定落点。
+- AI Chat 后端产生的 `repair_plan_draft` 没有稳定落点；前端只承接后端创建的 `middleware_repair` case，不改 Chat 页面。
 - Case 页面还不能专门表达中间件拓扑、角色、复制、锁、连接、磁盘、WAL、备份和 failover 风险。
 - 缺少中间件只读诊断证据的结构化面板和“证据不足”阻断状态。
 - 缺少已审核经验匹配页面，用户无法判断经验是否适用当前环境。
@@ -334,7 +334,7 @@ created
 - 阻塞项。
 - 操作者或系统 actor。
 
-如果用户从 AI Chat 说“帮我修复 xxx 的 PG 集群”，页面必须停在 `collecting_evidence` 或 `diagnosing`，不能直接进入 `executing`。
+如果用户从现有 AI Chat 说“帮我修复 xxx 的 PG 集群”，由后端创建或绑定 `middleware_repair` case；页面必须停在 `collecting_evidence` 或 `diagnosing`，不能直接进入 `executing`。
 
 ### 7.3 Tabs
 
@@ -980,7 +980,7 @@ AI Chat / User / Alert
 
 - `/middleware` 能展示中间件修复总览、Safety Strip、活跃 case、待确认 RepairPlan、运行中 RecoveryAttempt 和经验候选。
 - `/middleware/resources` 能展示 PG、Redis、MQ、Kafka、Elasticsearch、MySQL 等资源目录和安全画像。
-- 用户从 AI Chat 请求“帮我修复 xxx 的 PG 集群”时，页面创建 `middleware_repair` case 并停留在诊断或计划阶段，不能直接执行。
+- 用户从现有 AI Chat 请求“帮我修复 xxx 的 PG 集群”时，后端创建 `middleware_repair` case，页面只承接该 case 并停留在诊断或计划阶段，不能直接执行。
 - PG 资源详情能展示拓扑、角色、复制、锁、连接、磁盘/WAL、备份、PITR 和 failover 风险。
 - required diagnostic evidence 缺失时，只允许继续只读诊断或生成证据不足计划，不能确认高风险修复。
 - 命中已审核经验时展示来源、适用环境、成功率、最近失败、禁用条件、权限、风险、回滚和验证项。

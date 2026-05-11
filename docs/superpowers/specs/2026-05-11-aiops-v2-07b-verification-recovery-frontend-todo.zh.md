@@ -68,7 +68,7 @@ Verification API view-model
 
 - `web/src/pages/IncidentWorkbenchPage.tsx`：Case Header 增加 RecoveryStatus；Verification tab 复用 `verification` 组件。
 - `web/src/pages/RunbookDetailPage.tsx`：Runbook 验证项链接到 VerificationSpec / VerificationRecord。
-- `web/src/pages/RunnerStudioPage.tsx` 或 `WorkflowRunDetailPage.tsx`：Workflow End / Run Detail 嵌入 verification refs、observation window、recovery contribution。
+- `web/src/pages/WorkflowRunDetailPage.tsx`：Workflow End / Run Detail 嵌入 verification refs、observation window、recovery contribution；不要求修改现有 Runner 页面。
 - `web/src/pages/CorootOverviewPage.tsx` 或 Observability 页面：DebugEvent 修复后跳转 Evidence Compare。
 - `web/src/pages/PostmortemPage.tsx`：复盘引用 VerificationRecord 和 RecoveryDecision。
 - `web/src/pages/ApprovalManagementPage.tsx`：高风险 ActionProposal 展示 missing VerificationSpec blocker。
@@ -231,7 +231,7 @@ Verification API view-model
 
 - [ ] 修改 `IncidentWorkbenchPage.tsx`，Verification tab 复用 Recovery Summary、Verification Records、Evidence Compare、Decision & Close Gate。
 - [ ] 修改 `ApprovalManagementPage.tsx`，高风险 ActionProposal 显示 VerificationSpec、expectedEffect、rollbackCriteria 和 missing verification blocker。
-- [ ] 修改 `RunnerStudioPage.tsx` 或 `WorkflowRunDetailPage.tsx`，Workflow End / Run Detail 显示 verification refs、observation window、recovery contribution。
+- [ ] 修改 `WorkflowRunDetailPage.tsx` 或对应 Execution Run Detail 组件，Workflow End / Run Detail 显示 verification refs、observation window、recovery contribution；不要求修改现有 Runner 页面。
 - [ ] 修改 `RunbookDetailPage.tsx`，Runbook 验证项链接到 VerificationSpec / VerificationRecord。
 - [ ] 修改 Observability / DebugEvent 页面，修复后展示 before/after trace 对比和 VerificationRecord 链接。
 - [ ] 修改 Middleware Repair 页面，嵌入 PG/Redis/MQ 健康验证和 rollback verification。

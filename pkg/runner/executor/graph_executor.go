@@ -186,6 +186,12 @@ func (e *GraphExecutor) runGraphNode(ctx context.Context, wf workflow.Workflow, 
 			return finish(graphNodeResult{id: node.ID, status: state.RunStatusFailed, exports: exports, allowed: allowed, err: err})
 		}
 		return finish(graphNodeResult{id: node.ID, status: state.RunStatusSuccess, exports: exports, allowed: allowed})
+	case "variable_aggregator":
+		exports, allowed, err := aggregateGraphVariables(node, runtimeVars)
+		if err != nil {
+			return finish(graphNodeResult{id: node.ID, status: state.RunStatusFailed, err: err})
+		}
+		return finish(graphNodeResult{id: node.ID, status: state.RunStatusSuccess, exports: exports, allowed: allowed})
 	case "end":
 		return finish(graphNodeResult{id: node.ID, status: state.RunStatusSuccess})
 	case "manual_approval":
@@ -471,6 +477,172 @@ func subflowVars(node workflow.GraphNodeSpec, step workflow.Step) map[string]any
 		}
 	}
 	return vars
+}
+
+func aggregateGraphVariables(node workflow.GraphNodeSpec, runtimeVars map[string]any) (map[string]any, map[string]any, error) {
+	aggregator := node.Data.Aggregator
+	if aggregator == nil {
+		return nil, nil, fmt.Errorf("variable aggregator node %q aggregator spec is required", node.ID)
+	}
+	outputKey := strings.TrimSpace(aggregator.OutputKey)
+	if outputKey == "" {
+		return nil, nil, fmt.Errorf("variable aggregator node %q output_key is required", node.ID)
+	}
+	values := make([]any, 0, len(aggregator.Sources))
+	for _, source := range aggregator.Sources {
+		value, ok := resolveAggregatorSource(source, runtimeVars)
+		if ok {
+			values = append(values, value)
+		}
+	}
+	var selected any
+	switch strings.TrimSpace(aggregator.Strategy) {
+	case "", "first_non_empty", "prefer_success":
+		for _, value := range values {
+			if aggregatorValuePresent(value) {
+				selected = value
+				break
+			}
+		}
+	case "array":
+		selected = values
+	default:
+		return nil, nil, fmt.Errorf("variable aggregator node %q unsupported strategy %q", node.ID, aggregator.Strategy)
+	}
+	exports := map[string]any{outputKey: selected}
+	return exports, exports, nil
+}
+
+func resolveAggregatorSource(source workflow.GraphVariableAggregatorSourceSpec, vars map[string]any) (any, bool) {
+	for _, expression := range aggregatorSourceExpressions(source) {
+		if value, ok := lookupAggregatorExpression(expression, vars); ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func aggregatorSourceExpressions(source workflow.GraphVariableAggregatorSourceSpec) []string {
+	expressions := []string{}
+	if expression := strings.TrimSpace(source.Expression); expression != "" {
+		expressions = append(expressions, expression)
+	}
+	if source.Variable == nil {
+		return expressions
+	}
+	ref := source.Variable
+	if path := strings.TrimSpace(ref.Path); path != "" {
+		expressions = append(expressions, path)
+	}
+	scope := strings.TrimSpace(ref.Scope)
+	nodeID := strings.TrimSpace(ref.NodeID)
+	name := strings.TrimSpace(ref.Name)
+	if scope != "" && nodeID != "" && name != "" {
+		expressions = append(expressions, scope+"."+nodeID+"."+name)
+	}
+	if scope != "" && name != "" {
+		expressions = append(expressions, scope+"."+name)
+	}
+	if name != "" {
+		expressions = append(expressions, name)
+	}
+	return expressions
+}
+
+func lookupAggregatorExpression(expression string, vars map[string]any) (any, bool) {
+	expression = strings.TrimSpace(expression)
+	if expression == "" {
+		return nil, false
+	}
+	if value, ok := vars[expression]; ok {
+		return value, true
+	}
+	parts := splitVariablePath(expression)
+	if len(parts) == 0 {
+		return nil, false
+	}
+	if value, ok := lookupNestedAggregatorValue(vars, parts); ok {
+		return value, true
+	}
+	switch parts[0] {
+	case "env", "workflow_var", "inventory", "sys", "system", "input", "workflow_input":
+		if len(parts) > 1 {
+			if value, ok := lookupNestedAggregatorValue(vars, parts[1:]); ok {
+				return value, true
+			}
+		}
+	case "node", "node_output", "approval", "subflow":
+		if len(parts) > 2 {
+			if value, ok := lookupNestedAggregatorValue(vars, parts[2:]); ok {
+				return value, true
+			}
+		}
+	}
+	if len(parts) > 1 {
+		if value, ok := vars[parts[len(parts)-1]]; ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func splitVariablePath(expression string) []string {
+	raw := strings.Split(expression, ".")
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func lookupNestedAggregatorValue(current any, parts []string) (any, bool) {
+	if len(parts) == 0 {
+		return current, true
+	}
+	switch typed := current.(type) {
+	case map[string]any:
+		next, ok := typed[parts[0]]
+		if !ok {
+			return nil, false
+		}
+		return lookupNestedAggregatorValue(next, parts[1:])
+	case map[string]string:
+		if len(parts) != 1 {
+			return nil, false
+		}
+		next, ok := typed[parts[0]]
+		return next, ok
+	case map[any]any:
+		next, ok := typed[parts[0]]
+		if !ok {
+			return nil, false
+		}
+		return lookupNestedAggregatorValue(next, parts[1:])
+	default:
+		return nil, false
+	}
+}
+
+func aggregatorValuePresent(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) > 0
+	case []string:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	case map[string]string:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 func (e *GraphExecutor) runStep(ctx context.Context, wf workflow.Workflow, step workflow.Step, runtimeVars, allowedVars map[string]any) (string, map[string]any, map[string]any, error) {
@@ -761,8 +933,20 @@ func (idx executionGraph) selectedOutgoing(nodeID, status string, vars map[strin
 			if status != state.RunStatusSuccess {
 				continue
 			}
-			ok, err := workflow.EvalWhen(edge.Condition, vars)
+			ok, err := workflow.EvalWhen(idx.edgeConditionExpression(edge), vars)
 			if err == nil && ok {
+				selected = append(selected, edge)
+			}
+		case "if":
+			if status != state.RunStatusSuccess {
+				continue
+			}
+			ok, err := workflow.EvalWhen(idx.edgeConditionExpression(edge), vars)
+			if err == nil && ok {
+				selected = append(selected, edge)
+			}
+		case "else":
+			if status == state.RunStatusSuccess && !idx.hasMatchedConditionalOutgoing(nodeID, edge.ID, vars) {
 				selected = append(selected, edge)
 			}
 		}
@@ -821,14 +1005,53 @@ func (idx executionGraph) rawSelectedOutgoing(nodeID, status string, vars map[st
 			}
 		case "condition":
 			if status == state.RunStatusSuccess {
-				ok, err := workflow.EvalWhen(edge.Condition, vars)
+				ok, err := workflow.EvalWhen(idx.edgeConditionExpression(edge), vars)
 				if err == nil && ok {
 					selected = append(selected, edge)
 				}
 			}
+		case "if":
+			if status == state.RunStatusSuccess {
+				ok, err := workflow.EvalWhen(idx.edgeConditionExpression(edge), vars)
+				if err == nil && ok {
+					selected = append(selected, edge)
+				}
+			}
+		case "else":
+			if status == state.RunStatusSuccess && !idx.hasMatchedConditionalOutgoing(nodeID, edge.ID, vars) {
+				selected = append(selected, edge)
+			}
 		}
 	}
 	return selected
+}
+
+func (idx executionGraph) edgeConditionExpression(edge workflow.GraphEdgeSpec) string {
+	if strings.TrimSpace(edge.Condition) != "" {
+		return edge.Condition
+	}
+	node := idx.nodes[edge.Source]
+	if node.Data.Condition != nil && strings.TrimSpace(node.Data.Condition.If) != "" {
+		return node.Data.Condition.If
+	}
+	return ""
+}
+
+func (idx executionGraph) hasMatchedConditionalOutgoing(nodeID, skipEdgeID string, vars map[string]any) bool {
+	for _, edge := range idx.outgoing[nodeID] {
+		if edge.ID == skipEdgeID {
+			continue
+		}
+		kind := strings.TrimSpace(edge.Kind)
+		if kind != "if" && kind != "condition" {
+			continue
+		}
+		ok, err := workflow.EvalWhen(idx.edgeConditionExpression(edge), vars)
+		if err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (idx executionGraph) hasLoopContinuation(loopID, nodeID, status string) bool {

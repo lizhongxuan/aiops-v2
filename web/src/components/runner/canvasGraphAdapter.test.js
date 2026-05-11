@@ -7,6 +7,7 @@ import {
   getGraphUpstreamNodeIds,
   graphToCanvasModel,
   graphToFlowModel,
+  insertCatalogActionOnEdge,
   updateGraphEdgeKind,
   validationIssueToCanvasFocus,
   validateGraphConnection,
@@ -55,7 +56,7 @@ describe("canvasGraphAdapter", () => {
       position: { x: 780, y: 180 },
       label: "Shell Script",
       step: {
-        name: "shell-run",
+        name: expect.stringMatching(/^shell-run-1-[a-z]{4}$/),
         action: "shell.run",
         targets: ["local"],
         args: { script: "set -e\ndf -h", env: { LC_ALL: "C" } },
@@ -71,6 +72,27 @@ describe("canvasGraphAdapter", () => {
     expect(graph.nodes).toHaveLength(2);
   });
 
+  it("hides terminal end nodes from the flow canvas while preserving the backend graph", () => {
+    const flow = graphToFlowModel({
+      version: "v1",
+      workflow: { name: "no-visible-end" },
+      nodes: [
+        { id: "start", type: "start", position: { x: 80, y: 120 }, label: "Start" },
+        { id: "shell-run", type: "action", position: { x: 360, y: 120 }, label: "Shell Script", step: { name: "shell-run-1-abcd", action: "shell.run" } },
+        { id: "end", type: "end", position: { x: 640, y: 120 }, label: "End" },
+      ],
+      edges: [
+        { id: "start-shell-run", source: "start", target: "shell-run", kind: "next" },
+        { id: "shell-run-end", source: "shell-run", target: "end", kind: "next" },
+      ],
+    });
+
+    expect(flow.nodes.map((node) => node.id)).toEqual(["start", "shell-run"]);
+    expect(flow.edges).toEqual([
+      expect.objectContaining({ id: "start-shell-run", source: "start", target: "shell-run" }),
+    ]);
+  });
+
   it("defaults executable action nodes to local so new drafts can validate and run without inventory setup", () => {
     const next = addCatalogActionNode(
       { version: "v1", workflow: { name: "demo" }, nodes: [], edges: [] },
@@ -79,6 +101,37 @@ describe("canvasGraphAdapter", () => {
     );
 
     expect(next.nodes[0].step.targets).toEqual(["local"]);
+  });
+
+  it("uses backend graph node types for condition, approval, and variable aggregator catalog actions", () => {
+    const condition = addCatalogActionNode(
+      { version: "v1", workflow: { name: "demo" }, nodes: [], edges: [] },
+      { action: "condition.evaluate", label: "条件分支" },
+      { x: 120, y: 160 },
+    );
+    const approval = addCatalogActionNode(
+      { version: "v1", workflow: { name: "demo" }, nodes: [], edges: [] },
+      { action: "manual.approval", label: "人工审批" },
+      { x: 120, y: 160 },
+    );
+    const aggregator = addCatalogActionNode(
+      { version: "v1", workflow: { name: "demo" }, nodes: [], edges: [] },
+      { action: "variable.aggregate", label: "变量聚合" },
+      { x: 120, y: 160 },
+    );
+
+    expect(condition.nodes[0]).toMatchObject({
+      type: "condition",
+      step: { action: "condition.evaluate" },
+    });
+    expect(approval.nodes[0]).toMatchObject({
+      type: "manual_approval",
+      step: { action: "manual.approval" },
+    });
+    expect(aggregator.nodes[0]).toMatchObject({
+      type: "variable_aggregator",
+      step: { action: "variable.aggregate" },
+    });
   });
 
   it("reads backend port arrays when converting graph nodes to flow canvas data", () => {
@@ -183,6 +236,101 @@ describe("canvasGraphAdapter", () => {
     expect(duplicate.edges).toHaveLength(1);
   });
 
+  it("normalizes flow handles into backend edge kinds without losing UI ports", () => {
+    const approvalGraph = {
+      version: "v1",
+      workflow: { name: "demo" },
+      nodes: [
+        {
+          id: "approve",
+          type: "approval",
+          ports: [
+            { id: "in", type: "input" },
+            { id: "approved", type: "output" },
+            { id: "rejected", type: "output" },
+          ],
+        },
+        {
+          id: "deploy",
+          type: "action",
+          ports: [
+            { id: "in", type: "input" },
+            { id: "next", type: "output" },
+          ],
+        },
+      ],
+      edges: [],
+    };
+
+    const approved = flowConnectionToGraphEdge(approvalGraph, {
+      source: "approve",
+      target: "deploy",
+      sourceHandle: "approved",
+      targetHandle: "in",
+    });
+    const rejected = flowConnectionToGraphEdge(approvalGraph, {
+      source: "approve",
+      target: "deploy",
+      sourceHandle: "rejected",
+      targetHandle: "in",
+    });
+    const timeout = flowConnectionToGraphEdge({
+      ...approvalGraph,
+      nodes: [
+        { id: "wait", type: "action", ports: [{ id: "in", type: "input" }, { id: "timeout", type: "output" }] },
+        approvalGraph.nodes[1],
+      ],
+    }, {
+      source: "wait",
+      target: "deploy",
+      sourceHandle: "timeout",
+      targetHandle: "in",
+    });
+
+    expect(approved.edges[0]).toMatchObject({
+      kind: "approval_approved",
+      source_port: "approved",
+      target_port: "in",
+    });
+    expect(rejected.edges[0]).toMatchObject({
+      kind: "approval_rejected",
+      source_port: "rejected",
+      target_port: "in",
+    });
+    expect(timeout.edges[0]).toMatchObject({
+      kind: "failure",
+      source_port: "timeout",
+      target_port: "in",
+    });
+  });
+
+  it("inserts a catalog action on an existing edge and reconnects the graph", () => {
+    const next = insertCatalogActionOnEdge(graph, "start-pre-check", {
+      action: "notify.send",
+      label: "Notify",
+    });
+
+    expect(next.nodes.map((node) => node.id)).toContain("notify-send");
+    expect(next.edges.find((edge) => edge.id === "start-pre-check")).toBeUndefined();
+    expect(next.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "start",
+        target: "notify-send",
+        kind: "next",
+        source_port: "next",
+        target_port: "in",
+      }),
+      expect.objectContaining({
+        source: "notify-send",
+        target: "pre-check",
+        kind: "next",
+        source_port: "next",
+        target_port: "in",
+      }),
+    ]));
+    expect(graph.edges).toHaveLength(1);
+  });
+
   it("rejects invalid flow canvas connections with actionable validation errors", () => {
     const validation = validateGraphConnection(graph, {
       source: "pre-check",
@@ -230,6 +378,26 @@ describe("canvasGraphAdapter", () => {
       sourceHandle: "next",
       targetHandle: "in",
     })).toEqual({ valid: true });
+  });
+
+  it("normalizes loose reverse handle connections into executable graph direction", () => {
+    const graphWithoutEdges = { ...graph, edges: [] };
+    const result = connectFlowEdge(graphWithoutEdges, {
+      source: "pre-check",
+      target: "start",
+      sourceHandle: "in",
+      targetHandle: "next",
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.graph.edges).toEqual([
+      expect.objectContaining({
+        source: "start",
+        target: "pre-check",
+        source_port: "next",
+        target_port: "in",
+      }),
+    ]);
   });
 
   it("updates an existing edge kind and keeps graph-only edge data", () => {

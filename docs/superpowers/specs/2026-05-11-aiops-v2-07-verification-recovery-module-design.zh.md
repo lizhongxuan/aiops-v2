@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-07a-verification-recovery-frontend-design.zh.md](2026-05-11-aiops-v2-07a-verification-recovery-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-07b-verification-recovery-frontend-todo.zh.md](2026-05-11-aiops-v2-07b-verification-recovery-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段重点验证两个场景：浏览器插件慢请求修复后的新 trace / Coroot SLO / 用户动作耗时对比，以及 PG 修复后的复制、锁、连接、磁盘/WAL、备份状态、业务指标和 Coroot 指标。独立恢复队列、全资源类型回滚验证和复杂 observation window 编排延后。
+
+必须输出用户能理解的恢复报告：是否恢复、依据是什么、失败点是什么、是否已回滚、下一步建议是什么。Case 不能只因为工具退出码为 0 就进入 `resolved`。
+
 ## 1. 模块定位
 
 Verification & Recovery 模块负责回答“动作执行后是否真的恢复”。它不能只看命令退出码，而要结合 Coroot SLO、ERP 业务指标、用户侧 trace、K8s 状态、主机检查、中间件健康、Workflow outputs 和人工确认，形成可审计的恢复结论。

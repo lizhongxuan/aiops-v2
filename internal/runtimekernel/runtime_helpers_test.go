@@ -1,6 +1,7 @@
 package runtimekernel
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
@@ -64,6 +66,50 @@ func TestLegacyRuntimeSchemaAdaptersPreserveRolesAndToolCalls(t *testing.T) {
 	}
 	if _, err := runtimeMessagesToSchema([]Message{{Role: "unknown"}}); err == nil {
 		t.Fatal("expected unsupported role to fail")
+	}
+}
+
+func TestToolForToolCallMatchesProviderSafeName(t *testing.T) {
+	tools := []promptcompiler.Tool{
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{Name: "coroot.list_services", Description: "List services."},
+		},
+	}
+
+	toolDef := toolForToolCall(tools, ToolCall{Name: "coroot_list_services"})
+	if toolDef == nil {
+		t.Fatal("toolForToolCall() = nil, want match by provider-safe name")
+	}
+	if got := toolDef.Metadata().Name; got != "coroot.list_services" {
+		t.Fatalf("matched tool name = %q, want canonical coroot.list_services", got)
+	}
+}
+
+func TestToolDispatcherDispatchesProviderSafeName(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "coroot.list_services", Description: "List services."},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "services"}, nil
+		},
+	}
+	lookup := assembledToolLookup{byName: map[string]tooling.Tool{}}
+	addToolLookupName(lookup.byName, toolDef.Metadata().Name, toolDef)
+
+	result := NewToolDispatcher(lookup, nil, emitter).Dispatch(
+		context.Background(),
+		"sess-provider-name",
+		"turn-provider-name",
+		ToolCall{ID: "call-1", Name: "coroot_list_services", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error != "" || result.Content != "services" {
+		t.Fatalf("Dispatch() = %#v, want successful execution", result)
+	}
+	if result.Metadata.Name != "coroot.list_services" {
+		t.Fatalf("Dispatch() metadata name = %q, want canonical coroot.list_services", result.Metadata.Name)
 	}
 }
 

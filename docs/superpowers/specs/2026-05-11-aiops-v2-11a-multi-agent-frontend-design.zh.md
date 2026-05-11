@@ -58,7 +58,7 @@ Multi-Agent 前端是跨模块协作层，不替代已有业务页面。
 - `web/src/pages/ProtocolWorkspacePage.tsx`：已有复杂运维 AI Chat，右侧展示 Main Agent Process、Approval Rail、MCP Surfaces、Artifacts / Evidence 和 Workspace Contract。
 - `web/src/pages/PromptTracePage.tsx`：已有 Prompt Trace 浏览能力，可承接 AgentMessage drilldown。
 - `web/src/pages/ApprovalManagementPage.tsx`、`web/src/pages/HostsPage.tsx`：已有审批和主机治理入口，可承接 ActionToken、HostLease 和 RBAC 链接。
-- `web/src/pages/RunbookCatalogPage.tsx`、`web/src/pages/RunnerStudioPage.tsx`：可承接 Runbook Agent 和 Execution Agent 产生的 Runbook / Workflow 关联。
+- `web/src/pages/RunbookCatalogPage.tsx` 与现有 Runner workflow API/catalog：可承接 Runbook Agent 和 Execution Agent 产生的 Runbook / Workflow 关联；不要求修改现有 Runner 页面。
 - `web/src/pages/ExperiencePacksPage.tsx`：可承接 Learning Agent 生成的 Experience candidate。
 - `web/src/transport/aiopsTransportTypes.ts`：已有 `AiopsRuntimeLiveness.activeAgents`、process block、approval、artifact 等状态结构。
 - `internal/agentui/agent_event.go`、`internal/agentui/agent_event_projection.go`：已有 AgentEvent、AgentProjection、TimelineEntry、ApprovalProjection、ArtifactProjection 和 RuntimeLiveness。
@@ -686,7 +686,7 @@ agent.replay.seq
 - Observer 不可用：只能基于已有证据诊断。
 - Diagnosis 不可用：Commander 只能展示证据和建议补证。
 - Runbook Agent 不可用：不能自动匹配 Runbook / Experience。
-- Execution Agent 不可用：已批准动作仍可由 Runner 页面承接，但要显示交接状态。
+- Execution Agent 不可用：已批准动作仍可由现有 Runner 引擎承接，但交接状态优先在 Case / Execution 页面显示，不要求修改现有 Runner 页面。
 - Verification Agent 不可用：case 不能自动 resolved。
 - Learning Agent 不可用：不生成经验候选，不影响修复闭环。
 

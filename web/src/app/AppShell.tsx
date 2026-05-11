@@ -62,25 +62,28 @@ export function AppShell() {
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="shrink-0 border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:px-6">
-          <div className="flex items-center justify-between gap-3 overflow-hidden">
-            <div className="flex min-w-0 items-center gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="lg:hidden"
-                aria-label="navigation"
-              >
-                <PanelLeftOpen className="h-4 w-4" />
-              </Button>
-              <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-950">{active?.title ?? "AIOps Workspace"}</div>
-                <div className="text-xs text-slate-500">{active?.description ?? "React shell placeholder during migration"}</div>
+        <header className="relative z-[70] shrink-0 overflow-visible border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:px-6" data-testid="app-shell-header">
+          {headerContent ? (
+            <div className="min-w-0 overflow-visible">{headerContent}</div>
+          ) : (
+            <div className="flex items-center justify-between gap-3 overflow-hidden">
+              <div className="flex min-w-0 items-center gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="lg:hidden"
+                  aria-label="navigation"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                </Button>
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-slate-950">{active?.title ?? "AIOps Workspace"}</div>
+                  <div className="text-xs text-slate-500">{active?.description ?? "React shell placeholder during migration"}</div>
+                </div>
               </div>
             </div>
-            {headerContent ? <div className="min-w-0 shrink-0 overflow-hidden">{headerContent}</div> : null}
-          </div>
+          )}
         </header>
         <div className="min-h-0 flex-1 overflow-hidden">
           <Outlet />

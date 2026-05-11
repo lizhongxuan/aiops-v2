@@ -1908,16 +1908,37 @@ func toolForToolCall(tools []promptcompiler.Tool, tc ToolCall) promptcompiler.To
 			continue
 		}
 		meta := toolDef.Metadata()
-		if strings.TrimSpace(meta.Name) == toolName {
+		if toolCallNameMatchesCandidate(toolName, meta.Name) {
 			return toolDef
 		}
 		for _, alias := range meta.Aliases {
-			if strings.TrimSpace(alias) == toolName {
+			if toolCallNameMatchesCandidate(toolName, alias) {
 				return toolDef
 			}
 		}
 	}
 	return nil
+}
+
+func addToolLookupName(byName map[string]tooling.Tool, name string, toolDef tooling.Tool) {
+	name = strings.TrimSpace(name)
+	if name == "" || toolDef == nil {
+		return
+	}
+	byName[name] = toolDef
+	providerName := tooling.ProviderSafeToolName(name)
+	if providerName != "" {
+		byName[providerName] = toolDef
+	}
+}
+
+func toolCallNameMatchesCandidate(toolName, candidate string) bool {
+	toolName = strings.TrimSpace(toolName)
+	candidate = strings.TrimSpace(candidate)
+	if toolName == "" || candidate == "" {
+		return false
+	}
+	return toolName == candidate || toolName == tooling.ProviderSafeToolName(candidate)
 }
 
 func toolMetadataForToolCall(tools []promptcompiler.Tool, tc ToolCall) tooling.ToolMetadata {
@@ -2267,9 +2288,9 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 			continue
 		}
 		meta := toolDef.Metadata()
-		lookup.byName[meta.Name] = toolDef
+		addToolLookupName(lookup.byName, meta.Name, toolDef)
 		for _, alias := range meta.Aliases {
-			lookup.byName[alias] = toolDef
+			addToolLookupName(lookup.byName, alias, toolDef)
 		}
 	}
 	dispatcher := NewToolDispatcher(lookup, k.policy, k.projector)

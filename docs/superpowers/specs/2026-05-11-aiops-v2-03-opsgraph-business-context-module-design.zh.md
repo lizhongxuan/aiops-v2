@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-03a-opsgraph-business-context-frontend-design.zh.md](2026-05-11-aiops-v2-03a-opsgraph-business-context-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-03b-opsgraph-business-context-frontend-todo.zh.md](2026-05-11-aiops-v2-03b-opsgraph-business-context-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段提供两个闭环需要的最小图谱路径：`BrowserDebugAction -> APIRoute -> Service -> MiddlewareResource`，以及 `MiddlewareResource -> Service -> BusinessCapability`。它用于解释慢请求影响路径、PG 影响业务和经验适配环境。
+
+全 ERP 图谱、CMDB 化资产管理、复杂图谱补丁审核、资产地图页面和环境变体推理不作为本次场景改造的前置条件。OpsGraph 是上下文查询层，不是新的事实源，也不因为一次 AI 推理自动改图。
+
 ## 1. 模块定位
 
 OpsGraph 是 `aiops-v2` 的运维推理图谱。它把 ERP 业务能力、服务、接口、前端动作、中间件、主机、Pod、SLO、变更、Runbook、Workflow、经验包和 case 连接起来，回答“这个技术异常影响什么业务”和“这个业务异常可能由哪些技术路径导致”。

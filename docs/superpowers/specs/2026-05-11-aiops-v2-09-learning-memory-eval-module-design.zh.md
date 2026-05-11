@@ -7,6 +7,12 @@
 前端设计：[2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md](2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md](2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+本模块本阶段实现经验复用和沉淀的最小闭环：`Candidate Store`、`Review Queue`、`Activation Index`、SkillCard、Debug RCA candidate、RepairPlan candidate、Runbook/Workflow draft。Memory 分层、完整 Eval 平台、复杂 EvoMap UI、自动图谱补丁和复杂 fitness 排序不是本次场景改造的前置条件。
+
+必须保证已审核经验才能被现有 AI Chat、DebugCase 和中间件修复检索；未审核候选不能进入 PromptCompiler、推荐排序或自动计划。
+
 ## 1. 模块定位
 
 Learning 模块负责把真实运维过程沉淀为可审核、可复用、可评测的资产：Experience Pack、Runbook、Workflow、Memory、OpsGraph patch 和 Eval case。它不是让系统自由修改自己，而是把运行历史变成受治理的候选资产。

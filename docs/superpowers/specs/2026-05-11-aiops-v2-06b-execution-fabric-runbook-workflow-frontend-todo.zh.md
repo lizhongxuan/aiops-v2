@@ -7,7 +7,7 @@
 
 ## 1. 目标
 
-把现有 Runbook 页面和 Runner Studio 升级为 Execution Fabric 前端控制台：支持 Tool Catalog、Runbook lifecycle、Runbook Instance、Workflow lifecycle、Start/Fanout/End 企业级配置、Workflow Run Detail、ActionToken / HostLease / EvidenceRef 治理展示，以及 Case、AI Reasoning、Governed Action、Verification、Experience 的跨页面集成。
+把 Runbook 页面、Execution Run Detail 和执行 API view-model 升级为 Execution Fabric 控制台：支持 Tool Catalog、Runbook lifecycle、Runbook Instance、Workflow run lifecycle、ActionToken / HostLease / EvidenceRef 治理展示，以及 Case、AI Reasoning、Governed Action、Verification、Experience 的跨页面集成。本阶段不修改现有 Runner 工作流页面和功能，只复用现有 Runner workflow 引擎、catalog、validate、dry-run、run、publish、history 和事件能力。
 
 ## 2. 实施顺序
 
@@ -15,11 +15,10 @@
 Execution Fabric API view-model
   -> Tool Catalog
   -> Runbook Catalog / Detail / Instance
-  -> Runner Studio API 迁移
-  -> Workflow lifecycle gates
-  -> Start target selector / fanout / lock policy
-  -> Node governance / ActionToken / HostLease
-  -> End outputs / callbacks / verification
+  -> Existing Runner workflow API integration
+  -> Workflow run lifecycle gates
+  -> Governance metadata / ActionToken / HostLease
+  -> Outputs / callbacks / verification in run detail
   -> Workflow Run Detail
   -> AI draft 和跨页面集成
   -> 测试和视觉校验
@@ -70,11 +69,9 @@ Execution Fabric API view-model
 
 - `web/src/pages/RunbookCatalogPage.tsx`：从 `complexPagesApi.ts` 迁移到 `runbooks.ts`，拆出表格和筛选组件。
 - `web/src/pages/RunbookDetailPage.tsx`：补齐 lifecycle、steps、match、action templates、verification、rollback、instances、lineage。
-- `web/src/pages/RunnerStudioPage.tsx`：去掉页面内 `requestJson`，使用 `runnerStudioClient` 或 `executionFabric.ts`；接入 Start/Node/End 治理面板。
-- `web/src/api/runnerStudioClient.js`：必要时补充 canonical wrapper 或保持作为兼容 client。
-- `web/src/components/runner/RunnerCanvas.tsx`：展示 ActionToken、HostLease、fanout、callback 状态。
-- `web/src/components/runner/runStateReducer.js`：补齐 ActionToken、HostLease、callback_retry、agent_unavailable 事件聚合。
-- `web/src/components/runner/runnerVariables.js`：补齐 End outputs 和 callback output 的变量展示。
+- `web/src/api/runnerStudioClient.js`：必要时补充后端兼容 wrapper，但不要求改 Runner 页面。
+- `web/src/pages/ExecutionRunDetailPage.tsx` 或对应运行详情组件：展示 ActionToken、HostLease、fanout、callback、verification 和 evidence 状态。
+- `web/src/components/execution/executionViewModels.ts`：聚合 ActionToken、HostLease、callback_retry、agent_unavailable、End outputs 和 callback output。
 - `web/src/pages/IncidentWorkbenchPage.tsx`：嵌入 matched Runbooks、Runbook instances、Workflow runs。
 - `web/src/pages/ApprovalManagementPage.tsx`：展示 source Runbook step / Workflow node / run id。
 - `web/src/pages/AIReasoningPage.tsx`：ReasoningOutput 的 runbook_draft / workflow_draft 跳转到执行面。
@@ -156,19 +153,18 @@ Execution Fabric API view-model
 - [ ] 注册 `/runbook-instances/:instanceId`。
 - [ ] 单测覆盖步骤推进、ActionProposal 生成入口、阻断直接执行。
 
-## 10. Task 7：迁移 Runner Studio API 调用
+## 10. Task 7：接入现有 Runner workflow API
 
-- [ ] 修改 `RunnerStudioPage.tsx`，移除页面内 `requestJson`。
 - [ ] 使用 `runnerStudioClient` 或 `executionFabric.ts` 的 wrapper 调用 workflows、graph、validate、dry-run、publish、runs、run history、actions、AI draft。
-- [ ] 保留当前本地 draft fallback 行为。
+- [ ] 保留现有 Runner 页面行为和本地 draft fallback 行为。
 - [ ] 服务器不可用时禁用 validate、dry-run、publish、run，但允许本地编辑和保存草稿。
 - [ ] 扩展 `runnerStudioClient.test.js` 覆盖新增 wrapper。
 - [ ] 单测覆盖 Runner API 不可用时不提交生产运行。
 
-## 11. Task 8：实现 Workflow lifecycle gates
+## 11. Task 8：实现 Workflow run lifecycle gates
 
 - [ ] 新增 `WorkflowLifecycleGatePanel.tsx`。
-- [ ] 在 Runner Studio 显示 validate、dry-run、risk review、publish gate。
+- [ ] 在 Case / Execution Run Detail / Experience 页面显示 validate、dry-run、risk review、publish gate；不要求改 Runner 页面。
 - [ ] validate 问题定位到节点、边和字段。
 - [ ] dry-run 展示 target resolution、host lease precheck、ActionToken requirement、variable resolution、graph path、fanout batches、callbacks preview。
 - [ ] risk review 展示 high risk/destructive nodes、mutating tools、missing rollback、missing verification、disabled conditions、impacted services、required approvals。
@@ -255,11 +251,11 @@ Execution Fabric API view-model
 
 ## 19. 交付检查
 
-- [ ] `RunnerStudioPage.tsx` 不直接调用裸 `fetch`。
+- [ ] 本阶段不修改现有 Runner 页面；新增 Execution API client 不直接调用裸 `fetch`。
 - [ ] `RunbookCatalogPage.tsx` 和 `RunbookDetailPage.tsx` 不再依赖 `complexPagesApi.ts` 扩展新能力。
 - [ ] Runbook step 只能生成 ActionProposal，不能直接执行生产写动作。
 - [ ] Tool Catalog 能展示 risk、permissions、schema、idempotency、timeout、redactionRules 和 allowlist。
-- [ ] Workflow Start 能定义 targetSelector、labels、explicitHosts、variables、lockPolicy、fanout、batchSize、failureThreshold。
+- [ ] Execution Run Detail 能展示 workflow run 的 targetSelector、labels、explicitHosts、variables、lockPolicy、fanout、batchSize、failureThreshold 摘要。
 - [ ] Workflow 节点能展示 target、risk、permissions、approval、ActionToken、HostLease。
 - [ ] Workflow End 能展示 outputs、callbacks、verification、callback retry。
 - [ ] Validate、dry-run、risk review、publish gate 可见且能阻断发布。

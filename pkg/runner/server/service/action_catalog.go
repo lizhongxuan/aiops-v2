@@ -237,6 +237,43 @@ func DefaultActionSpecs() []ActionSpec {
 			Experimental: true,
 		},
 		{
+			Action:      "variable.aggregate",
+			Title:       "Variable Aggregator",
+			Category:    "control",
+			Description: "Aggregate upstream variables into a stable graph output for downstream nodes.",
+			Risk:        "read_only",
+			NodeType:    "variable_aggregator",
+			Defaults: map[string]any{
+				"output_key": "aggregated_value",
+				"strategy":   "first_non_empty",
+				"sources":    []map[string]any{{"expression": "env.VALUE"}},
+			},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"output_key": envStringSchema("Output variable key"),
+				"strategy":   enumStringSchema("Aggregation strategy", []string{"first_non_empty", "prefer_success", "array"}),
+				"sources": map[string]any{
+					"type":  "array",
+					"title": "Variable sources",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"expression": envStringSchema("Variable expression"),
+						},
+					},
+				},
+			}, []string{"output_key"}),
+			Outputs: []OutputSpec{{Name: "value", Type: "any", Description: "Aggregated value."}},
+			Examples: []ActionExample{{
+				Title: "Prefer first available restore target",
+				Args: map[string]any{
+					"output_key": "restore_host",
+					"strategy":   "first_non_empty",
+					"sources":    []map[string]any{{"expression": "node.pick-primary.host"}, {"expression": "node.pick-replica.host"}},
+				},
+			}},
+			Experimental: true,
+		},
+		{
 			Action:      "manual.approval",
 			Title:       "Manual Approval",
 			Category:    "control",
@@ -591,6 +628,8 @@ func defaultActionCapabilities(spec ActionSpec) []string {
 		capabilities = append(capabilities, "branching")
 	case "subflow":
 		capabilities = append(capabilities, "subflow")
+	case "variable_aggregator":
+		capabilities = append(capabilities, "aggregation")
 	default:
 		capabilities = append(capabilities, "targets", "timeout", "retries")
 		if spec.Risk == "high" || spec.Risk == "medium" {
@@ -608,6 +647,8 @@ func defaultActionPorts(spec ActionSpec) ActionDefaultPorts {
 		outputs = []ActionPortSpec{{ID: "if", Label: "IF"}, {ID: "else", Label: "ELSE"}}
 	case "manual_approval":
 		outputs = []ActionPortSpec{{ID: "approved", Label: "通过"}, {ID: "rejected", Label: "拒绝"}}
+	case "variable_aggregator":
+		outputs = []ActionPortSpec{{ID: "next", Label: "下一步"}}
 	default:
 		switch strings.TrimSpace(spec.Action) {
 		case "wait.event":
@@ -775,6 +816,21 @@ func envStringSchema(title string) map[string]any {
 	return map[string]any{
 		"type":  "string",
 		"title": title,
+	}
+}
+
+func enumStringSchema(title string, values []string) map[string]any {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			items = append(items, value)
+		}
+	}
+	return map[string]any{
+		"type":  "string",
+		"title": title,
+		"enum":  items,
 	}
 }
 

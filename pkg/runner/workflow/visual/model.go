@@ -10,17 +10,18 @@ import (
 const (
 	GraphVersion = "v1"
 
-	NodeTypeStart          NodeType = "start"
-	NodeTypeAction         NodeType = "action"
-	NodeTypeCondition      NodeType = "condition"
-	NodeTypeParallel       NodeType = "parallel"
-	NodeTypeJoin           NodeType = "join"
-	NodeTypeLoop           NodeType = "loop"
-	NodeTypeHandler        NodeType = "handler"
-	NodeTypeGroup          NodeType = "group"
-	NodeTypeSubflow        NodeType = "subflow"
-	NodeTypeManualApproval NodeType = "manual_approval"
-	NodeTypeEnd            NodeType = "end"
+	NodeTypeStart              NodeType = "start"
+	NodeTypeAction             NodeType = "action"
+	NodeTypeCondition          NodeType = "condition"
+	NodeTypeParallel           NodeType = "parallel"
+	NodeTypeJoin               NodeType = "join"
+	NodeTypeLoop               NodeType = "loop"
+	NodeTypeHandler            NodeType = "handler"
+	NodeTypeGroup              NodeType = "group"
+	NodeTypeSubflow            NodeType = "subflow"
+	NodeTypeManualApproval     NodeType = "manual_approval"
+	NodeTypeVariableAggregator NodeType = "variable_aggregator"
+	NodeTypeEnd                NodeType = "end"
 
 	EdgeKindNext             EdgeKind = "next"
 	EdgeKindSuccess          EdgeKind = "success"
@@ -71,27 +72,28 @@ type Position struct {
 }
 
 type Node struct {
-	ID          string            `json:"id" yaml:"id"`
-	Type        NodeType          `json:"type" yaml:"type"`
-	Position    Position          `json:"position" yaml:"position"`
-	StepName    string            `json:"step_name,omitempty" yaml:"step_name,omitempty"`
-	StepID      string            `json:"step_id,omitempty" yaml:"step_id,omitempty"`
-	Step        *workflow.Step    `json:"step,omitempty" yaml:"step,omitempty"`
-	HandlerName string            `json:"handler_name,omitempty" yaml:"handler_name,omitempty"`
-	Handler     *workflow.Handler `json:"handler,omitempty" yaml:"handler,omitempty"`
-	Approval    *ApprovalSpec     `json:"approval,omitempty" yaml:"approval,omitempty"`
-	Condition   *ConditionSpec    `json:"condition,omitempty" yaml:"condition,omitempty"`
-	Subflow     *SubflowSpec      `json:"subflow,omitempty" yaml:"subflow,omitempty"`
-	Join        *JoinSpec         `json:"join,omitempty" yaml:"join,omitempty"`
-	Loop        *LoopSpec         `json:"loop,omitempty" yaml:"loop,omitempty"`
-	ParentID    string            `json:"parent_id,omitempty" yaml:"parent_id,omitempty"`
-	Label       string            `json:"label,omitempty" yaml:"label,omitempty"`
-	Collapsed   bool              `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
-	Ports       []Port            `json:"ports,omitempty" yaml:"ports,omitempty"`
-	Inputs      []InputParamSpec  `json:"inputs,omitempty" yaml:"inputs,omitempty"`
-	Outputs     []OutputParamSpec `json:"outputs,omitempty" yaml:"outputs,omitempty"`
-	UI          map[string]any    `json:"ui,omitempty" yaml:"ui,omitempty"`
-	State       *NodeRunState     `json:"state,omitempty" yaml:"-"`
+	ID          string                  `json:"id" yaml:"id"`
+	Type        NodeType                `json:"type" yaml:"type"`
+	Position    Position                `json:"position" yaml:"position"`
+	StepName    string                  `json:"step_name,omitempty" yaml:"step_name,omitempty"`
+	StepID      string                  `json:"step_id,omitempty" yaml:"step_id,omitempty"`
+	Step        *workflow.Step          `json:"step,omitempty" yaml:"step,omitempty"`
+	HandlerName string                  `json:"handler_name,omitempty" yaml:"handler_name,omitempty"`
+	Handler     *workflow.Handler       `json:"handler,omitempty" yaml:"handler,omitempty"`
+	Approval    *ApprovalSpec           `json:"approval,omitempty" yaml:"approval,omitempty"`
+	Condition   *ConditionSpec          `json:"condition,omitempty" yaml:"condition,omitempty"`
+	Subflow     *SubflowSpec            `json:"subflow,omitempty" yaml:"subflow,omitempty"`
+	Aggregator  *VariableAggregatorSpec `json:"aggregator,omitempty" yaml:"aggregator,omitempty"`
+	Join        *JoinSpec               `json:"join,omitempty" yaml:"join,omitempty"`
+	Loop        *LoopSpec               `json:"loop,omitempty" yaml:"loop,omitempty"`
+	ParentID    string                  `json:"parent_id,omitempty" yaml:"parent_id,omitempty"`
+	Label       string                  `json:"label,omitempty" yaml:"label,omitempty"`
+	Collapsed   bool                    `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
+	Ports       []Port                  `json:"ports,omitempty" yaml:"ports,omitempty"`
+	Inputs      []InputParamSpec        `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Outputs     []OutputParamSpec       `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	UI          map[string]any          `json:"ui,omitempty" yaml:"ui,omitempty"`
+	State       *NodeRunState           `json:"state,omitempty" yaml:"-"`
 }
 
 type Port struct {
@@ -125,6 +127,18 @@ type SubflowSpec struct {
 	WorkflowName string         `json:"workflow_name,omitempty" yaml:"workflow_name,omitempty"`
 	Vars         map[string]any `json:"vars,omitempty" yaml:"vars,omitempty"`
 	UI           map[string]any `json:"ui,omitempty" yaml:"ui,omitempty"`
+}
+
+type VariableAggregatorSpec struct {
+	OutputKey string                         `json:"output_key,omitempty" yaml:"output_key,omitempty"`
+	Strategy  string                         `json:"strategy,omitempty" yaml:"strategy,omitempty"`
+	Sources   []VariableAggregatorSourceSpec `json:"sources,omitempty" yaml:"sources,omitempty"`
+	UI        map[string]any                 `json:"ui,omitempty" yaml:"ui,omitempty"`
+}
+
+type VariableAggregatorSourceSpec struct {
+	Expression string       `json:"expression,omitempty" yaml:"expression,omitempty"`
+	Variable   *VariableRef `json:"variable,omitempty" yaml:"variable,omitempty"`
 }
 
 type JoinSpec struct {
@@ -219,7 +233,7 @@ type EdgeRunState struct {
 
 func executableNodeType(t NodeType) bool {
 	switch t {
-	case NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeSubflow, NodeTypeManualApproval, NodeTypeEnd:
+	case NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeSubflow, NodeTypeManualApproval, NodeTypeVariableAggregator, NodeTypeEnd:
 		return true
 	default:
 		return false
@@ -228,7 +242,7 @@ func executableNodeType(t NodeType) bool {
 
 func continuationRequiredNodeType(t NodeType) bool {
 	switch t {
-	case NodeTypeStart, NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeSubflow, NodeTypeManualApproval:
+	case NodeTypeStart, NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeSubflow, NodeTypeManualApproval, NodeTypeVariableAggregator:
 		return true
 	default:
 		return false
@@ -246,7 +260,7 @@ func stepBackedNodeType(t NodeType) bool {
 
 func validNodeType(t NodeType) bool {
 	switch t {
-	case NodeTypeStart, NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeHandler, NodeTypeGroup, NodeTypeSubflow, NodeTypeManualApproval, NodeTypeEnd:
+	case NodeTypeStart, NodeTypeAction, NodeTypeCondition, NodeTypeParallel, NodeTypeJoin, NodeTypeLoop, NodeTypeHandler, NodeTypeGroup, NodeTypeSubflow, NodeTypeManualApproval, NodeTypeVariableAggregator, NodeTypeEnd:
 		return true
 	default:
 		return false

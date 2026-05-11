@@ -76,7 +76,7 @@ Experience Pack API view-model
 - `web/src/pages/ExperiencePackLibraryPage.tsx`：如果 09 已落地，补充 10 专题 tabs 和详情入口。
 - `web/src/pages/ExperiencePackDetailPage.tsx`：补充 Evidence Chain、Experience Case、Artifacts、Variants、Fitness。
 - `web/src/pages/ExperienceReviewQueuePage.tsx`：补充 10 专题审核动作和发布影响说明。
-- `web/src/pages/RunnerStudioPage.tsx`：展示 source=experience-pack、experience_pack_id、variant_key、review_record_id、evidence chain、environment scope。
+- 现有 Runner workflow metadata：写入 source=experience-pack、experience_pack_id、variant_key、review_record_id、evidence chain、environment scope；不要求改 Runner 页面。
 - `web/src/pages/RunbookCatalogPage.tsx`：只加载 approved/published，candidate 不进入正式目录。
 - `web/src/pages/IncidentWorkbenchPage.tsx`：Case Assets 提供“生成经验候选”入口。
 - `web/src/pages/PromptTracePage.tsx`：Chat / Prompt Trace 展示已激活经验来源和候选排除提示。
@@ -150,7 +150,7 @@ Experience Pack API view-model
 - [ ] Header 展示 pack id、title、status、version、source、scenario signature、environment profile、confidence、review state、activation state、fitness、last outcome。
 - [ ] Header 动作包括打开审核、生成 Runbook Draft、生成 Workflow Draft、创建环境变体、运行 Eval、pause、deprecate、导出 evidence refs。
 - [ ] Tabs 包含 Overview、Evidence Chain、Experience Case、Artifacts、Review & Gate、Activation、Variants、Fitness、Lineage。
-- [ ] Evidence Chain 展示 Coroot、Frontend Debug、Trace backend、Middleware Repair、Chat、Workflow run、Runbook instance、Approval、Incident close、Outcome verification。
+- [ ] Evidence Chain 展示 Coroot、Browser Plugin Debug、Trace backend、Middleware Repair、Chat、Workflow run、Runbook instance、Approval、Incident close、Outcome verification。
 - [ ] Experience Case 展示 problem_signature、trace_signature、middleware_signature、actions_taken、outcome、verification、operator_decisions、environment_profile_id、activated_assets。
 - [ ] 单测覆盖 evidence used_for、semantic hash、activation state、variant list、audit refs。
 
@@ -240,8 +240,8 @@ Experience Pack API view-model
 
 ## 16. Task 13：Runner / Runbook / Chat 集成
 
-- [ ] RunnerStudioPage 对经验包来源 draft 展示 source=experience-pack、experience_pack_id、variant_key、review_record_id。
-- [ ] Runner publish modal 展示审核人、证据链、环境适用范围、graph hash、dry-run 状态。
+- [ ] 经验服务把 source=experience-pack、experience_pack_id、variant_key、review_record_id 写入现有 Runner workflow draft metadata。
+- [ ] Experience 页面展示审核人、证据链、环境适用范围、graph hash、dry-run 状态；不要求改 Runner publish modal。
 - [ ] RunbookCatalogPage 只展示 approved/published，不展示 candidate。
 - [ ] RunbookDetailPage 展示 source experience、review record、lineage 和 environment scope。
 - [ ] PromptTracePage 展示 activatedExperienceRefs、candidate leakage warning 和 experience activation diff。
@@ -287,14 +287,14 @@ Experience Pack API view-model
 - [ ] Candidate Store 和 Activation Index 强隔离，candidate 不显示为可推荐、可执行或已发布。
 - [ ] 候选详情展示 synthesis reason、evidence coverage、redaction status、environment compatibility、disabled conditions 和 Gate Result。
 - [ ] Review Workbench 展示 Evidence、AI Chat Impact、Artifact Diff、Debug / Repair Diff、Gate Result 和 Audit。
-- [ ] Gene/Capsule/Debug RCA/RepairPlan 只有审核通过后才能进入 Activation Index。
+- [ ] SkillCard/Debug RCA/RepairPlan 只有审核通过后才能进入 Activation Index；Gene/Capsule 后续实现时也必须经过同一审核。
 - [ ] Runbook draft 和 Workflow graph draft 只能进入对应发布流程，不能直接变成生产执行资产。
 - [ ] 环境不匹配时只能创建 variant candidate，不能修改原发布资产。
 - [ ] Variant Resolver 能解释匹配顺序和只读降级原因。
 - [ ] Fitness 下降能触发 pause、deprecate、variant candidate 或 Eval case，但不自动修改发布资产。
 - [ ] Chat 只展示已激活经验来源，候选只显示数量和审核入口。
 - [ ] Debug Trace 和 Middleware Repair 能生成经验候选，并保留脱敏、验证和失败点。
-- [ ] Runner Studio 展示 experience_pack_id、variant_key、review_record_id、evidence chain 和 environment scope。
+- [ ] 经验服务能把 experience_pack_id、variant_key、review_record_id、evidence chain 和 environment scope 写入现有 Runner workflow metadata；本阶段不改 Runner 页面。
 - [ ] 所有审核、发布、拒绝、变体生成、pause、deprecated 都有 audit record。
 - [ ] 所有请求走 `web/src/api/learningAssets.ts`、`web/src/api/experiencePacks.ts` wrapper 或统一 API client，不在页面内裸 `fetch`。
 - [ ] 页面不创建私有 WebSocket/SSE。

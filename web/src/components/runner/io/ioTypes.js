@@ -1,4 +1,4 @@
-export const ALLOWED_VALUE_SOURCE_TYPES = ["constant", "variable_reference", "expression"];
+export const ALLOWED_VALUE_SOURCE_TYPES = ["literal", "variable", "expression", "secret", "env"];
 
 export function createInputParam(key = "input") {
   return {
@@ -7,7 +7,7 @@ export function createInputParam(key = "input") {
     type: "string",
     required: false,
     description: "",
-    value_source: { type: "constant", value: "" },
+    value_source: { type: "literal", value: "" },
   };
 }
 
@@ -20,8 +20,9 @@ export function cloneInputParam(param = {}) {
 }
 
 export function normalizeValueSource(source = {}) {
-  const type = source.type || "constant";
-  if (type === "variable_reference") {
+  const rawType = source.type || "literal";
+  const type = rawType === "constant" ? "literal" : rawType === "variable_reference" ? "variable" : rawType === "secret_ref" ? "secret" : rawType;
+  if (type === "variable") {
     return {
       type,
       variable: source.variable || null,
@@ -31,6 +32,18 @@ export function normalizeValueSource(source = {}) {
     return {
       type,
       expression: source.expression || "",
+    };
+  }
+  if (type === "secret") {
+    return {
+      type,
+      secret_ref: source.secret_ref || source.secretRef || "",
+    };
+  }
+  if (type === "env") {
+    return {
+      type,
+      env_key: source.env_key || source.envKey || "",
     };
   }
   return {
@@ -60,7 +73,7 @@ export function validateInputParams(params = []) {
       issues.push({
         code: "invalid_value_source",
         key,
-        message: "value_source 只允许 constant、variable_reference、expression",
+        message: "value_source 只允许 literal、variable、expression、secret、env",
       });
     }
   }
@@ -72,4 +85,60 @@ export function variablePath(variable = {}) {
   if (variable.scope === "node_output") return `nodes.${variable.node_id}.outputs.${variable.name}`;
   if (variable.scope && variable.name) return `${variable.scope}.${variable.name}`;
   return "";
+}
+
+export function variableToValueSource(variable = {}) {
+  const name = String(variable.name || variable.key || "").trim();
+  if (!name) return { type: "literal", value: "" };
+  const scope = backendVariableScope(variable.scope);
+  const ref = { scope, name };
+  const nodeId = String(variable.nodeId || variable.node_id || variable.sourceNodeId || "").trim();
+  if (nodeId && ["node_output", "approval", "subflow"].includes(scope)) {
+    ref.node_id = nodeId;
+  }
+  return {
+    type: "variable",
+    variable: ref,
+  };
+}
+
+export function valueSourceLabel(source = {}) {
+  const normalized = normalizeValueSource(source);
+  if (normalized.type === "variable") {
+    const variable = normalized.variable || {};
+    const parts = [variable.scope, variable.node_id, variable.name].filter(Boolean);
+    return parts.join(".");
+  }
+  if (normalized.type === "expression") {
+    return normalized.expression || "";
+  }
+  if (normalized.value === undefined || normalized.value === null) return "";
+  if (typeof normalized.value === "object") return JSON.stringify(normalized.value);
+  return String(normalized.value);
+}
+
+function backendVariableScope(scope = "") {
+  switch (String(scope || "").trim()) {
+  case "input":
+  case "workflow_input":
+    return "workflow_input";
+  case "sys":
+  case "system":
+    return "system";
+  case "env":
+  case "workflow_var":
+  case "environment":
+    return "workflow_var";
+  case "node":
+  case "node_output":
+    return "node_output";
+  case "approval":
+    return "approval";
+  case "subflow":
+    return "subflow";
+  case "inventory":
+    return "inventory";
+  default:
+    return String(scope || "").trim() || "workflow_var";
+  }
 }

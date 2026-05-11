@@ -2,6 +2,8 @@ export function createInitialRunState() {
   return {
     runId: "",
     status: "idle",
+    message: "",
+    error: "",
     startedAt: "",
     finishedAt: "",
     nodes: {},
@@ -30,12 +32,17 @@ function pick(event, ...keys) {
   return undefined;
 }
 
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
 function pickRunId(event) {
   return pick(event, "run_id", "runId", "id") || "";
 }
 
 function pickNodeId(event) {
-  return pick(event, "node_id", "nodeId", "step", "node", "id") || "";
+  const output = objectValue(event?.output);
+  return pick(event, "node_id", "nodeId", "step", "node", "id") || output.node_id || output.nodeId || "";
 }
 
 function cloneState(state) {
@@ -69,23 +76,43 @@ function appendLog(state, event, stream) {
     event: pick(event, "event", "name") || eventType(event),
     nodeId: pickNodeId(event),
     hostId: pick(event, "host_id", "hostId", "host") || "",
-    message: pick(event, "message", "data", "text", "summary") || "",
+    message: pick(event, "message", "data", "text", "summary", "chunk") || "",
     ts: pick(event, "ts", "time", "timestamp") || "",
   });
+}
+
+function mergeNodeResult(previous, next) {
+  if (
+    previous &&
+    next &&
+    typeof previous === "object" &&
+    typeof next === "object" &&
+    !Array.isArray(previous) &&
+    !Array.isArray(next)
+  ) {
+    return { ...previous, ...next };
+  }
+  return next;
 }
 
 function updateNode(state, event, status) {
   const nodeId = pickNodeId(event);
   if (!nodeId) return;
+  const current = state.nodes[nodeId] || {};
   const result = pick(event, "result", "output");
+  const message = pick(event, "message", "summary");
+  const error = pick(event, "error");
   state.nodes[nodeId] = {
-    ...(state.nodes[nodeId] || {}),
+    ...current,
     nodeId,
+    stepName: pick(event, "step_name", "stepName", "step") || current.stepName || "",
     status: pick(event, "status") || status,
-    startedAt: pick(event, "started_at", "startedAt") || state.nodes[nodeId]?.startedAt || "",
-    finishedAt: pick(event, "finished_at", "finishedAt") || state.nodes[nodeId]?.finishedAt || "",
-    durationMs: pick(event, "duration_ms", "durationMs") || state.nodes[nodeId]?.durationMs || 0,
-    result: result === undefined ? state.nodes[nodeId]?.result : result,
+    startedAt: pick(event, "started_at", "startedAt") || current.startedAt || "",
+    finishedAt: pick(event, "finished_at", "finishedAt") || current.finishedAt || "",
+    durationMs: pick(event, "duration_ms", "durationMs") || current.durationMs || 0,
+    message: message === undefined ? current.message || "" : message,
+    error: error === undefined ? current.error || "" : error,
+    result: result === undefined ? current.result : mergeNodeResult(current.result, result),
   };
   if (result !== undefined) {
     state.variables.nodeResults.push({ nodeId, result });
@@ -153,6 +180,8 @@ export function reduceRunEvent(state = createInitialRunState(), event = {}) {
   if (type === "run.completed" || type === "run.failed" || type === "run.cancelled" || type === "run_finish") {
     next.runId = pickRunId(event) || next.runId;
     next.status = type === "run_finish" ? pick(event, "status") || "completed" : type.replace("run.", "");
+    next.message = pick(event, "message", "summary") || next.message || "";
+    next.error = pick(event, "error") || next.error || "";
     next.finishedAt = pick(event, "ts", "finished_at", "finishedAt") || next.finishedAt;
     return next;
   }
@@ -164,13 +193,17 @@ export function reduceRunEvent(state = createInitialRunState(), event = {}) {
   if (type === "node.failed") updateNode(next, event, "failed");
   if (type === "host_result") appendHostResult(next, event);
 
-  if (type === "edge.traversed") {
-    const edgeId = pick(event, "edge_id", "edgeId", "id") || `${pick(event, "source")}-${pick(event, "target")}`;
+  if (type === "edge.traversed" || type === "edge_selected") {
+    const output = objectValue(event.output);
+    const source = pick(event, "source") || output.source || "";
+    const target = pick(event, "target") || output.target || "";
+    const edgeId = pick(event, "edge_id", "edgeId", "id") || output.edge_id || output.edgeId || `${source}-${target}`;
     next.edges[edgeId] = {
       edgeId,
-      source: pick(event, "source") || "",
-      target: pick(event, "target") || "",
-      status: "traversed",
+      source,
+      target,
+      kind: pick(event, "kind") || output.kind || "",
+      status: type === "edge_selected" ? "selected" : "traversed",
       ts: pick(event, "ts", "time", "timestamp") || "",
     };
   }
@@ -189,14 +222,21 @@ export function reduceRunEvent(state = createInitialRunState(), event = {}) {
     appendLog(next, event, "sse");
   }
 
-  if (type === "approval.requested" || type === "approval.completed") {
+  if (type === "output_delta") {
+    const stream = pick(event, "stream") || "stdout";
+    appendLog(next, event, stream);
+    updateHost(next, event, stream);
+  }
+
+  if (type === "approval.requested" || type === "approval.completed" || type === "approval_waiting" || type === "approval_resolved") {
     const id = pick(event, "approval_id", "approvalId", "id");
     if (id) {
+      const existing = next.approvals.find((approval) => approval.id === id);
       next.approvals = upsertById(next.approvals, id, {
         id,
-        nodeId: pick(event, "node_id", "nodeId") || "",
-        summary: pick(event, "summary", "message") || "",
-        status: type === "approval.completed" ? pick(event, "status", "decision") || "completed" : "pending",
+        nodeId: pick(event, "node_id", "nodeId") || existing?.nodeId || "",
+        summary: pick(event, "summary", "message") || existing?.summary || "",
+        status: type === "approval.completed" || type === "approval_resolved" ? pick(event, "status", "decision") || "completed" : "pending",
       });
     }
   }

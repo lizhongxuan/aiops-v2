@@ -5,8 +5,11 @@
 .data
 .playwright-cli
 node_modules
+**/node_modules
 output
+**/output
 test-results
+**/test-results
 tmp
 
 ai-server
@@ -18,5 +21,9 @@ web/test-results
 web/tests
 web/tests-playwright
 
+**/.data
+**/.gocache
+**/.tools
+**/.playwright-cli
 **/*.log
 **/.DS_Store

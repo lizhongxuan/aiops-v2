@@ -195,6 +195,10 @@ func nodeOutputVariableSet(node Node) variableSet {
 			out.add(variableFromOutput("subflow", node, output, "subflow"))
 		}
 	}
+	if node.Type == NodeTypeVariableAggregator && node.Aggregator != nil && strings.TrimSpace(node.Aggregator.OutputKey) != "" {
+		output := OutputParamSpec{Key: strings.TrimSpace(node.Aggregator.OutputKey), Type: "any"}
+		out.add(variableFromOutput("node_output", node, output, "node_output"))
+	}
 	if node.Type == NodeTypeManualApproval {
 		for _, item := range []VariableCandidate{
 			{Scope: "approval", Name: "decision", Type: "string", Path: "approval." + node.ID + ".decision", NodeID: node.ID, Source: "approval"},

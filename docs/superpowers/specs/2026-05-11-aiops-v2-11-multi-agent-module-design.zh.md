@@ -6,6 +6,12 @@
 前端设计：[2026-05-11-aiops-v2-11a-multi-agent-frontend-design.zh.md](2026-05-11-aiops-v2-11a-multi-agent-frontend-design.zh.md)
 实施清单：[2026-05-11-aiops-v2-11b-multi-agent-frontend-todo.zh.md](2026-05-11-aiops-v2-11b-multi-agent-frontend-todo.zh.md)
 
+## 0. 场景边界
+
+Multi-Agent 不进入本次场景主链路。浏览器插件慢请求调试和 PG 修复先由单个 AI Reasoning orchestrator 在同一个 case 上串行完成证据收集、诊断、计划、执行解释、验证解释和经验候选总结。
+
+本文件保留为后续协作形态参考。本次场景改造不新增 AgentTask API、AgentMessage 事实源、协作面板、冲突仲裁或并行 Agent 执行；任何内部任务分解都必须落回 Case timeline、Prompt Trace 和现有动作治理。
+
 ## 1. 模块定位
 
 Multi-Agent 是协作形态，不是独立事实源。多个 Agent 可以分工收集证据、诊断、推进 Runbook、生成计划、执行受治理动作、验证恢复和沉淀经验，但必须共享同一个 case、event log、policy、host lease、prompt trace 和 audit。

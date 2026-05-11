@@ -17,10 +17,12 @@ ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 
 COPY go.mod go.sum ./
+COPY pkg/runner/go.mod pkg/runner/go.sum ./pkg/runner/
 RUN go mod download
 
 COPY cmd ./cmd
 COPY internal ./internal
+COPY pkg ./pkg
 COPY data ./data
 COPY runbooks ./runbooks
 COPY proto ./proto

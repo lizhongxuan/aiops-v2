@@ -62,4 +62,93 @@ describe("runStateReducer", () => {
     expect(state.logs[0]).toMatchObject({ stream: "stdout", nodeId: "restore", hostId: "pg-01", message: "ok" });
     expect(state.variables.nodeResults[0]).toMatchObject({ nodeId: "restore", result: { stdout: "ok", exit_code: 0 } });
   });
+
+  it("normalizes graph runner events for selected edges, approvals, and output deltas", () => {
+    const state = reduceRunEvents(
+      [
+        { type: "run_start", run_id: "run-3", timestamp: "10:00:01" },
+        { type: "edge_selected", edge_id: "gate-deploy-if", source: "gate", target: "deploy", kind: "if", timestamp: "10:00:02" },
+        { type: "approval_waiting", approval_id: "approval-1", node_id: "approve", message: "Deploy production?", timestamp: "10:00:03" },
+        { type: "output_delta", node_id: "deploy", stream: "stdout", chunk: "deploy ok", timestamp: "10:00:04" },
+        { type: "approval_resolved", approval_id: "approval-1", node_id: "approve", decision: "approved", timestamp: "10:00:05" },
+      ],
+      createInitialRunState(),
+    );
+
+    expect(state.edges["gate-deploy-if"]).toMatchObject({
+      edgeId: "gate-deploy-if",
+      source: "gate",
+      target: "deploy",
+      kind: "if",
+      status: "selected",
+    });
+    expect(state.approvals[0]).toMatchObject({
+      id: "approval-1",
+      nodeId: "approve",
+      summary: "Deploy production?",
+      status: "approved",
+    });
+    expect(state.logs[0]).toMatchObject({
+      stream: "stdout",
+      nodeId: "deploy",
+      message: "deploy ok",
+    });
+  });
+
+  it("keeps failure messages from run submission and node failures", () => {
+    const state = reduceRunEvents(
+      [
+        { type: "run.failed", status: "failed", message: "runner backend unavailable", timestamp: "10:00:00" },
+        { type: "node.failed", node_id: "prepare-runtime", status: "failed", message: "shell.run requires args.script", timestamp: "10:00:01" },
+      ],
+      createInitialRunState(),
+    );
+
+    expect(state.status).toBe("failed");
+    expect(state.message).toBe("runner backend unavailable");
+    expect(state.nodes["prepare-runtime"]).toMatchObject({
+      nodeId: "prepare-runtime",
+      status: "failed",
+      message: "shell.run requires args.script",
+    });
+  });
+
+  it("keeps stderr from host_result after a later node_finished event", () => {
+    const state = reduceRunEvents(
+      [
+        {
+          type: "host_result",
+          step: "prepare-runtime",
+          host: "local",
+          status: "failed",
+          message: "shell.run failed: exit status 9",
+          output: {
+            stdout: "about-to-fail stdout\n",
+            stderr: "intentional failure: missing deployment token\n",
+          },
+        },
+        {
+          type: "node_finished",
+          status: "failed",
+          message: "shell.run failed: exit status 9",
+          output: { node_id: "prepare-runtime" },
+        },
+      ],
+      createInitialRunState(),
+    );
+
+    expect(state.nodes["prepare-runtime"]).toMatchObject({
+      status: "failed",
+      message: "shell.run failed: exit status 9",
+      result: {
+        node_id: "prepare-runtime",
+        stdout: "about-to-fail stdout\n",
+        stderr: "intentional failure: missing deployment token\n",
+      },
+    });
+    expect(state.logs.map((log) => log.message)).toEqual([
+      "about-to-fail stdout\n",
+      "intentional failure: missing deployment token\n",
+    ]);
+  });
 });

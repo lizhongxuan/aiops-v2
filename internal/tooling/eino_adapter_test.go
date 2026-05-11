@@ -43,6 +43,25 @@ func TestNewEinoToolAdapterBuildsInfoFromToolDescription(t *testing.T) {
 	}
 }
 
+func TestNewEinoToolAdapterUsesProviderSafeToolName(t *testing.T) {
+	t.Parallel()
+
+	tool := &StaticTool{
+		Meta: ToolMetadata{Name: "coroot.list_services", Description: "List services."},
+		ExecuteFunc: func(context.Context, json.RawMessage) (ToolResult, error) {
+			return ToolResult{Content: "ok"}, nil
+		},
+	}
+
+	info, err := NewEinoToolAdapter(tool).Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info() error = %v", err)
+	}
+	if info.Name != "coroot_list_services" {
+		t.Fatalf("Info().Name = %q, want provider-safe coroot_list_services", info.Name)
+	}
+}
+
 func TestEinoToolAdapterInvokableRunReturnsToolContent(t *testing.T) {
 	t.Parallel()
 

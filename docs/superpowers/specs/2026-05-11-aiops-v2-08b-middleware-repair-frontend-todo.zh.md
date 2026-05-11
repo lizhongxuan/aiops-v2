@@ -27,7 +27,7 @@ Middleware Repair API view-model
   -> Tests and visual checks
 ```
 
-先建立 `middlewareRepair.ts` 和 view-model，再做页面。不要在 AI Chat、Incident、Coroot、Runner 页面各自拼接中间件修复状态。
+先建立 `middlewareRepair.ts` 和 view-model，再做页面。不要在 AI Chat、Incident、Coroot、Runner 页面各自拼接中间件修复状态；现有 AI Chat 页面不改，只消费后端创建/绑定 case 的结果。
 
 ## 3. 文件地图
 
@@ -80,7 +80,7 @@ Middleware Repair API view-model
 - `web/src/pages/OpsGraphPage.tsx`：MiddlewareResource entity 跳转资源详情。
 - `web/src/pages/CorootOverviewPage.tsx` 或 Observability 页面：中间件 probe / RCA 证据跳转 repair case。
 - `web/src/pages/ApprovalManagementPage.tsx`：中间件高风险动作展示 RepairPlan、backup、rollback、verification blocker。
-- `web/src/pages/RunnerStudioPage.tsx` 或 `WorkflowRunDetailPage.tsx`：source=repair_plan 的 run 展示 RepairPlan 链接。
+- `web/src/pages/WorkflowRunDetailPage.tsx` 或对应 Execution Run Detail 组件：source=repair_plan 的 run 展示 RepairPlan 链接；不要求修改现有 Runner 页面。
 - `web/src/pages/ExperiencePacksPage.tsx`：展示 middleware_repair source 和 RepairPlan candidate。
 - `web/src/pages/PostmortemPage.tsx`：引用 RepairPlan、RecoveryAttempt、failedPoint 和 Verification outcome。
 - `web/src/app/navigation.ts`：增加 Middleware Repair 导航。
@@ -170,7 +170,7 @@ Middleware Repair API view-model
 - [ ] Header 展示 caseId、resource、kind、environment、case status、repair phase、risk level、primary hypothesis、evidence coverage、selected experience、active RepairPlan、RecoveryStatus。
 - [ ] Status Rail 展示 created、identifying_resource、collecting_evidence、diagnosing、matching_experience、planning、awaiting_confirmation、awaiting_approval、executing、verifying、succeeded、failed、rolled_back、experience_candidate_ready。
 - [ ] Tabs 包含 Overview、Resource、Diagnostics、Experience Match、RepairPlan、Execution、Verification、Rollback、Experience Candidate、Timeline / Audit。
-- [ ] 从 AI Chat 创建的修复 case 初始停在 collecting_evidence 或 diagnosing，不进入 executing。
+- [ ] 从现有 AI Chat 后端创建/绑定的修复 case 初始停在 collecting_evidence 或 diagnosing，不进入 executing。
 - [ ] Overview 展示 repair phase、阻塞项、下一步、风险和证据覆盖。
 - [ ] 注册 `/middleware/repairs/:caseId` 路由。
 - [ ] 单测覆盖自然语言修复请求不会直接显示执行按钮。
@@ -331,7 +331,7 @@ Middleware Repair API view-model
 
 - [ ] `/middleware` 能展示总览、Safety Strip、活跃修复、待确认 RepairPlan、运行中 RecoveryAttempt、验证失败和经验候选。
 - [ ] `/middleware/resources` 能展示 PG、Redis、MQ、Kafka、Elasticsearch、MySQL 等资源和安全画像。
-- [ ] AI Chat 的“帮我修复 xxx 的 PG 集群”只能创建 middleware_repair case 并进入诊断或计划阶段，不能直接执行。
+- [ ] AI Chat 的“帮我修复 xxx 的 PG 集群”只能由后端创建/绑定 middleware_repair case 并进入诊断或计划阶段，不能直接执行，也不要求改 AI Chat 页面。
 - [ ] PG 页面展示拓扑、角色、复制、锁、连接、磁盘/WAL、备份、PITR 和 failover 风险。
 - [ ] required diagnostic evidence 缺失时，高风险修复确认被禁用。
 - [ ] 命中已审核经验时展示来源、环境、成功率、最近失败、禁用条件、权限、风险、回滚和验证项。

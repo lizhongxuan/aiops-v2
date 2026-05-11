@@ -572,6 +572,9 @@ func TestCompile_ToolPromptSet_UsesMetadataDescriptionBeforeDescription(t *testi
 	if !strings.Contains(result.Tools.Content, "coroot.list_services") {
 		t.Error("Should include assembled tool in tool prompt")
 	}
+	if !strings.Contains(result.Tools.Content, "coroot_list_services") {
+		t.Error("Tool prompt should show provider-safe tool name for model invocation")
+	}
 	if result.Tools.Entries[0].Capability != "List services from Coroot" {
 		t.Errorf("metadata description should be used, got %q", result.Tools.Entries[0].Capability)
 	}

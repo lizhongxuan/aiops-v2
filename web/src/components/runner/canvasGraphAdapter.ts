@@ -3,6 +3,7 @@ import {
   getConnectionValidationMessage,
   getNodeCanvasMeta,
   getNodePorts,
+  getNodeTypeDefinition,
 } from "./nodeTypeRegistry";
 
 export type RunnerPosition = { x: number; y: number };
@@ -111,6 +112,23 @@ function uniqueId(base: string, items: Array<{ id?: string }> = []): string {
   return `${base}-${index}`;
 }
 
+function randomLetters(length = 4): string {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz";
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const values = crypto.getRandomValues(new Uint8Array(length));
+    return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+  }
+  let result = "";
+  for (let index = 0; index < length; index += 1) result += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return result || "node".slice(0, length);
+}
+
+function nextActionOrder(base: string, nodes: RunnerNode[] = []): number {
+  const matcher = new RegExp(`^${base}(?:-|$)`);
+  const count = nodes.filter((node) => matcher.test(String(node.id || node.step?.name || ""))).length;
+  return count + 1;
+}
+
 function actionLabel(action: RunnerAction = {}): string {
   return action.label || action.title || action.name || action.action || "Action";
 }
@@ -150,6 +168,96 @@ function nextAvailablePosition(position: Partial<RunnerPosition>, nodes: RunnerN
   return candidate;
 }
 
+function edgeId(edge: RunnerEdge): string {
+  return edge.id || `${edge.source}-${edge.target}-${edge.kind || edge.source_port || "next"}`;
+}
+
+export function canonicalEdgeKindForPort(port = "next"): string {
+  switch (String(port || "next").trim()) {
+  case "approved":
+    return "approval_approved";
+  case "rejected":
+    return "approval_rejected";
+  case "timeout":
+    return "failure";
+  default:
+    return String(port || "next").trim() || "next";
+  }
+}
+
+function displayPortForEdgeKind(kind = "next"): string {
+  switch (String(kind || "next").trim()) {
+  case "approval_approved":
+    return "approved";
+  case "approval_rejected":
+    return "rejected";
+  default:
+    return String(kind || "next").trim() || "next";
+  }
+}
+
+function buildCatalogActionNode(nodes: RunnerNode[] = [], action: RunnerAction = {}, position: Partial<RunnerPosition> = { x: 0, y: 0 }): RunnerNode {
+  const base = slugify(action.action || actionLabel(action));
+  const id = uniqueId(base, nodes);
+  const stepName = `${base}-${nextActionOrder(base, nodes)}-${randomLetters(4)}`;
+  const nodePosition = nextAvailablePosition(position, nodes);
+  const defaultPorts = getActionDefaultPorts(action);
+  const nodeType = graphNodeTypeForAction(action);
+  return {
+    id,
+    type: nodeType,
+    position: nodePosition,
+    label: actionLabel(action),
+    ports: serializeGraphPorts(defaultPorts),
+    step: {
+      name: stepName,
+      action: action.action || action.name || id,
+      targets: defaultActionTargets(action),
+      args: cloneValue(action.defaults || {}),
+    },
+  };
+}
+
+function graphNodeTypeForAction(action: RunnerAction = {}) {
+  const explicit = String(action.node_type || action.nodeType || "").trim();
+  if (explicit) return explicit;
+  switch (getNodeTypeDefinition(action).key) {
+  case "condition":
+    return "condition";
+  case "approval":
+    return "manual_approval";
+  case "subflow":
+    return "subflow";
+  case "variable-aggregator":
+    return "variable_aggregator";
+  default:
+    return "action";
+  }
+}
+
+function downstreamNodeIds(graph: RunnerGraph = {}, startNodeId = "") {
+  const outgoingBySource = new Map<string, string[]>();
+  for (const edge of graph.edges || []) {
+    const source = String(edge.source || "").trim();
+    const target = String(edge.target || "").trim();
+    if (!source || !target) continue;
+    if (!outgoingBySource.has(source)) outgoingBySource.set(source, []);
+    outgoingBySource.get(source)?.push(target);
+  }
+
+  const visited = new Set<string>();
+  const queue = [startNodeId].filter(Boolean);
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || visited.has(current)) continue;
+    visited.add(current);
+    for (const target of outgoingBySource.get(current) || []) {
+      if (!visited.has(target)) queue.push(target);
+    }
+  }
+  return visited;
+}
+
 export function graphToCanvasModel(graph: RunnerGraph = {}, options: { selectedNodeId?: string } = {}) {
   const selectedNodeId = options.selectedNodeId || "";
   return {
@@ -166,7 +274,7 @@ export function graphToCanvasModel(graph: RunnerGraph = {}, options: { selectedN
       },
     })),
     edges: (graph.edges || []).map((edge) => ({
-      id: edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`,
+      id: edgeId(edge),
       source: edge.source,
       target: edge.target,
       type: "runner-edge",
@@ -180,8 +288,10 @@ export function graphToCanvasModel(graph: RunnerGraph = {}, options: { selectedN
 
 export function graphToFlowModel(graph: RunnerGraph = {}, options: { selectedNodeId?: string } = {}) {
   const selectedNodeId = options.selectedNodeId || "";
+  const visibleNodes = (graph.nodes || []).filter((node) => String(node.type || "").toLowerCase() !== "end" && getNodeCanvasMeta(node).key !== "end");
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   return {
-    nodes: (graph.nodes || []).map((node) => ({
+    nodes: visibleNodes.map((node) => ({
       id: node.id,
       type: "runner-node",
       position: { ...(node.position || { x: 0, y: 0 }) },
@@ -193,43 +303,47 @@ export function graphToFlowModel(graph: RunnerGraph = {}, options: { selectedNod
         node: { ...node, position: { ...(node.position || {}) } },
       },
     })),
-    edges: (graph.edges || []).map((edge) => ({
-      id: edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`,
+    edges: (graph.edges || []).filter((edge) => visibleNodeIds.has(String(edge.source || "")) && visibleNodeIds.has(String(edge.target || ""))).map((edge) => {
+      const sourcePort = edge.source_port || edge.sourceHandle || displayPortForEdgeKind(edge.kind || "next");
+      return {
+      id: edgeId(edge),
       source: edge.source,
       target: edge.target,
-      sourceHandle: edge.source_port || edge.sourceHandle || edge.kind || "next",
+      sourceHandle: sourcePort,
       targetHandle: edge.target_port || edge.targetHandle || "in",
-      label: edge.kind || "next",
+      label: sourcePort,
       type: "runner-edge",
       animated: ["next", "success", "running", "selected"].includes(edge.kind || edge.state?.status || ""),
       className: ["runner-flow-edge", edge.state?.status ? `is-${edge.state.status}` : ""].filter(Boolean).join(" "),
       data: {
         kind: edge.kind || "next",
+        displayKind: sourcePort,
         edge: { ...edge },
       },
-    })),
+    };
+    }),
   };
 }
 
 export function addCatalogActionNode(graph: RunnerGraph = {}, action: RunnerAction = {}, position: Partial<RunnerPosition> = { x: 0, y: 0 }) {
   const next = cloneGraph(graph);
-  const base = slugify(action.action || actionLabel(action));
-  const id = uniqueId(base, next.nodes);
-  const nodePosition = nextAvailablePosition(position, next.nodes);
-  const defaultPorts = getActionDefaultPorts(action);
-  next.nodes = [...(next.nodes || []), {
-    id,
-    type: "action",
-    position: nodePosition,
-    label: actionLabel(action),
-    ports: serializeGraphPorts(defaultPorts),
-    step: {
-      name: id,
-      action: action.action || action.name || id,
-      targets: defaultActionTargets(action),
-      args: cloneValue(action.defaults || {}),
-    },
-  }];
+  const existingNodes = next.nodes || [];
+  const node = buildCatalogActionNode(existingNodes, action, position);
+  const startNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "start" || item.id === "start");
+  const endNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "end" || item.id === "end");
+  const hasExecutableNode = existingNodes.some((item) => {
+    const type = String(item.type || "").toLowerCase();
+    return type !== "start" && type !== "end";
+  });
+  const startToEndEdge = (next.edges || []).find((edge) => edge.source === startNode?.id && edge.target === endNode?.id);
+  next.nodes = [...existingNodes, node];
+  if (startNode && endNode && !hasExecutableNode && startToEndEdge) {
+    next.edges = [
+      ...(next.edges || []).filter((edge) => edge !== startToEndEdge),
+      { id: `${startNode.id}-${node.id}-next`, source: startNode.id, target: node.id, kind: "next", source_port: "next", target_port: "in" },
+      { id: `${node.id}-${endNode.id}-next`, source: node.id, target: endNode.id, kind: "next", source_port: "next", target_port: "in" },
+    ];
+  }
   return next;
 }
 
@@ -246,14 +360,16 @@ export function addGraphEdge(graph: RunnerGraph = {}, connection: FlowConnection
   const target = String(connection.target || "").trim();
   if (!source || !target) return next;
   if (source === target) return next;
-  const kind = connection.kind || "next";
+  const sourcePort = String(connection.sourceHandle || connection.source_port || connection.kind || "next").trim() || "next";
+  const targetPort = String(connection.targetHandle || connection.target_port || "in").trim() || "in";
+  const kind = canonicalEdgeKindForPort(connection.kind || sourcePort || "next");
   if ((next.edges || []).some((edge) => edge.source === source && edge.target === target && (edge.kind || "next") === kind)) {
     return next;
   }
   const id = uniqueId(`${source}-${target}-${kind}`, next.edges);
   const edge: RunnerEdge = { id, source, target, kind };
-  if (connection.sourceHandle || connection.source_port) edge.source_port = connection.sourceHandle || connection.source_port;
-  if (connection.targetHandle || connection.target_port) edge.target_port = connection.targetHandle || connection.target_port;
+  if (connection.sourceHandle || connection.source_port) edge.source_port = sourcePort || displayPortForEdgeKind(kind);
+  if (connection.targetHandle || connection.target_port) edge.target_port = targetPort;
   next.edges = [...(next.edges || []), edge];
   return next;
 }
@@ -265,22 +381,61 @@ export function removeGraphEdge(graph: RunnerGraph = {}, edgeId = "") {
 }
 
 export function updateGraphEdgeKind(graph: RunnerGraph = {}, edgeId = "", kind = "next") {
-  const normalizedKind = String(kind || "next").trim() || "next";
+  const sourcePort = String(kind || "next").trim() || "next";
+  const normalizedKind = canonicalEdgeKindForPort(sourcePort);
   const next = cloneGraph(graph);
   next.edges = (next.edges || []).map((edge) => {
-    const currentId = edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`;
+    const currentId = edgeIdForUpdate(edge);
     if (currentId !== edgeId) return edge;
     return {
       ...edge,
       kind: normalizedKind,
-      source_port: normalizedKind,
+      source_port: sourcePort,
       target_port: edge.target_port || edge.targetHandle || "in",
     };
   });
   return next;
 }
 
+function edgeIdForUpdate(edge: RunnerEdge) {
+  return edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`;
+}
+
+function normalizeFlowConnection(graph: RunnerGraph = {}, connection: FlowConnection = {}): FlowConnection {
+  const source = String(connection.source || "").trim();
+  const target = String(connection.target || "").trim();
+  const sourceHandle = String(connection.sourceHandle || connection.source_port || connection.kind || "next").trim();
+  const targetHandle = String(connection.targetHandle || connection.target_port || "in").trim();
+  const sourceNode = (graph.nodes || []).find((node) => node.id === source);
+  const targetNode = (graph.nodes || []).find((node) => node.id === target);
+  if (!sourceNode || !targetNode || !sourceHandle || !targetHandle) return connection;
+
+  const sourcePorts = getNodePorts(sourceNode);
+  const targetPorts = getNodePorts(targetNode);
+  const sourceCanOutput = sourcePorts.outputs.some((port: RunnerPort) => port.id === sourceHandle);
+  const targetCanInput = targetPorts.inputs.some((port: RunnerPort) => port.id === targetHandle);
+  if (sourceCanOutput && targetCanInput) return connection;
+
+  const sourceCanInput = sourcePorts.inputs.some((port: RunnerPort) => port.id === sourceHandle);
+  const targetCanOutput = targetPorts.outputs.some((port: RunnerPort) => port.id === targetHandle);
+  if (sourceCanInput && targetCanOutput) {
+    return {
+      ...connection,
+      source: target,
+      target: source,
+      sourceHandle: targetHandle,
+      targetHandle: sourceHandle,
+      source_port: targetHandle,
+      target_port: sourceHandle,
+      kind: canonicalEdgeKindForPort(connection.kind || targetHandle || "next"),
+    };
+  }
+
+  return connection;
+}
+
 export function validateGraphConnection(graph: RunnerGraph = {}, connection: FlowConnection = {}): ValidationResult {
+  connection = normalizeFlowConnection(graph, connection);
   const source = String(connection.source || "").trim();
   const target = String(connection.target || "").trim();
   const sourceHandle = String(connection.sourceHandle || connection.source_port || connection.kind || "next").trim();
@@ -288,7 +443,7 @@ export function validateGraphConnection(graph: RunnerGraph = {}, connection: Flo
   const connectionId = String(connection.id || "").trim();
   const sourceNode = (graph.nodes || []).find((node) => node.id === source);
   const targetNode = (graph.nodes || []).find((node) => node.id === target);
-  const kind = connection.kind || sourceHandle || "next";
+  const kind = canonicalEdgeKindForPort(connection.kind || sourceHandle || "next");
 
   if (!sourceNode) return invalidConnection("invalid_source");
   if (!targetNode) return invalidConnection("invalid_target");
@@ -305,10 +460,10 @@ export function validateGraphConnection(graph: RunnerGraph = {}, connection: Flo
   }
 
   if ((graph.edges || []).some((edge) => {
-    const edgeId = edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`;
+    const edgeId = edgeIdForUpdate(edge);
     if (connectionId && edgeId === connectionId) return false;
-    const edgeKind = edge.kind || edge.source_port || "next";
-    const edgeSourcePort = edge.source_port || edgeKind;
+    const edgeKind = canonicalEdgeKindForPort(edge.kind || edge.source_port || "next");
+    const edgeSourcePort = edge.source_port || displayPortForEdgeKind(edgeKind);
     const edgeTargetPort = edge.target_port || "in";
     return edge.source === source && edge.target === target && edgeSourcePort === sourceHandle && edgeTargetPort === targetHandle && edgeKind === kind;
   })) {
@@ -319,6 +474,7 @@ export function validateGraphConnection(graph: RunnerGraph = {}, connection: Flo
 }
 
 export function connectFlowEdge(graph: RunnerGraph = {}, connection: FlowConnection = {}) {
+  connection = normalizeFlowConnection(graph, connection);
   const validation = validateGraphConnection(graph, connection);
   if (!validation.valid) {
     return { graph, error: validation };
@@ -355,14 +511,67 @@ export function getGraphUpstreamNodeIds(graph: RunnerGraph = {}, nodeId = "") {
 }
 
 export function flowConnectionToGraphEdge(graph: RunnerGraph = {}, connection: FlowConnection = {}) {
-  const kind = connection.kind || connection.sourceHandle || "next";
+  const sourcePort = connection.sourceHandle || connection.source_port || connection.kind || "next";
+  const kind = canonicalEdgeKindForPort(connection.kind || sourcePort || "next");
   return addGraphEdge(graph, {
     source: connection.source,
     target: connection.target,
     kind,
-    sourceHandle: connection.sourceHandle || kind,
+    sourceHandle: sourcePort,
     targetHandle: connection.targetHandle || "in",
   });
+}
+
+export function insertCatalogActionOnEdge(graph: RunnerGraph = {}, targetEdgeId = "", action: RunnerAction = {}) {
+  const next = cloneGraph(graph);
+  const original = (next.edges || []).find((edge) => edgeId(edge) === targetEdgeId || edgeIdForUpdate(edge) === targetEdgeId);
+  if (!original?.source || !original?.target) return next;
+
+  const shifted = downstreamNodeIds(next, original.target);
+  next.nodes = (next.nodes || []).map((node) => {
+    if (!shifted.has(node.id)) return node;
+    const position = node.position || { x: 0, y: 0 };
+    return {
+      ...node,
+      position: {
+        x: (Number(position.x) || 0) + 320,
+        y: Number(position.y) || 0,
+      },
+    };
+  });
+
+  const sourceNode = (next.nodes || []).find((node) => node.id === original.source);
+  const targetNode = (next.nodes || []).find((node) => node.id === original.target);
+  const sourcePosition = sourceNode?.position || { x: 0, y: 0 };
+  const targetPosition = targetNode?.position || { x: Number(sourcePosition.x || 0) + 640, y: sourcePosition.y || 0 };
+  const insertPosition = {
+    x: ((Number(sourcePosition.x) || 0) + (Number(targetPosition.x) || 0)) / 2,
+    y: ((Number(sourcePosition.y) || 0) + (Number(targetPosition.y) || 0)) / 2,
+  };
+  const inserted = buildCatalogActionNode(next.nodes || [], action, insertPosition);
+  const remainingEdges = (next.edges || []).filter((edge) => edge !== original);
+  const originalSourcePort = original.source_port || original.sourceHandle || displayPortForEdgeKind(original.kind || "next");
+  const originalKind = canonicalEdgeKindForPort(original.kind || originalSourcePort || "next");
+  const originalTargetPort = original.target_port || original.targetHandle || "in";
+  const firstEdge: RunnerEdge = {
+    id: uniqueId(`${original.source}-${inserted.id}-${originalKind}`, remainingEdges),
+    source: original.source,
+    target: inserted.id,
+    kind: originalKind,
+    source_port: originalSourcePort,
+    target_port: "in",
+  };
+  const secondEdge: RunnerEdge = {
+    id: uniqueId(`${inserted.id}-${original.target}-next`, [...remainingEdges, firstEdge]),
+    source: inserted.id,
+    target: original.target,
+    kind: "next",
+    source_port: "next",
+    target_port: originalTargetPort,
+  };
+  next.nodes = [...(next.nodes || []), inserted];
+  next.edges = [...remainingEdges, firstEdge, secondEdge];
+  return next;
 }
 
 export function validationIssueToCanvasFocus(graph: RunnerGraph = {}, issue: Record<string, unknown> = {}) {

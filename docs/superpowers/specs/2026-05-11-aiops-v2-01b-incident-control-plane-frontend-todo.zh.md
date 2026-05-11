@@ -110,7 +110,7 @@ API view-model
 ## 9. Task 6：Evidence 与 Timeline
 
 - [ ] 新增 `CaseEvidencePanel.tsx`。
-- [ ] 按来源分组展示 Coroot、ERP、Frontend Debug、Trace、Tool、Workflow、Middleware、Change、User。
+- [ ] 按来源分组展示 Coroot、ERP、Browser Plugin Debug、Trace、Tool、Workflow、Middleware、Change、User。
 - [ ] 显示 confidence、redactionStatus、observedAt、rawRef。
 - [ ] 权限不足或脱敏失败的证据只展示受限状态和 evidence id。
 - [ ] 新增 `CaseTimelinePanel.tsx`。

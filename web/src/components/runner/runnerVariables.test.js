@@ -117,6 +117,42 @@ describe("runnerVariables", () => {
     });
   });
 
+  it("attaches last-run values to visible variables without unmasking secrets", () => {
+    const variables = collectRunnerVariables(graph, "verify", {
+      runState: {
+        runId: "run-1",
+        status: "success",
+        variables: {
+          inputs: [{ key: "backup_id", value: "backup-42" }],
+          outputs: [{ nodeId: "restore", key: "restore_lsn", value: "0/16B6C50" }],
+          exports: [{ key: "PGDATA", value: "/runtime/pg" }],
+          nodeResults: [],
+        },
+        nodes: {
+          restore: {
+            nodeId: "restore",
+            result: {
+              restore_token: "runtime-secret-node",
+            },
+          },
+        },
+      },
+    });
+
+    expect(variables.find((variable) => variable.expression === "input.backup_id")).toMatchObject({
+      lastValue: "backup-42",
+      displayValue: "backup-42",
+    });
+    expect(variables.find((variable) => variable.expression === "node.restore.restore_lsn")).toMatchObject({
+      lastValue: "0/16B6C50",
+      displayValue: "0/16B6C50",
+    });
+    expect(variables.find((variable) => variable.expression === "node.restore.restore_token")).toMatchObject({
+      secret: true,
+      displayValue: "******",
+    });
+  });
+
   it("compiles and parses structured selectors as Runner variable expressions", () => {
     expect(compileRunnerVariableSelector({ scope: "input", name: "backup_id" })).toBe("input.backup_id");
     expect(compileRunnerVariableSelector({ scope: "env", name: "PGDATA" })).toBe("env.PGDATA");

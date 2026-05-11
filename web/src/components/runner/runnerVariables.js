@@ -17,7 +17,7 @@ export function collectRunnerVariables(graph = {}, nodeId = "", options = {}) {
     ...collectSystemVariables(),
     ...collectNodeOutputVariables(graph, upstreamIds),
   ];
-  return dedupeVariables(variables).sort(sortVariables);
+  return enrichVariablesWithRunState(dedupeVariables(variables).sort(sortVariables), options.runState);
 }
 
 export function validateRunnerVariableReferences(graph = {}, nodeId = "", references = []) {
@@ -316,4 +316,67 @@ function sortVariables(a, b) {
 
 function cleanKey(value = "") {
   return String(value || "").trim();
+}
+
+function enrichVariablesWithRunState(variables = [], runState = null) {
+  if (!runState) return variables;
+  return variables.map((variable) => {
+    const lastValue = lookupLastRunValue(variable, runState);
+    if (lastValue === undefined) return variable;
+    if (variable.secret) {
+      return {
+        ...variable,
+        lastValue: SECRET_DISPLAY_VALUE,
+        displayValue: SECRET_DISPLAY_VALUE,
+      };
+    }
+    return {
+      ...variable,
+      lastValue,
+      value: lastValue,
+      displayValue: formatDisplayValue(lastValue),
+    };
+  });
+}
+
+function lookupLastRunValue(variable = {}, runState = {}) {
+  const key = variable.name;
+  if (!key) return undefined;
+  if (variable.scope === "input") {
+    const match = findLast(runState.variables?.inputs || [], (item) => item.key === key || item.name === key);
+    return match?.value;
+  }
+  if (variable.scope === "env") {
+    const match = findLast(runState.variables?.exports || [], (item) => item.key === key || item.name === key);
+    return match?.value;
+  }
+  if (variable.scope === "sys") {
+    if (key === "run_id") return runState.runId || undefined;
+    if (key === "workflow_name") return runState.workflowName || undefined;
+    if (key === "timestamp") return runState.startedAt || runState.finishedAt || undefined;
+    return undefined;
+  }
+  if (variable.scope !== "node") return undefined;
+  const nodeId = variable.nodeId || variable.node_id || variable.sourceNodeId;
+  const output = findLast(runState.variables?.outputs || [], (item) => item.nodeId === nodeId && (item.key === key || item.name === key));
+  if (output) return output.value;
+  const result = runState.nodes?.[nodeId]?.result;
+  if (result && typeof result === "object" && key in result) return result[key];
+  const nodeResult = findLast(runState.variables?.nodeResults || [], (item) => item.nodeId === nodeId && item.result && typeof item.result === "object" && key in item.result);
+  if (nodeResult) return nodeResult.result[key];
+  return undefined;
+}
+
+function findLast(items = [], predicate = () => false) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) return items[index];
+  }
+  return null;
+}
+
+function formatDisplayValue(value) {
+  if (value === null) return "null";
+  if (value === undefined) return "";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }

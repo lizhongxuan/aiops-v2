@@ -34,6 +34,7 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/projection"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/runnerembed"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/server"
 	"aiops-v2/internal/settings"
@@ -248,6 +249,28 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init web assets: %w", err)
 	}
+	var runnerRuntime *runnerembed.Runtime
+	if strings.TrimSpace(os.Getenv("AIOPS_RUNNER_DISABLED")) != "1" {
+		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{DataDir: dataDir})
+		if err != nil {
+			return fmt.Errorf("init runner runtime: %w", err)
+		}
+	}
+	if strings.TrimSpace(runnerStudioUpstreamURL) != "" {
+		if runnerRuntime != nil {
+			log.Printf("ai-server: Runner Studio upstream configuration is deprecated and ignored while embedded Runner is enabled")
+		} else {
+			log.Printf("ai-server: Runner Studio upstream configuration is deprecated; embedded Runner is disabled")
+		}
+	}
+	httpOptions := []server.HTTPServerOption{
+		server.WithWebAssets(webAssets),
+		server.WithTerminalManager(terminalManager),
+		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
+	}
+	if runnerRuntime != nil {
+		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
+	}
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
@@ -258,9 +281,7 @@ func run() error {
 			appui.WithTerminalManager(terminalManager),
 			appui.WithLifecycleContext(ctx),
 		),
-		server.WithWebAssets(webAssets),
-		server.WithTerminalManager(terminalManager),
-		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
+		httpOptions...,
 	)
 	if subscriber := httpServer.ProjectionSubscriber(); subscriber != nil {
 		projector.AddSubscriber(subscriber)
@@ -330,6 +351,12 @@ func run() error {
 
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http shutdown: %v", err)
+	}
+
+	if runnerRuntime != nil {
+		if err := runnerRuntime.Close(shutdownCtx); err != nil {
+			log.Printf("runner runtime shutdown: %v", err)
+		}
 	}
 
 	if err := dataStore.Flush(); err != nil {
