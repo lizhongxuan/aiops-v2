@@ -3,6 +3,8 @@
 日期：2026-05-11
 范围：`aiops-v2` Coroot 集成、用户侧慢请求调试、中间件自治修复、事故工作台、Runbook 目录、Runner Studio 工作流编排与运行系统。
 目标：让系统在真实 AI Chat 运维、用户侧 Debug Trace 和中间件修复过程中自动沉淀经验，形成可审计的 Evolution Map；自动生成内容先进入候选经验包，只有经过人工审核后，才能影响 AI Chat 推荐、发布为 Runbook 或发布为 Workflow；后续遇到不同操作系统、运行环境和基础设施形态时，可以派生适配版本，同时不影响既有已发布资产。
+前端设计：[2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md](2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md)
+实施清单：[2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md](2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md)
 
 ## 1. 背景与现状
 
@@ -358,7 +360,7 @@ Synthesizer 只生成候选，不发布。
 - 从中间件修复 case 生成 RepairPlan draft：包含 RCA、诊断步骤、修复步骤、回滚、验证、禁用条件和审批要求。
 - 从失败 case 生成“禁用条件、风险提示、环境不适配说明”。
 - 从修复失败 case 生成 failure capsule 或 incompatibility edge，避免下次继续推荐同一路径。
-- 从 postmortem follow-up 生成待补充验证项或前置检查。
+- 从 postmortem follow-up 生成补充验证项候选或前置检查。
 
 生成的 workflow draft 必须带标签：
 

@@ -77,6 +77,8 @@ flowchart TD
 | 09a | Learning, Memory & Eval Frontend | [2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md](2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md) | 如何设计候选资产、审核队列、Activation Index、Memory、Eval、Evolution Map 和环境变体页面 |
 | 09b | Learning, Memory & Eval Frontend TODO | [2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md](2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md) | 如何按任务落地 Learning 资产控制台和跨模块经验沉淀闭环 |
 | 10 | Experience Pack 自我演化详设 | [2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md) | 如何从真实运维、Debug Trace 和中间件修复中沉淀可审核经验 |
+| 10a | Experience Pack Frontend | [2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md](2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md) | 如何设计经验包候选库、审核台、Artifact Studio、变体解析、Activation 影响和 Fitness 页面 |
+| 10b | Experience Pack Frontend TODO | [2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md](2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md) | 如何按任务落地 Experience Pack 自我演化前端和跨模块候选生成入口 |
 | 11 | Multi-Agent Collaboration | [2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md](2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md) | 多 Agent 如何协作但不分裂事实源、权限和审计 |
 
 已有专题文档继续作为局部设计来源：
