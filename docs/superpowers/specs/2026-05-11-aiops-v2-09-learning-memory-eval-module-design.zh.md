@@ -4,6 +4,8 @@
 状态：模块详细设计
 所属总纲：[2026-05-11-aiops-v2-00-enterprise-control-plane-design.zh.md](2026-05-11-aiops-v2-00-enterprise-control-plane-design.zh.md)
 专题文档：[2026-05-11-aiops-v2-10-experience-packs-design.zh.md](2026-05-11-aiops-v2-10-experience-packs-design.zh.md)
+前端设计：[2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md](2026-05-11-aiops-v2-09a-learning-memory-eval-frontend-design.zh.md)
+实施清单：[2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md](2026-05-11-aiops-v2-09b-learning-memory-eval-frontend-todo.zh.md)
 
 ## 1. 模块定位
 
