@@ -80,6 +80,8 @@ flowchart TD
 | 10a | Experience Pack Frontend | [2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md](2026-05-11-aiops-v2-10a-experience-packs-frontend-design.zh.md) | 如何设计经验包候选库、审核台、Artifact Studio、变体解析、Activation 影响和 Fitness 页面 |
 | 10b | Experience Pack Frontend TODO | [2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md](2026-05-11-aiops-v2-10b-experience-packs-frontend-todo.zh.md) | 如何按任务落地 Experience Pack 自我演化前端和跨模块候选生成入口 |
 | 11 | Multi-Agent Collaboration | [2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md](2026-05-11-aiops-v2-11-multi-agent-module-design.zh.md) | 多 Agent 如何协作但不分裂事实源、权限和审计 |
+| 11a | Multi-Agent Collaboration Frontend | [2026-05-11-aiops-v2-11a-multi-agent-frontend-design.zh.md](2026-05-11-aiops-v2-11a-multi-agent-frontend-design.zh.md) | 如何设计 Case 内多 Agent 协作面板、任务图、输出 ledger、冲突处理、人工决策和回放页面 |
+| 11b | Multi-Agent Collaboration Frontend TODO | [2026-05-11-aiops-v2-11b-multi-agent-frontend-todo.zh.md](2026-05-11-aiops-v2-11b-multi-agent-frontend-todo.zh.md) | 如何按任务落地 Multi-Agent 协作前端和跨 Case/Prompt Trace/治理页面集成 |
 
 已有专题文档继续作为局部设计来源：
 
