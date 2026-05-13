@@ -202,6 +202,39 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("attaches turn Agent-to-UI artifacts to assistant message metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-coroot-latency",
+          type: "coroot_chart",
+          titleZh: "Coroot 延迟趋势",
+          summaryZh: "接口 P95 延迟在 14:03 后升高。",
+          caseId: "case-debug-1",
+          source: "coroot",
+          redactionStatus: "redacted",
+          createdAt: "2026-05-12T02:00:00Z",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      agentUiArtifacts: [
+        expect.objectContaining({
+          id: "artifact-coroot-latency",
+          type: "coroot_chart",
+          titleZh: "Coroot 延迟趋势",
+          caseId: "case-debug-1",
+        }),
+      ],
+    });
+  });
+
   it("treats working and blocked transport states as running", () => {
     const state = createState();
 

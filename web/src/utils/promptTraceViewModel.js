@@ -10,6 +10,31 @@ const HASH_LABELS = [
 const RISKY_TOOLS = new Set(["exec_command", "run_command", "shell", "terminal"]);
 const PROMPT_SIZE_WARNING = 20_000;
 const MESSAGE_SIZE_WARNING = 20_000;
+const ARTIFACT_ID_KEYS = ["artifactId", "artifact_id", "agentUiArtifactId", "agent_ui_artifact_id", "id"];
+const LLM_REQUEST_ID_KEYS = ["llmRequestId", "llm_request_id", "modelCallId", "model_call_id", "requestId", "request_id"];
+const TOOL_CALL_ID_KEYS = ["toolCallId", "tool_call_id", "callId", "call_id"];
+const EVIDENCE_REF_KEYS = ["evidenceRef", "evidence_ref", "evidenceId", "evidence_id", "rawRef", "raw_ref"];
+const CASE_ID_KEYS = ["caseId", "case_id", "incidentId", "incident_id"];
+const REDACTION_STATUS_LABELS = {
+  redacted: "已脱敏",
+  partial: "部分脱敏",
+  failed: "脱敏失败",
+  restricted: "权限受限",
+  none: "未脱敏",
+  raw: "未脱敏",
+};
+const DETAIL_EMPTY_TEXT = {
+  systemPrompt: "暂无 system prompt",
+  developerPrompt: "暂无 developer prompt",
+  userPrompt: "暂无 user prompt",
+  toolMessages: "暂无 tool messages",
+  retrievalContext: "暂无 retrieval context",
+  output: "暂无输出",
+  error: "暂无错误",
+  tokens: "暂无 token 信息",
+  duration: "暂无耗时",
+};
+const SENSITIVE_VALUE = "[已脱敏]";
 
 export function parsePromptTrace(input) {
   const warnings = [];
@@ -50,6 +75,9 @@ export function parsePromptTrace(input) {
   const promptCharCount = layers.reduce((sum, item) => sum + item.charCount, 0) || promptObjectCharCount(prompt);
   const largestLayer = layers.reduce((largest, item) => (item.charCount > (largest?.charCount || 0) ? item : largest), null);
   const hasUserMessage = layers.some((item) => item.providerRole === "user" || item.semanticRole === "user");
+  const caseId = compactText(payload.caseId || payload.metadata?.["eval.caseId"] || payload.metadata?.caseId);
+  const sessionId = compactText(payload.sessionId);
+  const turnId = compactText(payload.turnId);
 
   if (!hasUserMessage) {
     warnings.push(warning("warning", "本次模型输入中没有 user message。", layers[0]?.id));
@@ -71,17 +99,18 @@ export function parsePromptTrace(input) {
     }
   }
 
-  const toolRegistryText = compactText(prompt.tools) || layers.find((item) => item.promptLayer === "tool_index")?.content || "";
+  const toolRegistryText = redactSensitiveText(compactText(prompt.tools) || layers.find((item) => item.promptLayer === "tool_index")?.content || "");
   const riskyTools = visibleTools.filter((tool) => RISKY_TOOLS.has(tool));
+  const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
 
   return {
-    raw: payload,
+    raw: redactSensitiveValue(payload),
     summary: {
       schemaVersion: payload.schemaVersion ?? null,
       kind: compactText(payload.kind),
-      caseId: compactText(payload.caseId || payload.metadata?.["eval.caseId"] || payload.metadata?.caseId),
-      sessionId: compactText(payload.sessionId),
-      turnId: compactText(payload.turnId),
+      caseId,
+      sessionId,
+      turnId,
       iteration: Number.isFinite(Number(payload.iteration)) ? Number(payload.iteration) : null,
       createdAt: compactText(payload.createdAt),
       messageCount: layers.length,
@@ -101,6 +130,8 @@ export function parsePromptTrace(input) {
       registryText: toolRegistryText,
       registryCharCount: toolRegistryText.length,
     },
+    agentUiSources,
+    agentUiArtifacts: agentUiSources.flatArtifacts,
     warnings,
   };
 }
@@ -134,6 +165,32 @@ export function compactText(value) {
   }
 }
 
+export function redactSensitiveText(value = "") {
+  let text = compactText(value);
+  if (!text) return "";
+  text = text.replace(/(request\s*body\s*[:=]\s*)(\{[\s\S]*?\}|\[[\s\S]*?\]|"[^"]*"|'[^']*'|\S+)/gi, `$1${SENSITIVE_VALUE}`);
+  text = text.replace(/((?:api[\s_-]*key|token|password|secret|cookie|authorization)\s*[:=]\s*)(["']?)[^\s,;}\]"']+/gi, `$1${SENSITIVE_VALUE}`);
+  text = text.replace(/(["'](?:api[\s_-]*key|token|password|secret|cookie|authorization)["']\s*:\s*)(["'])(?:\\.|(?!\2).)*\2/gi, `$1$2${SENSITIVE_VALUE}$2`);
+  text = text.replace(/(\\["'](?:api[\s_-]*key|token|password|secret|cookie|authorization)\\["']\s*:\s*\\["'])(?:\\.|[^\\])*?(\\["'])/gi, `$1${SENSITIVE_VALUE}$2`);
+  return text;
+}
+
+function redactSensitiveValue(value) {
+  if (typeof value === "string") return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map(redactSensitiveValue);
+  if (!isPlainObject(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => {
+      if (isSensitiveKey(key)) return [key, SENSITIVE_VALUE];
+      return [key, redactSensitiveValue(entry)];
+    }),
+  );
+}
+
+function isSensitiveKey(key = "") {
+  return /^(?:api[_\s-]*key|token|password|secret|cookie|authorization|request[_\s-]*body)$/i.test(key);
+}
+
 function parseInput(input, warnings) {
   if (typeof input === "string") {
     const text = input.trim();
@@ -153,10 +210,10 @@ function parseInput(input, warnings) {
 
 function buildLayer(message = {}, fallbackIndex, promptFingerprint = {}) {
   const index = Number.isFinite(Number(message.index)) ? Number(message.index) : fallbackIndex;
-  const providerRole = compactText(message.providerRole);
-  const semanticRole = compactText(message.semanticRole);
+  const providerRole = compactText(message.providerRole || message.role);
+  const semanticRole = compactText(message.semanticRole || message.semantic_role || message.role);
   const promptLayer = compactText(message.promptLayer);
-  const content = compactText(message.content);
+  const content = redactSensitiveText(compactText(message.content));
   const toolCalls = Array.isArray(message.toolCalls) ? message.toolCalls : [];
   const toolCallId = compactText(message.toolCallId);
   const hash = hashForLayer(promptLayer, semanticRole, promptFingerprint);
@@ -222,6 +279,400 @@ function promptObjectCharCount(prompt = {}) {
   return ["system", "developer", "tools", "policy", "stable", "dynamic"].reduce((sum, key) => {
     return sum + compactText(prompt[key]).length;
   }, 0);
+}
+
+function buildAgentUiSources(payload = {}, layers = [], context = {}) {
+  const toolCalls = collectToolCalls(payload);
+  const toolCallsById = new Map(toolCalls.map((item) => [item.id, item]).filter(([id]) => id));
+  const explicitLlmRequests = collectLlmRequests(payload, layers);
+  const defaultLlmRequestId = firstText(
+    pickFromSource(payload, LLM_REQUEST_ID_KEYS),
+    pickFromSource(payload.metadata, LLM_REQUEST_ID_KEYS),
+    Number.isFinite(Number(payload.iteration)) ? `iteration-${Number(payload.iteration)}` : "",
+    "llm-request",
+  );
+  const flatArtifacts = collectAgentUiArtifacts(payload)
+    .map((source, index) => normalizeAgentUiSourceArtifact(source, index, context, toolCallsById, defaultLlmRequestId))
+    .filter((item) => item.artifactId);
+  const userLayer = findLast(layers, (item) => item.providerRole === "user" || item.semanticRole === "user");
+  const llmRequests = buildLlmRequests(flatArtifacts, toolCalls, explicitLlmRequests, payload, layers);
+  const userRequests = llmRequests.length || userLayer
+    ? [
+        {
+          id: context.turnId || userLayer?.id || "user-request",
+          turnId: context.turnId || "",
+          title: "用户请求",
+          content: userLayer?.content || "",
+          preview: userLayer?.preview || "",
+          llmRequests,
+        },
+      ]
+    : [];
+
+  return {
+    session: {
+      id: context.sessionId || "",
+      caseId: context.caseId || "",
+    },
+    summary: {
+      artifactCount: flatArtifacts.length,
+      userRequestCount: userRequests.length,
+      llmRequestCount: llmRequests.length,
+    },
+    userRequests,
+    flatArtifacts,
+  };
+}
+
+function findLast(items, predicate) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) return items[index];
+  }
+  return null;
+}
+
+function collectAgentUiArtifacts(payload = {}) {
+  const byId = new Map();
+  for (const entry of [
+    ...collectionToRecords(payload.artifacts, "artifact_id"),
+    ...collectionToRecords(payload.metadata?.artifacts, "artifact_id"),
+    ...collectionToRecords(payload.agentUiArtifacts, "artifact_id"),
+    ...collectionToRecords(payload.metadata?.agentUiArtifacts, "artifact_id"),
+  ]) {
+    const artifactId = pickFromSource(entry, ARTIFACT_ID_KEYS);
+    if (!artifactId) continue;
+    const current = byId.get(artifactId) || {};
+    byId.set(artifactId, mergeArtifactRecord(current, entry));
+  }
+  return Array.from(byId.values());
+}
+
+function mergeArtifactRecord(current, next) {
+  const currentMetadata = metadataFor(current);
+  const nextMetadata = metadataFor(next);
+  return {
+    ...current,
+    ...next,
+    metadata: {
+      ...currentMetadata,
+      ...nextMetadata,
+    },
+  };
+}
+
+function normalizeAgentUiSourceArtifact(source, index, context, toolCallsById, defaultLlmRequestId) {
+  const artifactId = pickFromSource(source, ARTIFACT_ID_KEYS) || `agent-ui-artifact-${index + 1}`;
+  const toolCallId = pickFromSource(source, TOOL_CALL_ID_KEYS);
+  const toolCall = toolCallId ? toolCallsById.get(toolCallId) : null;
+  const llmRequestId = firstText(pickFromSource(source, LLM_REQUEST_ID_KEYS), toolCall?.llmRequestId, defaultLlmRequestId);
+  const type = redactSensitiveText(firstText(pickFromSource(source, ["type", "kind", "artifactType", "artifact_type"]), "agent_ui_artifact"));
+  const title = redactSensitiveText(firstText(pickFromSource(source, ["titleZh", "title", "name"]), artifactId));
+  const evidenceRef = redactSensitiveText(firstText(pickFromSource(source, EVIDENCE_REF_KEYS), firstArrayText(source.evidenceRefs), firstArrayText(source.evidence_refs)));
+  const caseId = firstText(pickFromSource(source, CASE_ID_KEYS), context.caseId);
+  const redactionStatus = firstText(pickFromSource(source, ["redactionStatus", "redaction_status", "redacted"]));
+
+  return {
+    id: `agent-ui-source-${artifactId}`,
+    artifactId,
+    type,
+    title,
+    llmRequestId,
+    toolCallId,
+    evidenceRef,
+    caseId,
+    redactionStatus,
+    redactionStatusLabel: redactionStatusLabel(redactionStatus),
+    generatedBy: toolCall
+      ? {
+          kind: "tool_call",
+          id: toolCall.id,
+          name: toolCall.name,
+          label: `工具调用 ${toolCall.name || toolCall.id}`,
+          llmRequestId,
+        }
+      : {
+          kind: "llm_request",
+          id: llmRequestId,
+          name: "",
+          label: `LLMRequest ${llmRequestId}`,
+          llmRequestId,
+        },
+    raw: redactSensitiveValue(source),
+  };
+}
+
+function collectLlmRequests(payload = {}, layers = []) {
+  const records = [
+    ...collectionToRecords(payload.llmRequests, "id"),
+    ...collectionToRecords(payload.llm_requests, "id"),
+    ...collectionToRecords(payload.modelRequests, "id"),
+    ...collectionToRecords(payload.model_requests, "id"),
+    ...collectionToRecords(payload.metadata?.llmRequests, "id"),
+    ...collectionToRecords(payload.metadata?.llm_requests, "id"),
+  ];
+
+  return records.map((record, index) => normalizeLlmRequest(record, index, payload, layers));
+}
+
+function normalizeLlmRequest(source, index, payload, layers) {
+  const metadata = metadataFor(source);
+  const requestBody = firstObject(source.requestBody, source.request_body, source.body, source.input, metadata.requestBody, metadata.request_body);
+  const messages = collectRequestMessages(requestBody, source, payload);
+  const id = firstText(pickFromSource(source, LLM_REQUEST_ID_KEYS), source.id, metadata.id, `llm-request-${index + 1}`);
+  return {
+    id,
+    label: `LLMRequest ${id}`,
+    detail: buildLlmRequestDetail(source, metadata, requestBody, messages, layers, payload),
+  };
+}
+
+function collectRequestMessages(requestBody, source, payload) {
+  const directMessages = [
+    ...(Array.isArray(requestBody?.messages) ? requestBody.messages : []),
+    ...(Array.isArray(source.messages) ? source.messages : []),
+    ...(Array.isArray(source.modelInput) ? source.modelInput : []),
+    ...(Array.isArray(payload.messages) ? payload.messages : []),
+  ];
+  return directMessages.filter(isPlainObject);
+}
+
+function buildLlmRequestDetail(source, metadata, requestBody, messages, layers, payload) {
+  const systemPrompt = firstText(
+    messagesForRole(messages, "system"),
+    pickFromSource(source, ["systemPrompt", "system_prompt"]),
+    pickFromSource(metadata, ["systemPrompt", "system_prompt"]),
+    payload.prompt?.system,
+    layerContent(layers, "system"),
+  );
+  const developerPrompt = firstText(
+    messagesForRole(messages, "developer"),
+    pickFromSource(source, ["developerPrompt", "developer_prompt"]),
+    pickFromSource(metadata, ["developerPrompt", "developer_prompt"]),
+    payload.prompt?.developer,
+    layerContent(layers, "developer"),
+  );
+  const userPrompt = firstText(
+    messagesForRole(messages, "user"),
+    pickFromSource(source, ["userPrompt", "user_prompt", "prompt"]),
+    pickFromSource(metadata, ["userPrompt", "user_prompt"]),
+    layerContent(layers, "user"),
+  );
+  const toolMessages = firstText(
+    messagesForRole(messages, "tool"),
+    source.toolMessages,
+    source.tool_messages,
+    metadata.toolMessages,
+    metadata.tool_messages,
+    layers.filter((item) => item.providerRole === "tool" || item.semanticRole.includes("tool")).map((item) => item.content),
+  );
+  const retrievalContext = firstText(
+    source.retrievalContext,
+    source.retrieval_context,
+    source.context,
+    source.contexts,
+    source.documents,
+    metadata.retrievalContext,
+    metadata.retrieval_context,
+    payload.retrievalContext,
+    payload.retrieval_context,
+    layers.filter((item) => /retrieval|context|memory/.test(`${item.promptLayer} ${item.semanticRole}`.toLowerCase())).map((item) => item.content),
+  );
+  const output = firstText(
+    source.output,
+    source.response,
+    source.completion,
+    source.assistantOutput,
+    source.assistant_output,
+    metadata.output,
+    payload.output,
+    payload.response,
+    layerContent(layers, "assistant"),
+  );
+  const error = firstText(source.error, source.errorMessage, source.error_message, metadata.error, payload.error, payload.errorMessage);
+
+  return {
+    systemPrompt: redactOrEmpty(systemPrompt, DETAIL_EMPTY_TEXT.systemPrompt),
+    developerPrompt: redactOrEmpty(developerPrompt, DETAIL_EMPTY_TEXT.developerPrompt),
+    userPrompt: redactOrEmpty(userPrompt, DETAIL_EMPTY_TEXT.userPrompt),
+    toolMessages: redactOrEmpty(toolMessages, DETAIL_EMPTY_TEXT.toolMessages),
+    retrievalContext: redactOrEmpty(retrievalContext, DETAIL_EMPTY_TEXT.retrievalContext),
+    output: redactOrEmpty(output, DETAIL_EMPTY_TEXT.output),
+    error: redactOrEmpty(error, DETAIL_EMPTY_TEXT.error),
+    tokens: formatUsage(source.usage || metadata.usage || payload.usage || requestBody?.usage),
+    duration: formatDuration(firstText(source.durationMs, source.duration_ms, source.latencyMs, source.latency_ms, source.elapsedMs, source.elapsed_ms, metadata.durationMs, metadata.duration_ms)),
+  };
+}
+
+function buildLlmRequests(artifacts, toolCalls, explicitLlmRequests, payload, layers) {
+  const byRequest = new Map();
+  for (const request of explicitLlmRequests) {
+    byRequest.set(request.id, {
+      id: request.id,
+      label: request.label,
+      detail: request.detail,
+      toolCalls: [],
+      generatedArtifacts: [],
+    });
+  }
+
+  for (const artifact of artifacts) {
+    const requestId = artifact.llmRequestId || "llm-request";
+    if (!byRequest.has(requestId)) {
+      byRequest.set(requestId, {
+        id: requestId,
+        label: `LLMRequest ${requestId}`,
+        detail: buildLlmRequestDetail({}, {}, {}, [], layers, payload),
+        toolCalls: [],
+        generatedArtifacts: [],
+      });
+    }
+    byRequest.get(requestId).generatedArtifacts.push(artifact);
+  }
+
+  for (const request of byRequest.values()) {
+    const artifactToolCallIds = new Set(request.generatedArtifacts.map((item) => item.toolCallId).filter(Boolean));
+    request.toolCalls = toolCalls.filter((toolCall) => {
+      return toolCall.llmRequestId === request.id || artifactToolCallIds.has(toolCall.id);
+    });
+  }
+
+  return Array.from(byRequest.values());
+}
+
+function collectToolCalls(payload = {}) {
+  const records = [
+    ...collectionToRecords(payload.toolCalls, "id"),
+    ...collectionToRecords(payload.metadata?.toolCalls, "id"),
+  ];
+
+  for (const message of Array.isArray(payload.modelInput) ? payload.modelInput : []) {
+    const messageLlmRequestId = pickFromSource(message, LLM_REQUEST_ID_KEYS);
+    for (const toolCall of collectionToRecords(message.toolCalls, "id")) {
+      records.push({
+        ...toolCall,
+        llmRequestId: pickFromSource(toolCall, LLM_REQUEST_ID_KEYS) || messageLlmRequestId,
+      });
+    }
+  }
+
+  const byId = new Map();
+  records.forEach((record, index) => {
+    const normalized = normalizeToolCall(record, index);
+    if (!normalized.id) return;
+    byId.set(normalized.id, { ...(byId.get(normalized.id) || {}), ...normalized });
+  });
+  return Array.from(byId.values());
+}
+
+function normalizeToolCall(source, index) {
+  const fn = isPlainObject(source.function) ? source.function : {};
+  const metadata = metadataFor(source);
+  const id = firstText(pickFromSource(source, ["id", "toolCallId", "tool_call_id", "callId", "call_id"]), `tool-call-${index + 1}`);
+  const name = firstText(source.name, source.toolName, source.tool_name, fn.name, metadata.name, metadata.toolName, metadata.tool_name);
+  const llmRequestId = pickFromSource(source, LLM_REQUEST_ID_KEYS);
+  return {
+    id,
+    name,
+    type: firstText(source.type, "function"),
+    llmRequestId,
+    arguments: redactSensitiveText(firstText(fn.arguments, source.arguments, source.args)),
+  };
+}
+
+function messagesForRole(messages, role) {
+  return messages
+    .filter((message) => compactText(message.role || message.providerRole || message.semanticRole).toLowerCase() === role)
+    .map((message) => message.content)
+    .filter(Boolean);
+}
+
+function layerContent(layers, key) {
+  const needle = key.toLowerCase();
+  return layers
+    .filter((item) => `${item.providerRole} ${item.semanticRole} ${item.promptLayer}`.toLowerCase().includes(needle))
+    .map((item) => item.content);
+}
+
+function firstObject(...values) {
+  return values.find(isPlainObject) || {};
+}
+
+function redactOrEmpty(value, emptyText) {
+  const text = redactSensitiveText(compactText(value));
+  return text || emptyText;
+}
+
+function formatUsage(usage) {
+  if (!isPlainObject(usage)) return DETAIL_EMPTY_TEXT.tokens;
+  const prompt = firstText(usage.prompt_tokens, usage.promptTokens, usage.input_tokens, usage.inputTokens);
+  const completion = firstText(usage.completion_tokens, usage.completionTokens, usage.output_tokens, usage.outputTokens);
+  const total = firstText(usage.total_tokens, usage.totalTokens, usage.total);
+  if (!prompt && !completion && !total) return DETAIL_EMPTY_TEXT.tokens;
+  return `prompt ${prompt || "-"} / completion ${completion || "-"} / total ${total || "-"}`;
+}
+
+function formatDuration(value) {
+  if (!compactText(value)) return DETAIL_EMPTY_TEXT.duration;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return DETAIL_EMPTY_TEXT.duration;
+  return `${number} ms`;
+}
+
+function collectionToRecords(value, idKey) {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean).map((item) => (isPlainObject(item) ? item : { value: item }));
+  }
+  if (isPlainObject(value)) {
+    return Object.entries(value).map(([key, item]) => {
+      if (isPlainObject(item)) {
+        return { [idKey]: key, ...item };
+      }
+      return { [idKey]: key, value: item };
+    });
+  }
+  return [];
+}
+
+function pickFromSource(source, keys) {
+  if (!isPlainObject(source)) return "";
+  const metadata = metadataFor(source);
+  const generatedBy = isPlainObject(source.generatedBy)
+    ? source.generatedBy
+    : isPlainObject(metadata.generatedBy)
+      ? metadata.generatedBy
+      : {};
+
+  for (const key of keys) {
+    const value = firstText(source[key], metadata[key], generatedBy[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function metadataFor(source) {
+  if (!isPlainObject(source)) return {};
+  return {
+    ...(isPlainObject(source.meta) ? source.meta : {}),
+    ...(isPlainObject(source.metadata) ? source.metadata : {}),
+  };
+}
+
+function firstArrayText(value) {
+  return Array.isArray(value) ? firstText(...value) : "";
+}
+
+function firstText(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length === 0) continue;
+    const text = compactText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function redactionStatusLabel(status) {
+  const key = compactText(status).toLowerCase();
+  return REDACTION_STATUS_LABELS[key] || compactText(status);
 }
 
 function warning(severity, message, targetId) {

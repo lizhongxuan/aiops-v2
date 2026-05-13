@@ -1,4 +1,4 @@
-import { Plus, RefreshCw, Save, Search, Trash2 } from "lucide-react";
+import { Plus, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -114,16 +114,10 @@ export function SkillCatalogPage() {
       title="Skills 管理"
       description="维护可供 Agent 绑定和调用的 skills catalog，支持添加、删除、搜索与基础字段编辑。"
       actions={
-        <>
-          <Button variant="outline" onClick={() => void load()} disabled={loading || saving}>
-            <RefreshCw />
-            刷新
-          </Button>
-          <Button onClick={createNewSkill}>
-            <Plus />
-            新增
-          </Button>
-        </>
+        <Button onClick={createNewSkill}>
+          <Plus />
+          新增
+        </Button>
       }
     >
       <StatGrid

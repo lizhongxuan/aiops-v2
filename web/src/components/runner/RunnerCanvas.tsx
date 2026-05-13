@@ -210,6 +210,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; insertPosition: RunnerPosition } | null>(null);
   const [edgeMenu, setEdgeMenu] = useState<{ x: number; y: number; edgeId: string } | null>(null);
   const [pendingAddPosition, setPendingAddPosition] = useState<RunnerPosition | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState("");
   const menuPositionForEvent = useCallback((event: MouseEvent, menuWidth = 210, menuHeight = 178) => {
     const bounds = canvasRef.current?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect();
     return {
@@ -217,6 +218,16 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       y: Math.min(Math.max(event.clientY - bounds.top, 8), Math.max(bounds.height - menuHeight - 8, 8)),
     };
   }, []);
+  const selectGraphEdge = useCallback(
+    (edgeId: string) => {
+      setSelectedEdgeId(edgeId);
+      props.onSelectNode("");
+      setActiveEdgeHit({ edgeId });
+      setContextMenu(null);
+      setEdgeMenu(null);
+    },
+    [props],
+  );
   const deleteGraphEdges = useCallback(
     (edgeIds: string[]) => {
       if (!edgeIds.length) return;
@@ -224,6 +235,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       for (const edgeId of edgeIds) nextGraph = removeGraphEdge(nextGraph, edgeId);
       setConnectionError("");
       setActiveEdgeHit(null);
+      setSelectedEdgeId("");
       setEdgePickerEdgeId("");
       setEdgeMenu(null);
       props.onUpdateGraph(nextGraph);
@@ -256,15 +268,16 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         ...edge,
         reconnectable: true,
         selectable: true,
+        selected: selectedEdgeId === edge.id,
         data: {
           ...(edge.data || {}),
           active: activeEdgeHit?.edgeId === edge.id,
+          onSelectEdge: selectGraphEdge,
           onInsertEdge: (edgeId: string) => {
             setPickerOpen(false);
             setEdgePickerEdgeId(edgeId);
             setActiveEdgeHit(null);
           },
-          onDeleteEdge: (edgeId: string) => deleteGraphEdges([edgeId]),
           onOpenEdgeMenu: (edgeId: string, event: MouseEvent<SVGPathElement>) => {
             event.preventDefault();
             event.stopPropagation();
@@ -277,7 +290,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         },
         markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#94a3b8" },
       })) as Edge[],
-    [activeEdgeHit, deleteGraphEdges, flowModel.edges, menuPositionForEvent],
+    [activeEdgeHit, flowModel.edges, menuPositionForEvent, selectGraphEdge, selectedEdgeId],
   );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(edges);
@@ -289,6 +302,25 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   useEffect(() => {
     setFlowEdges(edges);
   }, [edges, setFlowEdges]);
+
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+    const exists = (props.graph.edges || []).some((edge) => (edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`) === selectedEdgeId);
+    if (!exists) setSelectedEdgeId("");
+  }, [props.graph.edges, selectedEdgeId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!selectedEdgeId) return;
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      event.preventDefault();
+      deleteGraphEdges([selectedEdgeId]);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deleteGraphEdges, selectedEdgeId]);
 
   useEffect(() => {
     if (!runFocusNodeId) return;
@@ -303,8 +335,8 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   }, [props.focusNodeId, props.graph.nodes, reactFlow, runFocusNodeId]);
 
   const addAction = useCallback(
-    (action: RunnerAction, position = { x: 420, y: 180 }) => {
-      props.onUpdateGraph(addCatalogActionNode(props.graph, action, position));
+    (action: RunnerAction, position = { x: 420, y: 180 }, options: { preservePosition?: boolean } = {}) => {
+      props.onUpdateGraph(addCatalogActionNode(props.graph, action, position, options));
     },
     [props],
   );
@@ -393,6 +425,25 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
     [edgePickerEdgeId, flowModel.edges, flowModel.nodes, reactFlow],
   );
 
+  const handleCanvasClick = useCallback(
+    (event: MouseEvent<HTMLElement>) => {
+      const target = event.target as Element | null;
+      if (
+        target?.closest(
+          "button,input,textarea,select,.react-flow__node,.runner-node-picker,.runner-canvas-context-menu,.runner-edge-menu,.react-flow__controls,.react-flow__minimap",
+        )
+      ) {
+        return;
+      }
+      const point = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      const hit = getActiveEdgeHit(point, flowModel.nodes as Node[], flowModel.edges as Edge[]);
+      if (!hit) return;
+      event.stopPropagation();
+      selectGraphEdge(hit.edgeId);
+    },
+    [flowModel.edges, flowModel.nodes, reactFlow, selectGraphEdge],
+  );
+
   const handleDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
@@ -451,7 +502,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   }, [props, reactFlow]);
 
   return (
-    <section className={`runner-canvas-react ${pickerOpen ? "with-palette" : ""}`} data-testid="runner-canvas-dropzone" onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
+    <section className={`runner-canvas-react ${pickerOpen ? "with-palette" : ""}`} data-testid="runner-canvas-dropzone" onClickCapture={handleCanvasClick} onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
       {contextMenu ? (
         <section className="runner-canvas-context-menu" data-testid="runner-canvas-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
           <button type="button" data-testid="runner-context-add-node" onClick={() => { setPendingAddPosition(contextMenu.insertPosition); setContextMenu(null); setPickerOpen(true); }}>
@@ -506,7 +557,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
               data-testid={`catalog-action-${actionKey(action)}`}
               onDragStart={(event) => event.dataTransfer.setData("application/runner-action", actionKey(action))}
               onClick={() => {
-                addAction(action, pendingAddPosition || undefined);
+                addAction(action, pendingAddPosition || undefined, { preservePosition: Boolean(pendingAddPosition) });
                 setPendingAddPosition(null);
                 setPickerOpen(false);
               }}
@@ -551,6 +602,10 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         onEdgesDelete={onEdgesDelete}
         onConnect={onConnect}
         onReconnect={onReconnect}
+        onEdgeClick={(event, edge) => {
+          event.stopPropagation();
+          selectGraphEdge(edge.id);
+        }}
         onEdgeDoubleClick={(event, edge) => {
           event.preventDefault();
           event.stopPropagation();
@@ -565,10 +620,14 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
           const menuPosition = menuPositionForEvent(event, 156, 48);
           setEdgeMenu({ ...menuPosition, edgeId: edge.id });
         }}
-        onNodeClick={(_event, node) => props.onSelectNode(node.id)}
+        onNodeClick={(_event, node) => {
+          setSelectedEdgeId("");
+          props.onSelectNode(node.id);
+        }}
         onPaneClick={() => {
           props.onSelectNode("");
           setActiveEdgeHit(null);
+          setSelectedEdgeId("");
           setContextMenu(null);
           setEdgeMenu(null);
         }}
@@ -584,6 +643,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         edgesReconnectable
         reconnectRadius={16}
         connectOnClick
+        deleteKeyCode={["Backspace", "Delete"]}
       >
         <Background />
         <MiniMap pannable zoomable />

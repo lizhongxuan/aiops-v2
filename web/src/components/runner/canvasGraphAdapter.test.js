@@ -172,6 +172,22 @@ describe("canvasGraphAdapter", () => {
     expect(second.nodes[1].position).toEqual({ x: 420, y: 160 });
   });
 
+  it("preserves the requested position for context-menu adds", () => {
+    const first = addCatalogActionNode(
+      { version: "v1", workflow: { name: "demo" }, nodes: [], edges: [] },
+      { action: "shell.run", label: "Shell Script" },
+      { x: 420, y: 240 },
+    );
+    const second = addCatalogActionNode(
+      first,
+      { action: "shell.run", label: "Shell Script" },
+      { x: 450, y: 330 },
+      { preservePosition: true },
+    );
+
+    expect(second.nodes[1].position).toEqual({ x: 450, y: 330 });
+  });
+
   it("connects nodes by appending a backend graph edge", () => {
     const next = addGraphEdge(graph, { source: "pre-check", target: "restore", kind: "success" });
 

@@ -5,6 +5,7 @@ import {
   Bot,
   CheckCircle,
   Database,
+  Download,
   FlaskConical,
   Maximize2,
   MoreHorizontal,
@@ -14,20 +15,21 @@ import {
   Rocket,
   Save,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 
-import { useRegisterAppShellHeader } from "@/app/AppShellChromeContext";
+import { useRegisterAppShellHeader, useRegisterAppShellPageChrome } from "@/app/AppShellChromeContext";
 import { RunnerCanvas } from "@/components/runner/RunnerCanvas";
 import { createInputParam, normalizeInputParams, valueSourceLabel, variableToValueSource } from "@/components/runner/io/ioTypes";
-import { ALLOWED_EXTRACT_SOURCE_TYPES, createOutputParam, normalizeOutputParams, validateJsonPath } from "@/components/runner/io/outputTypes";
+import { createOutputParam, normalizeOutputParams } from "@/components/runner/io/outputTypes";
 import { FALLBACK_RUNNER_ACTIONS } from "@/components/runner/fallbackActionCatalog";
 import { getNodeCanvasMeta } from "@/components/runner/nodeTypeRegistry";
 import { collectRunnerVariables } from "@/components/runner/runnerVariables";
 import { firstRunnableNodeId } from "@/components/runner/runnerRunVisualState";
 import { extractRunnerRunEvents, finalRunnerRunStatus, isRunnerRunHistoryTerminal, mapRunnerRunEventsToGraph, unwrapRunnerPayload } from "@/components/runner/runEventHistory";
 import { createInitialRunState, reduceRunEvents } from "@/components/runner/runStateReducer";
-import type { RunnerGraph, RunnerNode } from "@/components/runner/canvasGraphAdapter";
+import type { RunnerEdge, RunnerGraph, RunnerNode } from "@/components/runner/canvasGraphAdapter";
 import "@/components/runner/runnerStudio.css";
 
 type RunnerAction = { action?: string; name?: string; label?: string; title?: string; category?: string; defaults?: Record<string, unknown>; [key: string]: unknown };
@@ -36,6 +38,20 @@ type Workflow = {
   name: string;
   title?: string;
   status?: string;
+  workflow_type?: string;
+  workflowType?: string;
+  case_id?: string;
+  caseId?: string;
+  host_profile_snapshot?: Record<string, unknown>;
+  hostProfileSnapshot?: Record<string, unknown>;
+  host_profile_snapshots?: Record<string, unknown>[];
+  hostProfileSnapshots?: Record<string, unknown>[];
+  host_lease?: Record<string, unknown>;
+  hostLease?: Record<string, unknown>;
+  host_leases?: Record<string, unknown>[];
+  hostLeases?: Record<string, unknown>[];
+  experience_pack_binding?: Record<string, unknown>;
+  experiencePackBinding?: Record<string, unknown>;
   graph?: RunnerGraph | null;
   local_draft?: boolean;
   validated_graph_hash?: string;
@@ -63,13 +79,19 @@ type RunnerRunRecord = {
   message: string;
   startedAt: string;
   finishedAt: string;
+  caseId?: string;
+  hostLeaseId?: string;
+  failedStep?: string;
+  failedReason?: string;
+  rollbackResult?: string;
+  verificationRefs?: string[];
   events: Record<string, unknown>[];
   state: RunState;
 };
 type RunnerHostGroup = { label: string; hosts: string[] };
 type RunnerEndCallback = { event: string; url: string; payload: string };
 
-type ToolbarActionKey = "save" | "validate" | "dry-run" | "run" | "variables" | "run-details" | "publish" | "ai-generate";
+type ToolbarActionKey = "save" | "validate" | "dry-run" | "run" | "variables" | "run-details" | "publish" | "ai-generate" | "import" | "export";
 
 const FALLBACK_ACTIONS: RunnerAction[] = FALLBACK_RUNNER_ACTIONS
   .filter((action) => action.action !== "wait.event")
@@ -88,6 +110,8 @@ const PRIMARY_TOOLBAR_ACTIONS = [
 ] as const;
 
 const SECONDARY_TOOLBAR_ACTIONS = [
+  ["import", "导入", Upload],
+  ["export", "导出", Download],
   ["validate", "校验", CheckCircle],
   ["dry-run", "Dry Run", FlaskConical],
   ["variables", "变量", Database],
@@ -96,6 +120,14 @@ const SECONDARY_TOOLBAR_ACTIONS = [
 ] as const;
 
 const RUN_SUBMIT_COOLDOWN_MS = 8000;
+const WORKFLOW_EXPORT_KIND = "aiops.runner.workflow";
+const WORKFLOW_EXPORT_VERSION = 1;
+const IMPORT_LAYOUT_START_X = 80;
+const IMPORT_LAYOUT_START_Y = 160;
+const IMPORT_LAYOUT_COLUMN_GAP = 320;
+const IMPORT_LAYOUT_ROW_GAP = 140;
+const WORKFLOW_EXPORT_KEYS = ["name", "title", "description", "workflow_type", "workflowType", "category", "inventory", "inputs", "outputs", "variables", "vars"];
+const NODE_EXPORT_KEYS = ["id", "type", "label", "description", "ports", "step", "inputs", "outputs", "risk", "ui", "condition", "aggregator", "branches"];
 
 function workflowKey(workflow: Partial<Workflow> | null | undefined) {
   return String(workflow?.name || workflow?.id || "").trim();
@@ -132,6 +164,161 @@ function createBlankWorkflowGraph(name: string, title = name): RunnerGraph {
   );
 }
 
+function compactJsonValue(value: unknown): unknown {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (Array.isArray(value)) {
+    const items = value.map((item) => compactJsonValue(item)).filter((item) => item !== undefined);
+    return items.length ? items : undefined;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => [key, compactJsonValue(item)] as const)
+      .filter(([, item]) => item !== undefined);
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  }
+  return value;
+}
+
+function cloneCompactValue(value: unknown) {
+  if (value === undefined) return undefined;
+  try {
+    return compactJsonValue(JSON.parse(JSON.stringify(value)));
+  } catch (_error) {
+    return undefined;
+  }
+}
+
+function pickCompactRecord(source: Record<string, unknown>, keys: string[]) {
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    const value = cloneCompactValue(source[key]);
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function compactWorkflowNode(node: RunnerNode) {
+  const compact = pickCompactRecord(node, NODE_EXPORT_KEYS);
+  compact.id = String(node.id || "").trim();
+  return cloneCompactValue(compact) as Record<string, unknown> | undefined;
+}
+
+function compactWorkflowEdge(edge: RunnerEdge) {
+  const source = String(edge.source || "").trim();
+  const target = String(edge.target || "").trim();
+  if (!source || !target) return undefined;
+  return cloneCompactValue({
+    source,
+    source_port: edge.source_port || edge.sourceHandle || edge.kind || "next",
+    target,
+    target_port: edge.target_port || edge.targetHandle || "in",
+    kind: edge.kind || edge.source_port || edge.sourceHandle || "next",
+  }) as Record<string, unknown> | undefined;
+}
+
+function workflowExportPayload(workflow: Workflow, graph: RunnerGraph) {
+  const name = workflowKey(workflow);
+  const graphWorkflow = objectValue(graph.workflow);
+  const workflowInfo = pickCompactRecord({ ...graphWorkflow, name, title: graphWorkflow.title || workflow.title || name }, WORKFLOW_EXPORT_KEYS);
+  return {
+    kind: WORKFLOW_EXPORT_KIND,
+    version: WORKFLOW_EXPORT_VERSION,
+    workflow: workflowInfo,
+    nodes: (graph.nodes || []).map(compactWorkflowNode).filter(Boolean),
+    edges: (graph.edges || []).map(compactWorkflowEdge).filter(Boolean),
+  };
+}
+
+function importedNodeRank(node: RunnerNode, indexById: Map<string, number>) {
+  const type = String(node.type || "").toLowerCase();
+  if (type === "start" || node.id === "start") return -10000;
+  if (type === "end" || node.id === "end") return 10000;
+  return indexById.get(node.id) || 0;
+}
+
+function layoutImportedWorkflowGraph(graph: RunnerGraph): RunnerGraph {
+  const nodes = graph.nodes || [];
+  if (!nodes.length) return graph;
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+  const incoming = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  for (const edge of graph.edges || []) {
+    const source = String(edge.source || "");
+    const target = String(edge.target || "");
+    if (!nodeIds.has(source) || !nodeIds.has(target)) continue;
+    incoming.get(target)?.push(source);
+  }
+  const depthMemo = new Map<string, number>();
+  const depthForNode = (nodeId: string, visiting = new Set<string>()): number => {
+    if (depthMemo.has(nodeId)) return depthMemo.get(nodeId) || 0;
+    if (visiting.has(nodeId)) return 0;
+    visiting.add(nodeId);
+    const depth = (incoming.get(nodeId) || []).reduce((maxDepth, sourceId) => Math.max(maxDepth, depthForNode(sourceId, visiting) + 1), 0);
+    visiting.delete(nodeId);
+    depthMemo.set(nodeId, depth);
+    return depth;
+  };
+  const layers = new Map(nodes.map((node) => [node.id, depthForNode(node.id)]));
+  const layerRows = new Map<number, RunnerNode[]>();
+  for (const node of nodes) {
+    const layer = layers.get(node.id) || 0;
+    layerRows.set(layer, [...(layerRows.get(layer) || []), node]);
+  }
+  for (const [layer, layerNodes] of layerRows) {
+    layerRows.set(layer, [...layerNodes].sort((a, b) => importedNodeRank(a, indexById) - importedNodeRank(b, indexById)));
+  }
+  const rowById = new Map<string, number>();
+  for (const layerNodes of layerRows.values()) layerNodes.forEach((node, row) => rowById.set(node.id, row));
+  return {
+    ...graph,
+    layout: undefined,
+    nodes: nodes.map((node) => ({
+      ...node,
+      position: {
+        x: IMPORT_LAYOUT_START_X + (layers.get(node.id) || 0) * IMPORT_LAYOUT_COLUMN_GAP,
+        y: IMPORT_LAYOUT_START_Y + (rowById.get(node.id) || 0) * IMPORT_LAYOUT_ROW_GAP,
+      },
+    })),
+  };
+}
+
+function importedWorkflowNode(value: unknown, index: number): RunnerNode {
+  const source = objectValue(value);
+  const compact = pickCompactRecord(source, NODE_EXPORT_KEYS);
+  const id = String(compact.id || `node-${index + 1}`).trim();
+  return { ...compact, id } as RunnerNode;
+}
+
+function importedWorkflowEdge(value: unknown, index: number, nodeIds: Set<string>): RunnerEdge | null {
+  const source = objectValue(value);
+  const edgeSource = String(source.source || "").trim();
+  const edgeTarget = String(source.target || "").trim();
+  if (!edgeSource || !edgeTarget || !nodeIds.has(edgeSource) || !nodeIds.has(edgeTarget)) return null;
+  const kind = String(source.kind || source.source_port || source.sourceHandle || "next");
+  return {
+    id: `${edgeSource}-${edgeTarget}-${kind}-${index + 1}`,
+    source: edgeSource,
+    source_port: String(source.source_port || source.sourceHandle || kind || "next"),
+    target: edgeTarget,
+    target_port: String(source.target_port || source.targetHandle || "in"),
+    kind,
+  };
+}
+
+function workflowImportPayloadToGraph(payload: unknown, currentName: string): RunnerGraph {
+  const record = objectValue(payload);
+  const nestedGraph = objectValue(record.graph);
+  const workflowSource = objectValue(record.workflow || nestedGraph.workflow);
+  const nodesSource = Array.isArray(record.nodes) ? record.nodes : Array.isArray(nestedGraph.nodes) ? nestedGraph.nodes : [];
+  const edgesSource = Array.isArray(record.edges) ? record.edges : Array.isArray(nestedGraph.edges) ? nestedGraph.edges : [];
+  if (!nodesSource.length) throw new Error("导入失败：JSON 中没有 nodes。");
+  const nodes = nodesSource.map(importedWorkflowNode).filter((node) => node.id);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = edgesSource.map((edge, index) => importedWorkflowEdge(edge, index, nodeIds)).filter(Boolean) as RunnerEdge[];
+  const workflowInfo = pickCompactRecord({ ...workflowSource, name: currentName }, WORKFLOW_EXPORT_KEYS);
+  return layoutImportedWorkflowGraph(normalizeGraph({ version: "v1", workflow: { ...workflowInfo, name: currentName }, nodes, edges }, currentName));
+}
+
 function readLocalDrafts(): Workflow[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(LOCAL_DRAFTS_KEY) || "{}");
@@ -152,10 +339,11 @@ function saveLocalDraft(workflow: Workflow) {
 }
 
 function deleteLocalDraft(name: string) {
-  const key = slugify(name);
+  const key = String(name || "").trim();
   if (!key) return;
   const current = Object.fromEntries(readLocalDrafts().map((item) => [workflowKey(item), item]));
   delete current[key];
+  delete current[slugify(key)];
   window.localStorage.setItem(LOCAL_DRAFTS_KEY, JSON.stringify(current));
 }
 
@@ -239,14 +427,28 @@ function buildRunRecord(runId: string, events: Record<string, unknown>[], fallba
   const state = reduceRunEvents(events, createInitialRunState());
   const id = String(runId || state.runId || fallback.runId || `run-${Date.now()}`);
   const derivedStatus = finalRunnerRunStatus(events) || String(state.status || fallback.status || "unknown");
+  const traceability = runTraceabilityFromEvents(events, fallback);
   return {
     runId: id,
     status: derivedStatus,
     message: String(state.message || state.error || fallback.message || ""),
     startedAt: String(state.startedAt || fallback.startedAt || new Date().toISOString()),
     finishedAt: String(state.finishedAt || fallback.finishedAt || ""),
+    ...traceability,
     events: events.map((event) => ({ ...event, run_id: event.run_id || id })),
     state: { ...state, runId: state.runId || id, status: derivedStatus },
+  };
+}
+
+function runTraceabilityFromEvents(events: Record<string, unknown>[], fallback: Partial<RunnerRunRecord>) {
+  const sources = [fallback as Record<string, unknown>, ...events.map((event) => objectValue(event))];
+  return {
+    caseId: String(firstScalarValue(sources, ["caseId", "case_id", "incidentId", "incident_id"]) || ""),
+    hostLeaseId: String(firstScalarValue(sources, ["hostLeaseId", "host_lease_id", "leaseId", "lease_id"]) || ""),
+    failedStep: String(firstScalarValue(sources, ["failedStep", "failed_step", "step"]) || ""),
+    failedReason: String(firstScalarValue(sources, ["failedReason", "failed_reason", "reason", "error"]) || ""),
+    rollbackResult: String(firstScalarValue(sources, ["rollbackResult", "rollback_result"]) || ""),
+    verificationRefs: firstArrayValue(sources, ["verificationRefs", "verification_refs"]).map((item) => String(item)).filter(Boolean),
   };
 }
 
@@ -296,15 +498,15 @@ function formatRunnerStudioNotice(error: unknown): ApiNotice {
   const status = Number((error as { status?: number })?.status || 0);
   if (status === 404) {
     return {
-      title: "本地编排模式",
-      message: "当前 ai-server 尚未接入 /api/runner-studio/*，已启用内置动作库，可先创建和编排工作流。",
-      hint: "保存、校验、运行和发布需要重启最新 ai-server。",
+      title: "内置 Runner API 暂不可用",
+      message: "当前 ai-server 没有暴露 /api/runner-studio/*，已启用本地动作库，可先创建和编排工作流草稿。",
+      hint: "请使用最新 start.sh 重新启动 ai-server。",
     };
   }
   return {
-    title: "本地编排模式",
-    message: "Runner API upstream 尚未配置，已启用内置动作库，可先完成工作流草稿。",
-    hint: "设置 Runner API upstream 后重启 ai-server。",
+    title: "内置 Runner API 暂不可用",
+    message: "当前 ai-server 未返回 Runner Studio API，已启用本地动作库，可先完成工作流草稿。",
+    hint: "请确认 ai-server 已用最新 start.sh 启动，且未设置 AIOPS_RUNNER_DISABLED=1。",
   };
 }
 
@@ -343,32 +545,126 @@ function saveStateLabel(saveState: SaveState) {
   return saveState.message || "草稿";
 }
 
-function WorkflowLibrary({ workflows, loading, onOpenManager, onSelect }: { workflows: Workflow[]; loading: boolean; onOpenManager: () => void; onSelect: (name: string) => void }) {
+function workflowTypeLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    diagnosis: "诊断",
+    diagnostic: "诊断",
+    diagnose: "诊断",
+    repair: "修复",
+    remediation: "修复",
+    rollback: "回滚",
+    verification: "验证",
+    verify: "验证",
+  };
+  const normalized = String(value || "").trim().toLowerCase();
+  return labels[normalized] || (normalized ? normalized : "未分类");
+}
+
+function workflowContextView(workflow: Partial<Workflow> | null | undefined, graph?: RunnerGraph | null) {
+  const graphWorkflow = objectValue(graph?.workflow || workflow?.graph?.workflow);
+  const sources = [workflow as Record<string, unknown>, graphWorkflow].filter(Boolean);
+  const hostProfile = firstRecordValue(sources, ["host_profile_snapshot", "hostProfileSnapshot", "host_profile"]);
+  const hostLease = firstRecordValue(sources, ["host_lease", "hostLease", "lease"]);
+  const experienceBinding = firstRecordValue(sources, ["experience_pack_binding", "experiencePackBinding", "experience_pack"]);
+  const hostProfiles = firstArrayValue(sources, ["host_profile_snapshots", "hostProfileSnapshots"]);
+  const hostLeases = firstArrayValue(sources, ["host_leases", "hostLeases"]);
+  const resolvedHostProfile = Object.keys(hostProfile).length ? hostProfile : objectValue(hostProfiles[0]);
+  const resolvedHostLease = Object.keys(hostLease).length ? hostLease : objectValue(hostLeases[0]);
+  return {
+    typeLabel: workflowTypeLabel(firstScalarValue(sources, ["workflow_type", "workflowType", "type", "category"])),
+    caseId: String(firstScalarValue(sources, ["case_id", "caseId", "incident_id", "incidentId"]) || ""),
+    hostProfileId: String(firstScalarValue([resolvedHostProfile], ["host_id", "hostId", "display_name", "displayName", "id"]) || ""),
+    hostProfileSummary: [firstScalarValue([resolvedHostProfile], ["display_name", "displayName"]), firstScalarValue([resolvedHostProfile], ["os"]), firstScalarValue([resolvedHostProfile], ["arch"])].filter(Boolean).join(" / "),
+    hostLeaseId: String(firstScalarValue([resolvedHostLease], ["lease_id", "leaseId", "id"]) || ""),
+    hostLeaseStatus: String(firstScalarValue([resolvedHostLease], ["status", "state"]) || ""),
+    experiencePackId: String(firstScalarValue([experienceBinding], ["pack_id", "packId", "id", "experience_pack_id", "experiencePackId"]) || ""),
+    workflowBindable: booleanValue(firstScalarValue([experienceBinding], ["workflow_bindable", "workflowBindable", "bindable", "enabled"]), false),
+  };
+}
+
+function firstScalarValue(sources: Array<Record<string, unknown> | null | undefined>, keys: string[]) {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && value !== "" && typeof value !== "object") return value;
+    }
+  }
+  return "";
+}
+
+function firstRecordValue(sources: Array<Record<string, unknown> | null | undefined>, keys: string[]) {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      const value = source[key];
+      if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+    }
+  }
+  return {};
+}
+
+function firstArrayValue(sources: Array<Record<string, unknown> | null | undefined>, keys: string[]) {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      const value = source[key];
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return [];
+}
+
+function booleanValue(value: unknown, fallback = false) {
+  if (typeof value === "boolean") return value;
+  const normalized = String(value || "").trim().toLowerCase();
+  if (["true", "1", "yes", "enabled"].includes(normalized)) return true;
+  if (["false", "0", "no", "disabled"].includes(normalized)) return false;
+  return fallback;
+}
+
+function workflowTestId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-");
+}
+
+function WorkflowLibrary({ workflows, onSelect, onDelete }: { workflows: Workflow[]; onSelect: (name: string) => void; onDelete: (name: string) => void }) {
   return (
     <section className="runner-workflow-library" data-testid="runner-workflow-library">
-      <header className="runner-workflow-library-head">
-        <div>
-          <p>RUNNER WORKFLOWS</p>
-          <h1>工作流</h1>
-        </div>
-        <div className="workflow-quick-actions">
-          <button type="button" className="runner-studio-action-button primary" data-testid="runner-open-manager" onClick={onOpenManager} disabled={loading}>管理工作流</button>
-        </div>
-      </header>
       <div className="workflow-quick-list">
         {workflows.length === 0 ? <p className="runner-studio-empty">暂无工作流，打开管理器创建一个 blank workflow。</p> : null}
-        {workflows.map((workflow) => (
-          <button key={workflowKey(workflow)} type="button" className="runner-studio-workflow" onClick={() => onSelect(workflowKey(workflow))}>
-            <span>{workflow.title || workflow.name}</span>
-            <small>{workflow.status || "draft"}</small>
-          </button>
-        ))}
+        {workflows.map((workflow) => {
+          const context = workflowContextView(workflow);
+          const key = workflowKey(workflow);
+          return (
+            <div key={key} className="runner-studio-workflow-row">
+              <button type="button" className="runner-studio-workflow" onClick={() => onSelect(key)}>
+                <span>{workflow.title || workflow.name}</span>
+                <small>{workflow.status || "draft"}</small>
+                <span className="runner-workflow-card-meta">
+                  <em>类型：{context.typeLabel}</em>
+                  {context.hostProfileId ? <em>HostProfileSnapshot {context.hostProfileId}</em> : null}
+                  {context.hostLeaseId ? <em>HostLease {context.hostLeaseId}</em> : null}
+                  <em>{context.workflowBindable ? "可绑定经验包" : "未开放经验包绑定"}</em>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="workflow-icon-button danger"
+                aria-label={`删除工作流 ${workflow.title || workflow.name}`}
+                data-testid={`runner-delete-workflow-${workflowTestId(key)}`}
+                onClick={() => onDelete(key)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
 }
 
-function WorkflowManagerModal({ workflows, onClose, onCreateBlank, onSelect }: { workflows: Workflow[]; onClose: () => void; onCreateBlank: (name: string) => void; onSelect: (name: string) => void }) {
+function WorkflowManagerModal({ workflows, onClose, onCreateBlank, onSelect, onDelete }: { workflows: Workflow[]; onClose: () => void; onCreateBlank: (name: string) => void; onSelect: (name: string) => void; onDelete: (name: string) => void }) {
   const [name, setName] = useState("runner-blank");
   return (
     <section className="workflow-manager-backdrop" data-testid="workflow-manager-modal">
@@ -387,6 +683,15 @@ function WorkflowManagerModal({ workflows, onClose, onCreateBlank, onSelect }: {
             <div key={workflowKey(workflow)} className="workflow-manager-row">
               <button type="button" className="workflow-manager-main" onClick={() => onSelect(workflowKey(workflow))}>
                 <span>{workflow.title || workflow.name}</span><small>{workflow.status || "draft"}</small>
+              </button>
+              <button
+                type="button"
+                className="workflow-icon-button danger"
+                aria-label={`删除工作流 ${workflow.title || workflow.name}`}
+                data-testid={`workflow-manager-delete-${workflowTestId(workflowKey(workflow))}`}
+                onClick={() => onDelete(workflowKey(workflow))}
+              >
+                <Trash2 size={15} />
               </button>
             </div>
           ))}
@@ -420,8 +725,6 @@ function RunnerNodeTargetsEditor({ groups, targets, onChange }: { groups: Runner
     if (targets.includes(label)) onChange(targets.filter((item) => item !== label));
     else onChange([...targets, label]);
   };
-  const groupByLabel = Object.fromEntries(groups.map((group) => [group.label, group]));
-  const summary = targets.map((label) => ({ label, count: groupByLabel[label]?.hosts?.length || 0 }));
   return (
     <section className="runner-node-targets" data-testid="runner-node-targets">
       <label>目标标签<input data-testid="runner-node-target-labels-input" value={targets.join(", ")} placeholder="web, db" onChange={(event) => onChange(normalizeTargetLabels(event.target.value))} /></label>
@@ -431,9 +734,6 @@ function RunnerNodeTargetsEditor({ groups, targets, onChange }: { groups: Runner
             {group.label}<span>{group.hosts.length} 台</span>
           </button>
         ))}
-      </div>
-      <div className="runner-node-target-summary" data-testid="runner-node-target-summary">
-        {summary.length ? summary.map((item) => <span key={item.label}>{item.label}：{item.count || "未声明"} 台主机</span>) : <span>未指定目标时运行前需要补充主机标签。</span>}
       </div>
     </section>
   );
@@ -492,10 +792,6 @@ function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode }:
   const removeInput = (index: number) => setDraft({ ...draft, inputs: inputs.filter((_, itemIndex: number) => itemIndex !== index) });
   const updateOutput = (index: number, patch: Record<string, unknown>) => setDraft({ ...draft, outputs: outputs.map((item: Record<string, unknown>, itemIndex: number) => itemIndex === index ? { ...item, ...patch } : item) });
   const removeOutput = (index: number) => setDraft({ ...draft, outputs: outputs.filter((_, itemIndex: number) => itemIndex !== index) });
-  const updateOutputExtract = (index: number, patch: Record<string, unknown>) => {
-    const current = objectValue(outputs[index]?.extract_source);
-    updateOutput(index, { extract_source: { ...current, ...patch } });
-  };
   const appendConditionVariable = (variable: { expression?: string }) => {
     const expression = String(variable.expression || "").trim();
     if (!expression) return;
@@ -534,8 +830,6 @@ function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode }:
   const updateStepArg = (key: string, value: unknown) => updateStep({ args: { ...objectValue(draft.step?.args), [key]: value } });
   const tabs = [
     ["settings", "设置"],
-    ["input", "输入"],
-    ["output", "输出"],
     ...(isAggregator ? [["aggregate", "聚合"]] : []),
     ...(isCondition ? [["branches", "分支"]] : []),
     ["error", "错误处理"],
@@ -637,45 +931,6 @@ function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode }:
                 </div>
               </section>
             ) : null}
-          </section>
-        ) : null}
-        {tab === "input" ? (
-          <section data-testid="input-tab" className="runner-schema-editor runner-io-editor">
-            <button type="button" data-testid="input-add" onClick={() => setDraft({ ...draft, inputs: [...inputs, createInputParam(`input_${inputs.length + 1}`)] })}>添加输入</button>
-            {inputs.map((item: Record<string, unknown>, index: number) => {
-              const key = String(item.key || `input_${index + 1}`);
-              const source = objectValue(item.value_source);
-              const sourceType = String(source.type || "literal");
-              return (
-                <div key={`${key}-${index}`} className="runner-io-row">
-                  <label>Key<input data-testid={`input-key-${key}`} value={key} onChange={(event) => updateInput(index, { key: event.target.value })} /></label>
-                  <label>来源<select value={sourceType} onChange={(event) => updateInputSource(index, defaultValueSource(event.target.value))}><option value="literal">常量</option><option value="variable">变量</option><option value="expression">表达式</option></select></label>
-                  {sourceType === "literal" ? <label>值<input value={String(source.value ?? "")} onChange={(event) => updateInputSource(index, { ...source, type: "literal", value: event.target.value })} /></label> : null}
-                  {sourceType === "expression" ? <label>表达式<input value={String(source.expression || "")} onChange={(event) => updateInputSource(index, { ...source, type: "expression", expression: event.target.value })} /></label> : null}
-                  {sourceType === "variable" ? <div className="runner-variable-source"><span>{valueSourceLabel(source) || "未选择变量"}</span><RunnerVariablePicker variables={variables} onPick={(variable) => updateInputSource(index, variableToValueSource(variable))} /></div> : null}
-                </div>
-              );
-            })}
-          </section>
-        ) : null}
-        {tab === "output" ? (
-          <section data-testid="output-tab" className="runner-schema-editor runner-io-editor">
-            <button type="button" data-testid="output-add" onClick={() => setDraft({ ...draft, outputs: [...outputs, createOutputParam(`output_${outputs.length + 1}`)] })}>添加输出</button>
-            {outputs.map((item: Record<string, unknown>, index: number) => {
-              const key = String(item.key || `output_${index + 1}`);
-              const source = objectValue(item.extract_source);
-              const sourceType = String(source.type || "stdout_text");
-              const jsonPathIssue = sourceType === "stdout_jsonpath" ? validateJsonPath(String(source.path || "")) : "";
-              return (
-                <div key={`${key}-${index}`} className="runner-io-row">
-                  <label>Key<input data-testid={`output-key-${key}`} value={key} onChange={(event) => updateOutput(index, { key: event.target.value })} /></label>
-                  <label>类型<select value={String(item.type || "string")} onChange={(event) => updateOutput(index, { type: event.target.value })}><option value="any">any</option><option value="string">string</option><option value="number">number</option><option value="boolean">boolean</option><option value="object">object</option><option value="array">array</option></select></label>
-                  <label>抽取<select value={sourceType} onChange={(event) => updateOutput(index, { extract_source: defaultExtractSource(event.target.value) })}>{ALLOWED_EXTRACT_SOURCE_TYPES.map((type: string) => <option key={type} value={type}>{extractSourceLabel(type)}</option>)}</select></label>
-                  {needsExtractPath(sourceType) ? <label>路径<input value={String(source.path || "")} placeholder={sourceType === "stdout_jsonpath" ? "$.result" : "KEY"} onChange={(event) => updateOutputExtract(index, { type: sourceType, path: event.target.value })} /></label> : null}
-                  {jsonPathIssue ? <p className="runner-io-warning">{jsonPathIssue}</p> : null}
-                </div>
-              );
-            })}
           </section>
         ) : null}
         {tab === "aggregate" ? (
@@ -819,7 +1074,7 @@ function RunnerCodeOutputVariablesEditor({
     <section className="runner-code-variable-editor" data-testid="runner-code-output-variables">
       <div className="runner-code-variable-editor-head">
         <strong>输出变量</strong>
-        <button type="button" aria-label="添加输出变量" onClick={onAdd}><Plus size={15} /></button>
+        <button type="button" data-testid="runner-code-output-add" aria-label="添加输出变量" onClick={onAdd}><Plus size={15} /></button>
       </div>
       {outputs.length ? outputs.map((item, index) => {
         const key = String(item.key || `output_${index + 1}`);
@@ -1009,6 +1264,7 @@ function RunnerRunHistoryPanel({ records, currentState, currentEvents, graph, se
           <span>{activeRecord.runId} · {activeRecord.status}</span>
         </div>
         <section data-testid="runner-run-detail-panel">
+          <RunnerRunTraceabilityCard record={activeRecord} />
           <RunnerRunPanel state={activeRecord.state} graph={graph} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode} />
         </section>
       </section>
@@ -1025,10 +1281,32 @@ function RunnerRunHistoryPanel({ records, currentState, currentEvents, graph, se
               <div><strong>{record.runId}</strong><span>{record.status}</span></div>
               <small>{record.finishedAt || record.startedAt || record.message || "尚无时间"}</small>
               <span>{failedNodes.length ? `失败步骤：${failedNodes.map((node: { nodeId?: string }) => node.nodeId).filter(Boolean).join(", ")}` : `节点：${Object.keys(record.state.nodes || {}).length}`}</span>
+              {record.caseId ? <span>Case：{record.caseId}</span> : null}
+              {record.hostLeaseId ? <span>HostLease：{record.hostLeaseId}</span> : null}
+              {record.rollbackResult ? <span>回滚：{record.rollbackResult}</span> : null}
+              {record.verificationRefs?.length ? <span>验证：{record.verificationRefs.join(", ")}</span> : null}
             </button>
           );
         }) : <p>暂无运行记录。</p>}
       </div>
+    </section>
+  );
+}
+
+function RunnerRunTraceabilityCard({ record }: { record: RunnerRunRecord }) {
+  const hasTrace = Boolean(record.caseId || record.hostLeaseId || record.failedStep || record.failedReason || record.rollbackResult || record.verificationRefs?.length);
+  if (!hasTrace) return null;
+  return (
+    <section className="publish-review-card runner-run-traceability" data-testid="runner-run-traceability">
+      <h3>运行追溯</h3>
+      <dl>
+        {record.caseId ? <div><dt>Case</dt><dd><a href={`/incidents/${encodeURIComponent(record.caseId)}`}>{record.caseId}</a></dd></div> : null}
+        {record.hostLeaseId ? <div><dt>HostLease</dt><dd>{record.hostLeaseId}</dd></div> : null}
+        {record.failedStep ? <div><dt>failed_step</dt><dd>{record.failedStep}</dd></div> : null}
+        {record.failedReason ? <div><dt>failed_reason</dt><dd>{record.failedReason}</dd></div> : null}
+        {record.rollbackResult ? <div><dt>rollback_result</dt><dd>{record.rollbackResult}</dd></div> : null}
+        {record.verificationRefs?.length ? <div><dt>verification_refs</dt><dd>{record.verificationRefs.join(", ")}</dd></div> : null}
+      </dl>
     </section>
   );
 }
@@ -1262,52 +1540,6 @@ function ensureAggregatorOutput(outputs: Record<string, unknown>[], outputKey: s
   ];
 }
 
-function defaultValueSource(type = "literal") {
-  switch (type) {
-  case "variable":
-    return { type, variable: null };
-  case "expression":
-    return { type, expression: "" };
-  default:
-    return { type: "literal", value: "" };
-  }
-}
-
-function defaultExtractSource(type = "stdout_text") {
-  switch (type) {
-  case "stdout_jsonpath":
-    return { type, path: "$" };
-  case "export_var":
-  case "approval_result":
-  case "subflow_output":
-    return { type, path: "" };
-  case "exit_code":
-    return { type };
-  case "stderr_text":
-    return { type, path: "" };
-  case "stdout_text":
-  default:
-    return { type: "stdout_text", path: "" };
-  }
-}
-
-function needsExtractPath(type = "") {
-  return ["stdout_jsonpath", "export_var", "approval_result", "subflow_output"].includes(type);
-}
-
-function extractSourceLabel(type = "") {
-  const labels: Record<string, string> = {
-    stdout_text: "stdout 文本",
-    stdout_jsonpath: "stdout JSONPath",
-    stderr_text: "stderr 文本",
-    exit_code: "退出码",
-    export_var: "导出变量",
-    approval_result: "审批结果",
-    subflow_output: "子流程输出",
-  };
-  return labels[type] || type;
-}
-
 function PublishReviewModal({ workflow, onClose, onPublished }: { workflow: Workflow; onClose: () => void; onPublished: (payload: Partial<Workflow>) => void }) {
   const [note, setNote] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1425,6 +1657,7 @@ export function RunnerStudioPage() {
   const [toolbarMoreOpen, setToolbarMoreOpen] = useState(false);
   const runInFlightRef = useRef(false);
   const runLockUntilRef = useRef(0);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const headerActionsRef = useRef<{ back: () => void; toolbar: (key: ToolbarActionKey) => void }>({ back: () => {}, toolbar: () => {} });
 
   const selectedWorkflow = useMemo(() => workflows.find((workflow) => workflowKey(workflow) === selectedWorkflowName) || null, [workflows, selectedWorkflowName]);
@@ -1469,6 +1702,24 @@ export function RunnerStudioPage() {
     const timer = window.setInterval(() => setClockNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [runLockedUntil]);
+
+  useEffect(() => {
+    if (!toolbarMoreOpen) return undefined;
+    function closeToolbarMenu(event: PointerEvent) {
+      const target = event.target as Element | null;
+      if (target?.closest?.("[data-testid='runner-toolbar-more-container']")) return;
+      setToolbarMoreOpen(false);
+    }
+    function closeToolbarMenuByKeyboard(event: KeyboardEvent) {
+      if (event.key === "Escape") setToolbarMoreOpen(false);
+    }
+    document.addEventListener("pointerdown", closeToolbarMenu);
+    document.addEventListener("keydown", closeToolbarMenuByKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", closeToolbarMenu);
+      document.removeEventListener("keydown", closeToolbarMenuByKeyboard);
+    };
+  }, [toolbarMoreOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1520,6 +1771,59 @@ export function RunnerStudioPage() {
     setManagerOpen(false);
     setSaveState({ status: "local_draft", message: "本地草稿", lastSavedAt: formatSaveTime() });
     selectWorkflow(name);
+  }
+
+  function exportWorkflow() {
+    if (!selectedWorkflow) return;
+    const payload = workflowExportPayload(selectedWorkflow, graph);
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${slugify(workflowKey(selectedWorkflow) || "workflow")}.workflow.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 0);
+  }
+
+  async function importWorkflowFile(event: { currentTarget: HTMLInputElement }) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file || !selectedWorkflow) return;
+    try {
+      const text = await file.text();
+      const payload = JSON.parse(text);
+      const importedGraph = workflowImportPayloadToGraph(payload, workflowKey(selectedWorkflow));
+      updateGraph(importedGraph);
+      setSelectedNodeId("");
+      setRunEvents([]);
+      setRunRecords([]);
+      setRunDrawerOpen(false);
+      setSaveState({ status: "pending", message: "已导入，未保存" });
+    } catch (error) {
+      setSaveState({ status: "failed", message: "导入失败", error: errorMessage(error) });
+    }
+  }
+
+  async function deleteWorkflow(name: string) {
+    const key = String(name || "").trim();
+    if (!key) return;
+    const workflow = workflows.find((item) => workflowKey(item) === key);
+    if (!window.confirm(`确认删除工作流 ${workflow?.title || workflow?.name || key}？`)) return;
+    try {
+      if (workflow && !workflow.local_draft && !serverActionsDisabled) {
+        await requestJson(`/api/runner-studio/workflows/${encodeURIComponent(key)}`, { method: "DELETE" });
+      }
+      deleteLocalDraft(key);
+      setWorkflows((current) => current.filter((item) => workflowKey(item) !== key));
+      if (selectedWorkflowName === key) {
+        selectWorkflow("");
+      }
+      setSaveState({ status: "saved", message: "工作流已删除", lastSavedAt: formatSaveTime() });
+    } catch (error) {
+      setSaveState({ status: "failed", message: "删除失败", error: errorMessage(error) });
+    }
   }
 
   function updateGraph(nextGraph: RunnerGraph) {
@@ -1671,6 +1975,8 @@ export function RunnerStudioPage() {
     if (key === "dry-run") void dryRunWorkflow();
     if (key === "run" && !runActionDisabled) void runWorkflow();
     if (key === "variables") setDebugDockOpen((value) => !value);
+    if (key === "import") importInputRef.current?.click();
+    if (key === "export") exportWorkflow();
     if (key === "run-details") {
       setRunDrawerMode("history");
       setRunDrawerOpen(true);
@@ -1704,13 +2010,33 @@ export function RunnerStudioPage() {
     </div>
   ) : null, [runActionDisabled, runActionTitle, saveState.error, saveState.lastSavedAt, saveState.message, saveState.status, selectedWorkflow?.name, selectedWorkflow?.status, selectedWorkflow?.title, toolbarMoreOpen]);
 
+  const runnerLibraryHeaderActions = useMemo(
+    () => selectedWorkflow ? null : (
+      <button type="button" className="runner-studio-action-button primary" data-testid="runner-open-manager" onClick={() => setManagerOpen(true)} disabled={loading}>管理工作流</button>
+    ),
+    [loading, selectedWorkflow],
+  );
+
   useRegisterAppShellHeader(runnerHeaderContent);
+  useRegisterAppShellPageChrome({
+    title: selectedWorkflow ? null : "工作流",
+    description: selectedWorkflow ? null : "Workflow 编排",
+    actions: runnerLibraryHeaderActions,
+  });
 
   return (
     <section className="runner-studio-page" data-testid="runner-studio-page">
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,application/json"
+        data-testid="runner-workflow-import-input"
+        style={{ display: "none" }}
+        onChange={(event) => void importWorkflowFile(event)}
+      />
       {apiNotice && !apiNoticeDismissed ? <section className="runner-studio-api-notice" data-testid="runner-studio-api-notice"><strong>{apiNotice.title}</strong><span>{apiNotice.message} {apiNotice.hint}</span><button type="button" data-testid="runner-api-notice-close" onClick={() => setApiNoticeDismissed(true)}>关闭</button></section> : null}
       <section className={`runner-studio-shell ${fullscreen ? "fullscreen" : ""}`} data-testid="runner-studio-shell" aria-busy={loading ? "true" : "false"}>
-        {!selectedWorkflow ? <WorkflowLibrary workflows={workflows} loading={loading} onOpenManager={() => setManagerOpen(true)} onSelect={selectWorkflow} /> : (
+        {!selectedWorkflow ? <WorkflowLibrary workflows={workflows} onSelect={selectWorkflow} onDelete={(name) => void deleteWorkflow(name)} /> : (
           <>
             <div className={`runner-studio-workspace ${selectedNode ? "with-node-panel" : ""}`}>
               <section className="runner-studio-main"><section className="runner-studio-canvas" aria-label="工作流画布" data-testid="runner-studio-canvas"><RunnerCanvas graph={graph} actions={actions} runState={runState} focusNodeId={runFocusNodeId} selectedNodeId={selectedNodeId} fullscreen={fullscreen} onUpdateGraph={updateGraph} onSelectNode={setSelectedNodeId} onOpenNodeConfig={setSelectedNodeId} onNodeAction={() => {}} onToggleFullscreen={() => setFullscreen((value) => !value)} /></section></section>
@@ -1721,7 +2047,7 @@ export function RunnerStudioPage() {
         )}
         {selectedWorkflow && runDrawerOpen ? <section className="runner-studio-run-drawer-backdrop" role="dialog" aria-modal="true" aria-label={runDrawerMode === "history" ? "运行详情" : "节点运行详情"} data-testid="runner-run-drawer"><aside className="runner-studio-run-drawer-panel"><header className="runner-studio-run-drawer-head"><div><strong>{runDrawerMode === "history" ? "运行详情" : "节点运行详情"}</strong><span>{runDrawerMode === "history" ? "每次运行一行记录，可快速定位失败步骤。" : "当前节点的上次运行、日志和变量输出。"}</span></div><button type="button" className="runner-run-drawer-close" data-testid="runner-run-drawer-close" aria-label="关闭运行详情" onClick={() => setRunDrawerOpen(false)}><X size={18} /></button></header><div className="runner-studio-run-drawer-body">{runDrawerMode === "history" ? <RunnerRunHistoryPanel records={runRecords} currentState={runState} currentEvents={runEvents} graph={graph} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} /> : <RunnerNodeRunDetails state={runState} graph={graph} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} />}</div></aside></section> : null}
       </section>
-      {managerOpen ? <WorkflowManagerModal workflows={workflows} onClose={() => setManagerOpen(false)} onCreateBlank={createBlankWorkflow} onSelect={(name) => { setManagerOpen(false); selectWorkflow(name); }} /> : null}
+      {managerOpen ? <WorkflowManagerModal workflows={workflows} onClose={() => setManagerOpen(false)} onCreateBlank={createBlankWorkflow} onSelect={(name) => { setManagerOpen(false); selectWorkflow(name); }} onDelete={(name) => void deleteWorkflow(name)} /> : null}
       {publishOpen && selectedWorkflow ? <PublishReviewModal workflow={selectedWorkflow} onClose={() => setPublishOpen(false)} onPublished={(payload) => { upsertWorkflow(selectedWorkflowName, { ...payload, status: payload.status || "published" }); setPublishOpen(false); }} /> : null}
       {aiOpen && selectedWorkflow ? <AiAssistantModal workflow={selectedWorkflow} graph={graph} onClose={() => setAiOpen(false)} onApply={(nextGraph) => { updateGraph(nextGraph); setAiOpen(false); }} /> : null}
     </section>

@@ -23,6 +23,7 @@ import (
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
+	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
 )
 
@@ -91,6 +92,48 @@ func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
 			t.Fatalf("upstream = %q, want empty", got)
 		}
 	})
+}
+
+func TestOpenConfiguredStoreDefaultsToJSONFileStore(t *testing.T) {
+	dataDir := t.TempDir()
+	got, err := openConfiguredStore(dataDir, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("openConfiguredStore() error = %v", err)
+	}
+	defer got.Close()
+	if _, ok := got.(*store.JSONFileStore); !ok {
+		t.Fatalf("openConfiguredStore() type = %T, want *store.JSONFileStore", got)
+	}
+}
+
+func TestOpenConfiguredStoreRequiresMySQLDSN(t *testing.T) {
+	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
+		if key == "AIOPS_STORE_DRIVER" {
+			return "mysql"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("openConfiguredStore() succeeded without mysql dsn")
+	}
+	if !strings.Contains(err.Error(), "AIOPS_MYSQL_DSN") {
+		t.Fatalf("error = %q, want AIOPS_MYSQL_DSN", err.Error())
+	}
+}
+
+func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
+	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
+		if key == "AIOPS_STORE_DRIVER" {
+			return "postgres"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("openConfiguredStore() succeeded with unknown driver")
+	}
+	if !strings.Contains(err.Error(), "unsupported store driver") {
+		t.Fatalf("error = %q, want unsupported store driver", err.Error())
+	}
 }
 
 func TestCorootEndpointFromEnv(t *testing.T) {

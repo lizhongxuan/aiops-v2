@@ -1,4 +1,5 @@
-import { PanelLeftOpen } from "lucide-react";
+import { useEffect, useState } from "react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
 
 import { useAppShellChrome } from "@/app/AppShellChromeContext";
@@ -17,19 +18,58 @@ function currentTitle(pathname: string) {
 export function AppShell() {
   const location = useLocation();
   const active = currentTitle(location.pathname);
-  const { headerContent } = useAppShellChrome();
+  const { headerActions, headerContent, headerDescription, headerTitle } = useAppShellChrome();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("aiops.sidebarCollapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const title = headerTitle ?? active?.title ?? "AIOps Workspace";
+  const description = headerDescription ?? active?.description ?? "React shell placeholder during migration";
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("aiops.sidebarCollapsed", String(sidebarCollapsed));
+    } catch {
+      // Ignore storage failures; the sidebar still works for the current session.
+    }
+  }, [sidebarCollapsed]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
-      <aside className="hidden h-full w-72 shrink-0 border-r border-slate-200 bg-slate-100/80 lg:flex lg:flex-col">
-        <div className="border-b border-slate-200 px-5 py-4">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">V2</div>
-          <div className="mt-1 text-lg font-semibold text-slate-950">AIOPS</div>
+      <aside
+        data-testid="app-shell-sidebar"
+        data-collapsed={sidebarCollapsed ? "true" : "false"}
+        className={[
+          "hidden h-full shrink-0 border-r border-slate-200 bg-slate-100/80 transition-[width] duration-200 lg:flex lg:flex-col",
+          sidebarCollapsed ? "w-20" : "w-72",
+        ].join(" ")}
+      >
+        <div className={`border-b border-slate-200 py-4 ${sidebarCollapsed ? "px-3" : "px-5"}`}>
+          <div className={`flex items-start gap-2 ${sidebarCollapsed ? "flex-col items-center" : "justify-between"}`}>
+            <div className={sidebarCollapsed ? "text-center" : "min-w-0"}>
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">V2</div>
+              {sidebarCollapsed ? null : <div className="mt-1 text-lg font-semibold text-slate-950">AIOPS</div>}
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 shrink-0 bg-white"
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              onClick={() => setSidebarCollapsed((current) => !current)}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </Button>
+          </div>
         </div>
-        <nav className="flex-1 overflow-y-auto px-3 py-4">
+        <nav className={`flex-1 overflow-y-auto py-4 ${sidebarCollapsed ? "px-2" : "px-3"}`}>
           {navigationSections.map((section) => (
-            <div key={section.title} className="mb-6">
-              <div className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</div>
+            <div key={section.title} className={sidebarCollapsed ? "mb-4" : "mb-6"}>
+              {sidebarCollapsed ? <div className="sr-only">{section.title}</div> : <div className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{section.title}</div>}
               <div className="space-y-1">
                 {section.items
                   .filter((item) => item.nav)
@@ -40,18 +80,23 @@ export function AppShell() {
                         key={item.path}
                         to={item.path}
                         end={item.path === "/"}
+                        title={item.title}
+                        aria-label={sidebarCollapsed ? item.title : undefined}
                         className={({ isActive }) =>
                           [
-                            "flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors",
+                            "flex rounded-lg transition-colors",
+                            sidebarCollapsed ? "items-center justify-center px-2 py-3" : "items-start gap-3 px-3 py-2.5",
                             isActive ? "bg-white text-slate-950 shadow-sm" : "text-slate-600 hover:bg-white/80 hover:text-slate-950",
                           ].join(" ")
                         }
                       >
                         <Icon className="mt-0.5 h-4 w-4 shrink-0" />
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium">{item.title}</span>
-                          <span className="block text-xs text-slate-500">{item.description}</span>
-                        </span>
+                        {sidebarCollapsed ? null : (
+                          <span className="min-w-0">
+                            <span className="block text-sm font-medium">{item.title}</span>
+                            <span className="block text-xs text-slate-500">{item.description}</span>
+                          </span>
+                        )}
                       </NavLink>
                     );
                   })}
@@ -66,8 +111,8 @@ export function AppShell() {
           {headerContent ? (
             <div className="min-w-0 overflow-visible">{headerContent}</div>
           ) : (
-            <div className="flex items-center justify-between gap-3 overflow-hidden">
-              <div className="flex min-w-0 items-center gap-3">
+            <div className="flex items-center justify-between gap-3 overflow-visible">
+              <div className="flex min-w-0 items-center gap-3 overflow-hidden">
                 <Button
                   type="button"
                   variant="outline"
@@ -78,10 +123,11 @@ export function AppShell() {
                   <PanelLeftOpen className="h-4 w-4" />
                 </Button>
                 <div className="min-w-0">
-                  <div className="text-sm font-semibold text-slate-950">{active?.title ?? "AIOps Workspace"}</div>
-                  <div className="text-xs text-slate-500">{active?.description ?? "React shell placeholder during migration"}</div>
+                  <div className="truncate text-sm font-semibold text-slate-950">{title}</div>
+                  <div className="truncate text-xs text-slate-500">{description}</div>
                 </div>
               </div>
+              {headerActions ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 overflow-visible">{headerActions}</div> : null}
             </div>
           )}
         </header>

@@ -73,6 +73,16 @@ describe("MessageMarkdown", () => {
     expect(writes).toEqual([url]);
   });
 
+  it("keeps a source label and its URL in one compact paragraph", async () => {
+    await act(async () => {
+      root.render(<MessageMarkdown text={"来源：\n\nhttps://www.coinbase.com/price/bitcoin"} />);
+    });
+
+    const paragraphs = container.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(1);
+    expect(paragraphs[0].textContent).toBe("来源： www.coinbase.com /price/bitcoin");
+  });
+
   it("falls back to selection copy when clipboard api rejects", async () => {
     const execCalls: string[] = [];
     Object.defineProperty(navigator, "clipboard", {

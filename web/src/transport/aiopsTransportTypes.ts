@@ -41,6 +41,7 @@ export type AiopsTransportTurn = {
   user?: AiopsTransportMessage;
   intent?: AiopsTransportIntent;
   process?: AiopsProcessBlock[];
+  agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
   final?: AiopsTransportFinal;
   status: AiopsTransportTurnStatus;
   startedAt?: string;
@@ -129,6 +130,32 @@ export type AiopsTransportArtifact = {
   rawRef?: string;
   createdAt?: string;
   modifiedAt?: string;
+};
+
+export type AiopsTransportAgentUiArtifact = {
+  id: string;
+  type: string;
+  title?: string;
+  titleZh?: string;
+  summary?: string;
+  summaryZh?: string;
+  status?: string;
+  severity?: string;
+  dataRef?: string;
+  inlineData?: unknown;
+  payload?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  actions?: Array<Record<string, unknown>>;
+  mcpCard?: Record<string, unknown>;
+  source?: string;
+  caseId?: string;
+  evidenceRef?: string;
+  promptTraceId?: string;
+  permissionScope?: string;
+  redactionStatus?: string;
+  originalType?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type AiopsRuntimeLiveness = {

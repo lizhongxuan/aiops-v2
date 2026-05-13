@@ -212,6 +212,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.Handle("/api/v1/terminal/ws", s.handleTerminalWebSocket())
 	s.mux.HandleFunc("/api/v1/incidents", s.handleIncidents)
 	s.mux.HandleFunc("/api/v1/incidents/", s.handleIncidents)
+	s.mux.HandleFunc("/api/v1/experience-packs", s.handleExperiencePacks)
+	s.mux.HandleFunc("/api/v1/experience-packs/", s.handleExperiencePacks)
 	s.mux.HandleFunc("/api/v1/coroot/webhook", s.handleCorootWebhook)
 	s.mux.HandleFunc("/api/v1/opsgraph/lookup", s.handleOpsGraphLookup)
 	s.mux.HandleFunc("/api/v1/opsgraph/entities/", s.handleOpsGraphEntity)

@@ -71,7 +71,7 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
 	// ---------------------------------------------------------------------------
-	dataStore, err := store.NewJSONFileStore(dataDir, 5*time.Second)
+	dataStore, err := openConfiguredStore(dataDir, os.Getenv)
 	if err != nil {
 		return fmt.Errorf("init store: %w", err)
 	}
@@ -376,6 +376,25 @@ func envOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	driver := strings.ToLower(strings.TrimSpace(getenv("AIOPS_STORE_DRIVER")))
+	switch driver {
+	case "", "json", "file":
+		return store.NewJSONFileStore(dataDir, 5*time.Second)
+	case "mysql":
+		dsn := strings.TrimSpace(getenv("AIOPS_MYSQL_DSN"))
+		if dsn == "" {
+			return nil, fmt.Errorf("AIOPS_MYSQL_DSN is required when AIOPS_STORE_DRIVER=mysql")
+		}
+		return store.NewMySQLStore(dsn)
+	default:
+		return nil, fmt.Errorf("unsupported store driver %q", driver)
+	}
 }
 
 func runnerStudioUpstreamFromEnv(getenv func(string) string) string {

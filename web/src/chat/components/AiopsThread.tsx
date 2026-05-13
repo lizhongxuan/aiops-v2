@@ -2,7 +2,8 @@ import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessa
 import { ArrowDown, Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
+import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { McpSurfacePart } from "./McpSurfacePart";
@@ -13,6 +14,7 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
+  agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
   intent?: { text?: string; status?: string } | null;
   turnStatus?: string;
   turnStartedAt?: string;
@@ -89,6 +91,7 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
+  const artifacts = meta.agentUiArtifacts || [];
   const finalText = messageText(message.content);
 
   return (
@@ -109,6 +112,13 @@ function AssistantMessage() {
             finalText={finalText}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
+        ) : null}
+        {artifacts.length ? (
+          <div className="grid gap-2">
+            {artifacts.map((artifact) => (
+              <AgentUiArtifactPart key={artifact.id} artifact={artifact} />
+            ))}
+          </div>
         ) : null}
       </div>
     </MessagePrimitive.Root>

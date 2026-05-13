@@ -1,5 +1,6 @@
 // @ts-check
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
 
 const ACTIONS = {
   items: [
@@ -211,6 +212,19 @@ test.describe("Runner Studio", () => {
     await expect(page.getByText("打开 Runner UI")).toHaveCount(0);
   });
 
+  test("deletes a local workflow from the workflow library", async ({ page }) => {
+    page.on("dialog", (dialog) => dialog.accept());
+
+    await createBlankWorkflow(page);
+    await page.getByTestId("runner-back-to-library").click();
+
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("runner-blank");
+    await page.getByTestId("runner-delete-workflow-runner-blank").click();
+
+    await expect(page.getByTestId("runner-workflow-library")).not.toContainText("runner-blank");
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("暂无工作流");
+  });
+
   test("opens a specific workflow editor from /runner/:workflowName and returns to the list route", async ({ page }) => {
     await page.unroute("**/api/runner-studio/workflows");
     await page.route("**/api/runner-studio/workflows", (route) =>
@@ -240,6 +254,52 @@ test.describe("Runner Studio", () => {
     await expect(page).toHaveURL(/\/runner$/);
     await expect(page.getByTestId("runner-workflow-library")).toContainText("PG Restore");
     await expect(page.getByTestId("runner-studio-topbar")).toHaveCount(0);
+  });
+
+  test("surfaces Workflow type, HostProfileSnapshot, HostLease and experience binding context", async ({ page }) => {
+    await page.unroute("**/api/runner-studio/workflows");
+    await page.route("**/api/runner-studio/workflows", (route) =>
+      route.fulfill({
+        json: {
+          workflows: [
+            {
+              name: "pg-pool-fix",
+              title: "PG Pool Fix",
+              status: "validated",
+              workflow_type: "repair",
+              case_id: "case-pg-fix",
+              host_profile_snapshot: { host_id: "host-db-01", display_name: "db-01", os: "Linux", arch: "x86_64" },
+              host_lease: { lease_id: "lease-db-01", status: "acquired", expires_at: "2026-05-12T10:00:00+08:00" },
+              experience_pack_binding: { enabled: true, pack_id: "pack-pg-pool", workflow_bindable: true },
+              graph: {
+                version: "v1",
+                workflow: {
+                  name: "pg-pool-fix",
+                  workflow_type: "repair",
+                  case_id: "case-pg-fix",
+                  host_profile_snapshot: { host_id: "host-db-01", display_name: "db-01", os: "Linux", arch: "x86_64" },
+                  host_lease: { lease_id: "lease-db-01", status: "acquired" },
+                  experience_pack_binding: { enabled: true, pack_id: "pack-pg-pool", workflow_bindable: true },
+                },
+                nodes: [],
+                edges: [],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await page.goto("/runner");
+
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("修复");
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("HostProfileSnapshot");
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("HostLease");
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("可绑定经验包");
+    await expect(page.getByTestId("runner-workflow-library")).not.toContainText("Runbook");
+
+    await page.getByText("PG Pool Fix").click();
+    await expect(page.getByTestId("runner-workflow-context")).toHaveCount(0);
   });
 
   test("creates a blank workflow, drags nodes, configures I/O, validates, and dry-runs", async ({ page }) => {
@@ -284,12 +344,17 @@ test.describe("Runner Studio", () => {
 
     await page.getByTestId("canvas-node-shell-run").click();
     await expect(page.getByTestId("runner-node-panel")).toBeVisible();
-    await page.getByTestId("runner-node-panel-tab-input").click();
-    await page.getByTestId("input-add").click();
-    await page.getByTestId("input-key-input_1").fill("backup_id");
-    await page.getByTestId("runner-node-panel-tab-output").click();
-    await page.getByTestId("output-add").click();
-    await page.getByTestId("output-key-output_1").fill("restore_lsn");
+    await expect(page.getByTestId("runner-node-panel-tab-input")).toHaveCount(0);
+    await expect(page.getByTestId("runner-node-panel-tab-output")).toHaveCount(0);
+    await page.getByTestId("runner-code-input-add").click();
+    await page.getByLabel("输入变量名").fill("backup_id");
+    const inputKeyBox = await page.getByLabel("输入变量名").boundingBox();
+    const inputValueBox = await page.getByTestId("runner-code-input-value-0").boundingBox();
+    expect(inputKeyBox).not.toBeNull();
+    expect(inputValueBox).not.toBeNull();
+    expect(Math.abs(Math.round(inputKeyBox.width) - Math.round(inputValueBox.width))).toBeLessThanOrEqual(4);
+    await page.getByTestId("runner-code-output-add").click();
+    await page.getByLabel("输出变量名").fill("restore_lsn");
     await page.getByTestId("runner-node-panel-apply").click();
 
     await clickToolbar(page, "validate");
@@ -307,10 +372,8 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("canvas-node-condition-evaluate")).toBeVisible();
     await expect(page.getByTestId("canvas-node-manual-approval")).toBeVisible();
     await page.getByTestId("canvas-node-shell-run").click();
-    await page.getByTestId("runner-node-panel-tab-input").click();
-    await expect(page.getByTestId("input-key-backup_id")).toHaveValue("backup_id");
-    await page.getByTestId("runner-node-panel-tab-output").click();
-    await expect(page.getByTestId("output-key-restore_lsn")).toHaveValue("restore_lsn");
+    await expect(page.getByLabel("输入变量名")).toHaveValue("backup_id");
+    await expect(page.getByLabel("输出变量名")).toHaveValue("restore_lsn");
     await page.getByTestId("runner-node-panel-close").click();
 
     await expect(page.locator(".runner-canvas-toolbar").getByTestId("runner-canvas-fullscreen-toggle")).toHaveCount(0);
@@ -423,6 +486,98 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-toolbar-variables")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-publish")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-ai-generate")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-import")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-export")).toBeVisible();
+    await page.getByTestId("runner-studio-canvas").click({ position: { x: 20, y: 20 } });
+    await expect(page.getByTestId("runner-toolbar-more-menu")).toHaveCount(0);
+  });
+
+  test("imports and exports compact workflow JSON without layout metadata", async ({ page }) => {
+    await createBlankWorkflow(page);
+
+    const importedWorkflow = {
+      kind: "aiops.runner.workflow",
+      version: 1,
+      workflow: {
+        name: "external-name-ignored",
+        title: "Imported repair flow",
+        workflow_type: "repair",
+        status: "validated",
+      },
+      nodes: [
+        {
+          id: "start",
+          type: "start",
+          label: "Start",
+          position: { x: 5000, y: 6000 },
+          ui: { host_groups: [{ label: "db", hosts: ["db-01"] }] },
+          state: { status: "running" },
+        },
+        {
+          id: "inspect-pg",
+          type: "action",
+          label: "Inspect PG",
+          position: { x: 9000, y: 9000 },
+          step: { action: "shell.run", targets: ["db"], args: { script: "pg_isready" } },
+          inputs: [{ key: "cluster", value_source: { type: "literal", value: "pg-main" } }],
+          outputs: [{ key: "pg_status", type: "string" }],
+          measured: { width: 999 },
+        },
+        {
+          id: "repair-pg",
+          type: "action",
+          label: "Repair PG",
+          position: { x: 12000, y: 9000 },
+          step: { action: "shell.run", targets: ["db"], args: { script: "echo repair" } },
+        },
+      ],
+      edges: [
+        { id: "old-start-inspect", source: "start", source_port: "next", target: "inspect-pg", target_port: "in", kind: "next", state: { status: "running" } },
+        { source: "inspect-pg", source_port: "next", target: "repair-pg", target_port: "in", kind: "next" },
+      ],
+      dry_run_graph_hash: "should-not-import",
+      layout: { stale: true },
+    };
+
+    await page.getByTestId("runner-workflow-import-input").setInputFiles({
+      name: "workflow.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(importedWorkflow)),
+    });
+
+    await expect(page.getByTestId("runner-save-state")).toContainText("已导入，未保存");
+    await expect(page.getByTestId("canvas-node-inspect-pg")).toBeVisible();
+    await expect(page.getByTestId("canvas-node-repair-pg")).toBeVisible();
+
+    const saveRequest = page.waitForRequest((req) =>
+      req.url().includes("/api/runner-studio/workflows") && req.url().endsWith("/graph") && ["POST", "PUT"].includes(req.method()),
+    );
+    await page.getByTestId("runner-toolbar-save").click();
+    const savedGraph = (await saveRequest).postDataJSON().graph;
+    const inspectNode = savedGraph.nodes.find((node) => node.id === "inspect-pg");
+    expect(inspectNode.position.x).toBeLessThan(1000);
+    expect(inspectNode.position.y).toBeLessThan(1000);
+    expect(inspectNode.position).not.toEqual({ x: 9000, y: 9000 });
+    expect(inspectNode.step.args.script).toBe("pg_isready");
+    expect(inspectNode.measured).toBeUndefined();
+    expect(savedGraph.dry_run_graph_hash).toBeUndefined();
+
+    await page.getByTestId("runner-toolbar-more").click();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByTestId("runner-toolbar-export").click();
+    const download = await downloadPromise;
+    const exportedPath = await download.path();
+    const exported = JSON.parse(readFileSync(exportedPath, "utf8"));
+
+    expect(exported.kind).toBe("aiops.runner.workflow");
+    expect(exported.workflow.name).toBe("runner-blank");
+    expect(exported.workflow.title).toBe("Imported repair flow");
+    expect(exported.nodes.find((node) => node.id === "inspect-pg").step.args.script).toBe("pg_isready");
+    expect(exported.nodes.some((node) => node.position)).toBe(false);
+    expect(exported.nodes.some((node) => node.state || node.measured)).toBe(false);
+    expect(exported.edges.some((edge) => edge.id || edge.state)).toBe(false);
+    expect(exported.layout).toBeUndefined();
+    expect(exported.dry_run_graph_hash).toBeUndefined();
   });
 
   test("uses Dify-like node settings for system nodes and script actions", async ({ page }) => {
@@ -488,8 +643,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-node-target-options")).toContainText("web");
     await expect(page.getByTestId("runner-node-target-options")).toContainText("db");
     await page.getByTestId("runner-node-target-labels-input").fill("web, db");
-    await expect(page.getByTestId("runner-node-target-summary")).toContainText("web：2 台主机");
-    await expect(page.getByTestId("runner-node-target-summary")).toContainText("db：1 台主机");
+    await expect(page.getByTestId("runner-node-target-summary")).toHaveCount(0);
     await page.getByTestId("runner-node-panel-apply").click();
     await page.getByTestId("runner-node-panel-close").click();
 
@@ -525,7 +679,8 @@ test.describe("Runner Studio", () => {
     expect(canvasBox).not.toBeNull();
     const clickPoint = { x: Math.round(canvasBox.width * 0.82), y: Math.round(canvasBox.height * 0.68) };
 
-    await canvas.click({ button: "right", position: clickPoint });
+    await page.mouse.click(canvasBox.x + clickPoint.x, canvasBox.y + clickPoint.y, { button: "right" });
+    await expect(page.getByTestId("runner-canvas-context-menu")).toBeVisible();
     await page.getByTestId("runner-context-add-node").click();
     await page.getByTestId("catalog-action-shell-run").click();
     const firstNodeBox = await page.getByTestId("canvas-node-shell-run").boundingBox();
@@ -533,9 +688,20 @@ test.describe("Runner Studio", () => {
     expect(Math.abs(firstNodeBox.x + firstNodeBox.width / 2 - (canvasBox.x + clickPoint.x))).toBeLessThan(130);
     expect(Math.abs(firstNodeBox.y + firstNodeBox.height / 2 - (canvasBox.y + clickPoint.y))).toBeLessThan(110);
 
-    await page.getByTestId("runner-node-picker-toggle").click();
+    const secondClickPoint = {
+      x: Math.round(firstNodeBox.x - canvasBox.x + firstNodeBox.width / 2 - 230),
+      y: Math.round(firstNodeBox.y - canvasBox.y + firstNodeBox.height / 2 + 90),
+    };
+    await page.mouse.click(canvasBox.x + secondClickPoint.x, canvasBox.y + secondClickPoint.y, { button: "right" });
+    await expect(page.getByTestId("runner-canvas-context-menu")).toBeVisible();
+    await page.getByTestId("runner-context-add-node").click();
     await page.getByTestId("catalog-action-shell-run").click();
     await expect(page.getByTestId("canvas-node-shell-run-2")).toBeVisible();
+    const secondNodeBox = await page.getByTestId("canvas-node-shell-run-2").boundingBox();
+    expect(secondNodeBox).not.toBeNull();
+    expect(Math.abs(secondNodeBox.x + secondNodeBox.width / 2 - (canvasBox.x + secondClickPoint.x))).toBeLessThan(40);
+    expect(Math.abs(secondNodeBox.y + secondNodeBox.height / 2 - (canvasBox.y + secondClickPoint.y))).toBeLessThan(40);
+
     const sourceHandle = await page.getByTestId("canvas-node-shell-run").getByTitle("下一步").boundingBox();
     const targetHandle = await page.getByTestId("canvas-node-shell-run-2").locator(".runner-canvas-handle.input").boundingBox();
     expect(sourceHandle).not.toBeNull();
@@ -554,9 +720,20 @@ test.describe("Runner Studio", () => {
       expect.arrayContaining([expect.objectContaining({ source: "shell-run", target: "shell-run-2" })]),
     );
 
-    await page.locator(".runner-flow-edge-hover-path").first().hover({ force: true });
-    await expect(page.getByTestId("runner-edge-delete-start-shell-run-next")).toBeVisible();
-    await page.getByTestId("runner-edge-delete-start-shell-run-next").click();
+    const firstEdge = page.locator(".runner-flow-edge-hover-path").first();
+    await firstEdge.hover({ force: true });
+    await expect(page.getByRole("button", { name: "在连线上插入节点" })).toBeVisible();
+    await expect(page.getByTestId("runner-edge-delete-start-shell-run-next")).toHaveCount(0);
+    const startHandle = await page.getByTestId("canvas-node-start").getByTitle("下一步").boundingBox();
+    const firstNodeInput = await page.getByTestId("canvas-node-shell-run").locator(".runner-canvas-handle.input").boundingBox();
+    expect(startHandle).not.toBeNull();
+    expect(firstNodeInput).not.toBeNull();
+    const edgeClickX = startHandle.x + startHandle.width / 2 + (firstNodeInput.x + firstNodeInput.width / 2 - (startHandle.x + startHandle.width / 2)) * 0.25;
+    const edgeClickY = startHandle.y + startHandle.height / 2 + (firstNodeInput.y + firstNodeInput.height / 2 - (startHandle.y + startHandle.height / 2)) * 0.25;
+    await page.mouse.click(edgeClickX, edgeClickY);
+    await expect(page.locator(".react-flow__edge.selected")).toHaveCount(1);
+    await expect(page.locator(".react-flow__edge.selected .runner-flow-edge-path")).toHaveCSS("stroke", "rgb(37, 99, 235)");
+    await page.keyboard.press("Delete");
     const saveAfterDelete = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/workflows/") && req.url().endsWith("/graph") && ["POST", "PUT"].includes(req.method()),
     );
@@ -773,6 +950,9 @@ test.describe("Runner Studio", () => {
     await page.goto("/runner");
 
     await expect(page.getByTestId("runner-studio-api-notice")).toBeVisible();
+    await expect(page.getByTestId("runner-studio-api-notice")).toContainText("内置 Runner API");
+    await expect(page.getByTestId("runner-studio-api-notice")).not.toContainText("Runner API upstream");
+    await expect(page.getByTestId("runner-studio-api-notice")).not.toContainText("设置 Runner API upstream");
     await page.getByTestId("runner-api-notice-close").click();
     await expect(page.getByTestId("runner-studio-api-notice")).toHaveCount(0);
     await expect(page.getByTestId("runner-workflow-library")).toBeVisible();

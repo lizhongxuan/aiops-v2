@@ -70,6 +70,9 @@ type RunnerAction = {
   ports?: unknown;
   [key: string]: unknown;
 };
+type AddCatalogActionNodeOptions = {
+  preservePosition?: boolean;
+};
 
 type FlowConnection = {
   id?: string;
@@ -196,11 +199,23 @@ function displayPortForEdgeKind(kind = "next"): string {
   }
 }
 
-function buildCatalogActionNode(nodes: RunnerNode[] = [], action: RunnerAction = {}, position: Partial<RunnerPosition> = { x: 0, y: 0 }): RunnerNode {
+function normalizedPosition(position: Partial<RunnerPosition>): RunnerPosition {
+  return {
+    x: Number(position.x) || 0,
+    y: Number(position.y) || 0,
+  };
+}
+
+function buildCatalogActionNode(
+  nodes: RunnerNode[] = [],
+  action: RunnerAction = {},
+  position: Partial<RunnerPosition> = { x: 0, y: 0 },
+  options: AddCatalogActionNodeOptions = {},
+): RunnerNode {
   const base = slugify(action.action || actionLabel(action));
   const id = uniqueId(base, nodes);
   const stepName = `${base}-${nextActionOrder(base, nodes)}-${randomLetters(4)}`;
-  const nodePosition = nextAvailablePosition(position, nodes);
+  const nodePosition = options.preservePosition ? normalizedPosition(position) : nextAvailablePosition(position, nodes);
   const defaultPorts = getActionDefaultPorts(action);
   const nodeType = graphNodeTypeForAction(action);
   return {
@@ -325,10 +340,15 @@ export function graphToFlowModel(graph: RunnerGraph = {}, options: { selectedNod
   };
 }
 
-export function addCatalogActionNode(graph: RunnerGraph = {}, action: RunnerAction = {}, position: Partial<RunnerPosition> = { x: 0, y: 0 }) {
+export function addCatalogActionNode(
+  graph: RunnerGraph = {},
+  action: RunnerAction = {},
+  position: Partial<RunnerPosition> = { x: 0, y: 0 },
+  options: AddCatalogActionNodeOptions = {},
+) {
   const next = cloneGraph(graph);
   const existingNodes = next.nodes || [];
-  const node = buildCatalogActionNode(existingNodes, action, position);
+  const node = buildCatalogActionNode(existingNodes, action, position, options);
   const startNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "start" || item.id === "start");
   const endNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "end" || item.id === "end");
   const hasExecutableNode = existingNodes.some((item) => {

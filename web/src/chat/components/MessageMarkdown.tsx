@@ -50,7 +50,14 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
 }
 
 function normalizeFinalAnswerMarkdown(value: string) {
-  return normalizeLooseNestedListLabels(value);
+  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(value));
+}
+
+function normalizeDetachedSourceLinks(value: string) {
+  return value.replace(
+    /(^|[\n\r])(\s*(?:来源|参考来源|数据来源|资料来源)\s*[：:])\s*(?:\r?\n){1,3}\s*((?:https?:\/\/|www\.)\S+)/g,
+    "$1$2 $3",
+  );
 }
 
 function normalizeLooseNestedListLabels(value: string) {

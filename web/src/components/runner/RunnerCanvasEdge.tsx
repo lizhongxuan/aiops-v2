@@ -8,19 +8,28 @@ export function RunnerCanvasEdge(props: EdgeProps) {
     kind?: string;
     displayKind?: string;
     active?: boolean;
+    onSelectEdge?: (edgeId: string) => void;
     onInsertEdge?: (edgeId: string) => void;
-    onDeleteEdge?: (edgeId: string) => void;
     onOpenEdgeMenu?: (edgeId: string, event: MouseEvent<SVGPathElement>) => void;
   } | undefined;
   const isInsertVisible = Boolean(data?.active || insertVisible);
 
   return (
     <>
-      <BaseEdge id={props.id} path={edgePath} markerEnd={props.markerEnd} className="runner-flow-edge-path" />
+      <BaseEdge
+        id={props.id}
+        path={edgePath}
+        markerEnd={props.markerEnd}
+        className={`runner-flow-edge-path ${props.selected ? "is-selected" : ""}`}
+      />
       {data?.onInsertEdge ? (
         <path
           d={edgePath}
           className="runner-flow-edge-hover-path"
+          onClick={(event) => {
+            event.stopPropagation();
+            data.onSelectEdge?.(props.id);
+          }}
           onContextMenu={(event) => data.onOpenEdgeMenu?.(props.id, event)}
         />
       ) : null}
@@ -47,23 +56,6 @@ export function RunnerCanvasEdge(props: EdgeProps) {
               }}
             >
               +
-            </button>
-          ) : null}
-          {data?.onDeleteEdge ? (
-            <button
-              type="button"
-              className="runner-flow-edge-delete"
-              aria-label="删除连线"
-              title="删除连线"
-              data-testid={`runner-edge-delete-${props.id}`}
-              onFocus={() => setInsertVisible(true)}
-              onBlur={() => setInsertVisible(false)}
-              onClick={(event) => {
-                event.stopPropagation();
-                data.onDeleteEdge?.(props.id);
-              }}
-            >
-              ×
             </button>
           ) : null}
         </div>

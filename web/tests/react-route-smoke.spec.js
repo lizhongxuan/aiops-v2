@@ -37,7 +37,7 @@ test.describe("React route smoke", () => {
     test(`renders ${route}`, async ({ page }) => {
       await page.goto(route);
 
-      await expect(page.locator("aside")).toContainText("AIOPS");
+      await expect(page.locator("aside").first()).toContainText("AIOPS");
       await expect(page.locator("main")).not.toHaveText("");
     });
   }
@@ -45,10 +45,10 @@ test.describe("React route smoke", () => {
   test("redirects legacy route aliases", async ({ page }) => {
     await page.goto("/hosts");
     await expect(page).toHaveURL(/\/settings\/hosts$/);
-    await expect(page.locator("main")).toContainText("Hosts");
+    await expect(page.locator("main")).toContainText("主机");
 
     await page.goto("/experience-packs");
     await expect(page).toHaveURL(/\/settings\/experience-packs$/);
-    await expect(page.locator("main")).toContainText("Experience Packs");
+    await expect(page.locator("main")).toContainText("经验包");
   });
 });

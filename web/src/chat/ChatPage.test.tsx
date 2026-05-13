@@ -48,6 +48,40 @@ describe("ChatPage", () => {
     expect(container.querySelector("textarea")).toBeNull();
   });
 
+  it("renders Agent-to-UI artifacts inside assistant messages", async () => {
+    const state = sampleState();
+    state.turns["turn-1"].agentUiArtifacts = [
+      {
+        id: "artifact-coroot-latency",
+        type: "coroot_chart",
+        titleZh: "Coroot 延迟趋势",
+        summaryZh: "接口 P95 延迟在 14:03 后明显升高。",
+        caseId: "case-debug-1",
+        source: "coroot",
+        redactionStatus: "redacted",
+        inlineData: {
+          mcpCard: {
+            uiKind: "readonly_chart",
+            title: "指标趋势",
+            visual: {
+              kind: "timeseries",
+              series: [{ name: "p95_latency_ms", data: [{ timestamp: 1, value: 980 }] }],
+            },
+          },
+        },
+      },
+    ];
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(container.textContent).toContain("Coroot 延迟趋势");
+    expect(container.textContent).toContain("接口 P95 延迟在 14:03 后明显升高。");
+    expect(container.textContent).toContain("p95_latency_ms");
+    expect(container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent).toContain("查看 Case");
+  });
+
   it("uses the current turn approval when stale approvals remain in transport state", async () => {
     const state = sampleState();
     state.pendingApprovals = {

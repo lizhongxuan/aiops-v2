@@ -1,5 +1,6 @@
 import type { PropsWithChildren, ReactNode } from "react";
 
+import { useRegisterAppShellPageChrome } from "@/app/AppShellChromeContext";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -11,17 +12,11 @@ export function ComplexPageFrame({
   actions,
   children,
 }: PropsWithChildren<{ kicker: string; title: string; description?: string; actions?: ReactNode }>) {
+  useRegisterAppShellPageChrome({ title, description: description || kicker, actions: actions || null });
+
   return (
     <section className="h-full overflow-y-auto bg-slate-50 px-4 py-5 text-slate-900 lg:px-6">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <header className="flex flex-col gap-3 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{kicker}</p>
-            <h1 className="mt-1 text-xl font-semibold text-slate-950">{title}</h1>
-            {description ? <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{description}</p> : null}
-          </div>
-          {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
-        </header>
         {children}
       </div>
     </section>

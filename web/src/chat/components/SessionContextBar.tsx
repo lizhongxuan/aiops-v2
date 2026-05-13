@@ -1,7 +1,7 @@
-import { Check, ChevronDown, Ellipsis, Eraser, History, LaptopMinimal, LoaderCircle, Plus, RefreshCw, Server, X } from "lucide-react";
+import { Check, ChevronDown, Ellipsis, Eraser, History, LaptopMinimal, LoaderCircle, Plus, Server, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
-import { useRegisterAppShellHeader } from "@/app/AppShellChromeContext";
+import { useRegisterAppShellHeaderActions } from "@/app/AppShellChromeContext";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -48,6 +48,24 @@ type SessionContextBarProps = {
   onThreadChange: (threadId: string, initialState?: AiopsTransportState, autoResume?: boolean) => void;
   children: ReactNode;
 };
+
+export const SESSION_CONTEXT_TIMEOUT_MS = 8000;
+
+export function withSessionContextTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = SESSION_CONTEXT_TIMEOUT_MS,
+  label = "session context request",
+): Promise<T> {
+  let timeoutId: ReturnType<typeof window.setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  });
+}
 
 export function SessionContextBar({
   kind,
@@ -112,7 +130,11 @@ export function SessionContextBar({
     setActiveAction("refresh");
     setBusy(true);
     try {
-      const [sessionResult, hostResult, llmResult] = await Promise.allSettled([fetchSessions(), fetchHosts(), fetchLlmConfig()]);
+      const [sessionResult, hostResult, llmResult] = await Promise.allSettled([
+        withSessionContextTimeout(fetchSessions(), SESSION_CONTEXT_TIMEOUT_MS, "加载会话"),
+        withSessionContextTimeout(fetchHosts(), SESSION_CONTEXT_TIMEOUT_MS, "加载主机"),
+        withSessionContextTimeout(fetchLlmConfig(), SESSION_CONTEXT_TIMEOUT_MS, "加载 LLM 配置"),
+      ]);
       const nextSessions =
         sessionResult.status === "fulfilled" ? sessionResult.value.sessions || sessionResult.value.items || [] : sessions;
       const nextHosts = hostResult.status === "fulfilled" ? hostResult.value.items || [] : hosts;
@@ -254,8 +276,6 @@ export function SessionContextBar({
         : createFeedback === "error"
           ? "创建失败"
           : newSessionLabel;
-  const refreshButtonLabel = activeAction === "refresh" ? "刷新中" : "刷新";
-
   const headerActions = useMemo(
     () => (
       <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
@@ -270,10 +290,6 @@ export function SessionContextBar({
             <Plus />
           )}
           {createButtonLabel}
-        </Button>
-        <Button variant="outline" onClick={() => void load()} disabled={busy} className="rounded-full">
-          <RefreshCw className={activeAction === "refresh" ? "animate-spin" : ""} />
-          {refreshButtonLabel}
         </Button>
         <SessionMenu
           label={kind === "workspace" ? "工作目标" : "主机"}
@@ -301,10 +317,10 @@ export function SessionContextBar({
         />
       </div>
     ),
-    [activeAction, activeSession, activeTarget?.label, busy, createButtonLabel, createFeedback, kind, refreshButtonLabel, scopedSessions, targetOptions, terminalHref],
+    [activeAction, activeSession, activeTarget?.label, busy, createButtonLabel, createFeedback, kind, scopedSessions, targetOptions, terminalHref],
   );
 
-  useRegisterAppShellHeader(headerActions);
+  useRegisterAppShellHeaderActions(headerActions);
 
   return (
     <SessionTargetContext.Provider value={targetContext}>

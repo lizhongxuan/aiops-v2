@@ -1,6 +1,7 @@
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import type { PropsWithChildren, ReactNode } from "react";
 
+import { useRegisterAppShellPageChrome } from "@/app/AppShellChromeContext";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,16 +14,11 @@ export function SettingsPageFrame({
   actions,
   children,
 }: PropsWithChildren<{ title: string; description: string; actions?: ReactNode }>) {
+  useRegisterAppShellPageChrome({ title, description, actions: actions || null });
+
   return (
     <section className="h-full overflow-y-auto bg-slate-50 px-4 py-5 text-slate-900 lg:px-6">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <header className="flex flex-col gap-3 border-b border-slate-200 pb-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-xl font-semibold tracking-normal text-slate-950">{title}</h1>
-            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-600">{description}</p>
-          </div>
-          {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div> : null}
-        </header>
         {children}
       </div>
     </section>

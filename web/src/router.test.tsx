@@ -57,6 +57,7 @@ describe("AppRouter", () => {
       root.unmount();
     });
     container.remove();
+    localStorage.clear();
   });
 
   it.each(routedPaths)("renders React shell for %s", async (path) => {
@@ -82,8 +83,8 @@ describe("AppRouter", () => {
       );
     });
 
-    expect(container.textContent).toContain("Hosts");
-    expect(container.textContent).toContain("主机清单");
+    expect(container.textContent).toContain("主机与租约");
+    expect(container.textContent).toContain("主机画像");
   });
 
   it("redirects legacy experience packs route to settings experience packs", async () => {
@@ -95,7 +96,31 @@ describe("AppRouter", () => {
       );
     });
 
-    expect(container.textContent).toContain("Experience Packs");
-    expect(container.textContent).toContain("经验包库");
+    expect(container.textContent).toContain("经验包");
+    expect(container.textContent).toContain("经验包工作台");
+  });
+
+  it("can collapse the desktop navigation rail to an icon-only column", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/debug/prompts"]}>
+          <AppRouter />
+        </MemoryRouter>,
+      );
+    });
+
+    const sidebar = container.querySelector('[data-testid="app-shell-sidebar"]');
+    const collapseButton = container.querySelector('[aria-label="收起侧边栏"]') as HTMLButtonElement | null;
+    expect(sidebar?.getAttribute("data-collapsed")).toBe("false");
+    expect(collapseButton).toBeTruthy();
+
+    await act(async () => {
+      collapseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(sidebar?.getAttribute("data-collapsed")).toBe("true");
+    expect(sidebar?.className).toContain("w-20");
+    expect(container.querySelector('[aria-label="展开侧边栏"]')).toBeTruthy();
+    expect(container.querySelector('a[title="Prompt Trace"]')).toBeTruthy();
   });
 });

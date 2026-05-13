@@ -423,6 +423,15 @@
   color: #854d0e;
 }
 
+.workflow-icon-button.danger {
+  color: #b91c1c;
+}
+
+.workflow-icon-button.danger:hover {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
 .runner-studio-main {
   display: grid;
   min-width: 0;
@@ -738,8 +747,11 @@
 }
 
 .runner-canvas-react .react-flow__edge.selected .react-flow__edge-path,
-.runner-canvas-react .react-flow__edge:hover .react-flow__edge-path {
+.runner-canvas-react .react-flow__edge:hover .react-flow__edge-path,
+.runner-canvas-react .react-flow__edge.selected .runner-flow-edge-path,
+.runner-canvas-react .runner-flow-edge-path.is-selected {
   stroke: #2563eb;
+  stroke-width: 3;
 }
 
 .runner-flow-edge-hover-path {
@@ -1754,7 +1766,7 @@
 .runner-code-variable-row {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.25fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
 }
@@ -1911,21 +1923,6 @@
 .runner-node-target-options span {
   color: #64748b;
   font-weight: 800;
-}
-
-.runner-node-target-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.runner-node-target-summary span {
-  border-radius: 999px;
-  background: #f1f5f9;
-  color: #475569;
-  font-size: 12px;
-  font-weight: 800;
-  padding: 5px 8px;
 }
 
 .runner-end-final-variables .runner-variable-inspector {
@@ -5334,30 +5331,6 @@
   color: #fff;
 }
 
-.runner-flow-edge-delete {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #fecaca;
-  border-radius: 999px;
-  background: #fff;
-  color: #dc2626;
-  cursor: pointer;
-  font-size: 16px;
-  font-weight: 900;
-  line-height: 1;
-  padding: 0 0 2px;
-  box-shadow: 0 8px 18px rgba(220, 38, 38, 0.14);
-}
-
-.runner-flow-edge-delete:hover,
-.runner-flow-edge-delete:focus-visible {
-  background: #dc2626;
-  color: #fff;
-}
-
 .runner-studio-api-notice {
   display: flex;
   align-items: center;
@@ -5386,6 +5359,48 @@
   cursor: pointer;
   font-weight: 800;
   padding: 8px 10px;
+}
+
+.runner-workflow-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.runner-workflow-card-meta em {
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  padding: 3px 7px;
+}
+
+.runner-run-traceability dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.runner-run-traceability dl div {
+  display: grid;
+  gap: 3px;
+}
+
+.runner-run-traceability dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.runner-run-traceability dd {
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  margin: 0;
 }
 
 .runner-schema-editor {
