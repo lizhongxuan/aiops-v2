@@ -222,6 +222,8 @@ describe("PromptTracePage", () => {
     expect(userRequestButton?.className).toContain("overflow-hidden");
     expect(llmRequestButton?.className).toContain("overflow-hidden");
     expect(sessionButton?.getAttribute("title")).toContain("sess-1");
+    expect(sessionButton?.getAttribute("title")).toContain("Case case-checkout-1");
+    expect(sessionButton?.textContent).not.toContain("Case case-checkout-1");
     expect(userRequestButton?.getAttribute("title")).toContain("检查 checkout p95 延迟");
     expect(userRequestButton?.getAttribute("title")).not.toContain("LLM 请求");
     expect(userRequestButton?.getAttribute("title")).not.toContain("Turn turn-1");
@@ -229,13 +231,14 @@ describe("PromptTracePage", () => {
     expect(userRequestButton?.textContent).not.toContain("Turn turn-1");
     expect(userRequestButton?.textContent).toContain("turn-1");
     expect(llmRequestButton?.getAttribute("title")).toContain("sess-1/turn-1/iteration-001.json");
+    expect(llmRequestButton?.textContent).not.toContain("查看详情");
     expect(container.querySelector('[data-testid="prompt-trace-session-title"]')?.className).toContain("line-clamp-2");
     expect(container.querySelector('[data-testid="prompt-trace-turn-preview"]')?.className).toContain("line-clamp-2");
     expect(container.querySelector('[data-testid="prompt-trace-llm-path"]')?.className).toContain("truncate");
     expect(container.querySelector('[data-testid="prompt-trace-session-title"]')?.getAttribute("style") || "").toContain("-webkit-line-clamp: 2");
     expect(container.querySelector('[data-testid="prompt-trace-turn-preview"]')?.getAttribute("style") || "").toContain("-webkit-line-clamp: 2");
 
-    const llmButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("查看详情"));
+    const llmButton = container.querySelector('[data-testid="prompt-trace-llm-card"]') as HTMLButtonElement | null;
     expect(llmButton).toBeTruthy();
     await act(async () => {
       llmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -243,24 +246,15 @@ describe("PromptTracePage", () => {
     await flush();
 
     expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("LLM 请求详情");
-    expect(document.body.textContent).toContain("Agent-to-UI 来源");
-    expect(document.body.textContent).toContain("System Prompt");
-    expect(document.body.textContent).toContain("Developer Prompt");
-    expect(document.body.textContent).toContain("User Prompt");
-    expect(document.body.textContent).toContain("Tool Messages");
-    expect(document.body.textContent).toContain("Retrieval Context");
-    expect(document.body.textContent).toContain("输出");
-    expect(document.body.textContent).toContain("错误");
-    expect(document.body.textContent).toContain("Token");
-    expect(document.body.textContent).toContain("耗时");
-    expect(document.body.textContent).toContain("prompt 21 / completion 8 / total 29");
-    expect(document.body.textContent).toContain("456 ms");
-    expect(document.body.textContent).toContain("coroot-checkout-latency-chart");
-    expect(document.body.textContent).toContain("Coroot 图表");
-    expect(document.body.textContent).toContain("Checkout p95 延迟图");
-    expect(document.body.textContent).toContain("工具调用 coroot.query_latency");
-    expect(document.body.textContent).toContain("EvidenceRef ev-coroot-latency");
-    expect(document.body.textContent).toContain("Case case-checkout-1");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("Agent-to-UI 来源");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("当前链路");
+    expect(Array.from(document.body.querySelectorAll('[role="dialog"] button')).map((button) => button.textContent)).not.toContain("来源");
+    expect(document.body.textContent).toContain("Messages");
+    expect(document.body.textContent).toContain("Tools");
+    expect(document.body.textContent).toContain("Prompt chars");
+    expect(document.body.textContent).not.toContain("coroot-checkout-latency-chart");
+    expect(document.body.textContent).not.toContain("工具调用 coroot.query_latency");
+    expect(document.body.textContent).not.toContain("EvidenceRef ev-coroot-latency");
     expect(document.body.textContent).toContain("已脱敏");
     expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent === "Raw")).toBe(true);
     expect(Array.from(container.querySelectorAll("textarea,input,[contenteditable='true']"))).toHaveLength(1);
