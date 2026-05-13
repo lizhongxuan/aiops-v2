@@ -3,7 +3,7 @@ import { FALLBACK_RUNNER_ACTIONS } from "./fallbackActionCatalog";
 
 describe("FALLBACK_RUNNER_ACTIONS", () => {
   it("keeps structured input and output schemas for core local actions", () => {
-    for (const actionName of ["cmd.run", "shell.run", "script.shell", "notify.send"]) {
+    for (const actionName of ["cmd.run", "shell.run", "script.shell", "notify.send", "variable.aggregate"]) {
       const action = FALLBACK_RUNNER_ACTIONS.find((item) => item.action === actionName);
 
       expect(action?.inputs_schema).toMatchObject({ type: "object", properties: expect.any(Object) });
@@ -18,5 +18,6 @@ describe("FALLBACK_RUNNER_ACTIONS", () => {
 
     expect(FALLBACK_RUNNER_ACTIONS.find((item) => item.action === "cmd.run").inputs_schema.required).toContain("cmd");
     expect(FALLBACK_RUNNER_ACTIONS.find((item) => item.action === "shell.run").inputs_schema.required).toContain("script");
+    expect(FALLBACK_RUNNER_ACTIONS.find((item) => item.action === "variable.aggregate").default_ports.outputs.map((port) => port.id)).toEqual(["next"]);
   });
 });

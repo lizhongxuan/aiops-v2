@@ -1,4 +1,5 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { AlertTriangle, CheckCircle2, LoaderCircle } from "lucide-react";
 
 import type { RunnerNode, RunnerPort } from "./canvasGraphAdapter";
 
@@ -18,6 +19,11 @@ type RunnerCanvasNodeData = {
     outputs?: RunnerPort[];
   };
   node?: RunnerNode;
+  runState?: {
+    status?: string;
+    label?: string;
+    message?: string;
+  };
   onOpenConfig?: (nodeId: string) => void;
   onNodeAction?: (action: string, nodeId: string) => void;
 };
@@ -28,11 +34,12 @@ export function RunnerCanvasNode({ id, data, selected }: NodeProps) {
   const inputs = nodeData.ports?.inputs || [];
   const outputs = nodeData.ports?.outputs || [];
   const label = nodeData.label || nodeData.node?.label || nodeData.node?.step?.name || id;
-  const action = meta.action || nodeData.node?.step?.action || nodeData.node?.type || "node";
+  const runStatus = nodeData.runState?.status || "";
+  const runLabel = nodeData.runState?.label || "";
 
   return (
     <div
-      className={["runner-canvas-node", selected ? "selected" : "", `tone-${meta.tone || "slate"}`].filter(Boolean).join(" ")}
+      className={["runner-canvas-node", selected ? "selected" : "", runStatus ? `run-${runStatus}` : "", `tone-${meta.tone || "slate"}`].filter(Boolean).join(" ")}
       data-testid={`canvas-node-${id}`}
       onDoubleClick={(event) => {
         event.stopPropagation();
@@ -44,17 +51,19 @@ export function RunnerCanvasNode({ id, data, selected }: NodeProps) {
         nodeData.onNodeAction?.("open-menu", id);
       }}
     >
+      {runStatus ? (
+        <div className={`runner-canvas-node-run-state status-${runStatus}`} title={nodeData.runState?.message || runLabel}>
+          {runStatus === "running" ? <LoaderCircle className="runner-canvas-node-run-spinner" size={13} /> : null}
+          {runStatus === "failed" ? <AlertTriangle size={13} /> : null}
+          {runStatus === "success" ? <CheckCircle2 size={13} /> : null}
+          <span>{runLabel}</span>
+        </div>
+      ) : null}
       <div className="runner-canvas-node-head">
         <span className="runner-canvas-node-icon">{meta.iconText || "RUN"}</span>
         <div>
           <strong>{label}</strong>
-          <small>{action}</small>
         </div>
-      </div>
-      <p>{meta.description || meta.category || "工作流节点"}</p>
-      <div className="runner-canvas-node-foot">
-        <span>{meta.risk || "low"}</span>
-        <span>{inputs.length} in · {outputs.length} out</span>
       </div>
       {inputs.map((port, index) => (
         <Handle

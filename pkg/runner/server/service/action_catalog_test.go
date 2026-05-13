@@ -12,8 +12,8 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 	catalog := NewActionCatalog()
 
 	items := catalog.List(context.Background(), ActionCatalogFilter{})
-	if len(items) != 9 {
-		t.Fatalf("expected 9 default specs, got %d", len(items))
+	if len(items) != 10 {
+		t.Fatalf("expected 10 default specs, got %d", len(items))
 	}
 	for i := 1; i < len(items); i++ {
 		prev := items[i-1].Category + "/" + items[i-1].Action
@@ -123,6 +123,19 @@ func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 	approval, _ := catalog.Get(context.Background(), "manual.approval")
 	if got := portIDs(approval.DefaultPorts.Outputs); len(got) != 2 || got[0] != "approved" || got[1] != "rejected" {
 		t.Fatalf("manual.approval default output ports = %+v", got)
+	}
+	aggregator, ok := catalog.Get(context.Background(), "variable.aggregate")
+	if !ok {
+		t.Fatal("variable.aggregate should be present")
+	}
+	if aggregator.NodeType != "variable_aggregator" {
+		t.Fatalf("variable.aggregate node type = %q, want variable_aggregator", aggregator.NodeType)
+	}
+	if got := portIDs(aggregator.DefaultPorts.Outputs); len(got) != 1 || got[0] != "next" {
+		t.Fatalf("variable.aggregate default output ports = %+v", got)
+	}
+	if _, ok := schemaProperties(t, decodeSchema(t, aggregator.OutputsSchema))["value"]; !ok {
+		t.Fatalf("variable.aggregate outputs schema missing value: %s", string(aggregator.OutputsSchema))
 	}
 }
 

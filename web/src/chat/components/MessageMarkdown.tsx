@@ -36,17 +36,44 @@ markdown.renderer.rules.link_open = (tokens, index, options, _env, self) => {
 };
 
 export function MessageMarkdown({ text }: MessageMarkdownProps) {
-  const trimmed = normalizeReadableTimestamps(text.trim());
+  const trimmed = normalizeFinalAnswerMarkdown(normalizeReadableTimestamps(text.trim()));
   if (!trimmed) {
     return null;
   }
   return (
     <div
-      className="aiops-message-markdown space-y-2 break-words [&_a]:cursor-copy [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-6"
+      className="aiops-message-markdown space-y-1.5 break-words [&_a]:cursor-copy [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-0.5 [&_li>p]:m-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol_ul]:mt-0.5 [&_ol_ul]:pl-5 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ul_ul]:mt-0.5 [&_ul_ul]:pl-5"
       onClick={copyLinkInsteadOfNavigating}
       dangerouslySetInnerHTML={{ __html: markdown.render(trimmed) }}
     />
   );
+}
+
+function normalizeFinalAnswerMarkdown(value: string) {
+  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(value));
+}
+
+function normalizeDetachedSourceLinks(value: string) {
+  return value.replace(
+    /(^|[\n\r])(\s*(?:来源|参考来源|数据来源|资料来源)\s*[：:])\s*(?:\r?\n){1,3}\s*((?:https?:\/\/|www\.)\S+)/g,
+    "$1$2 $3",
+  );
+}
+
+function normalizeLooseNestedListLabels(value: string) {
+  const lines = value.split(/\r?\n/);
+  const output: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const current = line.match(/^(\s*)-\s+([^：:，,。；;]{1,24})\s*$/);
+    const next = lines[index + 1] || "";
+    if (current && /^(\s{2,}|\t+)-\s+\S/.test(next)) {
+      output.push(`${current[1]}- **${current[2].trim()}**`);
+      continue;
+    }
+    output.push(line);
+  }
+  return output.join("\n");
 }
 
 function compactInlineAutoLinks(tokens: MarkdownToken[]) {

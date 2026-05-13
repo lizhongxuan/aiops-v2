@@ -23,6 +23,7 @@ import (
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
+	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
 )
 
@@ -91,6 +92,95 @@ func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
 			t.Fatalf("upstream = %q, want empty", got)
 		}
 	})
+}
+
+func TestOpenConfiguredStoreDefaultsToJSONFileStore(t *testing.T) {
+	dataDir := t.TempDir()
+	got, err := openConfiguredStore(dataDir, func(string) string { return "" })
+	if err != nil {
+		t.Fatalf("openConfiguredStore() error = %v", err)
+	}
+	defer got.Close()
+	if _, ok := got.(*store.JSONFileStore); !ok {
+		t.Fatalf("openConfiguredStore() type = %T, want *store.JSONFileStore", got)
+	}
+}
+
+func TestOpenConfiguredStoreRequiresMySQLDSN(t *testing.T) {
+	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
+		if key == "AIOPS_STORE_DRIVER" {
+			return "mysql"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("openConfiguredStore() succeeded without mysql dsn")
+	}
+	if !strings.Contains(err.Error(), "AIOPS_MYSQL_DSN") {
+		t.Fatalf("error = %q, want AIOPS_MYSQL_DSN", err.Error())
+	}
+}
+
+func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
+	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
+		if key == "AIOPS_STORE_DRIVER" {
+			return "postgres"
+		}
+		return ""
+	})
+	if err == nil {
+		t.Fatal("openConfiguredStore() succeeded with unknown driver")
+	}
+	if !strings.Contains(err.Error(), "unsupported store driver") {
+		t.Fatalf("error = %q, want unsupported store driver", err.Error())
+	}
+}
+
+func TestCorootEndpointFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{
+			name: "prefers explicit endpoint",
+			env: map[string]string{
+				"AIOPS_COROOT_ENDPOINT": " http://coroot-endpoint.internal ",
+				"AIOPS_COROOT_BASE_URL": "http://coroot-base.internal",
+				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
+			},
+			want: "http://coroot-endpoint.internal",
+		},
+		{
+			name: "falls back to aiops base url",
+			env: map[string]string{
+				"AIOPS_COROOT_BASE_URL": " http://127.0.0.1:18180 ",
+				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
+			},
+			want: "http://127.0.0.1:18180",
+		},
+		{
+			name: "falls back to coroot base url",
+			env: map[string]string{
+				"COROOT_BASE_URL": " http://coroot.local ",
+			},
+			want: "http://coroot.local",
+		},
+		{
+			name: "returns empty when unset",
+			env:  map[string]string{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := corootEndpointFromEnv(func(key string) string { return tt.env[key] })
+			if got != tt.want {
+				t.Fatalf("corootEndpointFromEnv() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func isNoopRuntimeObserver(observer runtimekernel.Observer) bool {

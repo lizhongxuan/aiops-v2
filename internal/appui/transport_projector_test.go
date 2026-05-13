@@ -104,8 +104,8 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if transportTurn.Final == nil || transportTurn.Final.Text != "等待审批完成后执行回滚" {
 		t.Fatalf("turn.Final = %+v, want final text", transportTurn.Final)
 	}
-	if len(transportTurn.Process) != 6 {
-		t.Fatalf("len(turn.Process) = %d, want 6", len(transportTurn.Process))
+	if len(transportTurn.Process) != 7 {
+		t.Fatalf("len(turn.Process) = %d, want 7", len(transportTurn.Process))
 	}
 
 	reasoningBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindReasoning)
@@ -133,8 +133,8 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if commandBlock.Command == "exec_command" {
 		t.Fatal("command block should not expose tool name as user-visible command")
 	}
-	if commandBlock.OutputPreview != "rollout undo started" {
-		t.Fatalf("command block output = %q, want output summary", commandBlock.OutputPreview)
+	if commandBlock.OutputPreview != "" {
+		t.Fatalf("command block output = %q, want no preview without explicit outputPreview", commandBlock.OutputPreview)
 	}
 	if commandBlock.ExitCode == nil || *commandBlock.ExitCode != 0 {
 		t.Fatalf("command exit code = %#v, want 0", commandBlock.ExitCode)
@@ -151,6 +151,10 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	approvalBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindApproval)
 	if approvalBlock.ApprovalID != "approval-1" || approvalBlock.Status != AiopsTransportProcessStatusBlocked {
 		t.Fatalf("approval block = %+v, want blocked approval", approvalBlock)
+	}
+	assistantBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindAssistant)
+	if assistantBlock.Text != "等待审批完成后执行回滚" || assistantBlock.DisplayKind != "assistant.final" {
+		t.Fatalf("assistant final block = %+v, want inline final answer block", assistantBlock)
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
@@ -194,8 +198,65 @@ func TestTransportProjectorPreservesCommandWhenToolResultOnlyHasOutput(t *testin
 	if commandBlock.Command != "uptime" {
 		t.Fatalf("command block command = %q, want real command", commandBlock.Command)
 	}
-	if commandBlock.OutputPreview != "22:38 up 22 days, 8:23, 1 user" {
-		t.Fatalf("command block output = %q, want terminal output", commandBlock.OutputPreview)
+	if commandBlock.OutputPreview != "" {
+		t.Fatalf("command block output = %q, want no preview when tool result only has summary", commandBlock.OutputPreview)
+	}
+}
+
+func TestTransportProjectorBackfillsCommandPreviewFromSnapshotToolResult(t *testing.T) {
+	now := time.Date(2026, 5, 7, 14, 39, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	fullOutput := "PID PPID %MEM RSS STAT COMM\n1 0 0.1 1024 S launchd\n2 1 1.3 204800 S Google Chrome Helper"
+	toolCallData := json.RawMessage(`{
+		"id":"call-ps",
+		"name":"exec_command",
+		"arguments":{"command":"ps","args":["-axo","pid,ppid,%mem,rss,state,comm"]}
+	}`)
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-ps",
+		"toolName":"exec_command",
+		"outputSummary":"PID PPID %MEM RSS STAT COMM"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-command-preview",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(2 * time.Second),
+		CompletedAt: ptrTime(now.Add(2 * time.Second)),
+		Iterations: []runtimekernel.IterationState{
+			{
+				ID:          "iter-1",
+				SessionID:   "session-1",
+				TurnID:      "turn-command-preview",
+				Iteration:   0,
+				Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+				ResumeState: runtimekernel.TurnResumeStateNone,
+				ToolResults: []runtimekernel.ToolResult{{ToolCallID: "call-ps", Content: fullOutput}},
+				StartedAt:   now,
+				UpdatedAt:   now.Add(2 * time.Second),
+			},
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "cmd-call", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "exec_command", Data: toolCallData}, CreatedAt: now},
+			{ID: "cmd-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "PID PPID %MEM RSS STAT COMM", Data: toolResultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	commandBlock := findTransportProcessBlock(t, projected.Turns["turn-command-preview"].Process, AiopsTransportProcessKindCommand)
+	if commandBlock.Command != "ps -axo pid,ppid,%mem,rss,state,comm" {
+		t.Fatalf("command block command = %q, want real command", commandBlock.Command)
+	}
+	if !strings.Contains(commandBlock.OutputPreview, "launchd") || !strings.Contains(commandBlock.OutputPreview, "Google Chrome Helper") {
+		t.Fatalf("command block output preview = %q, want full multi-line preview", commandBlock.OutputPreview)
 	}
 }
 
@@ -409,12 +470,12 @@ func TestTransportProjectorIgnoresSnapshotPendingGatesForTerminalTurn(t *testing
 			UpdatedAt: now,
 		}},
 		PendingEvidence: []runtimekernel.PendingEvidence{{
-			ID:        "evidence-stale",
-			TurnID:    "turn-denied-approval",
+			ID:         "evidence-stale",
+			TurnID:     "turn-denied-approval",
 			ToolCallID: "tool-call-1",
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
+			Status:     "pending",
+			CreatedAt:  now,
+			UpdatedAt:  now,
 		}},
 		AgentItems: []agentstate.TurnItem{
 			{
@@ -570,6 +631,61 @@ func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *tes
 	}
 	if final.Status != AiopsTransportFinalStatusRunning {
 		t.Fatalf("final status = %q, want running", final.Status)
+	}
+	assistantBlock := findTransportProcessBlock(t, projected.Turns["turn-streaming-final"].Process, AiopsTransportProcessKindAssistant)
+	if assistantBlock.Text != "第一段第二段完整流式输出" {
+		t.Fatalf("assistant final block text = %q, want full streaming FinalOutput", assistantBlock.Text)
+	}
+}
+
+func TestTransportProjectorReordersProcessFromLatestAgentItems(t *testing.T) {
+	now := time.Date(2026, 5, 8, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	searchData := json.RawMessage(`{
+		"toolCallId":"search-1",
+		"toolName":"web_search",
+		"displayKind":"browser.search",
+		"inputSummary":"BTC current price USD 24h change"
+	}`)
+	firstSnapshot := &runtimekernel.TurnSnapshot{
+		ID:        "turn-process-order",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "search-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "BTC current price USD 24h change", Data: searchData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+	projected, err := projector.ProjectTurnSnapshot(state, firstSnapshot)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot(first) error = %v", err)
+	}
+	if len(projected.Turns["turn-process-order"].Process) != 1 || projected.Turns["turn-process-order"].Process[0].Kind != AiopsTransportProcessKindSearch {
+		t.Fatalf("first process = %#v, want only search", projected.Turns["turn-process-order"].Process)
+	}
+
+	secondSnapshot := *firstSnapshot
+	secondSnapshot.UpdatedAt = now.Add(2 * time.Second)
+	secondSnapshot.AgentItems = []agentstate.TurnItem{
+		{ID: "final-prelude", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "我将先用实时网页搜索获取当前BTC价格、24小时涨跌与主要来源报价，并据此给你一个简明行情摘要。"}, CreatedAt: now.Add(500 * time.Millisecond)},
+		{ID: "search-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "BTC current price USD 24h change", Data: searchData}, CreatedAt: now.Add(time.Second)},
+	}
+	projected, err = projector.ProjectTurnSnapshot(projected, &secondSnapshot)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot(second) error = %v", err)
+	}
+
+	process := projected.Turns["turn-process-order"].Process
+	if len(process) != 2 {
+		t.Fatalf("len(process) = %d, want assistant and search: %#v", len(process), process)
+	}
+	if process[0].Kind != AiopsTransportProcessKindAssistant || process[0].Text == "" {
+		t.Fatalf("process[0] = %+v, want assistant prelude", process[0])
+	}
+	if process[1].Kind != AiopsTransportProcessKindSearch {
+		t.Fatalf("process[1] = %+v, want search after assistant", process[1])
 	}
 }
 
@@ -833,7 +949,8 @@ func TestTransportProjectorSanitizesHTMLInToolOutput(t *testing.T) {
 		"toolName":"fetch_page",
 		"displayKind":"tool",
 		"inputSummary":"https://example.com",
-		"outputSummary":"` + rawHTML + `"
+		"outputSummary":"` + rawHTML + `",
+		"outputPreview":"` + rawHTML + `"
 	}`)
 
 	turn := &runtimekernel.TurnSnapshot{

@@ -33,6 +33,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	if projectedTurn.ID == "" {
 		projectedTurn.ID = turnID
 	}
+	projectedTurn.Process = nil
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
 	projectedTurn.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), projectedTurn.UpdatedAt)
 	if turn.CompletedAt != nil {
@@ -46,8 +47,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		activeApprovalIDs = snapshotPendingApprovalIDs(turn.PendingApprovals, turn.PendingEvidence)
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
+	resultPreviews := transportToolResultPreviews(turn)
 	for _, item := range turn.AgentItems {
-		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item)
+		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews)
 	}
 	if turn.Lifecycle.IsTerminal() {
 		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
@@ -66,6 +68,14 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		}
 		projectedTurn.Final.Text = finalText
 		projectedTurn.Final.Status = finalStatus
+		projectedTurn = projectAssistantFinalProcessBlock(
+			projectedTurn,
+			turnID,
+			projectedTurn.Final.ID,
+			finalText,
+			mapFinalStatusToTransportProcessStatus(finalStatus),
+			turn.UpdatedAt,
+		)
 	}
 
 	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
@@ -98,6 +108,29 @@ func snapshotPendingApprovalIDs(approvals []runtimekernel.PendingApproval, evide
 		}
 	}
 	return ids
+}
+
+func transportToolResultPreviews(turn *runtimekernel.TurnSnapshot) map[string]string {
+	previews := map[string]string{}
+	if turn == nil {
+		return previews
+	}
+	for _, iteration := range turn.Iterations {
+		for _, result := range iteration.ToolResults {
+			toolCallID := strings.TrimSpace(result.ToolCallID)
+			if toolCallID == "" || strings.TrimSpace(result.Content) == "" {
+				continue
+			}
+			if _, exists := previews[toolCallID]; exists {
+				continue
+			}
+			_, outputPreview, _ := summarizeToolResultForEvent(turn.ID, toolCallID, result.Content)
+			if preview := jsonStringValue(outputPreview); preview != "" {
+				previews[toolCallID] = preview
+			}
+		}
+	}
+	return previews
 }
 
 func pruneTransportPendingApprovalsForTurn(state *AiopsTransportState, turnID string, activeIDs map[string]bool) {
@@ -216,7 +249,13 @@ func projectSnapshotPendingEvidence(turn AiopsTransportTurn, state *AiopsTranspo
 	return turn
 }
 
-func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID string, item agentstate.TurnItem) AiopsTransportTurn {
+func projectTurnItem(
+	turn AiopsTransportTurn,
+	state *AiopsTransportState,
+	turnID string,
+	item agentstate.TurnItem,
+	resultPreviews map[string]string,
+) AiopsTransportTurn {
 	switch item.Type {
 	case agentstate.TurnItemTypeUserMessage:
 		text := firstNonEmptyString(strings.TrimSpace(item.Payload.Summary), decodeUserMessageText(item.Payload.Data))
@@ -273,6 +312,10 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			toolText = sanitizeOutputPreview(toolText)
 		}
 
+		outputPreview := outputPreviewForTransportToolBlock(blockKind, tool)
+		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
+			outputPreview = resultPreviews[tool.ToolCallID]
+		}
 		block := AiopsProcessBlock{
 			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
 			Kind:          blockKind,
@@ -280,7 +323,7 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			Status:        mapItemStatusToTransportProcessStatus(item.Status),
 			Text:          toolText,
 			InputSummary:  tool.InputSummary,
-			OutputPreview: sanitizeOutputPreview(outputPreviewForTransportToolBlock(blockKind, tool)),
+			OutputPreview: sanitizeOutputPreview(outputPreview),
 			RawRef:        tool.RawRef,
 			ExitCode:      tool.ExitCode,
 			DurationMs:    tool.DurationMs,
@@ -368,11 +411,20 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 			delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 		}
 	case agentstate.TurnItemTypeFinalAnswer:
+		text := strings.TrimSpace(item.Payload.Summary)
 		turn.Final = &AiopsTransportFinal{
 			ID:     item.ID,
-			Text:   strings.TrimSpace(item.Payload.Summary),
+			Text:   text,
 			Status: mapItemStatusToTransportFinalStatus(item.Status),
 		}
+		turn = projectAssistantFinalProcessBlock(
+			turn,
+			turnID,
+			item.ID,
+			text,
+			mapItemStatusToTransportProcessStatus(item.Status),
+			firstNonZeroTime(item.UpdatedAt, item.CreatedAt),
+		)
 	case agentstate.TurnItemTypeModelCall:
 		block := AiopsProcessBlock{
 			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindReasoning), item.ID),
@@ -387,6 +439,30 @@ func projectTurnItem(turn AiopsTransportTurn, state *AiopsTransportState, turnID
 		state.LastError = strings.TrimSpace(item.Payload.Summary)
 	}
 
+	return turn
+}
+
+func projectAssistantFinalProcessBlock(
+	turn AiopsTransportTurn,
+	turnID string,
+	sourceID string,
+	text string,
+	status AiopsTransportProcessStatus,
+	updatedAt time.Time,
+) AiopsTransportTurn {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return turn
+	}
+	block := AiopsProcessBlock{
+		ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindAssistant), firstNonEmptyString(sourceID, "output")),
+		Kind:        AiopsTransportProcessKindAssistant,
+		DisplayKind: "assistant.final",
+		Status:      status,
+		Text:        text,
+		UpdatedAt:   transportTimestamp(updatedAt),
+	}
+	turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	return turn
 }
 
@@ -530,6 +606,17 @@ func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportF
 		return AiopsTransportFinalStatusCompleted
 	default:
 		return AiopsTransportFinalStatusRunning
+	}
+}
+
+func mapFinalStatusToTransportProcessStatus(status AiopsTransportFinalStatus) AiopsTransportProcessStatus {
+	switch status {
+	case AiopsTransportFinalStatusCompleted:
+		return AiopsTransportProcessStatusCompleted
+	case AiopsTransportFinalStatusFailed:
+		return AiopsTransportProcessStatusFailed
+	default:
+		return AiopsTransportProcessStatusRunning
 	}
 }
 
@@ -693,7 +780,7 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 	if blockKind == AiopsTransportProcessKindSearch {
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
-	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.OutputSummary, tool.Error)
+	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
 }
 
 func jsonStringValue(raw json.RawMessage) string {

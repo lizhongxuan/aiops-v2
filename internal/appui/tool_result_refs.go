@@ -20,10 +20,8 @@ func summarizeToolResultForEvent(turnID, toolCallID, result string) (summary str
 		return summary, preview, ""
 	}
 	rawRef = rawRefForAgentTool(turnID, toolCallID)
-	if size <= maxAgentEventPayloadBytes {
-		previewText := truncateAgentEventBytes(result, inlineToolResultBytes)
-		preview, _ = json.Marshal(previewText)
-	}
+	previewText := truncateAgentEventBytes(result, inlineToolResultBytes)
+	preview, _ = json.Marshal(previewText)
 	return summary, preview, rawRef
 }
 

@@ -35,9 +35,6 @@ func agentEventFromTurnItem(sessionID, turnID string, item agentstate.TurnItem) 
 		return AgentEvent{}, false
 	}
 	eventID := fmt.Sprintf("turn-item:%s:%s", turnID, item.ID)
-	if item.Type == agentstate.TurnItemTypeFinalAnswer {
-		eventID = fmt.Sprintf("turn-item:%s:final_answer", turnID)
-	}
 	event := AgentEvent{
 		EventID:    eventID,
 		SessionID:  sessionID,

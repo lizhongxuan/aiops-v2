@@ -90,6 +90,7 @@ type HTTPServer struct {
 	ui                      appui.HTTPServices
 	mux                     *http.ServeMux
 	web                     http.Handler
+	runnerStudioHandler     http.Handler
 	runnerStudioUpstreamURL string
 	terminalManager         *terminal.Manager
 	appWSHeartbeatTick      time.Duration
@@ -136,6 +137,14 @@ func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
 func WithRunnerStudioUpstreamURL(rawURL string) HTTPServerOption {
 	return func(s *HTTPServer) {
 		s.runnerStudioUpstreamURL = strings.TrimSpace(rawURL)
+	}
+}
+
+// WithRunnerStudioHandler mounts an embedded Runner API handler for same-origin
+// /api/runner-studio/* routes. It takes precedence over the legacy upstream URL.
+func WithRunnerStudioHandler(handler http.Handler) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.runnerStudioHandler = handler
 	}
 }
 
@@ -203,6 +212,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.Handle("/api/v1/terminal/ws", s.handleTerminalWebSocket())
 	s.mux.HandleFunc("/api/v1/incidents", s.handleIncidents)
 	s.mux.HandleFunc("/api/v1/incidents/", s.handleIncidents)
+	s.mux.HandleFunc("/api/v1/experience-packs", s.handleExperiencePacks)
+	s.mux.HandleFunc("/api/v1/experience-packs/", s.handleExperiencePacks)
 	s.mux.HandleFunc("/api/v1/coroot/webhook", s.handleCorootWebhook)
 	s.mux.HandleFunc("/api/v1/opsgraph/lookup", s.handleOpsGraphLookup)
 	s.mux.HandleFunc("/api/v1/opsgraph/entities/", s.handleOpsGraphEntity)

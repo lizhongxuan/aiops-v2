@@ -401,7 +401,7 @@ func validateTransportMCPSurface(state AiopsTransportState, surfaceID string, ac
 
 func isTransportRejectedDecision(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "accept", "accept_session", "approve", "approved", "allow", "yes":
+	case "accept", "accept_session", "approve", "approved", "approved_for_session", "allow", "yes":
 		return false
 	default:
 		return true

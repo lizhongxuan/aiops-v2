@@ -98,7 +98,8 @@ AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
 常用启动覆盖：
 
 ```bash
-AIOPS_HTTP_ADDR=:18080 ./scripts/start.sh
+AIOPS_HTTP_ADDR=:19080 ./scripts/start.sh
+AIOPS_GRPC_AUTO_PORT=0 ./scripts/start.sh
 SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 ./scripts/start.sh --dry-run
 ```

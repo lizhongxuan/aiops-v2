@@ -3,6 +3,26 @@ import { buildHostListViewModel } from "@/lib/hostListViewModel";
 type JsonMap = Record<string, unknown>;
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 
+function parseResponseBody(text: string, contentType: string) {
+  const trimmed = text.trim();
+  if (!trimmed) return {};
+  if (contentType.includes("application/json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return { message: trimmed };
+    }
+  }
+  return { message: trimmed };
+}
+
+function fallbackErrorMessage(path: string, status: number, statusText: string) {
+  if (path.startsWith("/api/") && status >= 500) {
+    return `后端 API 返回空响应（HTTP ${status} ${statusText || ""}）。开发模式下请确认 ai-server 正在监听 127.0.0.1:18080，或按 README 使用 AIOPS_HTTP_ADDR=:18080 ./scripts/start.sh 启动。`;
+  }
+  return `Request failed with status ${status}`;
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { body, headers, ...rest } = options;
   const hasBody = body !== undefined && body !== null && !(body instanceof FormData);
@@ -16,9 +36,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     body: hasBody && typeof body !== "string" ? JSON.stringify(body) : (body as BodyInit | undefined),
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  const payload = parseResponseBody(text, response.headers.get("Content-Type") || "");
   if (!response.ok) {
-    throw new Error(payload?.error || payload?.message || `Request failed with status ${response.status}`);
+    const message = typeof payload?.error === "string" ? payload.error : typeof payload?.message === "string" ? payload.message : "";
+    throw new Error(message || fallbackErrorMessage(path, response.status, response.statusText));
   }
   return payload as T;
 }

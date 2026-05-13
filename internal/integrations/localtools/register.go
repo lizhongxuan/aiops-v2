@@ -278,7 +278,7 @@ func NewBrowseURLTool(opts Options) tooling.Tool {
 			Name:        "browse_url",
 			Aliases:     []string{"web_fetch", "fetch_url", "open_url"},
 			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Fetch a specific http(s) URL and return readable page text. Use this after web_search returns URLs or when the user provides a URL. Do not use exec_command/bash/python to browse web pages.",
+			Description: "Fetch a specific http(s) URL and return readable page text. Use this after web_search returns URLs or when the user provides a URL. Dynamic quote pages may omit JavaScript-rendered prices from readable text; if a realtime price or market quote is missing, use web_search again with another authoritative source. Do not use exec_command/bash/python to browse web pages.",
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: opts.MaxOutputBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
@@ -347,7 +347,7 @@ func NewWebSearchTool(repo LLMConfigRepository, opts Options) tooling.Tool {
 			Name:        "web_search",
 			Aliases:     []string{"search_web"},
 			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Search the web using the current model provider's native web_search tool first; fall back to public web results only when the provider returns no usable text. Use precise, self-contained queries. For current or latest information, include the current date or target date, key entities, and the data you need. Prefer authoritative sources and cite source URLs. Use allowed_domains or blocked_domains when you need Claude Code-style source control. Avoid vague one-word queries; if results are weak or irrelevant, refine the query with source names, official domains, or site: filters.",
+			Description: "Search the web using the current model provider's native web_search tool first; fall back to public web results only when the provider returns no usable text. Use precise, self-contained queries. For current or latest information, include the current date or target date, key entities, and the data you need. Prefer authoritative sources and cite source URLs. For realtime price or market quote questions, do not stop after one unreadable or dynamic page; try another authoritative source or a more specific official/API query until you can cross-check the current numeric value, timestamp, and quote currency. Use allowed_domains or blocked_domains when you need Claude Code-style source control. Avoid vague one-word queries; if results are weak or irrelevant, refine the query with source names, official domains, or site: filters.",
 			ProviderNative: &tooling.ProviderNativeToolInfo{
 				Provider: "openai",
 				Type:     "web_search",

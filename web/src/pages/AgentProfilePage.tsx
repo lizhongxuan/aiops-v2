@@ -1,4 +1,4 @@
-import { Download, Plus, RefreshCw, RotateCcw, Save, Upload, X } from "lucide-react";
+import { Download, Plus, RotateCcw, Save, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -188,10 +188,6 @@ export function AgentProfilePage() {
         description="管理 system prompt、运行参数、skills 与 MCP 绑定。"
         actions={
           <>
-            <Button variant="outline" onClick={() => void load()} disabled={loading || saving}>
-              <RefreshCw />
-              刷新
-            </Button>
             <Button variant="outline" onClick={() => void exportProfiles()} disabled={saving}>
               <Download />
               导出

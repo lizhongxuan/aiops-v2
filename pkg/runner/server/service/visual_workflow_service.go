@@ -674,7 +674,7 @@ func singleNodeRunGraph(graph visual.Graph, nodeID string) (visual.Graph, error)
 			continue
 		}
 		switch node.Type {
-		case visual.NodeTypeAction, visual.NodeTypeCondition, visual.NodeTypeSubflow:
+		case visual.NodeTypeAction, visual.NodeTypeCondition, visual.NodeTypeSubflow, visual.NodeTypeVariableAggregator:
 			next := graph
 			startID := "__single_run_start"
 			endID := "__single_run_end"
@@ -901,7 +901,7 @@ func graphRequiresDAGExecutor(graph visual.Graph) bool {
 	outgoing := map[string]int{}
 	for _, node := range graph.Nodes {
 		switch node.Type {
-		case visual.NodeTypeParallel, visual.NodeTypeJoin, visual.NodeTypeLoop, visual.NodeTypeManualApproval, visual.NodeTypeSubflow:
+		case visual.NodeTypeParallel, visual.NodeTypeJoin, visual.NodeTypeLoop, visual.NodeTypeManualApproval, visual.NodeTypeSubflow, visual.NodeTypeVariableAggregator:
 			return true
 		}
 	}
@@ -934,7 +934,7 @@ func isExecutableGraphNode(graph visual.Graph, nodeID string) bool {
 			continue
 		}
 		switch node.Type {
-		case visual.NodeTypeAction, visual.NodeTypeCondition, visual.NodeTypeSubflow, visual.NodeTypeManualApproval, visual.NodeTypeParallel, visual.NodeTypeJoin, visual.NodeTypeLoop:
+		case visual.NodeTypeAction, visual.NodeTypeCondition, visual.NodeTypeSubflow, visual.NodeTypeManualApproval, visual.NodeTypeVariableAggregator, visual.NodeTypeParallel, visual.NodeTypeJoin, visual.NodeTypeLoop:
 			return true
 		default:
 			return false

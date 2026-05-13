@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ type PromptTraceItem struct {
 	ModifiedAt        string            `json:"modifiedAt,omitempty"`
 	VisibleTools      []string          `json:"visibleTools,omitempty"`
 	MessageCount      int               `json:"messageCount,omitempty"`
+	UserPromptPreview string            `json:"userPromptPreview,omitempty"`
 	PromptFingerprint map[string]string `json:"promptFingerprint,omitempty"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
 }
@@ -66,6 +68,14 @@ type PromptTraceService interface {
 
 type promptTraceService struct {
 	rootDir string
+}
+
+type promptTraceMessage struct {
+	Role         string `json:"role"`
+	ProviderRole string `json:"providerRole"`
+	SemanticRole string `json:"semanticRole"`
+	PromptLayer  string `json:"promptLayer"`
+	Content      string `json:"content"`
 }
 
 func NewPromptTraceService(rootDir string) PromptTraceService {
@@ -191,16 +201,16 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339Nano),
 	}
 	var payload struct {
-		Kind              string            `json:"kind"`
-		CreatedAt         string            `json:"createdAt"`
-		SessionID         string            `json:"sessionId"`
-		TurnID            string            `json:"turnId"`
-		Iteration         int               `json:"iteration"`
-		VisibleTools      []string          `json:"visibleTools"`
-		PromptFingerprint map[string]string `json:"promptFingerprint"`
-		CaseID            string            `json:"caseId"`
-		Metadata          map[string]string `json:"metadata"`
-		ModelInput        []json.RawMessage `json:"modelInput"`
+		Kind              string               `json:"kind"`
+		CreatedAt         string               `json:"createdAt"`
+		SessionID         string               `json:"sessionId"`
+		TurnID            string               `json:"turnId"`
+		Iteration         int                  `json:"iteration"`
+		VisibleTools      []string             `json:"visibleTools"`
+		PromptFingerprint map[string]string    `json:"promptFingerprint"`
+		CaseID            string               `json:"caseId"`
+		Metadata          map[string]string    `json:"metadata"`
+		ModelInput        []promptTraceMessage `json:"modelInput"`
 	}
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
@@ -217,6 +227,7 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 	item.CaseID = firstPromptTraceNonEmpty(payload.CaseID, payload.Metadata["eval.caseId"], payload.Metadata["caseId"], derivePromptTraceCaseID(item.SessionID), derivePromptTraceCaseID(item.RelativePath))
 	item.VisibleTools = append([]string(nil), payload.VisibleTools...)
 	item.MessageCount = len(payload.ModelInput)
+	item.UserPromptPreview = promptTraceUserPromptPreview(payload.ModelInput)
 	item.PromptFingerprint = cleanPromptTraceFingerprint(payload.PromptFingerprint)
 	item.Metadata = cleanPromptTraceFingerprint(payload.Metadata)
 
@@ -228,6 +239,41 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		item.DiffPath = promptTraceRelativePath(root, base+".diff.md")
 	}
 	return item, nil
+}
+
+var promptTraceSecretPattern = regexp.MustCompile(`(?i)\b(api[_\s-]*key|token|secret|password|cookie|authorization)\s*[:=]\s*["']?[^"\s,;}\]]+`)
+
+func promptTraceUserPromptPreview(messages []promptTraceMessage) string {
+	for index := len(messages) - 1; index >= 0; index-- {
+		msg := messages[index]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") && !strings.EqualFold(strings.TrimSpace(msg.ProviderRole), "user") && !strings.EqualFold(strings.TrimSpace(msg.SemanticRole), "user") {
+			continue
+		}
+		return promptTracePreviewText(promptTraceRedactPreview(msg.Content), 180)
+	}
+	return ""
+}
+
+func promptTraceRedactPreview(value string) string {
+	return promptTraceSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
+		key := match
+		if index := strings.IndexAny(match, ":="); index >= 0 {
+			key = strings.TrimSpace(match[:index])
+		}
+		return key + "=[REDACTED]"
+	})
+}
+
+func promptTracePreviewText(value string, maxRunes int) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if text == "" || maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func filterPromptTraceItems(items []PromptTraceItem, req PromptTraceListRequest) []PromptTraceItem {

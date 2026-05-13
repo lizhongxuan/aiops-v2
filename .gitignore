@@ -1,0 +1,10 @@
+!/web/tests/
+!/web/tests/**
+!/deploy/
+deploy/*
+!/deploy/k8s/
+deploy/k8s/*
+!/deploy/k8s/**
+!/docs/
+docs/*
+!/docs/deploy-docker-k8s.zh.md

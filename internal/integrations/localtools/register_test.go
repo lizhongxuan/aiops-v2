@@ -554,6 +554,8 @@ func TestWebSearchToolPromptGuidesPreciseCurrentSearchesAndSources(t *testing.T)
 		"authoritative",
 		"source",
 		"avoid vague",
+		"realtime price",
+		"try another authoritative source",
 	} {
 		if !strings.Contains(strings.ToLower(prompt), want) {
 			t.Fatalf("web_search prompt missing %q guidance:\n%s", want, prompt)

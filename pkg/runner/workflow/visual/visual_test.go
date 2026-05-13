@@ -791,6 +791,61 @@ func TestExamplesYAMLParseAndRoundTripAsGraph(t *testing.T) {
 	}
 }
 
+func TestVariableAggregatorGraphNodeValidatesAndRoundTrips(t *testing.T) {
+	graph := Graph{
+		Version: GraphVersion,
+		Workflow: workflow.Workflow{
+			Version: "v0.1",
+			Name:    "variable-aggregator-roundtrip",
+			Plan:    workflow.Plan{Mode: "auto", Strategy: "graph"},
+			Inventory: workflow.Inventory{Hosts: map[string]workflow.Host{
+				"local": {Address: "local"},
+			}},
+		},
+		Nodes: []Node{
+			{ID: "start", Type: NodeTypeStart},
+			{ID: "pre", Type: NodeTypeAction, Step: &workflow.Step{Name: "pre", Action: "cmd.run", Targets: []string{"local"}, Args: map[string]any{"cmd": "echo ok"}}},
+			{
+				ID:   "aggregate",
+				Type: NodeTypeVariableAggregator,
+				Aggregator: &VariableAggregatorSpec{
+					OutputKey: "restore_host",
+					Strategy:  "first_non_empty",
+					Sources: []VariableAggregatorSourceSpec{
+						{Expression: "node.pre.candidate_host"},
+					},
+				},
+				Outputs: []OutputParamSpec{{Key: "restore_host", Type: "string"}},
+			},
+			{ID: "end", Type: NodeTypeEnd},
+		},
+		Edges: []Edge{
+			{ID: "start-pre", Source: "start", Target: "pre", Kind: EdgeKindNext},
+			{ID: "pre-aggregate", Source: "pre", Target: "aggregate", Kind: EdgeKindNext},
+			{ID: "aggregate-end", Source: "aggregate", Target: "end", Kind: EdgeKindNext},
+		},
+	}
+
+	if err := ValidateGraph(graph); err != nil {
+		t.Fatalf("validate variable aggregator graph: %v", err)
+	}
+	raw, err := CompileGraphToYAML(graph)
+	if err != nil {
+		t.Fatalf("compile variable aggregator graph: %v", err)
+	}
+	roundTrip, err := ParseYAMLToGraph(raw)
+	if err != nil {
+		t.Fatalf("parse variable aggregator graph: %v", err)
+	}
+	node := findNodeByID(t, roundTrip, "aggregate")
+	if node.Type != NodeTypeVariableAggregator || node.Aggregator == nil {
+		t.Fatalf("aggregator node not preserved: %+v", node)
+	}
+	if node.Aggregator.OutputKey != "restore_host" || len(node.Aggregator.Sources) != 1 || node.Aggregator.Sources[0].Expression != "node.pre.candidate_host" {
+		t.Fatalf("aggregator spec not preserved: %+v", node.Aggregator)
+	}
+}
+
 func assertVisualIssue(t *testing.T, issues []Issue, code string) {
 	t.Helper()
 	for _, issue := range issues {

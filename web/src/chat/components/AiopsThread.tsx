@@ -2,7 +2,8 @@ import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessa
 import { ArrowDown, Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
+import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { McpSurfacePart } from "./McpSurfacePart";
@@ -13,6 +14,7 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
+  agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
   intent?: { text?: string; status?: string } | null;
   turnStatus?: string;
   turnStartedAt?: string;
@@ -36,8 +38,8 @@ export function AiopsThread() {
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm">
                   <Bot className="h-5 w-5" />
                 </div>
-                <h1 className="mt-5 text-2xl font-semibold tracking-tight text-slate-950">
-                  {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : `要对 ${target.targetLabel} 做什么？`}
+                <h1 className="mt-5 text-2xl font-semibold text-slate-950">
+                  {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : "Hello there"}
                 </h1>
                 <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
                   {workspace.kind === "workspace"
@@ -77,7 +79,7 @@ function UserMessage() {
   const message = useMessage();
   return (
     <MessagePrimitive.Root className="flex justify-end px-1">
-      <div className="max-w-[78%] rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-7 text-slate-950">
+      <div className="max-w-[78%] rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[16px] leading-8 text-slate-950">
         <MessageMarkdown text={messageText(message.content)} />
       </div>
     </MessagePrimitive.Root>
@@ -89,6 +91,8 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
+  const artifacts = meta.agentUiArtifacts || [];
+  const finalText = messageText(message.content);
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
@@ -98,19 +102,22 @@ function AssistantMessage() {
             {meta.intent.text}
           </div>
         ) : null}
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
+        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) || finalText ? (
           <ProcessTranscript
             process={process}
             turnStatus={meta.turnStatus}
             turnStartedAt={meta.turnStartedAt}
             turnCompletedAt={meta.turnCompletedAt}
             turnUpdatedAt={meta.turnUpdatedAt}
+            finalText={finalText}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
         ) : null}
-        {message.content.length > 0 ? (
-          <div className="max-w-none px-1 py-1 text-[15px] leading-7 text-slate-900">
-            <MessageMarkdown text={messageText(message.content)} />
+        {artifacts.length ? (
+          <div className="grid gap-2">
+            {artifacts.map((artifact) => (
+              <AgentUiArtifactPart key={artifact.id} artifact={artifact} />
+            ))}
           </div>
         ) : null}
       </div>

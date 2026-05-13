@@ -1,4 +1,4 @@
-import { RefreshCw, Save } from "lucide-react";
+import { Save } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -80,16 +80,10 @@ export function LLMConfigPage() {
       title="LLM 配置"
       description="配置主模型 Provider、模型名和兼容 OpenAI 格式的 Base URL。API Key 留空时保持现有密钥。"
       actions={
-        <>
-          <Button variant="outline" onClick={() => void load()} disabled={loading || saving}>
-            <RefreshCw />
-            刷新
-          </Button>
-          <Button data-testid="llm-save-button" onClick={() => void save()} disabled={loading || saving}>
-            <Save />
-            保存并重启 Runtime
-          </Button>
-        </>
+        <Button data-testid="llm-save-button" onClick={() => void save()} disabled={loading || saving}>
+          <Save />
+          保存并重启 Runtime
+        </Button>
       }
     >
       {message ? <StatusAlert type={message.type} title={message.type === "error" ? "操作失败" : "操作完成"} message={message.text} /> : null}

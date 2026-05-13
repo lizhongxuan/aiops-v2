@@ -11,6 +11,7 @@ describe("nodeTypeRegistry", () => {
   it("derives semantic node metadata and ports from Runner actions", () => {
     const condition = { id: "gate", type: "condition", step: { action: "condition.branch" } };
     const approval = { id: "approval", type: "approval", step: { action: "approval.wait" } };
+    const aggregator = { id: "aggregate", type: "variable_aggregator", step: { action: "variable.aggregate" } };
 
     expect(getNodeTypeDefinition(condition)).toMatchObject({
       key: "condition",
@@ -19,6 +20,12 @@ describe("nodeTypeRegistry", () => {
     });
     expect(getNodePorts(condition).outputs.map((port) => port.id)).toEqual(["if", "else"]);
     expect(getNodePorts(approval).outputs.map((port) => port.id)).toEqual(["approved", "rejected"]);
+    expect(getNodeTypeDefinition(aggregator)).toMatchObject({
+      key: "variable-aggregator",
+      label: "变量聚合",
+      iconText: "VAR",
+    });
+    expect(getNodePorts(aggregator).outputs.map((port) => port.id)).toEqual(["next"]);
   });
 
   it("preserves explicit graph ports over registry defaults", () => {

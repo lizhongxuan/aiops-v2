@@ -31,6 +31,11 @@ const conditionPorts = {
   ],
 };
 
+const nextOnlyPorts = {
+  inputs: [{ id: "in", label: "输入" }],
+  outputs: [{ id: "next", label: "下一步" }],
+};
+
 const waitPorts = {
   inputs: [{ id: "in", label: "输入" }],
   outputs: [
@@ -159,6 +164,38 @@ const fallbackRunnerActions = [
       properties: {
         matched: { type: "boolean", title: "matched" },
         branch: { type: "string", title: "branch" },
+      },
+    },
+  },
+  {
+    action: "variable.aggregate",
+    label: "变量聚合",
+    category: "逻辑",
+    risk: "low",
+    capabilities: ["structured_io", "variables", "aggregation"],
+    default_ports: nextOnlyPorts,
+    description: "从上游变量中选择第一个有效值或输出数组，形成稳定的下游变量。",
+    inputs_schema: {
+      type: "object",
+      properties: {
+        output_key: { type: "string", title: "Output key" },
+        strategy: { type: "string", title: "Strategy", enum: ["first_non_empty", "prefer_success", "array"] },
+        sources: {
+          type: "array",
+          title: "Sources",
+          items: {
+            type: "object",
+            properties: {
+              expression: { type: "string", title: "Variable expression" },
+            },
+          },
+        },
+      },
+    },
+    outputs_schema: {
+      type: "object",
+      properties: {
+        value: { type: "string", title: "value" },
       },
     },
   },

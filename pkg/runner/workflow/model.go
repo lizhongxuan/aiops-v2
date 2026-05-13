@@ -85,18 +85,19 @@ type GraphNodeSpec struct {
 }
 
 type GraphNodeDataSpec struct {
-	StepName    string              `json:"stepName,omitempty" yaml:"stepName,omitempty"`
-	HandlerName string              `json:"handlerName,omitempty" yaml:"handlerName,omitempty"`
-	Label       string              `json:"label,omitempty" yaml:"label,omitempty"`
-	Collapsed   bool                `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
-	Approval    *GraphApprovalSpec  `json:"approval,omitempty" yaml:"approval,omitempty"`
-	Condition   *GraphConditionSpec `json:"condition,omitempty" yaml:"condition,omitempty"`
-	Subflow     *GraphSubflowSpec   `json:"subflow,omitempty" yaml:"subflow,omitempty"`
-	Join        *GraphJoinSpec      `json:"join,omitempty" yaml:"join,omitempty"`
-	Loop        *GraphLoopSpec      `json:"loop,omitempty" yaml:"loop,omitempty"`
-	Inputs      []GraphInputSpec    `json:"inputs,omitempty" yaml:"inputs,omitempty"`
-	Outputs     []GraphOutputSpec   `json:"outputs,omitempty" yaml:"outputs,omitempty"`
-	UI          map[string]any      `json:"ui,omitempty" yaml:"ui,omitempty"`
+	StepName    string                       `json:"stepName,omitempty" yaml:"stepName,omitempty"`
+	HandlerName string                       `json:"handlerName,omitempty" yaml:"handlerName,omitempty"`
+	Label       string                       `json:"label,omitempty" yaml:"label,omitempty"`
+	Collapsed   bool                         `json:"collapsed,omitempty" yaml:"collapsed,omitempty"`
+	Approval    *GraphApprovalSpec           `json:"approval,omitempty" yaml:"approval,omitempty"`
+	Condition   *GraphConditionSpec          `json:"condition,omitempty" yaml:"condition,omitempty"`
+	Subflow     *GraphSubflowSpec            `json:"subflow,omitempty" yaml:"subflow,omitempty"`
+	Aggregator  *GraphVariableAggregatorSpec `json:"aggregator,omitempty" yaml:"aggregator,omitempty"`
+	Join        *GraphJoinSpec               `json:"join,omitempty" yaml:"join,omitempty"`
+	Loop        *GraphLoopSpec               `json:"loop,omitempty" yaml:"loop,omitempty"`
+	Inputs      []GraphInputSpec             `json:"inputs,omitempty" yaml:"inputs,omitempty"`
+	Outputs     []GraphOutputSpec            `json:"outputs,omitempty" yaml:"outputs,omitempty"`
+	UI          map[string]any               `json:"ui,omitempty" yaml:"ui,omitempty"`
 }
 
 type GraphPortSpec struct {
@@ -190,6 +191,18 @@ type GraphSubflowSpec struct {
 	WorkflowName string         `json:"workflow_name,omitempty" yaml:"workflow_name,omitempty"`
 	Vars         map[string]any `json:"vars,omitempty" yaml:"vars,omitempty"`
 	UI           map[string]any `json:"ui,omitempty" yaml:"ui,omitempty"`
+}
+
+type GraphVariableAggregatorSpec struct {
+	OutputKey string                              `json:"output_key,omitempty" yaml:"output_key,omitempty"`
+	Strategy  string                              `json:"strategy,omitempty" yaml:"strategy,omitempty"`
+	Sources   []GraphVariableAggregatorSourceSpec `json:"sources,omitempty" yaml:"sources,omitempty"`
+	UI        map[string]any                      `json:"ui,omitempty" yaml:"ui,omitempty"`
+}
+
+type GraphVariableAggregatorSourceSpec struct {
+	Expression string                `json:"expression,omitempty" yaml:"expression,omitempty"`
+	Variable   *GraphVariableRefSpec `json:"variable,omitempty" yaml:"variable,omitempty"`
 }
 
 type GraphJoinSpec struct {

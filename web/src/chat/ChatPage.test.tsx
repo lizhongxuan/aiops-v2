@@ -39,12 +39,47 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("payment-api is waiting for rollout approval.");
     expect(container.textContent).toContain("等待审批");
     expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
-    expect(container.textContent).toContain("1. 批准");
-    expect(container.textContent).toContain("2. 拒绝");
+    expect(container.textContent).toContain("1. 是");
+    expect(container.textContent).toContain("2. 是，且对于以后类似命令不再询问");
+    expect(container.textContent).toContain("3. 否，请告知 AIOps 如何调整");
     expect(container.textContent).toContain("提交");
     expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="codex-approval-command"]')).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("renders Agent-to-UI artifacts inside assistant messages", async () => {
+    const state = sampleState();
+    state.turns["turn-1"].agentUiArtifacts = [
+      {
+        id: "artifact-coroot-latency",
+        type: "coroot_chart",
+        titleZh: "Coroot 延迟趋势",
+        summaryZh: "接口 P95 延迟在 14:03 后明显升高。",
+        caseId: "case-debug-1",
+        source: "coroot",
+        redactionStatus: "redacted",
+        inlineData: {
+          mcpCard: {
+            uiKind: "readonly_chart",
+            title: "指标趋势",
+            visual: {
+              kind: "timeseries",
+              series: [{ name: "p95_latency_ms", data: [{ timestamp: 1, value: 980 }] }],
+            },
+          },
+        },
+      },
+    ];
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(container.textContent).toContain("Coroot 延迟趋势");
+    expect(container.textContent).toContain("接口 P95 延迟在 14:03 后明显升高。");
+    expect(container.textContent).toContain("p95_latency_ms");
+    expect(container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent).toContain("查看 Case");
   });
 
   it("uses the current turn approval when stale approvals remain in transport state", async () => {
@@ -81,6 +116,18 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("等待审批");
     expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("renders the empty single-host greeting", async () => {
+    const state = createInitialAiopsTransportState("thread-empty");
+    state.sessionId = "sess-empty";
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} threadId="thread-empty" />);
+    });
+
+    expect(container.textContent).toContain("Hello there");
+    expect(container.textContent).not.toContain("要对 server-local 做什么？");
   });
 });
 

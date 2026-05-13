@@ -27,7 +27,7 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 	for _, tool := range ctx.AssembledTools {
 		toolEntry := c.buildToolPromptEntry(tool)
 		entries = append(entries, toolEntry)
-		parts = append(parts, c.formatToolIndexLine(toolPromptSectionTitle(tool), toolEntry))
+		parts = append(parts, c.formatToolIndexLine(tool, toolEntry))
 	}
 
 	if len(entries) == 0 {
@@ -53,7 +53,7 @@ func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPrompt
 			if tool == nil || !tool.IsDestructive(nil) {
 				continue
 			}
-			if name := toolPromptSectionTitle(tool); name != "" {
+			if name := toolPromptDeltaName(tool); name != "" {
 				delta.ApprovalRequired = append(delta.ApprovalRequired, name)
 			}
 		}
@@ -110,10 +110,14 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 	return te
 }
 
-func (c *PromptCompilerImpl) formatToolIndexLine(name string, entry ToolPromptEntry) string {
+func (c *PromptCompilerImpl) formatToolIndexLine(tool Tool, entry ToolPromptEntry) string {
+	name := toolPromptSectionTitle(tool)
 	lines := []string{"- " + name}
 	if entry.Capability != "" {
 		lines[0] = fmt.Sprintf("- %s: %s", name, entry.Capability)
+	}
+	if canonical := toolCanonicalNameForPrompt(tool); canonical != "" && canonical != name {
+		lines = append(lines, "  Canonical name: "+canonical)
 	}
 	if entry.UsagePolicy != "" {
 		lines = append(lines, "  Usage policy: "+entry.UsagePolicy)
@@ -150,15 +154,40 @@ func toolGovernanceSummary(tool Tool) string {
 func toolPromptSectionTitle(tool Tool) string {
 	meta := tool.Metadata()
 	if meta.Name != "" {
-		return meta.Name
+		return tooling.ProviderSafeToolName(meta.Name)
 	}
 	if len(meta.Aliases) > 0 && meta.Aliases[0] != "" {
-		return meta.Aliases[0]
+		return tooling.ProviderSafeToolName(meta.Aliases[0])
 	}
 	if desc := toolCapabilityDescription(tool); desc != "" {
 		return desc
 	}
 	return "tool"
+}
+
+func toolCanonicalNameForPrompt(tool Tool) string {
+	if tool == nil {
+		return ""
+	}
+	meta := tool.Metadata()
+	if strings.TrimSpace(meta.Name) != "" {
+		return strings.TrimSpace(meta.Name)
+	}
+	for _, alias := range meta.Aliases {
+		if strings.TrimSpace(alias) != "" {
+			return strings.TrimSpace(alias)
+		}
+	}
+	return ""
+}
+
+func toolPromptDeltaName(tool Tool) string {
+	name := toolPromptSectionTitle(tool)
+	canonical := toolCanonicalNameForPrompt(tool)
+	if canonical != "" && canonical != name {
+		return fmt.Sprintf("%s (canonical: %s)", name, canonical)
+	}
+	return name
 }
 
 func toolCapabilityDescription(tool Tool) string {

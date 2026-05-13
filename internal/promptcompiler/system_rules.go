@@ -17,6 +17,7 @@ func (c *PromptCompilerImpl) buildSystemPrompt(ctx CompileContext) (SystemPrompt
 	// Role based on agent kind
 	role := c.resolveRole(ctx)
 	parts = append(parts, fmt.Sprintf("# Role\n%s", role))
+	parts = append(parts, fmt.Sprintf("# Behavior\n%s", defaultBehaviorBaseline()))
 
 	// Environment context based on session type
 	env := c.resolveEnvironment(ctx)
@@ -30,6 +31,16 @@ func (c *PromptCompilerImpl) buildSystemPrompt(ctx CompileContext) (SystemPrompt
 		Role:        role,
 		Environment: env,
 	}, nil
+}
+
+func defaultBehaviorBaseline() string {
+	lines := []string{
+		"Be precise, safe, and helpful.",
+		"Prefer concise, direct answers for simple requests.",
+		"Use brief progress updates before substantial grouped tool work.",
+		"For simple factual lookups, use tools silently when needed and keep the answer compact.",
+	}
+	return strings.Join(lines, "\n")
 }
 
 // resolveRole determines the agent's role text based on AgentKind and SessionType.

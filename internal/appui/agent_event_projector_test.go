@@ -532,6 +532,16 @@ func TestAgentEventProjector_ToolCallClearsProvisionalAssistantFinal(t *testing.
 	if got := proj.FinalMessages["turn-1"].Text; got != "最终行情结论。" {
 		t.Fatalf("FinalMessages[turn-1].Text = %q, want only post-tool final answer", got)
 	}
+	group := proj.ProcessGroups["turn-1"]
+	if len(group) != 2 {
+		t.Fatalf("ProcessGroups[turn-1] length = %d, want assistant prelude and tool: %+v", len(group), group)
+	}
+	if group[0].Kind != AgentEventAssistant || group[0].DisplayKind != "assistant.process" || group[0].Summary != "我将先核实行情。" {
+		t.Fatalf("first process row = %+v, want assistant prelude", group[0])
+	}
+	if group[1].Kind != AgentEventTool || group[1].ToolCallID != "search-1" {
+		t.Fatalf("second process row = %+v, want search tool", group[1])
+	}
 }
 
 func TestAgentEventProjector_ToolProjectionPreservesInputAndOutputSummary(t *testing.T) {

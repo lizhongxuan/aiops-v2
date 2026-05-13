@@ -15,20 +15,9 @@ import (
 
 	"go.uber.org/zap"
 	"runner/logging"
-	"runner/scriptstore"
-	"runner/server/api"
 	"runner/server/config"
-	"runner/server/events"
-	"runner/server/metrics"
-	"runner/server/queue"
-	"runner/server/service"
-	"runner/server/store/agentstore"
-	"runner/server/store/envstore"
 	"runner/server/store/eventstore"
-	"runner/server/store/mcpstore"
-	"runner/server/store/skillstore"
 	"runner/server/ui"
-	"runner/state"
 )
 
 var (
@@ -105,84 +94,20 @@ func Main(opts Options) {
 		os.Exit(1)
 	}
 
-	readiness := &api.HealthHandler{
-		Checker: readinessChecker{cfg: cfg},
+	runtime, err := NewRuntime(context.Background(), RuntimeOptions{Config: cfg})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "init runner runtime: %v\n", err)
+		os.Exit(1)
 	}
-
-	workflowSvc := service.NewWorkflowService(cfg.Stores.WorkflowsDir)
-	scriptStore := scriptstore.NewFileStore(cfg.Stores.ScriptsDir)
-	scriptSvc := service.NewScriptService(scriptStore)
-	agentStore := agentstore.NewFileStore(cfg.Stores.AgentStateFile)
-	agentSvc := service.NewAgentService(agentStore, cfg.Agent.OfflineGraceSec)
-	skillStore := skillstore.NewFileStore(cfg.Stores.SkillsDir)
-	skillSvc := service.NewSkillService(skillStore)
-	environmentStore := envstore.NewFileStore(cfg.Stores.EnvironmentsDir)
-	environmentSvc := service.NewEnvironmentService(environmentStore)
-	mcpStore := mcpstore.NewFileStore(cfg.Stores.MCPDir)
-	mcpSvc := service.NewMcpService(mcpStore)
-	preprocessor := service.NewPreprocessor(scriptSvc, agentSvc, cfg.Security.AllowedActions)
-	runStore := state.NewFileStore(cfg.Stores.RunStateFile)
-	runQueue := queue.NewMemoryQueue(cfg.Execution.QueueSize)
-	eventHub := events.NewHub()
-	collector := metrics.NewCollector()
-	runSvc := service.NewRunService(service.RunServiceConfig{
-		MaxConcurrentRuns:  cfg.Execution.MaxConcurrentRuns,
-		MaxOutputBytes:     cfg.Execution.MaxOutputBytes,
-		MetaStore:          service.NewFileRunRecordStore(service.DeriveRunRecordFile(cfg.Stores.RunStateFile)),
-		EventStore:         eventstore.NewFileStore(eventstore.DeriveRunEventDir(cfg.Stores.RunStateFile)),
-		AgentDispatchToken: cfg.Agent.DispatchToken,
-	}, workflowSvc, preprocessor, runStore, runQueue, eventHub, collector)
-	defer runSvc.Close()
-	actionCatalog := service.NewActionCatalog()
-	visualWorkflowSvc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{
-		WorkflowService: workflowSvc,
-		RunService:      runSvc,
-		Preprocessor:    preprocessor,
-		ActionCatalog:   actionCatalog,
-	})
-	dashboardSvc := service.NewDashboardService(runSvc, agentSvc)
-	systemSvc := service.NewSystemService(runSvc, agentSvc)
-
-	var uiHandler http.Handler
-	if cfg.UI.Enabled {
-		embeddedUI, _ := ui.EmbeddedFS()
-		handler, err := api.NewUIHandler(cfg.UI.DistDir, cfg.UI.BasePath, embeddedUI, ui.FallbackFS())
-		if err != nil {
-			logging.L().Error("init ui handler failed", zap.Error(err))
-			os.Exit(1)
-		}
-		uiHandler = handler
-	}
-
-	router := api.NewRouter(api.RouterOptions{
-		AuthEnabled:    cfg.Auth.Enabled,
-		AuthToken:      cfg.Auth.Token,
-		CORSOrigins:    cfg.UI.CORSOrigins,
-		UIBasePath:     cfg.UI.BasePath,
-		Health:         readiness,
-		Workflow:       api.NewWorkflowHandler(workflowSvc),
-		VisualWorkflow: api.NewVisualWorkflowHandler(visualWorkflowSvc),
-		Script:         api.NewScriptHandler(scriptSvc),
-		Run:            api.NewRunHandler(runSvc),
-		Agent:          api.NewAgentHandler(agentSvc),
-		Skill:          api.NewSkillHandler(skillSvc),
-		Environment:    api.NewEnvironmentHandler(environmentSvc),
-		MCP:            api.NewMcpHandler(mcpSvc),
-		Dashboard:      api.NewDashboardHandler(dashboardSvc),
-		System: api.NewSystemHandler(api.SystemInfo{
-			Version:     Version,
-			BuildTime:   BuildTime,
-			DocsURL:     cfg.UI.DocsURL,
-			RepoURL:     cfg.UI.RepoURL,
-			AuthEnabled: cfg.Auth.Enabled,
-		}, systemSvc),
-		MetricsHandler: collector.Handler(),
-		UI:             uiHandler,
-	})
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout())
+		defer cancel()
+		_ = runtime.Close(ctx)
+	}()
 
 	server := &http.Server{
 		Addr:         cfg.Server.Addr,
-		Handler:      router,
+		Handler:      runtime.Handler,
 		ReadTimeout:  cfg.ReadTimeout(),
 		WriteTimeout: cfg.WriteTimeout(),
 	}

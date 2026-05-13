@@ -11,14 +11,18 @@ import (
 const runnerStudioAPIPrefix = "/api/runner-studio"
 
 func (s *HTTPServer) handleRunnerStudio(w http.ResponseWriter, r *http.Request) {
-	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
-	if upstream == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
-		return
-	}
 	targetPath, err := runnerStudioTargetPath(r.Method, r.URL.EscapedPath())
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.runnerStudioHandler != nil {
+		s.serveEmbeddedRunnerStudio(w, r, targetPath)
+		return
+	}
+	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
+	if upstream == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
 		return
 	}
 	targetURL, err := joinRunnerStudioUpstreamURL(upstream, targetPath, r.URL.RawQuery)
@@ -41,6 +45,16 @@ func (s *HTTPServer) handleRunnerStudio(w http.ResponseWriter, r *http.Request) 
 	copyRunnerStudioResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func (s *HTTPServer) serveEmbeddedRunnerStudio(w http.ResponseWriter, r *http.Request, targetPath string) {
+	req := r.Clone(r.Context())
+	req.URL.Path = targetPath
+	req.URL.RawPath = ""
+	req.RequestURI = ""
+	req.Header = http.Header{}
+	copyRunnerStudioRequestHeaders(req.Header, r.Header)
+	s.runnerStudioHandler.ServeHTTP(w, req)
 }
 
 func runnerStudioTargetPath(method, path string) (string, error) {
@@ -85,6 +99,12 @@ func runnerStudioTargetPath(method, path string) (string, error) {
 		return "/api/v1/runs/" + parts[1] + "/graph", nil
 	case len(parts) == 4 && parts[0] == "runs" && parts[2] == "events" && parts[3] == "history" && method == http.MethodGet:
 		return "/api/v1/runs/" + parts[1] + "/events/history", nil
+	case len(parts) == 3 && parts[0] == "runs" && parts[2] == "events" && method == http.MethodGet:
+		return "/api/v1/runs/" + parts[1] + "/events", nil
+	case len(parts) == 5 && parts[0] == "runs" && parts[2] == "nodes" && parts[4] == "approve" && method == http.MethodPost:
+		return "/api/v1/runs/" + parts[1] + "/nodes/" + parts[3] + "/approve", nil
+	case len(parts) == 5 && parts[0] == "runs" && parts[2] == "nodes" && parts[4] == "reject" && method == http.MethodPost:
+		return "/api/v1/runs/" + parts[1] + "/nodes/" + parts[3] + "/reject", nil
 	case len(parts) == 3 && parts[0] == "runs" && parts[2] == "cancel" && method == http.MethodPost:
 		return "/api/v1/runs/" + parts[1] + "/cancel", nil
 	default:

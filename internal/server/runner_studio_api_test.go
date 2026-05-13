@@ -171,6 +171,27 @@ func TestRunnerStudioAPIRoutesProxyToRunnerAPI(t *testing.T) {
 			wantPath:   "/api/v1/runs/run-1/events/history",
 		},
 		{
+			name:       "run live events",
+			method:     http.MethodGet,
+			path:       "/api/runner-studio/runs/run-1/events",
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/v1/runs/run-1/events",
+		},
+		{
+			name:       "approve graph node",
+			method:     http.MethodPost,
+			path:       "/api/runner-studio/runs/run-1/nodes/approve-1/approve",
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/v1/runs/run-1/nodes/approve-1/approve",
+		},
+		{
+			name:       "reject graph node",
+			method:     http.MethodPost,
+			path:       "/api/runner-studio/runs/run-1/nodes/approve-1/reject",
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/v1/runs/run-1/nodes/approve-1/reject",
+		},
+		{
 			name:       "cancel run",
 			method:     http.MethodPost,
 			path:       "/api/runner-studio/runs/run-1/cancel",
@@ -256,6 +277,39 @@ func TestRunnerStudioAPIHeaderPolicy(t *testing.T) {
 	}
 	if got := resp.Header.Get("X-Request-Id"); got != "req-1" {
 		t.Fatalf("response X-Request-Id = %q, want req-1", got)
+	}
+}
+
+func TestRunnerStudioAPIUsesEmbeddedHandlerWithoutUpstream(t *testing.T) {
+	type embeddedSeenRequest struct {
+		Method      string
+		EscapedPath string
+		Query       string
+	}
+	seen := make(chan embeddedSeenRequest, 1)
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- embeddedSeenRequest{Method: r.Method, EscapedPath: r.URL.EscapedPath(), Query: r.URL.RawQuery}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"embedded": true})
+	})
+	srv := NewHTTPServer(
+		appui.NewServices(websocketAPITestRuntime{}, nil),
+		WithRunnerStudioHandler(embedded),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/runner-studio/actions?category=command")
+	if err != nil {
+		t.Fatalf("GET action catalog error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	got := <-seen
+	if got.Method != http.MethodGet || got.EscapedPath != "/api/v1/actions/catalog" || got.Query != "category=command" {
+		t.Fatalf("embedded request = %+v", got)
 	}
 }
 

@@ -97,6 +97,7 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
         process: turn.process || [],
         intent: turn.intent || null,
+        agentUiArtifacts: turn.agentUiArtifacts || [],
       },
       unstable_annotations: [],
       unstable_data: [],

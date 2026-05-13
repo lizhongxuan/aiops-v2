@@ -34,6 +34,7 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/projection"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/runnerembed"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/server"
 	"aiops-v2/internal/settings"
@@ -61,7 +62,7 @@ func run() error {
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
 	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	corootEndpoint := envOrDefault("AIOPS_COROOT_ENDPOINT", "")
+	corootEndpoint := corootEndpointFromEnv(os.Getenv)
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
@@ -70,7 +71,7 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
 	// ---------------------------------------------------------------------------
-	dataStore, err := store.NewJSONFileStore(dataDir, 5*time.Second)
+	dataStore, err := openConfiguredStore(dataDir, os.Getenv)
 	if err != nil {
 		return fmt.Errorf("init store: %w", err)
 	}
@@ -248,6 +249,28 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init web assets: %w", err)
 	}
+	var runnerRuntime *runnerembed.Runtime
+	if strings.TrimSpace(os.Getenv("AIOPS_RUNNER_DISABLED")) != "1" {
+		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{DataDir: dataDir})
+		if err != nil {
+			return fmt.Errorf("init runner runtime: %w", err)
+		}
+	}
+	if strings.TrimSpace(runnerStudioUpstreamURL) != "" {
+		if runnerRuntime != nil {
+			log.Printf("ai-server: Runner Studio upstream configuration is deprecated and ignored while embedded Runner is enabled")
+		} else {
+			log.Printf("ai-server: Runner Studio upstream configuration is deprecated; embedded Runner is disabled")
+		}
+	}
+	httpOptions := []server.HTTPServerOption{
+		server.WithWebAssets(webAssets),
+		server.WithTerminalManager(terminalManager),
+		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
+	}
+	if runnerRuntime != nil {
+		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
+	}
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
@@ -258,9 +281,7 @@ func run() error {
 			appui.WithTerminalManager(terminalManager),
 			appui.WithLifecycleContext(ctx),
 		),
-		server.WithWebAssets(webAssets),
-		server.WithTerminalManager(terminalManager),
-		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
+		httpOptions...,
 	)
 	if subscriber := httpServer.ProjectionSubscriber(); subscriber != nil {
 		projector.AddSubscriber(subscriber)
@@ -332,6 +353,12 @@ func run() error {
 		log.Printf("http shutdown: %v", err)
 	}
 
+	if runnerRuntime != nil {
+		if err := runnerRuntime.Close(shutdownCtx); err != nil {
+			log.Printf("runner runtime shutdown: %v", err)
+		}
+	}
+
 	if err := dataStore.Flush(); err != nil {
 		log.Printf("store flush: %v", err)
 	}
@@ -351,11 +378,43 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
+func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	driver := strings.ToLower(strings.TrimSpace(getenv("AIOPS_STORE_DRIVER")))
+	switch driver {
+	case "", "json", "file":
+		return store.NewJSONFileStore(dataDir, 5*time.Second)
+	case "mysql":
+		dsn := strings.TrimSpace(getenv("AIOPS_MYSQL_DSN"))
+		if dsn == "" {
+			return nil, fmt.Errorf("AIOPS_MYSQL_DSN is required when AIOPS_STORE_DRIVER=mysql")
+		}
+		return store.NewMySQLStore(dsn)
+	default:
+		return nil, fmt.Errorf("unsupported store driver %q", driver)
+	}
+}
+
 func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 	for _, key := range []string{
 		"AIOPS_RUNNER_STUDIO_UPSTREAM_URL",
 		"RUNNER_STUDIO_UPSTREAM_URL",
 		"AIOPS_RUNNER_API_BASE_URL",
+	} {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func corootEndpointFromEnv(getenv func(string) string) string {
+	for _, key := range []string{
+		"AIOPS_COROOT_ENDPOINT",
+		"AIOPS_COROOT_BASE_URL",
+		"COROOT_BASE_URL",
 	} {
 		if value := strings.TrimSpace(getenv(key)); value != "" {
 			return value

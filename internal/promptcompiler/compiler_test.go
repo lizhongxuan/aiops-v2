@@ -129,6 +129,43 @@ func TestCompile_SystemPrompt_HostSession(t *testing.T) {
 	}
 }
 
+func TestCompile_SystemPrompt_BehaviorBaseline(t *testing.T) {
+	compiler := NewCompiler()
+
+	result, err := compiler.Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "chat",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	required := []string{
+		"# Behavior",
+		"Be precise, safe, and helpful.",
+		"concise, direct answers",
+		"brief progress updates",
+		"simple factual lookups",
+		"use tools silently",
+	}
+	for _, want := range required {
+		if !strings.Contains(result.System.Content, want) {
+			t.Fatalf("system prompt should include %q, got:\n%s", want, result.System.Content)
+		}
+	}
+	blocked := []string{
+		"Preamble messages",
+		"Examples:",
+		"Spotted a clever caching util",
+		"for every trivial read",
+	}
+	for _, block := range blocked {
+		if strings.Contains(result.System.Content, block) {
+			t.Fatalf("system prompt should not include verbose preamble copy %q:\n%s", block, result.System.Content)
+		}
+	}
+}
+
 func TestCompile_SystemPrompt_WorkspaceSession(t *testing.T) {
 	compiler := NewCompiler()
 
@@ -230,10 +267,14 @@ func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t
 
 	content := strings.ToLower(result.Developer.Content)
 	required := []string{
+		"quick factual lookups",
+		"use tools silently",
+		"only the key values",
+		"do not narrate tool process",
+		"complex, ambiguous, multi-step, or aiops/rca",
 		"before the first tool call",
-		"intent",
-		"after each tool result",
-		"briefly summarize",
+		"multi-step investigations",
+		"after each batch",
 		"current or latest",
 		"precise",
 		"cite source",
@@ -530,6 +571,9 @@ func TestCompile_ToolPromptSet_UsesMetadataDescriptionBeforeDescription(t *testi
 	}
 	if !strings.Contains(result.Tools.Content, "coroot.list_services") {
 		t.Error("Should include assembled tool in tool prompt")
+	}
+	if !strings.Contains(result.Tools.Content, "coroot_list_services") {
+		t.Error("Tool prompt should show provider-safe tool name for model invocation")
 	}
 	if result.Tools.Entries[0].Capability != "List services from Coroot" {
 		t.Errorf("metadata description should be used, got %q", result.Tools.Entries[0].Capability)

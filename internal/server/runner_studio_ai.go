@@ -14,12 +14,6 @@ func (s *HTTPServer) handleRunnerStudioAI(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "runner studio AI endpoint not found"})
 		return
 	}
-	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
-	if upstream == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
-		return
-	}
-
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -39,6 +33,25 @@ func (s *HTTPServer) handleRunnerStudioAI(w http.ResponseWriter, r *http.Request
 	upstreamBody, err := json.Marshal(payload)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.runnerStudioHandler != nil {
+		req := r.Clone(r.Context())
+		req.Method = http.MethodPost
+		req.URL.Path = "/api/v1/workflows/ai/draft"
+		req.URL.RawPath = ""
+		req.RequestURI = ""
+		req.Body = io.NopCloser(bytes.NewReader(upstreamBody))
+		req.Header = http.Header{}
+		copyRunnerStudioRequestHeaders(req.Header, r.Header)
+		req.Header.Set("Content-Type", "application/json")
+		s.runnerStudioHandler.ServeHTTP(w, req)
+		return
+	}
+
+	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
+	if upstream == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
 		return
 	}
 	targetURL, err := joinRunnerStudioUpstreamURL(upstream, "/api/v1/workflows/ai/draft", r.URL.RawQuery)

@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
@@ -710,7 +711,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
-	if req.Decision != "" && req.Decision != "approved" {
+	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
 		now := time.Now()
 		snapshot.Lifecycle = TurnLifecycleFailed
 		snapshot.ResumeState = TurnResumeStateNone
@@ -758,8 +759,11 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if resumeInput != "" {
 		appendResumeInputMessage(session, resumeInput)
 		k.markSnapshotResuming(session, snapshot, "resume_user_input")
-	} else if _, ok := pendingToolCall(snapshot); ok {
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, "approved", "approved", time.Now())
+	} else if toolCall, ok := pendingToolCall(snapshot); ok {
+		if isSessionApprovalResumeDecision(req.Decision) {
+			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
+		}
+		k.emitApprovalDecided(session, snapshot, req.ApprovalID, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
 		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot)
 		if err != nil {
 			return TurnResult{}, err
@@ -866,6 +870,61 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 		}
 	}
 	return PendingApproval{}
+}
+
+func isApprovedResumeDecision(decision string) bool {
+	switch strings.ToLower(strings.TrimSpace(decision)) {
+	case "", "approved", "approved_for_session":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSessionApprovalResumeDecision(decision string) bool {
+	return strings.EqualFold(strings.TrimSpace(decision), "approved_for_session")
+}
+
+func approvedResumeDecisionLabel(decision string) string {
+	if isSessionApprovalResumeDecision(decision) {
+		return "approved_for_session"
+	}
+	return "approved"
+}
+
+func rememberSessionApprovalGrant(session *SessionState, toolCall ToolCall, approvalID string) {
+	if session == nil {
+		return
+	}
+	inputHash, err := actionproposal.NormalizedInputHash(toolCall.Arguments)
+	if err != nil || strings.TrimSpace(inputHash) == "" {
+		return
+	}
+	toolName := strings.TrimSpace(toolCall.Name)
+	if toolName == "" {
+		return
+	}
+	now := time.Now()
+	command := strings.TrimSpace(approvalCommandForToolCall(toolCall))
+	for idx := range session.ApprovalGrants {
+		grant := &session.ApprovalGrants[idx]
+		if strings.TrimSpace(grant.ToolName) != toolName || strings.TrimSpace(grant.InputHash) != inputHash {
+			continue
+		}
+		grant.Command = firstNonEmpty(command, grant.Command)
+		grant.Source = "session"
+		grant.UpdatedAt = now
+		return
+	}
+	session.ApprovalGrants = append(session.ApprovalGrants, SessionApprovalGrant{
+		ID:        firstNonEmpty(strings.TrimSpace(approvalID), strings.TrimSpace(toolCall.ID)),
+		ToolName:  toolName,
+		InputHash: inputHash,
+		Command:   command,
+		Source:    "session",
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,20 +1258,24 @@ func (k *EinoKernel) runHostIterationLoop(
 		if modelSpanCtx != nil {
 			modelCtx = modelSpanCtx
 		}
-		finalItemID := fmt.Sprintf("%s-final-answer", turnID)
+		finalItemID := fmt.Sprintf("%s-final-answer-%d", turnID, iteration)
+		iterationAssistantOutput := ""
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
-			if strings.TrimSpace(delta) != "" {
+			if delta != "" {
+				iterationAssistantOutput += delta
 				snapshot.FinalOutput += delta
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, truncateString(snapshot.FinalOutput, 240))
-				} else {
-					appendAgentItem(snapshot, newAgentItem(
-						finalItemID,
-						agentstate.TurnItemTypeFinalAnswer,
-						agentstate.ItemStatusRunning,
-						truncateString(snapshot.FinalOutput, 240),
-						nil,
-					))
+				if strings.TrimSpace(iterationAssistantOutput) != "" {
+					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, iterationAssistantOutput)
+					} else {
+						appendAgentItem(snapshot, newAgentItem(
+							finalItemID,
+							agentstate.TurnItemTypeFinalAnswer,
+							agentstate.ItemStatusRunning,
+							iterationAssistantOutput,
+							nil,
+						))
+					}
 				}
 				snapshot.UpdatedAt = time.Now()
 				k.persistTurnSnapshot(session, snapshot)
@@ -1336,19 +1399,24 @@ func (k *EinoKernel) runHostIterationLoop(
 		session.LatestCheckpoint = checkpoint
 		k.persistTurnSnapshot(session, snapshot)
 
+		assistantContent := strings.TrimSpace(iterationAssistantOutput)
+		if assistantContent == "" {
+			assistantContent = strings.TrimSpace(assistantMsg.Content)
+		}
+
 		if len(assistantMsg.ToolCalls) == 0 {
 			now := time.Now()
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
-			snapshot.FinalOutput = assistantMsg.Content
+			snapshot.FinalOutput = assistantContent
 			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, truncateString(assistantMsg.Content, 240))
+				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
 			} else {
 				appendAgentItem(snapshot, newAgentItem(
 					finalItemID,
 					agentstate.TurnItemTypeFinalAnswer,
 					agentstate.ItemStatusCompleted,
-					truncateString(assistantMsg.Content, 240),
+					assistantContent,
 					map[string]string{"messageId": assistantMsg.ID},
 				))
 			}
@@ -1363,12 +1431,24 @@ func (k *EinoKernel) runHostIterationLoop(
 			session.PendingApprovals = nil
 			session.PendingEvidence = nil
 			k.persistTurnSnapshot(session, snapshot)
-			return assistantMsg.Content, nil, nil
+			return assistantContent, nil, nil
 		}
 
+		if assistantContent != "" {
+			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
+			} else {
+				appendAgentItem(snapshot, newAgentItem(
+					finalItemID,
+					agentstate.TurnItemTypeFinalAnswer,
+					agentstate.ItemStatusCompleted,
+					assistantContent,
+					map[string]string{"messageId": assistantMsg.ID},
+				))
+			}
+		}
 		if snapshot.FinalOutput != "" {
 			snapshot.FinalOutput = ""
-			removeAgentItem(snapshot, finalItemID)
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
 		}
@@ -1828,16 +1908,37 @@ func toolForToolCall(tools []promptcompiler.Tool, tc ToolCall) promptcompiler.To
 			continue
 		}
 		meta := toolDef.Metadata()
-		if strings.TrimSpace(meta.Name) == toolName {
+		if toolCallNameMatchesCandidate(toolName, meta.Name) {
 			return toolDef
 		}
 		for _, alias := range meta.Aliases {
-			if strings.TrimSpace(alias) == toolName {
+			if toolCallNameMatchesCandidate(toolName, alias) {
 				return toolDef
 			}
 		}
 	}
 	return nil
+}
+
+func addToolLookupName(byName map[string]tooling.Tool, name string, toolDef tooling.Tool) {
+	name = strings.TrimSpace(name)
+	if name == "" || toolDef == nil {
+		return
+	}
+	byName[name] = toolDef
+	providerName := tooling.ProviderSafeToolName(name)
+	if providerName != "" {
+		byName[providerName] = toolDef
+	}
+}
+
+func toolCallNameMatchesCandidate(toolName, candidate string) bool {
+	toolName = strings.TrimSpace(toolName)
+	candidate = strings.TrimSpace(candidate)
+	if toolName == "" || candidate == "" {
+		return false
+	}
+	return toolName == candidate || toolName == tooling.ProviderSafeToolName(candidate)
 }
 
 func toolMetadataForToolCall(tools []promptcompiler.Tool, tc ToolCall) tooling.ToolMetadata {
@@ -2187,9 +2288,9 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 			continue
 		}
 		meta := toolDef.Metadata()
-		lookup.byName[meta.Name] = toolDef
+		addToolLookupName(lookup.byName, meta.Name, toolDef)
 		for _, alias := range meta.Aliases {
-			lookup.byName[alias] = toolDef
+			addToolLookupName(lookup.byName, alias, toolDef)
 		}
 	}
 	dispatcher := NewToolDispatcher(lookup, k.policy, k.projector)
@@ -2198,6 +2299,7 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 	}
 	dispatcher = dispatcher.
 		WithPermissions(k.permissions).
+		WithSessionApprovalGrants(session.ApprovalGrants).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
@@ -2247,7 +2349,7 @@ func generateModelResponse(
 					onReasoning(*event)
 				}
 			}
-			if onFinalDelta != nil && strings.TrimSpace(msg.Content) != "" {
+			if onFinalDelta != nil && msg.Content != "" {
 				onFinalDelta(msg.Content)
 			}
 			chunks = append(chunks, msg)
@@ -2272,7 +2374,7 @@ func generateModelResponse(
 	if isEmptyAssistantResponse(response) {
 		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
 	}
-	if onFinalDelta != nil && strings.TrimSpace(response.Content) != "" {
+	if onFinalDelta != nil && response.Content != "" {
 		onFinalDelta(response.Content)
 	}
 	return response, nil

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
@@ -55,14 +57,15 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup       ToolLookup
-	policy       *policyengine.Engine
-	permissions  *permissions.Engine
-	hooks        *hooks.Registry
-	projector    EventEmitter
-	spanSource   SpanStreamSource // optional: span tracking for tool calls
-	observer     Observer
-	progressSink ToolProgressSink
+	lookup         ToolLookup
+	policy         *policyengine.Engine
+	permissions    *permissions.Engine
+	hooks          *hooks.Registry
+	projector      EventEmitter
+	spanSource     SpanStreamSource // optional: span tracking for tool calls
+	observer       Observer
+	progressSink   ToolProgressSink
+	approvalGrants []SessionApprovalGrant
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -89,6 +92,12 @@ func NewToolDispatcherWithSpans(lookup ToolLookup, policy *policyengine.Engine, 
 // WithPermissions attaches a tool-scoped permission engine to the dispatcher.
 func (d *ToolDispatcher) WithPermissions(engine *permissions.Engine) *ToolDispatcher {
 	d.permissions = engine
+	return d
+}
+
+// WithSessionApprovalGrants attaches exact-input approvals granted for this session.
+func (d *ToolDispatcher) WithSessionApprovalGrants(grants []SessionApprovalGrant) *ToolDispatcher {
+	d.approvalGrants = cloneSessionApprovalGrants(grants)
 	return d
 }
 
@@ -214,6 +223,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 
 	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc)
 	toolEvent.Arguments = tc.Arguments
+
+	if !approved && d.hasSessionApprovalGrant(tc, desc) {
+		approved = true
+	}
 
 	if !approved {
 		if checker, ok := executor.(ToolPermissionChecker); ok {
@@ -483,6 +496,52 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
 	}
+}
+
+func cloneSessionApprovalGrants(grants []SessionApprovalGrant) []SessionApprovalGrant {
+	if len(grants) == 0 {
+		return nil
+	}
+	out := make([]SessionApprovalGrant, len(grants))
+	copy(out, grants)
+	return out
+}
+
+func (d *ToolDispatcher) hasSessionApprovalGrant(tc ToolCall, desc ToolDescriptor) bool {
+	if d == nil || len(d.approvalGrants) == 0 {
+		return false
+	}
+	inputHash, err := actionproposal.NormalizedInputHash(tc.Arguments)
+	if err != nil || strings.TrimSpace(inputHash) == "" {
+		return false
+	}
+	for _, grant := range d.approvalGrants {
+		if !sessionApprovalToolNameMatches(grant.ToolName, tc.Name, desc.Metadata) {
+			continue
+		}
+		if strings.TrimSpace(grant.InputHash) == inputHash {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionApprovalToolNameMatches(grantToolName, callName string, meta tooling.ToolMetadata) bool {
+	target := strings.TrimSpace(grantToolName)
+	if target == "" {
+		return false
+	}
+	for _, candidate := range []string{strings.TrimSpace(callName), strings.TrimSpace(meta.Name)} {
+		if candidate != "" && candidate == target {
+			return true
+		}
+	}
+	for _, alias := range meta.Aliases {
+		if strings.TrimSpace(alias) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, result DispatchResult) {

@@ -30,15 +30,15 @@ export function McpSurfacePart({ surface }: McpSurfacePartProps) {
           size="sm"
           onClick={() => commands.mcpAction(surface.id, surface.status === "connected" ? "close" : "open")}
         >
-          {surface.status === "connected" ? "Close" : "Open"}
+          {surface.status === "connected" ? "关闭" : "打开"}
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={() => commands.mcpRefresh(surface.id)}>
           <RefreshCw className="h-3.5 w-3.5" />
-          Refresh
+          刷新
         </Button>
         <Button type="button" variant="outline" size="sm" onClick={() => commands.mcpPin(surface.id, !surface.pinned)}>
           <Pin className="h-3.5 w-3.5" />
-          {surface.pinned ? "Unpin" : "Pin"}
+          {surface.pinned ? "取消固定" : "固定"}
         </Button>
       </div>
     </div>

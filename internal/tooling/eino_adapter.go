@@ -59,7 +59,7 @@ func buildToolInfo(t Tool) *schema.ToolInfo {
 	}
 
 	return &schema.ToolInfo{
-		Name:        meta.Name,
+		Name:        ProviderSafeToolName(meta.Name),
 		Desc:        desc,
 		ParamsOneOf: paramsOneOf,
 	}

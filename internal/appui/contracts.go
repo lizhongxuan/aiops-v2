@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/auth"
+	"aiops-v2/internal/incidents"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
@@ -100,6 +101,7 @@ type servicesConfig struct {
 	agentMCP         AgentMCPCatalogRepository
 	profiles         AgentProfileRepository
 	agentEvents      AgentEventRepository
+	incidents        incidents.Store
 	lifecycleContext context.Context
 }
 
@@ -129,6 +131,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		}
 		if repo, ok := any(dataStore).(AgentEventRepository); ok {
 			cfg.agentEvents = repo
+		}
+		if repo, ok := any(dataStore).(incidents.Store); ok {
+			cfg.incidents = repo
 		}
 	}
 }
@@ -264,7 +269,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	settingsService := NewSettingsService(cfg.settings, cfg.auth)
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(cfg.agentEvents)
-	incidentService := NewIncidentService(nil)
+	incidentService := NewIncidentService(incidents.NewService(cfg.incidents, nil))
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,7 +26,11 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
   "caseId": "case-1",
   "visibleTools": ["exec_command"],
   "promptFingerprint": {"stableHash": "stable-hash"},
-  "modelInput": [{"providerRole": "system"}, {"providerRole": "user"}]
+  "modelInput": [
+    {"providerRole": "system"},
+    {"providerRole": "user", "content": "检查 checkout p95 延迟 token=super-secret"},
+    {"role": "user", "content": "再次查看 payment 状态 password=super-secret"}
+  ]
 }`), 0o644); err != nil {
 		t.Fatalf("write json: %v", err)
 	}
@@ -45,11 +50,17 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
 		t.Fatalf("traces = %d, want 1", len(list.Traces))
 	}
 	trace := list.Traces[0]
-	if trace.SessionID != "sess-1" || trace.TurnID != "turn-1" || trace.CaseID != "case-1" || trace.MessageCount != 2 {
+	if trace.SessionID != "sess-1" || trace.TurnID != "turn-1" || trace.CaseID != "case-1" || trace.MessageCount != 3 {
 		t.Fatalf("trace metadata = %#v", trace)
 	}
 	if trace.MarkdownPath == "" || trace.DiffPath == "" {
 		t.Fatalf("trace paths missing markdown/diff: %#v", trace)
+	}
+	if !strings.Contains(trace.UserPromptPreview, "再次查看 payment 状态") {
+		t.Fatalf("user prompt preview = %q, want latest turn user message", trace.UserPromptPreview)
+	}
+	if strings.Contains(trace.UserPromptPreview, "super-secret") {
+		t.Fatalf("user prompt preview leaked secret: %q", trace.UserPromptPreview)
 	}
 
 	file, err := service.GetModelInputTraceFile(context.Background(), PromptTraceFileRequest{Path: trace.MarkdownPath})

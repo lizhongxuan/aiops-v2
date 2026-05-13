@@ -112,6 +112,44 @@ func TestRunnerStudioAIPatchRequiresDraftWorkflow(t *testing.T) {
 	}
 }
 
+func TestRunnerStudioAIGenerateDraftUsesEmbeddedHandler(t *testing.T) {
+	type embeddedSeen struct {
+		Method string
+		Path   string
+	}
+	seen := make(chan embeddedSeen, 1)
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- embeddedSeen{Method: r.Method, Path: r.URL.EscapedPath()}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error_explanation": "embedded draft response",
+		})
+	})
+	srv := NewHTTPServer(
+		appui.NewServices(websocketAPITestRuntime{}, nil),
+		WithRunnerStudioHandler(embedded),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(
+		ts.URL+"/api/runner-studio/ai/draft",
+		"application/json",
+		strings.NewReader(`{"workflow_status":"draft","instruction":"生成恢复流程","graph":{"nodes":[]}}`),
+	)
+	if err != nil {
+		t.Fatalf("POST ai draft error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	req := <-seen
+	if req.Method != http.MethodPost || req.Path != "/api/v1/workflows/ai/draft" {
+		t.Fatalf("embedded = %+v, want POST /api/v1/workflows/ai/draft", req)
+	}
+}
+
 func TestRunnerStudioAIFailureExplanationDoesNotRequireGraphPatch(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

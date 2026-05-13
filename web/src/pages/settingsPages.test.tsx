@@ -3,7 +3,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppShellChromeProvider } from "@/app/AppShellChromeContext";
 import { AppRouter } from "@/router";
+import { shouldUseExperiencePackFixtureFallback } from "./ExperiencePacksPage";
 
 const statePayload = {
   hosts: [{ id: "server-local", name: "server-local", status: "online" }],
@@ -23,6 +25,133 @@ const hostsPayload = {
       agentVersion: "1.8.4",
       lastHeartbeat: new Date().toISOString(),
       labels: { env: "prod", role: "web", cluster: "ops-k8s" },
+    },
+  ],
+};
+
+const hostProfilesPayload = {
+  items: [
+    {
+      host_id: "host-prod-07",
+      display_name: "web-07",
+      status: "online",
+      os: "linux",
+      arch: "x86_64",
+      labels: { env: "prod", role: "web" },
+      agent_version: "1.8.4",
+      agent_id: "agent-prod-07",
+      runtime: { os_release: "Ubuntu 24.04", kernel: "6.8.0", request_body: "secret-business-payload" },
+      service_runtime: { supervisor: "systemd", unit: "aiops-agent.service" },
+      token: "secret-profile-token",
+      password: "secret-profile-password",
+      private_key: "-----BEGIN PRIVATE KEY-----",
+      cookie: "sid=secret-cookie",
+      authorization: "Bearer secret-authorization",
+      last_heartbeat_at: "2026-05-12T09:20:00+08:00",
+      profile_expires_at: "2026-05-12T09:50:00+08:00",
+    },
+    {
+      host_id: "host-db-01",
+      display_name: "pg-primary",
+      status: "offline",
+      os: "linux",
+      arch: "x86_64",
+      labels: { role: "db" },
+      profile_expires_at: "2026-05-12T08:00:00+08:00",
+    },
+  ],
+};
+
+const hostLeasesPayload = {
+  items: [
+    {
+      lease_id: "lease-prod-07",
+      host_id: "host-prod-07",
+      status: "active",
+      mission_id: "case-debug-1",
+      owner_session_id: "session-debug-1",
+      acquired_at: "2026-05-12T09:10:00+08:00",
+      expires_at: "2026-05-12T09:40:00+08:00",
+    },
+    {
+      lease_id: "lease-db-conflict",
+      host_id: "host-db-01",
+      status: "conflict",
+      mission_id: "case-pg-1",
+      owner_session_id: "session-pg-1",
+      expires_at: "2026-05-12T09:45:00+08:00",
+    },
+  ],
+};
+
+const hostReportHistoryPayload = {
+  items: [
+    {
+      report_id: "report-web-07",
+      host_id: "host-prod-07",
+      status: "accepted",
+      reported_at: "2026-05-12T09:20:00+08:00",
+      summary: "CPU 8C / Memory 32GiB / Disk 400GiB",
+    },
+  ],
+};
+
+const experienceCandidatesPayload = {
+  items: [
+    {
+      id: "candidate-pg-pool",
+      pack_id: "pack-pg-pool",
+      title: "PG 连接池修复候选经验包",
+      summary: "从 case-pg-fix 提炼出的连接池耗尽处理经验，等待审核启用。",
+      status: "candidate",
+      match_reason: "中间件类型、错误模式和 HostProfile 标签一致",
+      source_case_id: "case-pg-fix",
+      experience_pack: {
+        id: "pack-pg-pool",
+        title: "PG 连接池修复经验包",
+        summary: "诊断连接池耗尽，执行参数调整并验证恢复。",
+        version: "v1.0",
+        status: "enabled",
+        review_status: "approved",
+        enabled: true,
+        workflow_binding: { workflow_id: "wf-pg-pool-fix", workflow_name: "PG Pool Fix", status: "draft", version: "v1" },
+        retrieval_eval: { score: 0.91, matched_cases: 4, verdict: "pass", last_evaluated_at: "2026-05-12T09:30:00+08:00" },
+        authorization_scopes: [{ type: "environment", value: "prod", searchable: true, reason: "生产 PG 集群" }],
+      },
+    },
+    {
+      id: "candidate-java-heap",
+      pack_id: "pack-java-heap",
+      title: "Java 堆内存排障经验包",
+      summary: "已启用但还没有配置可检索范围。",
+      status: "enabled",
+      source_case_id: "case-java-oom",
+      experience_pack: {
+        id: "pack-java-heap",
+        title: "Java 堆内存排障经验包",
+        summary: "线程 dump 与堆转储排查流程。",
+        version: "v2.1",
+        status: "enabled",
+        review_status: "approved",
+        enabled: true,
+        workflow_binding: { workflow_id: "wf-java-heap", workflow_name: "Java Heap RCA", status: "bound" },
+        retrieval_eval: { score: 0.77, matched_cases: 2, verdict: "warn" },
+        authorization_scopes: [],
+      },
+    },
+  ],
+};
+
+const experienceReusePayload = {
+  items: [
+    {
+      id: "reuse-pg-1",
+      pack_id: "pack-pg-pool",
+      case_id: "case-pg-repeat",
+      result: "failed_rollback",
+      summary: "连接池调整失败，已执行回滚并记录失败点。",
+      reused_by: "主 Agent",
+      reused_at: "2026-05-12T10:00:00+08:00",
     },
   ],
 };
@@ -67,6 +196,13 @@ function jsonResponse(payload: unknown) {
 function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input);
   if (url.endsWith("/api/v1/state")) return jsonResponse(statePayload);
+  if (url.includes("/api/v1/host-profiles/") && url.endsWith("/report-history")) return jsonResponse(hostReportHistoryPayload);
+  if (url.includes("/api/v1/host-profiles")) return jsonResponse(hostProfilesPayload);
+  if (url.includes("/api/v1/host-leases")) return jsonResponse(hostLeasesPayload);
+  if (url.includes("/api/v1/experience-packs/") && url.includes("/reuse-records")) return jsonResponse(experienceReusePayload);
+  if (url.includes("/api/v1/experience-packs/candidates")) return jsonResponse(experienceCandidatesPayload);
+  if (url.includes("/api/v1/experience-packs/") && url.includes("/authorization-scopes")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
+  if (url.includes("/api/v1/experience-packs/") && url.includes("/enabled")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
   if (url.endsWith("/api/v1/hosts")) {
     if (init?.method === "POST") return jsonResponse({ ok: true });
     return jsonResponse(hostsPayload);
@@ -101,9 +237,11 @@ describe("React settings pages", () => {
   async function renderPath(path: string) {
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={[path]}>
-          <AppRouter />
-        </MemoryRouter>,
+        <AppShellChromeProvider>
+          <MemoryRouter initialEntries={[path]}>
+            <AppRouter />
+          </MemoryRouter>
+        </AppShellChromeProvider>,
       );
     });
     await flush();
@@ -142,7 +280,7 @@ describe("React settings pages", () => {
     ["/settings", "设置"],
     ["/settings/llm", "LLM 配置"],
     ["/settings/hosts", "env=prod"],
-    ["/settings/experience-packs", "经验包库"],
+    ["/settings/experience-packs", "经验包工作台"],
     ["/settings/agent", "Agent Profile"],
     ["/settings/skills", "Ops Triage"],
     ["/settings/mcp", "Metrics MCP"],
@@ -151,6 +289,130 @@ describe("React settings pages", () => {
 
     expect(container.textContent).toContain(expectedText);
     expect(container.textContent).not.toContain("Migration Placeholder");
+  });
+
+  it("moves settings page actions into the app shell header", async () => {
+    await renderPath("/settings/hosts");
+
+    const hostsHeader = container.querySelector('[data-testid="app-shell-header"]');
+    expect(hostsHeader?.textContent).toContain("主机与租约");
+    expect(hostsHeader?.textContent).not.toContain("刷新");
+    expect(hostsHeader?.textContent).toContain("接入主机");
+    expect(container.querySelector("main > div header")?.textContent || "").not.toContain("HostLease 锁状态");
+
+    await remountPath("/settings/experience-packs");
+    const packsHeader = container.querySelector('[data-testid="app-shell-header"]');
+    expect(packsHeader?.textContent).toContain("经验包");
+    expect(packsHeader?.textContent).not.toContain("刷新");
+    expect(container.querySelector("main > div header")?.textContent || "").not.toContain("必须先审核启用");
+  });
+
+  it("renders HostProfile, HostLease, report history and access config tabs in Chinese", async () => {
+    await renderPath("/settings/hosts");
+
+    expect(container.textContent).toContain("主机与租约");
+    expect(container.textContent).toContain("主机画像");
+    expect(container.textContent).toContain("主机租约");
+    expect(container.textContent).toContain("上报历史");
+    expect(container.textContent).toContain("接入配置");
+    expect(container.textContent).toContain("web-07");
+    expect(container.textContent).toContain("Linux");
+    expect(container.textContent).toContain("x86_64");
+    expect(container.textContent).toContain("env=prod");
+    expect(container.textContent).toContain("基础信息");
+    expect(container.textContent).toContain("运行环境");
+    expect(container.textContent).toContain("已安装 Agent");
+    expect(container.textContent).toContain("service runtime");
+    expect(container.textContent).toContain("最近 Case");
+    expect(container.textContent).toContain("当前 HostLease");
+    expect(container.textContent).toContain("agent-prod-07");
+    expect(container.textContent).toContain("aiops-agent.service");
+    expect(container.textContent).toContain("case-debug-1");
+    expect(container.textContent).toContain("2026-05-12T09:40:00+08:00");
+    expect(container.textContent).not.toMatch(
+      /secret-profile-token|secret-profile-password|PRIVATE KEY|secret-cookie|secret-authorization|secret-business-payload/i,
+    );
+
+    const leaseTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("主机租约"));
+    expect(leaseTab).toBeTruthy();
+    await act(async () => leaseTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    expect(container.textContent).toContain("lease-prod-07");
+    expect(container.textContent).toContain("case-debug-1");
+
+    const reportTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("上报历史"));
+    expect(reportTab).toBeTruthy();
+    await act(async () => reportTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    expect(container.textContent).toContain("report-web-07");
+
+    const profileTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("主机画像"));
+    expect(profileTab).toBeTruthy();
+    await act(async () => profileTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+    expect(container.textContent).toContain("客户端离线");
+    expect(container.textContent).toContain("环境标签缺失");
+    expect(container.textContent).toContain("host-db-01");
+    expect(container.textContent).toContain("case-pg-1");
+    expect(container.textContent).toContain("2026-05-12T09:45:00+08:00");
+
+    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
+    expect(accessTab).toBeTruthy();
+  });
+
+  it("renders Experience Pack candidate, authorization, eval and reuse gates in Chinese", async () => {
+    await renderPath("/settings/experience-packs");
+
+    expect(container.textContent).toContain("经验包");
+    expect(container.textContent).toContain("候选");
+    expect(container.textContent).toContain("已启用");
+    expect(container.textContent).toContain("授权范围");
+    expect(container.textContent).toContain("Eval");
+    expect(container.textContent).toContain("复用记录");
+    expect(container.textContent).toContain("PG 连接池修复候选经验包");
+    expect(container.textContent).toContain("来源 Case");
+    expect(container.textContent).toContain("推荐 Workflow");
+    expect(container.textContent).toContain("Java 堆内存排障经验包");
+    expect(container.textContent).toContain("不可检索");
+
+    const authTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("授权范围"));
+    expect(authTab).toBeTruthy();
+    await act(async () => authTab?.click());
+    await flush();
+    expect(container.textContent).toContain("environment");
+    expect(container.textContent).toContain("prod");
+
+    const reuseTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("复用记录"));
+    expect(reuseTab).toBeTruthy();
+    await act(async () => reuseTab?.click());
+    await flush();
+    expect(container.textContent).toContain("case-pg-repeat");
+    expect(container.textContent).toContain("失败回退");
+  });
+
+  it("keeps the Experience Pack workbench full width when there are no candidates", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/experience-packs/candidates")) {
+        return jsonResponse({ items: [] });
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/experience-packs");
+
+    const layout = container.querySelector('[data-testid="experience-pack-workbench-layout"]');
+    expect(layout?.className).toContain("xl:grid-cols-1");
+    expect(container.textContent).toContain("没有候选经验包");
+    expect(container.textContent).toContain("从 AI 对话或 Case 详情提炼");
+    expect(container.textContent).toContain("审核启用后再配置可检索范围");
+    expect(container.textContent).not.toContain("包详情");
+  });
+
+  it("keeps Experience Pack fixture fallback out of production mode", () => {
+    expect(shouldUseExperiencePackFixtureFallback({ DEV: false, MODE: "production" })).toBe(false);
+    expect(shouldUseExperiencePackFixtureFallback({ DEV: true, MODE: "development" })).toBe(true);
+    expect(shouldUseExperiencePackFixtureFallback({ DEV: false, MODE: "test" })).toBe(true);
   });
 
   it("supports refresh, save, delete, and import settings operations", async () => {

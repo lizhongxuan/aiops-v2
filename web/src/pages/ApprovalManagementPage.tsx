@@ -1,4 +1,4 @@
-import { RefreshCcw, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -99,12 +99,6 @@ export function ApprovalManagementPage() {
       kicker="Approvals"
       title="审批管理"
       description="集中查看审批流水、授权记录，管理命令授权的生命周期。"
-      actions={
-        <Button variant="outline" onClick={() => (activeTab === "audits" ? void loadAudits() : void loadGrants(host))}>
-          <RefreshCcw />
-          刷新
-        </Button>
-      }
     >
       {message ? <StatusAlert type={message.type} title={message.type === "error" ? "操作失败" : "操作完成"} message={message.text} /> : null}
       <MetricStrip
@@ -154,7 +148,7 @@ export function ApprovalManagementPage() {
                     </tbody>
                   </table>
                 </div>
-              ) : <EmptyPanel title="暂无审批流水" description="调整过滤条件或稍后刷新。" />}
+              ) : <EmptyPanel title="暂无审批流水" description="调整过滤条件或稍后再试。" />}
             </CardContent>
           </Card>
         </TabsContent>
