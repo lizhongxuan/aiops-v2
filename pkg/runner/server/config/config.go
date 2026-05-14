@@ -114,6 +114,7 @@ func Default() Config {
 				"script.shell",
 				"script.python",
 				"wait.event",
+				"manual.approval",
 			},
 		},
 		Logging: LoggingConfig{

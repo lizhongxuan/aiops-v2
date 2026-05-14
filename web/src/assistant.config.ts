@@ -46,6 +46,11 @@ declare module "@assistant-ui/react" {
         surfaceId: string;
         pinned: boolean;
       };
+      aiopsInsertAgentUiArtifact: {
+        type: "aiops.insert-agent-ui-artifact";
+        turnId?: string;
+        artifact: Record<string, unknown>;
+      };
     }
   }
 }

@@ -10,6 +10,16 @@ func TestDefaultUIDistDirPointsAtRunnerEmbeddedDist(t *testing.T) {
 	}
 }
 
+func TestDefaultSecurityAllowsManualApprovalAction(t *testing.T) {
+	cfg := Default()
+	for _, action := range cfg.Security.AllowedActions {
+		if action == "manual.approval" {
+			return
+		}
+	}
+	t.Fatalf("default allowed actions = %v, want manual.approval", cfg.Security.AllowedActions)
+}
+
 func TestLoadAppliesUIBasePathEnvOverride(t *testing.T) {
 	t.Setenv("RUNNER_UI_BASE_PATH", "/runner-abc")
 

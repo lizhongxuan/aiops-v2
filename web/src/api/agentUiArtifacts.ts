@@ -1,4 +1,5 @@
 import { normalizeMcpUiCard } from "@/lib/mcpUiCardModel";
+import { normalizeExperienceMatch } from "./experiencePacks";
 
 export type AgentUIArtifactType =
   | "coroot_chart"
@@ -7,6 +8,7 @@ export type AgentUIArtifactType =
   | "workflow_result"
   | "verification_result"
   | "experience_match"
+  | "experience_pack_candidate"
   | "unsupported";
 
 export type AgentUIArtifactStatus =
@@ -49,6 +51,7 @@ const SUPPORTED_TYPES = new Set<AgentUIArtifactType>([
   "workflow_result",
   "verification_result",
   "experience_match",
+  "experience_pack_candidate",
 ]);
 
 const SUPPORTED_STATUSES = new Set<AgentUIArtifactStatus>([
@@ -119,6 +122,20 @@ function normalizeActions(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
     ? value.map((item) => sanitizeRecord(item)).filter((item) => Object.keys(item).length > 0)
     : [];
+}
+
+const EXPERIENCE_MATCH_ACTIONS = [
+  { id: "view_skill", label: "查看 Skill", intent: "view_skill", mutation: false },
+  { id: "check_preconditions", label: "检查前置条件", intent: "check_preconditions", mutation: false },
+  { id: "create_dry_run", label: "生成 Dry Run", intent: "create_dry_run", mutation: false },
+  { id: "view_history", label: "查看历史成功案例", intent: "view_history", mutation: false },
+  { id: "mark_not_applicable", label: "标记不适用", intent: "mark_not_applicable", mutation: true },
+];
+
+function normalizeExperienceMatchActions(explicitActions: unknown): Array<Record<string, unknown>> {
+  const allowed = new Set(EXPERIENCE_MATCH_ACTIONS.map((action) => action.id));
+  const explicit = normalizeActions(explicitActions).filter((action) => allowed.has(compactText(action.id)));
+  return EXPERIENCE_MATCH_ACTIONS.map((standard) => explicit.find((action) => compactText(action.id) === standard.id) || standard);
 }
 
 function standardAction(id: string, label: string, href: string, target: Record<string, unknown>): Record<string, unknown> {
@@ -199,7 +216,8 @@ export function normalizeAgentUIArtifact(input: unknown): AgentUIArtifact {
   const source = sanitizeRecord(input);
   const { type, originalType } = normalizeType(source.type || source.kind || source.artifactType);
   const title = compactText(source.title || source.name) || (type === "unsupported" ? "不支持的 UI Artifact" : "Agent UI Artifact");
-  const payload = type === "unsupported" ? {} : sanitizeRecord(source.payload || source.data || source.result);
+  const rawPayload = type === "unsupported" ? {} : sanitizeRecord(source.payload || source.data || source.result);
+  const payload = type === "experience_match" ? normalizeExperienceMatch(rawPayload) as unknown as Record<string, unknown> : rawPayload;
   const metadata = sanitizeRecord(source.metadata || source.meta);
   const caseId = compactText(source.caseId || source.case_id || payload.caseId || payload.case_id || metadata.caseId || metadata.case_id);
   const evidenceRef = compactText(
@@ -255,7 +273,9 @@ export function normalizeAgentUIArtifact(input: unknown): AgentUIArtifact {
     redactionStatus: compactText(source.redactionStatus || source.redaction_status || payload.redactionStatus || payload.redaction_status || metadata.redactionStatus || metadata.redaction_status),
     payload: mcpCard ? payloadWithoutMcpCard(payload) : payload,
     metadata,
-    actions: normalizeArtifactActions(source.actions, { caseId, evidenceRef, promptTraceId }),
+    actions: type === "experience_match"
+      ? normalizeExperienceMatchActions(source.actions || rawPayload.actions)
+      : normalizeArtifactActions(source.actions, { caseId, evidenceRef, promptTraceId }),
     ...(mcpCard ? { mcpCard } : {}),
   };
 }

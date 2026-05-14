@@ -235,6 +235,37 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("shows an assistant message when a turn only contains an Agent-to-UI artifact", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      id: "turn-1",
+      status: "completed",
+      startedAt: "2026-05-06T00:00:00Z",
+      completedAt: "2026-05-06T00:00:01Z",
+      agentUiArtifacts: [
+        {
+          id: "artifact-candidate-1",
+          type: "experience_pack_candidate",
+          titleZh: "经验包候选已生成",
+          summaryZh: "等待审核后才能启用。",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]?.metadata?.unstable_state).toMatchObject({
+      agentUiArtifacts: [
+        expect.objectContaining({
+          id: "artifact-candidate-1",
+          type: "experience_pack_candidate",
+        }),
+      ],
+    });
+  });
+
   it("treats working and blocked transport states as running", () => {
     const state = createState();
 

@@ -28,3 +28,7 @@ if (typeof globalThis.matchMedia === "undefined") {
     },
   });
 }
+
+if (typeof Element !== "undefined" && typeof Element.prototype.scrollTo !== "function") {
+  Element.prototype.scrollTo = function scrollTo() {};
+}

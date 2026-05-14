@@ -65,32 +65,34 @@ const (
 )
 
 type AiopsTransportState struct {
-	SchemaVersion    string                              `json:"schemaVersion"`
-	SessionID        string                              `json:"sessionId"`
-	ThreadID         string                              `json:"threadId"`
-	Status           AiopsTransportStatus                `json:"status"`
-	CurrentTurnID    string                              `json:"currentTurnId,omitempty"`
-	Turns            map[string]AiopsTransportTurn       `json:"turns"`
-	TurnOrder        []string                            `json:"turnOrder"`
-	PendingApprovals map[string]AiopsTransportApproval   `json:"pendingApprovals"`
-	McpSurfaces      map[string]AiopsTransportMcpSurface `json:"mcpSurfaces"`
-	Artifacts        map[string]AiopsTransportArtifact   `json:"artifacts"`
-	RuntimeLiveness  AiopsRuntimeLiveness                `json:"runtimeLiveness"`
-	LastError        string                              `json:"lastError,omitempty"`
-	Seq              int64                               `json:"seq"`
-	UpdatedAt        string                              `json:"updatedAt"`
+	SchemaVersion             string                                   `json:"schemaVersion"`
+	SessionID                 string                                   `json:"sessionId"`
+	ThreadID                  string                                   `json:"threadId"`
+	Status                    AiopsTransportStatus                     `json:"status"`
+	CurrentTurnID             string                                   `json:"currentTurnId,omitempty"`
+	Turns                     map[string]AiopsTransportTurn            `json:"turns"`
+	TurnOrder                 []string                                 `json:"turnOrder"`
+	PendingApprovals          map[string]AiopsTransportApproval        `json:"pendingApprovals"`
+	McpSurfaces               map[string]AiopsTransportMcpSurface      `json:"mcpSurfaces"`
+	Artifacts                 map[string]AiopsTransportArtifact        `json:"artifacts"`
+	ExperiencePackSuggestions []AiopsTransportExperiencePackSuggestion `json:"experiencePackSuggestions,omitempty"`
+	RuntimeLiveness           AiopsRuntimeLiveness                     `json:"runtimeLiveness"`
+	LastError                 string                                   `json:"lastError,omitempty"`
+	Seq                       int64                                    `json:"seq"`
+	UpdatedAt                 string                                   `json:"updatedAt"`
 }
 
 type AiopsTransportTurn struct {
-	ID          string                   `json:"id"`
-	User        *AiopsTransportMessage   `json:"user,omitempty"`
-	Intent      *AiopsTransportIntent    `json:"intent,omitempty"`
-	Process     []AiopsProcessBlock      `json:"process,omitempty"`
-	Final       *AiopsTransportFinal     `json:"final,omitempty"`
-	Status      AiopsTransportTurnStatus `json:"status"`
-	StartedAt   string                   `json:"startedAt,omitempty"`
-	CompletedAt string                   `json:"completedAt,omitempty"`
-	UpdatedAt   string                   `json:"updatedAt,omitempty"`
+	ID               string                        `json:"id"`
+	User             *AiopsTransportMessage        `json:"user,omitempty"`
+	Intent           *AiopsTransportIntent         `json:"intent,omitempty"`
+	Process          []AiopsProcessBlock           `json:"process,omitempty"`
+	AgentUiArtifacts []AiopsTransportAgentArtifact `json:"agentUiArtifacts,omitempty"`
+	Final            *AiopsTransportFinal          `json:"final,omitempty"`
+	Status           AiopsTransportTurnStatus      `json:"status"`
+	StartedAt        string                        `json:"startedAt,omitempty"`
+	CompletedAt      string                        `json:"completedAt,omitempty"`
+	UpdatedAt        string                        `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportMessage struct {
@@ -174,6 +176,45 @@ type AiopsTransportArtifact struct {
 	RawRef     string `json:"rawRef,omitempty"`
 	CreatedAt  string `json:"createdAt,omitempty"`
 	ModifiedAt string `json:"modifiedAt,omitempty"`
+}
+
+type AiopsTransportAgentArtifact struct {
+	ID              string           `json:"id"`
+	Type            string           `json:"type"`
+	Title           string           `json:"title,omitempty"`
+	TitleZh         string           `json:"titleZh,omitempty"`
+	Summary         string           `json:"summary,omitempty"`
+	SummaryZh       string           `json:"summaryZh,omitempty"`
+	Status          string           `json:"status,omitempty"`
+	Severity        string           `json:"severity,omitempty"`
+	DataRef         string           `json:"dataRef,omitempty"`
+	InlineData      map[string]any   `json:"inlineData,omitempty"`
+	Payload         map[string]any   `json:"payload,omitempty"`
+	Metadata        map[string]any   `json:"metadata,omitempty"`
+	Actions         []map[string]any `json:"actions,omitempty"`
+	Source          string           `json:"source,omitempty"`
+	CaseID          string           `json:"caseId,omitempty"`
+	EvidenceRef     string           `json:"evidenceRef,omitempty"`
+	PromptTraceID   string           `json:"promptTraceId,omitempty"`
+	PermissionScope string           `json:"permissionScope,omitempty"`
+	RedactionStatus string           `json:"redactionStatus,omitempty"`
+	CreatedAt       string           `json:"createdAt,omitempty"`
+	UpdatedAt       string           `json:"updatedAt,omitempty"`
+}
+
+type AiopsTransportExperiencePackSuggestion struct {
+	ID          string         `json:"id,omitempty"`
+	Type        string         `json:"type"`
+	Label       string         `json:"label"`
+	Reason      string         `json:"reason,omitempty"`
+	CaseID      string         `json:"caseId,omitempty"`
+	PackID      string         `json:"packId,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Service     string         `json:"service,omitempty"`
+	Environment string         `json:"environment,omitempty"`
+	SourceRefs  []string       `json:"sourceRefs,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type AiopsRuntimeLiveness struct {

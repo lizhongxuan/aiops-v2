@@ -1,6 +1,7 @@
 import type { AssistantTransportCommand } from "@assistant-ui/react";
 
 import type {
+  AiopsTransportAgentUiArtifact,
   AiopsTransportState,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
@@ -13,6 +14,7 @@ export type AiopsTransportCommandActions = {
   mcpAction: (surfaceId: string, action: string, params?: Record<string, unknown>, target?: string) => void;
   mcpRefresh: (surfaceId: string) => void;
   mcpPin: (surfaceId: string, pinned: boolean) => void;
+  insertAgentUiArtifact: (artifact: AiopsTransportAgentUiArtifact, turnId?: string) => void;
 };
 
 export function createInitialAiopsTransportState(threadId = "default"): AiopsTransportState {
@@ -96,6 +98,13 @@ export function createAiopsTransportCommandActions(
         surfaceId,
         pinned,
       });
+    },
+    insertAgentUiArtifact(artifact, turnId = currentTurnId) {
+      sendCommand(removeUndefined({
+        type: "aiops.insert-agent-ui-artifact",
+        turnId,
+        artifact,
+      }));
     },
   };
 }

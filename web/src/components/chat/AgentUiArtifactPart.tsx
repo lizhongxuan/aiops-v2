@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
 import { CorootChartArtifact } from "./CorootChartArtifact";
 import { ExperienceMatchArtifact } from "./ExperienceMatchArtifact";
+import { RunnerWorkflowCandidateArtifact } from "./RunnerWorkflowCandidateArtifact";
 import { TopologySliceArtifact } from "./TopologySliceArtifact";
 import { TraceSummaryArtifact } from "./TraceSummaryArtifact";
 import { VerificationResultArtifact } from "./VerificationResultArtifact";
@@ -27,6 +28,8 @@ const ARTIFACT_LABELS: Record<string, string> = {
   workflow_result: "Workflow 结果",
   verification_result: "验证结果",
   experience_match: "经验命中",
+  experience_pack_candidate: "经验候选",
+  runner_workflow_candidate: "Runner 草稿",
 };
 
 const REDACTION_LABELS: Record<string, string> = {
@@ -88,6 +91,14 @@ function artifactContent(artifact: AiopsTransportAgentUiArtifact) {
       return <VerificationResultArtifact artifact={artifact} />;
     case "experience_match":
       return <ExperienceMatchArtifact artifact={artifact} />;
+    case "experience_pack_candidate":
+      return (
+        <div data-testid="experience-pack-candidate-artifact">
+          <InlineDataPreview artifact={artifact} />
+        </div>
+      );
+    case "runner_workflow_candidate":
+      return <RunnerWorkflowCandidateArtifact artifact={artifact} />;
     default:
       return null;
   }
@@ -147,6 +158,10 @@ function unifiedActionsForArtifact(artifact: AiopsTransportAgentUiArtifact): Art
       label: "查看 Prompt Trace",
       href: `/debug/prompts?trace_id=${encodeURIComponent(promptTraceId)}`,
     });
+  }
+
+  if (artifact.type === "runner_workflow_candidate") {
+    return actions;
   }
 
   for (const action of artifact.actions || []) {
@@ -236,6 +251,10 @@ function iconForArtifact(type: string) {
       return CheckCircle2;
     case "experience_match":
       return ShieldCheck;
+    case "experience_pack_candidate":
+      return ListChecks;
+    case "runner_workflow_candidate":
+      return GitBranch;
     default:
       return AlertTriangle;
   }

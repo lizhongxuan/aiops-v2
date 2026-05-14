@@ -1,6 +1,6 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
@@ -9,9 +9,11 @@ import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 describe("ChatPage", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let originalFetch: typeof globalThis.fetch | undefined;
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    originalFetch = globalThis.fetch;
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
       unobserve() {}
@@ -26,6 +28,7 @@ describe("ChatPage", () => {
     act(() => {
       root.unmount();
     });
+    globalThis.fetch = originalFetch as typeof globalThis.fetch;
     container.remove();
   });
 
@@ -128,6 +131,181 @@ describe("ChatPage", () => {
 
     expect(container.textContent).toContain("Hello there");
     expect(container.textContent).not.toContain("要对 server-local 做什么？");
+  });
+
+  it("renders experience-pack suggestion buttons as Agent-to-UI cards and replaces the composer for confirmation", async () => {
+    const state = createInitialAiopsTransportState("thread-suggestion");
+    state.sessionId = "sess-suggestion";
+    state.experiencePackSuggestions = [
+      {
+        id: "suggestion-generate-runner",
+        type: "generate_runner_workflow_candidate",
+        label: "生成 Runner Workflow 草稿",
+        reason: "命令数超过 6 且 Proof 明确",
+        sourceRefs: ["case-pg", "proof-pg"],
+      },
+      {
+        id: "suggestion-generate-pack",
+        type: "generate_experience_pack_candidate",
+        label: "生成经验包候选",
+        reason: "命令数超过 6 且 Proof 明确",
+        sourceRefs: ["case-pg", "proof-pg"],
+      },
+    ];
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} threadId="thread-suggestion" />);
+    });
+
+    const suggestionBar = container.querySelector('[data-testid="experience-pack-suggestion-bar"]');
+    const composerShell = container.querySelector('[data-testid="aiops-composer-shell"]');
+    expect(suggestionBar?.textContent).toContain("生成工作流");
+    expect(suggestionBar?.textContent).toContain("生成经验包");
+    expect(composerShell?.textContent).not.toContain("生成工作流");
+    expect(composerShell?.textContent).not.toContain("生成经验包");
+
+    const button = Array.from(suggestionBar?.querySelectorAll("button") || []).find((item) => item.textContent?.includes("生成经验包"));
+    expect(button).toBeTruthy();
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="aiops-composer-shell"]')).toBeNull();
+    expect(container.querySelector('[data-testid="experience-pack-confirmation-composer"]')).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("确认生成经验包");
+    expect(container.textContent).toContain("确认前不会写入经验包，也不会自动执行 Runner");
+    expect(container.textContent).toContain("命令数超过 6 且 Proof 明确");
+    expect(container.textContent).toContain("case-pg");
+    expect(container.textContent).toContain("确认生成");
+
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "取消");
+    await act(async () => {
+      cancelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="experience-pack-confirmation-composer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="omnibar-input"]')).not.toBeNull();
+  });
+
+  it("previews experience-pack retrieval and adaptation while typing an ops request", async () => {
+    globalThis.fetch = vi.fn(async (path) => {
+      if (String(path) === "/api/v1/experience-packs/retrieve") {
+        return new Response(JSON.stringify({
+          items: [
+            {
+              pack_id: "pack-pg-cluster",
+              skill: { name: "PG 主从部署经验包", summary: "PostgreSQL 主从部署和 pg_mon 经验" },
+              confidence: 0.92,
+              matched_signals: ["postgres", "主从", "pg_mon"],
+              match_reasons: ["Skill 与 Gene 信号命中"],
+            },
+          ],
+          total: 1,
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof globalThis.fetch;
+    const state = createInitialAiopsTransportState("thread-pg-preview");
+    state.sessionId = "sess-pg-preview";
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} threadId="thread-pg-preview" />);
+    });
+
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+    expect(input).toBeTruthy();
+    await act(async () => {
+      input.value = "给主机A和主机B搭建PG主从集群，pg_mon放到主机C上";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="experience-pack-intent-preview"]')?.textContent).toContain("经验包预检");
+    expect(container.querySelector('[data-testid="aiops-composer-shell"]')?.contains(container.querySelector('[data-testid="experience-pack-intent-preview"]'))).toBe(false);
+    expect(container.textContent).toContain("Runner 负责怎么执行");
+    expect(container.textContent).toContain("GEP 记录经验来自哪次故障");
+    expect(container.textContent).toContain("结构化条件过滤 + 关键词/BM25 + 向量语义检索");
+    expect(container.textContent).toContain("推荐经验包、执行计划、Runner、风险范围和验证方式");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    });
+    expect(container.textContent).toContain("PG 主从部署经验包");
+    expect(container.textContent).toContain("命中 92%");
+  });
+
+  it("prepares an experience-pack candidate after the user confirms a Chat suggestion", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      id: "candidate-pack-ai-chat-redis",
+      candidate_id: "candidate-pack-ai-chat-redis",
+      pack_id: "pack-ai-chat-redis",
+      title: "Redis 运维排障经验包",
+      status: "candidate",
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+    const state = createInitialAiopsTransportState("thread-suggestion-confirm");
+    state.sessionId = "sess-suggestion-confirm";
+    state.experiencePackSuggestions = [
+      {
+        id: "suggestion-generate-pack",
+        type: "generate_experience_pack_candidate",
+        label: "生成经验包候选",
+        reason: "本次 Redis 运维轨迹具备复用价值",
+        caseId: "case-ai-chat-redis",
+        packId: "pack-ai-chat-redis",
+        title: "Redis 运维排障经验包",
+        summary: "从 AI Chat 运维轨迹生成候选经验。",
+        service: "redis",
+        environment: "prod",
+        sourceRefs: ["thread-suggestion-confirm", "sess-suggestion-confirm"],
+        metadata: {
+          chatSessionId: "sess-suggestion-confirm",
+          commands: [
+            "redis-cli INFO memory",
+            "redis-cli CONFIG GET maxmemory",
+            "redis-cli SLOWLOG GET 10",
+            "redis-cli --bigkeys",
+            "curl -fsS http://payment-api/health",
+            "redis-cli INFO stats",
+          ],
+        },
+      },
+    ];
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} threadId="thread-suggestion-confirm" />);
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("生成经验包"));
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="aiops-composer-shell"]')).toBeNull();
+    const confirmButton = Array.from(container.querySelectorAll("button")).find((item) => item.textContent === "确认生成");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    const prepareCall = fetchMock.mock.calls.find(([path]) => String(path) === "/api/v1/experience-packs/candidates/prepare");
+    expect(prepareCall).toBeTruthy();
+    const [path, init] = prepareCall || [];
+    expect(String(path)).toBe("/api/v1/experience-packs/candidates/prepare");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      caseId: "case-ai-chat-redis",
+      packId: "pack-ai-chat-redis",
+      title: "Redis 运维排障经验包",
+      service: "redis",
+      environment: "prod",
+      chatSessionId: "sess-suggestion-confirm",
+      commands: [
+        "redis-cli INFO memory",
+        "redis-cli CONFIG GET maxmemory",
+        "redis-cli SLOWLOG GET 10",
+        "redis-cli --bigkeys",
+        "curl -fsS http://payment-api/health",
+        "redis-cli INFO stats",
+      ],
+    });
   });
 });
 

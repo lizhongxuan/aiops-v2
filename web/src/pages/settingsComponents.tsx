@@ -13,12 +13,12 @@ export function SettingsPageFrame({
   description,
   actions,
   children,
-}: PropsWithChildren<{ title: string; description: string; actions?: ReactNode }>) {
+}: PropsWithChildren<{ title: string; description?: string; actions?: ReactNode }>) {
   useRegisterAppShellPageChrome({ title, description, actions: actions || null });
 
   return (
     <section className="h-full overflow-y-auto bg-slate-50 px-4 py-5 text-slate-900 lg:px-6">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+      <div className="mx-auto flex min-h-full w-full max-w-7xl flex-col gap-4">
         {children}
       </div>
     </section>

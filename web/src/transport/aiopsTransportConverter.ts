@@ -110,7 +110,7 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
-  if (turn.final?.text || turn.intent?.text || (turn.process || []).length > 0) {
+  if (turn.final?.text || turn.intent?.text || (turn.process || []).length > 0 || (turn.agentUiArtifacts || []).length > 0) {
     return true;
   }
   // Always show the message for failed/canceled turns so the error is visible

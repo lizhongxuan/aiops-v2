@@ -30,10 +30,27 @@ export type AiopsTransportState = {
   pendingApprovals: Record<string, AiopsTransportApproval>;
   mcpSurfaces: Record<string, AiopsTransportMcpSurface>;
   artifacts: Record<string, AiopsTransportArtifact>;
+  experiencePackSuggestions?: AiopsTransportExperiencePackSuggestion[];
   runtimeLiveness: AiopsRuntimeLiveness;
   lastError?: string;
   seq: number;
   updatedAt: string;
+};
+
+export type AiopsTransportExperiencePackSuggestion = {
+  id?: string;
+  type: string;
+  label: string;
+  reason?: string;
+  caseId?: string;
+  packId?: string;
+  title?: string;
+  summary?: string;
+  service?: string;
+  environment?: string;
+  metadata?: Record<string, unknown>;
+  sourceRefs?: string[];
+  source_refs?: string[];
 };
 
 export type AiopsTransportTurn = {

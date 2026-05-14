@@ -103,6 +103,7 @@ type servicesConfig struct {
 	agentEvents      AgentEventRepository
 	incidents        incidents.Store
 	lifecycleContext context.Context
+	experiencePacks  ExperiencePackService
 }
 
 // ServicesOption customizes first-party Web services.
@@ -209,6 +210,12 @@ func WithLifecycleContext(ctx context.Context) ServicesOption {
 	}
 }
 
+func WithExperiencePackService(service ExperiencePackService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.experiencePacks = service
+	}
+}
+
 // HTTPServices is the interface consumed by internal/server handlers.
 type HTTPServices interface {
 	ChatService() ChatService
@@ -226,26 +233,27 @@ type HTTPServices interface {
 
 // Services is the default first-party Web application service set.
 type Services struct {
-	chat           ChatService
-	state          StateService
-	sessions       SessionService
-	sessionSource  SessionSource
-	approvals      ApprovalService
-	choices        ChoiceService
-	settings       SettingsService
-	hosts          HostService
-	mcps           MCPService
-	profiles       AgentProfileService
-	auth           AuthService
-	terminal       TerminalService
-	agentEvents    AgentEventService
-	incidents      IncidentService
-	postmortems    PostmortemService
-	corootWebhooks CorootWebhookService
-	runbooks       RunbookService
-	opsgraph       OpsGraphService
-	erp            ERPContextService
-	changes        ChangeContextService
+	chat            ChatService
+	state           StateService
+	sessions        SessionService
+	sessionSource   SessionSource
+	approvals       ApprovalService
+	choices         ChoiceService
+	settings        SettingsService
+	hosts           HostService
+	mcps            MCPService
+	profiles        AgentProfileService
+	auth            AuthService
+	terminal        TerminalService
+	agentEvents     AgentEventService
+	incidents       IncidentService
+	postmortems     PostmortemService
+	corootWebhooks  CorootWebhookService
+	runbooks        RunbookService
+	opsgraph        OpsGraphService
+	erp             ERPContextService
+	changes         ChangeContextService
+	experiencePacks ExperiencePackService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -271,26 +279,27 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	agentEvents := NewAgentEventService(cfg.agentEvents)
 	incidentService := NewIncidentService(incidents.NewService(cfg.incidents, nil))
 	return &Services{
-		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
-		state:          NewStateService(sessions, builder),
-		sessions:       NewSessionService(sessions, sessionStore, builder),
-		sessionSource:  sessions,
-		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
-		choices:        NewChoiceService(runtime, sessions),
-		settings:       settingsService,
-		hosts:          NewHostService(sessionStore, cfg.hosts, builder),
-		mcps:           NewMCPService(cfg.mcps, registry),
-		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
-		auth:           authService,
-		terminal:       NewTerminalService(cfg.terminal, cfg.hosts),
-		agentEvents:    agentEvents,
-		incidents:      incidentService,
-		postmortems:    NewPostmortemService(incidentService),
-		corootWebhooks: NewCorootWebhookService(incidentService),
-		runbooks:       NewRunbookService("", nil),
-		opsgraph:       NewOpsGraphService(""),
-		erp:            NewERPContextService(),
-		changes:        NewChangeContextService(),
+		chat:            NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
+		state:           NewStateService(sessions, builder),
+		sessions:        NewSessionService(sessions, sessionStore, builder),
+		sessionSource:   sessions,
+		approvals:       NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
+		choices:         NewChoiceService(runtime, sessions),
+		settings:        settingsService,
+		hosts:           NewHostService(sessionStore, cfg.hosts, builder),
+		mcps:            NewMCPService(cfg.mcps, registry),
+		profiles:        NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
+		auth:            authService,
+		terminal:        NewTerminalService(cfg.terminal, cfg.hosts),
+		agentEvents:     agentEvents,
+		incidents:       incidentService,
+		postmortems:     NewPostmortemService(incidentService),
+		corootWebhooks:  NewCorootWebhookService(incidentService),
+		runbooks:        NewRunbookService("", nil),
+		opsgraph:        NewOpsGraphService(""),
+		erp:             NewERPContextService(),
+		changes:         NewChangeContextService(),
+		experiencePacks: firstNonNilExperiencePackService(cfg.experiencePacks),
 	}
 }
 
@@ -311,13 +320,324 @@ func (s *Services) TerminalService() TerminalService { return s.terminal }
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
-func (s *Services) IncidentService() IncidentService           { return s.incidents }
-func (s *Services) PostmortemService() PostmortemService       { return s.postmortems }
-func (s *Services) CorootWebhookService() CorootWebhookService { return s.corootWebhooks }
-func (s *Services) RunbookService() RunbookService             { return s.runbooks }
-func (s *Services) OpsGraphService() OpsGraphService           { return s.opsgraph }
-func (s *Services) ERPContextService() ERPContextService       { return s.erp }
-func (s *Services) ChangeContextService() ChangeContextService { return s.changes }
+func (s *Services) IncidentService() IncidentService             { return s.incidents }
+func (s *Services) PostmortemService() PostmortemService         { return s.postmortems }
+func (s *Services) CorootWebhookService() CorootWebhookService   { return s.corootWebhooks }
+func (s *Services) RunbookService() RunbookService               { return s.runbooks }
+func (s *Services) OpsGraphService() OpsGraphService             { return s.opsgraph }
+func (s *Services) ERPContextService() ERPContextService         { return s.erp }
+func (s *Services) ChangeContextService() ChangeContextService   { return s.changes }
+func (s *Services) ExperiencePackService() ExperiencePackService { return s.experiencePacks }
+
+type ExperiencePackServiceProvider interface {
+	ExperiencePackService() ExperiencePackService
+}
+
+type ExperiencePackService interface {
+	ListPacks(ListExperiencePacksRequest) (ExperiencePackLibraryList, error)
+	ListCandidates(ListExperiencePackCandidatesRequest) (ExperiencePackCandidateList, error)
+	Retrieve(ExperiencePackRetrieveRequest) (ExperiencePackMatchList, error)
+	RetrieveCandidate(candidateID string) (ExperiencePack, error)
+	EvaluateSuggestions(ExperiencePackSuggestionEvaluateRequest) (ExperiencePackSuggestionEvaluateResult, error)
+	PrepareCandidate(ExperiencePackPrepareCandidateRequest) (ExperiencePackCandidate, error)
+	ConfirmCandidate(candidateID string, req ExperiencePackReviewRequest) (ExperiencePack, error)
+	PrepareRunnerCandidate(ExperiencePackRunnerCandidateRequest) (ExperiencePackRunnerCandidate, error)
+	ConfirmRunnerCandidate(ExperiencePackRunnerCandidateRequest) (ExperiencePackRunnerCandidate, error)
+	GetPack(packID string) (ExperiencePack, error)
+	GetValidationGate(packID string) (ExperiencePackValidationGate, error)
+	EnablePack(packID string, req ExperiencePackReviewRequest) (ExperiencePack, error)
+	PausePack(packID string, req ExperiencePackReviewRequest) (ExperiencePack, error)
+	SetPackEnabled(packID string, enabled bool, req ExperiencePackReviewRequest) (ExperiencePack, error)
+	SaveAuthorizationScopes(packID string, scopes []ExperiencePackAuthorizationScope) (ExperiencePack, error)
+	GetAuthorizationScopes(packID string) ([]ExperiencePackAuthorizationScope, error)
+	SaveRunnerBindings(packID string, bindings []ExperiencePackRunnerBinding) (ExperiencePack, error)
+	ReviewRunnerBindings(packID string, req ExperiencePackRunnerBindingReviewRequest) (ExperiencePack, error)
+	ListReuseRecords(packID string, req ListExperiencePackReuseRecordsRequest) (ExperiencePackReuseRecordList, error)
+}
+
+type ListExperiencePacksRequest struct {
+	Status           string `json:"status,omitempty"`
+	Category         string `json:"category,omitempty"`
+	UsageShape       string `json:"usageShape,omitempty"`
+	Middleware       string `json:"middleware,omitempty"`
+	Tag              string `json:"tag,omitempty"`
+	HasRunnerBinding string `json:"hasRunnerBinding,omitempty"`
+	Limit            int    `json:"limit,omitempty"`
+	Cursor           string `json:"cursor,omitempty"`
+}
+
+type ListExperiencePackCandidatesRequest struct {
+	CaseID      string `json:"caseId,omitempty"`
+	Service     string `json:"service,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Limit       int    `json:"limit,omitempty"`
+	Cursor      string `json:"cursor,omitempty"`
+}
+
+type ExperiencePackSuggestionEvaluateRequest struct {
+	CaseID                   string         `json:"caseId,omitempty"`
+	Service                  string         `json:"service,omitempty"`
+	Environment              string         `json:"environment,omitempty"`
+	Signals                  any            `json:"signals,omitempty"`
+	Limit                    int            `json:"limit,omitempty"`
+	CommandCount             int            `json:"commandCount,omitempty"`
+	Outcome                  string         `json:"outcome,omitempty"`
+	RedactionStatus          string         `json:"redactionStatus,omitempty"`
+	LLMOperationalValueScore float64        `json:"llmOperationalValueScore,omitempty"`
+	MatchedPackID            string         `json:"matchedPackId,omitempty"`
+	MemoryGraphWritable      bool           `json:"memoryGraphWritable,omitempty"`
+	ReusableStepCount        int            `json:"reusableStepCount,omitempty"`
+	Metadata                 map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRetrieveRequest struct {
+	CaseID        string         `json:"caseId,omitempty"`
+	ChatSessionID string         `json:"chatSessionId,omitempty"`
+	Query         string         `json:"query,omitempty"`
+	UserText      string         `json:"userText,omitempty"`
+	Signals       any            `json:"signals,omitempty"`
+	OS            string         `json:"os,omitempty"`
+	Environment   string         `json:"environment,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackPrepareCandidateRequest struct {
+	CaseID            string         `json:"caseId,omitempty"`
+	ChatSessionID     string         `json:"chatSessionId,omitempty"`
+	PackID            string         `json:"packId,omitempty"`
+	Title             string         `json:"title,omitempty"`
+	Summary           string         `json:"summary,omitempty"`
+	Service           string         `json:"service,omitempty"`
+	Environment       string         `json:"environment,omitempty"`
+	Commands          []string       `json:"commands,omitempty"`
+	SuggestionID      string         `json:"suggestionId,omitempty"`
+	ConfirmationToken string         `json:"confirmationToken,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackReviewRequest struct {
+	Reviewer          string         `json:"reviewer,omitempty"`
+	Comment           string         `json:"comment,omitempty"`
+	Decision          string         `json:"decision,omitempty"`
+	Reason            string         `json:"reason,omitempty"`
+	CandidateID       string         `json:"candidateId,omitempty"`
+	ConfirmationToken string         `json:"confirmationToken,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRunnerCandidateRequest struct {
+	CaseID            string         `json:"caseId,omitempty"`
+	ChatSessionID     string         `json:"chatSessionId,omitempty"`
+	PackID            string         `json:"packId,omitempty"`
+	CandidateID       string         `json:"candidateId,omitempty"`
+	Title             string         `json:"title,omitempty"`
+	Summary           string         `json:"summary,omitempty"`
+	Service           string         `json:"service,omitempty"`
+	Environment       string         `json:"environment,omitempty"`
+	Commands          []string       `json:"commands,omitempty"`
+	ConfirmationToken string         `json:"confirmationToken,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRunnerCandidate struct {
+	ID              string                      `json:"id"`
+	PackID          string                      `json:"pack_id,omitempty"`
+	WorkflowID      string                      `json:"workflow_id,omitempty"`
+	WorkflowName    string                      `json:"workflow_name,omitempty"`
+	Status          string                      `json:"status"`
+	StudioDraftLink string                      `json:"studio_draft_link,omitempty"`
+	Workflow        map[string]any              `json:"workflow,omitempty"`
+	Graph           map[string]any              `json:"graph,omitempty"`
+	RunnerBinding   ExperiencePackRunnerBinding `json:"runner_binding,omitempty"`
+	Metadata        map[string]any              `json:"metadata,omitempty"`
+}
+
+type ListExperiencePackReuseRecordsRequest struct {
+	CaseID string `json:"caseId,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
+}
+
+type ExperiencePackCandidateList struct {
+	Items      []ExperiencePackCandidate `json:"items"`
+	Total      int                       `json:"total"`
+	NextCursor string                    `json:"nextCursor,omitempty"`
+}
+
+type ExperiencePackLibraryList struct {
+	Items      []ExperiencePack `json:"items"`
+	Total      int              `json:"total"`
+	NextCursor string           `json:"nextCursor,omitempty"`
+}
+
+type ExperiencePackSuggestionEvaluateResult struct {
+	Items       []ExperiencePackSuggestion `json:"items"`
+	Suggestions []ExperiencePackSuggestion `json:"suggestions"`
+	Total       int                        `json:"total"`
+	NextCursor  string                     `json:"nextCursor,omitempty"`
+}
+
+type ExperiencePackReuseRecordList struct {
+	Items      []ExperiencePackReuseRecord `json:"items"`
+	Total      int                         `json:"total"`
+	NextCursor string                      `json:"nextCursor,omitempty"`
+}
+
+type ExperiencePackCandidate struct {
+	ID             string          `json:"id"`
+	CandidateID    string          `json:"candidate_id,omitempty"`
+	PackID         string          `json:"pack_id"`
+	Title          string          `json:"title"`
+	Summary        string          `json:"summary,omitempty"`
+	Status         string          `json:"status"`
+	MatchReason    string          `json:"match_reason,omitempty"`
+	SourceCaseID   string          `json:"source_case_id,omitempty"`
+	ExperiencePack *ExperiencePack `json:"experience_pack,omitempty"`
+	CreatedAt      string          `json:"created_at,omitempty"`
+	UpdatedAt      string          `json:"updated_at,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
+}
+
+type ExperiencePack struct {
+	ID                  string                             `json:"id"`
+	PackID              string                             `json:"pack_id,omitempty"`
+	Title               string                             `json:"title"`
+	Summary             string                             `json:"summary,omitempty"`
+	Version             string                             `json:"version,omitempty"`
+	Category            string                             `json:"category,omitempty"`
+	UsageShape          string                             `json:"usage_shape,omitempty"`
+	Middleware          string                             `json:"middleware,omitempty"`
+	Tags                []string                           `json:"tags,omitempty"`
+	Status              string                             `json:"status"`
+	ReviewStatus        string                             `json:"review_status"`
+	Enabled             bool                               `json:"enabled"`
+	Skill               ExperiencePackSkill                `json:"skill,omitempty"`
+	History             ExperiencePackHistory              `json:"history,omitempty"`
+	AdvancedRefs        ExperiencePackAdvancedRefs         `json:"advanced_refs,omitempty"`
+	RetrievalEval       ExperiencePackRetrievalEval        `json:"retrieval_eval"`
+	ValidationGate      ExperiencePackValidationGate       `json:"validation_gate"`
+	WorkflowBinding     ExperiencePackWorkflowBinding      `json:"workflow_binding"`
+	RunnerBindings      []ExperiencePackRunnerBinding      `json:"runner_bindings,omitempty"`
+	AuthorizationScopes []ExperiencePackAuthorizationScope `json:"authorization_scopes"`
+	CreatedAt           string                             `json:"created_at,omitempty"`
+	UpdatedAt           string                             `json:"updated_at,omitempty"`
+	Metadata            map[string]any                     `json:"metadata,omitempty"`
+}
+
+type ExperiencePackSkill struct {
+	ID      string `json:"id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Path    string `json:"path,omitempty"`
+}
+
+type ExperiencePackHistory struct {
+	SuccessCount int    `json:"success_count,omitempty"`
+	FailureCount int    `json:"failure_count,omitempty"`
+	RecentResult string `json:"recent_result,omitempty"`
+}
+
+type ExperiencePackAdvancedRefs struct {
+	GeneAssetID     string   `json:"gene_asset_id,omitempty"`
+	CapsuleAssetIDs []string `json:"capsule_asset_ids,omitempty"`
+}
+
+type ExperiencePackMatchList struct {
+	Items []ExperiencePackMatch `json:"items"`
+	Total int                   `json:"total"`
+}
+
+type ExperiencePackMatch struct {
+	PackID              string                      `json:"pack_id"`
+	Skill               ExperiencePackSkill         `json:"skill"`
+	Confidence          float64                     `json:"confidence,omitempty"`
+	CompatibilityStatus string                      `json:"compatibility_status,omitempty"`
+	CompatibilityGaps   []string                    `json:"compatibility_gaps,omitempty"`
+	MatchedSignals      []string                    `json:"matched_signals,omitempty"`
+	MatchReasons        []string                    `json:"match_reasons,omitempty"`
+	PreconditionGaps    []string                    `json:"precondition_gaps,omitempty"`
+	RiskWarnings        []string                    `json:"risk_warnings,omitempty"`
+	NextActions         []string                    `json:"next_actions,omitempty"`
+	OSVariant           string                      `json:"os_variant,omitempty"`
+	RunnerBinding       ExperiencePackRunnerBinding `json:"runner_binding,omitempty"`
+	History             ExperiencePackHistory       `json:"history,omitempty"`
+	AdvancedRefs        ExperiencePackAdvancedRefs  `json:"advanced_refs,omitempty"`
+}
+
+type ExperiencePackSuggestion struct {
+	ID          string         `json:"id"`
+	Type        string         `json:"type"`
+	Label       string         `json:"label"`
+	Reason      string         `json:"reason,omitempty"`
+	CaseID      string         `json:"caseId,omitempty"`
+	PackID      string         `json:"packId,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
+	Service     string         `json:"service,omitempty"`
+	Environment string         `json:"environment,omitempty"`
+	SourceRefs  []string       `json:"source_refs,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRetrievalEval struct {
+	Score           *float64       `json:"score,omitempty"`
+	MatchedCases    int            `json:"matched_cases,omitempty"`
+	Verdict         string         `json:"verdict,omitempty"`
+	LastEvaluatedAt string         `json:"last_evaluated_at,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackValidationGate struct {
+	Status    string           `json:"status"`
+	Reasons   []string         `json:"reasons,omitempty"`
+	Checks    []map[string]any `json:"checks,omitempty"`
+	UpdatedAt string           `json:"updated_at,omitempty"`
+}
+
+type ExperiencePackWorkflowBinding struct {
+	WorkflowID   string         `json:"workflow_id,omitempty"`
+	WorkflowName string         `json:"workflow_name,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRunnerBinding struct {
+	ID           string         `json:"id,omitempty"`
+	WorkflowID   string         `json:"workflow_id,omitempty"`
+	WorkflowName string         `json:"workflow_name,omitempty"`
+	Status       string         `json:"status,omitempty"`
+	ReviewStatus string         `json:"review_status,omitempty"`
+	Version      string         `json:"version,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackRunnerBindingReviewRequest struct {
+	Reviewer   string   `json:"reviewer,omitempty"`
+	Decision   string   `json:"decision,omitempty"`
+	Comment    string   `json:"comment,omitempty"`
+	BindingIDs []string `json:"bindingIds,omitempty"`
+}
+
+type ExperiencePackAuthorizationScope struct {
+	ID         string         `json:"id,omitempty"`
+	Type       string         `json:"type"`
+	Value      string         `json:"value"`
+	Searchable bool           `json:"searchable"`
+	Reason     string         `json:"reason,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+}
+
+type ExperiencePackReuseRecord struct {
+	ID       string         `json:"id"`
+	PackID   string         `json:"pack_id"`
+	CaseID   string         `json:"case_id,omitempty"`
+	Result   string         `json:"result,omitempty"`
+	Summary  string         `json:"summary,omitempty"`
+	ReusedBy string         `json:"reused_by,omitempty"`
+	ReusedAt string         `json:"reused_at,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
 
 type ChatCommand struct {
 	SessionID       string

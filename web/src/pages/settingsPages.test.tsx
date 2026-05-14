@@ -111,9 +111,15 @@ const experienceCandidatesPayload = {
         title: "PG 连接池修复经验包",
         summary: "诊断连接池耗尽，执行参数调整并验证恢复。",
         version: "v1.0",
+        category: "repair",
+        usage_shape: "guided",
         status: "enabled",
         review_status: "approved",
         enabled: true,
+        validation_gate: { status: "passed", validators: ["runner.readonly_probe"] },
+        runner_bindings: [{ id: "binding-pg", workflow_id: "wf-pg-pool-fix", workflow_name: "PG Pool Fix", status: "ready" }],
+        history: { success_count: 4, failure_count: 1, recent_result: "success" },
+        advanced_refs: { gene_asset_id: "gene-pg-pool", capsule_asset_ids: ["capsule-pg-1"] },
         workflow_binding: { workflow_id: "wf-pg-pool-fix", workflow_name: "PG Pool Fix", status: "draft", version: "v1" },
         retrieval_eval: { score: 0.91, matched_cases: 4, verdict: "pass", last_evaluated_at: "2026-05-12T09:30:00+08:00" },
         authorization_scopes: [{ type: "environment", value: "prod", searchable: true, reason: "生产 PG 集群" }],
@@ -131,9 +137,13 @@ const experienceCandidatesPayload = {
         title: "Java 堆内存排障经验包",
         summary: "线程 dump 与堆转储排查流程。",
         version: "v2.1",
+        category: "optimize",
+        usage_shape: "diagnostic",
         status: "enabled",
         review_status: "approved",
         enabled: true,
+        validation_gate: { status: "blocked", reasons: ["缺少 rollback"] },
+        history: { success_count: 2, failure_count: 0, recent_result: "success" },
         workflow_binding: { workflow_id: "wf-java-heap", workflow_name: "Java Heap RCA", status: "bound" },
         retrieval_eval: { score: 0.77, matched_cases: 2, verdict: "warn" },
         authorization_scopes: [],
@@ -154,6 +164,25 @@ const experienceReusePayload = {
       reused_at: "2026-05-12T10:00:00+08:00",
     },
   ],
+};
+
+const runnerCandidatePayload = {
+  id: "runner-candidate-pg",
+  pack_id: "pack-pg-pool",
+  workflow_id: "wf-pg-pool-local-draft",
+  workflow_name: "PG Pool Local Draft",
+  status: "draft",
+  studio_draft_link: "/runner/wf-pg-pool-local-draft",
+  workflow: {
+    id: "wf-pg-pool-local-draft",
+    name: "wf-pg-pool-local-draft",
+    title: "PG Pool Local Draft",
+    graph: {
+      workflow: { name: "wf-pg-pool-local-draft" },
+      nodes: [{ id: "start", type: "start" }, { id: "validate", type: "action", step: { action: "shell.run", args: { script: "echo ok" } } }],
+      edges: [{ id: "start-validate", source: "start", target: "validate", source_port: "next", target_port: "in" }],
+    },
+  },
 };
 
 const llmPayload = {
@@ -200,6 +229,8 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes("/api/v1/host-profiles")) return jsonResponse(hostProfilesPayload);
   if (url.includes("/api/v1/host-leases")) return jsonResponse(hostLeasesPayload);
   if (url.includes("/api/v1/experience-packs/") && url.includes("/reuse-records")) return jsonResponse(experienceReusePayload);
+  if (url.endsWith("/api/v1/experience-packs/runner-candidates/confirm")) return jsonResponse(runnerCandidatePayload);
+  if (url.endsWith("/api/v1/experience-packs/runner-candidates/prepare")) return jsonResponse(runnerCandidatePayload);
   if (url.includes("/api/v1/experience-packs/candidates")) return jsonResponse(experienceCandidatesPayload);
   if (url.includes("/api/v1/experience-packs/") && url.includes("/authorization-scopes")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
   if (url.includes("/api/v1/experience-packs/") && url.includes("/enabled")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
@@ -264,6 +295,7 @@ describe("React settings pages", () => {
       disconnect() {}
     };
     vi.spyOn(globalThis, "fetch").mockImplementation(mockFetch as typeof fetch);
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -280,7 +312,7 @@ describe("React settings pages", () => {
     ["/settings", "设置"],
     ["/settings/llm", "LLM 配置"],
     ["/settings/hosts", "env=prod"],
-    ["/settings/experience-packs", "经验包工作台"],
+    ["/settings/experience-packs", "经验库"],
     ["/settings/agent", "Agent Profile"],
     ["/settings/skills", "Ops Triage"],
     ["/settings/mcp", "Metrics MCP"],
@@ -305,6 +337,37 @@ describe("React settings pages", () => {
     expect(packsHeader?.textContent).toContain("经验包");
     expect(packsHeader?.textContent).not.toContain("刷新");
     expect(container.querySelector("main > div header")?.textContent || "").not.toContain("必须先审核启用");
+  });
+
+  it("sends an experience-pack review item to Runner Studio as a local draft", async () => {
+    await renderPath("/settings/experience-packs");
+
+    const reviewTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("待审核经验"));
+    expect(reviewTab).toBeTruthy();
+    await act(async () => reviewTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    const sendButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("发送到 Runner Studio"));
+    expect(sendButton).toBeTruthy();
+    await act(async () => sendButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    expect(container.textContent).toContain("已创建本地草稿");
+    const link = Array.from(container.querySelectorAll("a")).find((anchor) => anchor.textContent?.includes("打开 Runner Studio"));
+    expect(link?.getAttribute("href")).toBe("/runner/wf-pg-pool-local-draft");
+    const drafts = JSON.parse(window.localStorage.getItem("runner.studio.localDrafts") || "{}");
+    expect(drafts["wf-pg-pool-local-draft"]).toMatchObject({
+      id: "wf-pg-pool-local-draft",
+      local_draft: true,
+      ai_generated_draft: true,
+    });
+    expect(drafts["wf-pg-pool-local-draft"].graph.nodes).toHaveLength(2);
+
+    await remountPath("/runner/wf-pg-pool-local-draft");
+    const draftsAfterNavigation = JSON.parse(window.localStorage.getItem("runner.studio.localDrafts") || "{}");
+    expect(container.textContent).toContain("PG Pool Local Draft");
+    expect(container.textContent).toContain("validate");
+    expect(draftsAfterNavigation["wf-pg-pool-local-draft"].graph.nodes).toHaveLength(2);
   });
 
   it("renders HostProfile, HostLease, report history and access config tabs in Chinese", async () => {
@@ -360,34 +423,85 @@ describe("React settings pages", () => {
     expect(accessTab).toBeTruthy();
   });
 
-  it("renders Experience Pack candidate, authorization, eval and reuse gates in Chinese", async () => {
+  it("renders Experience Pack library, review queue, detail, validation, runner, and advanced sections in Chinese", async () => {
     await renderPath("/settings/experience-packs");
 
     expect(container.textContent).toContain("经验包");
-    expect(container.textContent).toContain("候选");
-    expect(container.textContent).toContain("已启用");
-    expect(container.textContent).toContain("授权范围");
-    expect(container.textContent).toContain("Eval");
-    expect(container.textContent).toContain("复用记录");
+    expect(container.textContent).toContain("经验库");
+    expect(container.textContent).toContain("待审核经验");
+    const packsHeader = container.querySelector('[data-testid="app-shell-header"]');
+    const headerText = packsHeader?.textContent || "";
+    expect((headerText.match(/经验包/g) || [])).toHaveLength(1);
+    expect(headerText).toContain("经验库");
+    expect(headerText).toContain("待审核经验");
+    expect(headerText).not.toContain("经验详情");
+    expect(packsHeader?.contains(container.querySelector('[role="tablist"][aria-label="经验包视图"]'))).toBe(true);
+    expect(container.textContent).not.toContain("共同呈现 GEP Skill Bundle");
+    expect(container.textContent).not.toContain("默认展示 Skill");
     expect(container.textContent).toContain("PG 连接池修复候选经验包");
-    expect(container.textContent).toContain("来源 Case");
-    expect(container.textContent).toContain("推荐 Workflow");
     expect(container.textContent).toContain("Java 堆内存排障经验包");
     expect(container.textContent).toContain("不可检索");
+    expect(container.textContent).toContain("上一页");
+    expect(container.textContent).toContain("下一页");
+    expect(container.querySelector('[data-testid="experience-pack-pagination"]')?.className).toContain("mt-auto");
+    expect(container.textContent).not.toContain("历史成功");
+    expect(container.textContent).not.toContain("Validation Gate passed");
 
-    const authTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("授权范围"));
-    expect(authTab).toBeTruthy();
-    await act(async () => authTab?.click());
+    const reviewTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("待审核经验"));
+    expect(reviewTab).toBeTruthy();
+    await act(async () => reviewTab?.click());
     await flush();
-    expect(container.textContent).toContain("environment");
-    expect(container.textContent).toContain("prod");
+    expect(container.textContent).toContain("Skill.md 摘要");
+    expect(container.textContent).toContain("必要文件完整性");
+    expect(container.textContent).toContain("GEP schema");
+    expect(container.textContent).toContain("asset_id");
+    expect(container.textContent).toContain("Capsule 来源");
+    expect(container.textContent).toContain("AVOID cue");
+    expect(container.textContent).toContain("发送到 Runner Studio");
 
-    const reuseTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("复用记录"));
-    expect(reuseTab).toBeTruthy();
-    await act(async () => reuseTab?.click());
+    const firstExperienceCard = Array.from(container.querySelectorAll('[data-slot="card"][data-size="sm"]')).find((card) => card.textContent?.includes("PG 连接池修复候选经验包"));
+    expect(firstExperienceCard).toBeTruthy();
+    await act(async () => firstExperienceCard?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
-    expect(container.textContent).toContain("case-pg-repeat");
-    expect(container.textContent).toContain("失败回退");
+    const detailDialog = container.querySelector('[role="dialog"][aria-modal="true"]');
+    expect(detailDialog?.textContent).toContain("经验详情");
+    expect(detailDialog?.parentElement?.className).toContain("z-[90]");
+    expect(detailDialog?.textContent).toContain("Skill.md");
+    expect(detailDialog?.textContent).toContain("Skill / Runner / GEP");
+    expect(detailDialog?.textContent).toContain("Runner 负责怎么执行");
+    expect(detailDialog?.textContent).toContain("PostgreSQL + pgvector");
+    expect(detailDialog?.textContent).toContain("历史效果");
+    expect(detailDialog?.textContent).toContain("高级区");
+    expect(detailDialog?.textContent).toContain("Gene asset_id");
+    expect(detailDialog?.textContent).toContain("capsule-pg-1");
+    expect(detailDialog?.textContent).toContain("OS/environment variants");
+    expect(detailDialog?.textContent).toContain("Runner Bindings");
+  });
+
+  it("lets an approved Experience Pack configure searchable scope from the detail page", async () => {
+    await renderPath("/settings/experience-packs");
+
+    const javaCard = Array.from(container.querySelectorAll('[data-slot="card"][data-size="sm"]')).find((card) => card.textContent?.includes("Java 堆内存排障经验包"));
+    expect(javaCard).toBeTruthy();
+    await act(async () => javaCard?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    const detailDialog = container.querySelector('[role="dialog"][aria-modal="true"]');
+    expect(detailDialog?.textContent).toContain("Java 堆内存排障经验包");
+    expect(detailDialog?.textContent).toContain("经验包尚未配置可检索授权范围");
+
+    const configureButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("配置可检索范围"));
+    expect(configureButton).toBeTruthy();
+    await act(async () => configureButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/v1/experience-packs/pack-java-heap/authorization-scopes",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ scopes: [{ type: "environment", value: "prod", searchable: true, reason: "默认生产环境授权" }] }),
+      }),
+    );
   });
 
   it("keeps the Experience Pack workbench full width when there are no candidates", async () => {
@@ -403,10 +517,9 @@ describe("React settings pages", () => {
 
     const layout = container.querySelector('[data-testid="experience-pack-workbench-layout"]');
     expect(layout?.className).toContain("xl:grid-cols-1");
-    expect(container.textContent).toContain("没有候选经验包");
+    expect(container.textContent).toContain("没有经验包");
     expect(container.textContent).toContain("从 AI 对话或 Case 详情提炼");
-    expect(container.textContent).toContain("审核启用后再配置可检索范围");
-    expect(container.textContent).not.toContain("包详情");
+    expect(container.textContent).toContain("审核启用后再进入经验库");
   });
 
   it("keeps Experience Pack fixture fallback out of production mode", () => {

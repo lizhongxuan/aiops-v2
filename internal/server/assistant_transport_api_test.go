@@ -206,6 +206,163 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 }
 
+func TestAssistantTransportAPIStreamsExperiencePackSuggestionsAfterOperationalTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, delay: 25 * time.Millisecond}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body := map[string]any{
+		"state": map[string]any{
+			"schemaVersion":    "aiops.transport.v1",
+			"sessionId":        "",
+			"threadId":         "thread-redis-suggestion",
+			"status":           "idle",
+			"turns":            map[string]any{},
+			"turnOrder":        []any{},
+			"pendingApprovals": map[string]any{},
+			"mcpSurfaces":      map[string]any{},
+			"artifacts":        map[string]any{},
+			"runtimeLiveness":  map[string]any{},
+			"seq":              0,
+			"updatedAt":        time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		"threadId": "thread-redis-suggestion",
+		"commands": []map[string]any{
+			{
+				"type": "add-message",
+				"message": map[string]any{
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "text", "text": strings.Join([]string{
+							"redis-cache used_memory_rss 接近 maxmemory，payment-api p95 升高。完成只读诊断、Dry Run、受控执行计划、恢复验证和回滚方案。",
+							"redis-cli INFO memory",
+							"redis-cli CONFIG GET maxmemory",
+							"redis-cli SLOWLOG GET 10",
+							"redis-cli --bigkeys",
+							"curl -fsS http://payment-api/health",
+							"redis-cli INFO stats",
+						}, "\n")},
+					},
+				},
+			},
+		},
+	}
+	payload, _ := json.Marshal(body)
+
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if !strings.Contains(text, "\"experiencePackSuggestions\"") {
+		t.Fatalf("response = %q, want experiencePackSuggestions state update", text)
+	}
+	if !strings.Contains(text, "生成经验包") {
+		t.Fatalf("response = %q, want generate experience-pack suggestion", text)
+	}
+	if !strings.Contains(text, "生成工作流") {
+		t.Fatalf("response = %q, want generate runner workflow suggestion", text)
+	}
+	if !strings.Contains(text, "thread-redis-suggestion") {
+		t.Fatalf("response = %q, want suggestion source refs to include thread id", text)
+	}
+}
+
+func TestAssistantTransportAPIAttachesExperienceMatchArtifactForReusablePack(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, delay: 25 * time.Millisecond}
+	experiencePacks := appui.NewExperiencePackService(nil)
+	candidate, err := experiencePacks.PrepareCandidate(appui.ExperiencePackPrepareCandidateRequest{
+		CaseID:  "case-existing-pg",
+		PackID:  "pack-existing-pg",
+		Title:   "PG 主从部署经验包",
+		Summary: "postgres pg 主从 pg_mon 部署经验，包含 Dry Run、审批、恢复验证和回滚。",
+		Service: "postgres",
+	})
+	if err != nil {
+		t.Fatalf("prepare candidate: %v", err)
+	}
+	if _, err := experiencePacks.ConfirmCandidate(candidate.ID, appui.ExperiencePackReviewRequest{Reviewer: "test", Decision: "approve"}); err != nil {
+		t.Fatalf("confirm candidate: %v", err)
+	}
+	if _, err := experiencePacks.SetPackEnabled("pack-existing-pg", true, appui.ExperiencePackReviewRequest{Reviewer: "test"}); err != nil {
+		t.Fatalf("enable pack: %v", err)
+	}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions, appui.WithExperiencePackService(experiencePacks)))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body := map[string]any{
+		"state": map[string]any{
+			"schemaVersion":    "aiops.transport.v1",
+			"sessionId":        "",
+			"threadId":         "thread-pg-reuse",
+			"status":           "idle",
+			"turns":            map[string]any{},
+			"turnOrder":        []any{},
+			"pendingApprovals": map[string]any{},
+			"mcpSurfaces":      map[string]any{},
+			"artifacts":        map[string]any{},
+			"runtimeLiveness":  map[string]any{},
+			"seq":              0,
+			"updatedAt":        time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		"threadId": "thread-pg-reuse",
+		"commands": []map[string]any{
+			{
+				"type": "add-message",
+				"message": map[string]any{
+					"role": "user",
+					"content": []map[string]any{
+						{"type": "text", "text": strings.Join([]string{
+							"给主机A和主机B搭建 postgres pg 主从集群，pg_mon 放到主机C上，生产环境。",
+							"ssh hostA 'sudo apt-get install -y postgresql-16'",
+							"ssh hostB 'sudo apt-get install -y postgresql-16'",
+							"ssh hostA 'sudo -u postgres initdb -D /data/pg'",
+							"ssh hostB 'pg_basebackup -h hostA -D /data/pg -R'",
+							"ssh hostC 'sudo apt-get install -y pg_mon'",
+							"psql -h hostA -c 'select pg_is_in_recovery();'",
+						}, "\n")},
+					},
+				},
+			},
+		},
+	}
+	payload, _ := json.Marshal(body)
+
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if !strings.Contains(text, "\"type\":\"experience_match\"") || !strings.Contains(text, "命中经验包") {
+		t.Fatalf("response = %q, want experience_match artifact", text)
+	}
+	if !strings.Contains(text, "\"matchedPackId\":\"pack-existing-pg\"") {
+		t.Fatalf("response = %q, want matched pack metadata", text)
+	}
+	if !strings.Contains(text, "evolve_current_experience") {
+		t.Fatalf("response = %q, want evolve current experience suggestion", text)
+	}
+	if strings.Contains(text, "generate_experience_pack_candidate") {
+		t.Fatalf("response = %q, should not generate a new pack when an enabled pack matched", text)
+	}
+}
+
 func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-approval-ack", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
@@ -881,6 +1038,31 @@ func TestAssistantTransportStreamClearsApprovalWithoutTransportErrorOnDeniedAppr
 	}
 }
 
+func TestAssistantTransportDetectsMySQLExperiencePackIdentity(t *testing.T) {
+	text := strings.Join([]string{
+		"真实 MySQL 运维闭环：Docker 容器 aiops-mysql，MySQL 8.0，127.0.0.1:33306。",
+		"mysql -h127.0.0.1 -P33306 aiops_biz -e \"SELECT COUNT(*) FROM orders;\"",
+		"mysqldump -h127.0.0.1 -P33306 --single-transaction aiops_biz > aiops_biz.sql",
+		"恢复验证和受控回滚都已完成。",
+	}, "\n")
+
+	if got := assistantTransportDetectService(text); got != "mysql" {
+		t.Fatalf("assistantTransportDetectService() = %q, want mysql", got)
+	}
+	if got := assistantTransportSuggestionTitle("mysql"); got != "MySQL 运维经验包" {
+		t.Fatalf("assistantTransportSuggestionTitle(mysql) = %q, want MySQL 运维经验包", got)
+	}
+	if got := assistantTransportSuggestionPackID("case-ai-chat-real-mysql", assistantTransportDetectService(text)); !strings.HasSuffix(got, "-mysql") {
+		t.Fatalf("assistantTransportSuggestionPackID() = %q, want mysql suffix", got)
+	}
+	signals := assistantTransportSuggestionSignals(text)
+	for _, want := range []string{"mysql", "mysqldump", "备份", "恢复验证", "回滚"} {
+		if !containsString(signals, want) {
+			t.Fatalf("assistantTransportSuggestionSignals() = %#v, missing %q", signals, want)
+		}
+	}
+}
+
 func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, message string) []byte {
 	t.Helper()
 	body := map[string]any{
@@ -916,4 +1098,13 @@ func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, mess
 		t.Fatalf("Marshal() error = %v", err)
 	}
 	return payload
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

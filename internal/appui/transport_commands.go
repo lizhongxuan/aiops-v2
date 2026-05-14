@@ -18,6 +18,7 @@ const (
 	TransportCommandTypeMCPAction        TransportCommandType = "aiops.mcp-action"
 	TransportCommandTypeMCPRefresh       TransportCommandType = "aiops.mcp-refresh"
 	TransportCommandTypeMCPPin           TransportCommandType = "aiops.mcp-pin"
+	TransportCommandTypeInsertArtifact   TransportCommandType = "aiops.insert-agent-ui-artifact"
 )
 
 type TransportCommand struct {
@@ -30,6 +31,7 @@ type TransportCommand struct {
 	MCPAction        *TransportMCPActionCommand
 	MCPRefresh       *TransportMCPRefreshCommand
 	MCPPin           *TransportMCPPinCommand
+	InsertArtifact   *TransportInsertArtifactCommand
 }
 
 type TransportUserMessage struct {
@@ -84,6 +86,11 @@ type TransportMCPPinCommand struct {
 	Pinned    bool
 }
 
+type TransportInsertArtifactCommand struct {
+	TurnID   string
+	Artifact AiopsTransportAgentArtifact
+}
+
 type TransportCommandHandler struct {
 	chat      ChatService
 	approvals ApprovalService
@@ -129,6 +136,8 @@ func (h *TransportCommandHandler) Apply(ctx context.Context, state AiopsTranspor
 		return h.applyMCPRefresh(ctx, next, command.MCPRefresh)
 	case TransportCommandTypeMCPPin:
 		return h.applyMCPPin(next, command.MCPPin), TransportCommandResult{}, nil
+	case TransportCommandTypeInsertArtifact:
+		return h.applyInsertArtifact(next, command.InsertArtifact), TransportCommandResult{}, nil
 	default:
 		return next, TransportCommandResult{}, nil
 	}
@@ -367,6 +376,58 @@ func (h *TransportCommandHandler) applyMCPPin(state AiopsTransportState, command
 	surface.Pinned = command.Pinned
 	state.McpSurfaces[surfaceID] = surface
 	return state
+}
+
+func (h *TransportCommandHandler) applyInsertArtifact(state AiopsTransportState, command *TransportInsertArtifactCommand) AiopsTransportState {
+	if command == nil {
+		return state
+	}
+	artifact := command.Artifact
+	artifact.ID = strings.TrimSpace(artifact.ID)
+	artifact.Type = strings.TrimSpace(artifact.Type)
+	if artifact.ID == "" {
+		artifact.ID = fmt.Sprintf("agent-ui-artifact-%d", time.Now().UnixNano())
+	}
+	if artifact.Type == "" {
+		artifact.Type = "experience_pack_candidate"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if strings.TrimSpace(artifact.CreatedAt) == "" {
+		artifact.CreatedAt = now
+	}
+	artifact.UpdatedAt = now
+
+	turnID := strings.TrimSpace(firstNonEmptyString(command.TurnID, state.CurrentTurnID))
+	if turnID == "" {
+		turnID = "local-artifacts"
+	}
+	turn := state.Turns[turnID]
+	if turn.ID == "" {
+		turn.ID = turnID
+		turn.Status = AiopsTransportTurnStatusCompleted
+		turn.StartedAt = now
+		turn.CompletedAt = now
+	}
+	turn.UpdatedAt = now
+	turn.AgentUiArtifacts = upsertAgentArtifact(turn.AgentUiArtifacts, artifact)
+	state.TurnOrder = appendTurnOrder(state.TurnOrder, turnID)
+	state.Turns[turnID] = turn
+	state.UpdatedAt = now
+	state.Seq++
+	return state
+}
+
+func upsertAgentArtifact(items []AiopsTransportAgentArtifact, artifact AiopsTransportAgentArtifact) []AiopsTransportAgentArtifact {
+	for idx, item := range items {
+		if strings.TrimSpace(item.ID) == artifact.ID {
+			next := append([]AiopsTransportAgentArtifact(nil), items...)
+			next[idx] = artifact
+			return next
+		}
+	}
+	next := append([]AiopsTransportAgentArtifact(nil), items...)
+	next = append(next, artifact)
+	return next
 }
 
 func touchMcpSurface(state AiopsTransportState, surfaceID string) AiopsTransportState {

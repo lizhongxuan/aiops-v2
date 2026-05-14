@@ -333,6 +333,128 @@ describe("AgentUiArtifactPart", () => {
     expect(container.textContent).toContain("验证项");
     expect(container.textContent).toContain("确认新 trace p95 小于 500ms");
   });
+
+  it("renders experience_match Skill, preconditions, OS variant, runner binding, and history without execute_now", async () => {
+    await act(async () => {
+      root.render(
+        <ExperienceMatchArtifact
+          artifact={{
+            id: "match-pg-lag",
+            type: "experience_match",
+            title: "命中经验",
+            payload: {
+              skill: { name: "PG 主从延迟诊断" },
+              compatibilityStatus: "adapt_required",
+              compatibilityGaps: ["操作系统不同：请求 centos，经验包 ubuntu"],
+              matchedSignals: ["pg_replication_lag", "wal_sender_wait"],
+              preconditionGaps: ["需要确认目标主机操作系统"],
+              osVariant: "linux",
+              runnerBinding: { workflowName: "PG Lag Dry Run", status: "ready" },
+              history: { successCount: 7, failureCount: 1, recentResult: "success" },
+              actions: [{ id: "execute_now", label: "立即执行" }],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Skill");
+    expect(container.textContent).toContain("PG 主从延迟诊断");
+    expect(container.textContent).toContain("兼容状态");
+    expect(container.textContent).toContain("需适配后使用");
+    expect(container.textContent).toContain("适配差异");
+    expect(container.textContent).toContain("操作系统不同");
+    expect(container.textContent).toContain("命中原因");
+    expect(container.textContent).toContain("pg_replication_lag");
+    expect(container.textContent).toContain("缺失前置条件");
+    expect(container.textContent).toContain("需要确认目标主机操作系统");
+    expect(container.textContent).toContain("OS 变体");
+    expect(container.textContent).toContain("linux");
+    expect(container.textContent).toContain("Runner Binding");
+    expect(container.textContent).toContain("PG Lag Dry Run");
+    expect(container.textContent).toContain("历史成功/失败");
+    expect(container.textContent).toContain("7");
+    expect(container.textContent).toContain("1");
+    expect(container.textContent).not.toContain("立即执行");
+  });
+
+  it("renders an experience-pack candidate artifact after user confirmation", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-candidate-1",
+            type: "experience_pack_candidate",
+            titleZh: "经验包候选已生成",
+            summaryZh: "PostgreSQL 主从集群部署经验 已生成候选资产，审核通过后才能启用。",
+            redactionStatus: "redacted",
+            inlineData: {
+              candidateId: "candidate-pg",
+              packId: "pack-pg",
+              reviewStatus: "candidate",
+            },
+            actions: [{ id: "review", label: "去审核", href: "/settings/experience-packs?tab=review" }],
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("经验包候选已生成");
+    expect(container.textContent).toContain("经验候选");
+    expect(container.textContent).toContain("candidate-pg");
+    expect(container.textContent).toContain("去审核");
+    expect(container.querySelector('[data-testid="experience-pack-candidate-artifact"]')).not.toBeNull();
+  });
+
+  it("renders runner workflow candidate as a read-only progressive UI card without navigation", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "runner-candidate-1",
+            type: "runner_workflow_candidate",
+            titleZh: "Runner Workflow 草稿已生成",
+            summaryZh: "Redis 运维排障经验包 Workflow 已写入 Runner Studio 本地草稿。",
+            redactionStatus: "redacted",
+            inlineData: {
+              workflowId: "wf-redis",
+              workflowName: "Redis 运维排障经验包 Workflow",
+              nodes: [
+                { id: "precheck", title: "环境预检查", detail: "来自后端 Runner graph" },
+                { id: "approval", title: "人工审批", detail: "来自后端 Runner graph" },
+                { id: "dry_run", title: "Dry Run", detail: "来自后端 Runner graph" },
+                { id: "execute", title: "受控执行", detail: "来自后端 Runner graph" },
+                { id: "validate", title: "恢复验证", detail: "来自后端 Runner graph" },
+                { id: "rollback", title: "受控回滚", detail: "来自后端 Runner graph" },
+              ],
+            },
+            actions: [{ id: "open-runner", label: "打开 Runner Studio", href: "/runner/wf-redis" }],
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("节点生成进度");
+    expect(container.textContent).toContain("环境预检查");
+    expect(container.textContent).toContain("人工审批");
+    expect(container.textContent).toContain("Dry Run");
+    expect(container.textContent).toContain("受控执行");
+    expect(container.textContent).toContain("恢复验证");
+    expect(container.textContent).toContain("受控回滚");
+    expect(container.textContent).toContain("只读预览");
+    expect(container.querySelector('a[href="/runner/wf-redis"]')).toBeNull();
+
+    const previewButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("打开 Runner Studio 只读预览"));
+    expect(previewButton).toBeTruthy();
+    await act(async () => {
+      previewButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const dialog = container.querySelector('[role="dialog"][aria-modal="true"]');
+    expect(dialog?.textContent).toContain("Runner Studio 只读预览");
+    expect(dialog?.textContent).toContain("AI 正在逐步创建节点");
+    expect(dialog?.textContent).toContain("不能在这里编辑或发布工作流");
+  });
 });
 
 describe("McpSurfacePart", () => {

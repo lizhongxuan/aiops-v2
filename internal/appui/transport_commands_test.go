@@ -451,3 +451,40 @@ func TestTransportCommandsMCPRefreshAndPinUpdateState(t *testing.T) {
 		t.Fatalf("surface pinned = %+v, want pinned=true", pinned.McpSurfaces["surface-1"])
 	}
 }
+
+func TestTransportCommandsInsertArtifactAppendsCandidateToTurn(t *testing.T) {
+	handler := NewTransportCommandHandler(nil, nil, nil, nil)
+	state := NewAiopsTransportState("sess-1", "thread-1")
+	state.CurrentTurnID = "turn-1"
+	state.Turns["turn-1"] = AiopsTransportTurn{ID: "turn-1", Status: AiopsTransportTurnStatusCompleted}
+	state.TurnOrder = []string{"turn-1"}
+
+	next, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeInsertArtifact,
+		InsertArtifact: &TransportInsertArtifactCommand{
+			Artifact: AiopsTransportAgentArtifact{
+				ID:        "artifact-candidate-1",
+				Type:      "experience_pack_candidate",
+				TitleZh:   "经验包候选已生成",
+				SummaryZh: "等待审核后才能启用。",
+				InlineData: map[string]any{
+					"candidateId": "candidate-1",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply(insert artifact) error = %v", err)
+	}
+
+	artifacts := next.Turns["turn-1"].AgentUiArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUiArtifacts len = %d, want 1", len(artifacts))
+	}
+	if artifacts[0].ID != "artifact-candidate-1" || artifacts[0].Type != "experience_pack_candidate" {
+		t.Fatalf("artifact = %+v, want experience pack candidate", artifacts[0])
+	}
+	if next.Seq <= state.Seq {
+		t.Fatalf("Seq = %d, want > %d", next.Seq, state.Seq)
+	}
+}

@@ -196,6 +196,71 @@ describe("normalizeAgentUIArtifact", () => {
     expect(artifacts.map((item) => item.id)).toEqual(["a", "b"]);
     expect(artifacts.map((item) => item.type)).toEqual(["verification_result", "experience_match"]);
   });
+
+  it("normalizes experience_match payload fields and removes execute_now actions", () => {
+    const artifact = normalizeAgentUIArtifact({
+      id: "match-pg-lag",
+      type: "experience_match",
+      title: "命中 PG Skill",
+      payload: {
+        skill: { name: "PG 主从延迟诊断" },
+        matched_signals: ["pg_replication_lag"],
+        precondition_gaps: ["需要确认目标主机操作系统"],
+        risk_warnings: ["只允许 dry run"],
+        os_variant: "linux",
+        runner_binding: { id: "binding-1", workflow_id: "wf-pg-lag", status: "ready" },
+        history: { success_count: 7, failure_count: 1 },
+        gene: { signals_match: ["should-not-leak"] },
+      },
+      actions: [
+        { id: "execute_now", label: "立即执行", mutation: true },
+        { id: "view_skill", label: "查看 Skill" },
+      ],
+    });
+
+    expect(artifact.payload).toMatchObject({
+      skill: { name: "PG 主从延迟诊断" },
+      matchedSignals: ["pg_replication_lag"],
+      preconditionGaps: ["需要确认目标主机操作系统"],
+      riskWarnings: ["只允许 dry run"],
+      osVariant: "linux",
+      runnerBinding: { id: "binding-1", workflowId: "wf-pg-lag", status: "ready" },
+      history: { successCount: 7, failureCount: 1 },
+    });
+    expect(artifact.actions.map((action) => action.id)).toEqual([
+      "view_skill",
+      "check_preconditions",
+      "create_dry_run",
+      "view_history",
+      "mark_not_applicable",
+    ]);
+    expect(JSON.stringify(artifact)).not.toContain("execute_now");
+    expect(JSON.stringify(artifact)).not.toContain("should-not-leak");
+  });
+
+  it("normalizes experience_pack_candidate as a first-class artifact", () => {
+    const artifact = normalizeAgentUIArtifact({
+      id: "artifact-candidate-1",
+      type: "experience_pack_candidate",
+      title: "经验包候选已生成",
+      summary: "等待审核后才能启用。",
+      data: {
+        candidateId: "candidate-pg",
+        packId: "pack-pg",
+      },
+    });
+
+    expect(artifact).toMatchObject({
+      id: "artifact-candidate-1",
+      type: "experience_pack_candidate",
+      title: "经验包候选已生成",
+      summary: "等待审核后才能启用。",
+      payload: {
+        candidateId: "candidate-pg",
+        packId: "pack-pg",
+      },
+    });
+  });
 });
 
 describe("enterprise assistant fixtures", () => {

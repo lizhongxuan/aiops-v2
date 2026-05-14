@@ -23,9 +23,13 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 export function AiopsComposer({
   className = "",
   variant = "default",
+  onDraftTextChange,
+  onMessageSubmitted,
 }: {
   className?: string;
   variant?: "default" | "chat";
+  onDraftTextChange?: (text: string) => void;
+  onMessageSubmitted?: () => void;
 } = {}) {
   const state = useAssistantTransportState() as AiopsTransportState;
   const threadIsRunning = useThread((snapshot) => snapshot.isRunning);
@@ -54,6 +58,8 @@ export function AiopsComposer({
           isRunning={isRunning}
           state={state}
           threadIsRunning={threadIsRunning}
+          onTextChange={onDraftTextChange || noop}
+          onMessageSubmitted={onMessageSubmitted || noop}
         />
         {workspace.composerDisabledReason ? (
           <div className="px-1 text-xs text-amber-700">{workspace.composerDisabledReason}</div>
@@ -79,16 +85,22 @@ function selectComposerApproval(state: AiopsTransportState): AiopsTransportAppro
   return approvals.sort((a, b) => (b.requestedAt || "").localeCompare(a.requestedAt || ""))[0];
 }
 
+function noop() {}
+
 function ComposerBody({
   variant,
   isRunning,
   state,
   threadIsRunning,
+  onTextChange,
+  onMessageSubmitted,
 }: {
   variant: "default" | "chat";
   isRunning: boolean;
   state: AiopsTransportState;
   threadIsRunning: boolean;
+  onTextChange: (text: string) => void;
+  onMessageSubmitted: () => void;
 }) {
   const workspace = useSessionWorkspaceContext();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -112,6 +124,7 @@ function ComposerBody({
           rows={1}
           placeholder="输入你的问题或任务"
           disabled={Boolean(workspace.composerDisabledReason) || isRunning}
+          onInput={(event) => onTextChange(event.currentTarget.value)}
           className={
             variant === "chat"
               ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
@@ -122,7 +135,7 @@ function ComposerBody({
 
       <div className={variant === "chat" ? "flex shrink-0 items-center justify-between" : "mb-1 flex shrink-0 items-center gap-2"}>
         <span className="text-xs text-slate-400 pl-1">{workspace.llmLabel}</span>
-        <TargetAwareSendButton variant={variant} isRunning={isRunning} state={state} threadIsRunning={threadIsRunning} />
+        <TargetAwareSendButton variant={variant} isRunning={isRunning} state={state} threadIsRunning={threadIsRunning} onMessageSubmitted={onMessageSubmitted} />
       </div>
     </ComposerPrimitive.Root>
   );
@@ -133,11 +146,13 @@ function TargetAwareSendButton({
   isRunning,
   state,
   threadIsRunning,
+  onMessageSubmitted,
 }: {
   variant: "default" | "chat";
   isRunning: boolean;
   state: AiopsTransportState;
   threadIsRunning: boolean;
+  onMessageSubmitted: () => void;
 }) {
   const api = useAssistantApi();
   const composer = useComposerRuntime();
@@ -211,6 +226,7 @@ function TargetAwareSendButton({
         const text = composer.getState().text.trim();
         if (!text) return;
         composer.setText("");
+        onMessageSubmitted();
         const command = {
           type: "add-message",
           message: {

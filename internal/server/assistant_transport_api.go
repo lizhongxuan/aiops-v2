@@ -244,6 +244,14 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 				Pinned:    command.Pinned,
 			},
 		}, nil
+	case *assistantTransportInsertArtifactCommand:
+		return appui.TransportCommand{
+			Type: appui.TransportCommandTypeInsertArtifact,
+			InsertArtifact: &appui.TransportInsertArtifactCommand{
+				TurnID:   strings.TrimSpace(firstAssistantTransportValue(command.TurnID, state.CurrentTurnID)),
+				Artifact: command.Artifact,
+			},
+		}, nil
 	default:
 		return appui.TransportCommand{}, errors.New("assistant transport command is not supported")
 	}
@@ -311,6 +319,7 @@ func (s *HTTPServer) streamAssistantTransportState(
 				if err != nil {
 					return current, err
 				}
+				next = s.attachAssistantTransportExperiencePackSuggestions(next, session)
 				if err := encoder.WriteStateOps(assistantTransportDiffStateOps(current, next)); err != nil {
 					return current, err
 				}
@@ -502,6 +511,475 @@ func projectAssistantTransportSessionState(
 	return next, nil
 }
 
+func (s *HTTPServer) attachAssistantTransportExperiencePackSuggestions(state appui.AiopsTransportState, session *runtimekernel.SessionState) appui.AiopsTransportState {
+	turn := assistantTransportLatestSessionTurn(session)
+	if turn == nil || turn.Lifecycle != runtimekernel.TurnLifecycleCompleted {
+		state.ExperiencePackSuggestions = nil
+		return state
+	}
+	projectedTurn, ok := state.Turns[strings.TrimSpace(turn.ID)]
+	if !ok || !assistantTransportTurnHasExperiencePackValue(projectedTurn) {
+		state.ExperiencePackSuggestions = nil
+		return state
+	}
+	service := s.experiencePackService()
+	if service == nil {
+		state.ExperiencePackSuggestions = nil
+		return state
+	}
+	caseID := assistantTransportSuggestionCaseID(state, session, turn)
+	text := assistantTransportSuggestionText(projectedTurn)
+	signals := assistantTransportSuggestionSignals(text)
+	serviceName := assistantTransportDetectService(text)
+	environment := assistantTransportDetectEnvironment(text)
+	matches, _ := service.Retrieve(appui.ExperiencePackRetrieveRequest{
+		CaseID:        caseID,
+		ChatSessionID: strings.TrimSpace(state.SessionID),
+		UserText:      text,
+		Signals:       signals,
+		Environment:   environment,
+		Metadata: map[string]any{
+			"threadId": strings.TrimSpace(state.ThreadID),
+			"turnId":   strings.TrimSpace(turn.ID),
+			"source":   "ai-chat",
+		},
+	})
+	matchedPackID := ""
+	if len(matches.Items) > 0 {
+		matchedPackID = strings.TrimSpace(matches.Items[0].PackID)
+		projectedTurn.AgentUiArtifacts = assistantTransportUpsertAgentArtifact(
+			projectedTurn.AgentUiArtifacts,
+			assistantTransportExperienceMatchArtifact(caseID, projectedTurn, matches.Items[0]),
+		)
+		state.Turns[strings.TrimSpace(turn.ID)] = projectedTurn
+	}
+	commands := assistantTransportExtractCommands(projectedTurn)
+	result, err := service.EvaluateSuggestions(appui.ExperiencePackSuggestionEvaluateRequest{
+		CaseID:                   caseID,
+		Service:                  serviceName,
+		Environment:              environment,
+		Signals:                  signals,
+		CommandCount:             assistantTransportEstimateCommandCount(projectedTurn),
+		Outcome:                  "success",
+		RedactionStatus:          "redacted",
+		LLMOperationalValueScore: 0.8,
+		MatchedPackID:            matchedPackID,
+		MemoryGraphWritable:      true,
+		ReusableStepCount:        assistantTransportEstimateReusableStepCount(projectedTurn),
+		Metadata: map[string]any{
+			"chatSessionId": strings.TrimSpace(state.SessionID),
+			"threadId":      strings.TrimSpace(state.ThreadID),
+			"turnId":        strings.TrimSpace(turn.ID),
+			"source":        "ai-chat",
+			"commands":      commands,
+			"signals":       signals,
+			"matchedPackId": matchedPackID,
+		},
+	})
+	if err != nil || len(result.Items) == 0 {
+		state.ExperiencePackSuggestions = nil
+		return state
+	}
+	sourceRefs := []string{}
+	if state.ThreadID != "" {
+		sourceRefs = append(sourceRefs, state.ThreadID)
+	}
+	if state.SessionID != "" {
+		sourceRefs = append(sourceRefs, state.SessionID)
+	}
+	if turn.ID != "" {
+		sourceRefs = append(sourceRefs, turn.ID)
+	}
+	summary := assistantTransportSuggestionSummary(projectedTurn)
+	state.ExperiencePackSuggestions = make([]appui.AiopsTransportExperiencePackSuggestion, 0, len(result.Items))
+	for _, item := range result.Items {
+		itemID := strings.TrimSpace(firstAssistantTransportValue(item.ID, item.Type))
+		state.ExperiencePackSuggestions = append(state.ExperiencePackSuggestions, appui.AiopsTransportExperiencePackSuggestion{
+			ID:          itemID,
+			Type:        strings.TrimSpace(item.Type),
+			Label:       strings.TrimSpace(item.Label),
+			Reason:      strings.TrimSpace(item.Reason),
+			CaseID:      caseID,
+			PackID:      firstAssistantTransportValue(matchedPackID, assistantTransportSuggestionPackID(caseID, serviceName)),
+			Title:       assistantTransportSuggestionTitle(serviceName),
+			Summary:     summary,
+			Service:     serviceName,
+			Environment: environment,
+			SourceRefs:  append([]string(nil), sourceRefs...),
+			Metadata: map[string]any{
+				"chatSessionId": strings.TrimSpace(state.SessionID),
+				"threadId":      strings.TrimSpace(state.ThreadID),
+				"turnId":        strings.TrimSpace(turn.ID),
+				"suggestionId":  itemID,
+				"commands":      commands,
+				"signals":       signals,
+				"matchedPackId": matchedPackID,
+				"proofId":       assistantTransportProofID(projectedTurn),
+			},
+		})
+	}
+	return state
+}
+
+func assistantTransportExperienceMatchArtifact(caseID string, turn appui.AiopsTransportTurn, match appui.ExperiencePackMatch) appui.AiopsTransportAgentArtifact {
+	packTitle := strings.TrimSpace(firstAssistantTransportValue(match.Skill.Name, match.PackID))
+	confidence := match.Confidence
+	return appui.AiopsTransportAgentArtifact{
+		ID:              "experience-match-" + transportSafeID(firstAssistantTransportValue(match.PackID, turn.ID)),
+		Type:            "experience_match",
+		TitleZh:         "命中经验包",
+		SummaryZh:       firstAssistantTransportValue(packTitle, "经验包") + " 已命中。AI 将先给出执行计划、风险范围、Runner 工作流和验证方式，确认后才会使用。",
+		Status:          "ready",
+		Source:          "ai-chat",
+		CaseID:          caseID,
+		RedactionStatus: "redacted",
+		InlineData: map[string]any{
+			"packId":              match.PackID,
+			"skillName":           firstAssistantTransportValue(match.Skill.Name, match.Skill.Summary, match.PackID),
+			"compatibilityStatus": match.CompatibilityStatus,
+			"compatibilityGaps":   append([]string(nil), match.CompatibilityGaps...),
+			"matchReasons":        append([]string(nil), match.MatchReasons...),
+			"matchedSignals":      append([]string(nil), match.MatchedSignals...),
+			"preconditionGaps":    append([]string(nil), match.PreconditionGaps...),
+			"riskWarnings":        append([]string(nil), match.RiskWarnings...),
+			"osVariant":           match.OSVariant,
+			"runnerBinding":       match.RunnerBinding,
+			"history":             match.History,
+			"advancedRefs":        match.AdvancedRefs,
+			"confidence":          confidence,
+			"executionPlan":       assistantTransportExperienceExecutionPlan(match),
+			"riskScope":           "执行前必须确认 HostLease、审批、Dry Run 和爆炸半径；环境不一致时仅生成 Runner 变体，不修改原经验包。",
+			"validationItems":     []string{"环境预检查", "人工审批", "Dry Run", "受控执行", "恢复验证", "受控回滚"},
+			"requiresReview":      true,
+			"retrievalPipeline":   []string{"结构化条件过滤", "关键词/BM25", "向量语义检索", "环境指纹匹配", "GEP Gene signals_match"},
+		},
+		Actions: []map[string]any{
+			{"id": "view-experience-pack", "label": "查看经验包", "href": "/settings/experience-packs", "mutation": false},
+		},
+	}
+}
+
+func assistantTransportExperienceExecutionPlan(match appui.ExperiencePackMatch) []string {
+	steps := []string{
+		"读取 Skill：确认为什么适用、前置条件、验证和回滚方式",
+		"读取 GEP Gene：确认触发信号、安全约束、历史成功/失败和环境指纹",
+	}
+	if strings.TrimSpace(match.RunnerBinding.WorkflowID) != "" {
+		steps = append(steps, "准备 Runner Workflow："+firstAssistantTransportValue(match.RunnerBinding.WorkflowName, match.RunnerBinding.WorkflowID))
+	} else if match.CompatibilityStatus == "adapt_required" {
+		steps = append(steps, "当前环境与经验包存在差异：只参考 Skill，先生成适配计划和 Runner 变体")
+	} else if match.CompatibilityStatus == "reference_only" {
+		steps = append(steps, "当前经验仅作参考：不使用原 Runner，每一步操作都需要用户审核")
+	} else {
+		steps = append(steps, "当前环境没有可直接执行的 Runner，先生成 Runner 变体")
+	}
+	steps = append(steps,
+		"提交人工审核：确认目标、爆炸半径和回滚计划",
+		"执行 Dry Run：只读验证参数和前置条件",
+		"受控执行并完成恢复验证",
+	)
+	return steps
+}
+
+func assistantTransportUpsertAgentArtifact(items []appui.AiopsTransportAgentArtifact, artifact appui.AiopsTransportAgentArtifact) []appui.AiopsTransportAgentArtifact {
+	id := strings.TrimSpace(artifact.ID)
+	if id == "" {
+		return items
+	}
+	for idx, item := range items {
+		if strings.TrimSpace(item.ID) == id {
+			next := append([]appui.AiopsTransportAgentArtifact(nil), items...)
+			next[idx] = artifact
+			return next
+		}
+	}
+	next := append([]appui.AiopsTransportAgentArtifact(nil), items...)
+	return append(next, artifact)
+}
+
+func assistantTransportTurnHasExperiencePackValue(turn appui.AiopsTransportTurn) bool {
+	text := strings.ToLower(assistantTransportSuggestionText(turn))
+	if text == "" {
+		return false
+	}
+	keywords := []string{
+		"运维", "排障", "故障", "告警", "修复", "恢复", "验证", "回滚", "部署",
+		"备份", "dry run", "coroot", "redis", "mysql", "mysqldump", "postgres", "postgresql", "pg", "kubernetes", "p95", "latency",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantTransportSuggestionText(turn appui.AiopsTransportTurn) string {
+	parts := []string{}
+	if turn.User != nil {
+		parts = append(parts, turn.User.Text)
+	}
+	if turn.Final != nil {
+		parts = append(parts, turn.Final.Text)
+	}
+	for _, block := range turn.Process {
+		parts = append(parts, block.Text, block.Command, block.InputSummary, block.OutputPreview)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func assistantTransportSuggestionSummary(turn appui.AiopsTransportTurn) string {
+	if turn.Final != nil && strings.TrimSpace(turn.Final.Text) != "" {
+		return trimAssistantTransportText(turn.Final.Text, 280)
+	}
+	if turn.User != nil && strings.TrimSpace(turn.User.Text) != "" {
+		return trimAssistantTransportText(turn.User.Text, 280)
+	}
+	return "从 AI Chat 运维轨迹生成的候选经验。"
+}
+
+func assistantTransportEstimateCommandCount(turn appui.AiopsTransportTurn) int {
+	if commands := assistantTransportExtractCommands(turn); len(commands) > 0 {
+		return len(commands)
+	}
+	count := 0
+	for _, block := range turn.Process {
+		if block.Kind == appui.AiopsTransportProcessKindCommand || block.Kind == appui.AiopsTransportProcessKindTool {
+			count++
+		}
+	}
+	return count
+}
+
+func assistantTransportEstimateReusableStepCount(turn appui.AiopsTransportTurn) int {
+	if commands := assistantTransportExtractCommands(turn); len(commands) > 0 {
+		return len(commands)
+	}
+	count := 0
+	for _, block := range turn.Process {
+		if strings.TrimSpace(block.Text) != "" || strings.TrimSpace(block.Command) != "" {
+			count++
+		}
+		if len(block.Steps) > 0 {
+			count += len(block.Steps)
+		}
+	}
+	return count
+}
+
+func assistantTransportExtractCommands(turn appui.AiopsTransportTurn) []string {
+	candidates := []string{}
+	for _, block := range turn.Process {
+		for _, value := range []string{block.Command, block.InputSummary, block.OutputPreview, block.Text} {
+			candidates = append(candidates, assistantTransportCommandLines(value)...)
+		}
+	}
+	if turn.Final != nil {
+		candidates = append(candidates, assistantTransportCommandLines(turn.Final.Text)...)
+	}
+	if turn.User != nil {
+		candidates = append(candidates, assistantTransportCommandLines(turn.User.Text)...)
+	}
+	return assistantTransportUniqueCommands(candidates)
+}
+
+func assistantTransportCommandLines(value string) []string {
+	lines := strings.Split(value, "\n")
+	result := []string{}
+	for _, line := range lines {
+		command := normalizeAssistantTransportCommandLine(line)
+		if command != "" {
+			result = append(result, command)
+		}
+	}
+	return result
+}
+
+func normalizeAssistantTransportCommandLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	line = strings.Trim(line, "`")
+	line = strings.TrimSpace(line)
+	line = strings.TrimPrefix(line, "$ ")
+	line = strings.TrimPrefix(line, "# ")
+	line = strings.TrimSpace(strings.TrimLeft(line, "-*"))
+	if len(line) > 2 && line[1] == '.' && line[0] >= '0' && line[0] <= '9' {
+		line = strings.TrimSpace(line[2:])
+	}
+	if len(line) > 3 && line[2] == '.' && line[0] >= '0' && line[0] <= '9' && line[1] >= '0' && line[1] <= '9' {
+		line = strings.TrimSpace(line[3:])
+	}
+	lower := strings.ToLower(line)
+	prefixes := []string{
+		"sudo ", "ssh ", "scp ", "rsync ", "systemctl ", "journalctl ", "docker ", "docker compose ", "kubectl ", "helm ",
+		"psql ", "pg_ctl", "pg_basebackup", "initdb", "createuser ", "createdb ", "redis-cli ", "mysql ", "mysqldump ",
+		"curl ", "wget ", "sed ", "awk ", "grep ", "cat ", "tee ", "mkdir ", "chown ", "chmod ", "cp ", "mv ", "tar ",
+		"apt ", "apt-get ", "yum ", "dnf ", "brew ", "echo ",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return line
+		}
+	}
+	return ""
+}
+
+func assistantTransportUniqueCommands(values []string) []string {
+	seen := map[string]bool{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, value)
+	}
+	return result
+}
+
+func assistantTransportProofID(turn appui.AiopsTransportTurn) string {
+	seed := []string{turn.ID}
+	if turn.Final != nil {
+		seed = append(seed, turn.Final.ID)
+	}
+	if turn.User != nil {
+		seed = append(seed, turn.User.ID)
+	}
+	return "proof-ai-chat-" + transportSafeID(strings.Join(seed, "-"))
+}
+
+func assistantTransportSuggestionCaseID(state appui.AiopsTransportState, session *runtimekernel.SessionState, turn *runtimekernel.TurnSnapshot) string {
+	return "case-ai-chat-" + transportSafeID(firstAssistantTransportValue(state.ThreadID, state.SessionID, sessionID(session), turnID(turn), "session"))
+}
+
+func assistantTransportSuggestionPackID(caseID, serviceName string) string {
+	base := caseID
+	if serviceName != "" {
+		base += "-" + serviceName
+	}
+	return "pack-" + transportSafeID(base)
+}
+
+func assistantTransportSuggestionTitle(serviceName string) string {
+	switch serviceName {
+	case "redis":
+		return "Redis 运维排障经验包"
+	case "mysql":
+		return "MySQL 运维经验包"
+	case "postgres":
+		return "PostgreSQL 运维经验包"
+	case "kubernetes":
+		return "Kubernetes 运维经验包"
+	default:
+		return "AI Chat 运维经验包"
+	}
+}
+
+func assistantTransportDetectService(text string) string {
+	normalized := strings.ToLower(text)
+	switch {
+	case strings.Contains(normalized, "redis"):
+		return "redis"
+	case strings.Contains(normalized, "mysql"), strings.Contains(normalized, "mysqldump"), strings.Contains(normalized, "mariadb"):
+		return "mysql"
+	case strings.Contains(normalized, "postgres"), strings.Contains(normalized, "postgresql"), strings.Contains(normalized, "pg "):
+		return "postgres"
+	case strings.Contains(normalized, "kubernetes"), strings.Contains(normalized, "kubectl"), strings.Contains(normalized, "pod"):
+		return "kubernetes"
+	default:
+		return "aiops"
+	}
+}
+
+func assistantTransportDetectEnvironment(text string) string {
+	normalized := strings.ToLower(text)
+	switch {
+	case strings.Contains(normalized, "prod"), strings.Contains(normalized, "生产"):
+		return "prod"
+	case strings.Contains(normalized, "staging"), strings.Contains(normalized, "预发"):
+		return "staging"
+	default:
+		return "unknown"
+	}
+}
+
+func assistantTransportSuggestionSignals(text string) []string {
+	normalized := strings.ToLower(text)
+	signals := []string{}
+	for _, keyword := range []string{"redis", "used_memory_rss", "maxmemory", "payment-api", "p95", "slowlog", "big key", "mysql", "mysqldump", "backup", "备份", "aiops_biz", "orders", "coroot", "dry run", "rollback", "回滚", "恢复验证"} {
+		if strings.Contains(normalized, strings.ToLower(keyword)) {
+			signals = append(signals, keyword)
+		}
+	}
+	if strings.Contains(normalized, "mysqldump") && !assistantTransportStringIn(signals, "备份") {
+		signals = append(signals, "备份")
+	}
+	if len(signals) == 0 {
+		signals = append(signals, "ai-chat-ops")
+	}
+	return signals
+}
+
+func assistantTransportStringIn(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionID(session *runtimekernel.SessionState) string {
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.ID)
+}
+
+func turnID(turn *runtimekernel.TurnSnapshot) string {
+	if turn == nil {
+		return ""
+	}
+	return strings.TrimSpace(turn.ID)
+}
+
+func transportSafeID(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return "unknown"
+	}
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range value {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(builder.String(), "-")
+}
+
+func trimAssistantTransportText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len([]rune(value)) <= limit {
+		return value
+	}
+	runes := []rune(value)
+	return strings.TrimSpace(string(runes[:limit])) + "..."
+}
+
 func assistantTransportSessionTurnIsTerminal(session *runtimekernel.SessionState) bool {
 	turn := assistantTransportLatestSessionTurn(session)
 	if turn == nil {
@@ -608,6 +1086,9 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 	if !reflect.DeepEqual(prev.Artifacts, next.Artifacts) {
 		appendSet([]any{"artifacts"}, next.Artifacts)
 	}
+	if !reflect.DeepEqual(prev.ExperiencePackSuggestions, next.ExperiencePackSuggestions) {
+		appendSet([]any{"experiencePackSuggestions"}, next.ExperiencePackSuggestions)
+	}
 	if !reflect.DeepEqual(prev.RuntimeLiveness, next.RuntimeLiveness) {
 		appendSet([]any{"runtimeLiveness"}, next.RuntimeLiveness)
 	}
@@ -712,6 +1193,12 @@ func assistantTransportCloneState(state appui.AiopsTransportState) appui.AiopsTr
 	for key, artifact := range state.Artifacts {
 		cloned.Artifacts[key] = artifact
 	}
+	if len(state.ExperiencePackSuggestions) > 0 {
+		cloned.ExperiencePackSuggestions = make([]appui.AiopsTransportExperiencePackSuggestion, len(state.ExperiencePackSuggestions))
+		for idx, suggestion := range state.ExperiencePackSuggestions {
+			cloned.ExperiencePackSuggestions[idx] = assistantTransportCloneExperiencePackSuggestion(suggestion)
+		}
+	}
 	cloned.RuntimeLiveness = appui.AiopsRuntimeLiveness{
 		ActiveTurns:          cloneTransportBoolMap(state.RuntimeLiveness.ActiveTurns),
 		ActiveAgents:         cloneTransportBoolMap(state.RuntimeLiveness.ActiveAgents),
@@ -720,6 +1207,16 @@ func assistantTransportCloneState(state appui.AiopsTransportState) appui.AiopsTr
 		ActiveCommandStreams: cloneTransportBoolMap(state.RuntimeLiveness.ActiveCommandStreams),
 	}
 	return cloned
+}
+
+func assistantTransportCloneExperiencePackSuggestion(suggestion appui.AiopsTransportExperiencePackSuggestion) appui.AiopsTransportExperiencePackSuggestion {
+	if len(suggestion.SourceRefs) > 0 {
+		suggestion.SourceRefs = append([]string(nil), suggestion.SourceRefs...)
+	}
+	if len(suggestion.Metadata) > 0 {
+		suggestion.Metadata = cloneTransportAnyMap(suggestion.Metadata)
+	}
+	return suggestion
 }
 
 func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTransportTurn {
@@ -740,6 +1237,26 @@ func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTrans
 		cloned.Process = make([]appui.AiopsProcessBlock, len(turn.Process))
 		for idx, block := range turn.Process {
 			cloned.Process[idx] = assistantTransportCloneProcessBlock(block)
+		}
+	}
+	if len(turn.AgentUiArtifacts) > 0 {
+		cloned.AgentUiArtifacts = make([]appui.AiopsTransportAgentArtifact, len(turn.AgentUiArtifacts))
+		for idx, artifact := range turn.AgentUiArtifacts {
+			cloned.AgentUiArtifacts[idx] = assistantTransportCloneAgentArtifact(artifact)
+		}
+	}
+	return cloned
+}
+
+func assistantTransportCloneAgentArtifact(artifact appui.AiopsTransportAgentArtifact) appui.AiopsTransportAgentArtifact {
+	cloned := artifact
+	cloned.InlineData = cloneTransportAnyMap(artifact.InlineData)
+	cloned.Payload = cloneTransportAnyMap(artifact.Payload)
+	cloned.Metadata = cloneTransportAnyMap(artifact.Metadata)
+	if len(artifact.Actions) > 0 {
+		cloned.Actions = make([]map[string]any, len(artifact.Actions))
+		for idx, action := range artifact.Actions {
+			cloned.Actions[idx] = cloneTransportAnyMap(action)
 		}
 	}
 	return cloned

@@ -1,10 +1,11 @@
 import { useState } from "react";
 
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
-import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type { AiopsTransportExperiencePackSuggestion, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { AiopsComposer } from "./components/AiopsComposer";
 import { AiopsThread } from "./components/AiopsThread";
+import { ExperiencePackSuggestionConfirmation } from "./components/ExperiencePackChatArtifacts";
 import { SessionContextBar } from "./components/SessionContextBar";
 
 type ChatPageProps = {
@@ -16,6 +17,8 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
   const [activeThreadId, setActiveThreadId] = useState(threadId);
   const [activeInitialState, setActiveInitialState] = useState(initialState);
   const [activeAutoResume, setActiveAutoResume] = useState(false);
+  const [draftText, setDraftText] = useState("");
+  const [selectedExperienceSuggestion, setSelectedExperienceSuggestion] = useState<AiopsTransportExperiencePackSuggestion | null>(null);
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden text-zinc-950">
@@ -30,6 +33,8 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
           setActiveThreadId(nextThreadId);
           setActiveInitialState(nextInitialState);
           setActiveAutoResume(Boolean(autoResume));
+          setDraftText("");
+          setSelectedExperienceSuggestion(null);
         }}
       >
         <ChatTransportProvider
@@ -39,8 +44,22 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
           threadId={activeThreadId}
         >
           <div className="grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white">
-            <AiopsThread />
-            <AiopsComposer variant="chat" />
+            <AiopsThread
+              draftText={draftText}
+              onSelectExperienceSuggestion={setSelectedExperienceSuggestion}
+            />
+            {selectedExperienceSuggestion ? (
+              <ExperiencePackSuggestionConfirmation
+                suggestion={selectedExperienceSuggestion}
+                onCancel={() => setSelectedExperienceSuggestion(null)}
+              />
+            ) : (
+              <AiopsComposer
+                variant="chat"
+                onDraftTextChange={setDraftText}
+                onMessageSubmitted={() => setDraftText("")}
+              />
+            )}
           </div>
         </ChatTransportProvider>
       </SessionContextBar>

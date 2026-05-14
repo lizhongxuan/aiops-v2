@@ -96,6 +96,18 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 				"type": "aiops.mcp-pin",
 				"surfaceId": "surface-3",
 				"pinned": true
+			},
+			{
+				"type": "aiops.insert-agent-ui-artifact",
+				"turnId": "turn-1",
+				"artifact": {
+					"id": "artifact-candidate-1",
+					"type": "experience_pack_candidate",
+					"titleZh": "经验包候选已生成",
+					"inlineData": {
+						"candidateId": "candidate-1"
+					}
+				}
 			}
 		]
 	}`)
@@ -129,8 +141,8 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	if _, ok := req.Tools["web_search"]; !ok {
 		t.Fatalf("Tools = %#v, want web_search key", req.Tools)
 	}
-	if len(req.Commands) != 8 {
-		t.Fatalf("len(Commands) = %d, want 8", len(req.Commands))
+	if len(req.Commands) != 9 {
+		t.Fatalf("len(Commands) = %d, want 9", len(req.Commands))
 	}
 
 	addMessage, ok := req.Commands[0].(*assistantTransportAddMessageCommand)
@@ -211,6 +223,14 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	}
 	if mcpPin.SurfaceID != "surface-3" || !mcpPin.Pinned {
 		t.Fatalf("mcpPin = %+v, want surface-3/pinned=true", mcpPin)
+	}
+
+	insertArtifact, ok := req.Commands[8].(*assistantTransportInsertArtifactCommand)
+	if !ok {
+		t.Fatalf("command[8] type = %T, want *assistantTransportInsertArtifactCommand", req.Commands[8])
+	}
+	if insertArtifact.TurnID != "turn-1" || insertArtifact.Artifact.Type != "experience_pack_candidate" {
+		t.Fatalf("insertArtifact = %+v, want turn-1 experience_pack_candidate", insertArtifact)
 	}
 }
 

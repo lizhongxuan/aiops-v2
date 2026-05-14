@@ -3,9 +3,10 @@ import { ArrowDown, Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
-import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportExperiencePackSuggestion, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
+import { ExperiencePackChatArtifacts } from "./ExperiencePackChatArtifacts";
 import { McpSurfacePart } from "./McpSurfacePart";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
@@ -22,7 +23,13 @@ type AssistantMessageMeta = {
   turnUpdatedAt?: string;
 };
 
-export function AiopsThread() {
+export function AiopsThread({
+  draftText = "",
+  onSelectExperienceSuggestion,
+}: {
+  draftText?: string;
+  onSelectExperienceSuggestion?: (suggestion: AiopsTransportExperiencePackSuggestion) => void;
+} = {}) {
   const state = useAssistantTransportState() as AiopsTransportState;
   const surfaces = Object.values(state.mcpSurfaces || {});
   const target = useSessionTargetContext();
@@ -57,6 +64,10 @@ export function AiopsThread() {
               }}
             />
             <McpSurfaceList surfaces={surfaces} />
+            <ExperiencePackChatArtifacts
+              draftText={draftText}
+              onSelectSuggestion={onSelectExperienceSuggestion || noopSelectExperienceSuggestion}
+            />
           </div>
         </div>
       </ThreadPrimitive.Viewport>
@@ -74,6 +85,8 @@ export function AiopsThread() {
     </ThreadPrimitive.Root>
   );
 }
+
+function noopSelectExperienceSuggestion() {}
 
 function UserMessage() {
   const message = useMessage();

@@ -44,6 +44,7 @@ func (s *HTTPServer) handleAssistantTransportResume(w http.ResponseWriter, r *ht
 		_ = encoder.WriteError(current.LastError)
 		return
 	}
+	current = s.attachAssistantTransportExperiencePackSuggestions(current, session)
 	if err := encoder.WriteStateOps(assistantTransportFullStateOps(current)); err != nil {
 		return
 	}

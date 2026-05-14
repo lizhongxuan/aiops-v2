@@ -1,20 +1,18 @@
-import { CheckCircle2, Power, Search, ShieldCheck } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, Power, Search, ShieldCheck, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 
 import {
   approveExperiencePackCandidate,
+  confirmRunnerCandidate,
   listExperiencePackCandidates,
   listExperiencePackReuseRecords,
   normalizeExperienceCandidate,
   saveExperiencePackAuthorizationScopes,
   setExperiencePackEnabled,
-  type AuthorizationScopeView,
   type ExperienceCandidateView,
   type ExperiencePackView,
   type ReuseRecordView,
 } from "@/api/experiencePacks";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -55,6 +53,7 @@ export function shouldUseExperiencePackFixtureFallback(env: ExperiencePackFallba
 }
 
 const ALLOW_FIXTURE_FALLBACK = shouldUseExperiencePackFixtureFallback(import.meta.env);
+const EXPERIENCE_PAGE_SIZE = 6;
 
 function searchableTone(pack?: ExperiencePackView | null): "default" | "success" | "warning" | "danger" {
   if (!pack) return "warning";
@@ -80,22 +79,28 @@ function statusLabel(value = "") {
   return labels[value] || value || "未知";
 }
 
-function scopeLabel(scope: AuthorizationScopeView) {
-  return `${scope.type}: ${scope.value}`;
-}
-
 function packFromCandidate(candidate: ExperienceCandidateView) {
   return candidate.experiencePack;
+}
+
+function shortSummary(value = "", maxLength = 96) {
+  const text = compactText(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
 export function ExperiencePacksPage() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [activeTab, setActiveTab] = useState("candidates");
+  const [activeTab, setActiveTab] = useState("library");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [candidates, setCandidates] = useState<ExperienceCandidateView[]>(ALLOW_FIXTURE_FALLBACK ? FALLBACK_CANDIDATES : []);
   const [selectedCandidateId, setSelectedCandidateId] = useState(ALLOW_FIXTURE_FALLBACK ? FALLBACK_CANDIDATES[0]?.id || "" : "");
+  const [libraryPage, setLibraryPage] = useState(1);
+  const [reviewPage, setReviewPage] = useState(1);
   const [reuseRecords, setReuseRecords] = useState<ReuseRecordView[]>([]);
+  const [runnerDraftLinks, setRunnerDraftLinks] = useState<Record<string, string>>({});
+  const [runnerDraftStatus, setRunnerDraftStatus] = useState<Record<string, string>>({});
 
   async function loadCandidates() {
     setLoading(true);
@@ -128,7 +133,21 @@ export function ExperiencePacksPage() {
 
   const selectedCandidate = filteredCandidates.find((candidate) => candidate.id === selectedCandidateId) || filteredCandidates[0] || null;
   const selectedPack = selectedCandidate?.experiencePack || null;
-  const enabledPacks = filteredCandidates.map(packFromCandidate).filter((pack): pack is ExperiencePackView => Boolean(pack && pack.enabled));
+  const reviewCandidates = filteredCandidates.filter((candidate) => {
+    const pack = candidate.experiencePack;
+    return candidate.status === "candidate" || pack?.reviewStatus !== "approved" || pack?.validationGate.status === "blocked";
+  });
+  const libraryTotalPages = Math.max(1, Math.ceil(filteredCandidates.length / EXPERIENCE_PAGE_SIZE));
+  const reviewTotalPages = Math.max(1, Math.ceil(reviewCandidates.length / EXPERIENCE_PAGE_SIZE));
+  const currentLibraryPage = Math.min(libraryPage, libraryTotalPages);
+  const currentReviewPage = Math.min(reviewPage, reviewTotalPages);
+  const pagedLibraryCandidates = filteredCandidates.slice((currentLibraryPage - 1) * EXPERIENCE_PAGE_SIZE, currentLibraryPage * EXPERIENCE_PAGE_SIZE);
+  const pagedReviewCandidates = reviewCandidates.slice((currentReviewPage - 1) * EXPERIENCE_PAGE_SIZE, currentReviewPage * EXPERIENCE_PAGE_SIZE);
+
+  useEffect(() => {
+    setLibraryPage(1);
+    setReviewPage(1);
+  }, [query, candidates.length]);
 
   useEffect(() => {
     async function loadReuseRecords() {
@@ -161,85 +180,120 @@ export function ExperiencePacksPage() {
     setCandidates((current) => current.map((item) => item.experiencePack?.id === pack.id ? { ...item, experiencePack: next } : item));
   }
 
+  async function sendToRunnerStudio(candidate: ExperienceCandidateView) {
+    const key = candidate.id;
+    setRunnerDraftStatus((current) => ({ ...current, [key]: "正在生成 Runner Studio 草稿..." }));
+    try {
+      const result = await confirmRunnerCandidate({
+        candidateId: candidate.id,
+        packId: candidate.packId,
+        title: candidate.title,
+        summary: candidate.summary,
+      });
+      setRunnerDraftLinks((current) => ({ ...current, [key]: result.studioDraftLink || `/runner/${encodeURIComponent(result.workflowId || result.id)}` }));
+      setRunnerDraftStatus((current) => ({ ...current, [key]: "已创建本地草稿，进入 Runner Studio 后仍需人工审核、Dry Run 和发布。" }));
+    } catch (cause) {
+      setRunnerDraftStatus((current) => ({ ...current, [key]: (cause as Error).message || "Runner 草稿生成失败" }));
+    }
+  }
+
+  function openCandidateDetail(candidate: ExperienceCandidateView) {
+    setSelectedCandidateId(candidate.id);
+    setDetailOpen(true);
+  }
+
+  function selectView(key: string) {
+    setActiveTab(key);
+    setDetailOpen(false);
+  }
+
+  const headerActions = (
+    <div className="flex w-[min(100%,56rem)] flex-col gap-2 sm:flex-row sm:items-center">
+      <label className="relative min-w-0 flex-1">
+        <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
+        <Input className="h-8 pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索经验包、来源 Case、Workflow、适用范围" />
+      </label>
+      <div className="flex shrink-0 flex-wrap gap-2" role="tablist" aria-label="经验包视图">
+        {[
+          ["library", "经验库"],
+          ["review", "待审核经验"],
+        ].map(([key, label]) => {
+          const selected = activeTab === key && !detailOpen;
+          return (
+            <button key={key} type="button" role="tab" aria-selected={selected} className={`rounded-lg border px-3 py-1.5 text-sm ${selected ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => selectView(key)}>
+              {label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
-    <SettingsPageFrame
-      title="经验包"
-      description="从运维对话中生成可复用经验包，但必须先审核启用，再配置可检索范围；命中后只推荐 Workflow，不自动执行。"
-    >
+    <SettingsPageFrame title="经验包" description="" actions={headerActions}>
       {error ? <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{error}</div> : null}
-      <Card className="rounded-lg bg-white">
-        <CardContent className="flex flex-col gap-3 pt-0 lg:flex-row lg:items-center">
-          <label className="relative min-w-0 flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
-            <Input className="pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索经验包、来源 Case、Workflow、适用范围" />
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">两道门槛</Badge>
-            <Badge variant="outline">审核启用</Badge>
-            <Badge variant="outline">授权范围</Badge>
-            <Badge variant="outline">推荐 Workflow</Badge>
-          </div>
-        </CardContent>
-      </Card>
 
       <div
         data-testid="experience-pack-workbench-layout"
-        className={`grid gap-4 ${selectedCandidate ? "xl:grid-cols-[minmax(0,1fr)_420px]" : "xl:grid-cols-1"}`}
+        className="grid min-h-0 flex-1 gap-4 xl:grid-cols-1"
       >
-        <Card className="rounded-lg bg-white" data-testid="experience-pack-workbench">
-          <CardHeader>
-            <CardTitle>经验包工作台</CardTitle>
-            <CardDescription>候选、启用状态、授权范围、Eval 和复用效果在同一处闭环。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-4">
-              <div className="flex flex-wrap gap-2" role="tablist" aria-label="经验包视图">
-                {[
-                  ["candidates", "候选"],
-                  ["enabled", "已启用"],
-                  ["scopes", "授权范围"],
-                  ["eval", "Eval"],
-                  ["reuse", "复用记录"],
-                ].map(([key, label]) => (
-                  <button key={key} type="button" role="tab" aria-selected={activeTab === key} className={`rounded-lg border px-3 py-2 text-sm ${activeTab === key ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setActiveTab(key)}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {activeTab === "candidates" ? (
-                <section className="grid gap-2">
-                {filteredCandidates.length ? filteredCandidates.map((candidate) => (
+        <Card className="flex min-h-0 flex-col rounded-lg bg-white" data-testid="experience-pack-workbench">
+          <CardContent className="flex min-h-0 flex-1 flex-col">
+            {activeTab === "library" ? (
+              <section className="flex min-h-0 flex-1 flex-col gap-2">
+                {filteredCandidates.length ? pagedLibraryCandidates.map((candidate) => (
                   <ExperienceCandidateCard
                     key={candidate.id}
                     candidate={candidate}
                     selected={selectedCandidate?.id === candidate.id}
-                    onSelect={() => setSelectedCandidateId(candidate.id)}
+                    onSelect={() => openCandidateDetail(candidate)}
                     onApprove={() => void approveCandidate(candidate)}
                   />
-                )) : <EmptyState title="没有候选经验包" description="从 AI 对话或 Case 详情提炼后，会先进入候选区；审核启用后再配置可检索范围。" />}
-                </section>
-              ) : null}
+                )) : <EmptyState title="没有经验包" description="从 AI 对话或 Case 详情提炼后，会先进入待审核经验；审核启用后再进入经验库。" />}
+                <PaginationControls
+                  page={currentLibraryPage}
+                  totalPages={libraryTotalPages}
+                  onPrevious={() => setLibraryPage((page) => Math.max(1, page - 1))}
+                  onNext={() => setLibraryPage((page) => Math.min(libraryTotalPages, page + 1))}
+                />
+              </section>
+            ) : null}
 
-              {activeTab === "enabled" ? (
-                <section className="grid gap-2">
-                  {enabledPacks.length ? enabledPacks.map((pack) => <EnabledPackCard key={pack.id} pack={pack} onToggle={() => void togglePack(pack)} />) : <EmptyState title="没有已启用经验包" description="候选经验包审核通过后才会出现在这里。" />}
-                </section>
-              ) : null}
-
-              {activeTab === "scopes" ? selectedPack ? <AuthorizationScopesPanel pack={selectedPack} onSave={() => void saveScopes(selectedPack)} /> : <EmptyState title="未选择经验包" description="先在候选或已启用列表中选择一个经验包。" /> : null}
-
-              {activeTab === "eval" ? selectedPack ? <RetrievalEvalPanel pack={selectedPack} /> : <EmptyState title="未选择经验包" description="选择经验包后查看检索 Eval。" /> : null}
-
-              {activeTab === "reuse" ? (
-                <ReuseRecordsPanel records={reuseRecords} />
-              ) : null}
-            </div>
+            {activeTab === "review" ? (
+              <section className="flex min-h-0 flex-1 flex-col gap-2">
+                {reviewCandidates.length ? pagedReviewCandidates.map((candidate) => (
+                    <ReviewQueueCard
+                      key={candidate.id}
+                      candidate={candidate}
+                      selected={selectedCandidate?.id === candidate.id}
+                      onSelect={() => openCandidateDetail(candidate)}
+                      onApprove={() => void approveCandidate(candidate)}
+                      onConfigureScope={() => candidate.experiencePack ? void saveScopes(candidate.experiencePack) : undefined}
+                      onSendToRunnerStudio={() => void sendToRunnerStudio(candidate)}
+                      runnerDraftLink={runnerDraftLinks[candidate.id]}
+                      runnerDraftStatus={runnerDraftStatus[candidate.id]}
+                    />
+                  )) : <EmptyState title="没有待审核经验" description="候选经验包通过文件完整性、GEP schema、asset_id 和 validation gate 后会进入经验库。" />}
+                <PaginationControls
+                  page={currentReviewPage}
+                  totalPages={reviewTotalPages}
+                  onPrevious={() => setReviewPage((page) => Math.max(1, page - 1))}
+                  onNext={() => setReviewPage((page) => Math.min(reviewTotalPages, page + 1))}
+                />
+              </section>
+            ) : null}
           </CardContent>
         </Card>
-
-        {selectedCandidate ? <ExperiencePackDetail candidate={selectedCandidate} /> : null}
       </div>
+      {detailOpen && selectedCandidate ? (
+        <ExperiencePackDetailModal
+          candidate={selectedCandidate}
+          reuseRecords={reuseRecords}
+          onClose={() => setDetailOpen(false)}
+          onToggle={selectedPack ? () => void togglePack(selectedPack) : undefined}
+          onConfigureScope={selectedPack ? () => void saveScopes(selectedPack) : undefined}
+        />
+      ) : null}
     </SettingsPageFrame>
   );
 }
@@ -248,113 +302,173 @@ function ExperienceCandidateCard({ candidate, selected, onSelect, onApprove }: {
   const pack = candidate.experiencePack;
   return (
     <Card size="sm" className={selected ? "cursor-pointer rounded-lg border-slate-400 bg-slate-50" : "cursor-pointer rounded-lg bg-white"} onClick={onSelect}>
-        <CardContent className="grid gap-3 pt-0">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="font-medium text-slate-900">{candidate.title}</div>
-              <div className="text-xs leading-5 text-slate-500">{candidate.summary}</div>
-            </div>
-            <ToneBadge tone={searchableTone(pack)}>{pack?.searchable ? "可检索" : "不可检索"}</ToneBadge>
+      <CardContent className="grid gap-2">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-medium text-slate-900">{candidate.title}</div>
+            <div className="mt-1 text-xs leading-5 text-slate-500">{shortSummary(pack?.skill.summary || candidate.summary)}</div>
           </div>
-          <div className="flex flex-wrap gap-2 text-xs text-slate-600">
-            <ToneBadge>来源 Case {candidate.sourceCaseId || "-"}</ToneBadge>
-            <ToneBadge>生成时间 {candidateGeneratedAt(candidate) || "-"}</ToneBadge>
-            <ToneBadge>推荐 Workflow {pack?.workflowBinding.workflowName || "待绑定"}</ToneBadge>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <ToneBadge tone={searchableTone(pack)}>{pack?.searchable ? "可检索" : "不可检索"}</ToneBadge>
             <ToneBadge>{statusLabel(candidate.status)}</ToneBadge>
           </div>
-          <p className="text-xs text-slate-500">{pack?.searchableReason || "经验包尚未生成可检索包体"}</p>
-          {pack?.reviewStatus !== "approved" ? <Button size="sm" variant="outline" type="button" onClick={(event) => { event.stopPropagation(); onApprove(); }}><CheckCircle2 />审核通过</Button> : null}
-        </CardContent>
-    </Card>
-  );
-}
-
-function candidateGeneratedAt(candidate: ExperienceCandidateView) {
-  const source = candidate.raw || {};
-  const value = source.createdAt || source.created_at || source.generatedAt || source.generated_at;
-  return value ? String(value) : "";
-}
-
-function EnabledPackCard({ pack, onToggle }: { pack: ExperiencePackView; onToggle: () => void }) {
-  const risk = String(pack.raw.risk || pack.raw.risk_level || pack.raw.riskLevel || "未标注风险");
-  const recentReuse = String(pack.raw.recent_reuse_result || pack.raw.recentReuseResult || pack.raw.last_reuse_result || "暂无复用记录");
-  return (
-    <Card size="sm" className="rounded-lg bg-white">
-      <CardContent className="flex flex-col gap-3 pt-0 md:flex-row md:items-center">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium text-slate-900">{pack.title}</div>
-          <div className="text-xs leading-5 text-slate-500">{pack.summary}</div>
-          <div className="mt-2 flex flex-wrap gap-2">
-            <ToneBadge>{pack.version || "未版本化"}</ToneBadge>
-            <ToneBadge>{risk}</ToneBadge>
-            <ToneBadge tone={searchableTone(pack)}>{pack.searchable ? "可检索" : "不可检索"}</ToneBadge>
-            <ToneBadge>{pack.workflowBinding.workflowName}</ToneBadge>
-            <ToneBadge>{recentReuse}</ToneBadge>
-          </div>
         </div>
-        <Button size="sm" variant="outline" type="button" onClick={onToggle}><Power />{pack.enabled ? "停用" : "启用"}</Button>
+        <div className="flex flex-wrap gap-2 text-xs text-slate-500">
+          <span>{pack?.category || "repair"}</span>
+          <span>·</span>
+          <span>{pack?.usageShape || "diagnostic"}</span>
+          {candidate.sourceCaseId ? (
+            <>
+              <span>·</span>
+              <span>{candidate.sourceCaseId}</span>
+            </>
+          ) : null}
+        </div>
+        {pack?.reviewStatus !== "approved" ? <Button size="sm" variant="outline" type="button" onClick={(event) => { event.stopPropagation(); onApprove(); }}><CheckCircle2 />审核通过</Button> : null}
       </CardContent>
     </Card>
   );
 }
 
-function AuthorizationScopesPanel({ pack, onSave }: { pack: ExperiencePackView; onSave: () => void }) {
+function PaginationControls({
+  page,
+  totalPages,
+  onPrevious,
+  onNext,
+}: {
+  page: number;
+  totalPages: number;
+  onPrevious: () => void;
+  onNext: () => void;
+}) {
   return (
-    <section className="grid gap-3 rounded-lg border bg-slate-50 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="font-medium text-slate-950">授权范围</h3>
-          <p className="mt-1 text-sm text-slate-600">{pack.searchableReason}</p>
-        </div>
-        <ToneBadge tone={searchableTone(pack)}>{pack.searchable ? "可检索" : "不可检索"}</ToneBadge>
-      </div>
-      <div className="grid gap-2">
-        {pack.authorizationScopes.length ? pack.authorizationScopes.map((scope) => (
-          <div key={scope.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white p-3 text-sm">
-            <span>{scopeLabel(scope)}</span>
-            <span className="text-slate-500">{scope.searchable ? "允许检索" : "不可检索"} · {scope.reason || "未说明"}</span>
+    <div data-testid="experience-pack-pagination" className="mt-auto flex items-center justify-end gap-2 pt-3 text-xs text-slate-500">
+      <Button size="sm" variant="outline" type="button" disabled={page <= 1} onClick={onPrevious}>
+        <ChevronLeft />上一页
+      </Button>
+      <span>第 {page} / {totalPages} 页</span>
+      <Button size="sm" variant="outline" type="button" disabled={page >= totalPages} onClick={onNext}>
+        下一页<ChevronRight />
+      </Button>
+    </div>
+  );
+}
+
+function ReviewQueueCard({
+  candidate,
+  selected,
+  onSelect,
+  onApprove,
+  onConfigureScope,
+  onSendToRunnerStudio,
+  runnerDraftLink = "",
+  runnerDraftStatus = "",
+}: {
+  candidate: ExperienceCandidateView;
+  selected: boolean;
+  onSelect: () => void;
+  onApprove: () => void;
+  onConfigureScope: () => void;
+  onSendToRunnerStudio: () => void;
+  runnerDraftLink?: string;
+  runnerDraftStatus?: string;
+}) {
+  const pack = candidate.experiencePack;
+  const gatePassed = Boolean(pack?.validationGate.passed);
+  return (
+    <Card size="sm" className={selected ? "cursor-pointer rounded-lg border-slate-400 bg-slate-50" : "cursor-pointer rounded-lg bg-white"} onClick={onSelect}>
+      <CardContent className="grid gap-3 pt-0">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="font-medium text-slate-900">{candidate.title}</div>
+            <div className="text-xs leading-5 text-slate-500">{pack?.skill.summary || candidate.summary}</div>
           </div>
-        )) : <p className="text-sm text-slate-500">尚未配置用户、团队、环境、资源类型或业务范围，当前不可检索。</p>}
-      </div>
-      <Button type="button" variant="outline" onClick={onSave}><ShieldCheck />保存授权范围</Button>
-    </section>
+          <ToneBadge tone={gatePassed ? "success" : "danger"}>validation gate {pack?.validationGate.status || "unknown"}</ToneBadge>
+        </div>
+        <dl className="grid gap-2 text-xs text-slate-600 md:grid-cols-2">
+          <div><dt className="font-medium text-slate-500">Skill.md 摘要</dt><dd>{pack?.skill.summary || candidate.summary}</dd></div>
+          <div><dt className="font-medium text-slate-500">必要文件完整性</dt><dd>{pack ? "Skill.md / Gene / Capsule 已登记" : "待检查"}</dd></div>
+          <div><dt className="font-medium text-slate-500">GEP schema</dt><dd>{pack ? "已校验" : "待校验"}</dd></div>
+          <div><dt className="font-medium text-slate-500">asset_id</dt><dd>{pack?.advancedRefs.geneAssetId || "待校验"}</dd></div>
+          <div><dt className="font-medium text-slate-500">Capsule 来源</dt><dd>{candidate.sourceCaseId || "待补充"}</dd></div>
+          <div><dt className="font-medium text-slate-500">Runner Binding 可用性</dt><dd>{runnerStatus(pack)}</dd></div>
+          <div><dt className="font-medium text-slate-500">AVOID cue 候选</dt><dd>{String(pack?.raw.avoid_cue_candidate || pack?.raw.avoidCueCandidate || "无阻断")}</dd></div>
+        </dl>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" type="button" disabled={!gatePassed} onClick={(event) => { event.stopPropagation(); onApprove(); }}><CheckCircle2 />approve</Button>
+          <Button size="sm" variant="outline" type="button" onClick={(event) => event.stopPropagation()}>request changes</Button>
+          <Button size="sm" variant="outline" type="button" onClick={(event) => event.stopPropagation()}>reject</Button>
+          <Button size="sm" variant="outline" type="button" onClick={(event) => { event.stopPropagation(); onConfigureScope(); }}><ShieldCheck />configure scope</Button>
+          <Button size="sm" variant="outline" type="button" onClick={(event) => { event.stopPropagation(); onSendToRunnerStudio(); }}>发送到 Runner Studio</Button>
+        </div>
+        {runnerDraftStatus ? <div className="text-xs text-slate-500">{runnerDraftStatus}</div> : null}
+        {runnerDraftLink ? (
+          <a className="text-xs font-medium text-slate-900 underline-offset-4 hover:underline" href={runnerDraftLink} onClick={(event) => event.stopPropagation()}>
+            打开 Runner Studio
+          </a>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
-function RetrievalEvalPanel({ pack }: { pack: ExperiencePackView }) {
+function ExperiencePackDetailModal({
+  candidate,
+  reuseRecords,
+  onClose,
+  onToggle,
+  onConfigureScope,
+}: {
+  candidate: ExperienceCandidateView;
+  reuseRecords: ReuseRecordView[];
+  onClose: () => void;
+  onToggle?: () => void;
+  onConfigureScope?: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   return (
-    <section className="grid gap-3 rounded-lg border bg-slate-50 p-4">
-      <h3 className="font-medium text-slate-950">检索 Eval</h3>
-      <dl className="grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-        <div><dt className="font-medium text-slate-500">分数</dt><dd>{pack.retrievalEval.score ?? "-"}</dd></div>
-        <div><dt className="font-medium text-slate-500">命中 Case</dt><dd>{pack.retrievalEval.matchedCases}</dd></div>
-        <div><dt className="font-medium text-slate-500">结论</dt><dd>{statusLabel(pack.retrievalEval.verdict)}</dd></div>
-        <div><dt className="font-medium text-slate-500">更新时间</dt><dd>{pack.retrievalEval.lastEvaluatedAt || "-"}</dd></div>
-      </dl>
-    </section>
+    <div className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-slate-950/40 p-4 sm:p-8" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="经验详情"
+        className="relative w-full max-w-3xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Button className="absolute right-3 top-3 z-10 bg-white" size="icon" variant="outline" type="button" aria-label="关闭经验详情" onClick={onClose}>
+          <X />
+        </Button>
+        <ExperiencePackDetail
+          candidate={candidate}
+          reuseRecords={reuseRecords}
+          onToggle={onToggle}
+          onConfigureScope={onConfigureScope}
+        />
+      </section>
+    </div>
   );
 }
 
-function ReuseRecordsPanel({ records }: { records: ReuseRecordView[] }) {
-  return (
-    <section className="grid gap-2">
-      {records.length ? records.map((record) => (
-        <Card key={record.id} size="sm" className="rounded-lg bg-white">
-          <CardContent className="grid gap-2 pt-0 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <Link className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/incidents/${encodeURIComponent(record.caseId)}`}>{record.caseId}</Link>
-              <ToneBadge>{statusLabel(record.result)}</ToneBadge>
-            </div>
-            <p className="text-slate-600">{record.summary}</p>
-            <p className="text-xs text-slate-500">{record.reusedBy || "Agent"} · {record.reusedAt || "-"}</p>
-          </CardContent>
-        </Card>
-      )) : <EmptyState title="暂无复用记录" description="经验包被推荐并执行 Workflow 后，会记录命中 Case、执行结果、验证结果和失败回退。" />}
-    </section>
-  );
-}
-
-function ExperiencePackDetail({ candidate }: { candidate: ExperienceCandidateView | null }) {
+function ExperiencePackDetail({
+  candidate,
+  reuseRecords = [],
+  onToggle,
+  onConfigureScope,
+  compact = false,
+}: {
+  candidate: ExperienceCandidateView | null;
+  reuseRecords?: ReuseRecordView[];
+  onToggle?: () => void;
+  onConfigureScope?: () => void;
+  compact?: boolean;
+}) {
   const pack = candidate?.experiencePack;
   if (!candidate) {
     return null;
@@ -362,7 +476,7 @@ function ExperiencePackDetail({ candidate }: { candidate: ExperienceCandidateVie
   return (
     <Card className="rounded-lg bg-white">
       <CardHeader>
-        <CardTitle>包详情</CardTitle>
+        <CardTitle>经验详情</CardTitle>
         <CardDescription>{candidate.title}</CardDescription>
       </CardHeader>
       <CardContent className="grid gap-4">
@@ -370,21 +484,74 @@ function ExperiencePackDetail({ candidate }: { candidate: ExperienceCandidateVie
           <ToneBadge>{statusLabel(candidate.status)}</ToneBadge>
           <ToneBadge tone={searchableTone(pack)}>{pack?.searchable ? "可检索" : "不可检索"}</ToneBadge>
           {pack?.version ? <ToneBadge>{pack.version}</ToneBadge> : null}
+          <ToneBadge>{pack?.category || "repair"}</ToneBadge>
+          <ToneBadge>{pack?.usageShape || "diagnostic"}</ToneBadge>
         </div>
-        <section>
-          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">候选摘要</div>
-          <p className="mt-1 text-sm leading-6 text-slate-700">{candidate.summary}</p>
+        <section className="rounded-lg border bg-slate-50 p-3">
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">Skill / Runner / GEP</div>
+          <div className="mt-2 grid gap-2 text-sm leading-6 text-slate-700">
+            <p>Runner 负责怎么执行；Skill 负责为什么这么做、什么时候适用、环境不同时怎么调整、怎么验证和回滚。</p>
+            <p>GEP 负责进化治理：记录来源故障、Gene、环境指纹、成功失败、验证方式、版本血缘和不可变审计。</p>
+          </div>
         </section>
         <section className="rounded-lg border bg-slate-50 p-3">
-          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">推荐 Workflow</div>
-          <p className="mt-1 text-sm text-slate-700">{pack?.workflowBinding.workflowName || "待生成 Workflow 草案"}</p>
-          <p className="mt-1 text-xs text-slate-500">经验包命中时只推荐该 Workflow，执行前仍需 Case 中的确认和 HostLease 校验。</p>
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">检索与适配</div>
+          <p className="mt-2 text-sm leading-6 text-slate-700">经验包检索使用 PostgreSQL + pgvector 承载结构化过滤、BM25/关键词、向量语义、环境指纹和 GEP Gene signals_match；环境差异时先生成适配计划和 Runner 变体，用户审核后再执行。</p>
+        </section>
+        {pack ? (
+          <section className="rounded-lg border bg-slate-50 p-3">
+            <div className="text-xs font-medium uppercase tracking-normal text-slate-500">检索授权范围</div>
+            <p className="mt-1 text-sm leading-6 text-slate-700">{pack.searchableReason}</p>
+            <p className="mt-1 text-xs text-slate-500">
+              {pack.authorizationScopes.length
+                ? pack.authorizationScopes.map((scope) => `${scope.type}:${scope.value}`).join("、")
+                : "未配置 scope"}
+            </p>
+            {onConfigureScope ? (
+              <Button className="mt-3" size="sm" variant="outline" type="button" onClick={onConfigureScope}>
+                <ShieldCheck />配置可检索范围
+              </Button>
+            ) : null}
+          </section>
+        ) : null}
+        <section>
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">Skill.md</div>
+          <p className="mt-1 text-sm leading-6 text-slate-700">{pack?.skill.name || candidate.title}：{pack?.skill.summary || candidate.summary}</p>
+        </section>
+        <section className="rounded-lg border bg-slate-50 p-3">
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">required files</div>
+          <p className="mt-1 text-sm text-slate-700">skills/SKILL.md、GEP Gene、Capsule、Validation、Rollback</p>
         </section>
         <section>
-          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">检索状态</div>
-          <p className="mt-1 text-sm leading-6 text-slate-700">{pack?.searchableReason || "尚未生成可检索状态。"}</p>
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">历史效果</div>
+          <p className="mt-1 text-sm leading-6 text-slate-700">成功 {pack?.history.successCount ?? 0}，失败 {pack?.history.failureCount ?? 0}，最近结果 {statusLabel(pack?.history.recentResult || "unknown")}。</p>
+          {reuseRecords.length ? <p className="mt-1 text-xs text-slate-500">最近复用：{reuseRecords[0].caseId} / {statusLabel(reuseRecords[0].result)}</p> : null}
         </section>
+        <section className="rounded-lg border bg-slate-50 p-3">
+          <div className="text-xs font-medium uppercase tracking-normal text-slate-500">可选 Runner 工作流</div>
+          <p className="mt-1 text-sm text-slate-700">{pack?.workflowBinding.workflowName || pack?.runnerBindings[0]?.workflowName || "待生成 Workflow 草案"} · {runnerStatus(pack)}</p>
+          <p className="mt-1 text-xs text-slate-500">经验包命中时只推荐 Runner Workflow，执行前仍需 Case 确认、Dry Run 和 HostLease 校验。</p>
+          {onToggle ? <Button className="mt-3" size="sm" variant="outline" type="button" onClick={onToggle}><Power />{pack?.enabled ? "pause" : "enable"}</Button> : null}
+        </section>
+        {!compact ? (
+          <section className="grid gap-2 rounded-lg border bg-slate-50 p-3 text-sm">
+            <div className="text-xs font-medium uppercase tracking-normal text-slate-500">高级区</div>
+            <div>Gene asset_id：{pack?.advancedRefs.geneAssetId || "未返回"}</div>
+            <div>Capsule 列表：{pack?.advancedRefs.capsuleAssetIds.join("、") || "未返回"}</div>
+            <div>EvolutionEvent 列表：{String(pack?.raw.evolution_events_count || pack?.raw.evolutionEventCount || "摘要未返回")}</div>
+            <div>MemoryGraphEvent 摘要：{String(pack?.raw.memory_events_summary || pack?.raw.memoryEventsSummary || "摘要未返回")}</div>
+            <div>AVOID cues：{String(pack?.raw.avoid_cues_summary || pack?.raw.avoidCuesSummary || "无")}</div>
+            <div>OS/environment variants：{String(pack?.raw.os_variants || pack?.raw.osVariants || pack?.runnerBindings.map((binding) => binding.osVariant).filter(Boolean).join("、") || "default")}</div>
+            <div>Runner Bindings：{pack?.runnerBindings.map((binding) => `${binding.workflowName} / ${binding.status}`).join("、") || "未绑定"}</div>
+          </section>
+        ) : null}
       </CardContent>
     </Card>
   );
+}
+
+function runnerStatus(pack?: ExperiencePackView | null) {
+  if (!pack) return "unbound";
+  const binding = pack.runnerBindings[0] || pack.workflowBinding;
+  return `${binding.workflowName || binding.workflowId} / ${binding.status}`;
 }

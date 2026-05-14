@@ -1752,10 +1752,21 @@ export function RunnerStudioPage() {
     async function ensureGraph() {
       const current = workflows.find((workflow) => workflowKey(workflow) === selectedWorkflowName);
       if (current?.graph) return;
+      const localDraft = readLocalDrafts().find((workflow) => workflowKey(workflow) === selectedWorkflowName);
+      if (localDraft?.graph) {
+        if (!cancelled) upsertWorkflow(selectedWorkflowName, localDraft);
+        return;
+      }
+      if (loading && workflows.length === 0) return;
       try {
         const payload = await requestJson(`/api/runner-studio/workflows/${encodeURIComponent(selectedWorkflowName)}/graph`);
         if (!cancelled) upsertWorkflow(selectedWorkflowName, { name: selectedWorkflowName, ...(current?.title ? { title: current.title } : {}), graph: normalizeGraph(payload.graph || payload, selectedWorkflowName), local_draft: false });
       } catch (error) {
+        const latestLocalDraft = readLocalDrafts().find((workflow) => workflowKey(workflow) === selectedWorkflowName);
+        if (latestLocalDraft?.graph) {
+          if (!cancelled) upsertWorkflow(selectedWorkflowName, latestLocalDraft);
+          return;
+        }
         const graph = createBlankWorkflowGraph(selectedWorkflowName, current?.title || selectedWorkflowName);
         const draft = saveLocalDraft({ name: selectedWorkflowName, title: current?.title || selectedWorkflowName, status: "draft", graph });
         if (!cancelled) upsertWorkflow(selectedWorkflowName, draft);
@@ -1763,7 +1774,7 @@ export function RunnerStudioPage() {
     }
     void ensureGraph();
     return () => { cancelled = true; };
-  }, [selectedWorkflowName, upsertWorkflow, workflows]);
+  }, [loading, selectedWorkflowName, upsertWorkflow, workflows]);
 
   function createBlankWorkflow(name: string) {
     const workflow = saveLocalDraft({ name, title: name, status: "draft", graph: createBlankWorkflowGraph(name), local_draft: true, validation_result: { valid: false, errors: [], warnings: [] } });

@@ -17,6 +17,7 @@ const (
 	assistantTransportCommandMCPAction        = "aiops.mcp-action"
 	assistantTransportCommandMCPRefresh       = "aiops.mcp-refresh"
 	assistantTransportCommandMCPPin           = "aiops.mcp-pin"
+	assistantTransportCommandInsertArtifact   = "aiops.insert-agent-ui-artifact"
 )
 
 type assistantTransportRequest struct {
@@ -119,6 +120,16 @@ type assistantTransportMCPPinCommand struct {
 }
 
 func (c *assistantTransportMCPPinCommand) Type() string {
+	return c.CommandType
+}
+
+type assistantTransportInsertArtifactCommand struct {
+	CommandType string                            `json:"type"`
+	TurnID      string                            `json:"turnId,omitempty"`
+	Artifact    appui.AiopsTransportAgentArtifact `json:"artifact"`
+}
+
+func (c *assistantTransportInsertArtifactCommand) Type() string {
 	return c.CommandType
 }
 
@@ -245,6 +256,12 @@ func decodeAssistantTransportCommand(raw json.RawMessage) (assistantTransportCom
 		return &command, nil
 	case assistantTransportCommandMCPPin:
 		var command assistantTransportMCPPinCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return nil, err
+		}
+		return &command, nil
+	case assistantTransportCommandInsertArtifact:
+		var command assistantTransportInsertArtifactCommand
 		if err := json.Unmarshal(raw, &command); err != nil {
 			return nil, err
 		}

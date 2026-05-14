@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -271,11 +272,23 @@ func run() error {
 	if runnerRuntime != nil {
 		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	}
+	experiencePackRepo, err := buildExperiencePackRepository(dataDir, os.Getenv)
+	if err != nil {
+		return err
+	}
+	if closeable, ok := experiencePackRepo.(interface{ Close() error }); ok {
+		defer func() {
+			if err := closeable.Close(); err != nil {
+				log.Printf("experience pack repository shutdown: %v", err)
+			}
+		}()
+	}
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
 			sessionManager,
 			appui.WithStore(dataStore),
+			appui.WithExperiencePackService(appui.NewExperiencePackService(experiencePackRepo)),
 			appui.WithMCPRegistry(mcpRegistry),
 			appui.WithAuthManager(authManager),
 			appui.WithTerminalManager(terminalManager),
@@ -395,6 +408,23 @@ func openConfiguredStore(dataDir string, getenv func(string) string) (store.Stor
 	default:
 		return nil, fmt.Errorf("unsupported store driver %q", driver)
 	}
+}
+
+func buildExperiencePackRepository(dataDir string, getenv func(string) string) (appui.ExperiencePackRepository, error) {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	for _, key := range []string{"AIOPS_EXPERIENCE_PACK_PGVECTOR_DSN", "AIOPS_PGVECTOR_DSN"} {
+		if dsn := strings.TrimSpace(getenv(key)); dsn != "" {
+			repo, err := appui.NewPGVectorExperiencePackRepository(dsn)
+			if err != nil {
+				return nil, fmt.Errorf("init experience pack pgvector repository: %w", err)
+			}
+			log.Printf("ai-server: experience pack repository uses PostgreSQL + pgvector index")
+			return repo, nil
+		}
+	}
+	return appui.NewFileExperiencePackRepository(filepath.Join(dataDir, "experience-packs", "library.json")), nil
 }
 
 func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
