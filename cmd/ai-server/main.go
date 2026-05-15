@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
+	runnerservice "runner/server/service"
 
 	"aiops-v2/internal/agentmgr"
 	"aiops-v2/internal/agents"
@@ -24,10 +26,12 @@ import (
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/integrations/localtools"
+	opsmanualtools "aiops-v2/internal/integrations/opsmanuals"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/observability"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/plugins"
@@ -67,6 +71,8 @@ func run() error {
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
 	runnerStudioUpstreamURL := runnerStudioUpstreamFromEnv(os.Getenv)
+	opsManualAutoRetrieval := envBoolDefault("AIOPS_OPS_MANUAL_AUTO_RETRIEVAL", false)
+	workflowReferenceGuardMode := workflowReferenceGuardModeFromEnv(os.Getenv)
 
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
@@ -76,6 +82,11 @@ func run() error {
 		return fmt.Errorf("init store: %w", err)
 	}
 	defer dataStore.Close()
+	opsManualRepo, ok := any(dataStore).(opsmanual.ManualRepository)
+	if !ok {
+		opsManualRepo = opsmanual.NewMemoryStore()
+	}
+	opsManualDomainService := opsmanual.NewService(opsManualRepo)
 
 	// ---------------------------------------------------------------------------
 	// 2. Registries
@@ -192,6 +203,9 @@ func run() error {
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
 	}
+	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
+		return fmt.Errorf("init ops manual tools: %w", err)
+	}
 	if err := registerBuiltinIntegrations(mcpRegistry, corootEndpoint); err != nil {
 		return fmt.Errorf("init builtin integrations: %w", err)
 	}
@@ -251,10 +265,15 @@ func run() error {
 	}
 	var runnerRuntime *runnerembed.Runtime
 	if strings.TrimSpace(os.Getenv("AIOPS_RUNNER_DISABLED")) != "1" {
-		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{DataDir: dataDir})
+		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{
+			DataDir:                    dataDir,
+			WorkflowReferenceGuardMode: workflowReferenceGuardMode,
+		})
 		if err != nil {
 			return fmt.Errorf("init runner runtime: %w", err)
 		}
+		runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
+		runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	}
 	if strings.TrimSpace(runnerStudioUpstreamURL) != "" {
 		if runnerRuntime != nil {
@@ -267,6 +286,7 @@ func run() error {
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
 		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
+		server.WithOpsManualAutoRetrieval(opsManualAutoRetrieval),
 	}
 	if runnerRuntime != nil {
 		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
@@ -279,6 +299,7 @@ func run() error {
 			appui.WithMCPRegistry(mcpRegistry),
 			appui.WithAuthManager(authManager),
 			appui.WithTerminalManager(terminalManager),
+			appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
 			appui.WithLifecycleContext(ctx),
 		),
 		httpOptions...,
@@ -378,6 +399,32 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
+func envBoolDefault(key string, defaultVal bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	switch value {
+	case "":
+		return defaultVal
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	case "0", "false", "no", "off", "disabled":
+		return false
+	default:
+		return defaultVal
+	}
+}
+
+func workflowReferenceGuardModeFromEnv(getenv func(string) string) runnerservice.WorkflowReferenceGuardMode {
+	if getenv == nil {
+		getenv = func(string) string { return "" }
+	}
+	switch strings.ToLower(strings.TrimSpace(getenv("AIOPS_WORKFLOW_REFERENCE_GUARD_MODE"))) {
+	case "warn", "warning":
+		return runnerservice.WorkflowReferenceGuardModeWarn
+	default:
+		return runnerservice.WorkflowReferenceGuardModeEnforce
+	}
+}
+
 func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
@@ -408,6 +455,188 @@ func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 		}
 	}
 	return ""
+}
+
+type opsManualWorkflowReferenceRepository interface {
+	ListOpsManuals() ([]opsmanual.OpsManual, error)
+	ListOpsManualCandidates() ([]opsmanual.ManualCandidate, error)
+}
+
+type opsManualRunRecordRepository interface {
+	SaveOpsManualRunRecord(record opsmanual.RunRecord) error
+}
+
+type opsManualRunRecordSink struct {
+	repo opsManualRunRecordRepository
+}
+
+func (s opsManualRunRecordSink) RecordRun(_ context.Context, record runnerservice.OpsManualRunRecord) error {
+	if s.repo == nil {
+		return nil
+	}
+	metadata := record.Metadata
+	workflowID := strings.TrimSpace(record.WorkflowID)
+	if workflowID == "" {
+		workflowID = strings.TrimSpace(record.WorkflowName)
+	}
+	if workflowID == "" {
+		return nil
+	}
+	result := opsmanual.WorkflowResult{
+		ID:                  strings.TrimSpace(record.RunID),
+		ManualID:            strings.TrimSpace(record.ManualID),
+		WorkflowID:          workflowID,
+		WorkflowVersion:     strings.TrimSpace(record.WorkflowVersion),
+		WorkflowDigest:      strings.TrimSpace(record.WorkflowDigest),
+		OperationFrame:      metadataStruct[opsmanual.OperationFrame](metadata, "operation_frame"),
+		EnvironmentSnapshot: metadataStruct[opsmanual.EnvironmentProfile](metadata, "environment_snapshot", "environment"),
+		Parameters:          metadataMap(metadata, "vars", "parameters"),
+		ApprovalRef:         metadataString(metadata, "approval_ref", "approval_id"),
+		DryRunStatus:        metadataString(metadata, "dry_run_status"),
+		ExecutionStatus:     strings.TrimSpace(record.Status),
+		ValidationStatus:    metadataString(metadata, "validation_status"),
+		RollbackStatus:      metadataString(metadata, "rollback_status"),
+		FailureReason:       firstTrimmed(metadataString(metadata, "failure_reason"), record.ErrorCode, record.Message),
+		Operator:            strings.TrimSpace(record.TriggeredBy),
+		StartedAt:           formatRunnerTime(record.StartedAt),
+		CompletedAt:         formatRunnerTime(record.FinishedAt),
+	}
+	if result.StartedAt == "" {
+		result.StartedAt = formatRunnerTime(record.CreatedAt)
+	}
+	runRecord, err := opsmanual.BuildRunRecordFromWorkflowResult(result)
+	if err != nil {
+		return err
+	}
+	return s.repo.SaveOpsManualRunRecord(runRecord)
+}
+
+func metadataString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := metadata[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(typed); trimmed != "" {
+				return trimmed
+			}
+		default:
+			if value != nil {
+				if trimmed := strings.TrimSpace(fmt.Sprint(value)); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func metadataMap(metadata map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		value, ok := metadata[key]
+		if !ok || value == nil {
+			continue
+		}
+		if typed, ok := value.(map[string]any); ok {
+			return typed
+		}
+		var out map[string]any
+		if decodeMetadata(value, &out) == nil && len(out) > 0 {
+			return out
+		}
+	}
+	return nil
+}
+
+func metadataStruct[T any](metadata map[string]any, keys ...string) T {
+	var zero T
+	for _, key := range keys {
+		value, ok := metadata[key]
+		if !ok || value == nil {
+			continue
+		}
+		var out T
+		if err := decodeMetadata(value, &out); err == nil {
+			return out
+		}
+	}
+	return zero
+}
+
+func decodeMetadata(value any, out any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func firstTrimmed(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func formatRunnerTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+type opsManualWorkflowReferenceChecker struct {
+	repo opsManualWorkflowReferenceRepository
+}
+
+func (c opsManualWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Context, workflowID string) ([]runnerservice.WorkflowReference, error) {
+	workflowID = strings.TrimSpace(workflowID)
+	if c.repo == nil || workflowID == "" {
+		return nil, nil
+	}
+	var refs []runnerservice.WorkflowReference
+	manuals, err := c.repo.ListOpsManuals()
+	if err != nil {
+		return nil, err
+	}
+	for _, manual := range manuals {
+		if strings.TrimSpace(manual.WorkflowRef.WorkflowID) != workflowID {
+			continue
+		}
+		refs = append(refs, runnerservice.WorkflowReference{
+			ManualID: strings.TrimSpace(manual.ID),
+			Status:   strings.TrimSpace(string(manual.Status)),
+			Title:    strings.TrimSpace(manual.Title),
+		})
+	}
+	candidates, err := c.repo.ListOpsManualCandidates()
+	if err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
+		manual := candidate.ProposedManual
+		if strings.TrimSpace(manual.WorkflowRef.WorkflowID) != workflowID {
+			continue
+		}
+		status := strings.TrimSpace(candidate.ReviewStatus)
+		if status == "" {
+			status = "candidate"
+		}
+		manualID := strings.TrimSpace(manual.ID)
+		if manualID == "" {
+			manualID = strings.TrimSpace(candidate.ID)
+		}
+		refs = append(refs, runnerservice.WorkflowReference{
+			ManualID: manualID,
+			Status:   status,
+			Title:    strings.TrimSpace(manual.Title),
+		})
+	}
+	return refs, nil
 }
 
 func corootEndpointFromEnv(getenv func(string) string) string {

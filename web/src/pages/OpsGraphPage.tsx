@@ -99,7 +99,7 @@ export function OpsGraphPage() {
                 {!selectedEntity.id ? (
                   <section data-testid="opsgraph-empty-guide" className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-600">
                     <div className="font-medium text-slate-950">如何生成图谱</div>
-                    <p className="mt-1 leading-6">搜索 Case、服务、主机或中间件后会展示邻域。关系来自 Coroot MCP RCA 结果、Case 证据、主机上报画像、HostLease 和经验包绑定。</p>
+                    <p className="mt-1 leading-6">搜索 Case、服务、主机或中间件后会展示邻域。关系来自 Coroot MCP RCA 结果、Case 证据、主机上报画像、HostLease 和运维手册绑定。</p>
                   </section>
                 ) : null}
                 <article className="rounded-lg border bg-slate-50 p-4">
@@ -108,7 +108,7 @@ export function OpsGraphPage() {
                   {selectedEntity.id ? (
                     <div className="mt-3 flex flex-wrap gap-2 text-sm">
                       <Link className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/incidents?entity_id=${encodeURIComponent(selectedEntity.id)}`}>查看关联 Case</Link>
-                      <Link className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/settings/experience-packs?entity_id=${encodeURIComponent(selectedEntity.id)}`}>查看经验包</Link>
+                      <Link className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/settings/ops-manuals?entity_id=${encodeURIComponent(selectedEntity.id)}`}>查看运维手册</Link>
                     </div>
                   ) : null}
                 </article>
@@ -184,14 +184,14 @@ function OpsGraphContextPanel({ selectedEntity, context }: { selectedEntity: Ent
 
         {packs.length ? (
           <section className="rounded-lg border bg-slate-50 p-3">
-            <div className="font-medium text-slate-950">关联经验包</div>
+            <div className="font-medium text-slate-950">关联运维手册</div>
             <div className="mt-2 grid gap-2 text-sm">
-              {packs.map((pack) => <Link key={pack.id || pack.name} className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/settings/experience-packs?entity_id=${encodeURIComponent(selectedId)}`}>{pack.name || pack.id}</Link>)}
+              {packs.map((pack) => <Link key={pack.id || pack.name} className="font-medium text-slate-900 underline-offset-4 hover:underline" to={`/settings/ops-manuals?entity_id=${encodeURIComponent(selectedId)}`}>{pack.name || pack.id}</Link>)}
             </div>
           </section>
         ) : null}
 
-        {!Object.keys(hostProfile).length && !Object.keys(hostLease).length && !members.length && !packs.length ? <p className="text-sm text-slate-500">选择主机或中间件节点后展示 HostProfile、HostLease、成员和经验包上下文。</p> : null}
+        {!Object.keys(hostProfile).length && !Object.keys(hostLease).length && !members.length && !packs.length ? <p className="text-sm text-slate-500">选择主机或中间件节点后展示 HostProfile、HostLease、成员和运维手册上下文。</p> : null}
       </CardContent>
     </Card>
   );

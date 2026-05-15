@@ -17,6 +17,7 @@ import (
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/observability"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
@@ -25,6 +26,7 @@ import (
 	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
+	runnerservice "runner/server/service"
 )
 
 type registryAdapterMockTool struct {
@@ -92,6 +94,61 @@ func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
 			t.Fatalf("upstream = %q, want empty", got)
 		}
 	})
+}
+
+func TestOpsManualRunRecordSinkPersistsRunnerTerminalRecord(t *testing.T) {
+	repo, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer repo.Close()
+	sink := opsManualRunRecordSink{repo: repo}
+
+	err = sink.RecordRun(context.Background(), runnerservice.OpsManualRunRecord{
+		RunID:           "run-redis-1",
+		ManualID:        "manual-redis-memory",
+		WorkflowID:      "workflow-redis-memory",
+		WorkflowVersion: "v3",
+		WorkflowDigest:  "sha256:abc",
+		Status:          "success",
+		TriggeredBy:     "sre",
+		Metadata: map[string]any{
+			"dry_run_status":    "passed",
+			"validation_status": "passed",
+			"rollback_status":   "skipped",
+			"operation_frame": map[string]any{
+				"target":    map[string]any{"type": "redis"},
+				"operation": map[string]any{"action": "rca_or_repair"},
+			},
+			"environment":  map[string]any{"os": "ubuntu", "execution_surface": "ssh"},
+			"vars":         map[string]any{"target_instance": "redis-prod-01", "password": "secret"},
+			"approval_ref": "approval-1",
+		},
+		CreatedAt:  time.Date(2026, 5, 14, 9, 0, 0, 0, time.UTC),
+		StartedAt:  time.Date(2026, 5, 14, 9, 1, 0, 0, time.UTC),
+		FinishedAt: time.Date(2026, 5, 14, 9, 2, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("RecordRun() error = %v", err)
+	}
+
+	records, err := repo.ListOpsManualRunRecords("manual-redis-memory", "workflow-redis-memory", 10)
+	if err != nil {
+		t.Fatalf("ListOpsManualRunRecords() error = %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %#v, want one", records)
+	}
+	record := records[0]
+	if record.ID != "run-redis-1" || record.ExecutionStatus != "success" || record.ValidationStatus != "passed" || record.DryRunStatus != "passed" {
+		t.Fatalf("record = %#v, want mapped runner status fields", record)
+	}
+	if record.OperationFrame.Target.Type != "redis" || record.OperationFrame.Operation.Action != "rca_or_repair" {
+		t.Fatalf("operation frame = %#v, want redis rca_or_repair", record.OperationFrame)
+	}
+	if got := record.RedactedParameters["password"]; got != opsmanual.RedactedValue {
+		t.Fatalf("password = %#v, want redacted", got)
+	}
 }
 
 func TestOpenConfiguredStoreDefaultsToJSONFileStore(t *testing.T) {

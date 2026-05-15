@@ -1,4 +1,4 @@
-import { ArrowRight, Bot, Boxes, Cable, History, KeyRound, LayoutGrid, Server, Settings, Wrench } from "lucide-react";
+import { ArrowRight, BookOpen, Bot, Boxes, Cable, KeyRound, LayoutGrid, Server, Settings, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +8,7 @@ import { SettingsPageFrame } from "@/pages/settingsComponents";
 const primaryEntries = [
   { title: "LLM 配置", description: "Provider、API Key、模型选择", path: "/settings/llm", icon: KeyRound },
   { title: "Hosts", description: "主机清单、标签、会话与接入状态", path: "/settings/hosts", icon: Server },
-  { title: "Experience Packs", description: "经验包、playbook、版本演进", path: "/settings/experience-packs", icon: History },
+  { title: "运维手册", description: "已验证手册、待审核候选、执行记录", path: "/settings/ops-manuals", icon: BookOpen },
   { title: "Agent Profile", description: "System prompt、权限、skills、MCP", path: "/settings/agent", icon: Bot },
   { title: "Skills", description: "Skill catalog 和默认激活策略", path: "/settings/skills", icon: Wrench },
   { title: "MCP Catalog", description: "Agent MCP 绑定和权限策略", path: "/settings/mcp", icon: Cable },
@@ -25,7 +25,7 @@ export function SettingsPage() {
   return (
     <SettingsPageFrame
       title="设置"
-      description="把模型、主机、经验包和 Agent Profile 收敛到一个入口。React 版本直接消费现有后端 API，不再挂旧 Vue 设置页。"
+      description="把模型、主机、运维手册和 Agent Profile 收敛到一个入口。React 版本直接消费现有后端 API，不再挂旧 Vue 设置页。"
     >
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {primaryEntries.map((entry) => (

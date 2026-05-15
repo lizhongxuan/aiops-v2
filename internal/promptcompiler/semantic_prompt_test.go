@@ -137,6 +137,26 @@ func TestSemanticPromptAIOpsInvestigationLoopIsOperational(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"search_ops_manuals",
+		"operations manuals",
+		"complex operations task",
+		"high-risk actions",
+		"service restart",
+		"configuration changes",
+		"database operations",
+		"backup",
+		"recovery",
+		"migration",
+		"cluster changes",
+	})
+}
+
 func TestSemanticPromptRiskBoundariesUseBlastRadius(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {

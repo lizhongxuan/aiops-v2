@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 )
 
 func (s *HTTPServer) handleExperiencePacks(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/experience-packs"), "/")
+	log.Printf("legacy experience-packs API called: method=%s path=%s", r.Method, r.URL.Path)
 
 	switch {
 	case r.Method == http.MethodGet && path == "candidates":

@@ -327,8 +327,8 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 		t.Fatalf("Apply() error = %v", err)
 	}
 
-	if approvals.decision.ID != "approval-1" || approvals.decision.Decision != "accept" {
-		t.Fatalf("approval decision = %+v, want approval-1/accept", approvals.decision)
+	if approvals.decision.SessionID != "sess-1" || approvals.decision.TurnID != "turn-1" || approvals.decision.ID != "approval-1" || approvals.decision.Decision != "accept" {
+		t.Fatalf("approval decision = %+v, want sess-1/turn-1/approval-1/accept", approvals.decision)
 	}
 	if result.Status != "accepted" {
 		t.Fatalf("result.Status = %q, want accepted", result.Status)

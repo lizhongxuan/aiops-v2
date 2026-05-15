@@ -115,7 +115,7 @@ const opsGraphNeighborhoodPayload = {
       { id: "pg-0", name: "pg-0", role: "primary", status: "warning" },
       { id: "pg-1", name: "pg-1", role: "replica", status: "healthy" },
     ],
-    related_experience_packs: [{ id: "pack-pg-pool", name: "PG 连接池修复经验包" }],
+    related_experience_packs: [{ id: "manual-pg-pool", name: "PG 连接池修复运维手册" }],
   },
   neighbors: [
     { id: "svc-checkout", name: "Checkout 服务", type: "service", relation: "writes_to", status: "warning" },
@@ -415,12 +415,12 @@ describe("React complex migration pages", () => {
     expect(container.textContent).toContain("PG 主库");
     expect(container.textContent).toContain("中间件成员");
     expect(container.textContent).toContain("pg-0");
-    expect(container.textContent).toContain("PG 连接池修复经验包");
+    expect(container.textContent).toContain("PG 连接池修复运维手册");
     expect(container.textContent).toContain("HostProfile 摘要");
     expect(container.textContent).toContain("db-01");
     expect(container.textContent).toContain("lease-db-01");
     expect(container.querySelector('a[href="/settings/hosts?host_id=host-db-01"]')?.textContent).toContain("主机与租约");
-    expect(container.querySelector('a[href="/settings/experience-packs?entity_id=pg-primary"]')?.textContent).toContain("经验包");
+    expect(container.querySelector('a[href="/settings/ops-manuals?entity_id=pg-primary"]')?.textContent).toContain("运维手册");
     expect(container.textContent).not.toContain("CMDB 编辑");
   });
 

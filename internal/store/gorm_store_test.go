@@ -10,6 +10,7 @@ import (
 
 	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/incidents"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
 )
@@ -223,5 +224,109 @@ func TestGormStoreIncidentRoundTrip(t *testing.T) {
 	evidence := restoredStore.ListEvidence("case-1")
 	if len(evidence) != 1 || evidence[0].Summary != "connection pool saturated" {
 		t.Fatalf("ListEvidence() = %#v", evidence)
+	}
+}
+
+func TestGormStoreOpsManualRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ops-manuals.db")
+	first := newSQLiteGormStore(t, dbPath)
+	manual := opsmanual.OpsManual{
+		ID:          "manual-redis-memory",
+		Title:       "Redis memory pressure",
+		Status:      opsmanual.ManualStatusVerified,
+		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-redis-memory"},
+		Operation:   opsmanual.OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
+		UpdatedAt:   "2026-05-14T08:00:00Z",
+	}
+	if err := first.SaveOpsManual(manual); err != nil {
+		t.Fatalf("SaveOpsManual() error = %v", err)
+	}
+	if err := first.SaveOpsManualCandidate(opsmanual.ManualCandidate{
+		ID:             "candidate-redis-memory",
+		ProposedManual: manual,
+		ReviewStatus:   "pending",
+		UpdatedAt:      "2026-05-14T08:01:00Z",
+	}); err != nil {
+		t.Fatalf("SaveOpsManualCandidate() error = %v", err)
+	}
+	if err := first.SaveOpsManualRunRecord(opsmanual.RunRecord{
+		ID:               "record-1",
+		ManualID:         "manual-redis-memory",
+		WorkflowID:       "workflow-redis-memory",
+		ValidationStatus: "passed",
+		CompletedAt:      "2026-05-14T08:02:00Z",
+	}); err != nil {
+		t.Fatalf("SaveOpsManualRunRecord() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second := newSQLiteGormStore(t, dbPath)
+	defer second.Close()
+	restored, ok, err := second.GetOpsManual("manual-redis-memory")
+	if err != nil || !ok || restored.WorkflowRef.WorkflowID != "workflow-redis-memory" {
+		t.Fatalf("GetOpsManual() = %#v, %v, %v", restored, ok, err)
+	}
+	manuals, err := second.ListOpsManuals()
+	if err != nil || len(manuals) != 1 {
+		t.Fatalf("ListOpsManuals() = %#v, %v", manuals, err)
+	}
+	candidates, err := second.ListOpsManualCandidates()
+	if err != nil || len(candidates) != 1 || candidates[0].ID != "candidate-redis-memory" {
+		t.Fatalf("ListOpsManualCandidates() = %#v, %v", candidates, err)
+	}
+	records, err := second.ListOpsManualRunRecords("manual-redis-memory", "", 10)
+	if err != nil || len(records) != 1 || records[0].ValidationStatus != "passed" {
+		t.Fatalf("ListOpsManualRunRecords() = %#v, %v", records, err)
+	}
+}
+
+func TestJSONFileStoreOpsManualRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	manual := opsmanual.OpsManual{
+		ID:          "manual-pg-backup",
+		Title:       "PostgreSQL backup",
+		Status:      opsmanual.ManualStatusVerified,
+		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup"},
+		Operation:   opsmanual.OperationProfile{TargetType: "postgresql", Action: "backup"},
+		UpdatedAt:   "2026-05-14T08:00:00Z",
+	}
+	if err := first.SaveOpsManual(manual); err != nil {
+		t.Fatalf("SaveOpsManual() error = %v", err)
+	}
+	if err := first.SaveOpsManualCandidate(opsmanual.ManualCandidate{ID: "candidate-pg-backup", ProposedManual: manual, ReviewStatus: "pending"}); err != nil {
+		t.Fatalf("SaveOpsManualCandidate() error = %v", err)
+	}
+	if err := first.SaveOpsManualRunRecord(opsmanual.RunRecord{ID: "record-pg-1", ManualID: "manual-pg-backup", WorkflowID: "workflow-pg-backup", ExecutionStatus: "failed"}); err != nil {
+		t.Fatalf("SaveOpsManualRunRecord() error = %v", err)
+	}
+	if err := first.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("reopen NewJSONFileStore() error = %v", err)
+	}
+	defer second.Close()
+	manuals, err := second.ListOpsManuals()
+	if err != nil || len(manuals) != 1 || manuals[0].ID != "manual-pg-backup" {
+		t.Fatalf("ListOpsManuals() = %#v, %v", manuals, err)
+	}
+	candidates, err := second.ListOpsManualCandidates()
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("ListOpsManualCandidates() = %#v, %v", candidates, err)
+	}
+	records, err := second.ListOpsManualRunRecords("manual-pg-backup", "", 0)
+	if err != nil || len(records) != 1 || records[0].ExecutionStatus != "failed" {
+		t.Fatalf("ListOpsManualRunRecords() = %#v, %v", records, err)
 	}
 }

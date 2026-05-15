@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  BookOpen,
   Bot,
   CheckCircle,
   Database,
@@ -91,7 +92,7 @@ type RunnerRunRecord = {
 type RunnerHostGroup = { label: string; hosts: string[] };
 type RunnerEndCallback = { event: string; url: string; payload: string };
 
-type ToolbarActionKey = "save" | "validate" | "dry-run" | "run" | "variables" | "run-details" | "publish" | "ai-generate" | "import" | "export";
+type ToolbarActionKey = "save" | "validate" | "dry-run" | "run" | "variables" | "run-details" | "publish" | "ai-generate" | "ops-manual" | "import" | "export";
 
 const FALLBACK_ACTIONS: RunnerAction[] = FALLBACK_RUNNER_ACTIONS
   .filter((action) => action.action !== "wait.event")
@@ -110,6 +111,7 @@ const PRIMARY_TOOLBAR_ACTIONS = [
 ] as const;
 
 const SECONDARY_TOOLBAR_ACTIONS = [
+  ["ops-manual", "生成运维手册", BookOpen],
   ["import", "导入", Upload],
   ["export", "导出", Download],
   ["validate", "校验", CheckCircle],
@@ -644,7 +646,7 @@ function WorkflowLibrary({ workflows, onSelect, onDelete }: { workflows: Workflo
                   <em>类型：{context.typeLabel}</em>
                   {context.hostProfileId ? <em>HostProfileSnapshot {context.hostProfileId}</em> : null}
                   {context.hostLeaseId ? <em>HostLease {context.hostLeaseId}</em> : null}
-                  <em>{context.workflowBindable ? "可绑定经验包" : "未开放经验包绑定"}</em>
+                  <em>{context.workflowBindable ? "可绑定运维手册" : "未开放运维手册绑定"}</em>
                 </span>
               </button>
               <button
@@ -1604,6 +1606,97 @@ function PublishReviewModal({ workflow, onClose, onPublished }: { workflow: Work
   );
 }
 
+function OpsManualCandidateModal({ workflow, graph, onClose }: { workflow: Workflow; graph: RunnerGraph; onClose: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState("");
+  const name = workflowKey(workflow);
+  const title = workflow.title || workflow.name || name;
+  const status = workflow.status || "draft";
+  const candidateTitle = `${title} 运维手册候选`;
+  const manualPath = `/settings/ops-manuals?workflow=${encodeURIComponent(name)}`;
+  const nodeCount = graph.nodes?.length || 0;
+  const payload = {
+    workflow_id: name,
+    workflow_name: name,
+    source_type: "runner_workflow",
+    source_refs: [name],
+    draft_manual: {
+      title: candidateTitle,
+      status: "draft",
+      workflow_ref: { workflow_id: name },
+      operation: { target_type: "runner_workflow", action: objectValue(graph.workflow).workflow_type || workflow.workflow_type || workflow.workflowType || "review_required" },
+      required_context: { required_inputs: [], required_evidence: [] },
+      preconditions: ["确认 Workflow 已完成校验或 Dry Run", "确认执行目标、权限和回滚窗口"],
+      validation: ["复核候选手册内容", "绑定执行记录后再进入已验证手册"],
+      cannot_use_when: ["Workflow 尚未明确适用范围", "缺少后续复核"],
+      document_markdown: `# ${candidateTitle}\n\n由 Runner Workflow ${name} 准备，只读候选内容需在运维手册页审核后使用。`,
+    },
+  };
+
+  async function prepareCandidate() {
+    if (loading || result) return;
+    setLoading(true);
+    setError("");
+    try {
+      const response = await requestJson("/api/v1/ops-manuals/candidates/prepare", { method: "POST", body: JSON.stringify(payload) });
+      setResult(objectValue(response));
+    } catch (cause) {
+      setError(errorMessage(cause, "候选手册准备失败"));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="publish-review-backdrop" data-testid="runner-ops-manual-modal">
+      <div className="publish-review-modal" role="dialog" aria-modal="true" aria-label="准备运维手册候选">
+        <header className="publish-review-head">
+          <div><p>OPS MANUAL CANDIDATE</p><h2>准备运维手册候选</h2></div>
+          <button type="button" className="workflow-icon-button" aria-label="关闭" onClick={onClose}><X size={16} /></button>
+        </header>
+        <main className="publish-review-body">
+          <section className="publish-review-card">
+            <h3>确认范围</h3>
+            <p>将为当前 Runner Workflow 准备一个待审核 OpsManual 候选，不会发布或替换已验证手册。</p>
+            <ul>
+              <li>Workflow：{title}</li>
+              <li>状态：{status}</li>
+              <li>绑定：只绑定 1 个 Runner Workflow</li>
+              <li>节点数：{nodeCount}</li>
+            </ul>
+          </section>
+          <section className="publish-review-card">
+            <h3>只读预览</h3>
+            <p>{candidateTitle}</p>
+            <ul>
+              <li>AI Chat 引用键：ops_manual_candidate:{name}</li>
+              <li>运维手册页：{manualPath}</li>
+              <li>后续仍需在运维手册页审核、补全适用范围和验证记录。</li>
+            </ul>
+          </section>
+          <section className="publish-review-card">
+            <h3>检查清单</h3>
+            <ul>
+              <li>确认候选只来自当前选中的 Workflow。</li>
+              <li>确认候选不会自动发布，必须经过验证和发布检查。</li>
+              <li>确认手册页和 AI Chat 可用该引用定位候选。</li>
+            </ul>
+          </section>
+          {result ? <p className="publish-review-warning">已准备候选：{String(result.id || result.candidate_id || "pending_review")}</p> : null}
+          {error ? <p className="publish-review-error" role="alert">{error}</p> : null}
+        </main>
+        <footer className="publish-review-footer">
+          <button type="button" onClick={onClose}>取消</button>
+          <button type="button" className="primary" data-testid="runner-ops-manual-prepare" disabled={loading || Boolean(result)} onClick={() => void prepareCandidate()}>
+            <BookOpen size={15} />{loading ? "准备中" : result ? "已准备候选" : "准备候选"}
+          </button>
+        </footer>
+      </div>
+    </section>
+  );
+}
+
 function AiAssistantModal({ workflow, graph, onClose, onApply }: { workflow: Workflow; graph: RunnerGraph; onClose: () => void; onApply: (graph: RunnerGraph) => void }) {
   const [instruction, setInstruction] = useState("");
   const [draftGraph, setDraftGraph] = useState<RunnerGraph | null>(null);
@@ -1652,6 +1745,7 @@ export function RunnerStudioPage() {
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [publishOpen, setPublishOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [opsManualOpen, setOpsManualOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [debugDockOpen, setDebugDockOpen] = useState(false);
   const [toolbarMoreOpen, setToolbarMoreOpen] = useState(false);
@@ -1983,6 +2077,7 @@ export function RunnerStudioPage() {
     }
     if (key === "publish") setPublishOpen(true);
     if (key === "ai-generate") setAiOpen(true);
+    if (key === "ops-manual") setOpsManualOpen(true);
   }
 
   headerActionsRef.current = {
@@ -2049,6 +2144,7 @@ export function RunnerStudioPage() {
       </section>
       {managerOpen ? <WorkflowManagerModal workflows={workflows} onClose={() => setManagerOpen(false)} onCreateBlank={createBlankWorkflow} onSelect={(name) => { setManagerOpen(false); selectWorkflow(name); }} onDelete={(name) => void deleteWorkflow(name)} /> : null}
       {publishOpen && selectedWorkflow ? <PublishReviewModal workflow={selectedWorkflow} onClose={() => setPublishOpen(false)} onPublished={(payload) => { upsertWorkflow(selectedWorkflowName, { ...payload, status: payload.status || "published" }); setPublishOpen(false); }} /> : null}
+      {opsManualOpen && selectedWorkflow ? <OpsManualCandidateModal workflow={selectedWorkflow} graph={graph} onClose={() => setOpsManualOpen(false)} /> : null}
       {aiOpen && selectedWorkflow ? <AiAssistantModal workflow={selectedWorkflow} graph={graph} onClose={() => setAiOpen(false)} onApply={(nextGraph) => { updateGraph(nextGraph); setAiOpen(false); }} /> : null}
     </section>
   );

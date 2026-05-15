@@ -39,7 +39,7 @@ describe("zhLabels", () => {
     expect(zhNavigationTitle("/runner")).toBe("Runner Workflow");
     expect(zhNavigationTitle("/settings/llm")).toBe("LLM 配置");
     expect(zhNavigationTitle("/settings/hosts")).toBe("主机与租约");
-    expect(zhNavigationTitle("/settings/experience-packs")).toBe("经验包");
+    expect(zhNavigationTitle("/settings/experience-packs")).toBe("运维手册");
     expect(zhNavigationTitle("/mcp")).toBe("MCP 服务");
     expect(zhNavigationTitle("/coroot")).toBe("Coroot 观测");
     expect(zhNavigationTitle("/debug/prompts")).toBe("Prompt Trace");
@@ -57,7 +57,7 @@ describe("navigation convergence", () => {
       "/runner",
       "/settings/llm",
       "/settings/hosts",
-      "/settings/experience-packs",
+      "/settings/ops-manuals",
       "/mcp",
       "/coroot",
       "/debug/prompts",

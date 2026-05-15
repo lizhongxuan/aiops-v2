@@ -73,6 +73,8 @@ func (c *assistantTransportRetryCommand) Type() string {
 
 type assistantTransportApprovalDecisionCommand struct {
 	CommandType string `json:"type"`
+	SessionID   string `json:"sessionId,omitempty"`
+	TurnID      string `json:"turnId,omitempty"`
 	ApprovalID  string `json:"approvalId"`
 	Decision    string `json:"decision"`
 }

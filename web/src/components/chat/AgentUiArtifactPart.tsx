@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
 import { CorootChartArtifact } from "./CorootChartArtifact";
 import { ExperienceMatchArtifact } from "./ExperienceMatchArtifact";
+import { OpsManualMatchArtifact, OpsManualSearchResultArtifact, RunnerWorkflowGenerationArtifact } from "@/chat/components/OpsManualChatArtifacts";
 import { TopologySliceArtifact } from "./TopologySliceArtifact";
 import { TraceSummaryArtifact } from "./TraceSummaryArtifact";
 import { VerificationResultArtifact } from "./VerificationResultArtifact";
@@ -27,6 +28,9 @@ const ARTIFACT_LABELS: Record<string, string> = {
   workflow_result: "Workflow 结果",
   verification_result: "验证结果",
   experience_match: "经验命中",
+  ops_manual_match: "运维手册判定",
+  ops_manual_search_result: "运维手册检索",
+  runner_workflow_generation: "Workflow 生成进度",
 };
 
 const REDACTION_LABELS: Record<string, string> = {
@@ -36,6 +40,13 @@ const REDACTION_LABELS: Record<string, string> = {
 };
 
 export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
+  if (artifact.type === "ops_manual_match") {
+    return <OpsManualMatchArtifact artifact={artifact} />;
+  }
+  if (artifact.type === "ops_manual_search_result") {
+    return <OpsManualSearchResultArtifact artifact={artifact} />;
+  }
+
   const typeLabel = ARTIFACT_LABELS[artifact.type] || "暂不支持的卡片类型";
   const title = text(artifact.titleZh) || text(artifact.title) || typeLabel;
   const summary = text(artifact.summaryZh) || text(artifact.summary) || (ARTIFACT_LABELS[artifact.type] ? "暂无摘要" : "该卡片类型未注册，已按安全模式展示。");
@@ -88,6 +99,12 @@ function artifactContent(artifact: AiopsTransportAgentUiArtifact) {
       return <VerificationResultArtifact artifact={artifact} />;
     case "experience_match":
       return <ExperienceMatchArtifact artifact={artifact} />;
+    case "ops_manual_match":
+      return <OpsManualMatchArtifact artifact={artifact} />;
+    case "ops_manual_search_result":
+      return <OpsManualSearchResultArtifact artifact={artifact} />;
+    case "runner_workflow_generation":
+      return <RunnerWorkflowGenerationArtifact artifact={artifact} />;
     default:
       return null;
   }
@@ -235,7 +252,11 @@ function iconForArtifact(type: string) {
     case "verification_result":
       return CheckCircle2;
     case "experience_match":
+    case "ops_manual_match":
+    case "ops_manual_search_result":
       return ShieldCheck;
+    case "runner_workflow_generation":
+      return GitBranch;
     default:
       return AlertTriangle;
   }

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
@@ -13,8 +14,9 @@ type ChatPageProps = {
 };
 
 export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) {
-  const [activeThreadId, setActiveThreadId] = useState(threadId);
-  const [activeInitialState, setActiveInitialState] = useState(initialState);
+  const resolvedInitialState = useMemo(() => initialState ?? resolveUiFixtureState() ?? undefined, [initialState]);
+  const [activeThreadId, setActiveThreadId] = useState(resolvedInitialState?.threadId || threadId);
+  const [activeInitialState, setActiveInitialState] = useState(resolvedInitialState);
   const [activeAutoResume, setActiveAutoResume] = useState(false);
 
   return (

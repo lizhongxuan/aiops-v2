@@ -199,6 +199,20 @@ test.describe("Runner Studio", () => {
     await page.route("**/api/runner-studio/workflows/*/publish", (route) =>
       route.fulfill({ json: { name: "runner-blank", status: "published", published_graph_hash: "graph-hash-e2e" } }),
     );
+    await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) =>
+      route.fulfill({
+        json: {
+          id: "candidate-runner-blank",
+          review_status: "pending",
+          proposed_manual: {
+            id: "manual-runner-blank-draft",
+            title: "runner-blank 运维手册候选",
+            status: "draft",
+            workflow_ref: { workflow_id: "runner-blank" },
+          },
+        },
+      }),
+    );
   });
 
   test("opens /runner as native Runner Studio instead of a legacy entry page", async ({ page }) => {
@@ -256,7 +270,41 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-studio-topbar")).toHaveCount(0);
   });
 
-  test("surfaces Workflow type, HostProfileSnapshot, HostLease and experience binding context", async ({ page }) => {
+  test("opens a read-only OpsManual candidate preview for the selected workflow", async ({ page }) => {
+    await createBlankWorkflow(page);
+
+    await page.getByTestId("runner-toolbar-more").click();
+    await page.getByTestId("runner-toolbar-ops-manual").click();
+
+    const modal = page.getByTestId("runner-ops-manual-modal");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText("准备运维手册候选");
+    await expect(modal).toContainText("runner-blank");
+    await expect(modal).toContainText("draft");
+    await expect(modal).toContainText("只绑定 1 个 Runner Workflow");
+    await expect(modal).toContainText("后续仍需在运维手册页审核");
+    await expect(modal).toContainText("只读预览");
+    await expect(modal).toContainText("/settings/ops-manuals");
+    await expect(page).toHaveURL(/\/runner\/runner-blank$/);
+
+    const prepareRequest = page.waitForRequest((req) =>
+      req.url().includes("/api/v1/ops-manuals/candidates/prepare") && req.method() === "POST",
+    );
+    await page.getByTestId("runner-ops-manual-prepare").click();
+    const request = await prepareRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      workflow_id: "runner-blank",
+      workflow_name: "runner-blank",
+      draft_manual: {
+        title: "runner-blank 运维手册候选",
+        workflow_ref: { workflow_id: "runner-blank" },
+      },
+    });
+    await expect(modal).toContainText("已准备候选");
+    await expect(page).toHaveURL(/\/runner\/runner-blank$/);
+  });
+
+  test("surfaces Workflow type, HostProfileSnapshot, HostLease and ops manual binding context", async ({ page }) => {
     await page.unroute("**/api/runner-studio/workflows");
     await page.route("**/api/runner-studio/workflows", (route) =>
       route.fulfill({
@@ -295,7 +343,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-workflow-library")).toContainText("修复");
     await expect(page.getByTestId("runner-workflow-library")).toContainText("HostProfileSnapshot");
     await expect(page.getByTestId("runner-workflow-library")).toContainText("HostLease");
-    await expect(page.getByTestId("runner-workflow-library")).toContainText("可绑定经验包");
+    await expect(page.getByTestId("runner-workflow-library")).toContainText("可绑定运维手册");
     await expect(page.getByTestId("runner-workflow-library")).not.toContainText("Runbook");
 
     await page.getByText("PG Pool Fix").click();

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/agentui"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
 )
@@ -80,6 +81,18 @@ type Store interface {
 	ListToolResultSpills() ([]*tooling.ResultSpill, error)
 	SaveToolResultSpill(spill *tooling.ResultSpill) error
 	DeleteToolResultSpill(id string) error
+
+	// Ops manuals
+	GetOpsManual(id string) (opsmanual.OpsManual, bool, error)
+	ListOpsManuals() ([]opsmanual.OpsManual, error)
+	SaveOpsManual(manual opsmanual.OpsManual) error
+	DeleteOpsManual(id string) error
+	GetOpsManualCandidate(id string) (opsmanual.ManualCandidate, bool, error)
+	ListOpsManualCandidates() ([]opsmanual.ManualCandidate, error)
+	SaveOpsManualCandidate(candidate opsmanual.ManualCandidate) error
+	DeleteOpsManualCandidate(id string) error
+	ListOpsManualRunRecords(manualID string, workflowID string, limit int) ([]opsmanual.RunRecord, error)
+	SaveOpsManualRunRecord(record opsmanual.RunRecord) error
 
 	// Flush forces an immediate write of all dirty state to disk.
 	Flush() error
@@ -230,6 +243,10 @@ type JSONFileStore struct {
 	profiles []AgentProfileRecord
 	spills   map[string]*tooling.ResultSpill
 
+	opsManuals          map[string]opsmanual.OpsManual
+	opsManualCandidates map[string]opsmanual.ManualCandidate
+	opsManualRunRecords map[string]opsmanual.RunRecord
+
 	// Async write control
 	dirty    map[string]bool // tracks which data sets need flushing
 	stopCh   chan struct{}
@@ -248,15 +265,18 @@ func NewJSONFileStore(dataDir string, flushInterval time.Duration) (*JSONFileSto
 	}
 
 	s := &JSONFileStore{
-		dataDir:  dataDir,
-		sessions: make(map[string]*runtimekernel.SessionState),
-		tasks:    make(map[string]*runtimekernel.WorkspaceTask),
-		dirty:    make(map[string]bool),
-		hosts:    make(map[string]*HostRecord),
-		spills:   make(map[string]*tooling.ResultSpill),
-		stopCh:   make(chan struct{}),
-		doneCh:   make(chan struct{}),
-		interval: flushInterval,
+		dataDir:             dataDir,
+		sessions:            make(map[string]*runtimekernel.SessionState),
+		tasks:               make(map[string]*runtimekernel.WorkspaceTask),
+		dirty:               make(map[string]bool),
+		hosts:               make(map[string]*HostRecord),
+		spills:              make(map[string]*tooling.ResultSpill),
+		opsManuals:          make(map[string]opsmanual.OpsManual),
+		opsManualCandidates: make(map[string]opsmanual.ManualCandidate),
+		opsManualRunRecords: make(map[string]opsmanual.RunRecord),
+		stopCh:              make(chan struct{}),
+		doneCh:              make(chan struct{}),
+		interval:            flushInterval,
 	}
 
 	if err := s.loadFromDisk(); err != nil {
@@ -828,6 +848,167 @@ func (s *JSONFileStore) DeleteToolResultSpill(id string) error {
 }
 
 // ---------------------------------------------------------------------------
+// Ops manuals
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetOpsManual(id string) (opsmanual.OpsManual, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	manual, ok := s.opsManuals[id]
+	if !ok {
+		return opsmanual.OpsManual{}, false, nil
+	}
+	return cloneOpsManual(manual), true, nil
+}
+
+func (s *JSONFileStore) ListOpsManuals() ([]opsmanual.OpsManual, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]opsmanual.OpsManual, 0, len(s.opsManuals))
+	for _, manual := range s.opsManuals {
+		out = append(out, cloneOpsManual(manual))
+	}
+	sortOpsManuals(out)
+	return out, nil
+}
+
+func (s *JSONFileStore) SaveOpsManual(manual opsmanual.OpsManual) error {
+	if strings.TrimSpace(manual.ID) == "" {
+		return fmt.Errorf("ops manual id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opsManuals[manual.ID] = cloneOpsManual(manual)
+	s.dirty["opsmanual:"+manual.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) DeleteOpsManual(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.opsManuals[id]; !ok {
+		return fmt.Errorf("ops manual %q not found", id)
+	}
+	delete(s.opsManuals, id)
+	s.dirty["delete_opsmanual:"+id] = true
+	return nil
+}
+
+func (s *JSONFileStore) GetOpsManualCandidate(id string) (opsmanual.ManualCandidate, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	candidate, ok := s.opsManualCandidates[id]
+	if !ok {
+		return opsmanual.ManualCandidate{}, false, nil
+	}
+	return cloneOpsManualCandidate(candidate), true, nil
+}
+
+func (s *JSONFileStore) ListOpsManualCandidates() ([]opsmanual.ManualCandidate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]opsmanual.ManualCandidate, 0, len(s.opsManualCandidates))
+	for _, candidate := range s.opsManualCandidates {
+		out = append(out, cloneOpsManualCandidate(candidate))
+	}
+	sortOpsManualCandidates(out)
+	return out, nil
+}
+
+func (s *JSONFileStore) SaveOpsManualCandidate(candidate opsmanual.ManualCandidate) error {
+	if strings.TrimSpace(candidate.ID) == "" {
+		return fmt.Errorf("ops manual candidate id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opsManualCandidates[candidate.ID] = cloneOpsManualCandidate(candidate)
+	s.dirty["opsmanualcandidate:"+candidate.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) DeleteOpsManualCandidate(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.opsManualCandidates[id]; !ok {
+		return fmt.Errorf("ops manual candidate %q not found", id)
+	}
+	delete(s.opsManualCandidates, id)
+	s.dirty["delete_opsmanualcandidate:"+id] = true
+	return nil
+}
+
+func (s *JSONFileStore) ListOpsManualRunRecords(manualID string, workflowID string, limit int) ([]opsmanual.RunRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return filterOpsManualRunRecords(s.opsManualRunRecords, manualID, workflowID, limit), nil
+}
+
+func (s *JSONFileStore) SaveOpsManualRunRecord(record opsmanual.RunRecord) error {
+	if strings.TrimSpace(record.ID) == "" {
+		return fmt.Errorf("ops manual run record id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opsManualRunRecords[record.ID] = cloneOpsManualRunRecord(record)
+	s.dirty["opsmanualrunrecord:"+record.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) ListManuals(req opsmanual.ListManualsRequest) ([]opsmanual.OpsManual, error) {
+	manuals, err := s.ListOpsManuals()
+	if err != nil {
+		return nil, err
+	}
+	return filterOpsManuals(manuals, req), nil
+}
+
+func (s *JSONFileStore) GetManual(id string) (opsmanual.OpsManual, error) {
+	manual, ok, err := s.GetOpsManual(id)
+	if err != nil {
+		return opsmanual.OpsManual{}, err
+	}
+	if !ok {
+		return opsmanual.OpsManual{}, fmt.Errorf("ops manual %q not found", id)
+	}
+	return manual, nil
+}
+
+func (s *JSONFileStore) SaveManual(manual opsmanual.OpsManual) error {
+	return s.SaveOpsManual(manual)
+}
+
+func (s *JSONFileStore) ListRunRecords(req opsmanual.ListRunRecordsRequest) ([]opsmanual.RunRecord, error) {
+	return s.ListOpsManualRunRecords(req.ManualID, req.WorkflowID, req.Limit)
+}
+
+func (s *JSONFileStore) GetCandidate(id string) (opsmanual.ManualCandidate, error) {
+	candidate, ok, err := s.GetOpsManualCandidate(id)
+	if err != nil {
+		return opsmanual.ManualCandidate{}, err
+	}
+	if !ok {
+		return opsmanual.ManualCandidate{}, fmt.Errorf("ops manual candidate %q not found", id)
+	}
+	return candidate, nil
+}
+
+func (s *JSONFileStore) ListCandidates() ([]opsmanual.ManualCandidate, error) {
+	return s.ListOpsManualCandidates()
+}
+
+func (s *JSONFileStore) SaveCandidate(candidate opsmanual.ManualCandidate) error {
+	return s.SaveOpsManualCandidate(candidate)
+}
+
+func (s *JSONFileStore) DeleteCandidate(id string) error {
+	return s.DeleteOpsManualCandidate(id)
+}
+
+func (s *JSONFileStore) SaveRunRecord(record opsmanual.RunRecord) error {
+	return s.SaveOpsManualRunRecord(record)
+}
+
+// ---------------------------------------------------------------------------
 // Flush / Close
 // ---------------------------------------------------------------------------
 
@@ -966,6 +1147,26 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			id := key[13:]
 			path := filepath.Join(s.dataDir, "tool-spills", id+".json")
 			_ = os.Remove(path)
+		case len(key) > 10 && key[:10] == "opsmanual:":
+			if err := s.writeJSON("ops-manuals.json", mapValues(s.opsManuals, cloneOpsManual)); err != nil {
+				return err
+			}
+		case len(key) > 17 && key[:17] == "delete_opsmanual:":
+			if err := s.writeJSON("ops-manuals.json", mapValues(s.opsManuals, cloneOpsManual)); err != nil {
+				return err
+			}
+		case len(key) > 19 && key[:19] == "opsmanualcandidate:":
+			if err := s.writeJSON("ops-manual-candidates.json", mapValues(s.opsManualCandidates, cloneOpsManualCandidate)); err != nil {
+				return err
+			}
+		case len(key) > 26 && key[:26] == "delete_opsmanualcandidate:":
+			if err := s.writeJSON("ops-manual-candidates.json", mapValues(s.opsManualCandidates, cloneOpsManualCandidate)); err != nil {
+				return err
+			}
+		case len(key) > 19 && key[:19] == "opsmanualrunrecord:":
+			if err := s.writeJSON("ops-manual-run-records.json", mapValues(s.opsManualRunRecords, cloneOpsManualRunRecord)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1177,6 +1378,31 @@ func (s *JSONFileStore) loadFromDisk() error {
 		s.spills[spill.ID] = &spill
 	}
 
+	if raw, err := os.ReadFile(filepath.Join(s.dataDir, "ops-manuals.json")); err == nil {
+		var items []opsmanual.OpsManual
+		if err := json.Unmarshal(raw, &items); err == nil {
+			for _, item := range items {
+				s.opsManuals[item.ID] = cloneOpsManual(item)
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(s.dataDir, "ops-manual-candidates.json")); err == nil {
+		var items []opsmanual.ManualCandidate
+		if err := json.Unmarshal(raw, &items); err == nil {
+			for _, item := range items {
+				s.opsManualCandidates[item.ID] = cloneOpsManualCandidate(item)
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(s.dataDir, "ops-manual-run-records.json")); err == nil {
+		var items []opsmanual.RunRecord
+		if err := json.Unmarshal(raw, &items); err == nil {
+			for _, item := range items {
+				s.opsManualRunRecords[item.ID] = cloneOpsManualRunRecord(item)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1286,4 +1512,136 @@ func cloneAgentProfileRecords(src []AgentProfileRecord) ([]AgentProfileRecord, e
 		return nil, err
 	}
 	return dst, nil
+}
+
+func cloneOpsManual(src opsmanual.OpsManual) opsmanual.OpsManual {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return src
+	}
+	var dst opsmanual.OpsManual
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return src
+	}
+	return dst
+}
+
+func cloneOpsManualCandidate(src opsmanual.ManualCandidate) opsmanual.ManualCandidate {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return src
+	}
+	var dst opsmanual.ManualCandidate
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return src
+	}
+	return dst
+}
+
+func cloneOpsManualRunRecord(src opsmanual.RunRecord) opsmanual.RunRecord {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return src
+	}
+	var dst opsmanual.RunRecord
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return src
+	}
+	return dst
+}
+
+func mapValues[T any](items map[string]T, clone func(T) T) []T {
+	out := make([]T, 0, len(items))
+	for _, item := range items {
+		out = append(out, clone(item))
+	}
+	return out
+}
+
+func sortOpsManuals(items []opsmanual.OpsManual) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt == items[j].UpdatedAt {
+			return items[i].Title < items[j].Title
+		}
+		return items[i].UpdatedAt > items[j].UpdatedAt
+	})
+}
+
+func sortOpsManualCandidates(items []opsmanual.ManualCandidate) {
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt == items[j].UpdatedAt {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].UpdatedAt > items[j].UpdatedAt
+	})
+}
+
+func filterOpsManualRunRecords(records map[string]opsmanual.RunRecord, manualID string, workflowID string, limit int) []opsmanual.RunRecord {
+	out := make([]opsmanual.RunRecord, 0, len(records))
+	for _, record := range records {
+		if manualID != "" && record.ManualID != manualID {
+			continue
+		}
+		if workflowID != "" && record.WorkflowID != workflowID {
+			continue
+		}
+		out = append(out, cloneOpsManualRunRecord(record))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left := out[i].CompletedAt
+		if left == "" {
+			left = out[i].StartedAt
+		}
+		right := out[j].CompletedAt
+		if right == "" {
+			right = out[j].StartedAt
+		}
+		if left == right {
+			return out[i].ID < out[j].ID
+		}
+		return left > right
+	})
+	if limit <= 0 {
+		limit = 50
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func filterOpsManuals(manuals []opsmanual.OpsManual, req opsmanual.ListManualsRequest) []opsmanual.OpsManual {
+	out := make([]opsmanual.OpsManual, 0, len(manuals))
+	for _, manual := range manuals {
+		if req.Status != "" && manual.Status != req.Status {
+			continue
+		}
+		if req.TargetType != "" && !strings.EqualFold(manual.Operation.TargetType, req.TargetType) {
+			continue
+		}
+		if req.Action != "" && !strings.EqualFold(manual.Operation.Action, req.Action) {
+			continue
+		}
+		if req.Middleware != "" && !strings.EqualFold(manual.Applicability.Middleware, req.Middleware) {
+			continue
+		}
+		if req.ExecutionSurface != "" && !containsFold(manual.Applicability.ExecutionSurface, req.ExecutionSurface) {
+			continue
+		}
+		out = append(out, cloneOpsManual(manual))
+	}
+	sortOpsManuals(out)
+	if req.Limit > 0 && len(out) > req.Limit {
+		out = out[:req.Limit]
+	}
+	return out
+}
+
+func containsFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, want) {
+			return true
+		}
+	}
+	return false
 }

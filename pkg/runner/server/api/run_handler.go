@@ -27,6 +27,9 @@ func (h *runHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := h.svc.Submit(r.Context(), &req)
 	if err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}

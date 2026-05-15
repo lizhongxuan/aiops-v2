@@ -89,6 +89,9 @@ func (h *workflowHandler) Create(w http.ResponseWriter, r *http.Request) {
 		SaveNoteSet: req.SaveNote != nil,
 	})
 	if err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}
@@ -126,6 +129,9 @@ func (h *workflowHandler) Update(w http.ResponseWriter, r *http.Request) {
 		SaveNoteSet: req.SaveNote != nil,
 	})
 	if err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}
@@ -135,10 +141,12 @@ func (h *workflowHandler) Update(w http.ResponseWriter, r *http.Request) {
 		"labels":      req.Labels,
 		"save_note":   derefString(req.SaveNote),
 	})
+	warnings, _ := h.svc.WorkflowReferenceWarnings(r.Context(), name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":      name,
 		"save_note": derefString(req.SaveNote),
 		"status":    service.WorkflowStatusDraft,
+		"warnings":  warnings,
 	})
 }
 
@@ -251,6 +259,9 @@ func (h *workflowHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := h.svc.Rollback(r.Context(), name, versionID, service.WorkflowRollbackOptions{SaveNote: req.SaveNote})
 	if err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}
@@ -298,6 +309,9 @@ func (h *workflowHandler) ImportBundle(w http.ResponseWriter, r *http.Request) {
 		SaveNote:  req.SaveNote,
 	})
 	if err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}
@@ -319,6 +333,9 @@ func (h *workflowHandler) ImportBundle(w http.ResponseWriter, r *http.Request) {
 func (h *workflowHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
 	if err := h.svc.Delete(r.Context(), name); err != nil {
+		if writeWorkflowGuardError(w, err) {
+			return
+		}
 		writeServiceError(w, err)
 		return
 	}
@@ -454,6 +471,33 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func writeWorkflowGuardError(w http.ResponseWriter, err error) bool {
+	var coded interface {
+		Code() string
+		Message() string
+		WorkflowReferences() []service.WorkflowReference
+	}
+	if !errors.As(err, &coded) {
+		return false
+	}
+	payload := map[string]any{
+		"error":   coded.Code(),
+		"message": coded.Message(),
+	}
+	if refs := coded.WorkflowReferences(); len(refs) > 0 {
+		payload["references"] = refs
+	}
+	status := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, service.ErrConflict):
+		status = http.StatusConflict
+	case errors.Is(err, service.ErrInvalid):
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, payload)
+	return true
 }
 
 func workflowVersionResponses(items []*service.WorkflowVersionRecord) []map[string]any {

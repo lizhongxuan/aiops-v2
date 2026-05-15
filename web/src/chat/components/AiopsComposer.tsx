@@ -7,7 +7,7 @@ import {
   useComposerRuntime,
   useThread,
 } from "@assistant-ui/react";
-import { ArrowUp, Check, LoaderCircle, Square } from "lucide-react";
+import { ArrowUp, Check, FileText, LoaderCircle, Square, Wrench } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,13 @@ import { resolveStopDispatchTarget } from "./aiopsComposerActions";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
+type GenerationConfirmation = {
+  action: string;
+  title: string;
+  sourceTitle: string;
+  artifactId?: string;
+};
+
 export function AiopsComposer({
   className = "",
   variant = "default",
@@ -31,9 +38,40 @@ export function AiopsComposer({
   const threadIsRunning = useThread((snapshot) => snapshot.isRunning);
   const workspace = useSessionWorkspaceContext();
   const isRunning = isAiopsTransportRunning(state) || threadIsRunning;
+  const [generationConfirmation, setGenerationConfirmation] = useState<GenerationConfirmation | null>(null);
+
+  useEffect(() => {
+    function handleConfirmation(event: Event) {
+      const detail = (event as CustomEvent<Partial<GenerationConfirmation>>).detail || {};
+      const action = String(detail.action || "").trim();
+      if (!["generate_ops_manual_candidate", "generate_runner_workflow_candidate"].includes(action)) {
+        return;
+      }
+      setGenerationConfirmation({
+        action,
+        title: String(detail.title || (action === "generate_ops_manual_candidate" ? "生成运维手册候选" : "生成工作流候选")),
+        sourceTitle: String(detail.sourceTitle || "当前对话"),
+        artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
+      });
+    }
+    window.addEventListener("aiops:composer-confirmation", handleConfirmation);
+    return () => window.removeEventListener("aiops:composer-confirmation", handleConfirmation);
+  }, []);
+
   const pendingApproval = selectComposerApproval(state);
   if (pendingApproval) {
     return <BlockedApprovalComposer approval={pendingApproval} />;
+  }
+  if (generationConfirmation) {
+    return (
+      <GenerationConfirmationComposer
+        confirmation={generationConfirmation}
+        variant={variant}
+        className={className}
+        onCancel={() => setGenerationConfirmation(null)}
+        onComplete={() => setGenerationConfirmation(null)}
+      />
+    );
   }
 
   return (
@@ -58,6 +96,80 @@ export function AiopsComposer({
         {workspace.composerDisabledReason ? (
           <div className="px-1 text-xs text-amber-700">{workspace.composerDisabledReason}</div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+function GenerationConfirmationComposer({
+  confirmation,
+  variant,
+  className,
+  onCancel,
+  onComplete,
+}: {
+  confirmation: GenerationConfirmation;
+  variant: "default" | "chat";
+  className: string;
+  onCancel: () => void;
+  onComplete: () => void;
+}) {
+  const sendCommand = useAssistantTransportSendCommand();
+  const target = useSessionTargetContext();
+  const Icon = confirmation.action === "generate_ops_manual_candidate" ? FileText : Wrench;
+
+  function confirm() {
+    const text =
+      confirmation.action === "generate_ops_manual_candidate"
+        ? `确认生成运维手册候选：${confirmation.sourceTitle}`
+        : `确认生成工作流候选：${confirmation.sourceTitle}`;
+    sendCommand({
+      type: "add-message",
+      message: {
+        role: "user",
+        metadata: {
+          ...target.metadata,
+          opsManualAction: confirmation.action,
+          sourceArtifactId: confirmation.artifactId,
+        },
+        ...(target.hostId ? { hostId: target.hostId } : {}),
+        parts: [{ type: "text", text }],
+      },
+    } as Parameters<typeof sendCommand>[0]);
+    onComplete();
+  }
+
+  return (
+    <div
+      className={[
+        variant === "chat" ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6" : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      data-testid="ops-manual-generation-confirmation"
+    >
+      <div className="mx-auto max-w-3xl rounded-[1.25rem] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.10)]">
+        <div className="flex items-start gap-3">
+          <span className="rounded-md bg-slate-100 p-2 text-slate-700">
+            <Icon className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium text-slate-400">二次确认</div>
+            <div className="mt-1 text-[15px] font-semibold leading-6 text-slate-950">{confirmation.title}</div>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              将基于「{confirmation.sourceTitle}」生成候选草稿，仍需验证和发布检查后才能进入运维手册库。
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button type="button" variant="outline" size="sm" className="rounded-md" onClick={onCancel}>
+            取消
+          </Button>
+          <Button type="button" size="sm" className="rounded-md bg-slate-950 text-white hover:bg-slate-800" onClick={confirm}>
+            确认生成
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -239,10 +351,29 @@ function TargetAwareSendButton({
 function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApproval }) {
   const commands = useAiopsTransportCommands();
   const [decision, setDecision] = useState<"accept" | "accept_session" | "reject">("accept");
+  const [submittingDecision, setSubmittingDecision] = useState<"accept" | "accept_session" | "reject" | null>(null);
+  const [submitError, setSubmitError] = useState("");
   const commandText = approval.command || approval.reason || approval.id;
+  const isSubmitting = Boolean(submittingDecision) && !submitError;
 
-  function submitDecision() {
-    commands.approvalDecision(approval.id, decision);
+  useEffect(() => {
+    setDecision("accept");
+    setSubmittingDecision(null);
+    setSubmitError("");
+  }, [approval.id]);
+
+  function submitDecision(nextDecision: "accept" | "accept_session" | "reject" = decision) {
+    if (isSubmitting) {
+      return;
+    }
+    setSubmittingDecision(nextDecision);
+    setSubmitError("");
+    try {
+      commands.approvalDecision(approval.id, nextDecision);
+    } catch (error) {
+      setSubmittingDecision(null);
+      setSubmitError(error instanceof Error ? error.message : "提交审批失败，请重试");
+    }
   }
 
   return (
@@ -266,19 +397,33 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
               selected={decision === "accept"}
               onClick={() => setDecision("accept")}
               label="1. 是"
+              disabled={isSubmitting}
             />
             <ApprovalChoice
               selected={decision === "accept_session"}
               onClick={() => setDecision("accept_session")}
               label="2. 是，且对于以后类似命令不再询问"
+              disabled={isSubmitting}
             />
             <ApprovalChoice
               selected={decision === "reject"}
               onClick={() => setDecision("reject")}
               label="3. 否，请告知 AIOps 如何调整"
               tone="muted"
+              disabled={isSubmitting}
             />
           </div>
+          {isSubmitting ? (
+            <div className="flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700" role="status">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              <span>已提交确认，正在继续执行...</span>
+            </div>
+          ) : null}
+          {submitError ? (
+            <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+              {submitError}
+            </div>
+          ) : null}
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <Button
@@ -286,7 +431,8 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
             variant="outline"
             size="sm"
             className="rounded-full border-slate-200 bg-white px-4"
-            onClick={() => commands.approvalDecision(approval.id, "reject")}
+            disabled={isSubmitting}
+            onClick={() => submitDecision("reject")}
           >
             跳过
           </Button>
@@ -294,9 +440,10 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
             type="button"
             size="sm"
             className="rounded-full bg-slate-950 px-4 text-white hover:bg-slate-800"
-            onClick={submitDecision}
+            disabled={isSubmitting}
+            onClick={() => submitDecision()}
           >
-            提交
+            {isSubmitting ? "提交中" : "提交"}
           </Button>
         </div>
       </div>
@@ -309,19 +456,23 @@ function ApprovalChoice({
   onClick,
   label,
   tone = "default",
+  disabled = false,
 }: {
   selected: boolean;
   onClick: () => void;
   label: string;
   tone?: "default" | "muted";
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role="radio"
       aria-checked={selected}
+      disabled={disabled}
       className={[
         "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[15px] leading-6 transition-colors",
+        disabled ? "cursor-not-allowed opacity-70" : "",
         selected
           ? "bg-slate-100 text-slate-950"
           : tone === "muted"

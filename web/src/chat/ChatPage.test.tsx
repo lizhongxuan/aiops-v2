@@ -17,6 +17,7 @@ describe("ChatPage", () => {
       unobserve() {}
       disconnect() {}
     };
+    HTMLElement.prototype.scrollTo = function scrollTo() {};
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -116,6 +117,61 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("等待审批");
     expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("shows immediate feedback after submitting an approval decision", async () => {
+    await act(async () => {
+      root.render(<ChatPage initialState={sampleState()} />);
+    });
+
+    const submit = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("提交"),
+    ) as HTMLButtonElement | undefined;
+
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("已提交确认，正在继续执行");
+    expect(submit?.textContent).toContain("提交中");
+    expect(submit?.disabled).toBe(true);
+  });
+
+  it("replaces the textarea with an ops manual generation confirmation panel", async () => {
+    const state = createInitialAiopsTransportState("thread-confirmation");
+    state.sessionId = "sess-confirmation";
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} threadId="thread-confirmation" />);
+    });
+
+    expect(container.querySelector("textarea")).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-confirmation", {
+          detail: {
+            action: "generate_ops_manual_candidate",
+            title: "生成运维手册候选",
+            sourceTitle: "Redis 内存压力排障",
+            artifactId: "artifact-generate-manual",
+          },
+        }),
+      );
+    });
+
+    expect(container.querySelector('[data-testid="ops-manual-generation-confirmation"]')).not.toBeNull();
+    expect(container.textContent).toContain("生成运维手册候选");
+    expect(container.textContent).toContain("Redis 内存压力排障");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    const cancel = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("取消"));
+    await act(async () => {
+      cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="ops-manual-generation-confirmation"]')).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
   });
 
   it("renders the empty single-host greeting", async () => {

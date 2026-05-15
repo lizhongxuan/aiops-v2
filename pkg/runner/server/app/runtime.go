@@ -22,12 +22,15 @@ import (
 )
 
 type RuntimeOptions struct {
-	Config config.Config
+	Config                     config.Config
+	OpsManualRunRecordSink     service.OpsManualRunRecordSink
+	WorkflowReferenceGuardMode service.WorkflowReferenceGuardMode
 }
 
 type Runtime struct {
-	Handler http.Handler
-	runSvc  *service.RunService
+	Handler     http.Handler
+	runSvc      *service.RunService
+	workflowSvc *service.WorkflowService
 }
 
 func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
@@ -37,6 +40,9 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 	}
 
 	workflowSvc := service.NewWorkflowService(cfg.Stores.WorkflowsDir)
+	if opts.WorkflowReferenceGuardMode != "" {
+		workflowSvc.SetWorkflowReferenceGuardMode(opts.WorkflowReferenceGuardMode)
+	}
 	scriptStore := scriptstore.NewFileStore(cfg.Stores.ScriptsDir)
 	scriptSvc := service.NewScriptService(scriptStore)
 	agentStore := agentstore.NewFileStore(cfg.Stores.AgentStateFile)
@@ -53,11 +59,12 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 	eventHub := events.NewHub()
 	collector := metrics.NewCollector()
 	runSvc := service.NewRunService(service.RunServiceConfig{
-		MaxConcurrentRuns:  cfg.Execution.MaxConcurrentRuns,
-		MaxOutputBytes:     cfg.Execution.MaxOutputBytes,
-		MetaStore:          service.NewFileRunRecordStore(service.DeriveRunRecordFile(cfg.Stores.RunStateFile)),
-		EventStore:         eventstore.NewFileStore(eventstore.DeriveRunEventDir(cfg.Stores.RunStateFile)),
-		AgentDispatchToken: cfg.Agent.DispatchToken,
+		MaxConcurrentRuns:      cfg.Execution.MaxConcurrentRuns,
+		MaxOutputBytes:         cfg.Execution.MaxOutputBytes,
+		MetaStore:              service.NewFileRunRecordStore(service.DeriveRunRecordFile(cfg.Stores.RunStateFile)),
+		EventStore:             eventstore.NewFileStore(eventstore.DeriveRunEventDir(cfg.Stores.RunStateFile)),
+		AgentDispatchToken:     cfg.Agent.DispatchToken,
+		OpsManualRunRecordSink: opts.OpsManualRunRecordSink,
 	}, workflowSvc, preprocessor, runStore, runQueue, eventHub, collector)
 	actionCatalog := service.NewActionCatalog()
 	visualWorkflowSvc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{
@@ -106,7 +113,28 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 		UI:             uiHandler,
 	})
 
-	return &Runtime{Handler: router, runSvc: runSvc}, nil
+	return &Runtime{Handler: router, runSvc: runSvc, workflowSvc: workflowSvc}, nil
+}
+
+func (r *Runtime) SetWorkflowReferenceChecker(checker service.WorkflowReferenceChecker) {
+	if r == nil || r.workflowSvc == nil {
+		return
+	}
+	r.workflowSvc.SetWorkflowReferenceChecker(checker)
+}
+
+func (r *Runtime) SetWorkflowReferenceGuardMode(mode service.WorkflowReferenceGuardMode) {
+	if r == nil || r.workflowSvc == nil {
+		return
+	}
+	r.workflowSvc.SetWorkflowReferenceGuardMode(mode)
+}
+
+func (r *Runtime) SetOpsManualRunRecordSink(sink service.OpsManualRunRecordSink) {
+	if r == nil || r.runSvc == nil {
+		return
+	}
+	r.runSvc.SetOpsManualRunRecordSink(sink)
 }
 
 func (r *Runtime) Close(ctx context.Context) error {

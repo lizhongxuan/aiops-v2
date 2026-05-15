@@ -143,6 +143,7 @@ func developerAIOpsInvestigationLines(ctx CompileContext) []string {
 		"Gather direct evidence before naming a root cause.",
 		"Prefer narrowing hypotheses over broad speculation.",
 		"Separate observed facts from inference.",
+		"Call search_ops_manuals to search operations manuals when the user explicitly asks to use operations manuals, requests a complex operations task, or before high-risk actions such as service restart, configuration changes, database operations, backup, recovery, migration, or cluster changes.",
 		"Before mutation, capture pre-change state and intended rollback or recovery path.",
 		"After mutation, verify the symptom, metric, log, or service state that motivated the change.",
 	}

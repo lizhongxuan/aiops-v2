@@ -302,6 +302,11 @@ func projectTurnItem(
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
 		tool := decodeTransportToolPayload(item.Payload)
+		if item.Type == agentstate.TurnItemTypeToolResult {
+			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, tool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+		}
 		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
 		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
 
@@ -691,6 +696,107 @@ type transportToolPayload struct {
 	ExitCode      *int            `json:"exitCode"`
 	DurationMs    int64           `json:"durationMs"`
 	Error         string          `json:"error"`
+}
+
+func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_search_result" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	decision, _ := payload["decision"].(string)
+	decision = strings.TrimSpace(decision)
+	if decision == "" {
+		decision = "unknown"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-search:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
+		Type:            "ops_manual_search_result",
+		Title:           "Ops manual search result",
+		TitleZh:         "运维手册检索结果",
+		Summary:         decision,
+		SummaryZh:       opsManualSearchSummaryZh(decision),
+		Status:          decision,
+		Severity:        opsManualSearchSeverity(decision),
+		Source:          "tool:search_ops_manuals",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         opsManualSearchArtifactActions(decision),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func upsertTransportAgentUIArtifact(items []AiopsTransportAgentUIArtifact, artifact AiopsTransportAgentUIArtifact) []AiopsTransportAgentUIArtifact {
+	if strings.TrimSpace(artifact.ID) == "" {
+		return items
+	}
+	for idx := range items {
+		if items[idx].ID == artifact.ID {
+			items[idx] = artifact
+			return items
+		}
+	}
+	return append(items, artifact)
+}
+
+func opsManualSearchSummaryZh(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return "已找到可直接使用的运维手册，用户确认前不会执行 Runner Workflow。"
+	case "adapt":
+		return "找到相似运维手册，但当前环境存在差异，需要先生成变体并校验。"
+	case "reference_only":
+		return "找到可参考的运维手册，不能直接运行工作流，需要按步骤确认后执行。"
+	case "need_info":
+		return "识别到相关运维手册，但还缺少目标实例、环境、执行面或证据。"
+	case "no_match":
+		return "没有找到合适的运维手册。"
+	default:
+		return "已完成运维手册检索判定。"
+	}
+}
+
+func opsManualSearchSeverity(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return "success"
+	case "adapt":
+		return "warning"
+	case "reference_only", "need_info":
+		return "info"
+	default:
+		return "neutral"
+	}
+}
+
+func opsManualSearchArtifactActions(decision string) []map[string]any {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return []map[string]any{
+			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
+			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+		}
+	case "adapt":
+		return []map[string]any{
+			{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"},
+			{"id": "review_gaps", "label": "查看差异", "kind": "panel"},
+		}
+	case "reference_only":
+		return []map[string]any{{"id": "step_by_step", "label": "逐步参考", "kind": "panel"}}
+	case "need_info":
+		return []map[string]any{{"id": "collect_context", "label": "补充上下文", "kind": "form"}}
+	default:
+		return nil
+	}
 }
 
 func decodeTransportToolPayload(envelope agentstate.PayloadEnvelope) transportToolPayload {

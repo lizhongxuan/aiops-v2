@@ -26,6 +26,7 @@ internal/
 ├── modeltrace/                 # 本地模型输入 trace 文件与 prompt fingerprint
 ├── observability/              # OpenTelemetry observer（本地 Phoenix trace UI）
 ├── eval/                       # 本地 agent eval case / runner / scorer
+├── opsmanual/                  # 运维手册 + Runner Workflow 引用 + Run Record 可靠性记录
 ├── server/                     # HTTP/WebSocket/gRPC API 兼容层
 ├── store/                      # 数据持久化（内存 + JSON 异步写盘）
 ├── settings/                   # settings precedence / governance 聚合
@@ -40,6 +41,22 @@ internal/
 - `skills` 不直接进入 tool pool，而是先进入 `SkillRegistry`，再通过 `CommandRegistry.ListSkillLikePromptCommands()` 暴露给 `SkillTool`。
 - `AgentDefinition`、`MCPServerConfig`、`settings / hooks / permissions` 都不是 tool；它们分别进入独立 registry 或治理层。
 - 旧 `capability` 兼容层已经删除；主运行链只认 `tooling.Tool`、`tooling.Registry`、`mcp.Registry`、`commands/skills/agents/...` 各自独立 registry。
+
+## AIOps 运维资产（2026-05）
+
+AIOps 的核心积累是“运维手册 + Runner Workflow + Run Record”：
+
+- 运维手册说明工作流解决什么问题、适用于什么环境、参数如何填写、怎么验证、什么时候不能用。
+- Runner Workflow 负责经过验证的脚本步骤、参数定义、前置检查和验证步骤。
+- Run Record 记录每次执行后的真实环境、参数摘要、审批、Dry Run、执行结果和验证结果，用于判断工作流是否可靠。
+
+AI Chat 不能用纯语义命中率决定是否执行。它必须先抽取 Operation Frame，再按目标对象、操作类型、平台、执行面、权限、参数和验证证据判断：可直接执行、需补充信息、需适配工作流变体，或只能参考手册逐步人工审核。
+
+运维手册回滚开关：
+
+- `AIOPS_OPS_MANUAL_AUTO_RETRIEVAL=0`：临时关闭 AI Chat 自动插入运维手册检索卡片，保留手动搜索和管理页。
+- `AIOPS_WORKFLOW_REFERENCE_GUARD_MODE=warn`：当 Runner Workflow 被 verified 运维手册引用时，编辑/导入/回滚从 hard block 降级为 warning；真实执行仍必须通过 `workflow_digest` 校验。
+- 检索默认使用结构化规则和持久化 Run Record 排序，不依赖向量数据库；生产可用 `AIOPS_STORE_DRIVER=mysql` + `AIOPS_MYSQL_DSN` 使用 Gorm/MySQL 持久化。
 
 ## React Chat v2 终态规则（2026-05）
 

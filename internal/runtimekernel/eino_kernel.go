@@ -2192,6 +2192,12 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	if result.Error != "" {
 		payload["error"] = result.Error
 	}
+	if result.Display != nil {
+		payload["displayKind"] = result.Display.Type
+		if len(result.Display.Data) > 0 {
+			payload["outputPreview"] = append(json.RawMessage(nil), result.Display.Data...)
+		}
+	}
 	return payload
 }
 

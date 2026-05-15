@@ -97,6 +97,7 @@ type HTTPServer struct {
 	appSnapshots            *AppSnapshotBroadcaster
 	agentEvents             appui.AgentEventService
 	promptTraces            appui.PromptTraceService
+	opsManualAutoRetrieval  bool
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -132,6 +133,12 @@ func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
 	}
 }
 
+func WithOpsManualAutoRetrieval(enabled bool) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.opsManualAutoRetrieval = enabled
+	}
+}
+
 // WithRunnerStudioUpstreamURL configures the server-side runner API upstream
 // used by same-origin /api/runner-studio/* aggregation routes.
 func WithRunnerStudioUpstreamURL(rawURL string) HTTPServerOption {
@@ -159,13 +166,14 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		}
 	}
 	s := &HTTPServer{
-		ui:                 ui,
-		mux:                http.NewServeMux(),
-		terminalManager:    terminal.NewManager(),
-		appWSHeartbeatTick: 15 * time.Second,
-		agentEvents:        agentEvents,
-		promptTraces:       appui.NewPromptTraceService(""),
-		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
+		ui:                     ui,
+		mux:                    http.NewServeMux(),
+		terminalManager:        terminal.NewManager(),
+		appWSHeartbeatTick:     15 * time.Second,
+		agentEvents:            agentEvents,
+		promptTraces:           appui.NewPromptTraceService(""),
+		appSnapshots:           NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
+		opsManualAutoRetrieval: true,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -214,6 +222,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/incidents/", s.handleIncidents)
 	s.mux.HandleFunc("/api/v1/experience-packs", s.handleExperiencePacks)
 	s.mux.HandleFunc("/api/v1/experience-packs/", s.handleExperiencePacks)
+	s.mux.HandleFunc("/api/v1/ops-manuals", s.handleOpsManuals)
+	s.mux.HandleFunc("/api/v1/ops-manuals/", s.handleOpsManuals)
 	s.mux.HandleFunc("/api/v1/coroot/webhook", s.handleCorootWebhook)
 	s.mux.HandleFunc("/api/v1/opsgraph/lookup", s.handleOpsGraphLookup)
 	s.mux.HandleFunc("/api/v1/opsgraph/entities/", s.handleOpsGraphEntity)

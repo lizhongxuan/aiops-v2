@@ -8,7 +8,6 @@ import { ApprovalManagementPage } from "@/pages/ApprovalManagementPage";
 import { CapabilityCenterPage } from "@/pages/CapabilityCenterPage";
 import { CorootOverviewPage } from "@/pages/CorootOverviewPage";
 import { ERPHealthPage } from "@/pages/ERPHealthPage";
-import { ExperiencePacksPage } from "@/pages/ExperiencePacksPage";
 import { GeneratorWorkshopPage } from "@/pages/GeneratorWorkshopPage";
 import { HostsPage } from "@/pages/HostsPage";
 import { IncidentListPage } from "@/pages/IncidentListPage";
@@ -18,6 +17,7 @@ import { LLMConfigPage } from "@/pages/LLMConfigPage";
 import { McpCatalogPage } from "@/pages/McpCatalogPage";
 import { McpServersPage } from "@/pages/McpServersPage";
 import { OpsGraphPage } from "@/pages/OpsGraphPage";
+import { OpsManualsPage } from "@/pages/OpsManualsPage";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
 import { PostmortemPage } from "@/pages/PostmortemPage";
 import { PromptTracePage } from "@/pages/PromptTracePage";
@@ -50,7 +50,8 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/settings": <SettingsPage />,
   "/settings/llm": <LLMConfigPage />,
   "/settings/hosts": <HostsPage />,
-  "/settings/experience-packs": <ExperiencePacksPage />,
+  "/settings/ops-manuals": <OpsManualsPage />,
+  "/settings/experience-packs": <OpsManualsPage />,
   "/settings/agent": <AgentProfilePage />,
   "/settings/skills": <SkillCatalogPage />,
   "/settings/mcp": <McpCatalogPage />,

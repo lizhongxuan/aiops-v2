@@ -1,0 +1,177 @@
+{
+  "manuals": [
+    {
+      "id": "manual-pg-backup-ubuntu",
+      "manual_family_id": "manual-family-pg-backup",
+      "title": "PostgreSQL 备份 Ubuntu 运维手册",
+      "status": "verified",
+      "version": "v1",
+      "owner": "sre",
+      "workflow_ref": {
+        "workflow_id": "workflow-pg-backup-ubuntu",
+        "workflow_version": "v3"
+      },
+      "operation": {
+        "target_type": "postgresql",
+        "action": "backup",
+        "risk_level": "medium",
+        "stateful": true
+      },
+      "applicability": {
+        "middleware": "postgresql",
+        "os": ["ubuntu"],
+        "platform": ["vm"],
+        "execution_surface": ["ssh"]
+      },
+      "required_context": {
+        "required_inputs": ["target_instance", "backup_path"],
+        "required_evidence": ["ssh_access", "pg_isready"]
+      },
+      "parameter_rules": {
+        "target_instance": {
+          "source": "user_or_inventory",
+          "required": true,
+          "validation": "must identify a PostgreSQL instance"
+        },
+        "backup_path": {
+          "source": "user",
+          "required": true,
+          "validation": "must be an absolute path with free space"
+        }
+      },
+      "preconditions": [
+        "SSH access to the target host is available",
+        "pg_isready reports healthy before backup"
+      ],
+      "validation": [
+        "pg_isready reports healthy after backup",
+        "backup file exists at backup_path and is non-empty"
+      ],
+      "cannot_use_when": [
+        "目标实例未知",
+        "无法确认 pg_isready 状态",
+        "备份路径不可写"
+      ],
+      "risk_notes": [
+        "Stateful middleware backup; user confirmation is required before running the workflow."
+      ],
+      "document_markdown": "用于在 Ubuntu 主机上通过 SSH 执行 PostgreSQL 备份，包含参数填写、前置检查、Dry Run 与备份文件验证步骤。",
+      "search_doc": "PostgreSQL backup Ubuntu ssh pg_isready backup_path workflow-pg-backup-ubuntu",
+      "created_at": "2026-05-15T00:00:00Z",
+      "updated_at": "2026-05-15T00:00:00Z"
+    },
+    {
+      "id": "manual-redis-rca-ssh",
+      "manual_family_id": "manual-family-redis-rca",
+      "title": "Redis SSH 排障运维手册",
+      "status": "verified",
+      "version": "v1",
+      "owner": "sre",
+      "workflow_ref": {
+        "workflow_id": "workflow-redis-rca-ssh",
+        "workflow_version": "v2"
+      },
+      "operation": {
+        "target_type": "redis",
+        "action": "rca_or_repair",
+        "risk_level": "medium",
+        "stateful": true
+      },
+      "applicability": {
+        "middleware": "redis",
+        "platform": ["vm"],
+        "execution_surface": ["ssh"]
+      },
+      "required_context": {
+        "required_inputs": ["target_instance"],
+        "required_evidence": ["symptom", "metrics"]
+      },
+      "parameter_rules": {
+        "target_instance": {
+          "source": "user_or_inventory",
+          "required": true,
+          "validation": "must identify a Redis instance"
+        }
+      },
+      "preconditions": [
+        "SSH access to the target host is available",
+        "Metrics or logs are available for the reported symptom"
+      ],
+      "validation": [
+        "symptom has a documented root cause",
+        "metrics show recovery or a safe next action is recorded"
+      ],
+      "cannot_use_when": [
+        "目标实例未知",
+        "没有症状或指标证据"
+      ],
+      "risk_notes": [
+        "RCA only; repair steps require a separate user confirmation."
+      ],
+      "document_markdown": "用于通过 SSH 排查 Redis 故障，需要目标实例、症状和指标证据后才能判断是否可复用工作流。",
+      "search_doc": "Redis RCA SSH symptom metrics target_instance workflow-redis-rca-ssh",
+      "created_at": "2026-05-15T00:00:00Z",
+      "updated_at": "2026-05-15T00:00:00Z"
+    }
+  ],
+  "candidates": [],
+  "run_records": [
+    {
+      "id": "run-record-pg-backup-ubuntu-success",
+      "manual_id": "manual-pg-backup-ubuntu",
+      "workflow_id": "workflow-pg-backup-ubuntu",
+      "workflow_version": "v3",
+      "operation_frame": {
+        "intent": "backup",
+        "object_type": "postgresql",
+        "operation_type": "backup",
+        "target": {
+          "type": "postgresql",
+          "name": "pg-ubuntu-01"
+        },
+        "operation": {
+          "target_type": "postgresql",
+          "action": "backup",
+          "risk_level": "medium",
+          "stateful": true
+        },
+        "environment": {
+          "env": "prod",
+          "os": "ubuntu",
+          "platform": "vm",
+          "execution_surface": "ssh",
+          "package_manager": "apt"
+        },
+        "evidence": {
+          "provided": ["ssh_access", "pg_isready"]
+        },
+        "risk": {
+          "level": "medium",
+          "reason": "stateful middleware operation",
+          "production_impact": "possible"
+        },
+        "required_params": {
+          "backup_path": "/data/backups"
+        },
+        "raw_text": "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常"
+      },
+      "environment_snapshot": {
+        "env": "prod",
+        "os": "ubuntu",
+        "platform": "vm",
+        "execution_surface": "ssh",
+        "package_manager": "apt"
+      },
+      "redacted_parameters": {
+        "target_instance": "pg-ubuntu-01",
+        "backup_path": "/data/backups"
+      },
+      "dry_run_status": "passed",
+      "execution_status": "passed",
+      "validation_status": "passed",
+      "operator": "sre",
+      "started_at": "2026-05-15T01:00:00Z",
+      "completed_at": "2026-05-15T01:08:00Z"
+    }
+  ]
+}
