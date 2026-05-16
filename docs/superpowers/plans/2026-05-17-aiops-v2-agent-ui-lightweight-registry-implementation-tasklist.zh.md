@@ -4,7 +4,7 @@
 
 **Goal:** Build the lightweight Agent-to-UI protocol registry described in `docs/superpowers/specs/2026-05-16-aiops-v2-agent-ui-lightweight-registry-design.zh.md`, so existing `AgentUIArtifact` values can be schema-validated, previewed, versioned, managed, and rendered through a local trusted UI card registry.
 
-**Architecture:** Keep the existing transport field `agentUiArtifacts` as the runtime contract. Add a Go `UICardService` over the existing store, expose real `/api/v1/ui-cards` and `/api/v1/agent-ui-artifacts` endpoints, then add a frontend registry layer that maps normalized artifacts to trusted React renderers with safe fallbacks.
+**Architecture:** Keep the existing transport field `agentUiArtifacts` as the runtime contract. Add a Go `UICardService` over the existing store, expose real `/api/v1/ui-cards` and `/api/v1/agent-ui-artifacts` endpoints, then make the frontend registry the single renderer selection mechanism for every normalized artifact, including unsupported and invalid terminal states.
 
 **Tech Stack:** Go HTTP server, existing `internal/store` JSON/Gorm stores, React 19, TypeScript, Vite, Vitest, Playwright, existing shadcn-style UI primitives, existing assistant transport.
 
@@ -20,6 +20,8 @@
 - Existing UI card page: `web/src/pages/UICardManagementPage.tsx`
 - Existing empty backend resource handler: `internal/server/resource_management.go`
 
+Implementation decision for this plan: registry lookup directly replaces the existing dispatcher. If older design text permits keeping hardcoded rendering as a transition path, this plan supersedes that text.
+
 ## Execution Rules
 
 - Work from a clean implementation branch or isolated worktree before starting.
@@ -27,8 +29,14 @@
 - Do not revert unrelated existing changes in the repository.
 - Use TDD for each code task: failing test, minimal implementation, passing test.
 - Do not allow model-generated HTML, scripts, iframes, event handlers, or dynamic React code into renderers.
-- Preserve legacy artifact rendering while adding registry lookup.
+- Replace legacy artifact rendering with registry lookup. `AgentUiArtifactPart` must not keep a direct type switch, type-specific early returns, or any second rendering path.
 - Use `items/stats/total` in `/api/v1/ui-cards` responses; keep a `cards` compatibility alias only if needed by old callers.
+
+## Non-Negotiable Rendering Rule
+
+`lookupAgentUiCardRenderer` is the only renderer selection path for Chat artifacts. Unsupported, disabled, missing-renderer, and invalid-payload cases must be represented as registry-owned terminal renderers. They must not fall back to the old switch dispatcher, dedicated component branches, or any legacy compatibility path.
+
+The existing artifact type `ops_manual_fallback_guide` is a business artifact type name and remains supported as a registered renderer. It is not a renderer fallback mechanism.
 
 ## File Map
 
@@ -68,26 +76,26 @@
 - Create: `web/src/api/uiCards.test.js`
   - Cover client paths and payload shapes.
 - Modify: `web/src/api/agentUiArtifacts.ts`
-  - Add schema version metadata, action allowlist normalization, richer dangerous key removal, and version-aware fallback metadata.
+  - Add schema version metadata, action allowlist normalization, richer dangerous key removal, and version-aware registry status metadata.
 - Test: `web/src/api/agentUiArtifacts.test.ts`
   - Extend existing tests for registry-ready normalization.
 - Create: `web/src/lib/agentUiCardRegistry.tsx`
   - Provide frontend renderer registry and lookup rules.
 - Create: `web/src/lib/agentUiCardRegistry.test.tsx`
-  - Cover active, deprecated, disabled, missing renderer, invalid payload, and fallback lookups.
+  - Cover active, deprecated, disabled, missing renderer, invalid payload, and registry terminal-state lookups.
 - Create: `web/src/lib/agentUiCardDefinitions.ts`
   - Define built-in frontend definitions that match backend seeds.
 
 ### Frontend Rendering and Pages
 
 - Modify: `web/src/components/chat/AgentUiArtifactPart.tsx`
-  - Route through registry lookup before existing renderer fallback.
+  - Replace the existing dispatcher with registry lookup as the only renderer selection mechanism.
 - Test: `web/src/components/chat/AgentUiArtifactPart.test.tsx`
-  - Add registry lookup and fallback cases without removing existing assertions.
+  - Add registry lookup and terminal-state cases without removing existing assertions.
 - Create: `web/src/components/chat/UnsupportedArtifactCard.tsx`
-  - Safe fallback for unregistered or disabled artifacts.
+  - Registry-owned terminal renderer for unregistered or disabled artifacts.
 - Create: `web/src/components/chat/InvalidArtifactCard.tsx`
-  - Safe fallback for schema validation failures.
+  - Registry-owned terminal renderer for schema validation failures.
 - Create: `web/src/pages/AgentUICenterPage.tsx`
   - Cross-page artifact feed and detail drawer.
 - Create: `web/src/pages/AgentUICenterPage.test.tsx`
@@ -108,7 +116,7 @@
 ### End-to-End and Docs
 
 - Create: `web/tests/agent-ui-registry.spec.js`
-  - Verify `/ui-cards`, preview, chat fallback, and `/agent-ui` feed flows.
+  - Verify `/ui-cards`, preview, Chat registry terminal states, and `/agent-ui` feed flows.
 - Modify: `docs/superpowers/specs/2026-05-16-aiops-v2-agent-ui-lightweight-registry-design.zh.md`
   - Update only if implementation reveals a design correction.
 
@@ -786,7 +794,7 @@ Create tests covering:
 - disabled definition returns `UnsupportedArtifactCard`
 - missing renderer returns `UnsupportedArtifactCard`
 - invalid payload result returns `InvalidArtifactCard`
-- legacy artifact without `metadata.schemaVersion` still renders through active type definition
+- artifact without `metadata.schemaVersion` still renders through the active registry definition
 
 - [ ] **Step 2: Run failing registry tests**
 
@@ -870,11 +878,11 @@ git commit -m "feat: add agent ui card registry runtime"
 
 Add tests to `AgentUiArtifactPart.test.tsx`:
 
-- disabled registry definition renders unsupported fallback
-- missing renderer renders unsupported fallback
-- invalid payload renders invalid fallback
+- disabled registry definition renders `UnsupportedArtifactCard` through registry lookup
+- missing renderer renders `UnsupportedArtifactCard` through registry lookup
+- invalid payload renders `InvalidArtifactCard` through registry lookup
 - existing `coroot_chart` still renders `CorootChartArtifact`
-- existing `ops_manual_preflight_result` still renders dedicated ops manual component
+- existing `ops_manual_preflight_result` still renders the registered ops manual preflight renderer
 
 - [ ] **Step 2: Run failing component tests**
 
@@ -887,7 +895,7 @@ npm test -- --run src/components/chat/AgentUiArtifactPart.test.tsx
 
 Expected: fail because the dispatcher does not use registry lookup.
 
-- [ ] **Step 3: Implement fallback cards**
+- [ ] **Step 3: Implement registry terminal renderers**
 
 Create `UnsupportedArtifactCard.tsx` and `InvalidArtifactCard.tsx`. Both must:
 
@@ -895,10 +903,11 @@ Create `UnsupportedArtifactCard.tsx` and `InvalidArtifactCard.tsx`. Both must:
 - avoid rendering `payload` directly
 - avoid `dangerouslySetInnerHTML`
 - show a short Chinese reason
+- be invoked only by `lookupAgentUiCardRenderer`, not by ad hoc branches in `AgentUiArtifactPart.tsx`
 
 - [ ] **Step 4: Update dispatcher**
 
-In `AgentUiArtifactPart.tsx`, replace direct switch ownership with:
+In `AgentUiArtifactPart.tsx`, delete the direct type switch and type-specific early returns. Replace them with:
 
 ```tsx
 const lookup = lookupAgentUiCardRenderer(artifact, defaultAgentUiCardRegistry);
@@ -906,7 +915,7 @@ const Renderer = lookup.Renderer;
 return <Renderer artifact={artifact} />;
 ```
 
-Keep dedicated ops manual early returns only if their event-dispatch behavior cannot yet be represented through the registry. Add a comment explaining the temporary compatibility boundary.
+All current dedicated components, including ops manual components, must be reachable through `defaultAgentUiCardRegistry`. If a renderer needs event-dispatch behavior, register that renderer in the registry instead of adding a special-case branch.
 
 - [ ] **Step 5: Run component tests**
 
@@ -1177,7 +1186,7 @@ The test should:
 - run preview with the built-in sample
 - assert rendered preview contains the card title and no raw JSON dump as primary content
 
-- [ ] **Step 2: Write Playwright test for unsupported artifact fallback**
+- [ ] **Step 2: Write Playwright test for unsupported artifact registry behavior**
 
 The test should use a fixture with an artifact:
 
@@ -1333,7 +1342,7 @@ git commit -m "fix: complete agent ui registry verification"
 - `/ui-cards` is a real registry page, not only a debug table.
 - Existing chat artifact types still render.
 - Registry lookup controls renderer selection.
-- Unsupported and invalid artifacts show safe fallback cards.
+- Unsupported and invalid artifacts show registry-owned terminal cards.
 - Preview supports normal, redacted, and restricted contexts.
 
 ### Agent UI Center Accepted
