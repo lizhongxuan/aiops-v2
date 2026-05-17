@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -23,14 +24,24 @@ import (
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/commands"
+	"aiops-v2/internal/evidence"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
+	agenttools "aiops-v2/internal/integrations/agents"
+	agentuitools "aiops-v2/internal/integrations/agentui"
+	"aiops-v2/internal/integrations/changes"
+	evidencetools "aiops-v2/internal/integrations/evidence"
+	"aiops-v2/internal/integrations/k8s"
 	"aiops-v2/internal/integrations/localtools"
+	mcpresourcetools "aiops-v2/internal/integrations/mcpresources"
+	opsgraphtools "aiops-v2/internal/integrations/opsgraph"
 	opsmanualtools "aiops-v2/internal/integrations/opsmanuals"
+	"aiops-v2/internal/integrations/toolsearch"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/observability"
+	opsgraphstore "aiops-v2/internal/opsgraph"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/permissions"
@@ -86,7 +97,12 @@ func run() error {
 	if !ok {
 		opsManualRepo = opsmanual.NewMemoryStore()
 	}
-	opsManualDomainService := opsmanual.NewService(opsManualRepo)
+	if summary, err := opsmanual.ImportLegacyJSONFilesIfEmpty(opsManualRepo, dataDir); err != nil {
+		return fmt.Errorf("import legacy ops manuals: %w", err)
+	} else if summary.ManualsImported > 0 || summary.CandidatesImported > 0 || summary.RunRecordsImported > 0 {
+		log.Printf("ai-server: imported legacy ops manuals (manuals=%d candidates=%d run_records=%d)", summary.ManualsImported, summary.CandidatesImported, summary.RunRecordsImported)
+	}
+	opsManualDomainService := opsmanual.NewService(opsManualRepo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery()))
 
 	// ---------------------------------------------------------------------------
 	// 2. Registries
@@ -200,8 +216,12 @@ func run() error {
 	if err := registerPluginsFromEnv(pluginRegistrar); err != nil {
 		return fmt.Errorf("init plugins: %w", err)
 	}
-	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{}); err != nil {
+	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
+	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{EvidenceService: evidenceService}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
+	}
+	if err := registerAIOpsToolSurface(toolRegistry, mcpRegistry, evidenceService, newOpsInvestigationAgentToolManager(agentManager, agentFactory)); err != nil {
+		return fmt.Errorf("init aiops tool surface: %w", err)
 	}
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
 		return fmt.Errorf("init ops manual tools: %w", err)
@@ -433,6 +453,15 @@ func openConfiguredStore(dataDir string, getenv func(string) string) (store.Stor
 	switch driver {
 	case "", "json", "file":
 		return store.NewJSONFileStore(dataDir, 5*time.Second)
+	case "postgres", "postgresql":
+		dsn := strings.TrimSpace(getenv("AIOPS_POSTGRES_DSN"))
+		if dsn == "" {
+			dsn = strings.TrimSpace(getenv("DATABASE_URL"))
+		}
+		if dsn == "" {
+			return nil, fmt.Errorf("AIOPS_POSTGRES_DSN is required when AIOPS_STORE_DRIVER=postgres")
+		}
+		return store.NewPostgresStore(dsn)
 	case "mysql":
 		dsn := strings.TrimSpace(getenv("AIOPS_MYSQL_DSN"))
 		if dsn == "" {
@@ -455,6 +484,76 @@ func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 		}
 	}
 	return ""
+}
+
+func registerAIOpsToolSurface(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager) error {
+	if toolRegistry == nil {
+		return fmt.Errorf("tool registry is required")
+	}
+	if err := changes.RegisterBuiltins(toolRegistry); err != nil {
+		return err
+	}
+	if err := k8s.RegisterBuiltins(toolRegistry, k8s.Options{}); err != nil {
+		return err
+	}
+	opsGraphStore, err := opsgraphstore.LoadSeedFile(projectRelativePath("data/opsgraph/erp.seed.yaml"))
+	if err != nil {
+		opsGraphStore = opsgraphstore.NewStore(nil, nil)
+	}
+	if err := opsgraphtools.RegisterBuiltins(toolRegistry, opsGraphStore); err != nil {
+		return err
+	}
+	if evidenceService != nil {
+		if err := evidencetools.RegisterBuiltins(toolRegistry, evidenceService); err != nil {
+			return err
+		}
+	}
+	if mcpRegistry != nil {
+		if err := mcpresourcetools.RegisterBuiltins(toolRegistry, mcpRegistry); err != nil {
+			return err
+		}
+	}
+	if investigationAgents != nil {
+		for _, tool := range []tooling.Tool{
+			agenttools.NewSpawnAgentTool(investigationAgents),
+			agenttools.NewWaitAgentTool(investigationAgents),
+		} {
+			if err := toolRegistry.Register(tool); err != nil {
+				return err
+			}
+		}
+	}
+	if err := agentuitools.RegisterBuiltins(toolRegistry); err != nil {
+		return err
+	}
+	return toolsearch.RegisterBuiltins(toolRegistry)
+}
+
+func projectRelativePath(rel string) string {
+	rel = strings.TrimSpace(rel)
+	if rel == "" || filepath.IsAbs(rel) {
+		return rel
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return rel
+	}
+	for dir := wd; dir != ""; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, rel)
+		if pathExists(candidate) {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return rel
+}
+
+func pathExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 type opsManualWorkflowReferenceRepository interface {
@@ -767,6 +866,14 @@ func (a *registryAdapter) AssembleToolPool(session runtimekernel.SessionType, mo
 	return tooling.AssembleEinoToolPool(a.assembledTools(string(session), string(mode)))
 }
 
+func (a *registryAdapter) CompileContextWithMetadata(session runtimekernel.SessionType, mode runtimekernel.Mode, metadata map[string]string) []promptcompiler.Tool {
+	return a.assembledToolsWithMetadata(string(session), string(mode), metadata)
+}
+
+func (a *registryAdapter) AssembleToolPoolWithMetadata(session runtimekernel.SessionType, mode runtimekernel.Mode, metadata map[string]string) []tool.BaseTool {
+	return tooling.AssembleEinoToolPool(a.assembledToolsWithMetadata(string(session), string(mode), metadata))
+}
+
 func (a *registryAdapter) RefreshToken(session runtimekernel.SessionType, mode runtimekernel.Mode) string {
 	if a.tools == nil {
 		return ""
@@ -792,13 +899,17 @@ func (a *registryAdapter) skillPromptCommands() []commands.PromptCommand {
 }
 
 func (a *registryAdapter) assembledTools(session, mode string) []tooling.Tool {
+	return a.assembledToolsWithMetadata(session, mode, nil)
+}
+
+func (a *registryAdapter) assembledToolsWithMetadata(session, mode string, metadata map[string]string) []tooling.Tool {
 	if a.tools == nil {
 		return nil
 	}
 	return a.tools.AssembleToolsWithOptions(session, mode, tooling.AssembleOptions{
 		MetadataTransform: a.flags.ApplyToolMetadata,
 		Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-			return a.flags.IsToolVisible(meta)
+			return a.flags.IsToolVisible(meta) && tooling.IsToolVisibleForTurnMetadata(meta, metadata)
 		},
 	})
 }
@@ -862,6 +973,83 @@ func (a *agentManagerAdapter) CollectResults(missionID string) []runtimekernel.A
 		}
 	}
 	return out
+}
+
+type opsInvestigationAgentToolManager struct {
+	manager *agentmgr.AgentManager
+	factory *agentmgr.AgentFactory
+}
+
+func newOpsInvestigationAgentToolManager(manager *agentmgr.AgentManager, factory *agentmgr.AgentFactory) *opsInvestigationAgentToolManager {
+	if manager == nil || factory == nil {
+		return nil
+	}
+	return &opsInvestigationAgentToolManager{manager: manager, factory: factory}
+}
+
+func (m *opsInvestigationAgentToolManager) SpawnInvestigationAgent(ctx context.Context, req agenttools.SpawnRequest) (agenttools.SpawnResult, error) {
+	if m == nil || m.manager == nil {
+		return agenttools.SpawnResult{}, fmt.Errorf("agent manager is required")
+	}
+	agentID := fmt.Sprintf("%s-%d", strings.TrimSpace(req.AgentType), time.Now().UnixNano())
+	missionID := firstTrimmed(req.IncidentID, req.SessionID, "ops-investigation")
+	sessionID := firstTrimmed(req.SessionID, "agent-"+agentID)
+	instance, err := m.manager.Spawn(ctx, agentmgr.SpawnRequest{
+		ID:        agentID,
+		Kind:      agentmgr.AgentKindWorker,
+		MissionID: missionID,
+		HostID:    strings.TrimSpace(req.HostID),
+		SessionID: sessionID,
+		Task:      strings.TrimSpace(req.Task),
+	})
+	if err != nil {
+		return agenttools.SpawnResult{}, err
+	}
+
+	go m.runInvestigationAgent(agentID, req)
+	return agenttools.SpawnResult{AgentID: instance.ID, AgentType: strings.TrimSpace(req.AgentType), Status: string(instance.Status)}, nil
+}
+
+func (m *opsInvestigationAgentToolManager) runInvestigationAgent(agentID string, req agenttools.SpawnRequest) {
+	if m == nil || m.manager == nil || m.factory == nil {
+		return
+	}
+	hostID := firstTrimmed(req.HostID, "workspace")
+	cfg, err := m.factory.CreateWorkerAgent(context.Background(), hostID, strings.TrimSpace(req.Task))
+	if err != nil {
+		m.manager.MarkAgentFailed(agentID, err)
+		return
+	}
+	if _, err := m.manager.RunAgent(context.Background(), agentID, cfg); err != nil {
+		m.manager.MarkAgentFailed(agentID, err)
+	}
+}
+
+func (m *opsInvestigationAgentToolManager) WaitEvidenceReports(ctx context.Context, agentIDs []string) ([]agentmgr.EvidenceReport, error) {
+	reports := make([]agentmgr.EvidenceReport, 0, len(agentIDs))
+	for _, id := range agentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		inst := m.manager.GetInstance(id)
+		if inst == nil {
+			return nil, fmt.Errorf("agent %q not found", id)
+		}
+		if !inst.Status.IsTerminal() {
+			return nil, fmt.Errorf("agent %q is still %s", id, inst.Status)
+		}
+		report := agentmgr.EvidenceReport{
+			AgentID:    inst.ID,
+			Summary:    strings.TrimSpace(inst.Output),
+			Confidence: "unknown",
+		}
+		if inst.Error != "" {
+			report.Errors = []string{inst.Error}
+		}
+		reports = append(reports, report.Normalize())
+	}
+	return reports, nil
 }
 
 func loadSkillRegistryFromEnv() (*skills.Registry, error) {

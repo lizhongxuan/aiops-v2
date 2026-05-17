@@ -2,6 +2,48 @@ package terminalpolicy
 
 import "testing"
 
+func TestTerminalReadOnlyStillRequiresAllowlist(t *testing.T) {
+	allowed := []struct {
+		command string
+		args    []string
+	}{
+		{command: "kubectl", args: []string{"get", "events", "-n", "prod"}},
+		{command: "kubectl", args: []string{"describe", "pod/redis-0", "-n", "prod"}},
+		{command: "kubectl", args: []string{"logs", "deploy/redis", "-n", "prod", "--tail=100"}},
+		{command: "redis-cli", args: []string{"-h", "redis.prod", "INFO"}},
+		{command: "redis-cli", args: []string{"-u", "redis://redis.prod:6379", "MEMORY", "STATS"}},
+	}
+	denied := []struct {
+		command string
+		args    []string
+	}{
+		{command: "bash", args: []string{"-lc", "cat /etc/passwd"}},
+		{command: "python", args: []string{"-c", "print('hi')"}},
+		{command: "kubectl", args: []string{"logs", "-f", "deploy/redis", "-n", "prod"}},
+		{command: "kubectl", args: []string{"delete", "pod/redis-0", "-n", "prod"}},
+		{command: "redis-cli", args: []string{"FLUSHALL"}},
+	}
+	for _, input := range allowed {
+		if !IsAllowedReadOnlyTerminal(input.command, input.args) {
+			t.Fatalf("expected allowed: %#v", input)
+		}
+	}
+	for _, input := range denied {
+		if IsAllowedReadOnlyTerminal(input.command, input.args) {
+			t.Fatalf("expected denied: %#v", input)
+		}
+	}
+}
+
+func TestMutatingTerminalCommandRequiresHighRiskApproval(t *testing.T) {
+	if !RequiresHighRiskApproval("kubectl", []string{"rollout", "restart", "deploy/redis", "-n", "prod"}) {
+		t.Fatal("mutating kubectl command must require high-risk approval")
+	}
+	if TerminalRiskLevel("kubectl", []string{"get", "events", "-n", "prod"}) != "low" {
+		t.Fatal("allowlisted read-only kubectl command should remain low risk")
+	}
+}
+
 func TestIsReadOnlyCommandAllowsShellWrappedDate(t *testing.T) {
 	if !IsReadOnlyCommand("bash", []string{"-lc", "date '+%F %A %u %T %Z'"}) {
 		t.Fatal("bash -lc date should be classified read-only")

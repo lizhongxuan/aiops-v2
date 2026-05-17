@@ -1,6 +1,9 @@
 package opsmanual
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRetrieveManualsRedisTriageNeedsMoreInfo(t *testing.T) {
 	repo := NewMemoryStore()
@@ -35,7 +38,7 @@ func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	if err := repo.SaveManual(redisMemoryManual()); err != nil {
 		t.Fatalf("SaveManual() error = %v", err)
 	}
-	frame := BuildOperationFrame("生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 排查", nil)
+	frame := BuildOperationFrame("生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 排查", map[string]any{"target_name": "redis-local-01"})
 	matches, err := RetrieveManuals(repo, frame)
 	if err != nil {
 		t.Fatalf("RetrieveManuals() error = %v", err)
@@ -46,7 +49,7 @@ func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	if matches[0].State != DecisionDirect {
 		t.Fatalf("state = %q, want direct", matches[0].State)
 	}
-	for _, want := range []string{"fill_parameters", "run_precheck", "start_dry_run"} {
+	for _, want := range []string{"fill_parameters", "run_preflight_probe", "start_dry_run"} {
 		if !contains(matches[0].RecommendedNextActions, want) {
 			t.Fatalf("actions = %#v, want %q", matches[0].RecommendedNextActions, want)
 		}
@@ -91,7 +94,7 @@ func TestSearchOpsManualsDirectExecuteForExactPostgresBackup(t *testing.T) {
 	})
 
 	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		OperationFrame: BuildOperationFrame("在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", nil),
+		OperationFrame: BuildOperationFrame("在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", map[string]any{"target_name": "pg-ubuntu-01"}),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,8 +102,71 @@ func TestSearchOpsManualsDirectExecuteForExactPostgresBackup(t *testing.T) {
 	if result.Decision != DecisionDirectExecute {
 		t.Fatalf("decision = %q, want direct_execute; result=%#v", result.Decision, result)
 	}
-	if len(result.Manuals) != 1 || result.Manuals[0].RecommendedAction != "run_bound_workflow" {
-		t.Fatalf("manuals = %#v, want run_bound_workflow", result.Manuals)
+	if len(result.Manuals) != 1 || result.Manuals[0].RecommendedAction != "run_preflight_probe" {
+		t.Fatalf("manuals = %#v, want run_preflight_probe", result.Manuals)
+	}
+	if result.Manuals[0].PreflightStatus != PreflightStatusNotRun {
+		t.Fatalf("preflight status = %q, want not_run", result.Manuals[0].PreflightStatus)
+	}
+	if result.RecommendedNextAction != "运行 Node 0 预检，通过后再 Dry Run。" {
+		t.Fatalf("recommended next action = %q, want preflight guidance", result.RecommendedNextAction)
+	}
+}
+
+func TestSearchOpsManualsLatestRunRecordFailureSuppressesDirectExecution(t *testing.T) {
+	repo := NewMemoryStore()
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-success", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T01:00:00Z",
+	})
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-failed", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "failed", ValidationStatus: "failed", CompletedAt: "2026-05-15T02:00:00Z",
+	})
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text:     "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-ubuntu-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionReference {
+		t.Fatalf("decision = %q, want reference_only after latest failed run; result=%#v", result.Decision, result)
+	}
+	if len(result.Manuals) == 0 || !result.Manuals[0].RunRecordSummary.Suppressed {
+		t.Fatalf("run summary = %#v, want suppressed", result.Manuals)
+	}
+	if result.Manuals[0].RecommendedAction != "reference_manual" {
+		t.Fatalf("recommended action = %q, want reference_manual", result.Manuals[0].RecommendedAction)
+	}
+}
+
+func TestSearchOpsManualsRecentRecoveryRestoresDirectExecution(t *testing.T) {
+	repo := NewMemoryStore()
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-failed", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "failed", ValidationStatus: "failed", CompletedAt: "2026-05-15T01:00:00Z",
+	})
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-recovered", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T02:00:00Z",
+	})
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text:     "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-ubuntu-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionDirectExecute {
+		t.Fatalf("decision = %q, want direct_execute after latest passed recovery; result=%#v", result.Decision, result)
+	}
+	if result.Manuals[0].RunRecordSummary.Suppressed || result.Manuals[0].RunRecordSummary.LatestStatus != "passed" {
+		t.Fatalf("run summary = %#v, want latest passed and unsuppressed", result.Manuals[0].RunRecordSummary)
 	}
 }
 
@@ -118,6 +184,51 @@ func TestSearchOpsManualsNeedInfoForShortRedisTriage(t *testing.T) {
 	if len(result.NextQuestions) == 0 {
 		t.Fatalf("next questions empty, want user-facing missing context questions")
 	}
+	if len(result.NextQuestions) > 4 {
+		t.Fatalf("next questions = %#v, want compact form fields", result.NextQuestions)
+	}
+	if containsAnyQuestionText(result.NextQuestions, "Coroot", "监控指标") {
+		t.Fatalf("next questions = %#v, should not ask the user whether Coroot or monitoring evidence exists", result.NextQuestions)
+	}
+	if containsQuestionForField(result.NextQuestions, "risk_level") {
+		t.Fatalf("next questions = %#v, should not ask risk in the first short RCA prompt", result.NextQuestions)
+	}
+	for _, want := range []string{"目标实例是哪一个？", "这是生产、测试还是其他环境？", "执行方式是 SSH、kubectl、docker exec 还是其他方式？", "当前现象是什么？"} {
+		if !hasAny(result.NextQuestions, want) {
+			t.Fatalf("next questions = %#v, want compact form question %q", result.NextQuestions, want)
+		}
+	}
+}
+
+func TestSearchOpsManualsStatusCheckCanReuseRedisRCAManual(t *testing.T) {
+	repo := NewMemoryStore()
+	mustSaveManual(t, repo, redisRcaManual())
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text:     "检查 Redis 状态。当前主机就是 server-local，请优先使用运维手册、真实只读发现和预检，不要执行变更。",
+		Metadata: map[string]any{"selected_host": "server-local"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationFrame.Intent != "status_check" || result.OperationFrame.Target.Name != "" {
+		t.Fatalf("operation frame = %#v, want status_check without fake target name", result.OperationFrame)
+	}
+	if result.Decision != DecisionNeedInfo {
+		t.Fatalf("decision = %q, want need_info for param resolution; result=%#v", result.Decision, result)
+	}
+	if len(result.Manuals) != 1 || result.Manuals[0].Manual.ID != "manual-redis-rca-ssh" {
+		t.Fatalf("manuals = %#v, want redis RCA manual", result.Manuals)
+	}
+	if !contains(result.Manuals[0].MatchedFields, "operation_type") {
+		t.Fatalf("matched fields = %#v, want compatible operation_type", result.Manuals[0].MatchedFields)
+	}
+	if hasAny(result.Manuals[0].MissingFields, "symptom") || hasAny(result.Manuals[0].MissingFields, "metrics") {
+		t.Fatalf("missing fields = %#v, status check should not require RCA symptom/metrics", result.Manuals[0].MissingFields)
+	}
+	if !hasAny(result.Manuals[0].MissingFields, "target_instance") {
+		t.Fatalf("missing fields = %#v, want target_instance for resolver", result.Manuals[0].MissingFields)
+	}
 }
 
 func TestSearchOpsManualsAdaptWhenOnlyOSDiffers(t *testing.T) {
@@ -125,7 +236,8 @@ func TestSearchOpsManualsAdaptWhenOnlyOSDiffers(t *testing.T) {
 	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
 
 	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Text:     "在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-centos-01"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -141,18 +253,116 @@ func TestSearchOpsManualsAdaptWhenOnlyOSDiffers(t *testing.T) {
 	}
 }
 
-func TestSearchOpsManualsDoesNotDirectExecutePostgresManualForMySQLBackup(t *testing.T) {
+func TestSearchOpsManualsDoesNotExposeCrossObjectManualForMySQLBackup(t *testing.T) {
 	repo := NewMemoryStore()
 	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
 
 	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，备份到 /data/backups，已确认 ssh_access 正常",
+		Text:     "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，备份到 /data/backups，已确认 ssh_access 正常",
+		Metadata: map[string]any{"target_name": "mysql-01"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if result.Decision != DecisionNoMatch || len(result.Manuals) != 0 {
+		t.Fatalf("result = %#v, want no_match without exposing cross-object manuals", result)
+	}
+}
+
+func TestSearchOpsManualsDoesNotExposeK8sManualForKafkaLag(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := OpsManual{
+		ID:      "manual-k8s-pod-crashloop-rca",
+		Title:   "Kubernetes Pod CrashLoop/OOM 排障运维手册",
+		Status:  ManualStatusVerified,
+		Version: "v1",
+		WorkflowRef: WorkflowRef{
+			WorkflowID: "workflow-k8s-pod-crashloop-rca",
+		},
+		Operation: OperationProfile{
+			TargetType: "kubernetes_pod",
+			Action:     "rca_or_repair",
+			RiskLevel:  "medium",
+		},
+		Applicability: ApplicabilityProfile{
+			Middleware: "kubernetes",
+		},
+		SearchDoc:        "Kubernetes pod CrashLoopBackOff OOMKilled restart logs events",
+		DocumentMarkdown: "用于 Kubernetes Pod CrashLoop/OOM 排障。",
+	}
+	mustSaveManual(t, repo, manual)
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text: "Kafka consumer group checkout-prod lag 持续升高，需要排查 broker 和 partition rebalance，先只读分析。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionNoMatch || len(result.Manuals) != 0 {
+		t.Fatalf("result = %#v, want no_match without exposing Kubernetes manual for Kafka", result)
+	}
+	if !strings.Contains(result.Summary, "Kafka") {
+		t.Fatalf("summary = %q, want Kafka-specific no-match summary", result.Summary)
+	}
+	if !strings.Contains(result.RecommendedNextAction, "AI 会继续自动尝试只读排查") {
+		t.Fatalf("recommended action = %q, want AI auto read-only investigation", result.RecommendedNextAction)
+	}
+}
+
+func TestSearchOpsManualsIgnoresUnverifiedManuals(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := pgBackupManual("manual-pg-backup-draft", "ubuntu", "ssh", "workflow-pg-backup-draft")
+	manual.Status = ManualStatusDraft
+	mustSaveManual(t, repo, manual)
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text:     "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-ubuntu-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Manuals) != 0 || result.Decision == DecisionDirectExecute {
+		t.Fatalf("result = %#v, want no verified executable candidates", result)
+	}
+}
+
+func TestSearchOpsManualsDisabledWorkflowIsReferenceOnly(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := pgBackupManual("manual-pg-backup-disabled", "ubuntu", "ssh", "workflow-pg-backup-disabled")
+	manual.Metadata = map[string]any{"workflow_status": "disabled"}
+	mustSaveManual(t, repo, manual)
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text:     "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-ubuntu-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionReference {
+		t.Fatalf("decision = %q, want reference_only; result=%#v", result.Decision, result)
+	}
+	if !hasAny(result.Manuals[0].BlockedReasons, "bound workflow is not enabled") {
+		t.Fatalf("blocked reasons = %#v, want workflow disabled", result.Manuals[0].BlockedReasons)
+	}
+}
+
+func TestSearchOpsManualsNoRestartDoesNotDirectRestartWorkflow(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := redisRcaManual()
+	manual.ID = "manual-redis-restart"
+	manual.Title = "Redis restart workflow"
+	manual.Operation.Action = "restart"
+	manual.WorkflowRef.WorkflowID = "workflow-redis-restart"
+	mustSaveManual(t, repo, manual)
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{Text: "只读排查 Redis redis-01，不重启服务，只看 metrics"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Decision == DecisionDirectExecute || result.Decision == DecisionAdapt {
-		t.Fatalf("decision = %q, want reference_only or no_match for cross middleware", result.Decision)
+		t.Fatalf("decision = %q, want no executable restart path; result=%#v", result.Decision, result)
 	}
 }
 
@@ -163,7 +373,8 @@ func TestSearchOpsManualsReferenceOnlyWhenManualHasNoWorkflow(t *testing.T) {
 	mustSaveManual(t, repo, manual)
 
 	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Text:     "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{"target_name": "pg-ubuntu-01"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +407,7 @@ func TestSearchOpsManualsRiskAboveManualBoundaryIsReferenceOnly(t *testing.T) {
 	manual.Operation.RiskLevel = "low"
 	mustSaveManual(t, repo, manual)
 
-	frame := BuildOperationFrame("在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 恢复，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", nil)
+	frame := BuildOperationFrame("在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 恢复，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", map[string]any{"target_name": "pg-ubuntu-01"})
 	frame.Operation.Action = "backup"
 	frame.OperationType = "backup"
 	frame.Intent = "backup"
@@ -233,6 +444,20 @@ func TestSearchOpsManualsNoCandidateButMissingExecutionSurfaceAndRiskNeedsInfo(t
 	for _, want := range []string{"execution_surface", "risk_level"} {
 		if !hasAny(result.NextQuestions, want) && !containsQuestionForField(result.NextQuestions, want) {
 			t.Fatalf("next questions = %#v, want question for %s", result.NextQuestions, want)
+		}
+	}
+}
+
+func TestSearchOpsManualsNoMatchAccuracyForUnrelatedRequests(t *testing.T) {
+	repo := NewMemoryStore()
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	for _, text := range []string{"帮我看一下网络慢", "安装一个工具", "写一个 SQL 查询"} {
+		result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{Text: text})
+		if err != nil {
+			t.Fatalf("SearchOpsManuals(%q) error = %v", text, err)
+		}
+		if result.Decision == DecisionDirectExecute || result.Decision == DecisionAdapt {
+			t.Fatalf("SearchOpsManuals(%q) decision = %q, want no executable match; result=%#v", text, result.Decision, result)
 		}
 	}
 }
@@ -353,8 +578,23 @@ func containsQuestionForField(questions []string, field string) bool {
 			if stringsContains(question, "执行方式") {
 				return true
 			}
+		case "environment":
+			if stringsContains(question, "生产") || stringsContains(question, "测试") || stringsContains(question, "环境") {
+				return true
+			}
 		case "risk_level":
 			if stringsContains(question, "风险等级") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsAnyQuestionText(questions []string, fragments ...string) bool {
+	for _, question := range questions {
+		for _, fragment := range fragments {
+			if stringsContains(question, fragment) {
 				return true
 			}
 		}

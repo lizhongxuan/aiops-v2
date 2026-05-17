@@ -101,14 +101,16 @@ export function ApprovalManagementPage() {
       description="集中查看审批流水、授权记录，管理命令授权的生命周期。"
     >
       {message ? <StatusAlert type={message.type} title={message.type === "error" ? "操作失败" : "操作完成"} message={message.text} /> : null}
-      <MetricStrip
-        items={[
-          { label: "今日审批", value: String(stats.todayTotal ?? audits.length) },
-          { label: "待审核", value: String(stats.pending ?? audits.filter((item) => item.decision === "pending").length), tone: "warn" },
-          { label: "自动放行", value: String(stats.autoAccepted ?? audits.filter((item) => item.decision === "auto_accepted").length), tone: "ok" },
-          { label: "授权命令", value: String(stats.grantedCommands ?? grants.length) },
-        ]}
-      />
+      <div data-testid="stats-row">
+        <MetricStrip
+          items={[
+            { label: "今日审批", value: String(stats.todayTotal ?? audits.length) },
+            { label: "待审核", value: String(stats.pending ?? audits.filter((item) => item.decision === "pending").length), tone: "warn" },
+            { label: "自动放行", value: String(stats.autoAccepted ?? audits.filter((item) => item.decision === "auto_accepted").length), tone: "ok" },
+            { label: "授权命令", value: String(stats.grantedCommands ?? grants.length) },
+          ]}
+        />
+      </div>
       <Tabs value={activeTab} onValueChange={(value) => { setActiveTab(value); if (value === "grants") void loadGrants(host); }}>
         <TabsList>
           <TabsTrigger value="audits">审批流水</TabsTrigger>
@@ -121,28 +123,29 @@ export function ApprovalManagementPage() {
               <CardDescription>兼容 `/approval-audits` 的 items/audits 返回结构。</CardDescription>
             </CardHeader>
             <CardContent className="grid gap-3">
-              <div className="grid gap-2 md:grid-cols-[1fr_180px_180px]">
-                <label className="relative">
+              <div className="grid gap-2 md:grid-cols-[1fr_180px_180px_120px]" data-testid="filter-bar">
+                <label className="relative" data-testid="filter-host">
                   <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
                   <Input className="pl-8" value={host} onChange={(event) => setHost(event.target.value)} placeholder="按主机过滤" />
                 </label>
                 <SelectField value={decision} onChange={setDecision} options={[{ label: "全部决策", value: "" }, { label: "pending", value: "pending" }, { label: "approved", value: "approved" }, { label: "rejected", value: "rejected" }, { label: "auto_accepted", value: "auto_accepted" }]} />
-                <Button variant="outline" onClick={() => void loadAudits()}>应用过滤</Button>
+                <Button variant="outline" onClick={() => void loadAudits()} data-testid="apply-filters-btn">应用过滤</Button>
+                <Button variant="ghost" onClick={() => { setHost(""); setDecision(""); }} data-testid="reset-filters-btn">重置</Button>
               </div>
               {loading ? <LoadingState label="加载审批流水" /> : filteredAudits.length ? (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[860px] text-left text-sm">
+                  <table className="w-full min-w-[860px] text-left text-sm" data-testid="audit-table">
                     <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
                       <tr><th className="py-2 pr-3">时间</th><th className="py-2 pr-3">主机</th><th className="py-2 pr-3">工具</th><th className="py-2 pr-3">决策</th><th className="py-2 text-right">操作</th></tr>
                     </thead>
                     <tbody className="divide-y">
                       {filteredAudits.map((item) => (
-                        <tr key={item.id}>
+                        <tr key={item.id} className="cursor-pointer hover:bg-slate-50" onClick={() => setSelectedAudit(item)}>
                           <td className="py-3 pr-3">{formatTime(item.createdAt)}</td>
                           <td className="py-3 pr-3">{item.host || "-"}</td>
                           <td className="py-3 pr-3">{item.toolName || item.command || "-"}</td>
                           <td className="py-3 pr-3"><RiskBadge value={decisionLabel(item.decision)} /></td>
-                          <td className="py-3 text-right"><Button variant="outline" onClick={() => setSelectedAudit(item)}>详情</Button></td>
+                          <td className="py-3 text-right"><Button variant="outline" onClick={(event) => { event.stopPropagation(); setSelectedAudit(item); }}>详情</Button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -158,7 +161,7 @@ export function ApprovalManagementPage() {
             <CardContent className="grid gap-3">
               {loading ? <LoadingState label="加载授权记录" /> : grants.length ? (
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[760px] text-left text-sm">
+                  <table className="w-full min-w-[760px] text-left text-sm" data-testid="grants-table">
                     <thead className="border-b text-xs uppercase tracking-normal text-slate-500"><tr><th className="py-2 pr-3">授权 ID</th><th className="py-2 pr-3">主机</th><th className="py-2 pr-3">命令/工具</th><th className="py-2 pr-3">状态</th><th className="py-2 text-right">操作</th></tr></thead>
                     <tbody className="divide-y">
                       {grants.map((grant) => (
@@ -177,7 +180,7 @@ export function ApprovalManagementPage() {
       </Tabs>
 
       <Sheet open={Boolean(selectedAudit)} onOpenChange={(open) => !open && setSelectedAudit(null)}>
-        <SheetContent className="sm:max-w-lg">
+        <SheetContent className="sm:max-w-lg" data-testid="detail-drawer">
           <SheetHeader><SheetTitle>审批详情</SheetTitle><SheetDescription>{selectedAudit?.id}</SheetDescription></SheetHeader>
           <div className="px-4">
             <KeyValueList items={[

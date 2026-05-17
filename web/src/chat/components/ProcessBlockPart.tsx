@@ -37,6 +37,11 @@ export function ProcessBlockPart({ block, compact = false }: ProcessBlockPartPro
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-zinc-500" />
         <div className="min-w-0 flex-1 truncate font-medium text-zinc-800">{labelForBlock(block)}</div>
+        {block.mock ? (
+          <Badge variant="outline" className="bg-amber-50 text-amber-700">
+            Mock
+          </Badge>
+        ) : null}
         <Badge variant="outline" className="bg-white text-zinc-600">
           {block.status}
         </Badge>
@@ -72,6 +77,11 @@ export function ProcessBlockPart({ block, compact = false }: ProcessBlockPartPro
               {result.snippet ? <span className="ml-1">{result.snippet}</span> : null}
             </div>
           ))}
+        </div>
+      ) : null}
+      {block.evidenceRefs?.length ? (
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-500">
+          {block.evidenceRefs.map((ref) => <span key={ref}>证据 {ref}</span>)}
         </div>
       ) : null}
     </div>

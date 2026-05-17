@@ -129,7 +129,7 @@ The existing artifact type `ops_manual_fallback_guide` is a business artifact ty
 - Modify: `internal/store/gorm_store.go`
 - Test: `internal/store/gorm_store_test.go`
 
-- [ ] **Step 1: Write a failing JSON store round-trip test**
+- [x] **Step 1: Write a failing JSON store round-trip test**
 
 Add a test in `internal/store/gorm_store_test.go` named `TestJSONFileStore_UICardsExtendedFieldsRoundTrip`. The test should create a temp JSON store, save one UI card with schema, policies, samples, and version fields, flush, reopen the store, and assert every nested field is preserved.
 
@@ -186,7 +186,7 @@ card := store.UICard{
 }
 ```
 
-- [ ] **Step 2: Run the failing store test**
+- [x] **Step 2: Run the failing store test**
 
 Run:
 
@@ -196,7 +196,7 @@ go test ./internal/store -run TestJSONFileStore_UICardsExtendedFieldsRoundTrip -
 
 Expected: fail because `store.UICard` does not yet define the extended fields and nested policy types.
 
-- [ ] **Step 3: Extend the store types**
+- [x] **Step 3: Extend the store types**
 
 In `internal/store/store.go`, add focused nested types near `UICard`, then extend `UICard` by appending fields. Use `map[string]any` for schemas so JSON and Gorm KV storage remain simple.
 
@@ -242,7 +242,7 @@ RedactionPolicy UICardRedactionPolicy  `json:"redactionPolicy,omitempty"`
 SamplePayloads  []UICardSample         `json:"samplePayloads,omitempty"`
 ```
 
-- [ ] **Step 4: Run JSON and Gorm store tests**
+- [x] **Step 4: Run JSON and Gorm store tests**
 
 Run:
 
@@ -252,7 +252,7 @@ go test ./internal/store -run 'UICards|GormStore|JSONFileStore' -count=1
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add internal/store/store.go internal/store/gorm_store.go internal/store/gorm_store_test.go
@@ -268,7 +268,7 @@ git commit -m "feat: extend ui card store model"
 - Create: `internal/appui/ui_card_service_test.go`
 - Modify: `internal/appui/contracts.go`
 
-- [ ] **Step 1: Write service tests for list, seed, preview, and validation**
+- [x] **Step 1: Write service tests for list, seed, preview, and validation**
 
 Create `internal/appui/ui_card_service_test.go` with tests named:
 
@@ -303,7 +303,7 @@ errors contains payload.script
 errors contains payload.dangerouslySetInnerHTML
 ```
 
-- [ ] **Step 2: Run the failing service tests**
+- [x] **Step 2: Run the failing service tests**
 
 Run:
 
@@ -313,7 +313,7 @@ go test ./internal/appui -run UICardService -count=1
 
 Expected: fail because the service does not exist.
 
-- [ ] **Step 3: Define service contracts**
+- [x] **Step 3: Define service contracts**
 
 In `internal/appui/contracts.go`, add:
 
@@ -333,7 +333,7 @@ type UICardService interface {
 
 Also add `UICardService() UICardService` to `HTTPServices` and `Services`, wire a default service in `NewServices`, and add a `WithUICardService` option if test setup needs injection.
 
-- [ ] **Step 4: Implement minimal service behavior**
+- [x] **Step 4: Implement minimal service behavior**
 
 Create `internal/appui/ui_card_service.go` with:
 
@@ -343,7 +343,7 @@ Create `internal/appui/ui_card_service.go` with:
 - Built-in definitions for current artifact types: `coroot_chart`, `trace_summary`, `topology_slice`, `workflow_result`, `verification_result`, `experience_match`, `ops_manual_match`, `ops_manual_search_result`, `ops_manual_preflight_result`, `ops_manual_fallback_guide`, `runner_workflow_generation`.
 - Dangerous key traversal for `html`, `script`, `iframe`, `innerHTML`, `outerHTML`, `dangerouslySetInnerHTML`, `onClick`, `onLoad`, and `styleText`.
 
-- [ ] **Step 5: Run service tests**
+- [x] **Step 5: Run service tests**
 
 Run:
 
@@ -353,7 +353,7 @@ go test ./internal/appui -run UICardService -count=1
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add internal/appui/contracts.go internal/appui/ui_card_service.go internal/appui/ui_card_service_test.go
@@ -371,7 +371,7 @@ git commit -m "feat: add ui card domain service"
 - Test: `internal/server/ui_cards_api_test.go`
 - Test: `internal/server/resources_http_test.go`
 
-- [ ] **Step 1: Write HTTP API tests**
+- [x] **Step 1: Write HTTP API tests**
 
 Create `internal/server/ui_cards_api_test.go` with tests:
 
@@ -396,7 +396,7 @@ if _, ok := payload["total"]; !ok {
 }
 ```
 
-- [ ] **Step 2: Run failing HTTP tests**
+- [x] **Step 2: Run failing HTTP tests**
 
 Run:
 
@@ -406,7 +406,7 @@ go test ./internal/server -run UICardsAPI -count=1
 
 Expected: fail because `handleUICards` still returns `{"cards":[]}` and does not route subresources.
 
-- [ ] **Step 3: Wire ResourceServer to UICardService**
+- [x] **Step 3: Wire ResourceServer to UICardService**
 
 Modify `internal/server/resources.go` so `ResourceServer` stores an `appui.UICardService`.
 
@@ -434,7 +434,7 @@ func NewResourceServerWithUICards(uiCards appui.UICardService) *ResourceServer {
 
 Keep `NewResourceServer()` as a compatibility wrapper that creates a default service.
 
-- [ ] **Step 4: Register resource routes from HTTPServer with the app service**
+- [x] **Step 4: Register resource routes from HTTPServer with the app service**
 
 In `internal/server/http.go`, replace:
 
@@ -448,7 +448,7 @@ with:
 NewResourceServerWithUICards(s.ui.UICardService()).RegisterOnMux(s.mux)
 ```
 
-- [ ] **Step 5: Implement UI card route parsing**
+- [x] **Step 5: Implement UI card route parsing**
 
 In `internal/server/resource_management.go`, route:
 
@@ -470,7 +470,7 @@ Use small helper functions in the same file:
 - `decodeResourceJSON(r *http.Request, dst any) bool`
 - `writeResourceError(w http.ResponseWriter, status int, message string)`
 
-- [ ] **Step 6: Run server tests**
+- [x] **Step 6: Run server tests**
 
 Run:
 
@@ -480,7 +480,7 @@ go test ./internal/server -run 'UICardsAPI|RegistersResourceRoutes' -count=1
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add internal/server/resources.go internal/server/resource_management.go internal/server/http.go internal/server/ui_cards_api_test.go internal/server/resources_http_test.go
@@ -498,7 +498,7 @@ git commit -m "feat: expose ui card registry api"
 - Modify: `internal/server/resource_routes.go`
 - Test: `internal/server/agent_ui_artifacts_api_test.go`
 
-- [ ] **Step 1: Write service tests for artifact feed aggregation**
+- [x] **Step 1: Write service tests for artifact feed aggregation**
 
 Create tests that seed a small in-memory set of artifacts and assert:
 
@@ -508,7 +508,7 @@ Create tests that seed a small in-memory set of artifacts and assert:
 - `limit=1` returns one item and a non-empty next cursor when more items exist
 - `validate` rejects unknown dangerous keys using the same dangerous key list as UI cards
 
-- [ ] **Step 2: Run failing service tests**
+- [x] **Step 2: Run failing service tests**
 
 Run:
 
@@ -518,7 +518,7 @@ go test ./internal/appui -run AgentUIArtifact -count=1
 
 Expected: fail because the service does not exist.
 
-- [ ] **Step 3: Implement an initial artifact feed service**
+- [x] **Step 3: Implement an initial artifact feed service**
 
 Create `internal/appui/agent_ui_artifact_service.go` with:
 
@@ -544,7 +544,7 @@ type AgentUIArtifactListResult struct {
 
 First implementation can read from an injected in-memory provider and expose a clean interface. It should be designed so later work can plug in session snapshots, cases, prompt traces, runner records, and Coroot evidence without changing HTTP response shape.
 
-- [ ] **Step 4: Write HTTP API tests**
+- [x] **Step 4: Write HTTP API tests**
 
 Create `internal/server/agent_ui_artifacts_api_test.go` with tests:
 
@@ -552,7 +552,7 @@ Create `internal/server/agent_ui_artifacts_api_test.go` with tests:
 - `TestAgentUIArtifactsAPI_GetMissingReturnsNotFound`
 - `TestAgentUIArtifactsAPI_ValidateRejectsDangerousPayload`
 
-- [ ] **Step 5: Register and implement endpoints**
+- [x] **Step 5: Register and implement endpoints**
 
 In `internal/server/resource_routes.go`, register:
 
@@ -569,7 +569,7 @@ GET  /api/v1/agent-ui-artifacts/{id}
 POST /api/v1/agent-ui-artifacts/validate
 ```
 
-- [ ] **Step 6: Run backend artifact API tests**
+- [x] **Step 6: Run backend artifact API tests**
 
 Run:
 
@@ -579,7 +579,7 @@ go test ./internal/appui ./internal/server -run 'AgentUIArtifact|AgentUIArtifact
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add internal/appui/agent_ui_artifact_service.go internal/appui/agent_ui_artifact_service_test.go internal/server/agent_ui_artifacts.go internal/server/agent_ui_artifacts_api_test.go internal/server/resource_routes.go
@@ -594,7 +594,7 @@ git commit -m "feat: add agent ui artifact feed api"
 - Modify: `web/src/api/uiCards.js`
 - Create: `web/src/api/uiCards.test.js`
 
-- [ ] **Step 1: Write client tests**
+- [x] **Step 1: Write client tests**
 
 Create `web/src/api/uiCards.test.js` using `createHttpClient` with a fake `fetchImpl`. Assert exact paths:
 
@@ -610,7 +610,7 @@ POST   /api/v1/ui-cards/metric-insight/versions
 PUT    /api/v1/ui-cards/metric-insight/status
 ```
 
-- [ ] **Step 2: Run failing client tests**
+- [x] **Step 2: Run failing client tests**
 
 Run:
 
@@ -621,7 +621,7 @@ npm test -- --run src/api/uiCards.test.js
 
 Expected: fail because the new client functions do not exist.
 
-- [ ] **Step 3: Implement client functions**
+- [x] **Step 3: Implement client functions**
 
 Update `web/src/api/uiCards.js` with:
 
@@ -663,7 +663,7 @@ export function updateUiCardStatus(id, status) {
 }
 ```
 
-- [ ] **Step 4: Run client tests**
+- [x] **Step 4: Run client tests**
 
 Run:
 
@@ -674,7 +674,7 @@ npm test -- --run src/api/uiCards.test.js
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/api/uiCards.js web/src/api/uiCards.test.js
@@ -689,7 +689,7 @@ git commit -m "feat: expand ui card api client"
 - Modify: `web/src/api/agentUiArtifacts.ts`
 - Modify: `web/src/api/agentUiArtifacts.test.ts`
 
-- [ ] **Step 1: Add failing tests for action allowlist and dangerous keys**
+- [x] **Step 1: Add failing tests for action allowlist and dangerous keys**
 
 Extend `web/src/api/agentUiArtifacts.test.ts` with tests that assert:
 
@@ -698,7 +698,7 @@ Extend `web/src/api/agentUiArtifacts.test.ts` with tests that assert:
 - unknown mutation action is returned with `disabled: true` and a `disabledReason`.
 - `metadata.schemaVersion`, `metadata.cardVersion`, and `metadata.renderer` are preserved.
 
-- [ ] **Step 2: Run failing normalizer tests**
+- [x] **Step 2: Run failing normalizer tests**
 
 Run:
 
@@ -709,7 +709,7 @@ npm test -- --run src/api/agentUiArtifacts.test.ts
 
 Expected: fail for new dangerous keys and action policy assertions.
 
-- [ ] **Step 3: Extend normalizer constants**
+- [x] **Step 3: Extend normalizer constants**
 
 In `web/src/api/agentUiArtifacts.ts`, expand dangerous keys:
 
@@ -744,7 +744,7 @@ const ALLOWED_ACTION_INTENTS = new Set([
 ]);
 ```
 
-- [ ] **Step 4: Normalize unknown actions safely**
+- [x] **Step 4: Normalize unknown actions safely**
 
 Update action normalization so unknown intents are not dropped silently. Return:
 
@@ -758,7 +758,7 @@ Update action normalization so unknown intents are not dropped silently. Return:
 
 Do not execute or route unknown actions.
 
-- [ ] **Step 5: Run normalizer tests**
+- [x] **Step 5: Run normalizer tests**
 
 Run:
 
@@ -769,7 +769,7 @@ npm test -- --run src/api/agentUiArtifacts.test.ts
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/api/agentUiArtifacts.ts web/src/api/agentUiArtifacts.test.ts
@@ -785,7 +785,7 @@ git commit -m "feat: harden agent ui artifact normalization"
 - Create: `web/src/lib/agentUiCardRegistry.tsx`
 - Create: `web/src/lib/agentUiCardRegistry.test.tsx`
 
-- [ ] **Step 1: Write registry lookup tests**
+- [x] **Step 1: Write registry lookup tests**
 
 Create tests covering:
 
@@ -796,7 +796,7 @@ Create tests covering:
 - invalid payload result returns `InvalidArtifactCard`
 - artifact without `metadata.schemaVersion` still renders through the active registry definition
 
-- [ ] **Step 2: Run failing registry tests**
+- [x] **Step 2: Run failing registry tests**
 
 Run:
 
@@ -807,7 +807,7 @@ npm test -- --run src/lib/agentUiCardRegistry.test.tsx
 
 Expected: fail because registry files do not exist.
 
-- [ ] **Step 3: Define built-in frontend definitions**
+- [x] **Step 3: Define built-in frontend definitions**
 
 Create `web/src/lib/agentUiCardDefinitions.ts` with definitions for existing supported types. Include:
 
@@ -827,7 +827,7 @@ export const BUILTIN_AGENT_UI_CARD_DEFINITIONS = [
 ];
 ```
 
-- [ ] **Step 4: Implement registry lookup**
+- [x] **Step 4: Implement registry lookup**
 
 Create `web/src/lib/agentUiCardRegistry.tsx` with:
 
@@ -846,7 +846,7 @@ The lookup result must contain:
 }
 ```
 
-- [ ] **Step 5: Run registry tests**
+- [x] **Step 5: Run registry tests**
 
 Run:
 
@@ -857,7 +857,7 @@ npm test -- --run src/lib/agentUiCardRegistry.test.tsx
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/lib/agentUiCardDefinitions.ts web/src/lib/agentUiCardRegistry.tsx web/src/lib/agentUiCardRegistry.test.tsx
@@ -874,7 +874,7 @@ git commit -m "feat: add agent ui card registry runtime"
 - Create: `web/src/components/chat/InvalidArtifactCard.tsx`
 - Modify: `web/src/components/chat/AgentUiArtifactPart.test.tsx`
 
-- [ ] **Step 1: Add failing dispatcher tests**
+- [x] **Step 1: Add failing dispatcher tests**
 
 Add tests to `AgentUiArtifactPart.test.tsx`:
 
@@ -884,7 +884,7 @@ Add tests to `AgentUiArtifactPart.test.tsx`:
 - existing `coroot_chart` still renders `CorootChartArtifact`
 - existing `ops_manual_preflight_result` still renders the registered ops manual preflight renderer
 
-- [ ] **Step 2: Run failing component tests**
+- [x] **Step 2: Run failing component tests**
 
 Run:
 
@@ -895,7 +895,7 @@ npm test -- --run src/components/chat/AgentUiArtifactPart.test.tsx
 
 Expected: fail because the dispatcher does not use registry lookup.
 
-- [ ] **Step 3: Implement registry terminal renderers**
+- [x] **Step 3: Implement registry terminal renderers**
 
 Create `UnsupportedArtifactCard.tsx` and `InvalidArtifactCard.tsx`. Both must:
 
@@ -905,7 +905,7 @@ Create `UnsupportedArtifactCard.tsx` and `InvalidArtifactCard.tsx`. Both must:
 - show a short Chinese reason
 - be invoked only by `lookupAgentUiCardRenderer`, not by ad hoc branches in `AgentUiArtifactPart.tsx`
 
-- [ ] **Step 4: Update dispatcher**
+- [x] **Step 4: Update dispatcher**
 
 In `AgentUiArtifactPart.tsx`, delete the direct type switch and type-specific early returns. Replace them with:
 
@@ -917,7 +917,7 @@ return <Renderer artifact={artifact} />;
 
 All current dedicated components, including ops manual components, must be reachable through `defaultAgentUiCardRegistry`. If a renderer needs event-dispatch behavior, register that renderer in the registry instead of adding a special-case branch.
 
-- [ ] **Step 5: Run component tests**
+- [x] **Step 5: Run component tests**
 
 Run:
 
@@ -928,7 +928,7 @@ npm test -- --run src/components/chat/AgentUiArtifactPart.test.tsx src/lib/agent
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/components/chat/AgentUiArtifactPart.tsx web/src/components/chat/AgentUiArtifactPart.test.tsx web/src/components/chat/UnsupportedArtifactCard.tsx web/src/components/chat/InvalidArtifactCard.tsx
@@ -944,7 +944,7 @@ git commit -m "feat: render agent ui artifacts through registry"
 - Create: `web/src/pages/UICardManagementPage.test.tsx`
 - Modify: `web/src/pages/settingsPages.test.tsx` if route-level coverage already belongs there
 
-- [ ] **Step 1: Write page tests**
+- [x] **Step 1: Write page tests**
 
 Create tests that mock `/api/v1/ui-cards` and assert:
 
@@ -955,7 +955,7 @@ Create tests that mock `/api/v1/ui-cards` and assert:
 - invalid JSON in preview input shows a local validation message and does not call the API
 - status action calls `/api/v1/ui-cards/{id}/status`
 
-- [ ] **Step 2: Run failing page tests**
+- [x] **Step 2: Run failing page tests**
 
 Run:
 
@@ -966,7 +966,7 @@ npm test -- --run src/pages/UICardManagementPage.test.tsx
 
 Expected: fail because the current page only has overview/list/debugger and minimal editing.
 
-- [ ] **Step 3: Implement registry page tabs**
+- [x] **Step 3: Implement registry page tabs**
 
 Update page tabs to:
 
@@ -985,7 +985,7 @@ Use existing UI primitives from `web/src/components/ui/*` and existing page shel
 - no marketing-style hero blocks
 - no nested cards inside cards
 
-- [ ] **Step 4: Implement preview workflow**
+- [x] **Step 4: Implement preview workflow**
 
 Preview tab behavior:
 
@@ -996,7 +996,7 @@ Preview tab behavior:
 - submit calls `previewUiCard(id, { artifact, context })`
 - render API result and local registry preview side by side when possible
 
-- [ ] **Step 5: Run page tests**
+- [x] **Step 5: Run page tests**
 
 Run:
 
@@ -1007,7 +1007,7 @@ npm test -- --run src/pages/UICardManagementPage.test.tsx
 
 Expected: pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/pages/UICardManagementPage.tsx web/src/pages/UICardManagementPage.test.tsx web/src/pages/settingsPages.test.tsx
@@ -1027,7 +1027,7 @@ git commit -m "feat: upgrade ui card management page"
 - Modify: `web/src/lib/zhLabels.ts`
 - Modify: `web/src/router.test.tsx`
 
-- [ ] **Step 1: Write API client and page tests**
+- [x] **Step 1: Write API client and page tests**
 
 Tests must assert:
 
@@ -1038,7 +1038,7 @@ Tests must assert:
 - detail drawer includes normalized JSON, metadata, actions, and trace links
 - route `/agent-ui` renders the page
 
-- [ ] **Step 2: Run failing tests**
+- [x] **Step 2: Run failing tests**
 
 Run:
 
@@ -1049,7 +1049,7 @@ npm test -- --run src/pages/AgentUICenterPage.test.tsx src/router.test.tsx
 
 Expected: fail because the page and route do not exist.
 
-- [ ] **Step 3: Implement API client**
+- [x] **Step 3: Implement API client**
 
 Create `web/src/api/agentUiArtifactsClient.ts` with:
 
@@ -1069,7 +1069,7 @@ export function validateAgentUiArtifact(payload: Record<string, unknown>) {
 }
 ```
 
-- [ ] **Step 4: Implement Agent UI Center**
+- [x] **Step 4: Implement Agent UI Center**
 
 The page should include:
 
@@ -1079,7 +1079,7 @@ The page should include:
 - detail drawer: rendered card preview, normalized JSON, metadata, actions, raw payload
 - quick links: Case, Evidence, Prompt Trace, Workflow Run, Coroot
 
-- [ ] **Step 5: Wire route and navigation**
+- [x] **Step 5: Wire route and navigation**
 
 Add route `/agent-ui` to:
 
@@ -1090,7 +1090,7 @@ Add route `/agent-ui` to:
 Navigation title: `Agent UI`
 Description: `卡片产物与渲染追踪`
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -1101,7 +1101,7 @@ npm test -- --run src/pages/AgentUICenterPage.test.tsx src/router.test.tsx src/l
 
 Expected: pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/src/api/agentUiArtifactsClient.ts web/src/pages/AgentUICenterPage.tsx web/src/pages/AgentUICenterPage.test.tsx web/src/router.tsx web/src/app/navigation.ts web/src/lib/zhLabels.ts web/src/router.test.tsx web/src/lib/zhLabels.test.ts
@@ -1119,7 +1119,7 @@ git commit -m "feat: add agent ui center page"
 - Test: `internal/appui/ui_card_service_test.go`
 - Test: `web/src/lib/agentUiCardRegistry.test.tsx`
 
-- [ ] **Step 1: Add a parity test for built-in card definitions**
+- [x] **Step 1: Add a parity test for built-in card definitions**
 
 In backend tests, assert built-in definitions include exactly the current supported artifact type set:
 
@@ -1139,7 +1139,7 @@ runner_workflow_generation
 
 In frontend tests, assert the same set exists in `BUILTIN_AGENT_UI_CARD_DEFINITIONS`.
 
-- [ ] **Step 2: Run parity tests**
+- [x] **Step 2: Run parity tests**
 
 Run:
 
@@ -1151,7 +1151,7 @@ npm test -- --run src/lib/agentUiCardRegistry.test.tsx
 
 Expected: pass after backend and frontend definitions align.
 
-- [ ] **Step 3: Add a contract comment**
+- [x] **Step 3: Add a contract comment**
 
 Add a short comment above backend seed definitions and frontend definitions:
 
@@ -1159,7 +1159,7 @@ Add a short comment above backend seed definitions and frontend definitions:
 Keep this built-in type set aligned with web/src/lib/agentUiCardDefinitions.ts and internal/appui/ui_card_service.go.
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add internal/appui/ui_card_service.go internal/appui/ui_card_service_test.go web/src/lib/agentUiCardDefinitions.ts web/src/lib/agentUiCardRegistry.test.tsx
@@ -1175,7 +1175,7 @@ git commit -m "test: align built in agent ui card definitions"
 - Modify: `web/tests/helpers/uiFixtureHarness.js` if the harness needs a card registry fixture
 - Modify: `web/src/lib/uiFixturePresets.js` if fixture presets need card samples
 
-- [ ] **Step 1: Write Playwright test for UI Cards page**
+- [x] **Step 1: Write Playwright test for UI Cards page**
 
 The test should:
 
@@ -1186,7 +1186,7 @@ The test should:
 - run preview with the built-in sample
 - assert rendered preview contains the card title and no raw JSON dump as primary content
 
-- [ ] **Step 2: Write Playwright test for unsupported artifact registry behavior**
+- [x] **Step 2: Write Playwright test for unsupported artifact registry behavior**
 
 The test should use a fixture with an artifact:
 
@@ -1216,7 +1216,7 @@ No script tag created from payload
 No alert text from payload
 ```
 
-- [ ] **Step 3: Write Playwright test for Agent UI Center**
+- [x] **Step 3: Write Playwright test for Agent UI Center**
 
 The test should:
 
@@ -1226,7 +1226,7 @@ The test should:
 - assert detail drawer opens
 - assert Prompt Trace link exists when fixture contains `promptTraceId`
 
-- [ ] **Step 4: Run Playwright tests**
+- [x] **Step 4: Run Playwright tests**
 
 Run:
 
@@ -1237,7 +1237,7 @@ npm run test:ui -- agent-ui-registry.spec.js --project=chromium
 
 Expected: pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit skipped because the workspace was already dirty and this turn should not mix unrelated changes into a commit**
 
 ```bash
 git add web/tests/agent-ui-registry.spec.js web/tests/helpers/uiFixtureHarness.js web/src/lib/uiFixturePresets.js
@@ -1251,7 +1251,7 @@ git commit -m "test: cover agent ui registry flows"
 **Files:**
 - No planned source changes unless verification exposes a failure.
 
-- [ ] **Step 1: Run focused Go tests**
+- [x] **Step 1: Run focused Go tests**
 
 Run:
 
@@ -1261,7 +1261,15 @@ go test ./internal/store ./internal/appui ./internal/server -run 'UICard|AgentUI
 
 Expected: pass.
 
-- [ ] **Step 2: Run focused frontend tests**
+Completed:
+
+```bash
+go test ./internal/store ./internal/appui ./internal/server -run 'UICard|AgentUIArtifact|ResourceRoutes' -count=1
+```
+
+Result: pass.
+
+- [x] **Step 2: Run focused frontend tests**
 
 Run:
 
@@ -1279,7 +1287,23 @@ npm test -- --run \
 
 Expected: pass.
 
-- [ ] **Step 3: Run build**
+Completed:
+
+```bash
+cd web
+npm test -- --run \
+  src/api/uiCards.test.js \
+  src/api/agentUiArtifacts.test.ts \
+  src/lib/agentUiCardRegistry.test.tsx \
+  src/components/chat/AgentUiArtifactPart.test.tsx \
+  src/pages/UICardManagementPage.test.tsx \
+  src/pages/AgentUICenterPage.test.tsx \
+  src/router.test.tsx
+```
+
+Result: pass. jsdom emitted the known non-fatal `HTMLCanvasElement.getContext` warning.
+
+- [x] **Step 3: Run build**
 
 Run:
 
@@ -1290,7 +1314,16 @@ npm run build
 
 Expected: build succeeds.
 
-- [ ] **Step 4: Run UI smoke test**
+Completed:
+
+```bash
+cd web
+npm run build
+```
+
+Result: pass. Vite emitted the existing chunk-size warning only.
+
+- [x] **Step 4: Run UI smoke test**
 
 Run:
 
@@ -1301,7 +1334,16 @@ npm run test:ui -- agent-ui-registry.spec.js --project=chromium
 
 Expected: pass.
 
-- [ ] **Step 5: Inspect git diff**
+Completed:
+
+```bash
+cd web
+npm run test:ui -- e2e/agent-ui-registry.spec.js --project=chromium
+```
+
+Result: pass.
+
+- [x] **Step 5: Inspect git diff**
 
 Run:
 
@@ -1316,7 +1358,17 @@ Expected:
 - no unrelated generated files are staged
 - no secrets or large trace artifacts are added
 
-- [ ] **Step 6: Final commit if verification required fixes**
+Completed:
+
+```bash
+git diff --stat
+git status --short
+git diff --check
+```
+
+Result: diff check passed. The workspace already contained many unrelated dirty files before this task, so the final status is not limited to this plan. No files were staged and no secrets were written.
+
+- [x] **Step 6: Final commit if verification required fixes**
 
 If verification fixes were needed:
 
@@ -1324,6 +1376,64 @@ If verification fixes were needed:
 git add <fixed-files>
 git commit -m "fix: complete agent ui registry verification"
 ```
+
+Final commit skipped because the workspace was already dirty with unrelated changes and the user did not request a commit.
+
+### Continuation Verification: 2026-05-17
+
+- [x] Rechecked task list: no unchecked implementation steps remain.
+- [x] Re-ran focused Go tests:
+
+```bash
+go test ./internal/store ./internal/appui ./internal/server -run 'UICard|AgentUIArtifact|ResourceRoutes' -count=1
+```
+
+Result: pass.
+
+- [x] Re-ran focused frontend tests:
+
+```bash
+cd web
+npm test -- --run src/api/uiCards.test.js src/api/agentUiArtifacts.test.ts src/lib/agentUiCardRegistry.test.tsx src/components/chat/AgentUiArtifactPart.test.tsx src/pages/UICardManagementPage.test.tsx src/pages/AgentUICenterPage.test.tsx src/router.test.tsx
+```
+
+Result: pass. jsdom emitted the known non-fatal `HTMLCanvasElement.getContext` warning.
+
+- [x] Re-ran frontend build:
+
+```bash
+cd web
+npm run build
+```
+
+Result: pass. Vite emitted the existing chunk-size warning only.
+
+- [x] Re-ran Playwright UI smoke test:
+
+```bash
+cd web
+npm run test:ui -- e2e/agent-ui-registry.spec.js --project=chromium
+```
+
+Result: pass.
+
+- [x] Re-ran diff hygiene check:
+
+```bash
+git diff --check
+git status --short
+```
+
+Result: diff check passed. The repository remains dirty with many existing unrelated changes; no files were staged.
+
+---
+
+## Fresh Verification Notes - 2026-05-17
+
+- Rechecked this task list while validating the Coroot RCA MCP-first implementation: no unchecked implementation steps remain.
+- Agent UI registry Playwright suite passed: `npm run test:ui -- e2e/agent-ui-registry.spec.js --project=chromium`.
+- Frontend focused registry/artifact tests passed as part of: `npm test -- --run src/components/chat/rca/rcaReportModel.test.ts src/components/chat/RCAReportArtifact.test.tsx src/components/chat/AgentUiArtifactPart.test.tsx src/lib/agentUiCardRegistry.test.tsx src/api/agentUiArtifacts.test.ts`.
+- Browser-in-app verification used a temporary current-code server at `http://127.0.0.1:18280`: `/ui-cards` showed the built-in card registry including `rca_report`; `/?verify=ops-manual-4field-form` showed the lightweight ops manual artifact without the old extra source label, and its `查看工作流` / `查看手册` controls opened read-only details.
 
 ---
 

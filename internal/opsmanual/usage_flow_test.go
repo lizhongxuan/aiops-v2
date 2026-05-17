@@ -21,7 +21,8 @@ func TestSearchOpsManualsRedisUsageFlowNeedsContextThenOffersConfirmedWorkflow(t
 	}
 
 	direct, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis used_memory_rss 持续上涨的症状，已有 metrics 指标证据，风险 medium，只做只读采集，无写入、无服务变更",
+		Text:     "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis used_memory_rss 持续上涨的症状，已有 metrics 指标证据，风险 medium，只做只读采集，无写入、无服务变更",
+		Metadata: map[string]any{"target_name": "redis-local-01"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +30,8 @@ func TestSearchOpsManualsRedisUsageFlowNeedsContextThenOffersConfirmedWorkflow(t
 	if direct.Decision != DecisionDirectExecute {
 		t.Fatalf("decision = %q, want direct_execute; result=%#v", direct.Decision, direct)
 	}
-	if len(direct.Manuals) == 0 || direct.Manuals[0].RecommendedAction != "run_bound_workflow" {
-		t.Fatalf("direct manuals = %#v, want run_bound_workflow recommendation", direct.Manuals)
+	if len(direct.Manuals) == 0 || direct.Manuals[0].RecommendedAction != "run_preflight_probe" {
+		t.Fatalf("direct manuals = %#v, want run_preflight_probe recommendation", direct.Manuals)
 	}
 	if !stringsContains(direct.Summary, "用户确认前不会执行 Runner Workflow") {
 		t.Fatalf("summary = %q, want explicit user confirmation boundary", direct.Summary)
@@ -45,15 +46,16 @@ func TestSearchOpsManualsRedisUsageFlowNeedsContextThenOffersConfirmedWorkflow(t
 	}
 
 	mustSaveRunRecord(t, repo, RunRecord{
-		ID:              "rr-confirmed-redis",
-		ManualID:        "manual-redis-rca-ssh",
-		WorkflowID:      "workflow-redis-rca-ssh",
-		ExecutionStatus: "success",
+		ID:               "rr-confirmed-redis",
+		ManualID:         "manual-redis-rca-ssh",
+		WorkflowID:       "workflow-redis-rca-ssh",
+		ExecutionStatus:  "success",
 		ValidationStatus: "passed",
-		CompletedAt:     "2026-05-15T04:00:00Z",
+		CompletedAt:      "2026-05-15T04:00:00Z",
 	})
 	afterConfirmedRun, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis used_memory_rss 持续上涨的症状，已有 metrics 指标证据，风险 medium，只做只读采集，无写入、无服务变更",
+		Text:     "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis used_memory_rss 持续上涨的症状，已有 metrics 指标证据，风险 medium，只做只读采集，无写入、无服务变更",
+		Metadata: map[string]any{"target_name": "redis-local-01"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,7 +70,8 @@ func TestSearchOpsManualsEnglishReadonlyRedisPromptDoesNotTreatNoRestartAsHighRi
 	mustSaveManual(t, repo, redisRcaManual())
 
 	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
-		Text: "redis-local-01 prod vm ssh Redis used_memory_rss rising symptom metrics medium readonly no restart no write use search_ops_manuals",
+		Text:     "redis-local-01 prod vm ssh Redis used_memory_rss rising symptom metrics medium readonly no restart no write use search_ops_manuals",
+		Metadata: map[string]any{"target_name": "redis-local-01"},
 	})
 	if err != nil {
 		t.Fatal(err)

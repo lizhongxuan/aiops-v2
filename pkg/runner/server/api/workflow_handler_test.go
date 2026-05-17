@@ -549,13 +549,15 @@ func TestRunRouteSubmitPersistsOpsManualMetadata(t *testing.T) {
 	workflowYAML := testAPIWorkflowYAML("api-run-meta", "echo metadata")
 
 	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/runs", map[string]any{
-		"workflow_yaml":    workflowYAML,
-		"manual_id":        "manual-api-run-meta",
-		"workflow_id":      "workflow-api-run-meta",
-		"workflow_version": "v5",
-		"workflow_digest":  service.DigestWorkflowContent([]byte(workflowYAML)),
-		"triggered_by":     "sre-api",
-		"metadata":         map[string]any{"decision_state": "approved"},
+		"workflow_yaml":          workflowYAML,
+		"manual_id":              "manual-api-run-meta",
+		"workflow_id":            "workflow-api-run-meta",
+		"workflow_version":       "v5",
+		"workflow_digest":        service.DigestWorkflowContent([]byte(workflowYAML)),
+		"preflight_status":       "passed",
+		"preflight_evidence_ref": "preflight:api-run-meta:ok",
+		"triggered_by":           "sre-api",
+		"metadata":               map[string]any{"decision_state": "approved"},
 	})
 	if code != http.StatusAccepted {
 		t.Fatalf("submit run status = %d payload=%s", code, payload)

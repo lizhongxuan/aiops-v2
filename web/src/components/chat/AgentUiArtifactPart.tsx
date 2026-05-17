@@ -1,14 +1,10 @@
 import { Activity, AlertTriangle, CheckCircle2, GitBranch, LineChart, ListChecks, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { defaultAgentUiCardRegistry, lookupAgentUiCardRenderer } from "@/lib/agentUiCardRegistry";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
-import { CorootChartArtifact } from "./CorootChartArtifact";
-import { ExperienceMatchArtifact } from "./ExperienceMatchArtifact";
-import { OpsManualMatchArtifact, OpsManualSearchResultArtifact, RunnerWorkflowGenerationArtifact } from "@/chat/components/OpsManualChatArtifacts";
-import { TopologySliceArtifact } from "./TopologySliceArtifact";
-import { TraceSummaryArtifact } from "./TraceSummaryArtifact";
-import { VerificationResultArtifact } from "./VerificationResultArtifact";
-import { WorkflowResultArtifact } from "./WorkflowResultArtifact";
+import { InvalidArtifactCard } from "./InvalidArtifactCard";
+import { UnsupportedArtifactCard } from "./UnsupportedArtifactCard";
 
 type AgentUiArtifactPartProps = {
   artifact: AiopsTransportAgentUiArtifact;
@@ -25,11 +21,16 @@ const ARTIFACT_LABELS: Record<string, string> = {
   coroot_chart: "Coroot 图表",
   trace_summary: "Trace 摘要",
   topology_slice: "拓扑片段",
+  rca_report: "根因分析",
   workflow_result: "Workflow 结果",
   verification_result: "验证结果",
   experience_match: "经验命中",
   ops_manual_match: "运维手册判定",
   ops_manual_search_result: "运维手册检索",
+  ops_manual_param_resolution: "运维手册参数解析",
+  ops_manual_param_form: "运维手册参数表单",
+  ops_manual_preflight_result: "运维手册预检",
+  ops_manual_fallback_guide: "运维手册降级步骤",
   runner_workflow_generation: "Workflow 生成进度",
 };
 
@@ -39,12 +40,21 @@ const REDACTION_LABELS: Record<string, string> = {
   restricted: "权限受限",
 };
 
+const SELF_RENDERED_TYPES = new Set([
+  "ops_manual_match",
+  "ops_manual_search_result",
+  "ops_manual_param_resolution",
+  "ops_manual_param_form",
+  "ops_manual_preflight_result",
+]);
+
 export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
-  if (artifact.type === "ops_manual_match") {
-    return <OpsManualMatchArtifact artifact={artifact} />;
+  const rendererLookup = lookupAgentUiCardRenderer(defaultAgentUiCardRegistry, artifact);
+  if (rendererLookup.state === "invalid_payload") {
+    return <InvalidArtifactCard artifact={artifact} reason={rendererLookup.reason} />;
   }
-  if (artifact.type === "ops_manual_search_result") {
-    return <OpsManualSearchResultArtifact artifact={artifact} />;
+  if (!("Renderer" in rendererLookup)) {
+    return <UnsupportedArtifactCard artifact={artifact} reason={rendererLookup.reason} />;
   }
 
   const typeLabel = ARTIFACT_LABELS[artifact.type] || "暂不支持的卡片类型";
@@ -52,7 +62,11 @@ export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
   const summary = text(artifact.summaryZh) || text(artifact.summary) || (ARTIFACT_LABELS[artifact.type] ? "暂无摘要" : "该卡片类型未注册，已按安全模式展示。");
   const Icon = iconForArtifact(artifact.type);
   const actions = unifiedActionsForArtifact(artifact);
-  const content = artifactContent(artifact);
+  const Renderer = rendererLookup.Renderer;
+
+  if (SELF_RENDERED_TYPES.has(artifact.type)) {
+    return <Renderer artifact={artifact} />;
+  }
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm" data-testid="agent-ui-artifact">
@@ -70,7 +84,8 @@ export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
         </div>
       </div>
 
-      {content || <InlineDataPreview artifact={artifact} />}
+      <Renderer artifact={artifact} />
+      <InlineDataPreview artifact={artifact} />
 
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
         {artifact.source ? <span>来源：{artifact.source}</span> : null}
@@ -85,32 +100,10 @@ export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
   );
 }
 
-function artifactContent(artifact: AiopsTransportAgentUiArtifact) {
-  switch (artifact.type) {
-    case "coroot_chart":
-      return <CorootChartArtifact artifact={artifact} />;
-    case "trace_summary":
-      return <TraceSummaryArtifact artifact={artifact} />;
-    case "topology_slice":
-      return <TopologySliceArtifact artifact={artifact} />;
-    case "workflow_result":
-      return <WorkflowResultArtifact artifact={artifact} />;
-    case "verification_result":
-      return <VerificationResultArtifact artifact={artifact} />;
-    case "experience_match":
-      return <ExperienceMatchArtifact artifact={artifact} />;
-    case "ops_manual_match":
-      return <OpsManualMatchArtifact artifact={artifact} />;
-    case "ops_manual_search_result":
-      return <OpsManualSearchResultArtifact artifact={artifact} />;
-    case "runner_workflow_generation":
-      return <RunnerWorkflowGenerationArtifact artifact={artifact} />;
-    default:
-      return null;
-  }
-}
-
 function InlineDataPreview({ artifact }: { artifact: AiopsTransportAgentUiArtifact }) {
+  if (artifact.type === "rca_report") {
+    return null;
+  }
   const data = artifact.inlineData;
   if (!data || typeof data !== "object") {
     return null;
@@ -246,6 +239,7 @@ function iconForArtifact(type: string) {
     case "trace_summary":
       return Activity;
     case "topology_slice":
+    case "rca_report":
       return GitBranch;
     case "workflow_result":
       return ListChecks;
@@ -254,6 +248,8 @@ function iconForArtifact(type: string) {
     case "experience_match":
     case "ops_manual_match":
     case "ops_manual_search_result":
+    case "ops_manual_preflight_result":
+    case "ops_manual_fallback_guide":
       return ShieldCheck;
     case "runner_workflow_generation":
       return GitBranch;

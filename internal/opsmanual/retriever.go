@@ -41,17 +41,7 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	if err != nil {
 		return SearchOpsManualsResult{}, err
 	}
-	hits := make([]SearchManualHit, 0, len(manuals))
-	for _, manual := range manuals {
-		if manual.Status != ManualStatusVerified {
-			continue
-		}
-		hit := evaluateSearchManual(repo, manual, frame)
-		if hit.UsableMode == DecisionNoMatch {
-			continue
-		}
-		hits = append(hits, hit)
-	}
+	hits := generateCandidates(repo, manuals, frame)
 	sortSearchHits(hits)
 	if req.Limit > 0 && len(hits) > req.Limit {
 		hits = hits[:req.Limit]
@@ -59,18 +49,30 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	result.Manuals = hits
 	if len(hits) == 0 {
 		result.Decision = noHitDecision(frame)
-		result.Summary = searchSummary(result.Decision, nil)
+		result.Summary = searchSummary(result.Decision, nil, frame)
 		result.NextQuestions = nextQuestionsForMissing(missingFrameForSearch(frame))
 		result.RecommendedNextAction = recommendedNextAction(result.Decision)
 		return result, nil
 	}
 	result.Decision = hits[0].UsableMode
-	result.Summary = searchSummary(result.Decision, &hits[0])
+	result.Summary = searchSummary(result.Decision, &hits[0], frame)
 	if result.Decision == DecisionNeedInfo {
-		result.NextQuestions = nextQuestionsForMissing(hits[0].MissingFields)
+		result.NextQuestions = nextQuestionsForNeedInfo(hits[0].Manual, frame, hits[0].MissingFields)
 	}
 	result.RecommendedNextAction = recommendedNextAction(result.Decision)
 	return result, nil
+}
+
+func generateCandidates(repo ManualRepository, manuals []OpsManual, frame OperationFrame) []SearchManualHit {
+	hits := make([]SearchManualHit, 0, len(manuals))
+	for _, manual := range manuals {
+		hit := evaluateSearchManual(repo, manual, frame)
+		if hit.UsableMode == DecisionNoMatch {
+			continue
+		}
+		hits = append(hits, hit)
+	}
+	return hits
 }
 
 func RetrieveManuals(repo ManualRepository, frame OperationFrame) ([]ManualMatch, error) {
@@ -159,9 +161,7 @@ func normalizeSearchOperationFrame(req SearchOpsManualsRequest) OperationFrame {
 		if frame.RawText == "" {
 			frame.RawText = req.Text
 		}
-		if frame.Metadata == nil {
-			frame.Metadata = cloneMap(req.Metadata)
-		}
+		frame.Metadata = mergeFrameMetadata(frame.Metadata, req.Metadata)
 	}
 	if frame.Target.Type == "" {
 		frame.Target.Type = firstNonEmpty(frame.ObjectType, frame.Operation.TargetType)
@@ -181,6 +181,7 @@ func normalizeSearchOperationFrame(req SearchOpsManualsRequest) OperationFrame {
 	if frame.Intent == "" {
 		frame.Intent = frame.Operation.Action
 	}
+	applyExplicitContextMetadata(&frame, frame.Metadata)
 	if len(frame.TargetScope.Hosts) == 0 && frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
@@ -190,23 +191,49 @@ func normalizeSearchOperationFrame(req SearchOpsManualsRequest) OperationFrame {
 func operationFrameEmpty(frame OperationFrame) bool {
 	return frame.RawText == "" &&
 		frame.Target.Type == "" &&
+		frame.Target.Name == "" &&
 		frame.ObjectType == "" &&
 		frame.Operation.Action == "" &&
-		frame.OperationType == ""
+		frame.OperationType == "" &&
+		len(frame.TargetScope.Hosts) == 0 &&
+		len(frame.RequiredParams) == 0 &&
+		len(frame.Metadata) == 0
+}
+
+func mergeFrameMetadata(primary, fallback map[string]any) map[string]any {
+	if len(primary) == 0 {
+		return cloneMap(fallback)
+	}
+	if len(fallback) == 0 {
+		return primary
+	}
+	merged := cloneMap(fallback)
+	for key, value := range primary {
+		merged[key] = value
+	}
+	return merged
 }
 
 func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame OperationFrame) SearchManualHit {
+	summary := summarizeRuns(repo, manual)
 	hit := SearchManualHit{
 		Manual:           cloneManual(manual),
 		BoundWorkflowID:  strings.TrimSpace(manual.WorkflowRef.WorkflowID),
-		RunRecordSummary: summarizeRuns(repo, manual),
+		RunRecordSummary: summary,
 	}
+	filter := hardFilterCandidate(manual, frame, summary)
+	if !filter.Allowed {
+		hit.UsableMode = DecisionNoMatch
+		hit.BlockedReasons = append(hit.BlockedReasons, filter.Reasons...)
+		return hit
+	}
+	hit.ScoreBreakdown = calculateScoreBreakdown(manual, frame, summary, nil)
 	manualTarget := strings.TrimSpace(firstNonEmpty(manual.Operation.TargetType, manual.Applicability.Middleware))
 	manualAction := strings.TrimSpace(manual.Operation.Action)
 	frameTarget := strings.TrimSpace(frame.Target.Type)
 	frameAction := strings.TrimSpace(frame.Operation.Action)
 	targetMatches := frameTarget != "" && manualTarget != "" && equalFold(manualTarget, frameTarget)
-	actionMatches := frameAction != "" && manualAction != "" && equalFold(manualAction, frameAction)
+	actionMatches := operationsCompatibleForSearch(manualAction, frameAction)
 	switch {
 	case targetMatches && actionMatches:
 		hit.MatchLevel = "same_object_same_operation"
@@ -241,28 +268,15 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 	if len(hit.EnvironmentDiffs) == 0 {
 		hit.MatchedFields = appendUnique(hit.MatchedFields, "environment")
 	}
-	workflowAvailable, workflowReason := workflowAvailableForSearch(manual)
-	if workflowReason != "" {
-		hit.BlockedReasons = appendUnique(hit.BlockedReasons, workflowReason)
-	}
-	if latestRunFailed(hit.RunRecordSummary) {
-		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "latest run record did not pass validation")
-	}
-	if riskExceedsManual(frame.Risk.Level, manual.Operation.RiskLevel) {
-		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "requested risk level exceeds manual risk boundary")
+	for _, reason := range filter.Reasons {
+		hit.BlockedReasons = appendUnique(hit.BlockedReasons, reason)
 	}
 
 	switch {
 	case len(hit.MissingFields) > 0:
 		hit.UsableMode = DecisionNeedInfo
 		hit.RecommendedAction = "collect_context"
-	case !workflowAvailable:
-		hit.UsableMode = DecisionReference
-		hit.RecommendedAction = "reference_manual"
-	case latestRunFailed(hit.RunRecordSummary):
-		hit.UsableMode = DecisionReference
-		hit.RecommendedAction = "reference_manual"
-	case riskExceedsManual(frame.Risk.Level, manual.Operation.RiskLevel):
+	case filter.MaxDecision == DecisionReference:
 		hit.UsableMode = DecisionReference
 		hit.RecommendedAction = "reference_manual"
 	case len(hit.EnvironmentDiffs) > 0:
@@ -271,9 +285,42 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		hit.RecommendedAction = "generate_workflow_variant"
 	default:
 		hit.UsableMode = DecisionDirectExecute
-		hit.RecommendedAction = "run_bound_workflow"
+		hit.PreflightStatus = PreflightStatusNotRun
+		hit.RecommendedAction = "run_preflight_probe"
+		if hit.ScoreBreakdown.FinalScore < directThreshold(manual) {
+			hit.UsableMode = DecisionReference
+			hit.RecommendedAction = "reference_manual"
+			hit.BlockedReasons = appendUnique(hit.BlockedReasons, "manual score is below direct execution threshold")
+		}
 	}
+	hit.UsableMode = capDecision(hit.UsableMode, filter.MaxDecision)
 	return hit
+}
+
+func operationsCompatibleForSearch(manualAction, frameAction string) bool {
+	manualAction = strings.TrimSpace(manualAction)
+	frameAction = strings.TrimSpace(frameAction)
+	if manualAction == "" || frameAction == "" {
+		return false
+	}
+	if equalFold(manualAction, frameAction) {
+		return true
+	}
+	return equalFold(manualAction, "rca_or_repair") && equalFold(frameAction, "status_check")
+}
+
+func candidateThreshold(manual OpsManual) float64 {
+	if threshold := effectiveRetrievalProfile(manual).MinScore.Candidate; threshold > 0 {
+		return threshold
+	}
+	return candidateMinScore
+}
+
+func directThreshold(manual OpsManual) float64 {
+	if threshold := effectiveRetrievalProfile(manual).MinScore.DirectExecute; threshold > 0 {
+		return threshold
+	}
+	return directExecuteMinScore
 }
 
 func missingFieldsForManual(manual OpsManual, frame OperationFrame) []string {
@@ -288,6 +335,9 @@ func missingFieldsForManual(manual OpsManual, frame OperationFrame) []string {
 		missing = appendUnique(missing, "platform")
 	}
 	for _, evidence := range manual.RequiredContext.RequiredEvidence {
+		if frame.Operation.Action == "status_check" && (evidence == "symptom" || evidence == "metrics") {
+			continue
+		}
 		if !hasAny(frame.Evidence.Provided, evidence) {
 			missing = appendUnique(missing, evidence)
 		}
@@ -363,7 +413,10 @@ func workflowAvailableForSearch(manual OpsManual) (bool, string) {
 }
 
 func latestRunFailed(summary RunRecordSummary) bool {
-	result := strings.ToLower(strings.TrimSpace(summary.RecentResult))
+	if summary.Suppressed {
+		return true
+	}
+	result := strings.ToLower(strings.TrimSpace(firstNonEmpty(summary.LatestStatus, summary.RecentResult)))
 	return result == "failed" || result == "error"
 }
 
@@ -375,7 +428,10 @@ func environmentDiffReason(diffs []string) string {
 }
 
 func noHitDecision(frame OperationFrame) DecisionState {
-	if len(missingFrameForSearch(frame)) > 0 {
+	if strings.TrimSpace(frame.Target.Type) == "" || strings.TrimSpace(frame.Operation.Action) == "" {
+		return DecisionNeedInfo
+	}
+	if strings.TrimSpace(frame.Operation.Action) != "rca_or_repair" && len(missingFrameForSearch(frame)) > 0 {
 		return DecisionNeedInfo
 	}
 	return DecisionNoMatch
@@ -431,7 +487,7 @@ func searchedFrameFields(frame OperationFrame) []string {
 	return fields
 }
 
-func searchSummary(decision DecisionState, hit *SearchManualHit) string {
+func searchSummary(decision DecisionState, hit *SearchManualHit, frame OperationFrame) string {
 	switch decision {
 	case DecisionDirectExecute:
 		if hit != nil {
@@ -443,8 +499,11 @@ func searchSummary(decision DecisionState, hit *SearchManualHit) string {
 	case DecisionAdapt:
 		return "找到同对象同操作手册，但当前环境存在差异，需要先生成适配工作流。"
 	case DecisionReference:
-		return "找到可参考的运维手册，但不能直接执行绑定工作流。"
+		return "没有可直接运行的 Workflow，可继续只读自动化排查。"
 	case DecisionNoMatch:
+		if strings.TrimSpace(frame.Target.Type) != "" {
+			return fmt.Sprintf("没有找到适用于 %s 的可用运维手册。", displayObjectType(frame.Target.Type))
+		}
 		return "没有找到合适的运维手册。"
 	default:
 		return "已完成运维手册检索。"
@@ -454,17 +513,34 @@ func searchSummary(decision DecisionState, hit *SearchManualHit) string {
 func recommendedNextAction(decision DecisionState) string {
 	switch decision {
 	case DecisionDirectExecute:
-		return "确认参数后进行 Dry Run。"
+		return "运行 Node 0 预检，通过后再 Dry Run。"
 	case DecisionNeedInfo:
 		return "补充缺失信息后重新检索。"
 	case DecisionAdapt:
 		return "生成适配工作流草稿，用户审核后 Dry Run。"
 	case DecisionReference:
-		return "按手册步骤参考执行，每一步都需要用户确认。"
+		return "没有可直接运行的 Workflow；继续只读自动化排查，若缺目标、时间范围、权限或观测数据会说明阻塞原因。"
 	case DecisionNoMatch:
-		return "继续普通 Agent 运维流程。"
+		return "AI 会继续自动尝试只读排查；如果缺少目标、时间范围、权限或观测数据，会先让你补齐必要信息。"
 	default:
 		return ""
+	}
+}
+
+func displayObjectType(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "redis":
+		return "Redis"
+	case "mysql":
+		return "MySQL"
+	case "postgresql", "postgres", "pg":
+		return "PostgreSQL"
+	case "kafka":
+		return "Kafka"
+	case "kubernetes_pod", "k8s_pod":
+		return "Kubernetes Pod"
+	default:
+		return strings.TrimSpace(value)
 	}
 }
 
@@ -485,7 +561,7 @@ func nextQuestionsForMissing(missing []string) []string {
 		case "symptom":
 			questions = append(questions, "当前现象是什么？")
 		case "metrics":
-			questions = append(questions, "是否有监控指标、日志或 Coroot 证据可供参考？")
+			questions = append(questions, "当前能直接描述的指标或日志现象是什么？")
 		case "backup_path":
 			questions = append(questions, "备份文件要保存到哪个路径？")
 		case "risk_level":
@@ -499,6 +575,32 @@ func nextQuestionsForMissing(missing []string) []string {
 		}
 	}
 	return questions
+}
+
+func nextQuestionsForNeedInfo(manual OpsManual, frame OperationFrame, missing []string) []string {
+	if frame.Operation.Action == "rca_or_repair" || manual.Operation.Action == "rca_or_repair" {
+		prioritized := []string{}
+		for _, field := range []string{"target_instance", "environment", "execution_surface", "symptom", "metrics"} {
+			if hasAny(missing, field) {
+				prioritized = appendUnique(prioritized, field)
+			}
+		}
+		for _, field := range missing {
+			if field == "risk_level" || field == "os" || field == "platform" {
+				continue
+			}
+			prioritized = appendUnique(prioritized, field)
+		}
+		return limitQuestions(nextQuestionsForMissing(prioritized), 4)
+	}
+	return limitQuestions(nextQuestionsForMissing(missing), 4)
+}
+
+func limitQuestions(questions []string, limit int) []string {
+	if limit <= 0 || len(questions) <= limit {
+		return questions
+	}
+	return questions[:limit]
 }
 
 func manualMatchFromSearchHit(hit SearchManualHit, summary string) ManualMatch {
@@ -520,7 +622,7 @@ func manualMatchFromSearchHit(hit SearchManualHit, summary string) ManualMatch {
 func legacyActionsForSearchHit(hit SearchManualHit) []string {
 	switch hit.UsableMode {
 	case DecisionDirectExecute:
-		return []string{"fill_parameters", "run_precheck", "start_dry_run"}
+		return []string{"fill_parameters", "run_preflight_probe", "start_dry_run"}
 	case DecisionAdapt:
 		return []string{"review_manual", "adapt_workflow"}
 	case DecisionNeedInfo:
@@ -542,6 +644,9 @@ func sortSearchHits(hits []SearchManualHit) {
 		}
 		if hits[i].RunRecordSummary.SuccessCount != hits[j].RunRecordSummary.SuccessCount {
 			return hits[i].RunRecordSummary.SuccessCount > hits[j].RunRecordSummary.SuccessCount
+		}
+		if hits[i].ScoreBreakdown.FinalScore != hits[j].ScoreBreakdown.FinalScore {
+			return hits[i].ScoreBreakdown.FinalScore > hits[j].ScoreBreakdown.FinalScore
 		}
 		if hits[i].RunRecordSummary.FailureCount != hits[j].RunRecordSummary.FailureCount {
 			return hits[i].RunRecordSummary.FailureCount < hits[j].RunRecordSummary.FailureCount
@@ -594,29 +699,7 @@ func summarizeRuns(repo ManualRepository, manual OpsManual) RunRecordSummary {
 	if err != nil {
 		return RunRecordSummary{}
 	}
-	summary := RunRecordSummary{}
-	for i, record := range records {
-		if record.ValidationStatus == "passed" {
-			summary.SuccessCount++
-		}
-		if record.ExecutionStatus == "failed" || record.ValidationStatus == "failed" {
-			summary.FailureCount++
-		}
-		when := record.CompletedAt
-		if when == "" {
-			when = record.StartedAt
-		}
-		if i == 0 || when > summary.LastRunAt {
-			summary.LastRunAt = when
-			switch {
-			case record.ValidationStatus != "":
-				summary.RecentResult = record.ValidationStatus
-			case record.ExecutionStatus != "":
-				summary.RecentResult = record.ExecutionStatus
-			}
-		}
-	}
-	return summary
+	return SummarizeRunRecords(records)
 }
 
 func sortMatches(matches []ManualMatch) {

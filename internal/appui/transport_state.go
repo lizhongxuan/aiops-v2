@@ -128,6 +128,8 @@ type AiopsProcessBlock struct {
 	Confidence    string                      `json:"confidence,omitempty"`
 	Window        string                      `json:"window,omitempty"`
 	RawRef        string                      `json:"rawRef,omitempty"`
+	EvidenceRefs  []string                    `json:"evidenceRefs,omitempty"`
+	Mock          bool                        `json:"mock,omitempty"`
 	ExitCode      *int                        `json:"exitCode,omitempty"`
 	DurationMs    int64                       `json:"durationMs,omitempty"`
 	UpdatedAt     string                      `json:"updatedAt,omitempty"`

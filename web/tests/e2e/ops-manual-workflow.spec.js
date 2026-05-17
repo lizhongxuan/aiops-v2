@@ -3,6 +3,7 @@ import { test, expect } from "@playwright/test";
 import {
   createChatFixtureSessions,
   createChatFixtureState,
+  openBrowserFixturePage,
   openFixturePage,
 } from "../helpers/uiFixtureHarness";
 
@@ -14,6 +15,10 @@ function idleRuntime() {
 }
 
 function stateWithArtifact({ text, artifact }) {
+  return stateWithArtifacts({ text, artifacts: [artifact] });
+}
+
+function stateWithArtifacts({ text, artifacts }) {
   const state = createChatFixtureState({
     cards: [
       {
@@ -35,7 +40,38 @@ function stateWithArtifact({ text, artifact }) {
     ],
     runtime: idleRuntime(),
   });
-  state.turns[state.currentTurnId].agentUiArtifacts = [artifact];
+  state.turns[state.currentTurnId].agentUiArtifacts = artifacts;
+  return state;
+}
+
+function stateWithProcess({ text, process, finalText = "" }) {
+  const state = createChatFixtureState({
+    cards: [
+      {
+        id: "user-redis-triage",
+        type: "UserMessageCard",
+        role: "user",
+        text,
+        createdAt: "2026-05-15T10:00:00Z",
+        updatedAt: "2026-05-15T10:00:00Z",
+      },
+      {
+        id: "assistant-redis-triage",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        createdAt: "2026-05-15T10:00:16Z",
+        updatedAt: "2026-05-15T10:00:16Z",
+      },
+    ],
+    runtime: idleRuntime(),
+    finalText,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.process = process;
+  turn.startedAt = "2026-05-15T10:00:00Z";
+  turn.completedAt = "2026-05-15T10:00:16Z";
+  turn.updatedAt = "2026-05-15T10:00:16Z";
   return state;
 }
 
@@ -104,6 +140,47 @@ function runnerGenerationArtifact() {
   };
 }
 
+function opsManualPreflightArtifact(status, overrides = {}) {
+  return {
+    id: `artifact-preflight-${status}`,
+    type: "ops_manual_preflight_result",
+    titleZh: "运维手册预检",
+    summaryZh: "Node 0 预检完成。",
+    source: "tool:run_ops_manual_preflight",
+    redactionStatus: "redacted",
+    inlineData: {
+      status,
+      ready: status === "passed",
+      reason: status === "passed" ? "只读探针通过，可以进入 Dry Run。" : "预检未通过，不能执行 Runner Workflow。",
+      manual_id: "manual-pg-backup-ubuntu",
+      workflow_id: "workflow-pg-backup-ubuntu",
+      probe_id: "probe-pg-backup-readonly",
+      next_action: status === "passed" ? "start_dry_run" : "fallback_guide",
+      evidence: [
+        { name: "ssh_access", status: status === "passed" ? "passed" : "failed", note: "只读连接检查" },
+        { name: "pg_isready", status: status === "passed" ? "passed" : "failed", note: "PostgreSQL 可用性检查" },
+      ],
+      ...overrides,
+    },
+  };
+}
+
+function opsManualFallbackGuideArtifact() {
+  return {
+    id: "artifact-fallback-guide",
+    type: "ops_manual_fallback_guide",
+    titleZh: "运维手册降级步骤",
+    summaryZh: "预检失败后只能按手册逐步确认。",
+    source: "tool:run_ops_manual_preflight",
+    redactionStatus: "redacted",
+    inlineData: {
+      title: "PostgreSQL 备份降级步骤",
+      reason: "目标不可达，不能运行绑定 Workflow。",
+      steps: ["确认主机名和网络可达性。", "确认 ssh 授权。", "确认 pg_isready 后再重新预检。"],
+    },
+  };
+}
+
 async function routeOpsManualApis(page) {
   const redisManual = {
     id: "manual-redis-memory",
@@ -165,6 +242,67 @@ async function routeOpsManualApis(page) {
 }
 
 test.describe("Ops Manual workflow UX", () => {
+  test("redis memory triage shows evidence not plan meta", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithProcess({
+        text: "redis-local-01 prod vm ssh Redis used_memory_rss rising symptom metrics medium readonly no restart no write",
+        finalText: "Redis 内存排查已完成：used_memory_rss 正在上升，建议继续核对慢查询与连接数。",
+        process: [
+          {
+            id: "redis-plan",
+            kind: "plan",
+            displayKind: "plan",
+            status: "completed",
+            text: "plan updated: active (1/4 in_progress)",
+            steps: [
+              { id: "metrics", text: "查询 Redis RSS 与 used_memory 指标", status: "completed" },
+              { id: "events", text: "读取最近 30 分钟 Redis 相关事件", status: "completed" },
+            ],
+          },
+          {
+            id: "redis-coroot-metrics",
+            kind: "tool",
+            displayKind: "coroot.service_metrics",
+            status: "completed",
+            text: "Coroot Redis 指标显示 used_memory_rss / used_memory 比值升高",
+            inputSummary: "redis-local-01 used_memory_rss p95",
+            outputPreview: "used_memory_rss=1.8GiB used_memory=1.0GiB p95=420ms",
+            mock: true,
+            evidenceRefs: ["evidence:redis:rss", "evidence:redis:p95"],
+          },
+          {
+            id: "redis-k8s-events",
+            kind: "tool",
+            displayKind: "k8s.get_events",
+            status: "completed",
+            text: "未发现 Redis Pod OOMKilled 事件",
+            inputSummary: "redis-local-01 events",
+            mock: true,
+            evidenceRefs: ["evidence:redis:events"],
+          },
+        ],
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    await expect(page.getByText(/plan updated: active/)).toHaveCount(0);
+    await expect(page.getByText("Redis 内存排查已完成")).toBeVisible();
+
+    await page.getByTestId("aiops-process-header").click();
+    await expect(page.getByText("查询 Redis RSS 与 used_memory 指标")).toBeVisible();
+    await expect(page.getByText("读取最近 30 分钟 Redis 相关事件")).toBeVisible();
+    await expect(page.getByText(/plan updated: active/)).toHaveCount(0);
+
+    await page.getByRole("button", { name: /已调用 2 个工具/ }).click();
+    const transcript = page.getByTestId("aiops-process-transcript");
+    await expect(transcript.getByText("证据").first()).toBeVisible();
+    await expect(transcript.getByText("evidence:redis:rss")).toBeVisible();
+    await expect(transcript.getByText("evidence:redis:p95")).toBeVisible();
+    await expect(transcript.getByText("evidence:redis:events")).toBeVisible();
+    await expect(transcript.getByText("Mock").first()).toBeVisible();
+    await expect(transcript.getByText(/Coroot Redis 指标/)).toBeVisible();
+  });
+
   test("short Redis troubleshooting input does not show typing precheck", async ({ page }) => {
     await openFixturePage(page, "/", {
       state: createChatFixtureState({ cards: [], runtime: idleRuntime() }),
@@ -196,12 +334,99 @@ test.describe("Ops Manual workflow UX", () => {
     });
 
     const card = page.getByTestId("ops-manual-search-result-card");
-    await expect(card).toContainText("需补充信息");
-    await expect(card).toContainText("目标 Redis 实例是哪一个？");
-    await expect(card).toContainText("部署方式是 Kubernetes、Docker 还是物理机？");
+    await expect(card).not.toContainText("手册缺上下文");
+    await expect(card).not.toContainText("信息不足，不能直接使用工作流。");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(card).not.toContainText("打开补充表单");
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toContainText("补充运维手册必要信息");
+    await expect(contextComposer).not.toContainText("运维手册缺信息");
+    await expect(contextComposer).not.toContainText("只补必要字段");
+    await expect(contextComposer).toContainText("目标位置（可选）");
+    await expect(contextComposer).toContainText("留空使用当前选择主机");
+    await expect(contextComposer).toContainText("实例/服务");
+    await expect(contextComposer).toContainText("自动探测实例（发现多个再让我选择）");
+    await expect(contextComposer).toContainText("访问/执行入口");
+    await expect(contextComposer).toContainText("自动探测访问入口");
+    await expect(contextComposer).toContainText("现象/证据（可选）");
+    await expect(contextComposer).toContainText("提交并继续");
+    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
+    await expect(card).not.toContainText("补充上下文");
+    await expect(card).not.toContainText("目标 Redis 实例是哪一个？");
+    await expect(card).not.toContainText("部署方式是 Kubernetes、Docker 还是物理机？");
+    await expect(card).not.toContainText("当前现象和指标是什么？");
     await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
     await expect(card).not.toContainText("可直接执行");
+    await expect(card).not.toContainText("立即执行");
+    await expect(card).not.toContainText("进入 Dry Run");
+    await expect(card).not.toContainText("manual-redis");
+    await expect(card).not.toContainText("Kubernetes Pod");
+    await expect(card).not.toContainText("绑定 Workflow");
+    await expect(card).not.toContainText("匹配字段");
+    await expect(card).not.toContainText("已检索字段");
+    await expect(card).not.toContainText("授权读取 Coroot");
     await expect(page.getByText("Runner 已执行")).toHaveCount(0);
+  });
+
+  test("need_info result shows fallback next questions when tool omits them", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifact({
+        text: "帮我排查 Redis",
+        artifact: opsManualSearchArtifact("need_info", {
+          summary: "信息不足，不能直接使用工作流。",
+          operation_frame: {
+            target: { type: "redis" },
+            operation: { action: "rca_or_repair" },
+          },
+        }),
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).not.toContainText("手册缺上下文");
+    await expect(card).not.toContainText("信息不足，不能直接使用工作流。");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toContainText("目标位置（可选）");
+    await expect(contextComposer).toContainText("实例/服务");
+    await expect(contextComposer).toContainText("访问/执行入口");
+    await expect(contextComposer).toContainText("现象/证据（可选）");
+    await expect(card).not.toContainText("请确认 redis / rca_or_repair 的目标实例或服务名称。");
+    await expect(card).not.toContainText("请补充部署形态、访问方式和必要只读证据。");
+    await expect(card).not.toContainText("立即执行");
+    await expect(card).not.toContainText("进入 Dry Run");
+    await expect(card).not.toContainText("选择目标实例");
+    await expect(card).not.toContainText("选择部署形态");
+  });
+
+  test("4-field context form submits as a compact follow-up and restores the chat input", async ({ page }) => {
+    await openFixturePage(page, "/", "ops-manual-4field-form");
+
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toBeVisible();
+    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
+
+    await contextComposer.getByLabel("目标位置（可选）").fill("server-local / docker:aiops-redis");
+    await contextComposer.getByLabel("现象/证据（可选）").fill("used_memory_rss 持续升高，p95 升高，metrics 可读");
+    await contextComposer.getByRole("button", { name: "提交并继续" }).click();
+
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
+  });
+
+  test("4-field context form can be dismissed without leaving a duplicate prompt", async ({ page }) => {
+    await openBrowserFixturePage(page, "/", "ops-manual-4field-form");
+
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toBeVisible();
+    await contextComposer.getByRole("button", { name: "取消" }).click();
+
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
   });
 
   test("CentOS PostgreSQL backup shows search adapt result instead of direct execution", async ({ page }) => {
@@ -229,7 +454,7 @@ test.describe("Ops Manual workflow UX", () => {
     const card = page.getByTestId("ops-manual-search-result-card");
     await expect(card).toContainText("需适配");
     await expect(card).toContainText("PostgreSQL 备份 Ubuntu 运维手册");
-    await expect(card).toContainText("os；package_manager");
+    await expect(card).toContainText("操作系统；包管理器");
     await expect(card).toContainText("生成适配工作流");
     await expect(card).toContainText("workflow targets ubuntu apt/systemd");
     await expect(card).not.toContainText("开始前置检查");
@@ -239,7 +464,7 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
   });
 
-  test("Ubuntu PostgreSQL backup shows direct_execute with bound workflow and Dry Run", async ({ page }) => {
+  test("Ubuntu PostgreSQL backup shows direct_execute with bound workflow and preflight first", async ({ page }) => {
     await openFixturePage(page, "/", {
       state: stateWithArtifact({
         text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
@@ -251,8 +476,171 @@ test.describe("Ops Manual workflow UX", () => {
               bound_workflow_id: "workflow-pg-backup-ubuntu",
               usable_mode: "direct_execute",
               matched_fields: ["object_type", "operation_type", "environment", "required_context"],
-              recommended_action: "run_bound_workflow",
+              recommended_action: "run_preflight_probe",
+              preflight_status: "not_run",
               run_record_summary: { success_count: 6, failure_count: 0, recent_result: "passed" },
+            },
+          ],
+          recommended_next_action: "运行 Node 0 预检，通过后再 Dry Run。",
+        }),
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).toContainText("可进入预检");
+    await expect(card).toContainText("PostgreSQL 备份 Ubuntu 运维手册");
+    await expect(card).toContainText("workflow-pg-backup-ubuntu");
+    await expect(card).toContainText("下一步：AI 会先运行只读预检");
+    await expect(card).not.toContainText("立即执行");
+    await expect(page.getByText("Runner 已执行")).toHaveCount(0);
+  });
+
+  test("direct manual match and passed preflight merge into one path to Dry Run", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifacts({
+        text: "运行 PostgreSQL Ubuntu 备份预检",
+        artifacts: [
+          opsManualSearchArtifact("direct_execute", {
+            summary: "找到可直接使用的运维手册，用户确认前不会执行 Runner Workflow。",
+            manuals: [
+              {
+                manual: { id: "manual-pg-backup-ubuntu", title: "PostgreSQL 备份 Ubuntu 运维手册" },
+                bound_workflow_id: "workflow-pg-backup-ubuntu",
+                usable_mode: "direct_execute",
+                recommended_action: "run_preflight_probe",
+              },
+            ],
+          }),
+          opsManualPreflightArtifact("passed"),
+        ],
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).toContainText("PostgreSQL 备份 Ubuntu 运维手册");
+    await expect(card).toContainText("workflow-pg-backup-ubuntu");
+    await expect(card).toContainText("Workflow 预检");
+    await expect(card).toContainText("预检通过");
+    await expect(card).toContainText("ssh_access");
+    await expect(card).toContainText("进入 Dry Run");
+    await expect(page.getByTestId("ops-manual-merged-preflight")).toHaveCount(1);
+    await expect(page.getByTestId("ops-manual-preflight-result-card")).toHaveCount(0);
+    await expect(page.getByText("立即执行")).toHaveCount(0);
+    await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
+
+    await page.getByRole("button", { name: "进入 Dry Run" }).click();
+    const confirmation = page.getByTestId("ops-manual-generation-confirmation");
+    await expect(confirmation).toContainText("进入 Dry Run");
+    await expect(confirmation).toContainText("不会执行真实变更");
+    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
+
+    await confirmation.getByRole("button", { name: "取消" }).click();
+    await expect(page.getByTestId("ops-manual-generation-confirmation")).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
+  });
+
+  test("preflight failed routes to fallback guide without workflow execution", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifacts({
+        text: "运行 PostgreSQL Ubuntu 备份预检",
+        artifacts: [opsManualPreflightArtifact("failed"), opsManualFallbackGuideArtifact()],
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const preflight = page.getByTestId("ops-manual-preflight-result-card");
+    await expect(preflight).toContainText("预检失败");
+    await expect(preflight).toContainText("查看降级步骤");
+    await expect(preflight).not.toContainText("进入 Dry Run");
+    await expect(preflight).not.toContainText("立即执行");
+    const fallback = page.getByTestId("ops-manual-fallback-guide-card");
+    await expect(fallback).toContainText("PostgreSQL 备份降级步骤");
+    await expect(fallback).toContainText("确认主机名和网络可达性");
+    await expect(fallback).not.toContainText("进入 Dry Run");
+    await expect(fallback).not.toContainText("立即执行");
+    await expect(page.getByText("Runner 已执行")).toHaveCount(0);
+  });
+
+  test("need_info search and blocked preflight use distinct stages", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifacts({
+        text: "排查 Redis",
+        artifacts: [
+          opsManualSearchArtifact("need_info", {
+            summary: "信息不足，不能直接使用工作流。",
+            manuals: [{ manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" } }],
+          }),
+          opsManualPreflightArtifact("blocked"),
+        ],
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const searchCard = page.getByTestId("ops-manual-search-result-card");
+    await expect(searchCard).toContainText("运维手册检索");
+    await expect(searchCard).not.toContainText("手册缺上下文");
+    await expect(searchCard).toContainText("暂未进入 Workflow 预检");
+    await expect(searchCard).not.toContainText("Workflow 预检阻断");
+
+    const preflight = page.getByTestId("ops-manual-preflight-result-card");
+    await expect(preflight).toContainText("Workflow 预检");
+    await expect(preflight).toContainText("Workflow 预检阻断");
+    await expect(preflight).not.toContainText("运维手册检索");
+  });
+
+  test("reference_only search result stays as guidance without executable workflow entry", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifact({
+        text: "参考 PostgreSQL 备份步骤，不要运行 Workflow",
+        artifact: opsManualSearchArtifact("reference_only", {
+          summary: "找到可参考手册，但不能直接执行绑定工作流。",
+          manuals: [
+            {
+              manual: { id: "manual-pg-backup-reference", title: "PostgreSQL 备份参考手册" },
+              usable_mode: "reference_only",
+              blocked_reasons: ["当前环境未绑定可安全执行的 Workflow"],
+            },
+          ],
+          recommended_next_action: "AI 会继续自动只读排查；如果缺目标、时间范围、权限或观测数据，会先让你补齐必要信息。",
+        }),
+      }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).toContainText("仅参考");
+    await expect(card).toContainText("PostgreSQL 备份参考手册");
+    await expect(card).toContainText("没有可直接运行的 Workflow");
+    await expect(card).toContainText("AI 会继续自动只读排查");
+    await expect(card).toContainText("先让你补齐必要信息");
+    await expect(card).toContainText("参考关系");
+    await expect(card).not.toContainText("按步骤执行");
+    await expect(card).not.toContainText("运行预检");
+    await expect(card).not.toContainText("进入 Dry Run");
+    await expect(card).not.toContainText("立即执行");
+  });
+
+  test("stale cross-object reference_only search result is hidden for Kafka", async ({ page }) => {
+    await openFixturePage(page, "/", {
+      state: stateWithArtifact({
+        text: "Kafka consumer group checkout-prod lag 持续升高，先只读分析",
+        artifact: opsManualSearchArtifact("reference_only", {
+          operation_frame: {
+            object_type: "kafka",
+            operation_type: "rca_or_repair",
+          },
+          manuals: [
+            {
+              manual: {
+                id: "manual-k8s-pod-crashloop-rca",
+                title: "Kubernetes Pod CrashLoop/OOM 排障运维手册",
+                operation: { target_type: "kubernetes_pod", action: "rca_or_repair" },
+              },
+              bound_workflow_id: "workflow-k8s-pod-crashloop-rca",
+              usable_mode: "reference_only",
+              blocked_reasons: ["object_type differs"],
             },
           ],
         }),
@@ -261,12 +649,22 @@ test.describe("Ops Manual workflow UX", () => {
     });
 
     const card = page.getByTestId("ops-manual-search-result-card");
-    await expect(card).toContainText("可直接执行");
-    await expect(card).toContainText("PostgreSQL 备份 Ubuntu 运维手册");
-    await expect(card).toContainText("workflow-pg-backup-ubuntu");
-    await expect(card).toContainText("Dry Run");
-    await expect(card).toContainText("用户确认前不会执行 Runner Workflow");
-    await expect(page.getByText("Runner 已执行")).toHaveCount(0);
+    await expect(card).toContainText("未找到适用手册，AI 将继续只读排查");
+    await expect(card).toContainText("没有找到适用于 Kafka 的可用运维手册。");
+    await expect(card).toContainText("AI 不使用不匹配的手册");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toContainText("目标位置（可选）");
+    await expect(contextComposer).toContainText("实例/服务");
+    await expect(contextComposer).toContainText("访问/执行入口");
+    await expect(contextComposer).toContainText("现象/证据（可选）");
+    await expect(card).not.toContainText("manual-k8s-pod-crashloop-rca");
+    await expect(card).not.toContainText("Kubernetes Pod CrashLoop/OOM");
+    await expect(card).not.toContainText("对象类型不匹配");
+    await expect(card).not.toContainText("object_type differs");
+    await expect(card).not.toContainText("进入 Dry Run");
+    await expect(card).not.toContainText("立即执行");
   });
 
   test("MySQL backup does not expose PostgreSQL workflow as executable", async ({ page }) => {
@@ -287,9 +685,15 @@ test.describe("Ops Manual workflow UX", () => {
 
     const card = page.getByTestId("ops-manual-search-result-card");
     await expect(card).toContainText("无可用手册");
-    await expect(card).toContainText("继续普通排查");
+    await expect(card).toContainText("AI 不使用不匹配的手册");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    await expect(page.getByTestId("ops-manual-context-composer")).toBeVisible();
     await expect(card).not.toContainText("PostgreSQL 备份 Ubuntu 运维手册");
     await expect(card).not.toContainText("可直接执行");
+    await expect(card).not.toContainText("运行预检");
+    await expect(card).not.toContainText("进入 Dry Run");
+    await expect(card).not.toContainText("立即执行");
     await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
   });
 
@@ -315,7 +719,7 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page).toHaveURL(startURL);
   });
 
-  test("ops manual generation uses bottom confirmation panel and restores composer", async ({ page }) => {
+  test("reference-only match card does not expose unsupported generation button", async ({ page }) => {
     await openFixturePage(page, "/", {
       state: stateWithArtifact({
         text: "Redis 排障已闭环，请生成运维手册",
@@ -324,12 +728,8 @@ test.describe("Ops Manual workflow UX", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    await page.getByRole("button", { name: "生成运维手册" }).click();
-    await expect(page.getByTestId("ops-manual-generation-confirmation")).toContainText("生成运维手册候选");
-    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
-
-    await page.getByRole("button", { name: "取消" }).click();
     await expect(page.getByTestId("ops-manual-generation-confirmation")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "生成运维手册" })).toHaveCount(0);
     await expect(page.getByTestId("omnibar-input")).toBeVisible();
   });
 

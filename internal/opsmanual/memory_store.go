@@ -19,21 +19,24 @@ type RunRecordRepository interface {
 }
 
 type MemoryStore struct {
-	mu         sync.RWMutex
-	manuals    map[string]OpsManual
-	candidates map[string]ManualCandidate
-	records    map[string]RunRecord
+	mu          sync.RWMutex
+	manuals     map[string]OpsManual
+	candidates  map[string]ManualCandidate
+	records     map[string]RunRecord
+	paramEvents map[string]ParamResolutionEvent
 }
 
 var _ ManualRepository = (*MemoryStore)(nil)
 var _ CandidateRepository = (*MemoryStore)(nil)
 var _ RunRecordRepository = (*MemoryStore)(nil)
+var _ ParamResolutionEventRepository = (*MemoryStore)(nil)
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		manuals:    map[string]OpsManual{},
-		candidates: map[string]ManualCandidate{},
-		records:    map[string]RunRecord{},
+		manuals:     map[string]OpsManual{},
+		candidates:  map[string]ManualCandidate{},
+		records:     map[string]RunRecord{},
+		paramEvents: map[string]ParamResolutionEvent{},
 	}
 }
 
@@ -162,6 +165,42 @@ func (s *MemoryStore) SaveRunRecord(record RunRecord) error {
 	defer s.mu.Unlock()
 	s.records[record.ID] = cloneRunRecord(record)
 	return nil
+}
+
+func (s *MemoryStore) SaveParamResolutionEvent(event ParamResolutionEvent) error {
+	if strings.TrimSpace(event.ID) == "" {
+		return fmt.Errorf("ops manual param resolution event id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paramEvents[event.ID] = cloneParamResolutionEvent(event)
+	return nil
+}
+
+func (s *MemoryStore) ListParamResolutionEvents(req ListParamResolutionEventsRequest) ([]ParamResolutionEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ParamResolutionEvent, 0, len(s.paramEvents))
+	for _, event := range s.paramEvents {
+		if !paramResolutionEventMatchesRequest(event, req) {
+			continue
+		}
+		out = append(out, cloneParamResolutionEvent(event))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func manualMatchesRequest(manual OpsManual, req ListManualsRequest) bool {

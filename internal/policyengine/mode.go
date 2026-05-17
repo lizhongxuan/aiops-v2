@@ -19,6 +19,7 @@ var readOnlyPatterns = []string{
 	"read", "list", "search", "get", "show", "status", "info",
 	"browse", "fetch",
 	"ps", "df", "top", "cat", "head", "tail", "ls",
+	"preflight",
 }
 
 // mutationPatterns identifies tools that modify state.
@@ -50,6 +51,9 @@ func isReadOnly(name string) bool {
 
 // isMutation reports whether the tool name matches mutation patterns.
 func isMutation(name string) bool {
+	if containsAny(name, []string{"preflight"}) {
+		return false
+	}
 	return containsAny(name, mutationPatterns)
 }
 

@@ -242,3 +242,60 @@ func TestWorkflowDigestMismatchBlocksExecution(t *testing.T) {
 		t.Fatalf("verify mismatched digest error = %v, want ErrWorkflowDigestMismatch", err)
 	}
 }
+
+func TestWorkflowGuardOpsManualPreflight(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     *RunRequest
+		wantErr bool
+	}{
+		{
+			name:    "no preflight blocked",
+			req:     &RunRequest{ManualID: "manual-pg-backup"},
+			wantErr: true,
+		},
+		{
+			name:    "failed preflight blocked",
+			req:     &RunRequest{ManualID: "manual-pg-backup", PreflightStatus: "failed"},
+			wantErr: true,
+		},
+		{
+			name:    "blocked preflight metadata blocked",
+			req:     &RunRequest{Metadata: map[string]any{"manual_id": "manual-pg-backup", "preflight_status": "blocked"}},
+			wantErr: true,
+		},
+		{
+			name:    "passed preflight allowed",
+			req:     &RunRequest{ManualID: "manual-pg-backup", PreflightStatus: "passed", PreflightEvidenceRef: "preflight:ok"},
+			wantErr: false,
+		},
+		{
+			name:    "passed preflight metadata allowed",
+			req:     &RunRequest{Metadata: map[string]any{"ops_manual_id": "manual-pg-backup", "preflight_status": "passed"}},
+			wantErr: false,
+		},
+		{
+			name:    "non ops manual run unchanged",
+			req:     &RunRequest{WorkflowName: "ordinary"},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := VerifyOpsManualPreflight(tt.req)
+			if tt.wantErr {
+				if !errors.Is(err, ErrOpsManualPreflightRequired) {
+					t.Fatalf("VerifyOpsManualPreflight() error = %v, want ErrOpsManualPreflightRequired", err)
+				}
+				var coded interface{ Code() string }
+				if !errors.As(err, &coded) || coded.Code() != WorkflowErrorCodeOpsManualPreflight {
+					t.Fatalf("preflight error should expose %s, got %T %v", WorkflowErrorCodeOpsManualPreflight, err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("VerifyOpsManualPreflight() error = %v, want nil", err)
+			}
+		})
+	}
+}

@@ -204,7 +204,7 @@ func TestOpsManualSearchAPIReturnsAdaptForCentOSPostgresBackup(t *testing.T) {
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
-	body := bytes.NewReader([]byte(`{"text":"在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常"}`))
+	body := bytes.NewReader([]byte(`{"text":"在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常","metadata":{"target_name":"pg-centos-01"}}`))
 	resp, err := http.Post(ts.URL+"/api/v1/ops-manuals/search", "application/json", body)
 	if err != nil {
 		t.Fatal(err)
@@ -220,6 +220,178 @@ func TestOpsManualSearchAPIReturnsAdaptForCentOSPostgresBackup(t *testing.T) {
 	}
 	if payload.Decision != opsmanual.DecisionAdapt {
 		t.Fatalf("decision = %q, want adapt", payload.Decision)
+	}
+}
+
+func TestOpsManualPreflightAPIReturnsPassed(t *testing.T) {
+	repo := opsmanual.NewMemoryStore()
+	manual := serverPGBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu")
+	manual.RunnableConditions.RequiredParams = []string{"target_instance", "backup_path"}
+	manual.PreflightProbe = opsmanual.PreflightProbe{ID: "pg-backup-readonly", ReadOnly: true, RequiredOutputs: []string{"ssh_access", "pg_isready"}}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := appui.NewOpsManualService(opsmanual.NewService(repo))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithWebAssets(http.NotFoundHandler()))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(opsmanual.PreflightRequest{
+		ManualID: manual.ID,
+		OperationFrame: opsmanual.BuildOperationFrame(
+			"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+			map[string]any{"target_name": "pg-ubuntu-01"},
+		),
+		Parameters: map[string]any{"target_instance": "pg-ubuntu-01", "backup_path": "/data/backups"},
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/ops-manuals/preflight", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var payload opsmanual.PreflightResult
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != opsmanual.PreflightStatusPassed || !payload.Ready || payload.NextAction != "start_dry_run" {
+		t.Fatalf("payload = %#v, want passed ready start_dry_run", payload)
+	}
+}
+
+func TestOpsManualResolveParamsAPIReturnsDynamicResult(t *testing.T) {
+	repo := opsmanual.NewMemoryStore()
+	manual := serverRedisManual()
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := appui.NewOpsManualService(opsmanual.NewService(repo))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithWebAssets(http.NotFoundHandler()))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	body := bytes.NewReader([]byte(`{
+		"request_text":"排查 Redis",
+		"manual_id":"manual-redis-memory",
+		"operation_frame":{"object_type":"redis","operation_type":"rca_or_repair"},
+		"metadata":{
+			"selected_host":"server-local",
+			"resource_candidates":[{"id":"docker:aiops-redis","name":"aiops-redis","type":"redis","source":"docker","confidence":0.92}]
+		}
+	}`))
+	resp, err := http.Post(ts.URL+"/api/v1/ops-manuals/resolve-params", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var payload opsmanual.ParamResolutionResult
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != opsmanual.ParamResolutionResolved {
+		t.Fatalf("payload = %#v, want resolved", payload)
+	}
+	for _, field := range payload.Fields {
+		if field.ID == "target_location" || field.ID == "execution_surface" || field.ID == "symptom" {
+			t.Fatalf("payload returned fixed legacy field %#v", field)
+		}
+	}
+}
+
+func TestOpsManualPreflightAPIRejectsMissingManualID(t *testing.T) {
+	service := appui.NewOpsManualService(opsmanual.NewService(opsmanual.NewMemoryStore()))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithWebAssets(http.NotFoundHandler()))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/ops-manuals/preflight", "application/json", bytes.NewReader([]byte(`{"parameters":{"target_instance":"pg-01"}}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestOpsManualPreflightAPIReturnsBlockedNotFoundAndNoProbe(t *testing.T) {
+	repo := opsmanual.NewMemoryStore()
+	manual := serverPGBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu")
+	manual.RunnableConditions.RequiredParams = []string{"target_instance", "backup_path"}
+	manual.PreflightProbe = opsmanual.PreflightProbe{ID: "pg-backup-readonly", ReadOnly: true, RequiredOutputs: []string{"ssh_access"}}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	noProbe := serverPGBackupManual("manual-pg-backup-no-probe", "ubuntu", "ssh", "workflow-pg-backup-no-probe")
+	noProbe.RunnableConditions.RequiredParams = []string{"target_instance", "backup_path"}
+	if err := repo.SaveManual(noProbe); err != nil {
+		t.Fatal(err)
+	}
+	service := appui.NewOpsManualService(opsmanual.NewService(repo))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithWebAssets(http.NotFoundHandler()))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+	frame := opsmanual.BuildOperationFrame(
+		"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		map[string]any{"target_name": "pg-ubuntu-01"},
+	)
+	frameMissingBackupPath := opsmanual.BuildOperationFrame(
+		"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，已确认 ssh_access 和 pg_isready 正常",
+		map[string]any{"target_name": "pg-ubuntu-01"},
+	)
+
+	cases := []struct {
+		name       string
+		request    opsmanual.PreflightRequest
+		wantHTTP   int
+		wantStatus opsmanual.PreflightStatus
+	}{
+		{
+			name:       "missing params blocked",
+			request:    opsmanual.PreflightRequest{ManualID: manual.ID, OperationFrame: frameMissingBackupPath, Parameters: map[string]any{"target_instance": "pg-ubuntu-01"}},
+			wantHTTP:   http.StatusOK,
+			wantStatus: opsmanual.PreflightStatusBlocked,
+		},
+		{
+			name:       "manual not found",
+			request:    opsmanual.PreflightRequest{ManualID: "missing-manual", OperationFrame: frame, Parameters: map[string]any{"target_instance": "pg-ubuntu-01", "backup_path": "/data/backups"}},
+			wantHTTP:   http.StatusBadRequest,
+			wantStatus: "",
+		},
+		{
+			name:       "no probe not applicable",
+			request:    opsmanual.PreflightRequest{ManualID: noProbe.ID, OperationFrame: frame, Parameters: map[string]any{"target_instance": "pg-ubuntu-01", "backup_path": "/data/backups"}},
+			wantHTTP:   http.StatusOK,
+			wantStatus: opsmanual.PreflightStatusNotApplicable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(tc.request)
+			resp, err := http.Post(ts.URL+"/api/v1/ops-manuals/preflight", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.wantHTTP {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, tc.wantHTTP)
+			}
+			if tc.wantStatus == "" {
+				return
+			}
+			var payload opsmanual.PreflightResult
+			if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Status != tc.wantStatus {
+				t.Fatalf("payload = %#v, want status %s", payload, tc.wantStatus)
+			}
+		})
 	}
 }
 

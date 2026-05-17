@@ -125,6 +125,21 @@ func TestExecuteModePolicy_AllowsNonMutationTools(t *testing.T) {
 	}
 }
 
+func TestModePoliciesTreatPreflightToolsAsReadOnly(t *testing.T) {
+	cases := []struct {
+		name   string
+		policy ModePolicy
+	}{
+		{name: "chat", policy: &ChatModePolicy{}},
+		{name: "inspect", policy: &InspectModePolicy{}},
+		{name: "plan", policy: &PlanModePolicy{}},
+		{name: "execute", policy: &ExecuteModePolicy{}},
+	}
+	for _, tc := range cases {
+		assertDecision(t, tc.name+"/run_ops_manual_preflight", tc.policy.CheckTool(toolInput("run_ops_manual_preflight")), PolicyActionAllow)
+	}
+}
+
 func TestExecuteModePolicy_MutationNeedsApproval(t *testing.T) {
 	p := &ExecuteModePolicy{}
 	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec"} {
@@ -222,6 +237,7 @@ func TestIsReadOnly(t *testing.T) {
 		{"head_lines", true},
 		{"tail_log", true},
 		{"ls_directory", true},
+		{"run_ops_manual_preflight", true},
 		{"file_write", false},
 		{"mysterious_tool", false},
 	}
@@ -247,6 +263,7 @@ func TestIsMutation(t *testing.T) {
 		{"service_restart", true},
 		{"service_stop", true},
 		{"process_kill", true},
+		{"run_ops_manual_preflight", false},
 		{"file_read", false},
 		{"mysterious_tool", false},
 	}

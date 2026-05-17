@@ -59,4 +59,32 @@ func TestSummarizeRunRecordsCountsValidationAndRecentResult(t *testing.T) {
 	if summary.RecentResult != "failed" || summary.LastRunAt != "2026-05-14T03:00:00Z" {
 		t.Fatalf("summary recent = %#v, want newest validation result", summary)
 	}
+	if summary.LatestStatus != "failed" || summary.ConsecutiveFailures != 1 || !summary.Suppressed {
+		t.Fatalf("summary suppression = %#v, want latest failed suppression", summary)
+	}
+	if summary.SuppressedReason == "" {
+		t.Fatalf("suppressed reason empty: %#v", summary)
+	}
+}
+
+func TestSummarizeRunRecordsTracksConsecutiveFailuresAndRecovery(t *testing.T) {
+	failed := SummarizeRunRecords([]RunRecord{
+		{ID: "new-failure", ValidationStatus: "failed", ExecutionStatus: "failed", CompletedAt: "2026-05-14T04:00:00Z"},
+		{ID: "old-failure", ValidationStatus: "failed", ExecutionStatus: "failed", CompletedAt: "2026-05-14T03:00:00Z"},
+		{ID: "old-success", ValidationStatus: "passed", ExecutionStatus: "succeeded", CompletedAt: "2026-05-14T02:00:00Z"},
+	})
+	if failed.ConsecutiveFailures != 2 || !failed.Suppressed {
+		t.Fatalf("failed summary = %#v, want two consecutive failures and suppression", failed)
+	}
+	if failed.SuppressedReason != "consecutive failures: 2" {
+		t.Fatalf("suppressed reason = %q", failed.SuppressedReason)
+	}
+
+	recovered := SummarizeRunRecords([]RunRecord{
+		{ID: "new-success", ValidationStatus: "passed", ExecutionStatus: "succeeded", CompletedAt: "2026-05-14T05:00:00Z"},
+		{ID: "old-failure", ValidationStatus: "failed", ExecutionStatus: "failed", CompletedAt: "2026-05-14T04:00:00Z"},
+	})
+	if recovered.LatestStatus != "passed" || recovered.ConsecutiveFailures != 0 || recovered.Suppressed {
+		t.Fatalf("recovered summary = %#v, want latest passed and no suppression", recovered)
+	}
 }

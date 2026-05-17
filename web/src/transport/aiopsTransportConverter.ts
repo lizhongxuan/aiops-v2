@@ -5,6 +5,7 @@ import type {
 
 import type {
   AiopsTransportState,
+  AiopsTransportAgentUiArtifact,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
 
@@ -97,7 +98,8 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
         process: turn.process || [],
         intent: turn.intent || null,
-        agentUiArtifacts: turn.agentUiArtifacts || [],
+        userText: turn.user?.text || "",
+        agentUiArtifacts: visibleAgentUiArtifacts(turn),
       },
       unstable_annotations: [],
       unstable_data: [],
@@ -118,6 +120,170 @@ function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
     return true;
   }
   return turn.status === "submitted" || turn.status === "working" || turn.status === "blocked";
+}
+
+function visibleAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
+  const artifacts = turn.agentUiArtifacts || [];
+  if (isTerminalTurn(turn.status)) {
+    return mergeOpsManualSearchAndPreflightArtifacts(artifacts);
+  }
+  return mergeOpsManualSearchAndPreflightArtifacts(artifacts).filter((artifact) => artifact.type !== "ops_manual_search_result");
+}
+
+function isTerminalTurn(status: AiopsTransportTurn["status"]) {
+  return status === "completed" || status === "failed" || status === "canceled";
+}
+
+function mergeOpsManualSearchAndPreflightArtifacts(artifacts: AiopsTransportAgentUiArtifact[]): AiopsTransportAgentUiArtifact[] {
+  const consumed = new Set<string>();
+  const mergedByPreflightId = new Map<string, Record<string, unknown>>();
+  return artifacts.map((artifact, index) => {
+    if (artifact.type !== "ops_manual_search_result" && artifact.type !== "ops_manual_param_resolution") {
+      return artifact;
+    }
+    const preflight = findFollowingMatchingPreflight(artifacts, index, artifact);
+    const paramResolution = artifact.type === "ops_manual_search_result" ? findFollowingMatchingParamResolution(artifacts, index, artifact) : undefined;
+    if (paramResolution && artifact.type === "ops_manual_search_result") {
+      consumed.add(paramResolution.id);
+    }
+    let mergedPreflightResult: Record<string, unknown> | undefined;
+    if (preflight) {
+      mergedPreflightResult = mergedByPreflightId.get(preflight.id) || {
+        ...asRecord(preflight.inlineData),
+        artifact_id: preflight.id,
+      };
+      mergedByPreflightId.set(preflight.id, mergedPreflightResult);
+    }
+    if (artifact.type === "ops_manual_search_result") {
+      if (preflight) {
+        consumed.add(preflight.id);
+      }
+      if (!paramResolution && !mergedPreflightResult) {
+        return artifact;
+      }
+      return {
+        ...artifact,
+        id: paramResolution?.id || artifact.id,
+        inlineData: {
+          ...asRecord(artifact.inlineData),
+          original_search_artifact_id: artifact.id,
+          ...(paramResolution
+            ? {
+                merged_param_resolution: {
+                  ...asRecord(paramResolution.inlineData),
+                  artifact_id: paramResolution.id,
+                },
+              }
+            : {}),
+          ...(mergedPreflightResult ? { merged_preflight_result: mergedPreflightResult } : {}),
+        },
+      };
+    }
+    if (!mergedPreflightResult) {
+      return artifact;
+    }
+    return {
+      ...artifact,
+      inlineData: {
+        ...asRecord(artifact.inlineData),
+        merged_preflight_result: mergedPreflightResult,
+      },
+    };
+  }).filter((_, index) => !consumed.has(artifacts[index]?.id || ""));
+}
+
+function findFollowingMatchingParamResolution(artifacts: AiopsTransportAgentUiArtifact[], index: number, artifact: AiopsTransportAgentUiArtifact) {
+  return artifacts.find((candidate, candidateIndex) =>
+    candidateIndex > index &&
+    candidate.type === "ops_manual_param_resolution" &&
+    opsManualParamResolutionMatchesSearch(candidate, artifact)
+  );
+}
+
+function findFollowingMatchingPreflight(artifacts: AiopsTransportAgentUiArtifact[], index: number, artifact: AiopsTransportAgentUiArtifact) {
+  return artifacts.find((candidate, candidateIndex) =>
+    candidateIndex > index &&
+    candidate.type === "ops_manual_preflight_result" &&
+    opsManualPreflightMatchesSearch(candidate, artifact)
+  );
+}
+
+function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAgentUiArtifact, search: AiopsTransportAgentUiArtifact) {
+  const resolutionData = asRecord(paramResolution.inlineData);
+  const resolutionManualID = text(pick(resolutionData, "manualId", "manual_id"));
+  const resolutionWorkflowID = text(pick(resolutionData, "workflowId", "workflow_id"));
+  const searchData = asRecord(search.inlineData);
+  const manuals = arrayRecords(pick(searchData, "manuals", "hits", "matches", "items"));
+  if (!manuals.length) {
+    return true;
+  }
+  return manuals.some((hit) => {
+    const manual = asRecord(pick(hit, "manual", "opsManual", "ops_manual"));
+    const workflowRef = asRecord(pick(manual, "workflowRef", "workflow_ref"));
+    const hitManualID = text(pick(manual, "id", "manualId", "manual_id"), text(pick(hit, "manualId", "manual_id")));
+    const hitWorkflowID = text(
+      pick(hit, "boundWorkflowId", "bound_workflow_id", "workflowId", "workflow_id"),
+      text(pick(workflowRef, "workflowId", "workflow_id")),
+    );
+    const manualMatches = !resolutionManualID || !hitManualID || resolutionManualID === hitManualID;
+    const workflowMatches = !resolutionWorkflowID || !hitWorkflowID || resolutionWorkflowID === hitWorkflowID;
+    return manualMatches && workflowMatches;
+  });
+}
+
+function opsManualPreflightMatchesSearch(preflight: AiopsTransportAgentUiArtifact, search: AiopsTransportAgentUiArtifact) {
+  const preflightData = asRecord(preflight.inlineData);
+  const manualID = text(pick(preflightData, "manualId", "manual_id"));
+  const workflowID = text(pick(preflightData, "workflowId", "workflow_id"));
+  const searchData = asRecord(search.inlineData);
+  if (search.type === "ops_manual_param_resolution") {
+    const resolutionManualID = text(pick(searchData, "manualId", "manual_id"));
+    const resolutionWorkflowID = text(pick(searchData, "workflowId", "workflow_id"));
+    const manualMatches = !manualID || !resolutionManualID || manualID === resolutionManualID;
+    const workflowMatches = !workflowID || !resolutionWorkflowID || workflowID === resolutionWorkflowID;
+    return manualMatches && workflowMatches;
+  }
+  const manuals = arrayRecords(pick(searchData, "manuals", "hits", "matches", "items"));
+  if (!manuals.length) {
+    return true;
+  }
+  return manuals.some((hit) => {
+    const manual = asRecord(pick(hit, "manual", "opsManual", "ops_manual"));
+    const workflowRef = asRecord(pick(manual, "workflowRef", "workflow_ref"));
+    const hitManualID = text(pick(manual, "id", "manualId", "manual_id"), text(pick(hit, "manualId", "manual_id")));
+    const hitWorkflowID = text(
+      pick(hit, "boundWorkflowId", "bound_workflow_id", "workflowId", "workflow_id"),
+      text(pick(workflowRef, "workflowId", "workflow_id")),
+    );
+    const manualMatches = !manualID || !hitManualID || manualID === hitManualID;
+    const workflowMatches = !workflowID || !hitWorkflowID || workflowID === hitWorkflowID;
+    return manualMatches && workflowMatches;
+  });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function arrayRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(asRecord).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function pick(record: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function text(value: unknown, fallback = ""): string {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  return String(value).trim() || fallback;
 }
 
 function optimisticPendingUserMessages(connectionMetadata: AssistantTransportConnectionMetadata) {

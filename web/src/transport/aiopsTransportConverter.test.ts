@@ -235,6 +235,190 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("delays ops manual search artifacts until the assistant turn is terminal", () => {
+    const state = createState();
+    state.status = "working";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      final: { id: "final-1", text: "我先查一下手册。", status: "running" },
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual",
+          type: "ops_manual_search_result",
+          titleZh: "运维手册检索",
+        },
+        {
+          id: "artifact-coroot-latency",
+          type: "coroot_chart",
+          titleZh: "Coroot 延迟趋势",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      agentUiArtifacts: [
+        expect.objectContaining({
+          id: "artifact-coroot-latency",
+          type: "coroot_chart",
+        }),
+      ],
+    });
+    expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "ops_manual_search_result" })]),
+    );
+  });
+
+  it("shows delayed ops manual search artifacts after the assistant turn completes", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual",
+          type: "ops_manual_search_result",
+          titleZh: "运维手册检索",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      agentUiArtifacts: [
+        expect.objectContaining({
+          id: "artifact-ops-manual",
+          type: "ops_manual_search_result",
+        }),
+      ],
+    });
+  });
+
+  it("merges matching ops manual preflight into the search artifact", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search",
+          type: "ops_manual_search_result",
+          titleZh: "运维手册检索",
+          inlineData: {
+            decision: "direct_execute",
+            manuals: [
+              {
+                manual: { id: "manual-mysql-backup-ssh", title: "MySQL SSH 备份运维手册" },
+                bound_workflow_id: "workflow-mysql-backup-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-preflight",
+          type: "ops_manual_preflight_result",
+          titleZh: "运维手册预检",
+          inlineData: {
+            status: "passed",
+            ready: true,
+            manual_id: "manual-mysql-backup-ssh",
+            workflow_id: "workflow-mysql-backup-ssh",
+            evidence: [{ name: "ssh_access", status: "passed" }],
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-search",
+      type: "ops_manual_search_result",
+      inlineData: {
+        merged_preflight_result: expect.objectContaining({
+          status: "passed",
+          manual_id: "manual-mysql-backup-ssh",
+          artifact_id: "artifact-ops-manual-preflight",
+        }),
+      },
+    });
+  });
+
+  it("merges search, parameter resolution, and preflight into one ops manual progress artifact", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "need_info",
+            manuals: [
+              {
+                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                bound_workflow_id: "workflow-redis-rca-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-params",
+          type: "ops_manual_param_resolution",
+          inlineData: {
+            status: "resolved",
+            manual_id: "manual-redis-rca-ssh",
+            workflow_id: "workflow-redis-rca-ssh",
+          },
+        },
+        {
+          id: "artifact-ops-manual-preflight",
+          type: "ops_manual_preflight_result",
+          inlineData: {
+            status: "passed",
+            ready: true,
+            manual_id: "manual-redis-rca-ssh",
+            workflow_id: "workflow-redis-rca-ssh",
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-params",
+      type: "ops_manual_search_result",
+      inlineData: {
+        original_search_artifact_id: "artifact-ops-manual-search",
+        merged_param_resolution: expect.objectContaining({
+          status: "resolved",
+          manual_id: "manual-redis-rca-ssh",
+          artifact_id: "artifact-ops-manual-params",
+        }),
+        merged_preflight_result: expect.objectContaining({
+          status: "passed",
+          artifact_id: "artifact-ops-manual-preflight",
+        }),
+      },
+    });
+    expect(artifacts).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "artifact-ops-manual-search" }),
+        expect.objectContaining({ id: "artifact-ops-manual-preflight" }),
+      ]),
+    );
+  });
+
   it("treats working and blocked transport states as running", () => {
     const state = createState();
 

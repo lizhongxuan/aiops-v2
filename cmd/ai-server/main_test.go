@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"aiops-v2/internal/agents"
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/featureflag"
+	agenttools "aiops-v2/internal/integrations/agents"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/observability"
@@ -163,25 +165,25 @@ func TestOpenConfiguredStoreDefaultsToJSONFileStore(t *testing.T) {
 	}
 }
 
-func TestOpenConfiguredStoreRequiresMySQLDSN(t *testing.T) {
+func TestOpenConfiguredStoreRequiresPostgresDSN(t *testing.T) {
 	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
 		if key == "AIOPS_STORE_DRIVER" {
-			return "mysql"
+			return "postgres"
 		}
 		return ""
 	})
 	if err == nil {
-		t.Fatal("openConfiguredStore() succeeded without mysql dsn")
+		t.Fatal("openConfiguredStore() succeeded without postgres dsn")
 	}
-	if !strings.Contains(err.Error(), "AIOPS_MYSQL_DSN") {
-		t.Fatalf("error = %q, want AIOPS_MYSQL_DSN", err.Error())
+	if !strings.Contains(err.Error(), "AIOPS_POSTGRES_DSN") {
+		t.Fatalf("error = %q, want AIOPS_POSTGRES_DSN", err.Error())
 	}
 }
 
 func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
 	_, err := openConfiguredStore(t.TempDir(), func(key string) string {
 		if key == "AIOPS_STORE_DRIVER" {
-			return "postgres"
+			return "oracle"
 		}
 		return ""
 	})
@@ -190,6 +192,93 @@ func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported store driver") {
 		t.Fatalf("error = %q, want unsupported store driver", err.Error())
+	}
+}
+
+func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	mcpRegistry := mcp.NewRegistry()
+
+	if err := registerAIOpsToolSurface(toolRegistry, mcpRegistry, nil, nil); err != nil {
+		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
+	}
+
+	tools := toolRegistry.AssembleTools("host", "inspect")
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Metadata().Name] = true
+	}
+	for _, required := range []string{
+		"tool_search",
+		"list_mcp_resources",
+		"read_mcp_resource",
+		"changes.recent_deployments",
+		"k8s.get_events",
+		"opsgraph.lookup",
+	} {
+		if !names[required] {
+			t.Fatalf("assembled tools missing %q; got %v", required, registryAdapterToolNames(tools))
+		}
+	}
+	for _, prefix := range []string{"runbook.", "fallback.", "erp."} {
+		for name := range names {
+			if strings.HasPrefix(name, prefix) {
+				t.Fatalf("removed tool %q is still visible; tools=%v", name, registryAdapterToolNames(tools))
+			}
+		}
+	}
+	if names["update_plan"] {
+		t.Fatalf("update_plan should not be visible in default inspect tools; got %v", registryAdapterToolNames(tools))
+	}
+}
+
+func TestRegisterAIOpsToolSurfaceIncludesAgentUIArtifactEmitter(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	mcpRegistry := mcp.NewRegistry()
+
+	if err := registerAIOpsToolSurface(toolRegistry, mcpRegistry, nil, nil); err != nil {
+		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
+	}
+
+	for _, tool := range toolRegistry.AssembleTools("host", "inspect") {
+		if tool.Metadata().Name == "aiops.ui_artifact_emit" {
+			if !tool.IsReadOnly(nil) {
+				t.Fatal("aiops.ui_artifact_emit should be read-only")
+			}
+			return
+		}
+	}
+	t.Fatal("aiops.ui_artifact_emit not found in assembled tool surface")
+}
+
+func TestRegisterAIOpsToolSurfaceCanExposeOpsInvestigationAgents(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	if err := registerAIOpsToolSurface(toolRegistry, mcp.NewRegistry(), nil, fakeOpsInvestigationAgentManager{}); err != nil {
+		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
+	}
+
+	tools := toolRegistry.AssembleTools("workspace", "inspect")
+	names := map[string]bool{}
+	for _, tool := range tools {
+		names[tool.Metadata().Name] = true
+	}
+	for _, required := range []string{"spawn_agent", "wait_agent"} {
+		if !names[required] {
+			t.Fatalf("assembled tools missing %q; got %v", required, registryAdapterToolNames(tools))
+		}
+	}
+}
+
+func TestVisibleAIOpsToolsHaveOutputSchema(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	if err := registerAIOpsToolSurface(toolRegistry, mcp.NewRegistry(), nil, fakeOpsInvestigationAgentManager{}); err != nil {
+		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
+	}
+
+	for _, tool := range toolRegistry.AssembleTools("host", "inspect") {
+		if len(bytes.TrimSpace(tool.OutputSchema())) == 0 {
+			t.Fatalf("tool %q missing OutputSchemaData", tool.Metadata().Name)
+		}
 	}
 }
 
@@ -243,6 +332,16 @@ func TestCorootEndpointFromEnv(t *testing.T) {
 func isNoopRuntimeObserver(observer runtimekernel.Observer) bool {
 	_, ok := observer.(runtimekernel.NoopObserver)
 	return ok
+}
+
+type fakeOpsInvestigationAgentManager struct{}
+
+func (fakeOpsInvestigationAgentManager) SpawnInvestigationAgent(context.Context, agenttools.SpawnRequest) (agenttools.SpawnResult, error) {
+	return agenttools.SpawnResult{AgentID: "agent-1", AgentType: "metrics_investigator", Status: "running"}, nil
+}
+
+func (fakeOpsInvestigationAgentManager) WaitEvidenceReports(context.Context, []string) ([]agentmgr.EvidenceReport, error) {
+	return []agentmgr.EvidenceReport{{AgentID: "agent-1", Summary: "evidence collected", EvidenceRefs: []string{"ev-1"}, Confidence: "medium"}}, nil
 }
 
 func (m *registryAdapterMockTool) Metadata() tooling.ToolMetadata {
@@ -299,6 +398,14 @@ func registerRegistryAdapterMockTool(t *testing.T, registry *tooling.Registry, t
 	if err := registry.Register(tool); err != nil {
 		t.Fatalf("register %q: %v", tool.Metadata().Name, err)
 	}
+}
+
+func registryAdapterToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
 }
 
 func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistryOverCommandSurface(t *testing.T) {
@@ -604,6 +711,35 @@ func TestRegistryAdapterUsesSameFlaggedAssemblyForPromptAndRuntimePools(t *testi
 	}
 	if info.Name != "read_file" {
 		t.Fatalf("tool pool Info().Name = %q, want read_file", info.Name)
+	}
+}
+
+func TestRegistryAdapterFiltersOpsManualToolsWhenUserOptedOut(t *testing.T) {
+	registry := tooling.NewRegistry()
+	for _, name := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight", "host_read"} {
+		registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: name, sessions: []string{"host"}, modes: []string{"chat"}})
+	}
+	adapter := newRegistryAdapter(registry, nil, featureflag.Default())
+	metadata := map[string]string{
+		"opsManualAction":  "skip_ops_manual",
+		"opsManualSkipped": "true",
+	}
+
+	tools := adapter.CompileContextWithMetadata(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"), metadata)
+	if got := registryAdapterToolNames(tools); fmt.Sprintf("%v", got) != "[host_read]" {
+		t.Fatalf("CompileContextWithMetadata tools = %v, want [host_read]", got)
+	}
+
+	pool := adapter.AssembleToolPoolWithMetadata(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"), metadata)
+	if len(pool) != 1 {
+		t.Fatalf("AssembleToolPoolWithMetadata() len = %d, want 1", len(pool))
+	}
+	info, err := pool[0].Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info() error = %v", err)
+	}
+	if info.Name != "host_read" {
+		t.Fatalf("tool pool Info().Name = %q, want host_read", info.Name)
 	}
 }
 

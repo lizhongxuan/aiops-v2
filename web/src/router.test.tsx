@@ -29,6 +29,7 @@ const routedPaths = [
   "/mcp",
   "/approval-management",
   "/capability-center",
+  "/agent-ui",
   "/ui-cards",
   "/script-configs",
   "/coroot",

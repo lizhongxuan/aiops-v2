@@ -10,6 +10,7 @@ import { MessageMarkdown } from "@/chat/components/MessageMarkdown";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyPanel, RiskBadge } from "@/pages/complexPageComponents";
+import { resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type {
@@ -21,8 +22,8 @@ import type {
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 export function ProtocolWorkspacePage() {
-  const fallbackState = useMemo(() => createInitialAiopsTransportState("protocol-workspace"), []);
-  const [activeThreadId, setActiveThreadId] = useState("protocol-workspace");
+  const fallbackState = useMemo(() => resolveUiFixtureState() || createInitialAiopsTransportState("protocol-workspace"), []);
+  const [activeThreadId, setActiveThreadId] = useState(fallbackState.threadId || "protocol-workspace");
   const [autoResume, setAutoResume] = useState(false);
   const [initialState, setInitialState] = useState(fallbackState);
 

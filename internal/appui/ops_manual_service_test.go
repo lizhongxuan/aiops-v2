@@ -41,6 +41,32 @@ func TestRetrieveManualsUsesSearchEngineCompatibility(t *testing.T) {
 	}
 }
 
+func TestOpsManualServiceRunPreflight(t *testing.T) {
+	repo := opsmanual.NewMemoryStore()
+	manual := appuiRedisManual()
+	manual.RunnableConditions.RequiredParams = []string{"target_instance"}
+	manual.PreflightProbe = opsmanual.PreflightProbe{ID: "redis-readonly-probe", ReadOnly: true, RequiredOutputs: []string{"ssh_access", "metrics_available"}}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := NewOpsManualService(opsmanual.NewService(repo))
+
+	result, err := service.RunPreflight(opsmanual.PreflightRequest{
+		ManualID: manual.ID,
+		OperationFrame: opsmanual.BuildOperationFrame(
+			"通过 ssh 排查 redis-local-01 Redis used_memory_rss p95 metrics symptom",
+			nil,
+		),
+		Parameters: map[string]any{"target_instance": "redis-local-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != opsmanual.PreflightStatusPassed || !result.Ready || result.ArtifactType != "ops_manual_preflight_result" {
+		t.Fatalf("result = %#v, want passed ready preflight artifact", result)
+	}
+}
+
 func TestOpsManualServiceConfirmCandidateEntersVerifiedList(t *testing.T) {
 	repo := opsmanual.NewMemoryStore()
 	service := NewOpsManualService(opsmanual.NewService(repo))

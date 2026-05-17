@@ -203,6 +203,47 @@ func TestTransportProjectorPreservesCommandWhenToolResultOnlyHasOutput(t *testin
 	}
 }
 
+func TestTransportProjectorProjectsToolMockAndEvidenceRefs(t *testing.T) {
+	now := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-metrics",
+		"toolName":"coroot.service_metrics",
+		"displayKind":"coroot.metrics",
+		"inputSummary":"redis-local-01 memory",
+		"outputSummary":"rss/used_memory ratio is 1.8",
+		"mock":true,
+		"evidenceRefs":["evidence:redis:rss","evidence:redis:events"]
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-tool-evidence",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		CompletedAt: ptrTime(now.Add(time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "rss/used_memory ratio is 1.8", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	toolBlock := findTransportProcessBlock(t, projected.Turns["turn-tool-evidence"].Process, AiopsTransportProcessKindTool)
+	if !toolBlock.Mock {
+		t.Fatalf("tool block Mock = false, want true: %+v", toolBlock)
+	}
+	if got, want := strings.Join(toolBlock.EvidenceRefs, ","), "evidence:redis:rss,evidence:redis:events"; got != want {
+		t.Fatalf("tool block EvidenceRefs = %q, want %q", got, want)
+	}
+}
+
 func TestTransportProjectorBackfillsCommandPreviewFromSnapshotToolResult(t *testing.T) {
 	now := time.Date(2026, 5, 7, 14, 39, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -800,6 +841,264 @@ func TestTransportProjectorExtractsRuntimeToolCallQueryAndMergesSearchResult(t *
 	}
 	if block.Text != query {
 		t.Fatalf("Text = %q, want %q", block.Text, query)
+	}
+}
+
+func TestTransportProjectorRendersOpsManualPreflightArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 15, 9, 20, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-preflight", "thread-preflight")
+	preflightPayload, _ := json.Marshal(map[string]any{
+		"status":      "blocked",
+		"ready":       false,
+		"manual_id":   "manual-redis-rca",
+		"workflow_id": "workflow-redis-rca",
+		"reason":      "preflight probe permission is missing",
+		"next_action": "request_permission",
+		"missing_permissions": []string{
+			"redis-readonly-probe",
+		},
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-preflight",
+		"toolName":"run_ops_manual_preflight",
+		"displayKind":"ops_manual_preflight_result",
+		"outputPreview":` + string(preflightPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-preflight",
+		SessionID: "session-preflight",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-preflight",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_preflight_result",
+					Summary: "blocked",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := projected.Turns["turn-preflight"].AgentUIArtifacts
+	if len(artifacts) != 1 || artifacts[0].Type != "ops_manual_preflight_result" {
+		t.Fatalf("artifacts = %#v, want one ops_manual_preflight_result", artifacts)
+	}
+	if artifacts[0].Status != "blocked" || artifacts[0].Severity != "warning" {
+		t.Fatalf("artifact = %#v, want blocked warning", artifacts[0])
+	}
+	if len(artifacts[0].Actions) != 1 || artifacts[0].Actions[0]["id"] != "request_permission" {
+		t.Fatalf("actions = %#v, want request_permission", artifacts[0].Actions)
+	}
+}
+
+func TestTransportProjectorRendersOpsManualParamResolutionArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 17, 9, 20, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-param", "thread-param")
+	payload, _ := json.Marshal(map[string]any{
+		"status":      "ambiguous",
+		"manual_id":   "manual-redis-rca",
+		"workflow_id": "workflow-redis-rca",
+		"fields": []map[string]any{{
+			"id":         "target_instance",
+			"label":      "Redis 实例",
+			"type":       "resource_ref",
+			"ui_control": "select",
+		}},
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-param-resolution",
+		"toolName":"resolve_ops_manual_params",
+		"displayKind":"ops_manual_param_resolution",
+		"outputPreview":` + string(payload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-param",
+		SessionID: "session-param",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-param",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_param_resolution",
+					Summary: "ambiguous",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := projected.Turns["turn-param"].AgentUIArtifacts
+	if len(artifacts) != 1 || artifacts[0].Type != "ops_manual_param_resolution" {
+		t.Fatalf("artifacts = %#v, want one param resolution artifact", artifacts)
+	}
+	if artifacts[0].Status != "ambiguous" || artifacts[0].Severity != "warning" {
+		t.Fatalf("artifact = %#v, want ambiguous warning", artifacts[0])
+	}
+	if len(artifacts[0].Actions) != 1 || artifacts[0].Actions[0]["id"] != "fill_params" {
+		t.Fatalf("actions = %#v, want fill_params", artifacts[0].Actions)
+	}
+}
+
+func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 15, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-rca", "thread-rca")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-artifact-1",
+		"toolName":"aiops.ui_artifact_emit",
+		"displayKind":"rca_report",
+		"outputPreview":{
+			"schemaVersion":"aiops.agent_ui_artifact/v1",
+			"type":"rca_report",
+			"titleZh":"checkout 根因分析",
+			"summaryZh":"checkout 延迟升高最可能来自 catalog 依赖。",
+			"status":"ok",
+			"severity":"high",
+			"source":"coroot",
+			"evidenceRef":"ev-coroot-latency",
+			"permissionScope":"read",
+			"redactionStatus":"redacted",
+			"inlineData":{
+				"schemaVersion":"aiops.rca_report/v1",
+				"source":"coroot",
+				"status":"ok",
+				"target":{"service":"checkout"},
+				"window":{"timeRange":"30m"},
+				"conclusion":{"summaryZh":"checkout 延迟升高最可能来自 catalog 依赖。","confidence":0.72},
+				"hypotheses":[],
+				"sections":[],
+				"evidenceRefs":["ev-coroot-latency"],
+				"rawRefs":[]
+			}
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-rca",
+		SessionID:   "session-rca",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-rca", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "RCA report", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-rca"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "rca_report" || artifact.Source != "coroot" || artifact.PermissionScope != "read" {
+		t.Fatalf("artifact = %+v, want rca_report from coroot", artifact)
+	}
+	if artifact.InlineData == nil {
+		t.Fatal("artifact inline data is nil")
+	}
+	if artifact.Metadata["evidenceRef"] != "ev-coroot-latency" {
+		t.Fatalf("artifact metadata = %#v, want evidenceRef copied into metadata", artifact.Metadata)
+	}
+}
+
+func TestTransportProjectorCompactsOpsManualSearchProcessPreview(t *testing.T) {
+	now := time.Date(2026, 5, 15, 9, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-ops-manual-search", "thread-ops-manual-search")
+	searchPayload, _ := json.Marshal(map[string]any{
+		"decision": "need_info",
+		"summary":  "信息不足，不能直接使用工作流。",
+		"manuals": []map[string]any{
+			{
+				"manual": map[string]any{
+					"id":    "manual-redis-rca-ssh",
+					"title": "Redis SSH 排障运维手册",
+				},
+				"missing_fields": []string{"environment", "execution_surface", "symptom", "metrics"},
+			},
+		},
+		"operation_frame": map[string]any{
+			"evidence": map[string]any{"missing": []string{"environment", "execution_surface", "symptom", "metrics"}},
+		},
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-search",
+		"toolName":"search_ops_manuals",
+		"displayKind":"ops_manual_search_result",
+		"outputPreview":` + string(searchPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-ops-manual-search",
+		SessionID: "session-ops-manual-search",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-search",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_search_result",
+					Summary: "need_info",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	transportTurn := projected.Turns["turn-ops-manual-search"]
+	if len(transportTurn.AgentUIArtifacts) != 1 || transportTurn.AgentUIArtifacts[0].Type != "ops_manual_search_result" {
+		t.Fatalf("artifacts = %#v, want ops manual search artifact", transportTurn.AgentUIArtifacts)
+	}
+	if len(transportTurn.Process) != 1 {
+		t.Fatalf("process = %#v, want one compact tool block", transportTurn.Process)
+	}
+	block := transportTurn.Process[0]
+	if block.OutputPreview != "" {
+		t.Fatalf("output preview = %q, want hidden preview for ops manual search", block.OutputPreview)
+	}
+	if !strings.Contains(block.Text, "运维手册匹配：手册缺上下文") || strings.Contains(block.Text, "need_info") || strings.Contains(block.Text, "execution_surface") {
+		t.Fatalf("block text = %q, want human compact decision without internal missing fields", block.Text)
+	}
+}
+
+func TestOpsManualSearchReferenceOnlySummaryPromotesReadOnlyInvestigation(t *testing.T) {
+	if got := opsManualSearchSummaryZh("reference_only"); !strings.Contains(got, "没有可直接运行的 Workflow") || !strings.Contains(got, "继续只读自动化排查") {
+		t.Fatalf("summary = %q, want read-only continuation without runnable Workflow", got)
+	}
+	if actions := opsManualSearchArtifactActions("reference_only"); len(actions) != 0 {
+		t.Fatalf("actions = %#v, want no executable or step-by-step action for reference_only search", actions)
 	}
 }
 

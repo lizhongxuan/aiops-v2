@@ -18,11 +18,30 @@ assert_contains() {
   fi
 }
 
+assert_fails_with() {
+  local needle="$1"
+  shift
+  local output
+  local status
+
+  set +e
+  output="$("$@" 2>&1)"
+  status="$?"
+  set -e
+
+  if [[ "$status" == "0" ]]; then
+    fail "expected command to fail"
+  fi
+  assert_contains "$output" "$needle"
+}
+
 help_output="$("$SCRIPT" --help)"
 assert_contains "$help_output" "Usage:"
 assert_contains "$help_output" "SKIP_WEB_BUILD=1"
 assert_contains "$help_output" "AIOPS_HTTP_ADDR=:18080"
 assert_contains "$help_output" "AIOPS_GRPC_AUTO_PORT=1"
+assert_contains "$help_output" "AIOPS_STORE_DRIVER=postgres"
+assert_contains "$help_output" "AIOPS_COROOT_BASE_URL=http://127.0.0.1:8080"
 
 default_dry_run_output="$(
   SKIP_WEB_BUILD=1 \
@@ -34,6 +53,7 @@ default_dry_run_output="$(
 assert_contains "$default_dry_run_output" "AIOPS_HTTP_ADDR=:18080"
 assert_contains "$default_dry_run_output" "AIOPS_GRPC_ADDR=:18090"
 assert_contains "$default_dry_run_output" "AIOPS_GRPC_AUTO_PORT=0"
+assert_contains "$default_dry_run_output" "AIOPS_STORE_DRIVER=postgres"
 
 dry_run_output="$(
   SKIP_WEB_BUILD=1 \
@@ -99,4 +119,42 @@ PY
   assert_contains "$auto_port_output" "auto-selected gRPC listen address"
   cleanup_listener
   trap - EXIT
+fi
+
+assert_fails_with "AIOPS_POSTGRES_DSN is required when AIOPS_STORE_DRIVER=postgres" \
+  env \
+  SKIP_WEB_BUILD=1 \
+  SKIP_GO_BUILD=1 \
+  AIOPS_STORE_DRIVER=postgres \
+  AIOPS_POSTGRES_DSN= \
+  DATABASE_URL= \
+  "$SCRIPT"
+
+if command -v python3 >/dev/null 2>&1; then
+  unused_port="$(
+    python3 - <<'PY'
+import socket
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.bind(("127.0.0.1", 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+  )"
+
+  assert_fails_with "dependency unavailable: postgresql" \
+    env \
+    SKIP_WEB_BUILD=1 \
+    SKIP_GO_BUILD=1 \
+    AIOPS_STORE_DRIVER=postgres \
+    AIOPS_POSTGRES_DSN="postgres://postgres:postgres@127.0.0.1:${unused_port}/aiops?sslmode=disable" \
+    "$SCRIPT"
+
+  assert_fails_with "dependency unavailable: coroot" \
+    env \
+    SKIP_WEB_BUILD=1 \
+    SKIP_GO_BUILD=1 \
+    AIOPS_STORE_DRIVER=json \
+    AIOPS_COROOT_BASE_URL="http://127.0.0.1:${unused_port}" \
+    "$SCRIPT"
 fi

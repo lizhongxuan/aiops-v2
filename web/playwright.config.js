@@ -11,6 +11,7 @@ export default defineConfig({
     "protocol-chat-ui.spec.js",
     "chat-ui-visual.spec.js",
     "chat-ui-snapshot.spec.js",
+    "ops-manual-param-resolution.spec.js",
     "react-route-smoke.spec.js",
     "react-shell-snapshot.spec.js",
     "runner-studio.spec.js",

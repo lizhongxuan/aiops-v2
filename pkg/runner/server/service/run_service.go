@@ -172,6 +172,10 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 		s.recordRejectedRun(ctx, req, wf, WorkflowErrorCodeDigestMismatch, err)
 		return nil, err
 	}
+	if err := VerifyOpsManualPreflight(req); err != nil {
+		s.recordRejectedRun(ctx, req, wf, WorkflowErrorCodeOpsManualPreflight, err)
+		return nil, err
+	}
 	if wf.Vars == nil {
 		wf.Vars = map[string]any{}
 	}
@@ -196,7 +200,7 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 		WorkflowVersion: defaultWorkflowVersion(req.WorkflowVersion, wf.Version),
 		WorkflowDigest:  strings.TrimSpace(req.WorkflowDigest),
 		Vars:            cloneAnyMap(req.Vars),
-		Metadata:        cloneAnyMap(req.Metadata),
+		Metadata:        runRequestMetadata(req),
 		TriggeredBy:     defaultTriggeredBy(req.TriggeredBy),
 		IdempotencyKey:  strings.TrimSpace(req.IdempotencyKey),
 		CreatedAt:       createdAt,
@@ -639,7 +643,7 @@ func (s *RunService) restoreRecords(ctx context.Context) {
 
 func (s *RunService) recordRejectedRun(ctx context.Context, req *RunRequest, wf workflow.Workflow, errorCode string, cause error) {
 	now := time.Now().UTC()
-	metadata := cloneAnyMap(req.Metadata)
+	metadata := runRequestMetadata(req)
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
@@ -676,6 +680,26 @@ func (s *RunService) recordRejectedRun(ctx context.Context, req *RunRequest, wf 
 	}
 	s.rememberMetaWithoutIdempotency(meta)
 	s.notifyOpsManualRunRecord(ctx, meta, errorCode)
+}
+
+func runRequestMetadata(req *RunRequest) map[string]any {
+	if req == nil {
+		return nil
+	}
+	metadata := cloneAnyMap(req.Metadata)
+	if strings.TrimSpace(req.PreflightStatus) != "" {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["preflight_status"] = strings.TrimSpace(req.PreflightStatus)
+	}
+	if strings.TrimSpace(req.PreflightEvidenceRef) != "" {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["preflight_evidence_ref"] = strings.TrimSpace(req.PreflightEvidenceRef)
+	}
+	return metadata
 }
 
 func (s *RunService) notifyOpsManualRunRecord(ctx context.Context, meta RunMeta, errorCode string) {

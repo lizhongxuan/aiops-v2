@@ -36,10 +36,14 @@ test.describe("ApprovalManagementPage", () => {
 
   test("displays stats row with correct values", async ({ page }) => {
     await expect(page.getByTestId("stats-row")).toBeVisible();
-    await expect(page.locator(".ops-statistic").filter({ hasText: "今日审批" })).toContainText("12");
-    await expect(page.locator(".ops-statistic").filter({ hasText: "待处理" })).toContainText("3");
-    await expect(page.locator(".ops-statistic").filter({ hasText: "自动放行" })).toContainText("5");
-    await expect(page.locator(".ops-statistic").filter({ hasText: "已授权命令" })).toContainText("8");
+    await expect(page.getByTestId("stats-row")).toContainText("今日审批");
+    await expect(page.getByTestId("stats-row")).toContainText("12");
+    await expect(page.getByTestId("stats-row")).toContainText("待审核");
+    await expect(page.getByTestId("stats-row")).toContainText("3");
+    await expect(page.getByTestId("stats-row")).toContainText("自动放行");
+    await expect(page.getByTestId("stats-row")).toContainText("5");
+    await expect(page.getByTestId("stats-row")).toContainText("授权命令");
+    await expect(page.getByTestId("stats-row")).toContainText("8");
   });
 
   test("renders audit table with rows", async ({ page }) => {
@@ -82,14 +86,13 @@ test.describe("ApprovalManagementPage", () => {
   });
 
   test("grants tab loads grant data", async ({ page }) => {
-    // Tab name is "授权列表"
-    await page.locator(".ops-tabs-tab", { hasText: "授权列表" }).click();
+    await page.getByRole("tab", { name: "授权记录" }).click();
     await expect(page.getByTestId("grants-table")).toBeVisible();
     await expect(page.getByText("systemctl restart nginx")).toBeVisible();
   });
 
   test("revoke button sends POST request", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "授权列表" }).click();
+    await page.getByRole("tab", { name: "授权记录" }).click();
     await page.waitForTimeout(500);
     const requestPromise = page.waitForRequest((req) =>
       req.url().includes("/approval-grants/grant-1/revoke") && req.method() === "POST"
@@ -99,7 +102,7 @@ test.describe("ApprovalManagementPage", () => {
   });
 
   test("enable button visible for disabled grants", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "授权列表" }).click();
+    await page.getByRole("tab", { name: "授权记录" }).click();
     await page.waitForTimeout(500);
     await expect(page.getByRole("button", { name: "启用" })).toBeVisible();
   });

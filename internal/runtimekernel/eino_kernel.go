@@ -49,6 +49,11 @@ type ToolAssemblySource interface {
 	AssembleToolPool(session SessionType, mode Mode) []tool.BaseTool
 }
 
+type metadataToolAssemblySource interface {
+	CompileContextWithMetadata(session SessionType, mode Mode, metadata map[string]string) []promptcompiler.Tool
+	AssembleToolPoolWithMetadata(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool
+}
+
 type toolRefreshAwareSource interface {
 	RefreshToken(session SessionType, mode Mode) string
 }
@@ -1018,7 +1023,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	compileCtx := enrichCompileContext(k.tools.CompileContext(req.SessionType, req.Mode), req.SessionType, req.HostID, time.Now())
+	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, req.HostID, req.Metadata, time.Now())
 	if len(preTurnEvent.AdditionalContext) > 0 {
 		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
 	}
@@ -1029,7 +1034,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 3: Assemble tools
 	recorder.Record(StepAssembleTools)
-	toolPool := k.tools.AssembleToolPool(req.SessionType, req.Mode)
+	toolPool := k.assembleToolPool(req.SessionType, req.Mode, req.Metadata)
 
 	// Step 4: Create agent
 	recorder.Record(StepCreateAgent)
@@ -1132,6 +1137,31 @@ func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session
 	return event, nil
 }
 
+func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
+	if source, ok := k.tools.(metadataToolAssemblySource); ok {
+		return promptcompiler.CompileContext{
+			SessionType:    string(session),
+			Mode:           string(mode),
+			AssembledTools: source.CompileContextWithMetadata(session, mode, metadata),
+		}
+	}
+	compileCtx := k.tools.CompileContext(session, mode)
+	if opsManualsOptedOut(metadata) {
+		compileCtx.AssembledTools = filterOpsManualTools(compileCtx.AssembledTools)
+	}
+	return compileCtx
+}
+
+func (k *EinoKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
+	if source, ok := k.tools.(metadataToolAssemblySource); ok {
+		return source.AssembleToolPoolWithMetadata(session, mode, metadata)
+	}
+	if !opsManualsOptedOut(metadata) {
+		return k.tools.AssembleToolPool(session, mode)
+	}
+	return tooling.AssembleEinoToolPool(filterOpsManualTools(k.tools.CompileContext(session, mode).AssembledTools))
+}
+
 func (k *EinoKernel) runHostIterationLoop(
 	ctx context.Context,
 	chatModel modelrouter.ChatModel,
@@ -1165,7 +1195,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		contextMessages := contextState.Messages
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
-		compileCtx := enrichCompileContext(k.tools.CompileContext(req.SessionType, req.Mode), req.SessionType, session.HostID, time.Now())
+		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, session.HostID, req.Metadata, time.Now())
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		if shouldSwitchToSynthesisOnly(req.Mode, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
@@ -1684,6 +1714,8 @@ func evidenceAwareFinalAnswerPromptAsset(snapshot *TurnSnapshot) string {
 		"证据：",
 		"影响面：",
 		"下一步：",
+		"",
+		"Exception: when the user only asked for a read-only status/RCA check and the collected evidence shows no abnormality, Keep the final answer short: one conclusion plus key evidence. Do not expand 下一步, and do not suggest remediation, workflow execution, rollback, or operations manual generation.",
 	)
 	return strings.Join(lines, "\n")
 }
@@ -1974,7 +2006,14 @@ func shouldFeedToolFailureBackToModel(result DispatchResult) bool {
 	if result.Metadata.EffectiveGovernance(defaultMaxInlineResultBytes).FailurePolicy == tooling.ToolFailurePolicyFailTurn {
 		return false
 	}
-	return result.Outcome == "tool_failed"
+	switch result.Outcome {
+	case "tool_failed":
+		return true
+	case "tool_denied":
+		return result.Source == "tool"
+	default:
+		return false
+	}
 }
 
 func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolResult {
@@ -2001,6 +2040,7 @@ func enrichCompileContext(
 	compileCtx promptcompiler.CompileContext,
 	sessionType SessionType,
 	hostID string,
+	metadata map[string]string,
 	now time.Time,
 ) promptcompiler.CompileContext {
 	if compileCtx.AgentKind == "" {
@@ -2014,6 +2054,18 @@ func enrichCompileContext(
 	hostID = strings.TrimSpace(hostID)
 	if hostID != "" && strings.TrimSpace(compileCtx.HostContext) == "" {
 		compileCtx.HostContext = hostID
+	}
+	if sessionBinding := sessionBindingPromptSection(metadata); sessionBinding != "" {
+		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+			Title:   "Session Binding",
+			Content: sessionBinding,
+		})
+	}
+	if opsManualOptOut := opsManualOptOutPromptSection(metadata); opsManualOptOut != "" {
+		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+			Title:   "Ops Manual Opt-Out",
+			Content: opsManualOptOut,
+		})
 	}
 	if sessionType != SessionTypeHost || hostID != "server-local" {
 		return compileCtx
@@ -2032,13 +2084,100 @@ func enrichCompileContext(
 	return compileCtx
 }
 
+func sessionBindingPromptSection(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, 6)
+	add := func(label string, keys ...string) {
+		for _, key := range keys {
+			value := strings.TrimSpace(metadata[key])
+			if value == "" {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("%s: %s", label, value))
+			return
+		}
+	}
+	add("Target kind", "aiops.target.kind")
+	add("Target host", "aiops.target.hostId")
+	add("Target label", "aiops.target.label")
+	add("Environment", "aiops.environment", "aiops.target.environment")
+	add("Coroot project", "aiops.coroot.project", "coroot.project")
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append(lines, "Use these session bindings when selecting read-only evidence tools. For Coroot, pass the bound project/environment when present; if it is absent, use the Coroot tool default and report unavailability from the tool result instead of asking whether Coroot exists.")
+	return strings.Join(lines, "\n")
+}
+
+func opsManualOptOutPromptSection(metadata map[string]string) string {
+	if !opsManualsOptedOut(metadata) {
+		return ""
+	}
+	lines := []string{
+		"User explicitly skipped operations manuals for this continuation.",
+		"Do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight in this turn.",
+		"Continue ordinary safe read-only investigation with non-manual tools and concise status updates.",
+	}
+	if manualTitle := strings.TrimSpace(metadata["opsManualManualTitle"]); manualTitle != "" {
+		lines = append(lines, fmt.Sprintf("Skipped manual title: %s", manualTitle))
+	}
+	if manualID := firstMetadataValue(metadata, "opsManualManualId", "manualId"); manualID != "" {
+		lines = append(lines, fmt.Sprintf("Skipped manual id: %s", manualID))
+	}
+	if workflowID := firstMetadataValue(metadata, "opsManualWorkflowId", "workflowId"); workflowID != "" {
+		lines = append(lines, fmt.Sprintf("Skipped workflow id: %s", workflowID))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func opsManualsOptedOut(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	action := strings.TrimSpace(metadata["opsManualAction"])
+	if strings.EqualFold(action, "skip_ops_manual") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualSkipped"]), "true")
+}
+
+func firstMetadataValue(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func filterOpsManualTools(tools []promptcompiler.Tool) []promptcompiler.Tool {
+	if len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]promptcompiler.Tool, 0, len(tools))
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		switch toolDef.Metadata().Name {
+		case "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight":
+			continue
+		default:
+			filtered = append(filtered, toolDef)
+		}
+	}
+	return filtered
+}
+
 func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (*TurnResult, error) {
 	toolCall, ok := pendingToolCall(snapshot)
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
 	k.markSnapshotResuming(session, snapshot, "resume_tool_approval")
-	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, time.Now())
+	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, nil, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
 	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
@@ -2172,6 +2311,14 @@ func iterationHasToolResult(iter *IterationState, toolCallID string) bool {
 
 func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[string]any {
 	outputSummary, _, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, result.Content)
+	if terminal := terminalEnvelopeFromToolResultContent(result.Content); terminal != nil {
+		if terminal.Command != "" {
+			outputSummary = terminal.Command
+		}
+		if terminal.Stdout != "" {
+			outputPreview, _ = json.Marshal(terminal.Stdout)
+		}
+	}
 	payload := map[string]any{
 		"toolCallId":      tc.ID,
 		"toolName":        tc.Name,
@@ -2189,6 +2336,9 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	if len(outputPreview) > 0 {
 		payload["outputPreview"] = outputPreview
 	}
+	if evidenceRefs := evidenceRefsFromToolResultContent(result.Content); len(evidenceRefs) > 0 {
+		payload["evidenceRefs"] = evidenceRefs
+	}
 	if result.Error != "" {
 		payload["error"] = result.Error
 	}
@@ -2199,6 +2349,71 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 		}
 	}
 	return payload
+}
+
+type terminalToolResultEnvelope struct {
+	Command string `json:"command"`
+	Stdout  string `json:"stdout"`
+}
+
+func terminalEnvelopeFromToolResultContent(content string) *terminalToolResultEnvelope {
+	content = strings.TrimSpace(content)
+	if content == "" || !strings.HasPrefix(content, "{") {
+		return nil
+	}
+	var payload struct {
+		SchemaVersion string `json:"schemaVersion"`
+		Tool          string `json:"tool"`
+		Command       string `json:"command"`
+		Stdout        string `json:"stdout"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return nil
+	}
+	if payload.SchemaVersion != "aiops.terminal/v1" && payload.Tool != "exec_command" {
+		return nil
+	}
+	return &terminalToolResultEnvelope{
+		Command: strings.TrimSpace(payload.Command),
+		Stdout:  strings.TrimSpace(payload.Stdout),
+	}
+}
+
+func evidenceRefsFromToolResultContent(content string) []string {
+	content = strings.TrimSpace(content)
+	if content == "" || !strings.HasPrefix(content, "{") {
+		return nil
+	}
+	var payload struct {
+		EvidenceRefs []string `json:"evidenceRefs"`
+		Data         struct {
+			EvidenceRefs []string `json:"evidenceRefs"`
+			EvidenceRef  string   `json:"evidenceRef"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return nil
+	}
+	refs := append([]string(nil), payload.EvidenceRefs...)
+	refs = append(refs, payload.Data.EvidenceRefs...)
+	if strings.TrimSpace(payload.Data.EvidenceRef) != "" {
+		refs = append(refs, payload.Data.EvidenceRef)
+	}
+	return cleanEvidenceRefs(refs)
+}
+
+func cleanEvidenceRefs(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		ref := strings.TrimSpace(value)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		out = append(out, ref)
+	}
+	return out
 }
 
 func (k *EinoKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {

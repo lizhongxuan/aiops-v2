@@ -30,6 +30,40 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	return IsReadOnlyCommandName(command)
 }
 
+// IsAllowedReadOnlyTerminal is the break-glass terminal allowlist. It is
+// intentionally narrower than IsReadOnlyCommand: even read-only terminal usage
+// must be operationally scoped before it can run without approval.
+func IsAllowedReadOnlyTerminal(command string, args []string) bool {
+	base := filepath.Base(strings.TrimSpace(command))
+	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
+		return IsAllowedReadOnlyTerminal(wrappedCommand, wrappedArgs)
+	}
+	switch base {
+	case "kubectl":
+		return isAllowedReadOnlyKubectlArgs(args)
+	case "curl":
+		return isReadOnlyCurlArgs(args)
+	case "redis-cli":
+		return isAllowedReadOnlyRedisCLIArgs(args)
+	default:
+		return false
+	}
+}
+
+// TerminalRiskLevel returns the minimum approval risk for a terminal command.
+// Mutating or non-allowlisted terminal commands are always high risk because
+// terminal access is break-glass diagnostic fallback, not a default action path.
+func TerminalRiskLevel(command string, args []string) string {
+	if IsAllowedReadOnlyTerminal(command, args) {
+		return "low"
+	}
+	return "high"
+}
+
+func RequiresHighRiskApproval(command string, args []string) bool {
+	return TerminalRiskLevel(command, args) == "high"
+}
+
 func IsReadOnlyCommandName(command string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
 	switch base {
@@ -38,6 +72,157 @@ func IsReadOnlyCommandName(command string) bool {
 	default:
 		return false
 	}
+}
+
+func isAllowedReadOnlyKubectlArgs(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	verb := strings.TrimSpace(args[0])
+	switch verb {
+	case "get", "describe":
+		return kubectlArgsAreSafe(args[1:])
+	case "logs":
+		return kubectlLogsArgsAreSafe(args[1:])
+	default:
+		return false
+	}
+}
+
+func kubectlLogsArgsAreSafe(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || strings.ContainsAny(arg, "\x00\n\r`$<>;|&") {
+			return false
+		}
+		switch arg {
+		case "-f", "--follow":
+			return false
+		case "-n", "--namespace", "-c", "--container", "--context", "--since", "--tail", "--limit-bytes":
+			i++
+			if i >= len(args) || !isSafeTerminalToken(args[i]) {
+				return false
+			}
+		default:
+			if strings.HasPrefix(arg, "--tail=") || strings.HasPrefix(arg, "--since=") ||
+				strings.HasPrefix(arg, "--limit-bytes=") || strings.HasPrefix(arg, "--container=") ||
+				strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--context=") {
+				_, value, _ := strings.Cut(arg, "=")
+				if !isSafeTerminalToken(value) {
+					return false
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				return false
+			}
+			if !isSafeTerminalToken(arg) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func kubectlArgsAreSafe(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || strings.ContainsAny(arg, "\x00\n\r`$<>;|&") {
+			return false
+		}
+		switch arg {
+		case "-n", "--namespace", "-l", "--selector", "-o", "--output", "--context", "--field-selector":
+			i++
+			if i >= len(args) || !isSafeTerminalToken(args[i]) {
+				return false
+			}
+		case "-A", "--all-namespaces", "--show-labels", "--watch=false":
+			continue
+		default:
+			if strings.HasPrefix(arg, "--namespace=") || strings.HasPrefix(arg, "--selector=") ||
+				strings.HasPrefix(arg, "--output=") || strings.HasPrefix(arg, "--context=") ||
+				strings.HasPrefix(arg, "--field-selector=") {
+				_, value, _ := strings.Cut(arg, "=")
+				if !isSafeTerminalToken(value) {
+					return false
+				}
+				continue
+			}
+			if arg == "-w" || arg == "--watch" || strings.HasPrefix(arg, "--watch=") {
+				return false
+			}
+			if strings.HasPrefix(arg, "-") {
+				return false
+			}
+			if !isSafeTerminalToken(arg) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isAllowedReadOnlyRedisCLIArgs(args []string) bool {
+	commandIndex := -1
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || strings.ContainsAny(arg, "\x00\n\r`$<>;|&") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			switch arg {
+			case "-h", "-p", "-n", "-u", "-a", "--user", "--pass", "--tls":
+				if arg != "--tls" {
+					i++
+					if i >= len(args) || !isSafeTerminalToken(args[i]) {
+						return false
+					}
+				}
+				continue
+			default:
+				return false
+			}
+		}
+		commandIndex = i
+		break
+	}
+	if commandIndex < 0 {
+		return false
+	}
+	cmd := strings.ToUpper(strings.TrimSpace(args[commandIndex]))
+	switch cmd {
+	case "INFO":
+		return len(args[commandIndex+1:]) <= 1 && allSafeTerminalTokens(args[commandIndex+1:])
+	case "MEMORY":
+		return len(args[commandIndex+1:]) == 1 && strings.EqualFold(args[commandIndex+1], "STATS")
+	default:
+		return false
+	}
+}
+
+func allSafeTerminalTokens(values []string) bool {
+	for _, value := range values {
+		if !isSafeTerminalToken(value) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeTerminalToken(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\x00\n\r`$<>;|&") {
+		return false
+	}
+	for _, r := range value {
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("_-./:=,@%", r)) {
+			return false
+		}
+	}
+	return true
 }
 
 func isReadOnlyIfconfigArgs(args []string) bool {

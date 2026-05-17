@@ -53,6 +53,29 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 	}
 }
 
+func TestToolPromptSetOmitsRemovedOpsTools(t *testing.T) {
+	compiler := NewCompiler()
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "runbook.match", Description: "old runbook"}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "fallback.plan_exec", Description: "old fallback"}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "erp.business_metric", Description: "old erp"}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "coroot.service_metrics", Description: "Get service metrics"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	for _, forbidden := range []string{"runbook.match", "fallback.plan_exec", "erp.business_metric"} {
+		if strings.Contains(compiled.Tools.Content, forbidden) {
+			t.Fatalf("tool prompt contains removed tool %q:\n%s", forbidden, compiled.Tools.Content)
+		}
+	}
+	if !strings.Contains(compiled.Tools.Content, "coroot.service_metrics") {
+		t.Fatalf("tool prompt should keep coroot tool:\n%s", compiled.Tools.Content)
+	}
+}
+
 type governancePromptTool struct {
 	meta tooling.ToolMetadata
 }

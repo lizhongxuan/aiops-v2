@@ -1,0 +1,291 @@
+[
+  {
+    "name": "pg ubuntu backup direct",
+    "text": "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run"
+  },
+  {
+    "name": "pg centos backup adapt",
+    "text": "在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+    "metadata": {
+      "target_name": "pg-centos-01"
+    },
+    "expected_decision": "adapt",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu"
+  },
+  {
+    "name": "mysql backup direct",
+    "text": "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，备份到 /data/backups，已确认 ssh_access 和 connection_test 正常",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu"]
+  },
+  {
+    "name": "mysql backup must not use pg",
+    "text": "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，备份到 /data/backups，已确认 ssh_access 正常",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu"],
+    "required_missing_fields": ["connection_test"]
+  },
+  {
+    "name": "short redis needs info",
+    "text": "排查 Redis",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "required_missing_fields": ["target_instance", "execution_surface", "symptom", "metrics"]
+  },
+  {
+    "name": "redis memory direct",
+    "text": "redis-local-01 prod vm ssh Redis used_memory_rss rising symptom metrics medium readonly no restart no write",
+    "metadata": {
+      "target_name": "redis-local-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run"
+  },
+  {
+    "name": "redis no restart not restart workflow",
+    "text": "只读排查 Redis redis-01，不重启服务，只看 metrics 和 symptom，通过 ssh",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "forbidden_decisions": ["adapt"]
+  },
+  {
+    "name": "k8s pod crashloop recalled",
+    "text": "checkout pod payment-api-7c9f CrashLoopBackOff by kubectl",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-k8s-pod-crashloop-rca",
+    "required_missing_fields": ["namespace", "rbac_read_ok"]
+  },
+  {
+    "name": "k8s oom recalled",
+    "text": "k8s pod payment-api OOMKilled 频繁重启 kubectl",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-k8s-pod-crashloop-rca",
+    "forbidden_manual_ids": ["manual-redis-rca-ssh", "manual-pg-backup-ubuntu"]
+  },
+  {
+    "name": "network latency no executable manual",
+    "text": "帮我看一下网络慢",
+    "forbidden_decisions": ["direct_execute", "adapt"]
+  },
+  {
+    "name": "install tool no executable manual",
+    "text": "安装一个工具",
+    "forbidden_decisions": ["direct_execute", "adapt"]
+  },
+  {
+    "name": "sql query no executable manual",
+    "text": "写一个 SQL 查询",
+    "forbidden_decisions": ["direct_execute", "adapt"]
+  },
+  {
+    "name": "pg backup missing pg_isready",
+    "text": "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 正常",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "required_missing_fields": ["pg_isready"]
+  },
+  {
+    "name": "pg backup missing backup path",
+    "text": "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，已确认 ssh_access 和 pg_isready 正常",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "required_missing_fields": ["backup_path"]
+  },
+  {
+    "name": "redis missing metrics",
+    "text": "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis 故障，只有 symptom",
+    "metadata": {
+      "target_name": "redis-local-01"
+    },
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "required_missing_fields": ["metrics"]
+  },
+  {
+    "name": "pg restore is reference only",
+    "text": "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 恢复 PostgreSQL 数据，备份文件在 /data/backups/base.dump",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "reference_only",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "forbidden_decisions": ["direct_execute", "adapt"]
+  },
+  {
+    "name": "redis backup is not redis rca direct",
+    "text": "通过 ssh 对 redis-01 做 Redis 备份到 /data/backups",
+    "forbidden_decisions": ["direct_execute", "adapt"]
+  },
+  {
+    "name": "k8s pod with rbac missing namespace still need info",
+    "text": "kubectl checkout pod payment-api CrashLoopBackOff rbac_read_ok",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-k8s-pod-crashloop-rca",
+    "required_missing_fields": ["namespace"]
+  },
+  {
+    "name": "postgres nickname pg direct",
+    "text": "prod vm ssh PG backup pg-ubuntu-01 /data/backups ssh_access pg_isready",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu"
+  },
+  {
+    "name": "postgres english back up needs info not reference",
+    "text": "Back up PostgreSQL on current host using ops manual",
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "forbidden_decisions": ["reference_only"],
+    "required_missing_fields": ["target_instance", "backup_path"]
+  },
+  {
+    "name": "redis slowlog metrics direct",
+    "text": "prod vm ssh Redis redis-cache-01 slowlog symptom metrics p95 rising readonly",
+    "metadata": {
+      "target_name": "redis-cache-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run"
+  },
+  {
+    "name": "pg readonly triage must not become backup direct",
+    "text": "prod vm ssh PostgreSQL pg-ubuntu-01 只读排查 pg_isready metrics symptom readonly no write 不写入",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "reference_only",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-mysql-backup-ssh", "manual-redis-rca-ssh"]
+  },
+  {
+    "name": "mysql readonly triage must not become backup direct",
+    "text": "prod vm ssh MySQL mysql-01 只读排查 connection_test metrics symptom readonly no write 不写入",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "reference_only",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu", "manual-redis-rca-ssh"]
+  },
+  {
+    "name": "redis oom text must not hit k8s oom manual",
+    "text": "prod vm ssh Redis redis-cache-01 OOM memory pressure used_memory_rss p95 symptom metrics readonly no restart",
+    "metadata": {
+      "target_name": "redis-cache-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-redis-rca-ssh",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_manual_ids": ["manual-k8s-pod-crashloop-rca"]
+  },
+  {
+    "name": "k8s oom complete identifiers still read only preflight",
+    "text": "prod k8s kubectl namespace checkout pod payment-api-7c9f OOMKilled CrashLoopBackOff rbac_read_ok readonly no write",
+    "metadata": {
+      "target_name": "payment-api-7c9f",
+      "namespace": "checkout",
+      "pod_name": "payment-api-7c9f"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-k8s-pod-crashloop-rca",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_missing_fields": ["namespace", "pod_name", "rbac_read_ok"],
+    "forbidden_manual_ids": ["manual-redis-rca-ssh", "manual-pg-backup-ubuntu", "manual-mysql-backup-ssh"]
+  },
+  {
+    "name": "k8s crashloop complete identifiers still read only preflight",
+    "text": "prod kubernetes kubectl namespace payments pod payment-api-7c9f CrashLoopBackOff previous state events rbac_read_ok readonly",
+    "metadata": {
+      "target_name": "payment-api-7c9f",
+      "namespace": "payments",
+      "pod_name": "payment-api-7c9f"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-k8s-pod-crashloop-rca",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_missing_fields": ["namespace", "pod_name", "rbac_read_ok"],
+    "forbidden_manual_ids": ["manual-redis-rca-ssh", "manual-pg-backup-ubuntu", "manual-mysql-backup-ssh"]
+  },
+  {
+    "name": "tidb unknown middleware no executable manual",
+    "text": "prod vm ssh 排查 TiDB tidb-01 latency symptom metrics readonly no write",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu", "manual-mysql-backup-ssh", "manual-redis-rca-ssh", "manual-k8s-pod-crashloop-rca"]
+  },
+  {
+    "name": "elasticsearch unknown middleware no executable manual",
+    "text": "prod vm ssh 排查 Elasticsearch es-01 heap pressure symptom metrics readonly no write",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu", "manual-mysql-backup-ssh", "manual-redis-rca-ssh", "manual-k8s-pod-crashloop-rca"]
+  },
+  {
+    "name": "mysql restore is reference only not backup",
+    "text": "在 Ubuntu 主机 mysql-01 上通过 ssh 恢复 MySQL 数据，备份文件在 /data/backups/mysql.dump，已确认 ssh_access 和 connection_test 正常",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "reference_only",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "forbidden_decisions": ["direct_execute", "adapt"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu"]
+  },
+  {
+    "name": "pg backup must not use mysql manual",
+    "text": "prod vm ssh PostgreSQL pg-ubuntu-01 backup /data/backups ssh_access pg_isready，不要跨中间件升级为其他数据库手册",
+    "metadata": {
+      "target_name": "pg-ubuntu-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-pg-backup-ubuntu",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_manual_ids": ["manual-mysql-backup-ssh"]
+  },
+  {
+    "name": "mysql backup must not use pg manual",
+    "text": "prod vm ssh MySQL mysql-01 backup /data/backups ssh_access connection_test，不要跨中间件升级为其他数据库手册",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "direct_execute",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "expected_top_action": "run_preflight_probe",
+    "expected_top_preflight": "not_run",
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu"]
+  }
+]

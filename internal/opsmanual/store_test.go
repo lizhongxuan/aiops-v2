@@ -8,16 +8,25 @@ import (
 func TestMemoryStoreClonesManualsCandidatesAndRunRecords(t *testing.T) {
 	store := NewMemoryStore()
 	manual := redisMemoryManual()
+	manual.Tags = []string{"redis", "memory"}
+	manual.RetrievalProfile = RetrievalProfile{Keywords: []string{"used_memory_rss"}}
+	manual.PreflightProbe = PreflightProbe{ID: "redis_readonly_probe", RequiredOutputs: []string{"redis_ping"}}
 	if err := store.SaveManual(manual); err != nil {
 		t.Fatalf("SaveManual() error = %v", err)
 	}
 	manual.Metadata = map[string]any{"mutated": true}
+	manual.Tags[0] = "mutated"
+	manual.RetrievalProfile.Keywords[0] = "mutated"
+	manual.PreflightProbe.RequiredOutputs[0] = "mutated"
 	restored, err := store.GetManual("manual-redis-memory")
 	if err != nil {
 		t.Fatalf("GetManual() error = %v", err)
 	}
 	if restored.Metadata["mutated"] != nil {
 		t.Fatalf("store retained caller mutation: %#v", restored.Metadata)
+	}
+	if restored.Tags[0] != "redis" || restored.RetrievalProfile.Keywords[0] != "used_memory_rss" || restored.PreflightProbe.RequiredOutputs[0] != "redis_ping" {
+		t.Fatalf("store retained nested caller mutation: %#v", restored)
 	}
 
 	candidate := ManualCandidate{ID: "candidate-1", ProposedManual: redisMemoryManual(), ReviewStatus: "pending"}
@@ -45,7 +54,11 @@ func TestFileStoreRoundTripsLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore() error = %v", err)
 	}
-	if err := store.SaveManual(redisMemoryManual()); err != nil {
+	manual := redisMemoryManual()
+	manual.Tags = []string{"redis", "memory"}
+	manual.RetrievalProfile = RetrievalProfile{Keywords: []string{"used_memory_rss"}}
+	manual.PreflightProbe = PreflightProbe{ID: "redis_readonly_probe", RequiredOutputs: []string{"redis_ping"}}
+	if err := store.SaveManual(manual); err != nil {
 		t.Fatalf("SaveManual() error = %v", err)
 	}
 	if err := store.SaveCandidate(ManualCandidate{ID: "candidate-1", ProposedManual: redisMemoryManual(), ReviewStatus: "pending"}); err != nil {
@@ -62,6 +75,9 @@ func TestFileStoreRoundTripsLibrary(t *testing.T) {
 	manuals, err := reopened.ListManuals(ListManualsRequest{Status: ManualStatusVerified})
 	if err != nil || len(manuals) != 1 {
 		t.Fatalf("ListManuals() = %#v, %v", manuals, err)
+	}
+	if manuals[0].RetrievalProfile.Keywords[0] != "used_memory_rss" || manuals[0].PreflightProbe.ID != "redis_readonly_probe" {
+		t.Fatalf("enhanced fields lost after file round trip: %#v", manuals[0])
 	}
 	candidates, err := reopened.ListCandidates()
 	if err != nil || len(candidates) != 1 {
@@ -83,8 +99,8 @@ func TestFileStoreFixtureSupportsSearchOpsManualsDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListManuals() error = %v", err)
 	}
-	if len(manuals) != 2 {
-		t.Fatalf("manual count = %d, want 2", len(manuals))
+	if len(manuals) != 4 {
+		t.Fatalf("manual count = %d, want 4", len(manuals))
 	}
 	pgManual, err := store.GetManual("manual-pg-backup-ubuntu")
 	if err != nil {
@@ -110,7 +126,7 @@ func TestFileStoreFixtureSupportsSearchOpsManualsDecisions(t *testing.T) {
 		t.Fatalf("pg records = %#v, want one passed record", records)
 	}
 
-	direct := searchFixture(t, store, "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常")
+	direct := searchFixtureWithMetadata(t, store, "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", map[string]any{"target_name": "pg-ubuntu-01"})
 	if direct.Decision != DecisionDirectExecute {
 		t.Fatalf("direct decision = %q, want direct_execute; result=%#v", direct.Decision, direct)
 	}
@@ -121,7 +137,7 @@ func TestFileStoreFixtureSupportsSearchOpsManualsDecisions(t *testing.T) {
 		t.Fatalf("direct run summary = %#v, want successful fixture run", direct.Manuals[0].RunRecordSummary)
 	}
 
-	adapt := searchFixture(t, store, "在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常")
+	adapt := searchFixtureWithMetadata(t, store, "在 CentOS 主机 pg-centos-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常", map[string]any{"target_name": "pg-centos-01"})
 	if adapt.Decision != DecisionAdapt {
 		t.Fatalf("adapt decision = %q, want adapt; result=%#v", adapt.Decision, adapt)
 	}
@@ -173,7 +189,12 @@ func assertManualFixture(t *testing.T, manual OpsManual) {
 
 func searchFixture(t *testing.T, store *FileStore, text string) SearchOpsManualsResult {
 	t.Helper()
-	result, err := SearchOpsManuals(store, SearchOpsManualsRequest{Text: text})
+	return searchFixtureWithMetadata(t, store, text, nil)
+}
+
+func searchFixtureWithMetadata(t *testing.T, store *FileStore, text string, metadata map[string]any) SearchOpsManualsResult {
+	t.Helper()
+	result, err := SearchOpsManuals(store, SearchOpsManualsRequest{Text: text, Metadata: metadata})
 	if err != nil {
 		t.Fatalf("SearchOpsManuals(%q) error = %v", text, err)
 	}

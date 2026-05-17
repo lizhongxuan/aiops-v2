@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -68,17 +69,42 @@ func BuildRunRecordFromWorkflowResult(result WorkflowResult) (RunRecord, error) 
 func SummarizeRunRecords(records []RunRecord) RunRecordSummary {
 	summary := RunRecordSummary{}
 	for _, record := range records {
-		if record.ValidationStatus == "passed" {
+		if runRecordPassed(record) {
 			summary.SuccessCount++
 		}
-		if record.ExecutionStatus == "failed" || record.ValidationStatus == "failed" {
+		if runRecordFailed(record) {
 			summary.FailureCount++
 		}
 		when := runRecordTime(record)
 		if when > summary.LastRunAt {
 			summary.LastRunAt = when
-			summary.RecentResult = recentRunResult(record)
+			summary.LatestStatus = recentRunResult(record)
+			summary.RecentResult = summary.LatestStatus
 		}
+	}
+	sorted := append([]RunRecord{}, records...)
+	sortRunRecordsByTime(sorted)
+	for _, record := range sorted {
+		switch {
+		case runRecordFailed(record):
+			summary.ConsecutiveFailures++
+		case runRecordPassed(record):
+			goto done
+		default:
+			goto done
+		}
+	}
+done:
+	if summary.LatestStatus == "" {
+		summary.LatestStatus = summary.RecentResult
+	}
+	if latestRunFailed(summary) {
+		summary.Suppressed = true
+		summary.SuppressedReason = "latest run record did not pass validation"
+	}
+	if summary.ConsecutiveFailures >= 2 {
+		summary.Suppressed = true
+		summary.SuppressedReason = fmt.Sprintf("consecutive failures: %d", summary.ConsecutiveFailures)
 	}
 	return summary
 }
@@ -148,12 +174,44 @@ func runRecordTime(record RunRecord) string {
 func recentRunResult(record RunRecord) string {
 	switch {
 	case record.ValidationStatus != "":
-		return record.ValidationStatus
+		return normalizeRunRecordStatus(record.ValidationStatus)
 	case record.ExecutionStatus != "":
-		return record.ExecutionStatus
+		return normalizeRunRecordStatus(record.ExecutionStatus)
 	case record.DryRunStatus != "":
-		return record.DryRunStatus
+		return normalizeRunRecordStatus(record.DryRunStatus)
 	default:
 		return ""
 	}
+}
+
+func runRecordPassed(record RunRecord) bool {
+	return normalizeRunRecordStatus(record.ValidationStatus) == "passed" ||
+		(record.ValidationStatus == "" && normalizeRunRecordStatus(record.ExecutionStatus) == "passed")
+}
+
+func runRecordFailed(record RunRecord) bool {
+	return normalizeRunRecordStatus(record.ValidationStatus) == "failed" ||
+		normalizeRunRecordStatus(record.ExecutionStatus) == "failed"
+}
+
+func normalizeRunRecordStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "passed", "pass", "success", "succeeded", "ok":
+		return "passed"
+	case "failed", "fail", "error", "errored":
+		return "failed"
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func sortRunRecordsByTime(records []RunRecord) {
+	sort.SliceStable(records, func(i, j int) bool {
+		left := runRecordTime(records[i])
+		right := runRecordTime(records[j])
+		if left == right {
+			return records[i].ID < records[j].ID
+		}
+		return left > right
+	})
 }

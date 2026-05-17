@@ -139,3 +139,17 @@ func TestCorootToolReturnsStructuredError(t *testing.T) {
 		t.Fatalf("error kind = %#v, want upstream_server_error", errPayload["kind"])
 	}
 }
+
+func TestCorootToolPromptTellsAgentToProbeInsteadOfAskUser(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"applications":[]}}`))
+	})
+	tool := corootToolByName(t, tools, "coroot.list_services")
+	prompt := tool.Prompt(tooling.PromptContext{SessionType: "host", Mode: "chat", Metadata: tool.Metadata()})
+	for _, want := range []string{"aiops.coroot.project", "availability/service probe", "instead of asking the user whether Coroot evidence exists"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, want %q", prompt, want)
+		}
+	}
+}

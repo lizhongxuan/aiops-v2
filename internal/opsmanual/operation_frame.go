@@ -7,29 +7,27 @@ import (
 )
 
 var backupPathPattern = regexp.MustCompile(`(?i)(/data/[^\s，。；,;]+|/[^\s，。；,;]*backup[^\s，。；,;]*)`)
+var labeledTargetPattern = regexp.MustCompile(`(?im)(?:目标实例/服务|目标实例|目标服务|目标对象|实例|服务)\s*[:：]\s*([^\n\r，。；,;]+)`)
 
 func BuildOperationFrame(text string, metadata map[string]any) OperationFrame {
 	lower := strings.ToLower(text)
 	frame := OperationFrame{RawText: text, Metadata: cloneMap(metadata), RequiredParams: map[string]any{}}
-	frame.Target.Type = firstMatch(lower, map[string][]string{
-		"redis":      {"redis"},
-		"postgresql": {"postgresql", "postgres", "pg_dump", "pg_basebackup", " pg ", " pg-", "pg-"},
-		"mysql":      {"mysql", "mysqldump"},
-	})
+	frame.Target.Type = detectObjectType(text)
 	frame.ObjectType = frame.Target.Type
-	frame.Target.Name = metadataString(metadata, "target_name")
+	frame.Target.Name = firstNonEmpty(
+		metadataString(metadata, "target_name"),
+		metadataString(metadata, "target_instance"),
+		metadataString(metadata, "pod_name"),
+	)
 	if frame.Target.Name == "" {
-		frame.Target.Name = extractTargetName(text, frame.Target.Type)
+		frame.Target.Name = extractLabeledTargetName(text, frame.Target.Type)
 	}
 	if frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
+	applyExplicitContextMetadata(&frame, metadata)
 	frame.Operation.TargetType = frame.Target.Type
-	frame.Operation.Action = firstMatch(lower, map[string][]string{
-		"backup":        {"备份", "backup", "dump"},
-		"deploy":        {"部署", "主从", "install"},
-		"rca_or_repair": {"排查", "故障", "恢复", "rca", "triage", "repair"},
-	})
+	frame.Operation.Action = detectOperationType(text)
 	if frame.Operation.Action == "" && frame.Target.Type != "" {
 		frame.Operation.Action = "rca_or_repair"
 	}
@@ -73,10 +71,14 @@ func BuildOperationFrame(text string, metadata map[string]any) OperationFrame {
 		frame.RequiredParams["backup_path"] = backupPath
 	}
 	frame.Evidence.Missing = missingContext(frame, lower)
-	if frame.Operation.Stateful || frame.Target.Type == "redis" || frame.Target.Type == "postgresql" || frame.Target.Type == "mysql" {
+	if frame.Operation.Stateful || frame.Target.Type == "redis" || frame.Target.Type == "postgresql" || frame.Target.Type == "mysql" || frame.Target.Type == "kafka" {
 		frame.Operation.Stateful = true
 		frame.Risk.Level = "medium"
 		frame.Risk.Reason = "stateful middleware operation"
+	}
+	if frame.Risk.Level == "" && frame.Operation.Action == "rca_or_repair" && frame.Target.Type != "" {
+		frame.Risk.Level = "medium"
+		frame.Risk.Reason = "operations troubleshooting"
 	}
 	if strings.Contains(lower, "恢复") || strings.Contains(lower, "restore") || strings.Contains(lower, "delete") || strings.Contains(lower, "drop") {
 		frame.Risk.DataMutation = true
@@ -115,66 +117,54 @@ func maxRiskLevel(left, right string) string {
 	return left
 }
 
-func extractTargetName(text, targetType string) string {
+func extractLabeledTargetName(text, targetType string) string {
 	if targetType == "" {
 		return ""
 	}
-	fields := strings.Fields(strings.ReplaceAll(text, "，", " "))
-	for i, field := range fields {
-		candidate := strings.Trim(field, " ，。；,;")
-		lowerCandidate := strings.ToLower(candidate)
-		switch targetType {
-		case "postgresql":
-			if strings.HasPrefix(lowerCandidate, "pg-") || strings.HasPrefix(lowerCandidate, "postgres-") {
-				return candidate
-			}
-		case "mysql":
-			if strings.HasPrefix(lowerCandidate, "mysql-") {
-				return candidate
-			}
-		case "redis":
-			if strings.HasPrefix(lowerCandidate, "redis-") {
-				return candidate
-			}
-		}
-		if i > 0 && (field == "上" || field == "中") {
-			prev := strings.Trim(fields[i-1], " 的，。；,;")
-			if looksLikeInstanceName(prev, targetType) {
-				return prev
-			}
-		}
+	match := labeledTargetPattern.FindStringSubmatch(text)
+	if len(match) <= 1 {
+		return ""
 	}
-	for i, field := range fields {
-		if strings.EqualFold(strings.Trim(field, " 的"), targetType) && i > 0 {
-			j := i - 1
-			for j >= 0 && strings.Trim(fields[j], " 的") == "" {
-				j--
-			}
-			if j < 0 {
-				return ""
-			}
-			candidate := strings.Trim(fields[j], " 的")
-			if candidate != "" && candidate != "生产" && candidate != "prod" {
-				for _, verb := range []string{"排查", "故障", "恢复", "备份", "部署", "请"} {
-					if candidate == verb {
-						return ""
-					}
-				}
-				return candidate
-			}
-		}
+	candidate := strings.TrimSpace(strings.Trim(match[1], " `\"'，。；,;"))
+	if candidate == "" {
+		return ""
 	}
-	return ""
+	fields := strings.Fields(candidate)
+	if len(fields) > 0 {
+		candidate = strings.Trim(fields[0], " `\"'，。；,;")
+	}
+	if candidate == "" {
+		return ""
+	}
+	return candidate
 }
 
 func evidenceFromText(text string) []string {
 	var out []string
-	for _, item := range []string{"ssh_access", "pg_isready", "used_memory_rss", "coroot", "p95", "metrics", "pg_version", "disk_free", "connection_test", "version"} {
+	for _, item := range []string{"ssh_access", "pg_isready", "used_memory_rss", "coroot", "p95", "metrics", "pg_version", "disk_free", "connection_test", "rbac_read_ok", "kubectl_access", "pod_exists", "version"} {
 		if strings.Contains(text, item) {
 			out = appendUnique(out, item)
 		}
 	}
+	if strings.Contains(text, "readonly") || strings.Contains(text, "只读") || strings.Contains(text, "不写入") || strings.Contains(text, "no write") {
+		out = appendUnique(out, "readonly")
+	}
+	if strings.Contains(text, "kubectl") {
+		out = appendUnique(out, "kubectl_access")
+	}
+	if strings.Contains(text, "crashloopbackoff") || strings.Contains(text, "频繁重启") || strings.Contains(text, "反复重启") {
+		out = appendUnique(out, "pod_restart")
+		out = appendUnique(out, "symptom")
+	}
+	if strings.Contains(text, "oomkilled") || strings.Contains(text, "内存打爆") {
+		out = appendUnique(out, "oom")
+		out = appendUnique(out, "symptom")
+	}
 	if strings.Contains(text, "指标") {
+		out = appendUnique(out, "metrics")
+	}
+	if strings.Contains(text, "lag") || strings.Contains(text, "rebalance") || strings.Contains(text, "broker") || strings.Contains(text, "partition") {
+		out = appendUnique(out, "symptom")
 		out = appendUnique(out, "metrics")
 	}
 	if strings.Contains(text, "症状") || strings.Contains(text, "持续上涨") || strings.Contains(text, "升高") ||
@@ -190,6 +180,9 @@ func hasPositiveRestartIntent(lower string) bool {
 		strings.Contains(lower, "do not restart") || strings.Contains(lower, "不重启") || strings.Contains(lower, "无需重启") {
 		return false
 	}
+	if strings.Contains(lower, "频繁重启") || strings.Contains(lower, "反复重启") {
+		return false
+	}
 	return strings.Contains(lower, "重启") || strings.Contains(lower, "restart") || strings.Contains(lower, "systemctl restart")
 }
 
@@ -198,7 +191,7 @@ func missingContext(frame OperationFrame, lower string) []string {
 	if frame.Target.Name == "" {
 		missing = appendUnique(missing, "target_instance")
 	}
-	if frame.Environment.Env == "" {
+	if frame.Environment.Env == "" && shouldRequireEnvironment(frame) {
 		missing = appendUnique(missing, "environment")
 	}
 	if frame.Environment.ExecutionSurface == "" {
@@ -208,7 +201,7 @@ func missingContext(frame OperationFrame, lower string) []string {
 		if !hasAny(frame.Evidence.Provided, "symptom") {
 			missing = appendUnique(missing, "symptom")
 		}
-		if !hasAny(frame.Evidence.Provided, "metrics", "used_memory_rss", "p95", "coroot") {
+		if frame.Target.Type != "kubernetes_pod" && !hasAny(frame.Evidence.Provided, "metrics", "used_memory_rss", "p95", "coroot") {
 			missing = appendUnique(missing, "metrics")
 		}
 	}
@@ -216,6 +209,35 @@ func missingContext(frame OperationFrame, lower string) []string {
 		missing = appendUnique(missing, "backup_path")
 	}
 	return missing
+}
+
+func applyExplicitContextMetadata(frame *OperationFrame, metadata map[string]any) {
+	if frame == nil {
+		return
+	}
+	if namespace := metadataString(metadata, "namespace"); namespace != "" {
+		frame.TargetScope.Namespace = namespace
+		frame.RequiredParams["namespace"] = namespace
+	}
+	if podName := metadataString(metadata, "pod_name"); podName != "" {
+		frame.RequiredParams["pod_name"] = podName
+		if frame.Target.Name == "" {
+			frame.Target.Name = podName
+		}
+	}
+	if frame.Target.Type == "kubernetes_pod" && frame.Target.Name != "" && !valuePresent(frame.RequiredParams["pod_name"]) {
+		frame.RequiredParams["pod_name"] = frame.Target.Name
+	}
+	if frame.Target.Name != "" {
+		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
+	}
+}
+
+func shouldRequireEnvironment(frame OperationFrame) bool {
+	if frame.Target.Type == "kubernetes_pod" && frame.TargetScope.Namespace != "" {
+		return false
+	}
+	return true
 }
 
 func extractBackupPath(text string) string {
@@ -283,23 +305,6 @@ func ensureMap(in map[string]any) map[string]any {
 		return in
 	}
 	return map[string]any{}
-}
-
-func looksLikeInstanceName(candidate, targetType string) bool {
-	lower := strings.ToLower(strings.TrimSpace(candidate))
-	if lower == "" {
-		return false
-	}
-	switch targetType {
-	case "postgresql":
-		return strings.HasPrefix(lower, "pg-") || strings.HasPrefix(lower, "postgres-")
-	case "mysql":
-		return strings.HasPrefix(lower, "mysql-")
-	case "redis":
-		return strings.HasPrefix(lower, "redis-")
-	default:
-		return strings.Contains(lower, "-")
-	}
 }
 
 func metadataString(metadata map[string]any, key string) string {

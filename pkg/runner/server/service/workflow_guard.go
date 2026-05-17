@@ -12,6 +12,7 @@ const (
 	WorkflowErrorCodeReferencedByCandidates   = "workflow_referenced_by_candidates"
 	WorkflowErrorCodeVersionLocked            = "workflow_version_locked"
 	WorkflowErrorCodeDigestMismatch           = "workflow_digest_mismatch"
+	WorkflowErrorCodeOpsManualPreflight       = "ops_manual_preflight_required"
 	workflowReferenceStatusVerified           = "verified"
 	workflowReferenceStatusCandidate          = "candidate"
 	workflowReferenceStatusDraft              = "draft"
@@ -25,6 +26,7 @@ var (
 	ErrWorkflowReferencedByCandidates = fmt.Errorf("%w: workflow is referenced by draft or candidate ops manual", ErrConflict)
 	ErrWorkflowVersionLocked          = fmt.Errorf("%w: workflow version is locked by verified ops manual", ErrConflict)
 	ErrWorkflowDigestMismatch         = fmt.Errorf("%w: workflow digest mismatch", ErrConflict)
+	ErrOpsManualPreflightRequired     = fmt.Errorf("%w: ops manual preflight passed is required", ErrConflict)
 )
 
 type WorkflowReferenceChecker interface {
@@ -265,4 +267,59 @@ func VerifyWorkflowDigest(expected string, raw []byte) error {
 
 func IsWorkflowDigestMismatch(err error) bool {
 	return errors.Is(err, ErrWorkflowDigestMismatch)
+}
+
+func VerifyOpsManualPreflight(req *RunRequest) error {
+	if req == nil || !isOpsManualRunRequest(req) {
+		return nil
+	}
+	status := strings.ToLower(strings.TrimSpace(req.PreflightStatus))
+	if status == "" {
+		status = strings.ToLower(strings.TrimSpace(metadataString(req.Metadata, "preflight_status")))
+	}
+	if status == "passed" {
+		return nil
+	}
+	message := "运维手册工作流执行前必须先完成预检并通过"
+	if status != "" {
+		message = fmt.Sprintf("运维手册工作流预检状态为 %q，不能执行 Runner", status)
+	}
+	return &WorkflowGuardError{
+		code:    WorkflowErrorCodeOpsManualPreflight,
+		message: message,
+		cause:   ErrOpsManualPreflightRequired,
+	}
+}
+
+func isOpsManualRunRequest(req *RunRequest) bool {
+	if req == nil {
+		return false
+	}
+	if strings.TrimSpace(req.ManualID) != "" {
+		return true
+	}
+	for _, key := range []string{"manual_id", "ops_manual_id"} {
+		if strings.TrimSpace(metadataString(req.Metadata, key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	default:
+		return fmt.Sprint(typed)
+	}
 }

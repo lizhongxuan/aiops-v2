@@ -52,11 +52,26 @@ AIOps 的核心积累是“运维手册 + Runner Workflow + Run Record”：
 
 AI Chat 不能用纯语义命中率决定是否执行。它必须先抽取 Operation Frame，再按目标对象、操作类型、平台、执行面、权限、参数和验证证据判断：可直接执行、需补充信息、需适配工作流变体，或只能参考手册逐步人工审核。
 
-运维手册回滚开关：
+运维手册运行开关：
 
-- `AIOPS_OPS_MANUAL_AUTO_RETRIEVAL=0`：临时关闭 AI Chat 自动插入运维手册检索卡片，保留手动搜索和管理页。
+- `AIOPS_OPS_MANUAL_AUTO_RETRIEVAL=1`：兼容开关，允许 AI Chat 在模型没有显式调用 `search_ops_manuals` 时补插只读检索卡片；默认关闭，推荐让 LLM 根据工具契约自行决定是否调用运维手册检索。
 - `AIOPS_WORKFLOW_REFERENCE_GUARD_MODE=warn`：当 Runner Workflow 被 verified 运维手册引用时，编辑/导入/回滚从 hard block 降级为 warning；真实执行仍必须通过 `workflow_digest` 校验。
-- 检索默认使用结构化规则和持久化 Run Record 排序，不依赖向量数据库；生产可用 `AIOPS_STORE_DRIVER=mysql` + `AIOPS_MYSQL_DSN` 使用 Gorm/MySQL 持久化。
+- 检索默认使用结构化规则和持久化 Run Record 排序，不依赖向量数据库；生产可用 `AIOPS_STORE_DRIVER=postgres` + `AIOPS_POSTGRES_DSN` 使用 Gorm/PostgreSQL 持久化。
+
+本地 PostgreSQL 启动示例：
+
+```bash
+docker run -d --name aiops-postgres \
+  -e POSTGRES_USER=aiops \
+  -e POSTGRES_PASSWORD=aiops \
+  -e POSTGRES_DB=aiops \
+  -p 127.0.0.1:55432:5432 \
+  pgvector/pgvector:pg16
+
+export AIOPS_STORE_DRIVER=postgres
+export AIOPS_POSTGRES_DSN='postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable'
+./scripts/start.sh
+```
 
 ## React Chat v2 终态规则（2026-05）
 
@@ -724,6 +739,7 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - 非 tool 的补充上下文只能走 `SkillPromptAssets` 或 `ExtraSections`
 - prompt 文案不能替代硬策略；真正的 allow / deny / ask 必须进 `PolicyEngine` / `PermissionEngine`
 - 新 mode / policy / governance source 若改变行为，必须同步补装配与回归测试
+- 不要把全局语义策略写死在局部函数里：LLM 何时调用 tool、选哪个实例对象、是否启动运维手册检索、如何解释用户自然语言意图，应通过 developer prompt、tool 描述和结构化 `operation_frame` 契约表达；后端代码只负责安全边界、schema 校验、显式结构字段解析、资源发现结果归一化、评分/阈值/权限/预检等确定性验证。禁止用 `extractTargetName` 这类面向局部场景的自然语言关键字/正则猜测来替代 LLM 的全局语义决策。
 
 **新增 LLM Provider**
 

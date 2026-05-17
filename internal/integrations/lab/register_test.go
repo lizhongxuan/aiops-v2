@@ -35,7 +35,7 @@ func TestRegisterBuiltinsRequiresRegistry(t *testing.T) {
 func TestRegisterBuiltinsRegistersLabServerAndTools(t *testing.T) {
 	mcpRegistry := mcp.NewRegistry()
 
-	if err := RegisterBuiltins(mcpRegistry); err != nil {
+	if err := RegisterBuiltins(mcpRegistry, Options{Mode: "dev"}); err != nil {
 		t.Fatalf("RegisterBuiltins() error = %v", err)
 	}
 
@@ -86,5 +86,28 @@ func TestRegisterBuiltinsRegistersLabServerAndTools(t *testing.T) {
 		assertLabVisibility(t, tool, "host", "execute", true)
 		assertLabVisibility(t, tool, "workspace", "inspect", false)
 		assertLabVisibility(t, tool, "workspace", "plan", !want.executeOnly)
+	}
+}
+
+func TestRegisterBuiltinsHidesLabToolsOutsideDevMode(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+
+	if err := RegisterBuiltins(mcpRegistry); err != nil {
+		t.Fatalf("RegisterBuiltins() error = %v", err)
+	}
+
+	if tools := mcpRegistry.DynamicTools(); len(tools) != 0 {
+		t.Fatalf("DynamicTools() len = %d, want 0", len(tools))
+	}
+	if tools := mcpRegistry.ListServerTools("lab"); len(tools) != 0 {
+		t.Fatalf("ListServerTools(lab) len = %d, want 0", len(tools))
+	}
+
+	prodRegistry := mcp.NewRegistry()
+	if err := RegisterBuiltins(prodRegistry, Options{Mode: "prod"}); err != nil {
+		t.Fatalf("RegisterBuiltins(prod) error = %v", err)
+	}
+	if tools := prodRegistry.DynamicTools(); len(tools) != 0 {
+		t.Fatalf("prod DynamicTools() len = %d, want 0", len(tools))
 	}
 }

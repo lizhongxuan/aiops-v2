@@ -14,6 +14,8 @@ func registerResourceRoutes(mux *http.ServeMux, rs *ResourceServer) {
 	mux.HandleFunc("/api/v1/capability-bindings/", rs.handleCapabilityBindings)
 	mux.HandleFunc("/api/v1/ui-cards", rs.handleUICards)
 	mux.HandleFunc("/api/v1/ui-cards/", rs.handleUICards)
+	mux.HandleFunc("/api/v1/agent-ui-artifacts", rs.handleAgentUIArtifacts)
+	mux.HandleFunc("/api/v1/agent-ui-artifacts/", rs.handleAgentUIArtifacts)
 	mux.HandleFunc("/api/v1/script-configs", rs.handleScriptConfigs)
 	mux.HandleFunc("/api/v1/script-configs/", rs.handleScriptConfigs)
 	mux.HandleFunc("/api/v1/lab-environments", rs.handleLabEnvironments)

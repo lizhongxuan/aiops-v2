@@ -4,6 +4,7 @@ import { AppShell } from "@/app/AppShell";
 import { routeInventory } from "@/app/navigation";
 import { ChatPage } from "@/chat/ChatPage";
 import { AgentProfilePage } from "@/pages/AgentProfilePage";
+import { AgentUICenterPage } from "@/pages/AgentUICenterPage";
 import { ApprovalManagementPage } from "@/pages/ApprovalManagementPage";
 import { CapabilityCenterPage } from "@/pages/CapabilityCenterPage";
 import { CorootOverviewPage } from "@/pages/CorootOverviewPage";
@@ -58,6 +59,7 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/mcp": <McpServersPage />,
   "/approval-management": <ApprovalManagementPage />,
   "/capability-center": <CapabilityCenterPage />,
+  "/agent-ui": <AgentUICenterPage />,
   "/ui-cards": <UICardManagementPage />,
   "/script-configs": <ScriptConfigPage />,
   "/coroot": <CorootOverviewPage />,

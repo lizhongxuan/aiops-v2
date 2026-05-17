@@ -96,6 +96,63 @@ describe("normalizeAgentUIArtifact", () => {
     expect(artifact.actions[0]).toEqual({ label: "查看", params: { tab: "result" } });
   });
 
+  it("drops all registered dangerous keys and preserves renderer metadata versions", () => {
+    const artifact = normalizeAgentUIArtifact({
+      type: "verification_result",
+      title: "验证结果",
+      payload: {
+        safe: "ok",
+        html: "<b>bad</b>",
+        script: "alert(1)",
+        iframe: "<iframe />",
+        innerHTML: "<b>bad</b>",
+        outerHTML: "<div>bad</div>",
+        dangerouslySetInnerHTML: { __html: "bad" },
+        onClick: "steal()",
+        onLoad: "steal()",
+        styleText: "body { display: none }",
+      },
+      metadata: {
+        schemaVersion: "agent-ui/v1",
+        cardVersion: "2026-05-17",
+        renderer: "verification-result",
+        onLoad: "steal()",
+      },
+    });
+
+    expect(artifact.payload).toEqual({ safe: "ok" });
+    expect(artifact.metadata).toEqual({
+      schemaVersion: "agent-ui/v1",
+      cardVersion: "2026-05-17",
+      renderer: "verification-result",
+    });
+    expect(JSON.stringify(artifact)).not.toContain("steal");
+    expect(JSON.stringify(artifact)).not.toContain("styleText");
+  });
+
+  it("disables unknown action intents without dropping the action", () => {
+    const artifact = normalizeAgentUIArtifact({
+      type: "workflow_result",
+      title: "修复结果",
+      actions: [
+        { id: "safe", label: "查看", intent: "open", href: "/incidents/case-1" },
+        { id: "unknown", label: "未知动作", intent: "execute_shell", href: "/danger" },
+      ],
+    });
+
+    expect(artifact.actions).toEqual([
+      { id: "safe", label: "查看", intent: "open", href: "/incidents/case-1" },
+      {
+        id: "unknown",
+        label: "未知动作",
+        intent: "execute_shell",
+        href: "/danger",
+        disabled: true,
+        disabledReason: "未知动作 intent：execute_shell",
+      },
+    ]);
+  });
+
   it("preserves a normalized MCP card for Coroot chart artifacts", () => {
     const artifact = normalizeAgentUIArtifact({
       id: "coroot-nginx-latency",
@@ -195,6 +252,27 @@ describe("normalizeAgentUIArtifact", () => {
 
     expect(artifacts.map((item) => item.id)).toEqual(["a", "b"]);
     expect(artifacts.map((item) => item.type)).toEqual(["verification_result", "experience_match"]);
+  });
+
+  it("supports ops manual and workflow Agent-to-UI artifact types", () => {
+    const artifact = normalizeAgentUIArtifact({
+      id: "preflight-1",
+      type: "ops_manual_preflight_result",
+      title: "运维手册预检结果",
+      status: "blocked",
+      payload: {
+        manual_id: "manual-pg-backup",
+        next_action: "request_permission",
+      },
+    });
+
+    expect(artifact).toMatchObject({
+      id: "preflight-1",
+      type: "ops_manual_preflight_result",
+      status: "blocked",
+      title: "运维手册预检结果",
+    });
+    expect(artifact.payload).toMatchObject({ manual_id: "manual-pg-backup" });
   });
 });
 

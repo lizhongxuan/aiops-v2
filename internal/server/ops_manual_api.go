@@ -79,6 +79,46 @@ func (s *HTTPServer) handleOpsManuals(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && path == "resolve-params":
+		var req opsmanual.ResolveOpsManualParamsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.ManualID) == "" {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "manual_id is required")
+			return
+		}
+		if req.RequestText == "" && req.OperationFrame.Target.Type == "" && req.OperationFrame.Operation.Action == "" && req.OperationFrame.RawText == "" {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "operation frame or text is required")
+			return
+		}
+		result, err := service.ResolveParams(req)
+		if err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && path == "preflight":
+		var req opsmanual.PreflightRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.ManualID) == "" {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "manual_id is required")
+			return
+		}
+		if req.OperationFrame.Target.Type == "" && req.OperationFrame.Operation.Action == "" && req.OperationFrame.RawText == "" && len(req.Parameters) == 0 {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, "operation frame or parameters are required")
+			return
+		}
+		result, err := service.RunPreflight(req)
+		if err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	case r.Method == http.MethodGet && path == "candidates":
 		result, err := service.ListCandidates()
 		if err != nil {

@@ -3,6 +3,7 @@ package planning
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 func ApplyPlanUpdate(_ PlanState, args UpdatePlanArgs) (PlanState, error) {
@@ -41,6 +42,9 @@ func normalizeUpdatePlanArgs(args UpdatePlanArgs) (UpdatePlanArgs, error) {
 		if normalized.Text == "" {
 			return UpdatePlanArgs{}, fmt.Errorf("step[%d] text is required", i)
 		}
+		if isVaguePlanStep(normalized.Text) {
+			return UpdatePlanArgs{}, fmt.Errorf("step[%d] text is too vague; describe the operation, evidence/tool, and expected output", i)
+		}
 		if normalized.Status == "" {
 			normalized.Status = StepStatusPending
 		}
@@ -65,4 +69,22 @@ func normalizeUpdatePlanArgs(args UpdatePlanArgs) (UpdatePlanArgs, error) {
 		return UpdatePlanArgs{}, fmt.Errorf("final plan status cannot contain in_progress steps")
 	}
 	return UpdatePlanArgs{Status: status, Steps: steps}, nil
+}
+
+func isVaguePlanStep(text string) bool {
+	normalized := strings.Join(strings.Fields(strings.TrimSpace(text)), "")
+	if normalized == "" {
+		return true
+	}
+	for _, phrase := range []string{
+		"分析问题",
+		"检查服务",
+		"处理故障",
+		"查看情况",
+	} {
+		if normalized == phrase {
+			return true
+		}
+	}
+	return utf8.RuneCountInString(normalized) < 6
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -48,15 +49,15 @@ var _ opsmanual.ManualRepository = (*GormStore)(nil)
 
 // GormStore implements Store using a GORM-backed database. Domain objects are
 // stored as JSON payloads to preserve the existing application contract while
-// allowing MySQL durability and GORM-managed migrations.
+// allowing SQL durability and GORM-managed migrations.
 type GormStore struct {
 	db *gorm.DB
 }
 
 type gormKVRecord struct {
-	Namespace string    `gorm:"primaryKey;size:64"`
-	RecordKey string    `gorm:"primaryKey;column:record_key;size:255"`
-	Payload   []byte    `gorm:"type:longblob"`
+	Namespace string `gorm:"primaryKey;size:64"`
+	RecordKey string `gorm:"primaryKey;column:record_key;size:255"`
+	Payload   []byte
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }
@@ -64,11 +65,11 @@ type gormKVRecord struct {
 func (gormKVRecord) TableName() string { return "aiops_kv_records" }
 
 type gormAgentEventRecord struct {
-	ID        uint      `gorm:"primaryKey"`
-	SessionID string    `gorm:"index:idx_aiops_agent_events_session_seq,priority:1;size:128"`
-	Seq       int64     `gorm:"index:idx_aiops_agent_events_session_seq,priority:2"`
-	EventID   string    `gorm:"size:128;index"`
-	Payload   []byte    `gorm:"type:longblob"`
+	ID        uint   `gorm:"primaryKey"`
+	SessionID string `gorm:"index:idx_aiops_agent_events_session_seq,priority:1;size:128"`
+	Seq       int64  `gorm:"index:idx_aiops_agent_events_session_seq,priority:2"`
+	EventID   string `gorm:"size:128;index"`
+	Payload   []byte
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
@@ -96,6 +97,20 @@ func NewMySQLStore(dsn string) (*GormStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("open mysql gorm store: %w", err)
+	}
+	return NewGormStore(db)
+}
+
+// NewPostgresStore opens a PostgreSQL-backed GORM store. The caller must supply
+// a DSN; connection and migration errors are returned to startup.
+func NewPostgresStore(dsn string) (*GormStore, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return nil, fmt.Errorf("postgres dsn is required")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("open postgres gorm store: %w", err)
 	}
 	return NewGormStore(db)
 }

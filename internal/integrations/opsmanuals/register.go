@@ -14,5 +14,12 @@ func RegisterBuiltins(registry *tooling.Registry, service *core.Service) error {
 	if service == nil {
 		return fmt.Errorf("opsmanuals: service is required")
 	}
-	return registry.Register(newSearchOpsManualsTool(service))
+	cache := newTurnSearchContextCache()
+	if err := registry.Register(newSearchOpsManualsTool(service, cache)); err != nil {
+		return err
+	}
+	if err := registry.Register(newResolveOpsManualParamsTool(service, cache)); err != nil {
+		return err
+	}
+	return registry.Register(newRunOpsManualPreflightTool(service, cache))
 }

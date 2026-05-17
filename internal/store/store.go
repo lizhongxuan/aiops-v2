@@ -107,21 +107,29 @@ type Store interface {
 
 // UICard represents a UI card definition persisted in ui-cards.json.
 type UICard struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Kind              string    `json:"kind"`
-	Renderer          string    `json:"renderer"`
-	BundleSupport     []string  `json:"bundleSupport,omitempty"`
-	PlacementDefaults []string  `json:"placementDefaults,omitempty"`
-	Summary           string    `json:"summary,omitempty"`
-	Capabilities      []string  `json:"capabilities,omitempty"`
-	TriggerTypes      []string  `json:"triggerTypes,omitempty"`
-	EditableFields    []string  `json:"editableFields,omitempty"`
-	Status            string    `json:"status"`
-	BuiltIn           bool      `json:"builtIn"`
-	Version           int       `json:"version"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                string           `json:"id"`
+	Name              string           `json:"name"`
+	Kind              string           `json:"kind"`
+	Renderer          string           `json:"renderer"`
+	RendererVersion   string           `json:"rendererVersion,omitempty"`
+	SchemaVersion     string           `json:"schemaVersion,omitempty"`
+	PayloadSchema     map[string]any   `json:"payloadSchema,omitempty"`
+	MetadataSchema    map[string]any   `json:"metadataSchema,omitempty"`
+	ActionPolicy      map[string]any   `json:"actionPolicy,omitempty"`
+	DisplayPolicy     map[string]any   `json:"displayPolicy,omitempty"`
+	RedactionPolicy   map[string]any   `json:"redactionPolicy,omitempty"`
+	SamplePayloads    []map[string]any `json:"samplePayloads,omitempty"`
+	BundleSupport     []string         `json:"bundleSupport,omitempty"`
+	PlacementDefaults []string         `json:"placementDefaults,omitempty"`
+	Summary           string           `json:"summary,omitempty"`
+	Capabilities      []string         `json:"capabilities,omitempty"`
+	TriggerTypes      []string         `json:"triggerTypes,omitempty"`
+	EditableFields    []string         `json:"editableFields,omitempty"`
+	Status            string           `json:"status"`
+	BuiltIn           bool             `json:"builtIn"`
+	Version           int              `json:"version"`
+	CreatedAt         time.Time        `json:"createdAt"`
+	UpdatedAt         time.Time        `json:"updatedAt"`
 }
 
 // LLMConfig represents the LLM provider configuration persisted in llm-config.json.

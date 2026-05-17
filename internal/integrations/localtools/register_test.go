@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"aiops-v2/internal/actionproposal"
+	"aiops-v2/internal/evidence"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
 	"pgregory.net/rapid"
@@ -25,7 +26,7 @@ func (r *fakeLLMRepo) GetLLMConfig() (*store.LLMConfig, error) {
 	return r.cfg, nil
 }
 
-func TestRegisterBuiltinsExposesChatTools(t *testing.T) {
+func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 	registry := tooling.NewRegistry()
 	repo := &fakeLLMRepo{cfg: &store.LLMConfig{
 		Provider: "openai",
@@ -43,10 +44,13 @@ func TestRegisterBuiltinsExposesChatTools(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.Metadata().Name] = tool
 	}
-	for _, name := range []string{"web_search", "browse_url", "exec_command", "get_current_model_config", "update_plan"} {
+	for _, name := range []string{"web_search", "browse_url", "exec_command", "get_current_model_config"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("assembled tools missing %q; got %v", name, toolNames(tools))
 		}
+	}
+	if _, ok := names["update_plan"]; ok {
+		t.Fatalf("update_plan should be internal/meta-only in default chat tools; got %v", toolNames(tools))
 	}
 	if native := names["web_search"].Metadata().ProviderNative; native == nil || !native.Prefer || native.Type != "web_search" {
 		t.Fatalf("web_search provider-native metadata = %#v, want preferred web_search", native)
@@ -108,21 +112,14 @@ func TestCurrentModelConfigToolDoesNotLeakSecrets(t *testing.T) {
 
 func TestExecCommandToolAllowsSafeReadCommand(t *testing.T) {
 	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
-	input := json.RawMessage(`{"command":"printf","args":["aiops-tool-ok"]}`)
+	input := json.RawMessage(`{"command":"kubectl","args":["get","events","-n","prod"]}`)
 
 	if !tool.IsReadOnly(input) {
-		t.Fatal("printf command should be classified read-only")
+		t.Fatal("allowlisted kubectl get events should be classified read-only")
 	}
 	decision := tool.CheckPermissions(context.Background(), input)
 	if decision.Action != tooling.PermissionActionAllow {
 		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
-	}
-	result, err := tool.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	if strings.TrimSpace(result.Content) != "aiops-tool-ok" {
-		t.Fatalf("content = %q, want aiops-tool-ok", result.Content)
 	}
 }
 
@@ -150,8 +147,53 @@ func TestExecCommandToolAllowsSafeCurlGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(result.Content, `"status":"ok"`) {
-		t.Fatalf("content = %q, want curl response body", result.Content)
+	if stdout := execCommandStdout(t, result.Content); !strings.Contains(stdout, `"status":"ok"`) {
+		t.Fatalf("stdout = %q, want curl response body", stdout)
+	}
+}
+
+func TestExecCommandToolRecordsTerminalEvidenceRef(t *testing.T) {
+	service := evidence.NewService(evidence.NewInMemoryStore(), func() time.Time {
+		return time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
+	})
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir(), EvidenceService: service})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{
+		SessionID:  "sess-terminal-evidence",
+		TurnID:     "turn-terminal-evidence",
+		ToolCallID: "call-terminal-evidence",
+		HostID:     "server-local",
+	})
+	input := json.RawMessage(`{"command":"printf","args":["ok"]}`)
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	var payload struct {
+		SchemaVersion string   `json:"schemaVersion"`
+		Tool          string   `json:"tool"`
+		Status        string   `json:"status"`
+		Stdout        string   `json:"stdout"`
+		EvidenceRefs  []string `json:"evidenceRefs"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not terminal envelope JSON: %v\n%s", err, result.Content)
+	}
+	if payload.SchemaVersion != "aiops.terminal/v1" || payload.Tool != "exec_command" || payload.Status != "ok" {
+		t.Fatalf("payload = %#v, want terminal envelope", payload)
+	}
+	if !strings.Contains(payload.Stdout, "ok") {
+		t.Fatalf("stdout = %q, want command output", payload.Stdout)
+	}
+	if len(payload.EvidenceRefs) != 1 {
+		t.Fatalf("evidenceRefs = %#v, want one ref", payload.EvidenceRefs)
+	}
+	rec, ok := service.Get(context.Background(), payload.EvidenceRefs[0])
+	if !ok {
+		t.Fatalf("evidence ref %q was not recorded", payload.EvidenceRefs[0])
+	}
+	if rec.SourceTool != "exec_command" || rec.Source != "terminal.break_glass" || rec.ToolCallID != "call-terminal-evidence" {
+		t.Fatalf("record = %#v, want terminal exec context", rec)
 	}
 }
 
@@ -179,21 +221,21 @@ func TestExecCommandToolAllowsSafeCurlGetCommandLineInCommandField(t *testing.T)
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(result.Content, `"source":"command-field"`) {
-		t.Fatalf("content = %q, want curl response body", result.Content)
+	if stdout := execCommandStdout(t, result.Content); !strings.Contains(stdout, `"source":"command-field"`) {
+		t.Fatalf("stdout = %q, want curl response body", stdout)
 	}
 }
 
-func TestExecCommandToolAllowsShellWrappedSafeReadCommand(t *testing.T) {
+func TestExecCommandToolRequiresEvidenceForNonAllowlistedReadOnlyCommand(t *testing.T) {
 	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
 	input := json.RawMessage(`{"command":"bash","args":["-lc","date '+%F %A %u %T %Z'"]}`)
 
-	if !tool.IsReadOnly(input) {
-		t.Fatal("bash -lc date should be classified read-only")
+	if tool.IsReadOnly(input) {
+		t.Fatal("bash -lc date should not bypass break-glass allowlist")
 	}
 	decision := tool.CheckPermissions(context.Background(), input)
-	if decision.Action != tooling.PermissionActionAllow {
-		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
 	}
 }
 
@@ -221,8 +263,21 @@ func TestExecCommandToolAllowsShellWrappedSafeCurlGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if !strings.Contains(result.Content, `"source":"shell-wrapped"`) {
-		t.Fatalf("content = %q, want curl response body", result.Content)
+	if stdout := execCommandStdout(t, result.Content); !strings.Contains(stdout, `"source":"shell-wrapped"`) {
+		t.Fatalf("stdout = %q, want curl response body", stdout)
+	}
+}
+
+func TestExecCommandToolRequiresEvidenceForPythonEvenIfDiagnosticIntent(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	input := json.RawMessage(`{"command":"python","args":["-c","print('hi')"],"intent":"diagnostic one-liner"}`)
+
+	if tool.IsReadOnly(input) {
+		t.Fatal("python must not be allowlisted as read-only terminal")
+	}
+	decision := tool.CheckPermissions(context.Background(), input)
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
 	}
 }
 
@@ -298,7 +353,7 @@ func TestExecCommandToolValidHighRiskTokenNeedsApprovalWithPayload(t *testing.T)
 	}
 }
 
-func TestExecCommandToolValidLowRiskTokenFollowsLocalPolicyAllow(t *testing.T) {
+func TestExecCommandToolValidLowRiskTokenStillNeedsApprovalForBreakGlassMutation(t *testing.T) {
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
 	secret := []byte("localtools-secret")
 	tool := NewExecCommandTool(Options{
@@ -311,8 +366,8 @@ func TestExecCommandToolValidLowRiskTokenFollowsLocalPolicyAllow(t *testing.T) {
 	withToken := injectActionToken(t, input, token)
 
 	decision := tool.CheckPermissions(context.Background(), withToken)
-	if decision.Action != tooling.PermissionActionAllow {
-		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	if decision.Action != tooling.PermissionActionNeedApproval {
+		t.Fatalf("CheckPermissions() = %#v, want need approval", decision)
 	}
 }
 
@@ -403,16 +458,13 @@ func TestExecCommandToolPropertyTamperedCommandArgsInvalidateToken(t *testing.T)
 	})
 }
 
-func TestExecCommandToolPropertyReadOnlyCommandsDoNotNeedToken(t *testing.T) {
+func TestExecCommandToolPropertyAllowlistedTerminalCommandsDoNotNeedToken(t *testing.T) {
 	workingDir := t.TempDir()
 	rapid.Check(t, func(rt *rapid.T) {
-		command := rapid.SampledFrom([]string{"date", "pwd", "whoami", "printf", "df"}).Draw(rt, "command")
-		args := []string{}
-		if command == "printf" {
-			args = []string{"ok"}
-		}
-		if command == "df" {
-			args = []string{"-h"}
+		command := rapid.SampledFrom([]string{"kubectl", "redis-cli"}).Draw(rt, "command")
+		args := []string{"get", "events", "-n", "prod"}
+		if command == "redis-cli" {
+			args = []string{"-h", "redis.prod", "INFO"}
 		}
 		tool := NewExecCommandTool(Options{WorkingDir: workingDir})
 		input := mustMarshalRaw(t, map[string]any{"command": command, "args": args})
@@ -494,6 +546,17 @@ func mustMarshalRaw(t testing.TB, value any) json.RawMessage {
 		t.Fatalf("marshal: %v", err)
 	}
 	return json.RawMessage(data)
+}
+
+func execCommandStdout(t testing.TB, content string) string {
+	t.Helper()
+	var payload struct {
+		Stdout string `json:"stdout"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		t.Fatalf("exec_command result is not JSON: %v\n%s", err, content)
+	}
+	return payload.Stdout
 }
 
 func TestWebSearchToolUsesProviderNativeResponsesAPI(t *testing.T) {

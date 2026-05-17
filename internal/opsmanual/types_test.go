@@ -62,3 +62,209 @@ func TestDecisionStateCanonicalValues(t *testing.T) {
 		t.Fatalf("DecisionNeedMoreInfo = %q, want %q", DecisionNeedMoreInfo, DecisionNeedInfo)
 	}
 }
+
+func TestOpsManualEnhancedContractRoundTrips(t *testing.T) {
+	manual := OpsManual{
+		ID:     "manual-k8s-pod-crashloop",
+		Title:  "Kubernetes Pod CrashLoopBackOff RCA",
+		Status: ManualStatusVerified,
+		Tags:   []string{"k8s", "pod", "crashloopbackoff"},
+		RetrievalProfile: RetrievalProfile{
+			Aliases: map[string][]string{
+				"kubernetes_pod": {"pod", "k8s pod", "容器组"},
+				"rca_or_repair":  {"排障", "诊断", "CrashLoopBackOff"},
+			},
+			Keywords:         []string{"restart", "oom", "events"},
+			NegativeKeywords: []string{"mysql", "postgresql", "no restart"},
+			EmbeddingText:    "Kubernetes Pod CrashLoopBackOff OOMKilled diagnostics",
+			MinScore: ScoreThresholds{
+				Candidate:     0.55,
+				DirectExecute: 0.82,
+			},
+		},
+		RunnableConditions: RunnableConditions{
+			RequiredParams:      []string{"namespace", "pod_name"},
+			AllowedEnvironments: []string{"prod"},
+			MaxRiskLevel:        "medium",
+			RequiresApproval:    false,
+		},
+		PreflightProbe: PreflightProbe{
+			ID:              "check_pod_status_and_rbac",
+			Type:            "runner_node",
+			Action:          "check_pod_status_and_rbac",
+			ReadOnly:        true,
+			TimeoutSeconds:  15,
+			RequiredOutputs: []string{"pod_exists", "rbac_read_ok"},
+		},
+		RiskPolicy: RiskPolicy{
+			BlastRadius:          "single_workload",
+			DataMutation:         false,
+			ServiceRestart:       "conditional",
+			ApprovalRequiredWhen: []string{"production", "risk_level>=high"},
+		},
+		FallbackGuide: FallbackGuide{
+			Mode:        "react_steps",
+			MarkdownRef: "document_markdown#降级排障指南",
+			Steps:       []string{"读取事件", "检查上次退出原因"},
+		},
+		Verification: VerificationProfile{
+			LastVerifiedAt:       "2026-05-15T00:00:00Z",
+			VerifiedBy:           "ops-review",
+			RequiredRunnerDryRun: true,
+		},
+	}
+
+	raw, err := json.Marshal(manual)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{"retrieval_profile", "runnable_conditions", "preflight_probe", "risk_policy", "fallback_guide", "verification"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("json = %s, want field %s", text, want)
+		}
+	}
+	var restored OpsManual
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.PreflightProbe.ID != "check_pod_status_and_rbac" || restored.RetrievalProfile.MinScore.DirectExecute != 0.82 {
+		t.Fatalf("restored enhanced fields = %#v", restored)
+	}
+}
+
+func TestPreflightResultContractRoundTrips(t *testing.T) {
+	result := PreflightResult{
+		Status:       PreflightStatusPassed,
+		Ready:        true,
+		Reason:       "all probes passed",
+		ManualID:     "manual-k8s-pod-crashloop",
+		WorkflowID:   "workflow-k8s-pod-rca",
+		NextAction:   "start_dry_run",
+		Evidence:     []PreflightEvidence{{Name: "rbac_read_ok", Status: "passed", Value: true}},
+		CheckedAt:    "2026-05-15T00:00:00Z",
+		ArtifactType: "ops_manual_preflight_result",
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var restored PreflightResult
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.Status != PreflightStatusPassed || !restored.Ready || len(restored.Evidence) != 1 {
+		t.Fatalf("restored preflight result = %#v", restored)
+	}
+}
+
+func TestParamResolutionTypesRoundTrip(t *testing.T) {
+	result := ParamResolutionResult{
+		Status:     ParamResolutionAmbiguous,
+		ManualID:   "manual-redis-rca",
+		WorkflowID: "workflow-redis-rca",
+		OperationFrame: OperationFrame{
+			ObjectType:    "redis",
+			OperationType: "rca_or_repair",
+		},
+		Graph: ParamResolutionGraph{
+			Nodes: []ParamResolutionNode{
+				{
+					ID: "target_host",
+					Requirement: ParamRequirement{
+						ID:            "target_host",
+						Label:         "目标主机",
+						Type:          "host_ref",
+						Required:      true,
+						DefaultSource: "selected_host",
+						ResolverHints: []string{"selected_host"},
+					},
+					Status: "resolved",
+					Resolved: &ResolvedParam{
+						ID:         "target_host",
+						Value:      "server-local",
+						Source:     "selected_host",
+						Confidence: 0.95,
+					},
+				},
+				{
+					ID: "redis_instance",
+					Requirement: ParamRequirement{
+						ID:        "redis_instance",
+						Label:     "Redis 实例",
+						Type:      "resource_ref",
+						Required:  true,
+						DependsOn: []string{"target_host"},
+					},
+					Status: "ambiguous",
+					Ambiguous: &AmbiguousParam{
+						ParamRequirement: ParamRequirement{ID: "redis_instance", Type: "resource_ref", Required: true},
+						Reason:           "multiple candidates",
+						Candidates: []ParamCandidate{
+							{Value: "docker:redis-a", Label: "redis-a", Source: "docker", Confidence: 0.9},
+							{Value: "docker:redis-b", Label: "redis-b", Source: "docker", Confidence: 0.9},
+						},
+					},
+				},
+			},
+			Edges: []ParamResolutionEdge{{From: "target_host", To: "redis_instance"}},
+		},
+		ResolvedParams: []ResolvedParam{{ID: "target_host", Value: "server-local", Source: "selected_host", Confidence: 0.95}},
+		AmbiguousParams: []AmbiguousParam{{
+			ParamRequirement: ParamRequirement{ID: "redis_instance", Type: "resource_ref", Required: true},
+			Reason:           "multiple candidates",
+			Candidates:       []ParamCandidate{{Value: "docker:redis-a", Label: "redis-a"}},
+		}},
+		Fields: []ParamResolutionFormField{{
+			ID:         "redis_instance",
+			Label:      "Redis 实例",
+			Type:       "resource_ref",
+			Required:   true,
+			UIControl:  "select",
+			Candidates: []ParamCandidate{{Value: "docker:redis-a", Label: "redis-a"}},
+		}},
+		NextAction:   "ask_user",
+		ArtifactType: "ops_manual_param_resolution",
+		CreatedAt:    "2026-05-17T00:00:00Z",
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{"resolved_params", "ambiguous_params", "default_source", "ui_control", "artifact_type"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("json = %s, want field %s", text, want)
+		}
+	}
+	var restored ParamResolutionResult
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if restored.Status != ParamResolutionAmbiguous || restored.Graph.Nodes[1].Ambiguous.Candidates[0].Value != "docker:redis-a" {
+		t.Fatalf("restored = %#v", restored)
+	}
+}
+
+func TestCloneParamResolutionDoesNotShareSlices(t *testing.T) {
+	result := ParamResolutionResult{
+		Graph: ParamResolutionGraph{Nodes: []ParamResolutionNode{{
+			ID:           "target_host",
+			Requirement:  ParamRequirement{ID: "target_host", DependsOn: []string{"root"}},
+			Dependencies: []string{"root"},
+		}}},
+		ResolvedParams: []ResolvedParam{{ID: "target_host", Value: "server-local", Metadata: map[string]any{"a": "b"}}},
+		Fields:         []ParamResolutionFormField{{ID: "target_host", Candidates: []ParamCandidate{{Value: "server-local"}}}},
+	}
+	cloned := cloneParamResolutionResult(result)
+	result.Graph.Nodes[0].Dependencies[0] = "mutated"
+	result.Graph.Nodes[0].Requirement.DependsOn[0] = "mutated"
+	result.ResolvedParams[0].Metadata["a"] = "mutated"
+	result.Fields[0].Candidates[0].Value = "mutated"
+	if cloned.Graph.Nodes[0].Dependencies[0] != "root" ||
+		cloned.Graph.Nodes[0].Requirement.DependsOn[0] != "root" ||
+		cloned.ResolvedParams[0].Metadata["a"] != "b" ||
+		cloned.Fields[0].Candidates[0].Value != "server-local" {
+		t.Fatalf("clone shared mutable data: %#v", cloned)
+	}
+}

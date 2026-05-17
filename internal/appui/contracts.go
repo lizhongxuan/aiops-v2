@@ -289,7 +289,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		if repo == nil {
 			repo = opsmanual.NewMemoryStore()
 		}
-		opsManualService = NewOpsManualService(opsmanual.NewService(repo))
+		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
 	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),

@@ -368,6 +368,67 @@ describe("ProcessTranscript", () => {
     expect(text).toContain("等待审核");
   });
 
+  it("renders plan steps instead of compact plan summary", async () => {
+    const process = [
+      makeBlock({
+        id: "plan-1",
+        kind: "plan",
+        displayKind: "plan",
+        status: "completed",
+        text: "plan updated: active (1/4 in_progress)",
+        steps: [
+          { id: "metrics", text: "查询 Redis RSS 与 used_memory 指标", status: "in_progress" },
+          { id: "events", text: "读取最近 30 分钟 Kubernetes events", status: "pending" },
+        ],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    expect(container.textContent).not.toContain("plan updated: active");
+    expect(container.textContent).toContain("查询 Redis RSS 与 used_memory 指标");
+    expect(container.textContent).toContain("读取最近 30 分钟 Kubernetes events");
+  });
+
+  it("shows mock and evidence refs on tool and command rows", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-mock-evidence",
+        kind: "tool",
+        displayKind: "coroot.metrics",
+        text: "rss/used_memory ratio is 1.8",
+        mock: true,
+        evidenceRefs: ["evidence:redis:rss", "evidence:redis:events"],
+      }),
+      makeBlock({
+        id: "reasoning-separator",
+        kind: "reasoning",
+        text: "继续核对 Kubernetes events。",
+      }),
+      makeBlock({
+        id: "cmd-mock-evidence",
+        kind: "command",
+        command: "kubectl get events -n prod",
+        mock: true,
+        evidenceRefs: ["evidence:k8s:events"],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-mock-evidence"]')?.textContent).toContain("Mock");
+    expect(container.querySelector('[data-testid="aiops-command-row-cmd-mock-evidence"]')?.textContent).toContain("Mock");
+    expect(container.textContent).toContain("证据");
+    expect(container.textContent).toContain("evidence:redis:rss");
+    expect(container.textContent).toContain("evidence:redis:events");
+    expect(container.textContent).toContain("evidence:k8s:events");
+  });
+
   it("lets expanded command rows in merged groups grow without clipping sibling rows", async () => {
     const process = [
       makeBlock({
@@ -912,6 +973,37 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("$ git diff -- internal/appui/transport_projector.go");
     expect(container.querySelector('[data-testid="aiops-command-output-cmd-native-card"]')?.className).toContain("bg-slate-100");
     expect(container.textContent).toContain("diff --git");
+  });
+
+  it("does not offer automatic ops manual generation after reusable completed operation evidence", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-manual-cta-1",
+        kind: "command",
+        status: "completed",
+        command: "docker ps --filter name=redis",
+        outputPreview: "aiops-redis",
+      }),
+      makeBlock({
+        id: "cmd-manual-cta-2",
+        kind: "command",
+        status: "completed",
+        command: "docker exec aiops-redis redis-cli INFO memory",
+        outputPreview: "used_memory_rss:123456",
+      }),
+    ];
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          finalText="本次验证状态：已验证，结论基于当前主机与 Redis 容器实时只读结果；未执行任何变更操作。"
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-generate-ops-manual-from-chat"]')).toBeNull();
+    expect(container.textContent).not.toContain("本次对话可沉淀为运维手册");
   });
 
   it("keeps long terminal output inside a bounded scroll area", async () => {

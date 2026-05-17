@@ -70,6 +70,9 @@ export const zhAgentUiTypeLabels: LabelMap = {
   verification_result: "验证结果",
   experience_match: "经验命中",
   ops_manual_match: "运维手册判定",
+  ops_manual_search_result: "运维手册检索",
+  ops_manual_preflight_result: "运维手册预检",
+  ops_manual_fallback_guide: "运维手册降级步骤",
   runner_workflow_generation: "Workflow 生成进度",
   unsupported: "暂不支持的卡片类型",
   text: "文本消息",
@@ -124,6 +127,7 @@ export const zhNavigationTitles: LabelMap = {
   "/settings/experience_packs": "运维手册",
   "/mcp": "MCP 服务",
   "/coroot": "Coroot 观测",
+  "/agent_ui": "Agent UI",
   "/debug/prompts": "Prompt Trace",
 };
 

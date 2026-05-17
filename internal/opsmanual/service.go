@@ -7,7 +7,8 @@ import (
 )
 
 type Service struct {
-	repo ManualRepository
+	repo      ManualRepository
+	discovery ResourceDiscovery
 }
 
 type PrepareManualCandidateRequest struct {
@@ -22,8 +23,22 @@ type ConfirmManualCandidateRequest struct {
 	ReviewNote string `json:"review_note,omitempty"`
 }
 
-func NewService(repo ManualRepository) *Service {
-	return &Service{repo: repo}
+type ServiceOption func(*Service)
+
+func WithResourceDiscovery(discovery ResourceDiscovery) ServiceOption {
+	return func(s *Service) {
+		s.discovery = discovery
+	}
+}
+
+func NewService(repo ManualRepository, opts ...ServiceOption) *Service {
+	service := &Service{repo: repo}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service
 }
 
 func (s *Service) ListManuals(req ListManualsRequest) ([]OpsManual, error) {

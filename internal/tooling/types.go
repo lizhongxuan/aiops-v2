@@ -138,6 +138,8 @@ type ToolMetadata struct {
 	Name             string                  `json:"name"`
 	Aliases          []string                `json:"aliases,omitempty"`
 	Description      string                  `json:"description,omitempty"`
+	Domain           string                  `json:"domain,omitempty"`
+	Mock             bool                    `json:"mock,omitempty"`
 	Origin           ToolOrigin              `json:"origin,omitempty"`
 	SearchHint       string                  `json:"searchHint,omitempty"`
 	ShouldDefer      bool                    `json:"shouldDefer,omitempty"`

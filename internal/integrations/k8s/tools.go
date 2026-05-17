@@ -49,11 +49,19 @@ func tools(opts Options) []tooling.Tool {
 
 func newReadOnlyTool(name, description string, visibility tooling.Visibility, build func(k8sInput) any) tooling.Tool {
 	return &tooling.StaticTool{
-		Meta:            tooling.ToolMetadata{Name: name, Origin: tooling.ToolOriginBuiltin, Description: description},
-		Visibility:      visibility,
-		InputSchemaData: k8sSchema(),
-		ReadOnlyFunc:    func(json.RawMessage) bool { return true },
-		DestructiveFunc: func(json.RawMessage) bool { return false },
+		Meta: tooling.ToolMetadata{
+			Name:        name,
+			Origin:      tooling.ToolOriginBuiltin,
+			Description: description,
+			Domain:      "kubernetes",
+			Mock:        true,
+			RiskLevel:   tooling.ToolRiskLow,
+		},
+		Visibility:       visibility,
+		InputSchemaData:  k8sSchema(),
+		OutputSchemaData: toolEnvelopeSchema(),
+		ReadOnlyFunc:     func(json.RawMessage) bool { return true },
+		DestructiveFunc:  func(json.RawMessage) bool { return false },
 		ConcurrencySafeFunc: func(json.RawMessage) bool {
 			return true
 		},
@@ -65,7 +73,8 @@ func newReadOnlyTool(name, description string, visibility tooling.Visibility, bu
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			data, _ := json.Marshal(build(in))
+			payload := ensureEnvelopeFields(build(in), name, "mock", true)
+			data, _ := json.Marshal(payload)
 			return tooling.ToolResult{Content: string(data), Display: &tooling.ToolDisplayPayload{Type: "k8s", Title: name, Data: data}}, nil
 		},
 	}
@@ -78,13 +87,17 @@ func newMutatingTool(name, description string, visibility tooling.Visibility, op
 			Name:             name,
 			Origin:           tooling.ToolOriginBuiltin,
 			Description:      description,
+			Domain:           "kubernetes",
+			Mock:             true,
+			RiskLevel:        tooling.ToolRiskHigh,
 			Mutating:         true,
 			RequiresApproval: true,
 		},
-		Visibility:      visibility,
-		InputSchemaData: k8sSchema(),
-		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
-		DestructiveFunc: func(json.RawMessage) bool { return true },
+		Visibility:       visibility,
+		InputSchemaData:  k8sSchema(),
+		OutputSchemaData: toolEnvelopeSchema(),
+		ReadOnlyFunc:     func(json.RawMessage) bool { return false },
+		DestructiveFunc:  func(json.RawMessage) bool { return true },
 		ConcurrencySafeFunc: func(json.RawMessage) bool {
 			return false
 		},
@@ -104,6 +117,9 @@ func newMutatingTool(name, description string, visibility tooling.Visibility, op
 				"schemaVersion": schemaVersion,
 				"tool":          name,
 				"status":        "planned",
+				"source":        "mock",
+				"mock":          true,
+				"evidenceRefs":  []string{},
 				"workload":      Workload{Kind: firstNonEmpty(in.Kind, "deployment"), Namespace: firstNonEmpty(in.Namespace, "prod"), Name: firstNonEmpty(in.Name, "order-api"), Replicas: in.Replicas, Status: "pending_approval"},
 			})
 			return tooling.ToolResult{Content: string(data), Display: &tooling.ToolDisplayPayload{Type: "k8s", Title: name, Data: data}}, nil
@@ -158,6 +174,43 @@ func decodeInput(input json.RawMessage) (k8sInput, error) {
 
 func k8sSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"environment":{"type":"string"},"namespace":{"type":"string"},"kind":{"type":"string"},"name":{"type":"string"},"container":{"type":"string"},"replicas":{"type":"integer"},"actionToken":{"type":"string"}}}`)
+}
+
+func toolEnvelopeSchema() json.RawMessage {
+	return json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"schemaVersion":{"type":"string"},
+			"tool":{"type":"string"},
+			"status":{"type":"string"},
+			"source":{"type":"string"},
+			"mock":{"type":"boolean"},
+			"evidenceRefs":{"type":"array","items":{"type":"string"}}
+		},
+		"required":["schemaVersion","tool","status"]
+	}`)
+}
+
+func ensureEnvelopeFields(payload any, toolName, source string, mock bool) map[string]any {
+	out, ok := payload.(map[string]any)
+	if !ok {
+		out = map[string]any{"data": payload}
+	}
+	if out["schemaVersion"] == nil {
+		out["schemaVersion"] = schemaVersion
+	}
+	if out["tool"] == nil {
+		out["tool"] = toolName
+	}
+	if out["status"] == nil {
+		out["status"] = "ok"
+	}
+	out["source"] = source
+	out["mock"] = mock
+	if _, ok := out["evidenceRefs"]; !ok {
+		out["evidenceRefs"] = []string{}
+	}
+	return out
 }
 
 func firstNonEmpty(values ...string) string {

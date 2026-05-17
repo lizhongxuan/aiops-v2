@@ -207,6 +207,33 @@ func TestToolResultAgentItemDataPreservesInputSummary(t *testing.T) {
 	}
 }
 
+func TestToolResultAgentItemDataExtractsEvidenceRefsFromStructuredOutput(t *testing.T) {
+	tc := ToolCall{
+		ID:   "call-terminal",
+		Name: "exec_command",
+	}
+	result := ToolResult{
+		ToolCallID: "call-terminal",
+		Content:    `{"schemaVersion":"aiops.terminal/v1","tool":"exec_command","status":"ok","command":"curl data:,ok","stdout":"ok","evidenceRefs":["ev-terminal-1"]}`,
+	}
+
+	data := toolResultAgentItemData("turn-1", tc, result)
+
+	refs, ok := data["evidenceRefs"].([]string)
+	if !ok {
+		t.Fatalf("evidenceRefs = %#v, want []string", data["evidenceRefs"])
+	}
+	if strings.Join(refs, ",") != "ev-terminal-1" {
+		t.Fatalf("evidenceRefs = %#v, want ev-terminal-1", refs)
+	}
+	if got := data["outputSummary"]; got != "curl data:,ok" {
+		t.Fatalf("outputSummary = %#v, want terminal command", got)
+	}
+	if got := strings.TrimSpace(string(data["outputPreview"].(json.RawMessage))); got != `"ok"` {
+		t.Fatalf("outputPreview = %s, want stdout preview", got)
+	}
+}
+
 func TestRunTurn_UpdatePlanToolWritesPlanTurnItem(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

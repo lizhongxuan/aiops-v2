@@ -173,7 +173,7 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		agentEvents:            agentEvents,
 		promptTraces:           appui.NewPromptTraceService(""),
 		appSnapshots:           NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
-		opsManualAutoRetrieval: true,
+		opsManualAutoRetrieval: false,
 	}
 	for _, opt := range opts {
 		if opt != nil {

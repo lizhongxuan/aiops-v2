@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 )
 
@@ -158,6 +159,115 @@ func assistantTransportOpsManualSearchArtifactFromToolResult(turnID string, item
 	}, true
 }
 
+func assistantTransportOpsManualPreflightArtifactFromToolResult(turnID string, itemID string, tool runtimekernel.ToolResult) (appui.AiopsTransportAgentUIArtifact, bool) {
+	if tool.Display == nil || strings.TrimSpace(tool.Display.Type) != "ops_manual_preflight_result" {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.Display.Data
+	if len(data) == 0 && strings.TrimSpace(tool.Content) != "" {
+		data = json.RawMessage(tool.Content)
+	}
+	if len(data) == 0 {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	status := strings.TrimSpace(firstAssistantTransportValue(assistantTransportStringValueFromMap(payload, "status"), assistantTransportStringValueFromMap(payload, "preflight_status"), "unknown"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	idPart := firstAssistantTransportValue(strings.TrimSpace(itemID), "preflight")
+	return appui.AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-preflight:" + turnID + ":" + idPart,
+		Type:            "ops_manual_preflight_result",
+		Title:           "Ops manual preflight result",
+		TitleZh:         "运维手册预检结果",
+		Summary:         status,
+		SummaryZh:       assistantTransportOpsManualPreflightSummary(status),
+		Status:          status,
+		Severity:        assistantTransportOpsManualPreflightSeverity(status),
+		Source:          "tool:run_ops_manual_preflight",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         assistantTransportOpsManualPreflightActions(status, assistantTransportStringValueFromMap(payload, "next_action")),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func assistantTransportOpsManualParamResolutionArtifactFromToolResult(turnID string, itemID string, tool runtimekernel.ToolResult) (appui.AiopsTransportAgentUIArtifact, bool) {
+	if tool.Display == nil || (strings.TrimSpace(tool.Display.Type) != "ops_manual_param_resolution" && strings.TrimSpace(tool.Display.Type) != "ops_manual_param_form") {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.Display.Data
+	if len(data) == 0 && strings.TrimSpace(tool.Content) != "" {
+		data = json.RawMessage(tool.Content)
+	}
+	if len(data) == 0 {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	status := strings.TrimSpace(firstAssistantTransportValue(assistantTransportStringValueFromMap(payload, "status"), "unknown"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	idPart := firstAssistantTransportValue(strings.TrimSpace(itemID), "param-resolution")
+	return appui.AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-param-resolution:" + turnID + ":" + idPart,
+		Type:            strings.TrimSpace(tool.Display.Type),
+		Title:           "Ops manual parameter resolution",
+		TitleZh:         "运维手册参数解析",
+		Summary:         status,
+		SummaryZh:       assistantTransportOpsManualParamResolutionSummary(status),
+		Status:          status,
+		Severity:        assistantTransportOpsManualParamResolutionSeverity(status),
+		Source:          "tool:resolve_ops_manual_params",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         assistantTransportOpsManualParamResolutionActions(status),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func assistantTransportOpsManualParamResolutionSummary(status string) string {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return "参数已自动补齐，可进入预检。"
+	case "ambiguous":
+		return "发现多个候选，需要用户选择。"
+	case "need_user_input":
+		return "仍缺少少量无法自动获取的参数。"
+	default:
+		return "已完成运维手册参数解析。"
+	}
+}
+
+func assistantTransportOpsManualParamResolutionSeverity(status string) string {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return "success"
+	case "ambiguous", "need_user_input":
+		return "warning"
+	default:
+		return "neutral"
+	}
+}
+
+func assistantTransportOpsManualParamResolutionActions(status string) []map[string]any {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return []map[string]any{{"id": "run_preflight", "label": "运行预检", "kind": "panel"}}
+	case "ambiguous", "need_user_input":
+		return []map[string]any{{"id": "fill_params", "label": "补充参数", "kind": "form"}}
+	default:
+		return nil
+	}
+}
+
 func (s *HTTPServer) assistantTransportOpsManualMatchArtifact(turnID string, command *appui.TransportAddMessageCommand) (appui.AiopsTransportAgentUIArtifact, bool) {
 	if command == nil || strings.TrimSpace(command.Message.Text) == "" {
 		return appui.AiopsTransportAgentUIArtifact{}, false
@@ -219,9 +329,9 @@ func assistantTransportOpsManualSummary(state string) string {
 	case "adapt", "adapt_required":
 		return "找到相似运维手册，但当前环境存在差异，需要先生成变体并校验。"
 	case "reference_only":
-		return "找到可参考的运维手册，不能直接运行工作流，需要按步骤确认后执行。"
+		return "没有可直接运行的 Workflow，可继续只读自动化排查。"
 	case "need_info", "need_more_info":
-		return "识别到相关运维手册，但还缺少目标实例、环境、执行面或证据。"
+		return "识别到相关运维手册，但还缺少少量关键上下文。"
 	case "no_match":
 		return "没有找到合适的运维手册。"
 	default:
@@ -255,15 +365,73 @@ func assistantTransportOpsManualActions(state string) []map[string]any {
 			{"id": "review_gaps", "label": "查看差异", "kind": "panel"},
 		}
 	case "reference_only":
-		return []map[string]any{
-			{"id": "step_by_step", "label": "逐步执行", "kind": "panel"},
-		}
+		return nil
 	case "need_info", "need_more_info":
-		return []map[string]any{
-			{"id": "collect_context", "label": "补充上下文", "kind": "form"},
-		}
+		return nil
 	default:
 		return nil
+	}
+}
+
+func assistantTransportOpsManualPreflightSummary(status string) string {
+	switch strings.TrimSpace(status) {
+	case "passed":
+		return "预检已通过，可以进入 Dry Run。"
+	case "blocked":
+		return "预检被阻断，需要补充参数、权限或环境适配。"
+	case "failed":
+		return "预检失败，不能执行绑定工作流。"
+	case "not_applicable":
+		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+	default:
+		return "已完成运维手册预检。"
+	}
+}
+
+func assistantTransportOpsManualPreflightSeverity(status string) string {
+	switch strings.TrimSpace(status) {
+	case "passed":
+		return "success"
+	case "blocked":
+		return "warning"
+	case "failed":
+		return "error"
+	case "not_applicable":
+		return "info"
+	default:
+		return "neutral"
+	}
+}
+
+func assistantTransportOpsManualPreflightActions(status string, nextAction string) []map[string]any {
+	switch strings.TrimSpace(status) {
+	case "passed", "not_applicable":
+		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+	case "blocked":
+		if strings.TrimSpace(nextAction) == "request_permission" {
+			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
+		}
+		if strings.TrimSpace(nextAction) == "generate_workflow_variant" {
+			return []map[string]any{{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"}}
+		}
+		return []map[string]any{{"id": "collect_context", "label": "补充上下文", "kind": "form"}}
+	case "failed":
+		return []map[string]any{{"id": "fallback_guide", "label": "查看降级步骤", "kind": "panel"}}
+	default:
+		return nil
+	}
+}
+
+func assistantTransportStringValueFromMap(payload map[string]any, key string) string {
+	raw, ok := payload[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	switch typed := raw.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
 	}
 }
 
@@ -507,7 +675,7 @@ func (s *HTTPServer) streamAssistantTransportState(
 			waitingForAcceptedApproval = assistantTransportShouldWaitForAcceptedApproval(current, latestTurn)
 			fingerprint := assistantTransportTurnFingerprint(latestTurn)
 			if !waitingForAcceptedTurn && !waitingForAcceptedApproval && fingerprint != "" && fingerprint != lastFingerprint {
-				next, err := projectAssistantTransportSessionState(assistantTransportCloneState(current), session, projector)
+				next, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(current), session, projector)
 				if err != nil {
 					return current, err
 				}
@@ -675,6 +843,7 @@ func cancelAssistantTransportTurn(ctx context.Context, chat appui.ChatService, s
 }
 
 func projectAssistantTransportSessionState(
+	server *HTTPServer,
 	state appui.AiopsTransportState,
 	session *runtimekernel.SessionState,
 	projector *appui.TransportProjector,
@@ -690,16 +859,133 @@ func projectAssistantTransportSessionState(
 	if strings.TrimSpace(next.ThreadID) == "" {
 		next.ThreadID = strings.TrimSpace(firstAssistantTransportValue(next.SessionID, session.ID))
 	}
+	var latestTurn *runtimekernel.TurnSnapshot
 	if session.CurrentTurn != nil {
-		return projector.ProjectTurnSnapshot(next, session.CurrentTurn)
+		latestTurn = session.CurrentTurn
+	} else if count := len(session.TurnHistory); count > 0 {
+		latestTurn = &session.TurnHistory[count-1]
 	}
-	if count := len(session.TurnHistory); count > 0 {
-		latest := session.TurnHistory[count-1]
-		return projector.ProjectTurnSnapshot(next, &latest)
+	if latestTurn != nil {
+		projected, err := projector.ProjectTurnSnapshot(next, latestTurn)
+		if err != nil {
+			return next, err
+		}
+		return server.decorateAssistantTransportOpsManualFallback(projected, latestTurn), nil
 	}
 	next.Status = appui.AiopsTransportStatusIdle
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return next, nil
+}
+
+func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.AiopsTransportState, turn *runtimekernel.TurnSnapshot) appui.AiopsTransportState {
+	if s == nil || turn == nil || !s.opsManualAutoRetrieval || !turn.Lifecycle.IsTerminal() {
+		return state
+	}
+	turnID := strings.TrimSpace(turn.ID)
+	if turnID == "" {
+		return state
+	}
+	projectedTurn := state.Turns[turnID]
+	if projectedTurn.ID == "" || assistantTransportHasOpsManualArtifact(projectedTurn.AgentUIArtifacts) {
+		return state
+	}
+	userText := firstAssistantTransportValue(strings.TrimSpace(projectedTurnUserText(projectedTurn)), assistantTransportTurnUserText(turn))
+	if strings.TrimSpace(userText) == "" {
+		return state
+	}
+	artifact, ok := s.assistantTransportOpsManualSearchFallbackArtifact(turnID, userText)
+	if !ok {
+		return state
+	}
+	projectedTurn.AgentUIArtifacts = upsertAssistantTransportAgentUIArtifact(projectedTurn.AgentUIArtifacts, artifact)
+	state.Turns[turnID] = projectedTurn
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return state
+}
+
+func assistantTransportHasOpsManualArtifact(artifacts []appui.AiopsTransportAgentUIArtifact) bool {
+	for _, artifact := range artifacts {
+		switch strings.TrimSpace(artifact.Type) {
+		case "ops_manual_search_result", "ops_manual_match", "ops_manual_preflight_result", "ops_manual_param_resolution", "ops_manual_param_form":
+			return true
+		}
+	}
+	return false
+}
+
+func projectedTurnUserText(turn appui.AiopsTransportTurn) string {
+	if turn.User == nil {
+		return ""
+	}
+	return strings.TrimSpace(turn.User.Text)
+}
+
+func assistantTransportTurnUserText(turn *runtimekernel.TurnSnapshot) string {
+	if turn == nil {
+		return ""
+	}
+	for _, item := range turn.AgentItems {
+		if item.Type != "user_message" {
+			continue
+		}
+		return firstAssistantTransportValue(strings.TrimSpace(item.Payload.Summary), assistantTransportDecodeUserText(item.Payload.Data))
+	}
+	return ""
+}
+
+func assistantTransportDecodeUserText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(payload.Content)+len(payload.Parts))
+	for _, item := range payload.Content {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "text") && strings.TrimSpace(item.Text) != "" {
+			parts = append(parts, strings.TrimSpace(item.Text))
+		}
+	}
+	for _, item := range payload.Parts {
+		if strings.EqualFold(strings.TrimSpace(item.Type), "text") && strings.TrimSpace(item.Text) != "" {
+			parts = append(parts, strings.TrimSpace(item.Text))
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func (s *HTTPServer) assistantTransportOpsManualSearchFallbackArtifact(turnID string, text string) (appui.AiopsTransportAgentUIArtifact, bool) {
+	service := s.opsManualService()
+	if service == nil || strings.TrimSpace(text) == "" {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	result, err := service.SearchOpsManuals(opsmanual.SearchOpsManualsRequest{Text: text, Limit: 3})
+	if err != nil || len(result.Manuals) == 0 || result.Decision == opsmanual.DecisionNoMatch {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
+	return assistantTransportOpsManualSearchArtifactFromToolResult(turnID, "fallback-search", runtimekernel.ToolResult{
+		ToolCallID: "fallback-search-ops-manuals",
+		Content:    string(raw),
+		Display: &runtimekernel.ToolDisplayPayload{
+			Type:  "ops_manual_search_result",
+			Title: "search_ops_manuals",
+			Data:  raw,
+		},
+	})
 }
 
 func assistantTransportSessionTurnIsTerminal(session *runtimekernel.SessionState) bool {

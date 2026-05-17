@@ -13,7 +13,7 @@ function readUiFixtureKey() {
   if (typeof window === "undefined") return "";
   try {
     const params = new URLSearchParams(window.location.search);
-    return String(params.get("fixture") || params.get("uiFixture") || params.get("fixtureKey") || "").trim();
+    return String(params.get("fixture") || params.get("uiFixture") || params.get("fixtureKey") || params.get("verify") || "").trim();
   } catch {
     return "";
   }

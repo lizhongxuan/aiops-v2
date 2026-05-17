@@ -86,6 +86,8 @@ func mockAnswer(c Case) string {
 		return "工具失败策略：按 FailurePolicy 处理失败，记录 failed tool_result，不能盲目重试；可回灌模型生成 final_answer 或终止 turn。关键文件是 internal/runtimekernel/agent_items.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_ToolFailureWritesFailedToolResultWithoutBlindRetry。"
 	case "finish-criteria-required":
 		return "完成条件：存在 pending approval/evidence/tool 或 plan in_progress 时不能标记 completed，必须保留 blocked/failed/error 状态。关键文件是 internal/runtimekernel/eino_kernel.go。验证方式：go test ./internal/runtimekernel -run TestRunTurn_MaxIterationsWritesFailedAgentError。"
+	case "coroot-rca-mcp-first":
+		return "Coroot MCP：先调用 coroot.collect_rca_context 收集 checkout 最近 30 分钟证据，再通过 aiops.ui_artifact_emit 输出 rca_report。结论必须引用 evidenceRefs；如果证据不足，应返回证据不足而不是确定根因。"
 	default:
 		category := strings.TrimSpace(c.Category)
 		if category == "" {
@@ -115,6 +117,11 @@ func mockToolCalls(c Case) []ToolCall {
 		return []ToolCall{{ID: "mock-call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/agent_items.go"}`)}}
 	case "tool-failure-no-blind-retry":
 		return []ToolCall{{ID: "mock-call-1", Name: "run_command", Arguments: json.RawMessage(`{"cmd":"go test ./internal/runtimekernel -run TestRunTurn_ToolFailureWritesFailedToolResultWithoutBlindRetry"}`)}}
+	case "coroot-rca-mcp-first":
+		return []ToolCall{
+			{ID: "mock-call-1", Name: "coroot.collect_rca_context", Arguments: json.RawMessage(`{"service":"checkout","window":"30m"}`)},
+			{ID: "mock-call-2", Name: "aiops.ui_artifact_emit", Arguments: json.RawMessage(`{"type":"rca_report","inlineData":{"schemaVersion":"aiops.rca_report/v1","status":"inconclusive","evidenceRefs":["coroot://metric/checkout/p95"],"rawRefs":[]}}`)},
+		}
 	default:
 		return nil
 	}

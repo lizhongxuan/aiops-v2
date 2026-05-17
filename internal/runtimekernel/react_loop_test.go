@@ -242,6 +242,14 @@ func (s *assemblerBackedToolSource) AssembleToolPool(session SessionType, mode M
 	return s.assembler.AssembleToolPoolWithOptions(string(session), string(mode), tooling.AssembleOptions{})
 }
 
+func (s *assemblerBackedToolSource) CompileContextWithMetadata(session SessionType, mode Mode, metadata map[string]string) []promptcompiler.Tool {
+	return s.assembler.CompileContextWithMetadata(string(session), string(mode), metadata)
+}
+
+func (s *assemblerBackedToolSource) AssembleToolPoolWithMetadata(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
+	return s.assembler.AssembleToolPoolWithMetadata(string(session), string(mode), metadata)
+}
+
 func (s *assemblerBackedToolSource) RefreshToken(session SessionType, mode Mode) string {
 	return s.assembler.RefreshToken(string(session), string(mode), tooling.AssembleOptions{})
 }
@@ -565,6 +573,146 @@ func TestRunTurn_FeedsToolFailureBackToModelInsteadOfFailingTurn(t *testing.T) {
 	}
 	if got := session.CurrentTurn.Iterations[0].ToolResults[0].Error; !strings.Contains(got, "date: illegal option") {
 		t.Fatalf("recorded tool error = %q, want original tool error", got)
+	}
+}
+
+func TestRunTurn_FeedsDeniedToolBackToModelInsteadOfFailingTurn(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("我会先检查数据库连接。", []schema.ToolCall{
+				{
+					ID:   "call-denied-psql",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "exec_command",
+						Arguments: `{"command":"psql","args":["postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable","-c","select version(), now();"]}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("psql 命令被策略拒绝，我会改用已收集的端口和容器证据说明状态。", nil),
+		},
+	}
+
+	executed := false
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "exec_command",
+			Description: "Execute a command",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: "forbidden terminal command is blocked by policy"}
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed = true
+			return tooling.ToolResult{Content: "should not execute"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-denied-tool-feedback",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-denied-tool-feedback",
+		Input:       "我要检查pg状态",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should continue after denied tool call, got error: %v", err)
+	}
+	if executed {
+		t.Fatal("denied tool should not execute")
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if result.Output != "psql 命令被策略拒绝，我会改用已收集的端口和容器证据说明状态。" {
+		t.Fatalf("result output = %q, want final answer after denied tool result", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+	var deniedToolMessage string
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-denied-psql" {
+			deniedToolMessage = msg.Content
+			break
+		}
+	}
+	if !strings.Contains(deniedToolMessage, "exec_command failed") || !strings.Contains(deniedToolMessage, "forbidden terminal command") {
+		t.Fatalf("denied tool message = %q, want denial fed back to model", deniedToolMessage)
+	}
+
+	session := kernel.sessions.Get("sess-denied-tool-feedback")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session current turn")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("current turn lifecycle = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	toolResult := session.CurrentTurn.Iterations[0].ToolResults[0]
+	if toolResult.ToolCallID != "call-denied-psql" || !strings.Contains(toolResult.Error, "forbidden terminal command") {
+		t.Fatalf("recorded denied tool result = %#v", toolResult)
+	}
+}
+
+func TestRunTurn_RejectsRemovedOpsToolCallAsMissingToolResult(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-runbook",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "runbook.match",
+						Arguments: `{"symptom":"redis memory"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("已改用当前可用的运维工具继续排查", nil),
+		},
+	}
+
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-removed-tool",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-removed-tool",
+		Input:       "triage redis memory",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should feed removed tool failure back to model, got error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+
+	var failureToolMessage string
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-runbook" {
+			failureToolMessage = msg.Content
+			break
+		}
+	}
+	if !strings.Contains(failureToolMessage, "runbook.match failed") || !strings.Contains(failureToolMessage, "tool not found: runbook.match") {
+		t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
+	}
+
+	session := kernel.sessions.Get("sess-removed-tool")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session current turn")
+	}
+	if len(session.CurrentTurn.Iterations) == 0 || len(session.CurrentTurn.Iterations[0].ToolResults) != 1 {
+		t.Fatalf("first iteration tool results = %#v, want one failed result", session.CurrentTurn.Iterations)
+	}
+	toolResult := session.CurrentTurn.Iterations[0].ToolResults[0]
+	if toolResult.ToolCallID != "call-runbook" || !strings.Contains(toolResult.Error, "tool not found: runbook.match") {
+		t.Fatalf("recorded tool result = %#v, want removed tool failure", toolResult)
 	}
 }
 
@@ -937,6 +1085,75 @@ func TestRunTurn_AddsEvidenceAwareFinalAnswerPromptAfterToolResults(t *testing.T
 		"证据：",
 		"影响面：",
 		"下一步：",
+	} {
+		if !strings.Contains(secondInput, want) {
+			t.Fatalf("second model input missing %q:\n%s", want, secondInput)
+		}
+	}
+}
+
+func TestRunTurn_EvidenceAwareFinalPromptKeepsCleanStatusChecksShort(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-redis-status",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "read_redis_status",
+						Arguments: `{"instance":"redis-local-01"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("Redis 状态正常", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_redis_status",
+			Description: "Read Redis status",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "redis-local-01 ping ok, memory stable, no abnormality detected"}, nil
+		},
+	}
+
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-clean-status-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-clean-status-final",
+		Input:       "检查 redis-local-01 状态",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Output != "Redis 状态正常" {
+		t.Fatalf("output = %q, want Redis 状态正常", result.Output)
+	}
+	if len(compiler.contexts) < 2 {
+		t.Fatalf("compiler contexts = %d, want second synthesis compile", len(compiler.contexts))
+	}
+	secondInput := strings.Join(compiler.contexts[1].SkillPromptAssets, "\n")
+	for _, want := range []string{
+		"read-only status/RCA check",
+		"no abnormality",
+		"Keep the final answer short",
+		"Do not expand 下一步",
+		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
 	} {
 		if !strings.Contains(secondInput, want) {
 			t.Fatalf("second model input missing %q:\n%s", want, secondInput)

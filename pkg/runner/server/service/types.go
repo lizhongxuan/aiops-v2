@@ -190,16 +190,18 @@ type RunDetail struct {
 }
 
 type RunRequest struct {
-	WorkflowName    string         `json:"workflow_name"`
-	WorkflowYAML    string         `json:"workflow_yaml"`
-	ManualID        string         `json:"manual_id,omitempty"`
-	WorkflowID      string         `json:"workflow_id,omitempty"`
-	WorkflowVersion string         `json:"workflow_version,omitempty"`
-	WorkflowDigest  string         `json:"workflow_digest,omitempty"`
-	Vars            map[string]any `json:"vars"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
-	TriggeredBy     string         `json:"triggered_by"`
-	IdempotencyKey  string         `json:"idempotency_key"`
+	WorkflowName         string         `json:"workflow_name"`
+	WorkflowYAML         string         `json:"workflow_yaml"`
+	ManualID             string         `json:"manual_id,omitempty"`
+	WorkflowID           string         `json:"workflow_id,omitempty"`
+	WorkflowVersion      string         `json:"workflow_version,omitempty"`
+	WorkflowDigest       string         `json:"workflow_digest,omitempty"`
+	PreflightStatus      string         `json:"preflight_status,omitempty"`
+	PreflightEvidenceRef string         `json:"preflight_evidence_ref,omitempty"`
+	Vars                 map[string]any `json:"vars"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+	TriggeredBy          string         `json:"triggered_by"`
+	IdempotencyKey       string         `json:"idempotency_key"`
 }
 
 type RunResponse struct {

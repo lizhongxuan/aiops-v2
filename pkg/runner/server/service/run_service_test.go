@@ -93,11 +93,13 @@ steps:
 	defer runSvc.Close()
 
 	resp, err := runSvc.Submit(context.Background(), &RunRequest{
-		WorkflowName:    "manual-meta-demo",
-		ManualID:        "manual-redis-restart",
-		WorkflowID:      "manual-meta-demo",
-		WorkflowVersion: "v3",
-		WorkflowDigest:  DigestWorkflowContent(wfYAML),
+		WorkflowName:         "manual-meta-demo",
+		ManualID:             "manual-redis-restart",
+		WorkflowID:           "manual-meta-demo",
+		WorkflowVersion:      "v3",
+		WorkflowDigest:       DigestWorkflowContent(wfYAML),
+		PreflightStatus:      "passed",
+		PreflightEvidenceRef: "preflight:manual-meta-demo:ok",
 		Metadata: map[string]any{
 			"decision_state": "direct",
 		},
@@ -142,6 +144,48 @@ func TestRunServiceBlocksWorkflowDigestMismatch(t *testing.T) {
 	})
 	if !errors.Is(err, ErrWorkflowDigestMismatch) {
 		t.Fatalf("submit digest mismatch error = %v, want ErrWorkflowDigestMismatch", err)
+	}
+}
+
+func TestRunServiceBlocksOpsManualWithoutPassedPreflight(t *testing.T) {
+	workflowYAML := []byte(successWorkflowYAML("preflight-guard-demo", "echo guarded"))
+	tests := []struct {
+		name            string
+		preflightStatus string
+		wantErr         bool
+	}{
+		{name: "missing preflight", wantErr: true},
+		{name: "failed preflight", preflightStatus: "failed", wantErr: true},
+		{name: "passed preflight", preflightStatus: "passed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runSvc := NewRunService(RunServiceConfig{
+				MaxConcurrentRuns: 1,
+				MaxOutputBytes:    65536,
+			}, nil, nil, state.NewInMemoryRunStore(), queue.NewMemoryQueue(8), events.NewHub(), metrics.NewCollector())
+			defer runSvc.Close()
+
+			resp, err := runSvc.Submit(context.Background(), &RunRequest{
+				WorkflowYAML:         string(workflowYAML),
+				ManualID:             "manual-preflight-guard",
+				WorkflowDigest:       DigestWorkflowContent(workflowYAML),
+				PreflightStatus:      tt.preflightStatus,
+				PreflightEvidenceRef: "preflight:guard:ok",
+			})
+			if tt.wantErr {
+				if !errors.Is(err, ErrOpsManualPreflightRequired) {
+					t.Fatalf("submit error = %v, want ErrOpsManualPreflightRequired", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("submit should pass with preflight: %v", err)
+			}
+			if resp.Status != state.RunStatusQueued {
+				t.Fatalf("response status = %s, want queued", resp.Status)
+			}
+		})
 	}
 }
 
@@ -251,12 +295,14 @@ func TestRunServiceCallsOpsManualSinkOnTerminalRun(t *testing.T) {
 
 	workflowYAML := []byte(successWorkflowYAML("terminal-sink-demo", "echo terminal"))
 	resp, err := runSvc.Submit(context.Background(), &RunRequest{
-		WorkflowYAML:    string(workflowYAML),
-		ManualID:        "manual-terminal",
-		WorkflowID:      "workflow-terminal",
-		WorkflowVersion: "v2",
-		WorkflowDigest:  DigestWorkflowContent(workflowYAML),
-		Metadata:        map[string]any{"decision_state": "direct"},
+		WorkflowYAML:         string(workflowYAML),
+		ManualID:             "manual-terminal",
+		WorkflowID:           "workflow-terminal",
+		WorkflowVersion:      "v2",
+		WorkflowDigest:       DigestWorkflowContent(workflowYAML),
+		PreflightStatus:      "passed",
+		PreflightEvidenceRef: "preflight:terminal:ok",
+		Metadata:             map[string]any{"decision_state": "direct"},
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)
@@ -273,6 +319,9 @@ func TestRunServiceCallsOpsManualSinkOnTerminalRun(t *testing.T) {
 	if record.Metadata["decision_state"] != "direct" {
 		t.Fatalf("terminal sink request metadata mismatch: %+v", record.Metadata)
 	}
+	if record.Metadata["preflight_status"] != "passed" || record.Metadata["preflight_evidence_ref"] != "preflight:terminal:ok" {
+		t.Fatalf("terminal sink preflight metadata mismatch: %+v", record.Metadata)
+	}
 }
 
 func TestRunServiceSinkFailureDoesNotBreakRunnerState(t *testing.T) {
@@ -286,9 +335,10 @@ func TestRunServiceSinkFailureDoesNotBreakRunnerState(t *testing.T) {
 
 	workflowYAML := []byte(successWorkflowYAML("sink-failure-demo", "echo ok"))
 	resp, err := runSvc.Submit(context.Background(), &RunRequest{
-		WorkflowYAML:   string(workflowYAML),
-		ManualID:       "manual-sink-failure",
-		WorkflowDigest: DigestWorkflowContent(workflowYAML),
+		WorkflowYAML:    string(workflowYAML),
+		ManualID:        "manual-sink-failure",
+		WorkflowDigest:  DigestWorkflowContent(workflowYAML),
+		PreflightStatus: "passed",
 	})
 	if err != nil {
 		t.Fatalf("submit: %v", err)

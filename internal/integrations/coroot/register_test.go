@@ -89,6 +89,7 @@ func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
 		}
 		assertCorootVisibility(t, tool, "host", "inspect", true)
 		assertCorootVisibility(t, tool, "workspace", "execute", true)
-		assertCorootVisibility(t, tool, "host", "chat", false)
+		assertCorootVisibility(t, tool, "host", "chat", true)
+		assertCorootVisibility(t, tool, "workspace", "chat", true)
 	}
 }

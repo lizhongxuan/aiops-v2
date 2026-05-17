@@ -1,6 +1,6 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
@@ -35,17 +35,29 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={sampleState()} />);
     });
 
-    expect(container.textContent).toContain("Investigate payment-api saturation");
-    expect(container.textContent).toContain("kubectl rollout status deploy/payment-api");
-    expect(container.textContent).toContain("payment-api is waiting for rollout approval.");
+    expect(container.textContent).toContain(
+      "Investigate payment-api saturation",
+    );
+    expect(container.textContent).toContain(
+      "kubectl rollout status deploy/payment-api",
+    );
+    expect(container.textContent).toContain(
+      "payment-api is waiting for rollout approval.",
+    );
     expect(container.textContent).toContain("等待审批");
     expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
     expect(container.textContent).toContain("1. 是");
-    expect(container.textContent).toContain("2. 是，且对于以后类似命令不再询问");
+    expect(container.textContent).toContain(
+      "2. 是，且对于以后类似命令不再询问",
+    );
     expect(container.textContent).toContain("3. 否，请告知 AIOps 如何调整");
     expect(container.textContent).toContain("提交");
-    expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="codex-approval-command"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="codex-approval-inline"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="codex-approval-command"]'),
+    ).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
   });
 
@@ -66,7 +78,12 @@ describe("ChatPage", () => {
             title: "指标趋势",
             visual: {
               kind: "timeseries",
-              series: [{ name: "p95_latency_ms", data: [{ timestamp: 1, value: 980 }] }],
+              series: [
+                {
+                  name: "p95_latency_ms",
+                  data: [{ timestamp: 1, value: 980 }],
+                },
+              ],
             },
           },
         },
@@ -78,9 +95,13 @@ describe("ChatPage", () => {
     });
 
     expect(container.textContent).toContain("Coroot 延迟趋势");
-    expect(container.textContent).toContain("接口 P95 延迟在 14:03 后明显升高。");
+    expect(container.textContent).toContain(
+      "接口 P95 延迟在 14:03 后明显升高。",
+    );
     expect(container.textContent).toContain("p95_latency_ms");
-    expect(container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent).toContain("查看 Case");
+    expect(
+      container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent,
+    ).toContain("查看 Case");
   });
 
   it("uses the current turn approval when stale approvals remain in transport state", async () => {
@@ -101,9 +122,15 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const command = container.querySelector('[data-testid="codex-approval-command"]');
-    expect(command?.textContent).toContain("kubectl rollout restart deploy/payment-api");
-    expect(command?.textContent).not.toContain("stale command should not render");
+    const command = container.querySelector(
+      '[data-testid="codex-approval-command"]',
+    );
+    expect(command?.textContent).toContain(
+      "kubectl rollout restart deploy/payment-api",
+    );
+    expect(command?.textContent).not.toContain(
+      "stale command should not render",
+    );
   });
 
   it("replaces the composer with approval options whenever a current turn approval is pending", async () => {
@@ -115,7 +142,9 @@ describe("ChatPage", () => {
     });
 
     expect(container.textContent).toContain("等待审批");
-    expect(container.querySelector('[data-testid="codex-approval-inline"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="codex-approval-inline"]'),
+    ).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
   });
 
@@ -124,8 +153,8 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={sampleState()} />);
     });
 
-    const submit = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("提交"),
+    const submit = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("提交"),
     ) as HTMLButtonElement | undefined;
 
     await act(async () => {
@@ -142,7 +171,9 @@ describe("ChatPage", () => {
     state.sessionId = "sess-confirmation";
 
     await act(async () => {
-      root.render(<ChatPage initialState={state} threadId="thread-confirmation" />);
+      root.render(
+        <ChatPage initialState={state} threadId="thread-confirmation" />,
+      );
     });
 
     expect(container.querySelector("textarea")).not.toBeNull();
@@ -160,18 +191,646 @@ describe("ChatPage", () => {
       );
     });
 
-    expect(container.querySelector('[data-testid="ops-manual-generation-confirmation"]')).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="ops-manual-generation-confirmation"]',
+      ),
+    ).not.toBeNull();
     expect(container.textContent).toContain("生成运维手册候选");
     expect(container.textContent).toContain("Redis 内存压力排障");
     expect(container.querySelector("textarea")).toBeNull();
 
-    const cancel = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("取消"));
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("取消"),
+    );
     await act(async () => {
       cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.querySelector('[data-testid="ops-manual-generation-confirmation"]')).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="ops-manual-generation-confirmation"]',
+      ),
+    ).toBeNull();
     expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("does not automatically offer ops manual generation from a completed AI Chat operation", async () => {
+    const state = createInitialAiopsTransportState("thread-manual-from-chat");
+    state.sessionId = "sess-manual-from-chat";
+    state.status = "idle";
+    state.currentTurnId = "turn-manual-from-chat";
+    state.turnOrder = ["turn-manual-from-chat"];
+    state.turns = {
+      "turn-manual-from-chat": {
+        id: "turn-manual-from-chat",
+        status: "completed",
+        startedAt: "2026-05-15T01:00:00Z",
+        completedAt: "2026-05-15T01:00:18Z",
+        user: {
+          id: "user-manual-from-chat",
+          text: "排查 Redis 内存和 p95 升高",
+          createdAt: "2026-05-15T01:00:00Z",
+        },
+        process: [
+          {
+            id: "cmd-manual-from-chat-1",
+            kind: "command",
+            status: "completed",
+            text: "docker ps --filter name=redis",
+            command: "docker ps --filter name=redis",
+            outputPreview: "aiops-redis",
+          },
+          {
+            id: "cmd-manual-from-chat-2",
+            kind: "command",
+            status: "completed",
+            text: "docker exec aiops-redis redis-cli INFO memory",
+            command: "docker exec aiops-redis redis-cli INFO memory",
+            outputPreview: "used_memory_rss:123456",
+          },
+        ],
+        final: {
+          id: "final-manual-from-chat",
+          status: "completed",
+          text: "本次验证状态：已验证，结论基于当前主机与 Redis 容器实时只读结果；未执行任何变更操作。",
+        },
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatPage initialState={state} threadId="thread-manual-from-chat" />,
+      );
+    });
+
+    expect(container.querySelector("textarea")).not.toBeNull();
+    const generate = container.querySelector(
+      '[data-testid="aiops-generate-ops-manual-from-chat"]',
+    );
+    expect(generate).toBeNull();
+    expect(
+      container.querySelector(
+        '[data-testid="ops-manual-generation-confirmation"]',
+      ),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("本次对话可沉淀为运维手册");
+  });
+
+  it("does not offer ops manual generation after a normal read-only status check", async () => {
+    const state = createInitialAiopsTransportState("thread-redis-status-check");
+    state.sessionId = "sess-redis-status-check";
+    state.status = "idle";
+    state.currentTurnId = "turn-redis-status-check";
+    state.turnOrder = ["turn-redis-status-check"];
+    state.turns = {
+      "turn-redis-status-check": {
+        id: "turn-redis-status-check",
+        status: "completed",
+        startedAt: "2026-05-17T01:00:00Z",
+        completedAt: "2026-05-17T01:00:12Z",
+        user: {
+          id: "user-redis-status-check",
+          text: "检查 Redis 状态",
+          createdAt: "2026-05-17T01:00:00Z",
+        },
+        intent: { text: "检查 Redis 状态", status: "status_check" },
+        process: [
+          {
+            id: "cmd-redis-status-1",
+            kind: "command",
+            status: "completed",
+            text: "docker ps --filter name=redis",
+            command: "docker ps --filter name=redis",
+            outputPreview: "aiops-redis Up 3 hours",
+          },
+          {
+            id: "cmd-redis-status-2",
+            kind: "command",
+            status: "completed",
+            text: "docker exec aiops-redis redis-cli ping",
+            command: "docker exec aiops-redis redis-cli ping",
+            outputPreview: "PONG",
+          },
+        ],
+        final: {
+          id: "final-redis-status-check",
+          status: "completed",
+          text: "Redis 当前状态正常，docker 容器运行中且 PING 返回 PONG；本次只读检查未执行任何变更。",
+        },
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatPage initialState={state} threadId="thread-redis-status-check" />,
+      );
+    });
+
+    expect(container.textContent).toContain("Redis 当前状态正常");
+    expect(
+      container.querySelector(
+        '[data-testid="aiops-generate-ops-manual-from-chat"]',
+      ),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("does not offer ops manual generation while ops manual parameters still need confirmation", async () => {
+    const state = createInitialAiopsTransportState(
+      "thread-pg-param-confirmation",
+    );
+    state.sessionId = "sess-pg-param-confirmation";
+    state.status = "idle";
+    state.currentTurnId = "turn-pg-param-confirmation";
+    state.turnOrder = ["turn-pg-param-confirmation"];
+    state.turns = {
+      "turn-pg-param-confirmation": {
+        id: "turn-pg-param-confirmation",
+        status: "completed",
+        startedAt: "2026-05-17T01:00:00Z",
+        completedAt: "2026-05-17T01:00:12Z",
+        user: {
+          id: "user-pg-param-confirmation",
+          text: "请按运维手册给本机 PostgreSQL 做备份",
+          createdAt: "2026-05-17T01:00:00Z",
+        },
+        process: [
+          {
+            id: "tool-pg-param-resolution",
+            kind: "tool",
+            status: "completed",
+            text: "resolve_ops_manual_params",
+            outputPreview: "target_instance ambiguous, backup_path missing",
+          },
+        ],
+        agentUiArtifacts: [
+          {
+            id: "artifact-pg-param-resolution",
+            type: "ops_manual_param_resolution",
+            status: "ambiguous",
+            inlineData: {
+              status: "ambiguous",
+              fields: [
+                {
+                  id: "target_instance",
+                  label: "实例/服务",
+                  candidates: [
+                    { value: "docker:aiops-postgres" },
+                    { value: "docker:aiops-pgvector" },
+                  ],
+                },
+                { id: "backup_path", label: "备份路径" },
+              ],
+            },
+          },
+        ],
+        final: {
+          id: "final-pg-param-confirmation",
+          status: "completed",
+          text: "还需要确认 PostgreSQL 目标实例和备份路径；目前还没有执行任何变更，也还未进入预检。",
+        },
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatPage
+          initialState={state}
+          threadId="thread-pg-param-confirmation"
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain(
+      "还需要确认 PostgreSQL 目标实例和备份路径",
+    );
+    expect(
+      container.querySelector(
+        '[data-testid="aiops-generate-ops-manual-from-chat"]',
+      ),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("补充运维手册参数");
+  });
+
+  it("replaces the textarea with a Dry Run confirmation panel", async () => {
+    const state = createInitialAiopsTransportState(
+      "thread-dry-run-confirmation",
+    );
+    state.sessionId = "sess-dry-run-confirmation";
+
+    await act(async () => {
+      root.render(
+        <ChatPage
+          initialState={state}
+          threadId="thread-dry-run-confirmation"
+        />,
+      );
+    });
+
+    expect(container.querySelector("textarea")).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-confirmation", {
+          detail: {
+            action: "start_runner_workflow_dry_run",
+            title: "进入 Dry Run",
+            sourceTitle: "MySQL SSH 备份运维手册",
+            artifactId: "artifact-preflight-passed",
+          },
+        }),
+      );
+    });
+
+    expect(
+      container.querySelector(
+        '[data-testid="ops-manual-generation-confirmation"]',
+      ),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("MySQL SSH 备份运维手册");
+    expect(container.textContent).toContain("不会执行真实变更");
+    expect(container.querySelector("textarea")).toBeNull();
+
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("取消"),
+    );
+    await act(async () => {
+      cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      container.querySelector(
+        '[data-testid="ops-manual-generation-confirmation"]',
+      ),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("replaces the textarea with a dynamic ops manual parameter form", async () => {
+    const state = createInitialAiopsTransportState("thread-context-form");
+    state.sessionId = "sess-context-form";
+
+    await act(async () => {
+      root.render(
+        <ChatPage initialState={state} threadId="thread-context-form" />,
+      );
+    });
+
+    expect(container.querySelector("textarea")).not.toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-context-request", {
+          detail: {
+            artifactId: "artifact-param-resolution",
+            title: "补充运维手册参数",
+            manualId: "manual-redis-rca-ssh",
+            workflowId: "workflow-redis-rca-ssh",
+            submitAction: "submit_ops_manual_param_form",
+            fields: [
+              {
+                id: "redis_instance",
+                label: "Redis 实例",
+                type: "resource_ref",
+                uiControl: "select",
+                required: true,
+                candidates: [
+                  { value: "docker:redis-1", label: "redis-1" },
+                  { value: "docker:redis-2", label: "redis-2" },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("补充运维手册参数");
+    expect(container.textContent).not.toContain("运维手册缺信息");
+    expect(container.textContent).not.toContain("只补必要字段");
+    expect(container.textContent).toContain("Redis 实例");
+    expect(container.textContent).toContain("redis-1");
+    expect(container.textContent).toContain("redis-2");
+    expect(container.textContent).not.toContain("目标位置");
+    expect(container.textContent).not.toContain("访问/执行入口");
+    expect(container.textContent).not.toContain("现象/证据");
+
+    const instanceSelect = container.querySelector(
+      'select[name="redis_instance"]',
+    ) as HTMLSelectElement | null;
+    expect(instanceSelect).not.toBeNull();
+    expect(container.querySelector("textarea")).toBeNull();
+
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("取消"),
+    );
+    await act(async () => {
+      cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("submits the dynamic ops manual parameter form as structured metadata", async () => {
+    const state = createInitialAiopsTransportState(
+      "thread-context-form-submit",
+    );
+    state.sessionId = "sess-context-form-submit";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      }),
+    );
+
+    try {
+      await act(async () => {
+        root.render(
+          <ChatPage
+            initialState={state}
+            threadId="thread-context-form-submit"
+          />,
+        );
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent("aiops:composer-context-request", {
+            detail: {
+              artifactId: "artifact-param-resolution",
+              title: "补充运维手册参数",
+              manualId: "manual-redis-rca-ssh",
+              workflowId: "workflow-redis-rca-ssh",
+              submitAction: "submit_ops_manual_param_form",
+              fields: [
+                {
+                  id: "redis_instance",
+                  label: "Redis 实例",
+                  type: "resource_ref",
+                  uiControl: "select",
+                  required: true,
+                  candidates: [
+                    { value: "docker:aiops-redis", label: "aiops-redis" },
+                    { value: "docker:redis-shadow", label: "redis-shadow" },
+                  ],
+                },
+              ],
+            },
+          }),
+        );
+      });
+
+      const targetSelect = container.querySelector(
+        'select[name="redis_instance"]',
+      ) as HTMLSelectElement | null;
+      expect(targetSelect).not.toBeNull();
+      targetSelect!.value = "docker:aiops-redis";
+
+      const submit = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("提交并继续"),
+      );
+      await act(async () => {
+        submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(
+        container.querySelector('[data-testid="ops-manual-context-composer"]'),
+      ).toBeNull();
+      expect(container.querySelector("textarea")).not.toBeNull();
+      expect(fetchSpy).toHaveBeenCalled();
+      const requestBody = String(fetchSpy.mock.calls.at(-1)?.[1]?.body || "");
+      expect(requestBody).toContain("已提交运维手册参数");
+      expect(requestBody).toContain("submit_ops_manual_param_form");
+      expect(requestBody).toContain("manual-redis-rca-ssh");
+      expect(requestBody).toContain("workflow-redis-rca-ssh");
+      expect(requestBody).toContain("opsManualParamsJson");
+      expect(requestBody).toContain("redis_instance");
+      expect(requestBody).toContain("docker:aiops-redis");
+      expect(requestBody).not.toContain("补充必要信息，继续下一步自动排查");
+      expect(requestBody).not.toContain("��");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("falls back to text input when a parameter select has no discovered candidates", async () => {
+    const state = createInitialAiopsTransportState(
+      "thread-context-form-no-candidates",
+    );
+    state.sessionId = "sess-context-form-no-candidates";
+
+    await act(async () => {
+      root.render(
+        <ChatPage
+          initialState={state}
+          threadId="thread-context-form-no-candidates"
+        />,
+      );
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-context-request", {
+          detail: {
+            artifactId: "artifact-param-resolution",
+            title: "补充运维手册参数",
+            manualId: "manual-redis-rca-ssh",
+            workflowId: "workflow-redis-rca-ssh",
+            submitAction: "submit_ops_manual_param_form",
+            fields: [
+              {
+                id: "target_instance",
+                label: "实例/服务",
+                type: "resource_ref",
+                uiControl: "select",
+                required: true,
+                placeholder:
+                  "Read-only resource discovery ran on server-local, but found no Redis candidate.",
+                candidates: [],
+              },
+            ],
+          },
+        }),
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('select[name="target_instance"]'),
+    ).toBeNull();
+    const targetInput = container.querySelector(
+      'input[name="target_instance"]',
+    ) as HTMLInputElement | null;
+    expect(targetInput).not.toBeNull();
+    expect(targetInput?.placeholder).toContain("found no Redis candidate");
+  });
+
+  it("renders sensitive ops manual fields as Secret reference inputs without leaking defaults", async () => {
+    const state = createInitialAiopsTransportState(
+      "thread-context-form-secret",
+    );
+    state.sessionId = "sess-context-form-secret";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      }),
+    );
+
+    try {
+      await act(async () => {
+        root.render(
+          <ChatPage
+            initialState={state}
+            threadId="thread-context-form-secret"
+          />,
+        );
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent("aiops:composer-context-request", {
+            detail: {
+              artifactId: "artifact-param-resolution-secret",
+              title: "补充敏感运维参数",
+              manualId: "manual-db-restore",
+              workflowId: "workflow-db-restore",
+              submitAction: "submit_ops_manual_param_form",
+              fields: [
+                {
+                  id: "db_password",
+                  label: "数据库密码",
+                  type: "secret_ref",
+                  uiControl: "secret_ref",
+                  sensitive: true,
+                  required: true,
+                  default: "plain-secret-should-not-render",
+                },
+              ],
+            },
+          }),
+        );
+      });
+
+      expect(
+        container.querySelector('[data-testid="ops-manual-context-composer"]'),
+      ).not.toBeNull();
+      expect(container.textContent).toContain("数据库密码（Secret 引用）");
+      expect(container.textContent).not.toContain(
+        "plain-secret-should-not-render",
+      );
+      const passwordInput = container.querySelector(
+        'input[name="db_password"]',
+      ) as HTMLInputElement | null;
+      expect(passwordInput).not.toBeNull();
+      expect(passwordInput?.type).toBe("password");
+      expect(passwordInput?.value).toBe("");
+      expect(passwordInput?.placeholder).toContain("secret://");
+      expect(passwordInput?.placeholder).toContain("避免填写明文密码");
+
+      const submit = Array.from(container.querySelectorAll("button")).find(
+        (button) => button.textContent?.includes("提交并继续"),
+      );
+      const fetchCallsBeforeEmptySubmit = fetchSpy.mock.calls.length;
+      await act(async () => {
+        submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      expect(fetchSpy.mock.calls.length).toBe(fetchCallsBeforeEmptySubmit);
+
+      passwordInput!.value = "secret://team/db-password";
+      await act(async () => {
+        submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(fetchSpy).toHaveBeenCalled();
+      const requestBody = String(fetchSpy.mock.calls.at(-1)?.[1]?.body || "");
+      expect(requestBody).toContain("secret://team/db-password");
+      expect(requestBody).not.toContain("plain-secret-should-not-render");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("restores the chat input when an artifact asks to skip ops manual usage", async () => {
+    const state = createInitialAiopsTransportState("thread-skip-ops-manual");
+    state.sessionId = "sess-skip-ops-manual";
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      }),
+    );
+
+    try {
+      await act(async () => {
+        root.render(
+          <ChatPage initialState={state} threadId="thread-skip-ops-manual" />,
+        );
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent("aiops:composer-context-request", {
+            detail: {
+              artifactId: "artifact-need-info",
+              title: "补充运维手册必要信息",
+              fields: [
+                {
+                  id: "target_location",
+                  label: "目标位置",
+                  placeholder: "server-01",
+                },
+              ],
+            },
+          }),
+        );
+      });
+
+      expect(
+        container.querySelector('[data-testid="ops-manual-context-composer"]'),
+      ).not.toBeNull();
+      expect(container.querySelector("textarea")).toBeNull();
+
+      await act(async () => {
+        window.dispatchEvent(
+          new CustomEvent("aiops:composer-context-submit", {
+            detail: {
+              artifactId: "artifact-need-info",
+              text: "已选择跳过运维手册。不要再调用 search_ops_manuals、resolve_ops_manual_params 或 run_ops_manual_preflight；请按普通只读排查继续。",
+              metadata: {
+                opsManualAction: "skip_ops_manual",
+                opsManualSkipped: "true",
+                opsManualManualId: "manual-pg-backup-ubuntu",
+              },
+            },
+          }),
+        );
+      });
+
+      expect(
+        container.querySelector('[data-testid="ops-manual-context-composer"]'),
+      ).toBeNull();
+      expect(container.querySelector("textarea")).not.toBeNull();
+      expect(fetchSpy).toHaveBeenCalled();
+      const requestBody = String(fetchSpy.mock.calls.at(-1)?.[1]?.body || "");
+      expect(requestBody).toContain("已选择跳过运维手册");
+      expect(requestBody).toContain("search_ops_manuals");
+      expect(requestBody).toContain("skip_ops_manual");
+      expect(requestBody).toContain("opsManualSkipped");
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("renders the empty single-host greeting", async () => {
@@ -246,4 +905,8 @@ function sampleState(): AiopsTransportState {
       activeCommandStreams: {},
     },
   };
+}
+
+function countText(text: string, pattern: string) {
+  return text.split(pattern).length - 1;
 }

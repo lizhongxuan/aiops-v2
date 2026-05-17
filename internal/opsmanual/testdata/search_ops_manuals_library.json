@@ -5,6 +5,7 @@
       "manual_family_id": "manual-family-pg-backup",
       "title": "PostgreSQL 备份 Ubuntu 运维手册",
       "status": "verified",
+      "tags": ["postgresql", "pg", "backup", "ubuntu", "ssh"],
       "version": "v1",
       "owner": "sre",
       "workflow_ref": {
@@ -57,6 +58,38 @@
       ],
       "document_markdown": "用于在 Ubuntu 主机上通过 SSH 执行 PostgreSQL 备份，包含参数填写、前置检查、Dry Run 与备份文件验证步骤。",
       "search_doc": "PostgreSQL backup Ubuntu ssh pg_isready backup_path workflow-pg-backup-ubuntu",
+      "retrieval_profile": {
+        "aliases": {
+          "postgresql": ["pg", "postgres", "PostgreSQL"],
+          "backup": ["备份", "dump", "pg_dump", "pg_basebackup"]
+        },
+        "keywords": ["postgresql", "pg", "backup", "pg_dump", "pg_isready", "backup_path", "ssh", "ubuntu"],
+        "negative_keywords": ["mysql", "redis", "kubernetes", "kubectl", "no restart", "不重启"],
+        "embedding_text": "PostgreSQL backup on Ubuntu VM through SSH with pg_isready validation and backup_path parameter",
+        "min_score": {
+          "candidate": 0.55,
+          "direct_execute": 0.82
+        }
+      },
+      "runnable_conditions": {
+        "required_params": ["target_instance", "backup_path"],
+        "allowed_environments": ["prod", "test", "staging"],
+        "max_risk_level": "medium",
+        "requires_approval": false
+      },
+      "preflight_probe": {
+        "id": "check_pg_backup_ssh_and_path",
+        "type": "runner_node",
+        "action": "check_pg_backup_ssh_and_path",
+        "read_only": true,
+        "timeout_seconds": 15,
+        "required_outputs": ["ssh_access", "pg_isready", "backup_path_writable"]
+      },
+      "fallback_guide": {
+        "mode": "react_steps",
+        "markdown_ref": "document_markdown#降级排障指南",
+        "steps": ["确认 SSH 访问", "检查 pg_isready", "确认备份路径可写"]
+      },
       "created_at": "2026-05-15T00:00:00Z",
       "updated_at": "2026-05-15T00:00:00Z"
     },
@@ -65,6 +98,7 @@
       "manual_family_id": "manual-family-redis-rca",
       "title": "Redis SSH 排障运维手册",
       "status": "verified",
+      "tags": ["redis", "memory", "rca", "ssh"],
       "version": "v1",
       "owner": "sre",
       "workflow_ref": {
@@ -110,6 +144,161 @@
       ],
       "document_markdown": "用于通过 SSH 排查 Redis 故障，需要目标实例、症状和指标证据后才能判断是否可复用工作流。",
       "search_doc": "Redis RCA SSH symptom metrics target_instance workflow-redis-rca-ssh",
+      "retrieval_profile": {
+        "aliases": {
+          "redis": ["Redis", "redis-server"],
+          "rca_or_repair": ["排查", "诊断", "RCA", "triage", "恢复"]
+        },
+        "keywords": ["redis", "used_memory_rss", "p95", "slowlog", "metrics", "symptom", "ssh"],
+        "negative_keywords": ["mysql", "postgresql", "pg", "kubernetes", "kubectl", "backup"],
+        "embedding_text": "Redis memory pressure RCA through SSH with metrics symptom used_memory_rss p95 evidence",
+        "min_score": {
+          "candidate": 0.55,
+          "direct_execute": 0.82
+        }
+      },
+      "runnable_conditions": {
+        "required_params": ["target_instance"],
+        "allowed_environments": ["prod", "test", "staging"],
+        "max_risk_level": "medium",
+        "requires_approval": false
+      },
+      "preflight_probe": {
+        "id": "check_redis_readonly_context",
+        "type": "runner_node",
+        "action": "check_redis_readonly_context",
+        "read_only": true,
+        "timeout_seconds": 15,
+        "required_outputs": ["ssh_access", "redis_ping", "metrics_available"]
+      },
+      "fallback_guide": {
+        "mode": "react_steps",
+        "markdown_ref": "document_markdown#降级排障指南",
+        "steps": ["确认目标 Redis 实例", "读取 used_memory_rss 与 used_memory", "检查 slowlog 与连接数"]
+      },
+      "created_at": "2026-05-15T00:00:00Z",
+      "updated_at": "2026-05-15T00:00:00Z"
+    },
+    {
+      "id": "manual-mysql-backup-ssh",
+      "manual_family_id": "manual-family-mysql-backup",
+      "title": "MySQL SSH 备份运维手册",
+      "status": "verified",
+      "tags": ["mysql", "backup", "ssh"],
+      "version": "v1",
+      "owner": "sre",
+      "workflow_ref": {
+        "workflow_id": "workflow-mysql-backup-ssh",
+        "workflow_version": "v1"
+      },
+      "operation": {
+        "target_type": "mysql",
+        "action": "backup",
+        "risk_level": "medium",
+        "stateful": true
+      },
+      "applicability": {
+        "middleware": "mysql",
+        "platform": ["vm"],
+        "execution_surface": ["ssh"]
+      },
+      "required_context": {
+        "required_inputs": ["target_instance", "backup_path"],
+        "required_evidence": ["ssh_access", "connection_test"]
+      },
+      "preconditions": ["SSH access to the target host is available", "MySQL connection test passes before backup"],
+      "validation": ["backup file exists at backup_path and is non-empty"],
+      "cannot_use_when": ["目标实例未知", "无法确认 MySQL 连接状态", "备份路径不可写"],
+      "document_markdown": "用于通过 SSH 执行 MySQL 备份，包含连接验证、备份路径检查和备份文件验证。",
+      "search_doc": "MySQL backup SSH mysqldump connection_test backup_path",
+      "retrieval_profile": {
+        "aliases": {
+          "mysql": ["mysqld", "mysqldump"],
+          "backup": ["备份", "dump", "mysqldump"]
+        },
+        "keywords": ["mysql", "mysqldump", "backup", "connection_test", "backup_path", "ssh"],
+        "negative_keywords": ["postgresql", "postgres", "pg", "redis", "kubernetes"],
+        "embedding_text": "MySQL backup through SSH with mysqldump connection test and backup_path",
+        "min_score": {
+          "candidate": 0.55,
+          "direct_execute": 0.82
+        }
+      },
+      "preflight_probe": {
+        "id": "check_mysql_backup_ssh_and_path",
+        "type": "runner_node",
+        "action": "check_mysql_backup_ssh_and_path",
+        "read_only": true,
+        "timeout_seconds": 15,
+        "required_outputs": ["ssh_access", "connection_test", "backup_path_writable"]
+      },
+      "fallback_guide": {
+        "mode": "react_steps",
+        "markdown_ref": "document_markdown#降级排障指南",
+        "steps": ["确认 SSH 访问", "执行 MySQL 连接测试", "确认备份路径可写"]
+      },
+      "created_at": "2026-05-15T00:00:00Z",
+      "updated_at": "2026-05-15T00:00:00Z"
+    },
+    {
+      "id": "manual-k8s-pod-crashloop-rca",
+      "manual_family_id": "manual-family-k8s-pod-rca",
+      "title": "Kubernetes Pod CrashLoop/OOM 排障运维手册",
+      "status": "verified",
+      "tags": ["kubernetes", "k8s", "pod", "crashloopbackoff", "oom"],
+      "version": "v1",
+      "owner": "sre",
+      "workflow_ref": {
+        "workflow_id": "workflow-k8s-pod-crashloop-rca",
+        "workflow_version": "v1"
+      },
+      "operation": {
+        "target_type": "kubernetes_pod",
+        "action": "rca_or_repair",
+        "risk_level": "medium",
+        "stateful": false
+      },
+      "applicability": {
+        "middleware": "kubernetes",
+        "platform": ["kubernetes"],
+        "execution_surface": ["kubectl"],
+        "topology": ["deployment", "statefulset"]
+      },
+      "required_context": {
+        "required_inputs": ["namespace", "pod_name"],
+        "required_evidence": ["kubectl_access", "rbac_read_ok"]
+      },
+      "preconditions": ["kubectl can read target namespace", "RBAC read permission is available"],
+      "validation": ["Pod events and previous container state are collected", "fallback or safe recovery step is recorded"],
+      "cannot_use_when": ["namespace 未知", "pod_name 未知", "没有 kubectl 读取权限"],
+      "document_markdown": "用于 Kubernetes Pod CrashLoopBackOff、OOMKilled 和频繁重启场景的只读排障。先读取事件、日志和上一次退出原因，再判断是否需要生成修复工作流。",
+      "search_doc": "Kubernetes pod CrashLoopBackOff OOMKilled restart kubectl events previous container state namespace pod_name rbac",
+      "retrieval_profile": {
+        "aliases": {
+          "kubernetes_pod": ["pod", "k8s pod", "容器组"],
+          "rca_or_repair": ["排查", "诊断", "CrashLoopBackOff", "OOMKilled", "频繁重启"]
+        },
+        "keywords": ["kubernetes", "k8s", "pod", "crashloopbackoff", "oomkilled", "restart", "kubectl", "events", "namespace", "pod_name"],
+        "negative_keywords": ["mysql", "postgresql", "redis", "backup"],
+        "embedding_text": "Kubernetes Pod CrashLoopBackOff OOMKilled restart diagnostics through kubectl events logs previous state",
+        "min_score": {
+          "candidate": 0.55,
+          "direct_execute": 0.82
+        }
+      },
+      "preflight_probe": {
+        "id": "check_pod_status_and_rbac",
+        "type": "runner_node",
+        "action": "check_pod_status_and_rbac",
+        "read_only": true,
+        "timeout_seconds": 15,
+        "required_outputs": ["pod_exists", "rbac_read_ok", "controller_detected"]
+      },
+      "fallback_guide": {
+        "mode": "react_steps",
+        "markdown_ref": "document_markdown#降级排障指南",
+        "steps": ["读取 Pod events", "读取 previous container state", "检查最近一次 OOMKilled 或 CrashLoopBackOff 原因"]
+      },
       "created_at": "2026-05-15T00:00:00Z",
       "updated_at": "2026-05-15T00:00:00Z"
     }

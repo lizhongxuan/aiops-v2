@@ -4,6 +4,8 @@ import {
   createOpsManualsApi,
   normalizeOpsManual,
   normalizeOpsManualMatch,
+  normalizeOpsManualParamResolutionResult,
+  normalizeOpsManualPreflightResult,
   normalizeOpsManualSearchResult,
   normalizeRunRecordList,
 } from "./opsManuals";
@@ -24,7 +26,7 @@ function createRecordingHttpClient(payload: unknown = { ok: true }) {
 }
 
 describe("ops manuals API", () => {
-  it("routes list, get, retrieve, search, candidate prepare, confirm, and run records through /api/v1/ops-manuals", async () => {
+  it("routes list, get, retrieve, search, param resolution, preflight, candidate prepare, confirm, and run records through /api/v1/ops-manuals", async () => {
     const http = createRecordingHttpClient({ items: [] });
     const api = createOpsManualsApi(http);
 
@@ -32,6 +34,8 @@ describe("ops manuals API", () => {
     await api.get("manual/redis 1");
     await api.retrieve({ raw_text: "排查 Redis" });
     await api.searchOpsManuals({ text: "排查 Redis", limit: 3 });
+    await api.resolveOpsManualParams({ manual_id: "manual-redis-memory", request_text: "排查 Redis" });
+    await api.runOpsManualPreflight({ manual_id: "manual-redis-memory", parameters: { target_instance: "redis-01" } });
     await api.prepareCandidate({ workflow_id: "wf/redis 1" });
     await api.confirmCandidate("candidate/redis 1", { reviewer: "sre", review_decision: "approved" });
     await api.listRunRecords("manual/redis 1", { limit: 10 });
@@ -41,6 +45,16 @@ describe("ops manuals API", () => {
       { method: "GET", path: "/api/v1/ops-manuals/manual%2Fredis%201" },
       { method: "POST", path: "/api/v1/ops-manuals/retrieve", body: { raw_text: "排查 Redis" } },
       { method: "POST", path: "/api/v1/ops-manuals/search", body: { text: "排查 Redis", limit: 3 } },
+      {
+        method: "POST",
+        path: "/api/v1/ops-manuals/resolve-params",
+        body: { manual_id: "manual-redis-memory", request_text: "排查 Redis" },
+      },
+      {
+        method: "POST",
+        path: "/api/v1/ops-manuals/preflight",
+        body: { manual_id: "manual-redis-memory", parameters: { target_instance: "redis-01" } },
+      },
       { method: "POST", path: "/api/v1/ops-manuals/candidates/prepare", body: { workflow_id: "wf/redis 1" } },
       {
         method: "POST",
@@ -98,7 +112,7 @@ describe("ops manuals API", () => {
       state: "direct",
       reasons: ["中间件匹配：redis"],
       missing_context: [],
-      run_record_summary: { success_count: 7, failure_count: 0 },
+      run_record_summary: { success_count: 7, failure_count: 0, latest_status: "passed", consecutive_failures: 0, suppressed: false },
       score: 0.92,
     });
 
@@ -107,7 +121,7 @@ describe("ops manuals API", () => {
       manualTitle: "Redis 内存压力排障",
       workflowRef: { workflowId: "workflow-redis-memory" },
       reasons: ["中间件匹配：redis"],
-      runRecordSummary: { successCount: 7, failureCount: 0 },
+      runRecordSummary: { successCount: 7, failureCount: 0, latestStatus: "passed", consecutiveFailures: 0, suppressed: false },
     });
     expect(match).not.toHaveProperty("score");
     expect(match).not.toHaveProperty("percentage");
@@ -124,6 +138,8 @@ describe("ops manuals API", () => {
           bound_workflow_id: "workflow-pg-backup-ubuntu",
           workflow_status: "enabled",
           usable_mode: "adapt",
+          score_breakdown: { final_score: 0.88 },
+          preflight_status: "not_run",
           matched_fields: ["object_type", "operation_type"],
           environment_diffs: ["os"],
           blocked_reasons: ["workflow targets ubuntu apt/systemd but current host is centos/yum/systemd"],
@@ -149,6 +165,8 @@ describe("ops manuals API", () => {
           workflowStatus: "enabled",
           boundWorkflowId: "workflow-pg-backup-ubuntu",
           usableMode: "adapt",
+          preflightStatus: "not_run",
+          scoreBreakdown: { finalScore: 0.88 },
           matchedFields: ["object_type", "operation_type"],
           environmentDiffs: ["os"],
           recommendedAction: "generate_workflow_variant",
@@ -160,6 +178,73 @@ describe("ops manuals API", () => {
     expect(result).not.toHaveProperty("percentage");
     expect(result.manuals[0]).not.toHaveProperty("score");
     expect(result.manuals[0]).not.toHaveProperty("percentage");
+  });
+
+  it("normalizes preflight results for Agent-to-UI cards", () => {
+    const result = normalizeOpsManualPreflightResult({
+      status: "passed",
+      ready: true,
+      manual_id: "manual-pg-backup",
+      workflow_id: "workflow-pg-backup",
+      probe_id: "pg-backup-readonly",
+      evidence: [{ name: "ssh_access", status: "passed", value: true }],
+      missing_permissions: [],
+      environment_diffs: [],
+      next_action: "start_dry_run",
+      checked_at: "2026-05-15T09:30:00Z",
+      artifact_type: "ops_manual_preflight_result",
+    });
+
+    expect(result).toMatchObject({
+      status: "passed",
+      ready: true,
+      manualId: "manual-pg-backup",
+      workflowId: "workflow-pg-backup",
+      probeId: "pg-backup-readonly",
+      nextAction: "start_dry_run",
+      artifactType: "ops_manual_preflight_result",
+    });
+    expect(result.evidence[0]).toMatchObject({ name: "ssh_access", status: "passed", value: true });
+  });
+
+  it("normalizes parameter resolution results for dynamic Agent-to-UI forms", () => {
+    const result = normalizeOpsManualParamResolutionResult({
+      status: "ambiguous",
+      manual_id: "manual-redis-memory",
+      workflow_id: "workflow-redis-memory",
+      resolved_params: [{ id: "target_host", value: "server-local", source: "selected_host", confidence: 1 }],
+      fields: [
+        {
+          id: "redis_instance",
+          label: "Redis 实例",
+          type: "resource_ref",
+          ui_control: "select",
+          required: true,
+          candidates: [{ value: "docker:redis-1", label: "redis-1", source: "docker", confidence: 0.91 }],
+        },
+      ],
+      next_action: "await_user_input",
+      artifact_type: "ops_manual_param_resolution",
+    });
+
+    expect(result).toMatchObject({
+      status: "ambiguous",
+      manualId: "manual-redis-memory",
+      workflowId: "workflow-redis-memory",
+      nextAction: "await_user_input",
+      artifactType: "ops_manual_param_resolution",
+      resolvedParams: [{ id: "target_host", value: "server-local", source: "selected_host", confidence: 1 }],
+      fields: [
+        {
+          id: "redis_instance",
+          label: "Redis 实例",
+          type: "resource_ref",
+          uiControl: "select",
+          required: true,
+          candidates: [{ value: "docker:redis-1", label: "redis-1", source: "docker", confidence: 0.91 }],
+        },
+      ],
+    });
   });
 
   it("maps legacy search decision aliases to canonical states", () => {

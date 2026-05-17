@@ -67,6 +67,8 @@ type OpsManualService interface {
 	ListManuals(OpsManualListRequest) (OpsManualListResult, error)
 	GetManual(id string) (OpsManualView, error)
 	SearchOpsManuals(opsmanual.SearchOpsManualsRequest) (opsmanual.SearchOpsManualsResult, error)
+	ResolveParams(opsmanual.ResolveOpsManualParamsRequest) (opsmanual.ParamResolutionResult, error)
+	RunPreflight(opsmanual.PreflightRequest) (opsmanual.PreflightResult, error)
 	RetrieveManuals(OpsManualRetrieveRequest) (OpsManualMatchList, error)
 	ListCandidates() (OpsManualCandidateListResult, error)
 	ListRunRecords(OpsManualRunRecordsRequest) (OpsManualRunRecordList, error)
@@ -118,6 +120,20 @@ func (s *defaultOpsManualService) SearchOpsManuals(req opsmanual.SearchOpsManual
 	return s.domain.SearchOpsManuals(req)
 }
 
+func (s *defaultOpsManualService) ResolveParams(req opsmanual.ResolveOpsManualParamsRequest) (opsmanual.ParamResolutionResult, error) {
+	if s.domain == nil {
+		return opsmanual.ParamResolutionResult{}, fmt.Errorf("ops manual service is not configured")
+	}
+	return s.domain.ResolveOpsManualParams(req)
+}
+
+func (s *defaultOpsManualService) RunPreflight(req opsmanual.PreflightRequest) (opsmanual.PreflightResult, error) {
+	if s.domain == nil {
+		return opsmanual.PreflightResult{}, fmt.Errorf("ops manual service is not configured")
+	}
+	return s.domain.RunPreflight(req)
+}
+
 func (s *defaultOpsManualService) RetrieveManuals(req OpsManualRetrieveRequest) (OpsManualMatchList, error) {
 	if s.domain == nil {
 		return OpsManualMatchList{}, fmt.Errorf("ops manual service is not configured")
@@ -156,7 +172,7 @@ func (s *defaultOpsManualService) RetrieveManuals(req OpsManualRetrieveRequest) 
 func legacyOpsManualActions(state opsmanual.DecisionState, fallback []string) []string {
 	switch state {
 	case opsmanual.DecisionDirectExecute:
-		return []string{"fill_parameters", "run_precheck", "start_dry_run"}
+		return []string{"fill_parameters", "run_preflight_probe", "start_dry_run"}
 	case opsmanual.DecisionAdapt:
 		return []string{"review_manual", "adapt_workflow"}
 	case opsmanual.DecisionNeedInfo:

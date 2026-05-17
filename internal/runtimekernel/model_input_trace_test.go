@@ -141,12 +141,12 @@ func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
 }
 
 func TestEnrichCompileContextSetsAgentKindFromSessionType(t *testing.T) {
-	hostCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeHost, "host-1", fixedModelInputTraceTime())
+	hostCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeHost, "host-1", nil, fixedModelInputTraceTime())
 	if hostCtx.AgentKind != promptcompiler.AgentKindWorker {
 		t.Fatalf("host AgentKind = %q, want worker", hostCtx.AgentKind)
 	}
 
-	workspaceCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", fixedModelInputTraceTime())
+	workspaceCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", nil, fixedModelInputTraceTime())
 	if workspaceCtx.AgentKind != promptcompiler.AgentKindPlanner {
 		t.Fatalf("workspace AgentKind = %q, want planner", workspaceCtx.AgentKind)
 	}

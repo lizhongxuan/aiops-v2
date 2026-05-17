@@ -40,8 +40,112 @@ export type RunRecordSummaryView = {
   successCount: number;
   failureCount: number;
   recentResult: string;
+  latestStatus: string;
   lastRunAt: string;
+  consecutiveFailures: number;
+  suppressed: boolean;
+  suppressedReason: string;
   raw: LooseRecord;
+};
+
+export type ScoreBreakdownView = {
+  structuralScore: number;
+  keywordScore: number;
+  vectorScore: number;
+  runHistoryScore: number;
+  penalty: number;
+  finalScore: number;
+  raw: LooseRecord;
+};
+
+export type OpsManualPreflightStatus = "not_run" | "passed" | "failed" | "blocked" | "not_applicable" | "unknown";
+
+export type OpsManualPreflightEvidence = {
+  name: string;
+  status: string;
+  value: unknown;
+  note: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualPreflightRequest = {
+  manual_id: string;
+  workflow_id?: string;
+  operation_frame?: Record<string, unknown>;
+  parameters: Record<string, unknown>;
+  requested_by?: string;
+  triggered_by?: string;
+};
+
+export type OpsManualPreflightResult = {
+  status: OpsManualPreflightStatus;
+  ready: boolean;
+  reason: string;
+  manualId: string;
+  workflowId: string;
+  probeId: string;
+  evidence: OpsManualPreflightEvidence[];
+  missingPermissions: string[];
+  environmentDiffs: string[];
+  nextAction: string;
+  checkedAt: string;
+  artifactType: string;
+  raw: unknown;
+};
+
+export type OpsManualParamCandidateView = {
+  value: unknown;
+  label: string;
+  hint: string;
+  source: string;
+  confidence: number;
+  evidence: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualResolvedParamView = {
+  id: string;
+  value: unknown;
+  source: string;
+  confidence: number;
+  evidence: string;
+  confirmedByUser: boolean;
+  needsUserConfirmation: boolean;
+  raw: LooseRecord;
+};
+
+export type OpsManualParamFormFieldView = {
+  id: string;
+  label: string;
+  type: string;
+  required: boolean;
+  sensitive: boolean;
+  uiControl: string;
+  placeholder: string;
+  defaultValue: unknown;
+  candidates: OpsManualParamCandidateView[];
+  raw: LooseRecord;
+};
+
+export type ResolveOpsManualParamsRequest = {
+  request_text?: string;
+  manual_id: string;
+  workflow_id?: string;
+  operation_frame?: Record<string, unknown>;
+  known_params?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+};
+
+export type OpsManualParamResolutionResult = {
+  status: string;
+  manualId: string;
+  workflowId: string;
+  operationFrame: Record<string, unknown>;
+  resolvedParams: OpsManualResolvedParamView[];
+  fields: OpsManualParamFormFieldView[];
+  nextAction: string;
+  artifactType: string;
+  raw: unknown;
 };
 
 export type OpsManualView = {
@@ -108,6 +212,8 @@ export type SearchManualHitView = {
   boundWorkflowId: string;
   matchLevel: string;
   usableMode: OpsManualSearchDecision;
+  scoreBreakdown: ScoreBreakdownView;
+  preflightStatus: OpsManualPreflightStatus;
   matchedFields: string[];
   missingFields: string[];
   environmentDiffs: string[];
@@ -254,6 +360,14 @@ function searchDecision(value: unknown): OpsManualSearchDecision {
   return "no_match";
 }
 
+function preflightStatus(value: unknown): OpsManualPreflightStatus {
+  const normalized = text(value).toLowerCase();
+  if (["not_run", "passed", "failed", "blocked", "not_applicable", "unknown"].includes(normalized)) {
+    return normalized as OpsManualPreflightStatus;
+  }
+  return "unknown";
+}
+
 function endpoint(path: string, params: Record<string, unknown> = {}) {
   const query = Object.entries(params)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
@@ -331,8 +445,113 @@ export function normalizeRunRecordSummary(input: unknown): RunRecordSummaryView 
     successCount: integer(pick(source, "successCount", "success_count")),
     failureCount: integer(pick(source, "failureCount", "failure_count")),
     recentResult: text(pick(source, "recentResult", "recent_result")),
+    latestStatus: text(pick(source, "latestStatus", "latest_status")),
     lastRunAt: text(pick(source, "lastRunAt", "last_run_at")),
+    consecutiveFailures: integer(pick(source, "consecutiveFailures", "consecutive_failures")),
+    suppressed: Boolean(pick(source, "suppressed")),
+    suppressedReason: text(pick(source, "suppressedReason", "suppressed_reason")),
     raw: source,
+  };
+}
+
+export function normalizeScoreBreakdown(input: unknown): ScoreBreakdownView {
+  const source = isRecord(input) ? input : {};
+  return {
+    structuralScore: Number(pick(source, "structuralScore", "structural_score")) || 0,
+    keywordScore: Number(pick(source, "keywordScore", "keyword_score")) || 0,
+    vectorScore: Number(pick(source, "vectorScore", "vector_score")) || 0,
+    runHistoryScore: Number(pick(source, "runHistoryScore", "run_history_score")) || 0,
+    penalty: Number(pick(source, "penalty")) || 0,
+    finalScore: Number(pick(source, "finalScore", "final_score")) || 0,
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualPreflightEvidence(input: unknown): OpsManualPreflightEvidence {
+  const source = isRecord(input) ? input : {};
+  return {
+    name: text(pick(source, "name")),
+    status: text(pick(source, "status")),
+    value: pick(source, "value"),
+    note: text(pick(source, "note")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualPreflightResult(input: unknown): OpsManualPreflightResult {
+  const source = isRecord(input) ? input : {};
+  return {
+    status: preflightStatus(pick(source, "status", "preflight_status")),
+    ready: bool(pick(source, "ready"), false),
+    reason: text(pick(source, "reason")),
+    manualId: text(pick(source, "manualId", "manual_id")),
+    workflowId: text(pick(source, "workflowId", "workflow_id")),
+    probeId: text(pick(source, "probeId", "probe_id")),
+    evidence: asArray(pick(source, "evidence")).map(normalizeOpsManualPreflightEvidence),
+    missingPermissions: stringArray(pick(source, "missingPermissions", "missing_permissions")),
+    environmentDiffs: stringArray(pick(source, "environmentDiffs", "environment_diffs")),
+    nextAction: text(pick(source, "nextAction", "next_action")),
+    checkedAt: text(pick(source, "checkedAt", "checked_at")),
+    artifactType: text(pick(source, "artifactType", "artifact_type")),
+    raw: input,
+  };
+}
+
+export function normalizeOpsManualParamCandidate(input: unknown): OpsManualParamCandidateView {
+  const source = isRecord(input) ? input : {};
+  return {
+    value: pick(source, "value", "id"),
+    label: text(pick(source, "label", "name")),
+    hint: text(pick(source, "hint")),
+    source: text(pick(source, "source")),
+    confidence: Number(pick(source, "confidence")) || 0,
+    evidence: text(pick(source, "evidence")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualResolvedParam(input: unknown): OpsManualResolvedParamView {
+  const source = isRecord(input) ? input : {};
+  return {
+    id: text(pick(source, "id")),
+    value: pick(source, "value"),
+    source: text(pick(source, "source")),
+    confidence: Number(pick(source, "confidence")) || 0,
+    evidence: text(pick(source, "evidence")),
+    confirmedByUser: bool(pick(source, "confirmedByUser", "confirmed_by_user"), false),
+    needsUserConfirmation: bool(pick(source, "needsUserConfirmation", "needs_user_confirmation"), false),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualParamFormField(input: unknown): OpsManualParamFormFieldView {
+  const source = isRecord(input) ? input : {};
+  return {
+    id: text(pick(source, "id")),
+    label: text(pick(source, "label", "title")),
+    type: text(pick(source, "type")),
+    required: bool(pick(source, "required"), false),
+    sensitive: bool(pick(source, "sensitive"), false),
+    uiControl: text(pick(source, "uiControl", "ui_control")),
+    placeholder: text(pick(source, "placeholder")),
+    defaultValue: pick(source, "default", "defaultValue", "default_value"),
+    candidates: asArray(pick(source, "candidates")).map(normalizeOpsManualParamCandidate),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualParamResolutionResult(input: unknown): OpsManualParamResolutionResult {
+  const source = isRecord(input) ? input : {};
+  return {
+    status: text(pick(source, "status"), "unresolved"),
+    manualId: text(pick(source, "manualId", "manual_id")),
+    workflowId: text(pick(source, "workflowId", "workflow_id")),
+    operationFrame: isRecord(pick(source, "operationFrame", "operation_frame")) ? (pick(source, "operationFrame", "operation_frame") as LooseRecord) : {},
+    resolvedParams: asArray(pick(source, "resolvedParams", "resolved_params")).map(normalizeOpsManualResolvedParam),
+    fields: asArray(pick(source, "fields", "formFields", "form_fields")).map(normalizeOpsManualParamFormField),
+    nextAction: text(pick(source, "nextAction", "next_action")),
+    artifactType: text(pick(source, "artifactType", "artifact_type")),
+    raw: input,
   };
 }
 
@@ -421,6 +640,8 @@ export function normalizeSearchManualHit(input: unknown): SearchManualHitView {
     boundWorkflowId: text(pick(source, "boundWorkflowId", "bound_workflow_id", "workflowId", "workflow_id"), workflowRef.workflowId),
     matchLevel: text(pick(source, "matchLevel", "match_level")),
     usableMode: searchDecision(pick(source, "usableMode", "usable_mode", "decision", "state")),
+    scoreBreakdown: normalizeScoreBreakdown(pick(source, "scoreBreakdown", "score_breakdown")),
+    preflightStatus: preflightStatus(pick(source, "preflightStatus", "preflight_status")),
     matchedFields: stringArray(pick(source, "matchedFields", "matched_fields")),
     missingFields: stringArray(pick(source, "missingFields", "missing_fields", "missingContext", "missing_context")),
     environmentDiffs: stringArray(pick(source, "environmentDiffs", "environment_diffs", "compatibilityGaps", "compatibility_gaps")),
@@ -547,6 +768,16 @@ export function createOpsManualsApi(client: OpsManualsHttpClient = httpClient) {
       return normalizeOpsManualSearchResult(response);
     },
 
+    async runOpsManualPreflight(payload: OpsManualPreflightRequest) {
+      const response = await client.post("/api/v1/ops-manuals/preflight", payload);
+      return normalizeOpsManualPreflightResult(response);
+    },
+
+    async resolveOpsManualParams(payload: ResolveOpsManualParamsRequest) {
+      const response = await client.post("/api/v1/ops-manuals/resolve-params", payload);
+      return normalizeOpsManualParamResolutionResult(response);
+    },
+
     async listCandidates(params: Record<string, string | number | boolean> = {}) {
       const payload = await client.get(endpoint("/api/v1/ops-manuals/candidates", params));
       return normalizeOpsManualCandidateList(payload);
@@ -578,4 +809,12 @@ export const opsManualsApi = createOpsManualsApi();
 
 export async function searchOpsManuals(request: SearchOpsManualsRequest): Promise<SearchOpsManualsResult> {
   return opsManualsApi.searchOpsManuals(request);
+}
+
+export async function runOpsManualPreflight(request: OpsManualPreflightRequest): Promise<OpsManualPreflightResult> {
+  return opsManualsApi.runOpsManualPreflight(request);
+}
+
+export async function resolveOpsManualParams(request: ResolveOpsManualParamsRequest): Promise<OpsManualParamResolutionResult> {
+  return opsManualsApi.resolveOpsManualParams(request);
 }
