@@ -1,24 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"go.uber.org/zap"
-	"runner/logging"
+	"aiops-v2/internal/hostagent"
 	"runner/modules"
 	"runner/modules/script"
-	"runner/modules/wait"
 	"runner/scheduler"
 )
+
+const agentVersion = "v0.1.0"
 
 type runRequest struct {
 	Task scheduler.Task `json:"task"`
@@ -52,6 +54,11 @@ type outputBuffer struct {
 	data    []byte
 }
 
+type agentOptions struct {
+	AsyncThreshold time.Duration
+	MaxOutputBytes int
+}
+
 func newOutputBuffer(maxSize int) *outputBuffer {
 	return &outputBuffer{maxSize: maxSize}
 }
@@ -76,11 +83,8 @@ func (b *outputBuffer) String() string {
 }
 
 func main() {
-	fs := flag.NewFlagSet("runner-agent", flag.ExitOnError)
-	addr := fs.String("addr", ":7072", "listen address")
-	token := fs.String("token", "runner-token", "auth token (empty disables auth)")
-	logLevel := fs.String("log-level", "info", "log level (debug/info/warn/error)")
-	logFormat := fs.String("log-format", "console", "log format (console/json)")
+	fs := flag.NewFlagSet("host-agent", flag.ExitOnError)
+	configPath := fs.String("config", "/etc/aiops/host-agent.yaml", "host-agent config path")
 	asyncThresholdSec := fs.Int("async-threshold-sec", 4, "auto async threshold in seconds when wait is omitted")
 	defaultMaxOutputBytes := fs.Int("max-output-bytes", 65536, "default max stdout/stderr bytes kept in memory")
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -88,21 +92,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	if _, err := logging.Init(logging.Config{LogLevel: *logLevel, LogFormat: *logFormat}); err != nil {
-		fmt.Fprintf(os.Stderr, "init logger: %v\n", err)
+	cfg, err := hostagent.Load(*configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
+	opts := agentOptions{
+		AsyncThreshold: time.Duration(*asyncThresholdSec) * time.Second,
+		MaxOutputBytes: *defaultMaxOutputBytes,
+	}
+	if opts.AsyncThreshold <= 0 {
+		opts.AsyncThreshold = 4 * time.Second
+	}
+	if opts.MaxOutputBytes <= 0 {
+		opts.MaxOutputBytes = 65536
+	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &http.Client{Timeout: 10 * time.Second}
+	if err := register(ctx, client, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "register host-agent: %v\n", err)
+		os.Exit(1)
+	}
+	go heartbeatLoop(ctx, client, cfg)
+
+	fmt.Fprintf(os.Stderr, "host-agent listening on %s\n", cfg.ListenAddr)
+	if err := http.ListenAndServe(cfg.ListenAddr, newAgentHandler(cfg, opts)); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 	registry := modules.NewRegistry()
 	registry.Register("script.shell", script.New("shell"))
 	registry.Register("script.python", script.New("python"))
-	registry.Register("wait.event", wait.NewEvent())
-	asyncThreshold := time.Duration(*asyncThresholdSec) * time.Second
+
+	asyncThreshold := opts.AsyncThreshold
 	if asyncThreshold <= 0 {
 		asyncThreshold = 4 * time.Second
 	}
-	if *defaultMaxOutputBytes <= 0 {
-		*defaultMaxOutputBytes = 65536
+	defaultMaxOutputBytes := opts.MaxOutputBytes
+	if defaultMaxOutputBytes <= 0 {
+		defaultMaxOutputBytes = 65536
 	}
 
 	var taskMu sync.Mutex
@@ -195,14 +228,11 @@ func main() {
 	}
 
 	checkAuth := func(w http.ResponseWriter, r *http.Request) bool {
-		required := strings.TrimSpace(*token)
+		required := strings.TrimSpace(cfg.Token)
 		if required == "" {
 			return true
 		}
-		auth := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-			auth = strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-		}
+		auth := bearerToken(r.Header.Get("Authorization"))
 		headerToken := strings.TrimSpace(r.Header.Get("X-Runner-Token"))
 		if auth == required || headerToken == required {
 			return true
@@ -276,7 +306,7 @@ func main() {
 			return
 		}
 
-		outputLimit := resolveOutputLimit(req.Task.Step.Args, *defaultMaxOutputBytes)
+		outputLimit := resolveOutputLimit(req.Task.Step.Args, defaultMaxOutputBytes)
 		runCtx, cancel := context.WithCancel(context.Background())
 		entry := &taskEntry{
 			Task:      req.Task,
@@ -287,14 +317,6 @@ func main() {
 			Stderr:    newOutputBuffer(outputLimit),
 		}
 		setTask(req.Task.ID, entry)
-
-		logging.L().Info("runner agent task start",
-			zap.String("task_id", req.Task.ID),
-			zap.String("run_id", req.Task.RunID),
-			zap.String("step", req.Task.Step.Name),
-			zap.String("action", req.Task.Step.Action),
-			zap.String("host", req.Task.Host.Name),
-		)
 
 		doneCh := make(chan scheduler.Result, 1)
 		go func() {
@@ -350,22 +372,12 @@ func main() {
 		}
 		if req.Wait != nil && waitMode {
 			result := <-doneCh
-			logging.L().Info("runner agent task finish",
-				zap.String("task_id", req.Task.ID),
-				zap.String("run_id", req.Task.RunID),
-				zap.String("status", result.Status),
-			)
 			writeJSON(w, http.StatusOK, runResponse{Result: result, RunID: req.Task.RunID, Error: result.Error})
 			return
 		}
 
 		select {
 		case result := <-doneCh:
-			logging.L().Info("runner agent task finish",
-				zap.String("task_id", req.Task.ID),
-				zap.String("run_id", req.Task.RunID),
-				zap.String("status", result.Status),
-			)
 			writeJSON(w, http.StatusOK, runResponse{Result: result, RunID: req.Task.RunID, Error: result.Error})
 		case <-time.After(asyncThreshold):
 			writeJSON(w, http.StatusOK, runResponse{
@@ -450,47 +462,92 @@ func main() {
 		})
 	})
 
-	mux.HandleFunc("/heartbeat", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-			return
-		}
-		if !checkAuth(w, r) {
-			return
-		}
-		now := time.Now().UTC()
-		lastBeat.Store(now.Unix())
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":    "ok",
-			"timestamp": now.Unix(),
-			"last_beat": now.Format(time.RFC3339),
-			"capability": []string{
-				"script.shell",
-				"script.python",
-				"wait.event",
-			},
-		})
-	})
-
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
 		last := time.Unix(lastBeat.Load(), 0)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"status":    "ok",
-			"timestamp": now.Unix(),
-			"last_beat": last.Format(time.RFC3339),
+			"status":       "ok",
+			"host_id":      cfg.HostID,
+			"version":      agentVersion,
+			"timestamp":    now.Unix(),
+			"last_beat":    last.Format(time.RFC3339),
+			"capabilities": cfg.Capabilities,
 		})
 	})
 
-	logging.L().Info("runner agent listening",
-		zap.String("addr", *addr),
-		zap.Bool("token_required", strings.TrimSpace(*token) != ""),
-		zap.Duration("async_threshold", asyncThreshold),
-	)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	return mux
+}
+
+func register(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
+	hostname, _ := os.Hostname()
+	payload := map[string]any{
+		"hostId":        cfg.HostID,
+		"hostname":      hostname,
+		"os":            runtime.GOOS,
+		"arch":          runtime.GOARCH,
+		"agentVersion":  agentVersion,
+		"capabilities":  cfg.Capabilities,
+		"labels":        cfg.Labels,
+		"listenAddress": cfg.ListenAddr,
 	}
+	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/register", payload)
+}
+
+func heartbeatLoop(ctx context.Context, client *http.Client, cfg hostagent.Config) {
+	ticker := time.NewTicker(cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := heartbeat(ctx, client, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "host-agent heartbeat: %v\n", err)
+			}
+		}
+	}
+}
+
+func heartbeat(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
+	payload := map[string]any{
+		"hostId":       cfg.HostID,
+		"agentVersion": agentVersion,
+		"timestamp":    time.Now().UTC().Format(time.RFC3339),
+		"capabilities": cfg.Capabilities,
+	}
+	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/heartbeat", payload)
+}
+
+func postAgentEvent(ctx context.Context, client *http.Client, cfg hostagent.Config, path string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.ServerURL+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(cfg.Token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.Token))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("%s returned status %d", path, resp.StatusCode)
+	}
+	return nil
+}
+
+func bearerToken(header string) string {
+	header = strings.TrimSpace(header)
+	if len(header) >= 7 && strings.EqualFold(header[:7], "bearer ") {
+		return strings.TrimSpace(header[7:])
+	}
+	return header
 }
 
 func resolveOutputLimit(args map[string]any, fallback int) int {
@@ -510,24 +567,8 @@ func resolveOutputLimit(args map[string]any, fallback int) int {
 		if v > 0 {
 			return v
 		}
-	case int8:
-		if v > 0 {
-			return int(v)
-		}
-	case int16:
-		if v > 0 {
-			return int(v)
-		}
-	case int32:
-		if v > 0 {
-			return int(v)
-		}
 	case int64:
 		if v > 0 {
-			return int(v)
-		}
-	case float32:
-		if int(v) > 0 {
 			return int(v)
 		}
 	case float64:
