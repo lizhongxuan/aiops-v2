@@ -250,6 +250,7 @@ type HostInstallRun struct {
 工作流名称：`host-agent-install`  
 触发入口：HostBootstrapService，不作为普通用户可编辑工作流暴露。  
 执行目标：`server-local`。安装动作由本机 Runner 使用 SSH/SCP 连接目标主机完成。
+节点约束：该工作流必须拆成多个独立 Runner graph node；每个安装、预检、校验、收尾节点的 action 都固定为 `script.shell`，不得使用 `cmd.run`、`shell.run`、LLM、prompt、chat/completion、agent planning 或任意模型调用节点。
 
 输入变量：
 
@@ -268,53 +269,61 @@ vars:
     role: web
 ```
 
-步骤：
+步骤。下列每一项都是一个独立 Runner graph node，`action=script.shell`，节点之间只通过受控 outputs 传递必要状态：
 
-1. `validate-inputs`
+1. `validate-inputs` (`script.shell`)
    - 校验 `host_id`、`ssh_host`、`ssh_user`、`ssh_credential_ref`、`agent_version`。
    - 确认凭据引用可解析，但不输出明文。
+   - 只做确定性参数校验，不调用 LLM 生成脚本或判断安装策略。
 
-2. `tcp-preflight`
-   - 使用 `builtin.tcp_ping` 探测 `${ssh_host}:${ssh_port}`。
-   - 如果 builtin 节点在首版尚未落地，先用受控 `script.shell` 调用 `nc -z` 或 `/dev/tcp`，但 action 名仍必须是 `script.shell`。
+2. `tcp-preflight` (`script.shell`)
+   - 使用固定脚本探测 `${ssh_host}:${ssh_port}`，优先调用 `nc -z`，无 `nc` 时使用 `/dev/tcp` 兜底。
+   - 不引入 `builtin.tcp_ping` 或其他非 `script.shell` 节点，避免安装工作流出现第二套执行语义。
 
-3. `ssh-preflight`
+3. `ssh-preflight` (`script.shell`)
    - 通过 SSH 执行固定只读命令：`echo aiops-ssh-ok`、`id -u`、`command -v sudo`。
    - 验证认证、主机可达、sudo 策略。
    - 不允许用户传入任意命令片段。
 
-4. `detect-platform`
+4. `detect-platform` (`script.shell`)
    - 执行 `uname -s`、`uname -m`、`sw_vers` 或读取 `/etc/os-release`。
    - 输出 `platform=darwin/arm64` 或 `platform=linux/ubuntu`。
    - 非支持平台失败。
 
-5. `resolve-artifact`
+5. `resolve-artifact` (`script.shell`)
    - 从 host-agent artifact manifest 选择二进制和 sha256。
    - 支持 `darwin/arm64` 和 `linux/ubuntu`。
 
-6. `upload-artifact`
+6. `upload-artifact` (`script.shell`)
    - 使用 `scp` 或 `ssh cat > file` 上传二进制、配置文件和校验文件到临时目录。
    - 校验 sha256。
 
-7. `install-files`
+7. `install-files` (`script.shell`)
    - Linux Ubuntu：安装到 `/opt/aiops/host-agent/host-agent`，配置到 `/etc/aiops/host-agent.yaml`。
    - macOS arm64：安装到 `/usr/local/aiops/host-agent/host-agent`，配置到 `/usr/local/etc/aiops/host-agent.yaml`。
 
-8. `install-service`
+8. `install-service` (`script.shell`)
    - Ubuntu 写入 `aiops-host-agent.service` 并执行 `systemctl daemon-reload`。
    - macOS 写入 `com.aiops.host-agent.plist` 并执行 `launchctl bootstrap`。
 
-9. `start-service`
+9. `start-service` (`script.shell`)
    - 启动服务，并读取服务状态。
 
-10. `verify-local-health`
+10. `verify-local-health` (`script.shell`)
     - 在目标主机本机请求 `http://127.0.0.1:${agent_listen_port}/health`。
 
-11. `verify-aiops-heartbeat`
+11. `verify-aiops-heartbeat` (`script.shell`)
     - 轮询 AIOps-v2 的 HostRecord 或 host-agent heartbeat endpoint，直到 `lastHeartbeat` 更新且状态为 `online`。
 
-12. `finalize-host`
+12. `finalize-host` (`script.shell`)
     - 更新 HostRecord：`transport=agent_http` 或后续 `grpc_reverse`、`status=online`、`installState=installed`、`controlMode=managed`、`terminalCapable=true`、`executable=true`、`agentVersion`。
+
+非 LLM 约束：
+
+- host-agent 安装全链路是确定性 Runner graph run，只执行仓库内置的 `script.shell` 模板和服务端注入的受控变量。
+- 工作流定义、节点参数、平台分支、artifact 选择、服务文件内容、健康检查和失败映射都由代码和配置决定，不允许运行时调用 LLM 生成命令、补全脚本、解释错误或选择下一步。
+- Runner workflow validator 必须拒绝包含 `llm.*`、`prompt.*`、`chat.*`、`completion.*`、`agent.*` 或其他模型调用语义的节点。
+- LLM 可以用于设计、代码生成或离线文档辅助，但不得参与生产安装 run 的执行路径。
 
 失败处理：
 
@@ -407,6 +416,8 @@ ssh -tt -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -p <port> 
 - 用户不能通过主机接入页面输入任意 shell。
 - Runner 默认 action registry 必须移除 `cmd.run` 和 `shell.run`，首版只保留 `script.shell` 作为 Shell 入口。
 - `script.shell` 在安装 workflow 中只执行固定模板脚本，变量通过参数注入并进行 shell escaping。
+- `builtin.host-agent-install/v1` 的所有节点必须是 `script.shell`，不得混入 LLM、prompt、chat/completion、agent planning 或模型工具调用节点。
+- 生产安装 run 的输入、分支、错误处理和重试策略只能来自代码、配置、Runner state 和目标主机探测结果，不得由 LLM 参与决策。
 
 审计：
 
@@ -454,7 +465,10 @@ online
 Runner 测试：
 
 - `builtin.host-agent-install/v1` graph validate 通过。
+- `builtin.host-agent-install/v1` 至少包含 `validate-inputs`、`tcp-preflight`、`ssh-preflight`、`detect-platform`、`resolve-artifact`、`upload-artifact`、`install-files`、`install-service`、`start-service`、`verify-local-health`、`verify-aiops-heartbeat`、`finalize-host` 这 12 个独立节点。
+- 安装 workflow 的每个节点 action 都必须是 `script.shell`。
 - 旧工作流引用 `cmd.run` 或 `shell.run` 在校验阶段失败。
+- 安装 workflow 引用 `llm.*`、`prompt.*`、`chat.*`、`completion.*`、`agent.*` 或其他模型调用语义节点时，必须在校验阶段失败。
 - 安装 workflow 的每个失败分支输出明确错误码：`ssh_unreachable`、`auth_failed`、`sudo_required`、`unsupported_platform`、`artifact_missing`、`service_start_failed`、`heartbeat_timeout`。
 
 前端测试：
@@ -510,6 +524,8 @@ Runner 测试：
 - AIOps-v2 能通过 SSH 完成预检、平台探测、安装、启动和心跳校验。
 - 只支持 macOS arm64 和 Ubuntu；其他平台明确失败。
 - 安装过程由 Runner run 承载，能查看当前步骤、日志摘要、失败原因和 Run ID。
+- Runner 安装工作流拆成多个明确步骤，且每个安装节点都是 `script.shell`。
+- host-agent 安装和启动过程不调用 LLM，也不依赖 LLM 生成命令、选择分支或解释失败。
 - 安装成功后 HostRecord 进入 `online` / `managed`，有 `lastHeartbeat` 和 `agentVersion`。
 - 主机列表能打开 SSH 终端，且不会连接成本机 shell。
 - 凭据、token、私钥、密码不出现在页面、日志、Run Record、Prompt Trace 或文档中。
