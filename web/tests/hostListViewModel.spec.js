@@ -194,9 +194,36 @@ describe("hostListViewModel", () => {
       installStep: "verify_heartbeat",
       lastError: "heartbeat timeout",
       installDetailLabel: "verify_heartbeat · run-install-123",
+      canOpenInstallRun: true,
       canRetryInstall: true,
       canOpenSsh: false,
       primaryAction: "retry_install",
+    });
+  });
+
+  it("does not expose a runner run link for direct Go SSH installs", () => {
+    const model = buildHostListViewModel({
+      hosts: [
+        {
+          id: "host-direct",
+          address: "10.0.9.12",
+          sshUser: "root",
+          status: "install_failed",
+          installState: "unsupported_platform",
+          installRunId: "direct-host-direct-abc123",
+          installStep: "detect-platform",
+          lastError: "linux/alinux is not supported",
+          transport: "ssh_bootstrap",
+        },
+      ],
+      now: NOW,
+    });
+
+    expect(model.rows[0]).toMatchObject({
+      installRunId: "direct-host-direct-abc123",
+      installWorkflowId: "",
+      installDetailLabel: "detect-platform · direct-host-direct-abc123",
+      canOpenInstallRun: false,
     });
   });
 

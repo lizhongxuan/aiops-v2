@@ -1350,3 +1350,71 @@ git log --oneline -n 12
 Expected: status is clean after final commit; log shows small phase commits matching the tasks above.
 
 Result 2026-05-18: `git status --short` was clean after removing the debug screenshot; `git log --oneline -n 12` showed the phase commits ending at `7bafb68 test: record host agent real host validation`.
+
+## 15. Change 2026-05-18：改为 Go 后端直连 SSH 安装
+
+**Context:** 用户要求“SSH 安装 workflow 先不动”，把 SSH 连主机与 host-agent 部署实现到 Golang 后端，不再使用 runner workflow。原 `builtin.host-agent-install/v1` 文件保持不改。
+
+- [x] **Step 15.1：后端 TDD 覆盖直连 SSH 安装器**
+
+Result 2026-05-18: 新增 `internal/appui/host_direct_installer_test.go`，覆盖：
+
+- Alibaba Cloud Linux 等非 Ubuntu 平台返回 `unsupported_platform`，错误不包含凭据。
+- SSH 测试接口实际走 dialer，检测 `linux/ubuntu`、arch、root/sudo。
+- 配置直连安装器时 `HostBootstrapService` 不调用 runner workflow。
+- Ubuntu 成功路径使用固定脚本命令上传 artifact、写 config/token、安装 systemd、启动服务，命令中不含 LLM/prompt/chat/completion。
+
+- [x] **Step 15.2：实现 Go 后端直连安装器**
+
+Result 2026-05-18: 新增 `internal/appui/host_direct_installer.go`：
+
+- 使用 `golang.org/x/crypto/ssh` 连接目标主机。
+- 支持 password / private key credential resolver。
+- 平台检测仅允许 `linux/ubuntu` amd64 和 `darwin/arm64`。
+- 本地 `go build` 生成 host-agent artifact，通过 SSH stdin 上传文件。
+- 后端生成 host-agent token，只保存 sha256 token ref，不落明文 token。
+- Linux Ubuntu 使用 systemd，macOS arm64 使用 launchd。
+- 安装路径不调用 LLM，也不提交 runner workflow。
+
+- [x] **Step 15.3：服务装配改为优先后端直连**
+
+Result 2026-05-18: `NewServices` 在存在 HostRepository + CredentialResolver 时创建 `DirectHostAgentInstaller`；`HostBootstrapService.Install` 优先调用 direct installer，runner 仅保留为旧兜底。`TestHostSSH` 也改为真实 SSH 连接探测。
+
+- [x] **Step 15.4：前端去掉直连安装的 Runner Run 链接**
+
+Result 2026-05-18: `web/src/lib/hostListViewModel.js` 增加 `canOpenInstallRun`，仅当 `installRunId` 和 `installWorkflowId` 同时存在时展示 Runner `Run` 链接；直连安装记录不再跳转 runner-studio。
+
+- [x] **Step 15.5：真实主机验证**
+
+Result 2026-05-18: 使用真实主机 `120.77.239.90:22` 验证：
+
+- `/api/v1/hosts/:id/ssh/test` 成功建立 SSH 连接，返回 `platform=linux/alinux`、`arch=amd64`、`sudo=root`。
+- `/api/v1/hosts/:id/install` 走 Go 后端直连路径，未使用 runner workflow；因目标为 Alibaba Cloud Linux，按当前支持范围失败在 `detect-platform`。
+- HostRecord 最终为 `status=install_failed`、`installState=unsupported_platform`、`installStep=detect-platform`，且无 `installWorkflowId`。
+- Browser in-app 页面验证接入配置表展示“不支持的平台”，且不再展示 Runner `Run` 链接。
+
+## 16. Change 2026-05-18：扩展支持 Linux amd64
+
+**Context:** 用户要求支持 `linux amd64`，让真实主机 `120.77.239.90` 能部署并启动 host-agent。
+
+- [x] **Step 16.1：TDD 覆盖通用 Linux amd64**
+
+Result 2026-05-18: 更新 `internal/appui/host_direct_installer_test.go`：
+
+- `ID=alinux`、`uname -m=x86_64` 的主机应识别为 `linux/amd64` 并走 systemd 安装。
+- 非 amd64 Linux 仍然返回 `unsupported_platform`。
+- systemd 启动步骤必须 `restart aiops-host-agent.service`，避免远端已有旧 unit/旧进程时 `enable --now` 不重启。
+
+- [x] **Step 16.2：实现通用 Linux amd64 平台分支**
+
+Result 2026-05-18: `internal/appui/host_direct_installer.go` 已将任意 Linux amd64 识别为支持平台；Ubuntu 仍可保留 `linux/ubuntu` 标签，其他发行版走 `linux/amd64`。`linux/amd64` 与 `linux/ubuntu` 共用 `/opt/aiops/host-agent`、`/etc/aiops/host-agent.yaml`、systemd service 安装和健康检查。
+
+- [x] **Step 16.3：真实 120.77.239.90 验证**
+
+Result 2026-05-18:
+
+- SSH 测试返回 `status=ok`、`platform=linux/amd64`、`os=linux`、`arch=amd64`、`sudo=root`。
+- 使用 Go 后端 direct installer 安装成功，HTTP 200，HostRecord 为 `status=online`、`transport=agent_http`、`installState=installed`、`installStep=finalize-host`。
+- 远端 systemd：`aiops-host-agent.service` 为 `active (running)`，进程为 `/opt/aiops/host-agent/host-agent --config /etc/aiops/host-agent.yaml`。
+- 远端和本机访问 `http://120.77.239.90:7072/health` 返回 `status=ok`、`host_id=linux-amd64-smoke`、`version=v0.1.0`。
+- Browser in-app 页面验证接入配置表展示 `120.77.239.90 / root`、`在线`、`finalize-host`、`install=direct-linux-amd64`。

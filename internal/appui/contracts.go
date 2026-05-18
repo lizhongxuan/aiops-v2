@@ -108,6 +108,7 @@ type servicesConfig struct {
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
 	hostBootstrapRunner HostBootstrapRunner
+	hostAgentInstaller  HostAgentInstaller
 }
 
 // ServicesOption customizes first-party Web services.
@@ -229,6 +230,12 @@ func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
 	}
 }
 
+func WithDirectHostAgentInstaller(installer HostAgentInstaller) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostAgentInstaller = installer
+	}
+}
+
 func WithOpsManualService(service OpsManualService) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.opsManuals = service
@@ -307,8 +314,12 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
 	}
 	var hostBootstrap *HostBootstrapService
-	if cfg.hostBootstrapRunner != nil {
-		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner)
+	hostAgentInstaller := cfg.hostAgentInstaller
+	if hostAgentInstaller == nil && cfg.hosts != nil && cfg.credentialResolver != nil {
+		hostAgentInstaller = NewDirectHostAgentInstaller(cfg.hosts, cfg.credentialResolver)
+	}
+	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
+		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
 	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),

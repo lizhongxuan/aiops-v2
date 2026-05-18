@@ -18,15 +18,33 @@ type HostBootstrapRunner interface {
 }
 
 type HostBootstrapService struct {
-	repo   HostRepository
-	runner HostBootstrapRunner
+	repo      HostRepository
+	runner    HostBootstrapRunner
+	installer HostAgentInstaller
 }
 
-func NewHostBootstrapService(repo HostRepository, runner HostBootstrapRunner) *HostBootstrapService {
-	return &HostBootstrapService{repo: repo, runner: runner}
+type HostBootstrapOption func(*HostBootstrapService)
+
+func WithHostAgentInstaller(installer HostAgentInstaller) HostBootstrapOption {
+	return func(s *HostBootstrapService) {
+		s.installer = installer
+	}
+}
+
+func NewHostBootstrapService(repo HostRepository, runner HostBootstrapRunner, opts ...HostBootstrapOption) *HostBootstrapService {
+	service := &HostBootstrapService{repo: repo, runner: runner}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service
 }
 
 func (s *HostBootstrapService) Install(ctx context.Context, hostID string, req HostInstallRequest) (HostInstallRun, error) {
+	if s != nil && s.installer != nil {
+		return s.installer.Install(ctx, hostID, req)
+	}
 	if s == nil || s.repo == nil {
 		return HostInstallRun{}, fmt.Errorf("host bootstrap repository is not configured")
 	}
@@ -98,6 +116,17 @@ func (s *HostBootstrapService) Install(ctx context.Context, hostID string, req H
 	run.WorkflowID = next.InstallWorkflowID
 	run.AgentVersion = next.AgentVersion
 	return run, nil
+}
+
+func (s *HostBootstrapService) TestSSH(ctx context.Context, hostID string, req HostSSHTestRequest) (HostSSHTestResponse, error) {
+	if s == nil || s.installer == nil {
+		return HostSSHTestResponse{}, fmt.Errorf("host bootstrap installer is not configured")
+	}
+	tester, ok := s.installer.(HostAgentSSHTester)
+	if !ok {
+		return HostSSHTestResponse{}, fmt.Errorf("host bootstrap installer does not support ssh test")
+	}
+	return tester.TestSSH(ctx, hostID, req.SSHCredentialRef)
 }
 
 func (s *HostBootstrapService) startInstallMonitor(hostID, runID string) {

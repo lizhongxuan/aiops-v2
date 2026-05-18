@@ -166,6 +166,7 @@ export function buildHostListViewModel({
         installStep,
         lastError,
         installDetailLabel: buildInstallDetailLabel({ installStep, installRunId }),
+        canOpenInstallRun: Boolean(installRunId && installWorkflowId),
         canRetryInstall: heartbeat.heartbeat === "install_failed" || heartbeat.heartbeat === "unsupported_platform",
         labels,
         labelText: labels.map((item) => item.label).join(" "),

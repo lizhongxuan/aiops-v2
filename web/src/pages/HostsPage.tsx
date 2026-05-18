@@ -319,7 +319,7 @@ export function HostsPage() {
                           </td>
                           <td className="py-3">
                             <div className="flex justify-end gap-2">
-                              {row.installRunId ? (
+                              {row.canOpenInstallRun ? (
                                 <Button variant="outline" asChild>
                                   <Link to={`/runner-studio/runs/${encodeURIComponent(row.installRunId)}`}>
                                     <ExternalLink />

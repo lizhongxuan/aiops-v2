@@ -184,7 +184,7 @@ func (s *defaultHostService) InstallHost(ctx context.Context, hostID string, pay
 	}, nil
 }
 
-func (s *defaultHostService) TestHostSSH(_ context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error) {
+func (s *defaultHostService) TestHostSSH(ctx context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error) {
 	if s.repo == nil {
 		return HostSSHTestResponse{}, fmt.Errorf("host repository is not configured")
 	}
@@ -205,6 +205,9 @@ func (s *defaultHostService) TestHostSSH(_ context.Context, hostID string, paylo
 	}
 	if strings.TrimSpace(host.SSHUser) == "" {
 		return HostSSHTestResponse{}, fmt.Errorf("ssh user is required")
+	}
+	if s.bootstrap != nil {
+		return s.bootstrap.TestSSH(ctx, targetID, payload)
 	}
 	return HostSSHTestResponse{
 		Status:  "ok",
