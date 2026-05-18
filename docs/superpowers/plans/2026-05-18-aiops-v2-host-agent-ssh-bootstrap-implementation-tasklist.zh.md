@@ -334,7 +334,7 @@ credentialResolver CredentialResolver
 func WithCredentialResolver(resolver CredentialResolver) ServicesOption
 ```
 
-- [ ] **Step 2.4：跑测试**
+- [x] **Step 2.4：跑测试**
 
 Run:
 
@@ -344,9 +344,12 @@ go test -count=1 ./internal/appui -run 'TestLocalSecretCredentialResolver|TestHo
 
 Expected: PASS。
 
-Interim result 2026-05-18: resolver-only file test passed with `go test -count=1 internal/appui/credential_resolver.go internal/appui/credential_resolver_test.go`. Full `./internal/appui` package verification is pending because Worker A has an in-progress uncommitted `host_install_workflow_test.go` in the same package.
+Result 2026-05-18:
 
-- [ ] **Step 2.5：提交**
+- `go test -count=1 internal/appui/credential_resolver.go internal/appui/credential_resolver_test.go`: PASS
+- `go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow|TestLocalSecretCredentialResolver|TestHostService'`: PASS after the Runner workflow slice landed.
+
+- [x] **Step 2.5：提交**
 
 Run:
 
@@ -361,7 +364,7 @@ git commit -m "feat: add ssh credential resolver"
 - Create: `internal/appui/host_install_workflow.go`
 - Create: `internal/appui/host_install_workflow_test.go`
 
-- [ ] **Step 3.1：写 graph 结构测试**
+- [x] **Step 3.1：写 graph 结构测试**
 
 测试必须断言：
 
@@ -398,7 +401,7 @@ go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow'
 
 Expected: FAIL because workflow builder 还不存在。
 
-- [ ] **Step 3.2：实现 workflow builder**
+- [x] **Step 3.2：实现 workflow builder**
 
 Expose:
 
@@ -417,7 +420,7 @@ Validation rules:
 - forbidden actions: `cmd.run`, `shell.run`.
 - no user-provided script text is accepted by API payload; scripts come from code templates.
 
-- [ ] **Step 3.3：实现受控 script 模板常量**
+- [x] **Step 3.3：实现受控 script 模板常量**
 
 Create one function per node:
 
@@ -437,7 +440,7 @@ and emit a machine-readable step marker:
 printf 'RUNNER_EXPORT_install_step=%s\n' 'detect-platform'
 ```
 
-- [ ] **Step 3.4：跑 workflow 测试**
+- [x] **Step 3.4：跑 workflow 测试**
 
 Run:
 
@@ -447,7 +450,12 @@ go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow'
 
 Expected: PASS。
 
-- [ ] **Step 3.5：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow'`: PASS
+- `(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)`: PASS after migrating legacy test fixtures from `cmd.run`/`shell.run` to `script.shell`.
+
+- [x] **Step 3.5：提交**
 
 Run:
 
@@ -808,7 +816,7 @@ git commit -m "feat: add host agent heartbeat api"
 - Modify: `pkg/runner/agent/main.go`
 - Create: `artifacts/host-agent/manifest.json`
 
-- [ ] **Step 8.1：写 hostagent config 测试**
+- [x] **Step 8.1：写 hostagent config 测试**
 
 Test cases:
 
@@ -826,7 +834,7 @@ go test -count=1 ./internal/hostagent -run TestHostAgent
 
 Expected: FAIL because package 还不存在。
 
-- [ ] **Step 8.2：实现 host-agent 配置和能力**
+- [x] **Step 8.2：实现 host-agent 配置和能力**
 
 Default capabilities:
 
@@ -840,7 +848,7 @@ The list must not include:
 []string{"cmd.run", "shell.run"}
 ```
 
-- [ ] **Step 8.3：实现 cmd/host-agent**
+- [x] **Step 8.3：实现 cmd/host-agent**
 
 Behavior:
 
@@ -850,7 +858,7 @@ Behavior:
 - expose `/health`, `/run`, `/status`, `/cancel`.
 - register only `script.shell` and `script.python` execution modules.
 
-- [ ] **Step 8.4：创建 artifact manifest**
+- [x] **Step 8.4：创建 artifact manifest**
 
 `artifacts/host-agent/manifest.json` shape:
 
@@ -866,7 +874,9 @@ Behavior:
 
 During implementation, fill `sha256` from the built binary.
 
-- [ ] **Step 8.5：跑 host-agent 测试**
+Result 2026-05-18: manifest skeleton created with empty sha256 entries; build artifact generation and checksum filling remains part of real packaging/acceptance work.
+
+- [x] **Step 8.5：跑 host-agent 测试**
 
 Run:
 
@@ -877,7 +887,12 @@ go test -count=1 ./internal/hostagent ./cmd/host-agent
 
 Expected: PASS。
 
-- [ ] **Step 8.6：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/hostagent ./cmd/host-agent`: PASS
+- `(cd pkg/runner && go test -count=1 ./agent)`: PASS, no test files
+
+- [x] **Step 8.6：提交**
 
 Run:
 
@@ -895,7 +910,7 @@ git commit -m "feat: add host agent binary"
 - Modify: `pkg/runner/workflow/visual/validate.go`
 - Test: `pkg/runner/workflow/visual/visual_test.go`
 
-- [ ] **Step 9.1：写默认 action 测试**
+- [x] **Step 9.1：写默认 action 测试**
 
 Update tests so default catalog contains `script.shell`, `script.python`, `wait.event` and does not contain `cmd.run` or `shell.run`.
 
@@ -907,7 +922,7 @@ Run:
 
 Expected: FAIL before implementation because legacy actions still exist.
 
-- [ ] **Step 9.2：移除默认 registry 里的旧 action**
+- [x] **Step 9.2：移除默认 registry 里的旧 action**
 
 In `pkg/runner/engine/defaults.go`, remove:
 
@@ -918,7 +933,7 @@ reg.Register("shell.run", shell.New())
 
 and remove unused imports.
 
-- [ ] **Step 9.3：移除 action catalog 旧 action**
+- [x] **Step 9.3：移除 action catalog 旧 action**
 
 In `DefaultActionSpecs()`, remove `cmd.run` and `shell.run` specs. Change `script.shell` defaults:
 
@@ -926,11 +941,11 @@ In `DefaultActionSpecs()`, remove `cmd.run` and `shell.run` specs. Change `scrip
 Defaults: map[string]any{"script": "set -euo pipefail\necho ok"}
 ```
 
-- [ ] **Step 9.4：新增模型节点拒绝测试**
+- [x] **Step 9.4：新增模型节点拒绝测试**
 
 Add visual validation test that a graph with `Action: "llm.generate"` fails when validated as host-agent install workflow via `ValidateHostAgentInstallGraph`.
 
-- [ ] **Step 9.5：跑 runner 测试**
+- [x] **Step 9.5：跑 runner 测试**
 
 Run:
 
@@ -940,7 +955,12 @@ Run:
 
 Expected: PASS。
 
-- [ ] **Step 9.6：提交**
+Result 2026-05-18:
+
+- `(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)`: PASS
+- legacy test fixtures in Runner engine/service/visual were migrated from `cmd.run` and `shell.run` to `script.shell` so production defaults remain restricted.
+
+- [x] **Step 9.6：提交**
 
 Run:
 
@@ -1029,7 +1049,7 @@ git commit -m "feat: add ssh backed terminal sessions"
 - Test: `web/tests/hostListViewModel.spec.js`
 - Test: `web/tests/e2e/hosts-management-snapshot.spec.js`
 
-- [ ] **Step 11.1：写 view model 测试**
+- [x] **Step 11.1：写 view model 测试**
 
 Add cases:
 
@@ -1048,7 +1068,7 @@ npm test -- --run hostListViewModel
 
 Expected: FAIL before view model update.
 
-- [ ] **Step 11.2：扩展 API client**
+- [x] **Step 11.2：扩展 API client**
 
 Add:
 
@@ -1062,7 +1082,7 @@ export function testHostSSH(hostId: string, payload: JsonMap) {
 }
 ```
 
-- [ ] **Step 11.3：更新接入主机对话框**
+- [x] **Step 11.3：更新接入主机对话框**
 
 `HostDraft` fields:
 
@@ -1080,7 +1100,7 @@ sshCredentialRef: draft.sshCredentialRef,
 agentVersion: draft.agentVersion || "v0.1.0",
 ```
 
-- [ ] **Step 11.4：更新列表状态和操作**
+- [x] **Step 11.4：更新列表状态和操作**
 
 Rows must show:
 
@@ -1090,7 +1110,7 @@ Rows must show:
 - online: terminal button enabled.
 - Runner detail link: `/runner-studio/runs/<installRunId>`.
 
-- [ ] **Step 11.5：跑前端单测**
+- [x] **Step 11.5：跑前端单测**
 
 Run:
 
@@ -1101,7 +1121,12 @@ npm test -- --run hostListViewModel settingsApi
 
 Expected: PASS。
 
-- [ ] **Step 11.6：更新 Playwright snapshot**
+Result 2026-05-18:
+
+- `cd web && npm test -- --run hostListViewModel settingsApi`: PASS, 10 tests passed
+- `cd web && npm run build`: PASS
+
+- [x] **Step 11.6：更新 Playwright snapshot**
 
 Run:
 
@@ -1112,7 +1137,9 @@ npm run test:e2e -- hosts-management-snapshot.spec.js --update-snapshots
 
 Expected: PASS and updated snapshot files under `web/tests/__screenshots__/` or the configured snapshot directory.
 
-- [ ] **Step 11.7：提交**
+Result 2026-05-18: `cd web && npm run test:ui -- hosts-management-snapshot.spec.js --update-snapshots`: PASS, 1 Playwright Chromium test passed. The documented `test:e2e` script does not exist in `web/package.json`; `test:ui` is the available equivalent.
+
+- [x] **Step 11.7：提交**
 
 Run:
 
