@@ -260,6 +260,7 @@ type Services struct {
 	choices        ChoiceService
 	settings       SettingsService
 	hosts          HostService
+	hostAgents     HostAgentService
 	mcps           MCPService
 	profiles       AgentProfileService
 	auth           AuthService
@@ -318,6 +319,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		choices:        NewChoiceService(runtime, sessions),
 		settings:       settingsService,
 		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
+		hostAgents:     NewHostAgentService(cfg.hosts),
 		mcps:           NewMCPService(cfg.mcps, registry),
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
 		auth:           authService,
@@ -342,7 +344,10 @@ func (s *Services) ApprovalService() ApprovalService { return s.approvals }
 func (s *Services) ChoiceService() ChoiceService     { return s.choices }
 func (s *Services) SettingsService() SettingsService { return s.settings }
 func (s *Services) HostService() HostService         { return s.hosts }
-func (s *Services) MCPService() MCPService           { return s.mcps }
+func (s *Services) HostAgentService() HostAgentService {
+	return s.hostAgents
+}
+func (s *Services) MCPService() MCPService { return s.mcps }
 func (s *Services) AgentProfileService() AgentProfileService {
 	return s.profiles
 }
@@ -730,6 +735,40 @@ type HostSSHTestResponse struct {
 	Message  string `json:"message,omitempty"`
 }
 
+type HostAgentRegisterRequest struct {
+	HostID        string            `json:"hostId"`
+	Hostname      string            `json:"hostname,omitempty"`
+	OS            string            `json:"os"`
+	Arch          string            `json:"arch"`
+	AgentVersion  string            `json:"agentVersion"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	ListenAddress string            `json:"listenAddress,omitempty"`
+}
+
+type HostAgentRegisterResponse struct {
+	Status        string      `json:"status"`
+	HostID        string      `json:"hostId"`
+	AgentURL      string      `json:"agentUrl,omitempty"`
+	AgentVersion  string      `json:"agentVersion,omitempty"`
+	LastHeartbeat string      `json:"lastHeartbeat,omitempty"`
+	Host          HostSummary `json:"host"`
+}
+
+type HostAgentHeartbeatRequest struct {
+	HostID       string   `json:"hostId"`
+	AgentVersion string   `json:"agentVersion,omitempty"`
+	Timestamp    string   `json:"timestamp,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type HostAgentHeartbeatResponse struct {
+	Status        string      `json:"status"`
+	HostID        string      `json:"hostId"`
+	LastHeartbeat string      `json:"lastHeartbeat"`
+	Host          HostSummary `json:"host"`
+}
+
 type HostMutationResponse struct {
 	Host              HostSummary   `json:"host"`
 	Items             []HostSummary `json:"items,omitempty"`
@@ -982,6 +1021,11 @@ type HostService interface {
 	TestHostSSH(ctx context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error)
 	DeleteHost(ctx context.Context, hostID string) error
 	SelectHost(ctx context.Context, hostID string) (StateSnapshot, error)
+}
+
+type HostAgentService interface {
+	Register(ctx context.Context, req HostAgentRegisterRequest, token string) (HostAgentRegisterResponse, error)
+	Heartbeat(ctx context.Context, req HostAgentHeartbeatRequest, token string) (HostAgentHeartbeatResponse, error)
 }
 
 type MCPService interface {

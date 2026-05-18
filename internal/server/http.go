@@ -211,6 +211,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces/file", s.handlePromptTraceFile)
 	s.mux.HandleFunc("/api/v1/hosts", s.handleHosts)
 	s.mux.HandleFunc("/api/v1/hosts/", s.handleHosts)
+	s.mux.HandleFunc("/api/v1/host-agents/register", s.handleHostAgents)
+	s.mux.HandleFunc("/api/v1/host-agents/heartbeat", s.handleHostAgents)
 	s.mux.HandleFunc("/api/v1/mcp/servers", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/refresh", s.handleMCPServersRefresh)

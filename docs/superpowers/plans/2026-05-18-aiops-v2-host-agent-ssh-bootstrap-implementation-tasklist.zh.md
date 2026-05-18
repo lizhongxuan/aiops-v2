@@ -756,7 +756,7 @@ git commit -m "feat: add host install api"
 - Modify: `internal/appui/contracts.go`
 - Modify: `internal/server/http.go`
 
-- [ ] **Step 7.1：写 appui 服务测试**
+- [x] **Step 7.1：写 appui 服务测试**
 
 Test cases:
 
@@ -774,7 +774,9 @@ go test -count=1 ./internal/appui -run TestHostAgentService
 
 Expected: FAIL because service 还不存在。
 
-- [ ] **Step 7.2：实现 HostAgentService**
+Result 2026-05-18: RED confirmed; `NewHostAgentService`、`HostAgentRegisterRequest`、`HostAgentHeartbeatRequest` 和 HTTP response contract 尚未实现。
+
+- [x] **Step 7.2：实现 HostAgentService**
 
 Add interface:
 
@@ -795,7 +797,7 @@ Register updates:
 - `Executable=true`
 - `OS`, `Arch`, `AgentVersion`, `LastHeartbeat`
 
-- [ ] **Step 7.3：写 HTTP handler**
+- [x] **Step 7.3：写 HTTP handler**
 
 Routes:
 
@@ -807,7 +809,7 @@ Token sources:
 - `Authorization: Bearer <token>`
 - `X-Host-Agent-Token: <token>`
 
-- [ ] **Step 7.4：跑 host-agent API 测试**
+- [x] **Step 7.4：跑 host-agent API 测试**
 
 Run:
 
@@ -817,6 +819,11 @@ go test -count=1 ./internal/server -run TestHostAgentAPI
 ```
 
 Expected: PASS。
+
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui -run TestHostAgentService`: PASS
+- `go test -count=1 ./internal/server -run TestHostAgentAPI`: PASS
 
 - [ ] **Step 7.5：提交**
 
