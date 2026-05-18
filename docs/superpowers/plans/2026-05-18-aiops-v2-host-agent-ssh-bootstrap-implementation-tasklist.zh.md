@@ -555,7 +555,7 @@ git commit -m "feat: expose embedded runner host install client"
 - Modify: `internal/appui/host_service.go`
 - Modify: `cmd/ai-server/main.go`
 
-- [ ] **Step 5.1：写 HostBootstrapService 测试**
+- [x] **Step 5.1：写 HostBootstrapService 测试**
 
 Fake runner 断言：
 
@@ -573,7 +573,9 @@ go test -count=1 ./internal/appui -run TestHostBootstrapService
 
 Expected: FAIL because service 还不存在。
 
-- [ ] **Step 5.2：定义 HostBootstrapRunner 和 HostInstallRun**
+Result 2026-05-18: RED confirmed; `NewHostBootstrapService` and `HostInstallRequest` were undefined.
+
+- [x] **Step 5.2：定义 HostBootstrapRunner 和 HostInstallRun**
 
 Implement:
 
@@ -595,7 +597,7 @@ type HostBootstrapRunner interface {
 }
 ```
 
-- [ ] **Step 5.3：实现 BootstrapService 提交逻辑**
+- [x] **Step 5.3：实现 BootstrapService 提交逻辑**
 
 `Install(ctx, host, req)` must:
 
@@ -605,7 +607,7 @@ type HostBootstrapRunner interface {
 - submit with idempotency key `host-agent-install:<hostID>:<agentVersion>`.
 - update HostRecord fields: `InstallRunID`, `InstallWorkflowID`, `InstallStep`, `Status`, `InstallState`.
 
-- [ ] **Step 5.4：接入 HostService**
+- [x] **Step 5.4：接入 HostService**
 
 Change constructor:
 
@@ -619,7 +621,7 @@ When `InstallViaSSH=true`:
 - call bootstrap service if configured.
 - if bootstrap is missing, mark `status=install_failed`, `installState=failed`, `lastError=runner runtime is not configured`.
 
-- [ ] **Step 5.5：在 ai-server 注入 bootstrap client**
+- [x] **Step 5.5：在 ai-server 注入 bootstrap client**
 
 In `cmd/ai-server/main.go`:
 
@@ -627,7 +629,7 @@ In `cmd/ai-server/main.go`:
 - if `runnerRuntime != nil`, build `runnerembed.NewBootstrapClient(runnerRuntime)`.
 - pass `appui.WithCredentialResolver(credentialResolver)` and `appui.WithHostBootstrapRunner(...)`.
 
-- [ ] **Step 5.6：跑服务测试**
+- [x] **Step 5.6：跑服务测试**
 
 Run:
 
@@ -638,7 +640,12 @@ go test -count=1 ./cmd/ai-server
 
 Expected: PASS。
 
-- [ ] **Step 5.7：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui -run 'TestHostService|TestHostBootstrapService'`: PASS
+- `go test -count=1 ./cmd/ai-server`: PASS
+
+- [x] **Step 5.7：提交**
 
 Run:
 

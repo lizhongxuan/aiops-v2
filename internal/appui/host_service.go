@@ -10,16 +10,22 @@ import (
 )
 
 type defaultHostService struct {
-	writer  SessionStore
-	repo    HostRepository
-	builder *SnapshotBuilder
+	writer    SessionStore
+	repo      HostRepository
+	builder   *SnapshotBuilder
+	bootstrap *HostBootstrapService
 }
 
-func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotBuilder) HostService {
+func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotBuilder, bootstrap ...*HostBootstrapService) HostService {
+	var bootstrapSvc *HostBootstrapService
+	if len(bootstrap) > 0 {
+		bootstrapSvc = bootstrap[0]
+	}
 	return &defaultHostService{
-		writer:  writer,
-		repo:    repo,
-		builder: builder,
+		writer:    writer,
+		repo:      repo,
+		builder:   builder,
+		bootstrap: bootstrapSvc,
 	}
 }
 
@@ -40,6 +46,17 @@ func (s *defaultHostService) CreateHost(_ context.Context, payload HostUpsert) (
 	}
 	if err := s.repo.SaveHost(record); err != nil {
 		return HostMutationResponse{}, err
+	}
+	if payload.InstallViaSSH && s.bootstrap != nil {
+		run, err := s.bootstrap.Install(context.Background(), record.ID, HostInstallRequest{
+			AgentVersion:     record.AgentVersion,
+			SSHCredentialRef: record.SSHCredentialRef,
+		})
+		if err != nil {
+			return HostMutationResponse{}, err
+		}
+		record.InstallRunID = run.RunID
+		record.InstallWorkflowID = run.WorkflowID
 	}
 	items, _ := s.ListHosts(context.Background())
 	return HostMutationResponse{
@@ -90,6 +107,17 @@ func (s *defaultHostService) UpdateHost(_ context.Context, hostID string, payloa
 	}
 	if err := s.repo.SaveHost(&updated); err != nil {
 		return HostMutationResponse{}, err
+	}
+	if payload.InstallViaSSH && s.bootstrap != nil {
+		run, err := s.bootstrap.Install(context.Background(), updated.ID, HostInstallRequest{
+			AgentVersion:     updated.AgentVersion,
+			SSHCredentialRef: updated.SSHCredentialRef,
+		})
+		if err != nil {
+			return HostMutationResponse{}, err
+		}
+		updated.InstallRunID = run.RunID
+		updated.InstallWorkflowID = run.WorkflowID
 	}
 	items, _ := s.ListHosts(context.Background())
 	return HostMutationResponse{

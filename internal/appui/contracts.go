@@ -92,21 +92,22 @@ type AgentEventService interface {
 }
 
 type servicesConfig struct {
-	settings           SettingsRepository
-	hosts              HostRepository
-	mcps               MCPRepository
-	mcpReg             *mcp.Registry
-	auth               *auth.Manager
-	terminal           *terminal.Manager
-	skills             SkillCatalogRepository
-	agentMCP           AgentMCPCatalogRepository
-	profiles           AgentProfileRepository
-	agentEvents        AgentEventRepository
-	incidents          incidents.Store
-	opsManuals         OpsManualService
-	opsManualRepo      opsmanual.ManualRepository
-	lifecycleContext   context.Context
-	credentialResolver CredentialResolver
+	settings            SettingsRepository
+	hosts               HostRepository
+	mcps                MCPRepository
+	mcpReg              *mcp.Registry
+	auth                *auth.Manager
+	terminal            *terminal.Manager
+	skills              SkillCatalogRepository
+	agentMCP            AgentMCPCatalogRepository
+	profiles            AgentProfileRepository
+	agentEvents         AgentEventRepository
+	incidents           incidents.Store
+	opsManuals          OpsManualService
+	opsManualRepo       opsmanual.ManualRepository
+	lifecycleContext    context.Context
+	credentialResolver  CredentialResolver
+	hostBootstrapRunner HostBootstrapRunner
 }
 
 // ServicesOption customizes first-party Web services.
@@ -222,6 +223,12 @@ func WithCredentialResolver(resolver CredentialResolver) ServicesOption {
 	}
 }
 
+func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostBootstrapRunner = runner
+	}
+}
+
 func WithOpsManualService(service OpsManualService) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.opsManuals = service
@@ -298,6 +305,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		}
 		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
 	}
+	var hostBootstrap *HostBootstrapService
+	if cfg.hostBootstrapRunner != nil {
+		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner)
+	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),
@@ -306,7 +317,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
 		choices:        NewChoiceService(runtime, sessions),
 		settings:       settingsService,
-		hosts:          NewHostService(sessionStore, cfg.hosts, builder),
+		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
 		mcps:           NewMCPService(cfg.mcps, registry),
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
 		auth:           authService,
@@ -698,6 +709,12 @@ type HostUpsert struct {
 	AgentVersion     string            `json:"agentVersion"`
 	Labels           map[string]string `json:"labels"`
 	InstallViaSSH    bool              `json:"installViaSsh"`
+}
+
+type HostInstallRequest struct {
+	AgentVersion     string `json:"agentVersion"`
+	SSHCredentialRef string `json:"sshCredentialRef"`
+	Force            bool   `json:"force"`
 }
 
 type HostMutationResponse struct {

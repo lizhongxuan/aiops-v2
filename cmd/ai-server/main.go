@@ -310,16 +310,27 @@ func run() error {
 	if runnerRuntime != nil {
 		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	}
+	secretDir := strings.TrimSpace(os.Getenv("AIOPS_SECRET_DIR"))
+	if secretDir == "" {
+		secretDir = filepath.Join(dataDir, "secrets")
+	}
+	serviceOptions := []appui.ServicesOption{
+		appui.WithStore(dataStore),
+		appui.WithMCPRegistry(mcpRegistry),
+		appui.WithAuthManager(authManager),
+		appui.WithTerminalManager(terminalManager),
+		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
+		appui.WithLifecycleContext(ctx),
+		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
+	}
+	if runnerRuntime != nil {
+		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
+	}
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
 			sessionManager,
-			appui.WithStore(dataStore),
-			appui.WithMCPRegistry(mcpRegistry),
-			appui.WithAuthManager(authManager),
-			appui.WithTerminalManager(terminalManager),
-			appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
-			appui.WithLifecycleContext(ctx),
+			serviceOptions...,
 		),
 		httpOptions...,
 	)
