@@ -495,7 +495,7 @@ ASKPASS
 
 ssh_run() {
   setup_ssh_auth
-  ssh $ssh_auth_args -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -p "$ssh_port" "$ssh_user@$ssh_host" "$@"
+  ssh -n $ssh_auth_args -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=15 -p "$ssh_port" "$ssh_user@$ssh_host" "$@"
 }
 
 ssh_script() {

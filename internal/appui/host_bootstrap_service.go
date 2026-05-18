@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/store"
 	"runner/workflow/visual"
@@ -92,10 +93,109 @@ func (s *HostBootstrapService) Install(ctx context.Context, hostID string, req H
 	if err := s.repo.SaveHost(&next); err != nil {
 		return HostInstallRun{}, err
 	}
+	s.startInstallMonitor(next.ID, next.InstallRunID)
 	run.HostID = next.ID
 	run.WorkflowID = next.InstallWorkflowID
 	run.AgentVersion = next.AgentVersion
 	return run, nil
+}
+
+func (s *HostBootstrapService) startInstallMonitor(hostID, runID string) {
+	if s == nil || s.runner == nil || s.repo == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	go s.monitorInstallRun(context.Background(), hostID, runID, 300, 2*time.Second)
+}
+
+func (s *HostBootstrapService) monitorInstallRun(ctx context.Context, hostID, runID string, attempts int, delay time.Duration) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if delay <= 0 {
+		delay = time.Second
+	}
+	for i := 0; i < attempts; i++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		run, err := s.runner.GetHostInstallRun(ctx, runID)
+		if err != nil {
+			continue
+		}
+		if !isTerminalInstallRunStatus(run.Status) {
+			s.updateHostInstallProgress(hostID, run)
+			continue
+		}
+		s.updateHostInstallProgress(hostID, run)
+		return
+	}
+}
+
+func (s *HostBootstrapService) updateHostInstallProgress(hostID string, run HostInstallRun) {
+	host, err := s.repo.GetHost(strings.TrimSpace(hostID))
+	if err != nil || host == nil {
+		return
+	}
+	next := cloneHostRecord(*host)
+	if step := strings.TrimSpace(run.CurrentStep); step != "" {
+		next.InstallStep = step
+	}
+	if runID := strings.TrimSpace(run.RunID); runID != "" {
+		next.InstallRunID = runID
+	}
+	if workflowID := strings.TrimSpace(run.WorkflowID); workflowID != "" {
+		next.InstallWorkflowID = workflowID
+	}
+	switch strings.TrimSpace(run.Status) {
+	case "success", "succeeded", "completed":
+		if next.Status != "online" {
+			next.Status = "online"
+		}
+		next.InstallState = "installed"
+		next.ControlMode = "managed"
+		next.LastError = ""
+	case "failed", "error", "canceled", "cancelled":
+		next.Status = "install_failed"
+		next.InstallState = installFailureState(run)
+		next.LastError = redactInstallError(firstNonEmpty(run.LastError, "host-agent install failed"))
+	default:
+		if next.Status != "online" {
+			next.Status = "installing"
+		}
+		next.InstallState = "running"
+	}
+	_ = s.repo.SaveHost(&next)
+}
+
+func isTerminalInstallRunStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "success", "succeeded", "completed", "failed", "error", "canceled", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func installFailureState(run HostInstallRun) string {
+	if strings.TrimSpace(run.CurrentStep) == "detect-platform" {
+		return "unsupported_platform"
+	}
+	return "failed"
+}
+
+func redactInstallError(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return "host-agent install failed"
+	}
+	for _, marker := range []string{"BEGIN OPENSSH PRIVATE KEY", "BEGIN RSA PRIVATE KEY", "password=", "Authorization: Bearer "} {
+		if strings.Contains(message, marker) {
+			return "host-agent install failed; sensitive detail redacted"
+		}
+	}
+	return message
 }
 
 func validateBootstrapHost(host store.HostRecord) error {

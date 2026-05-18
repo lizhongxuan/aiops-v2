@@ -105,6 +105,38 @@ func TestHostBootstrapServiceMapsSubmitFailureToInstallFailed(t *testing.T) {
 	}
 }
 
+func TestHostBootstrapServiceMapsDetectPlatformFailureToUnsupportedPlatform(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:                "prod-web-01",
+		Status:            "installing",
+		InstallState:      "running",
+		InstallRunID:      "run-1",
+		InstallWorkflowID: BuiltinHostAgentInstallWorkflowID,
+	})
+	runner := &fakeHostBootstrapRunner{run: HostInstallRun{
+		RunID:        "run-1",
+		WorkflowID:   BuiltinHostAgentInstallWorkflowID,
+		Status:       "failed",
+		CurrentStep:  "detect-platform",
+		LastError:    "script.shell failed: exit status 65",
+		AgentVersion: "v0.1.0",
+	}}
+	service := NewHostBootstrapService(repo, runner)
+
+	service.updateHostInstallProgress("prod-web-01", runner.run)
+
+	saved, err := repo.GetHost("prod-web-01")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if saved.Status != "install_failed" || saved.InstallState != "unsupported_platform" || saved.InstallStep != "detect-platform" {
+		t.Fatalf("saved host = %+v", saved)
+	}
+	if strings.TrimSpace(saved.LastError) == "" {
+		t.Fatalf("LastError is empty")
+	}
+}
+
 func TestHostBootstrapServiceUsesStableIdempotencyKey(t *testing.T) {
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "prod-web-01",
