@@ -108,7 +108,7 @@
 - Read: `docs/superpowers/specs/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-design.zh.md`
 - Read: `docs/2026-05-18-aiops-v2-first-release-scope.zh.md`
 
-- [ ] **Step 0.1：记录当前提交和工作区**
+- [x] **Step 0.1：记录当前提交和工作区**
 
 Run:
 
@@ -120,20 +120,32 @@ git status --short
 
 Expected: 输出当前 commit hash；`git status --short` 为空。若不为空，记录已有变更文件，不回滚用户变更。
 
-- [ ] **Step 0.2：跑当前相关测试作为 baseline**
+Result 2026-05-18:
+
+- commit: `c15bf1a3c1e14be25224344416f8d880150906ec`
+- branch: `manual_0513`
+- `git status --short`: clean
+
+- [x] **Step 0.2：跑当前相关测试作为 baseline**
 
 Run:
 
 ```bash
 cd /Users/lizhongxuan/Desktop/aiops/aiops-v2
 go test -count=1 ./internal/appui ./internal/server ./internal/store ./internal/terminal ./internal/runnerembed
-go test -count=1 ./pkg/runner/engine ./pkg/runner/server/service ./pkg/runner/workflow/visual
+(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)
 cd web && npm test -- --run hostListViewModel
 ```
 
 Expected: 以上命令退出码为 0。若已有失败，先记录失败命令和失败测试名，再决定是否单独修复。
 
-- [ ] **Step 0.3：创建实施分支或确认当前分支**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui ./internal/server ./internal/store ./internal/terminal ./internal/runnerembed`: PASS
+- `(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)`: PASS
+- `cd web && npm test -- --run hostListViewModel`: PASS, 5 tests passed
+
+- [x] **Step 0.3：创建实施分支或确认当前分支**
 
 Run:
 
@@ -143,6 +155,8 @@ git branch --show-current
 ```
 
 Expected: 输出当前分支名。若当前分支不是实施分支，使用 `git switch -c host-agent-ssh-bootstrap` 创建分支。
+
+Result 2026-05-18: current branch is `manual_0513`; it is not `main` or `master`, so implementation continues on the current branch.
 
 ## 3. Task 1：扩展 HostRecord 和 API 契约
 
@@ -491,7 +505,8 @@ func (c *BootstrapClient) GetHostInstallRun(ctx context.Context, runID string) (
 Run:
 
 ```bash
-go test -count=1 ./internal/runnerembed ./pkg/runner/server/app ./pkg/runner/server/service
+go test -count=1 ./internal/runnerembed
+(cd pkg/runner && go test -count=1 ./server/app ./server/service)
 ```
 
 Expected: PASS。
@@ -846,7 +861,7 @@ Run:
 
 ```bash
 go test -count=1 ./internal/hostagent ./cmd/host-agent
-go test -count=1 ./pkg/runner/agent
+(cd pkg/runner && go test -count=1 ./agent)
 ```
 
 Expected: PASS。
@@ -876,7 +891,7 @@ Update tests so default catalog contains `script.shell`, `script.python`, `wait.
 Run:
 
 ```bash
-go test -count=1 ./pkg/runner/engine ./pkg/runner/server/service -run 'TestDefault|TestActionCatalog'
+(cd pkg/runner && go test -count=1 ./engine ./server/service -run 'TestDefault|TestActionCatalog')
 ```
 
 Expected: FAIL before implementation because legacy actions still exist.
@@ -909,7 +924,7 @@ Add visual validation test that a graph with `Action: "llm.generate"` fails when
 Run:
 
 ```bash
-go test -count=1 ./pkg/runner/engine ./pkg/runner/server/service ./pkg/runner/workflow/visual
+(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)
 ```
 
 Expected: PASS。
@@ -1154,7 +1169,7 @@ Run:
 
 ```bash
 go test -count=1 ./internal/appui ./internal/server ./internal/store ./internal/terminal ./internal/runnerembed ./internal/hostagent
-go test -count=1 ./pkg/runner/engine ./pkg/runner/server/app ./pkg/runner/server/service ./pkg/runner/workflow/visual ./pkg/runner/agent
+(cd pkg/runner && go test -count=1 ./engine ./server/app ./server/service ./workflow/visual ./agent)
 ```
 
 Expected: PASS。
