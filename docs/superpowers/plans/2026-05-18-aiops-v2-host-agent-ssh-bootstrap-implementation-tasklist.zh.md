@@ -471,7 +471,7 @@ git commit -m "feat: add builtin host agent install workflow"
 - Create: `internal/runnerembed/bootstrap_client.go`
 - Test: `internal/runnerembed/bootstrap_client_test.go`
 
-- [ ] **Step 4.1：写 runnerembed client 测试**
+- [x] **Step 4.1：写 runnerembed client 测试**
 
 测试 fake runtime：
 
@@ -488,7 +488,9 @@ go test -count=1 ./internal/runnerembed -run TestBootstrapClient
 
 Expected: FAIL because client 还不存在。
 
-- [ ] **Step 4.2：在 runner runtime 暴露窄方法**
+Result 2026-05-18: RED confirmed; `NewBootstrapClient` was undefined.
+
+- [x] **Step 4.2：在 runner runtime 暴露窄方法**
 
 In `pkg/runner/server/app/runtime.go`, add fields:
 
@@ -505,7 +507,7 @@ func (r *Runtime) GetRun(ctx context.Context, runID string) (*service.RunDetail,
 
 These methods must delegate to existing services and must not expose general LLM or AI draft functionality.
 
-- [ ] **Step 4.3：实现 appui 依赖接口适配器**
+- [x] **Step 4.3：实现 appui 依赖接口适配器**
 
 In `internal/runnerembed/bootstrap_client.go`, implement:
 
@@ -519,7 +521,7 @@ func (c *BootstrapClient) SubmitHostInstallGraph(ctx context.Context, graph visu
 func (c *BootstrapClient) GetHostInstallRun(ctx context.Context, runID string) (appui.HostInstallRun, error)
 ```
 
-- [ ] **Step 4.4：跑 runnerembed 和 runner service 测试**
+- [x] **Step 4.4：跑 runnerembed 和 runner service 测试**
 
 Run:
 
@@ -530,7 +532,12 @@ go test -count=1 ./internal/runnerembed
 
 Expected: PASS。
 
-- [ ] **Step 4.5：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/runnerembed`: PASS
+- `(cd pkg/runner && go test -count=1 ./server/app ./server/service)`: PASS
+
+- [x] **Step 4.5：提交**
 
 Run:
 

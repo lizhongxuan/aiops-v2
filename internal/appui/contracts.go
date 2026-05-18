@@ -707,6 +707,17 @@ type HostMutationResponse struct {
 	InstallWorkflowID string        `json:"installWorkflowId,omitempty"`
 }
 
+type HostInstallRun struct {
+	HostID       string `json:"hostId,omitempty"`
+	RunID        string `json:"runId,omitempty"`
+	WorkflowID   string `json:"workflowId,omitempty"`
+	Status       string `json:"status,omitempty"`
+	CurrentStep  string `json:"currentStep,omitempty"`
+	LastError    string `json:"lastError,omitempty"`
+	Platform     string `json:"platform,omitempty"`
+	AgentVersion string `json:"agentVersion,omitempty"`
+}
+
 type MCPServerUpsert struct {
 	Name      string            `json:"name"`
 	Transport string            `json:"transport,omitempty"`

@@ -76,7 +76,9 @@ func TestNewRuntimeBuildsHandlerWithoutListening(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); body == "" || !strings.Contains(body, "cmd.run") {
-		t.Fatalf("action catalog body = %q, want cmd.run", body)
+	if body := rec.Body.String(); body == "" || !strings.Contains(body, "script.shell") {
+		t.Fatalf("action catalog body = %q, want script.shell", body)
+	} else if strings.Contains(body, "cmd.run") || strings.Contains(body, "shell.run") {
+		t.Fatalf("action catalog body = %q, should not include legacy shell actions", body)
 	}
 }
