@@ -825,7 +825,7 @@ Result 2026-05-18:
 - `go test -count=1 ./internal/appui -run TestHostAgentService`: PASS
 - `go test -count=1 ./internal/server -run TestHostAgentAPI`: PASS
 
-- [ ] **Step 7.5：提交**
+- [x] **Step 7.5：提交**
 
 Run:
 
@@ -833,6 +833,8 @@ Run:
 git add internal/appui/host_agent_service.go internal/appui/host_agent_service_test.go internal/server/host_agent_api.go internal/server/host_agent_api_test.go internal/appui/contracts.go internal/server/http.go
 git commit -m "feat: add host agent heartbeat api"
 ```
+
+Result 2026-05-18: committed `9a1e2c6 feat: add host agent heartbeat api`.
 
 ## 10. Task 8：实现 host-agent v0 二进制和 artifact manifest
 
