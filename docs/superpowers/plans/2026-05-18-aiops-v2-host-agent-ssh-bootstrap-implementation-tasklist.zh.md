@@ -276,7 +276,7 @@ git commit -m "feat: extend host install contract"
 - Create: `internal/appui/credential_resolver_test.go`
 - Modify: `internal/appui/contracts.go`
 
-- [ ] **Step 2.1：写凭据解析测试**
+- [x] **Step 2.1：写凭据解析测试**
 
 测试覆盖：
 
@@ -294,7 +294,9 @@ go test -count=1 ./internal/appui -run 'TestLocalSecretCredentialResolver'
 
 Expected: FAIL because resolver 还不存在。
 
-- [ ] **Step 2.2：实现 resolver 接口和本地 secret 解析**
+Result 2026-05-18: RED confirmed; tests failed because `NewLocalSecretCredentialResolver` and `ResolvedSSHCredential` were undefined.
+
+- [x] **Step 2.2：实现 resolver 接口和本地 secret 解析**
 
 Implement public contract:
 
@@ -318,7 +320,7 @@ type CredentialResolver interface {
 - 复制到 `0600` 临时文件，返回临时文件路径。
 - `Cleanup()` 删除临时文件。
 
-- [ ] **Step 2.3：注入 Services 配置**
+- [x] **Step 2.3：注入 Services 配置**
 
 在 `servicesConfig` 增加：
 
@@ -341,6 +343,8 @@ go test -count=1 ./internal/appui -run 'TestLocalSecretCredentialResolver|TestHo
 ```
 
 Expected: PASS。
+
+Interim result 2026-05-18: resolver-only file test passed with `go test -count=1 internal/appui/credential_resolver.go internal/appui/credential_resolver_test.go`. Full `./internal/appui` package verification is pending because Worker A has an in-progress uncommitted `host_install_workflow_test.go` in the same package.
 
 - [ ] **Step 2.5：提交**
 

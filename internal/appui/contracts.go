@@ -92,20 +92,21 @@ type AgentEventService interface {
 }
 
 type servicesConfig struct {
-	settings         SettingsRepository
-	hosts            HostRepository
-	mcps             MCPRepository
-	mcpReg           *mcp.Registry
-	auth             *auth.Manager
-	terminal         *terminal.Manager
-	skills           SkillCatalogRepository
-	agentMCP         AgentMCPCatalogRepository
-	profiles         AgentProfileRepository
-	agentEvents      AgentEventRepository
-	incidents        incidents.Store
-	opsManuals       OpsManualService
-	opsManualRepo    opsmanual.ManualRepository
-	lifecycleContext context.Context
+	settings           SettingsRepository
+	hosts              HostRepository
+	mcps               MCPRepository
+	mcpReg             *mcp.Registry
+	auth               *auth.Manager
+	terminal           *terminal.Manager
+	skills             SkillCatalogRepository
+	agentMCP           AgentMCPCatalogRepository
+	profiles           AgentProfileRepository
+	agentEvents        AgentEventRepository
+	incidents          incidents.Store
+	opsManuals         OpsManualService
+	opsManualRepo      opsmanual.ManualRepository
+	lifecycleContext   context.Context
+	credentialResolver CredentialResolver
 }
 
 // ServicesOption customizes first-party Web services.
@@ -212,6 +213,12 @@ func WithAgentProfileRepository(repo AgentProfileRepository) ServicesOption {
 func WithLifecycleContext(ctx context.Context) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.lifecycleContext = ctx
+	}
+}
+
+func WithCredentialResolver(resolver CredentialResolver) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.credentialResolver = resolver
 	}
 }
 
