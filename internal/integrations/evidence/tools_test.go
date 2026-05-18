@@ -75,11 +75,26 @@ func TestRegisterBuiltinsAddsEvidenceTools(t *testing.T) {
 		t.Fatalf("RegisterBuiltins() error = %v", err)
 	}
 
-	tools := registry.AssembleTools("host", "inspect")
-	for _, name := range []string{"evidence.record", "evidence.get", "evidence.link_incident"} {
-		if !hasTool(tools, name) {
-			t.Fatalf("missing %s in assembled tools", name)
+	if tools := registry.AssembleTools("host", "inspect"); len(tools) != 0 {
+		t.Fatalf("default evidence tools = %v, want no evidence tools in first surface", evidenceToolNames(tools))
+	}
+	readTools := registry.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{EnabledPacks: []string{"evidence_read"}})
+	if !hasTool(readTools, "evidence.get") {
+		t.Fatalf("missing evidence.get when evidence_read pack is enabled: %v", evidenceToolNames(readTools))
+	}
+	for _, name := range []string{"evidence.record", "evidence.link_incident"} {
+		tool := mustEvidenceTool(t, registry, name)
+		meta := tool.Metadata()
+		if meta.Layer != tooling.ToolLayerInternal {
+			t.Fatalf("%s layer = %q, want internal", name, meta.Layer)
 		}
+		if hasTool(readTools, name) {
+			t.Fatalf("%s should remain hidden even when evidence_read pack is enabled", name)
+		}
+	}
+	getMeta := mustEvidenceTool(t, registry, "evidence.get").Metadata()
+	if getMeta.Layer != tooling.ToolLayerDeferred || getMeta.Pack != "evidence_read" || !getMeta.DeferByDefault {
+		t.Fatalf("evidence.get metadata = layer:%q pack:%q defer:%v, want deferred evidence_read", getMeta.Layer, getMeta.Pack, getMeta.DeferByDefault)
 	}
 }
 
@@ -96,4 +111,21 @@ func hasTool(tools []tooling.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+func mustEvidenceTool(t *testing.T, registry *tooling.Registry, name string) tooling.Tool {
+	t.Helper()
+	tool, ok := registry.Get(name)
+	if !ok {
+		t.Fatalf("missing registered tool %s", name)
+	}
+	return tool
+}
+
+func evidenceToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
 }

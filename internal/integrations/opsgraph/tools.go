@@ -23,7 +23,7 @@ type entityInput struct {
 }
 
 func tools(store *graph.Store) []tooling.Tool {
-	visibility := tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"inspect", "plan", "execute"}}
+	visibility := tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}}
 	return []tooling.Tool{
 		newTool("opsgraph.lookup", "Look up ERP modules, business capabilities, services, data stores, tenants, and runbooks by symptom or name", lookupSchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
 			var in lookupInput
@@ -62,11 +62,15 @@ func tools(store *graph.Store) []tooling.Tool {
 func newTool(name, description string, schema json.RawMessage, visibility tooling.Visibility, execute func(context.Context, json.RawMessage) (any, error)) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: description,
-			Domain:      "opsgraph",
-			RiskLevel:   tooling.ToolRiskLow,
+			Name:           name,
+			Origin:         tooling.ToolOriginBuiltin,
+			Description:    description,
+			Domain:         "opsgraph",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "opsgraph",
+			DeferByDefault: true,
+			Triggers:       []string{"业务影响", "依赖关系", "服务图谱", "runbook", "impact", "dependency", "graph"},
+			RiskLevel:      tooling.ToolRiskLow,
 		},
 		Visibility:       visibility,
 		InputSchemaData:  schema,

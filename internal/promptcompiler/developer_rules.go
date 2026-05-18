@@ -169,6 +169,7 @@ func developerAIOpsInvestigationLines(ctx CompileContext) []string {
 		"When necessary user-provided fields block progress, rely on the Agent-to-UI compact form when one is present; do not duplicate the same fields as a multiline prose template.",
 		"When resolve_ops_manual_params returns ambiguous or need_user_input with form fields, stop tool use and wait for the user to submit the structured Agent-to-UI form; do not run host commands, Coroot probes, ordinary shell checks, preflight, or Workflow execution while that form is pending.",
 		"When a safe automated operation is available but not purely read-only, ask for user confirmation and then run it after confirmation rather than only describing it.",
+		"If a high-risk change request cannot proceed because no verified Workflow, ActionToken, approval path, or executable mutation tool is available, state that blocker and do not claim the change was executed.",
 		"Do not duplicate Agent-to-UI card details in assistant text; give one short status sentence plus the smallest useful question or next action.",
 		"When the user asks for a read-only status or RCA check and collected evidence shows no abnormality, answer with a short conclusion and key evidence only; do not expand a long next-step plan, and do not suggest remediation, workflow execution, rollback, or operations manual generation.",
 		"When the user asks for a status_check/health_check and resolve_ops_manual_params plus run_ops_manual_preflight have already passed, do not run extra host, shell, Docker, Kubernetes, or Coroot probes unless the preflight evidence is failed, stale, or explicitly insufficient; answer with 1-3 bullets total, no headings and no separate evidence section, make each bullet a concise conclusion with compact evidence, and include that no change was executed in one bullet.",
@@ -190,7 +191,7 @@ func developerToolUseBoundaryLines(ctx CompileContext) []string {
 		"Use tools to gather evidence before making claims that depend on local, current, or system-specific state.",
 		"Prefer the most specific available read-only tool before broader shell inspection.",
 		"When using exec_command for read-only inspection, pass the executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining. Use narrower commands or native flags instead.",
-		"Do not duplicate Layer 3 tool details in prose; rely on each tool's Usage policy, Governance, Example, and Failure handling for tool-specific behavior.",
+		"Do not duplicate Layer 3 tool details in prose; rely on the compact Tool Index, common tool policy, and runtime approval/evidence gates for tool-specific behavior.",
 	}
 	if strings.TrimSpace(ctx.ToolBudget) != "" {
 		lines = append(lines, "Keep tool results within the configured budget; summarize large outputs and reference raw artifacts instead of pasting them when ToolBudget is configured.")

@@ -53,7 +53,7 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 	}
 }
 
-func TestToolPromptReadOnlyFailureHandlingTreatsFailureAsEvidenceState(t *testing.T) {
+func TestToolPromptCommonPolicyTreatsReadOnlyFailureAsMissingEvidence(t *testing.T) {
 	compiler := NewCompiler()
 	compiled, err := compiler.Compile(CompileContext{
 		AssembledTools: []Tool{
@@ -72,19 +72,22 @@ func TestToolPromptReadOnlyFailureHandlingTreatsFailureAsEvidenceState(t *testin
 	}
 	content := compiled.Tools.Content
 	for _, want := range []string{
-		"failure is evidence state, not target state",
-		"missing/blocked evidence",
-		"policy blocked and permission denied do not prove target system state",
-		"non-zero exit requires stderr and exit code interpretation",
-		"empty output does not prove no abnormality",
+		"Common policy:",
+		"Read-only tool failure is missing or blocked evidence, not proof of target state.",
+		"Permission denied or policy blocked does not prove system health.",
+		"Non-zero exit requires stderr and exit code interpretation.",
+		"Empty output does not prove no abnormality.",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("read-only tool failure handling missing %q:\n%s", want, content)
+			t.Fatalf("common policy missing %q:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, "Failure handling:") {
+		t.Fatalf("tool prompt should not repeat failure handling per tool:\n%s", content)
 	}
 }
 
-func TestToolPromptDestructiveFailureHandlingStopsWithoutBroadeningScope(t *testing.T) {
+func TestToolPromptCommonPolicyCoversDestructiveFailureBoundary(t *testing.T) {
 	compiler := NewCompiler()
 	compiled, err := compiler.Compile(CompileContext{
 		AssembledTools: []Tool{
@@ -104,14 +107,34 @@ func TestToolPromptDestructiveFailureHandlingStopsWithoutBroadeningScope(t *test
 	}
 	content := compiled.Tools.Content
 	for _, want := range []string{
-		"Stop, report the failed mutation",
-		"do not broaden scope",
-		"policy blocked and permission denied do not prove target system state",
-		"non-zero exit requires stderr and exit code interpretation",
-		"empty output does not prove no abnormality",
+		"Mutating tools require explicit user intent, scoped target, runtime approval gate, and verification.",
+		"Failed mutations must stop at the scoped action and must not broaden scope.",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("destructive tool failure handling missing %q:\n%s", want, content)
+			t.Fatalf("destructive common policy missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestToolPromptCommonPolicyRenderedOnceForMultipleTools(t *testing.T) {
+	compiler := NewCompiler()
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{Name: "inspect_metrics", Description: "inspect metrics", RiskLevel: tooling.ToolRiskLow}},
+			readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{Name: "read_logs", Description: "read logs", RiskLevel: tooling.ToolRiskLow}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "restart_service", Description: "restart service", RiskLevel: tooling.ToolRiskHigh, Mutating: true, RequiresApproval: true}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	if got := strings.Count(content, "Common policy:"); got != 1 {
+		t.Fatalf("Common policy count = %d, want 1:\n%s", got, content)
+	}
+	for _, forbidden := range []string{"Usage policy:", "Example:", "Failure handling:"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("compact tool prompt should not include %q:\n%s", forbidden, content)
 		}
 	}
 }
@@ -120,6 +143,8 @@ func TestToolPromptSetOmitsRemovedOpsTools(t *testing.T) {
 	compiler := NewCompiler()
 	compiled, err := compiler.Compile(CompileContext{
 		AssembledTools: []Tool{
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "k8s.get_events", Description: "old k8s"}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "changes.recent_deployments", Description: "old changes"}},
 			governancePromptTool{meta: tooling.ToolMetadata{Name: "runbook.match", Description: "old runbook"}},
 			governancePromptTool{meta: tooling.ToolMetadata{Name: "fallback.plan_exec", Description: "old fallback"}},
 			governancePromptTool{meta: tooling.ToolMetadata{Name: "erp.business_metric", Description: "old erp"}},
@@ -129,7 +154,7 @@ func TestToolPromptSetOmitsRemovedOpsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	for _, forbidden := range []string{"runbook.match", "fallback.plan_exec", "erp.business_metric"} {
+	for _, forbidden := range []string{"k8s.get_events", "changes.recent_deployments", "runbook.match", "fallback.plan_exec", "erp.business_metric"} {
 		if strings.Contains(compiled.Tools.Content, forbidden) {
 			t.Fatalf("tool prompt contains removed tool %q:\n%s", forbidden, compiled.Tools.Content)
 		}

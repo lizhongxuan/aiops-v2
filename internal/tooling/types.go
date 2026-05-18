@@ -28,6 +28,17 @@ const (
 	ToolSourceMeta    ToolSource = "meta"
 )
 
+// ToolLayer classifies when a tool should appear in the assembled surface.
+type ToolLayer string
+
+const (
+	ToolLayerCore     ToolLayer = "core"
+	ToolLayerDeferred ToolLayer = "deferred"
+	ToolLayerInternal ToolLayer = "internal"
+	ToolLayerDebug    ToolLayer = "debug"
+	ToolLayerMutation ToolLayer = "mutation"
+)
+
 // MCPInfo stores MCP-specific metadata for tools that originated from an MCP server.
 type MCPInfo struct {
 	ServerID   string          `json:"serverId,omitempty"`
@@ -144,6 +155,12 @@ type ToolMetadata struct {
 	SearchHint       string                  `json:"searchHint,omitempty"`
 	ShouldDefer      bool                    `json:"shouldDefer,omitempty"`
 	AlwaysLoad       bool                    `json:"alwaysLoad,omitempty"`
+	Layer            ToolLayer               `json:"layer,omitempty"`
+	Pack             string                  `json:"pack,omitempty"`
+	DeferByDefault   bool                    `json:"deferByDefault,omitempty"`
+	Profiles         []string                `json:"profiles,omitempty"`
+	Triggers         []string                `json:"triggers,omitempty"`
+	RecordEvidence   bool                    `json:"recordEvidence,omitempty"`
 	IsMCP            bool                    `json:"isMCP,omitempty"`
 	IsLSP            bool                    `json:"isLSP,omitempty"`
 	RiskLevel        ToolRiskLevel           `json:"riskLevel,omitempty"`
@@ -350,4 +367,10 @@ type Tool interface {
 	ValidateInput(ctx context.Context, input json.RawMessage) error
 	CheckPermissions(ctx context.Context, input json.RawMessage) PermissionDecision
 	Execute(ctx context.Context, input json.RawMessage) (ToolResult, error)
+}
+
+// ToolCatalogProvider supplies the final assembled catalog for prompt/runtime
+// and discovery use cases. Registry and Assembler both implement this shape.
+type ToolCatalogProvider interface {
+	AssembleToolsWithOptions(session, mode string, opts AssembleOptions) []Tool
 }

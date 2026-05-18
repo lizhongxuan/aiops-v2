@@ -385,7 +385,7 @@ func TestExecCommandToolRejectsWrongToolToken(t *testing.T) {
 		t.Fatalf("hash: %v", err)
 	}
 	token, err := actionproposal.NewSigner(secret, func() time.Time { return now }).Sign(actionproposal.ActionTokenClaims{
-		ToolName:  "k8s.restart_workload",
+		ToolName:  "ops.restart_workload",
 		InputHash: hash,
 		Source:    actionproposal.SourceRunbook,
 		Risk:      actionproposal.RiskHigh,

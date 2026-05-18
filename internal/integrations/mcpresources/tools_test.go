@@ -44,10 +44,23 @@ func TestRegisterBuiltinsAddsMCPResourceTools(t *testing.T) {
 		t.Fatalf("RegisterBuiltins() error = %v", err)
 	}
 
-	tools := base.AssembleTools("host", "inspect")
+	if tools := base.AssembleTools("host", "inspect"); len(tools) != 0 {
+		t.Fatalf("default assembled tools = %v, want mcp_resource deferred by default", mcpResourceToolNames(tools))
+	}
+	tools := base.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{EnabledPacks: []string{"mcp_resource"}})
 	for _, name := range []string{"list_mcp_resources", "read_mcp_resource"} {
 		if !hasTool(tools, name) {
 			t.Fatalf("missing %s in assembled tools", name)
+		}
+		meta := toolByNameForMCPResourceTest(t, tools, name).Metadata()
+		if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "mcp_resource" || !meta.DeferByDefault {
+			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want deferred mcp_resource", name, meta.Layer, meta.Pack, meta.DeferByDefault)
+		}
+	}
+	chatTools := base.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"mcp_resource"}})
+	for _, name := range []string{"list_mcp_resources", "read_mcp_resource"} {
+		if !hasTool(chatTools, name) {
+			t.Fatalf("missing %s in chat tools when mcp_resource pack is enabled: %v", name, mcpResourceToolNames(chatTools))
 		}
 	}
 }
@@ -69,4 +82,23 @@ func hasTool(tools []tooling.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+func toolByNameForMCPResourceTest(t *testing.T, tools []tooling.Tool, name string) tooling.Tool {
+	t.Helper()
+	for _, tool := range tools {
+		if tool.Metadata().Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("missing tool %s", name)
+	return nil
+}
+
+func mcpResourceToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
 }

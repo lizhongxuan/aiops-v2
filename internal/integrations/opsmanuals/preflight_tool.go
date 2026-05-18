@@ -18,11 +18,14 @@ func newRunOpsManualPreflightTool(service *core.Service, cache *turnSearchContex
 	}
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        runOpsManualPreflightToolName,
-			Aliases:     []string{"ops_manual.preflight"},
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Run the read-only Node 0 preflight for a selected ops manual. Do not call this tool when the user opted out of operations manuals, skipped a manual, or metadata opsManualAction=skip_ops_manual / opsManualSkipped=true is present for the current continuation. For direct_execute results, pass the operation_frame and parameters from search_ops_manuals, preserving extracted values such as target_instance, namespace, pod_name, backup_path, evidence flags, and environment. This tool only produces auditable evidence such as parameter readiness, environment compatibility, permission gaps, and probe outputs; it never executes the bound Runner Workflow or mutates infrastructure.",
-			RiskLevel:   tooling.ToolRiskLow,
+			Name:           runOpsManualPreflightToolName,
+			Aliases:        []string{"ops_manual.preflight"},
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "ops_manual_flow",
+			DeferByDefault: true,
+			Description:    "Run read-only Node 0 preflight for a selected ops manual. Checks parameter readiness, environment compatibility, permission gaps, and probe evidence without executing the workflow.",
+			RiskLevel:      tooling.ToolRiskLow,
 		},
 		Visibility:      visibility,
 		InputSchemaData: runOpsManualPreflightInputSchema,

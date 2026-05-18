@@ -20,9 +20,7 @@ const defaultToolPromptInlineBudgetBytes = 4096
 // capability descriptions for all visible tool-like capabilities.
 func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptSet, error) {
 	var entries []ToolPromptEntry
-	var parts []string
-
-	parts = append(parts, "# Tool Index")
+	var toolLines []string
 
 	for _, tool := range ctx.AssembledTools {
 		if tool == nil || isRemovedOpsTool(tool.Metadata().Name) {
@@ -30,11 +28,15 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		}
 		toolEntry := c.buildToolPromptEntry(tool)
 		entries = append(entries, toolEntry)
-		parts = append(parts, c.formatToolIndexLine(tool, toolEntry))
+		toolLines = append(toolLines, c.formatToolIndexLine(tool, toolEntry))
 	}
 
+	parts := []string{"# Tool Index"}
 	if len(entries) == 0 {
 		parts = append(parts, "No tools available in current context.")
+	} else {
+		parts = append(parts, commonToolPolicyPrompt())
+		parts = append(parts, toolLines...)
 	}
 
 	content := strings.Join(parts, "\n\n")
@@ -46,7 +48,7 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 
 func isRemovedOpsTool(name string) bool {
 	name = strings.TrimSpace(name)
-	for _, prefix := range []string{"runbook.", "fallback.", "erp."} {
+	for _, prefix := range []string{"k8s.", "changes.", "runbook.", "fallback.", "erp."} {
 		if strings.HasPrefix(name, prefix) {
 			return true
 		}
@@ -57,6 +59,7 @@ func isRemovedOpsTool(name string) bool {
 func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPromptDelta {
 	delta := ToolPromptDelta{
 		NewlyAvailable:         append([]string(nil), ctx.ToolDelta.NewlyAvailable...),
+		NewlyAvailablePacks:    append([]string(nil), ctx.ToolDelta.NewlyAvailablePacks...),
 		TemporarilyUnavailable: append([]string(nil), ctx.ToolDelta.TemporarilyUnavailable...),
 		ApprovalRequired:       append([]string(nil), ctx.ToolDelta.ApprovalRequired...),
 	}
@@ -73,12 +76,16 @@ func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPrompt
 	}
 
 	delta.NewlyAvailable = normalizePromptNames(delta.NewlyAvailable)
+	delta.NewlyAvailablePacks = normalizePromptNames(delta.NewlyAvailablePacks)
 	delta.TemporarilyUnavailable = normalizePromptNames(delta.TemporarilyUnavailable)
 	delta.ApprovalRequired = normalizePromptNames(delta.ApprovalRequired)
 
 	var parts []string
 	if len(delta.NewlyAvailable) > 0 {
 		parts = append(parts, "## Newly available tools\n- "+strings.Join(delta.NewlyAvailable, "\n- "))
+	}
+	if len(delta.NewlyAvailablePacks) > 0 {
+		parts = append(parts, "## Newly available tool packs\n- "+strings.Join(delta.NewlyAvailablePacks, "\n- "))
 	}
 	if len(delta.TemporarilyUnavailable) > 0 {
 		parts = append(parts, "## Temporarily unavailable tools\n- "+strings.Join(delta.TemporarilyUnavailable, "\n- "))
@@ -132,19 +139,22 @@ func (c *PromptCompilerImpl) formatToolIndexLine(tool Tool, entry ToolPromptEntr
 	if canonical := toolCanonicalNameForPrompt(tool); canonical != "" && canonical != name {
 		lines = append(lines, "  Canonical name: "+canonical)
 	}
-	if entry.UsagePolicy != "" {
-		lines = append(lines, "  Usage policy: "+entry.UsagePolicy)
-	}
 	if entry.Governance != "" {
 		lines = append(lines, "  Governance: "+entry.Governance)
 	}
-	if entry.Example != "" {
-		lines = append(lines, "  Example: "+entry.Example)
-	}
-	if entry.FailureHandling != "" {
-		lines = append(lines, "  Failure handling: "+entry.FailureHandling)
-	}
 	return strings.Join(lines, "\n")
+}
+
+func commonToolPolicyPrompt() string {
+	return strings.Join([]string{
+		"Common policy:",
+		"- Read-only tool failure is missing or blocked evidence, not proof of target state.",
+		"- Permission denied or policy blocked does not prove system health.",
+		"- Non-zero exit requires stderr and exit code interpretation.",
+		"- Empty output does not prove no abnormality.",
+		"- Mutating tools require explicit user intent, scoped target, runtime approval gate, and verification.",
+		"- Failed mutations must stop at the scoped action and must not broaden scope.",
+	}, "\n")
 }
 
 func toolGovernanceSummary(tool Tool) string {

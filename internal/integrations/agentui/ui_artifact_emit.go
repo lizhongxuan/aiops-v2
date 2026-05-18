@@ -44,6 +44,7 @@ func NewUIArtifactEmitTool() tooling.Tool {
 			Description: "Emit a controlled read-only Agent-to-UI artifact. P0 supports rca_report artifacts.",
 			Domain:      "agentui",
 			Origin:      tooling.ToolOriginBuiltin,
+			Layer:       tooling.ToolLayerInternal,
 			RiskLevel:   tooling.ToolRiskLow,
 		},
 		Visibility:          tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}},

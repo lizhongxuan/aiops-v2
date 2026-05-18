@@ -14,16 +14,20 @@ func TestRegisterBuiltinsAddsArtifactEmitTool(t *testing.T) {
 	if err := RegisterBuiltins(registry); err != nil {
 		t.Fatalf("RegisterBuiltins() error = %v", err)
 	}
-	tools := registry.AssembleTools("host", "inspect")
-	for _, tool := range tools {
-		if tool.Metadata().Name == "aiops.ui_artifact_emit" {
-			if !tool.IsReadOnly(nil) {
-				t.Fatal("aiops.ui_artifact_emit should be read-only")
-			}
-			return
-		}
+	if tools := registry.AssembleTools("host", "inspect"); len(tools) != 0 {
+		t.Fatalf("default tools = %v, want artifact emit hidden from first surface", artifactToolNames(tools))
 	}
-	t.Fatal("aiops.ui_artifact_emit not registered")
+	tool, ok := registry.Get("aiops.ui_artifact_emit")
+	if !ok {
+		t.Fatal("aiops.ui_artifact_emit not registered")
+	}
+	meta := tool.Metadata()
+	if meta.Layer != tooling.ToolLayerInternal {
+		t.Fatalf("layer = %q, want internal", meta.Layer)
+	}
+	if !tool.IsReadOnly(nil) {
+		t.Fatal("aiops.ui_artifact_emit should be read-only")
+	}
 }
 
 func TestUIArtifactEmitEmitsRCAReportDisplay(t *testing.T) {
@@ -117,4 +121,12 @@ func TestUIArtifactEmitRejectsDirectActionHref(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "direct action href is not allowed") {
 		t.Fatalf("Execute() error = %v, want direct action href rejection", err)
 	}
+}
+
+func artifactToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
 }

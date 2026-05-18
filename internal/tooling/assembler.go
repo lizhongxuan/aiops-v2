@@ -73,9 +73,7 @@ func (a *Assembler) AssembleToolPoolWithOptions(session, mode string, opts Assem
 // CompileContextWithMetadata assembles prompt tools while applying turn-level
 // metadata such as explicit user opt-outs.
 func (a *Assembler) CompileContextWithMetadata(session, mode string, metadata map[string]string) []Tool {
-	return a.AssembleToolsWithOptions(session, mode, AssembleOptions{
-		Filter: turnMetadataToolFilter(metadata),
-	})
+	return a.AssembleToolsWithOptions(session, mode, AssembleOptionsForTurnMetadata(metadata))
 }
 
 // AssembleToolPoolWithMetadata adapts the metadata-filtered visible tools into

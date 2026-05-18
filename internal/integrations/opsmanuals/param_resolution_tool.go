@@ -19,11 +19,14 @@ func newResolveOpsManualParamsTool(service *core.Service, cache *turnSearchConte
 	}
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        resolveOpsManualParamsToolName,
-			Aliases:     []string{"ops_manual.resolve_params"},
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Resolve missing parameters for a matched ops manual before asking the user. Do not call this tool when the user opted out of operations manuals, skipped a manual, or metadata opsManualAction=skip_ops_manual / opsManualSkipped=true is present for the current continuation. This read-only tool builds an auditable Param Resolution Graph, reuses current chat/session context, tries safe read-only resolvers, and returns either resolved parameters for preflight or a compact dynamic form schema. Call this only after search_ops_manuals returns at least one matched manual and pass that manual_id; if search_ops_manuals returned need_info with no manuals, refine the search operation_frame or ask the smallest missing object/action question instead. Preserve explicit user-provided targets by passing operation_frame.target.name or known_params.target_instance when the user named a concrete instance/service/pod/container/host/resource. Do not ask fixed target/location/execution/symptom fields yourself.",
-			RiskLevel:   tooling.ToolRiskLow,
+			Name:           resolveOpsManualParamsToolName,
+			Aliases:        []string{"ops_manual.resolve_params"},
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "ops_manual_flow",
+			DeferByDefault: true,
+			Description:    "Resolve parameters for a matched ops manual using chat/session context and safe read-only resolvers. Returns resolved parameters for preflight or compact dynamic form fields.",
+			RiskLevel:      tooling.ToolRiskLow,
 		},
 		Visibility:      visibility,
 		InputSchemaData: resolveOpsManualParamsInputSchema,

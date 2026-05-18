@@ -26,9 +26,15 @@ func TestRegisterBuiltinsInstallsResolveOpsManualParams(t *testing.T) {
 	if !hasAlias(meta.Aliases, "ops_manual.resolve_params") {
 		t.Fatalf("aliases = %#v, want ops_manual.resolve_params", meta.Aliases)
 	}
-	for _, want := range []string{"opsManualAction=skip_ops_manual", "opsManualSkipped=true", "opted out"} {
+	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
+		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
+	}
+	if len(meta.Description) > 500 {
+		t.Fatalf("description length = %d, want <= 500: %q", len(meta.Description), meta.Description)
+	}
+	for _, want := range []string{"Resolve parameters", "matched ops manual", "chat/session context", "safe read-only resolvers", "resolved parameters", "dynamic form fields"} {
 		if !containsString([]string{meta.Description}, want) {
-			t.Fatalf("description = %q, want opt-out guidance %q", meta.Description, want)
+			t.Fatalf("description = %q, want %q", meta.Description, want)
 		}
 	}
 	if !tool.IsReadOnly(json.RawMessage(`{"request_text":"排查 Redis"}`)) {
@@ -48,8 +54,7 @@ func TestRegisterBuiltinsInstallsResolveOpsManualParams(t *testing.T) {
 			t.Fatalf("schema missing %q: %s", name, string(tool.InputSchema()))
 		}
 	}
-	if !containsString([]string{meta.Description}, "known_params.target_instance") ||
-		!containsString([]string{string(schema.Properties["operation_frame"])}, "target.name") ||
+	if !containsString([]string{string(schema.Properties["operation_frame"])}, "target.name") ||
 		!containsString([]string{string(schema.Properties["known_params"])}, "target_instance") {
 		t.Fatalf("resolve tool lacks explicit target guidance: description=%q schema=%s", meta.Description, string(tool.InputSchema()))
 	}

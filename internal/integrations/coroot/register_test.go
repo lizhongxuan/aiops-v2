@@ -93,3 +93,68 @@ func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
 		assertCorootVisibility(t, tool, "workspace", "chat", true)
 	}
 }
+
+func TestRegisterBuiltinsLayersCorootToolsIntoDeferredPacks(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	if err := RegisterBuiltins(mcpRegistry, "http://localhost:8080"); err != nil {
+		t.Fatalf("RegisterBuiltins() error = %v", err)
+	}
+	tools := mcpRegistry.ListServerTools("coroot")
+
+	list := corootToolByName(t, tools, "coroot.list_services").Metadata()
+	if list.Layer != tooling.ToolLayerCore || list.Pack != "" || list.DeferByDefault {
+		t.Fatalf("coroot.list_services metadata = layer:%q pack:%q defer:%v, want core", list.Layer, list.Pack, list.DeferByDefault)
+	}
+	for _, name := range []string{"coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "coroot.slo_status"} {
+		meta := corootToolByName(t, tools, name).Metadata()
+		if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "coroot_rca" || !meta.DeferByDefault {
+			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want coroot_rca deferred", name, meta.Layer, meta.Pack, meta.DeferByDefault)
+		}
+	}
+	for _, name := range []string{"coroot.alert_rules", "coroot.incident_timeline"} {
+		meta := corootToolByName(t, tools, name).Metadata()
+		if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "coroot_incident" || !meta.DeferByDefault {
+			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want coroot_incident deferred", name, meta.Layer, meta.Pack, meta.DeferByDefault)
+		}
+	}
+
+	assembler := tooling.NewAssembler(tooling.NewRegistry(), mcpRegistry)
+	defaultNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
+	if len(defaultNames) != 1 || defaultNames[0] != "coroot.list_services" {
+		t.Fatalf("default Coroot tools = %v, want only coroot.list_services", defaultNames)
+	}
+	rcaNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"coroot_rca"}}))
+	for _, want := range []string{"coroot.list_services", "coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "coroot.slo_status"} {
+		if !containsCorootToolName(rcaNames, want) {
+			t.Fatalf("coroot_rca tools = %v, want %s", rcaNames, want)
+		}
+	}
+	for _, forbidden := range []string{"coroot.alert_rules", "coroot.incident_timeline"} {
+		if containsCorootToolName(rcaNames, forbidden) {
+			t.Fatalf("coroot_rca tools = %v, should not include %s", rcaNames, forbidden)
+		}
+	}
+	incidentNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"coroot_incident"}}))
+	for _, want := range []string{"coroot.list_services", "coroot.alert_rules", "coroot.incident_timeline"} {
+		if !containsCorootToolName(incidentNames, want) {
+			t.Fatalf("coroot_incident tools = %v, want %s", incidentNames, want)
+		}
+	}
+}
+
+func corootToolNames(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
+}
+
+func containsCorootToolName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}

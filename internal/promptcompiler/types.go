@@ -179,6 +179,7 @@ type ToolPromptSet struct {
 type ToolPromptDelta struct {
 	Content                string
 	NewlyAvailable         []string
+	NewlyAvailablePacks    []string
 	TemporarilyUnavailable []string
 	ApprovalRequired       []string
 }
