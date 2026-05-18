@@ -1242,7 +1242,7 @@ Result 2026-05-18: committed `c1f1006 docs: add host agent install acceptance gu
 - Read: `.data/runner/run-state.json`
 - Read: `.data/runner/run-records.jsonl`
 
-- [ ] **Step 13.1：跑后端测试集合**
+- [x] **Step 13.1：跑后端测试集合**
 
 Run:
 
@@ -1253,7 +1253,12 @@ go test -count=1 ./internal/appui ./internal/server ./internal/store ./internal/
 
 Expected: PASS。
 
-- [ ] **Step 13.2：跑前端测试集合**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui ./internal/server ./internal/store ./internal/terminal ./internal/runnerembed ./internal/hostagent`: PASS
+- `(cd pkg/runner && go test -count=1 ./engine ./server/app ./server/service ./workflow/visual ./agent)`: PASS
+
+- [x] **Step 13.2：跑前端测试集合**
 
 Run:
 
@@ -1264,6 +1269,11 @@ npm run test:e2e -- hosts-management-snapshot.spec.js
 ```
 
 Expected: PASS。
+
+Result 2026-05-18:
+
+- `cd web && npm test -- --run hostListViewModel settingsApi`: PASS, 10 tests
+- `cd web && npm run test:ui -- hosts-management-snapshot.spec.js`: PASS, 1 Playwright Chromium test. The documented `test:e2e` script is not present in `web/package.json`.
 
 - [ ] **Step 13.3：真实 Ubuntu 验收**
 
@@ -1283,6 +1293,8 @@ Expected:
 - HostRecord becomes `online` and `installState=installed`.
 - Terminal opens remote SSH shell.
 
+Result 2026-05-18: BLOCKED by target OS mismatch. The provided real host `120.77.239.90` reports `ID=alinux` / `NAME="Alibaba Cloud Linux"` in `/etc/os-release`, while the supported Linux target for this milestone is Ubuntu only. The UI flow was executed with Playwright against the real host and correctly failed at `detect-platform`; see Step 13.5 evidence.
+
 - [ ] **Step 13.4：真实 macOS arm64 验收**
 
 Run through UI or API with macOS host:
@@ -1300,6 +1312,8 @@ Expected:
 - HostRecord becomes `online` and `installState=installed`.
 - Terminal opens remote SSH shell.
 
+Result 2026-05-18: NOT RUN. No macOS arm64 host credentials were provided in this session.
+
 - [ ] **Step 13.5：失败路径验收**
 
 Run three negative cases:
@@ -1310,7 +1324,9 @@ Run three negative cases:
 
 Expected: HostRecord remains not online, `lastError` is redacted, `installStep` points to failing step, Runner Run Record exists.
 
-- [ ] **Step 13.6：最终安全扫描**
+Result 2026-05-18: unsupported platform path PASS on the provided real host. Playwright submitted host `ubuntu-smoke` through the real `/settings/hosts` UI; Runner run `run-1779114475026830000-e4000b179b26` failed at `detect-platform`; HostRecord became `status=install_failed`, `installState=unsupported_platform`, `installStep=detect-platform`. Screenshot saved at `test-results/host-agent-e2e/unsupported-platform-hosts-page.png`. Bad credential and closed-port negative cases were not run yet.
+
+- [x] **Step 13.6：最终安全扫描**
 
 Run:
 
@@ -1319,6 +1335,8 @@ rg -n 'BEGIN OPENSSH PRIVATE KEY|BEGIN RSA PRIVATE KEY|password=|Authorization: 
 ```
 
 Expected: no matches for real secrets. Test fixtures may contain dummy strings only when clearly named dummy/example.
+
+Result 2026-05-18: scan completed. Matches were existing dummy/test redaction fixtures, scanner documentation lines, and redaction marker constants; no real SSH private key, host password, or bearer token was reported by this pattern.
 
 - [ ] **Step 13.7：最终提交或 PR 准备**
 
