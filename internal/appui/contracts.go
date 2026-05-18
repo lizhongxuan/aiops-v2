@@ -458,24 +458,30 @@ type AuthSummary struct {
 }
 
 type HostSummary struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Status          string            `json:"status"`
-	Kind            string            `json:"kind,omitempty"`
-	Address         string            `json:"address,omitempty"`
-	Transport       string            `json:"transport,omitempty"`
-	Executable      bool              `json:"executable,omitempty"`
-	TerminalCapable bool              `json:"terminalCapable,omitempty"`
-	OS              string            `json:"os,omitempty"`
-	Arch            string            `json:"arch,omitempty"`
-	AgentVersion    string            `json:"agentVersion,omitempty"`
-	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	LastError       string            `json:"lastError,omitempty"`
-	SSHUser         string            `json:"sshUser,omitempty"`
-	SSHPort         int               `json:"sshPort,omitempty"`
-	InstallState    string            `json:"installState,omitempty"`
-	ControlMode     string            `json:"controlMode,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Status            string            `json:"status"`
+	Kind              string            `json:"kind,omitempty"`
+	Address           string            `json:"address,omitempty"`
+	Transport         string            `json:"transport,omitempty"`
+	Executable        bool              `json:"executable,omitempty"`
+	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
+	OS                string            `json:"os,omitempty"`
+	Arch              string            `json:"arch,omitempty"`
+	AgentVersion      string            `json:"agentVersion,omitempty"`
+	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	LastError         string            `json:"lastError,omitempty"`
+	SSHUser           string            `json:"sshUser,omitempty"`
+	SSHPort           int               `json:"sshPort,omitempty"`
+	SSHCredentialRef  string            `json:"sshCredentialRef,omitempty"`
+	AgentURL          string            `json:"agentUrl,omitempty"`
+	AgentTokenRef     string            `json:"agentTokenRef,omitempty"`
+	InstallState      string            `json:"installState,omitempty"`
+	InstallRunID      string            `json:"installRunId,omitempty"`
+	InstallWorkflowID string            `json:"installWorkflowId,omitempty"`
+	InstallStep       string            `json:"installStep,omitempty"`
+	ControlMode       string            `json:"controlMode,omitempty"`
 }
 
 type CardView struct {
@@ -676,18 +682,22 @@ type LLMConfigUpdateResult struct {
 }
 
 type HostUpsert struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Address       string            `json:"address"`
-	SSHUser       string            `json:"sshUser"`
-	SSHPort       int               `json:"sshPort"`
-	Labels        map[string]string `json:"labels"`
-	InstallViaSSH bool              `json:"installViaSsh"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Address          string            `json:"address"`
+	SSHUser          string            `json:"sshUser"`
+	SSHPort          int               `json:"sshPort"`
+	SSHCredentialRef string            `json:"sshCredentialRef"`
+	AgentVersion     string            `json:"agentVersion"`
+	Labels           map[string]string `json:"labels"`
+	InstallViaSSH    bool              `json:"installViaSsh"`
 }
 
 type HostMutationResponse struct {
-	Host  HostSummary   `json:"host"`
-	Items []HostSummary `json:"items,omitempty"`
+	Host              HostSummary   `json:"host"`
+	Items             []HostSummary `json:"items,omitempty"`
+	InstallRunID      string        `json:"installRunId,omitempty"`
+	InstallWorkflowID string        `json:"installWorkflowId,omitempty"`
 }
 
 type MCPServerUpsert struct {

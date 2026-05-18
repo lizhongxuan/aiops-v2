@@ -167,7 +167,7 @@ Result 2026-05-18: current branch is `manual_0513`; it is not `main` or `master`
 - Test: `internal/appui/host_service_test.go`
 - Test: `internal/store/store_property_test.go`
 
-- [ ] **Step 1.1：先写 HostService 契约测试**
+- [x] **Step 1.1：先写 HostService 契约测试**
 
 在 `internal/appui/host_service_test.go` 增加测试，断言创建 SSH 安装主机会保存凭据引用、agent version 和安装字段：
 
@@ -209,7 +209,9 @@ go test -count=1 ./internal/appui -run TestHostServiceCreateHostStoresSSHInstall
 
 Expected: FAIL because `HostUpsert` and `HostSummary` do not yet expose the new fields.
 
-- [ ] **Step 1.2：扩展 HostRecord 和 appui contracts**
+Result 2026-05-18: RED confirmed; compile failed because `HostUpsert` and `HostSummary` did not expose `SSHCredentialRef` or `AgentVersion`.
+
+- [x] **Step 1.2：扩展 HostRecord 和 appui contracts**
 
 Implement:
 
@@ -238,11 +240,11 @@ InstallRunID      string `json:"installRunId,omitempty"`
 InstallWorkflowID string `json:"installWorkflowId,omitempty"`
 ```
 
-- [ ] **Step 1.3：更新 HostService 映射和默认值**
+- [x] **Step 1.3：更新 HostService 映射和默认值**
 
 在 `buildNewHostRecord()` 和 `mapHostRecord()` 中保存并返回新增字段。`installViaSsh=true` 且 `agentVersion` 为空时使用 `v0.1.0`。
 
-- [ ] **Step 1.4：跑契约测试**
+- [x] **Step 1.4：跑契约测试**
 
 Run:
 
@@ -253,7 +255,12 @@ go test -count=1 ./internal/store
 
 Expected: PASS。
 
-- [ ] **Step 1.5：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/appui -run 'TestHostServiceCrudAndSelect|TestHostServiceCreateHostStoresSSHInstallContract'`: PASS
+- `go test -count=1 ./internal/store`: PASS
+
+- [x] **Step 1.5：提交**
 
 Run:
 
