@@ -1064,7 +1064,7 @@ Expected: PASS。
 
 Result 2026-05-18: `go test -count=1 ./internal/terminal ./internal/appui -run 'TestSSHCommandFactory|TestTerminalService'`: PASS.
 
-- [ ] **Step 10.5：提交**
+- [x] **Step 10.5：提交**
 
 Run:
 
@@ -1072,6 +1072,8 @@ Run:
 git add internal/terminal/ssh_command.go internal/terminal/ssh_command_test.go internal/appui/terminal_service.go internal/appui/terminal_service_test.go cmd/ai-server/main.go
 git commit -m "feat: add ssh backed terminal sessions"
 ```
+
+Result 2026-05-18: committed `4f68429 feat: add ssh backed terminal sessions`. The runtime wiring is through `appui.NewServices(..., WithCredentialResolver(...))`, so `cmd/ai-server/main.go` did not need a separate code change.
 
 ## 13. Task 11：更新主机管理前端
 
