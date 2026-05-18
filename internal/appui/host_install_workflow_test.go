@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -65,6 +66,25 @@ func TestBuiltinHostAgentInstallWorkflowHasRequiredStepsInOrder(t *testing.T) {
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("action steps = %v, want %v", got, want)
+	}
+}
+
+func TestBuiltinHostAgentInstallWorkflowScriptsParseWithBash(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	graph := BuiltinHostAgentInstallGraph()
+	for _, node := range graph.Nodes {
+		if node.Type != visual.NodeTypeAction || node.Step == nil {
+			continue
+		}
+		script, _ := node.Step.Args["script"].(string)
+		cmd := exec.Command(bashPath, "-n")
+		cmd.Stdin = strings.NewReader(script)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("script for node %q does not parse: %v\n%s", node.ID, err, output)
+		}
 	}
 }
 

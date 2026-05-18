@@ -3,6 +3,8 @@ package appui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"aiops-v2/internal/store"
@@ -123,10 +125,34 @@ func hostInstallVars(host store.HostRecord) map[string]any {
 		"ssh_port":           host.SSHPort,
 		"ssh_credential_ref": host.SSHCredentialRef,
 		"agent_version":      host.AgentVersion,
-		"agent_server_url":   firstNonEmpty(host.AgentURL, "http://127.0.0.1:18080"),
+		"agent_server_url":   firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080"),
+		"aiops_api_url":      firstNonEmpty(os.Getenv("AIOPS_API_URL"), os.Getenv("AIOPS_AGENT_SERVER_URL"), "http://127.0.0.1:18080"),
 		"agent_listen_port":  7072,
+		"secret_dir":         defaultHostInstallSecretDir(),
+		"repo_root":          defaultHostInstallRepoRoot(),
 		"labels":             cloneStringMap(host.Labels),
 	}
+}
+
+func defaultHostInstallSecretDir() string {
+	if value := strings.TrimSpace(os.Getenv("AIOPS_SECRET_DIR")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("AIOPS_DATA_DIR")); value != "" {
+		return filepath.Join(value, "secrets")
+	}
+	return filepath.Join(".data", "secrets")
+}
+
+func defaultHostInstallRepoRoot() string {
+	if value := strings.TrimSpace(os.Getenv("AIOPS_REPO_ROOT")); value != "" {
+		return value
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return cwd
 }
 
 func hostInstallIdempotencyKey(hostID, agentVersion string) string {

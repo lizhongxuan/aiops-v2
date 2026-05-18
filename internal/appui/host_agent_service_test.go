@@ -97,6 +97,36 @@ func TestHostAgentServiceHeartbeatUpdatesLastHeartbeat(t *testing.T) {
 	}
 }
 
+func TestHostAgentServiceRegisterBindsFirstInstallToken(t *testing.T) {
+	token := "generated-on-target"
+	repo := newHostRepoStub(store.HostRecord{
+		ID:           "host-a",
+		Name:         "host-a",
+		Status:       "installing",
+		InstallState: "running",
+	})
+	service := NewHostAgentService(repo)
+
+	if _, err := service.Register(context.Background(), HostAgentRegisterRequest{
+		HostID:       "host-a",
+		OS:           "linux",
+		Arch:         "amd64",
+		AgentVersion: "v0.1.0",
+	}, token); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	saved, err := repo.GetHost("host-a")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if saved.AgentTokenRef != hostAgentTokenHashRef(token) {
+		t.Fatalf("AgentTokenRef = %q, want first token hash", saved.AgentTokenRef)
+	}
+	if _, err := service.Heartbeat(context.Background(), HostAgentHeartbeatRequest{HostID: "host-a"}, "wrong-token"); err == nil {
+		t.Fatalf("Heartbeat() error = nil, want bound token rejection")
+	}
+}
+
 func TestHostAgentServiceRejectsWrongToken(t *testing.T) {
 	token := "expected-agent-token"
 	repo := newHostRepoStub(store.HostRecord{

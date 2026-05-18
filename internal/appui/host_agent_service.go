@@ -9,6 +9,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/store"
 )
 
 var ErrHostAgentUnauthorized = errors.New("host-agent token rejected")
@@ -33,10 +35,19 @@ func (s *defaultHostAgentService) Register(ctx context.Context, req HostAgentReg
 	if err != nil {
 		return HostAgentRegisterResponse{}, err
 	}
-	if err := verifyHostAgentToken(host.AgentTokenRef, token); err != nil {
-		return HostAgentRegisterResponse{}, err
+	bindToken := shouldBindHostAgentToken(*host, token)
+	if !bindToken {
+		if err := verifyHostAgentToken(host.AgentTokenRef, token); err != nil {
+			return HostAgentRegisterResponse{}, err
+		}
+	}
+	if bindToken && strings.TrimSpace(token) == "" {
+		return HostAgentRegisterResponse{}, ErrHostAgentUnauthorized
 	}
 	next := cloneHostRecord(*host)
+	if bindToken {
+		next.AgentTokenRef = hostAgentTokenHashRef(token)
+	}
 	if name := strings.TrimSpace(req.Hostname); name != "" && strings.TrimSpace(next.Name) == "" {
 		next.Name = name
 	}
@@ -83,10 +94,19 @@ func (s *defaultHostAgentService) Heartbeat(ctx context.Context, req HostAgentHe
 	if err != nil {
 		return HostAgentHeartbeatResponse{}, err
 	}
-	if err := verifyHostAgentToken(host.AgentTokenRef, token); err != nil {
-		return HostAgentHeartbeatResponse{}, err
+	bindToken := shouldBindHostAgentToken(*host, token)
+	if !bindToken {
+		if err := verifyHostAgentToken(host.AgentTokenRef, token); err != nil {
+			return HostAgentHeartbeatResponse{}, err
+		}
+	}
+	if bindToken && strings.TrimSpace(token) == "" {
+		return HostAgentHeartbeatResponse{}, ErrHostAgentUnauthorized
 	}
 	next := cloneHostRecord(*host)
+	if bindToken {
+		next.AgentTokenRef = hostAgentTokenHashRef(token)
+	}
 	next.Status = "online"
 	next.LastHeartbeat = isoStamp(time.Now().UTC())
 	next.LastError = ""
@@ -131,6 +151,15 @@ func verifyHostAgentToken(ref, token string) error {
 		return ErrHostAgentUnauthorized
 	}
 	return fmt.Errorf("unsupported host-agent token ref")
+}
+
+func shouldBindHostAgentToken(host store.HostRecord, token string) bool {
+	if strings.TrimSpace(host.AgentTokenRef) != "" || strings.TrimSpace(token) == "" {
+		return false
+	}
+	status := strings.TrimSpace(host.Status)
+	installState := strings.TrimSpace(host.InstallState)
+	return status == "installing" || installState == "pending_install" || installState == "running"
 }
 
 func hostAgentURL(hostAddress, listenAddress string) string {
