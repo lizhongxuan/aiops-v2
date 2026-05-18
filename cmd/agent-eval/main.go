@@ -25,7 +25,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	var baselinePath string
 	var saveBaselinePath string
 	var priority string
+	var runPhase string
 	var serverURL string
+	var repetitions int
 	var pollTimeout time.Duration
 	var pollInterval time.Duration
 
@@ -38,6 +40,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	flags.StringVar(&baselinePath, "baseline", "", "optional baseline report.json to compare against")
 	flags.StringVar(&saveBaselinePath, "save-baseline", "", "optional path to write the current report as a baseline")
 	flags.StringVar(&priority, "priority", "", "optional case priority filter: P0, P1, or P2")
+	flags.StringVar(&runPhase, "run-phase", "", "optional run phase metadata: baseline, candidate, or unknown")
+	flags.IntVar(&repetitions, "repetitions", 1, "number of times to run each case")
 	flags.StringVar(&serverURL, "server-url", "http://localhost:8080", "base URL for -agent server")
 	flags.DurationVar(&pollTimeout, "poll-timeout", 2*time.Minute, "maximum time to poll /api/v1/state for -agent server")
 	flags.DurationVar(&pollInterval, "poll-interval", 500*time.Millisecond, "poll interval for /api/v1/state with -agent server")
@@ -76,7 +80,10 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		Agent:          agent,
 		AgentName:      agentName,
 		RunID:          runID,
+		RunPhase:       runPhase,
 		Priority:       priority,
+		Repetitions:    repetitions,
+		Metadata:       evalRunMetadata(),
 		BaselineReport: baseline,
 	}.Run(ctx)
 	if err != nil {
@@ -104,14 +111,22 @@ func buildAgent(name string, serverConfig eval.ServerAgentConfig) (eval.Agent, e
 
 func printReportTo(w io.Writer, report eval.Report) {
 	fmt.Fprintf(w, "eval run: %s\n", report.RunID)
+	if report.RunPhase != "" {
+		fmt.Fprintf(w, "phase: %s\n", report.RunPhase)
+	}
 	fmt.Fprintf(w, "output: %s\n", report.OutputDir)
-	fmt.Fprintf(w, "summary: %d/%d passed, avg score %.2f\n", report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore)
+	fmt.Fprintf(w, "summary: %d/%d passed, avg score %.2f, lowest-score avg %.2f, min %.2f\n",
+		report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore, report.Summary.LowestScoreAverage, report.Summary.MinScore)
 	for _, c := range report.Cases {
 		status := "PASS"
 		if !c.Passed {
 			status = "FAIL"
 		}
-		fmt.Fprintf(w, "- %s [%s] %.2f (%d/%d checks)\n", c.CaseID, status, c.Score, c.PassedChecks, c.TotalChecks)
+		iterationText := ""
+		if c.Iterations > 1 {
+			iterationText = fmt.Sprintf(" avg %.2f min %.2f iterations=%d", c.AvgScore, c.MinScore, c.Iterations)
+		}
+		fmt.Fprintf(w, "- %s [%s] %.2f%s (%d/%d checks)\n", c.CaseID, status, c.Score, iterationText, c.PassedChecks, c.TotalChecks)
 		if c.Error != "" {
 			fmt.Fprintf(w, "  error: %s\n", c.Error)
 		}
@@ -131,4 +146,12 @@ func printReportTo(w io.Writer, report eval.Report) {
 func printError(stderr io.Writer, err error) int {
 	fmt.Fprintln(stderr, "agent-eval:", err)
 	return 1
+}
+
+func evalRunMetadata() map[string]string {
+	return map[string]string{
+		"AIOPS_DIAGNOSTIC_PROTOCOL":         os.Getenv("AIOPS_DIAGNOSTIC_PROTOCOL"),
+		"AIOPS_DEBUG_MODEL_INPUT_TRACE":     os.Getenv("AIOPS_DEBUG_MODEL_INPUT_TRACE"),
+		"AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR": os.Getenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR"),
+	}
 }

@@ -133,6 +133,55 @@ func TestOpsManualEnhancedContractRoundTrips(t *testing.T) {
 	}
 }
 
+func TestOpsManualDiagnosisProfileRoundTrips(t *testing.T) {
+	manual := OpsManual{
+		ID:     "manual-redis-diagnosis",
+		Title:  "Redis connection diagnosis",
+		Status: ManualStatusVerified,
+		Diagnosis: DiagnosisProfile{
+			ApplicableSymptoms:       []string{"connection_timeout", "ping_failed"},
+			NotApplicableWhen:        []string{"target_instance_unknown"},
+			AllowedEvidenceSources:   []string{"redis-cli", "metrics", "read-only inventory"},
+			RecommendedEvidenceOrder: []string{"confirm scope", "ping", "info", "metrics"},
+			KeyJudgmentRules:         []string{"timeout is a symptom, not a root cause"},
+			CommonMisdiagnoses:       []string{"treating policy_blocked lsof as no listener"},
+			ConfidenceCriteria:       []string{"high requires direct redis evidence and checked refuting evidence"},
+			ConservativeWording:      []string{"evidence is insufficient to confirm a root cause"},
+			ApprovalRequiredActions:  []string{"restart", "config_write"},
+			MinimumRiskNextSteps:     []string{"collect read-only redis INFO"},
+		},
+		DocumentMarkdown: "Redis diagnosis manual",
+	}
+	raw, err := json.Marshal(manual)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"diagnosis",
+		"applicable_symptoms",
+		"allowed_evidence_sources",
+		"recommended_evidence_order",
+		"key_judgment_rules",
+		"common_misdiagnoses",
+		"confidence_criteria",
+		"conservative_wording",
+		"approval_required_actions",
+		"minimum_risk_next_steps",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("json = %s, want field %s", text, want)
+		}
+	}
+	var restored OpsManual
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !contains(restored.Diagnosis.CommonMisdiagnoses, "treating policy_blocked lsof as no listener") {
+		t.Fatalf("restored diagnosis = %#v", restored.Diagnosis)
+	}
+}
+
 func TestPreflightResultContractRoundTrips(t *testing.T) {
 	result := PreflightResult{
 		Status:       PreflightStatusPassed,

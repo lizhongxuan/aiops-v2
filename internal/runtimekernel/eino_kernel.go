@@ -21,6 +21,8 @@ import (
 
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/envcontext"
+	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/permissions"
@@ -455,6 +457,7 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 			Timestamp:       time.Now(),
 		}
 		session.Messages = append(session.Messages, msg)
+		updateRuntimeEnvironmentContext(session, req, msg.Timestamp)
 		snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
 		appendAgentItem(snapshot, newAgentItem(
 			turnID+"-user-message",
@@ -763,6 +766,15 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	resumeInput := resumeInputFromMetadata(req.Metadata)
 	if resumeInput != "" {
 		appendResumeInputMessage(session, resumeInput)
+		updateRuntimeEnvironmentContext(session, TurnRequest{
+			SessionType: session.Type,
+			Mode:        session.Mode,
+			SessionID:   session.ID,
+			TurnID:      req.TurnID,
+			HostID:      session.HostID,
+			Input:       resumeInput,
+			Metadata:    req.Metadata,
+		}, time.Now())
 		k.markSnapshotResuming(session, snapshot, "resume_user_input")
 	} else if toolCall, ok := pendingToolCall(snapshot); ok {
 		if isSessionApprovalResumeDecision(req.Decision) {
@@ -1018,12 +1030,14 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 			Timestamp:       time.Now(),
 		}
 		session.Messages = append(session.Messages, msg)
+		updateRuntimeEnvironmentContext(session, req, msg.Timestamp)
 	}
 	recomputeContextWindow(&session.Context, session.Messages)
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
 	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, req.HostID, req.Metadata, time.Now())
+	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 	if len(preTurnEvent.AdditionalContext) > 0 {
 		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
 	}
@@ -1138,18 +1152,24 @@ func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session
 }
 
 func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
+	flags := featureflag.FromEnv(os.Getenv)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
-		return promptcompiler.CompileContext{
+		return applyRuntimeFeatureFlags(promptcompiler.CompileContext{
 			SessionType:    string(session),
 			Mode:           string(mode),
 			AssembledTools: source.CompileContextWithMetadata(session, mode, metadata),
-		}
+		}, flags)
 	}
 	compileCtx := k.tools.CompileContext(session, mode)
 	if opsManualsOptedOut(metadata) {
 		compileCtx.AssembledTools = filterOpsManualTools(compileCtx.AssembledTools)
 	}
-	return compileCtx
+	return applyRuntimeFeatureFlags(compileCtx, flags)
+}
+
+func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featureflag.Flags) promptcompiler.CompileContext {
+	ctx.DisableDiagnosticProtocol = !flags.DiagnosticProtocol
+	return ctx
 }
 
 func (k *EinoKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
@@ -1196,6 +1216,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		contextMessages := contextState.Messages
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, session.HostID, req.Metadata, time.Now())
+		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		if shouldSwitchToSynthesisOnly(req.Mode, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
@@ -1247,6 +1268,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			VisibleTools:     toolNames(compileCtx.AssembledTools),
 			PromptInputTrace: promptBuild.Trace,
 			PromptInputDiff:  promptInputDiff,
+			DiagnosticTrace:  buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
 		})
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
@@ -2082,6 +2104,38 @@ func enrichCompileContext(
 		Content: "The AIOps UI/API for this session may be served on 127.0.0.1:8080. For service/container changes on server-local, check host ports with lsof before binding and do not bind new workloads to 127.0.0.1:8080 or host port 8080. Choose a free alternate port such as 18080 when exposing test services.",
 	})
 	return compileCtx
+}
+
+func updateRuntimeEnvironmentContext(session *SessionState, req TurnRequest, now time.Time) {
+	if session == nil || strings.TrimSpace(req.Input) == "" {
+		return
+	}
+	session.EnvironmentContext = envcontext.ApplyUserTurn(session.EnvironmentContext, envcontext.UserTurn{
+		SessionID: session.ID,
+		HostID:    firstNonEmpty(strings.TrimSpace(req.HostID), strings.TrimSpace(session.HostID)),
+		Input:     req.Input,
+		Metadata:  req.Metadata,
+		Now:       now,
+	})
+}
+
+func appendRuntimeEnvironmentContextSection(
+	compileCtx promptcompiler.CompileContext,
+	session *SessionState,
+) promptcompiler.CompileContext {
+	if session == nil || runtimeEnvironmentContextEmpty(session.EnvironmentContext) {
+		return compileCtx
+	}
+	section, ok := envcontext.BuildRuntimeEnvironmentSection(session.EnvironmentContext)
+	if !ok {
+		return compileCtx
+	}
+	compileCtx.ExtraSections = append(compileCtx.ExtraSections, section)
+	return compileCtx
+}
+
+func runtimeEnvironmentContextEmpty(state envcontext.State) bool {
+	return state.LastIntent == "" && state.CurrentFocus == nil && state.ManualContext == nil
 }
 
 func sessionBindingPromptSection(metadata map[string]string) string {

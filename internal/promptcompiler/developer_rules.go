@@ -41,6 +41,7 @@ func developerInstructionSections(ctx CompileContext) []string {
 		{title: "Planning and Status Tracking", lines: developerPlanningLines(ctx)},
 		{title: "Responsiveness", lines: developerResponsivenessLines()},
 		{title: "Evidence and Inference", lines: developerEvidenceLines(ctx)},
+		{title: "Diagnostic Protocol", lines: developerDiagnosticProtocolLines(ctx)},
 		{title: "AIOps Investigation Loop", lines: developerAIOpsInvestigationLines(ctx)},
 		{title: "Tool Use Boundaries", lines: developerToolUseBoundaryLines(ctx)},
 		{title: "Risk and Approval Boundaries", lines: developerRiskBoundaryLines(ctx)},
@@ -57,6 +58,13 @@ func developerInstructionSections(ctx CompileContext) []string {
 		lines = append(lines, renderDeveloperSection(section))
 	}
 	return lines
+}
+
+func developerDiagnosticProtocolLines(ctx CompileContext) []string {
+	if ctx.DisableDiagnosticProtocol {
+		return nil
+	}
+	return diagnosticProtocolLines()
 }
 
 func renderDeveloperSection(section developerSection) string {

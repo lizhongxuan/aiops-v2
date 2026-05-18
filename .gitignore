@@ -8,3 +8,9 @@ deploy/k8s/*
 !/docs/
 docs/*
 !/docs/deploy-docker-k8s.zh.md
+!/docs/2026-05-18-aiops-v2-diagnosis-accuracy-*.zh.md
+!/docs/superpowers/
+docs/superpowers/*
+!/docs/superpowers/plans/
+docs/superpowers/plans/*
+!/docs/superpowers/plans/2026-05-18-aiops-v2-diagnosis-accuracy-implementation-todo.zh.md

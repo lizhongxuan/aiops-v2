@@ -17,6 +17,7 @@ func cloneManual(in OpsManual) OpsManual {
 	out.RunnableConditions.RequiredParams = cloneStrings(in.RunnableConditions.RequiredParams)
 	out.RunnableConditions.AllowedEnvironments = cloneStrings(in.RunnableConditions.AllowedEnvironments)
 	out.PreflightProbe.RequiredOutputs = cloneStrings(in.PreflightProbe.RequiredOutputs)
+	out.Diagnosis = cloneDiagnosisProfile(in.Diagnosis)
 	out.RiskPolicy.ApprovalRequiredWhen = cloneStrings(in.RiskPolicy.ApprovalRequiredWhen)
 	out.FallbackGuide.Steps = cloneStrings(in.FallbackGuide.Steps)
 	out.ParameterRules = cloneParameterRules(in.ParameterRules)
@@ -159,6 +160,21 @@ func cloneRetrievalProfile(in RetrievalProfile) RetrievalProfile {
 	out.Aliases = cloneStringSliceMap(in.Aliases)
 	out.Keywords = cloneStrings(in.Keywords)
 	out.NegativeKeywords = cloneStrings(in.NegativeKeywords)
+	return out
+}
+
+func cloneDiagnosisProfile(in DiagnosisProfile) DiagnosisProfile {
+	out := in
+	out.ApplicableSymptoms = cloneStrings(in.ApplicableSymptoms)
+	out.NotApplicableWhen = cloneStrings(in.NotApplicableWhen)
+	out.AllowedEvidenceSources = cloneStrings(in.AllowedEvidenceSources)
+	out.RecommendedEvidenceOrder = cloneStrings(in.RecommendedEvidenceOrder)
+	out.KeyJudgmentRules = cloneStrings(in.KeyJudgmentRules)
+	out.CommonMisdiagnoses = cloneStrings(in.CommonMisdiagnoses)
+	out.ConfidenceCriteria = cloneStrings(in.ConfidenceCriteria)
+	out.ConservativeWording = cloneStrings(in.ConservativeWording)
+	out.ApprovalRequiredActions = cloneStrings(in.ApprovalRequiredActions)
+	out.MinimumRiskNextSteps = cloneStrings(in.MinimumRiskNextSteps)
 	return out
 }
 

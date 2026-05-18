@@ -34,6 +34,42 @@ func TestResolveOpsManualParamsAutoResolvesSingleRedis(t *testing.T) {
 	}
 }
 
+func TestResolveOpsManualParamsDoesNotUseDiagnosisProfileAsParamDefaults(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := redisParamManual()
+	manual.Diagnosis = DiagnosisProfile{
+		ApplicableSymptoms:       []string{"connection_timeout"},
+		AllowedEvidenceSources:   []string{"redis-cli"},
+		RecommendedEvidenceOrder: []string{"scope", "ping", "info"},
+		KeyJudgmentRules:         []string{"default examples are not environment facts"},
+		ConfidenceCriteria:       []string{"high requires direct evidence"},
+		MinimumRiskNextSteps:     []string{"ask for target instance"},
+	}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(repo, WithResourceDiscovery(fakeResourceDiscovery{}))
+	result, err := service.ResolveOpsManualParams(ResolveOpsManualParamsRequest{
+		RequestText: "排查 Redis",
+		ManualID:    manual.ID,
+		Metadata:    map[string]any{"selected_host": "server-local"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ParamResolutionNeedUserInput {
+		t.Fatalf("status = %q result=%#v, want need_user_input", result.Status, result)
+	}
+	for _, param := range result.ResolvedParams {
+		if param.Source == "manual_default" || param.Source == "manual_diagnosis" {
+			t.Fatalf("resolved params = %#v, diagnosis profile must not create resolved params", result.ResolvedParams)
+		}
+	}
+	if len(result.Fields) != 1 || result.Fields[0].ID != "target_instance" {
+		t.Fatalf("fields = %#v, want only target_instance from real requirement", result.Fields)
+	}
+}
+
 func TestResolveOpsManualParamsUsesInjectedDiscoveryWhenMetadataMissing(t *testing.T) {
 	repo := NewMemoryStore()
 	manual := redisParamManual()

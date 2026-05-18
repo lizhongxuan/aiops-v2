@@ -142,6 +142,40 @@ func TestRunCLIFiltersCasesByPriority(t *testing.T) {
 	}
 }
 
+func TestRunCLIRecordsRunPhaseRepetitionsAndFlagMetadata(t *testing.T) {
+	casesDir := t.TempDir()
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLICase(t, casesDir, "cli-repeat")
+	t.Setenv("AIOPS_DIAGNOSTIC_PROTOCOL", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesDir,
+		"-out", outDir,
+		"-run-phase", "candidate",
+		"-repetitions", "2",
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "phase: candidate") || !strings.Contains(stdout.String(), "iterations=2") {
+		t.Fatalf("stdout missing phase/repetition details:\n%s", stdout.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if report.RunPhase != "candidate" || report.Repetitions != 2 {
+		t.Fatalf("report run metadata = phase %q reps %d", report.RunPhase, report.Repetitions)
+	}
+	if report.Metadata["AIOPS_DIAGNOSTIC_PROTOCOL"] != "1" || report.Metadata["AIOPS_DEBUG_MODEL_INPUT_TRACE"] != "1" {
+		t.Fatalf("report flag metadata missing: %#v", report.Metadata)
+	}
+}
+
 func writeCLIRawCase(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -53,6 +53,69 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 	}
 }
 
+func TestToolPromptReadOnlyFailureHandlingTreatsFailureAsEvidenceState(t *testing.T) {
+	compiler := NewCompiler()
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			readOnlyGovernancePromptTool{
+				meta: tooling.ToolMetadata{
+					Name:        "inspect_metrics",
+					Description: "inspect metrics",
+					RiskLevel:   tooling.ToolRiskLow,
+					Mutating:    false,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	for _, want := range []string{
+		"failure is evidence state, not target state",
+		"missing/blocked evidence",
+		"policy blocked and permission denied do not prove target system state",
+		"non-zero exit requires stderr and exit code interpretation",
+		"empty output does not prove no abnormality",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("read-only tool failure handling missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestToolPromptDestructiveFailureHandlingStopsWithoutBroadeningScope(t *testing.T) {
+	compiler := NewCompiler()
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			governancePromptTool{
+				meta: tooling.ToolMetadata{
+					Name:             "restart_service",
+					Description:      "restart a service",
+					RiskLevel:        tooling.ToolRiskHigh,
+					Mutating:         true,
+					RequiresApproval: true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	for _, want := range []string{
+		"Stop, report the failed mutation",
+		"do not broaden scope",
+		"policy blocked and permission denied do not prove target system state",
+		"non-zero exit requires stderr and exit code interpretation",
+		"empty output does not prove no abnormality",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("destructive tool failure handling missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestToolPromptSetOmitsRemovedOpsTools(t *testing.T) {
 	compiler := NewCompiler()
 	compiled, err := compiler.Compile(CompileContext{
@@ -100,5 +163,32 @@ func (t governancePromptTool) CheckPermissions(context.Context, json.RawMessage)
 	return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 }
 func (t governancePromptTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+	return tooling.ToolResult{}, nil
+}
+
+type readOnlyGovernancePromptTool struct {
+	meta tooling.ToolMetadata
+}
+
+func (t readOnlyGovernancePromptTool) Metadata() tooling.ToolMetadata { return t.meta }
+func (t readOnlyGovernancePromptTool) InputSchema() json.RawMessage   { return nil }
+func (t readOnlyGovernancePromptTool) OutputSchema() json.RawMessage  { return nil }
+func (t readOnlyGovernancePromptTool) Description(json.RawMessage, tooling.DescribeContext) string {
+	return t.meta.Description
+}
+func (t readOnlyGovernancePromptTool) Prompt(tooling.PromptContext) string { return t.meta.Description }
+func (t readOnlyGovernancePromptTool) IsEnabled(tooling.ToolContext) bool  { return true }
+func (t readOnlyGovernancePromptTool) IsReadOnly(json.RawMessage) bool     { return true }
+func (t readOnlyGovernancePromptTool) IsDestructive(json.RawMessage) bool  { return false }
+func (t readOnlyGovernancePromptTool) IsConcurrencySafe(json.RawMessage) bool {
+	return true
+}
+func (t readOnlyGovernancePromptTool) ValidateInput(context.Context, json.RawMessage) error {
+	return nil
+}
+func (t readOnlyGovernancePromptTool) CheckPermissions(context.Context, json.RawMessage) tooling.PermissionDecision {
+	return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+}
+func (t readOnlyGovernancePromptTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 	return tooling.ToolResult{}, nil
 }

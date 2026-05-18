@@ -11,6 +11,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/promptinput"
 )
 
@@ -43,6 +44,7 @@ type Request struct {
 	ModelInput        []*schema.Message
 	PromptInputTrace  promptinput.PromptInputTrace
 	PromptInputDiff   *promptinput.TraceDiff
+	DiagnosticTrace   diagnostics.DiagnosticTrace
 }
 
 type payload struct {
@@ -60,6 +62,7 @@ type payload struct {
 	Prompt            Prompt                       `json:"prompt"`
 	ModelInput        []traceMessage               `json:"modelInput"`
 	PromptInputTrace  promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
+	DiagnosticTrace   *diagnostics.DiagnosticTrace `json:"diagnosticTrace,omitempty"`
 }
 
 type traceMessage struct {
@@ -131,13 +134,37 @@ func buildPayload(req Request) payload {
 		TurnID:            strings.TrimSpace(req.TurnID),
 		Iteration:         req.Iteration,
 		CaseID:            firstNonEmpty(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]),
-		Metadata:          copyStringMap(req.Metadata),
+		Metadata:          redactStringMap(copyStringMap(req.Metadata)),
 		VisibleTools:      append([]string(nil), req.VisibleTools...),
 		PromptFingerprint: copyStringMap(req.PromptFingerprint),
-		Prompt:            req.Prompt,
+		Prompt:            redactPrompt(req.Prompt),
 		ModelInput:        traceMessages(req.ModelInput),
-		PromptInputTrace:  req.PromptInputTrace,
+		PromptInputTrace:  redactPromptInputTrace(req.PromptInputTrace),
+		DiagnosticTrace:   diagnosticTracePayload(req.DiagnosticTrace),
 	}
+}
+
+func diagnosticTracePayload(trace diagnostics.DiagnosticTrace) *diagnostics.DiagnosticTrace {
+	if diagnosticTraceEmpty(trace) {
+		return nil
+	}
+	redacted := diagnostics.RedactTrace(trace)
+	return &redacted
+}
+
+func diagnosticTraceEmpty(trace diagnostics.DiagnosticTrace) bool {
+	return strings.TrimSpace(trace.TurnID) == "" &&
+		strings.TrimSpace(trace.ScopeHash) == "" &&
+		strings.TrimSpace(trace.ScopeSummary) == "" &&
+		len(trace.Hypotheses) == 0 &&
+		len(trace.ObservedEvidence) == 0 &&
+		len(trace.RefutingEvidence) == 0 &&
+		len(trace.MissingEvidence) == 0 &&
+		len(trace.ToolFailures) == 0 &&
+		strings.TrimSpace(trace.ManualBindingID) == "" &&
+		trace.Confidence == "" &&
+		strings.TrimSpace(trace.ConfidenceReason) == "" &&
+		!trace.RequiresApproval
 }
 
 func traceMessages(messages []*schema.Message) []traceMessage {
@@ -150,10 +177,10 @@ func traceMessages(messages []*schema.Message) []traceMessage {
 			Index:        i,
 			ProviderRole: string(msg.Role),
 			Name:         msg.Name,
-			Content:      msg.Content,
+			Content:      diagnostics.RedactSensitiveText(msg.Content),
 			ToolCallID:   msg.ToolCallID,
 			ToolName:     msg.ToolName,
-			ToolCalls:    append([]schema.ToolCall(nil), msg.ToolCalls...),
+			ToolCalls:    redactToolCalls(msg.ToolCalls),
 		}
 		if msg.Extra != nil {
 			if role, ok := msg.Extra["semantic_role"].(string); ok {
@@ -164,6 +191,55 @@ func traceMessages(messages []*schema.Message) []traceMessage {
 			}
 		}
 		out = append(out, item)
+	}
+	return out
+}
+
+func redactPrompt(prompt Prompt) Prompt {
+	return Prompt{
+		StableHash: prompt.StableHash,
+		Stable:     diagnostics.RedactSensitiveText(prompt.Stable),
+		Dynamic:    diagnostics.RedactSensitiveText(prompt.Dynamic),
+		System:     diagnostics.RedactSensitiveText(prompt.System),
+		Developer:  diagnostics.RedactSensitiveText(prompt.Developer),
+		Tools:      diagnostics.RedactSensitiveText(prompt.Tools),
+		Policy:     diagnostics.RedactSensitiveText(prompt.Policy),
+	}
+}
+
+func redactToolCalls(calls []schema.ToolCall) []schema.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		call.Function.Name = diagnostics.RedactSensitiveText(call.Function.Name)
+		call.Function.Arguments = diagnostics.RedactSensitiveText(call.Function.Arguments)
+		out = append(out, call)
+	}
+	return out
+}
+
+func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.PromptInputTrace {
+	if len(trace.Items) == 0 {
+		return promptinput.PromptInputTrace{}
+	}
+	out := promptinput.PromptInputTrace{Items: make([]promptinput.TraceItem, 0, len(trace.Items))}
+	for _, item := range trace.Items {
+		item.ID = diagnostics.RedactSensitiveText(item.ID)
+		item.Content = diagnostics.RedactSensitiveText(item.Content)
+		out.Items = append(out.Items, item)
+	}
+	return out
+}
+
+func redactStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = diagnostics.RedactSensitiveText(value)
 	}
 	return out
 }
@@ -236,7 +312,51 @@ func renderMarkdown(payload payload) string {
 		traceMarkdown = strings.Replace(traceMarkdown, "# Prompt Input Trace", "## Prompt Input Trace", 1)
 		fmt.Fprintf(&b, "\n%s", traceMarkdown)
 	}
+	if payload.DiagnosticTrace != nil {
+		fmt.Fprintf(&b, "\n%s", renderDiagnosticTraceMarkdown(*payload.DiagnosticTrace))
+	}
 	return b.String()
+}
+
+func renderDiagnosticTraceMarkdown(trace diagnostics.DiagnosticTrace) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n## Diagnostic Trace\n\n")
+	if trace.ScopeHash != "" || trace.ScopeSummary != "" {
+		fmt.Fprintf(&b, "- Scope: `%s` %s\n", trace.ScopeHash, trace.ScopeSummary)
+	}
+	if trace.ManualBindingID != "" {
+		fmt.Fprintf(&b, "- Manual binding: `%s`\n", trace.ManualBindingID)
+	}
+	if trace.Confidence != "" || trace.ConfidenceReason != "" {
+		fmt.Fprintf(&b, "- Confidence: `%s` %s\n", trace.Confidence, trace.ConfidenceReason)
+	}
+	if trace.RequiresApproval {
+		fmt.Fprintf(&b, "- Requires approval: `true`\n")
+	}
+	writeMarkdownList(&b, "Hypotheses", trace.Hypotheses)
+	writeMarkdownList(&b, "Observed Evidence", trace.ObservedEvidence)
+	writeMarkdownList(&b, "Refuting Evidence", trace.RefutingEvidence)
+	writeMarkdownList(&b, "Missing Evidence", trace.MissingEvidence)
+	if len(trace.ToolFailures) > 0 {
+		fmt.Fprintf(&b, "\n### Tool Failures\n")
+		for _, failure := range trace.ToolFailures {
+			fmt.Fprintf(&b, "- `%s` `%s` critical=%t: %s\n", failure.ToolName, failure.Semantic, failure.Critical, failure.Detail)
+		}
+	}
+	return b.String()
+}
+
+func writeMarkdownList(b *strings.Builder, title string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n### %s\n", title)
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		fmt.Fprintf(b, "- %s\n", value)
+	}
 }
 
 func copyStringMap(in map[string]string) map[string]string {

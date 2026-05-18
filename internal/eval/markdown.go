@@ -9,7 +9,14 @@ import (
 func RenderMarkdownReport(report Report) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Eval Report `%s`\n\n", report.RunID)
-	fmt.Fprintf(&b, "- Summary: %d/%d passed, avg score %.2f\n", report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore)
+	fmt.Fprintf(&b, "- Summary: %d/%d passed, avg score %.2f, lowest-score avg %.2f, min %.2f\n",
+		report.Summary.Passed, report.Summary.Total, report.Summary.AvgScore, report.Summary.LowestScoreAverage, report.Summary.MinScore)
+	if report.RunPhase != "" {
+		fmt.Fprintf(&b, "- Run phase: `%s`\n", report.RunPhase)
+	}
+	if report.Repetitions > 1 {
+		fmt.Fprintf(&b, "- Repetitions: `%d`\n", report.Repetitions)
+	}
 	if report.Agent != "" {
 		fmt.Fprintf(&b, "- Agent: `%s`\n", report.Agent)
 	}
@@ -30,7 +37,11 @@ func RenderMarkdownReport(report Report) string {
 		if c.Priority != "" {
 			meta += fmt.Sprintf(" priority=%s", c.Priority)
 		}
-		fmt.Fprintf(&b, "- `%s` %s %.2f (%d/%d checks)%s\n", c.CaseID, status, c.Score, c.PassedChecks, c.TotalChecks, meta)
+		iterationText := ""
+		if c.Iterations > 1 {
+			iterationText = fmt.Sprintf(" avg=%.2f min=%.2f iterations=%d", c.AvgScore, c.MinScore, c.Iterations)
+		}
+		fmt.Fprintf(&b, "- `%s` %s %.2f%s (%d/%d checks)%s\n", c.CaseID, status, c.Score, iterationText, c.PassedChecks, c.TotalChecks, meta)
 		if c.Error != "" {
 			fmt.Fprintf(&b, "  Error: %s\n", c.Error)
 		}

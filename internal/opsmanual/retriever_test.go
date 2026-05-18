@@ -33,6 +33,35 @@ func TestRetrieveManualsRedisTriageNeedsMoreInfo(t *testing.T) {
 	}
 }
 
+func TestRetrieveManualsPreservesDiagnosisProfileAsProcedureAsset(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := redisRcaManual()
+	manual.Diagnosis = DiagnosisProfile{
+		ApplicableSymptoms:       []string{"connection_timeout"},
+		AllowedEvidenceSources:   []string{"redis-cli", "metrics"},
+		RecommendedEvidenceOrder: []string{"scope", "ping", "info"},
+		KeyJudgmentRules:         []string{"command_not_allowed is missing evidence, not target state"},
+		CommonMisdiagnoses:       []string{"using stale docker port after host switch"},
+		ConfidenceCriteria:       []string{"high requires direct support and checked refuting evidence"},
+		ConservativeWording:      []string{"cannot confirm root cause without listener evidence"},
+		MinimumRiskNextSteps:     []string{"collect read-only INFO"},
+	}
+	mustSaveManual(t, repo, manual)
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{Text: "排查 Redis 连接失败"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Manuals) != 1 {
+		t.Fatalf("manuals = %#v, want one", result.Manuals)
+	}
+	got := result.Manuals[0].Manual.Diagnosis
+	if !contains(got.KeyJudgmentRules, "command_not_allowed is missing evidence, not target state") ||
+		!contains(got.CommonMisdiagnoses, "using stale docker port after host switch") {
+		t.Fatalf("diagnosis profile = %#v", got)
+	}
+}
+
 func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	repo := NewMemoryStore()
 	if err := repo.SaveManual(redisMemoryManual()); err != nil {

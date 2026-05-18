@@ -45,6 +45,7 @@ type OpsManual struct {
 	RetrievalProfile   RetrievalProfile         `json:"retrieval_profile,omitempty"`
 	RunnableConditions RunnableConditions       `json:"runnable_conditions,omitempty"`
 	PreflightProbe     PreflightProbe           `json:"preflight_probe,omitempty"`
+	Diagnosis          DiagnosisProfile         `json:"diagnosis,omitempty"`
 	RiskPolicy         RiskPolicy               `json:"risk_policy,omitempty"`
 	FallbackGuide      FallbackGuide            `json:"fallback_guide,omitempty"`
 	Verification       VerificationProfile      `json:"verification,omitempty"`
@@ -81,6 +82,19 @@ type RequiredContext struct {
 	RequiredInputs   []string `json:"required_inputs,omitempty"`
 	RequiredEvidence []string `json:"required_evidence,omitempty"`
 	OptionalEvidence []string `json:"optional_evidence,omitempty"`
+}
+
+type DiagnosisProfile struct {
+	ApplicableSymptoms       []string `json:"applicable_symptoms,omitempty"`
+	NotApplicableWhen        []string `json:"not_applicable_when,omitempty"`
+	AllowedEvidenceSources   []string `json:"allowed_evidence_sources,omitempty"`
+	RecommendedEvidenceOrder []string `json:"recommended_evidence_order,omitempty"`
+	KeyJudgmentRules         []string `json:"key_judgment_rules,omitempty"`
+	CommonMisdiagnoses       []string `json:"common_misdiagnoses,omitempty"`
+	ConfidenceCriteria       []string `json:"confidence_criteria,omitempty"`
+	ConservativeWording      []string `json:"conservative_wording,omitempty"`
+	ApprovalRequiredActions  []string `json:"approval_required_actions,omitempty"`
+	MinimumRiskNextSteps     []string `json:"minimum_risk_next_steps,omitempty"`
 }
 
 type ParameterRule struct {
