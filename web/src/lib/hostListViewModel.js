@@ -22,6 +22,12 @@ function resolveSourceLabel(host) {
 function resolveHeartbeat(host, now) {
   const status = normalizedText(host?.status);
   const installState = normalizedText(host?.installState);
+  if (installState === "unsupported_platform") {
+    return { heartbeat: "unsupported_platform", heartbeatLabel: "不支持的平台", heartbeatTone: "error" };
+  }
+  if (status === "install_failed" || installState === "failed") {
+    return { heartbeat: "install_failed", heartbeatLabel: "安装失败", heartbeatTone: "error" };
+  }
   if (status === "installing" || status === "pending_install" || installState === "pending_install") {
     return { heartbeat: "installing", heartbeatLabel: "待安装", heartbeatTone: "warning" };
   }
@@ -38,6 +44,7 @@ function resolveHeartbeat(host, now) {
 function resolvePrimaryAction(heartbeat) {
   if (heartbeat === "online") return "session";
   if (heartbeat === "installing") return "install";
+  if (heartbeat === "install_failed" || heartbeat === "unsupported_platform") return "retry_install";
   return "reinstall";
 }
 
@@ -65,6 +72,9 @@ function matchesQuery(row, query) {
     row.sourceLabel,
     row.sshLabel,
     row.labelText,
+    row.installRunId,
+    row.installStep,
+    row.lastError,
   ].map(normalizedText).join(" ");
   return haystack.includes(query);
 }
@@ -82,6 +92,14 @@ function matchesFilters(row, filters) {
 function buildSubtitle({ sourceLabel, version, ip, user }) {
   const source = version ? `${sourceLabel} ${version}` : sourceLabel;
   return `${source} · key ${ip}:${user}`;
+}
+
+function fieldText(source, camelKey, snakeKey) {
+  return compactText(source?.[camelKey] || (snakeKey ? source?.[snakeKey] : ""));
+}
+
+function buildInstallDetailLabel({ installStep, installRunId }) {
+  return [installStep, installRunId].filter(Boolean).join(" · ");
 }
 
 function labelPairs(host) {
@@ -122,6 +140,11 @@ export function buildHostListViewModel({
       const sshLabel = canUseSsh ? "可 SSH" : "无密码";
       const heartbeat = resolveHeartbeat(host, now instanceof Date ? now : new Date(now));
       const labels = labelPairs(host).map(([key, value]) => ({ key, value, label: `${key}=${value}` }));
+      const installRunId = fieldText(host, "installRunId", "install_run_id");
+      const installWorkflowId = fieldText(host, "installWorkflowId", "install_workflow_id");
+      const installStep = fieldText(host, "installStep", "install_step");
+      const lastError = fieldText(host, "lastError", "last_error");
+      const canOpenSsh = heartbeat.heartbeat === "online" && Boolean(host.terminalCapable || host.executable);
       return {
         raw: host,
         id,
@@ -138,9 +161,15 @@ export function buildHostListViewModel({
         sessionCount: sessionCountByHost.get(id) || 0,
         sourceLabel,
         sshLabel,
+        installRunId,
+        installWorkflowId,
+        installStep,
+        lastError,
+        installDetailLabel: buildInstallDetailLabel({ installStep, installRunId }),
+        canRetryInstall: heartbeat.heartbeat === "install_failed" || heartbeat.heartbeat === "unsupported_platform",
         labels,
         labelText: labels.map((item) => item.label).join(" "),
-        canOpenSsh: canUseSsh,
+        canOpenSsh,
         primaryAction: resolvePrimaryAction(heartbeat.heartbeat),
       };
     });

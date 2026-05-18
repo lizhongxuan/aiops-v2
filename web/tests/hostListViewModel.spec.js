@@ -164,4 +164,104 @@ describe("hostListViewModel", () => {
     expect(model.canPrev).toBe(true);
     expect(model.canNext).toBe(false);
   });
+
+  it("surfaces install run details and retry action for failed installs", () => {
+    const model = buildHostListViewModel({
+      hosts: [
+        {
+          id: "host-failed",
+          address: "10.0.9.10",
+          sshUser: "deploy",
+          status: "install_failed",
+          installState: "failed",
+          installRunId: "run-install-123",
+          installWorkflowId: "builtin.host-agent-install/v1",
+          installStep: "verify_heartbeat",
+          lastError: "heartbeat timeout",
+          transport: "ssh_bootstrap",
+        },
+      ],
+      now: NOW,
+    });
+
+    expect(model.rows[0]).toMatchObject({
+      id: "host-failed",
+      heartbeat: "install_failed",
+      heartbeatLabel: "安装失败",
+      heartbeatTone: "error",
+      installRunId: "run-install-123",
+      installWorkflowId: "builtin.host-agent-install/v1",
+      installStep: "verify_heartbeat",
+      lastError: "heartbeat timeout",
+      installDetailLabel: "verify_heartbeat · run-install-123",
+      canRetryInstall: true,
+      canOpenSsh: false,
+      primaryAction: "retry_install",
+    });
+  });
+
+  it("marks unsupported platform with a dedicated label", () => {
+    const model = buildHostListViewModel({
+      hosts: [
+        {
+          id: "host-unsupported",
+          address: "10.0.9.11",
+          sshUser: "admin",
+          status: "install_failed",
+          installState: "unsupported_platform",
+          lastError: "freebsd/amd64 is not supported",
+          transport: "ssh_bootstrap",
+        },
+      ],
+      now: NOW,
+    });
+
+    expect(model.rows[0]).toMatchObject({
+      heartbeat: "unsupported_platform",
+      heartbeatLabel: "不支持的平台",
+      heartbeatTone: "error",
+      lastError: "freebsd/amd64 is not supported",
+      canRetryInstall: true,
+      primaryAction: "retry_install",
+    });
+  });
+
+  it("enables terminal only when remote host is online and terminal capable", () => {
+    const hosts = [
+      {
+        id: "online-terminal",
+        address: "10.0.2.15",
+        sshUser: "root",
+        status: "online",
+        transport: "grpc_reverse",
+        lastHeartbeat: minutesAgo(0.2),
+        terminalCapable: true,
+      },
+      {
+        id: "online-no-terminal",
+        address: "10.0.2.16",
+        sshUser: "root",
+        status: "online",
+        transport: "grpc_reverse",
+        lastHeartbeat: minutesAgo(0.2),
+        terminalCapable: false,
+        executable: false,
+      },
+      {
+        id: "manual-installing",
+        address: "10.0.2.17",
+        sshUser: "deploy",
+        sshPort: 22,
+        status: "installing",
+        transport: "ssh_bootstrap",
+        terminalCapable: true,
+      },
+    ];
+
+    expect(buildHostListViewModel({ hosts, now: NOW }).rows.map((row) => [row.id, row.canOpenSsh])).toEqual([
+      ["online-terminal", true],
+      ["online-no-terminal", false],
+      ["manual-installing", false],
+    ]);
+  });
 });

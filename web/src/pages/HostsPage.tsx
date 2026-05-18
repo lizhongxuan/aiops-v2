@@ -1,6 +1,6 @@
-import { Plus, Save, Search, Trash2 } from "lucide-react";
+import { ExternalLink, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,6 +24,7 @@ import {
   fetchHosts,
   fetchSessions,
   fetchTerminalSessions,
+  retryHostInstall,
   type HostRecord,
   updateHost,
 } from "@/pages/settingsApi";
@@ -35,10 +36,24 @@ type HostDraft = {
   sshUser: string;
   sshPort: string;
   transport: string;
+  installViaSsh: boolean;
+  sshCredentialRef: string;
+  agentVersion: string;
   labelsText: string;
 };
 
-const blankDraft: HostDraft = { id: "", name: "", address: "", sshUser: "root", sshPort: "22", transport: "ssh_bootstrap", labelsText: "" };
+const blankDraft: HostDraft = {
+  id: "",
+  name: "",
+  address: "",
+  sshUser: "root",
+  sshPort: "22",
+  transport: "ssh_bootstrap",
+  installViaSsh: true,
+  sshCredentialRef: "",
+  agentVersion: "v0.1.0",
+  labelsText: "",
+};
 type HostTab = "profiles" | "leases" | "reports" | "access";
 type HostReportRow = { reportId: string; hostId: string; status: string; reportedAt: string; summary: string };
 
@@ -118,6 +133,9 @@ export function HostsPage() {
       sshUser: host.sshUser || "root",
       sshPort: String(host.sshPort || "22"),
       transport: host.transport || "ssh_bootstrap",
+      installViaSsh: host.transport === "ssh_bootstrap" || host.status === "installing" || host.installState === "pending_install",
+      sshCredentialRef: host.sshCredentialRef || "",
+      agentVersion: host.agentVersion || "v0.1.0",
       labelsText: formatLabels(host.labels),
     });
     setDialogOpen(true);
@@ -133,6 +151,9 @@ export function HostsPage() {
         sshUser: draft.sshUser,
         sshPort: Number(draft.sshPort) || 22,
         transport: draft.transport,
+        installViaSsh: draft.installViaSsh,
+        sshCredentialRef: draft.sshCredentialRef,
+        agentVersion: draft.agentVersion || "v0.1.0",
         labels: parseLabels(draft.labelsText),
       };
       if (editingHost?.id) {
@@ -157,6 +178,20 @@ export function HostsPage() {
       await load();
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "删除主机失败" });
+    }
+  }
+
+  async function retryInstall(host: HostRecord) {
+    try {
+      await retryHostInstall(host.id, {
+        agentVersion: host.agentVersion || "v0.1.0",
+        sshCredentialRef: host.sshCredentialRef || "",
+        force: false,
+      });
+      setMessage({ type: "success", text: "已重新提交安装任务" });
+      await load();
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "重新提交安装失败" });
     }
   }
 
@@ -242,7 +277,7 @@ export function HostsPage() {
               </div>
 
               {model.pageRows.length ? (
-                <div className="overflow-x-auto">
+                <div className="hosts-table-shell overflow-x-auto">
                   <table className="w-full min-w-[900px] text-left text-sm">
                     <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
                       <tr>
@@ -262,7 +297,9 @@ export function HostsPage() {
                             <div className="text-xs text-slate-500">{row.subtitle}</div>
                           </td>
                           <td className="py-3 pr-3">
-                            <ToneBadge tone={row.heartbeat === "online" ? "success" : row.heartbeat === "offline" ? "danger" : "warning"}>{row.heartbeatLabel}</ToneBadge>
+                            <ToneBadge tone={toneFromHeartbeat(row.heartbeatTone)}>{row.heartbeatLabel}</ToneBadge>
+                            {row.installDetailLabel ? <div className="mt-1 text-xs text-slate-500">{row.installDetailLabel}</div> : null}
+                            {row.lastError ? <div className="mt-1 max-w-xs break-words text-xs text-red-700">{row.lastError}</div> : null}
                           </td>
                           <td className="py-3 pr-3">
                             {row.labels?.length ? (
@@ -282,6 +319,20 @@ export function HostsPage() {
                           </td>
                           <td className="py-3">
                             <div className="flex justify-end gap-2">
+                              {row.installRunId ? (
+                                <Button variant="outline" asChild>
+                                  <Link to={`/runner-studio/runs/${encodeURIComponent(row.installRunId)}`}>
+                                    <ExternalLink />
+                                    Run
+                                  </Link>
+                                </Button>
+                              ) : null}
+                              {row.canRetryInstall ? (
+                                <Button variant="outline" onClick={() => void retryInstall(row.raw)}>
+                                  <RotateCcw />
+                                  重试
+                                </Button>
+                              ) : null}
                               <Button variant="outline" onClick={() => navigate(`/terminal/${row.id}`)} disabled={!row.canOpenSsh}>
                                 终端
                               </Button>
@@ -327,6 +378,22 @@ export function HostsPage() {
             </Field>
             <Field label="SSH 端口">
               <Input value={draft.sshPort} onChange={(event) => setDraft((prev) => ({ ...prev, sshPort: event.target.value }))} />
+            </Field>
+            <Field label="SSH 安装">
+              <label className="flex h-8 items-center gap-2 rounded-lg border bg-white px-2.5 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={draft.installViaSsh}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, installViaSsh: event.target.checked }))}
+                />
+                通过 SSH 安装 host-agent
+              </label>
+            </Field>
+            <Field label="SSH 凭据引用" hint="仅填写 secret:// 或 vault 引用，不填写密码或私钥内容。">
+              <Input value={draft.sshCredentialRef} onChange={(event) => setDraft((prev) => ({ ...prev, sshCredentialRef: event.target.value }))} placeholder="secret://ops/prod-web-01-ssh-key" />
+            </Field>
+            <Field label="Agent 版本">
+              <Input value={draft.agentVersion} onChange={(event) => setDraft((prev) => ({ ...prev, agentVersion: event.target.value }))} placeholder="v0.1.0" />
             </Field>
             <Field label="Transport">
               <SelectField
@@ -528,6 +595,13 @@ function formatLabels(labels?: Record<string, string>) {
 
 function badgeTone(tone: "success" | "warning" | "danger" | "neutral") {
   return tone === "neutral" ? "default" : tone;
+}
+
+function toneFromHeartbeat(tone: string) {
+  if (tone === "success") return "success";
+  if (tone === "warning") return "warning";
+  if (tone === "error" || tone === "danger") return "danger";
+  return "default";
 }
 
 function parseLabels(input: string) {

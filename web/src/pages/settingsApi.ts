@@ -86,9 +86,17 @@ export type HostRecord = {
   address?: string;
   sshUser?: string;
   sshPort?: number | string;
+  sshCredentialRef?: string;
   transport?: string;
+  agentUrl?: string;
+  agentTokenRef?: string;
   status?: string;
   installState?: string;
+  installRunId?: string;
+  installWorkflowId?: string;
+  installStep?: string;
+  lastError?: string;
+  controlMode?: string;
   terminalCapable?: boolean;
   executable?: boolean;
   agentVersion?: string;
@@ -167,6 +175,14 @@ export function updateHost(hostId: string, payload: JsonMap) {
 
 export function deleteHost(hostId: string) {
   return request<JsonMap>(`/api/v1/hosts/${encodeURIComponent(hostId)}`, { method: "DELETE" });
+}
+
+export function retryHostInstall(hostId: string, payload: JsonMap) {
+  return request<JsonMap>(`/api/v1/hosts/${encodeURIComponent(hostId)}/install`, { method: "POST", body: payload });
+}
+
+export function testHostSSH(hostId: string, payload: JsonMap) {
+  return request<JsonMap>(`/api/v1/hosts/${encodeURIComponent(hostId)}/ssh/test`, { method: "POST", body: payload });
 }
 
 export function fetchLlmConfig() {

@@ -45,6 +45,40 @@ function createHostsFixture() {
           status: "installing",
           transport: "ssh_bootstrap",
           installState: "pending_install",
+          installRunId: "run-install-001",
+          installWorkflowId: "builtin.host-agent-install/v1",
+          installStep: "probe_platform",
+          sshCredentialRef: "secret://ops/manual-install-key",
+          agentVersion: "v0.1.0",
+        },
+        {
+          id: "host-failed",
+          name: "failed-install",
+          address: "10.0.9.10",
+          sshUser: "deploy",
+          sshPort: 22,
+          status: "install_failed",
+          transport: "ssh_bootstrap",
+          installState: "failed",
+          installRunId: "run-install-002",
+          installWorkflowId: "builtin.host-agent-install/v1",
+          installStep: "verify_heartbeat",
+          lastError: "heartbeat timeout",
+          sshCredentialRef: "secret://ops/failed-install-key",
+          agentVersion: "v0.1.0",
+        },
+        {
+          id: "host-unsupported",
+          name: "unsupported-install",
+          address: "10.0.9.11",
+          sshUser: "admin",
+          sshPort: 22,
+          status: "install_failed",
+          transport: "ssh_bootstrap",
+          installState: "unsupported_platform",
+          lastError: "freebsd/amd64 is not supported",
+          sshCredentialRef: "secret://ops/unsupported-install-key",
+          agentVersion: "v0.1.0",
         },
         {
           id: "host-offline",
@@ -93,27 +127,53 @@ async function mockTerminalSessions(page) {
   });
 }
 
+async function mockHostsPageApis(page, fixture) {
+  await page.route("**/api/v1/hosts", (route) => {
+    if (route.request().method() !== "GET") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ items: fixture.state.hosts }),
+    });
+  });
+  await page.route("**/api/v1/hosts/*/install", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, installRunId: "run-retry-001" }) }),
+  );
+  await page.route("**/api/v1/host-profiles**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) }),
+  );
+  await page.route("**/api/v1/host-leases**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) }),
+  );
+}
+
 test.describe("Hosts management redesign snapshot", () => {
   test("renders the simplified host inventory on desktop and mobile", async ({ page }) => {
+    const fixture = createHostsFixture();
+    await mockHostsPageApis(page, fixture);
     await mockTerminalSessions(page);
 
     await page.setViewportSize({ width: 1440, height: 900 });
-    await openFixturePage(page, "/settings/hosts", createHostsFixture());
+    await openFixturePage(page, "/settings/hosts", fixture);
 
-    await expect(page.getByRole("heading", { name: "主机管理" })).toBeVisible();
+    await expect(page.getByText("主机与租约").first()).toBeVisible();
+    await page.getByRole("button", { name: "接入配置" }).click();
     await expect(page.locator(".hosts-page-heading")).toHaveCount(0);
-    await expect(page.locator(".header-host-button")).toContainText("server-local");
-    await expect(page.getByRole("button", { name: /终端/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: "终端" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /清空上下文/ })).toHaveCount(0);
-    await expect(page.locator(".header-right")).not.toContainText("清空上下文");
     await expect(page.locator(".hosts-table-shell")).toContainText("10.0.2.15 / root");
+    await expect(page.locator(".hosts-table-shell")).toContainText("verify_heartbeat");
+    await expect(page.locator(".hosts-table-shell")).toContainText("heartbeat timeout");
+    await expect(page.locator(".hosts-table-shell")).toContainText("不支持的平台");
     await expect(page.locator(".hosts-table-shell")).not.toContainText("server-local");
 
     await expectStablePageScreenshot(page, "hosts-management-redesign.png");
 
     await page.setViewportSize({ width: 390, height: 820 });
-    await openFixturePage(page, "/settings/hosts", createHostsFixture());
-    await expect(page.getByRole("heading", { name: "主机管理" })).toBeVisible();
+    await openFixturePage(page, "/settings/hosts", fixture);
+    await page.getByRole("button", { name: "接入配置" }).click();
     await expectStableLocatorScreenshot(page.locator(".hosts-table-shell"), "hosts-management-redesign-mobile-table.png");
   });
 });
