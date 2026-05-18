@@ -323,7 +323,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		mcps:           NewMCPService(cfg.mcps, registry),
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
 		auth:           authService,
-		terminal:       NewTerminalService(cfg.terminal, cfg.hosts),
+		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
 		postmortems:    NewPostmortemService(incidentService),

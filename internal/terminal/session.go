@@ -14,16 +14,16 @@ import (
 )
 
 type Session struct {
-	mu         sync.RWMutex
-	meta       SessionMetadata
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
+	mu          sync.RWMutex
+	meta        SessionMetadata
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
 	subscribers map[int]chan Event
-	nextSubID  int
-	history    []Event
-	closed     bool
-	closeOnce  sync.Once
-	doneCh     chan struct{}
+	nextSubID   int
+	history     []Event
+	closed      bool
+	closeOnce   sync.Once
+	doneCh      chan struct{}
 }
 
 func newSession(meta SessionMetadata, cmd *exec.Cmd, stdin io.WriteCloser) *Session {
@@ -274,15 +274,7 @@ func (s *Session) startReaders(stdout io.Reader, stderr io.Reader) {
 		s.mu.RLock()
 		cmd := s.cmd
 		s.mu.RUnlock()
-		exitCode := 0
-		exitSignal := ""
-		if cmd != nil {
-			if err := cmd.Wait(); err != nil {
-				exitCode, exitSignal = parseExitError(err)
-			} else if cmd.ProcessState != nil {
-				exitCode = cmd.ProcessState.ExitCode()
-			}
-		}
+		exitCode, exitSignal := waitCommand(cmd)
 		s.markExited(exitCode, exitSignal)
 	}()
 }
@@ -312,20 +304,24 @@ func startCommand(cmd *exec.Cmd, cwd string) (io.WriteCloser, io.ReadCloser, io.
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		runCommandCleanup(cmd)
 		return nil, nil, nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
+		runCommandCleanup(cmd)
 		return nil, nil, nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
+		runCommandCleanup(cmd)
 		return nil, nil, nil, err
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
+		runCommandCleanup(cmd)
 		return nil, nil, nil, err
 	}
 	return stdin, stdout, stderr, nil

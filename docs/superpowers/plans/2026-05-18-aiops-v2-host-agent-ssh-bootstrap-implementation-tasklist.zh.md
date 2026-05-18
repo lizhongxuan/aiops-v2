@@ -1008,7 +1008,7 @@ git commit -m "feat: restrict runner shell actions"
 - Modify: `internal/appui/terminal_service_test.go`
 - Modify: `cmd/ai-server/main.go`
 
-- [ ] **Step 10.1：写 SSH command 测试**
+- [x] **Step 10.1：写 SSH command 测试**
 
 Test cases:
 
@@ -1026,7 +1026,9 @@ go test -count=1 ./internal/terminal -run TestSSHCommandFactory
 
 Expected: FAIL because factory 还不存在。
 
-- [ ] **Step 10.2：实现 SSH command factory**
+Result 2026-05-18: RED confirmed; `BuildSSHCommand`、`SSHCommandRequest`、`SSHCredential` 和 command cleanup hook 尚未实现，TerminalService 尚未拒绝缺失 `SSHCredentialRef` 的远端终端会话。
+
+- [x] **Step 10.2：实现 SSH command factory**
 
 Command shape:
 
@@ -1041,7 +1043,7 @@ Rules:
 - session cleanup removes temp key.
 - server-local still uses local shell.
 
-- [ ] **Step 10.3：接入 TerminalService**
+- [x] **Step 10.3：接入 TerminalService**
 
 For non-`server-local` hosts:
 
@@ -1050,7 +1052,7 @@ For non-`server-local` hosts:
 - require `SSHCredentialRef`.
 - create SSH-backed session, not local shell.
 
-- [ ] **Step 10.4：跑 terminal 测试**
+- [x] **Step 10.4：跑 terminal 测试**
 
 Run:
 
@@ -1059,6 +1061,8 @@ go test -count=1 ./internal/terminal ./internal/appui -run 'TestSSHCommandFactor
 ```
 
 Expected: PASS。
+
+Result 2026-05-18: `go test -count=1 ./internal/terminal ./internal/appui -run 'TestSSHCommandFactory|TestTerminalService'`: PASS.
 
 - [ ] **Step 10.5：提交**
 
