@@ -1191,7 +1191,7 @@ git commit -m "feat: add host ssh install ui"
 - Create: `docs/host-agent-install-manual.zh.md`
 - Modify: `docs/superpowers/specs/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-design.zh.md`
 
-- [ ] **Step 12.1：写验收文档**
+- [x] **Step 12.1：写验收文档**
 
 Include exact sections:
 
@@ -1202,7 +1202,7 @@ Include exact sections:
 - 失败场景：错误凭据、端口不通、无 sudo、不支持平台。
 - 证据保留：Run ID、Run Record、截图、service status。
 
-- [ ] **Step 12.2：补充设计文档实施链接**
+- [x] **Step 12.2：补充设计文档实施链接**
 
 Add a short implementation reference section linking:
 
@@ -1210,7 +1210,7 @@ Add a short implementation reference section linking:
 实施任务清单：`docs/superpowers/plans/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-implementation-tasklist.zh.md`
 ```
 
-- [ ] **Step 12.3：文档自检**
+- [x] **Step 12.3：文档自检**
 
 Run:
 
@@ -1221,6 +1221,8 @@ git diff --check -- docs/host-agent-install-manual.zh.md docs/superpowers/specs/
 ```
 
 Expected: first command exits 1 with no matches; second command exits 0.
+
+Result 2026-05-18: red-flag scan exited 1 with no matches; `git diff --check -- docs/host-agent-install-manual.zh.md docs/superpowers/specs/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-design.zh.md`: PASS.
 
 - [ ] **Step 12.4：提交**
 

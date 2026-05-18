@@ -518,7 +518,13 @@ Runner 测试：
 - 保留 Run Record、截图和失败路径证据。
 - 若发现产品问题，按 `docs/self-improvement/` 格式沉淀问题文档。
 
-## 15. 验收标准
+## 15. 实施链接
+
+实施任务清单：`docs/superpowers/plans/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-implementation-tasklist.zh.md`
+
+真实环境验收手册：`docs/host-agent-install-manual.zh.md`
+
+## 16. 验收标准
 
 - 用户能在主机管理列表新增主机并选择 SSH 安装 host-agent。
 - AIOps-v2 能通过 SSH 完成预检、平台探测、安装、启动和心跳校验。
@@ -531,7 +537,7 @@ Runner 测试：
 - 凭据、token、私钥、密码不出现在页面、日志、Run Record、Prompt Trace 或文档中。
 - `cmd.run` 和 `shell.run` 不再作为首版默认 Shell 执行入口出现。
 
-## 16. 非目标
+## 17. 非目标
 
 - 不实现完整 CMDB。
 - 不支持 Windows、CentOS、Debian 非 Ubuntu、macOS Intel 或非 systemd Linux。
