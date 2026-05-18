@@ -92,20 +92,23 @@ type AgentEventService interface {
 }
 
 type servicesConfig struct {
-	settings         SettingsRepository
-	hosts            HostRepository
-	mcps             MCPRepository
-	mcpReg           *mcp.Registry
-	auth             *auth.Manager
-	terminal         *terminal.Manager
-	skills           SkillCatalogRepository
-	agentMCP         AgentMCPCatalogRepository
-	profiles         AgentProfileRepository
-	agentEvents      AgentEventRepository
-	incidents        incidents.Store
-	opsManuals       OpsManualService
-	opsManualRepo    opsmanual.ManualRepository
-	lifecycleContext context.Context
+	settings            SettingsRepository
+	hosts               HostRepository
+	mcps                MCPRepository
+	mcpReg              *mcp.Registry
+	auth                *auth.Manager
+	terminal            *terminal.Manager
+	skills              SkillCatalogRepository
+	agentMCP            AgentMCPCatalogRepository
+	profiles            AgentProfileRepository
+	agentEvents         AgentEventRepository
+	incidents           incidents.Store
+	opsManuals          OpsManualService
+	opsManualRepo       opsmanual.ManualRepository
+	lifecycleContext    context.Context
+	credentialResolver  CredentialResolver
+	hostBootstrapRunner HostBootstrapRunner
+	hostAgentInstaller  HostAgentInstaller
 }
 
 // ServicesOption customizes first-party Web services.
@@ -215,6 +218,24 @@ func WithLifecycleContext(ctx context.Context) ServicesOption {
 	}
 }
 
+func WithCredentialResolver(resolver CredentialResolver) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.credentialResolver = resolver
+	}
+}
+
+func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostBootstrapRunner = runner
+	}
+}
+
+func WithDirectHostAgentInstaller(installer HostAgentInstaller) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostAgentInstaller = installer
+	}
+}
+
 func WithOpsManualService(service OpsManualService) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.opsManuals = service
@@ -246,6 +267,7 @@ type Services struct {
 	choices        ChoiceService
 	settings       SettingsService
 	hosts          HostService
+	hostAgents     HostAgentService
 	mcps           MCPService
 	profiles       AgentProfileService
 	auth           AuthService
@@ -291,6 +313,14 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		}
 		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
 	}
+	var hostBootstrap *HostBootstrapService
+	hostAgentInstaller := cfg.hostAgentInstaller
+	if hostAgentInstaller == nil && cfg.hosts != nil && cfg.credentialResolver != nil {
+		hostAgentInstaller = NewDirectHostAgentInstaller(cfg.hosts, cfg.credentialResolver)
+	}
+	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
+		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
+	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),
@@ -299,11 +329,12 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
 		choices:        NewChoiceService(runtime, sessions),
 		settings:       settingsService,
-		hosts:          NewHostService(sessionStore, cfg.hosts, builder),
+		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
+		hostAgents:     NewHostAgentService(cfg.hosts),
 		mcps:           NewMCPService(cfg.mcps, registry),
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
 		auth:           authService,
-		terminal:       NewTerminalService(cfg.terminal, cfg.hosts),
+		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
 		postmortems:    NewPostmortemService(incidentService),
@@ -324,7 +355,10 @@ func (s *Services) ApprovalService() ApprovalService { return s.approvals }
 func (s *Services) ChoiceService() ChoiceService     { return s.choices }
 func (s *Services) SettingsService() SettingsService { return s.settings }
 func (s *Services) HostService() HostService         { return s.hosts }
-func (s *Services) MCPService() MCPService           { return s.mcps }
+func (s *Services) HostAgentService() HostAgentService {
+	return s.hostAgents
+}
+func (s *Services) MCPService() MCPService { return s.mcps }
 func (s *Services) AgentProfileService() AgentProfileService {
 	return s.profiles
 }
@@ -458,24 +492,30 @@ type AuthSummary struct {
 }
 
 type HostSummary struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Status          string            `json:"status"`
-	Kind            string            `json:"kind,omitempty"`
-	Address         string            `json:"address,omitempty"`
-	Transport       string            `json:"transport,omitempty"`
-	Executable      bool              `json:"executable,omitempty"`
-	TerminalCapable bool              `json:"terminalCapable,omitempty"`
-	OS              string            `json:"os,omitempty"`
-	Arch            string            `json:"arch,omitempty"`
-	AgentVersion    string            `json:"agentVersion,omitempty"`
-	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	LastError       string            `json:"lastError,omitempty"`
-	SSHUser         string            `json:"sshUser,omitempty"`
-	SSHPort         int               `json:"sshPort,omitempty"`
-	InstallState    string            `json:"installState,omitempty"`
-	ControlMode     string            `json:"controlMode,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Status            string            `json:"status"`
+	Kind              string            `json:"kind,omitempty"`
+	Address           string            `json:"address,omitempty"`
+	Transport         string            `json:"transport,omitempty"`
+	Executable        bool              `json:"executable,omitempty"`
+	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
+	OS                string            `json:"os,omitempty"`
+	Arch              string            `json:"arch,omitempty"`
+	AgentVersion      string            `json:"agentVersion,omitempty"`
+	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	LastError         string            `json:"lastError,omitempty"`
+	SSHUser           string            `json:"sshUser,omitempty"`
+	SSHPort           int               `json:"sshPort,omitempty"`
+	SSHCredentialRef  string            `json:"sshCredentialRef,omitempty"`
+	AgentURL          string            `json:"agentUrl,omitempty"`
+	AgentTokenRef     string            `json:"agentTokenRef,omitempty"`
+	InstallState      string            `json:"installState,omitempty"`
+	InstallRunID      string            `json:"installRunId,omitempty"`
+	InstallWorkflowID string            `json:"installWorkflowId,omitempty"`
+	InstallStep       string            `json:"installStep,omitempty"`
+	ControlMode       string            `json:"controlMode,omitempty"`
 }
 
 type CardView struct {
@@ -676,18 +716,86 @@ type LLMConfigUpdateResult struct {
 }
 
 type HostUpsert struct {
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Address       string            `json:"address"`
-	SSHUser       string            `json:"sshUser"`
-	SSHPort       int               `json:"sshPort"`
-	Labels        map[string]string `json:"labels"`
-	InstallViaSSH bool              `json:"installViaSsh"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Address          string            `json:"address"`
+	SSHUser          string            `json:"sshUser"`
+	SSHPort          int               `json:"sshPort"`
+	SSHCredentialRef string            `json:"sshCredentialRef"`
+	AgentVersion     string            `json:"agentVersion"`
+	Labels           map[string]string `json:"labels"`
+	InstallViaSSH    bool              `json:"installViaSsh"`
+}
+
+type HostInstallRequest struct {
+	AgentVersion     string `json:"agentVersion"`
+	SSHCredentialRef string `json:"sshCredentialRef"`
+	Force            bool   `json:"force"`
+}
+
+type HostSSHTestRequest struct {
+	SSHCredentialRef string `json:"sshCredentialRef"`
+}
+
+type HostSSHTestResponse struct {
+	Status   string `json:"status"`
+	Platform string `json:"platform,omitempty"`
+	OS       string `json:"os,omitempty"`
+	Arch     string `json:"arch,omitempty"`
+	Sudo     string `json:"sudo,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+type HostAgentRegisterRequest struct {
+	HostID        string            `json:"hostId"`
+	Hostname      string            `json:"hostname,omitempty"`
+	OS            string            `json:"os"`
+	Arch          string            `json:"arch"`
+	AgentVersion  string            `json:"agentVersion"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	ListenAddress string            `json:"listenAddress,omitempty"`
+}
+
+type HostAgentRegisterResponse struct {
+	Status        string      `json:"status"`
+	HostID        string      `json:"hostId"`
+	AgentURL      string      `json:"agentUrl,omitempty"`
+	AgentVersion  string      `json:"agentVersion,omitempty"`
+	LastHeartbeat string      `json:"lastHeartbeat,omitempty"`
+	Host          HostSummary `json:"host"`
+}
+
+type HostAgentHeartbeatRequest struct {
+	HostID       string   `json:"hostId"`
+	AgentVersion string   `json:"agentVersion,omitempty"`
+	Timestamp    string   `json:"timestamp,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+}
+
+type HostAgentHeartbeatResponse struct {
+	Status        string      `json:"status"`
+	HostID        string      `json:"hostId"`
+	LastHeartbeat string      `json:"lastHeartbeat"`
+	Host          HostSummary `json:"host"`
 }
 
 type HostMutationResponse struct {
-	Host  HostSummary   `json:"host"`
-	Items []HostSummary `json:"items,omitempty"`
+	Host              HostSummary   `json:"host"`
+	Items             []HostSummary `json:"items,omitempty"`
+	InstallRunID      string        `json:"installRunId,omitempty"`
+	InstallWorkflowID string        `json:"installWorkflowId,omitempty"`
+}
+
+type HostInstallRun struct {
+	HostID       string `json:"hostId,omitempty"`
+	RunID        string `json:"runId,omitempty"`
+	WorkflowID   string `json:"workflowId,omitempty"`
+	Status       string `json:"status,omitempty"`
+	CurrentStep  string `json:"currentStep,omitempty"`
+	LastError    string `json:"lastError,omitempty"`
+	Platform     string `json:"platform,omitempty"`
+	AgentVersion string `json:"agentVersion,omitempty"`
 }
 
 type MCPServerUpsert struct {
@@ -920,8 +1028,15 @@ type HostService interface {
 	ListHosts(ctx context.Context) ([]HostSummary, error)
 	CreateHost(ctx context.Context, payload HostUpsert) (HostMutationResponse, error)
 	UpdateHost(ctx context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error)
+	InstallHost(ctx context.Context, hostID string, payload HostInstallRequest) (HostMutationResponse, error)
+	TestHostSSH(ctx context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error)
 	DeleteHost(ctx context.Context, hostID string) error
 	SelectHost(ctx context.Context, hostID string) (StateSnapshot, error)
+}
+
+type HostAgentService interface {
+	Register(ctx context.Context, req HostAgentRegisterRequest, token string) (HostAgentRegisterResponse, error)
+	Heartbeat(ctx context.Context, req HostAgentHeartbeatRequest, token string) (HostAgentHeartbeatResponse, error)
 }
 
 type MCPService interface {

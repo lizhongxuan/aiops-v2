@@ -1026,6 +1026,54 @@ func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-final-rca", "thread-final-rca")
+	finalPayload := `{
+		"schemaVersion":"aiops.rca_report/v1",
+		"status":"partial",
+		"source":"coroot",
+		"target":{"service":"checkout"},
+		"conclusion":{"summaryZh":"checkout 延迟升高与 catalog 依赖相关。","confidence":0.72},
+		"evidenceRefs":["ev-coroot-latency"],
+		"rawRefs":[{"uri":"coroot://raw/latency","digest":"abc123"}]
+	}`
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-final-rca",
+		SessionID:   "session-final-rca",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		FinalOutput: finalPayload,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		CompletedAt: &now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-rca", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalPayload}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-final-rca"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "rca_report" || artifact.Status != "partial" || artifact.Source != "coroot" {
+		t.Fatalf("artifact = %+v, want partial coroot rca_report", artifact)
+	}
+	if artifact.InlineData == nil || artifact.InlineData["schemaVersion"] != "aiops.rca_report/v1" {
+		t.Fatalf("artifact inline data = %#v, want rca payload", artifact.InlineData)
+	}
+	if artifact.SummaryZh != "checkout 延迟升高与 catalog 依赖相关。" {
+		t.Fatalf("summaryZh = %q, want conclusion summary", artifact.SummaryZh)
+	}
+}
+
 func TestTransportProjectorCompactsOpsManualSearchProcessPreview(t *testing.T) {
 	now := time.Date(2026, 5, 15, 9, 30, 0, 0, time.UTC)
 	projector := NewTransportProjector()

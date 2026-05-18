@@ -43,13 +43,9 @@ func corootToolsWithClient(client *Client) []tooling.Tool {
 }
 
 func newCorootTool(name, description string, schema json.RawMessage, visibility tooling.Visibility, execute func(context.Context, json.RawMessage) (any, *CorootRawRef, error)) tooling.Tool {
+	meta := corootToolMetadata(name, description)
 	return &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Description: description,
-			Domain:      "coroot",
-			RiskLevel:   tooling.ToolRiskLow,
-		},
+		Meta:             meta,
 		Visibility:       visibility,
 		InputSchemaData:  schema,
 		OutputSchemaData: corootToolOutputSchema,
@@ -85,6 +81,30 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 			}, nil
 		},
 	}
+}
+
+func corootToolMetadata(name, description string) tooling.ToolMetadata {
+	meta := tooling.ToolMetadata{
+		Name:        name,
+		Description: description,
+		Domain:      "coroot",
+		RiskLevel:   tooling.ToolRiskLow,
+	}
+	switch name {
+	case "coroot.list_services":
+		meta.Layer = tooling.ToolLayerCore
+	case "coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "coroot.slo_status":
+		meta.Layer = tooling.ToolLayerDeferred
+		meta.Pack = "coroot_rca"
+		meta.DeferByDefault = true
+		meta.Triggers = []string{"RCA", "root cause", "根因", "延迟升高", "error rate", "SLO", "topology", "依赖"}
+	case "coroot.alert_rules", "coroot.incident_timeline":
+		meta.Layer = tooling.ToolLayerDeferred
+		meta.Pack = "coroot_incident"
+		meta.DeferByDefault = true
+		meta.Triggers = []string{"incident", "alert", "告警", "事件", "timeline"}
+	}
+	return meta
 }
 
 func withCorootEnvelopeFields(payload any) any {

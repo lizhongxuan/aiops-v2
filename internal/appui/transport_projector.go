@@ -77,6 +77,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 			mapFinalStatusToTransportProcessStatus(finalStatus),
 			turn.UpdatedAt,
 		)
+		if artifact, ok := transportRCAArtifactFromFinalPayload(turnID, projectedTurn.Final.ID, finalText); ok {
+			projectedTurn.AgentUIArtifacts = upsertTransportAgentUIArtifact(projectedTurn.AgentUIArtifacts, artifact)
+		}
 	}
 
 	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
@@ -861,11 +864,88 @@ func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool 
 	}, true
 }
 
+func transportRCAArtifactFromFinalPayload(turnID, itemID string, content string) (AiopsTransportAgentUIArtifact, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" || !strings.HasPrefix(content, "{") {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if strings.TrimSpace(jsonStringValueFromMap(payload, "schemaVersion")) != "aiops.rca_report/v1" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	evidenceRefs := transportStringList(payload["evidenceRefs"])
+	rawRefs := transportAnyList(payload["rawRefs"])
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "inconclusive")
+	if (status == "ok" || status == "partial") && len(evidenceRefs) == 0 && len(rawRefs) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	metadata := map[string]any{}
+	if len(evidenceRefs) > 0 {
+		metadata["evidenceRefs"] = evidenceRefs
+	}
+	if len(rawRefs) > 0 {
+		metadata["rawRefs"] = rawRefs
+	}
+	summaryZh := firstNonEmptyString(
+		jsonStringValueFromMap(payload, "summaryZh"),
+		nestedJSONStringValue(payload, "conclusion", "summaryZh"),
+		nestedJSONStringValue(payload, "conclusion", "summary"),
+	)
+	return AiopsTransportAgentUIArtifact{
+		ID:              "agent-ui:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "final-rca"),
+		Type:            "rca_report",
+		TitleZh:         "根因分析",
+		Summary:         jsonStringValueFromMap(payload, "summary"),
+		SummaryZh:       summaryZh,
+		Status:          status,
+		Severity:        firstNonEmptyString(jsonStringValueFromMap(payload, "severity"), "info"),
+		Source:          firstNonEmptyString(jsonStringValueFromMap(payload, "source"), "aiops"),
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Metadata:        metadata,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
 func asStringAnyMap(value any) map[string]any {
 	if out, ok := value.(map[string]any); ok {
 		return out
 	}
 	return nil
+}
+
+func nestedJSONStringValue(payload map[string]any, parent, key string) string {
+	child, ok := payload[parent].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return jsonStringValueFromMap(child, key)
+}
+
+func transportStringList(value any) []string {
+	items := transportAnyList(value)
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			out = append(out, strings.TrimSpace(text))
+		}
+	}
+	return cleanTransportStringList(out)
+}
+
+func transportAnyList(value any) []any {
+	switch typed := value.(type) {
+	case []any:
+		return typed
+	default:
+		return nil
+	}
 }
 
 func asStringAnyMapList(value any) []map[string]any {

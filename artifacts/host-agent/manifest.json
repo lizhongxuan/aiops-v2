@@ -1,0 +1,19 @@
+{
+  "version": "v0.1.0",
+  "artifacts": [
+    {
+      "platform": "linux/ubuntu",
+      "os": "linux",
+      "arch": "amd64",
+      "path": "artifacts/host-agent/v0.1.0/linux-amd64/host-agent",
+      "sha256": ""
+    },
+    {
+      "platform": "darwin/arm64",
+      "os": "darwin",
+      "arch": "arm64",
+      "path": "artifacts/host-agent/v0.1.0/darwin-arm64/host-agent",
+      "sha256": ""
+    }
+  ]
+}

@@ -20,7 +20,7 @@ inventory:
 steps:
   - name: collect
     targets: [local]
-    action: shell.run
+    action: script.shell
     expect_vars: ["OUT"]
 `
 
@@ -70,7 +70,7 @@ inventory:
 steps:
   - name: run
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       script: "echo ok"
 `
@@ -104,7 +104,7 @@ inventory:
 steps:
   - name: run
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       script: "echo ok"
 `

@@ -29,12 +29,12 @@ plan:
 steps:
   - name: prepare
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       script: echo prepare
   - name: deploy
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       script: echo deploy
 `
@@ -131,13 +131,13 @@ plan:
   strategy: sequential
 steps:
   - name: pre
-    action: shell.run
+    action: script.shell
   - name: branch-a
-    action: shell.run
+    action: script.shell
   - name: branch-b
     action: condition.evaluate
   - name: join
-    action: shell.run
+    action: script.shell
 `
 	g, err := ParseYAMLToGraph([]byte(raw))
 	if err != nil {
@@ -179,9 +179,9 @@ x_vendor_policy:
 owner: platform
 steps:
   - name: run
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo ok
+      script: echo ok
 `
 	g, err := ParseYAMLToGraph([]byte(raw))
 	if err != nil {
@@ -216,7 +216,7 @@ vars:
 steps:
   - name: prepare
     targets: [local]
-    action: cmd.run
+    action: script.shell
     when: vars.enabled == true
     loop: [a, b]
     must_vars: [token]
@@ -224,24 +224,24 @@ steps:
     continue_on_error: true
     notify: [notify-ops]
     args:
-      cmd: echo prepare
+      script: echo prepare
   - name: step-2
-    action: cmd.run
+    action: script.shell
   - name: step-3
-    action: cmd.run
+    action: script.shell
   - name: step-4
-    action: cmd.run
+    action: script.shell
   - name: step-5
-    action: cmd.run
+    action: script.shell
   - name: step-6
-    action: cmd.run
+    action: script.shell
   - name: step-7
-    action: cmd.run
+    action: script.shell
 handlers:
   - name: notify-ops
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo notify
+      script: echo notify
 `
 	g, err := ParseYAMLToGraph([]byte(raw))
 	if err != nil {
@@ -310,7 +310,7 @@ steps: []
 name: graph-invalid
 steps:
   - name: run
-    action: cmd.run
+    action: script.shell
 x_runner_graph:
   version: v1
   nodes:
@@ -346,8 +346,8 @@ x_runner_graph:
 }
 
 func TestValidateGraphRejectsCycles(t *testing.T) {
-	stepA := workflow.Step{Name: "a", Action: "shell.run"}
-	stepB := workflow.Step{Name: "b", Action: "shell.run"}
+	stepA := workflow.Step{Name: "a", Action: "script.shell"}
+	stepB := workflow.Step{Name: "b", Action: "script.shell"}
 	g := Graph{
 		Version: GraphVersion,
 		Workflow: workflow.Workflow{
@@ -380,7 +380,7 @@ func TestCompileGraphSupportsAdvancedNodeTypes(t *testing.T) {
 	approval := workflow.Step{Name: "approve", Action: "manual.approval"}
 	subflow := workflow.Step{Name: "child", Action: "workflow.run", Args: map[string]any{"workflow": "child-flow"}}
 	condition := workflow.Step{Name: "gate", Action: "condition.evaluate", When: "vars.enabled == true"}
-	handler := workflow.Handler{Name: "notify", Action: "shell.run"}
+	handler := workflow.Handler{Name: "notify", Action: "script.shell"}
 	g := Graph{
 		Version: GraphVersion,
 		Workflow: workflow.Workflow{
@@ -552,7 +552,7 @@ func TestCompileParseRoundTripPreservesDifyStyleBranchPortsAndConditionData(t *t
 				Type:     NodeTypeAction,
 				Position: Position{X: 560, Y: 220},
 				Ports:    []Port{{ID: "in", Type: "input", Label: "输入"}, {ID: "next", Type: "output", Label: "下一步"}},
-				Step:     &workflow.Step{Name: "notify", Action: "shell.run", Args: map[string]any{"script": "echo notify"}},
+				Step:     &workflow.Step{Name: "notify", Action: "script.shell", Args: map[string]any{"script": "echo notify"}},
 			},
 			{ID: "end", Type: NodeTypeEnd, Position: Position{X: 860, Y: 120}},
 		},
@@ -595,7 +595,7 @@ func TestCompileParseRoundTripPreservesDifyStyleBranchPortsAndConditionData(t *t
 
 func TestValidateGraphRejectsProductionInvalidGraphs(t *testing.T) {
 	step := func(name string) *workflow.Step {
-		return &workflow.Step{Name: name, Action: "shell.run", Args: map[string]any{"script": "echo ok"}}
+		return &workflow.Step{Name: name, Action: "script.shell", Args: map[string]any{"script": "echo ok"}}
 	}
 	cases := []struct {
 		name  string
@@ -804,7 +804,7 @@ func TestVariableAggregatorGraphNodeValidatesAndRoundTrips(t *testing.T) {
 		},
 		Nodes: []Node{
 			{ID: "start", Type: NodeTypeStart},
-			{ID: "pre", Type: NodeTypeAction, Step: &workflow.Step{Name: "pre", Action: "cmd.run", Targets: []string{"local"}, Args: map[string]any{"cmd": "echo ok"}}},
+			{ID: "pre", Type: NodeTypeAction, Step: &workflow.Step{Name: "pre", Action: "script.shell", Targets: []string{"local"}, Args: map[string]any{"script": "echo ok"}}},
 			{
 				ID:   "aggregate",
 				Type: NodeTypeVariableAggregator,

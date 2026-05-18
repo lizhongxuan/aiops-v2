@@ -29,6 +29,32 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case r.Method == http.MethodPost && strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/install"):
+		hostID := hostIDFromNestedHostPath(r.URL.Path, "install")
+		var req appui.HostInstallRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		resp, err := s.ui.HostService().InstallHost(r.Context(), hostID, req)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case r.Method == http.MethodPost && strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/ssh/test"):
+		hostID := hostIDFromNestedHostPath(r.URL.Path, "ssh/test")
+		var req appui.HostSSHTestRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		resp, err := s.ui.HostService().TestHostSSH(r.Context(), hostID, req)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 	case r.Method == http.MethodPut:
 		hostID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/hosts/"), "/")
 		var req appui.HostUpsert
@@ -52,6 +78,11 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func hostIDFromNestedHostPath(path, suffix string) string {
+	trimmed := strings.Trim(strings.TrimPrefix(path, "/api/v1/hosts/"), "/")
+	return strings.Trim(strings.TrimSuffix(trimmed, "/"+suffix), "/")
 }
 
 func (s *HTTPServer) handleSelectHost(w http.ResponseWriter, r *http.Request) {

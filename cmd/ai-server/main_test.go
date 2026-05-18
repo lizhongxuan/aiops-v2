@@ -16,6 +16,8 @@ import (
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/featureflag"
 	agenttools "aiops-v2/internal/integrations/agents"
+	"aiops-v2/internal/integrations/localtools"
+	opsmanualtools "aiops-v2/internal/integrations/opsmanuals"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/observability"
@@ -30,6 +32,14 @@ import (
 	"aiops-v2/internal/tooling"
 	runnerservice "runner/server/service"
 )
+
+type fakeLLMConfigRepo struct {
+	cfg *store.LLMConfig
+}
+
+func (r fakeLLMConfigRepo) GetLLMConfig() (*store.LLMConfig, error) {
+	return r.cfg, nil
+}
 
 type registryAdapterMockTool struct {
 	name     string
@@ -208,19 +218,42 @@ func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.
 	for _, tool := range tools {
 		names[tool.Metadata().Name] = true
 	}
-	for _, required := range []string{
-		"tool_search",
-		"list_mcp_resources",
-		"read_mcp_resource",
-		"changes.recent_deployments",
-		"k8s.get_events",
-		"opsgraph.lookup",
-	} {
+	for _, required := range []string{"tool_search"} {
 		if !names[required] {
 			t.Fatalf("assembled tools missing %q; got %v", required, registryAdapterToolNames(tools))
 		}
 	}
-	for _, prefix := range []string{"runbook.", "fallback.", "erp."} {
+	for _, deferredDefault := range []string{"list_mcp_resources", "read_mcp_resource", "opsgraph.lookup"} {
+		if names[deferredDefault] {
+			t.Fatalf("deferred tool %q should not be visible in default tools; got %v", deferredDefault, registryAdapterToolNames(tools))
+		}
+	}
+	deferredTools := toolRegistry.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{EnabledPacks: []string{"mcp_resource", "opsgraph"}})
+	deferredNames := map[string]bool{}
+	for _, tool := range deferredTools {
+		deferredNames[tool.Metadata().Name] = true
+	}
+	for _, required := range []string{"list_mcp_resources", "read_mcp_resource", "opsgraph.lookup"} {
+		if !deferredNames[required] {
+			t.Fatalf("deferred tools missing %q; got %v", required, registryAdapterToolNames(deferredTools))
+		}
+	}
+	for _, removedDefault := range []string{
+		"changes.recent_deployments",
+		"changes.recent_config_changes",
+		"k8s.get_workload",
+		"k8s.get_events",
+		"k8s.get_logs",
+		"k8s.rollout_status",
+		"k8s.restart_workload",
+		"k8s.scale_workload",
+		"k8s.rollout_undo",
+	} {
+		if names[removedDefault] {
+			t.Fatalf("mock tool %q should not be visible in production default tools; got %v", removedDefault, registryAdapterToolNames(tools))
+		}
+	}
+	for _, prefix := range []string{"k8s.", "changes.", "runbook.", "fallback.", "erp."} {
 		for name := range names {
 			if strings.HasPrefix(name, prefix) {
 				t.Fatalf("removed tool %q is still visible; tools=%v", name, registryAdapterToolNames(tools))
@@ -232,6 +265,65 @@ func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.
 	}
 }
 
+func TestProductionToolPromptRegistryStaysBelowP0Budget(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	repo := fakeLLMConfigRepo{cfg: &store.LLMConfig{Provider: "openai", Model: "gpt-5.4", BaseURL: "http://127.0.0.1:8317/v1", APIKey: "test"}}
+	if err := localtools.RegisterBuiltins(toolRegistry, repo, localtools.Options{WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("localtools.RegisterBuiltins() error = %v", err)
+	}
+	if err := registerAIOpsToolSurface(toolRegistry, mcp.NewRegistry(), nil, nil); err != nil {
+		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
+	}
+	manualService := opsmanual.NewService(opsmanual.NewMemoryStore())
+	if err := opsmanualtools.RegisterBuiltins(toolRegistry, manualService); err != nil {
+		t.Fatalf("opsmanuals.RegisterBuiltins() error = %v", err)
+	}
+
+	assembled := toolRegistry.AssembleTools("host", "inspect")
+	compiled, err := promptcompiler.NewCompiler().Compile(promptcompiler.CompileContext{
+		SessionType:    "host",
+		Mode:           "inspect",
+		AssembledTools: assembled,
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if got := len(compiled.Tools.Content); got == 0 || got > 10000 {
+		t.Fatalf("tool registry char count = %d, want 1..10000\n%s", got, compiled.Tools.Content)
+	}
+	if got := len(assembled); got == 0 {
+		t.Fatal("visible tool count should be recorded")
+	}
+}
+
+func TestRegisterAIOpsToolSurfaceWiresToolSearchToCatalogProvider(t *testing.T) {
+	toolRegistry := tooling.NewRegistry()
+	providerRegistry := tooling.NewRegistry()
+	if err := providerRegistry.Register(&tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "provider.only_tool", Description: "Provider only tool"},
+	}); err != nil {
+		t.Fatalf("provider Register() error = %v", err)
+	}
+	if err := registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcp.NewRegistry(), nil, nil, providerRegistry); err != nil {
+		t.Fatalf("registerAIOpsToolSurfaceWithCatalog() error = %v", err)
+	}
+	tool, ok := toolRegistry.Get("tool_search")
+	if !ok {
+		t.Fatal("tool_search should be registered")
+	}
+	input, err := json.Marshal(map[string]any{"query": "provider only", "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("tool_search Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, "provider.only_tool") {
+		t.Fatalf("tool_search result = %s, want provider.only_tool", result.Content)
+	}
+}
+
 func TestRegisterAIOpsToolSurfaceIncludesAgentUIArtifactEmitter(t *testing.T) {
 	toolRegistry := tooling.NewRegistry()
 	mcpRegistry := mcp.NewRegistry()
@@ -240,15 +332,19 @@ func TestRegisterAIOpsToolSurfaceIncludesAgentUIArtifactEmitter(t *testing.T) {
 		t.Fatalf("registerAIOpsToolSurface() error = %v", err)
 	}
 
-	for _, tool := range toolRegistry.AssembleTools("host", "inspect") {
-		if tool.Metadata().Name == "aiops.ui_artifact_emit" {
-			if !tool.IsReadOnly(nil) {
-				t.Fatal("aiops.ui_artifact_emit should be read-only")
-			}
-			return
-		}
+	if tools := toolRegistry.AssembleTools("host", "inspect"); registryAdapterHasTool(tools, "aiops.ui_artifact_emit") {
+		t.Fatalf("aiops.ui_artifact_emit should be hidden from default surface; got %v", registryAdapterToolNames(tools))
 	}
-	t.Fatal("aiops.ui_artifact_emit not found in assembled tool surface")
+	tool, ok := toolRegistry.Get("aiops.ui_artifact_emit")
+	if !ok {
+		t.Fatal("aiops.ui_artifact_emit not registered")
+	}
+	if tool.Metadata().Layer != tooling.ToolLayerInternal {
+		t.Fatalf("aiops.ui_artifact_emit layer = %q, want internal", tool.Metadata().Layer)
+	}
+	if !tool.IsReadOnly(nil) {
+		t.Fatal("aiops.ui_artifact_emit should be read-only")
+	}
 }
 
 func TestRegisterAIOpsToolSurfaceCanExposeOpsInvestigationAgents(t *testing.T) {
@@ -406,6 +502,15 @@ func registryAdapterToolNames(tools []tooling.Tool) []string {
 		names = append(names, tool.Metadata().Name)
 	}
 	return names
+}
+
+func registryAdapterHasTool(tools []tooling.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Metadata().Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistryOverCommandSurface(t *testing.T) {

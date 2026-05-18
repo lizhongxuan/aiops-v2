@@ -63,6 +63,37 @@ func TestScriptModuleArgs(t *testing.T) {
 	}
 }
 
+func TestScriptModuleExposesScalarVarsAsEnv(t *testing.T) {
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skip("/bin/sh not available")
+	}
+
+	mod := New("shell")
+	req := modules.Request{
+		Step: workflow.Step{
+			Action: "script.shell",
+			Args: map[string]any{
+				"script": "printf '%s:%s' \"$host_id\" \"$ssh_port\"",
+			},
+		},
+		Vars: map[string]any{
+			"host_id":  "host-a",
+			"ssh_port": 2222,
+			"labels":   map[string]any{"env": "prod"},
+		},
+	}
+
+	res, err := mod.Apply(context.Background(), req)
+	if err != nil {
+		t.Fatalf("apply script with vars: %v", err)
+	}
+
+	stdout, _ := res.Output["stdout"].(string)
+	if stdout != "host-a:2222" {
+		t.Fatalf("stdout = %q, want host-a:2222", stdout)
+	}
+}
+
 func TestScriptModuleScriptRefUnsupported(t *testing.T) {
 	mod := New("shell")
 	req := modules.Request{

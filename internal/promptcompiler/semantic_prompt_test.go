@@ -195,6 +195,8 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"operation_frame.target.name or known_params.target_instance",
 		"keep the selected/current host in target_scope.hosts",
 		"LLM judgment alone",
+		"no verified Workflow, ActionToken, approval path, or executable mutation tool",
+		"do not claim the change was executed",
 		"need_info",
 		"need_info with one or more manuals",
 		"immediate next tool call must be resolve_ops_manual_params with the matched manual_id",

@@ -48,21 +48,24 @@ type Request struct {
 }
 
 type payload struct {
-	SchemaVersion     int                          `json:"schemaVersion"`
-	Kind              string                       `json:"kind,omitempty"`
-	CreatedAt         string                       `json:"createdAt"`
-	TraceID           string                       `json:"traceId,omitempty"`
-	SessionID         string                       `json:"sessionId,omitempty"`
-	TurnID            string                       `json:"turnId,omitempty"`
-	Iteration         int                          `json:"iteration,omitempty"`
-	CaseID            string                       `json:"caseId,omitempty"`
-	Metadata          map[string]string            `json:"metadata,omitempty"`
-	VisibleTools      []string                     `json:"visibleTools,omitempty"`
-	PromptFingerprint map[string]string            `json:"promptFingerprint,omitempty"`
-	Prompt            Prompt                       `json:"prompt"`
-	ModelInput        []traceMessage               `json:"modelInput"`
-	PromptInputTrace  promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
-	DiagnosticTrace   *diagnostics.DiagnosticTrace `json:"diagnosticTrace,omitempty"`
+	SchemaVersion         int                          `json:"schemaVersion"`
+	Kind                  string                       `json:"kind,omitempty"`
+	CreatedAt             string                       `json:"createdAt"`
+	TraceID               string                       `json:"traceId,omitempty"`
+	SessionID             string                       `json:"sessionId,omitempty"`
+	TurnID                string                       `json:"turnId,omitempty"`
+	Iteration             int                          `json:"iteration,omitempty"`
+	CaseID                string                       `json:"caseId,omitempty"`
+	Metadata              map[string]string            `json:"metadata,omitempty"`
+	VisibleTools          []string                     `json:"visibleTools,omitempty"`
+	VisibleToolCount      int                          `json:"visibleToolCount,omitempty"`
+	PromptCharCount       int                          `json:"promptCharCount,omitempty"`
+	ToolRegistryCharCount int                          `json:"toolRegistryCharCount,omitempty"`
+	PromptFingerprint     map[string]string            `json:"promptFingerprint,omitempty"`
+	Prompt                Prompt                       `json:"prompt"`
+	ModelInput            []traceMessage               `json:"modelInput"`
+	PromptInputTrace      promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
+	DiagnosticTrace       *diagnostics.DiagnosticTrace `json:"diagnosticTrace,omitempty"`
 }
 
 type traceMessage struct {
@@ -125,23 +128,36 @@ func Enabled() bool {
 }
 
 func buildPayload(req Request) payload {
+	visibleTools := append([]string(nil), req.VisibleTools...)
+	modelInput := traceMessages(req.ModelInput)
 	return payload{
-		SchemaVersion:     1,
-		Kind:              strings.TrimSpace(req.Kind),
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339Nano),
-		TraceID:           strings.TrimSpace(req.TraceID),
-		SessionID:         strings.TrimSpace(req.SessionID),
-		TurnID:            strings.TrimSpace(req.TurnID),
-		Iteration:         req.Iteration,
-		CaseID:            firstNonEmpty(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]),
-		Metadata:          redactStringMap(copyStringMap(req.Metadata)),
-		VisibleTools:      append([]string(nil), req.VisibleTools...),
-		PromptFingerprint: copyStringMap(req.PromptFingerprint),
-		Prompt:            redactPrompt(req.Prompt),
-		ModelInput:        traceMessages(req.ModelInput),
-		PromptInputTrace:  redactPromptInputTrace(req.PromptInputTrace),
-		DiagnosticTrace:   diagnosticTracePayload(req.DiagnosticTrace),
+		SchemaVersion:         1,
+		Kind:                  strings.TrimSpace(req.Kind),
+		CreatedAt:             time.Now().UTC().Format(time.RFC3339Nano),
+		TraceID:               strings.TrimSpace(req.TraceID),
+		SessionID:             strings.TrimSpace(req.SessionID),
+		TurnID:                strings.TrimSpace(req.TurnID),
+		Iteration:             req.Iteration,
+		CaseID:                firstNonEmpty(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]),
+		Metadata:              redactStringMap(copyStringMap(req.Metadata)),
+		VisibleTools:          visibleTools,
+		VisibleToolCount:      len(visibleTools),
+		PromptCharCount:       modelInputCharCount(modelInput),
+		ToolRegistryCharCount: len(req.Prompt.Tools),
+		PromptFingerprint:     copyStringMap(req.PromptFingerprint),
+		Prompt:                redactPrompt(req.Prompt),
+		ModelInput:            modelInput,
+		PromptInputTrace:      redactPromptInputTrace(req.PromptInputTrace),
+		DiagnosticTrace:       diagnosticTracePayload(req.DiagnosticTrace),
 	}
+}
+
+func modelInputCharCount(messages []traceMessage) int {
+	total := 0
+	for _, msg := range messages {
+		total += len(msg.Content)
+	}
+	return total
 }
 
 func diagnosticTracePayload(trace diagnostics.DiagnosticTrace) *diagnostics.DiagnosticTrace {

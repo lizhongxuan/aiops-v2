@@ -47,7 +47,11 @@ func (m *Module) Apply(ctx context.Context, req modules.Request) (modules.Result
 	var execCmd *exec.Cmd
 	switch m.language {
 	case "shell":
-		execCmd = exec.CommandContext(ctx, "/bin/sh", append([]string{"-s", "--"}, args...)...)
+		shellPath := "/bin/sh"
+		if bashPath, lookErr := exec.LookPath("bash"); lookErr == nil {
+			shellPath = bashPath
+		}
+		execCmd = exec.CommandContext(ctx, shellPath, append([]string{"-s", "--"}, args...)...)
 	case "python":
 		execCmd = exec.CommandContext(ctx, "python3", append([]string{"-"}, args...)...)
 	default:
@@ -160,6 +164,7 @@ func readEnv(req modules.Request) ([]string, bool) {
 	merged := map[string]string{}
 
 	if req.Vars != nil {
+		mergeScalarVars(merged, req.Vars)
 		if raw, ok := req.Vars["env"]; ok {
 			mergeEnvMap(merged, raw)
 		}
@@ -179,6 +184,38 @@ func readEnv(req modules.Request) ([]string, bool) {
 		result = append(result, fmt.Sprintf("%s=%s", k, v))
 	}
 	return result, true
+}
+
+func mergeScalarVars(dst map[string]string, vars map[string]any) {
+	for key, value := range vars {
+		key = strings.TrimSpace(key)
+		if key == "" || key == "env" || !isShellEnvKey(key) || value == nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			dst[key] = typed
+		case bool:
+			dst[key] = fmt.Sprint(typed)
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
+			dst[key] = fmt.Sprint(typed)
+		}
+	}
+}
+
+func isShellEnvKey(key string) bool {
+	for i, r := range key {
+		if i == 0 {
+			if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+				return false
+			}
+			continue
+		}
+		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func mergeEnvMap(dst map[string]string, raw any) {

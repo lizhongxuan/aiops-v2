@@ -71,13 +71,9 @@ func NewLinkIncidentTool(service *core.Service) tooling.Tool {
 }
 
 func newTool(name, description string, schema json.RawMessage, execute func(context.Context, json.RawMessage) (any, error)) tooling.Tool {
+	meta := evidenceToolMetadata(name, description)
 	return &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: description,
-			RiskLevel:   tooling.ToolRiskLow,
-		},
+		Meta:                meta,
 		Visibility:          tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"inspect", "plan", "execute"}},
 		InputSchemaData:     schema,
 		OutputSchemaData:    outputSchema,
@@ -106,6 +102,24 @@ func newTool(name, description string, schema json.RawMessage, execute func(cont
 			}, nil
 		},
 	}
+}
+
+func evidenceToolMetadata(name, description string) tooling.ToolMetadata {
+	meta := tooling.ToolMetadata{
+		Name:        name,
+		Origin:      tooling.ToolOriginBuiltin,
+		Description: description,
+		RiskLevel:   tooling.ToolRiskLow,
+	}
+	switch name {
+	case "evidence.record", "evidence.link_incident":
+		meta.Layer = tooling.ToolLayerInternal
+	case "evidence.get":
+		meta.Layer = tooling.ToolLayerDeferred
+		meta.Pack = "evidence_read"
+		meta.DeferByDefault = true
+	}
+	return meta
 }
 
 func envelope(tool string, data map[string]any) map[string]any {

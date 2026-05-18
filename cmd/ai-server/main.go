@@ -29,9 +29,7 @@ import (
 	"aiops-v2/internal/hooks"
 	agenttools "aiops-v2/internal/integrations/agents"
 	agentuitools "aiops-v2/internal/integrations/agentui"
-	"aiops-v2/internal/integrations/changes"
 	evidencetools "aiops-v2/internal/integrations/evidence"
-	"aiops-v2/internal/integrations/k8s"
 	"aiops-v2/internal/integrations/localtools"
 	mcpresourcetools "aiops-v2/internal/integrations/mcpresources"
 	opsgraphtools "aiops-v2/internal/integrations/opsgraph"
@@ -220,7 +218,7 @@ func run() error {
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{EvidenceService: evidenceService}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
 	}
-	if err := registerAIOpsToolSurface(toolRegistry, mcpRegistry, evidenceService, newOpsInvestigationAgentToolManager(agentManager, agentFactory)); err != nil {
+	if err := registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcpRegistry, evidenceService, newOpsInvestigationAgentToolManager(agentManager, agentFactory), toolAssembler); err != nil {
 		return fmt.Errorf("init aiops tool surface: %w", err)
 	}
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
@@ -242,18 +240,19 @@ func run() error {
 		}
 	}()
 	kernelCfg := runtimekernel.EinoKernelConfig{
-		ToolSource:  newRegistryAdapter(toolAssembler, commandRegistry, flags),
-		Compiler:    compiler,
-		Policy:      policyEngine,
-		Permissions: permissionEngine,
-		Hooks:       runtimeHookRegistry,
-		Projector:   projector,
-		ModelRouter: router,
-		AgentMgr:    newAgentManagerAdapter(agentManager, agentFactory),
-		Sessions:    sessionManager,
-		SessionRepo: dataStore,
-		SpillRepo:   dataStore,
-		Observer:    runtimeObserver,
+		ToolSource:      newRegistryAdapter(toolAssembler, commandRegistry, flags),
+		Compiler:        compiler,
+		Policy:          policyEngine,
+		Permissions:     permissionEngine,
+		Hooks:           runtimeHookRegistry,
+		Projector:       projector,
+		ModelRouter:     router,
+		AgentMgr:        newAgentManagerAdapter(agentManager, agentFactory),
+		Sessions:        sessionManager,
+		SessionRepo:     dataStore,
+		SpillRepo:       dataStore,
+		EvidenceService: evidenceService,
+		Observer:        runtimeObserver,
 	}
 	kernel := runtimekernel.NewEinoKernel(kernelCfg)
 
@@ -311,16 +310,27 @@ func run() error {
 	if runnerRuntime != nil {
 		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	}
+	secretDir := strings.TrimSpace(os.Getenv("AIOPS_SECRET_DIR"))
+	if secretDir == "" {
+		secretDir = filepath.Join(dataDir, "secrets")
+	}
+	serviceOptions := []appui.ServicesOption{
+		appui.WithStore(dataStore),
+		appui.WithMCPRegistry(mcpRegistry),
+		appui.WithAuthManager(authManager),
+		appui.WithTerminalManager(terminalManager),
+		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
+		appui.WithLifecycleContext(ctx),
+		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
+	}
+	if runnerRuntime != nil {
+		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
+	}
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
 			sessionManager,
-			appui.WithStore(dataStore),
-			appui.WithMCPRegistry(mcpRegistry),
-			appui.WithAuthManager(authManager),
-			appui.WithTerminalManager(terminalManager),
-			appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
-			appui.WithLifecycleContext(ctx),
+			serviceOptions...,
 		),
 		httpOptions...,
 	)
@@ -487,14 +497,12 @@ func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 }
 
 func registerAIOpsToolSurface(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager) error {
+	return registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcpRegistry, evidenceService, investigationAgents, toolRegistry)
+}
+
+func registerAIOpsToolSurfaceWithCatalog(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager, catalogProvider tooling.ToolCatalogProvider) error {
 	if toolRegistry == nil {
 		return fmt.Errorf("tool registry is required")
-	}
-	if err := changes.RegisterBuiltins(toolRegistry); err != nil {
-		return err
-	}
-	if err := k8s.RegisterBuiltins(toolRegistry, k8s.Options{}); err != nil {
-		return err
 	}
 	opsGraphStore, err := opsgraphstore.LoadSeedFile(projectRelativePath("data/opsgraph/erp.seed.yaml"))
 	if err != nil {
@@ -526,7 +534,7 @@ func registerAIOpsToolSurface(toolRegistry *tooling.Registry, mcpRegistry *mcp.R
 	if err := agentuitools.RegisterBuiltins(toolRegistry); err != nil {
 		return err
 	}
-	return toolsearch.RegisterBuiltins(toolRegistry)
+	return toolsearch.RegisterBuiltins(toolRegistry, catalogProvider)
 }
 
 func projectRelativePath(rel string) string {
@@ -906,12 +914,13 @@ func (a *registryAdapter) assembledToolsWithMetadata(session, mode string, metad
 	if a.tools == nil {
 		return nil
 	}
-	return a.tools.AssembleToolsWithOptions(session, mode, tooling.AssembleOptions{
+	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{
 		MetadataTransform: a.flags.ApplyToolMetadata,
 		Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-			return a.flags.IsToolVisible(meta) && tooling.IsToolVisibleForTurnMetadata(meta, metadata)
+			return a.flags.IsToolVisible(meta)
 		},
-	})
+	}, metadata)
+	return a.tools.AssembleToolsWithOptions(session, mode, opts)
 }
 
 // ---------------------------------------------------------------------------

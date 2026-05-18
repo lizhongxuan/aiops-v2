@@ -69,12 +69,16 @@ func NewReadTool(registry *mcp.Registry) tooling.Tool {
 func newTool(name, description string, schema json.RawMessage, execute func(context.Context, json.RawMessage) (any, error)) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: description,
-			RiskLevel:   tooling.ToolRiskLow,
+			Name:           name,
+			Origin:         tooling.ToolOriginBuiltin,
+			Description:    description,
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "mcp_resource",
+			DeferByDefault: true,
+			Triggers:       []string{"MCP resource", "resource URI", "mcp://"},
+			RiskLevel:      tooling.ToolRiskLow,
 		},
-		Visibility:          tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"inspect", "plan", "execute"}},
+		Visibility:          tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}},
 		InputSchemaData:     schema,
 		OutputSchemaData:    outputSchema,
 		ReadOnlyFunc:        func(json.RawMessage) bool { return true },

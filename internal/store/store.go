@@ -160,26 +160,32 @@ type WebSettings struct {
 
 // HostRecord stores one managed host entry for inventory-oriented pages.
 type HostRecord struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
-	Kind            string            `json:"kind,omitempty"`
-	Address         string            `json:"address,omitempty"`
-	Transport       string            `json:"transport,omitempty"`
-	Status          string            `json:"status,omitempty"`
-	Executable      bool              `json:"executable,omitempty"`
-	TerminalCapable bool              `json:"terminalCapable,omitempty"`
-	OS              string            `json:"os,omitempty"`
-	Arch            string            `json:"arch,omitempty"`
-	AgentVersion    string            `json:"agentVersion,omitempty"`
-	LastHeartbeat   string            `json:"lastHeartbeat,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	LastError       string            `json:"lastError,omitempty"`
-	SSHUser         string            `json:"sshUser,omitempty"`
-	SSHPort         int               `json:"sshPort,omitempty"`
-	InstallState    string            `json:"installState,omitempty"`
-	ControlMode     string            `json:"controlMode,omitempty"`
-	CreatedAt       time.Time         `json:"createdAt,omitempty"`
-	UpdatedAt       time.Time         `json:"updatedAt,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Kind              string            `json:"kind,omitempty"`
+	Address           string            `json:"address,omitempty"`
+	Transport         string            `json:"transport,omitempty"`
+	Status            string            `json:"status,omitempty"`
+	Executable        bool              `json:"executable,omitempty"`
+	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
+	OS                string            `json:"os,omitempty"`
+	Arch              string            `json:"arch,omitempty"`
+	AgentVersion      string            `json:"agentVersion,omitempty"`
+	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	LastError         string            `json:"lastError,omitempty"`
+	SSHUser           string            `json:"sshUser,omitempty"`
+	SSHPort           int               `json:"sshPort,omitempty"`
+	SSHCredentialRef  string            `json:"sshCredentialRef,omitempty"`
+	AgentURL          string            `json:"agentUrl,omitempty"`
+	AgentTokenRef     string            `json:"agentTokenRef,omitempty"`
+	InstallState      string            `json:"installState,omitempty"`
+	InstallRunID      string            `json:"installRunId,omitempty"`
+	InstallWorkflowID string            `json:"installWorkflowId,omitempty"`
+	InstallStep       string            `json:"installStep,omitempty"`
+	ControlMode       string            `json:"controlMode,omitempty"`
+	CreatedAt         time.Time         `json:"createdAt,omitempty"`
+	UpdatedAt         time.Time         `json:"updatedAt,omitempty"`
 }
 
 // MCPServerRecord stores one MCP runtime server configuration and its latest

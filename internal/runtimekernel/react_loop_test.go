@@ -271,6 +271,7 @@ func (c *recordingCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 	cloned.ExtraSections = append([]promptcompiler.PromptSection(nil), ctx.ExtraSections...)
 	cloned.ToolDelta = promptcompiler.ToolPromptDelta{
 		NewlyAvailable:         append([]string(nil), ctx.ToolDelta.NewlyAvailable...),
+		NewlyAvailablePacks:    append([]string(nil), ctx.ToolDelta.NewlyAvailablePacks...),
 		TemporarilyUnavailable: append([]string(nil), ctx.ToolDelta.TemporarilyUnavailable...),
 		ApprovalRequired:       append([]string(nil), ctx.ToolDelta.ApprovalRequired...),
 		Content:                ctx.ToolDelta.Content,
@@ -713,6 +714,63 @@ func TestRunTurn_RejectsRemovedOpsToolCallAsMissingToolResult(t *testing.T) {
 	toolResult := session.CurrentTurn.Iterations[0].ToolResults[0]
 	if toolResult.ToolCallID != "call-runbook" || !strings.Contains(toolResult.Error, "tool not found: runbook.match") {
 		t.Fatalf("recorded tool result = %#v, want removed tool failure", toolResult)
+	}
+}
+
+func TestRunTurn_RejectsLegacyOpsToolPrefixesAsMissingToolResults(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		toolName  string
+		arguments string
+	}{
+		{name: "k8s", toolName: "k8s.restart_workload", arguments: `{"workload":"order-api"}`},
+		{name: "changes", toolName: "changes.recent_deployments", arguments: `{"service":"order-api"}`},
+		{name: "fallback", toolName: "fallback.plan_exec", arguments: `{"task":"restart redis"}`},
+		{name: "erp", toolName: "erp.business_metric", arguments: `{"metric":"order failures"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &sequentialLoopModel{
+				responses: []*schema.Message{
+					schema.AssistantMessage("", []schema.ToolCall{
+						{
+							ID:   "call-" + tc.name,
+							Type: "function",
+							Function: schema.FunctionCall{
+								Name:      tc.toolName,
+								Arguments: tc.arguments,
+							},
+						},
+					}),
+					schema.AssistantMessage("已改用当前可用的运维工具继续排查", nil),
+				},
+			}
+
+			kernel := newLoopKernel(t, model, nil, nil, nil)
+			result, err := kernel.RunTurn(context.Background(), TurnRequest{
+				SessionID:   "sess-legacy-tool-" + tc.name,
+				SessionType: SessionTypeHost,
+				Mode:        ModeInspect,
+				TurnID:      "turn-legacy-tool-" + tc.name,
+				Input:       "triage redis memory",
+			})
+			if err != nil {
+				t.Fatalf("RunTurn should feed removed tool failure back to model, got error: %v", err)
+			}
+			if result.Status != "completed" {
+				t.Fatalf("result status = %q, want completed", result.Status)
+			}
+
+			var failureToolMessage string
+			for _, msg := range model.inputs[1] {
+				if msg.Role == schema.Tool && msg.ToolCallID == "call-"+tc.name {
+					failureToolMessage = msg.Content
+					break
+				}
+			}
+			if !strings.Contains(failureToolMessage, tc.toolName+" failed") || !strings.Contains(failureToolMessage, "tool not found: "+tc.toolName) {
+				t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
+			}
+		})
 	}
 }
 
@@ -2807,6 +2865,226 @@ func TestRunTurn_RefreshesToolsBetweenIterations(t *testing.T) {
 	}
 	if !strings.Contains(session.CurrentTurn.Iterations[1].PromptDelta, "Newly available tools") {
 		t.Fatal("prompt delta should carry tool availability changes")
+	}
+}
+
+func TestIterationToolDeltaReportsNewlyAvailablePacks(t *testing.T) {
+	snapshot := &TurnSnapshot{Iterations: []IterationState{{
+		VisibleTools: []string{"search_ops_manuals"},
+	}}}
+	tools := []promptcompiler.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "search_ops_manuals", Layer: tooling.ToolLayerCore}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "resolve_ops_manual_params", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow"}},
+	}
+
+	delta := iterationToolDelta(snapshot, tools)
+	if !containsString(delta.NewlyAvailable, "resolve_ops_manual_params") {
+		t.Fatalf("newly available tools = %v, want resolve_ops_manual_params", delta.NewlyAvailable)
+	}
+	if !containsString(delta.NewlyAvailablePacks, "ops_manual_flow") {
+		t.Fatalf("newly available packs = %v, want ops_manual_flow", delta.NewlyAvailablePacks)
+	}
+
+	compiled, err := promptcompiler.NewCompiler().Compile(promptcompiler.CompileContext{ToolDelta: delta})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if !strings.Contains(compiled.Dynamic.ToolDelta.Content, "Newly available tool packs") || !strings.Contains(compiled.Dynamic.ToolDelta.Content, "ops_manual_flow") {
+		t.Fatalf("tool delta content missing pack section:\n%s", compiled.Dynamic.ToolDelta.Content)
+	}
+}
+
+func TestRunTurn_ProgressivelyEnablesOpsManualFlowTools(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-search-manual",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "search_ops_manuals",
+						Arguments: `{"text":"检查 Redis 状态，不要重启"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-resolve-params",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "resolve_ops_manual_params",
+						Arguments: `{"manual_id":"manual-redis-rca"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("manual flow ready", nil),
+		},
+	}
+
+	registry := tooling.NewRegistry()
+	for _, toolDef := range opsManualFlowRuntimeTestTools() {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-ops-manual-flow",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-ops-manual-flow",
+		Input:       "检查 Redis 状态，不要重启",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 3 {
+		t.Fatalf("compiler contexts = %d, want 3", len(compiler.contexts))
+	}
+
+	first := toolNames(compiler.contexts[0].AssembledTools)
+	for _, want := range []string{"search_ops_manuals"} {
+		if !containsString(first, want) {
+			t.Fatalf("first iteration tools = %v, want %s", first, want)
+		}
+	}
+	for _, forbidden := range []string{"resolve_ops_manual_params", "run_ops_manual_preflight"} {
+		if containsString(first, forbidden) {
+			t.Fatalf("first iteration tools = %v, should not include %s", first, forbidden)
+		}
+	}
+
+	second := toolNames(compiler.contexts[1].AssembledTools)
+	if !containsString(second, "resolve_ops_manual_params") {
+		t.Fatalf("second iteration tools = %v, want resolve_ops_manual_params after matched search", second)
+	}
+	if containsString(second, "run_ops_manual_preflight") {
+		t.Fatalf("second iteration tools = %v, should not include preflight before params resolve", second)
+	}
+
+	third := toolNames(compiler.contexts[2].AssembledTools)
+	if !containsString(third, "run_ops_manual_preflight") {
+		t.Fatalf("third iteration tools = %v, want run_ops_manual_preflight after resolved params", third)
+	}
+}
+
+func TestRunTurn_FeedsHiddenInternalEvidenceToolCallBackToModel(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-hidden-evidence-record",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "evidence.record",
+						Arguments: `{"summary":"legacy call"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("continued without evidence writer", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "evidence.record",
+			Description: "internal evidence writer",
+			Layer:       tooling.ToolLayerInternal,
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "should not execute"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-hidden-evidence",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-hidden-evidence",
+		Input:       "legacy evidence record",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	var failureToolMessage string
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-hidden-evidence-record" {
+			failureToolMessage = msg.Content
+			break
+		}
+	}
+	if !strings.Contains(failureToolMessage, "tool not found: evidence.record") {
+		t.Fatalf("hidden evidence failure message = %q, want tool-not-found feedback", failureToolMessage)
+	}
+}
+
+func opsManualFlowRuntimeTestTools() []tooling.Tool {
+	return []tooling.Tool{
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:        "search_ops_manuals",
+				Description: "search manuals",
+				Layer:       tooling.ToolLayerCore,
+				RiskLevel:   tooling.ToolRiskLow,
+			},
+			ReadOnlyFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+				data := json.RawMessage(`{"decision":"need_info","manuals":[{"manual":{"id":"manual-redis-rca","title":"Redis RCA"},"usable_mode":"need_info"}]}`)
+				return tooling.ToolResult{
+					Content: `{"decision":"need_info","manuals":[{"id":"manual-redis-rca"}]}`,
+					Display: &tooling.ToolDisplayPayload{
+						Type:  "ops_manual_search_result",
+						Title: "search_ops_manuals",
+						Data:  data,
+					},
+				}, nil
+			},
+		},
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:           "resolve_ops_manual_params",
+				Description:    "resolve params",
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           "ops_manual_flow",
+				DeferByDefault: true,
+				RiskLevel:      tooling.ToolRiskLow,
+			},
+			ReadOnlyFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+				data := json.RawMessage(`{"status":"resolved","manual_id":"manual-redis-rca","workflow_id":"wf-redis-rca","resolved_params":[{"id":"target_instance","value":"redis-01"}]}`)
+				return tooling.ToolResult{
+					Content: `{"status":"resolved","next_action":"run_preflight"}`,
+					Display: &tooling.ToolDisplayPayload{
+						Type:  "ops_manual_param_resolution",
+						Title: "resolve_ops_manual_params",
+						Data:  data,
+					},
+				}, nil
+			},
+		},
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:           "run_ops_manual_preflight",
+				Description:    "preflight",
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           "ops_manual_flow",
+				DeferByDefault: true,
+				RiskLevel:      tooling.ToolRiskLow,
+			},
+			ReadOnlyFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+				return tooling.ToolResult{Content: `{"status":"passed"}`}, nil
+			},
+		},
 	}
 }
 

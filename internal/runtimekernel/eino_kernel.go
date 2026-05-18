@@ -22,6 +22,7 @@ import (
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
+	evidencecore "aiops-v2/internal/evidence"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/modelrouter"
@@ -111,19 +112,20 @@ type AgentManagerSource interface {
 // EinoKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
 type EinoKernel struct {
-	tools       ToolAssemblySource
-	compiler    promptcompiler.Compiler
-	policy      *policyengine.Engine
-	permissions *permissions.Engine
-	hooks       *hooks.Registry
-	projector   EventEmitter
-	modelRouter *modelrouter.Router
-	sessions    *SessionManager
-	agentMgr    AgentManagerSource
-	spanSource  SpanStreamSource // optional: span tree integration for conversation tracking
-	observer    Observer
-	compressor  *spanstream.ContextCompressor
-	spillRepo   ToolResultSpillRepository
+	tools           ToolAssemblySource
+	compiler        promptcompiler.Compiler
+	policy          *policyengine.Engine
+	permissions     *permissions.Engine
+	hooks           *hooks.Registry
+	projector       EventEmitter
+	modelRouter     *modelrouter.Router
+	sessions        *SessionManager
+	agentMgr        AgentManagerSource
+	spanSource      SpanStreamSource // optional: span tree integration for conversation tracking
+	observer        Observer
+	compressor      *spanstream.ContextCompressor
+	spillRepo       ToolResultSpillRepository
+	evidenceService *evidencecore.Service
 
 	turnCancelMu       sync.Mutex
 	inFlightTurnCancel map[string]context.CancelFunc
@@ -132,20 +134,21 @@ type EinoKernel struct {
 
 // EinoKernelConfig holds the dependencies for creating an EinoKernel.
 type EinoKernelConfig struct {
-	ToolSource  ToolAssemblySource
-	Compiler    promptcompiler.Compiler
-	Policy      *policyengine.Engine
-	Permissions *permissions.Engine
-	Hooks       *hooks.Registry
-	Projector   EventEmitter
-	ModelRouter *modelrouter.Router
-	AgentMgr    AgentManagerSource
-	Sessions    *SessionManager
-	SessionRepo SessionRepository
-	SpanSource  SpanStreamSource // optional: if nil, span tracking is disabled
-	Observer    Observer
-	Compressor  *spanstream.ContextCompressor
-	SpillRepo   ToolResultSpillRepository
+	ToolSource      ToolAssemblySource
+	Compiler        promptcompiler.Compiler
+	Policy          *policyengine.Engine
+	Permissions     *permissions.Engine
+	Hooks           *hooks.Registry
+	Projector       EventEmitter
+	ModelRouter     *modelrouter.Router
+	AgentMgr        AgentManagerSource
+	Sessions        *SessionManager
+	SessionRepo     SessionRepository
+	SpanSource      SpanStreamSource // optional: if nil, span tracking is disabled
+	Observer        Observer
+	Compressor      *spanstream.ContextCompressor
+	SpillRepo       ToolResultSpillRepository
+	EvidenceService *evidencecore.Service
 }
 
 // NewEinoKernel creates a new EinoKernel with the given dependencies.
@@ -172,6 +175,7 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 		observer:           observer,
 		compressor:         cfg.Compressor,
 		spillRepo:          cfg.SpillRepo,
+		evidenceService:    cfg.EvidenceService,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
 	}
@@ -1036,7 +1040,8 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, req.HostID, req.Metadata, time.Now())
+	turnMetadata := applyIntentToolPacks(cloneTurnMetadata(req.Metadata), req.Input)
+	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
 	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 	if len(preTurnEvent.AdditionalContext) > 0 {
 		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
@@ -1048,7 +1053,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 3: Assemble tools
 	recorder.Record(StepAssembleTools)
-	toolPool := k.assembleToolPool(req.SessionType, req.Mode, req.Metadata)
+	toolPool := k.assembleToolPool(req.SessionType, req.Mode, turnMetadata)
 
 	// Step 4: Create agent
 	recorder.Record(StepCreateAgent)
@@ -1197,6 +1202,7 @@ func (k *EinoKernel) runHostIterationLoop(
 	toolDispatches := countActualToolDispatches(snapshot)
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 	var lastReasoningPersist time.Time
+	turnMetadata := applyIntentToolPacks(cloneTurnMetadata(req.Metadata), req.Input)
 
 	for iteration := len(snapshot.Iterations); iteration < maxIterations; iteration++ {
 		k.emitIterationStage(session.ID, turnID, iteration, "context_pipeline", turnSpanID)
@@ -1215,7 +1221,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		contextMessages := contextState.Messages
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
-		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, req.Metadata), req.SessionType, session.HostID, req.Metadata, time.Now())
+		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		if shouldSwitchToSynthesisOnly(req.Mode, toolDispatches, compileCtx.AssembledTools) {
@@ -1262,7 +1268,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			SessionID:        session.ID,
 			TurnID:           turnID,
 			Iteration:        iteration,
-			Metadata:         req.Metadata,
+			Metadata:         turnMetadata,
 			Compiled:         compiled,
 			ModelInput:       modelInput,
 			VisibleTools:     toolNames(compileCtx.AssembledTools),
@@ -1560,6 +1566,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				}
 			}
 			applyHiddenTools(snapshot, dispatchResult.HiddenTools)
+			dispatchResult.Result = k.autoRecordToolResultEvidence(ctx, session, turnID, tc, dispatchResult.Metadata, dispatchResult.Result)
 			recordedResult, materializeErr := k.materializeToolResult(session, snapshot, iteration, tc, dispatchResult.Metadata, dispatchResult.Result)
 			if materializeErr != nil {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
@@ -1567,6 +1574,8 @@ func (k *EinoKernel) runHostIterationLoop(
 				k.persistTurnSnapshot(session, snapshot)
 				return nil, fmt.Errorf("materialize tool result %q: %w", tc.Name, materializeErr)
 			}
+			turnMetadata = updateOpsManualFlowTurnMetadata(turnMetadata, recordedResult)
+			turnMetadata = updateToolSearchPackTurnMetadata(turnMetadata, tc.Name, recordedResult)
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusCompleted, tc.Name)
 			appendAgentItem(snapshot, newAgentItem(
 				toolResultItemID(turnID, tc),
@@ -3632,8 +3641,34 @@ func iterationToolDelta(snapshot *TurnSnapshot, tools []promptcompiler.Tool) pro
 		return delta
 	}
 	delta.NewlyAvailable = diffStrings(current, previous.VisibleTools)
+	delta.NewlyAvailablePacks = newlyAvailablePacks(delta.NewlyAvailable, tools)
 	delta.TemporarilyUnavailable = mergeStringSets(diffStrings(previous.VisibleTools, current), snapshot.HiddenTools)
 	return delta
+}
+
+func newlyAvailablePacks(newToolNames []string, tools []promptcompiler.Tool) []string {
+	if len(newToolNames) == 0 {
+		return nil
+	}
+	newNames := make(map[string]bool, len(newToolNames))
+	for _, name := range newToolNames {
+		newNames[name] = true
+	}
+	packs := make([]string, 0)
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		meta := tool.Metadata()
+		if !newNames[meta.Name] || meta.Pack == "" || seen[meta.Pack] {
+			continue
+		}
+		seen[meta.Pack] = true
+		packs = append(packs, meta.Pack)
+	}
+	sort.Strings(packs)
+	return packs
 }
 
 func buildProtocolPromptState(snapshot *TurnSnapshot, delta promptcompiler.ToolPromptDelta, approvals []PendingApproval, evidence []PendingEvidence) promptcompiler.ProtocolPromptState {

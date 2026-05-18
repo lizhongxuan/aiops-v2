@@ -19,12 +19,12 @@ type CommandFactory func(req CreateSessionRequest) (*exec.Cmd, error)
 type ManagerOption func(*Manager)
 
 type Manager struct {
-	mu              sync.RWMutex
-	sessions        map[string]*Session
-	commandFactory  CommandFactory
-	defaultHostID   string
-	defaultShell    string
-	defaultCwd      string
+	mu             sync.RWMutex
+	sessions       map[string]*Session
+	commandFactory CommandFactory
+	defaultHostID  string
+	defaultShell   string
+	defaultCwd     string
 }
 
 func NewManager(opts ...ManagerOption) *Manager {
@@ -46,6 +46,15 @@ func WithCommandFactory(factory CommandFactory) ManagerOption {
 	return func(m *Manager) {
 		m.commandFactory = factory
 	}
+}
+
+func (m *Manager) SetCommandFactory(factory CommandFactory) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commandFactory = factory
 }
 
 func WithDefaultShell(shell string) ManagerOption {
@@ -70,7 +79,7 @@ func (m *Manager) CreateSession(_ context.Context, req CreateSessionRequest) (Se
 		cwd = m.defaultCwd
 	}
 	meta := SessionMetadata{
-		SessionID:  fmt.Sprintf("term-%d", time.Now().UnixNano()),
+		SessionID: fmt.Sprintf("term-%d", time.Now().UnixNano()),
 		HostID:    hostID,
 		Cwd:       cwd,
 		Shell:     shell,
@@ -106,7 +115,13 @@ func (m *Manager) CreateSession(_ context.Context, req CreateSessionRequest) (Se
 
 func (m *Manager) buildCommand(req CreateSessionRequest, meta SessionMetadata) (*exec.Cmd, error) {
 	if m.commandFactory != nil {
-		return m.commandFactory(req)
+		cmd, err := m.commandFactory(req)
+		if err != nil {
+			return nil, err
+		}
+		if cmd != nil {
+			return cmd, nil
+		}
 	}
 	args := shellArgs(meta.Shell)
 	cmd := exec.Command(meta.Shell, args...)

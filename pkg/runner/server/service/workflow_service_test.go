@@ -100,7 +100,7 @@ func TestVisualWorkflowPublishStateMachineRequiresValidatedGraphHash(t *testing.
 		t.Fatalf("dry run metadata missing: %+v", dryRunPassed)
 	}
 
-	published, err := svc.Publish(context.Background(), "publish-demo", WorkflowPublishOptions{SaveNote: "ready for prod"})
+	published, err := svc.Publish(context.Background(), "publish-demo", WorkflowPublishOptions{SaveNote: "ready for prod", RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("publish workflow: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestWorkflowServicePublishRequiresRiskAcknowledgement(t *testing.T) {
 	svc := NewWorkflowService(t.TempDir())
 	if err := svc.Create(context.Background(), &WorkflowRecord{
 		Name:    "publish-risk",
-		RawYAML: []byte(testWorkflowYAMLWithAction("publish-risk", "shell.run", "script", "echo risky")),
+		RawYAML: []byte(testWorkflowYAMLWithAction("publish-risk", "script.shell", "script", "echo risky")),
 	}); err != nil {
 		t.Fatalf("create workflow: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestWorkflowServicePublishEnforcesDryRunPrechecks(t *testing.T) {
 		t.Fatalf("create capability workflow: %v", err)
 	}
 	validateForPublish(t, svc, "publish-capability")
-	if _, err := svc.Publish(context.Background(), "publish-capability", WorkflowPublishOptions{WarningAcknowledged: true}); !isInvalidCapabilityError(err) {
+	if _, err := svc.Publish(context.Background(), "publish-capability", WorkflowPublishOptions{RiskAcknowledged: true, WarningAcknowledged: true}); !isInvalidCapabilityError(err) {
 		t.Fatalf("publish with capability mismatch error = %v", err)
 	}
 
@@ -174,10 +174,10 @@ func TestWorkflowServicePublishEnforcesDryRunPrechecks(t *testing.T) {
 		t.Fatalf("create warning workflow: %v", err)
 	}
 	validateForPublish(t, svc, "publish-warning")
-	if _, err := svc.Publish(context.Background(), "publish-warning", WorkflowPublishOptions{}); !isInvalidWarningAcknowledgementError(err) {
+	if _, err := svc.Publish(context.Background(), "publish-warning", WorkflowPublishOptions{RiskAcknowledged: true}); !isInvalidWarningAcknowledgementError(err) {
 		t.Fatalf("publish with dry-run warning error = %v", err)
 	}
-	if _, err := svc.Publish(context.Background(), "publish-warning", WorkflowPublishOptions{WarningAcknowledged: true}); err != nil {
+	if _, err := svc.Publish(context.Background(), "publish-warning", WorkflowPublishOptions{RiskAcknowledged: true, WarningAcknowledged: true}); err != nil {
 		t.Fatalf("publish with acknowledged warning: %v", err)
 	}
 }
@@ -347,7 +347,7 @@ func TestWorkflowServiceExportAndImportBundle(t *testing.T) {
 }
 
 func testWorkflowYAML(name, cmd string) string {
-	return testWorkflowYAMLWithAction(name, "cmd.run", "cmd", cmd)
+	return testWorkflowYAMLWithAction(name, "script.shell", "script", cmd)
 }
 
 func testWorkflowYAMLWithCapabilityMismatch(name string) string {
@@ -358,13 +358,13 @@ inventory:
     app-01:
       address: agent://app-01
       vars:
-        capabilities: [shell.run]
+        capabilities: [script.python]
 steps:
   - name: run
     targets: [app-01]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo ok
+      script: echo ok
 `
 }
 

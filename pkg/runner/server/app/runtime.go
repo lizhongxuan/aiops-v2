@@ -19,6 +19,7 @@ import (
 	"runner/server/store/skillstore"
 	"runner/server/ui"
 	"runner/state"
+	"runner/workflow/visual"
 )
 
 type RuntimeOptions struct {
@@ -28,9 +29,10 @@ type RuntimeOptions struct {
 }
 
 type Runtime struct {
-	Handler     http.Handler
-	runSvc      *service.RunService
-	workflowSvc *service.WorkflowService
+	Handler           http.Handler
+	runSvc            *service.RunService
+	workflowSvc       *service.WorkflowService
+	visualWorkflowSvc *service.VisualWorkflowService
 }
 
 func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
@@ -113,7 +115,23 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 		UI:             uiHandler,
 	})
 
-	return &Runtime{Handler: router, runSvc: runSvc, workflowSvc: workflowSvc}, nil
+	return &Runtime{Handler: router, runSvc: runSvc, workflowSvc: workflowSvc, visualWorkflowSvc: visualWorkflowSvc}, nil
+}
+
+func (r *Runtime) SubmitGraphRun(ctx context.Context, graph visual.Graph, vars map[string]any, triggeredBy, idempotencyKey string) (*service.RunResponse, error) {
+	if r == nil || r.visualWorkflowSvc == nil {
+		return nil, fmt.Errorf("runner runtime is not configured")
+	}
+	return r.visualWorkflowSvc.SubmitGraphRunWithOptions(ctx, graph, vars, triggeredBy, idempotencyKey, service.VisualWorkflowRunOptions{
+		RiskAcknowledged: true,
+	})
+}
+
+func (r *Runtime) GetRun(ctx context.Context, runID string) (*service.RunDetail, error) {
+	if r == nil || r.runSvc == nil {
+		return nil, fmt.Errorf("runner runtime is not configured")
+	}
+	return r.runSvc.Get(ctx, runID)
 }
 
 func (r *Runtime) SetWorkflowReferenceChecker(checker service.WorkflowReferenceChecker) {

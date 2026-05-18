@@ -213,7 +213,7 @@ func TestApplyWithRunPersistsGraphStateAndEvents(t *testing.T) {
 			Hosts: map[string]workflow.Host{"local": {Address: "local"}},
 		},
 		Steps: []workflow.Step{
-			{ID: "run", Name: "run", Action: "cmd.run", Targets: []string{"local"}},
+			{ID: "run", Name: "run", Action: "script.shell", Targets: []string{"local"}},
 		},
 		XRunnerGraph: &workflow.GraphSpec{
 			Version: "v1",
@@ -258,7 +258,7 @@ func TestApplyWithRunPersistsLoopIterationState(t *testing.T) {
 			Hosts: map[string]workflow.Host{"local": {Address: "local"}},
 		},
 		Steps: []workflow.Step{
-			{ID: "body", Name: "body", Action: "cmd.run", Targets: []string{"local"}},
+			{ID: "body", Name: "body", Action: "script.shell", Targets: []string{"local"}},
 		},
 		XRunnerGraph: &workflow.GraphSpec{
 			Version: "v1",
@@ -383,7 +383,7 @@ func simpleWorkflow() workflow.Workflow {
 		Steps: []workflow.Step{
 			{
 				Name:   "step-1",
-				Action: "cmd.run",
+				Action: "script.shell",
 			},
 		},
 	}

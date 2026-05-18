@@ -81,3 +81,80 @@ func TestHostAPI_CRUDRemovedEndpointsAndSelect(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want selected host-a", payload.Snapshot)
 	}
 }
+
+func TestHostAPIInstallRetriesHostAgentWorkflow(t *testing.T) {
+	dataDir := t.TempDir()
+	dataStore, err := store.NewJSONFileStore(dataDir, 10)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer dataStore.Close()
+	if err := dataStore.SaveHost(&store.HostRecord{
+		ID:               "host-a",
+		Name:             "host-a",
+		Address:          "10.0.0.11",
+		SSHUser:          "ubuntu",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://ops/host-a",
+		AgentVersion:     "v0.1.0",
+		Status:           "install_failed",
+		InstallState:     "failed",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	sessionMgr := runtimekernel.NewSessionManager(dataStore)
+	srv := NewHTTPServer(appui.NewServices(sessionAPITestRuntime{}, sessionMgr, appui.WithStore(dataStore)))
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{"agentVersion": "v0.1.0", "sshCredentialRef": "secret://ops/host-a"})
+	resp, err := http.Post(ts.URL+"/api/v1/hosts/host-a/install", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST install error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST install status = %d, want 200", resp.StatusCode)
+	}
+	var payload appui.HostMutationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode install response: %v", err)
+	}
+	if payload.Host.Status != "installing" || payload.Host.InstallState != "pending_install" {
+		t.Fatalf("install response host = %+v", payload.Host)
+	}
+}
+
+func TestHostAPISSHTestRejectsMissingCredentialRef(t *testing.T) {
+	dataDir := t.TempDir()
+	dataStore, err := store.NewJSONFileStore(dataDir, 10)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer dataStore.Close()
+	if err := dataStore.SaveHost(&store.HostRecord{
+		ID:      "host-a",
+		Name:    "host-a",
+		Address: "10.0.0.11",
+		SSHUser: "ubuntu",
+		SSHPort: 22,
+		Status:  "offline",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	sessionMgr := runtimekernel.NewSessionManager(dataStore)
+	srv := NewHTTPServer(appui.NewServices(sessionAPITestRuntime{}, sessionMgr, appui.WithStore(dataStore)))
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/hosts/host-a/ssh/test", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("POST ssh test error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST ssh test status = %d, want 400", resp.StatusCode)
+	}
+}

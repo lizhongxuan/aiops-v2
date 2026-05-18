@@ -30,9 +30,9 @@ inventory:
 steps:
   - name: hello
     targets: [local]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: "echo hello"
+      script: "echo hello"
 `)
 	if err := wfSvc.Create(context.Background(), &WorkflowRecord{
 		Name:    "idempotency-demo",
@@ -75,9 +75,9 @@ version: "1"
 name: manual-meta-demo
 steps:
   - name: hello
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: "echo hello"
+      script: "echo hello"
 `)
 	if err := wfSvc.Create(context.Background(), &WorkflowRecord{
 		Name:    "manual-meta-demo",
@@ -435,9 +435,9 @@ inventory:
 steps:
   - name: hello
     targets: [local]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: "echo persisted"
+      script: "echo persisted"
 `)
 	if err := wfSvc.Create(context.Background(), &WorkflowRecord{
 		Name:    "persistence-demo",
@@ -541,9 +541,9 @@ inventory:
 steps:
   - name: run
     targets: [local]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: %q
+      script: %q
 `, name, cmd)
 }
 

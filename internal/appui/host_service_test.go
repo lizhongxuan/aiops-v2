@@ -105,3 +105,31 @@ func TestHostServiceCrudAndSelect(t *testing.T) {
 		t.Fatalf("latest session = %+v, want host-b selected", latest)
 	}
 }
+
+func TestHostServiceCreateHostStoresSSHInstallContract(t *testing.T) {
+	hostRepo := newHostRepoStub()
+	service := NewHostService(nil, hostRepo, NewSnapshotBuilder(hostRepo))
+
+	created, err := service.CreateHost(context.Background(), HostUpsert{
+		ID:               "prod-web-01",
+		Name:             "prod-web-01",
+		Address:          "10.0.0.11",
+		SSHUser:          "ubuntu",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://ops/prod-web-01-ssh-key",
+		AgentVersion:     "v0.1.0",
+		InstallViaSSH:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateHost() error = %v", err)
+	}
+	if created.Host.SSHCredentialRef != "secret://ops/prod-web-01-ssh-key" {
+		t.Fatalf("SSHCredentialRef = %q", created.Host.SSHCredentialRef)
+	}
+	if created.Host.AgentVersion != "v0.1.0" {
+		t.Fatalf("AgentVersion = %q", created.Host.AgentVersion)
+	}
+	if created.Host.Transport != "ssh_bootstrap" || created.Host.Status != "installing" || created.Host.InstallState != "pending_install" {
+		t.Fatalf("created host state = %+v", created.Host)
+	}
+}

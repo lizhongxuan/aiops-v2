@@ -267,6 +267,70 @@ func TestRegistryAssembleToolsWithOptionsAppliesFilterTransformAndExtraTools(t *
 	}
 }
 
+func TestRegistryAssembleToolsWithOptionsAppliesLayerPackAndProfileFilters(t *testing.T) {
+	r := NewRegistry()
+	for _, meta := range []ToolMetadata{
+		{Name: "legacy_default", Description: "old metadata remains visible"},
+		{Name: "core_read", Description: "core", Layer: ToolLayerCore},
+		{Name: "deferred_manual", Description: "deferred", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
+		{Name: "internal_record", Description: "internal", Layer: ToolLayerInternal},
+		{Name: "debug_trace", Description: "debug", Layer: ToolLayerDebug},
+		{Name: "mutation_restart", Description: "mutation", Layer: ToolLayerMutation, Pack: "mutation", Mutating: true},
+		{Name: "profile_only", Description: "profile", Layer: ToolLayerCore, Profiles: []string{"demo"}},
+	} {
+		if err := r.Register(&mockTool{
+			meta:        meta,
+			enabled:     true,
+			readOnly:    !meta.Mutating,
+			concurrency: true,
+			description: meta.Description,
+		}); err != nil {
+			t.Fatalf("Register(%s) error = %v", meta.Name, err)
+		}
+	}
+
+	defaultNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{}))
+	for _, want := range []string{"core_read", "legacy_default"} {
+		if !containsToolNameForRegistryTest(defaultNames, want) {
+			t.Fatalf("default names = %v, want %q", defaultNames, want)
+		}
+	}
+	for _, forbidden := range []string{"deferred_manual", "internal_record", "debug_trace", "mutation_restart", "profile_only"} {
+		if containsToolNameForRegistryTest(defaultNames, forbidden) {
+			t.Fatalf("default names = %v, should not include %q", defaultNames, forbidden)
+		}
+	}
+
+	manualNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{EnabledPacks: []string{"ops_manual_flow"}}))
+	if !containsToolNameForRegistryTest(manualNames, "deferred_manual") {
+		t.Fatalf("manual pack names = %v, want deferred_manual", manualNames)
+	}
+
+	mutationNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{EnabledPacks: []string{"mutation"}}))
+	if !containsToolNameForRegistryTest(mutationNames, "mutation_restart") {
+		t.Fatalf("mutation pack names = %v, want mutation_restart", mutationNames)
+	}
+
+	debugNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{Profile: "debug"}))
+	if !containsToolNameForRegistryTest(debugNames, "debug_trace") {
+		t.Fatalf("debug profile names = %v, want debug_trace", debugNames)
+	}
+
+	demoNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{Profile: "demo"}))
+	if !containsToolNameForRegistryTest(demoNames, "profile_only") {
+		t.Fatalf("demo profile names = %v, want profile_only", demoNames)
+	}
+}
+
+func containsToolNameForRegistryTest(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRegistryCompileContextWithMetadataFiltersOpsManualToolsAfterOptOut(t *testing.T) {
 	r := NewRegistry()
 	for _, name := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight", "host_read"} {
@@ -290,6 +354,70 @@ func TestRegistryCompileContextWithMetadataFiltersOpsManualToolsAfterOptOut(t *t
 	}
 	if assembled[0].Metadata().Name != "host_read" {
 		t.Fatalf("remaining tool = %q, want host_read", assembled[0].Metadata().Name)
+	}
+}
+
+func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *testing.T) {
+	r := NewRegistry()
+	for _, meta := range []ToolMetadata{
+		{Name: "host_read", Description: "host", Layer: ToolLayerCore},
+		{Name: "search_ops_manuals", Description: "search", Layer: ToolLayerCore},
+		{Name: "resolve_ops_manual_params", Description: "resolve", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
+		{Name: "run_ops_manual_preflight", Description: "preflight", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
+	} {
+		if err := r.Register(&mockTool{
+			meta:        meta,
+			enabled:     true,
+			readOnly:    true,
+			concurrency: true,
+			description: meta.Description,
+		}); err != nil {
+			t.Fatalf("Register(%s) error = %v", meta.Name, err)
+		}
+	}
+
+	initial := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", nil))
+	for _, want := range []string{"host_read", "search_ops_manuals"} {
+		if !containsToolNameForRegistryTest(initial, want) {
+			t.Fatalf("initial tools = %v, want %q", initial, want)
+		}
+	}
+	for _, forbidden := range []string{"resolve_ops_manual_params", "run_ops_manual_preflight"} {
+		if containsToolNameForRegistryTest(initial, forbidden) {
+			t.Fatalf("initial tools = %v, should not include %q", initial, forbidden)
+		}
+	}
+
+	afterMatch := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualMatched": "true",
+		"enableToolPack":   "ops_manual_flow",
+	}))
+	if !containsToolNameForRegistryTest(afterMatch, "resolve_ops_manual_params") {
+		t.Fatalf("after match tools = %v, want resolve_ops_manual_params", afterMatch)
+	}
+	if containsToolNameForRegistryTest(afterMatch, "run_ops_manual_preflight") {
+		t.Fatalf("after match tools = %v, should not include run_ops_manual_preflight before params resolve", afterMatch)
+	}
+
+	afterParams := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualMatched":        "true",
+		"opsManualParamsResolved": "true",
+		"enableToolPack":          "ops_manual_flow",
+		"enableTool":              "run_ops_manual_preflight",
+	}))
+	if !containsToolNameForRegistryTest(afterParams, "run_ops_manual_preflight") {
+		t.Fatalf("after params tools = %v, want run_ops_manual_preflight", afterParams)
+	}
+
+	skipped := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualAction":         "skip_ops_manual",
+		"opsManualMatched":        "true",
+		"opsManualParamsResolved": "true",
+		"enableToolPack":          "ops_manual_flow",
+		"enableTool":              "run_ops_manual_preflight",
+	}))
+	if !containsToolNameForRegistryTest(skipped, "host_read") || len(skipped) != 1 {
+		t.Fatalf("skipped tools = %v, want only host_read", skipped)
 	}
 }
 

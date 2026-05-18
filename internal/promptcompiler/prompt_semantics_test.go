@@ -41,7 +41,7 @@ func TestCompiledPromptToMessagesCarriesSemanticLayerMetadata(t *testing.T) {
 	}
 }
 
-func TestToolIndexIncludesUsageExamplesAndFailureHandling(t *testing.T) {
+func TestToolIndexIncludesCommonPolicyAndCompactEntries(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{
 		AssembledTools: []Tool{fakePromptTool{
 			name:        "read_file",
@@ -53,9 +53,14 @@ func TestToolIndexIncludesUsageExamplesAndFailureHandling(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	content := compiled.Tools.Content
-	for _, want := range []string{"Usage policy:", "Example:", "Failure handling:"} {
+	for _, want := range []string{"Common policy:", "Read-only tool failure is missing or blocked evidence", "read_file", "Read a workspace file."} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("tool index missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"Usage policy:", "Example:", "Failure handling:"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("compact tool index should not include %q:\n%s", forbidden, content)
 		}
 	}
 }

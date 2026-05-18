@@ -49,6 +49,7 @@ test.describe("React route smoke", () => {
 
     await page.goto("/experience-packs");
     await expect(page).toHaveURL(/\/settings\/experience-packs$/);
-    await expect(page.locator("main")).toContainText("经验包");
+    await expect(page.locator("main")).toContainText("运维手册");
+    await expect(page.locator("main")).toContainText("旧入口已迁移到运维手册");
   });
 });

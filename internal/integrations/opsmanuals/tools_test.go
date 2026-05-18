@@ -35,14 +35,15 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	if meta.RiskLevel != tooling.ToolRiskLow {
 		t.Fatalf("risk level = %q, want low", meta.RiskLevel)
 	}
-	for _, want := range []string{"high-risk", "database backup", "decision", "direct_execute", "need_info", "adapt", "reference_only", "no_match", "opsManualAction=skip_ops_manual", "opsManualSkipped=true", "opted out"} {
+	if meta.Layer != tooling.ToolLayerCore || meta.Pack != "" || meta.DeferByDefault {
+		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want core with no pack", meta.Layer, meta.Pack, meta.DeferByDefault)
+	}
+	if len(meta.Description) > 600 {
+		t.Fatalf("description length = %d, want <= 600: %q", len(meta.Description), meta.Description)
+	}
+	for _, want := range []string{"verified ops manuals", "decision", "direct_execute", "need_info", "adapt", "reference_only", "no_match", "operation_frame"} {
 		if !strings.Contains(meta.Description, want) {
 			t.Fatalf("description = %q, want %q", meta.Description, want)
-		}
-	}
-	for _, want := range []string{"explicit operation_frame", "object_type", "operation_type", "target_scope", "required_params", "operation_frame.target.name"} {
-		if !strings.Contains(meta.Description, want) {
-			t.Fatalf("description = %q, want explicit operation_frame guidance %q", meta.Description, want)
 		}
 	}
 	if !tool.IsReadOnly(json.RawMessage(`{"text":"排查 Redis"}`)) {
@@ -103,13 +104,19 @@ func TestRegisterBuiltinsInstallsRunOpsManualPreflight(t *testing.T) {
 	if !hasAlias(meta.Aliases, "ops_manual.preflight") {
 		t.Fatalf("aliases = %#v, want ops_manual.preflight", meta.Aliases)
 	}
-	for _, want := range []string{"read-only", "Node 0 preflight", "auditable evidence", "never executes", "operation_frame", "parameters from search_ops_manuals", "opsManualAction=skip_ops_manual", "opsManualSkipped=true"} {
+	if len(meta.Description) > 500 {
+		t.Fatalf("description length = %d, want <= 500: %q", len(meta.Description), meta.Description)
+	}
+	for _, want := range []string{"read-only", "Node 0 preflight", "parameter readiness", "environment compatibility", "permission gaps", "probe evidence", "without executing"} {
 		if !strings.Contains(meta.Description, want) {
 			t.Fatalf("description = %q, want %q", meta.Description, want)
 		}
 	}
 	if meta.RiskLevel != tooling.ToolRiskLow {
 		t.Fatalf("risk level = %q, want low", meta.RiskLevel)
+	}
+	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
+		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
 	if !tool.IsReadOnly(json.RawMessage(`{"manual_id":"manual-redis-rca","parameters":{"target_instance":"redis-01"}}`)) {
 		t.Fatal("run_ops_manual_preflight must be read-only")

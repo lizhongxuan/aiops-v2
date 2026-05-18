@@ -77,6 +77,104 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	compiled := promptcompiler.CompiledPrompt{
+		Tools: promptcompiler.ToolPromptSet{Content: "# Tool Index\n\n- read_file: Read files."},
+	}
+	input := []*schema.Message{
+		{Role: schema.System, Content: "system prompt"},
+		{Role: schema.User, Content: "user asks"},
+	}
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID:    "sess-metrics",
+		TurnID:       "turn-metrics",
+		Iteration:    1,
+		Compiled:     compiled,
+		ModelInput:   input,
+		VisibleTools: []string{"read_file", "tool_search"},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		PromptCharCount       int      `json:"promptCharCount"`
+		ToolRegistryCharCount int      `json:"toolRegistryCharCount"`
+		VisibleToolCount      int      `json:"visibleToolCount"`
+		VisibleTools          []string `json:"visibleTools"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.PromptCharCount != len("system prompt")+len("user asks") {
+		t.Fatalf("promptCharCount = %d, want model input content length", payload.PromptCharCount)
+	}
+	if payload.ToolRegistryCharCount != len(compiled.Tools.Content) {
+		t.Fatalf("toolRegistryCharCount = %d, want %d", payload.ToolRegistryCharCount, len(compiled.Tools.Content))
+	}
+	if payload.VisibleToolCount != 2 {
+		t.Fatalf("visibleToolCount = %d, want 2", payload.VisibleToolCount)
+	}
+	if got := strings.Join(payload.VisibleTools, ","); got != "read_file,tool_search" {
+		t.Fatalf("visibleTools = %q, want read_file,tool_search", got)
+	}
+}
+
+func TestModelInputTraceG01FirstTurnBaselineMetrics(t *testing.T) {
+	metrics := buildG01FirstTurnPromptMetrics(t)
+	if metrics.PromptCharCount == 0 {
+		t.Fatal("prompt char count should be recorded")
+	}
+	if metrics.ToolRegistryCharCount == 0 {
+		t.Fatal("tool registry char count should be recorded")
+	}
+	if metrics.VisibleToolCount == 0 {
+		t.Fatal("visible tool count should be recorded")
+	}
+	for _, want := range []string{"exec_command", "tool_search", "search_ops_manuals"} {
+		if !containsString(metrics.VisibleToolNames, want) {
+			t.Fatalf("visible tool names = %v, want %q", metrics.VisibleToolNames, want)
+		}
+	}
+	t.Logf("G01 first-turn baseline: prompt=%d toolRegistry=%d visibleTools=%d names=%v", metrics.PromptCharCount, metrics.ToolRegistryCharCount, metrics.VisibleToolCount, metrics.VisibleToolNames)
+}
+
+func TestModelInputTraceG01FirstTurnP0PromptSizeBudget(t *testing.T) {
+	metrics := buildG01FirstTurnPromptMetrics(t)
+	const maxFirstTurnPromptChars = 25000
+	const maxFirstTurnToolRegistryChars = 10000
+	if metrics.PromptCharCount > maxFirstTurnPromptChars {
+		t.Fatalf("prompt char count = %d, want <= %d", metrics.PromptCharCount, maxFirstTurnPromptChars)
+	}
+	if metrics.ToolRegistryCharCount > maxFirstTurnToolRegistryChars {
+		t.Fatalf("tool registry char count = %d, want <= %d", metrics.ToolRegistryCharCount, maxFirstTurnToolRegistryChars)
+	}
+}
+
+func TestModelInputTraceG01FirstTurnFinalTargetBudget(t *testing.T) {
+	metrics := buildG01FirstTurnPromptMetrics(t)
+	const maxFirstTurnPromptChars = 25000
+	const maxFirstTurnToolRegistryChars = 6000
+	const maxFirstTurnVisibleTools = 8
+	if metrics.PromptCharCount > maxFirstTurnPromptChars {
+		t.Fatalf("prompt char count = %d, want <= %d", metrics.PromptCharCount, maxFirstTurnPromptChars)
+	}
+	if metrics.ToolRegistryCharCount > maxFirstTurnToolRegistryChars {
+		t.Fatalf("tool registry char count = %d, want <= %d", metrics.ToolRegistryCharCount, maxFirstTurnToolRegistryChars)
+	}
+	if metrics.VisibleToolCount > maxFirstTurnVisibleTools {
+		t.Fatalf("visible tool count = %d, want <= %d; tools=%v", metrics.VisibleToolCount, maxFirstTurnVisibleTools, metrics.VisibleToolNames)
+	}
+}
+
 func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
@@ -334,6 +432,80 @@ func TestApplyRuntimeFeatureFlagsCanDisableDiagnosticProtocolPromptOnly(t *testi
 	if ctx.DisableDiagnosticProtocol {
 		t.Fatalf("DisableDiagnosticProtocol should be cleared when diagnostic protocol flag is enabled")
 	}
+}
+
+type firstTurnPromptMetrics struct {
+	PromptCharCount       int
+	ToolRegistryCharCount int
+	VisibleToolCount      int
+	VisibleToolNames      []string
+}
+
+func buildG01FirstTurnPromptMetrics(t *testing.T) firstTurnPromptMetrics {
+	t.Helper()
+
+	tools := []promptcompiler.Tool{
+		staticTraceTool("exec_command", "Execute a local terminal command on the selected host", tooling.ToolRiskHigh, true),
+		staticTraceTool("get_current_model_config", "Read currently configured LLM provider and model", tooling.ToolRiskMedium, false),
+		staticTraceTool("web_search", "Search the web for current information with source URLs", tooling.ToolRiskMedium, false),
+		staticTraceTool("browse_url", "Fetch a specific http or https URL as readable page text", tooling.ToolRiskMedium, false),
+		staticTraceTool("tool_search", "Search available operational tools by name, description, domain, and governance metadata", tooling.ToolRiskLow, false),
+		staticTraceTool("search_ops_manuals", "Search verified ops manuals for an operations request and return an auditable decision", tooling.ToolRiskLow, false),
+	}
+	ctx := promptcompiler.CompileContext{
+		SessionType:    "host",
+		Mode:           "inspect",
+		AssembledTools: tools,
+	}
+	compiler := promptcompiler.NewCompiler()
+	compiled, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	modelInput, err := compiler.CompileForEino(ctx)
+	if err != nil {
+		t.Fatalf("CompileForEino() error = %v", err)
+	}
+	modelInput = append(modelInput, schema.UserMessage("G01: 排查 ERP 订单提交异常，先收集证据，不要执行变更"))
+
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return firstTurnPromptMetrics{
+		PromptCharCount:       schemaMessageCharCount(modelInput),
+		ToolRegistryCharCount: len(compiled.Tools.Content),
+		VisibleToolCount:      len(names),
+		VisibleToolNames:      names,
+	}
+}
+
+func staticTraceTool(name, description string, risk tooling.ToolRiskLevel, mutating bool) promptcompiler.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        name,
+			Description: description,
+			RiskLevel:   risk,
+			Mutating:    mutating,
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool {
+			return !mutating
+		},
+		DestructiveFunc: func(json.RawMessage) bool {
+			return mutating
+		},
+	}
+}
+
+func schemaMessageCharCount(messages []*schema.Message) int {
+	total := 0
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		total += len(msg.Content)
+	}
+	return total
 }
 
 func fixedModelInputTraceTime() time.Time {

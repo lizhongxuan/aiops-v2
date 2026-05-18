@@ -12,9 +12,13 @@ import (
 
 // AssembleOptions controls per-call assembly behavior for the unified tool registry.
 type AssembleOptions struct {
-	ExtraTools        []Tool
-	MetadataTransform func(ToolMetadata) ToolMetadata
-	Filter            func(tool Tool, ctx ToolContext, meta ToolMetadata) bool
+	ExtraTools             []Tool
+	EnabledPacks           []string
+	Profile                string
+	IncludeDebug           bool
+	IncludeDeferredCatalog bool
+	MetadataTransform      func(ToolMetadata) ToolMetadata
+	Filter                 func(tool Tool, ctx ToolContext, meta ToolMetadata) bool
 }
 
 type registeredTool struct {
@@ -160,6 +164,9 @@ func (r *Registry) AssembleToolsWithOptions(session, mode string, opts AssembleO
 		if !t.IsEnabled(ctx) {
 			continue
 		}
+		if !isVisibleForAssembleOptions(meta, opts) {
+			continue
+		}
 		if opts.Filter != nil && !opts.Filter(t, ctx, meta) {
 			continue
 		}
@@ -184,6 +191,70 @@ func (r *Registry) AssembleToolsWithOptions(session, mode string, opts AssembleO
 	return out
 }
 
+func isVisibleForAssembleOptions(meta ToolMetadata, opts AssembleOptions) bool {
+	if !profileAllowsTool(meta, opts.Profile) {
+		return false
+	}
+	if meta.AlwaysLoad {
+		return true
+	}
+	layer := meta.Layer
+	if layer == "" {
+		if meta.ShouldDefer {
+			layer = ToolLayerDeferred
+		} else {
+			layer = ToolLayerCore
+		}
+	}
+	switch layer {
+	case ToolLayerCore:
+		return true
+	case ToolLayerDeferred:
+		if opts.IncludeDeferredCatalog {
+			return true
+		}
+		if meta.DeferByDefault || meta.Pack != "" {
+			return packEnabled(meta.Pack, opts.EnabledPacks)
+		}
+		return true
+	case ToolLayerInternal:
+		return false
+	case ToolLayerDebug:
+		return opts.IncludeDebug || opts.Profile == "debug"
+	case ToolLayerMutation:
+		if meta.Pack != "" {
+			return packEnabled(meta.Pack, opts.EnabledPacks)
+		}
+		return packEnabled(string(ToolLayerMutation), opts.EnabledPacks)
+	default:
+		return true
+	}
+}
+
+func profileAllowsTool(meta ToolMetadata, profile string) bool {
+	if len(meta.Profiles) == 0 {
+		return true
+	}
+	for _, candidate := range meta.Profiles {
+		if candidate == profile {
+			return true
+		}
+	}
+	return false
+}
+
+func packEnabled(pack string, enabled []string) bool {
+	if pack == "" {
+		return false
+	}
+	for _, candidate := range enabled {
+		if candidate == pack {
+			return true
+		}
+	}
+	return false
+}
+
 // AssembleToolPool returns Eino tools for the visible unified tools.
 func (r *Registry) AssembleToolPool(session, mode string) []tool.BaseTool {
 	return r.AssembleToolPoolWithOptions(session, mode, AssembleOptions{})
@@ -197,9 +268,7 @@ func (r *Registry) AssembleToolPoolWithOptions(session, mode string, opts Assemb
 // CompileContextWithMetadata assembles prompt tools while applying turn-level
 // metadata such as explicit user opt-outs.
 func (r *Registry) CompileContextWithMetadata(session, mode string, metadata map[string]string) []Tool {
-	return r.AssembleToolsWithOptions(session, mode, AssembleOptions{
-		Filter: turnMetadataToolFilter(metadata),
-	})
+	return r.AssembleToolsWithOptions(session, mode, AssembleOptionsForTurnMetadata(metadata))
 }
 
 // AssembleToolPoolWithMetadata adapts the metadata-filtered visible tools into

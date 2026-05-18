@@ -3,6 +3,7 @@ package appui
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"aiops-v2/internal/terminal"
@@ -31,6 +32,14 @@ type defaultTerminalService struct {
 }
 
 func NewTerminalService(manager *terminal.Manager, hosts ...HostRepository) TerminalService {
+	return newTerminalService(manager, nil, hosts...)
+}
+
+func NewTerminalServiceWithCredentialResolver(manager *terminal.Manager, resolver CredentialResolver, hosts ...HostRepository) TerminalService {
+	return newTerminalService(manager, resolver, hosts...)
+}
+
+func newTerminalService(manager *terminal.Manager, resolver CredentialResolver, hosts ...HostRepository) TerminalService {
 	if manager == nil {
 		manager = terminal.NewManager()
 	}
@@ -38,7 +47,58 @@ func NewTerminalService(manager *terminal.Manager, hosts ...HostRepository) Term
 	if len(hosts) > 0 {
 		hostRepo = hosts[0]
 	}
+	if hostRepo != nil && resolver != nil {
+		manager.SetCommandFactory(NewHostSSHCommandFactory(hostRepo, resolver))
+	}
 	return &defaultTerminalService{manager: manager, hosts: hostRepo}
+}
+
+func NewHostSSHCommandFactory(hosts HostRepository, resolver CredentialResolver) terminal.CommandFactory {
+	return func(req terminal.CreateSessionRequest) (*exec.Cmd, error) {
+		hostID := strings.TrimSpace(firstNonEmpty(req.HostID, serverLocalHostID))
+		if hostID == serverLocalHostID {
+			return nil, nil
+		}
+		if hosts == nil {
+			return nil, fmt.Errorf("host repository is not configured")
+		}
+		if resolver == nil {
+			return nil, fmt.Errorf("ssh credential resolver is not configured")
+		}
+		host, err := hosts.GetHost(hostID)
+		if err != nil {
+			return nil, err
+		}
+		if host == nil {
+			return nil, fmt.Errorf("host not found: %s", hostID)
+		}
+		ref := strings.TrimSpace(host.SSHCredentialRef)
+		if ref == "" {
+			return nil, fmt.Errorf("ssh credential ref is required")
+		}
+		credential, err := resolver.ResolveSSHCredential(context.Background(), ref)
+		if err != nil {
+			return nil, err
+		}
+		cmd, err := terminal.BuildSSHCommand(terminal.SSHCommandRequest{
+			HostID:  host.ID,
+			Address: host.Address,
+			User:    host.SSHUser,
+			Port:    host.SSHPort,
+			Credential: terminal.SSHCredential{
+				PrivateKeyPath: credential.PrivateKeyPath,
+				Password:       credential.Password,
+				Cleanup:        credential.Cleanup,
+			},
+		})
+		if err != nil {
+			if credential.Cleanup != nil {
+				_ = credential.Cleanup()
+			}
+			return nil, err
+		}
+		return cmd, nil
+	}
 }
 
 func (s *defaultTerminalService) CreateSession(ctx context.Context, req TerminalCreateSessionCommand) (terminal.SessionMetadata, error) {
@@ -85,6 +145,9 @@ func (s *defaultTerminalService) validateTerminalHost(hostID string) (string, er
 	}
 	if !host.TerminalCapable && !host.Executable {
 		return "", fmt.Errorf("terminal is not enabled for host %s", targetID)
+	}
+	if strings.TrimSpace(host.SSHCredentialRef) == "" {
+		return "", fmt.Errorf("ssh credential ref is required for host %s", targetID)
 	}
 	return targetID, nil
 }

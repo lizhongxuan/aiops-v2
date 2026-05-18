@@ -15,9 +15,7 @@ import (
 	"go.uber.org/zap"
 	"runner/logging"
 	"runner/modules"
-	"runner/modules/cmd"
 	"runner/modules/script"
-	"runner/modules/shell"
 	"runner/modules/wait"
 	"runner/scheduler"
 )
@@ -96,8 +94,6 @@ func main() {
 	}
 
 	registry := modules.NewRegistry()
-	registry.Register("cmd.run", cmd.New())
-	registry.Register("shell.run", shell.New())
 	registry.Register("script.shell", script.New("shell"))
 	registry.Register("script.python", script.New("python"))
 	registry.Register("wait.event", wait.NewEvent())
@@ -469,8 +465,6 @@ func main() {
 			"timestamp": now.Unix(),
 			"last_beat": now.Format(time.RFC3339),
 			"capability": []string{
-				"cmd.run",
-				"shell.run",
 				"script.shell",
 				"script.python",
 				"wait.event",
