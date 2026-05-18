@@ -1338,7 +1338,7 @@ Expected: no matches for real secrets. Test fixtures may contain dummy strings o
 
 Result 2026-05-18: scan completed. Matches were existing dummy/test redaction fixtures, scanner documentation lines, and redaction marker constants; no real SSH private key, host password, or bearer token was reported by this pattern.
 
-- [ ] **Step 13.7：最终提交或 PR 准备**
+- [x] **Step 13.7：最终提交或 PR 准备**
 
 Run:
 
@@ -1348,3 +1348,5 @@ git log --oneline -n 12
 ```
 
 Expected: status is clean after final commit; log shows small phase commits matching the tasks above.
+
+Result 2026-05-18: `git status --short` was clean after removing the debug screenshot; `git log --oneline -n 12` showed the phase commits ending at `7bafb68 test: record host agent real host validation`.
