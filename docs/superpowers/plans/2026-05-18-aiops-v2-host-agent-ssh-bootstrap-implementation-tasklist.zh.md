@@ -454,6 +454,7 @@ Result 2026-05-18:
 
 - `go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow'`: PASS
 - `(cd pkg/runner && go test -count=1 ./engine ./server/service ./workflow/visual)`: PASS after migrating legacy test fixtures from `cmd.run`/`shell.run` to `script.shell`.
+- Supplemental executable workflow pass: `go test -count=1 ./internal/appui -run 'TestBuiltinHostAgentInstallWorkflow|TestHostAgentService|TestHostBootstrapService'`: PASS; `(cd pkg/runner && go test -count=1 ./modules/script ./engine ./server/service ./workflow/visual)`: PASS. Committed `708d1a7 feat: make host agent install workflow executable`.
 
 - [x] **Step 3.5：提交**
 
