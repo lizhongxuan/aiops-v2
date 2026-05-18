@@ -128,6 +128,92 @@ func (s *defaultHostService) UpdateHost(_ context.Context, hostID string, payloa
 	}, nil
 }
 
+func (s *defaultHostService) InstallHost(ctx context.Context, hostID string, payload HostInstallRequest) (HostMutationResponse, error) {
+	if s.repo == nil {
+		return HostMutationResponse{}, fmt.Errorf("host repository is not configured")
+	}
+	targetID := strings.TrimSpace(hostID)
+	if targetID == "" {
+		return HostMutationResponse{}, fmt.Errorf("host id is required")
+	}
+	current, err := s.repo.GetHost(targetID)
+	if err != nil {
+		return HostMutationResponse{}, err
+	}
+	updated := cloneHostRecord(*current)
+	if ref := strings.TrimSpace(payload.SSHCredentialRef); ref != "" {
+		updated.SSHCredentialRef = ref
+	}
+	if version := strings.TrimSpace(payload.AgentVersion); version != "" {
+		updated.AgentVersion = version
+	}
+	if updated.AgentVersion == "" {
+		updated.AgentVersion = "v0.1.0"
+	}
+	if strings.TrimSpace(updated.SSHCredentialRef) == "" {
+		return HostMutationResponse{}, fmt.Errorf("ssh credential ref is required")
+	}
+	updated.Transport = "ssh_bootstrap"
+	updated.Status = "installing"
+	updated.InstallState = "pending_install"
+	updated.InstallWorkflowID = BuiltinHostAgentInstallWorkflowID
+	updated.InstallStep = "validate-inputs"
+	updated.ControlMode = "managed"
+	updated.LastError = ""
+	if err := s.repo.SaveHost(&updated); err != nil {
+		return HostMutationResponse{}, err
+	}
+	if s.bootstrap != nil {
+		run, err := s.bootstrap.Install(ctx, updated.ID, HostInstallRequest{
+			AgentVersion:     updated.AgentVersion,
+			SSHCredentialRef: updated.SSHCredentialRef,
+			Force:            payload.Force,
+		})
+		if err != nil {
+			return HostMutationResponse{}, err
+		}
+		updated.InstallRunID = run.RunID
+		updated.InstallWorkflowID = run.WorkflowID
+	}
+	items, _ := s.ListHosts(context.Background())
+	return HostMutationResponse{
+		Host:              mapHostRecord(updated),
+		Items:             items,
+		InstallRunID:      updated.InstallRunID,
+		InstallWorkflowID: updated.InstallWorkflowID,
+	}, nil
+}
+
+func (s *defaultHostService) TestHostSSH(_ context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error) {
+	if s.repo == nil {
+		return HostSSHTestResponse{}, fmt.Errorf("host repository is not configured")
+	}
+	targetID := strings.TrimSpace(hostID)
+	if targetID == "" {
+		return HostSSHTestResponse{}, fmt.Errorf("host id is required")
+	}
+	host, err := s.repo.GetHost(targetID)
+	if err != nil {
+		return HostSSHTestResponse{}, err
+	}
+	ref := strings.TrimSpace(firstNonEmpty(payload.SSHCredentialRef, host.SSHCredentialRef))
+	if ref == "" {
+		return HostSSHTestResponse{}, fmt.Errorf("ssh credential ref is required")
+	}
+	if strings.TrimSpace(host.Address) == "" {
+		return HostSSHTestResponse{}, fmt.Errorf("host address is required")
+	}
+	if strings.TrimSpace(host.SSHUser) == "" {
+		return HostSSHTestResponse{}, fmt.Errorf("ssh user is required")
+	}
+	return HostSSHTestResponse{
+		Status:  "ok",
+		OS:      host.OS,
+		Arch:    host.Arch,
+		Message: "SSH preflight input accepted",
+	}, nil
+}
+
 func (s *defaultHostService) DeleteHost(_ context.Context, hostID string) error {
 	if s.repo == nil {
 		return fmt.Errorf("host repository is not configured")

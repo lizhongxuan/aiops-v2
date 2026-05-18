@@ -717,6 +717,19 @@ type HostInstallRequest struct {
 	Force            bool   `json:"force"`
 }
 
+type HostSSHTestRequest struct {
+	SSHCredentialRef string `json:"sshCredentialRef"`
+}
+
+type HostSSHTestResponse struct {
+	Status   string `json:"status"`
+	Platform string `json:"platform,omitempty"`
+	OS       string `json:"os,omitempty"`
+	Arch     string `json:"arch,omitempty"`
+	Sudo     string `json:"sudo,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
 type HostMutationResponse struct {
 	Host              HostSummary   `json:"host"`
 	Items             []HostSummary `json:"items,omitempty"`
@@ -965,6 +978,8 @@ type HostService interface {
 	ListHosts(ctx context.Context) ([]HostSummary, error)
 	CreateHost(ctx context.Context, payload HostUpsert) (HostMutationResponse, error)
 	UpdateHost(ctx context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error)
+	InstallHost(ctx context.Context, hostID string, payload HostInstallRequest) (HostMutationResponse, error)
+	TestHostSSH(ctx context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error)
 	DeleteHost(ctx context.Context, hostID string) error
 	SelectHost(ctx context.Context, hostID string) (StateSnapshot, error)
 }

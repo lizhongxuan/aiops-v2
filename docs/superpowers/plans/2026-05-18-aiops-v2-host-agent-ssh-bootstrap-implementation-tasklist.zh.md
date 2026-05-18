@@ -662,7 +662,7 @@ git commit -m "feat: submit host agent install workflow"
 - Modify: `internal/appui/contracts.go`
 - Modify: `internal/appui/host_service.go`
 
-- [ ] **Step 6.1：写 HTTP API 测试**
+- [x] **Step 6.1：写 HTTP API 测试**
 
 Add tests:
 
@@ -679,7 +679,9 @@ go test -count=1 ./internal/server -run 'TestHostAPIInstall|TestHostAPISSHTest'
 
 Expected: FAIL because routes 还不存在。
 
-- [ ] **Step 6.2：扩展 HostService interface**
+Result 2026-05-18: RED confirmed; both new endpoints returned 404.
+
+- [x] **Step 6.2：扩展 HostService interface**
 
 Add:
 
@@ -711,7 +713,7 @@ type HostSSHTestResponse struct {
 }
 ```
 
-- [ ] **Step 6.3：路由实现**
+- [x] **Step 6.3：路由实现**
 
 In `handleHosts`, dispatch:
 
@@ -720,7 +722,7 @@ In `handleHosts`, dispatch:
 
 Ensure `/api/v1/hosts` POST/GET and `/api/v1/hosts/{id}` PUT/DELETE behavior remains unchanged.
 
-- [ ] **Step 6.4：跑 HTTP 测试**
+- [x] **Step 6.4：跑 HTTP 测试**
 
 Run:
 
@@ -730,7 +732,12 @@ go test -count=1 ./internal/server -run 'TestHostAPI'
 
 Expected: PASS。
 
-- [ ] **Step 6.5：提交**
+Result 2026-05-18:
+
+- `go test -count=1 ./internal/server -run 'TestHostAPIInstall|TestHostAPISSHTest'`: PASS
+- `go test -count=1 ./internal/server -run 'TestHostAPI'`: PASS
+
+- [x] **Step 6.5：提交**
 
 Run:
 
