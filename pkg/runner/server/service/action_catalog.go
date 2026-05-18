@@ -94,64 +94,13 @@ func NewActionCatalog(specs ...ActionSpec) *ActionCatalog {
 func DefaultActionSpecs() []ActionSpec {
 	return []ActionSpec{
 		{
-			Action:       "cmd.run",
-			Title:        "Command",
-			Category:     "command",
-			Description:  "Run a shell command through /bin/sh -c on each target.",
-			Risk:         "medium",
-			NodeType:     "action",
-			RequiredArgs: []string{"cmd"},
-			Defaults:     map[string]any{"cmd": "echo hello"},
-			ArgsSchema: actionArgsSchema(map[string]any{
-				"cmd": map[string]any{
-					"type":        "string",
-					"title":       "Command",
-					"description": "Command passed to /bin/sh -c.",
-					"minLength":   1,
-				},
-				"dir": envStringSchema("Working directory"),
-				"env": envObjectSchema(),
-			}, []string{"cmd"}),
-			Outputs: commandOutputs(),
-			Examples: []ActionExample{{
-				Title: "Check disk",
-				Args:  map[string]any{"cmd": "df -h"},
-			}},
-		},
-		{
-			Action:       "shell.run",
-			Title:        "Shell Script",
-			Category:     "script",
-			Description:  "Run inline shell script content through /bin/sh.",
-			Risk:         "high",
-			NodeType:     "action",
-			RequiredArgs: []string{"script"},
-			Defaults:     map[string]any{"script": "set -e\necho ok"},
-			ArgsSchema: actionArgsSchema(map[string]any{
-				"script": map[string]any{
-					"type":        "string",
-					"title":       "Script",
-					"description": "Shell script content.",
-					"minLength":   1,
-				},
-				"dir":         envStringSchema("Working directory"),
-				"env":         envObjectSchema(),
-				"export_vars": boolSchema("Parse RUNNER_EXPORT_* lines from stdout."),
-			}, []string{"script"}),
-			Outputs: commandOutputs(),
-			Examples: []ActionExample{{
-				Title: "Restart service",
-				Args:  map[string]any{"script": "systemctl restart app.service", "export_vars": true},
-			}},
-		},
-		{
 			Action:      "script.shell",
-			Title:       "Stored Shell Script",
+			Title:       "Shell Script",
 			Category:    "script",
 			Description: "Run shell script content resolved by the script service or supplied inline.",
 			Risk:        "high",
 			NodeType:    "action",
-			Defaults:    map[string]any{"script_ref": "restore.sh"},
+			Defaults:    map[string]any{"script": "set -euo pipefail\necho ok"},
 			ArgsSchema: actionArgsSchema(map[string]any{
 				"script_ref": envStringSchema("Stored script name"),
 				"script":     envStringSchema("Inline shell script"),
@@ -167,8 +116,8 @@ func DefaultActionSpecs() []ActionSpec {
 			}, nil),
 			Outputs: commandOutputs(),
 			Examples: []ActionExample{{
-				Title: "Run stored restore script",
-				Args:  map[string]any{"script_ref": "restore.sh", "args": []string{"--dry-run"}},
+				Title: "Run inline shell script",
+				Args:  map[string]any{"script": "set -euo pipefail\necho ok"},
 			}},
 		},
 		{

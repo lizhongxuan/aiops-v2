@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"runner/workflow"
@@ -12,8 +13,8 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 	catalog := NewActionCatalog()
 
 	items := catalog.List(context.Background(), ActionCatalogFilter{})
-	if len(items) != 10 {
-		t.Fatalf("expected 10 default specs, got %d", len(items))
+	if len(items) != 8 {
+		t.Fatalf("expected 8 default specs, got %d", len(items))
 	}
 	for i := 1; i < len(items); i++ {
 		prev := items[i-1].Category + "/" + items[i-1].Action
@@ -23,15 +24,15 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 		}
 	}
 
-	spec, ok := catalog.Get(context.Background(), "cmd.run")
-	if !ok {
-		t.Fatal("cmd.run should be present")
+	for _, action := range []string{"cmd.run", "shell.run"} {
+		if _, ok := catalog.Get(context.Background(), action); ok {
+			t.Fatalf("%s should not be in the default catalog", action)
+		}
 	}
-	if !json.Valid(spec.ArgsSchema) {
-		t.Fatalf("cmd.run args_schema should be valid json: %s", string(spec.ArgsSchema))
-	}
-	if len(spec.RequiredArgs) != 1 || spec.RequiredArgs[0] != "cmd" {
-		t.Fatalf("cmd.run required args mismatch: %+v", spec.RequiredArgs)
+	for _, action := range []string{"script.shell", "script.python", "wait.event"} {
+		if _, ok := catalog.Get(context.Background(), action); !ok {
+			t.Fatalf("%s should be present", action)
+		}
 	}
 	for _, item := range items {
 		if item.Risk == "" {
@@ -55,7 +56,7 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 	catalog := NewActionCatalog()
 
-	for _, action := range []string{"cmd.run", "shell.run", "script.shell", "notify.send"} {
+	for _, action := range []string{"script.shell", "script.python", "wait.event", "notify.send"} {
 		t.Run(action, func(t *testing.T) {
 			spec, ok := catalog.Get(context.Background(), action)
 			if !ok {
@@ -104,20 +105,22 @@ func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 				if _, ok := outputProps["delivered"]; !ok {
 					t.Fatalf("%s outputs_schema missing delivered property: %+v", action, outputs)
 				}
+			} else if action == "wait.event" {
+				if _, ok := outputProps["event"]; !ok {
+					t.Fatalf("%s outputs_schema missing event property: %+v", action, outputs)
+				}
 			} else if _, ok := outputProps["stdout"]; !ok {
 				t.Fatalf("%s outputs_schema missing stdout property: %+v", action, outputs)
 			}
 		})
 	}
 
-	cmd, _ := catalog.Get(context.Background(), "cmd.run")
-	if !schemaRequired(decodeSchema(t, cmd.InputsSchema))["cmd"] {
-		t.Fatalf("cmd.run inputs_schema should require cmd: %s", string(cmd.InputsSchema))
+	shell, _ := catalog.Get(context.Background(), "script.shell")
+	if got, _ := shell.Defaults["script"].(string); !strings.HasPrefix(got, "set -euo pipefail\n") {
+		t.Fatalf("script.shell should default to an inline strict shell script, got %+v", shell.Defaults)
 	}
-
-	shell, _ := catalog.Get(context.Background(), "shell.run")
-	if !schemaRequired(decodeSchema(t, shell.InputsSchema))["script"] {
-		t.Fatalf("shell.run inputs_schema should require script: %s", string(shell.InputsSchema))
+	if _, ok := shell.Defaults["script_ref"]; ok {
+		t.Fatalf("script.shell defaults should prefer inline script, got %+v", shell.Defaults)
 	}
 
 	approval, _ := catalog.Get(context.Background(), "manual.approval")
@@ -141,27 +144,23 @@ func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 
 func TestActionCatalogReturnsDefensiveCopies(t *testing.T) {
 	catalog := NewActionCatalog()
-	spec, ok := catalog.Get(context.Background(), "cmd.run")
+	spec, ok := catalog.Get(context.Background(), "script.shell")
 	if !ok {
-		t.Fatal("cmd.run should be present")
+		t.Fatal("script.shell should be present")
 	}
-	spec.RequiredArgs[0] = "mutated"
 	spec.ArgsSchema[0] = 'x'
-	spec.Defaults["cmd"] = "mutated"
-	spec.Examples[0].Args["cmd"] = "mutated"
+	spec.Defaults["script"] = "mutated"
+	spec.Examples[0].Args["script"] = "mutated"
 	spec.InputsSchema[0] = 'x'
 	spec.OutputsSchema[0] = 'x'
-	spec.InputExamples[0].Values["cmd"] = "mutated"
+	spec.InputExamples[0].Values["script"] = "mutated"
 	spec.OutputExamples[0].Values["stdout"] = "mutated"
 	spec.DefaultPorts.Outputs[0].ID = "mutated"
 	spec.Capabilities[0] = "mutated"
 
-	fresh, ok := catalog.Get(context.Background(), "cmd.run")
+	fresh, ok := catalog.Get(context.Background(), "script.shell")
 	if !ok {
-		t.Fatal("cmd.run should still be present")
-	}
-	if fresh.RequiredArgs[0] != "cmd" {
-		t.Fatalf("catalog returned mutable required args: %+v", fresh.RequiredArgs)
+		t.Fatal("script.shell should still be present")
 	}
 	if !json.Valid(fresh.ArgsSchema) {
 		t.Fatalf("catalog returned mutable args schema: %s", string(fresh.ArgsSchema))
@@ -172,13 +171,13 @@ func TestActionCatalogReturnsDefensiveCopies(t *testing.T) {
 	if !json.Valid(fresh.OutputsSchema) {
 		t.Fatalf("catalog returned mutable outputs schema: %s", string(fresh.OutputsSchema))
 	}
-	if fresh.Defaults["cmd"] == "mutated" {
+	if fresh.Defaults["script"] == "mutated" {
 		t.Fatalf("catalog returned mutable defaults: %+v", fresh.Defaults)
 	}
-	if fresh.Examples[0].Args["cmd"] == "mutated" {
+	if fresh.Examples[0].Args["script"] == "mutated" {
 		t.Fatalf("catalog returned mutable examples: %+v", fresh.Examples)
 	}
-	if fresh.InputExamples[0].Values["cmd"] == "mutated" {
+	if fresh.InputExamples[0].Values["script"] == "mutated" {
 		t.Fatalf("catalog returned mutable input examples: %+v", fresh.InputExamples)
 	}
 	if fresh.OutputExamples[0].Values["stdout"] == "mutated" {
@@ -197,10 +196,10 @@ func TestActionCatalogValidateStep(t *testing.T) {
 
 	missingRequired := catalog.ValidateStep(workflow.Step{
 		Name:   "missing",
-		Action: "cmd.run",
+		Action: "script.shell",
 	})
-	if len(missingRequired) != 1 || missingRequired[0].Field != "args.cmd" {
-		t.Fatalf("expected missing args.cmd issue, got %+v", missingRequired)
+	if len(missingRequired) != 1 || missingRequired[0].Field != "args.script" {
+		t.Fatalf("expected missing args.script issue, got %+v", missingRequired)
 	}
 
 	scriptWithRef := catalog.ValidateStep(workflow.Step{

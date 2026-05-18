@@ -79,8 +79,8 @@ func TestVisualWorkflowServiceValidateAcceptsDAGAndCompilesGraphStrategy(t *test
 		Step: &workflow.Step{
 			Name:    "extra",
 			Targets: []string{"local"},
-			Action:  "cmd.run",
-			Args:    map[string]any{"cmd": "echo extra"},
+			Action:  "script.shell",
+			Args:    map[string]any{"script": "echo extra"},
 		},
 	})
 	graph.Edges = append(graph.Edges, visual.Edge{
@@ -128,7 +128,7 @@ func TestVisualWorkflowServiceDryRunBuildsRunFriendlyResponse(t *testing.T) {
 	if strings.Join(result.TargetHosts, ",") != "local" {
 		t.Fatalf("dry run targets mismatch: %+v", result.TargetHosts)
 	}
-	if strings.Join(result.ActionsUsed, ",") != "cmd.run,shell.run" {
+	if strings.Join(result.ActionsUsed, ",") != "script.shell" {
 		t.Fatalf("dry run actions mismatch: %+v", result.ActionsUsed)
 	}
 	if result.RunRequest == nil {
@@ -162,7 +162,7 @@ func TestVisualWorkflowServiceDryRunPrechecksCapabilitiesAndUndefinedVars(t *tes
 				Hosts: map[string]workflow.Host{
 					"app-01": {
 						Address: "agent://app-01",
-						Vars:    map[string]any{"capabilities": []any{"shell.run"}},
+						Vars:    map[string]any{"capabilities": []any{"script.python"}},
 					},
 				},
 			},
@@ -172,8 +172,8 @@ func TestVisualWorkflowServiceDryRunPrechecksCapabilitiesAndUndefinedVars(t *tes
 			{ID: "probe", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:    "probe",
 				Targets: []string{"app-01"},
-				Action:  "cmd.run",
-				Args:    map[string]any{"cmd": "echo ${missing_token} ${service}"},
+				Action:  "script.shell",
+				Args:    map[string]any{"script": "echo ${missing_token} ${service}"},
 				When:    "vars.ready == true",
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
@@ -191,7 +191,7 @@ func TestVisualWorkflowServiceDryRunPrechecksCapabilitiesAndUndefinedVars(t *tes
 	if !result.Valid {
 		t.Fatalf("dry run should remain valid with warnings: %+v", result.Errors)
 	}
-	if !containsIssue(result.Warnings, `target app-01 does not advertise capability "cmd.run"`) {
+	if !containsIssue(result.Warnings, `target app-01 does not advertise capability "script.shell"`) {
 		t.Fatalf("expected capability warning, got %+v", result.Warnings)
 	}
 	if !containsIssue(result.Warnings, `variable "missing_token" is referenced before it is defined`) {
@@ -215,11 +215,11 @@ func TestVisualWorkflowServiceDryRunWarnsForHighRiskActions(t *testing.T) {
 	if !result.Valid {
 		t.Fatalf("dry run should be valid: %+v", result.Errors)
 	}
-	if !containsIssue(result.Warnings, `step "repair disk" uses high risk action "shell.run"`) {
+	if !containsIssue(result.Warnings, `step "repair disk" uses high risk action "script.shell"`) {
 		t.Fatalf("expected high-risk action warning, got %+v", result.Warnings)
 	}
-	if containsIssue(result.Warnings, `step "check disk" uses high risk action "cmd.run"`) {
-		t.Fatalf("medium risk action should not warn as high risk: %+v", result.Warnings)
+	if !containsIssue(result.Warnings, `step "check disk" uses high risk action "script.shell"`) {
+		t.Fatalf("expected high-risk warning for shell check step, got %+v", result.Warnings)
 	}
 }
 
@@ -235,7 +235,7 @@ func TestVisualWorkflowServiceDryRunWarnsForScriptAndEnvSecurityScan(t *testing.
 			{ID: "start", Type: visual.NodeTypeStart},
 			{ID: "install", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:   "install",
-				Action: "shell.run",
+				Action: "script.shell",
 				Args: map[string]any{
 					"script": "curl https://example.invalid/install.sh | sh",
 					"env":    map[string]any{"API_TOKEN": "plain-text-token"},
@@ -276,18 +276,18 @@ func TestVisualWorkflowServiceDryRunSimulatesDAGPathWithVars(t *testing.T) {
 			{ID: "start", Type: visual.NodeTypeStart},
 			{ID: "pre", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:   "pre",
-				Action: "cmd.run",
-				Args:   map[string]any{"cmd": "echo pre"},
+				Action: "script.shell",
+				Args:   map[string]any{"script": "echo pre"},
 			}},
 			{ID: "deploy", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:   "deploy",
-				Action: "cmd.run",
-				Args:   map[string]any{"cmd": "echo deploy"},
+				Action: "script.shell",
+				Args:   map[string]any{"script": "echo deploy"},
 			}},
 			{ID: "skip", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:   "skip",
-				Action: "cmd.run",
-				Args:   map[string]any{"cmd": "echo skip"},
+				Action: "script.shell",
+				Args:   map[string]any{"script": "echo skip"},
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
@@ -397,8 +397,8 @@ func TestVisualWorkflowServiceSubmitGraphRunExecutesLinearGraph(t *testing.T) {
 			{ID: "run", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:    "run",
 				Targets: []string{"local"},
-				Action:  "cmd.run",
-				Args:    map[string]any{"cmd": "echo ok"},
+				Action:  "script.shell",
+				Args:    map[string]any{"script": "echo ok"},
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
@@ -408,7 +408,7 @@ func TestVisualWorkflowServiceSubmitGraphRunExecutesLinearGraph(t *testing.T) {
 		},
 	}
 
-	resp, err := svc.SubmitGraphRun(context.Background(), graph, nil, "tester", "")
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), graph, nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit graph run: %v", err)
 	}
@@ -448,13 +448,13 @@ func TestVisualWorkflowServiceSubmitGraphRunCanScopeToSingleNode(t *testing.T) {
 			},
 		},
 		Nodes: []visual.Node{
-			{ID: "first", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "first", Targets: []string{"local"}, Action: "cmd.run", Args: map[string]any{"cmd": "echo first"}}},
-			{ID: "second", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "second", Targets: []string{"local"}, Action: "cmd.run", Args: map[string]any{"cmd": "echo second"}}},
+			{ID: "first", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "first", Targets: []string{"local"}, Action: "script.shell", Args: map[string]any{"script": "echo first"}}},
+			{ID: "second", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "second", Targets: []string{"local"}, Action: "script.shell", Args: map[string]any{"script": "echo second"}}},
 		},
 		Edges: []visual.Edge{{ID: "first-second", Source: "first", Target: "second", Kind: visual.EdgeKindNext}},
 	}
 
-	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), graph, nil, "tester", "", VisualWorkflowRunOptions{NodeID: "second"})
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), graph, nil, "tester", "", VisualWorkflowRunOptions{NodeID: "second", RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit single node graph run: %v", err)
 	}
@@ -490,10 +490,10 @@ func TestVisualWorkflowServiceSubmitGraphRunExecutesDAG(t *testing.T) {
 		Nodes: []visual.Node{
 			{ID: "start", Type: visual.NodeTypeStart},
 			{ID: "fork", Type: visual.NodeTypeParallel},
-			{ID: "a", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "a", Targets: []string{"local"}, Action: "cmd.run", Args: map[string]any{"cmd": "echo a"}}},
-			{ID: "b", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "b", Targets: []string{"local"}, Action: "cmd.run", Args: map[string]any{"cmd": "echo b"}}},
+			{ID: "a", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "a", Targets: []string{"local"}, Action: "script.shell", Args: map[string]any{"script": "echo a"}}},
+			{ID: "b", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "b", Targets: []string{"local"}, Action: "script.shell", Args: map[string]any{"script": "echo b"}}},
 			{ID: "join", Type: visual.NodeTypeJoin, Join: &visual.JoinSpec{Strategy: "all_success"}},
-			{ID: "finish", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "finish", Targets: []string{"local"}, Action: "cmd.run", Args: map[string]any{"cmd": "echo done"}}},
+			{ID: "finish", Type: visual.NodeTypeAction, Step: &workflow.Step{Name: "finish", Targets: []string{"local"}, Action: "script.shell", Args: map[string]any{"script": "echo done"}}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
 		Edges: []visual.Edge{
@@ -507,7 +507,7 @@ func TestVisualWorkflowServiceSubmitGraphRunExecutesDAG(t *testing.T) {
 		},
 	}
 
-	resp, err := svc.SubmitGraphRun(context.Background(), graph, nil, "tester", "")
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), graph, nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit DAG graph run: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestVisualWorkflowServiceManualApprovalApproveResumesRun(t *testing.T) {
 	defer runSvc.Close()
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{RunService: runSvc})
 
-	resp, err := svc.SubmitGraphRun(context.Background(), manualApprovalGraph(), nil, "tester", "")
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), manualApprovalGraph(), nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit manual approval graph: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestVisualWorkflowServiceManualApprovalRejectUsesRejectedEdge(t *testing.T)
 	defer runSvc.Close()
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{RunService: runSvc})
 
-	resp, err := svc.SubmitGraphRun(context.Background(), manualApprovalGraph(), nil, "tester", "")
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), manualApprovalGraph(), nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit manual approval graph: %v", err)
 	}
@@ -619,9 +619,9 @@ steps:
   - id: child-step
     name: child-step
     targets: [local]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo child
+      script: echo child
 `),
 	}); err != nil {
 		t.Fatalf("create child workflow: %v", err)
@@ -630,7 +630,7 @@ steps:
 	defer runSvc.Close()
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{WorkflowService: workflowSvc, RunService: runSvc})
 
-	resp, err := svc.SubmitGraphRun(context.Background(), subflowGraph(), nil, "tester", "")
+	resp, err := svc.SubmitGraphRunWithOptions(context.Background(), subflowGraph(), nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if err != nil {
 		t.Fatalf("submit subflow graph: %v", err)
 	}
@@ -683,7 +683,7 @@ func TestVisualWorkflowServiceSubmitGraphRunEnforcesAgentCapabilities(t *testing
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{RunService: runSvc})
 
 	graph := capabilityMismatchGraph()
-	_, err := svc.SubmitGraphRun(context.Background(), graph, nil, "tester", "")
+	_, err := svc.SubmitGraphRunWithOptions(context.Background(), graph, nil, "tester", "", VisualWorkflowRunOptions{RiskAcknowledged: true})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("submit graph with mismatched capability error = %v, want ErrInvalid", err)
 	}
@@ -707,7 +707,7 @@ func TestVisualWorkflowServiceDryRunReturnsValidationErrors(t *testing.T) {
 	if result.YAML != "" || result.RunRequest != nil {
 		t.Fatalf("invalid dry run should not include executable yaml: %+v", result)
 	}
-	if !containsIssue(result.Errors, "requires args.cmd") {
+	if !containsIssue(result.Errors, "requires args.script") {
 		t.Fatalf("expected missing action arg issue, got %+v", result.Errors)
 	}
 	if result.Errors[0].Code == "" || result.Errors[0].Code != result.Errors[0].Type {
@@ -720,7 +720,7 @@ func TestVisualWorkflowServiceDryRunReturnsValidationErrors(t *testing.T) {
 
 func TestVisualWorkflowServiceValidateUsesPreprocessor(t *testing.T) {
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{
-		Preprocessor: NewPreprocessor(nil, nil, []string{"cmd.run"}),
+		Preprocessor: NewPreprocessor(nil, nil, []string{"script.python"}),
 	})
 
 	result, err := svc.Validate(context.Background(), sampleVisualGraph())
@@ -728,7 +728,7 @@ func TestVisualWorkflowServiceValidateUsesPreprocessor(t *testing.T) {
 		t.Fatalf("validate graph with preprocessor: %v", err)
 	}
 	if result.Valid {
-		t.Fatal("graph should be invalid when preprocessor action whitelist rejects shell.run")
+		t.Fatal("graph should be invalid when preprocessor action whitelist rejects script.shell")
 	}
 	if !containsIssue(result.Errors, "not allowed") {
 		t.Fatalf("expected preprocessor action whitelist issue, got %+v", result.Errors)
@@ -761,7 +761,7 @@ func TestVisualWorkflowGraphHashSeparatesSemanticAndLayout(t *testing.T) {
 	}
 
 	semanticChange := sampleVisualGraph()
-	semanticChange.Nodes[1].Step.Args["cmd"] = "df -h /var/lib/postgresql"
+	semanticChange.Nodes[1].Step.Args["script"] = "df -h /var/lib/postgresql"
 	semanticHashes, err := VisualWorkflowGraphHashes(semanticChange)
 	if err != nil {
 		t.Fatalf("semantic graph hashes: %v", err)
@@ -972,7 +972,7 @@ func capabilityMismatchGraph() visual.Graph {
 				Hosts: map[string]workflow.Host{
 					"app-01": {
 						Address: "agent://app-01",
-						Vars:    map[string]any{"capabilities": []any{"shell.run"}},
+						Vars:    map[string]any{"capabilities": []any{"script.python"}},
 					},
 				},
 			},
@@ -982,8 +982,8 @@ func capabilityMismatchGraph() visual.Graph {
 			{ID: "probe", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:    "probe",
 				Targets: []string{"app-01"},
-				Action:  "cmd.run",
-				Args:    map[string]any{"cmd": "echo ok"},
+				Action:  "script.shell",
+				Args:    map[string]any{"script": "echo ok"},
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
@@ -1027,8 +1027,8 @@ func subflowGraph() visual.Graph {
 				Step: &workflow.Step{
 					Name:    "after",
 					Targets: []string{"local"},
-					Action:  "cmd.run",
-					Args:    map[string]any{"cmd": "echo after"},
+					Action:  "script.shell",
+					Args:    map[string]any{"script": "echo after"},
 				},
 			},
 			{ID: "end", Type: visual.NodeTypeEnd},
@@ -1074,8 +1074,8 @@ func manualApprovalGraph() visual.Graph {
 				Step: &workflow.Step{
 					Name:    "after",
 					Targets: []string{"local"},
-					Action:  "cmd.run",
-					Args:    map[string]any{"cmd": "echo after"},
+					Action:  "script.shell",
+					Args:    map[string]any{"script": "echo after"},
 				},
 			},
 			{
@@ -1084,8 +1084,8 @@ func manualApprovalGraph() visual.Graph {
 				Step: &workflow.Step{
 					Name:    "notify",
 					Targets: []string{"local"},
-					Action:  "cmd.run",
-					Args:    map[string]any{"cmd": "echo notify"},
+					Action:  "script.shell",
+					Args:    map[string]any{"script": "echo notify"},
 				},
 			},
 			{ID: "end", Type: visual.NodeTypeEnd},
@@ -1124,8 +1124,8 @@ func sampleVisualGraph() visual.Graph {
 				Step: &workflow.Step{
 					Name:    "check disk",
 					Targets: []string{"local"},
-					Action:  "cmd.run",
-					Args:    map[string]any{"cmd": "df -h"},
+					Action:  "script.shell",
+					Args:    map[string]any{"script": "df -h"},
 				},
 			},
 			{
@@ -1134,7 +1134,7 @@ func sampleVisualGraph() visual.Graph {
 				Step: &workflow.Step{
 					Name:    "repair disk",
 					Targets: []string{"local"},
-					Action:  "shell.run",
+					Action:  "script.shell",
 					Args:    map[string]any{"script": "echo cleanup"},
 				},
 			},
@@ -1143,8 +1143,8 @@ func sampleVisualGraph() visual.Graph {
 				Type: visual.NodeTypeHandler,
 				Handler: &workflow.Handler{
 					Name:   "notify ops",
-					Action: "cmd.run",
-					Args:   map[string]any{"cmd": "echo notify"},
+					Action: "script.shell",
+					Args:   map[string]any{"script": "echo notify"},
 				},
 			},
 			{

@@ -111,9 +111,9 @@ func loopVisualGraph() Graph {
 				Step: &workflow.Step{
 					ID:      "loop-step",
 					Name:    "loop-step",
-					Action:  "cmd.run",
+					Action:  "script.shell",
 					Targets: []string{"local"},
-					Args:    map[string]any{"cmd": "echo item"},
+					Args:    map[string]any{"script": "echo item"},
 				},
 			},
 			{ID: "end", Type: NodeTypeEnd},

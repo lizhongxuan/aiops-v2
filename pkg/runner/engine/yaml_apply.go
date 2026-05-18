@@ -150,10 +150,10 @@ func injectWorkflowParams(wf *workflow.Workflow, params map[string]any) error {
 		}
 		if script, ok := stepScripts[step.Name]; ok {
 			if strings.TrimSpace(step.Action) == "" {
-				step.Action = "shell.run"
+				step.Action = "script.shell"
 			}
-			if step.Action != "shell.run" {
-				return fmt.Errorf("step %q action must be shell.run when step_script is set", step.Name)
+			if step.Action != "script.shell" {
+				return fmt.Errorf("step %q action must be script.shell when step_script is set", step.Name)
 			}
 			if step.Args == nil {
 				step.Args = map[string]any{}

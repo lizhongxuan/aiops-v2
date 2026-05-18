@@ -33,7 +33,7 @@ func TestGraphIORoundTripPreservesStructuredInputsAndOutputs(t *testing.T) {
 				StepName: "restore",
 				Step: &workflow.Step{
 					Name:   "restore",
-					Action: "shell.run",
+					Action: "script.shell",
 					Args:   map[string]any{"script": "echo restore"},
 				},
 				Inputs: []InputParamSpec{
@@ -124,7 +124,7 @@ func TestValidateGraphRejectsInvalidStructuredIO(t *testing.T) {
 				ID:       "run",
 				Type:     NodeTypeAction,
 				StepName: "run",
-				Step:     &workflow.Step{Name: "run", Action: "cmd.run", Args: map[string]any{"cmd": "echo ok"}},
+				Step:     &workflow.Step{Name: "run", Action: "script.shell", Args: map[string]any{"script": "echo ok"}},
 				Inputs: []InputParamSpec{
 					{Key: "target", Type: "string", ValueSource: ValueSource{Type: "variable"}},
 					{Key: "target", Type: "unknown"},
@@ -183,9 +183,9 @@ x_runner_graph:
 steps:
   - id: step-restore
     name: restore
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo restore
+      script: echo restore
 `
 
 	graph, err := ParseYAMLToGraph([]byte(raw))
@@ -229,9 +229,9 @@ x_runner_graph:
       target: end
 steps:
   - name: run
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: echo ok
+      script: echo ok
 `
 
 	graph, err := ParseYAMLToGraph([]byte(raw))
