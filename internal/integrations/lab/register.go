@@ -9,7 +9,11 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-func RegisterBuiltins(mcpRegistry *mcp.Registry) error {
+type Options struct {
+	Mode string
+}
+
+func RegisterBuiltins(mcpRegistry *mcp.Registry, opts ...Options) error {
 	if mcpRegistry == nil {
 		return fmt.Errorf("lab: mcp registry is required")
 	}
@@ -24,7 +28,17 @@ func RegisterBuiltins(mcpRegistry *mcp.Registry) error {
 		return err
 	}
 
+	if !devMode(opts...) {
+		return nil
+	}
 	return mcpRegistry.OnServerConnected("lab", labTools())
+}
+
+func devMode(opts ...Options) bool {
+	if len(opts) == 0 {
+		return false
+	}
+	return opts[0].Mode == "dev"
 }
 
 func labTools() []tooling.Tool {

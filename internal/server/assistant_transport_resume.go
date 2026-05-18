@@ -37,7 +37,7 @@ func (s *HTTPServer) handleAssistantTransportResume(w http.ResponseWriter, r *ht
 	projector := appui.NewTransportProjector()
 	initial := assistantTransportInitialState(req)
 	session := assistantTransportResolveResumeSession(source, initial)
-	current, err := projectAssistantTransportSessionState(assistantTransportCloneState(initial), session, projector)
+	current, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(initial), session, projector)
 	if err != nil {
 		current = assistantTransportFailedResumeState(initial, err)
 		_ = encoder.WriteStateOps(assistantTransportFullStateOps(current))

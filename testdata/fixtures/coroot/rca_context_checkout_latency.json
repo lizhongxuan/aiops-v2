@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "coroot.rca_context/v1",
+  "source": "coroot",
+  "project": "default",
+  "target": {
+    "service": "checkout",
+    "incidentId": "inc-checkout-latency"
+  },
+  "window": {
+    "timeRange": "30m"
+  },
+  "entities": [
+    { "id": "checkout", "kind": "service", "status": "critical" },
+    { "id": "catalog", "kind": "service", "status": "critical" },
+    { "id": "db-main", "kind": "postgres", "status": "warning" }
+  ],
+  "topology": {
+    "nodes": [
+      { "id": "checkout", "name": "checkout", "category": "service", "status": "critical", "issues": ["latency"] },
+      { "id": "catalog", "name": "catalog", "category": "service", "status": "critical", "issues": ["cpu", "latency"] },
+      { "id": "db-main", "name": "db-main", "category": "postgres", "status": "warning", "issues": ["query volume"] }
+    ],
+    "edges": [
+      { "source": "checkout", "target": "catalog", "status": "critical", "stats": ["p99 latency", "failed tcp connections"] },
+      { "source": "catalog", "target": "db-main", "status": "warning", "stats": ["query calls/sec"] }
+    ]
+  },
+  "metrics": [
+    {
+      "id": "metric-checkout-catalog-latency",
+      "name": "latency_p99",
+      "entity": "checkout->catalog",
+      "status": "critical",
+      "unit": "s",
+      "valueSummary": "p99 rose from 80ms to 1.8s",
+      "evidenceRef": "ev-coroot-checkout-catalog-latency",
+      "series": [
+        { "ts": "2026-05-15T10:00:00+08:00", "value": 0.08 },
+        { "ts": "2026-05-15T10:30:00+08:00", "value": 1.8 }
+      ]
+    },
+    {
+      "id": "metric-catalog-cpu",
+      "name": "cpu_usage",
+      "entity": "catalog",
+      "status": "critical",
+      "unit": "cores",
+      "valueSummary": "catalog CPU increased from 0.6 to 2.4 cores",
+      "evidenceRef": "ev-coroot-catalog-cpu"
+    }
+  ],
+  "events": [
+    {
+      "id": "event-catalog-rollout",
+      "type": "deployment",
+      "timestamp": "2026-05-15T10:21:00+08:00",
+      "entity": "catalog",
+      "message": "catalog image changed from catalog:0.49 to catalog:0.50",
+      "evidenceRef": "ev-coroot-catalog-deployment"
+    }
+  ],
+  "deployments": [
+    {
+      "id": "deploy-catalog-050",
+      "entity": "catalog",
+      "version": "catalog:0.50",
+      "timestamp": "2026-05-15T10:21:00+08:00",
+      "evidenceRef": "ev-coroot-catalog-deployment"
+    }
+  ],
+  "dbQueries": [
+    {
+      "id": "query-brand-products",
+      "entity": "db-main",
+      "fingerprint": "select * from products where brand = ?",
+      "callsPerSecondBefore": 5,
+      "callsPerSecondAfter": 176,
+      "totalTimePerSecondBefore": 0.03,
+      "totalTimePerSecondAfter": 2.9,
+      "evidenceRef": "ev-coroot-db-query-volume"
+    }
+  ],
+  "profiles": [],
+  "traces": [],
+  "logs": [],
+  "limitations": ["profiling disabled in fixture"],
+  "rawRefs": [
+    {
+      "source": "coroot",
+      "uri": "coroot://project/default/rca-context/checkout?range=30m",
+      "digest": "sha256:fixture-checkout-latency"
+    }
+  ]
+}

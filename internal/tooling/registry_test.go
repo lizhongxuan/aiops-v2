@@ -267,6 +267,32 @@ func TestRegistryAssembleToolsWithOptionsAppliesFilterTransformAndExtraTools(t *
 	}
 }
 
+func TestRegistryCompileContextWithMetadataFiltersOpsManualToolsAfterOptOut(t *testing.T) {
+	r := NewRegistry()
+	for _, name := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight", "host_read"} {
+		if err := r.Register(&mockTool{
+			meta:        ToolMetadata{Name: name, Description: name},
+			enabled:     true,
+			readOnly:    true,
+			concurrency: true,
+			description: name,
+		}); err != nil {
+			t.Fatalf("Register(%s) error = %v", name, err)
+		}
+	}
+
+	assembled := r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualAction":  "skip_ops_manual",
+		"opsManualSkipped": "true",
+	})
+	if len(assembled) != 1 {
+		t.Fatalf("CompileContextWithMetadata() len = %d, want 1", len(assembled))
+	}
+	if assembled[0].Metadata().Name != "host_read" {
+		t.Fatalf("remaining tool = %q, want host_read", assembled[0].Metadata().Name)
+	}
+}
+
 func TestRegistryAssembleToolPoolWithOptionsPrefersBuiltinOverExtraMCPConflict(t *testing.T) {
 	r := NewRegistry()
 

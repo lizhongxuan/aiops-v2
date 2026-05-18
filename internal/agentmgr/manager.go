@@ -225,6 +225,25 @@ func (m *AgentManager) KillAgent(ctx context.Context, agentID string) error {
 	return nil
 }
 
+// MarkAgentFailed records a spawn-time or configuration failure for an agent
+// that could not enter RunAgent.
+func (m *AgentManager) MarkAgentFailed(agentID string, err error) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	instance, ok := m.instances[agentID]
+	if !ok || instance.Status.IsTerminal() {
+		return
+	}
+	instance.Status = AgentStatusFailed
+	if err != nil {
+		instance.Error = err.Error()
+	}
+	instance.UpdatedAt = time.Now()
+}
+
 // ---------------------------------------------------------------------------
 // CollectResults gathers all results for a given mission.
 // ---------------------------------------------------------------------------

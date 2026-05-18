@@ -18,6 +18,11 @@ export function ToolBlockPart({ block, compact = false }: ToolBlockPartProps) {
       <div className="flex items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-zinc-500" />
         <div className="min-w-0 flex-1 truncate font-medium text-zinc-800">{block.displayKind || block.kind}</div>
+        {block.mock ? (
+          <Badge variant="outline" className="bg-amber-50 text-amber-700">
+            Mock
+          </Badge>
+        ) : null}
         <Badge variant="outline" className="bg-white text-zinc-600">
           {block.status}
         </Badge>
@@ -38,6 +43,7 @@ export function ToolBlockPart({ block, compact = false }: ToolBlockPartProps) {
         {typeof block.exitCode === "number" ? <span>exit {block.exitCode}</span> : null}
         {block.durationMs ? <span>{block.durationMs}ms</span> : null}
         {block.rawRef ? <span>{block.rawRef}</span> : null}
+        {block.evidenceRefs?.map((ref) => <span key={ref}>证据 {ref}</span>)}
       </div>
     </div>
   );

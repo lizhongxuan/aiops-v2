@@ -21,6 +21,7 @@ const routedPaths = [
   "/settings",
   "/settings/llm",
   "/settings/hosts",
+  "/settings/ops-manuals",
   "/settings/experience-packs",
   "/settings/agent",
   "/settings/skills",
@@ -28,6 +29,7 @@ const routedPaths = [
   "/mcp",
   "/approval-management",
   "/capability-center",
+  "/agent-ui",
   "/ui-cards",
   "/script-configs",
   "/coroot",
@@ -87,7 +89,7 @@ describe("AppRouter", () => {
     expect(container.textContent).toContain("主机画像");
   });
 
-  it("redirects legacy experience packs route to settings experience packs", async () => {
+  it("redirects legacy experience packs route to settings ops manuals", async () => {
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={["/experience-packs"]}>
@@ -96,8 +98,8 @@ describe("AppRouter", () => {
       );
     });
 
-    expect(container.textContent).toContain("经验包");
-    expect(container.textContent).toContain("经验包工作台");
+    expect(container.textContent).toContain("运维手册");
+    expect(container.textContent).toContain("旧入口已迁移到运维手册");
   });
 
   it("can collapse the desktop navigation rail to an icon-only column", async () => {

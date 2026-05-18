@@ -83,6 +83,35 @@ describe("MessageMarkdown", () => {
     expect(paragraphs[0].textContent).toBe("来源： www.coinbase.com /price/bitcoin");
   });
 
+  it("keeps short section labels with their content and separates sections", async () => {
+    await act(async () => {
+      root.render(
+        <MessageMarkdown
+          text={[
+            "根因：",
+            "",
+            "不是故障，也不是预检失败；当前仅缺少一个必要参数：备份路径。",
+            "证据：",
+            "",
+            "已按运维手册完成只读匹配与参数解析。",
+            "影响面：",
+            "",
+            "在你确认备份路径前，不会执行任何备份变更。",
+          ].join("\n")}
+        />,
+      );
+    });
+
+    const paragraphs = Array.from(container.querySelectorAll("p")).map((paragraph) => paragraph.textContent || "");
+    expect(paragraphs).toEqual([
+      "根因： 不是故障，也不是预检失败；当前仅缺少一个必要参数：备份路径。",
+      "证据： 已按运维手册完成只读匹配与参数解析。",
+      "影响面： 在你确认备份路径前，不会执行任何备份变更。",
+    ]);
+    expect(container.querySelectorAll("p")).toHaveLength(3);
+    expect(container.querySelectorAll("strong")).toHaveLength(3);
+  });
+
   it("falls back to selection copy when clipboard api rejects", async () => {
     const execCalls: string[] = [];
     Object.defineProperty(navigator, "clipboard", {

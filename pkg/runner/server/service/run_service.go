@@ -21,23 +21,25 @@ import (
 )
 
 type RunServiceConfig struct {
-	MaxConcurrentRuns  int
-	MaxOutputBytes     int
-	MetaStore          RunRecordStore
-	EventStore         eventstore.Store
-	AgentDispatchToken string
+	MaxConcurrentRuns      int
+	MaxOutputBytes         int
+	MetaStore              RunRecordStore
+	EventStore             eventstore.Store
+	AgentDispatchToken     string
+	OpsManualRunRecordSink OpsManualRunRecordSink
 }
 
 type RunService struct {
-	workflowSvc *WorkflowService
-	pre         *Preprocessor
-	runStore    state.RunStateStore
-	recordStore RunRecordStore
-	eventStore  eventstore.Store
-	queue       queue.Queue
-	events      *events.Hub
-	metrics     *metrics.Collector
-	approvals   *approvalCoordinator
+	workflowSvc   *WorkflowService
+	pre           *Preprocessor
+	runStore      state.RunStateStore
+	recordStore   RunRecordStore
+	eventStore    eventstore.Store
+	runRecordSink OpsManualRunRecordSink
+	queue         queue.Queue
+	events        *events.Hub
+	metrics       *metrics.Collector
+	approvals     *approvalCoordinator
 
 	maxOutputBytes     int
 	agentDispatchToken string
@@ -46,10 +48,11 @@ type RunService struct {
 	workerCancel context.CancelFunc
 	workerWg     sync.WaitGroup
 
-	mu          sync.RWMutex
-	jobs        map[string]*runJob
-	metas       map[string]RunMeta
-	idempotency map[string]string
+	mu           sync.RWMutex
+	jobs         map[string]*runJob
+	metas        map[string]RunMeta
+	idempotency  map[string]string
+	sinkNotified map[string]struct{}
 }
 
 type runJob struct {
@@ -90,6 +93,7 @@ func NewRunService(cfg RunServiceConfig, workflowSvc *WorkflowService, pre *Prep
 		runStore:           runStore,
 		recordStore:        cfg.MetaStore,
 		eventStore:         cfg.EventStore,
+		runRecordSink:      cfg.OpsManualRunRecordSink,
 		queue:              q,
 		events:             hub,
 		metrics:            collector,
@@ -101,6 +105,7 @@ func NewRunService(cfg RunServiceConfig, workflowSvc *WorkflowService, pre *Prep
 		jobs:               map[string]*runJob{},
 		metas:              map[string]RunMeta{},
 		idempotency:        map[string]string{},
+		sinkNotified:       map[string]struct{}{},
 	}
 
 	_, _ = runStore.MarkInterruptedRunning(context.Background(), "runner-server restarted")
@@ -123,6 +128,15 @@ func (s *RunService) Close() {
 	s.workerCancel()
 	s.queue.Close()
 	s.workerWg.Wait()
+}
+
+func (s *RunService) SetOpsManualRunRecordSink(sink OpsManualRunRecordSink) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runRecordSink = sink
 }
 
 func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse, error) {
@@ -154,6 +168,14 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 	if err != nil {
 		return nil, err
 	}
+	if err := VerifyWorkflowDigest(req.WorkflowDigest, rawYAML); err != nil {
+		s.recordRejectedRun(ctx, req, wf, WorkflowErrorCodeDigestMismatch, err)
+		return nil, err
+	}
+	if err := VerifyOpsManualPreflight(req); err != nil {
+		s.recordRejectedRun(ctx, req, wf, WorkflowErrorCodeOpsManualPreflight, err)
+		return nil, err
+	}
 	if wf.Vars == nil {
 		wf.Vars = map[string]any{}
 	}
@@ -170,16 +192,21 @@ func (s *RunService) Submit(ctx context.Context, req *RunRequest) (*RunResponse,
 	runID := state.NewRunID()
 	createdAt := time.Now().UTC()
 	meta := RunMeta{
-		RunID:          runID,
-		WorkflowName:   wf.Name,
-		WorkflowYAML:   string(rawYAML),
-		Vars:           cloneAnyMap(req.Vars),
-		TriggeredBy:    defaultTriggeredBy(req.TriggeredBy),
-		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-		CreatedAt:      createdAt,
-		QueuedAt:       createdAt,
-		Status:         state.RunStatusQueued,
-		Summary:        buildRunSummary(state.RunStatusQueued, ""),
+		RunID:           runID,
+		WorkflowName:    wf.Name,
+		WorkflowYAML:    string(rawYAML),
+		ManualID:        strings.TrimSpace(req.ManualID),
+		WorkflowID:      defaultWorkflowID(req.WorkflowID, wf.Name),
+		WorkflowVersion: defaultWorkflowVersion(req.WorkflowVersion, wf.Version),
+		WorkflowDigest:  strings.TrimSpace(req.WorkflowDigest),
+		Vars:            cloneAnyMap(req.Vars),
+		Metadata:        runRequestMetadata(req),
+		TriggeredBy:     defaultTriggeredBy(req.TriggeredBy),
+		IdempotencyKey:  strings.TrimSpace(req.IdempotencyKey),
+		CreatedAt:       createdAt,
+		QueuedAt:        createdAt,
+		Status:          state.RunStatusQueued,
+		Summary:         buildRunSummary(state.RunStatusQueued, ""),
 	}
 	if err := s.recordStore.Upsert(ctx, meta); err != nil {
 		return nil, err
@@ -319,6 +346,7 @@ func (s *RunService) Cancel(ctx context.Context, runID string) error {
 		s.metas[runID] = meta
 		s.mu.Unlock()
 		s.persistMetaAsync(meta)
+		s.notifyOpsManualRunRecord(context.Background(), meta, "")
 		s.publishEvent(runID, events.Event{
 			Type:      "run_finish",
 			RunID:     runID,
@@ -438,6 +466,7 @@ func (s *RunService) processJob(runID string) {
 			Version:      1,
 		})
 		s.persistMetaAsync(meta)
+		s.notifyOpsManualRunRecord(context.Background(), meta, "")
 		s.metrics.ObserveRunFinished(state.RunStatusCanceled, 0)
 		s.publishEvent(runID, events.Event{
 			Type:      "run_finish",
@@ -541,6 +570,7 @@ func (s *RunService) processJob(runID string) {
 	cancel()
 
 	s.persistMetaAsync(enrichMetaWithRun(meta, snapshot))
+	s.notifyOpsManualRunRecord(context.Background(), enrichMetaWithRun(meta, snapshot), "")
 	s.metrics.ObserveRunFinished(status, finished.Sub(start))
 	if isGraphWorkflow(job.Workflow) {
 		s.metrics.ObserveGraphRunFinished(status, finished.Sub(start))
@@ -611,6 +641,111 @@ func (s *RunService) restoreRecords(ctx context.Context) {
 	}
 }
 
+func (s *RunService) recordRejectedRun(ctx context.Context, req *RunRequest, wf workflow.Workflow, errorCode string, cause error) {
+	now := time.Now().UTC()
+	metadata := runRequestMetadata(req)
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	if strings.TrimSpace(errorCode) != "" {
+		metadata["error_code"] = strings.TrimSpace(errorCode)
+	}
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	meta := RunMeta{
+		RunID:           state.NewRunID(),
+		WorkflowName:    wf.Name,
+		ManualID:        strings.TrimSpace(req.ManualID),
+		WorkflowID:      defaultWorkflowID(req.WorkflowID, wf.Name),
+		WorkflowVersion: defaultWorkflowVersion(req.WorkflowVersion, wf.Version),
+		WorkflowDigest:  strings.TrimSpace(req.WorkflowDigest),
+		Vars:            cloneAnyMap(req.Vars),
+		Metadata:        metadata,
+		TriggeredBy:     defaultTriggeredBy(req.TriggeredBy),
+		IdempotencyKey:  strings.TrimSpace(req.IdempotencyKey),
+		CreatedAt:       now,
+		QueuedAt:        now,
+		FinishedAt:      now,
+		Status:          state.RunStatusFailed,
+		Message:         message,
+		Summary:         buildRunSummary(state.RunStatusFailed, message),
+	}
+	if err := s.recordStore.Upsert(ctx, meta); err != nil {
+		logging.L().Warn("persist rejected run meta failed",
+			zap.String("run_id", meta.RunID),
+			zap.Error(err),
+		)
+	}
+	s.rememberMetaWithoutIdempotency(meta)
+	s.notifyOpsManualRunRecord(ctx, meta, errorCode)
+}
+
+func runRequestMetadata(req *RunRequest) map[string]any {
+	if req == nil {
+		return nil
+	}
+	metadata := cloneAnyMap(req.Metadata)
+	if strings.TrimSpace(req.PreflightStatus) != "" {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["preflight_status"] = strings.TrimSpace(req.PreflightStatus)
+	}
+	if strings.TrimSpace(req.PreflightEvidenceRef) != "" {
+		if metadata == nil {
+			metadata = map[string]any{}
+		}
+		metadata["preflight_evidence_ref"] = strings.TrimSpace(req.PreflightEvidenceRef)
+	}
+	return metadata
+}
+
+func (s *RunService) notifyOpsManualRunRecord(ctx context.Context, meta RunMeta, errorCode string) {
+	if s == nil || s.runRecordSink == nil || !state.IsTerminalRunStatus(meta.Status) {
+		return
+	}
+	s.mu.Lock()
+	if _, ok := s.sinkNotified[meta.RunID]; ok {
+		s.mu.Unlock()
+		return
+	}
+	s.sinkNotified[meta.RunID] = struct{}{}
+	s.mu.Unlock()
+
+	if strings.TrimSpace(errorCode) == "" {
+		if value, ok := meta.Metadata["error_code"].(string); ok {
+			errorCode = value
+		}
+	}
+	record := OpsManualRunRecord{
+		RunID:           meta.RunID,
+		ManualID:        meta.ManualID,
+		WorkflowID:      meta.WorkflowID,
+		WorkflowName:    meta.WorkflowName,
+		WorkflowVersion: meta.WorkflowVersion,
+		WorkflowDigest:  meta.WorkflowDigest,
+		Status:          meta.Status,
+		ErrorCode:       strings.TrimSpace(errorCode),
+		Message:         meta.Message,
+		TriggeredBy:     meta.TriggeredBy,
+		Metadata:        cloneAnyMap(meta.Metadata),
+		CreatedAt:       meta.CreatedAt,
+		StartedAt:       meta.StartedAt,
+		FinishedAt:      meta.FinishedAt,
+	}
+	if err := s.runRecordSink.RecordRun(ctx, record); err != nil {
+		logging.L().Warn("ops manual run record sink failed",
+			zap.String("run_id", meta.RunID),
+			zap.String("manual_id", meta.ManualID),
+			zap.String("workflow_id", meta.WorkflowID),
+			zap.String("status", meta.Status),
+			zap.Error(err),
+		)
+	}
+}
+
 func (s *RunService) lookupMeta(runID string) (RunMeta, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -629,6 +764,16 @@ func (s *RunService) rememberMeta(meta RunMeta) {
 	if meta.IdempotencyKey != "" {
 		s.idempotency[meta.IdempotencyKey] = meta.RunID
 	}
+}
+
+func (s *RunService) rememberMetaWithoutIdempotency(meta RunMeta) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	meta = cloneRunMeta(meta)
+	if meta.Summary == "" {
+		meta.Summary = buildRunSummary(meta.Status, meta.Message)
+	}
+	s.metas[meta.RunID] = meta
 }
 
 func (s *RunService) forgetMeta(runID, idempotencyKey string) {
@@ -666,6 +811,7 @@ func buildRunDetail(meta RunMeta, run *state.RunState) RunDetail {
 	detail := RunDetail{
 		RunMeta: cloneRunMeta(meta),
 	}
+	detail.WorkflowVersion = detail.RunMeta.WorkflowVersion
 	if detail.TriggeredBy == "" {
 		detail.TriggeredBy = "system"
 	}
@@ -675,7 +821,9 @@ func buildRunDetail(meta RunMeta, run *state.RunState) RunDetail {
 	if run == nil {
 		return detail
 	}
-	detail.WorkflowVersion = run.WorkflowVersion
+	if detail.WorkflowVersion == "" {
+		detail.WorkflowVersion = run.WorkflowVersion
+	}
 	detail.LastError = run.LastError
 	detail.InterruptedReason = run.InterruptedReason
 	detail.LastNotifyError = run.LastNotifyError
@@ -770,6 +918,22 @@ func defaultTriggeredBy(triggeredBy string) string {
 		return "system"
 	}
 	return trimmed
+}
+
+func defaultWorkflowID(workflowID, workflowName string) string {
+	trimmed := strings.TrimSpace(workflowID)
+	if trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(workflowName)
+}
+
+func defaultWorkflowVersion(requestVersion, loadedVersion string) string {
+	trimmed := strings.TrimSpace(requestVersion)
+	if trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(loadedVersion)
 }
 
 func synthesizeRunHistory(run RunDetail) []events.Event {

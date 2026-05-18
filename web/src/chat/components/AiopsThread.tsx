@@ -3,7 +3,7 @@ import { ArrowDown, Bot } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
-import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { McpSurfacePart } from "./McpSurfacePart";
@@ -14,8 +14,9 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
-  agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
+  agentUiArtifacts?: unknown[];
   intent?: { text?: string; status?: string } | null;
+  userText?: string;
   turnStatus?: string;
   turnStartedAt?: string;
   turnCompletedAt?: string;

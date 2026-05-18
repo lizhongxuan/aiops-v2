@@ -27,63 +27,13 @@ type TraceItem = {
 
 type TraceListPayload = { traces?: TraceItem[]; rootDir?: string; selectedId?: string };
 type FilePayload = { content?: string };
-type AgentUiSourceArtifact = {
-  id: string;
-  artifactId: string;
-  type: string;
-  title: string;
-  evidenceRef?: string;
-  caseId?: string;
-  redactionStatus?: string;
-  redactionStatusLabel?: string;
-  generatedBy?: {
-    kind?: string;
-    id?: string;
-    name?: string;
-    label?: string;
-    llmRequestId?: string;
-  };
-};
-type AgentUiSourceToolCall = { id: string; name?: string };
-type AgentUiSourceLlmRequest = {
-  id: string;
-  label: string;
-  detail?: {
-    systemPrompt?: string;
-    developerPrompt?: string;
-    userPrompt?: string;
-    toolMessages?: string;
-    retrievalContext?: string;
-    output?: string;
-    error?: string;
-    tokens?: string;
-    duration?: string;
-  };
-  toolCalls: AgentUiSourceToolCall[];
-  generatedArtifacts: AgentUiSourceArtifact[];
-};
 type AgentUiSourceUserRequest = {
-  id: string;
   turnId?: string;
-  title: string;
   content?: string;
   preview?: string;
-  llmRequests: AgentUiSourceLlmRequest[];
 };
 type AgentUiSources = {
-  session?: { id?: string; caseId?: string };
-  summary?: { artifactCount?: number; userRequestCount?: number; llmRequestCount?: number };
   userRequests?: AgentUiSourceUserRequest[];
-};
-
-const ARTIFACT_TYPE_LABELS: Record<string, string> = {
-  coroot_chart: "Coroot 图表",
-  trace_summary: "Trace 摘要",
-  topology_slice: "拓扑片段",
-  workflow_result: "Workflow 结果",
-  verification_result: "验证结果",
-  experience_match: "经验命中",
-  unsupported: "暂不支持",
 };
 
 const TRACE_LIST_CARD_CLASS = "h-28 min-h-28 max-h-28 shrink-0 overflow-hidden rounded-lg border p-3 text-left text-sm";
@@ -106,10 +56,6 @@ function displayTime(value = "") {
   if (!value) return "";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function artifactTypeLabel(type = "") {
-  return ARTIFACT_TYPE_LABELS[type] || type || "未知类型";
 }
 
 function compactTraceLabel(value = "", maxLength = 30) {
@@ -151,7 +97,7 @@ export function PromptTracePage() {
   const [traces, setTraces] = useState<TraceItem[]>([]);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [activeView, setActiveView] = useState("sources");
+  const [activeView, setActiveView] = useState("overview");
   const [activeRaw, setActiveRaw] = useState("markdown");
   const [fileCache, setFileCache] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
@@ -208,7 +154,6 @@ export function PromptTracePage() {
   const sourceUserRequests = ((traceViewModel?.agentUiSources as AgentUiSources | undefined)?.userRequests || []);
 
   const views = [
-    ["sources", "来源"],
     ["overview", "概览"],
     ["layers", "Prompt 层"],
     ["messages", "消息"],
@@ -220,7 +165,7 @@ export function PromptTracePage() {
   return (
     <SettingsPageFrame
       title="Prompt Trace"
-      description="按会话、用户请求和 LLM 请求查看本次对话的 Prompt、工具和 Agent-to-UI 来源。"
+      description="按会话、用户请求和 LLM 请求查看本次对话的 Prompt、消息、工具、Diff 和 Raw。"
     >
       {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
       <div
@@ -246,7 +191,7 @@ export function PromptTracePage() {
                   data-testid="prompt-trace-session-card"
                   title={sessionCardTitle(group)}
                   className={`${TRACE_LIST_CARD_CLASS} ${group.id === selectedSessionGroup?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
-                  onClick={() => { setSelectedId(group.traces[0]?.id || ""); setActiveView("sources"); }}
+                  onClick={() => { setSelectedId(group.traces[0]?.id || ""); setActiveView("overview"); }}
                 >
                   <span data-testid="prompt-trace-session-title" className="block line-clamp-2 break-all font-medium leading-5" style={TWO_LINE_CLAMP_STYLE}>{group.label}</span>
                   <span className="mt-1 block truncate text-xs text-slate-500">最近 {displayTime(group.latestAt)}</span>
@@ -254,7 +199,6 @@ export function PromptTracePage() {
                     <ToneBadge>用户请求 {group.turns.length}</ToneBadge>
                     <ToneBadge>LLM 请求 {group.traces.length}</ToneBadge>
                   </span>
-                  {group.caseIds.length ? <span className="mt-1 block truncate text-xs text-slate-500" title={`Case ${group.caseIds.join("，")}`}>Case {group.caseIds.join("，")}</span> : null}
                 </button>
               )) : null}
               {!loading && !sessionGroups.length ? <p className="py-6 text-center text-sm text-slate-500">暂无 Prompt Trace。</p> : null}
@@ -278,7 +222,7 @@ export function PromptTracePage() {
                   data-testid="prompt-trace-turn-card"
                   title={turnCardTitle(turn, preview)}
                   className={`${TRACE_LIST_CARD_CLASS} ${turn.id === selectedTurnGroup?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
-                  onClick={() => { setSelectedId(turn.traces[0]?.id || ""); setActiveView("sources"); }}
+                  onClick={() => { setSelectedId(turn.traces[0]?.id || ""); setActiveView("overview"); }}
                 >
                   <div data-testid="prompt-trace-turn-preview" className="line-clamp-2 overflow-hidden text-sm font-medium leading-5 text-slate-950" style={TWO_LINE_CLAMP_STYLE}>{preview}</div>
                   <div className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
@@ -304,7 +248,7 @@ export function PromptTracePage() {
                   data-testid="prompt-trace-llm-card"
                   title={llmCardTitle(trace, index)}
                   className={`${TRACE_LIST_CARD_CLASS} min-w-0 ${trace.id === selectedTrace?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
-                  onClick={() => { setSelectedId(trace.id); setActiveView("sources"); setDetailOpen(true); }}
+                  onClick={() => { setSelectedId(trace.id); setActiveView("overview"); setDetailOpen(true); }}
                 >
                   <span className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-medium">LLM 请求 {index + 1}</span>
@@ -314,7 +258,6 @@ export function PromptTracePage() {
                   <span className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
                     {trace.promptFingerprint?.stableHash ? <ToneBadge>stable {shortHash(trace.promptFingerprint.stableHash)}</ToneBadge> : null}
                     {trace.visibleTools?.length ? <ToneBadge>工具 {trace.visibleTools.length}</ToneBadge> : null}
-                    <ToneBadge>查看详情</ToneBadge>
                   </span>
                 </button>
               ))}
@@ -406,7 +349,6 @@ function PromptTraceDetailDialog({
           </div>
 
           <div className="mt-4 grid gap-4">
-            {activeView === "sources" ? <AgentUiSourcesView sources={traceViewModel?.agentUiSources as AgentUiSources | undefined} /> : null}
             {activeView === "overview" ? (
               <section className="grid gap-3 md:grid-cols-3">
                 <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Messages</CardDescription><CardTitle>{traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0}</CardTitle></CardHeader></Card>
@@ -425,61 +367,6 @@ function PromptTraceDetailDialog({
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function AgentUiSourcesView({ sources }: { sources?: AgentUiSources | null }) {
-  const userRequests = sources?.userRequests || [];
-  const summary = sources?.summary || {};
-  const session = sources?.session || {};
-  const selectedUserRequest = userRequests[0] || null;
-  const selectedLlmRequests = selectedUserRequest?.llmRequests || [];
-  const selectedLlmRequest = selectedLlmRequests[0] || null;
-
-  return (
-    <section className="grid gap-3">
-      <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold text-slate-950">Agent-to-UI 来源</h2>
-            <p className="mt-1 text-sm text-slate-600">会话 → 用户请求 → LLM 请求 → Artifact</p>
-          </div>
-          <div className="flex flex-wrap gap-2 text-xs">
-            <ToneBadge>会话 {session.id || "-"}</ToneBadge>
-            {session.caseId ? <ToneBadge>Case {session.caseId}</ToneBadge> : null}
-            <ToneBadge>Artifact {summary.artifactCount ?? 0}</ToneBadge>
-          </div>
-        </div>
-      </div>
-
-      {userRequests.length ? (
-        <div className="grid gap-3">
-          <section className="rounded-lg border border-slate-200 bg-white p-4">
-            <h3 className="text-sm font-semibold text-slate-950">当前链路</h3>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                <div className="text-xs font-medium text-slate-500">会话</div>
-                <div className="mt-1 break-all font-medium text-slate-950">{session.id || "-"}</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                <div className="text-xs font-medium text-slate-500">用户请求</div>
-                <div className="mt-1 line-clamp-3 font-medium text-slate-950">{selectedUserRequest?.content || selectedUserRequest?.preview || selectedUserRequest?.turnId || "-"}</div>
-              </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                <div className="text-xs font-medium text-slate-500">LLM 请求</div>
-                <div className="mt-1 break-all font-mono text-slate-950">{selectedLlmRequest?.label || "-"}</div>
-              </div>
-            </div>
-          </section>
-
-          {selectedLlmRequest ? <LlmRequestDetail request={selectedLlmRequest} /> : <div className="rounded-lg border border-dashed border-slate-200 p-4 text-sm text-slate-500">本次 LLM 请求没有生成 Agent-to-UI Artifact；Prompt 内容请切换到 Prompt 层、消息或 Raw 查看。</div>}
-        </div>
-      ) : (
-        <div className="rounded-lg border border-dashed border-slate-200 bg-white p-6 text-sm text-slate-500">
-          暂无 Agent-to-UI Artifact 来源。
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -565,73 +452,4 @@ function compareLatestDesc(left: { latestAt: string }, right: { latestAt: string
 
 function compareTraceDesc(left: TraceItem, right: TraceItem) {
   return new Date(right.createdAt || right.modifiedAt || 0).getTime() - new Date(left.createdAt || left.modifiedAt || 0).getTime();
-}
-
-function LlmRequestDetail({ request }: { request: AgentUiSourceLlmRequest }) {
-  const detail = request.detail || {};
-  const fields = [
-    ["System Prompt", detail.systemPrompt],
-    ["Developer Prompt", detail.developerPrompt],
-    ["User Prompt", detail.userPrompt],
-    ["Tool Messages", detail.toolMessages],
-    ["Retrieval Context", detail.retrievalContext],
-    ["输出", detail.output],
-    ["错误", detail.error],
-    ["Token", detail.tokens],
-    ["耗时", detail.duration],
-  ];
-
-  return (
-    <div className="grid gap-3">
-      <div className="grid gap-2">
-        {fields.map(([label, value]) => (
-          <section key={label} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="text-xs font-medium text-slate-500">{label}</div>
-            <pre className="mt-1 max-h-36 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-900">{value || "暂无"}</pre>
-          </section>
-        ))}
-      </div>
-
-      <div className="grid gap-2">
-        {request.generatedArtifacts.map((artifact) => (
-          <article key={artifact.id || artifact.artifactId} className="rounded-lg border border-slate-200 bg-white p-3">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-medium text-slate-950">{artifact.title || artifact.artifactId}</div>
-                <div className="mt-1 break-all font-mono text-xs text-slate-500">{artifact.artifactId}</div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <ToneBadge>{artifactTypeLabel(artifact.type)}</ToneBadge>
-                {artifact.redactionStatus || artifact.redactionStatusLabel ? <ToneBadge>{artifact.redactionStatusLabel || artifact.redactionStatus}</ToneBadge> : null}
-              </div>
-            </div>
-            <dl className="mt-3 grid gap-2 text-xs text-slate-600 md:grid-cols-2">
-              <div>
-                <dt className="font-medium text-slate-500">生成来源</dt>
-                <dd>{artifact.generatedBy?.label || artifact.generatedBy?.id || "LLM 请求"}</dd>
-              </div>
-              {artifact.evidenceRef ? (
-                <div>
-                  <dt className="font-medium text-slate-500">EvidenceRef</dt>
-                  <dd>EvidenceRef {artifact.evidenceRef}</dd>
-                </div>
-              ) : null}
-              {artifact.caseId ? (
-                <div>
-                  <dt className="font-medium text-slate-500">Case</dt>
-                  <dd>Case {artifact.caseId}</dd>
-                </div>
-              ) : null}
-              {artifact.redactionStatus ? (
-                <div>
-                  <dt className="font-medium text-slate-500">脱敏状态</dt>
-                  <dd>{artifact.redactionStatusLabel || artifact.redactionStatus}</dd>
-                </div>
-              ) : null}
-            </dl>
-          </article>
-        ))}
-      </div>
-    </div>
-  );
 }

@@ -23,6 +23,7 @@ import {
   type SessionKind,
   type SessionSummary,
 } from "@/pages/settingsApi";
+import { resolveUiFixtureSessions, resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
@@ -127,6 +128,17 @@ export function SessionContextBar({
   }
 
   async function load() {
+    const fixtureSessions = resolveUiFixtureSessions();
+    const fixtureState = resolveUiFixtureState();
+    if (fixtureSessions) {
+      const nextSessions = fixtureSessions.sessions || fixtureSessions.items || [];
+      const nextHosts = Array.isArray(fixtureState?.hosts) ? fixtureState.hosts : hosts;
+      setSessions(nextSessions);
+      setHosts(nextHosts);
+      setLlm({ provider: "openai", model: "gpt-5.4", apiKeySet: true });
+      applySession(fixtureSessions.activeSessionId || nextSessions[0]?.id || activeThreadId, nextSessions, false, nextHosts);
+      return;
+    }
     setActiveAction("refresh");
     setBusy(true);
     try {
@@ -450,6 +462,10 @@ function MoreActionsMenu({
   );
 }
 
+export function buildTargetOptionsForTest(hosts: HostRecord[], kind: SessionKind): TargetOption[] {
+  return buildTargetOptions(hosts, kind);
+}
+
 function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOption[] {
   const normalizedHosts = hostOptions(hosts);
   if (kind === "single_host") {
@@ -477,6 +493,13 @@ function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOptio
         "aiops.target.labelKey": key,
         "aiops.target.labelValue": value,
         "aiops.target.label": `${key}=${value}`,
+        ...(isEnvironmentLabel(key)
+          ? {
+              "aiops.environment": value,
+              "aiops.target.environment": value,
+              "aiops.coroot.project": value,
+            }
+          : {}),
       },
     });
   }
@@ -494,18 +517,17 @@ function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOptio
 
 function hostOptions(hosts: HostRecord[]) {
   const normalized = ensureLocalHost(hosts);
-  return normalized.map((host) => ({
-    value: `host:${host.id}`,
-    label: host.name || host.address || host.id,
-    description: firstText(host.address, host.id),
-    kind: "host" as const,
-    hostId: host.id,
-    metadata: {
-      "aiops.target.kind": "host",
-      "aiops.target.hostId": host.id,
-      "aiops.target.label": host.name || host.address || host.id,
-    },
-  }));
+  return normalized.map((host) => {
+    const label = host.name || host.address || host.id;
+    return {
+      value: `host:${host.id}`,
+      label,
+      description: firstText(host.address, host.id),
+      kind: "host" as const,
+      hostId: host.id,
+      metadata: hostTargetMetadata(host, label),
+    };
+  });
 }
 
 function ensureLocalHost(hosts: HostRecord[]) {
@@ -549,6 +571,47 @@ function k8sGroups(hosts: HostRecord[]) {
     if (cluster) groups.set(cluster, (groups.get(cluster) || 0) + 1);
   }
   return Array.from(groups.entries());
+}
+
+function hostTargetMetadata(host: HostRecord, label: string) {
+  const labels = host.labels || {};
+  const metadata: Record<string, string> = {
+    "aiops.target.kind": "host",
+    "aiops.target.hostId": host.id,
+    "aiops.target.label": label,
+  };
+  const environment = resolveEnvironmentLabel(labels);
+  if (environment) {
+    metadata["aiops.environment"] = environment;
+    metadata["aiops.target.environment"] = environment;
+  }
+  const corootProject = resolveCorootProjectLabel(labels, environment);
+  if (corootProject) {
+    metadata["aiops.coroot.project"] = corootProject;
+  }
+  const cluster = firstText(labels.k8s, labels.cluster, labels.clusterName, labels["k8s.cluster"]);
+  if (cluster) {
+    metadata["aiops.target.cluster"] = cluster;
+  }
+  return metadata;
+}
+
+function resolveEnvironmentLabel(labels: Record<string, string>) {
+  return firstText(labels["aiops.environment"], labels.environment, labels.env, labels.stage, labels["app.kubernetes.io/environment"]);
+}
+
+function resolveCorootProjectLabel(labels: Record<string, string>, fallbackEnvironment?: string) {
+  return firstText(
+    labels["aiops.coroot.project"],
+    labels["coroot.project"],
+    labels.corootProject,
+    labels.coroot_project,
+    fallbackEnvironment,
+  );
+}
+
+function isEnvironmentLabel(key: string) {
+  return ["env", "environment", "stage", "aiops.environment", "app.kubernetes.io/environment"].includes(key.trim().toLowerCase());
 }
 
 function normalizeKind(kind?: string) {

@@ -15,7 +15,7 @@ export {
   createProtocolFixtureState,
 };
 
-export const FIXTURE_BASE_URL = process.env.PLAYWRIGHT_FIXTURE_BASE_URL || "http://127.0.0.1:4173";
+export const FIXTURE_BASE_URL = process.env.PLAYWRIGHT_FIXTURE_BASE_URL || process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:53173";
 
 function normalizeUiFixtureInput(fixture) {
   if (typeof fixture === "string") {

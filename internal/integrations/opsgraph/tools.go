@@ -65,10 +65,12 @@ func newTool(name, description string, schema json.RawMessage, visibility toolin
 			Name:        name,
 			Origin:      tooling.ToolOriginBuiltin,
 			Description: description,
+			Domain:      "opsgraph",
 			RiskLevel:   tooling.ToolRiskLow,
 		},
-		Visibility:      visibility,
-		InputSchemaData: schema,
+		Visibility:       visibility,
+		InputSchemaData:  schema,
+		OutputSchemaData: outputSchema,
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
 		},
@@ -121,4 +123,17 @@ var entitySchema = json.RawMessage(`{
 		"query": {"type": "string", "description": "Fallback lookup query when entityId is unknown"},
 		"depth": {"type": "integer", "description": "Neighborhood traversal depth, defaults to 1"}
 	}
+}`)
+
+var outputSchema = json.RawMessage(`{
+	"type":"object",
+	"properties":{
+		"schemaVersion":{"type":"string"},
+		"tool":{"type":"string"},
+		"status":{"type":"string"},
+		"source":{"type":"string"},
+		"mock":{"type":"boolean"},
+		"evidenceRefs":{"type":"array","items":{"type":"string"}}
+	},
+	"required":["schemaVersion","tool","status"]
 }`)

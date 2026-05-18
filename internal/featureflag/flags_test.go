@@ -13,6 +13,9 @@ func TestDefaultAndClone(t *testing.T) {
 	if f.UnifiedToolModel || f.ToolSearch || f.MCPServerRegistry || f.SkillRegistry || f.AgentRegistry || f.HooksV2 {
 		t.Fatalf("default flags should be false: %#v", f)
 	}
+	if !f.DiagnosticProtocol {
+		t.Fatalf("diagnostic protocol should default on: %#v", f)
+	}
 	if f.DisabledTools != nil || f.DeferredTools != nil || f.ExperimentalMetaTools != nil {
 		t.Fatalf("default slices should be nil: %#v", f)
 	}
@@ -50,6 +53,8 @@ func TestFromEnvParsing(t *testing.T) {
 			return "No"
 		case envHooksV2:
 			return "false"
+		case envDiagnosticProtocol:
+			return "0"
 		case envDisabledTools:
 			return " alpha, beta\nalpha " + sep + "gamma "
 		case envDeferredTools:
@@ -68,6 +73,9 @@ func TestFromEnvParsing(t *testing.T) {
 	if f.AgentRegistry || f.HooksV2 {
 		t.Fatalf("false values should remain false: %#v", f)
 	}
+	if f.DiagnosticProtocol {
+		t.Fatalf("diagnostic protocol should parse explicit 0 as disabled: %#v", f)
+	}
 
 	if want := []string{"alpha", "beta", "gamma"}; !reflect.DeepEqual(f.DisabledTools, want) {
 		t.Fatalf("disabled tools mismatch: got %#v want %#v", f.DisabledTools, want)
@@ -77,6 +85,13 @@ func TestFromEnvParsing(t *testing.T) {
 	}
 	if want := []string{"zeta", "eta"}; !reflect.DeepEqual(f.ExperimentalMetaTools, want) {
 		t.Fatalf("experimental tools mismatch: got %#v want %#v", f.ExperimentalMetaTools, want)
+	}
+}
+
+func TestFromEnvDiagnosticProtocolDefaultsOn(t *testing.T) {
+	f := FromEnv(func(string) string { return "" })
+	if !f.DiagnosticProtocol {
+		t.Fatalf("diagnostic protocol should default on when env is unset: %#v", f)
 	}
 }
 

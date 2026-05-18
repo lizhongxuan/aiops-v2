@@ -4,9 +4,17 @@ export type AgentUIArtifactType =
   | "coroot_chart"
   | "trace_summary"
   | "topology_slice"
+  | "rca_report"
   | "workflow_result"
   | "verification_result"
   | "experience_match"
+  | "ops_manual_match"
+  | "ops_manual_search_result"
+  | "ops_manual_param_resolution"
+  | "ops_manual_param_form"
+  | "ops_manual_preflight_result"
+  | "ops_manual_fallback_guide"
+  | "runner_workflow_generation"
   | "unsupported";
 
 export type AgentUIArtifactStatus =
@@ -46,9 +54,17 @@ const SUPPORTED_TYPES = new Set<AgentUIArtifactType>([
   "coroot_chart",
   "trace_summary",
   "topology_slice",
+  "rca_report",
   "workflow_result",
   "verification_result",
   "experience_match",
+  "ops_manual_match",
+  "ops_manual_search_result",
+  "ops_manual_param_resolution",
+  "ops_manual_param_form",
+  "ops_manual_preflight_result",
+  "ops_manual_fallback_guide",
+  "runner_workflow_generation",
 ]);
 
 const SUPPORTED_STATUSES = new Set<AgentUIArtifactStatus>([
@@ -65,11 +81,31 @@ const SUPPORTED_STATUSES = new Set<AgentUIArtifactStatus>([
 const DANGEROUS_KEYS = new Set([
   "html",
   "script",
+  "iframe",
   "dangerouslySetInnerHTML",
   "innerHTML",
+  "outerHTML",
+  "onClick",
+  "onLoad",
+  "styleText",
 ]);
 
 const MCP_CARD_KEYS = ["mcpUiCard", "mcpCard", "card", "visual"] as const;
+export const ALLOWED_ACTION_INTENTS = new Set([
+  "open",
+  "open-case",
+  "open-evidence",
+  "open-prompt-trace",
+  "preview",
+  "validate",
+  "refresh",
+  "retry",
+  "confirm",
+  "cancel",
+  "request-permission",
+  "generate-runner-workflow-candidate",
+  "generate_runner_workflow_candidate",
+]);
 
 function compactText(value: unknown): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
@@ -117,8 +153,21 @@ function normalizeStatus(value: unknown, type: AgentUIArtifactType): AgentUIArti
 
 function normalizeActions(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
-    ? value.map((item) => sanitizeRecord(item)).filter((item) => Object.keys(item).length > 0)
+    ? value.map((item) => normalizeAction(item)).filter((item) => Object.keys(item).length > 0)
     : [];
+}
+
+function normalizeAction(value: unknown): Record<string, unknown> {
+  const action = sanitizeRecord(value);
+  const intent = compactText(action.intent);
+  if (!intent || ALLOWED_ACTION_INTENTS.has(intent)) {
+    return action;
+  }
+  return {
+    ...action,
+    disabled: true,
+    disabledReason: `未知动作 intent：${intent}`,
+  };
 }
 
 function standardAction(id: string, label: string, href: string, target: Record<string, unknown>): Record<string, unknown> {

@@ -70,6 +70,20 @@ func (a *Assembler) AssembleToolPoolWithOptions(session, mode string, opts Assem
 	return AssembleEinoToolPool(a.AssembleToolsWithOptions(session, mode, opts))
 }
 
+// CompileContextWithMetadata assembles prompt tools while applying turn-level
+// metadata such as explicit user opt-outs.
+func (a *Assembler) CompileContextWithMetadata(session, mode string, metadata map[string]string) []Tool {
+	return a.AssembleToolsWithOptions(session, mode, AssembleOptions{
+		Filter: turnMetadataToolFilter(metadata),
+	})
+}
+
+// AssembleToolPoolWithMetadata adapts the metadata-filtered visible tools into
+// Eino base tools for the same turn.
+func (a *Assembler) AssembleToolPoolWithMetadata(session, mode string, metadata map[string]string) []tool.BaseTool {
+	return AssembleEinoToolPool(a.CompileContextWithMetadata(session, mode, metadata))
+}
+
 // RefreshToken returns a stable token that changes when the assembled tool
 // surface changes. It can be used by runtimekernel to decide whether an
 // iteration must refresh its tool context.

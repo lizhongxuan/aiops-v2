@@ -1,6 +1,7 @@
 import { ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AiopsProcessBlock } from "@/transport/aiopsTransportTypes";
 
@@ -73,7 +74,6 @@ export function ProcessTranscript({
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
   const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming;
   const live = running || waiting;
-
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [open, setOpen] = useState(live);
@@ -481,6 +481,7 @@ function ToolDetailRow({
           {detail.output}
         </div>
       ) : null}
+      <EvidenceRefs refs={detail.evidenceRefs} />
     </div>
   );
 }
@@ -554,6 +555,23 @@ function CommandDetailRow({
           ) : null}
         </div>
       ) : null}
+      <EvidenceRefs refs={detail.evidenceRefs} />
+    </div>
+  );
+}
+
+function EvidenceRefs({ refs }: { refs?: string[] }) {
+  if (!refs?.length) {
+    return null;
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5 text-[13px] leading-5 text-slate-400">
+      <span>证据</span>
+      {refs.map((ref) => (
+        <code key={ref} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] text-slate-500">
+          {ref}
+        </code>
+      ))}
     </div>
   );
 }
@@ -619,6 +637,8 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
     kind: groupingKindForBlock(block),
     status: block.status,
     approvalId: block.approvalId,
+    evidenceRefs: uniqueLines(block.evidenceRefs || []),
+    mock: Boolean(block.mock),
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
     output: hasOutputPreview && (block.kind === "command" || block.kind === "tool" || block.kind === "mcp")
       ? cleanCommandOutput(block.outputPreview)
@@ -681,37 +701,39 @@ function terminalStatusLabel(status?: string) {
 
 function commandSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
   const command = detail.text || "命令";
+  const prefix = detail.mock ? "Mock " : "";
   switch (detail.status) {
     case "blocked":
-      return `等待审核 ${command}`;
+      return `等待审核 ${prefix}${command}`;
     case "failed":
-      return `运行失败 ${command}`;
+      return `运行失败 ${prefix}${command}`;
     case "running":
-      return `正在运行 ${command}`;
+      return `正在运行 ${prefix}${command}`;
     case "queued":
-      return `排队中 ${command}`;
+      return `排队中 ${prefix}${command}`;
     case "rejected":
-      return `已拒绝 ${command}`;
+      return `已拒绝 ${prefix}${command}`;
     default:
-      return `已运行 ${command}`;
+      return `已运行 ${prefix}${command}`;
   }
 }
 
 function toolDetailSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
   const text = detail.text || "工具调用";
+  const prefix = detail.mock ? "Mock " : "";
   switch (detail.status) {
     case "blocked":
-      return `等待审核 ${text}`;
+      return `等待审核 ${prefix}${text}`;
     case "failed":
-      return `执行失败 ${text}`;
+      return `执行失败 ${prefix}${text}`;
     case "running":
-      return `正在执行 ${text}`;
+      return `正在执行 ${prefix}${text}`;
     case "queued":
-      return `排队中 ${text}`;
+      return `排队中 ${prefix}${text}`;
     case "rejected":
-      return `已拒绝 ${text}`;
+      return `已拒绝 ${prefix}${text}`;
     default:
-      return text;
+      return `${prefix}${text}`;
   }
 }
 
@@ -725,6 +747,9 @@ function NativeProcessText({
   }
   if (block.kind === "reasoning") {
     return <ThinkingText block={block} />;
+  }
+  if (block.kind === "plan") {
+    return <PlanSteps block={block} />;
   }
   if (block.kind === "command") {
     return <CommandDetailRow detail={mergedBlockDetail(block)} showSummaryIcon />;
@@ -741,6 +766,34 @@ function NativeProcessText({
       {text}
     </div>
   );
+}
+
+function PlanSteps({ block }: { block: AiopsProcessBlock }) {
+  if (!block.steps?.length) {
+    const text = isCompactPlanSummary(block.text) ? "" : readableBlockSummary(block);
+    return text ? (
+      <div className="whitespace-pre-wrap break-words text-[16px] font-medium leading-8 text-slate-950">
+        {text}
+      </div>
+    ) : null;
+  }
+  return (
+    <ol className="space-y-1.5 text-[14px] leading-6 text-slate-500" data-testid={`aiops-plan-steps-${block.id}`}>
+      {block.steps.map((step) => (
+        <li key={step.id || step.text} className="flex min-w-0 gap-2">
+          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-slate-300" aria-hidden="true" />
+          <span className="min-w-0 break-words">
+            {step.text}
+            {step.summary ? <span className="ml-1 text-slate-400">{step.summary}</span> : null}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function isCompactPlanSummary(text?: string) {
+  return /^plan updated:/i.test((text || "").trim());
 }
 
 function AssistantFinalText({ text }: { text: string }) {

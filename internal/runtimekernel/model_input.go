@@ -5,6 +5,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
@@ -20,6 +21,7 @@ type ModelInputDebugTraceRequest struct {
 	VisibleTools     []string
 	PromptInputTrace promptinput.PromptInputTrace
 	PromptInputDiff  *promptinput.TraceDiff
+	DiagnosticTrace  diagnostics.DiagnosticTrace
 }
 
 func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]*schema.Message, error) {
@@ -137,6 +139,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		ModelInput:       req.ModelInput,
 		PromptInputTrace: req.PromptInputTrace,
 		PromptInputDiff:  req.PromptInputDiff,
+		DiagnosticTrace:  req.DiagnosticTrace,
 	})
 }
 

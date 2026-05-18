@@ -38,19 +38,22 @@ type workflowMeta struct {
 }
 
 type WorkflowService struct {
-	store       *workflowstore.Store
-	metaPath    string
-	historyPath string
-	mu          sync.Mutex
+	store              *workflowstore.Store
+	metaPath           string
+	historyPath        string
+	referenceChecker   WorkflowReferenceChecker
+	referenceGuardMode WorkflowReferenceGuardMode
+	mu                 sync.Mutex
 }
 
 const workflowBundleFormatVersion = "runner.workflow.bundle/v1"
 
 func NewWorkflowService(dir string) *WorkflowService {
 	return &WorkflowService{
-		store:       workflowstore.New(dir),
-		metaPath:    filepath.Join(dir, ".meta.json"),
-		historyPath: filepath.Join(dir, ".history"),
+		store:              workflowstore.New(dir),
+		metaPath:           filepath.Join(dir, ".meta.json"),
+		historyPath:        filepath.Join(dir, ".history"),
+		referenceGuardMode: WorkflowReferenceGuardModeEnforce,
 	}
 }
 
@@ -187,7 +190,7 @@ func (s *WorkflowService) Create(_ context.Context, record *WorkflowRecord) erro
 	return s.saveCurrentVersion(context.Background(), name, "create")
 }
 
-func (s *WorkflowService) Update(_ context.Context, name string, record *WorkflowRecord) error {
+func (s *WorkflowService) Update(ctx context.Context, name string, record *WorkflowRecord) error {
 	if record == nil {
 		return fmt.Errorf("%w: empty workflow record", ErrInvalid)
 	}
@@ -209,8 +212,11 @@ func (s *WorkflowService) Update(_ context.Context, name string, record *Workflo
 	if strings.TrimSpace(wf.Name) != name {
 		return fmt.Errorf("%w: workflow name mismatch", ErrInvalid)
 	}
-	existing, err := s.Get(context.Background(), name)
+	existing, err := s.Get(ctx, name)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
 		return err
 	}
 	if _, err := s.store.Put(name, raw); err != nil {
@@ -457,6 +463,9 @@ func (s *WorkflowService) Rollback(ctx context.Context, name, versionID string, 
 	if err != nil {
 		return nil, err
 	}
+	if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
+		return nil, err
+	}
 	if _, err := s.store.Put(name, version.RawYAML); err != nil {
 		return nil, err
 	}
@@ -546,6 +555,11 @@ func (s *WorkflowService) ImportBundle(ctx context.Context, bundle *WorkflowBund
 	if err := validateWorkflowBundleVersions(name, bundle.Versions); err != nil {
 		return nil, err
 	}
+	if exists {
+		if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := s.store.Put(name, raw); err != nil {
 		return nil, err
 	}
@@ -580,10 +594,16 @@ func (s *WorkflowService) ImportBundle(ctx context.Context, bundle *WorkflowBund
 	return record, nil
 }
 
-func (s *WorkflowService) Delete(_ context.Context, name string) error {
+func (s *WorkflowService) Delete(ctx context.Context, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalid)
+	}
+	if _, err := s.Get(ctx, name); err != nil {
+		return err
+	}
+	if err := s.ensureWorkflowDeleteAllowed(ctx, name); err != nil {
+		return err
 	}
 	path := filepath.Join(s.store.Dir, name+".yaml")
 	if err := os.Remove(path); err != nil {

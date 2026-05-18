@@ -22,6 +22,8 @@ declare module "@assistant-ui/react" {
       };
       aiopsApprovalDecision: {
         type: "aiops.approval-decision";
+        sessionId?: string;
+        turnId?: string;
         approvalId: string;
         decision: string;
       };

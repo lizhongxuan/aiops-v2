@@ -102,7 +102,7 @@ func (s *defaultApprovalService) resumeApprovalDecision(req runtimekernel.Resume
 }
 
 func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision) (*runtimekernel.SessionState, runtimekernel.ResumeRequest, error) {
-	session, approval, err := findApprovalTarget(s.sessions, decision.ID)
+	session, approval, err := findApprovalTargetScoped(s.sessions, decision.SessionID, decision.TurnID, decision.ID)
 	if err != nil {
 		return nil, runtimekernel.ResumeRequest{}, err
 	}

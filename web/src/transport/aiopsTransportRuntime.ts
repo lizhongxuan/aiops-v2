@@ -62,11 +62,13 @@ export function createAiopsTransportCommandActions(
       }));
     },
     approvalDecision(approvalId, decision) {
-      sendCommand({
+      sendCommand(removeUndefined({
         type: "aiops.approval-decision",
+        sessionId,
+        turnId: currentTurnId,
         approvalId,
         decision,
-      });
+      }));
     },
     choiceAnswer(requestId, answer) {
       sendCommand({

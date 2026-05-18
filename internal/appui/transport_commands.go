@@ -60,6 +60,8 @@ type TransportRetryCommand struct {
 }
 
 type TransportApprovalDecisionCommand struct {
+	SessionID  string
+	TurnID     string
 	ApprovalID string
 	Decision   string
 }
@@ -237,8 +239,10 @@ func (h *TransportCommandHandler) applyApprovalDecision(ctx context.Context, sta
 	approvalID := strings.TrimSpace(command.ApprovalID)
 	approval := state.PendingApprovals[approvalID]
 	decision := ApprovalDecision{
-		ID:       approvalID,
-		Decision: strings.TrimSpace(command.Decision),
+		SessionID: strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
+		TurnID:    strings.TrimSpace(firstNonEmptyString(command.TurnID, approval.TurnID, state.CurrentTurnID)),
+		ID:        approvalID,
+		Decision:  strings.TrimSpace(command.Decision),
 	}
 	result, err := h.applyApprovalDecisionCommand(ctx, decision)
 	if err != nil {

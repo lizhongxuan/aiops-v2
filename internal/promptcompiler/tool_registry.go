@@ -25,6 +25,9 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 	parts = append(parts, "# Tool Index")
 
 	for _, tool := range ctx.AssembledTools {
+		if tool == nil || isRemovedOpsTool(tool.Metadata().Name) {
+			continue
+		}
 		toolEntry := c.buildToolPromptEntry(tool)
 		entries = append(entries, toolEntry)
 		parts = append(parts, c.formatToolIndexLine(tool, toolEntry))
@@ -39,6 +42,16 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		Content: content,
 		Entries: entries,
 	}, nil
+}
+
+func isRemovedOpsTool(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, prefix := range []string{"runbook.", "fallback.", "erp."} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPromptDelta {
@@ -242,13 +255,14 @@ func toolUsageExample(tool Tool) string {
 }
 
 func toolFailureHandling(tool Tool) string {
+	common := "policy blocked and permission denied do not prove target system state; non-zero exit requires stderr and exit code interpretation; empty output does not prove no abnormality."
 	if tool.IsDestructive(nil) {
-		return "Stop, report the failed mutation, and do not retry with broader scope unless a new scoped tool call can go through the runtime approval gate."
+		return "Stop, report the failed mutation, and do not broaden scope or retry riskier actions unless a new scoped tool call can go through the runtime approval gate; " + common
 	}
 	if tool.IsReadOnly(nil) {
-		return "Report the missing evidence and try a narrower read-only query when useful."
+		return "Read-only tool failure is evidence state, not target state: classify it as missing/blocked evidence and try a narrower read-only query when useful; " + common
 	}
-	return "Surface the error, keep prior evidence separate from inference, and ask for missing input if needed."
+	return "Surface the error, keep prior evidence separate from inference, and ask for missing input if needed; " + common
 }
 
 func toolResultShape(tool Tool) string {

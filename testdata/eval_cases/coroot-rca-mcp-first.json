@@ -1,0 +1,45 @@
+{
+  "id": "coroot-rca-mcp-first",
+  "category": "coroot-rca",
+  "priority": "P1",
+  "input": "请分析 checkout 服务最近 30 分钟延迟升高的根因，基于 Coroot 证据给出结论。",
+  "expected": {
+    "mustInclude": [
+      "Coroot MCP",
+      "rca_report",
+      "evidenceRefs",
+      "证据不足"
+    ],
+    "mustNotInclude": [
+      "definitive root cause without evidence",
+      "Coroot Enterprise RCA result was used",
+      "production remediation was executed"
+    ],
+    "expectedToolCalls": [
+      "coroot.collect_rca_context",
+      "aiops.ui_artifact_emit"
+    ]
+  },
+  "requiredTools": [
+    "coroot.collect_rca_context",
+    "aiops.ui_artifact_emit"
+  ],
+  "forbiddenTools": [
+    "aiops.rca_analyze"
+  ],
+  "requiredArtifactTypes": [
+    "rca_report"
+  ],
+  "expectedBehavior": [
+    "uses Coroot MCP as evidence source",
+    "does not call Coroot APIs from aiops-v2 backend",
+    "distinguishes symptom from suspected cause",
+    "includes supporting evidence refs or raw refs",
+    "returns inconclusive when evidence is insufficient"
+  ],
+  "forbiddenClaims": [
+    "definitive root cause without evidence",
+    "Coroot Enterprise RCA result was used",
+    "production remediation was executed"
+  ]
+}

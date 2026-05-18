@@ -406,6 +406,63 @@ func TestRunnerWritesArtifactsAndReport(t *testing.T) {
 	}
 }
 
+func TestRunnerRepetitionsAggregateAverageMinimumAndArtifacts(t *testing.T) {
+	casesDir := t.TempDir()
+	outDir := t.TempDir()
+	writeJSON(t, filepath.Join(casesDir, "repeat.json"), Case{
+		ID:       "repeat",
+		Category: "诊断",
+		Input:    "repeat this case",
+		Expected: Expected{MustInclude: []string{"stable-answer"}},
+	})
+	agent := &scriptedEvalAgent{outputs: []RunOutput{
+		{Answer: "stable-answer。验证方式：go test ./internal/eval。"},
+		{Answer: "missing expected phrase。验证方式：go test ./internal/eval。"},
+		{Answer: "stable-answer。验证方式：go test ./internal/eval。"},
+	}}
+
+	report, err := Runner{
+		CasesDir:    casesDir,
+		OutputDir:   outDir,
+		Agent:       agent,
+		RunID:       "repeat-run",
+		RunPhase:    "candidate",
+		Repetitions: 3,
+		Metadata:    map[string]string{"AIOPS_DIAGNOSTIC_PROTOCOL": "1"},
+	}.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run eval: %v", err)
+	}
+	if report.RunPhase != "candidate" || report.Repetitions != 3 || report.Metadata["AIOPS_DIAGNOSTIC_PROTOCOL"] != "1" {
+		t.Fatalf("report metadata not preserved: %#v", report)
+	}
+	if len(report.Cases) != 1 {
+		t.Fatalf("cases = %d, want 1", len(report.Cases))
+	}
+	score := report.Cases[0]
+	if score.Iterations != 3 || len(score.IterationScores) != 3 || len(score.IterationArtifacts) != 3 {
+		t.Fatalf("iteration metadata missing: %#v", score)
+	}
+	if score.MinScore >= score.AvgScore {
+		t.Fatalf("min score = %.2f avg = %.2f, want min below avg", score.MinScore, score.AvgScore)
+	}
+	if score.Passed {
+		t.Fatalf("aggregate should fail when any repetition fails: %#v", score)
+	}
+	if report.Summary.LowestScoreAverage != score.MinScore || report.Summary.MinScore != score.MinScore {
+		t.Fatalf("summary min fields = %#v, case min %.2f", report.Summary, score.MinScore)
+	}
+	for _, name := range []string{
+		filepath.Join(outDir, "repeat", "1", "answer.txt"),
+		filepath.Join(outDir, "repeat", "2", "answer.txt"),
+		filepath.Join(outDir, "repeat", "3", "answer.txt"),
+	} {
+		if _, err := os.Stat(name); err != nil {
+			t.Fatalf("expected repetition artifact %s: %v", name, err)
+		}
+	}
+}
+
 func TestP0SmokeCasesExistAndPassMockAgent(t *testing.T) {
 	casesDir := filepath.Clean("../../testdata/eval_cases")
 	outDir := t.TempDir()
@@ -522,4 +579,18 @@ func findCheck(checks []CheckResult, name string) CheckResult {
 		}
 	}
 	return CheckResult{}
+}
+
+type scriptedEvalAgent struct {
+	outputs []RunOutput
+	calls   int
+}
+
+func (a *scriptedEvalAgent) Run(_ context.Context, _ Case) (RunOutput, error) {
+	if a.calls >= len(a.outputs) {
+		return RunOutput{Answer: "no scripted output。验证方式：go test ./internal/eval。"}, nil
+	}
+	out := a.outputs[a.calls]
+	a.calls++
+	return out, nil
 }

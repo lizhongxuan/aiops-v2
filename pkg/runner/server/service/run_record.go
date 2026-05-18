@@ -222,6 +222,7 @@ func mapValues(items map[string]RunMeta) []RunMeta {
 func cloneRunMeta(input RunMeta) RunMeta {
 	out := input
 	out.Vars = cloneAnyMap(input.Vars)
+	out.Metadata = cloneAnyMap(input.Metadata)
 	if len(input.Labels) > 0 {
 		out.Labels = make(map[string]string, len(input.Labels))
 		for key, value := range input.Labels {

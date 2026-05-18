@@ -23,7 +23,7 @@ func NewUpdatePlanTool() tooling.Tool {
 			Origin:      tooling.ToolOriginMeta,
 			Description: "Update the current turn's structured plan/todo state. Use for multi-step work; skip for simple answers.",
 		},
-		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}},
+		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"plan", "execute"}},
 		InputSchemaData: json.RawMessage(`{
 			"type": "object",
 			"properties": {

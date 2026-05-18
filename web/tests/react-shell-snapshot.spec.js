@@ -300,6 +300,129 @@ function longTerminalOutputState() {
   };
 }
 
+const rcaReportTransportState = {
+  schemaVersion: "aiops.transport.v2",
+  sessionId: "rca-report-session",
+  threadId: "rca-report-session",
+  status: "idle",
+  currentTurnId: "turn-rca",
+  turns: {
+    "turn-rca": {
+      id: "turn-rca",
+      status: "completed",
+      startedAt: "2026-05-15T02:00:00.000Z",
+      completedAt: "2026-05-15T02:00:12.000Z",
+      user: {
+        id: "user-rca",
+        text: "分析 checkout 服务最近 30 分钟延迟升高的根因",
+        createdAt: "2026-05-15T02:00:00.000Z",
+      },
+      process: [
+        {
+          id: "tool-coroot-context",
+          kind: "tool",
+          displayKind: "coroot.collect_rca_context",
+          status: "completed",
+          text: "coroot.collect_rca_context",
+          updatedAt: "2026-05-15T02:00:04.000Z",
+        },
+        {
+          id: "tool-artifact",
+          kind: "tool",
+          displayKind: "rca_report",
+          status: "completed",
+          text: "aiops.ui_artifact_emit",
+          updatedAt: "2026-05-15T02:00:08.000Z",
+        },
+      ],
+      agentUiArtifacts: [
+        {
+          id: "artifact-rca-report",
+          type: "rca_report",
+          titleZh: "checkout 根因分析",
+          summaryZh: "checkout 延迟升高最可能来自 catalog 依赖。",
+          status: "ok",
+          severity: "high",
+          source: "coroot",
+          permissionScope: "read",
+          redactionStatus: "redacted",
+          inlineData: {
+            schemaVersion: "aiops.rca_report/v1",
+            source: "coroot",
+            status: "ok",
+            target: { service: "checkout" },
+            window: { timeRange: "30m" },
+            conclusion: {
+              summaryZh: "checkout 延迟升高最可能来自 catalog 依赖。",
+              rootCauseEntity: "catalog",
+              confidence: 0.72,
+            },
+            hypotheses: [
+              {
+                id: "hyp-1",
+                titleZh: "catalog 依赖延迟",
+                confidence: 0.72,
+                supportingEvidenceRefs: ["ev-coroot-latency"],
+                contradictingEvidenceRefs: [],
+                missingEvidence: [],
+              },
+            ],
+            sections: [
+              {
+                id: "propagation",
+                kind: "propagation_map",
+                titleZh: "传播路径",
+                evidenceRefs: ["ev-coroot-latency"],
+                payload: {
+                  nodes: [{ id: "checkout" }, { id: "catalog" }],
+                  edges: [{ source: "checkout", target: "catalog" }],
+                },
+              },
+              {
+                id: "metrics",
+                kind: "timeseries_grid",
+                titleZh: "关键指标",
+                evidenceRefs: ["ev-coroot-latency"],
+                payload: {
+                  metrics: [
+                    {
+                      name: "latency_p99",
+                      entity: "checkout->catalog",
+                      valueSummary: "p99 rose to 1.8s",
+                      status: "critical",
+                    },
+                  ],
+                },
+              },
+            ],
+            evidenceRefs: ["ev-coroot-latency"],
+            rawRefs: [{ source: "coroot", uri: "coroot://project/default/checkout" }],
+            limitations: [],
+          },
+        },
+      ],
+      final: {
+        id: "final-rca",
+        text: "RCA 初步完成，最强假设是 catalog 依赖延迟传播到 checkout。",
+        status: "completed",
+      },
+    },
+  },
+  turnOrder: ["turn-rca"],
+  pendingApprovals: {},
+  mcpSurfaces: {},
+  artifacts: {},
+  runtimeLiveness: {
+    activeTurns: {},
+    activeAgents: {},
+    pendingApprovals: {},
+    pendingUserInputs: {},
+    activeCommandStreams: {},
+  },
+  seq: 1,
+  updatedAt: "2026-05-15T02:00:12.000Z",
+};
+
 function dataStreamForState(state) {
   return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
 }
@@ -406,4 +529,12 @@ test("long terminal output stays inside a scrollable output box", async ({ page 
   expect(sizes.clientHeight).toBeGreaterThan(0);
   expect(sizes.clientHeight).toBeLessThanOrEqual(192);
   expect(sizes.scrollHeight).toBeGreaterThan(sizes.clientHeight);
+});
+
+test("chat renders rca report artifact", async ({ page }) => {
+  await routeShellApis(page, rcaReportTransportState);
+
+  await page.goto("/");
+  await expect(page.getByTestId("rca-report-artifact")).toBeVisible();
+  await expect(page).toHaveScreenshot("chat-rca-report-artifact.png", { fullPage: true });
 });

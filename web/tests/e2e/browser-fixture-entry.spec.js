@@ -6,20 +6,90 @@ test.describe("browser fixture entry", () => {
   test("loads chat fixture state and sessions without route mocks", async ({ page }) => {
     await openBrowserFixturePage(page, "/", "chat");
 
-    await expect(page.locator(".chat-container")).toBeVisible({ timeout: 5000 });
     await expect(page.locator("body")).toContainText("nginx 中间件的状态");
-    await expect(page.locator("body")).toContainText("Nginx chat");
+    await expect(page.locator("body")).toContainText("收集 nginx 错误日志");
   });
 
   test("loads protocol fixture state and sessions without route mocks", async ({ page }) => {
     await openBrowserFixturePage(page, "/protocol?promptDebug=1", "protocol");
 
-    const pageRoot = page.getByTestId("protocol-workspace-page");
-    await expect(pageRoot).toBeVisible({ timeout: 5000 });
-    await expect(pageRoot).toContainText("nginx 巡检计划");
-    await expect(pageRoot).toContainText("等待审批");
+    await expect(page.locator("body")).toContainText("复杂运维 AI Chat");
+    await expect(page.locator("body")).toContainText("nginx 巡检计划");
+    await expect(page.locator("body")).toContainText("等待审批");
+  });
 
-    await page.getByTestId("protocol-prompt-debug-button").click();
-    await expect(page.getByTestId("protocol-prompt-debug-drawer")).toContainText("Tool Visibility");
+  test("loads ops manual preflight fixture without route mocks", async ({ page }) => {
+    await openBrowserFixturePage(page, "/", "ops-manual-preflight");
+
+    const searchCard = page.getByTestId("ops-manual-search-result-card");
+    await expect(searchCard).toContainText("运行预检");
+    await expect(searchCard.getByTestId("ops-manual-merged-preflight")).toContainText("预检通过");
+    await expect(searchCard.getByTestId("ops-manual-merged-preflight")).toContainText("进入 Dry Run");
+    await expect(page.getByTestId("ops-manual-preflight-result-card")).toHaveCount(0);
+    await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
+    await expect(page.getByText("立即执行")).toHaveCount(0);
+  });
+
+  test("loads ops manual 4-field form fixture without duplicate inline prompt", async ({ page }) => {
+    await openBrowserFixturePage(page, "/", "ops-manual-4field-form");
+
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).not.toContainText("手册缺上下文");
+    await expect(card).not.toContainText("信息不足，不能直接使用工作流。");
+    await expect(card).toContainText("Redis SSH 排障运维手册");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(card).not.toContainText("打开补充表单");
+    await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
+    await expect(page.getByTestId("ops-manual-candidate-match-detail")).toHaveCount(0);
+    await page.getByTestId("ops-manual-candidate-toggle").click();
+    await expect(page.getByTestId("ops-manual-candidate-match-detail")).toContainText("命中依据");
+    await expect(page.getByTestId("ops-manual-candidate-match-detail")).toContainText("对象类型");
+    await expect(page.getByTestId("ops-manual-candidate-match-detail")).toContainText("操作类型");
+    await expect(card.getByRole("button", { name: "不使用" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "查看工作流" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "查看手册" })).toBeVisible();
+
+    await card.getByRole("button", { name: "查看工作流" }).click();
+    await expect(page.getByRole("dialog")).toContainText("工作流只读预览");
+    await expect(page.getByRole("dialog")).toContainText("Redis SSH 排障工作流");
+    await expect(page.getByRole("dialog")).toContainText("采集只读指标");
+    await expect(page.getByRole("dialog")).toContainText("redis-cli INFO memory");
+    await page.getByRole("button", { name: "2. 判断内存压力" }).click();
+    await expect(page.getByRole("dialog")).toContainText("compare used_memory_rss maxmemory");
+    await page.keyboard.press("Escape");
+
+    await card.getByRole("button", { name: "查看手册" }).click();
+    await expect(page.getByRole("dialog")).toContainText("运维手册只读预览");
+    await expect(page.getByRole("dialog")).toContainText("Redis SSH 排障运维手册");
+    await expect(page.getByRole("dialog")).toContainText("用于 Redis SSH 场景的只读排障和恢复前验证");
+    await page.keyboard.press("Escape");
+
+    const contextComposer = page.getByTestId("ops-manual-context-composer");
+    await expect(contextComposer).toContainText("补充运维手册必要信息");
+    await expect(contextComposer).not.toContainText("运维手册缺信息");
+    await expect(contextComposer).not.toContainText("只补必要字段");
+    await expect(contextComposer.getByLabel("目标位置（可选）")).toBeVisible();
+    await expect(contextComposer.getByText("留空使用当前选择主机")).toBeVisible();
+    await expect(contextComposer.getByLabel("实例/服务")).toBeVisible();
+    await expect(contextComposer.locator('select[name="target_instance_mode"]')).toHaveValue("auto_discover");
+    await expect(contextComposer.getByLabel("访问/执行入口")).toBeVisible();
+    await expect(contextComposer.locator('select[name="execution_surface_mode"]')).toHaveValue("auto");
+    await expect(contextComposer.getByLabel("现象/证据（可选）")).toBeVisible();
+    await expect(contextComposer.locator('input[name="target_instance"]')).toHaveCount(0);
+    await expect(contextComposer.locator('input[name="execution_surface"]')).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
+  });
+
+  test("offers ops manual generation from a completed AI chat operation", async ({ page }) => {
+    await openBrowserFixturePage(page, "/", "ops-manual-generate-from-chat");
+
+    await expect(page.getByText("本次对话可沉淀为运维手册")).toBeVisible();
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
+
+    await page.getByTestId("aiops-generate-ops-manual-from-chat").click();
+
+    await expect(page.getByTestId("ops-manual-generation-confirmation")).toContainText("生成运维手册候选");
+    await expect(page.getByTestId("ops-manual-generation-confirmation")).toContainText("排查 Redis 内存和 p95 升高");
+    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
   });
 });

@@ -194,6 +194,20 @@ func (r *Registry) AssembleToolPoolWithOptions(session, mode string, opts Assemb
 	return AssembleEinoToolPool(r.AssembleToolsWithOptions(session, mode, opts))
 }
 
+// CompileContextWithMetadata assembles prompt tools while applying turn-level
+// metadata such as explicit user opt-outs.
+func (r *Registry) CompileContextWithMetadata(session, mode string, metadata map[string]string) []Tool {
+	return r.AssembleToolsWithOptions(session, mode, AssembleOptions{
+		Filter: turnMetadataToolFilter(metadata),
+	})
+}
+
+// AssembleToolPoolWithMetadata adapts the metadata-filtered visible tools into
+// Eino base tools for the same turn.
+func (r *Registry) AssembleToolPoolWithMetadata(session, mode string, metadata map[string]string) []tool.BaseTool {
+	return AssembleEinoToolPool(r.CompileContextWithMetadata(session, mode, metadata))
+}
+
 func selectionRank(meta ToolMetadata) int {
 	if meta.HasMCPSource() {
 		return 0

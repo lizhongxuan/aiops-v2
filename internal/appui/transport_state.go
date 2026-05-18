@@ -82,15 +82,16 @@ type AiopsTransportState struct {
 }
 
 type AiopsTransportTurn struct {
-	ID          string                   `json:"id"`
-	User        *AiopsTransportMessage   `json:"user,omitempty"`
-	Intent      *AiopsTransportIntent    `json:"intent,omitempty"`
-	Process     []AiopsProcessBlock      `json:"process,omitempty"`
-	Final       *AiopsTransportFinal     `json:"final,omitempty"`
-	Status      AiopsTransportTurnStatus `json:"status"`
-	StartedAt   string                   `json:"startedAt,omitempty"`
-	CompletedAt string                   `json:"completedAt,omitempty"`
-	UpdatedAt   string                   `json:"updatedAt,omitempty"`
+	ID               string                          `json:"id"`
+	User             *AiopsTransportMessage          `json:"user,omitempty"`
+	Intent           *AiopsTransportIntent           `json:"intent,omitempty"`
+	Process          []AiopsProcessBlock             `json:"process,omitempty"`
+	AgentUIArtifacts []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
+	Final            *AiopsTransportFinal            `json:"final,omitempty"`
+	Status           AiopsTransportTurnStatus        `json:"status"`
+	StartedAt        string                          `json:"startedAt,omitempty"`
+	CompletedAt      string                          `json:"completedAt,omitempty"`
+	UpdatedAt        string                          `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportMessage struct {
@@ -127,6 +128,8 @@ type AiopsProcessBlock struct {
 	Confidence    string                      `json:"confidence,omitempty"`
 	Window        string                      `json:"window,omitempty"`
 	RawRef        string                      `json:"rawRef,omitempty"`
+	EvidenceRefs  []string                    `json:"evidenceRefs,omitempty"`
+	Mock          bool                        `json:"mock,omitempty"`
 	ExitCode      *int                        `json:"exitCode,omitempty"`
 	DurationMs    int64                       `json:"durationMs,omitempty"`
 	UpdatedAt     string                      `json:"updatedAt,omitempty"`
@@ -174,6 +177,27 @@ type AiopsTransportArtifact struct {
 	RawRef     string `json:"rawRef,omitempty"`
 	CreatedAt  string `json:"createdAt,omitempty"`
 	ModifiedAt string `json:"modifiedAt,omitempty"`
+}
+
+type AiopsTransportAgentUIArtifact struct {
+	ID              string           `json:"id"`
+	Type            string           `json:"type"`
+	Title           string           `json:"title,omitempty"`
+	TitleZh         string           `json:"titleZh,omitempty"`
+	Summary         string           `json:"summary,omitempty"`
+	SummaryZh       string           `json:"summaryZh,omitempty"`
+	Status          string           `json:"status,omitempty"`
+	Severity        string           `json:"severity,omitempty"`
+	DataRef         string           `json:"dataRef,omitempty"`
+	InlineData      map[string]any   `json:"inlineData,omitempty"`
+	Payload         map[string]any   `json:"payload,omitempty"`
+	Metadata        map[string]any   `json:"metadata,omitempty"`
+	Actions         []map[string]any `json:"actions,omitempty"`
+	Source          string           `json:"source,omitempty"`
+	PermissionScope string           `json:"permissionScope,omitempty"`
+	RedactionStatus string           `json:"redactionStatus,omitempty"`
+	CreatedAt       string           `json:"createdAt,omitempty"`
+	UpdatedAt       string           `json:"updatedAt,omitempty"`
 }
 
 type AiopsRuntimeLiveness struct {

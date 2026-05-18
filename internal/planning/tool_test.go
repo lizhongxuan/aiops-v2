@@ -13,7 +13,7 @@ func TestValidateUpdatePlanArgsAcceptsCompletedPlanWithoutInProgress(t *testing.
 	args := UpdatePlanArgs{
 		Status: PlanStatusCompleted,
 		Steps: []PlanStep{
-			{ID: "one", Text: "first", Status: StepStatusCompleted},
+			{ID: "one", Text: "汇总 evidence refs 并给出 Redis 内存增长的根因判断", Status: StepStatusCompleted},
 		},
 	}
 
@@ -24,7 +24,7 @@ func TestValidateUpdatePlanArgsAcceptsCompletedPlanWithoutInProgress(t *testing.
 
 func TestUpdatePlanToolValidatesAndReturnsCompactSummary(t *testing.T) {
 	tool := NewUpdatePlanTool()
-	input := json.RawMessage(`{"steps":[{"id":"one","text":"Investigate host pressure","status":"in_progress"},{"id":"two","text":"Summarize impact","status":"pending"}]}`)
+	input := json.RawMessage(`{"steps":[{"id":"one","text":"查询 Coroot 中 Redis 内存指标并判断 RSS 增长是否异常","status":"in_progress"},{"id":"two","text":"汇总 evidence refs 并说明影响范围","status":"pending"}]}`)
 
 	if tool.Metadata().Name != "update_plan" {
 		t.Fatalf("tool name = %q, want update_plan", tool.Metadata().Name)

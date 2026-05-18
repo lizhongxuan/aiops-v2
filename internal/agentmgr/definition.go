@@ -90,16 +90,16 @@ func (d AgentDefinition) ToRegistryDefinition() agents.Definition {
 	}
 
 	return agents.Definition{
-		Kind:            string(d.Kind),
-		Name:            d.Name,
-		Source:          string(agents.SourceBuiltin),
-		Description:     d.Description,
-		Prompt:          prompt,
-		Tools:           append([]string(nil), d.Tools...),
-		Model:           d.Model,
-		Hooks:           append([]string(nil), d.Hooks...),
-		MCPServers:      append([]string(nil), d.MCPServers...),
-		MaxIterations:   d.MaxIterations,
+		Kind:          string(d.Kind),
+		Name:          d.Name,
+		Source:        string(agents.SourceBuiltin),
+		Description:   d.Description,
+		Prompt:        prompt,
+		Tools:         append([]string(nil), d.Tools...),
+		Model:         d.Model,
+		Hooks:         append([]string(nil), d.Hooks...),
+		MCPServers:    append([]string(nil), d.MCPServers...),
+		MaxIterations: d.MaxIterations,
 	}
 }
 
@@ -179,6 +179,41 @@ type AgentResult struct {
 
 	// Duration is the total execution time.
 	Duration time.Duration
+}
+
+// EvidenceReport is the standardized output contract for spawned operations
+// investigation agents. Child agents report evidence, not arbitrary prose or
+// code changes.
+type EvidenceReport struct {
+	AgentID       string   `json:"agentId"`
+	Summary       string   `json:"summary"`
+	EvidenceRefs  []string `json:"evidenceRefs"`
+	Confidence    string   `json:"confidence"`
+	NextQuestions []string `json:"nextQuestions"`
+	Errors        []string `json:"errors"`
+}
+
+// Normalize fills optional slices so JSON output keeps the report contract
+// stable even when a child agent has no follow-up questions or errors.
+func (r EvidenceReport) Normalize() EvidenceReport {
+	r.EvidenceRefs = append([]string(nil), r.EvidenceRefs...)
+	r.NextQuestions = append([]string(nil), r.NextQuestions...)
+	r.Errors = append([]string(nil), r.Errors...)
+	if r.Confidence == "" {
+		r.Confidence = "unknown"
+	}
+	return r
+}
+
+// Validate checks the minimum fields needed for downstream evidence use.
+func (r EvidenceReport) Validate() error {
+	if r.AgentID == "" {
+		return fmt.Errorf("evidence report agent id is required")
+	}
+	if r.Summary == "" && len(r.Errors) == 0 {
+		return fmt.Errorf("evidence report summary or errors are required")
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

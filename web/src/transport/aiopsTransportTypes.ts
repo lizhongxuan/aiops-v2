@@ -83,6 +83,8 @@ export type AiopsProcessBlock = {
   confidence?: string;
   window?: string;
   rawRef?: string;
+  evidenceRefs?: string[];
+  mock?: boolean;
   exitCode?: number;
   durationMs?: number;
   updatedAt?: string;

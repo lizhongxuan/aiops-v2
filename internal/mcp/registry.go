@@ -29,6 +29,27 @@ type ServerConfig struct {
 	Source    string
 }
 
+// Resource describes an MCP resource exposed by a server.
+type Resource struct {
+	ServerID    string          `json:"serverId,omitempty"`
+	URI         string          `json:"uri"`
+	Name        string          `json:"name,omitempty"`
+	Description string          `json:"description,omitempty"`
+	MimeType    string          `json:"mimeType,omitempty"`
+	Raw         json.RawMessage `json:"raw,omitempty"`
+}
+
+// ResourceContent is the readable payload for an MCP resource.
+type ResourceContent struct {
+	ServerID string `json:"serverId,omitempty"`
+	URI      string `json:"uri"`
+	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     []byte `json:"blob,omitempty"`
+	Digest   string `json:"digest,omitempty"`
+	Bytes    int64  `json:"bytes,omitempty"`
+}
+
 // Registry tracks MCP server configuration and dynamically connected tools.
 type Registry struct {
 	mu          sync.RWMutex
@@ -36,6 +57,8 @@ type Registry struct {
 	serverCfgs  map[string]ServerConfig
 	serverTools map[string][]tooling.Tool
 	serverState map[string]bool
+	resources   map[string][]Resource
+	contents    map[string]map[string]ResourceContent
 }
 
 // NewRegistry creates an empty MCP server registry.
@@ -44,6 +67,8 @@ func NewRegistry() *Registry {
 		serverCfgs:  make(map[string]ServerConfig),
 		serverTools: make(map[string][]tooling.Tool),
 		serverState: make(map[string]bool),
+		resources:   make(map[string][]Resource),
+		contents:    make(map[string]map[string]ResourceContent),
 	}
 	setDefaultRegistry(r)
 	return r
@@ -144,6 +169,119 @@ func (r *Registry) ListServers() []ServerConfig {
 	return out
 }
 
+// OnServerResources replaces the resource metadata set for a server.
+func (r *Registry) OnServerResources(serverID string, resources []Resource) error {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return fmt.Errorf("mcp: server id is required")
+	}
+	normalized := make([]Resource, 0, len(resources))
+	for _, resource := range resources {
+		resource.URI = strings.TrimSpace(resource.URI)
+		if resource.URI == "" {
+			continue
+		}
+		resource.ServerID = serverID
+		resource.Name = strings.TrimSpace(resource.Name)
+		resource.Description = strings.TrimSpace(resource.Description)
+		resource.MimeType = strings.TrimSpace(resource.MimeType)
+		resource.Raw = append(json.RawMessage(nil), resource.Raw...)
+		normalized = append(normalized, resource)
+	}
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].URI < normalized[j].URI
+	})
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resources[serverID] = normalized
+	return nil
+}
+
+// SetResourceContent registers local readable content for a resource.
+func (r *Registry) SetResourceContent(serverID, uri string, content ResourceContent) error {
+	serverID = strings.TrimSpace(serverID)
+	uri = strings.TrimSpace(uri)
+	if serverID == "" {
+		return fmt.Errorf("mcp: server id is required")
+	}
+	if uri == "" {
+		return fmt.Errorf("mcp: resource uri is required")
+	}
+	content.ServerID = serverID
+	content.URI = uri
+	content.MimeType = strings.TrimSpace(content.MimeType)
+	content.Blob = append([]byte(nil), content.Blob...)
+	content.Bytes = int64(len(content.Text) + len(content.Blob))
+	if content.Digest == "" {
+		content.Digest = resourceContentDigest(content)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.contents[serverID] == nil {
+		r.contents[serverID] = make(map[string]ResourceContent)
+	}
+	r.contents[serverID][uri] = content
+	return nil
+}
+
+// ListResources returns resource metadata for one server, or all enabled servers when serverID is empty.
+func (r *Registry) ListResources(serverID string) []Resource {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	serverID = strings.TrimSpace(serverID)
+	var out []Resource
+	if serverID != "" {
+		if r.serverState[serverID] {
+			return nil
+		}
+		for _, resource := range r.resources[serverID] {
+			out = append(out, cloneResource(resource))
+		}
+		return out
+	}
+
+	serverIDs := make([]string, 0, len(r.resources))
+	for id := range r.resources {
+		serverIDs = append(serverIDs, id)
+	}
+	sort.Strings(serverIDs)
+	for _, id := range serverIDs {
+		if r.serverState[id] {
+			continue
+		}
+		for _, resource := range r.resources[id] {
+			out = append(out, cloneResource(resource))
+		}
+	}
+	return out
+}
+
+// ReadResource returns locally registered resource content.
+func (r *Registry) ReadResource(_ context.Context, serverID, uri string) (ResourceContent, bool, error) {
+	serverID = strings.TrimSpace(serverID)
+	uri = strings.TrimSpace(uri)
+	if serverID == "" {
+		return ResourceContent{}, false, fmt.Errorf("mcp: server id is required")
+	}
+	if uri == "" {
+		return ResourceContent{}, false, fmt.Errorf("mcp: resource uri is required")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.serverState[serverID] {
+		return ResourceContent{}, false, nil
+	}
+	content, ok := r.contents[serverID][uri]
+	if !ok {
+		return ResourceContent{}, false, nil
+	}
+	return cloneResourceContent(content), true, nil
+}
+
 // OnServerConnected replaces the connected tool set for a server.
 func (r *Registry) OnServerConnected(serverID string, tools []tooling.Tool) error {
 	serverID = strings.TrimSpace(serverID)
@@ -169,7 +307,10 @@ func (r *Registry) OnServerConnected(serverID string, tools []tooling.Tool) erro
 func (r *Registry) OnServerDisconnected(serverID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.serverTools, strings.TrimSpace(serverID))
+	serverID = strings.TrimSpace(serverID)
+	delete(r.serverTools, serverID)
+	delete(r.resources, serverID)
+	delete(r.contents, serverID)
 }
 
 // UnregisterServer removes a server config and any connected tools.
@@ -180,6 +321,8 @@ func (r *Registry) UnregisterServer(serverID string) {
 	defer r.mu.Unlock()
 	delete(r.serverCfgs, serverID)
 	delete(r.serverTools, serverID)
+	delete(r.resources, serverID)
+	delete(r.contents, serverID)
 }
 
 // ListServerTools returns the connected tools for one server.
@@ -395,6 +538,27 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 func cloneServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.Command = append([]string(nil), cfg.Command...)
 	return cfg
+}
+
+func cloneResource(resource Resource) Resource {
+	resource.Raw = append(json.RawMessage(nil), resource.Raw...)
+	return resource
+}
+
+func cloneResourceContent(content ResourceContent) ResourceContent {
+	content.Blob = append([]byte(nil), content.Blob...)
+	return content
+}
+
+func resourceContentDigest(content ResourceContent) string {
+	h := sha256.New()
+	_, _ = h.Write([]byte(content.ServerID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(content.URI))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(content.Text))
+	_, _ = h.Write(content.Blob)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
 func normalizeServerSource(source string) string {

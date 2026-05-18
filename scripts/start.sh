@@ -21,6 +21,15 @@ Environment overrides:
   AIOPS_DATA_DIR=.data         persisted state directory, default .data
   AIOPS_WEB_DIST_DIR=web/dist  frontend dist directory, default web/dist
   AIOPS_SERVER_BIN=.data/bin/ai-server
+  AIOPS_STORE_DRIVER=postgres  persisted backend store, default postgres for this script
+  AIOPS_POSTGRES_DSN=postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable
+                               PostgreSQL DSN used when AIOPS_STORE_DRIVER=postgres
+  AIOPS_COROOT_BASE_URL=http://127.0.0.1:8080
+                               when set, Coroot must be reachable before aiops-v2 starts
+  AIOPS_OTEL_ENABLED=1         when enabled, AIOPS_OTEL_ENDPOINT must be reachable
+  AIOPS_RUNNER_STUDIO_UPSTREAM_URL=http://127.0.0.1:19080
+                               when set, Runner Studio upstream must be reachable
+  AIOPS_DEPENDENCY_TIMEOUT=2   dependency connection timeout in seconds
   SKIP_WEB_BUILD=1             skip npm build
   SKIP_GO_BUILD=1              skip go build
 
@@ -133,6 +142,303 @@ select_available_grpc_addr() {
   return 1
 }
 
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+truthy() {
+  case "$(lower "${1:-}")" in
+    1|true|yes|on|enabled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+first_non_empty_env() {
+  local key
+  local value
+
+  for key in "$@"; do
+    value="${!key:-}"
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+default_port_for_scheme() {
+  case "$(lower "$1")" in
+    http)
+      printf '80\n'
+      ;;
+    https)
+      printf '443\n'
+      ;;
+    postgres|postgresql)
+      printf '5432\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+url_host_port() {
+  local url="$1"
+  local scheme
+  local rest
+  local authority
+  local host
+  local port
+
+  if [[ ! "$url" =~ ^([A-Za-z][A-Za-z0-9+.-]*)://(.+)$ ]]; then
+    return 1
+  fi
+  scheme="${BASH_REMATCH[1]}"
+  rest="${BASH_REMATCH[2]}"
+  authority="${rest%%/*}"
+  authority="${authority%%\?*}"
+  authority="${authority##*@}"
+
+  if [[ "$authority" =~ ^\[([^]]+)\](:([0-9]+))?$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[3]:-}"
+  elif [[ "$authority" =~ ^([^:]+):([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  else
+    host="$authority"
+    port="$(default_port_for_scheme "$scheme")"
+  fi
+
+  if [[ -z "$host" || -z "$port" ]]; then
+    return 1
+  fi
+
+  printf '%s %s\n' "$host" "$port"
+}
+
+tcp_open() {
+  local host="$1"
+  local port="$2"
+  local timeout="${AIOPS_DEPENDENCY_TIMEOUT:-2}"
+
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w "$timeout" "$host" "$port" >/dev/null 2>&1
+    return
+  fi
+
+  (echo >/dev/tcp/"$host"/"$port") >/dev/null 2>&1
+}
+
+check_tcp_dependency() {
+  local name="$1"
+  local host="$2"
+  local port="$3"
+
+  if tcp_open "$host" "$port"; then
+    log "dependency ready: $name ($host:$port)"
+    return 0
+  fi
+
+  printf 'dependency unavailable: %s (%s:%s)\n' "$name" "$host" "$port" >&2
+  printf 'start the required middleware first, then run ./scripts/start.sh again.\n' >&2
+  return 1
+}
+
+check_url_dependency() {
+  local name="$1"
+  local url="$2"
+  local endpoint
+  local host
+  local port
+  local timeout="${AIOPS_DEPENDENCY_TIMEOUT:-2}"
+
+  [[ -z "$url" ]] && return 0
+
+  if command -v curl >/dev/null 2>&1; then
+    if curl --noproxy '*' -sS -o /dev/null --connect-timeout "$timeout" --max-time "$((timeout + 3))" "$url"; then
+      log "dependency ready: $name ($url)"
+      return 0
+    fi
+  else
+    if endpoint="$(url_host_port "$url")"; then
+      host="${endpoint% *}"
+      port="${endpoint##* }"
+      if tcp_open "$host" "$port"; then
+        log "dependency ready: $name ($host:$port)"
+        return 0
+      fi
+    fi
+  fi
+
+  printf 'dependency unavailable: %s (%s)\n' "$name" "$url" >&2
+  printf 'start the required middleware first, then run ./scripts/start.sh again.\n' >&2
+  return 1
+}
+
+mysql_endpoint_from_dsn() {
+  local dsn="$1"
+  local endpoint
+  local socket_path
+  local host
+  local port
+  local unix_re='@unix\(([^)]*)\)'
+  local tcp_re='@tcp\(([^)]*)\)'
+
+  if [[ "$dsn" =~ $unix_re ]]; then
+    socket_path="${BASH_REMATCH[1]}"
+    printf 'unix %s\n' "$socket_path"
+    return 0
+  fi
+
+  if [[ "$dsn" =~ $tcp_re ]]; then
+    endpoint="${BASH_REMATCH[1]}"
+    if [[ "$endpoint" =~ ^([^:]*):([0-9]+)$ ]]; then
+      host="${BASH_REMATCH[1]:-127.0.0.1}"
+      port="${BASH_REMATCH[2]}"
+    else
+      host="${endpoint:-127.0.0.1}"
+      port="3306"
+    fi
+    printf 'tcp %s %s\n' "$host" "$port"
+    return 0
+  fi
+
+  printf 'tcp 127.0.0.1 3306\n'
+}
+
+check_mysql_dependency() {
+  local driver
+  local dsn
+  local endpoint
+  local kind
+  local host
+  local port
+  local socket_path
+
+  driver="$(lower "${AIOPS_STORE_DRIVER:-}")"
+  [[ "$driver" != "mysql" ]] && return 0
+
+  dsn="${AIOPS_MYSQL_DSN:-}"
+  if [[ -z "$dsn" ]]; then
+    printf 'AIOPS_MYSQL_DSN is required when AIOPS_STORE_DRIVER=mysql\n' >&2
+    return 1
+  fi
+
+  endpoint="$(mysql_endpoint_from_dsn "$dsn")"
+  kind="${endpoint%% *}"
+  if [[ "$kind" == "unix" ]]; then
+    socket_path="${endpoint#unix }"
+    if [[ -S "$socket_path" ]]; then
+      log "dependency ready: mysql ($socket_path)"
+      return 0
+    fi
+    printf 'dependency unavailable: mysql unix socket (%s)\n' "$socket_path" >&2
+    printf 'start the required middleware first, then run ./scripts/start.sh again.\n' >&2
+    return 1
+  fi
+
+  read -r _ host port <<<"$endpoint"
+  check_tcp_dependency "mysql" "$host" "$port"
+}
+
+postgres_endpoint_from_dsn() {
+  local dsn="$1"
+  local endpoint
+  local host="127.0.0.1"
+  local port="5432"
+  local part
+
+  if endpoint="$(url_host_port "$dsn" 2>/dev/null)"; then
+    printf 'tcp %s\n' "$endpoint"
+    return 0
+  fi
+
+  for part in $dsn; do
+    case "$part" in
+      host=*)
+        host="${part#host=}"
+        ;;
+      port=*)
+        port="${part#port=}"
+        ;;
+    esac
+  done
+
+  if [[ "$host" == /* ]]; then
+    printf 'unix %s/.s.PGSQL.%s\n' "$host" "$port"
+    return 0
+  fi
+
+  printf 'tcp %s %s\n' "$host" "$port"
+}
+
+check_postgres_dependency() {
+  local driver
+  local dsn
+  local endpoint
+  local kind
+  local host
+  local port
+  local socket_path
+
+  driver="$(lower "${AIOPS_STORE_DRIVER:-}")"
+  case "$driver" in
+    postgres|postgresql)
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  dsn="$(first_non_empty_env AIOPS_POSTGRES_DSN DATABASE_URL || true)"
+  if [[ -z "$dsn" ]]; then
+    printf 'AIOPS_POSTGRES_DSN is required when AIOPS_STORE_DRIVER=postgres\n' >&2
+    return 1
+  fi
+
+  endpoint="$(postgres_endpoint_from_dsn "$dsn")"
+  kind="${endpoint%% *}"
+  if [[ "$kind" == "unix" ]]; then
+    socket_path="${endpoint#unix }"
+    if [[ -S "$socket_path" ]]; then
+      log "dependency ready: postgresql ($socket_path)"
+      return 0
+    fi
+    printf 'dependency unavailable: postgresql unix socket (%s)\n' "$socket_path" >&2
+    printf 'start the required middleware first, then run ./scripts/start.sh again.\n' >&2
+    return 1
+  fi
+
+  read -r _ host port <<<"$endpoint"
+  check_tcp_dependency "postgresql" "$host" "$port"
+}
+
+check_configured_dependencies() {
+  local coroot_url
+  local runner_upstream_url
+
+  check_postgres_dependency
+  check_mysql_dependency
+
+  coroot_url="$(first_non_empty_env AIOPS_COROOT_BASE_URL COROOT_BASE_URL || true)"
+  check_url_dependency "coroot" "$coroot_url"
+
+  if truthy "${AIOPS_OTEL_ENABLED:-}"; then
+    check_url_dependency "otel" "${AIOPS_OTEL_ENDPOINT:-http://localhost:6006/v1/traces}"
+  fi
+
+  runner_upstream_url="$(first_non_empty_env AIOPS_RUNNER_STUDIO_UPSTREAM_URL RUNNER_STUDIO_UPSTREAM_URL AIOPS_RUNNER_API_BASE_URL || true)"
+  check_url_dependency "runner studio upstream" "$runner_upstream_url"
+}
+
 for arg in "$@"; do
   case "$arg" in
     --dry-run)
@@ -162,6 +468,14 @@ export AIOPS_DATA_DIR="${AIOPS_DATA_DIR:-.data}"
 export AIOPS_HTTP_ADDR="${AIOPS_HTTP_ADDR:-:18080}"
 export AIOPS_GRPC_ADDR="${AIOPS_GRPC_ADDR:-:18090}"
 export AIOPS_WEB_DIST_DIR="${AIOPS_WEB_DIST_DIR:-web/dist}"
+export AIOPS_STORE_DRIVER="${AIOPS_STORE_DRIVER:-postgres}"
+case "$(lower "$AIOPS_STORE_DRIVER")" in
+  postgres|postgresql)
+    if [[ -z "${AIOPS_POSTGRES_DSN+x}" && -z "${DATABASE_URL+x}" ]]; then
+      export AIOPS_POSTGRES_DSN="postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable"
+    fi
+    ;;
+esac
 
 SKIP_WEB_BUILD="${SKIP_WEB_BUILD:-0}"
 SKIP_GO_BUILD="${SKIP_GO_BUILD:-0}"
@@ -187,6 +501,7 @@ AIOPS_GRPC_AUTO_PORT=$AIOPS_GRPC_AUTO_PORT
 AIOPS_DATA_DIR=$AIOPS_DATA_DIR
 AIOPS_WEB_DIST_DIR=$AIOPS_WEB_DIST_DIR
 AIOPS_SERVER_BIN=$AIOPS_SERVER_BIN
+AIOPS_STORE_DRIVER=$AIOPS_STORE_DRIVER
 SKIP_WEB_BUILD=$SKIP_WEB_BUILD
 SKIP_GO_BUILD=$SKIP_GO_BUILD
 EOF
@@ -203,9 +518,12 @@ EOF
   else
     printf 'would run: go build -o %s ./cmd/ai-server\n' "$AIOPS_SERVER_BIN"
   fi
+  printf 'would check configured middleware dependencies before build/start\n'
   printf 'would start: %s\n' "$AIOPS_SERVER_BIN"
   exit 0
 fi
+
+check_configured_dependencies
 
 if [[ "$SKIP_WEB_BUILD" != "1" ]]; then
   require_command npm

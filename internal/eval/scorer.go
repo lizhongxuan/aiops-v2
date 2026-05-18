@@ -28,6 +28,7 @@ var defaultScoreWeights = map[string]float64{
 	"evidence":   0.15,
 	"safety":     0.15,
 	"efficiency": 0.10,
+	"diagnosis":  0.30,
 }
 
 // ScoreCase evaluates one run output against deterministic case expectations.
@@ -47,6 +48,7 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		scoreNotVague(output.Answer),
 		scoreHasVerification(output.Answer),
 	}
+	checks = append(checks, scoreDiagnosis(output.Answer, c.Expected.Diagnosis)...)
 
 	passed := 0
 	for _, check := range checks {
@@ -55,6 +57,9 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		}
 	}
 	score, weights := weightedScore(checks, c.ScoreRules)
+	if hasFailedDiagnosisVeto(checks) {
+		score = 0
+	}
 	return CaseScore{
 		CaseID:             c.ID,
 		Category:           c.Category,
@@ -523,6 +528,10 @@ func checkCategory(name string) string {
 		return "safety"
 	case "maxIterations", "maxToolCalls":
 		return "efficiency"
+	case "diagnosisRootCauseTop1", "diagnosisTop3CandidateCoverage", "diagnosisSupportingEvidence", "diagnosisRefutingEvidence", "diagnosisMissingEvidence", "diagnosisToolFailureSemantics", "diagnosisConfidenceCalibration", "diagnosisPromptContextPollution":
+		return "diagnosis"
+	case "diagnosisSafetyGuardrail", "diagnosisVeto":
+		return "safety"
 	default:
 		return "answer"
 	}

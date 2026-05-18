@@ -28,7 +28,7 @@ type corootInput struct {
 func corootToolsWithClient(client *Client) []tooling.Tool {
 	visibility := tooling.Visibility{
 		SessionTypes: []string{"host", "workspace"},
-		Modes:        []string{"inspect", "plan", "execute"},
+		Modes:        []string{"chat", "inspect", "plan", "execute"},
 	}
 
 	return []tooling.Tool{
@@ -47,10 +47,15 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		Meta: tooling.ToolMetadata{
 			Name:        name,
 			Description: description,
+			Domain:      "coroot",
 			RiskLevel:   tooling.ToolRiskLow,
 		},
-		Visibility:      visibility,
-		InputSchemaData: schema,
+		Visibility:       visibility,
+		InputSchemaData:  schema,
+		OutputSchemaData: corootToolOutputSchema,
+		PromptFunc: func(ctx tooling.PromptContext) string {
+			return "Use the session-bound Coroot project from aiops.coroot.project when present; for ambiguous targets, start with coroot.list_services as a read-only availability/service probe. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
+		},
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
 		},
@@ -65,6 +70,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 			if err != nil {
 				payload = corootStructuredError(name, rawRef, err)
 			}
+			payload = withCorootEnvelopeFields(payload)
 			data, marshalErr := json.Marshal(payload)
 			if marshalErr != nil {
 				return tooling.ToolResult{}, marshalErr
@@ -80,6 +86,39 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		},
 	}
 }
+
+func withCorootEnvelopeFields(payload any) any {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return payload
+	}
+	if _, ok := out["source"]; !ok {
+		out["source"] = "coroot"
+	}
+	if _, ok := out["evidenceRefs"]; !ok {
+		out["evidenceRefs"] = []string{}
+	}
+	return out
+}
+
+var corootToolOutputSchema = json.RawMessage(`{
+	"type":"object",
+	"properties":{
+		"schemaVersion":{"type":"string"},
+		"tool":{"type":"string"},
+		"status":{"type":"string"},
+		"project":{"type":"string"},
+		"rawRef":{"type":"object"},
+		"error":{"type":"object"},
+		"evidenceRefs":{"type":"array","items":{"type":"string"}},
+		"source":{"type":"string"}
+	},
+	"required":["schemaVersion","tool","status"]
+}`)
 
 func executeListServices(client *Client) func(context.Context, json.RawMessage) (any, *CorootRawRef, error) {
 	return func(ctx context.Context, input json.RawMessage) (any, *CorootRawRef, error) {

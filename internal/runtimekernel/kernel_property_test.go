@@ -103,6 +103,14 @@ func (s *testMockToolAssemblySource) AssembleToolPool(session SessionType, mode 
 	return s.registry.AssembleToolPool(string(session), string(mode))
 }
 
+func (s *testMockToolAssemblySource) CompileContextWithMetadata(session SessionType, mode Mode, metadata map[string]string) []promptcompiler.Tool {
+	return s.registry.CompileContextWithMetadata(string(session), string(mode), metadata)
+}
+
+func (s *testMockToolAssemblySource) AssembleToolPoolWithMetadata(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
+	return s.registry.AssembleToolPoolWithMetadata(string(session), string(mode), metadata)
+}
+
 // testMockEventEmitter implements EventEmitter for testing.
 type testMockEventEmitter struct {
 	mu     sync.Mutex
@@ -308,6 +316,55 @@ func TestProperty1_TurnPipelineExecutionOrder(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRunTurnFiltersOpsManualToolsWhenUserOptedOut(t *testing.T) {
+	compiler := &recordingTestCompiler{delegate: &testMockCompiler{}}
+	kernel := newTestKernel(compiler)
+	registry := kernel.tools.(*testMockToolAssemblySource).registry
+	for _, name := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight", "host_read"} {
+		_ = registry.Register(&testMockTool{
+			name:        name,
+			description: name,
+			readOnly:    true,
+		})
+	}
+
+	_, err := kernel.RunTurnWithRecorder(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		Input:       "已选择跳过运维手册，继续只读排查",
+		Metadata: map[string]string{
+			"opsManualAction":  "skip_ops_manual",
+			"opsManualSkipped": "true",
+		},
+	}, &PipelineRecorder{})
+	if err != nil {
+		t.Fatalf("RunTurnWithRecorder error = %v", err)
+	}
+	if len(compiler.contexts) == 0 {
+		t.Fatal("compiler did not record a compile context")
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	if fmt.Sprintf("%v", names) != "[host_read]" {
+		t.Fatalf("assembled tools = %v, want [host_read]", names)
+	}
+}
+
+type recordingTestCompiler struct {
+	delegate promptcompiler.Compiler
+	contexts []promptcompiler.CompileContext
+}
+
+func (c *recordingTestCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
+	cloned := ctx
+	cloned.AssembledTools = append([]promptcompiler.Tool(nil), ctx.AssembledTools...)
+	c.contexts = append(c.contexts, cloned)
+	return c.delegate.Compile(ctx)
+}
+
+func (c *recordingTestCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
+	return c.delegate.CompileForEino(ctx)
 }
 
 // ---------------------------------------------------------------------------

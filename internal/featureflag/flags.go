@@ -14,6 +14,7 @@ const (
 	envSkillRegistry         = "AIOPS_FLAG_SKILL_REGISTRY"
 	envAgentRegistry         = "AIOPS_FLAG_AGENT_REGISTRY"
 	envHooksV2               = "AIOPS_FLAG_HOOKS_V2"
+	envDiagnosticProtocol    = "AIOPS_DIAGNOSTIC_PROTOCOL"
 	envDisabledTools         = "AIOPS_DISABLED_TOOLS"
 	envDeferredTools         = "AIOPS_DEFERRED_TOOLS"
 	envExperimentalMetaTools = "AIOPS_EXPERIMENTAL_META_TOOLS"
@@ -27,6 +28,7 @@ type Flags struct {
 	SkillRegistry         bool
 	AgentRegistry         bool
 	HooksV2               bool
+	DiagnosticProtocol    bool
 	DisabledTools         []string
 	DeferredTools         []string
 	ExperimentalMetaTools []string
@@ -34,7 +36,7 @@ type Flags struct {
 
 // Default returns the zero-value flag set.
 func Default() Flags {
-	return Flags{}
+	return Flags{DiagnosticProtocol: true}
 }
 
 // FromEnv builds a flag set from environment variables using the provided lookup.
@@ -50,6 +52,7 @@ func FromEnv(lookup func(string) string) Flags {
 	f.SkillRegistry = parseBool(lookup(envSkillRegistry))
 	f.AgentRegistry = parseBool(lookup(envAgentRegistry))
 	f.HooksV2 = parseBool(lookup(envHooksV2))
+	f.DiagnosticProtocol = parseBoolDefault(lookup(envDiagnosticProtocol), true)
 	f.DisabledTools = parseList(lookup(envDisabledTools))
 	f.DeferredTools = parseList(lookup(envDeferredTools))
 	f.ExperimentalMetaTools = parseList(lookup(envExperimentalMetaTools))
@@ -65,6 +68,7 @@ func (f Flags) Clone() Flags {
 		SkillRegistry:         f.SkillRegistry,
 		AgentRegistry:         f.AgentRegistry,
 		HooksV2:               f.HooksV2,
+		DiagnosticProtocol:    f.DiagnosticProtocol,
 		DisabledTools:         cloneStrings(f.DisabledTools),
 		DeferredTools:         cloneStrings(f.DeferredTools),
 		ExperimentalMetaTools: cloneStrings(f.ExperimentalMetaTools),
@@ -97,6 +101,21 @@ func parseBool(value string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func parseBoolDefault(value string, fallback bool) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 

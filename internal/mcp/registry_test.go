@@ -112,6 +112,40 @@ func TestRegistryDynamicToolsLifecycle(t *testing.T) {
 	}
 }
 
+func TestMCPRegistryListsAndReadsResources(t *testing.T) {
+	r := NewRegistry()
+	if err := r.OnServerResources("coroot", []Resource{{
+		URI:      "coroot://projects/default/schema",
+		Name:     "Coroot schema",
+		MimeType: "application/json",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetResourceContent("coroot", "coroot://projects/default/schema", ResourceContent{
+		URI:      "coroot://projects/default/schema",
+		MimeType: "application/json",
+		Text:     `{"project":"default"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resources := r.ListResources("coroot")
+	if len(resources) != 1 || resources[0].URI == "" {
+		t.Fatalf("resources = %#v", resources)
+	}
+	if resources[0].ServerID != "coroot" {
+		t.Fatalf("resource server id = %q, want coroot", resources[0].ServerID)
+	}
+
+	content, ok, err := r.ReadResource(context.Background(), "coroot", "coroot://projects/default/schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || content.Text == "" || content.Digest == "" {
+		t.Fatalf("ReadResource() = %#v, %v, want content with digest", content, ok)
+	}
+}
+
 func TestRegistryRejectsEmptyServerID(t *testing.T) {
 	r := NewRegistry()
 

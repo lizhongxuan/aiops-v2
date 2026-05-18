@@ -24,8 +24,15 @@ var allowedPriorities = map[string]struct{}{
 	"P2": {},
 }
 
-// LoadCases reads all *.json files in dir and returns them sorted by id.
+// LoadCases reads cases from a directory of *.json files, one JSON case file, or one JSON case array file.
 func LoadCases(dir string) ([]Case, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read cases path: %w", err)
+	}
+	if !info.IsDir() {
+		return loadCasesFile(dir)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read cases dir: %w", err)
@@ -49,6 +56,31 @@ func LoadCases(dir string) ([]Case, error) {
 		}
 		c.Priority = normalizePriority(c.Priority)
 		cases = append(cases, c)
+	}
+	sort.Slice(cases, func(i, j int) bool {
+		return cases[i].ID < cases[j].ID
+	})
+	return cases, nil
+}
+
+func loadCasesFile(path string) ([]Case, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read case %s: %w", path, err)
+	}
+	var cases []Case
+	if err := json.Unmarshal(data, &cases); err != nil {
+		var c Case
+		if singleErr := json.Unmarshal(data, &c); singleErr != nil {
+			return nil, fmt.Errorf("parse case %s: %w", path, err)
+		}
+		cases = []Case{c}
+	}
+	for i := range cases {
+		if err := validateCase(cases[i], path); err != nil {
+			return nil, err
+		}
+		cases[i].Priority = normalizePriority(cases[i].Priority)
 	}
 	sort.Slice(cases, func(i, j int) bool {
 		return cases[i].ID < cases[j].ID

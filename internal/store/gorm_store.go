@@ -9,49 +9,55 @@ import (
 	"time"
 
 	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/incidents"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
 )
 
 const (
-	gormNamespaceSessions         = "sessions"
-	gormNamespaceWorkspaceTasks   = "workspace_tasks"
-	gormNamespaceApprovalAudits   = "approval_audits"
-	gormNamespaceUICards          = "ui_cards"
-	gormNamespaceLLMConfig        = "llm_config"
-	gormNamespaceWebSettings      = "web_settings"
-	gormNamespaceHosts            = "hosts"
-	gormNamespaceMCPServers       = "mcp_servers"
-	gormNamespaceSkillCatalog     = "skill_catalog"
-	gormNamespaceAgentMCPCatalog  = "agent_mcp_catalog"
-	gormNamespaceAgentProfiles    = "agent_profiles"
-	gormNamespaceToolSpills       = "tool_spills"
-	gormNamespaceAgentProjections = "agent_projections"
-	gormNamespaceIncidents        = "incidents"
-	gormNamespaceIncidentEvidence = "incident_evidence"
+	gormNamespaceSessions            = "sessions"
+	gormNamespaceWorkspaceTasks      = "workspace_tasks"
+	gormNamespaceApprovalAudits      = "approval_audits"
+	gormNamespaceUICards             = "ui_cards"
+	gormNamespaceLLMConfig           = "llm_config"
+	gormNamespaceWebSettings         = "web_settings"
+	gormNamespaceHosts               = "hosts"
+	gormNamespaceMCPServers          = "mcp_servers"
+	gormNamespaceSkillCatalog        = "skill_catalog"
+	gormNamespaceAgentMCPCatalog     = "agent_mcp_catalog"
+	gormNamespaceAgentProfiles       = "agent_profiles"
+	gormNamespaceToolSpills          = "tool_spills"
+	gormNamespaceAgentProjections    = "agent_projections"
+	gormNamespaceIncidents           = "incidents"
+	gormNamespaceIncidentEvidence    = "incident_evidence"
+	gormNamespaceOpsManuals          = "ops_manuals"
+	gormNamespaceOpsManualCandidates = "ops_manual_candidates"
+	gormNamespaceOpsManualRunRecords = "ops_manual_run_records"
 )
 
 const gormSingletonKey = "current"
 
 var _ Store = (*GormStore)(nil)
 var _ incidents.Store = (*GormStore)(nil)
+var _ opsmanual.ManualRepository = (*GormStore)(nil)
 
 // GormStore implements Store using a GORM-backed database. Domain objects are
 // stored as JSON payloads to preserve the existing application contract while
-// allowing MySQL durability and GORM-managed migrations.
+// allowing SQL durability and GORM-managed migrations.
 type GormStore struct {
 	db *gorm.DB
 }
 
 type gormKVRecord struct {
-	Namespace string    `gorm:"primaryKey;size:64"`
-	RecordKey string    `gorm:"primaryKey;column:record_key;size:255"`
-	Payload   []byte    `gorm:"type:longblob"`
+	Namespace string `gorm:"primaryKey;size:64"`
+	RecordKey string `gorm:"primaryKey;column:record_key;size:255"`
+	Payload   []byte
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime"`
 }
@@ -59,11 +65,11 @@ type gormKVRecord struct {
 func (gormKVRecord) TableName() string { return "aiops_kv_records" }
 
 type gormAgentEventRecord struct {
-	ID        uint      `gorm:"primaryKey"`
-	SessionID string    `gorm:"index:idx_aiops_agent_events_session_seq,priority:1;size:128"`
-	Seq       int64     `gorm:"index:idx_aiops_agent_events_session_seq,priority:2"`
-	EventID   string    `gorm:"size:128;index"`
-	Payload   []byte    `gorm:"type:longblob"`
+	ID        uint   `gorm:"primaryKey"`
+	SessionID string `gorm:"index:idx_aiops_agent_events_session_seq,priority:1;size:128"`
+	Seq       int64  `gorm:"index:idx_aiops_agent_events_session_seq,priority:2"`
+	EventID   string `gorm:"size:128;index"`
+	Payload   []byte
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
 
@@ -91,6 +97,20 @@ func NewMySQLStore(dsn string) (*GormStore, error) {
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("open mysql gorm store: %w", err)
+	}
+	return NewGormStore(db)
+}
+
+// NewPostgresStore opens a PostgreSQL-backed GORM store. The caller must supply
+// a DSN; connection and migration errors are returned to startup.
+func NewPostgresStore(dsn string) (*GormStore, error) {
+	dsn = strings.TrimSpace(dsn)
+	if dsn == "" {
+		return nil, fmt.Errorf("postgres dsn is required")
+	}
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("open postgres gorm store: %w", err)
 	}
 	return NewGormStore(db)
 }
@@ -599,6 +619,145 @@ func (s *GormStore) ListEvidence(incidentID string) []incidents.EvidenceRef {
 		return []incidents.EvidenceRef{}
 	}
 	return append([]incidents.EvidenceRef(nil), items...)
+}
+
+func (s *GormStore) GetOpsManual(id string) (opsmanual.OpsManual, bool, error) {
+	var manual opsmanual.OpsManual
+	ok, err := s.loadKV(gormNamespaceOpsManuals, id, &manual)
+	if err != nil || !ok {
+		return opsmanual.OpsManual{}, ok, err
+	}
+	return cloneOpsManual(manual), true, nil
+}
+
+func (s *GormStore) ListOpsManuals() ([]opsmanual.OpsManual, error) {
+	var manuals []opsmanual.OpsManual
+	if err := s.listKV(gormNamespaceOpsManuals, &manuals); err != nil {
+		return nil, err
+	}
+	out := make([]opsmanual.OpsManual, 0, len(manuals))
+	for _, manual := range manuals {
+		out = append(out, cloneOpsManual(manual))
+	}
+	sortOpsManuals(out)
+	return out, nil
+}
+
+func (s *GormStore) SaveOpsManual(manual opsmanual.OpsManual) error {
+	if strings.TrimSpace(manual.ID) == "" {
+		return fmt.Errorf("ops manual id is required")
+	}
+	return s.saveKV(gormNamespaceOpsManuals, manual.ID, cloneOpsManual(manual))
+}
+
+func (s *GormStore) DeleteOpsManual(id string) error {
+	return s.deleteRequiredKV(gormNamespaceOpsManuals, id, "ops manual")
+}
+
+func (s *GormStore) GetOpsManualCandidate(id string) (opsmanual.ManualCandidate, bool, error) {
+	var candidate opsmanual.ManualCandidate
+	ok, err := s.loadKV(gormNamespaceOpsManualCandidates, id, &candidate)
+	if err != nil || !ok {
+		return opsmanual.ManualCandidate{}, ok, err
+	}
+	return cloneOpsManualCandidate(candidate), true, nil
+}
+
+func (s *GormStore) ListOpsManualCandidates() ([]opsmanual.ManualCandidate, error) {
+	var candidates []opsmanual.ManualCandidate
+	if err := s.listKV(gormNamespaceOpsManualCandidates, &candidates); err != nil {
+		return nil, err
+	}
+	out := make([]opsmanual.ManualCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, cloneOpsManualCandidate(candidate))
+	}
+	sortOpsManualCandidates(out)
+	return out, nil
+}
+
+func (s *GormStore) SaveOpsManualCandidate(candidate opsmanual.ManualCandidate) error {
+	if strings.TrimSpace(candidate.ID) == "" {
+		return fmt.Errorf("ops manual candidate id is required")
+	}
+	return s.saveKV(gormNamespaceOpsManualCandidates, candidate.ID, cloneOpsManualCandidate(candidate))
+}
+
+func (s *GormStore) DeleteOpsManualCandidate(id string) error {
+	return s.deleteRequiredKV(gormNamespaceOpsManualCandidates, id, "ops manual candidate")
+}
+
+func (s *GormStore) ListOpsManualRunRecords(manualID string, workflowID string, limit int) ([]opsmanual.RunRecord, error) {
+	var records []opsmanual.RunRecord
+	if err := s.listKV(gormNamespaceOpsManualRunRecords, &records); err != nil {
+		return nil, err
+	}
+	recordMap := make(map[string]opsmanual.RunRecord, len(records))
+	for _, record := range records {
+		recordMap[record.ID] = record
+	}
+	return filterOpsManualRunRecords(recordMap, manualID, workflowID, limit), nil
+}
+
+func (s *GormStore) SaveOpsManualRunRecord(record opsmanual.RunRecord) error {
+	if strings.TrimSpace(record.ID) == "" {
+		return fmt.Errorf("ops manual run record id is required")
+	}
+	return s.saveKV(gormNamespaceOpsManualRunRecords, record.ID, cloneOpsManualRunRecord(record))
+}
+
+func (s *GormStore) ListManuals(req opsmanual.ListManualsRequest) ([]opsmanual.OpsManual, error) {
+	manuals, err := s.ListOpsManuals()
+	if err != nil {
+		return nil, err
+	}
+	return filterOpsManuals(manuals, req), nil
+}
+
+func (s *GormStore) GetManual(id string) (opsmanual.OpsManual, error) {
+	manual, ok, err := s.GetOpsManual(id)
+	if err != nil {
+		return opsmanual.OpsManual{}, err
+	}
+	if !ok {
+		return opsmanual.OpsManual{}, fmt.Errorf("ops manual %q not found", id)
+	}
+	return manual, nil
+}
+
+func (s *GormStore) SaveManual(manual opsmanual.OpsManual) error {
+	return s.SaveOpsManual(manual)
+}
+
+func (s *GormStore) ListRunRecords(req opsmanual.ListRunRecordsRequest) ([]opsmanual.RunRecord, error) {
+	return s.ListOpsManualRunRecords(req.ManualID, req.WorkflowID, req.Limit)
+}
+
+func (s *GormStore) GetCandidate(id string) (opsmanual.ManualCandidate, error) {
+	candidate, ok, err := s.GetOpsManualCandidate(id)
+	if err != nil {
+		return opsmanual.ManualCandidate{}, err
+	}
+	if !ok {
+		return opsmanual.ManualCandidate{}, fmt.Errorf("ops manual candidate %q not found", id)
+	}
+	return candidate, nil
+}
+
+func (s *GormStore) ListCandidates() ([]opsmanual.ManualCandidate, error) {
+	return s.ListOpsManualCandidates()
+}
+
+func (s *GormStore) SaveCandidate(candidate opsmanual.ManualCandidate) error {
+	return s.SaveOpsManualCandidate(candidate)
+}
+
+func (s *GormStore) DeleteCandidate(id string) error {
+	return s.DeleteOpsManualCandidate(id)
+}
+
+func (s *GormStore) SaveRunRecord(record opsmanual.RunRecord) error {
+	return s.SaveOpsManualRunRecord(record)
 }
 
 func (s *GormStore) Flush() error {

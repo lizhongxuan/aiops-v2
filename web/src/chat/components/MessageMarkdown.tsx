@@ -50,7 +50,50 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
 }
 
 function normalizeFinalAnswerMarkdown(value: string) {
-  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(value));
+  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(normalizeStandaloneSectionLabels(value)));
+}
+
+function normalizeStandaloneSectionLabels(value: string) {
+  const labels = [
+    "根因",
+    "证据",
+    "影响面",
+    "下一步",
+    "结论",
+    "建议",
+    "处理结果",
+    "当前状态",
+    "风险",
+    "原因",
+  ];
+  const labelPattern = labels.join("|");
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  const output: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const matched = line.match(new RegExp(`^\\s*(${labelPattern})\\s*[：:]\\s*$`));
+    if (!matched) {
+      output.push(line);
+      continue;
+    }
+    let nextIndex = index + 1;
+    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+      nextIndex += 1;
+    }
+    const nextLine = lines[nextIndex] || "";
+    const nextIsSection = new RegExp(`^\\s*(${labelPattern})\\s*[：:]`).test(nextLine);
+    if (!nextLine.trim() || nextIsSection || /^(\s*[-*+]|\s*\d+[.)])\s+/.test(nextLine)) {
+      output.push(line);
+      continue;
+    }
+    if (output.length && output[output.length - 1].trim()) {
+      output.push("");
+    }
+    output.push(`**${matched[1]}：** ${nextLine.trim()}`);
+    output.push("");
+    index = nextIndex;
+  }
+  return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function normalizeDetachedSourceLinks(value: string) {

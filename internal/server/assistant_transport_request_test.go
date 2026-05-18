@@ -71,6 +71,8 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 			},
 			{
 				"type": "aiops.approval-decision",
+				"sessionId": "sess-1",
+				"turnId": "turn-1",
 				"approvalId": "approval-1",
 				"decision": "accept"
 			},
@@ -174,8 +176,19 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	if !ok {
 		t.Fatalf("command[3] type = %T, want *assistantTransportApprovalDecisionCommand", req.Commands[3])
 	}
-	if approvalCommand.ApprovalID != "approval-1" || approvalCommand.Decision != "accept" {
-		t.Fatalf("approvalCommand = %+v, want approval-1/accept", approvalCommand)
+	if approvalCommand.SessionID != "sess-1" || approvalCommand.TurnID != "turn-1" || approvalCommand.ApprovalID != "approval-1" || approvalCommand.Decision != "accept" {
+		t.Fatalf("approvalCommand = %+v, want sess-1/turn-1/approval-1/accept", approvalCommand)
+	}
+	approvalTransportCommand, err := assistantTransportCommandFromDecoded(approvalCommand, req, assistantTransportInitialState(req))
+	if err != nil {
+		t.Fatalf("assistantTransportCommandFromDecoded(approval) error = %v", err)
+	}
+	if approvalTransportCommand.ApprovalDecision == nil ||
+		approvalTransportCommand.ApprovalDecision.SessionID != "sess-1" ||
+		approvalTransportCommand.ApprovalDecision.TurnID != "turn-1" ||
+		approvalTransportCommand.ApprovalDecision.ApprovalID != "approval-1" ||
+		approvalTransportCommand.ApprovalDecision.Decision != "accept" {
+		t.Fatalf("ApprovalDecision transport command = %+v, want scoped approval decision", approvalTransportCommand.ApprovalDecision)
 	}
 
 	choiceCommand, ok := req.Commands[4].(*assistantTransportChoiceAnswerCommand)

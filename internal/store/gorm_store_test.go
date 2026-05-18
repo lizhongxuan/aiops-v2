@@ -10,6 +10,7 @@ import (
 
 	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/incidents"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
 )
@@ -143,6 +144,99 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGormStoreUICardsNestedPolicyRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ui-cards.db")
+	first := newSQLiteGormStore(t, dbPath)
+	now := time.Date(2026, 5, 16, 9, 0, 0, 0, time.UTC)
+	card := UICard{
+		ID:                "custom-diagnosis",
+		Name:              "Diagnosis Card",
+		Kind:              "diagnosis",
+		Renderer:          "agent-ui/diagnosis",
+		RendererVersion:   "1.2.0",
+		SchemaVersion:     "2026-05-16",
+		PayloadSchema:     map[string]any{"type": "object", "required": []any{"summary"}},
+		MetadataSchema:    map[string]any{"type": "object"},
+		ActionPolicy:      map[string]any{"allowed": []any{"open_case"}},
+		DisplayPolicy:     map[string]any{"density": "compact"},
+		RedactionPolicy:   map[string]any{"mode": "strict"},
+		SamplePayloads:    []map[string]any{{"summary": "redis memory pressure"}},
+		BundleSupport:     []string{"web"},
+		PlacementDefaults: []string{"assistant_turn"},
+		Status:            "active",
+		Version:           3,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := first.SaveUICards([]UICard{card}); err != nil {
+		t.Fatalf("SaveUICards() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second := newSQLiteGormStore(t, dbPath)
+	defer second.Close()
+	cards, err := second.GetUICards()
+	if err != nil || len(cards) != 1 {
+		t.Fatalf("GetUICards() = %#v, %v", cards, err)
+	}
+	restored := cards[0]
+	if restored.RendererVersion != "1.2.0" || restored.SchemaVersion != "2026-05-16" {
+		t.Fatalf("version fields lost after gorm round trip: %#v", restored)
+	}
+	if restored.PayloadSchema["type"] != "object" || restored.ActionPolicy["allowed"] == nil || len(restored.SamplePayloads) != 1 {
+		t.Fatalf("nested policy fields lost after gorm round trip: %#v", restored)
+	}
+}
+
+func TestJSONFileStoreUICardsNestedPolicyRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	card := UICard{
+		ID:              "custom-evidence",
+		Name:            "Evidence Card",
+		Kind:            "evidence",
+		Renderer:        "agent-ui/evidence",
+		RendererVersion: "0.4.0",
+		SchemaVersion:   "2026-05-16",
+		PayloadSchema:   map[string]any{"properties": map[string]any{"title": map[string]any{"type": "string"}}},
+		MetadataSchema:  map[string]any{"additionalProperties": true},
+		ActionPolicy:    map[string]any{"dangerous": false},
+		DisplayPolicy:   map[string]any{"maxInlineRows": float64(5)},
+		RedactionPolicy: map[string]any{"fields": []any{"token"}},
+		SamplePayloads:  []map[string]any{{"title": "cpu saturation"}},
+		Status:          "active",
+		Version:         1,
+	}
+	if err := first.SaveUICards([]UICard{card}); err != nil {
+		t.Fatalf("SaveUICards() error = %v", err)
+	}
+	if err := first.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("reopen NewJSONFileStore() error = %v", err)
+	}
+	defer second.Close()
+	cards, err := second.GetUICards()
+	if err != nil || len(cards) != 1 {
+		t.Fatalf("GetUICards() = %#v, %v", cards, err)
+	}
+	restored := cards[0]
+	if restored.RendererVersion != "0.4.0" || restored.PayloadSchema["properties"] == nil || len(restored.SamplePayloads) != 1 {
+		t.Fatalf("nested policy fields lost after json round trip: %#v", restored)
+	}
+}
+
 func TestGormStoreAgentEventRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "events.db")
 	first := newSQLiteGormStore(t, dbPath)
@@ -223,5 +317,127 @@ func TestGormStoreIncidentRoundTrip(t *testing.T) {
 	evidence := restoredStore.ListEvidence("case-1")
 	if len(evidence) != 1 || evidence[0].Summary != "connection pool saturated" {
 		t.Fatalf("ListEvidence() = %#v", evidence)
+	}
+}
+
+func TestGormStoreOpsManualRoundTrip(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "ops-manuals.db")
+	first := newSQLiteGormStore(t, dbPath)
+	manual := opsmanual.OpsManual{
+		ID:          "manual-redis-memory",
+		Title:       "Redis memory pressure",
+		Status:      opsmanual.ManualStatusVerified,
+		Tags:        []string{"redis", "memory"},
+		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-redis-memory"},
+		Operation:   opsmanual.OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
+		RetrievalProfile: opsmanual.RetrievalProfile{
+			Keywords: []string{"used_memory_rss"},
+			MinScore: opsmanual.ScoreThresholds{
+				Candidate:     0.55,
+				DirectExecute: 0.82,
+			},
+		},
+		PreflightProbe: opsmanual.PreflightProbe{ID: "redis_readonly_probe", RequiredOutputs: []string{"redis_ping"}},
+		UpdatedAt:      "2026-05-14T08:00:00Z",
+	}
+	if err := first.SaveOpsManual(manual); err != nil {
+		t.Fatalf("SaveOpsManual() error = %v", err)
+	}
+	if err := first.SaveOpsManualCandidate(opsmanual.ManualCandidate{
+		ID:             "candidate-redis-memory",
+		ProposedManual: manual,
+		ReviewStatus:   "pending",
+		UpdatedAt:      "2026-05-14T08:01:00Z",
+	}); err != nil {
+		t.Fatalf("SaveOpsManualCandidate() error = %v", err)
+	}
+	if err := first.SaveOpsManualRunRecord(opsmanual.RunRecord{
+		ID:               "record-1",
+		ManualID:         "manual-redis-memory",
+		WorkflowID:       "workflow-redis-memory",
+		ValidationStatus: "passed",
+		CompletedAt:      "2026-05-14T08:02:00Z",
+	}); err != nil {
+		t.Fatalf("SaveOpsManualRunRecord() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second := newSQLiteGormStore(t, dbPath)
+	defer second.Close()
+	restored, ok, err := second.GetOpsManual("manual-redis-memory")
+	if err != nil || !ok || restored.WorkflowRef.WorkflowID != "workflow-redis-memory" {
+		t.Fatalf("GetOpsManual() = %#v, %v, %v", restored, ok, err)
+	}
+	if restored.RetrievalProfile.Keywords[0] != "used_memory_rss" || restored.PreflightProbe.ID != "redis_readonly_probe" {
+		t.Fatalf("enhanced fields lost after gorm round trip: %#v", restored)
+	}
+	manuals, err := second.ListOpsManuals()
+	if err != nil || len(manuals) != 1 {
+		t.Fatalf("ListOpsManuals() = %#v, %v", manuals, err)
+	}
+	candidates, err := second.ListOpsManualCandidates()
+	if err != nil || len(candidates) != 1 || candidates[0].ID != "candidate-redis-memory" {
+		t.Fatalf("ListOpsManualCandidates() = %#v, %v", candidates, err)
+	}
+	records, err := second.ListOpsManualRunRecords("manual-redis-memory", "", 10)
+	if err != nil || len(records) != 1 || records[0].ValidationStatus != "passed" {
+		t.Fatalf("ListOpsManualRunRecords() = %#v, %v", records, err)
+	}
+}
+
+func TestJSONFileStoreOpsManualRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	manual := opsmanual.OpsManual{
+		ID:               "manual-pg-backup",
+		Title:            "PostgreSQL backup",
+		Status:           opsmanual.ManualStatusVerified,
+		Tags:             []string{"postgresql", "backup"},
+		WorkflowRef:      opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup"},
+		Operation:        opsmanual.OperationProfile{TargetType: "postgresql", Action: "backup"},
+		RetrievalProfile: opsmanual.RetrievalProfile{Keywords: []string{"pg_isready", "backup_path"}},
+		PreflightProbe:   opsmanual.PreflightProbe{ID: "pg_backup_probe", RequiredOutputs: []string{"pg_isready"}},
+		UpdatedAt:        "2026-05-14T08:00:00Z",
+	}
+	if err := first.SaveOpsManual(manual); err != nil {
+		t.Fatalf("SaveOpsManual() error = %v", err)
+	}
+	if err := first.SaveOpsManualCandidate(opsmanual.ManualCandidate{ID: "candidate-pg-backup", ProposedManual: manual, ReviewStatus: "pending"}); err != nil {
+		t.Fatalf("SaveOpsManualCandidate() error = %v", err)
+	}
+	if err := first.SaveOpsManualRunRecord(opsmanual.RunRecord{ID: "record-pg-1", ManualID: "manual-pg-backup", WorkflowID: "workflow-pg-backup", ExecutionStatus: "failed"}); err != nil {
+		t.Fatalf("SaveOpsManualRunRecord() error = %v", err)
+	}
+	if err := first.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	second, err := NewJSONFileStore(dir, time.Hour)
+	if err != nil {
+		t.Fatalf("reopen NewJSONFileStore() error = %v", err)
+	}
+	defer second.Close()
+	manuals, err := second.ListOpsManuals()
+	if err != nil || len(manuals) != 1 || manuals[0].ID != "manual-pg-backup" {
+		t.Fatalf("ListOpsManuals() = %#v, %v", manuals, err)
+	}
+	if manuals[0].RetrievalProfile.Keywords[0] != "pg_isready" || manuals[0].PreflightProbe.ID != "pg_backup_probe" {
+		t.Fatalf("enhanced fields lost after json store round trip: %#v", manuals[0])
+	}
+	candidates, err := second.ListOpsManualCandidates()
+	if err != nil || len(candidates) != 1 {
+		t.Fatalf("ListOpsManualCandidates() = %#v, %v", candidates, err)
+	}
+	records, err := second.ListOpsManualRunRecords("manual-pg-backup", "", 0)
+	if err != nil || len(records) != 1 || records[0].ExecutionStatus != "failed" {
+		t.Fatalf("ListOpsManualRunRecords() = %#v, %v", records, err)
 	}
 }

@@ -284,9 +284,9 @@ export const protocolContext = {
   request:
     "请在今晚发布前检查 web 集群 nginx 配置，并在异常时自动修复。",
   planner:
-    "1. 查询经验包与主机画像\n2. 生成分批 DAG\n3. 将 reload 检查派发至 3 台主机\n4. 对失败节点执行 fallback",
+    "1. 查询运维手册与主机画像\n2. 生成分批 DAG\n3. 将 reload 检查派发至 3 台主机\n4. 对失败节点执行 fallback",
   attachments: [
-    "Pack: nginx-reload-v3.2",
+    "Manual: nginx-reload-v3.2",
     "Host Group: web-cluster",
     "Policy: batch-size=3",
     "Approval Mode: batch-approve",
@@ -342,7 +342,7 @@ export const protocolMission = {
   projectionMode: "前台投影 · 主 Agent 驱动",
   approvalMode: "当前命令放行",
   phase: "执行中",
-  pack: "nginx-reload-v3.2",
+  manual: "nginx-reload-v3.2",
   summary: [
     "先做配置检查，再把 reload 审批收敛到单机单命令，避免整批误放行。",
     "DAG 聚焦任务拆分，不和主机拓扑强耦合；主机只通过 dispatch 绑定到执行上下文。",
@@ -350,7 +350,7 @@ export const protocolMission = {
   ],
   plannerReasons: [
     "web-08 最近一次 reload 失败后未重试，风险高于其它节点。",
-    "经验包建议先跑配置守卫，再单机放行 reload。",
+    "运维手册建议先跑配置守卫，再单机放行 reload。",
     "db-01 仅开放终端，不参与 reload，只提供只读交叉验证。",
   ],
   connections: [
@@ -395,7 +395,7 @@ export const protocolPlanDetailView = {
       "Incident Summary",
       "Safe Change Review",
     ],
-    packs: [
+    manuals: [
       "nginx-reload-v3.2",
       "web-cluster 主机画像",
     ],
@@ -404,14 +404,14 @@ export const protocolPlanDetailView = {
     {
       id: "process-1",
       label: "监控与上下文收集",
-      summary: "主 Agent 先读取监控 MCP、经验包和主机画像，确认最近一次 reload 失败集中在 web-08。",
+      summary: "主 Agent 先读取监控 MCP、运维手册和主机画像，确认最近一次 reload 失败集中在 web-08。",
       hosts: ["web-07", "web-08", "web-09", "web-10", "db-01"],
       mcpHits: [
         "Metrics MCP: nginx reload 告警与 probe 波动",
         "Docs MCP: reload 前检查清单",
       ],
       skillHits: ["Ops Triage"],
-      packHits: ["nginx-reload-v3.2"],
+      manualHits: ["nginx-reload-v3.2"],
       risk: "低",
     },
     {
@@ -421,7 +421,7 @@ export const protocolPlanDetailView = {
       hosts: ["web-07", "web-08", "web-09", "web-10"],
       mcpHits: [],
       skillHits: ["Safe Change Review", "Incident Summary"],
-      packHits: ["web-cluster 主机画像"],
+      manualHits: ["web-cluster 主机画像"],
       risk: "中",
     },
     {
@@ -431,7 +431,7 @@ export const protocolPlanDetailView = {
       hosts: ["web-07", "web-08", "web-09", "web-10", "cache-04"],
       mcpHits: [],
       skillHits: [],
-      packHits: [],
+      manualHits: [],
       risk: "中",
     },
   ],
@@ -488,8 +488,8 @@ export const protocolPlanDetailView = {
       id: "trace-3",
       kind: "skill",
       time: "19:43",
-      title: "Skills / 经验包命中",
-      detail: "命中 Ops Triage、Safe Change Review、Incident Summary，以及 nginx-reload-v3.2 经验包。",
+      title: "Skills / 运维手册命中",
+      detail: "命中 Ops Triage、Safe Change Review、Incident Summary，以及 nginx-reload-v3.2 运维手册。",
     },
     {
       id: "trace-4",
@@ -641,7 +641,7 @@ export const protocolMainAgentMessages = [
     time: "19:44",
     label: "系统",
     title: "上下文已附加",
-    body: "Coroot RCA、经验包 nginx-reload-v3.2 和 web-cluster 主机画像已写入主 Agent 上下文。",
+    body: "Coroot RCA、运维手册 nginx-reload-v3.2 和 web-cluster 主机画像已写入主 Agent 上下文。",
   },
 ];
 

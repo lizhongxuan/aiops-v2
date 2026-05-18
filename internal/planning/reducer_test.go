@@ -68,3 +68,30 @@ func TestApplyPlanUpdateRejectsDuplicateStepIDs(t *testing.T) {
 		t.Fatal("expected duplicate step ids to fail")
 	}
 }
+
+func TestApplyPlanUpdateRejectsVagueSteps(t *testing.T) {
+	for _, text := range []string{"分析问题", "检查服务", "处理故障", "查看情况"} {
+		_, err := ApplyPlanUpdate(PlanState{}, UpdatePlanArgs{
+			Steps: []PlanStep{{ID: "vague", Text: text, Status: StepStatusInProgress}},
+		})
+		if err == nil {
+			t.Fatalf("expected vague step %q to fail", text)
+		}
+	}
+}
+
+func TestApplyPlanUpdateAcceptsVerifiableOpsStep(t *testing.T) {
+	next, err := ApplyPlanUpdate(PlanState{}, UpdatePlanArgs{
+		Steps: []PlanStep{{
+			ID:     "redis-metrics",
+			Text:   "查询 Coroot 中 redis-local-01 的 used_memory_rss 与 used_memory 指标并判断 RSS 增长是否脱离数据集增长",
+			Status: StepStatusInProgress,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPlanUpdate() error = %v", err)
+	}
+	if next.Steps[0].ID != "redis-metrics" {
+		t.Fatalf("step was not kept: %#v", next.Steps[0])
+	}
+}

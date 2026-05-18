@@ -131,9 +131,111 @@ func TestSemanticPromptAIOpsInvestigationLoopIsOperational(t *testing.T) {
 		"direct evidence",
 		"narrowing hypotheses",
 		"observed facts from inference",
+		"opsManualAction=skip_ops_manual",
+		"opsManualSkipped=true",
+		"do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight",
+		"ordinary safe read-only investigation",
 		"pre-change state",
 		"rollback or recovery path",
 		"symptom, metric, log, or service state",
+	})
+}
+
+func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "execute",
+		AnswerStyle: "aiops_rca",
+	})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"read-only status or RCA check",
+		"no abnormality",
+		"short conclusion",
+		"do not expand a long next-step plan",
+		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
+		"resolve_ops_manual_params plus run_ops_manual_preflight have already passed",
+		"do not run extra host, shell, Docker, Kubernetes, or Coroot probes",
+		"1-3 bullets total",
+		"no headings and no separate evidence section",
+		"concise conclusion with compact evidence",
+		"no change was executed in one bullet",
+	})
+}
+
+func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"search_ops_manuals",
+		"operations manuals",
+		"complex operations task",
+		"high-risk actions",
+		"service restart",
+		"configuration changes",
+		"database operations",
+		"backup",
+		"recovery",
+		"migration",
+		"cluster changes",
+		"middleware or infrastructure target",
+		"short or underspecified",
+		"排查 Redis",
+		"do not ask prose follow-up questions first",
+		"before asking follow-up questions",
+		"missing fields",
+		"original request text",
+		"preserve negations",
+		"不重启",
+		"no restart",
+		"operation_frame.target.name or known_params.target_instance",
+		"keep the selected/current host in target_scope.hosts",
+		"LLM judgment alone",
+		"need_info",
+		"need_info with one or more manuals",
+		"immediate next tool call must be resolve_ops_manual_params with the matched manual_id",
+		"Do not run host commands, Coroot probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
+		"need_info with no manuals",
+		"do not call resolve_ops_manual_params because there is no manual_id",
+		"call search_ops_manuals again with an explicit operation_frame",
+		"ask only the smallest missing object or action question",
+		"missing ops manual matching context, not a Workflow preflight failure",
+		"fill the bottom form",
+		"do not repeat questions or a template in prose",
+		"Do not duplicate Agent-to-UI card details",
+		"one short status sentence plus the smallest useful question or next action",
+		"Coroot tools are visible",
+		"session-bound aiops.coroot.project",
+		"Do not ask the user whether Coroot evidence exists",
+		"system cannot inspect",
+		"adapt",
+		"reference_only",
+		"no_match",
+		"non-executable",
+		"never run a Workflow from those decisions",
+		"reference_only or no_match",
+		"continue safe read-only evidence-driven investigation",
+		"Kafka",
+		"metrics/log source",
+		"host/session availability",
+		"Do not present a cross-object manual",
+		"Kubernetes Pod manual as a Kafka troubleshooting reference",
+		"Agent-to-UI compact form",
+		"do not duplicate the same fields as a multiline prose template",
+		"resolve_ops_manual_params returns ambiguous or need_user_input",
+		"stop tool use and wait for the user to submit the structured Agent-to-UI form",
+		"do not run host commands, Coroot probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
+		"ask for user confirmation and then run it after confirmation",
+		"direct_execute",
+		"run_ops_manual_preflight",
+		"pass the operation_frame",
+		"extracted parameters",
+		"preflight passed",
+		"Dry Run",
 	})
 }
 

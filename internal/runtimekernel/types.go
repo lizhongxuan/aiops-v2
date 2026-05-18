@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/envcontext"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,6 +30,7 @@ type SessionState struct {
 	LatestCheckpoint   *CheckpointMetadata    `json:"latestCheckpoint,omitempty"`
 	CompactedSegments  []CompactedSegment     `json:"compactedSegments,omitempty"`
 	ExternalReferences []ExternalReference    `json:"externalReferences,omitempty"`
+	EnvironmentContext envcontext.State       `json:"environmentContext,omitempty"`
 	CreatedAt          time.Time              `json:"createdAt"`
 	UpdatedAt          time.Time              `json:"updatedAt"`
 }

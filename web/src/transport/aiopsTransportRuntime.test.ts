@@ -54,7 +54,7 @@ describe("aiopsTransportRuntime", () => {
     expect(send.mock.calls.map(([command]) => command)).toEqual([
       { type: "aiops.stop", sessionId: "sess-1", turnId: "turn-1", reason: "user requested stop" },
       { type: "aiops.retry", sessionId: "sess-1", turnId: "turn-1" },
-      { type: "aiops.approval-decision", approvalId: "approval-1", decision: "reject" },
+      { type: "aiops.approval-decision", sessionId: "sess-1", turnId: "turn-1", approvalId: "approval-1", decision: "reject" },
       { type: "aiops.choice-answer", requestId: "choice-1", answer: "continue" },
       { type: "aiops.mcp-action", surfaceId: "filesystem", action: "open", params: { path: "/tmp" } },
       { type: "aiops.mcp-refresh", surfaceId: "filesystem" },

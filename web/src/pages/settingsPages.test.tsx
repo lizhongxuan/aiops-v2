@@ -156,6 +156,53 @@ const experienceReusePayload = {
   ],
 };
 
+const opsManualsPayload = {
+  items: [
+    {
+      id: "manual-redis-memory",
+      title: "Redis 内存压力排障",
+      status: "verified",
+      workflow_ref: { workflow_id: "workflow-redis-memory" },
+      operation: { target_type: "redis", action: "rca_or_repair" },
+      applicability: { middleware: "redis", os: ["ubuntu"], platform: ["vm"], execution_surface: ["ssh"] },
+      required_context: { required_inputs: ["target_instance"] },
+      preconditions: ["确认目标实例"],
+      validation: ["指标恢复"],
+      cannot_use_when: ["无法确认实例"],
+      run_record_summary: { success_count: 3, failure_count: 1, recent_result: "success" },
+    },
+  ],
+};
+
+const opsManualCandidatesPayload = {
+  items: [
+    {
+      id: "candidate-redis-memory",
+      review_status: "pending",
+      source_type: "workflow",
+      proposed_manual: {
+        id: "manual-redis-memory-draft",
+        title: "Redis 内存压力候选",
+        status: "draft",
+        workflow_ref: { workflow_id: "workflow-redis-memory" },
+        operation: { target_type: "redis", action: "rca_or_repair" },
+      },
+    },
+  ],
+};
+
+const opsManualRunRecordsPayload = {
+  items: [
+    {
+      id: "run-redis-1",
+      manual_id: "manual-redis-memory",
+      workflow_id: "workflow-redis-memory",
+      execution_status: "success",
+      validation_status: "passed",
+    },
+  ],
+};
+
 const llmPayload = {
   provider: "openai",
   model: "gpt-5.4",
@@ -203,6 +250,9 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.includes("/api/v1/experience-packs/candidates")) return jsonResponse(experienceCandidatesPayload);
   if (url.includes("/api/v1/experience-packs/") && url.includes("/authorization-scopes")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
   if (url.includes("/api/v1/experience-packs/") && url.includes("/enabled")) return jsonResponse({ pack: experienceCandidatesPayload.items[0].experience_pack });
+  if (url.includes("/api/v1/ops-manuals/candidates")) return jsonResponse(opsManualCandidatesPayload);
+  if (url.includes("/api/v1/ops-manuals/run-records")) return jsonResponse(opsManualRunRecordsPayload);
+  if (url.includes("/api/v1/ops-manuals")) return jsonResponse(opsManualsPayload);
   if (url.endsWith("/api/v1/hosts")) {
     if (init?.method === "POST") return jsonResponse({ ok: true });
     return jsonResponse(hostsPayload);
@@ -280,7 +330,8 @@ describe("React settings pages", () => {
     ["/settings", "设置"],
     ["/settings/llm", "LLM 配置"],
     ["/settings/hosts", "env=prod"],
-    ["/settings/experience-packs", "经验包工作台"],
+    ["/settings/ops-manuals", "Redis 内存压力排障"],
+    ["/settings/experience-packs", "旧入口已迁移到运维手册"],
     ["/settings/agent", "Agent Profile"],
     ["/settings/skills", "Ops Triage"],
     ["/settings/mcp", "Metrics MCP"],
@@ -300,11 +351,11 @@ describe("React settings pages", () => {
     expect(hostsHeader?.textContent).toContain("接入主机");
     expect(container.querySelector("main > div header")?.textContent || "").not.toContain("HostLease 锁状态");
 
-    await remountPath("/settings/experience-packs");
+    await remountPath("/settings/ops-manuals");
     const packsHeader = container.querySelector('[data-testid="app-shell-header"]');
-    expect(packsHeader?.textContent).toContain("经验包");
+    expect(packsHeader?.textContent).toContain("运维手册");
     expect(packsHeader?.textContent).not.toContain("刷新");
-    expect(container.querySelector("main > div header")?.textContent || "").not.toContain("必须先审核启用");
+    expect(container.querySelector("main > div header")?.textContent || "").not.toContain("经验包入口已迁移");
   });
 
   it("renders HostProfile, HostLease, report history and access config tabs in Chinese", async () => {
@@ -360,53 +411,46 @@ describe("React settings pages", () => {
     expect(accessTab).toBeTruthy();
   });
 
-  it("renders Experience Pack candidate, authorization, eval and reuse gates in Chinese", async () => {
-    await renderPath("/settings/experience-packs");
+  it("renders Ops Manual tabs, candidates, and run records in Chinese", async () => {
+    await renderPath("/settings/ops-manuals");
 
-    expect(container.textContent).toContain("经验包");
-    expect(container.textContent).toContain("候选");
-    expect(container.textContent).toContain("已启用");
-    expect(container.textContent).toContain("授权范围");
-    expect(container.textContent).toContain("Eval");
-    expect(container.textContent).toContain("复用记录");
-    expect(container.textContent).toContain("PG 连接池修复候选经验包");
-    expect(container.textContent).toContain("来源 Case");
-    expect(container.textContent).toContain("推荐 Workflow");
-    expect(container.textContent).toContain("Java 堆内存排障经验包");
-    expect(container.textContent).toContain("不可检索");
+    expect(container.textContent).toContain("运维手册");
+    expect(container.textContent).toContain("已验证手册");
+    expect(container.textContent).toContain("待审核手册");
+    expect(container.textContent).toContain("执行记录");
+    expect(container.textContent).toContain("Redis 内存压力排障");
+    expect(container.textContent).toContain("workflow-redis-memory");
+    expect(container.textContent).not.toContain("Experience Pack");
 
-    const authTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("授权范围"));
-    expect(authTab).toBeTruthy();
-    await act(async () => authTab?.click());
+    const reviewTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("待审核手册"));
+    expect(reviewTab).toBeTruthy();
+    await act(async () => reviewTab?.click());
     await flush();
-    expect(container.textContent).toContain("environment");
-    expect(container.textContent).toContain("prod");
+    expect(container.textContent).toContain("Redis 内存压力候选");
+    expect(container.textContent).toContain("通过");
 
-    const reuseTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("复用记录"));
-    expect(reuseTab).toBeTruthy();
-    await act(async () => reuseTab?.click());
+    const recordsTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("执行记录"));
+    expect(recordsTab).toBeTruthy();
+    await act(async () => recordsTab?.click());
     await flush();
-    expect(container.textContent).toContain("case-pg-repeat");
-    expect(container.textContent).toContain("失败回退");
+    expect(container.textContent).toContain("run-redis-1");
+    expect(container.textContent).toContain("成功");
   });
 
-  it("keeps the Experience Pack workbench full width when there are no candidates", async () => {
+  it("shows an empty state when there are no verified ops manuals", async () => {
     vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
       const url = String(input);
-      if (url.includes("/api/v1/experience-packs/candidates")) {
+      if (url.includes("/api/v1/ops-manuals") && !url.includes("/candidates") && !url.includes("/run-records")) {
         return jsonResponse({ items: [] });
       }
       return mockFetch(input, init);
     });
 
-    await renderPath("/settings/experience-packs");
+    await renderPath("/settings/ops-manuals");
 
-    const layout = container.querySelector('[data-testid="experience-pack-workbench-layout"]');
-    expect(layout?.className).toContain("xl:grid-cols-1");
-    expect(container.textContent).toContain("没有候选经验包");
-    expect(container.textContent).toContain("从 AI 对话或 Case 详情提炼");
-    expect(container.textContent).toContain("审核启用后再配置可检索范围");
-    expect(container.textContent).not.toContain("包详情");
+    expect(container.textContent).toContain("暂无已验证手册");
+    expect(container.textContent).toContain("通过审核并绑定 Runner Workflow 后会出现在这里。");
+    expect(container.querySelector('[data-testid="ops-manual-side-detail"]')).toBeNull();
   });
 
   it("keeps Experience Pack fixture fallback out of production mode", () => {

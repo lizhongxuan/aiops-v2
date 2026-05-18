@@ -9,6 +9,7 @@ import (
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/incidents"
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
@@ -102,6 +103,8 @@ type servicesConfig struct {
 	profiles         AgentProfileRepository
 	agentEvents      AgentEventRepository
 	incidents        incidents.Store
+	opsManuals       OpsManualService
+	opsManualRepo    opsmanual.ManualRepository
 	lifecycleContext context.Context
 }
 
@@ -134,6 +137,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		}
 		if repo, ok := any(dataStore).(incidents.Store); ok {
 			cfg.incidents = repo
+		}
+		if repo, ok := any(dataStore).(opsmanual.ManualRepository); ok {
+			cfg.opsManualRepo = repo
 		}
 	}
 }
@@ -209,6 +215,12 @@ func WithLifecycleContext(ctx context.Context) ServicesOption {
 	}
 }
 
+func WithOpsManualService(service OpsManualService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.opsManuals = service
+	}
+}
+
 // HTTPServices is the interface consumed by internal/server handlers.
 type HTTPServices interface {
 	ChatService() ChatService
@@ -246,6 +258,7 @@ type Services struct {
 	opsgraph       OpsGraphService
 	erp            ERPContextService
 	changes        ChangeContextService
+	opsManuals     OpsManualService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -270,6 +283,14 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(cfg.agentEvents)
 	incidentService := NewIncidentService(incidents.NewService(cfg.incidents, nil))
+	opsManualService := cfg.opsManuals
+	if opsManualService == nil {
+		repo := cfg.opsManualRepo
+		if repo == nil {
+			repo = opsmanual.NewMemoryStore()
+		}
+		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
+	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),
@@ -291,6 +312,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		opsgraph:       NewOpsGraphService(""),
 		erp:            NewERPContextService(),
 		changes:        NewChangeContextService(),
+		opsManuals:     opsManualService,
 	}
 }
 
@@ -318,6 +340,7 @@ func (s *Services) RunbookService() RunbookService             { return s.runboo
 func (s *Services) OpsGraphService() OpsGraphService           { return s.opsgraph }
 func (s *Services) ERPContextService() ERPContextService       { return s.erp }
 func (s *Services) ChangeContextService() ChangeContextService { return s.changes }
+func (s *Services) OpsManualService() OpsManualService         { return s.opsManuals }
 
 type ChatCommand struct {
 	SessionID       string
@@ -605,8 +628,10 @@ type SessionMutationResponse struct {
 }
 
 type ApprovalDecision struct {
-	ID       string
-	Decision string
+	SessionID string
+	TurnID    string
+	ID        string
+	Decision  string
 }
 
 type ChoiceAnswer struct {

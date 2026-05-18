@@ -56,31 +56,78 @@ func findApprovalTarget(sessions SessionSource, approvalID string) (*runtimekern
 		return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval id is required")
 	}
 	for _, session := range sortSessionsByActivity(sessions.List()) {
-		for _, approval := range session.PendingApprovals {
-			if approval.ID == target {
-				return session, approval, nil
-			}
-		}
-		for _, evidence := range session.PendingEvidence {
-			if evidence.ID == target {
-				return session, pendingEvidenceAsApproval(evidence), nil
-			}
-		}
-		if session.CurrentTurn == nil {
-			continue
-		}
-		for _, approval := range session.CurrentTurn.PendingApprovals {
-			if approval.ID == target {
-				return session, approval, nil
-			}
-		}
-		for _, evidence := range session.CurrentTurn.PendingEvidence {
-			if evidence.ID == target {
-				return session, pendingEvidenceAsApproval(evidence), nil
-			}
+		if approval, ok := findApprovalInSession(session, "", target); ok {
+			return session, approval, nil
 		}
 	}
 	return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval %q not found", target)
+}
+
+func findApprovalTargetScoped(sessions SessionSource, sessionID, turnID, approvalID string) (*runtimekernel.SessionState, runtimekernel.PendingApproval, error) {
+	if sessions == nil {
+		return nil, runtimekernel.PendingApproval{}, fmt.Errorf("session source is not configured")
+	}
+	target := strings.TrimSpace(approvalID)
+	if target == "" {
+		return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval id is required")
+	}
+	trimmedSessionID := strings.TrimSpace(sessionID)
+	trimmedTurnID := strings.TrimSpace(turnID)
+	if trimmedSessionID == "" && trimmedTurnID == "" {
+		return findApprovalTarget(sessions, target)
+	}
+	candidates := sortSessionsByActivity(sessions.List())
+	if trimmedSessionID != "" {
+		session := sessions.Get(trimmedSessionID)
+		if session == nil {
+			return nil, runtimekernel.PendingApproval{}, fmt.Errorf("session %q not found", trimmedSessionID)
+		}
+		candidates = []*runtimekernel.SessionState{session}
+	}
+	for _, session := range candidates {
+		if approval, ok := findApprovalInSession(session, trimmedTurnID, target); ok {
+			return session, approval, nil
+		}
+	}
+	if trimmedTurnID != "" {
+		return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval %q not found for turn %q", target, trimmedTurnID)
+	}
+	return nil, runtimekernel.PendingApproval{}, fmt.Errorf("approval %q not found", target)
+}
+
+func findApprovalInSession(session *runtimekernel.SessionState, turnID, approvalID string) (runtimekernel.PendingApproval, bool) {
+	if session == nil {
+		return runtimekernel.PendingApproval{}, false
+	}
+	target := strings.TrimSpace(approvalID)
+	targetTurnID := strings.TrimSpace(turnID)
+	matchesTurn := func(value string) bool {
+		return targetTurnID == "" || strings.TrimSpace(value) == targetTurnID
+	}
+	for _, approval := range session.PendingApprovals {
+		if approval.ID == target && matchesTurn(approval.TurnID) {
+			return approval, true
+		}
+	}
+	for _, evidence := range session.PendingEvidence {
+		if evidence.ID == target && matchesTurn(evidence.TurnID) {
+			return pendingEvidenceAsApproval(evidence), true
+		}
+	}
+	if session.CurrentTurn == nil || !matchesTurn(session.CurrentTurn.ID) {
+		return runtimekernel.PendingApproval{}, false
+	}
+	for _, approval := range session.CurrentTurn.PendingApprovals {
+		if approval.ID == target && matchesTurn(approval.TurnID) {
+			return approval, true
+		}
+	}
+	for _, evidence := range session.CurrentTurn.PendingEvidence {
+		if evidence.ID == target && matchesTurn(evidence.TurnID) {
+			return pendingEvidenceAsApproval(evidence), true
+		}
+	}
+	return runtimekernel.PendingApproval{}, false
 }
 
 func pendingEvidenceAsApproval(evidence runtimekernel.PendingEvidence) runtimekernel.PendingApproval {

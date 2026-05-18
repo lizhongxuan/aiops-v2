@@ -1,10 +1,13 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentUiArtifactPart } from "./AgentUiArtifactPart";
 import { CorootChartArtifact } from "./CorootChartArtifact";
 import { ExperienceMatchArtifact } from "./ExperienceMatchArtifact";
+import { RCAReportArtifact } from "./RCAReportArtifact";
 import { TopologySliceArtifact } from "./TopologySliceArtifact";
 import { TraceSummaryArtifact } from "./TraceSummaryArtifact";
 import { VerificationResultArtifact } from "./VerificationResultArtifact";
@@ -44,6 +47,7 @@ describe("AgentUiArtifactPart", () => {
     expect(WorkflowResultArtifact).toBeTypeOf("function");
     expect(VerificationResultArtifact).toBeTypeOf("function");
     expect(ExperienceMatchArtifact).toBeTypeOf("function");
+    expect(RCAReportArtifact).toBeTypeOf("function");
   });
 
   it("renders a Coroot chart artifact with Chinese summary and Case link", async () => {
@@ -104,7 +108,68 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.textContent).toContain("暂不支持的卡片类型");
+    expect(container.textContent).toContain("类型：unknown_widget");
     expect(container.innerHTML).not.toContain("dangerouslySetInnerHTML");
+  });
+
+  it("routes renderer selection through the frontend registry", () => {
+    const source = readFileSync(join(process.cwd(), "src/components/chat/AgentUiArtifactPart.tsx"), "utf8");
+
+    expect(source).toContain("lookupAgentUiCardRenderer(defaultAgentUiCardRegistry");
+    expect(source).not.toContain("switch (artifact.type)");
+  });
+
+  it("renders terminal unsupported cards without exposing payload HTML", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-terminal-unsupported",
+            type: "shell_widget",
+            title: "危险卡片",
+            source: "agent",
+            caseId: "case-terminal",
+            evidenceRef: "ev-terminal",
+            promptTraceId: "trace-terminal",
+            payload: {
+              html: "<img src=x onerror=alert(1)>",
+              secret: "must-not-render",
+            },
+          } as any}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("无法渲染 Agent UI 卡片");
+    expect(container.textContent).toContain("未注册的卡片类型。");
+    expect(container.textContent).toContain("类型：shell_widget");
+    expect(container.textContent).toContain("来源：agent");
+    expect(container.querySelector('a[href="/incidents/case-terminal"]')?.textContent).toContain("查看 Case");
+    expect(container.querySelector('a[href="/incidents/case-terminal?evidence=ev-terminal"]')?.textContent).toContain("查看证据");
+    expect(container.querySelector('a[href="/debug/prompts?trace_id=trace-terminal"]')?.textContent).toContain("查看 Prompt Trace");
+    expect(container.textContent).not.toContain("must-not-render");
+    expect(container.querySelector("img")).toBeNull();
+    expect(container.innerHTML).not.toContain("onerror");
+  });
+
+  it("renders invalid payload cards without exposing payload content", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-invalid-payload",
+            type: "trace_summary",
+            source: "agent",
+            payload: "raw invalid payload",
+          } as any}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Agent UI 卡片数据无效");
+    expect(container.textContent).toContain("卡片 payload 必须是对象。");
+    expect(container.textContent).toContain("类型：trace_summary");
+    expect(container.textContent).not.toContain("raw invalid payload");
   });
 
   it("renders normalized API artifacts with top-level mcpCard", async () => {
@@ -158,6 +223,43 @@ describe("AgentUiArtifactPart", () => {
     expect(container.querySelector('a[href="/incidents/case-debug-3"]')?.textContent).toContain("查看 Case");
     expect(container.querySelector('a[href="/incidents/case-debug-3?evidence=ev-trace-1"]')?.textContent).toContain("查看证据");
     expect(container.querySelector('a[href="/debug/prompts?trace_id=prompt-trace-1"]')?.textContent).toContain("查看 Prompt Trace");
+  });
+
+  it("renders rca_report artifacts with the RCA component", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-rca",
+            type: "rca_report",
+            titleZh: "checkout 根因分析",
+            summaryZh: "checkout 延迟升高最可能来自 catalog 依赖。",
+            source: "coroot",
+            permissionScope: "read",
+            redactionStatus: "redacted",
+            inlineData: {
+              schemaVersion: "aiops.rca_report/v1",
+              source: "coroot",
+              status: "ok",
+              target: { service: "checkout" },
+              window: { timeRange: "30m" },
+              conclusion: {
+                summaryZh: "checkout 延迟升高最可能来自 catalog 依赖。",
+                confidence: 0.72,
+              },
+              hypotheses: [],
+              sections: [],
+              evidenceRefs: [],
+              rawRefs: [],
+              limitations: [],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="rca-report-artifact"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("schemaVersion");
   });
 
   it("renders Coroot chart empty, permission, redaction, and unavailable states without executing HTML", async () => {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/promptinput"
 )
 
@@ -175,5 +176,119 @@ func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	}
 	if !strings.Contains(string(markdown), "- Prompt fingerprint: `stable-hash`") || !strings.Contains(string(markdown), "- Eval case: `case-1`") {
 		t.Fatalf("markdown trace missing prompt fingerprint summary:\n%s", string(markdown))
+	}
+}
+
+func TestWriteIncludesDiagnosticTraceAndRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-1",
+		TurnID:    "turn-1",
+		DiagnosticTrace: diagnostics.DiagnosticTrace{
+			ScopeHash:        "scope-redis",
+			ScopeSummary:     "redis redis://:secret@127.0.0.1:6379/0",
+			Hypotheses:       []string{"redis unavailable"},
+			ObservedEvidence: []string{"PING timeout"},
+			RefutingEvidence: []string{"container is running"},
+			MissingEvidence:  []string{"need api key sk-test-value"},
+			ToolFailures: []diagnostics.ToolFailure{{
+				ToolName: "exec_command",
+				Semantic: diagnostics.ToolFailurePolicyBlocked,
+				Detail:   "policy blocked token=plain-token",
+				Critical: true,
+			}},
+			ManualBindingID:  "manual-redis",
+			Confidence:       diagnostics.ConfidenceLow,
+			ConfidenceReason: "sensitive value was present in failed probe",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{`"diagnosticTrace"`, `"scopeHash": "scope-redis"`, `"manualBindingId": "manual-redis"`, `"semantic": "policy_blocked"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
+		}
+	}
+	for _, forbidden := range []string{"secret", "sk-test-value", "plain-token"} {
+		if strings.Contains(jsonText, forbidden) {
+			t.Fatalf("json trace leaked %q:\n%s", forbidden, jsonText)
+		}
+	}
+
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	md := string(markdown)
+	for _, want := range []string{"## Diagnostic Trace", "scope-redis", "redis unavailable", "PING timeout", "policy_blocked", "low"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown trace missing %q:\n%s", want, md)
+		}
+	}
+	for _, forbidden := range []string{"secret", "sk-test-value", "plain-token"} {
+		if strings.Contains(md, forbidden) {
+			t.Fatalf("markdown trace leaked %q:\n%s", forbidden, md)
+		}
+	}
+}
+
+func TestWriteRedactsSecretsFromPromptModelInputAndToolCalls(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-1",
+		TurnID:    "turn-1",
+		Prompt: Prompt{
+			Dynamic: "## Runtime Environment Context\nCurrentFocus: target=redis dsn=redis://:secret-pass@127.0.0.1:6379/0",
+		},
+		ModelInput: []*schema.Message{
+			{Role: schema.User, Content: "连接串 redis://:secret-pass@127.0.0.1:6379/0 帮我排查"},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				ID:   "call-1",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "host_exec",
+					Arguments: `{"cmd":"redis-cli -a secret-pass PING","token":"plain-token"}`,
+				},
+			}}},
+		},
+		PromptInputTrace: promptinput.PromptInputTrace{Items: []promptinput.TraceItem{{
+			Source:       "conversation",
+			SemanticRole: "user",
+			Content:      "redis password=secret-pass",
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	for _, filePath := range []string{path, strings.TrimSuffix(path, filepath.Ext(path)) + ".md"} {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("read %s: %v", filePath, err)
+		}
+		text := string(data)
+		for _, forbidden := range []string{"secret-pass", "plain-token"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s leaked %q:\n%s", filePath, forbidden, text)
+			}
+		}
+		if !strings.Contains(text, "[REDACTED]") {
+			t.Fatalf("%s missing redaction marker:\n%s", filePath, text)
+		}
 	}
 }

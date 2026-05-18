@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -302,6 +303,20 @@ func projectTurnItem(
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
 		tool := decodeTransportToolPayload(item.Payload)
+		if item.Type == agentstate.TurnItemTypeToolResult {
+			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, tool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+			if artifact, ok := transportOpsManualPreflightArtifactFromToolPayload(turnID, item.ID, tool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+			if artifact, ok := transportOpsManualParamResolutionArtifactFromToolPayload(turnID, item.ID, tool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, tool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+		}
 		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
 		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
 
@@ -316,6 +331,7 @@ func projectTurnItem(
 		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
 			outputPreview = resultPreviews[tool.ToolCallID]
 		}
+		toolText, outputPreview = compactOpsManualSearchProcessText(tool.DisplayKind, toolText, outputPreview)
 		block := AiopsProcessBlock{
 			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
 			Kind:          blockKind,
@@ -325,6 +341,8 @@ func projectTurnItem(
 			InputSummary:  tool.InputSummary,
 			OutputPreview: sanitizeOutputPreview(outputPreview),
 			RawRef:        tool.RawRef,
+			EvidenceRefs:  cleanTransportStringList(tool.EvidenceRefs),
+			Mock:          tool.Mock,
 			ExitCode:      tool.ExitCode,
 			DurationMs:    tool.DurationMs,
 			UpdatedAt:     transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
@@ -688,9 +706,329 @@ type transportToolPayload struct {
 	Arguments     json.RawMessage `json:"arguments"`
 	OutputPreview json.RawMessage `json:"outputPreview"`
 	RawRef        string          `json:"rawRef"`
+	EvidenceRefs  []string        `json:"evidenceRefs"`
+	Mock          bool            `json:"mock"`
 	ExitCode      *int            `json:"exitCode"`
 	DurationMs    int64           `json:"durationMs"`
 	Error         string          `json:"error"`
+}
+
+func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_search_result" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	decision, _ := payload["decision"].(string)
+	decision = strings.TrimSpace(decision)
+	if decision == "" {
+		decision = "unknown"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-search:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
+		Type:            "ops_manual_search_result",
+		Title:           "Ops manual search result",
+		TitleZh:         "运维手册检索结果",
+		Summary:         decision,
+		SummaryZh:       opsManualSearchSummaryZh(decision),
+		Status:          decision,
+		Severity:        opsManualSearchSeverity(decision),
+		Source:          "tool:search_ops_manuals",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         opsManualSearchArtifactActions(decision),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func transportOpsManualPreflightArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_preflight_result" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	status := strings.TrimSpace(firstNonEmptyString(jsonStringValueFromMap(payload, "status"), jsonStringValueFromMap(payload, "preflight_status"), "unknown"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-preflight:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
+		Type:            "ops_manual_preflight_result",
+		Title:           "Ops manual preflight result",
+		TitleZh:         "运维手册预检结果",
+		Summary:         status,
+		SummaryZh:       opsManualPreflightSummaryZh(status),
+		Status:          status,
+		Severity:        opsManualPreflightSeverity(status),
+		Source:          "tool:run_ops_manual_preflight",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         opsManualPreflightArtifactActions(status, jsonStringValueFromMap(payload, "next_action")),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func transportOpsManualParamResolutionArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_param_resolution" && strings.TrimSpace(tool.DisplayKind) != "ops_manual_param_form" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	status := strings.TrimSpace(firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "unknown"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	return AiopsTransportAgentUIArtifact{
+		ID:              "ops-manual-param-resolution:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
+		Type:            strings.TrimSpace(tool.DisplayKind),
+		Title:           "Ops manual parameter resolution",
+		TitleZh:         "运维手册参数解析",
+		Summary:         status,
+		SummaryZh:       opsManualParamResolutionSummaryZh(status),
+		Status:          status,
+		Severity:        opsManualParamResolutionSeverity(status),
+		Source:          "tool:resolve_ops_manual_params",
+		PermissionScope: "read",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         opsManualParamResolutionArtifactActions(status),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "rca_report" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if strings.TrimSpace(jsonStringValueFromMap(payload, "type")) != "rca_report" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	metadata := asStringAnyMap(payload["metadata"])
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	for _, key := range []string{"caseId", "evidenceRef", "promptTraceId"} {
+		if value := jsonStringValueFromMap(payload, key); value != "" {
+			metadata[key] = value
+		}
+	}
+	return AiopsTransportAgentUIArtifact{
+		ID:              "agent-ui:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "artifact"),
+		Type:            "rca_report",
+		Title:           jsonStringValueFromMap(payload, "title"),
+		TitleZh:         firstNonEmptyString(jsonStringValueFromMap(payload, "titleZh"), "根因分析"),
+		Summary:         jsonStringValueFromMap(payload, "summary"),
+		SummaryZh:       jsonStringValueFromMap(payload, "summaryZh"),
+		Status:          firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "ok"),
+		Severity:        firstNonEmptyString(jsonStringValueFromMap(payload, "severity"), "info"),
+		Source:          firstNonEmptyString(jsonStringValueFromMap(payload, "source"), "aiops"),
+		PermissionScope: firstNonEmptyString(jsonStringValueFromMap(payload, "permissionScope"), "read"),
+		RedactionStatus: firstNonEmptyString(jsonStringValueFromMap(payload, "redactionStatus"), "redacted"),
+		InlineData:      asStringAnyMap(payload["inlineData"]),
+		Metadata:        metadata,
+		Actions:         asStringAnyMapList(payload["actions"]),
+		CreatedAt:       firstNonEmptyString(jsonStringValueFromMap(payload, "createdAt"), now),
+		UpdatedAt:       firstNonEmptyString(jsonStringValueFromMap(payload, "updatedAt"), now),
+	}, true
+}
+
+func asStringAnyMap(value any) map[string]any {
+	if out, ok := value.(map[string]any); ok {
+		return out
+	}
+	return nil
+}
+
+func asStringAnyMapList(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if record, ok := item.(map[string]any); ok {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func upsertTransportAgentUIArtifact(items []AiopsTransportAgentUIArtifact, artifact AiopsTransportAgentUIArtifact) []AiopsTransportAgentUIArtifact {
+	if strings.TrimSpace(artifact.ID) == "" {
+		return items
+	}
+	for idx := range items {
+		if items[idx].ID == artifact.ID {
+			items[idx] = artifact
+			return items
+		}
+	}
+	return append(items, artifact)
+}
+
+func opsManualPreflightSummaryZh(status string) string {
+	switch strings.TrimSpace(status) {
+	case "passed":
+		return "预检已通过，可以进入 Dry Run。"
+	case "blocked":
+		return "预检被阻断，需要补充参数、权限或环境适配。"
+	case "failed":
+		return "预检失败，不能执行绑定工作流。"
+	case "not_applicable":
+		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+	default:
+		return "已完成运维手册预检。"
+	}
+}
+
+func opsManualParamResolutionSummaryZh(status string) string {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return "参数已自动补齐，可进入预检。"
+	case "ambiguous":
+		return "发现多个候选，需要用户选择。"
+	case "need_user_input":
+		return "仍缺少少量无法自动获取的参数。"
+	default:
+		return "已完成运维手册参数解析。"
+	}
+}
+
+func opsManualParamResolutionSeverity(status string) string {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return "success"
+	case "ambiguous", "need_user_input":
+		return "warning"
+	default:
+		return "neutral"
+	}
+}
+
+func opsManualParamResolutionArtifactActions(status string) []map[string]any {
+	switch strings.TrimSpace(status) {
+	case "resolved":
+		return []map[string]any{{"id": "run_preflight", "label": "运行预检", "kind": "panel"}}
+	case "ambiguous", "need_user_input":
+		return []map[string]any{{"id": "fill_params", "label": "补充参数", "kind": "form"}}
+	default:
+		return nil
+	}
+}
+
+func opsManualPreflightSeverity(status string) string {
+	switch strings.TrimSpace(status) {
+	case "passed":
+		return "success"
+	case "blocked":
+		return "warning"
+	case "failed":
+		return "error"
+	case "not_applicable":
+		return "info"
+	default:
+		return "neutral"
+	}
+}
+
+func opsManualPreflightArtifactActions(status string, nextAction string) []map[string]any {
+	nextAction = strings.TrimSpace(nextAction)
+	switch strings.TrimSpace(status) {
+	case "passed", "not_applicable":
+		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+	case "blocked":
+		if nextAction == "request_permission" {
+			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
+		}
+		if nextAction == "generate_workflow_variant" {
+			return []map[string]any{{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"}}
+		}
+		return []map[string]any{{"id": "collect_context", "label": "补充上下文", "kind": "form"}}
+	case "failed":
+		return []map[string]any{{"id": "fallback_guide", "label": "查看降级步骤", "kind": "panel"}}
+	default:
+		return nil
+	}
+}
+
+func opsManualSearchSummaryZh(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return "已找到可直接使用的运维手册，用户确认前不会执行 Runner Workflow。"
+	case "adapt":
+		return "找到相似运维手册，但当前环境存在差异，需要先生成变体并校验。"
+	case "reference_only":
+		return "没有可直接运行的 Workflow，可继续只读自动化排查。"
+	case "need_info":
+		return "识别到相关运维手册，但还缺少少量关键上下文。"
+	case "no_match":
+		return "没有找到合适的运维手册。"
+	default:
+		return "已完成运维手册检索判定。"
+	}
+}
+
+func opsManualSearchSeverity(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return "success"
+	case "adapt":
+		return "warning"
+	case "reference_only", "need_info":
+		return "info"
+	default:
+		return "neutral"
+	}
+}
+
+func opsManualSearchArtifactActions(decision string) []map[string]any {
+	switch strings.TrimSpace(decision) {
+	case "direct_execute":
+		return []map[string]any{
+			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
+			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+		}
+	case "adapt":
+		return []map[string]any{
+			{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"},
+			{"id": "review_gaps", "label": "查看差异", "kind": "panel"},
+		}
+	case "reference_only":
+		return nil
+	case "need_info":
+		return nil
+	default:
+		return nil
+	}
 }
 
 func decodeTransportToolPayload(envelope agentstate.PayloadEnvelope) transportToolPayload {
@@ -783,6 +1121,46 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
 }
 
+func compactOpsManualSearchProcessText(displayKind, text, outputPreview string) (string, string) {
+	if strings.TrimSpace(displayKind) != "ops_manual_search_result" {
+		return text, outputPreview
+	}
+	payload := map[string]any{}
+	if strings.TrimSpace(outputPreview) != "" {
+		_ = json.Unmarshal([]byte(outputPreview), &payload)
+	}
+	decision := strings.TrimSpace(jsonStringValueFromMap(payload, "decision"))
+	summary := strings.TrimSpace(jsonStringValueFromMap(payload, "summary"))
+	if decision == "" && summary == "" {
+		return firstNonEmptyString(summary, text, "运维手册检索完成"), ""
+	}
+	label := "运维手册匹配"
+	if decision != "" {
+		label += "：" + opsManualSearchDecisionLabel(decision)
+	}
+	if summary != "" {
+		label += "，" + summary
+	}
+	return label, ""
+}
+
+func opsManualSearchDecisionLabel(decision string) string {
+	switch strings.TrimSpace(decision) {
+	case "need_info", "need_more_info", "missing_info":
+		return "手册缺上下文"
+	case "direct_execute", "direct", "executable":
+		return "可进入预检"
+	case "adapt", "adapt_required", "generate_variant":
+		return "需适配 Workflow"
+	case "reference_only", "reference":
+		return "仅参考"
+	case "no_match":
+		return "无可用手册"
+	default:
+		return strings.TrimSpace(decision)
+	}
+}
+
 func jsonStringValue(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -792,6 +1170,36 @@ func jsonStringValue(raw json.RawMessage) string {
 		return strings.TrimSpace(value)
 	}
 	return strings.TrimSpace(string(raw))
+}
+
+func jsonStringValueFromMap(payload map[string]any, key string) string {
+	raw, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	switch typed := raw.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func cleanTransportStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(value)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		cleaned = append(cleaned, text)
+	}
+	return cleaned
 }
 
 func cleanProviderNativeSearchSummary(value string) string {

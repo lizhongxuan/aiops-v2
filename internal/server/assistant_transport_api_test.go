@@ -14,6 +14,7 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 )
 
@@ -22,6 +23,17 @@ type assistantTransportCaptureWriter struct {
 }
 
 func (w *assistantTransportCaptureWriter) Flush() {}
+
+func firstAssistantTransportStreamFrame(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if idx := strings.Index(text, "\n"); idx >= 0 {
+		return text[:idx]
+	}
+	return text
+}
 
 type assistantTransportAPITestRuntime struct {
 	sessions *runtimekernel.SessionManager
@@ -203,6 +215,367 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
+	}
+}
+
+func TestAssistantTransportAddsOpsManualNeedMoreInfoArtifactWhenFallbackEnabled(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	services := appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo))))
+	server := NewHTTPServer(services, WithOpsManualAutoRetrieval(true))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual", "排查 Redis")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if strings.Contains(firstAssistantTransportStreamFrame(text), `"type":"ops_manual_match"`) || strings.Contains(firstAssistantTransportStreamFrame(text), `"type":"ops_manual_search_result"`) {
+		t.Fatalf("first response frame = %q, should not show ops manual artifact before final answer", firstAssistantTransportStreamFrame(text))
+	}
+	if strings.Contains(text, `"type":"ops_manual_match"`) {
+		t.Fatalf("response = %q, should not use legacy ops_manual_match fallback", text)
+	}
+	if !strings.Contains(text, `"type":"ops_manual_search_result"`) || !strings.Contains(text, `"status":"need_info"`) {
+		t.Fatalf("response = %q, should add terminal ops manual search fallback", text)
+	}
+	if !strings.Contains(text, "final answer") {
+		t.Fatalf("response = %q, should still run the chat turn", text)
+	}
+	if strings.Contains(text, "命中 14%") || strings.Contains(text, "命中率") {
+		t.Fatalf("response = %q, should not expose percentage hit rate", text)
+	}
+}
+
+func TestAssistantTransportSkipsOpsManualArtifactWhenAutoRetrievalDisabled(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	services := appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo))))
+	server := NewHTTPServer(services, WithOpsManualAutoRetrieval(false))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual-disabled", "排查 Redis")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if strings.Contains(text, `"type":"ops_manual_match"`) {
+		t.Fatalf("response = %q, should not include ops_manual_match when auto retrieval is disabled", text)
+	}
+	if !strings.Contains(text, "final answer") {
+		t.Fatalf("response = %q, should still run the chat turn", text)
+	}
+}
+
+func TestAssistantTransportDoesNotAutoSearchOpsManualByDefault(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	services := appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo))))
+	server := NewHTTPServer(services)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual-default", "排查 Redis")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if strings.Contains(text, `"type":"ops_manual_search_result"`) || strings.Contains(text, `"type":"ops_manual_match"`) {
+		t.Fatalf("response = %q, should not auto search ops manuals by default; the LLM must call search_ops_manuals", text)
+	}
+	if !strings.Contains(text, "final answer") {
+		t.Fatalf("response = %q, should still run the chat turn", text)
+	}
+}
+
+func TestAssistantTransportAddsOpsManualNeedInfoArtifactForTextOnlyFallback(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	services := appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo))))
+	server := NewHTTPServer(services, WithOpsManualAutoRetrieval(true))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual", "生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 排查")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if strings.Contains(firstAssistantTransportStreamFrame(text), `"type":"ops_manual_match"`) || strings.Contains(firstAssistantTransportStreamFrame(text), `"type":"ops_manual_search_result"`) {
+		t.Fatalf("first response frame = %q, should not show ops manual artifact before final answer", firstAssistantTransportStreamFrame(text))
+	}
+	if strings.Contains(text, `"type":"ops_manual_match"`) {
+		t.Fatalf("response = %q, should not use legacy ops_manual_match fallback", text)
+	}
+	if !strings.Contains(text, `"type":"ops_manual_search_result"`) || !strings.Contains(text, `"status":"need_info"`) || !strings.Contains(text, `"target_instance"`) {
+		t.Fatalf("response = %q, should add terminal ops manual search fallback without guessing target_instance from text only", text)
+	}
+}
+
+func TestAssistantTransportRendersOpsManualSearchToolArtifact(t *testing.T) {
+	now := time.Now().UTC()
+	result := opsmanual.SearchOpsManualsResult{
+		Decision:      opsmanual.DecisionNeedInfo,
+		Summary:       "缺少目标实例、环境、症状和指标。",
+		NextQuestions: []string{"目标 Redis 实例是哪一个？"},
+	}
+	raw, _ := json.Marshal(result)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-tool-ops-manual",
+		SessionID:   "sess-tool-ops-manual",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-search-ops-manuals",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_search_result",
+					Summary: "need_info",
+					Data: json.RawMessage(`{
+						"toolCallId":"call-search-ops-manuals",
+						"toolName":"search_ops_manuals",
+						"displayKind":"ops_manual_search_result",
+						"outputPreview":` + string(raw) + `
+					}`),
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+	state, err := appui.NewTransportProjector().ProjectTurnSnapshot(appui.NewAiopsTransportState("sess-tool-ops-manual", "thread-tool-ops-manual"), turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projected := state.Turns["turn-tool-ops-manual"]
+	if len(projected.AgentUIArtifacts) != 1 || projected.AgentUIArtifacts[0].Type != "ops_manual_search_result" {
+		t.Fatalf("artifacts = %#v, want one ops_manual_search_result", projected.AgentUIArtifacts)
+	}
+	if projected.AgentUIArtifacts[0].Status != "need_info" {
+		t.Fatalf("artifact status = %q, want need_info", projected.AgentUIArtifacts[0].Status)
+	}
+}
+
+func TestAssistantTransportRendersOpsManualPreflightToolArtifact(t *testing.T) {
+	raw, _ := json.Marshal(opsmanual.PreflightResult{
+		Status:     opsmanual.PreflightStatusPassed,
+		Ready:      true,
+		ManualID:   "manual-pg-backup",
+		WorkflowID: "workflow-pg-backup",
+		NextAction: "start_dry_run",
+	})
+	artifact, ok := assistantTransportOpsManualPreflightArtifactFromToolResult("turn-preflight", "tool-result-preflight", runtimekernel.ToolResult{
+		ToolCallID: "call-preflight",
+		Content:    string(raw),
+		Display: &runtimekernel.ToolDisplayPayload{
+			Type:  "ops_manual_preflight_result",
+			Title: "run_ops_manual_preflight",
+			Data:  raw,
+		},
+	})
+	if !ok {
+		t.Fatal("expected preflight artifact")
+	}
+	if artifact.Type != "ops_manual_preflight_result" || artifact.Status != "passed" || artifact.Severity != "success" {
+		t.Fatalf("artifact = %#v, want passed preflight artifact", artifact)
+	}
+	if len(artifact.Actions) != 1 || artifact.Actions[0]["id"] != "start_dry_run" {
+		t.Fatalf("actions = %#v, want start_dry_run", artifact.Actions)
+	}
+}
+
+func TestAssistantTransportRendersOpsManualParamResolutionToolArtifact(t *testing.T) {
+	raw, _ := json.Marshal(opsmanual.ParamResolutionResult{
+		Status:     opsmanual.ParamResolutionResolved,
+		ManualID:   "manual-redis-rca",
+		WorkflowID: "workflow-redis-rca",
+		NextAction: "run_preflight",
+	})
+	artifact, ok := assistantTransportOpsManualParamResolutionArtifactFromToolResult("turn-param", "tool-result-param", runtimekernel.ToolResult{
+		ToolCallID: "call-param",
+		Content:    string(raw),
+		Display: &runtimekernel.ToolDisplayPayload{
+			Type:  "ops_manual_param_resolution",
+			Title: "resolve_ops_manual_params",
+			Data:  raw,
+		},
+	})
+	if !ok {
+		t.Fatal("expected param resolution artifact")
+	}
+	if artifact.Type != "ops_manual_param_resolution" || artifact.Status != "resolved" || artifact.Severity != "success" {
+		t.Fatalf("artifact = %#v, want resolved param artifact", artifact)
+	}
+	if len(artifact.Actions) != 1 || artifact.Actions[0]["id"] != "run_preflight" {
+		t.Fatalf("actions = %#v, want run_preflight", artifact.Actions)
+	}
+}
+
+func TestAssistantTransportAddsTerminalOpsManualSearchFallbackWhenModelSkipsTool(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-terminal-ops-manual-fallback", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	completedAt := now.Add(time.Second)
+	session.CurrentTurn = nil
+	session.TurnHistory = []runtimekernel.TurnSnapshot{
+		{
+			ID:          "turn-terminal-ops-manual-fallback",
+			SessionID:   "sess-terminal-ops-manual-fallback",
+			SessionType: runtimekernel.SessionTypeHost,
+			Mode:        runtimekernel.ModeChat,
+			Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+			StartedAt:   now,
+			UpdatedAt:   completedAt,
+			CompletedAt: &completedAt,
+			FinalOutput: "请补充目标实例和现象。",
+			AgentItems: []agentstate.TurnItem{
+				{ID: "user-redis", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "排查 Redis"}, CreatedAt: now},
+				{ID: "final-redis", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "请补充目标实例和现象。"}, CreatedAt: completedAt},
+			},
+		},
+	}
+	sessions.Update(session)
+
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo)))), WithOpsManualAutoRetrieval(true))
+	initial := appui.NewAiopsTransportState("sess-terminal-ops-manual-fallback", "thread-terminal-ops-manual-fallback")
+	initial.Status = appui.AiopsTransportStatusWorking
+	writer := &assistantTransportCaptureWriter{}
+
+	next, err := server.streamAssistantTransportState(context.Background(), newAssistantTransportStreamEncoder(writer), sessions, appui.NewTransportProjector(), server.ui.ChatService(), initial)
+	if err != nil {
+		t.Fatalf("streamAssistantTransportState() error = %v", err)
+	}
+
+	turn := next.Turns["turn-terminal-ops-manual-fallback"]
+	if len(turn.AgentUIArtifacts) != 1 || turn.AgentUIArtifacts[0].Type != "ops_manual_search_result" {
+		t.Fatalf("agent UI artifacts = %#v, want one terminal ops manual search fallback", turn.AgentUIArtifacts)
+	}
+	if turn.AgentUIArtifacts[0].Status != "need_info" {
+		t.Fatalf("artifact status = %q, want need_info", turn.AgentUIArtifacts[0].Status)
+	}
+	if !strings.Contains(writer.String(), "ops_manual_search_result") {
+		t.Fatalf("stream = %q, want terminal fallback artifact frame", writer.String())
+	}
+}
+
+func TestAssistantTransportDoesNotAddOpsManualFallbackWhileTurnRunning(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-running-ops-manual-fallback", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-running-ops-manual-fallback",
+		SessionID:   "sess-running-ops-manual-fallback",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-redis", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "排查 Redis"}, CreatedAt: now},
+		},
+	}
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions, appui.WithOpsManualService(appui.NewOpsManualService(opsmanual.NewService(repo)))))
+	state := appui.NewAiopsTransportState("sess-running-ops-manual-fallback", "thread-running-ops-manual-fallback")
+	projected, err := projectAssistantTransportSessionState(server, state, &runtimekernel.SessionState{ID: session.ID, CurrentTurn: turn}, appui.NewTransportProjector())
+	if err != nil {
+		t.Fatalf("projectAssistantTransportSessionState() error = %v", err)
+	}
+	if artifacts := projected.Turns["turn-running-ops-manual-fallback"].AgentUIArtifacts; len(artifacts) != 0 {
+		t.Fatalf("agent UI artifacts = %#v, want no fallback before terminal turn", artifacts)
+	}
+}
+
+func TestAssistantTransportDoesNotSynthesizeRunnerWorkflowArtifactAfterConfirmation(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayloadWithMetadata(t, "", "thread-generate-workflow", "确认生成工作流候选：Redis 运维手册", map[string]string{
+		"opsManualAction": "generate_runner_workflow_candidate",
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if strings.Contains(text, `"type":"runner_workflow_generation"`) {
+		t.Fatalf("response = %q, should not synthesize runner_workflow_generation before a real workflow generation result", text)
+	}
+	if !strings.Contains(text, "final answer") {
+		t.Fatalf("response = %q, want normal chat response to continue", text)
+	}
+}
+
+func TestAssistantTransportDoesNotShowRunnerWorkflowArtifactWhenGenerationTurnFails(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runErr: context.DeadlineExceeded}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayloadWithMetadata(t, "", "thread-generate-workflow-failed", "确认生成工作流候选：PostgreSQL 备份 Ubuntu 运维手册", map[string]string{
+		"opsManualAction": "generate_runner_workflow_candidate",
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if !strings.Contains(text, "context deadline exceeded") {
+		t.Fatalf("response = %q, want backend error", text)
+	}
+	if strings.Contains(text, `"type":"runner_workflow_generation"`) {
+		t.Fatalf("response = %q, should not show runner_workflow_generation when backend generation fails", text)
 	}
 }
 
@@ -473,7 +846,7 @@ func TestAssistantTransportAPIBackendErrorMarksCurrentTurnFailed(t *testing.T) {
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("session current turn is nil after failed run")
 	}
-	state, err := projectAssistantTransportSessionState(appui.NewAiopsTransportState(session.ID, "thread-1"), session, appui.NewTransportProjector())
+	state, err := projectAssistantTransportSessionState(nil, appui.NewAiopsTransportState(session.ID, "thread-1"), session, appui.NewTransportProjector())
 	if err != nil {
 		t.Fatalf("projectAssistantTransportSessionState() error = %v", err)
 	}
@@ -882,6 +1255,10 @@ func TestAssistantTransportStreamClearsApprovalWithoutTransportErrorOnDeniedAppr
 }
 
 func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, message string) []byte {
+	return assistantTransportAddMessagePayloadWithMetadata(t, sessionID, threadID, message, nil)
+}
+
+func assistantTransportAddMessagePayloadWithMetadata(t *testing.T, sessionID, threadID, message string, metadata map[string]string) []byte {
 	t.Helper()
 	body := map[string]any{
 		"state": map[string]any{
@@ -903,7 +1280,8 @@ func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, mess
 			{
 				"type": "add-message",
 				"message": map[string]any{
-					"role": "user",
+					"role":     "user",
+					"metadata": metadata,
 					"content": []map[string]any{
 						{"type": "text", "text": message},
 					},
@@ -916,4 +1294,26 @@ func assistantTransportAddMessagePayload(t *testing.T, sessionID, threadID, mess
 		t.Fatalf("Marshal() error = %v", err)
 	}
 	return payload
+}
+
+func assistantTransportRedisManual() opsmanual.OpsManual {
+	return opsmanual.OpsManual{
+		ID:          "manual-redis-memory",
+		Title:       "Redis 内存压力排障",
+		Status:      opsmanual.ManualStatusVerified,
+		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-redis-memory"},
+		Operation:   opsmanual.OperationProfile{TargetType: "redis", Action: "rca_or_repair", Stateful: true},
+		Applicability: opsmanual.ApplicabilityProfile{
+			Middleware:       "redis",
+			ExecutionSurface: []string{"ssh"},
+		},
+		RequiredContext: opsmanual.RequiredContext{
+			RequiredInputs:   []string{"target_instance"},
+			RequiredEvidence: []string{"used_memory_rss", "p95"},
+		},
+		Preconditions:    []string{"can connect"},
+		Validation:       []string{"memory recovered"},
+		CannotUseWhen:    []string{"目标实例未知"},
+		DocumentMarkdown: "Redis memory pressure manual.",
+	}
 }

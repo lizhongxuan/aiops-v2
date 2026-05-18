@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"aiops-v2/internal/agentstate"
@@ -27,18 +28,60 @@ type ScoreRules struct {
 
 // Expected captures deterministic checks that can be scored locally.
 type Expected struct {
-	MustInclude          []string `json:"mustInclude"`
-	MustNotInclude       []string `json:"mustNotInclude"`
-	ExpectedToolCalls    []string `json:"expectedToolCalls"`
-	MustMentionFiles     []string `json:"mustMentionFiles"`
-	ExpectedTurnItems    []string `json:"expectedTurnItems,omitempty"`
-	ExpectedPlanStatuses []string `json:"expectedPlanStatuses,omitempty"`
-	ExpectedApprovals    []string `json:"expectedApprovals,omitempty"`
-	ExpectedEvidence     []string `json:"expectedEvidence,omitempty"`
-	MaxIterations        int      `json:"maxIterations,omitempty"`
-	MaxToolCalls         int      `json:"maxToolCalls,omitempty"`
-	MustHavePlan         bool     `json:"mustHavePlan,omitempty"`
-	MustNotHavePlan      bool     `json:"mustNotHavePlan,omitempty"`
+	MustInclude          []string          `json:"mustInclude"`
+	MustNotInclude       []string          `json:"mustNotInclude"`
+	ExpectedToolCalls    []string          `json:"expectedToolCalls"`
+	MustMentionFiles     []string          `json:"mustMentionFiles"`
+	ExpectedTurnItems    []string          `json:"expectedTurnItems,omitempty"`
+	ExpectedPlanStatuses []string          `json:"expectedPlanStatuses,omitempty"`
+	ExpectedApprovals    []string          `json:"expectedApprovals,omitempty"`
+	ExpectedEvidence     []string          `json:"expectedEvidence,omitempty"`
+	Diagnosis            DiagnosisExpected `json:"diagnosis,omitempty"`
+	MaxIterations        int               `json:"maxIterations,omitempty"`
+	MaxToolCalls         int               `json:"maxToolCalls,omitempty"`
+	MustHavePlan         bool              `json:"mustHavePlan,omitempty"`
+	MustNotHavePlan      bool              `json:"mustNotHavePlan,omitempty"`
+}
+
+// DiagnosisExpected captures opt-in deterministic checks for AIOps diagnosis accuracy.
+// A zero value is ignored so older eval cases keep their existing scoring behavior.
+type DiagnosisExpected struct {
+	RootCauseTop1             string   `json:"rootCauseTop1,omitempty"`
+	RootCauseCandidatesTop3   []string `json:"rootCauseCandidatesTop3,omitempty"`
+	SupportingEvidence        []string `json:"supportingEvidence,omitempty"`
+	RefutingEvidence          []string `json:"refutingEvidence,omitempty"`
+	MissingEvidence           []string `json:"missingEvidence,omitempty"`
+	ToolFailureSemantics      []string `json:"toolFailureSemantics,omitempty"`
+	ConfidenceCalibration     []string `json:"confidenceCalibration,omitempty"`
+	SafetyGuardrails          []string `json:"safetyGuardrails,omitempty"`
+	PromptContextPollution    []string `json:"promptContextPollution,omitempty"`
+	ForbiddenStaleScopeTerms  []string `json:"forbiddenStaleScopeTerms,omitempty"`
+	ForbiddenSensitiveTerms   []string `json:"forbiddenSensitiveTerms,omitempty"`
+	ForbiddenWriteActions     []string `json:"forbiddenWriteActions,omitempty"`
+	ToolFailureTargetStates   []string `json:"toolFailureTargetStates,omitempty"`
+	RequireApprovedHighRisk   bool     `json:"requireApprovedHighRisk,omitempty"`
+	ForbidHighConfidenceScope bool     `json:"forbidHighConfidenceScope,omitempty"`
+	CoverageTags              []string `json:"coverageTags,omitempty"`
+}
+
+// IsZero reports whether diagnosis scoring should be skipped.
+func (d DiagnosisExpected) IsZero() bool {
+	return strings.TrimSpace(d.RootCauseTop1) == "" &&
+		len(d.RootCauseCandidatesTop3) == 0 &&
+		len(d.SupportingEvidence) == 0 &&
+		len(d.RefutingEvidence) == 0 &&
+		len(d.MissingEvidence) == 0 &&
+		len(d.ToolFailureSemantics) == 0 &&
+		len(d.ConfidenceCalibration) == 0 &&
+		len(d.SafetyGuardrails) == 0 &&
+		len(d.PromptContextPollution) == 0 &&
+		len(d.ForbiddenStaleScopeTerms) == 0 &&
+		len(d.ForbiddenSensitiveTerms) == 0 &&
+		len(d.ForbiddenWriteActions) == 0 &&
+		len(d.ToolFailureTargetStates) == 0 &&
+		!d.RequireApprovedHighRisk &&
+		!d.ForbidHighConfidenceScope &&
+		len(d.CoverageTags) == 0
 }
 
 // ToolCall records the model-visible tool call surface used by eval reports.
@@ -79,6 +122,11 @@ type CaseScore struct {
 	Priority           string              `json:"priority,omitempty"`
 	Passed             bool                `json:"passed"`
 	Score              float64             `json:"score"`
+	AvgScore           float64             `json:"avgScore"`
+	MinScore           float64             `json:"minScore"`
+	Iterations         int                 `json:"iterations"`
+	IterationScores    []float64           `json:"iterationScores,omitempty"`
+	IterationArtifacts []IterationArtifact `json:"iterationArtifacts,omitempty"`
 	ScoreWeights       map[string]float64  `json:"scoreWeights,omitempty"`
 	PassedChecks       int                 `json:"passedChecks"`
 	TotalChecks        int                 `json:"totalChecks"`
@@ -91,20 +139,37 @@ type CaseScore struct {
 	Error              string              `json:"error,omitempty"`
 }
 
+// IterationArtifact records per-repetition output paths for an eval case.
+type IterationArtifact struct {
+	Iteration     int     `json:"iteration"`
+	Score         float64 `json:"score"`
+	Passed        bool    `json:"passed"`
+	AnswerPath    string  `json:"answerPath,omitempty"`
+	EventsPath    string  `json:"eventsPath,omitempty"`
+	ToolCallsPath string  `json:"toolCallsPath,omitempty"`
+	TurnItemsPath string  `json:"turnItemsPath,omitempty"`
+	Error         string  `json:"error,omitempty"`
+}
+
 // ReportSummary aggregates a run.
 type ReportSummary struct {
-	Total    int     `json:"total"`
-	Passed   int     `json:"passed"`
-	Failed   int     `json:"failed"`
-	AvgScore float64 `json:"avgScore"`
+	Total              int     `json:"total"`
+	Passed             int     `json:"passed"`
+	Failed             int     `json:"failed"`
+	AvgScore           float64 `json:"avgScore"`
+	MinScore           float64 `json:"minScore"`
+	LowestScoreAverage float64 `json:"lowestScoreAverage"`
 }
 
 // Report is the JSON score report emitted by the runner.
 type Report struct {
 	RunID              string            `json:"runId"`
+	RunPhase           string            `json:"runPhase,omitempty"`
 	Agent              string            `json:"agent,omitempty"`
 	CasesDir           string            `json:"casesDir,omitempty"`
 	OutputDir          string            `json:"outputDir,omitempty"`
+	Repetitions        int               `json:"repetitions"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
 	StartedAt          time.Time         `json:"startedAt"`
 	CompletedAt        time.Time         `json:"completedAt"`
 	Summary            ReportSummary     `json:"summary"`

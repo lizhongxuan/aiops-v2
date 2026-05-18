@@ -21,7 +21,7 @@ import (
 	"unicode/utf8"
 
 	"aiops-v2/internal/actionproposal"
-	"aiops-v2/internal/planning"
+	"aiops-v2/internal/evidence"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
@@ -50,6 +50,7 @@ type Options struct {
 	ActionTokenSecret             []byte
 	Now                           func() time.Time
 	RequireApprovalForLowRiskExec bool
+	EvidenceService               *evidence.Service
 }
 
 func (o Options) normalize() Options {
@@ -88,7 +89,6 @@ func RegisterBuiltins(registry *tooling.Registry, repo LLMConfigRepository, opts
 		NewBrowseURLTool(opts),
 		NewExecCommandTool(opts),
 		NewCurrentModelConfigTool(repo),
-		planning.NewUpdatePlanTool(),
 	} {
 		if err := registry.Register(tool); err != nil {
 			return err
@@ -159,6 +159,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			Aliases:     []string{"terminal_command", "shell_command"},
 			Origin:      tooling.ToolOriginBuiltin,
 			Description: execCommandDescription(),
+			RiskLevel:   tooling.ToolRiskHigh,
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: opts.MaxOutputBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
@@ -181,29 +182,35 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 		OutputSchemaData: json.RawMessage(`{
 			"type": "object",
 			"properties": {
+				"schemaVersion": {"type": "string"},
+				"tool": {"type": "string"},
+				"status": {"type": "string"},
+				"source": {"type": "string"},
 				"stdout": {"type": "string"},
 				"stderr": {"type": "string"},
-				"exitCode": {"type": "integer"}
-			}
+				"exitCode": {"type": "integer"},
+				"evidenceRefs": {"type": "array", "items": {"type": "string"}}
+			},
+			"required": ["schemaVersion", "tool", "status"]
 		}`),
 		ReadOnlyFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err == nil && terminalpolicy.IsReadOnlyCommand(req.command, req.args)
+			return err == nil && terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
 		},
 		DestructiveFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err != nil || !terminalpolicy.IsReadOnlyCommand(req.command, req.args)
+			return err != nil || !terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
 		},
 		ConcurrencySafeFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err == nil && terminalpolicy.IsReadOnlyCommand(req.command, req.args)
+			return err == nil && terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
 		},
 		CheckPermissionsFunc: func(ctx context.Context, input json.RawMessage) tooling.PermissionDecision {
 			req, err := parseCommandInput(input)
 			if err != nil {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
 			}
-			if terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+			if terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args) {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
 			return checkExecCommandActionToken(ctx, input, req, opts, signer)
@@ -241,13 +248,30 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, fmt.Errorf("command failed: %w; stderr: %s", err, truncateString(stderr.String(), opts.MaxOutputBytes/2))
 			}
-			content := stdout.String()
-			if strings.TrimSpace(stderr.String()) != "" {
-				content = strings.TrimRight(content, "\n") + "\nstderr:\n" + stderr.String()
+			stdoutText := truncateString(stdout.String(), opts.MaxOutputBytes)
+			stderrText := truncateString(stderr.String(), opts.MaxOutputBytes/2)
+			exitCode := cmd.ProcessState.ExitCode()
+			evidenceRefs, err := recordTerminalEvidence(ctx, opts.EvidenceService, req, stdoutText, stderrText, exitCode)
+			if err != nil {
+				return tooling.ToolResult{}, err
 			}
-			content = truncateString(content, opts.MaxOutputBytes)
+			payload := map[string]any{
+				"schemaVersion": "aiops.terminal/v1",
+				"tool":          "exec_command",
+				"status":        "ok",
+				"source":        "terminal.break_glass",
+				"command":       terminalCommandString(req.command, req.args),
+				"stdout":        stdoutText,
+				"stderr":        stderrText,
+				"exitCode":      exitCode,
+				"evidenceRefs":  evidenceRefs,
+			}
+			content, err := json.Marshal(payload)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
 			return tooling.ToolResult{
-				Content: content,
+				Content: string(content),
 				Display: &tooling.ToolDisplayPayload{
 					Type:  "terminal",
 					Title: req.command,
@@ -255,6 +279,85 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			}, nil
 		},
 	}
+}
+
+func recordTerminalEvidence(ctx context.Context, service *evidence.Service, req commandInput, stdoutText, stderrText string, exitCode int) ([]string, error) {
+	if service == nil {
+		return []string{}, nil
+	}
+	execCtx, _ := tooling.ToolExecutionContextFrom(ctx)
+	summary := terminalEvidenceSummary(req.command, req.args, stdoutText, stderrText, exitCode)
+	rec, err := service.Record(ctx, evidence.RecordRequest{
+		IncidentID:  execCtx.IncidentID,
+		SourceTool:  "exec_command",
+		Source:      "terminal.break_glass",
+		Kind:        terminalEvidenceKind(req.command, req.args),
+		Summary:     summary,
+		Data:        terminalEvidenceData(req, stdoutText, stderrText, exitCode),
+		SessionID:   execCtx.SessionID,
+		TurnID:      execCtx.TurnID,
+		ToolCallID:  execCtx.ToolCallID,
+		Environment: strings.TrimSpace(execCtx.HostID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("record terminal evidence: %w", err)
+	}
+	return []string{rec.Ref}, nil
+}
+
+func terminalEvidenceSummary(command string, args []string, stdoutText, stderrText string, exitCode int) string {
+	preview := strings.TrimSpace(stdoutText)
+	if preview == "" {
+		preview = strings.TrimSpace(stderrText)
+	}
+	preview = strings.Join(strings.Fields(preview), " ")
+	if preview == "" {
+		preview = fmt.Sprintf("exitCode=%d", exitCode)
+	}
+	return truncateString(fmt.Sprintf("terminal %s returned %s", terminalCommandString(command, args), preview), 300)
+}
+
+func terminalEvidenceKind(command string, args []string) evidence.Kind {
+	command = strings.ToLower(strings.TrimSpace(command))
+	joined := strings.ToLower(strings.Join(args, " "))
+	switch {
+	case command == "kubectl" && (strings.Contains(joined, " logs") || strings.HasPrefix(joined, "logs")):
+		return evidence.KindLog
+	case command == "kubectl" && strings.Contains(joined, "events"):
+		return evidence.KindEvent
+	case command == "redis-cli":
+		return evidence.KindMetric
+	case command == "curl":
+		return evidence.KindOther
+	default:
+		return evidence.KindOther
+	}
+}
+
+func terminalEvidenceData(req commandInput, stdoutText, stderrText string, exitCode int) map[string]any {
+	return map[string]any{
+		"command":    terminalCommandString(req.command, req.args),
+		"executable": req.command,
+		"args":       append([]string(nil), req.args...),
+		"workingDir": req.WorkingDir,
+		"stdout":     stdoutText,
+		"stderr":     stderrText,
+		"exitCode":   exitCode,
+	}
+}
+
+func terminalCommandString(command string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	if strings.TrimSpace(command) != "" {
+		parts = append(parts, strings.TrimSpace(command))
+	}
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg != "" {
+			parts = append(parts, arg)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func execCommandDescription() string {
@@ -491,7 +594,7 @@ func checkExecCommandActionToken(ctx context.Context, input json.RawMessage, req
 			Reason: "ActionToken risk is required for terminal command",
 		}
 	}
-	if claims.Risk == actionproposal.RiskLow && !opts.RequireApprovalForLowRiskExec {
+	if claims.Risk == actionproposal.RiskLow && !opts.RequireApprovalForLowRiskExec && !terminalpolicy.RequiresHighRiskApproval(req.command, req.args) {
 		return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 	}
 	approval := buildExecApprovalPayload(req, claims)

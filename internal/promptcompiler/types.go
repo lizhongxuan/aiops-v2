@@ -70,6 +70,10 @@ type CompileContext struct {
 	// ShowRawReasoning is a debug-only flag; it must default to false.
 	ShowRawReasoning bool
 
+	// DisableDiagnosticProtocol disables the diagnosis prompt profile only.
+	// Trace redaction and safety guardrails must remain active outside prompt compilation.
+	DisableDiagnosticProtocol bool
+
 	// HostContext contains host-specific context (hostname, OS, etc.).
 	HostContext string
 
