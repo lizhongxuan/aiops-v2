@@ -1224,7 +1224,7 @@ Expected: first command exits 1 with no matches; second command exits 0.
 
 Result 2026-05-18: red-flag scan exited 1 with no matches; `git diff --check -- docs/host-agent-install-manual.zh.md docs/superpowers/specs/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-design.zh.md`: PASS.
 
-- [ ] **Step 12.4：提交**
+- [x] **Step 12.4：提交**
 
 Run:
 
@@ -1232,6 +1232,8 @@ Run:
 git add docs/host-agent-install-manual.zh.md docs/superpowers/specs/2026-05-18-aiops-v2-host-agent-ssh-bootstrap-design.zh.md
 git commit -m "docs: add host agent install acceptance guide"
 ```
+
+Result 2026-05-18: committed `c1f1006 docs: add host agent install acceptance guide`.
 
 ## 15. Task 13：端到端验证
 
