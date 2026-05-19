@@ -237,10 +237,18 @@ func redactToolCalls(calls []schema.ToolCall) []schema.ToolCall {
 }
 
 func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.PromptInputTrace {
-	if len(trace.Items) == 0 {
+	if len(trace.Items) == 0 && trace.OpsContextCapsuleChars == 0 && trace.SessionFactCount == 0 && trace.LettaHintCount == 0 && trace.MemoryItemCount == 0 && len(trace.VisibleOpsManualTools) == 0 && len(trace.DroppedContextReasons) == 0 {
 		return promptinput.PromptInputTrace{}
 	}
-	out := promptinput.PromptInputTrace{Items: make([]promptinput.TraceItem, 0, len(trace.Items))}
+	out := promptinput.PromptInputTrace{
+		Items:                  make([]promptinput.TraceItem, 0, len(trace.Items)),
+		OpsContextCapsuleChars: trace.OpsContextCapsuleChars,
+		SessionFactCount:       trace.SessionFactCount,
+		LettaHintCount:         trace.LettaHintCount,
+		MemoryItemCount:        trace.MemoryItemCount,
+		VisibleOpsManualTools:  append([]string(nil), trace.VisibleOpsManualTools...),
+		DroppedContextReasons:  append([]string(nil), trace.DroppedContextReasons...),
+	}
 	for _, item := range trace.Items {
 		item.ID = diagnostics.RedactSensitiveText(item.ID)
 		item.Content = diagnostics.RedactSensitiveText(item.Content)
@@ -323,7 +331,7 @@ func renderMarkdown(payload payload) string {
 			fmt.Fprintf(&b, "\nTool calls:\n\n```json\n%s\n```\n", string(data))
 		}
 	}
-	if len(payload.PromptInputTrace.Items) > 0 {
+	if !promptInputTraceEmpty(payload.PromptInputTrace) {
 		traceMarkdown := promptinput.RenderMarkdown(payload.PromptInputTrace)
 		traceMarkdown = strings.Replace(traceMarkdown, "# Prompt Input Trace", "## Prompt Input Trace", 1)
 		fmt.Fprintf(&b, "\n%s", traceMarkdown)
@@ -332,6 +340,16 @@ func renderMarkdown(payload payload) string {
 		fmt.Fprintf(&b, "\n%s", renderDiagnosticTraceMarkdown(*payload.DiagnosticTrace))
 	}
 	return b.String()
+}
+
+func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
+	return len(trace.Items) == 0 &&
+		trace.OpsContextCapsuleChars == 0 &&
+		trace.SessionFactCount == 0 &&
+		trace.LettaHintCount == 0 &&
+		trace.MemoryItemCount == 0 &&
+		len(trace.VisibleOpsManualTools) == 0 &&
+		len(trace.DroppedContextReasons) == 0
 }
 
 func renderDiagnosticTraceMarkdown(trace diagnostics.DiagnosticTrace) string {

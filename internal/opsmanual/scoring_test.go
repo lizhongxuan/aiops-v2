@@ -59,3 +59,56 @@ func TestScoreWithoutVectorScorerStaysStable(t *testing.T) {
 		t.Fatalf("final score = %.2f, want stable direct score without vector scorer; breakdown=%#v", breakdown.FinalScore, breakdown)
 	}
 }
+
+func TestManualHintsOnlyPromoteSameObjectActionNearTie(t *testing.T) {
+	repo := NewMemoryStore()
+	manualA := pgBackupManual("manual-pg-backup-a", "ubuntu", "ssh", "workflow-pg-backup-a")
+	manualB := pgBackupManual("manual-pg-backup-b", "ubuntu", "ssh", "workflow-pg-backup-b")
+	for _, manual := range []OpsManual{manualA, manualB} {
+		if err := repo.SaveManual(manual); err != nil {
+			t.Fatalf("SaveManual() error = %v", err)
+		}
+	}
+	service := NewService(repo, WithHintProvider(staticHintProvider{
+		manualHints: []ManualHint{{
+			ManualID:   "manual-pg-backup-b",
+			ObjectType: "postgresql",
+			Action:     "backup",
+			Source:     "memory_hint",
+			Redacted:   true,
+			Score:      0.7,
+		}},
+	}))
+	result, err := service.SearchOpsManuals(SearchOpsManualsRequest{
+		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+	})
+	if err != nil {
+		t.Fatalf("SearchOpsManuals() error = %v", err)
+	}
+	if len(result.Manuals) < 2 || result.Manuals[0].Manual.ID != "manual-pg-backup-b" {
+		t.Fatalf("manual order = %#v, want near-tie hinted manual first", result.Manuals)
+	}
+	if len(result.Manuals[0].HintSources) != 1 || result.Manuals[0].HintSources[0] != "memory_hint" {
+		t.Fatalf("hint sources = %#v, want memory_hint marker", result.Manuals[0].HintSources)
+	}
+
+	service = NewService(repo, WithHintProvider(staticHintProvider{
+		manualHints: []ManualHint{{
+			ManualID:   "manual-pg-backup-b",
+			ObjectType: "mysql",
+			Action:     "backup",
+			Source:     "memory_hint",
+			Redacted:   true,
+			Score:      0.7,
+		}},
+	}))
+	result, err = service.SearchOpsManuals(SearchOpsManualsRequest{
+		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+	})
+	if err != nil {
+		t.Fatalf("SearchOpsManuals() error = %v", err)
+	}
+	if len(result.Manuals) < 2 || result.Manuals[0].Manual.ID != "manual-pg-backup-a" {
+		t.Fatalf("manual order = %#v, cross-object hint must not promote", result.Manuals)
+	}
+}

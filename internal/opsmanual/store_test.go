@@ -99,8 +99,8 @@ func TestFileStoreFixtureSupportsSearchOpsManualsDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListManuals() error = %v", err)
 	}
-	if len(manuals) != 4 {
-		t.Fatalf("manual count = %d, want 4", len(manuals))
+	if len(manuals) != 5 {
+		t.Fatalf("manual count = %d, want 5", len(manuals))
 	}
 	pgManual, err := store.GetManual("manual-pg-backup-ubuntu")
 	if err != nil {

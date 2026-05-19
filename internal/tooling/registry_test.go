@@ -399,6 +399,15 @@ func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *
 		t.Fatalf("after match tools = %v, should not include run_ops_manual_preflight before params resolve", afterMatch)
 	}
 
+	afterDirect := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualMatched":       "true",
+		"opsManualDirectExecute": "true",
+		"enableToolPack":         "ops_manual_flow",
+	}))
+	if !containsToolNameForRegistryTest(afterDirect, "run_ops_manual_preflight") {
+		t.Fatalf("after direct_execute tools = %v, want run_ops_manual_preflight", afterDirect)
+	}
+
 	afterParams := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
 		"opsManualMatched":        "true",
 		"opsManualParamsResolved": "true",
@@ -407,6 +416,17 @@ func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *
 	}))
 	if !containsToolNameForRegistryTest(afterParams, "run_ops_manual_preflight") {
 		t.Fatalf("after params tools = %v, want run_ops_manual_preflight", afterParams)
+	}
+
+	referenceOnly := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"opsManualAction":         "reference_ops_manual",
+		"opsManualMatched":        "true",
+		"opsManualParamsResolved": "true",
+		"enableToolPack":          "ops_manual_flow",
+		"enableTool":              "run_ops_manual_preflight",
+	}))
+	if containsToolNameForRegistryTest(referenceOnly, "run_ops_manual_preflight") {
+		t.Fatalf("reference tools = %v, should not include run_ops_manual_preflight", referenceOnly)
 	}
 
 	skipped := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{

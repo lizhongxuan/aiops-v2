@@ -101,14 +101,15 @@ func missingManualIDToolResult() (tooling.ToolResult, error) {
 }
 
 type resolveOpsManualParamsModelPayload struct {
-	Status         string            `json:"status"`
-	ManualID       string            `json:"manual_id,omitempty"`
-	WorkflowID     string            `json:"workflow_id,omitempty"`
-	ResolvedParams map[string]any    `json:"resolved_params,omitempty"`
-	Fields         []modelParamField `json:"fields,omitempty"`
-	Blockers       []string          `json:"blockers,omitempty"`
-	NextAction     string            `json:"next_action,omitempty"`
-	Instructions   []string          `json:"instructions,omitempty"`
+	Status          string            `json:"status"`
+	OpsManualFlowID string            `json:"ops_manual_flow_id,omitempty"`
+	ManualID        string            `json:"manual_id,omitempty"`
+	WorkflowID      string            `json:"workflow_id,omitempty"`
+	ResolvedParams  map[string]any    `json:"resolved_params,omitempty"`
+	Fields          []modelParamField `json:"fields,omitempty"`
+	Blockers        []string          `json:"blockers,omitempty"`
+	NextAction      string            `json:"next_action,omitempty"`
+	Instructions    []string          `json:"instructions,omitempty"`
 }
 
 type modelParamField struct {
@@ -121,10 +122,11 @@ type modelParamField struct {
 
 func resolveOpsManualParamsModelResult(result core.ParamResolutionResult) resolveOpsManualParamsModelPayload {
 	payload := resolveOpsManualParamsModelPayload{
-		Status:     string(result.Status),
-		ManualID:   result.ManualID,
-		WorkflowID: result.WorkflowID,
-		NextAction: result.NextAction,
+		Status:          string(result.Status),
+		OpsManualFlowID: result.OpsManualFlowID,
+		ManualID:        result.ManualID,
+		WorkflowID:      result.WorkflowID,
+		NextAction:      result.NextAction,
 	}
 	if len(result.ResolvedParams) > 0 {
 		payload.ResolvedParams = map[string]any{}

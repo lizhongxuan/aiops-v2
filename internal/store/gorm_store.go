@@ -39,6 +39,7 @@ const (
 	gormNamespaceOpsManuals          = "ops_manuals"
 	gormNamespaceOpsManualCandidates = "ops_manual_candidates"
 	gormNamespaceOpsManualRunRecords = "ops_manual_run_records"
+	gormNamespaceOpsManualGuidedChat = "ops_manual_manual_guided_chat"
 )
 
 const gormSingletonKey = "current"
@@ -46,6 +47,7 @@ const gormSingletonKey = "current"
 var _ Store = (*GormStore)(nil)
 var _ incidents.Store = (*GormStore)(nil)
 var _ opsmanual.ManualRepository = (*GormStore)(nil)
+var _ opsmanual.ManualGuidedChatEventRepository = (*GormStore)(nil)
 
 // GormStore implements Store using a GORM-backed database. Domain objects are
 // stored as JSON payloads to preserve the existing application contract while
@@ -706,6 +708,25 @@ func (s *GormStore) SaveOpsManualRunRecord(record opsmanual.RunRecord) error {
 	return s.saveKV(gormNamespaceOpsManualRunRecords, record.ID, cloneOpsManualRunRecord(record))
 }
 
+func (s *GormStore) SaveManualGuidedChatEvent(event opsmanual.ManualGuidedChatEvent) error {
+	if strings.TrimSpace(event.ID) == "" {
+		return fmt.Errorf("ops manual manual-guided chat event id is required")
+	}
+	return s.saveKV(gormNamespaceOpsManualGuidedChat, event.ID, cloneManualGuidedChatEvent(event))
+}
+
+func (s *GormStore) ListManualGuidedChatEvents(req opsmanual.ListManualGuidedChatEventsRequest) ([]opsmanual.ManualGuidedChatEvent, error) {
+	var events []opsmanual.ManualGuidedChatEvent
+	if err := s.listKV(gormNamespaceOpsManualGuidedChat, &events); err != nil {
+		return nil, err
+	}
+	eventMap := make(map[string]opsmanual.ManualGuidedChatEvent, len(events))
+	for _, event := range events {
+		eventMap[event.ID] = event
+	}
+	return filterManualGuidedChatEvents(eventMap, req), nil
+}
+
 func (s *GormStore) ListManuals(req opsmanual.ListManualsRequest) ([]opsmanual.OpsManual, error) {
 	manuals, err := s.ListOpsManuals()
 	if err != nil {
@@ -730,7 +751,15 @@ func (s *GormStore) SaveManual(manual opsmanual.OpsManual) error {
 }
 
 func (s *GormStore) ListRunRecords(req opsmanual.ListRunRecordsRequest) ([]opsmanual.RunRecord, error) {
-	return s.ListOpsManualRunRecords(req.ManualID, req.WorkflowID, req.Limit)
+	var records []opsmanual.RunRecord
+	if err := s.listKV(gormNamespaceOpsManualRunRecords, &records); err != nil {
+		return nil, err
+	}
+	recordMap := make(map[string]opsmanual.RunRecord, len(records))
+	for _, record := range records {
+		recordMap[record.ID] = record
+	}
+	return filterOpsManualRunRecordsByRequest(recordMap, req), nil
 }
 
 func (s *GormStore) GetCandidate(id string) (opsmanual.ManualCandidate, error) {

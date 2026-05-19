@@ -2,7 +2,7 @@ import { AlertTriangle, CheckCircle2, Eye, FileText, History, Search, ShieldChec
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
-import { opsManualsApi, type OpsManualCandidateView, type OpsManualView, type RunRecordView } from "@/api/opsManuals";
+import { opsManualsApi, type OpsManualCandidateView, type OpsManualFlowTimelineEventView, type OpsManualView, type RunRecordView } from "@/api/opsManuals";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,7 @@ export function OpsManualsPage() {
   const [manuals, setManuals] = useState<OpsManualView[]>([]);
   const [candidates, setCandidates] = useState<OpsManualCandidateView[]>([]);
   const [records, setRecords] = useState<RunRecordView[]>([]);
+  const [timelines, setTimelines] = useState<Record<string, OpsManualFlowTimelineEventView[]>>({});
   const [error, setError] = useState("");
   const [selectedManual, setSelectedManual] = useState<OpsManualView | null>(null);
   const [previewWorkflow, setPreviewWorkflow] = useState<WorkflowPreview | null>(null);
@@ -46,9 +47,21 @@ export function OpsManualsPage() {
           opsManualsApi.listCandidates({ review_status: "pending", limit: 100 }),
           opsManualsApi.listAllRunRecords({ limit: 100 }),
         ]);
+        const flowIds = Array.from(new Set(recordList.items.map((record) => record.opsManualFlowId).filter(Boolean))).slice(0, 20);
+        const timelineEntries = await Promise.all(
+          flowIds.map(async (flowId) => {
+            try {
+              const timeline = await opsManualsApi.flowTimeline(flowId);
+              return [flowId, timeline.items] as const;
+            } catch {
+              return [flowId, []] as const;
+            }
+          }),
+        );
         setManuals(manualList.items);
         setCandidates(candidateList.items);
         setRecords(recordList.items);
+        setTimelines(Object.fromEntries(timelineEntries));
       } catch (cause) {
         setError((cause as Error).message || "运维手册加载失败。");
       }
@@ -138,7 +151,7 @@ export function OpsManualsPage() {
 
             {activeTab === "review" ? <CandidateReviewList candidates={candidates} onPreview={setPreviewWorkflow} /> : null}
 
-            {activeTab === "records" ? <RunRecordList records={records} manuals={manuals} /> : null}
+            {activeTab === "records" ? <RunRecordList records={records} manuals={manuals} timelines={timelines} /> : null}
           </div>
         </CardContent>
       </Card>
@@ -292,7 +305,7 @@ function WorkflowPreviewDialog({ preview, onOpenChange }: { preview: WorkflowPre
   );
 }
 
-function RunRecordList({ records, manuals }: { records: RunRecordView[]; manuals: OpsManualView[] }) {
+function RunRecordList({ records, manuals, timelines }: { records: RunRecordView[]; manuals: OpsManualView[]; timelines: Record<string, OpsManualFlowTimelineEventView[]> }) {
   if (!records.length) {
     return <EmptyState title="暂无执行记录" description="Runner Workflow 通过运维手册触发后，会记录 Dry Run、执行、验证和失败原因。" />;
   }
@@ -325,18 +338,58 @@ function RunRecordList({ records, manuals }: { records: RunRecordView[]; manuals
               <div className="grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
                 <span>手册：{manualTitleById.get(record.manualId) || record.manualId || "-"}</span>
                 <span>Workflow：{record.workflowId || "-"}</span>
+                <span>预检：{statusLabel(record.preflightStatus) || "-"}</span>
                 <span>Dry Run：{statusLabel(record.dryRunStatus) || "-"}</span>
                 <span>验证：{statusLabel(record.validationStatus) || "-"}</span>
                 <span>操作人：{record.operator || "-"}</span>
                 <span>完成：{record.completedAt || "-"}</span>
               </div>
               {record.failureReason ? <p className="text-xs text-red-700">失败原因：{record.failureReason}</p> : null}
+              <FlowTimeline events={timelines[record.opsManualFlowId] || []} />
             </CardContent>
           </Card>
         ))}
       </div>
     </section>
   );
+}
+
+function FlowTimeline({ events }: { events: OpsManualFlowTimelineEventView[] }) {
+  if (!events.length) return null;
+  return (
+    <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-2">
+      <div className="text-xs font-medium text-slate-500">流程时间线</div>
+      <div className="flex flex-wrap gap-2">
+        {events.map((event) => (
+          <ToneBadge key={event.id} tone={timelineTone(event.type)}>
+            {timelineLabel(event.type)}
+            {event.summary ? `：${statusLabel(event.summary) || event.summary}` : ""}
+          </ToneBadge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function timelineLabel(type: string) {
+  const labels: Record<string, string> = {
+    search: "检索",
+    param_resolution: "参数解析",
+    user_form_submit: "用户表单",
+    preflight: "预检",
+    dry_run: "Dry Run",
+    execution: "执行",
+    verification: "验证",
+    user_feedback: "用户反馈",
+    manual_guided_reference: "仅参考手册",
+  };
+  return labels[type] || type;
+}
+
+function timelineTone(type: string) {
+  if (type === "execution" || type === "verification" || type === "preflight" || type === "dry_run") return "success";
+  if (type === "user_feedback" || type === "manual_guided_reference") return "default";
+  return "default";
 }
 
 function ManualDetailDialog({ manual, records, onOpenChange }: { manual: OpsManualView | null; records: RunRecordView[]; onOpenChange: (open: boolean) => void }) {

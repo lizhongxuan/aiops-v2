@@ -1,6 +1,10 @@
 package opsmanual
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 func TestResolveOpsManualParamsAutoResolvesSingleRedis(t *testing.T) {
 	repo := NewMemoryStore()
@@ -311,6 +315,166 @@ func TestResolveOpsManualParamsMySQLDockerBackupOnlyAsksBackupPath(t *testing.T)
 	}
 }
 
+func TestParamResolutionPriorityOperationFrameWinsOverSessionFacts(t *testing.T) {
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	manual := redisTargetOnlyParamManual()
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFact(context.Background(), "sess-param-priority", SessionOpsFact{
+		Key:             SessionOpsFactTargetInstance,
+		Value:           "redis-from-session",
+		Source:          "session_fact",
+		Confidence:      0.99,
+		ConfirmedByUser: true,
+		ExpiresAt:       time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+	service := NewService(repo, WithSessionOpsContextStore(store))
+
+	result, err := service.ResolveOpsManualParams(ResolveOpsManualParamsRequest{
+		RequestText: "排查 Redis 实例 redis-from-frame",
+		ManualID:    manual.ID,
+		OperationFrame: OperationFrame{
+			ObjectType: "redis",
+			Target:     OperationTarget{Type: "redis", Name: "redis-from-frame"},
+			Operation:  OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
+		},
+		Metadata: map[string]any{"session_id": "sess-param-priority"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolvedParamValue(result.ResolvedParams, "target_instance", "redis-from-frame") {
+		t.Fatalf("resolved params = %#v, want operation_frame target to win over session fact", result.ResolvedParams)
+	}
+	if resolvedParamSource(result.ResolvedParams, "target_instance") != "operation_frame" {
+		t.Fatalf("resolved params = %#v, want operation_frame source", result.ResolvedParams)
+	}
+}
+
+func TestSessionFactsResolveRelevantMissingContext(t *testing.T) {
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	manual := redisTargetOnlyParamManual()
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFact(context.Background(), "sess-param-facts", SessionOpsFact{
+		Key:             SessionOpsFactTargetHost,
+		Value:           "server-from-session",
+		Source:          "session_fact",
+		Confidence:      0.93,
+		ConfirmedByUser: true,
+		ExpiresAt:       time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+	if err := store.UpsertFact(context.Background(), "sess-param-facts", SessionOpsFact{
+		Key:             SessionOpsFactTargetInstance,
+		Value:           "redis-from-session",
+		Source:          "session_fact",
+		Confidence:      0.93,
+		ConfirmedByUser: true,
+		ExpiresAt:       time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+	service := NewService(repo, WithSessionOpsContextStore(store))
+
+	result, err := service.ResolveOpsManualParams(ResolveOpsManualParamsRequest{
+		RequestText: "排查 Redis",
+		ManualID:    manual.ID,
+		Metadata:    map[string]any{"session_id": "sess-param-facts"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ParamResolutionResolved {
+		t.Fatalf("result = %#v, want session fact to resolve missing target_instance", result)
+	}
+	if !resolvedParamValue(result.ResolvedParams, "target_instance", "redis-from-session") {
+		t.Fatalf("resolved params = %#v, want session fact target_instance", result.ResolvedParams)
+	}
+	if resolvedParamSource(result.ResolvedParams, "target_instance") != "session_fact" {
+		t.Fatalf("resolved params = %#v, want session_fact source", result.ResolvedParams)
+	}
+}
+
+func TestSessionFactsDoNotAutoResolveBackupPath(t *testing.T) {
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	manual := pgBackupParamManual()
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertFact(context.Background(), "sess-param-backup", SessionOpsFact{
+		Key:             "backup_path",
+		Value:           "/data/old-backups",
+		Source:          "session_fact",
+		Confidence:      1,
+		ConfirmedByUser: true,
+		ExpiresAt:       time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+	service := NewService(repo, WithSessionOpsContextStore(store))
+
+	result, err := service.ResolveOpsManualParams(ResolveOpsManualParamsRequest{
+		RequestText: "给 PostgreSQL 做备份",
+		ManualID:    manual.ID,
+		KnownParams: map[string]any{"target_instance": "pg-01"},
+		Metadata:    map[string]any{"session_id": "sess-param-backup", "selected_host": "pg-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ParamResolutionNeedUserInput || len(result.Fields) != 1 || result.Fields[0].ID != "backup_path" {
+		t.Fatalf("result = %#v, want backup_path still user input", result)
+	}
+	if resolvedParamValue(result.ResolvedParams, "backup_path", "/data/old-backups") {
+		t.Fatalf("resolved params = %#v, backup_path must not come from session fact", result.ResolvedParams)
+	}
+}
+
+func TestSessionFactsWriteResolvedNonSensitiveParams(t *testing.T) {
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	manual := redisTargetOnlyParamManual()
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(repo, WithSessionOpsContextStore(store))
+
+	result, err := service.ResolveOpsManualParams(ResolveOpsManualParamsRequest{
+		RequestText: "排查 Redis",
+		ManualID:    manual.ID,
+		KnownParams: map[string]any{"target_instance": "redis-from-user"},
+		Metadata:    map[string]any{"session_id": "sess-param-writeback", "selected_host": "server-local"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != ParamResolutionResolved {
+		t.Fatalf("result = %#v, want resolved", result)
+	}
+	facts, err := store.ListFacts(context.Background(), "sess-param-writeback", SessionOpsFactFilter{
+		Keys: []string{SessionOpsFactTargetInstance},
+		Now:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("ListFacts() error = %v", err)
+	}
+	if len(facts) != 1 || facts[0].Value != "redis-from-user" || !facts[0].ConfirmedByUser || facts[0].Sensitive {
+		t.Fatalf("facts = %#v, want confirmed non-sensitive target_instance writeback", facts)
+	}
+	if facts[0].ExpiresAt.Before(time.Now().UTC().Add(90 * time.Minute)) {
+		t.Fatalf("fact expiry = %v, want user fact TTL around two hours", facts[0].ExpiresAt)
+	}
+}
+
 func redisParamManual() OpsManual {
 	return OpsManual{
 		ID:          "manual-redis-rca",
@@ -324,6 +488,22 @@ func redisParamManual() OpsManual {
 		},
 		RequiredContext:  RequiredContext{RequiredInputs: []string{"target_instance", "execution_surface"}},
 		Validation:       []string{"INFO memory 正常"},
+		CannotUseWhen:    []string{"目标实例未知"},
+		DocumentMarkdown: "Redis manual",
+	}
+}
+
+func redisTargetOnlyParamManual() OpsManual {
+	return OpsManual{
+		ID:          "manual-redis-target-only",
+		Title:       "Redis target-only manual",
+		Status:      ManualStatusVerified,
+		WorkflowRef: WorkflowRef{WorkflowID: "workflow-redis-target-only"},
+		Operation:   OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
+		RequiredContext: RequiredContext{
+			RequiredInputs: []string{"target_instance"},
+		},
+		Validation:       []string{"target checked"},
 		CannotUseWhen:    []string{"目标实例未知"},
 		DocumentMarkdown: "Redis manual",
 	}
@@ -370,4 +550,13 @@ func resolvedParamValue(params []ResolvedParam, id, want string) bool {
 		}
 	}
 	return false
+}
+
+func resolvedParamSource(params []ResolvedParam, id string) string {
+	for _, param := range params {
+		if param.ID == id {
+			return param.Source
+		}
+	}
+	return ""
 }

@@ -41,6 +41,11 @@ type BuildRequest struct {
 	Tools       []promptcompiler.Tool
 	Memories    []MemoryItem
 	MaxMemories int
+
+	OpsContextCapsule     string
+	SessionFactCount      int
+	LettaHintCount        int
+	DroppedContextReasons []string
 }
 
 // BuildResult is the provider-facing model input plus its explainable trace.
@@ -51,7 +56,13 @@ type BuildResult struct {
 
 // PromptInputTrace records where each prompt input item came from.
 type PromptInputTrace struct {
-	Items []TraceItem `json:"items"`
+	Items                  []TraceItem `json:"items"`
+	OpsContextCapsuleChars int         `json:"opsContextCapsuleChars,omitempty"`
+	SessionFactCount       int         `json:"sessionFactCount,omitempty"`
+	LettaHintCount         int         `json:"lettaHintCount,omitempty"`
+	MemoryItemCount        int         `json:"memoryItemCount,omitempty"`
+	VisibleOpsManualTools  []string    `json:"visibleOpsManualTools,omitempty"`
+	DroppedContextReasons  []string    `json:"droppedContextReasons,omitempty"`
 }
 
 // TraceItem is one semantic prompt-input trace entry.

@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/promptcompiler"
 )
 
 func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []MemoryItem, history []Message, runtimeMessages []*schema.Message) PromptInputTrace {
@@ -38,6 +40,16 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		})
 	}
 
+	if req.OpsContextCapsule != "" {
+		items = append(items, TraceItem{
+			Source:       "ops_context",
+			SemanticRole: "ops_context_capsule",
+			ProviderRole: string(schema.System),
+			PromptLayer:  "ops_context_capsule",
+			Content:      req.OpsContextCapsule,
+		})
+	}
+
 	for _, item := range req.Compiled.Dynamic.ProtocolState.Items {
 		items = append(items, TraceItem{
 			Source:       "protocol_state",
@@ -62,7 +74,15 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		})
 	}
 
-	return PromptInputTrace{Items: items}
+	return PromptInputTrace{
+		Items:                  items,
+		OpsContextCapsuleChars: len(req.OpsContextCapsule),
+		SessionFactCount:       req.SessionFactCount,
+		LettaHintCount:         req.LettaHintCount,
+		MemoryItemCount:        len(memories),
+		VisibleOpsManualTools:  visibleOpsManualTools(req.Tools),
+		DroppedContextReasons:  append([]string(nil), req.DroppedContextReasons...),
+	}
 }
 
 func promptSource(promptLayer string) string {
@@ -113,4 +133,19 @@ func stringExtra(extra map[string]any, key string) string {
 	}
 	str, _ := value.(string)
 	return str
+}
+
+func visibleOpsManualTools(tools []promptcompiler.Tool) []string {
+	var out []string
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		name := tool.Metadata().Name
+		switch name {
+		case "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight":
+			out = append(out, name)
+		}
+	}
+	return out
 }

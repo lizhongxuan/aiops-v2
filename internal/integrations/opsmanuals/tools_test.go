@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	core "aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/tooling"
@@ -191,10 +192,11 @@ func TestSearchOpsManualsToolExecutes(t *testing.T) {
 		t.Fatal("content should contain JSON result")
 	}
 	var payload struct {
-		Decision      string   `json:"decision"`
-		NextQuestions []string `json:"next_questions"`
-		Instructions  []string `json:"instructions"`
-		Manuals       []struct {
+		Decision        string   `json:"decision"`
+		OpsManualFlowID string   `json:"ops_manual_flow_id"`
+		NextQuestions   []string `json:"next_questions"`
+		Instructions    []string `json:"instructions"`
+		Manuals         []struct {
 			ID     string `json:"id"`
 			Title  string `json:"title"`
 			Manual any    `json:"manual"`
@@ -206,6 +208,9 @@ func TestSearchOpsManualsToolExecutes(t *testing.T) {
 	}
 	if payload.Decision != string(core.DecisionNeedInfo) {
 		t.Fatalf("decision = %q, want need_info", payload.Decision)
+	}
+	if payload.OpsManualFlowID == "" {
+		t.Fatal("model content should include ops_manual_flow_id")
 	}
 	if len(payload.NextQuestions) > 2 {
 		t.Fatalf("next questions = %#v, want at most two", payload.NextQuestions)
@@ -246,6 +251,73 @@ func TestSearchOpsManualsToolExecutes(t *testing.T) {
 	}
 	if len(displayPayload.Manuals) == 0 || len(displayPayload.Manuals[0].MissingFields) == 0 {
 		t.Fatalf("display data = %#v, want full UI/debug payload", displayPayload)
+	}
+	if displayPayload.OpsManualFlowID == "" || displayPayload.OpsManualFlowID != payload.OpsManualFlowID {
+		t.Fatalf("flow id model=%q display=%q, want both non-empty and equal", payload.OpsManualFlowID, displayPayload.OpsManualFlowID)
+	}
+}
+
+func TestSearchOpsManualsToolReturnsSuppressionMetadataCompactly(t *testing.T) {
+	registry := tooling.NewRegistry()
+	repo := core.NewMemoryStore()
+	store := core.NewMemorySessionOpsContextStore()
+	if err := repo.SaveManual(testPostgresBackupManual()); err != nil {
+		t.Fatal(err)
+	}
+	service := core.NewService(repo, core.WithSessionOpsContextStore(store))
+	if err := store.UpsertFact(context.Background(), "sess-pg-suppressed", core.NewOpsManualSuppressionFact(core.OpsManualSuppression{
+		ManualID:    "manual-pg-backup-ubuntu",
+		ObjectType:  "postgresql",
+		Action:      "backup",
+		TargetScope: "host:pg-ubuntu-01",
+		Reason:      "user_opt_out",
+	}, time.Now().UTC())); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+	if err := RegisterBuiltins(registry, service); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("search_ops_manuals")
+	if !ok {
+		t.Fatal("search_ops_manuals tool not registered")
+	}
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{
+		SessionID: "sess-pg-suppressed",
+		TurnID:    "turn-pg-suppressed",
+	})
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{"text":"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常","metadata":{"target_name":"pg-ubuntu-01"},"limit":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Decision          string   `json:"decision"`
+		SuppressedManuals []string `json:"suppressed_manuals"`
+		SuppressionReason string   `json:"suppression_reason"`
+		Manuals           []any    `json:"manuals"`
+		Instructions      []string `json:"instructions"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("content is not model-facing JSON: %v", err)
+	}
+	if payload.Decision != string(core.DecisionNoMatch) {
+		t.Fatalf("decision = %q, want no_match after suppression", payload.Decision)
+	}
+	if len(payload.Manuals) != 0 {
+		t.Fatalf("model manuals = %#v, want suppressed manual omitted", payload.Manuals)
+	}
+	if !containsString(payload.SuppressedManuals, "manual-pg-backup-ubuntu") || payload.SuppressionReason != "user_opt_out" {
+		t.Fatalf("suppression payload = %#v / %q, want compact user opt-out metadata", payload.SuppressedManuals, payload.SuppressionReason)
+	}
+	if !containsString(payload.Instructions, "Continue normal safe read-only evidence-driven investigation with available tools.") {
+		t.Fatalf("instructions = %#v, want normal read-only continuation", payload.Instructions)
+	}
+	var displayPayload core.SearchOpsManualsResult
+	if err := json.Unmarshal(result.Display.Data, &displayPayload); err != nil {
+		t.Fatalf("display data is not a SearchOpsManualsResult: %v", err)
+	}
+	if len(displayPayload.Manuals) != 0 || !containsString(displayPayload.SuppressedManuals, "manual-pg-backup-ubuntu") {
+		t.Fatalf("display payload = %#v, want suppressed metadata without card manual", displayPayload)
 	}
 }
 
@@ -540,9 +612,16 @@ func TestRunOpsManualPreflightReusesSameTurnSearchContext(t *testing.T) {
 		SessionID: "sess-pg-backup",
 		TurnID:    "turn-pg-backup",
 	})
-	_, err := searchTool.Execute(ctx, json.RawMessage(`{"text":"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常","metadata":{"target_name":"pg-ubuntu-01"},"limit":5}`))
+	search, err := searchTool.Execute(ctx, json.RawMessage(`{"text":"在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常","metadata":{"target_name":"pg-ubuntu-01"},"limit":5}`))
 	if err != nil {
 		t.Fatal(err)
+	}
+	var searchPayload core.SearchOpsManualsResult
+	if err := json.Unmarshal(search.Display.Data, &searchPayload); err != nil {
+		t.Fatalf("search display data is not a SearchOpsManualsResult: %v", err)
+	}
+	if searchPayload.OpsManualFlowID == "" {
+		t.Fatal("search payload missing ops_manual_flow_id")
 	}
 	result, err := preflightTool.Execute(ctx, json.RawMessage(`{"manual_id":"manual-pg-backup-ubuntu","workflow_id":"workflow-pg-backup-ubuntu","requested_by":"user","triggered_by":"chat"}`))
 	if err != nil {
@@ -554,6 +633,9 @@ func TestRunOpsManualPreflightReusesSameTurnSearchContext(t *testing.T) {
 	}
 	if payload.Status != core.PreflightStatusPassed || !payload.Ready {
 		t.Fatalf("payload = %#v, want passed ready with parameters reused from same-turn search", payload)
+	}
+	if payload.OpsManualFlowID != searchPayload.OpsManualFlowID {
+		t.Fatalf("preflight flow id = %q, want search flow id %q", payload.OpsManualFlowID, searchPayload.OpsManualFlowID)
 	}
 }
 

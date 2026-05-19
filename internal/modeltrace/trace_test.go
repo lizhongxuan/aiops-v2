@@ -143,6 +143,45 @@ func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 	}
 }
 
+func TestWriteIncludesPromptInputTraceBudgetMetrics(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-ops",
+		TurnID:    "turn-ops",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			OpsContextCapsuleChars: 512,
+			SessionFactCount:       5,
+			LettaHintCount:         2,
+			MemoryItemCount:        3,
+			VisibleOpsManualTools:  []string{"search_ops_manuals"},
+			DroppedContextReasons:  []string{"letta_hint_limit"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	for _, want := range []string{`"opsContextCapsuleChars": 512`, `"sessionFactCount": 5`, `"visibleOpsManualTools"`, `"letta_hint_limit"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("json trace missing %q:\n%s", want, string(data))
+		}
+	}
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	if !strings.Contains(string(markdown), "ops_context_capsule_chars") || !strings.Contains(string(markdown), "letta_hint_limit") {
+		t.Fatalf("markdown trace missing budget metrics:\n%s", string(markdown))
+	}
+}
+
 func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnabledEnv, "true")

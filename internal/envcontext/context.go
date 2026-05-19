@@ -205,6 +205,9 @@ func extractFocus(input, requestHostID, sessionID string, now time.Time) extract
 	focus.Version = extractVersion(clean)
 	focus.Port = extractPort(clean)
 	focus.DSN = extractDSN(clean)
+	if focus.Environment != "" && !positiveHostMentioned(cleanLower) {
+		focus.HostID = ""
+	}
 	focus.TargetID = buildTargetID(focus)
 	focus.ID = focusID(focus)
 
@@ -312,6 +315,8 @@ func extractHostID(input, requestHostID string) string {
 		return "host-b"
 	case containsAny(lower, "主机a", "主机 a", "host-a", "host a"):
 		return "host-a"
+	case localHostNegated(lower):
+		return ""
 	case containsAny(lower, "server-local", "本机", "当前主机", "本地"):
 		return firstNonEmpty(requestHostID, "server-local")
 	default:
@@ -431,6 +436,15 @@ func focusID(f Focus) string {
 
 func hostMentioned(input string) bool {
 	return containsAny(input, "主机a", "主机 a", "host-a", "host a", "主机b", "主机 b", "host-b", "host b", "server-local")
+}
+
+func positiveHostMentioned(input string) bool {
+	return containsAny(input, "主机a", "主机 a", "host-a", "host a", "主机b", "主机 b", "host-b", "host b", "server-local") ||
+		(!localHostNegated(input) && containsAny(input, "本机", "当前主机", "本地"))
+}
+
+func localHostNegated(input string) bool {
+	return containsAny(input, "不是本地", "非本地", "不要沿用", "不要继承", "不要带入旧", "其他环境", "另一个环境")
 }
 
 func containsAny(input string, needles ...string) bool {

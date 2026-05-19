@@ -119,13 +119,14 @@ type ParamRequirement struct {
 }
 
 type ParamCandidate struct {
-	Value            any     `json:"value"`
-	Label            string  `json:"label,omitempty"`
-	Hint             string  `json:"hint,omitempty"`
-	Source           string  `json:"source,omitempty"`
-	Confidence       float64 `json:"confidence,omitempty"`
-	Evidence         string  `json:"evidence,omitempty"`
-	FreshnessSeconds int     `json:"freshness_seconds,omitempty"`
+	Value            any            `json:"value"`
+	Label            string         `json:"label,omitempty"`
+	Hint             string         `json:"hint,omitempty"`
+	Source           string         `json:"source,omitempty"`
+	Confidence       float64        `json:"confidence,omitempty"`
+	Evidence         string         `json:"evidence,omitempty"`
+	FreshnessSeconds int            `json:"freshness_seconds,omitempty"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
 }
 
 type ResolvedParam struct {
@@ -141,7 +142,8 @@ type ResolvedParam struct {
 
 type MissingParam struct {
 	ParamRequirement
-	Reason string `json:"reason,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
+	Candidates []ParamCandidate `json:"candidates,omitempty"`
 }
 
 type AmbiguousParam struct {
@@ -211,6 +213,7 @@ type ParamResolutionFormField struct {
 
 type ParamResolutionResult struct {
 	Status          ParamResolutionStatus      `json:"status"`
+	OpsManualFlowID string                     `json:"ops_manual_flow_id,omitempty"`
 	ManualID        string                     `json:"manual_id,omitempty"`
 	WorkflowID      string                     `json:"workflow_id,omitempty"`
 	OperationFrame  OperationFrame             `json:"operation_frame"`
@@ -342,9 +345,12 @@ type SearchOpsManualsRequest struct {
 
 type SearchOpsManualsResult struct {
 	Decision              DecisionState     `json:"decision"`
+	OpsManualFlowID       string            `json:"ops_manual_flow_id,omitempty"`
 	Summary               string            `json:"summary"`
 	OperationFrame        OperationFrame    `json:"operation_frame"`
 	Manuals               []SearchManualHit `json:"manuals"`
+	SuppressedManuals     []string          `json:"suppressed_manuals,omitempty"`
+	SuppressionReason     string            `json:"suppression_reason,omitempty"`
 	NextQuestions         []string          `json:"next_questions,omitempty"`
 	RecommendedNextAction string            `json:"recommended_next_action,omitempty"`
 	SearchedFields        []string          `json:"searched_fields,omitempty"`
@@ -363,6 +369,7 @@ type SearchManualHit struct {
 	BlockedReasons    []string         `json:"blocked_reasons,omitempty"`
 	RecommendedAction string           `json:"recommended_action,omitempty"`
 	RunRecordSummary  RunRecordSummary `json:"run_record_summary,omitempty"`
+	HintSources       []string         `json:"hint_sources,omitempty"`
 }
 
 type ManualCandidate struct {
@@ -380,6 +387,8 @@ type ManualCandidate struct {
 
 type RunRecord struct {
 	ID                  string             `json:"id"`
+	SessionID           string             `json:"session_id,omitempty"`
+	OpsManualFlowID     string             `json:"ops_manual_flow_id,omitempty"`
 	ManualID            string             `json:"manual_id,omitempty"`
 	WorkflowID          string             `json:"workflow_id"`
 	WorkflowVersion     string             `json:"workflow_version,omitempty"`
@@ -388,11 +397,13 @@ type RunRecord struct {
 	EnvironmentSnapshot EnvironmentProfile `json:"environment_snapshot"`
 	RedactedParameters  map[string]any     `json:"redacted_parameters,omitempty"`
 	ApprovalRef         string             `json:"approval_ref,omitempty"`
+	PreflightStatus     string             `json:"preflight_status,omitempty"`
 	DryRunStatus        string             `json:"dry_run_status,omitempty"`
 	ExecutionStatus     string             `json:"execution_status,omitempty"`
 	ValidationStatus    string             `json:"validation_status,omitempty"`
 	RollbackStatus      string             `json:"rollback_status,omitempty"`
 	FailureReason       string             `json:"failure_reason,omitempty"`
+	UserFeedback        string             `json:"user_feedback,omitempty"`
 	Operator            string             `json:"operator,omitempty"`
 	StartedAt           string             `json:"started_at,omitempty"`
 	CompletedAt         string             `json:"completed_at,omitempty"`
@@ -430,12 +441,13 @@ const (
 )
 
 type PreflightRequest struct {
-	ManualID       string         `json:"manual_id"`
-	WorkflowID     string         `json:"workflow_id,omitempty"`
-	OperationFrame OperationFrame `json:"operation_frame"`
-	Parameters     map[string]any `json:"parameters,omitempty"`
-	RequestedBy    string         `json:"requested_by,omitempty"`
-	TriggeredBy    string         `json:"triggered_by,omitempty"`
+	OpsManualFlowID string         `json:"ops_manual_flow_id,omitempty"`
+	ManualID        string         `json:"manual_id"`
+	WorkflowID      string         `json:"workflow_id,omitempty"`
+	OperationFrame  OperationFrame `json:"operation_frame"`
+	Parameters      map[string]any `json:"parameters,omitempty"`
+	RequestedBy     string         `json:"requested_by,omitempty"`
+	TriggeredBy     string         `json:"triggered_by,omitempty"`
 }
 
 type PreflightEvidence struct {
@@ -447,6 +459,7 @@ type PreflightEvidence struct {
 
 type PreflightResult struct {
 	Status             PreflightStatus     `json:"status"`
+	OpsManualFlowID    string              `json:"ops_manual_flow_id,omitempty"`
 	Ready              bool                `json:"ready"`
 	Reason             string              `json:"reason,omitempty"`
 	ManualID           string              `json:"manual_id,omitempty"`

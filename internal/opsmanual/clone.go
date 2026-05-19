@@ -49,6 +49,9 @@ func cloneParamCandidates(in []ParamCandidate) []ParamCandidate {
 	}
 	out := make([]ParamCandidate, len(in))
 	copy(out, in)
+	for i := range out {
+		out[i].Metadata = cloneMap(in[i].Metadata)
+	}
 	return out
 }
 
@@ -74,6 +77,7 @@ func cloneMissingParams(in []MissingParam) []MissingParam {
 		out[i].DependsOn = cloneStrings(param.DependsOn)
 		out[i].ResolverHints = cloneStrings(param.ResolverHints)
 		out[i].AskUserWhen = cloneStrings(param.AskUserWhen)
+		out[i].Candidates = cloneParamCandidates(param.Candidates)
 	}
 	return out
 }

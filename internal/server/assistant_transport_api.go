@@ -110,13 +110,66 @@ func (s *HTTPServer) decorateAssistantTransportAgentUIArtifacts(state appui.Aiop
 	}
 	switch strings.TrimSpace(command.AddMessage.Metadata["opsManualAction"]) {
 	case "":
-		return state
+		if !assistantTransportOpsManualSkipped(command.AddMessage.Metadata) {
+			return state
+		}
 	case "generate_ops_manual_candidate", "generate_runner_workflow_candidate":
 		return state
+	}
+	if assistantTransportOpsManualSkipped(command.AddMessage.Metadata) {
+		s.recordAssistantTransportOpsManualSuppression(
+			firstAssistantTransportValue(state.SessionID, command.AddMessage.SessionID),
+			command.AddMessage,
+		)
+	}
+	if assistantTransportOpsManualReference(command.AddMessage.Metadata) {
+		s.recordAssistantTransportManualGuidedReference(
+			firstAssistantTransportValue(state.SessionID, command.AddMessage.SessionID),
+			command.AddMessage,
+		)
 	}
 	state.Turns[turnID] = turn
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state
+}
+
+func (s *HTTPServer) recordAssistantTransportOpsManualSuppression(sessionID string, command *appui.TransportAddMessageCommand) {
+	if s == nil || command == nil {
+		return
+	}
+	service := s.opsManualService()
+	if service == nil {
+		return
+	}
+	_ = service.RecordSuppression(context.Background(), strings.TrimSpace(sessionID), command.Message.Text, command.Metadata)
+}
+
+func (s *HTTPServer) recordAssistantTransportManualGuidedReference(sessionID string, command *appui.TransportAddMessageCommand) {
+	if s == nil || command == nil {
+		return
+	}
+	service := s.opsManualService()
+	if service == nil {
+		return
+	}
+	_ = service.RecordManualGuidedReference(context.Background(), strings.TrimSpace(sessionID), command.Message.Text, command.Metadata)
+}
+
+func assistantTransportOpsManualSkipped(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "skip_ops_manual") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualSkipped"]), "true")
+}
+
+func assistantTransportOpsManualReference(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "reference_ops_manual")
 }
 
 func assistantTransportOpsManualSearchArtifactFromToolResult(turnID string, itemID string, tool runtimekernel.ToolResult) (appui.AiopsTransportAgentUIArtifact, bool) {

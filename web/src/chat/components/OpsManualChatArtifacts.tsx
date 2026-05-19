@@ -56,9 +56,12 @@ type ParamCandidate = {
   source?: string;
   confidence?: number;
   evidence?: string;
+  metadata?: LooseRecord;
 };
 
 const OPS_MANUAL_SKIP_ACTION = "skip_ops_manual";
+const OPS_MANUAL_REFERENCE_ACTION = "reference_ops_manual";
+const OPS_MANUAL_PREFLIGHT_ACTION = "run_ops_manual_preflight";
 
 const STATE_LABELS: Record<string, string> = {
   direct_execute: "可进入预检",
@@ -304,6 +307,7 @@ export function OpsManualSearchResultArtifact({
   const operationFrame = asRecord(
     pick(data, "operationFrame", "operation_frame"),
   );
+  const flowId = text(pick(data, "opsManualFlowId", "ops_manual_flow_id"));
   const rawManuals = arrayRecords(
     pick(data, "manuals", "hits", "matches", "items"),
   );
@@ -398,6 +402,7 @@ export function OpsManualSearchResultArtifact({
             hit={manuals[0]}
             operationFrame={operationFrame}
             artifactId={artifact.id}
+            flowId={flowId}
             autoContinueContext={false}
           />
         ) : null}
@@ -467,6 +472,7 @@ export function OpsManualSearchResultArtifact({
           hit={manuals[0]}
           operationFrame={operationFrame}
           artifactId={artifact.id}
+          flowId={flowId}
           autoContinueContext={false}
         />
       ) : null}
@@ -479,6 +485,9 @@ export function OpsManualSearchResultArtifact({
               hit={hit}
               index={index}
               operationFrame={operationFrame}
+              artifactId={artifact.id}
+              flowId={flowId}
+              decision={decision}
             />
           ))}
         </div>
@@ -561,6 +570,10 @@ function OpsManualProgressCard({
         "workflow_id",
       ),
     ),
+  );
+  const flowId = text(
+    pick(paramResolution, "opsManualFlowId", "ops_manual_flow_id"),
+    text(pick(data, "opsManualFlowId", "ops_manual_flow_id")),
   );
   const status = normalizeParamResolutionStatus(
     text(pick(paramResolution, "status"), "unresolved"),
@@ -675,7 +688,10 @@ function OpsManualProgressCard({
       </div>
 
       {resolvedParams.length ? (
-        <section className="mt-3 rounded-md border border-slate-200 bg-white p-2">
+        <section
+          className="mt-3 rounded-md border border-slate-200 bg-white p-2"
+          data-testid="ops-manual-resolved-params"
+        >
           <button
             type="button"
             className="flex w-full items-center justify-between gap-2 text-left"
@@ -684,27 +700,31 @@ function OpsManualProgressCard({
           >
             <span className="font-medium text-slate-700">已解析参数</span>
             <span className="text-[11px] text-slate-400">
-              {paramsExpanded ? "收起" : "查看证据"}
+              {paramsExpanded ? "收起详细参数" : "查看详细参数"}
             </span>
           </button>
-          <dl
-            className={[
-              "mt-2 grid gap-2",
-              paramsExpanded
-                ? "sm:grid-cols-[8rem_1fr]"
-                : "sm:grid-cols-[6rem_1fr]",
-            ].join(" ")}
-          >
-            {(paramsExpanded ? resolvedParams : resolvedParams.slice(0, 2)).map(
-              (param, index) => (
+          {paramsExpanded ? (
+            <dl className="mt-2 grid gap-2 sm:grid-cols-[8rem_1fr]">
+              {resolvedParams.map((param, index) => (
                 <CompactParamValueRow
                   key={`${text(pick(param, "id"), String(index))}-${index}`}
                   param={param}
-                  showEvidence={paramsExpanded}
+                  showEvidence
                 />
-              ),
-            )}
-          </dl>
+              ))}
+            </dl>
+          ) : (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {resolvedParams.map((param, index) => (
+                <span
+                  key={`${text(pick(param, "id"), String(index))}-${index}`}
+                  className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-slate-600"
+                >
+                  {paramDisplayLabel(text(pick(param, "id")))}
+                </span>
+              ))}
+            </div>
+          )}
         </section>
       ) : null}
 
@@ -763,9 +783,13 @@ function OpsManualProgressCard({
                 artifact.id,
                 `运行运维手册预检：${manualId || workflowId || manualTitle}`,
                 {
-                  opsManualAction: "run_ops_manual_preflight",
-                  manualId,
-                  workflowId,
+                  ...preflightManualMetadata(
+                    manualId,
+                    workflowId,
+                    manualTitle,
+                    operationFrame,
+                    flowId,
+                  ),
                   resolvedParamsJson: JSON.stringify(
                     resolvedParamsToPayload(resolvedParams),
                   ),
@@ -786,13 +810,41 @@ function OpsManualProgressCard({
           size="sm"
           variant="outline"
           className="h-8 rounded-md"
+          onClick={() => {
+            dispatchComposerContextSubmit(
+              artifact.id,
+              referenceManualText(manualTitle, operationFrame),
+              referenceManualMetadata(
+                manualId,
+                workflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
+            );
+          }}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          仅参考手册
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-md"
           disabled={skipSubmitted}
           onClick={() => {
             setSkipSubmitted(true);
             dispatchComposerContextSubmit(
               artifact.id,
               skipManualText(manualTitle, operationFrame),
-              skipManualMetadata(manualId, workflowId, manualTitle),
+              skipManualMetadata(
+                manualId,
+                workflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
             );
           }}
         >
@@ -1014,6 +1066,10 @@ export function OpsManualPreflightResultArtifact({
   const reason = text(pick(data, "reason"));
   const manualId = text(pick(data, "manualId", "manual_id"));
   const workflowId = text(pick(data, "workflowId", "workflow_id"));
+  const operationFrame = asRecord(
+    pick(data, "operationFrame", "operation_frame"),
+  );
+  const flowId = text(pick(data, "opsManualFlowId", "ops_manual_flow_id"));
   const probeId = text(pick(data, "probeId", "probe_id"));
   const evidence = arrayRecords(pick(data, "evidence"));
   const missingPermissions = stringArray(
@@ -1181,6 +1237,10 @@ export function OpsManualParamResolutionArtifact({
   );
   const manualId = text(pick(data, "manualId", "manual_id"));
   const workflowId = text(pick(data, "workflowId", "workflow_id"));
+  const operationFrame = asRecord(
+    pick(data, "operationFrame", "operation_frame"),
+  );
+  const flowId = text(pick(data, "opsManualFlowId", "ops_manual_flow_id"));
   const resolvedParams = arrayRecords(
     pick(data, "resolvedParams", "resolved_params"),
   );
@@ -1306,6 +1366,11 @@ export function OpsManualParamResolutionArtifact({
                         className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-slate-600"
                       >
                         {candidateLabel(candidate)}
+                        {candidateDetailText(candidate) ? (
+                          <span className="ml-1 text-slate-500">
+                            {candidateDetailText(candidate)}
+                          </span>
+                        ) : null}
                       </span>
                     ))}
                   </div>
@@ -1331,9 +1396,13 @@ export function OpsManualParamResolutionArtifact({
                 artifact.id,
                 `运行运维手册预检：${manualId || workflowId || "当前手册"}`,
                 {
-                  opsManualAction: "run_ops_manual_preflight",
-                  manualId,
-                  workflowId,
+                  ...preflightManualMetadata(
+                    manualId,
+                    workflowId,
+                    manualId || "当前运维手册",
+                    operationFrame,
+                    flowId,
+                  ),
                   resolvedParamsJson: JSON.stringify(
                     resolvedParamsToPayload(resolvedParams),
                   ),
@@ -1349,6 +1418,28 @@ export function OpsManualParamResolutionArtifact({
             {preflightRunning ? "预检中" : "运行预检"}
           </Button>
         ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-md"
+          onClick={() => {
+            dispatchComposerContextSubmit(
+              artifact.id,
+              referenceManualText(manualId || "当前运维手册", operationFrame),
+              referenceManualMetadata(
+                manualId,
+                workflowId,
+                manualId || "当前运维手册",
+                operationFrame,
+                flowId,
+              ),
+            );
+          }}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          仅参考手册
+        </Button>
         {status === "resolved" && hasMergedPreflightResult ? (
           <span
             className="inline-flex h-8 items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 text-emerald-700"
@@ -1373,6 +1464,8 @@ export function OpsManualParamResolutionArtifact({
                 manualId,
                 workflowId,
                 manualId || "当前运维手册",
+                operationFrame,
+                flowId,
               ),
             );
           }}
@@ -1666,14 +1759,17 @@ function CompactManualCandidate({
   hit,
   operationFrame,
   artifactId,
+  flowId = "",
   autoContinueContext = false,
 }: {
   hit: LooseRecord;
   operationFrame?: LooseRecord;
   artifactId?: string;
+  flowId?: string;
   autoContinueContext?: boolean;
 }) {
   const [skipSubmitted, setSkipSubmitted] = useState(false);
+  const [referenceSubmitted, setReferenceSubmitted] = useState(false);
   const manualTitle = manualTitleFromHit(hit) || "候选运维手册";
   const manualId = manualIdFromHit(hit);
   const boundWorkflowId = text(
@@ -1759,11 +1855,41 @@ function CompactManualCandidate({
             dispatchComposerContextSubmit(
               artifactId || "",
               skipManualText(manualTitle, operationFrame),
-              skipManualMetadata(manualId, boundWorkflowId, manualTitle),
+              skipManualMetadata(
+                manualId,
+                boundWorkflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
             );
           }}
         >
           {skipSubmitted ? "已切换" : "不使用"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-md"
+          disabled={referenceSubmitted}
+          onClick={() => {
+            setReferenceSubmitted(true);
+            dispatchComposerContextSubmit(
+              artifactId || "",
+              referenceManualText(manualTitle, operationFrame),
+              referenceManualMetadata(
+                manualId,
+                boundWorkflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
+            );
+          }}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {referenceSubmitted ? "已参考" : "仅参考手册"}
         </Button>
         <Button
           type="button"
@@ -1803,6 +1929,14 @@ function CompactManualCandidate({
           data-testid="ops-manual-skip-submitted"
         >
           已切换为普通只读排查，等待 Agent 继续处理。
+        </div>
+      ) : null}
+      {referenceSubmitted ? (
+        <div
+          className="border-t border-slate-100 px-2 py-2 text-slate-600"
+          data-testid="ops-manual-reference-submitted"
+        >
+          已切换为仅参考手册，Agent 将按手册经验逐步排查，不进入 Workflow 预检。
         </div>
       ) : null}
     </div>
@@ -2021,12 +2155,22 @@ function SearchManualHit({
   hit,
   index,
   operationFrame,
+  artifactId,
+  flowId = "",
+  decision = "",
 }: {
   hit: LooseRecord;
   index: number;
   operationFrame?: LooseRecord;
+  artifactId: string;
+  flowId?: string;
+  decision?: string;
 }) {
+  const [skipSubmitted, setSkipSubmitted] = useState(false);
+  const [referenceSubmitted, setReferenceSubmitted] = useState(false);
+  const [preflightRunning, setPreflightRunning] = useState(false);
   const manualTitle = manualTitleFromHit(hit) || `相关手册 ${index + 1}`;
+  const manualId = manualIdFromHit(hit);
   const boundWorkflowId = text(
     pick(
       hit,
@@ -2056,6 +2200,11 @@ function SearchManualHit({
     operationFrame,
     usableMode,
   );
+  const canRunPreflight =
+    decision === "direct_execute" ||
+    decision === "direct" ||
+    usableMode === "direct_execute" ||
+    usableMode === "direct";
 
   return (
     <section className="rounded-md border border-slate-200 bg-white p-2">
@@ -2097,6 +2246,108 @@ function SearchManualHit({
           </>
         ) : null}
       </dl>
+      <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-200 pt-3">
+        {canRunPreflight ? (
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-md"
+            disabled={preflightRunning}
+            onClick={() => {
+              setPreflightRunning(true);
+              dispatchComposerContextSubmit(
+                artifactId,
+                preflightManualText(manualTitle, operationFrame),
+                preflightManualMetadata(
+                  manualId,
+                  boundWorkflowId,
+                  manualTitle,
+                  operationFrame,
+                  flowId,
+                ),
+              );
+            }}
+          >
+            {preflightRunning ? (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ShieldCheck className="h-3.5 w-3.5" />
+            )}
+            {preflightRunning ? "预检中" : "运行预检"}
+          </Button>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-md"
+          disabled={referenceSubmitted}
+          onClick={() => {
+            setReferenceSubmitted(true);
+            dispatchComposerContextSubmit(
+              artifactId,
+              referenceManualText(manualTitle, operationFrame),
+              referenceManualMetadata(
+                manualId,
+                boundWorkflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
+            );
+          }}
+        >
+          <FileText className="h-3.5 w-3.5" />
+          {referenceSubmitted ? "已参考" : "仅参考手册"}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-8 rounded-md"
+          disabled={skipSubmitted}
+          onClick={() => {
+            setSkipSubmitted(true);
+            dispatchComposerContextSubmit(
+              artifactId,
+              skipManualText(manualTitle, operationFrame),
+              skipManualMetadata(
+                manualId,
+                boundWorkflowId,
+                manualTitle,
+                operationFrame,
+                flowId,
+              ),
+            );
+          }}
+        >
+          {skipSubmitted ? "已切换" : "不使用"}
+        </Button>
+      </div>
+      {preflightRunning ? (
+        <div
+          className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-sky-700"
+          data-testid="ops-manual-preflight-running"
+        >
+          预检请求已提交，正在等待只读探针结果。
+        </div>
+      ) : null}
+      {referenceSubmitted ? (
+        <div
+          className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-slate-600"
+          data-testid="ops-manual-reference-submitted"
+        >
+          已切换为仅参考手册，Agent 将按手册经验逐步排查，不进入 Workflow 预检。
+        </div>
+      ) : null}
+      {skipSubmitted ? (
+        <div
+          className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-slate-600"
+          data-testid="ops-manual-skip-submitted"
+        >
+          已切换为普通只读排查，等待 Agent 继续处理。
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2177,6 +2428,7 @@ function paramCandidates(value: unknown): ParamCandidate[] {
         source: text(pick(record, "source")),
         confidence: numberValue(pick(record, "confidence")),
         evidence: text(pick(record, "evidence")),
+        metadata: asRecord(pick(record, "metadata")),
       };
     })
     .filter((candidate): candidate is ParamCandidate => Boolean(candidate));
@@ -2184,6 +2436,36 @@ function paramCandidates(value: unknown): ParamCandidate[] {
 
 function candidateLabel(candidate: ParamCandidate) {
   return candidate.label || text(candidate.value) || "候选项";
+}
+
+function candidateDetailText(candidate: ParamCandidate) {
+  const metadata = candidate.metadata || {};
+  const details: string[] = [];
+  const image = text(
+    pick(metadata, "image"),
+    stringArray(pick(metadata, "container_images", "containerImages"))[0] || "",
+  );
+  const ports = [
+    ...stringArray(pick(metadata, "ports")),
+    ...stringArray(pick(metadata, "listening_ports", "listeningPorts")),
+  ];
+  const health = text(pick(metadata, "health"));
+  const namespace = text(pick(metadata, "namespace"));
+  const phase = text(pick(metadata, "phase"));
+  const service = text(
+    pick(metadata, "systemd_service", "systemdService", "service"),
+  );
+  const owner = text(pick(metadata, "process_owner", "processOwner"));
+  const version = text(pick(metadata, "version"));
+  if (image) details.push(`image ${image}`);
+  if (ports.length) details.push(`ports ${ports.join(",")}`);
+  if (health) details.push(`health ${health}`);
+  if (namespace) details.push(`namespace ${namespace}`);
+  if (phase) details.push(`phase ${phase}`);
+  if (service) details.push(`service ${service}`);
+  if (owner) details.push(`owner ${owner}`);
+  if (version) details.push(`version ${version}`);
+  return details.join(" | ");
 }
 
 function paramDisplayLabel(id: string) {
@@ -2425,18 +2707,99 @@ function skipManualText(manualTitle: string, operationFrame?: LooseRecord) {
   return `已选择跳过运维手册「${manualTitle}」。本轮后续不要再调用 search_ops_manuals、resolve_ops_manual_params 或 run_ops_manual_preflight；请按普通只读排查继续。${operationText}默认使用当前选择主机；先做只读检查。`;
 }
 
+function referenceManualText(manualTitle: string, operationFrame?: LooseRecord) {
+  const operation = operationFrameLabel(operationFrame);
+  const operationText = operation ? `当前请求：${operation}；` : "";
+  return `仅参考运维手册「${manualTitle}」。请进入 manual-guided chat，按手册经验逐步做只读排查和命令审核，不要进入 Workflow 预检或自动执行工作流。${operationText}`;
+}
+
+function preflightManualText(manualTitle: string, operationFrame?: LooseRecord) {
+  const operation = operationFrameLabel(operationFrame);
+  const operationText = operation ? `当前请求：${operation}；` : "";
+  return `使用运维手册「${manualTitle}」运行只读预检。${operationText}只做预检探针，通过后再等待用户确认 Dry Run。`;
+}
+
+function opsManualActionMetadata(
+  actionName: string,
+  manualId: string,
+  workflowId: string,
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+  flowId = "",
+): Record<string, string> {
+  const objectType = operationFrameObjectValue(operationFrame);
+  const action = operationFrameOperationValue(operationFrame);
+  const targetScope = operationFrameTargetScopeValue(operationFrame);
+  return {
+    opsManualAction: actionName,
+    ...(manualId ? { opsManualManualId: manualId, manualId, manual_id: manualId } : {}),
+    ...(workflowId
+      ? { opsManualWorkflowId: workflowId, workflowId, workflow_id: workflowId }
+      : {}),
+    ...(manualTitle ? { opsManualManualTitle: manualTitle } : {}),
+    ...(objectType ? { opsManualObjectType: objectType, object_type: objectType } : {}),
+    ...(action
+      ? { opsManualOperationAction: action, operation_type: action, action }
+      : {}),
+    ...(targetScope
+      ? { opsManualTargetScope: targetScope, target_scope: targetScope }
+      : {}),
+    ...(flowId ? { opsManualFlowId: flowId, ops_manual_flow_id: flowId } : {}),
+  };
+}
+
 function skipManualMetadata(
   manualId: string,
   workflowId: string,
   manualTitle: string,
+  operationFrame?: LooseRecord,
+  flowId = "",
 ): Record<string, string> {
   return {
-    opsManualAction: OPS_MANUAL_SKIP_ACTION,
+    ...opsManualActionMetadata(
+      OPS_MANUAL_SKIP_ACTION,
+      manualId,
+      workflowId,
+      manualTitle,
+      operationFrame,
+      flowId,
+    ),
     opsManualSkipped: "true",
-    ...(manualId ? { opsManualManualId: manualId, manualId } : {}),
-    ...(workflowId ? { opsManualWorkflowId: workflowId, workflowId } : {}),
-    ...(manualTitle ? { opsManualManualTitle: manualTitle } : {}),
   };
+}
+
+function referenceManualMetadata(
+  manualId: string,
+  workflowId: string,
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+  flowId = "",
+): Record<string, string> {
+  return opsManualActionMetadata(
+    OPS_MANUAL_REFERENCE_ACTION,
+    manualId,
+    workflowId,
+    manualTitle,
+    operationFrame,
+    flowId,
+  );
+}
+
+function preflightManualMetadata(
+  manualId: string,
+  workflowId: string,
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+  flowId = "",
+): Record<string, string> {
+  return opsManualActionMetadata(
+    OPS_MANUAL_PREFLIGHT_ACTION,
+    manualId,
+    workflowId,
+    manualTitle,
+    operationFrame,
+    flowId,
+  );
 }
 
 function manualPreviewFromHit(hit: LooseRecord) {
@@ -2547,27 +2910,55 @@ function blockedReasonLabel(
 }
 
 function operationFrameObjectLabel(frame?: LooseRecord) {
+  return taxonomyLabel(operationFrameObjectValue(frame));
+}
+
+function operationFrameObjectValue(frame?: LooseRecord) {
   const current = asRecord(frame);
   const target = asRecord(pick(current, "target"));
   const operation = asRecord(pick(current, "operation"));
-  const raw = text(
+  return text(
     pick(current, "objectType", "object_type"),
     text(
       pick(target, "type"),
       text(pick(operation, "target_type", "targetType")),
     ),
   );
-  return taxonomyLabel(raw);
 }
 
 function operationFrameOperationLabel(frame?: LooseRecord) {
+  const raw = operationFrameOperationValue(frame);
+  return taxonomyLabel(raw) || raw;
+}
+
+function operationFrameOperationValue(frame?: LooseRecord) {
   const current = asRecord(frame);
   const operation = asRecord(pick(current, "operation"));
-  const raw = text(
+  return text(
     pick(current, "operationType", "operation_type"),
     text(pick(operation, "action", "type")),
   );
-  return taxonomyLabel(raw) || raw;
+}
+
+function operationFrameTargetScopeValue(frame?: LooseRecord) {
+  const current = asRecord(frame);
+  const target = asRecord(pick(current, "target"));
+  const scope = asRecord(pick(current, "targetScope", "target_scope"));
+  const hostValues = stringArray(pick(scope, "hosts", "host"));
+  const targetName = text(pick(target, "name"));
+  const hosts = hostValues.length ? hostValues : targetName ? [targetName] : [];
+  const parts: string[] = [];
+  for (const host of hosts) {
+    if (host.trim()) parts.push(`host:${host.trim()}`);
+  }
+  for (const [key, value] of [
+    ["cluster", text(pick(scope, "cluster"))],
+    ["namespace", text(pick(scope, "namespace"))],
+    ["service", text(pick(scope, "service"))],
+  ] as const) {
+    if (value.trim()) parts.push(`${key}:${value.trim()}`);
+  }
+  return Array.from(new Set(parts)).join("|").toLowerCase();
 }
 
 function taxonomyLabel(value: string) {

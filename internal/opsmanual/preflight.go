@@ -54,8 +54,16 @@ func (s *Service) RunPreflight(req PreflightRequest) (PreflightResult, error) {
 		result.NextAction = "request_permission"
 		return result, nil
 	}
+	if truthyParam(req.Parameters, "simulate_provider_unavailable") {
+		result.Status = PreflightStatusBlocked
+		result.Ready = false
+		result.Reason = "preflight provider is unavailable"
+		result.NextAction = "fix_provider"
+		result.Evidence = append(result.Evidence, PreflightEvidence{Name: "provider_available", Status: "failed", Value: false, Note: "provider unavailable"})
+		return result, nil
+	}
 	if truthyParam(req.Parameters, "simulate_target_missing") {
-		result.Status = PreflightStatusFailed
+		result.Status = PreflightStatusBlocked
 		result.Ready = false
 		result.Reason = "target instance is not reachable"
 		result.NextAction = "fallback_guide"
@@ -80,13 +88,23 @@ func (s *Service) RunPreflight(req PreflightRequest) (PreflightResult, error) {
 }
 
 func basePreflightResult(manual OpsManual, req PreflightRequest) PreflightResult {
+	workflowID := firstNonEmpty(strings.TrimSpace(req.WorkflowID), strings.TrimSpace(manual.WorkflowRef.WorkflowID))
+	flowID := strings.TrimSpace(req.OpsManualFlowID)
+	if flowID == "" {
+		flowID = BuildOpsManualFlowID(OpsManualFlowIDInput{
+			ManualID:       manual.ID,
+			WorkflowID:     workflowID,
+			OperationFrame: req.OperationFrame,
+		})
+	}
 	return PreflightResult{
-		Status:       PreflightStatusUnknown,
-		Ready:        false,
-		ManualID:     manual.ID,
-		WorkflowID:   firstNonEmpty(strings.TrimSpace(req.WorkflowID), strings.TrimSpace(manual.WorkflowRef.WorkflowID)),
-		CheckedAt:    time.Now().UTC().Format(time.RFC3339),
-		ArtifactType: preflightArtifactType,
+		Status:          PreflightStatusUnknown,
+		OpsManualFlowID: flowID,
+		Ready:           false,
+		ManualID:        manual.ID,
+		WorkflowID:      workflowID,
+		CheckedAt:       time.Now().UTC().Format(time.RFC3339),
+		ArtifactType:    preflightArtifactType,
 	}
 }
 

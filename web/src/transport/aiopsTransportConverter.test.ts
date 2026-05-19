@@ -419,6 +419,128 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
+  it("merges legacy parameter resolution when workflow_id carries the search flow id", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "need_info",
+            ops_manual_flow_id: "flow-search-mysql",
+            manuals: [
+              {
+                manual: { id: "manual-mysql-backup-ssh", title: "MySQL SSH 备份运维手册" },
+                bound_workflow_id: "workflow-mysql-backup-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-params",
+          type: "ops_manual_param_resolution",
+          inlineData: {
+            status: "need_user_input",
+            ops_manual_flow_id: "flow-regenerated-params",
+            manual_id: "manual-mysql-backup-ssh",
+            workflow_id: "flow-search-mysql",
+            fields: [{ id: "backup_path", label: "备份路径" }],
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-params",
+      type: "ops_manual_search_result",
+      inlineData: {
+        original_search_artifact_id: "artifact-ops-manual-search",
+        merged_param_resolution: expect.objectContaining({
+          artifact_id: "artifact-ops-manual-params",
+          manual_id: "manual-mysql-backup-ssh",
+          workflow_id: "flow-search-mysql",
+        }),
+      },
+    });
+  });
+
+  it("uses ops_manual_flow_id before manual and workflow heuristics when merging preflight results", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search-a",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "direct_execute",
+            ops_manual_flow_id: "flow-a",
+            manuals: [
+              {
+                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                bound_workflow_id: "workflow-redis-rca-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-search-b",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "direct_execute",
+            ops_manual_flow_id: "flow-b",
+            manuals: [
+              {
+                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                bound_workflow_id: "workflow-redis-rca-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-preflight-b",
+          type: "ops_manual_preflight_result",
+          inlineData: {
+            status: "passed",
+            ready: true,
+            ops_manual_flow_id: "flow-b",
+            manual_id: "manual-redis-rca-ssh",
+            workflow_id: "workflow-redis-rca-ssh",
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-search-a",
+      inlineData: expect.not.objectContaining({
+        merged_preflight_result: expect.anything(),
+      }),
+    });
+    expect(artifacts?.[1]).toMatchObject({
+      id: "artifact-ops-manual-search-b",
+      inlineData: {
+        ops_manual_flow_id: "flow-b",
+        merged_preflight_result: expect.objectContaining({
+          artifact_id: "artifact-ops-manual-preflight-b",
+          ops_manual_flow_id: "flow-b",
+        }),
+      },
+    });
+  });
+
   it("treats working and blocked transport states as running", () => {
     const state = createState();
 

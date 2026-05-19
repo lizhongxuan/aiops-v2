@@ -55,11 +55,14 @@ const runRecordsPayload = {
   items: [
     {
       id: "run-redis-1",
+      ops_manual_flow_id: "flow-redis-1",
       manual_id: "manual-redis-memory",
       workflow_id: "workflow-redis-memory",
+      preflight_status: "passed",
       dry_run_status: "passed",
       execution_status: "success",
       validation_status: "passed",
+      user_feedback: "applicable",
       operator: "sre",
       completed_at: "2026-05-14T09:00:00+08:00",
     },
@@ -77,12 +80,27 @@ const runRecordsPayload = {
   ],
 };
 
+const flowTimelinePayload = {
+  items: [
+    { id: "search-1", type: "search", ops_manual_flow_id: "flow-redis-1", summary: "direct_execute", redaction_status: "redacted", created_at: "2026-05-14T08:59:00+08:00" },
+    { id: "param-1", type: "param_resolution", ops_manual_flow_id: "flow-redis-1", summary: "resolved", redaction_status: "redacted", created_at: "2026-05-14T08:59:10+08:00" },
+    { id: "form-1", type: "user_form_submit", ops_manual_flow_id: "flow-redis-1", summary: "target_instance", redaction_status: "redacted", created_at: "2026-05-14T08:59:20+08:00" },
+    { id: "preflight-1", type: "preflight", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T08:59:30+08:00" },
+    { id: "dry-run-1", type: "dry_run", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T08:59:40+08:00" },
+    { id: "execution-1", type: "execution", ops_manual_flow_id: "flow-redis-1", summary: "success", redaction_status: "redacted", created_at: "2026-05-14T09:00:00+08:00" },
+    { id: "verification-1", type: "verification", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T09:00:05+08:00" },
+    { id: "feedback-1", type: "user_feedback", ops_manual_flow_id: "flow-redis-1", summary: "applicable", redaction_status: "redacted", created_at: "2026-05-14T09:00:10+08:00" },
+    { id: "reference-1", type: "manual_guided_reference", ops_manual_flow_id: "flow-redis-1", summary: "只参考手册", redaction_status: "redacted", created_at: "2026-05-14T09:00:20+08:00" },
+  ],
+};
+
 function jsonResponse(payload: unknown) {
   return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
 
 function mockFetch(input: RequestInfo | URL) {
   const url = String(input);
+  if (url.includes("/api/v1/ops-manuals/flows/flow-redis-1/timeline")) return jsonResponse(flowTimelinePayload);
   if (url.includes("/api/v1/ops-manuals/candidates")) return jsonResponse(candidatesPayload);
   if (url.includes("/api/v1/ops-manuals/run-records")) return jsonResponse(runRecordsPayload);
   if (url.includes("/api/v1/ops-manuals")) return jsonResponse(manualsPayload);
@@ -165,6 +183,16 @@ describe("OpsManualsPage", () => {
     expect(container.textContent).toContain("成功 1");
     expect(container.textContent).toContain("失败 1");
     expect(container.textContent).toContain("指标未恢复");
+    expect(container.textContent).toContain("流程时间线");
+    expect(container.textContent).toContain("检索");
+    expect(container.textContent).toContain("参数解析");
+    expect(container.textContent).toContain("用户表单");
+    expect(container.textContent).toContain("预检");
+    expect(container.textContent).toContain("Dry Run");
+    expect(container.textContent).toContain("执行");
+    expect(container.textContent).toContain("验证");
+    expect(container.textContent).toContain("用户反馈");
+    expect(container.textContent).toContain("仅参考手册");
     expect(container.textContent ?? "").not.toMatch(/Gene|Capsule|GEP|EvolutionEvent/);
   });
 

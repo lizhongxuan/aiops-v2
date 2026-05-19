@@ -11,8 +11,16 @@ func TestLocalResourceDiscoveryDiscoversDockerMiddleware(t *testing.T) {
 	discovery := NewLocalResourceDiscoveryWithRunner(func(_ context.Context, command string, args ...string) ([]byte, error) {
 		switch command {
 		case "docker":
+			if len(args) > 0 && args[0] == "inspect" {
+				return []byte(`[{
+					"Created": "2026-05-19T01:02:03Z",
+					"Mounts": [{"Source": "/data/redis", "Destination": "/data"}],
+					"NetworkSettings": {"Networks": {"aiops-net": {}}},
+					"State": {"Health": {"Status": "healthy"}}
+				}]`), nil
+			}
 			return []byte(strings.Join([]string{
-				"abc123\taiops-redis\tredis:7\t0.0.0.0:6379->6379/tcp\tUp 10 minutes",
+				"abc123\taiops-redis\tredis:7\t0.0.0.0:6379->6379/tcp\tUp 10 minutes (healthy)\t2026-05-19 01:02:03 +0000 UTC",
 				"def456\taiops-postgres\tpostgres:16\t0.0.0.0:5432->5432/tcp\tUp 8 minutes",
 				"ghi789\taiops-mysql\tmysql:8\t0.0.0.0:3306->3306/tcp\tUp 6 minutes",
 			}, "\n")), nil
@@ -33,6 +41,12 @@ func TestLocalResourceDiscoveryDiscoversDockerMiddleware(t *testing.T) {
 	if resources[0].ID != "docker:aiops-redis" || resources[0].Type != "redis" || resources[0].Surface != "docker exec aiops-redis" {
 		t.Fatalf("redis resource = %#v", resources[0])
 	}
+	if resources[0].Image != "redis:7" || !containsString(resources[0].Ports, "0.0.0.0:6379->6379/tcp") || resources[0].Health != "healthy" {
+		t.Fatalf("redis docker metadata = %#v", resources[0])
+	}
+	if !containsString(resources[0].Mounts, "/data/redis:/data") || !containsString(resources[0].Networks, "aiops-net") || resources[0].CreatedAt == "" {
+		t.Fatalf("redis docker inspect metadata = %#v", resources[0])
+	}
 	if resources[1].Type != "postgresql" {
 		t.Fatalf("postgres resource = %#v", resources[1])
 	}
@@ -47,7 +61,7 @@ func TestLocalResourceDiscoveryDockerFailureFallsBackToHostProcesses(t *testing.
 		case "docker":
 			return nil, errors.New("docker not found")
 		case "ps":
-			return []byte("COMM ARGS\nredis-server redis-server *:6379\nmysqld /usr/sbin/mysqld\n"), nil
+			return []byte("USER COMM ARGS\nredis redis-server redis-server 7.2.1 *:6379\nmysql mysqld /usr/sbin/mysqld --port=3306\n"), nil
 		default:
 			return nil, errors.New("unexpected command")
 		}
@@ -62,6 +76,9 @@ func TestLocalResourceDiscoveryDockerFailureFallsBackToHostProcesses(t *testing.
 	}
 	if resources[0].Type != "redis" || resources[0].Surface != "ssh db-01" {
 		t.Fatalf("host redis resource = %#v", resources[0])
+	}
+	if resources[0].ProcessOwner != "redis" || !containsString(resources[0].ListeningPorts, "6379") || resources[0].SystemdService != "redis-server.service" || resources[0].Version != "7.2.1" {
+		t.Fatalf("host redis metadata = %#v", resources[0])
 	}
 	if resources[1].Type != "mysql" {
 		t.Fatalf("host mysql resource = %#v", resources[1])
@@ -172,12 +189,29 @@ func TestLocalResourceDiscoveryDiscoversK8sPodsAndServices(t *testing.T) {
 	if pod.Surface != "kubectl -n cache exec redis-0 --" || pod.Labels["app"] != "redis" {
 		t.Fatalf("pod surface/labels = %#v", pod)
 	}
+	if pod.Phase != "Running" || !containsString(pod.ContainerImages, "redis:7") {
+		t.Fatalf("pod metadata = %#v", pod)
+	}
 	service := resources[1]
 	if service.ID != "k8s:service:data/postgresql" || service.Type != "postgresql" || service.Namespace != "data" || service.Service != "postgresql" {
 		t.Fatalf("service resource = %#v", service)
 	}
 	if service.Surface != "kubectl -n data get service postgresql" || service.Labels["app.kubernetes.io/name"] != "postgresql" {
 		t.Fatalf("service surface/labels = %#v", service)
+	}
+}
+
+func TestCorootResolverReportsProviderUnavailableWithoutCandidate(t *testing.T) {
+	registry := NewDefaultParamResolverRegistry(fakeResourceDiscovery{})
+	result, _ := registry.Resolve(context.Background(), ParamResolverRequest{
+		Requirement: ParamRequirement{ID: "target_instance", Type: "resource_ref"},
+		Manual:      OpsManual{Operation: OperationProfile{TargetType: "redis"}},
+	})
+	if result.Message == "" || !strings.Contains(result.Message, "coroot provider unavailable") {
+		t.Fatalf("message = %q, want coroot provider unavailable evidence", result.Message)
+	}
+	if len(result.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want no fabricated coroot candidate", result.Candidates)
 	}
 }
 
@@ -236,4 +270,13 @@ func TestLocalResourceDiscoveryCorootPlaceholderDoesNotCallNetwork(t *testing.T)
 			t.Fatalf("coroot placeholder made network command: %s", command)
 		}
 	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }

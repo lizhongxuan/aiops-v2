@@ -129,11 +129,20 @@ func (s *HTTPServer) handleOpsManuals(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && path == "run-records":
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		result, err := service.ListRunRecords(appui.OpsManualRunRecordsRequest{
-			WorkflowID: r.URL.Query().Get("workflow_id"),
-			Limit:      limit,
+			OpsManualFlowID: r.URL.Query().Get("ops_manual_flow_id"),
+			WorkflowID:      r.URL.Query().Get("workflow_id"),
+			Limit:           limit,
 		})
 		if err != nil {
 			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidOperationFrame, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "flows/") && strings.HasSuffix(path, "/timeline"):
+		flowID := strings.TrimSuffix(strings.TrimPrefix(path, "flows/"), "/timeline")
+		result, err := service.FlowTimeline(flowID)
+		if err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, result)

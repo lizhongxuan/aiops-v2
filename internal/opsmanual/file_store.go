@@ -15,16 +15,18 @@ type FileStore struct {
 }
 
 type fileStoreState struct {
-	Manuals               []OpsManual            `json:"manuals"`
-	Candidates            []ManualCandidate      `json:"candidates"`
-	RunRecords            []RunRecord            `json:"run_records"`
-	ParamResolutionEvents []ParamResolutionEvent `json:"param_resolution_events,omitempty"`
+	Manuals               []OpsManual             `json:"manuals"`
+	Candidates            []ManualCandidate       `json:"candidates"`
+	RunRecords            []RunRecord             `json:"run_records"`
+	ParamResolutionEvents []ParamResolutionEvent  `json:"param_resolution_events,omitempty"`
+	ManualGuidedEvents    []ManualGuidedChatEvent `json:"manual_guided_events,omitempty"`
 }
 
 var _ ManualRepository = (*FileStore)(nil)
 var _ CandidateRepository = (*FileStore)(nil)
 var _ RunRecordRepository = (*FileStore)(nil)
 var _ ParamResolutionEventRepository = (*FileStore)(nil)
+var _ ManualGuidedChatEventRepository = (*FileStore)(nil)
 
 func NewFileStore(path string) (*FileStore, error) {
 	if path == "" {
@@ -115,6 +117,19 @@ func (s *FileStore) ListParamResolutionEvents(req ListParamResolutionEventsReque
 	return s.mem.ListParamResolutionEvents(req)
 }
 
+func (s *FileStore) SaveManualGuidedChatEvent(event ManualGuidedChatEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.mem.SaveManualGuidedChatEvent(event); err != nil {
+		return err
+	}
+	return s.persist()
+}
+
+func (s *FileStore) ListManualGuidedChatEvents(req ListManualGuidedChatEventsRequest) ([]ManualGuidedChatEvent, error) {
+	return s.mem.ListManualGuidedChatEvents(req)
+}
+
 func (s *FileStore) load() error {
 	raw, err := os.ReadFile(s.path)
 	if os.IsNotExist(err) {
@@ -147,6 +162,11 @@ func (s *FileStore) load() error {
 			return err
 		}
 	}
+	for _, event := range state.ManualGuidedEvents {
+		if err := s.mem.SaveManualGuidedChatEvent(event); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -167,7 +187,11 @@ func (s *FileStore) persist() error {
 	if err != nil {
 		return err
 	}
-	state := fileStoreState{Manuals: manuals, Candidates: candidates, RunRecords: records, ParamResolutionEvents: events}
+	manualGuidedEvents, err := s.mem.ListManualGuidedChatEvents(ListManualGuidedChatEventsRequest{Limit: 1000000})
+	if err != nil {
+		return err
+	}
+	state := fileStoreState{Manuals: manuals, Candidates: candidates, RunRecords: records, ParamResolutionEvents: events, ManualGuidedEvents: manualGuidedEvents}
 	raw, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err

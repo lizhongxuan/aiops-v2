@@ -311,7 +311,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		if repo == nil {
 			repo = opsmanual.NewMemoryStore()
 		}
-		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
+		opsManualService = NewOpsManualService(opsmanual.NewService(
+			repo,
+			opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery()),
+			opsmanual.WithSessionOpsContextStore(opsmanual.NewMemorySessionOpsContextStore()),
+		))
 	}
 	var hostBootstrap *HostBootstrapService
 	hostAgentInstaller := cfg.hostAgentInstaller

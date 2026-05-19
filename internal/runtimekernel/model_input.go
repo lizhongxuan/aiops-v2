@@ -119,6 +119,10 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 }
 
 func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
+	promptTrace := req.PromptInputTrace
+	if len(promptTrace.VisibleOpsManualTools) == 0 {
+		promptTrace.VisibleOpsManualTools = visibleOpsManualToolsFromNames(req.VisibleTools)
+	}
 	return modeltrace.Write(modeltrace.Request{
 		Kind:              "runtime_model_input",
 		SessionID:         req.SessionID,
@@ -137,10 +141,21 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 			Policy:     effectiveRuntimePolicyPrompt(req.Compiled).Content,
 		},
 		ModelInput:       req.ModelInput,
-		PromptInputTrace: req.PromptInputTrace,
+		PromptInputTrace: promptTrace,
 		PromptInputDiff:  req.PromptInputDiff,
 		DiagnosticTrace:  req.DiagnosticTrace,
 	})
+}
+
+func visibleOpsManualToolsFromNames(names []string) []string {
+	var out []string
+	for _, name := range names {
+		switch strings.TrimSpace(name) {
+		case "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight":
+			out = append(out, strings.TrimSpace(name))
+		}
+	}
+	return out
 }
 
 func promptFingerprintMap(fp promptcompiler.PromptFingerprint) map[string]string {

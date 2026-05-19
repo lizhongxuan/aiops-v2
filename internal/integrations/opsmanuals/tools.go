@@ -82,8 +82,11 @@ type searchOpsManualsModelManual struct {
 
 type searchOpsManualsModelPayload struct {
 	Decision              string                        `json:"decision"`
+	OpsManualFlowID       string                        `json:"ops_manual_flow_id,omitempty"`
 	Summary               string                        `json:"summary"`
 	Manuals               []searchOpsManualsModelManual `json:"manuals,omitempty"`
+	SuppressedManuals     []string                      `json:"suppressed_manuals,omitempty"`
+	SuppressionReason     string                        `json:"suppression_reason,omitempty"`
 	NextQuestions         []string                      `json:"next_questions,omitempty"`
 	RecommendedNextAction string                        `json:"recommended_next_action,omitempty"`
 	Instructions          []string                      `json:"instructions,omitempty"`
@@ -92,7 +95,10 @@ type searchOpsManualsModelPayload struct {
 func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsManualsModelPayload {
 	payload := searchOpsManualsModelPayload{
 		Decision:              string(result.Decision),
+		OpsManualFlowID:       result.OpsManualFlowID,
 		Summary:               result.Summary,
+		SuppressedManuals:     limitStrings(result.SuppressedManuals, 3),
+		SuppressionReason:     result.SuppressionReason,
 		NextQuestions:         limitStrings(result.NextQuestions, 2),
 		RecommendedNextAction: result.RecommendedNextAction,
 	}

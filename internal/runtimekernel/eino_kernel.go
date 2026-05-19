@@ -2098,6 +2098,12 @@ func enrichCompileContext(
 			Content: opsManualOptOut,
 		})
 	}
+	if opsManualReference := opsManualReferencePromptSection(metadata); opsManualReference != "" {
+		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+			Title:   "Ops Manual Reference",
+			Content: opsManualReference,
+		})
+	}
 	if sessionType != SessionTypeHost || hostID != "server-local" {
 		return compileCtx
 	}
@@ -2191,6 +2197,26 @@ func opsManualOptOutPromptSection(metadata map[string]string) string {
 	}
 	if workflowID := firstMetadataValue(metadata, "opsManualWorkflowId", "workflowId"); workflowID != "" {
 		lines = append(lines, fmt.Sprintf("Skipped workflow id: %s", workflowID))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func opsManualReferencePromptSection(metadata map[string]string) string {
+	if len(metadata) == 0 || !strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "reference_ops_manual") {
+		return ""
+	}
+	lines := []string{
+		"User chose to reference the operations manual without entering Workflow preflight.",
+		"Use the manual as read-only guidance for manual-guided chat; do not call run_ops_manual_preflight or claim Workflow execution is available from this continuation.",
+	}
+	if manualTitle := strings.TrimSpace(metadata["opsManualManualTitle"]); manualTitle != "" {
+		lines = append(lines, fmt.Sprintf("Referenced manual title: %s", manualTitle))
+	}
+	if manualID := firstMetadataValue(metadata, "opsManualManualId", "manualId", "manual_id"); manualID != "" {
+		lines = append(lines, fmt.Sprintf("Referenced manual id: %s", manualID))
+	}
+	if workflowID := firstMetadataValue(metadata, "opsManualWorkflowId", "workflowId", "workflow_id"); workflowID != "" {
+		lines = append(lines, fmt.Sprintf("Workflow id for reference only: %s", workflowID))
 	}
 	return strings.Join(lines, "\n")
 }

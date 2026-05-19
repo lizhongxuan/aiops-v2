@@ -301,6 +301,93 @@
       },
       "created_at": "2026-05-15T00:00:00Z",
       "updated_at": "2026-05-15T00:00:00Z"
+    },
+    {
+      "id": "manual-mysql-secretref-credential-check",
+      "manual_family_id": "manual-family-mysql-secretref",
+      "title": "MySQL SecretRef 凭据校验运维手册",
+      "status": "verified",
+      "tags": ["mysql", "secretref", "credential", "ssh"],
+      "version": "v1",
+      "owner": "sre",
+      "workflow_ref": {
+        "workflow_id": "workflow-mysql-secretref-credential-check",
+        "workflow_version": "v1"
+      },
+      "operation": {
+        "target_type": "mysql",
+        "action": "credential_check",
+        "risk_level": "medium",
+        "stateful": true
+      },
+      "applicability": {
+        "middleware": "mysql",
+        "platform": ["vm"],
+        "execution_surface": ["ssh"]
+      },
+      "required_context": {
+        "required_inputs": ["target_instance", "credential_secret_ref"],
+        "required_evidence": ["ssh_access", "secret_ref_verified"]
+      },
+      "parameter_rules": {
+        "target_instance": {
+          "source": "user_or_inventory",
+          "required": true,
+          "validation": "must identify a MySQL instance"
+        },
+        "credential_secret_ref": {
+          "source": "user",
+          "required": true,
+          "sensitive": true,
+          "type": "secret_ref",
+          "validation": "must be a SecretRef such as secret://team/mysql-password; plaintext passwords are forbidden"
+        }
+      },
+      "preconditions": [
+        "SSH access to the target host is available",
+        "credential_secret_ref points to an approved secret handle"
+      ],
+      "validation": [
+        "SecretRef can be resolved by the approved runtime",
+        "No plaintext credential appears in run record or parameter event"
+      ],
+      "cannot_use_when": ["目标实例未知", "credential_secret_ref 为空", "用户输入了明文密码"],
+      "document_markdown": "用于验证 MySQL 凭据 SecretRef。敏感参数只能使用 SecretRef，不能在手册、RunRecord 或参数解析事件中保存明文密码。",
+      "search_doc": "MySQL credential SecretRef secret_ref password handle ssh workflow-mysql-secretref-credential-check",
+      "retrieval_profile": {
+        "aliases": {
+          "mysql": ["mysqld", "MySQL"],
+          "credential_check": ["凭据校验", "SecretRef", "secret ref", "密码句柄"]
+        },
+        "keywords": ["mysql", "secretref", "secret_ref", "credential", "password", "ssh"],
+        "negative_keywords": ["postgresql", "redis", "kubernetes", "backup"],
+        "embedding_text": "MySQL credential check through SSH requiring SecretRef instead of plaintext password",
+        "min_score": {
+          "candidate": 0.55,
+          "direct_execute": 0.82
+        }
+      },
+      "runnable_conditions": {
+        "required_params": ["target_instance", "credential_secret_ref"],
+        "allowed_environments": ["prod", "test", "staging"],
+        "max_risk_level": "medium",
+        "requires_approval": true
+      },
+      "preflight_probe": {
+        "id": "check_mysql_secretref_access",
+        "type": "runner_node",
+        "action": "check_mysql_secretref_access",
+        "read_only": true,
+        "timeout_seconds": 15,
+        "required_outputs": ["ssh_access", "secret_ref_verified"]
+      },
+      "fallback_guide": {
+        "mode": "react_steps",
+        "markdown_ref": "document_markdown#SecretRef 校验",
+        "steps": ["确认目标 MySQL 实例", "让用户提供 SecretRef", "只读校验 SecretRef 可解析"]
+      },
+      "created_at": "2026-05-19T00:00:00Z",
+      "updated_at": "2026-05-19T00:00:00Z"
     }
   ],
   "candidates": [],

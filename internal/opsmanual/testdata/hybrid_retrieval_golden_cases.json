@@ -118,6 +118,18 @@
     "required_missing_fields": ["backup_path"]
   },
   {
+    "name": "mysql backup missing backup path only",
+    "text": "prod vm ssh MySQL mysql-01 backup，已确认 ssh_access 和 connection_test 正常",
+    "metadata": {
+      "target_name": "mysql-01"
+    },
+    "expected_decision": "need_info",
+    "expected_top_manual_id": "manual-mysql-backup-ssh",
+    "required_missing_fields": ["backup_path"],
+    "forbidden_missing_fields": ["target_instance"],
+    "forbidden_manual_ids": ["manual-pg-backup-ubuntu"]
+  },
+  {
     "name": "redis missing metrics",
     "text": "在生产 vm 主机 redis-local-01 上通过 ssh 排查 Redis 故障，只有 symptom",
     "metadata": {

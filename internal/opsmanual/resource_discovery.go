@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,6 +25,19 @@ type ResourceCandidate struct {
 	Pod        string            `json:"pod,omitempty"`
 	Service    string            `json:"service,omitempty"`
 	Labels     map[string]string `json:"labels,omitempty"`
+	Image      string            `json:"image,omitempty"`
+	Ports      []string          `json:"ports,omitempty"`
+	Health     string            `json:"health,omitempty"`
+	Mounts     []string          `json:"mounts,omitempty"`
+	Networks   []string          `json:"networks,omitempty"`
+	CreatedAt  string            `json:"created_at,omitempty"`
+
+	ListeningPorts  []string `json:"listening_ports,omitempty"`
+	SystemdService  string   `json:"systemd_service,omitempty"`
+	ProcessOwner    string   `json:"process_owner,omitempty"`
+	Version         string   `json:"version,omitempty"`
+	Phase           string   `json:"phase,omitempty"`
+	ContainerImages []string `json:"container_images,omitempty"`
 }
 
 type ResourceDiscovery interface {
@@ -90,7 +105,7 @@ func (d localResourceDiscovery) DiscoverExecutionSurfaces(ctx context.Context, h
 }
 
 func (d localResourceDiscovery) discoverDockerResources(ctx context.Context, host string) []ResourceCandidate {
-	output, err := d.runWithTimeout(ctx, "docker", "ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}")
+	output, err := d.runWithTimeout(ctx, "docker", "ps", "--format", "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}\t{{.CreatedAt}}")
 	if err != nil || strings.TrimSpace(string(output)) == "" {
 		return nil
 	}
@@ -111,11 +126,17 @@ func (d localResourceDiscovery) discoverDockerResources(ctx context.Context, hos
 		if len(fields) > 4 {
 			status = strings.TrimSpace(fields[4])
 		}
+		createdAt := ""
+		if len(fields) > 5 {
+			createdAt = strings.TrimSpace(fields[5])
+		}
 		resourceType := middlewareTypeFromText(name + " " + image)
 		if resourceType == "" || name == "" {
 			continue
 		}
-		out = append(out, ResourceCandidate{
+		metadata := d.inspectDockerResource(ctx, firstNonEmpty(id, name))
+		portsList := splitListField(ports)
+		candidate := ResourceCandidate{
 			ID:         "docker:" + name,
 			Name:       name,
 			Type:       resourceType,
@@ -124,13 +145,20 @@ func (d localResourceDiscovery) discoverDockerResources(ctx context.Context, hos
 			Source:     "docker",
 			Evidence:   strings.TrimSpace(fmt.Sprintf("docker ps: id=%s image=%s ports=%s status=%s", id, image, ports, status)),
 			Confidence: 0.92,
-		})
+			Image:      firstNonEmpty(metadata.Image, image),
+			Ports:      portsList,
+			Health:     firstNonEmpty(metadata.Health, healthFromDockerStatus(status)),
+			Mounts:     metadata.Mounts,
+			Networks:   metadata.Networks,
+			CreatedAt:  firstNonEmpty(metadata.CreatedAt, createdAt),
+		}
+		out = append(out, candidate)
 	}
 	return out
 }
 
 func (d localResourceDiscovery) discoverHostProcessResources(ctx context.Context, host string) []ResourceCandidate {
-	output, err := d.runWithTimeout(ctx, "ps", "-axo", "comm,args")
+	output, err := d.runWithTimeout(ctx, "ps", "-axo", "user,comm,args")
 	if err != nil || strings.TrimSpace(string(output)) == "" {
 		return nil
 	}
@@ -144,16 +172,21 @@ func (d localResourceDiscovery) discoverHostProcessResources(ctx context.Context
 		if resourceType == "" {
 			continue
 		}
-		name := hostProcessResourceName(resourceType, line)
+		metadata := hostProcessMetadata(resourceType, line)
+		name := firstNonEmpty(metadata.Name, hostProcessResourceName(resourceType, line))
 		out = append(out, ResourceCandidate{
-			ID:         "host:" + resourceType + ":" + name,
-			Name:       name,
-			Type:       resourceType,
-			Host:       strings.TrimSpace(host),
-			Surface:    hostExecutionSurface(host),
-			Source:     "host_readonly",
-			Evidence:   "ps: " + strings.TrimSpace(line),
-			Confidence: 0.78,
+			ID:             "host:" + resourceType + ":" + name,
+			Name:           name,
+			Type:           resourceType,
+			Host:           strings.TrimSpace(host),
+			Surface:        hostExecutionSurface(host),
+			Source:         "host_readonly",
+			Evidence:       hostProcessEvidence(line, metadata),
+			Confidence:     0.78,
+			ListeningPorts: metadata.ListeningPorts,
+			SystemdService: metadata.SystemdService,
+			ProcessOwner:   metadata.ProcessOwner,
+			Version:        metadata.Version,
 		})
 	}
 	return out
@@ -196,18 +229,20 @@ func (d localResourceDiscovery) discoverK8sPods(ctx context.Context, host string
 			continue
 		}
 		out = append(out, ResourceCandidate{
-			ID:         "k8s:pod:" + namespace + "/" + name,
-			Name:       name,
-			Type:       resourceType,
-			Host:       strings.TrimSpace(host),
-			Surface:    "kubectl -n " + namespace + " exec " + name + " --",
-			Source:     "k8s",
-			Evidence:   strings.TrimSpace(fmt.Sprintf("kubectl get pods -A -o json: namespace=%s pod=%s phase=%s", namespace, name, pod.Status.Phase)),
-			Confidence: 0.88,
-			Cluster:    strings.TrimSpace(cluster),
-			Namespace:  namespace,
-			Pod:        name,
-			Labels:     cloneStringMap(pod.Metadata.Labels),
+			ID:              "k8s:pod:" + namespace + "/" + name,
+			Name:            name,
+			Type:            resourceType,
+			Host:            strings.TrimSpace(host),
+			Surface:         "kubectl -n " + namespace + " exec " + name + " --",
+			Source:          "k8s",
+			Evidence:        strings.TrimSpace(fmt.Sprintf("kubectl get pods -A -o json: namespace=%s pod=%s phase=%s", namespace, name, pod.Status.Phase)),
+			Confidence:      0.88,
+			Cluster:         strings.TrimSpace(cluster),
+			Namespace:       namespace,
+			Pod:             name,
+			Labels:          cloneStringMap(pod.Metadata.Labels),
+			Phase:           strings.TrimSpace(pod.Status.Phase),
+			ContainerImages: k8sContainerImages(pod.Spec.Containers),
 		})
 	}
 	return out
@@ -246,6 +281,7 @@ func (d localResourceDiscovery) discoverK8sServices(ctx context.Context, host st
 			Namespace:  namespace,
 			Service:    name,
 			Labels:     cloneStringMap(service.Metadata.Labels),
+			Ports:      k8sServicePorts(service),
 		})
 	}
 	return out
@@ -263,6 +299,191 @@ func (d localResourceDiscovery) runWithTimeout(ctx context.Context, command stri
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return d.run(runCtx, command, args...)
+}
+
+type dockerInspectMetadata struct {
+	Image     string
+	Health    string
+	Mounts    []string
+	Networks  []string
+	CreatedAt string
+}
+
+type dockerInspectContainer struct {
+	Created string `json:"Created"`
+	Config  struct {
+		Image string `json:"Image"`
+	} `json:"Config"`
+	State struct {
+		Status string `json:"Status"`
+		Health struct {
+			Status string `json:"Status"`
+		} `json:"Health"`
+	} `json:"State"`
+	Mounts []struct {
+		Name        string `json:"Name"`
+		Source      string `json:"Source"`
+		Destination string `json:"Destination"`
+		Type        string `json:"Type"`
+	} `json:"Mounts"`
+	NetworkSettings struct {
+		Networks map[string]any `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
+func (d localResourceDiscovery) inspectDockerResource(ctx context.Context, idOrName string) dockerInspectMetadata {
+	idOrName = strings.TrimSpace(idOrName)
+	if idOrName == "" {
+		return dockerInspectMetadata{}
+	}
+	output, err := d.runWithTimeout(ctx, "docker", "inspect", idOrName)
+	if err != nil || strings.TrimSpace(string(output)) == "" {
+		return dockerInspectMetadata{}
+	}
+	var containers []dockerInspectContainer
+	if err := json.Unmarshal(output, &containers); err != nil || len(containers) == 0 {
+		return dockerInspectMetadata{}
+	}
+	container := containers[0]
+	networks := make([]string, 0, len(container.NetworkSettings.Networks))
+	for network := range container.NetworkSettings.Networks {
+		if strings.TrimSpace(network) != "" {
+			networks = append(networks, strings.TrimSpace(network))
+		}
+	}
+	sort.Strings(networks)
+	mounts := make([]string, 0, len(container.Mounts))
+	for _, mount := range container.Mounts {
+		left := firstNonEmpty(mount.Source, mount.Name, mount.Type)
+		if left == "" && mount.Destination == "" {
+			continue
+		}
+		if mount.Destination == "" {
+			mounts = append(mounts, left)
+			continue
+		}
+		mounts = append(mounts, strings.TrimSpace(left+":"+mount.Destination))
+	}
+	return dockerInspectMetadata{
+		Image:     strings.TrimSpace(container.Config.Image),
+		Health:    firstNonEmpty(container.State.Health.Status, container.State.Status),
+		Mounts:    mounts,
+		Networks:  networks,
+		CreatedAt: strings.TrimSpace(container.Created),
+	}
+}
+
+func splitListField(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		item := strings.TrimSpace(part)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func healthFromDockerStatus(status string) string {
+	lower := strings.ToLower(status)
+	switch {
+	case strings.Contains(lower, "(healthy)"):
+		return "healthy"
+	case strings.Contains(lower, "(unhealthy)"):
+		return "unhealthy"
+	case strings.Contains(lower, "starting"):
+		return "starting"
+	default:
+		return ""
+	}
+}
+
+type hostProcessInfo struct {
+	Name           string
+	ProcessOwner   string
+	ListeningPorts []string
+	SystemdService string
+	Version        string
+}
+
+var hostPortPattern = regexp.MustCompile(`(?::|=)(\d{2,5})\b`)
+var hostVersionPattern = regexp.MustCompile(`\b\d+\.\d+(?:\.\d+)?\b`)
+
+func hostProcessMetadata(resourceType string, line string) hostProcessInfo {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return hostProcessInfo{}
+	}
+	owner := ""
+	command := fields[0]
+	argsStart := 0
+	if len(fields) > 1 && middlewareTypeFromProcessName(fields[0]) == "" && middlewareTypeFromProcessName(fields[1]) != "" {
+		owner = fields[0]
+		command = fields[1]
+		argsStart = 1
+	}
+	args := strings.Join(fields[argsStart:], " ")
+	ports := uniqueStrings(regexpSubmatches(hostPortPattern, args))
+	return hostProcessInfo{
+		Name:           hostProcessName(resourceType, command),
+		ProcessOwner:   owner,
+		ListeningPorts: ports,
+		SystemdService: systemdServiceName(resourceType, command),
+		Version:        firstRegexMatch(hostVersionPattern, args),
+	}
+}
+
+func hostProcessEvidence(line string, info hostProcessInfo) string {
+	parts := []string{"ps: " + strings.TrimSpace(line)}
+	if info.ProcessOwner != "" {
+		parts = append(parts, "owner="+info.ProcessOwner)
+	}
+	if len(info.ListeningPorts) > 0 {
+		parts = append(parts, "ports="+strings.Join(info.ListeningPorts, ","))
+	}
+	if info.Version != "" {
+		parts = append(parts, "version="+info.Version)
+	}
+	if info.SystemdService != "" {
+		parts = append(parts, "service="+info.SystemdService)
+	}
+	return strings.Join(parts, " ")
+}
+
+func hostProcessName(resourceType string, command string) string {
+	command = strings.TrimSpace(command)
+	switch resourceType {
+	case "postgresql":
+		return "postgres"
+	case "mysql":
+		return "mysqld"
+	default:
+		return command
+	}
+}
+
+func systemdServiceName(resourceType string, command string) string {
+	command = strings.TrimSpace(command)
+	switch resourceType {
+	case "redis":
+		if command == "" {
+			return "redis.service"
+		}
+		return command + ".service"
+	case "postgresql":
+		return "postgresql.service"
+	case "mysql":
+		return "mysqld.service"
+	case "kafka":
+		return "kafka.service"
+	case "nginx":
+		return "nginx.service"
+	case "elasticsearch":
+		return "elasticsearch.service"
+	default:
+		return ""
+	}
 }
 
 type k8sObjectMetadata struct {
@@ -323,6 +544,32 @@ func k8sServiceDiscoveryText(service k8sService) string {
 	return strings.Join(parts, " ")
 }
 
+func k8sContainerImages(containers []k8sContainer) []string {
+	out := make([]string, 0, len(containers))
+	for _, container := range containers {
+		image := strings.TrimSpace(container.Image)
+		if image != "" {
+			out = append(out, image)
+		}
+	}
+	return uniqueStrings(out)
+}
+
+func k8sServicePorts(service k8sService) []string {
+	out := make([]string, 0, len(service.Spec.Ports))
+	for _, port := range service.Spec.Ports {
+		if port.Port == 0 {
+			continue
+		}
+		if strings.TrimSpace(port.Name) != "" {
+			out = append(out, fmt.Sprintf("%s:%d", strings.TrimSpace(port.Name), port.Port))
+			continue
+		}
+		out = append(out, fmt.Sprint(port.Port))
+	}
+	return out
+}
+
 func labelsDiscoveryText(labels map[string]string) string {
 	if len(labels) == 0 {
 		return ""
@@ -341,6 +588,36 @@ func cloneStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
+	}
+	return out
+}
+
+func regexpSubmatches(pattern *regexp.Regexp, value string) []string {
+	matches := pattern.FindAllStringSubmatch(value, -1)
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
+			out = append(out, strings.TrimSpace(match[1]))
+		}
+	}
+	return out
+}
+
+func firstRegexMatch(pattern *regexp.Regexp, value string) string {
+	match := pattern.FindString(value)
+	return strings.TrimSpace(match)
+}
+
+func uniqueStrings(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		normalized := strings.TrimSpace(item)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
 	}
 	return out
 }

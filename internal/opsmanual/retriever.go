@@ -1,9 +1,12 @@
 package opsmanual
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 type ManualRepository interface {
@@ -23,12 +26,17 @@ type ListManualsRequest struct {
 }
 
 type ListRunRecordsRequest struct {
-	ManualID   string
-	WorkflowID string
-	Limit      int
+	OpsManualFlowID string
+	ManualID        string
+	WorkflowID      string
+	Limit           int
 }
 
 func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (SearchOpsManualsResult, error) {
+	return SearchOpsManualsWithHintProvider(context.Background(), repo, req, nil)
+}
+
+func SearchOpsManualsWithHintProvider(ctx context.Context, repo ManualRepository, req SearchOpsManualsRequest, provider HintProvider) (SearchOpsManualsResult, error) {
 	if repo == nil {
 		return SearchOpsManualsResult{}, fmt.Errorf("manual repository is nil")
 	}
@@ -43,10 +51,16 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	}
 	hits := generateCandidates(repo, manuals, frame)
 	sortSearchHits(hits)
+	hits = applyManualHintsToSearchHits(ctx, hits, frame, req, provider)
 	if req.Limit > 0 && len(hits) > req.Limit {
 		hits = hits[:req.Limit]
 	}
 	result.Manuals = hits
+	if len(hits) > 0 {
+		result.OpsManualFlowID = BuildOpsManualFlowIDFromMetadata(req.Metadata, hits[0].Manual.ID, firstNonEmpty(hits[0].BoundWorkflowID, hits[0].Manual.WorkflowRef.WorkflowID), frame)
+	} else {
+		result.OpsManualFlowID = BuildOpsManualFlowIDFromMetadata(req.Metadata, "", "", frame)
+	}
 	if len(hits) == 0 {
 		result.Decision = noHitDecision(frame)
 		result.Summary = searchSummary(result.Decision, nil, frame)
@@ -61,6 +75,92 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	}
 	result.RecommendedNextAction = recommendedNextAction(result.Decision)
 	return result, nil
+}
+
+func applyManualHintsToSearchHits(ctx context.Context, hits []SearchManualHit, frame OperationFrame, req SearchOpsManualsRequest, provider HintProvider) []SearchManualHit {
+	if len(hits) == 0 || provider == nil {
+		return hits
+	}
+	hints, err := provider.ManualHints(ctx, HintQuery{
+		Text:           firstNonEmpty(strings.TrimSpace(req.Text), strings.TrimSpace(frame.RawText)),
+		OperationFrame: frame,
+		SessionID:      firstMetadataAnyValue(req.Metadata, "session_id", "sessionId"),
+		ProjectID:      firstMetadataAnyValue(req.Metadata, "project_id", "projectId"),
+		Now:            time.Now().UTC(),
+		Limit:          8,
+	})
+	if err != nil || len(hints) == 0 {
+		return hits
+	}
+	original := make(map[string]int, len(hits))
+	for idx, hit := range hits {
+		original[hit.Manual.ID] = idx
+	}
+	hintSources := map[string][]string{}
+	for _, hint := range hints {
+		if !manualHintUsableForFrame(hint, frame) {
+			continue
+		}
+		manualID := strings.TrimSpace(hint.ManualID)
+		if manualID == "" {
+			continue
+		}
+		source := firstNonEmpty(strings.TrimSpace(hint.Source), "memory_hint")
+		if source != "memory_hint" && source != "letta_hint" {
+			source = "memory_hint"
+		}
+		hintSources[manualID] = appendUnique(hintSources[manualID], source)
+	}
+	if len(hintSources) == 0 {
+		return hits
+	}
+	for idx := range hits {
+		if sources := hintSources[hits[idx].Manual.ID]; len(sources) > 0 {
+			for _, source := range sources {
+				hits[idx].HintSources = appendUnique(hits[idx].HintSources, source)
+			}
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if manualHintNearTie(hits[i], hits[j], frame) {
+			leftHinted := len(hits[i].HintSources) > 0
+			rightHinted := len(hits[j].HintSources) > 0
+			if leftHinted != rightHinted {
+				return leftHinted
+			}
+		}
+		return original[hits[i].Manual.ID] < original[hits[j].Manual.ID]
+	})
+	return hits
+}
+
+func manualHintUsableForFrame(hint ManualHint, frame OperationFrame) bool {
+	if !hint.Redacted {
+		return false
+	}
+	now := time.Now().UTC()
+	if !hint.ExpiresAt.IsZero() && !hint.ExpiresAt.After(now) {
+		return false
+	}
+	return hintScopeMatches(hint.ObjectType, frame.Target.Type) && hintActionMatches(hint.Action, frame.Operation.Action)
+}
+
+func manualHintNearTie(left SearchManualHit, right SearchManualHit, frame OperationFrame) bool {
+	if !sameObjectActionSearchHit(left, frame) || !sameObjectActionSearchHit(right, frame) {
+		return false
+	}
+	if rankSearchHit(left) != rankSearchHit(right) {
+		return false
+	}
+	return math.Abs(left.ScoreBreakdown.FinalScore-right.ScoreBreakdown.FinalScore) <= 0.03
+}
+
+func sameObjectActionSearchHit(hit SearchManualHit, frame OperationFrame) bool {
+	manualTarget := firstNonEmpty(hit.Manual.Operation.TargetType, hit.Manual.Applicability.Middleware)
+	return strings.TrimSpace(manualTarget) != "" &&
+		strings.TrimSpace(frame.Target.Type) != "" &&
+		equalFold(manualTarget, frame.Target.Type) &&
+		operationsCompatibleForSearch(hit.Manual.Operation.Action, frame.Operation.Action)
 }
 
 func generateCandidates(repo ManualRepository, manuals []OpsManual, frame OperationFrame) []SearchManualHit {

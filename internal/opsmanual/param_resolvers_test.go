@@ -10,7 +10,7 @@ func TestParamResolverRegistryOrderAndOutcomes(t *testing.T) {
 		resources: []ResourceCandidate{{ID: "docker:redis-a", Name: "redis-a", Type: "redis", Source: "docker", Confidence: 0.92}},
 	})
 	names := registry.Names()
-	want := []string{"selected_host", "explicit_resource_match", "conversation", "manual_default", "run_record", "coroot", "host_readonly", "docker", "k8s"}
+	want := []string{"selected_host", "explicit_resource_match", "conversation", "manual_default", "run_record", "coroot", "host_readonly", "docker", "k8s", "hint_provider"}
 	if len(names) != len(want) {
 		t.Fatalf("names = %#v, want %#v", names, want)
 	}
@@ -96,6 +96,39 @@ func TestK8sApplicabilityFiltersOutDockerCandidates(t *testing.T) {
 	}
 }
 
+func TestResourceResolverCopiesDiscoveryMetadataIntoParamCandidates(t *testing.T) {
+	registry := NewDefaultParamResolverRegistry(fakeResourceDiscovery{
+		resources: []ResourceCandidate{
+			{
+				ID:              "k8s:pod:cache/redis-0",
+				Name:            "redis-0",
+				Type:            "redis",
+				Surface:         "kubectl -n cache exec redis-0 --",
+				Source:          "k8s",
+				Namespace:       "cache",
+				Pod:             "redis-0",
+				Phase:           "Running",
+				ContainerImages: []string{"redis:7.2"},
+				Confidence:      0.88,
+			},
+		},
+	})
+	result, _ := registry.Resolve(context.Background(), ParamResolverRequest{
+		Requirement:    ParamRequirement{ID: "target_instance", Type: "resource_ref", Required: true},
+		OperationFrame: OperationFrame{ObjectType: "redis"},
+	})
+	if len(result.Candidates) != 1 {
+		t.Fatalf("candidates = %#v, want one k8s candidate", result.Candidates)
+	}
+	metadata := result.Candidates[0].Metadata
+	if metadata["namespace"] != "cache" || metadata["phase"] != "Running" {
+		t.Fatalf("candidate metadata = %#v, want namespace and phase", metadata)
+	}
+	if images, ok := metadata["container_images"].([]string); !ok || len(images) != 1 || images[0] != "redis:7.2" {
+		t.Fatalf("candidate metadata images = %#v", metadata["container_images"])
+	}
+}
+
 func TestSensitiveParamIgnoresLowConfidenceConversationGuess(t *testing.T) {
 	ledger := NewOperationContextLedger()
 	ledger.AddFact(OperationContextFact{Key: "password", Value: "guess", Source: "conversation", Confidence: 0.4, Sensitive: true})
@@ -119,6 +152,85 @@ func TestSensitiveParamAcceptsUserConfirmedSecretRef(t *testing.T) {
 	})
 	if len(result.Candidates) != 1 || result.Candidates[0].Value != "secret://team/db-password" {
 		t.Fatalf("candidates = %#v, want user-confirmed secret ref", result.Candidates)
+	}
+}
+
+func TestSensitiveParamRejectsConfirmedPlaintext(t *testing.T) {
+	ledger := NewOperationContextLedger()
+	ledger.AddFact(OperationContextFact{Key: "password", Value: "plain-secret", Source: "user_form", Confidence: 0.99, ConfirmedByUser: true, Sensitive: true})
+	registry := NewDefaultParamResolverRegistry(nil)
+	result, _ := registry.Resolve(context.Background(), ParamResolverRequest{
+		Requirement: ParamRequirement{ID: "password", Type: "secret_ref", Required: true, Sensitive: true},
+		Ledger:      ledger,
+	})
+	if len(result.Candidates) != 0 {
+		t.Fatalf("candidates = %#v, want plaintext secret rejected", result.Candidates)
+	}
+}
+
+func TestParamHintsRequireCurrentConfirmationAndDoNotOverrideExplicitTarget(t *testing.T) {
+	provider := staticHintProvider{
+		paramHints: []ParamHint{{
+			ParamID:                     "target_instance",
+			Value:                       "redis-from-memory",
+			Label:                       "redis-from-memory",
+			Source:                      "memory_hint",
+			Redacted:                    true,
+			RequiresCurrentConfirmation: true,
+			Confidence:                  0.72,
+		}},
+	}
+	registry := NewParamResolverRegistry(nil, provider)
+	result, _ := registry.Resolve(context.Background(), ParamResolverRequest{
+		Requirement:    ParamRequirement{ID: "target_instance", Type: "resource_ref", Required: true},
+		OperationFrame: BuildOperationFrame("排查 Redis", nil),
+		Manual:         redisParamTestManual("manual-redis-hints"),
+	})
+	if len(result.Candidates) != 1 {
+		t.Fatalf("candidates = %#v, want one memory hint candidate", result.Candidates)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Source != "memory_hint" || candidate.Confidence >= 0.85 || candidate.Metadata["requires_current_confirmation"] != true {
+		t.Fatalf("candidate = %#v, want low-confidence memory hint requiring confirmation", candidate)
+	}
+
+	explicitFrame := BuildOperationFrame("排查 Redis redis-current", map[string]any{"target_name": "redis-current"})
+	result, _ = registry.Resolve(context.Background(), ParamResolverRequest{
+		Requirement:    ParamRequirement{ID: "target_instance", Type: "resource_ref", Required: true},
+		OperationFrame: explicitFrame,
+		Manual:         redisParamTestManual("manual-redis-hints"),
+		Ledger:         LedgerFromOperationFrame(explicitFrame),
+	})
+	if len(result.Candidates) != 1 || result.Candidates[0].Value != "redis-current" || result.Candidates[0].Source == "memory_hint" {
+		t.Fatalf("candidates = %#v, explicit target must win over hint", result.Candidates)
+	}
+}
+
+type staticHintProvider struct {
+	manualHints []ManualHint
+	paramHints  []ParamHint
+}
+
+func (p staticHintProvider) ManualHints(context.Context, HintQuery) ([]ManualHint, error) {
+	return cloneManualHints(p.manualHints), nil
+}
+
+func (p staticHintProvider) ParamHints(context.Context, HintQuery) ([]ParamHint, error) {
+	return cloneParamHints(p.paramHints), nil
+}
+
+func redisParamTestManual(id string) OpsManual {
+	return OpsManual{
+		ID:          id,
+		Title:       "Redis RCA",
+		Status:      ManualStatusVerified,
+		WorkflowRef: WorkflowRef{WorkflowID: "workflow-" + id},
+		Operation:   OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
+		Applicability: ApplicabilityProfile{
+			Middleware:       "redis",
+			ExecutionSurface: []string{"ssh"},
+			Platform:         []string{"vm"},
+		},
 	}
 }
 

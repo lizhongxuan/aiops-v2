@@ -259,18 +259,35 @@ export type OpsManualCandidateView = {
 
 export type RunRecordView = {
   id: string;
+  sessionId: string;
+  opsManualFlowId: string;
   manualId: string;
   workflowId: string;
   workflowVersion: string;
   workflowDigest: string;
+  preflightStatus: string;
   dryRunStatus: string;
   executionStatus: string;
   validationStatus: string;
   rollbackStatus: string;
   failureReason: string;
+  userFeedback: string;
   operator: string;
   startedAt: string;
   completedAt: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualFlowTimelineEventView = {
+  id: string;
+  type: string;
+  opsManualFlowId: string;
+  manualId: string;
+  workflowId: string;
+  sessionId: string;
+  summary: string;
+  redactionStatus: string;
+  createdAt: string;
   raw: LooseRecord;
 };
 
@@ -297,6 +314,13 @@ export type OpsManualCandidateListView = {
 
 export type RunRecordListView = {
   items: RunRecordView[];
+  nextCursor: string;
+  total: number | null;
+  raw: unknown;
+};
+
+export type OpsManualFlowTimelineView = {
+  items: OpsManualFlowTimelineEventView[];
   nextCursor: string;
   total: number | null;
   raw: unknown;
@@ -690,18 +714,38 @@ export function normalizeRunRecord(input: unknown): RunRecordView {
   const id = text(pick(source, "id", "runId", "run_id"), "unknown-run");
   return {
     id,
+    sessionId: text(pick(source, "sessionId", "session_id")),
+    opsManualFlowId: text(pick(source, "opsManualFlowId", "ops_manual_flow_id")),
     manualId: text(pick(source, "manualId", "manual_id")),
     workflowId: text(pick(source, "workflowId", "workflow_id")),
     workflowVersion: text(pick(source, "workflowVersion", "workflow_version")),
     workflowDigest: text(pick(source, "workflowDigest", "workflow_digest")),
+    preflightStatus: text(pick(source, "preflightStatus", "preflight_status")),
     dryRunStatus: text(pick(source, "dryRunStatus", "dry_run_status")),
     executionStatus: text(pick(source, "executionStatus", "execution_status", "status")),
     validationStatus: text(pick(source, "validationStatus", "validation_status")),
     rollbackStatus: text(pick(source, "rollbackStatus", "rollback_status")),
     failureReason: text(pick(source, "failureReason", "failure_reason")),
+    userFeedback: text(pick(source, "userFeedback", "user_feedback")),
     operator: text(pick(source, "operator")),
     startedAt: text(pick(source, "startedAt", "started_at")),
     completedAt: text(pick(source, "completedAt", "completed_at")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualFlowTimelineEvent(input: unknown): OpsManualFlowTimelineEventView {
+  const source = isRecord(input) ? input : {};
+  return {
+    id: text(pick(source, "id"), "unknown-event"),
+    type: text(pick(source, "type")),
+    opsManualFlowId: text(pick(source, "opsManualFlowId", "ops_manual_flow_id")),
+    manualId: text(pick(source, "manualId", "manual_id")),
+    workflowId: text(pick(source, "workflowId", "workflow_id")),
+    sessionId: text(pick(source, "sessionId", "session_id")),
+    summary: text(pick(source, "summary")),
+    redactionStatus: text(pick(source, "redactionStatus", "redaction_status")),
+    createdAt: text(pick(source, "createdAt", "created_at")),
     raw: source,
   };
 }
@@ -740,6 +784,16 @@ export function normalizeRunRecordList(input: unknown): RunRecordListView {
   const source = isRecord(input) ? input : {};
   return {
     items: asArray(pick(source, "items", "runRecords", "run_records", "records")).map(normalizeRunRecord),
+    nextCursor: text(pick(source, "nextCursor", "next_cursor", "cursor")),
+    total: listTotal(source),
+    raw: input,
+  };
+}
+
+export function normalizeOpsManualFlowTimeline(input: unknown): OpsManualFlowTimelineView {
+  const source = isRecord(input) ? input : {};
+  return {
+    items: asArray(pick(source, "items", "events", "timeline")).map(normalizeOpsManualFlowTimelineEvent),
     nextCursor: text(pick(source, "nextCursor", "next_cursor", "cursor")),
     total: listTotal(source),
     raw: input,
@@ -801,6 +855,11 @@ export function createOpsManualsApi(client: OpsManualsHttpClient = httpClient) {
     async listAllRunRecords(params: Record<string, string | number | boolean> = {}) {
       const payload = await client.get(endpoint("/api/v1/ops-manuals/run-records", params));
       return normalizeRunRecordList(payload);
+    },
+
+    async flowTimeline(flowId: string) {
+      const payload = await client.get(`/api/v1/ops-manuals/flows/${encodePath(flowId)}/timeline`);
+      return normalizeOpsManualFlowTimeline(payload);
     },
   };
 }

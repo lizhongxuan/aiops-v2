@@ -13,6 +13,8 @@ const RedactedValue = "[REDACTED]"
 
 type WorkflowResult struct {
 	ID                  string             `json:"id,omitempty"`
+	SessionID           string             `json:"session_id,omitempty"`
+	OpsManualFlowID     string             `json:"ops_manual_flow_id,omitempty"`
 	ManualID            string             `json:"manual_id,omitempty"`
 	WorkflowID          string             `json:"workflow_id"`
 	WorkflowVersion     string             `json:"workflow_version,omitempty"`
@@ -22,11 +24,13 @@ type WorkflowResult struct {
 	EnvironmentSnapshot EnvironmentProfile `json:"environment_snapshot"`
 	Parameters          map[string]any     `json:"parameters,omitempty"`
 	ApprovalRef         string             `json:"approval_ref,omitempty"`
+	PreflightStatus     string             `json:"preflight_status,omitempty"`
 	DryRunStatus        string             `json:"dry_run_status,omitempty"`
 	ExecutionStatus     string             `json:"execution_status,omitempty"`
 	ValidationStatus    string             `json:"validation_status,omitempty"`
 	RollbackStatus      string             `json:"rollback_status,omitempty"`
 	FailureReason       string             `json:"failure_reason,omitempty"`
+	UserFeedback        string             `json:"user_feedback,omitempty"`
 	Operator            string             `json:"operator,omitempty"`
 	StartedAt           string             `json:"started_at,omitempty"`
 	CompletedAt         string             `json:"completed_at,omitempty"`
@@ -47,6 +51,8 @@ func BuildRunRecordFromWorkflowResult(result WorkflowResult) (RunRecord, error) 
 	}
 	return RunRecord{
 		ID:                  id,
+		SessionID:           strings.TrimSpace(result.SessionID),
+		OpsManualFlowID:     strings.TrimSpace(result.OpsManualFlowID),
 		ManualID:            strings.TrimSpace(result.ManualID),
 		WorkflowID:          workflowID,
 		WorkflowVersion:     strings.TrimSpace(result.WorkflowVersion),
@@ -55,11 +61,13 @@ func BuildRunRecordFromWorkflowResult(result WorkflowResult) (RunRecord, error) 
 		EnvironmentSnapshot: result.EnvironmentSnapshot,
 		RedactedParameters:  RedactParameters(result.Parameters),
 		ApprovalRef:         strings.TrimSpace(result.ApprovalRef),
+		PreflightStatus:     strings.TrimSpace(result.PreflightStatus),
 		DryRunStatus:        strings.TrimSpace(result.DryRunStatus),
 		ExecutionStatus:     strings.TrimSpace(result.ExecutionStatus),
 		ValidationStatus:    strings.TrimSpace(result.ValidationStatus),
 		RollbackStatus:      strings.TrimSpace(result.RollbackStatus),
 		FailureReason:       strings.TrimSpace(result.FailureReason),
+		UserFeedback:        strings.TrimSpace(result.UserFeedback),
 		Operator:            strings.TrimSpace(result.Operator),
 		StartedAt:           strings.TrimSpace(result.StartedAt),
 		CompletedAt:         strings.TrimSpace(result.CompletedAt),
