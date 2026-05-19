@@ -7,12 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"runner/modules"
+	"runner/modules/builtin"
+	httpmodule "runner/modules/http"
+	"runner/modules/script"
 	"runner/state"
 	"runner/workflow"
 	"runner/workflow/visual"
@@ -58,6 +63,13 @@ type VisualWorkflowDryRunOptions struct {
 	TriggeredBy  string `json:"triggered_by,omitempty"`
 }
 
+type VisualWorkflowDebugRequest struct {
+	Graph  visual.Graph   `json:"graph"`
+	Vars   map[string]any `json:"vars,omitempty"`
+	Target string         `json:"target,omitempty"`
+	Mode   string         `json:"mode,omitempty"`
+}
+
 type CompiledVisualWorkflow struct {
 	Workflow workflow.Workflow     `json:"workflow"`
 	YAML     string                `json:"yaml"`
@@ -97,6 +109,16 @@ type VisualWorkflowDryRunResult struct {
 	Summary            string                        `json:"summary"`
 	YAML               string                        `json:"yaml,omitempty"`
 	RunRequest         *RunRequest                   `json:"run_request,omitempty"`
+}
+
+type VisualWorkflowDebugResult struct {
+	NodeID string         `json:"node_id"`
+	Action string         `json:"action"`
+	Mode   string         `json:"mode"`
+	Target string         `json:"target,omitempty"`
+	Status string         `json:"status"`
+	Output map[string]any `json:"output"`
+	Error  string         `json:"error,omitempty"`
 }
 
 type WorkflowGraphHashes struct {
@@ -626,6 +648,214 @@ func (s *VisualWorkflowService) DryRunWithOptions(ctx context.Context, graph vis
 		Summary:            buildVisualDryRunSummary(wf.Name, len(wf.Steps), len(targetHosts)),
 		YAML:               compiled.YAML,
 		RunRequest:         runReq,
+	}, nil
+}
+
+func (s *VisualWorkflowService) DebugNode(ctx context.Context, nodeID string, req VisualWorkflowDebugRequest) (*VisualWorkflowDebugResult, error) {
+	if s == nil {
+		return nil, fmt.Errorf("%w: visual workflow service is not configured", ErrUnavailable)
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, fmt.Errorf("%w: node_id is required", ErrInvalid)
+	}
+	graph := normalizeGraph(req.Graph)
+	node, err := debugNodeByID(graph, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node.Type != visual.NodeTypeAction {
+		return nil, fmt.Errorf("%w: node %q of type %q cannot be debugged", ErrInvalid, nodeID, node.Type)
+	}
+	if node.Step == nil {
+		return nil, fmt.Errorf("%w: node %q is missing step", ErrInvalid, nodeID)
+	}
+	step := *node.Step
+	step.Action = strings.TrimSpace(step.Action)
+	if step.Action == "" {
+		return nil, fmt.Errorf("%w: node %q action is required", ErrInvalid, nodeID)
+	}
+	mode := normalizeDebugMode(req.Mode)
+	target := strings.TrimSpace(req.Target)
+	if target == "" {
+		target = firstDebugTarget(step.Targets)
+	}
+	if target == "" {
+		target = "local"
+	}
+	moduleReq := modules.Request{
+		Step: step,
+		Host: resolveDebugHost(graph.Workflow.Inventory, target),
+		Vars: mergeDebugVars(graph.Workflow.Vars, req.Vars),
+	}
+	if moduleReq.Host.Name == "" {
+		moduleReq.Host.Name = target
+	}
+	if moduleReq.Host.Address == "" {
+		moduleReq.Host.Address = target
+	}
+
+	module, effectiveMode, err := debugModuleForStep(step, mode)
+	if err != nil {
+		return nil, err
+	}
+	if effectiveMode == "dry_run" || effectiveMode == "mock" {
+		return debugDryRunResult(nodeID, step.Action, effectiveMode, target, step, moduleReq, module)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, debugTimeoutForStep(step))
+	defer cancel()
+	start := time.Now()
+	result, applyErr := module.Apply(ctx, moduleReq)
+	status := "success"
+	errText := ""
+	if applyErr != nil {
+		status = "failed"
+		errText = applyErr.Error()
+	}
+	output := cloneAnyMap(result.Output)
+	if output == nil {
+		output = map[string]any{}
+	}
+	output["debug"] = map[string]any{
+		"mode":       effectiveMode,
+		"target":     target,
+		"elapsed_ms": time.Since(start).Milliseconds(),
+	}
+	return &VisualWorkflowDebugResult{
+		NodeID: nodeID,
+		Action: step.Action,
+		Mode:   effectiveMode,
+		Target: target,
+		Status: status,
+		Output: output,
+		Error:  errText,
+	}, nil
+}
+
+func debugNodeByID(graph visual.Graph, nodeID string) (*visual.Node, error) {
+	for i := range graph.Nodes {
+		if strings.TrimSpace(graph.Nodes[i].ID) == nodeID {
+			return &graph.Nodes[i], nil
+		}
+	}
+	return nil, fmt.Errorf("%w: node %q not found", ErrNotFound, nodeID)
+}
+
+func normalizeDebugMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "dry-run", "dry_run", "plan":
+		return "dry_run"
+	case "mock":
+		return "mock"
+	case "run", "real", "apply", "local", "local_dev":
+		return "run"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+func firstDebugTarget(targets []string) string {
+	for _, target := range targets {
+		if strings.TrimSpace(target) != "" {
+			return strings.TrimSpace(target)
+		}
+	}
+	return ""
+}
+
+func resolveDebugHost(inv workflow.Inventory, target string) workflow.HostSpec {
+	hosts := inv.ResolveHosts()
+	if host, ok := hosts[target]; ok {
+		return host
+	}
+	return workflow.HostSpec{Name: target, Address: target}
+}
+
+func mergeDebugVars(workflowVars, requestVars map[string]any) map[string]any {
+	out := cloneAnyMap(workflowVars)
+	if out == nil {
+		out = map[string]any{}
+	}
+	for key, value := range requestVars {
+		out[key] = value
+	}
+	return out
+}
+
+func debugModuleForStep(step workflow.Step, mode string) (modules.Module, string, error) {
+	if mode != "dry_run" && mode != "mock" && mode != "run" {
+		return nil, mode, fmt.Errorf("%w: unsupported debug mode %q", ErrInvalid, mode)
+	}
+	switch step.Action {
+	case "builtin.tcp_ping":
+		return builtin.NewTCPPing(), mode, nil
+	case "builtin.dns_resolve":
+		return builtin.NewDNSResolve(), mode, nil
+	case "http.request":
+		method := strings.ToUpper(strings.TrimSpace(fmt.Sprint(step.Args["method"])))
+		if method == "" || method == "<nil>" {
+			method = http.MethodGet
+		}
+		if mode == "run" && method != http.MethodGet && method != http.MethodHead {
+			return nil, mode, fmt.Errorf("%w: http.request %s debug is only available as dry_run or mock", ErrInvalid, method)
+		}
+		return httpmodule.New(), mode, nil
+	case "script.python":
+		return script.New("python"), mode, nil
+	case "script.shell":
+		if mode == "run" {
+			return nil, mode, fmt.Errorf("%w: script.shell debug defaults to dry_run/mock; use local dev execution outside production", ErrInvalid)
+		}
+		return script.New("shell"), mode, nil
+	default:
+		if mode == "run" {
+			return nil, mode, fmt.Errorf("%w: action %q does not support real node debug", ErrInvalid, step.Action)
+		}
+		return nil, mode, nil
+	}
+}
+
+func debugTimeoutForStep(step workflow.Step) time.Duration {
+	if timeout := strings.TrimSpace(step.Timeout); timeout != "" {
+		if parsed, err := time.ParseDuration(timeout); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	if step.Action == "script.python" {
+		return 5 * time.Second
+	}
+	return 10 * time.Second
+}
+
+func debugDryRunResult(nodeID, action, mode, target string, step workflow.Step, req modules.Request, module modules.Module) (*VisualWorkflowDebugResult, error) {
+	output := map[string]any{
+		"mock":   mode == "mock",
+		"mode":   mode,
+		"target": target,
+		"step": map[string]any{
+			"name":    step.Name,
+			"action":  step.Action,
+			"args":    cloneAnyMap(step.Args),
+			"timeout": step.Timeout,
+		},
+	}
+	if module != nil {
+		check, err := module.Check(context.Background(), req)
+		if err != nil {
+			return nil, err
+		}
+		if check.Diff != nil {
+			output["diff"] = check.Diff
+		}
+	}
+	return &VisualWorkflowDebugResult{
+		NodeID: nodeID,
+		Action: action,
+		Mode:   mode,
+		Target: target,
+		Status: "dry_run",
+		Output: output,
 	}, nil
 }
 

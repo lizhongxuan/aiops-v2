@@ -479,6 +479,44 @@ func TestRunOpsManualPreflightToolGuidesStatusCheckToCompactFinal(t *testing.T) 
 	}
 }
 
+func TestRunOpsManualPreflightToolAcceptsRequiredParamsListInOperationFrame(t *testing.T) {
+	registry := tooling.NewRegistry()
+	repo := core.NewMemoryStore()
+	manual := testRedisManual()
+	manual.PreflightProbe = core.PreflightProbe{ID: "redis-readonly-probe", ReadOnly: true, RequiredOutputs: []string{"redis_ping"}}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := core.NewService(repo)
+	if err := RegisterBuiltins(registry, service); err != nil {
+		t.Fatal(err)
+	}
+	tool, ok := registry.Get("run_ops_manual_preflight")
+	if !ok {
+		t.Fatal("run_ops_manual_preflight tool not registered")
+	}
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"manual_id":"manual-redis-rca",
+		"operation_frame":{
+			"target":{"type":"redis","name":"redis"},
+			"operation":{"target_type":"redis","action":"rca_or_repair"},
+			"required_params":["target_instance","symptom"]
+		},
+		"parameters":{"target_instance":"redis"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload core.PreflightResult
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != core.PreflightStatusPassed || !payload.Ready {
+		t.Fatalf("payload = %#v, want passed ready", payload)
+	}
+}
+
 func TestRunOpsManualPreflightReusesSameTurnSearchContext(t *testing.T) {
 	registry := tooling.NewRegistry()
 	repo := core.NewMemoryStore()

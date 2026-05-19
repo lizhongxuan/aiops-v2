@@ -1,0 +1,48 @@
+version: v0.1
+name: builtin-probes
+description: Read-only built-in network probes for DNS, TCP, HTTP, and TLS checks.
+inventory:
+  hosts:
+    probe-runner:
+      address: "http://127.0.0.1:7072"
+vars:
+  service_host: "api.example.com"
+  health_url: "https://api.example.com/healthz"
+plan:
+  mode: auto
+  strategy: sequential
+steps:
+  - name: resolve service dns
+    targets: [probe-runner]
+    action: builtin.dns_resolve
+    args:
+      name: "${service_host}"
+      record_type: A
+      timeout: 3s
+
+  - name: check https tcp port
+    targets: [probe-runner]
+    action: builtin.tcp_ping
+    args:
+      host: "${service_host}"
+      port: 443
+      timeout: 3s
+
+  - name: check health endpoint
+    targets: [probe-runner]
+    action: builtin.http_check
+    args:
+      url: "${health_url}"
+      expected_status: [200]
+      body_contains: "ok"
+      timeout: 5s
+
+  - name: inspect tls expiry
+    targets: [probe-runner]
+    action: builtin.ssl_expiry_check
+    args:
+      host: "${service_host}"
+      port: 443
+      server_name: "${service_host}"
+      warn_days: 30
+      timeout: 5s

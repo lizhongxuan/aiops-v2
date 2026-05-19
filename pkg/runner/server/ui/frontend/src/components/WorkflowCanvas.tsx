@@ -45,6 +45,9 @@ export default function WorkflowCanvas(props: WorkflowCanvasProps) {
       } else if (command && key === "z" && props.canUndo) {
         event.preventDefault();
         props.onUndo();
+      } else if (event.ctrlKey && key === "y" && props.canRedo) {
+        event.preventDefault();
+        props.onRedo();
       } else if ((event.key === "Delete" || event.key === "Backspace") && props.selectedNodeId) {
         event.preventDefault();
         props.onDeleteSelected();
@@ -86,10 +89,10 @@ export default function WorkflowCanvas(props: WorkflowCanvasProps) {
           <small>
             {nodes.length} nodes / {edges.length} edges
           </small>
-          <button className="icon-button" type="button" title="Undo" disabled={!props.canUndo} onClick={props.onUndo}>
+          <button className="icon-button" type="button" title="上一步" aria-label="上一步" disabled={!props.canUndo} onClick={props.onUndo}>
             ↶
           </button>
-          <button className="icon-button" type="button" title="Redo" disabled={!props.canRedo} onClick={props.onRedo}>
+          <button className="icon-button" type="button" title="下一步" aria-label="下一步" disabled={!props.canRedo} onClick={props.onRedo}>
             ↷
           </button>
           <button className="icon-button" type="button" title="Copy selected node" disabled={!props.selectedNodeId} onClick={props.onCopySelected}>

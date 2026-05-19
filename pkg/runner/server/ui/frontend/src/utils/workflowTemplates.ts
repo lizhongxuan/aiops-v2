@@ -1,6 +1,6 @@
 import type { WorkflowDefinition, WorkflowGraph, WorkflowNode } from "../types/workflow";
 
-export type WorkflowTemplateKind = "cmd-run-basic" | "shell-run-basic" | "manual-approval-basic";
+export type WorkflowTemplateKind = "script-shell-basic" | "shell-run-basic" | "manual-approval-basic";
 
 export interface WorkflowTemplateInput {
   kind: WorkflowTemplateKind;
@@ -35,7 +35,7 @@ export function createWorkflowGraphFromTemplate(input: WorkflowTemplateInput): W
           step: {
             id: "run-shell",
             name: "run-shell",
-            action: "shell.run",
+            action: "script.shell",
             args: { script: "echo hello" },
           },
         },
@@ -74,25 +74,25 @@ export function createWorkflowGraphFromTemplate(input: WorkflowTemplateInput): W
           },
         },
         {
-          id: "run-command",
+          id: "run-script",
           type: "action",
-          label: "Run command",
+          label: "Run script",
           position: { x: 560, y: 120 },
-          step_id: "run-command",
-          step_name: "run-command",
+          step_id: "run-script",
+          step_name: "run-script",
           step: {
-            id: "run-command",
-            name: "run-command",
-            action: "cmd.run",
-            args: { cmd: "echo hello" },
+            id: "run-script",
+            name: "run-script",
+            action: "script.shell",
+            args: { script: "echo hello" },
           },
         },
         endNode({ x: 820, y: 120 }),
       ],
       edges: [
         { id: "start-approve", source: "start", target: "approve", kind: "next" },
-        { id: "approve-run-command", source: "approve", target: "run-command", kind: "approval_approved" },
-        { id: "run-command-end", source: "run-command", target: "end", kind: "next" },
+        { id: "approve-run-script", source: "approve", target: "run-script", kind: "approval_approved" },
+        { id: "run-script-end", source: "run-script", target: "end", kind: "next" },
       ],
     };
   }
@@ -104,24 +104,24 @@ export function createWorkflowGraphFromTemplate(input: WorkflowTemplateInput): W
     nodes: [
       startNode(),
       {
-        id: "run-command",
+        id: "run-script",
         type: "action",
-        label: "Run command",
+        label: "Run script",
         position: { x: 320, y: 120 },
-        step_id: "run-command",
-        step_name: "run-command",
+        step_id: "run-script",
+        step_name: "run-script",
         step: {
-          id: "run-command",
-          name: "run-command",
-          action: "cmd.run",
-          args: { cmd: "echo hello" },
+          id: "run-script",
+          name: "run-script",
+          action: "script.shell",
+          args: { script: "echo hello" },
         },
       },
       endNode({ x: 600, y: 120 }),
     ],
     edges: [
-      { id: "start-run-command", source: "start", target: "run-command", kind: "next" },
-      { id: "run-command-end", source: "run-command", target: "end", kind: "next" },
+      { id: "start-run-script", source: "start", target: "run-script", kind: "next" },
+      { id: "run-script-end", source: "run-script", target: "end", kind: "next" },
     ],
   };
 }

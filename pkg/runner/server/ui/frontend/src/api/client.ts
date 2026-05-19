@@ -5,6 +5,8 @@ import type {
   CreatedGraphWorkflowResult,
   CreateGraphWorkflowRequest,
   DryRunResult,
+  NodeDebugRequest,
+  NodeDebugResult,
   RunEvent,
   RunResponse,
   ValidationResult,
@@ -125,6 +127,13 @@ export const runnerApi = {
     });
   },
 
+  async debugGraphNode(nodeId: string, request: NodeDebugRequest): Promise<NodeDebugResult> {
+    return requestJSON<NodeDebugResult>(`/workflows/graph/nodes/${encodeURIComponent(nodeId)}/debug`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
   async submitGraphRun(graph: WorkflowGraph, options?: { riskAcknowledged?: boolean }): Promise<RunResponse> {
     return requestJSON<RunResponse>("/workflows/graph/runs", {
       method: "POST",
@@ -227,5 +236,22 @@ export const mockApi = {
   },
   async getRunEventHistory(_runId: string): Promise<RunEvent[]> {
     return structuredClone(mockRunEvents);
+  },
+  async debugGraphNode(nodeId: string, _request?: NodeDebugRequest): Promise<NodeDebugResult> {
+    return {
+      node_id: nodeId,
+      action: "builtin.dns_resolve",
+      status: "success",
+      output: {
+        ok: true,
+        record_type: "A",
+        records: ["127.0.0.1"],
+        matched_expected: false,
+        resolver: "mock",
+      },
+      stdout: "",
+      stderr: "",
+      error: "",
+    };
   },
 };

@@ -26,6 +26,7 @@ import {
   graphToFlowModel,
   insertCatalogActionOnEdge,
   removeGraphEdge,
+  removeGraphNode,
   updateGraphNodePosition,
   type RunnerGraph,
   type RunnerPosition,
@@ -58,6 +59,7 @@ type RunnerCanvasProps = {
   onUpdateGraph: (graph: RunnerGraph) => void;
   onSelectNode: (nodeId: string) => void;
   onOpenNodeConfig: (nodeId: string) => void;
+  onDeleteNode?: (nodeId: string) => void;
   onNodeAction?: (action: string, nodeId: string) => void;
   onToggleFullscreen?: () => void;
 };
@@ -85,6 +87,11 @@ function actionKey(action: RunnerAction) {
 
 function actionLabel(action: RunnerAction) {
   return action.label || action.title || action.name || action.action || "Action";
+}
+
+function isTextEditingTarget(target: HTMLElement | null) {
+  if (!target) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
 }
 
 function pointInsideNode(point: FlowPoint, node: Node, padding = 0) {
@@ -242,6 +249,19 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
     },
     [props],
   );
+  const deleteGraphNode = useCallback(
+    (nodeId = "") => {
+      const targetNodeId = String(nodeId || "").trim();
+      if (!targetNodeId) return;
+      if (props.onDeleteNode) {
+        props.onDeleteNode(targetNodeId);
+        return;
+      }
+      props.onUpdateGraph(removeGraphNode(props.graph, targetNodeId));
+      props.onSelectNode("");
+    },
+    [props],
+  );
   const flowModel = useMemo(() => graphToFlowModel(props.graph, { selectedNodeId: props.selectedNodeId }), [props.graph, props.selectedNodeId]);
   const paletteActions = useMemo(() => getRunnerPaletteActions(props.actions), [props.actions]);
   const explicitFocusNodeId = useMemo(() => String(props.focusNodeId || "").split(":")[0], [props.focusNodeId]);
@@ -314,13 +334,27 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       if (!selectedEdgeId) return;
       if (event.key !== "Delete" && event.key !== "Backspace") return;
       const target = event.target as HTMLElement | null;
-      if (target && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)) return;
+      if (isTextEditingTarget(target)) return;
       event.preventDefault();
       deleteGraphEdges([selectedEdgeId]);
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [deleteGraphEdges, selectedEdgeId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!props.selectedNodeId || selectedEdgeId) return;
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target as HTMLElement | null;
+      if (isTextEditingTarget(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      deleteGraphNode(props.selectedNodeId);
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [deleteGraphNode, props.selectedNodeId, selectedEdgeId]);
 
   useEffect(() => {
     if (!runFocusNodeId) return;

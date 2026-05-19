@@ -7,7 +7,7 @@ const graph: WorkflowGraph = {
   workflow: { version: "v0.1", name: "demo" },
   nodes: [
     { id: "start", type: "start", label: "Start", position: { x: 80, y: 160 } },
-    { id: "cmd-run", type: "action", position: { x: 320, y: 160 }, step_name: "cmd-run" },
+    { id: "script-shell", type: "action", position: { x: 320, y: 160 }, step_name: "script-shell" },
   ],
   edges: [],
 };
@@ -15,8 +15,8 @@ const graph: WorkflowGraph = {
 describe("action catalog helpers", () => {
   it("filters actions and keeps deterministic category groups", () => {
     const actions: ActionSpec[] = [
-      { action: "shell.run", title: "Shell Script", category: "script", risk: "high" },
-      { action: "cmd.run", title: "Command", category: "command", risk: "medium" },
+      { action: "script.shell", title: "Shell Script", category: "script", risk: "high" },
+      { action: "http.request", title: "HTTP Request", category: "network", risk: "medium" },
       { action: "script.python", title: "Stored Python Script", category: "script", description: "Run Python script" },
     ];
 
@@ -24,7 +24,7 @@ describe("action catalog helpers", () => {
       {
         category: "script",
         actions: [
-          expect.objectContaining({ action: "shell.run" }),
+          expect.objectContaining({ action: "script.shell" }),
           expect.objectContaining({ action: "script.python" }),
         ],
       },
@@ -38,12 +38,12 @@ describe("action catalog helpers", () => {
       category: "release",
       risk: "high",
       node_type: "action",
-      defaults: { command: "deploy --check" },
+      defaults: { script: "deploy --check" },
       args_schema: {
         type: "object",
-        required: ["command", "environment"],
+        required: ["script", "environment"],
         properties: {
-          command: { type: "string" },
+          script: { type: "string" },
           environment: { type: "string", default: "staging" },
           dry_run: { type: "boolean", default: true },
         },
@@ -63,7 +63,7 @@ describe("action catalog helpers", () => {
         name: "custom-deploy",
         action: "custom.deploy",
         args: {
-          command: "deploy --check",
+          script: "deploy --check",
           environment: "staging",
           dry_run: true,
         },

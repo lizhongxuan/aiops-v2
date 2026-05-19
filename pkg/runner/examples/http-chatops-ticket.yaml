@@ -1,0 +1,60 @@
+version: v0.1
+name: http-chatops-ticket
+description: Create an ITSM incident and post the run summary to ChatOps using governed HTTP requests.
+inventory:
+  hosts:
+    control-plane:
+      address: "http://127.0.0.1:7072"
+vars:
+  service: checkout-api
+  severity: SEV2
+  summary: "checkout-api synthetic health check failed"
+  itsm_url: "https://itsm.example.com/api/v1/incidents"
+  chatops_url: "https://chat.example.com/api/v1/channels/oncall/messages"
+plan:
+  mode: manual-approve
+  strategy: sequential
+steps:
+  - name: create itsm incident
+    targets: [control-plane]
+    action: http.request
+    args:
+      method: POST
+      url: "${itsm_url}"
+      auth:
+        type: bearer
+        secret_ref: "itsm/api-token"
+      headers:
+        Content-Type: application/json
+      body_json:
+        service: "${service}"
+        severity: "${severity}"
+        summary: "${summary}"
+        source: aiops-runner
+      expected_status: [200, 201, 202]
+      json_path: "$.id"
+      timeout: 10s
+      retries: 2
+      redactions:
+        - "Authorization"
+
+  - name: post chatops notification
+    targets: [control-plane]
+    action: http.request
+    args:
+      method: POST
+      url: "${chatops_url}"
+      auth:
+        type: bearer
+        secret_ref: "chatops/bot-token"
+      headers:
+        Content-Type: application/json
+        X-Idempotency-Key: "aiops-${service}-${severity}"
+      body_json:
+        channel: oncall
+        text: "Created ${severity} incident for ${service}: ${summary}"
+      expected_status: [200, 201, 202]
+      timeout: 10s
+      retries: 2
+      redactions:
+        - "Authorization"

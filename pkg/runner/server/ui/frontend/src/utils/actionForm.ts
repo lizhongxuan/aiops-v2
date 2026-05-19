@@ -26,25 +26,6 @@ export interface TargetOption {
 }
 
 const commonActionSchemas: Record<string, JsonSchema> = {
-  "cmd.run": {
-    type: "object",
-    required: ["cmd"],
-    properties: {
-      cmd: { type: "string", title: "Command", description: "Command passed to /bin/sh -c." },
-      dir: { type: "string", title: "Working directory" },
-      env: envObjectSchema(),
-    },
-  },
-  "shell.run": {
-    type: "object",
-    required: ["script"],
-    properties: {
-      script: { type: "string", title: "Script", description: "Shell script content." },
-      dir: { type: "string", title: "Working directory" },
-      env: envObjectSchema(),
-      export_vars: { type: "boolean", title: "Export variables", description: "Parse RUNNER_EXPORT_* lines from stdout." },
-    },
-  },
   "script.shell": scriptSchema("Shell script"),
   "script.python": scriptSchema("Python script"),
 };
@@ -105,13 +86,13 @@ export function validateActionArgs(spec: ActionSpec | undefined, action: string 
     issues.push(...validateJSONSchemaValue(key, value, property));
   }
 
-  if ((action === "script.shell" || action === "script.python") && isEmptyArg(values.script_ref) && isEmptyArg(values.script)) {
+  if ((action === "script.shell" || action === "script.python") && isEmptyArg(values.script)) {
     issues.push({
-      field: "script_ref",
+      field: "script",
       severity: "error",
       code: "script_reference_missing",
-      message: "Stored script or inline script is required.",
-      suggestion: "Set script_ref for a managed script, or provide inline script content.",
+      message: "Inline script is required.",
+      suggestion: "Provide inline script content in args.script.",
     });
   }
 
@@ -192,9 +173,9 @@ export function validateTargets(workflow: WorkflowDefinition | null | undefined,
 }
 
 export function nodeAction(node: WorkflowNode | null | undefined): string {
-  if (!node) return "cmd.run";
-  if (node.type === "handler") return node.handler?.action || "cmd.run";
-  return node.step?.action || "cmd.run";
+  if (!node) return "script.shell";
+  if (node.type === "handler") return node.handler?.action || "script.shell";
+  return node.step?.action || "script.shell";
 }
 
 export function nodeExecutableName(node: WorkflowNode | null | undefined): string {
@@ -337,7 +318,7 @@ export function formatJSON(value: unknown): string {
 function ensureStep(node: WorkflowNode): WorkflowStep {
   return {
     name: node.step?.name || node.step_name || node.id,
-    action: node.step?.action || "cmd.run",
+    action: node.step?.action || "script.shell",
     args: {},
     ...node.step,
   };
@@ -346,7 +327,7 @@ function ensureStep(node: WorkflowNode): WorkflowStep {
 function ensureHandler(node: WorkflowNode): WorkflowHandler {
   return {
     name: node.handler?.name || node.handler_name || node.id,
-    action: node.handler?.action || "cmd.run",
+    action: node.handler?.action || "script.shell",
     args: {},
     ...node.handler,
   };
@@ -394,7 +375,7 @@ function fieldKind(key: string, schema: JsonSchema): ActionFieldKind {
   if (schema.type === "boolean") return "boolean";
   if (schema.type === "array" && schema.items?.type === "string") return "string-array";
   if (schema.type === "object") return "json";
-  if (key === "script" || key === "cmd") return "multiline";
+  if (key === "script" || key === "script") return "multiline";
   return "string";
 }
 
@@ -531,7 +512,6 @@ function scriptSchema(scriptTitle: string): JsonSchema {
   return {
     type: "object",
     properties: {
-      script_ref: { type: "string", title: "Stored script" },
       script: { type: "string", title: scriptTitle },
       args: { type: "array", title: "Arguments", items: { type: "string" } },
       dir: { type: "string", title: "Working directory" },

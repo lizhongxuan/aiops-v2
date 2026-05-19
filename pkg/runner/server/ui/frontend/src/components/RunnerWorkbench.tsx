@@ -9,7 +9,7 @@ import { useGraphStore } from "../stores/graphStore";
 import { buildGraphDiffSummary } from "../utils/graphDiff";
 import type { WorkflowGraph } from "../types/workflow";
 
-type NewWorkflowMode = "cmd-run-basic" | "shell-run-basic" | "manual-approval-basic" | "from-yaml" | "clone-current";
+type NewWorkflowMode = "script-shell-basic" | "shell-run-basic" | "manual-approval-basic" | "from-yaml" | "clone-current";
 
 export default function RunnerWorkbench() {
   const store = useGraphStore();
@@ -18,7 +18,7 @@ export default function RunnerWorkbench() {
   const [yamlPreviewOpen, setYamlPreviewOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [newWorkflowOpen, setNewWorkflowOpen] = useState(false);
-  const [newWorkflowInitialMode, setNewWorkflowInitialMode] = useState<NewWorkflowMode>("cmd-run-basic");
+  const [newWorkflowInitialMode, setNewWorkflowInitialMode] = useState<NewWorkflowMode>("script-shell-basic");
   const [switchConfirmOpen, setSwitchConfirmOpen] = useState(false);
   const [pendingWorkflowName, setPendingWorkflowName] = useState("");
   const bundleFileInput = useRef<HTMLInputElement | null>(null);
@@ -59,7 +59,7 @@ export default function RunnerWorkbench() {
     await store.importWorkflowBundle(await file.text());
   }
 
-  function openNewWorkflow(mode: NewWorkflowMode = "cmd-run-basic") {
+  function openNewWorkflow(mode: NewWorkflowMode = "script-shell-basic") {
     setNewWorkflowInitialMode(mode);
     setNewWorkflowOpen(true);
   }
@@ -94,7 +94,7 @@ export default function RunnerWorkbench() {
           <select className="workflow-select" value={store.state.graph?.workflow.name || ""} disabled={store.state.loading || store.state.switchingWorkflow} onChange={(event) => requestWorkflowSwitch(event.target.value)}>
             {workflowSelectOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-          <button type="button" disabled={store.state.creatingWorkflow} onClick={() => openNewWorkflow("cmd-run-basic")}>New</button>
+          <button type="button" disabled={store.state.creatingWorkflow} onClick={() => openNewWorkflow("script-shell-basic")}>New</button>
           <button type="button" disabled={!store.state.graph} onClick={() => openNewWorkflow("clone-current")}>Clone</button>
           <span className={`tag ${store.state.offline ? "tag-warning" : "tag-success"}`}>{store.state.offline ? "Mock data" : "API connected"}</span>
           <span className="tag">{workflowVersionText}</span>
@@ -147,8 +147,11 @@ export default function RunnerWorkbench() {
           workflow={store.state.graph?.workflow || null}
           workflows={store.state.workflowOptions}
           diffSummary={diffSummary}
+          nodeDebugging={store.state.nodeDebugging}
+          nodeDebugResult={store.state.nodeDebugResult}
           onUpdateNode={store.updateNode}
           onUpdateWorkflow={store.updateWorkflow}
+          onDebugNode={() => void store.debugSelectedNode()}
         />
       </main>
       <RunDrawer

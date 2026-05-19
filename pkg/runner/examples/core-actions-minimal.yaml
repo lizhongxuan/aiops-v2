@@ -1,0 +1,54 @@
+version: v0.1
+name: core-actions-minimal
+description: Minimal workflow covering the default registry and catalog core actions.
+inventory:
+  hosts:
+    local:
+      address: "127.0.0.1"
+vars:
+  probe_host: "example.com"
+  probe_url: "https://example.com"
+plan:
+  mode: auto
+  strategy: sequential
+steps:
+  - name: shell hello
+    targets: [local]
+    action: script.shell
+    args:
+      script: |
+        set -eu
+        echo "hello from script.shell"
+
+  - name: python json
+    targets: [local]
+    action: script.python
+    args:
+      script: |
+        import json
+        print(json.dumps({"ok": True}))
+
+  - name: http get
+    targets: [local]
+    action: http.request
+    args:
+      method: GET
+      url: "${probe_url}"
+      expected_status: [200]
+      timeout: 10s
+
+  - name: tcp probe
+    targets: [local]
+    action: builtin.tcp_ping
+    args:
+      host: "${probe_host}"
+      port: 443
+      timeout: 3s
+
+  - name: dns probe
+    targets: [local]
+    action: builtin.dns_resolve
+    args:
+      name: "${probe_host}"
+      record_type: A
+      timeout: 3s

@@ -15,9 +15,9 @@ const graph: WorkflowGraph = {
       position: { x: 10, y: 20 },
       step: {
         name: "run",
-        action: "cmd.run",
+        action: "script.shell",
         targets: ["local"],
-        args: { cmd: "echo ok" },
+        args: { script: "echo ok" },
       },
     },
   ],
@@ -35,7 +35,7 @@ describe("graph preview helpers", () => {
     expect(preview).toContain("version: v1");
     expect(preview).toContain("workflow:");
     expect(preview).toContain("nodes:");
-    expect(preview).toContain("cmd: \"echo ok\"");
+    expect(preview).toContain("script: \"echo ok\"");
   });
 
   it("formats graph JSON for the advanced editor", () => {

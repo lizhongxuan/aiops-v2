@@ -193,7 +193,7 @@ func TestVisualWorkflowAuditPublishRequiresValidatedGraphHash(t *testing.T) {
 		"validated_graph_hash": validated.ValidatedGraphHash,
 		"dry_run_graph_hash":   dryRun.DryRunGraphHash,
 		"diff": map[string]any{
-			"semantic_changes": []map[string]any{{"title": "restore action", "detail": "shell.run"}},
+			"semantic_changes": []map[string]any{{"title": "restore action", "detail": "script.shell"}},
 		},
 	}, auditHeaders())
 	if code != http.StatusOK {

@@ -13,27 +13,27 @@ vars:
 steps:
   - name: step-1 produce vars on agent_a
     targets: [agent_a]
-    action: cmd.run
+    action: script.shell
     args:
       export_vars: true
-      cmd: |
+      script: |
         echo "BOPS_EXPORT:HOST_A=agent_a"
         echo "BOPS_EXPORT:GREETING=hello-from-${demo_name}"
 
   - name: step-2 consume vars on agent_b
     targets: [agent_b]
-    action: cmd.run
+    action: script.shell
     args:
       export_vars: true
-      cmd: |
+      script: |
         echo "running on ${HOST_A}"
         echo "message: ${GREETING}"
         echo "BOPS_EXPORT:HOST_B=agent_b"
 
   - name: step-3 final check on agent_c
     targets: [agent_c]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: |
+      script: |
         echo "from ${HOST_A} -> ${HOST_B}"
         echo "done on agent_c"

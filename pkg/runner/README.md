@@ -81,9 +81,9 @@ inventory:
 steps:
   - name: hello
     targets: [local]
-    action: cmd.run
+    action: script.shell
     args:
-      cmd: |
+      script: |
         echo "hello"
 ```
 
@@ -95,19 +95,10 @@ steps:
 
 ## 6. 常用 action
 
-### cmd.run
-执行单行/多行命令：
-```yaml
-action: cmd.run
-args:
-  cmd: |
-    echo "hello"
-```
-
-### shell.run（整段 shell 脚本）
+### script.shell（整段 shell 脚本）
 直接写完整脚本：
 ```yaml
-action: shell.run
+action: script.shell
 args:
   script: |
     echo "hello"
@@ -124,7 +115,7 @@ BOPS_EXPORT:KEY=value
 
 YAML 示例：
 ```yaml
-action: shell.run
+action: script.shell
 args:
   export_vars: true
   script: |
@@ -140,7 +131,7 @@ args:
 ```yaml
 steps:
   - name: step-1
-    action: shell.run
+    action: script.shell
     args:
       export_vars: true
       script: |

@@ -8,7 +8,7 @@ inventory:
 steps:
   - name: check aiops repo root
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       dir: "../.."
       script: |
@@ -20,7 +20,7 @@ steps:
 
   - name: run focused package tests
     targets: [local]
-    action: shell.run
+    action: script.shell
     timeout: 5m
     args:
       dir: "../.."
@@ -34,7 +34,7 @@ steps:
 
   - name: run mock eval regression
     targets: [local]
-    action: shell.run
+    action: script.shell
     timeout: 5m
     args:
       dir: "../.."
@@ -47,7 +47,7 @@ steps:
 
   - name: check phoenix ui endpoint
     targets: [local]
-    action: shell.run
+    action: script.shell
     continue_on_error: true
     args:
       dir: "../.."
@@ -63,7 +63,7 @@ steps:
 
   - name: print manual trace verification
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       dir: "../.."
       script: |

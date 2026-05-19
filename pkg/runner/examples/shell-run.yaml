@@ -7,7 +7,7 @@ inventory:
 steps:
   - name: inline shell
     targets: [local]
-    action: shell.run
+    action: script.shell
     args:
       export_vars: true
       script: |

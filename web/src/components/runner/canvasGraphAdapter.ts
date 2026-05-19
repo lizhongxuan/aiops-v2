@@ -400,6 +400,17 @@ export function removeGraphEdge(graph: RunnerGraph = {}, edgeId = "") {
   return next;
 }
 
+export function removeGraphNode(graph: RunnerGraph = {}, nodeId = "") {
+  const targetNodeId = String(nodeId || "").trim();
+  if (!targetNodeId) return graph;
+  const node = (graph.nodes || []).find((item) => item.id === targetNodeId);
+  if (!node || isSystemGraphNode(node)) return graph;
+  const next = cloneGraph(graph);
+  next.nodes = (next.nodes || []).filter((item) => item.id !== targetNodeId);
+  next.edges = (next.edges || []).filter((edge) => edge.source !== targetNodeId && edge.target !== targetNodeId);
+  return next;
+}
+
 export function updateGraphEdgeKind(graph: RunnerGraph = {}, edgeId = "", kind = "next") {
   const sourcePort = String(kind || "next").trim() || "next";
   const normalizedKind = canonicalEdgeKindForPort(sourcePort);
@@ -419,6 +430,11 @@ export function updateGraphEdgeKind(graph: RunnerGraph = {}, edgeId = "", kind =
 
 function edgeIdForUpdate(edge: RunnerEdge) {
   return edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`;
+}
+
+function isSystemGraphNode(node: RunnerNode = { id: "" }) {
+  const type = String(node.type || "").toLowerCase();
+  return node.id === "start" || node.id === "end" || type === "start" || type === "end";
 }
 
 function normalizeFlowConnection(graph: RunnerGraph = {}, connection: FlowConnection = {}): FlowConnection {

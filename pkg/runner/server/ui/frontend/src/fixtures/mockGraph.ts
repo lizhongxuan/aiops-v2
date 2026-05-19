@@ -14,17 +14,17 @@ export const mockGraph: WorkflowGraph = {
       groups: {
         app: {
           hosts: ["staging-a", "staging-b"],
-          vars: { capabilities: ["cmd.run", "shell.run"] },
+          vars: { capabilities: ["script.shell", "builtin.tcp_ping"] },
         },
       },
       hosts: {
         "staging-a": {
           address: "agent://staging-a",
-          vars: { capabilities: ["cmd.run", "shell.run"] },
+          vars: { capabilities: ["script.shell", "builtin.tcp_ping"] },
         },
         "staging-b": {
           address: "agent://staging-b",
-          vars: { capabilities: ["cmd.run"] },
+          vars: { capabilities: ["script.shell"] },
         },
         "metrics-agent": {
           address: "agent://metrics-agent",
@@ -52,9 +52,9 @@ export const mockGraph: WorkflowGraph = {
       step_name: "probe-hosts",
       step: {
         name: "probe-hosts",
-        action: "cmd.run",
+        action: "script.shell",
         target: ["staging-a", "staging-b"],
-        args: { cmd: "systemctl is-active ${service}" },
+        args: { script: "systemctl is-active ${service}" },
       },
     },
     {
@@ -65,7 +65,7 @@ export const mockGraph: WorkflowGraph = {
       step_name: "restart-service",
       step: {
         name: "restart-service",
-        action: "shell.run",
+        action: "script.shell",
         target: ["staging-a", "staging-b"],
         args: { script: "sudo systemctl restart ${service}\nsleep 3\nsystemctl status ${service}" },
       },
@@ -91,7 +91,10 @@ export const mockGraph: WorkflowGraph = {
         name: "verify-metrics",
         action: "script.python",
         target: "metrics-agent",
-        args: { script_ref: "check-error-rate", args: ["${service}", "${environment}"] },
+        args: {
+          script: "import json, sys\nprint(json.dumps({\"service\": sys.argv[1], \"environment\": sys.argv[2], \"ok\": True}))",
+          args: ["${service}", "${environment}"],
+        },
       },
     },
     {
@@ -112,50 +115,70 @@ export const mockGraph: WorkflowGraph = {
 
 export const mockActions: ActionSpec[] = [
   {
-    action: "cmd.run",
-    title: "Command",
-    category: "command",
-    description: "Run a shell command through /bin/sh -c on each target.",
+    action: "script.shell",
+    title: "Shell Script",
+    category: "script",
+    description: "Run a shell script through /bin/sh -c on each target.",
     risk: "medium",
     node_type: "action",
-    required_args: ["cmd"],
-    defaults: { cmd: "echo hello" },
+    required_args: ["script"],
+    defaults: { script: "echo hello" },
     args_schema: {
       type: "object",
-      required: ["cmd"],
+      required: ["script"],
       properties: {
-        cmd: { type: "string", title: "Command", minLength: 1 },
+        script: { type: "string", title: "Shell Script", minLength: 1 },
         dir: { type: "string", title: "Working directory" },
       },
     },
   },
   {
-    action: "shell.run",
-    title: "Shell Script",
-    category: "script",
-    description: "Run inline shell script content through /bin/sh.",
-    risk: "high",
-    node_type: "action",
-    required_args: ["script"],
-    defaults: { script: "set -e\necho ok" },
-  },
-  {
-    action: "script.shell",
-    title: "Stored Shell Script",
-    category: "script",
-    description: "Run shell script content resolved by the script service or supplied inline.",
-    risk: "high",
-    node_type: "action",
-    defaults: { script_ref: "restore.sh" },
-  },
-  {
     action: "script.python",
-    title: "Stored Python Script",
+    title: "Python Script",
     category: "script",
     description: "Run Python script content resolved by the script service or supplied inline.",
     risk: "high",
     node_type: "action",
-    defaults: { script_ref: "verify.py" },
+    required_args: ["script"],
+    defaults: { script: "import json\nprint(json.dumps({\"ok\": True}))" },
+    args_schema: {
+      type: "object",
+      required: ["script"],
+      properties: {
+        script: { type: "string", title: "Python Script", minLength: 1 },
+        dir: { type: "string", title: "Working directory" },
+      },
+    },
+  },
+  {
+    action: "http.request",
+    title: "HTTP Request",
+    category: "network",
+    description: "Send a governed HTTP request and validate the response status.",
+    risk: "medium",
+    node_type: "action",
+    required_args: ["url"],
+    defaults: { method: "GET", url: "https://example.com/healthz", expected_status: [200], timeout: "10s" },
+  },
+  {
+    action: "builtin.tcp_ping",
+    title: "TCP Ping",
+    category: "network",
+    description: "Check whether a TCP host and port are reachable.",
+    risk: "read_only",
+    node_type: "action",
+    required_args: ["host", "port"],
+    defaults: { host: "example.com", port: 443, timeout: "3s" },
+  },
+  {
+    action: "builtin.dns_resolve",
+    title: "DNS Resolve",
+    category: "network",
+    description: "Resolve DNS records using the runner host resolver.",
+    risk: "read_only",
+    node_type: "action",
+    required_args: ["name"],
+    defaults: { name: "example.com", record_type: "A", timeout: "3s" },
   },
   {
     action: "manual.approval",

@@ -30,7 +30,7 @@ import { collectRunnerVariables } from "@/components/runner/runnerVariables";
 import { firstRunnableNodeId } from "@/components/runner/runnerRunVisualState";
 import { extractRunnerRunEvents, finalRunnerRunStatus, isRunnerRunHistoryTerminal, mapRunnerRunEventsToGraph, unwrapRunnerPayload } from "@/components/runner/runEventHistory";
 import { createInitialRunState, reduceRunEvents } from "@/components/runner/runStateReducer";
-import type { RunnerEdge, RunnerGraph, RunnerNode } from "@/components/runner/canvasGraphAdapter";
+import { removeGraphNode, type RunnerEdge, type RunnerGraph, type RunnerNode } from "@/components/runner/canvasGraphAdapter";
 import "@/components/runner/runnerStudio.css";
 
 type RunnerAction = { action?: string; name?: string; label?: string; title?: string; category?: string; defaults?: Record<string, unknown>; [key: string]: unknown };
@@ -761,7 +761,7 @@ function EndCallbacksEditor({ callbacks, onChange }: { callbacks: RunnerEndCallb
   );
 }
 
-function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode }: { node: RunnerNode; graph: RunnerGraph; runState: ReturnType<typeof createInitialRunState>; onClose: () => void; onApply: (node: RunnerNode) => void; onRunNode: (nodeId: string) => void }) {
+function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode, onDelete }: { node: RunnerNode; graph: RunnerGraph; runState: ReturnType<typeof createInitialRunState>; onClose: () => void; onApply: (node: RunnerNode) => void; onRunNode: (nodeId: string) => void; onDelete: (nodeId: string) => void }) {
   const [draft, setDraft] = useState(() => cloneNode(node));
   const [tab, setTab] = useState("settings");
   const [scriptModalOpen, setScriptModalOpen] = useState(false);
@@ -849,6 +849,7 @@ function RunnerNodePanel({ node, graph, runState, onClose, onApply, onRunNode }:
           <button type="button" data-testid="runner-node-panel-run" onClick={() => onRunNode(draft.id)}><Play size={15} />运行</button>
           <button type="button" data-testid="runner-node-panel-open-run" onClick={() => setTab("last-run")}><PanelRight size={15} />详情</button>
           <button type="button" className="primary" data-testid="runner-node-panel-apply" onClick={() => onApply(cloneNode(draft))}><CheckCircle size={15} />保存</button>
+          {!isSystemNode ? <button type="button" className="danger" aria-label="删除节点" data-testid="runner-node-panel-delete" onClick={() => onDelete(draft.id)}><Trash2 size={15} />删除</button> : null}
           <button type="button" aria-label="关闭节点配置" data-testid="runner-node-panel-close" onClick={onClose}><X size={16} /></button>
         </div>
       </header>
@@ -1928,6 +1929,13 @@ export function RunnerStudioPage() {
     setSaveState({ status: "pending", message: "未保存" });
   }
 
+  function deleteGraphNodeById(nodeId: string) {
+    const nextGraph = removeGraphNode(graph, nodeId);
+    if (nextGraph === graph) return;
+    updateGraph(nextGraph);
+    setSelectedNodeId("");
+  }
+
   function upsertRunRecord(record: RunnerRunRecord) {
     setRunRecords((current) => [record, ...current.filter((item) => item.runId !== record.runId)].slice(0, 25));
   }
@@ -2134,8 +2142,8 @@ export function RunnerStudioPage() {
         {!selectedWorkflow ? <WorkflowLibrary workflows={workflows} onSelect={selectWorkflow} onDelete={(name) => void deleteWorkflow(name)} /> : (
           <>
             <div className={`runner-studio-workspace ${selectedNode ? "with-node-panel" : ""}`}>
-              <section className="runner-studio-main"><section className="runner-studio-canvas" aria-label="工作流画布" data-testid="runner-studio-canvas"><RunnerCanvas graph={graph} actions={actions} runState={runState} focusNodeId={runFocusNodeId} selectedNodeId={selectedNodeId} fullscreen={fullscreen} onUpdateGraph={updateGraph} onSelectNode={setSelectedNodeId} onOpenNodeConfig={setSelectedNodeId} onNodeAction={() => {}} onToggleFullscreen={() => setFullscreen((value) => !value)} /></section></section>
-              {selectedNode ? <section className="runner-node-panel-modal" role="dialog" aria-modal="false" aria-label="节点配置面板" data-testid="runner-node-panel-modal"><RunnerNodePanel node={selectedNode} graph={graph} runState={runState} onClose={() => setSelectedNodeId("")} onApply={(node) => { updateGraph({ ...graph, nodes: (graph.nodes || []).map((item) => item.id === node.id ? node : item) }); setSelectedNodeId(node.id); }} onRunNode={(nodeId) => void runWorkflow(nodeId)} /></section> : null}
+              <section className="runner-studio-main"><section className="runner-studio-canvas" aria-label="工作流画布" data-testid="runner-studio-canvas"><RunnerCanvas graph={graph} actions={actions} runState={runState} focusNodeId={runFocusNodeId} selectedNodeId={selectedNodeId} fullscreen={fullscreen} onUpdateGraph={updateGraph} onSelectNode={setSelectedNodeId} onOpenNodeConfig={setSelectedNodeId} onDeleteNode={deleteGraphNodeById} onNodeAction={() => {}} onToggleFullscreen={() => setFullscreen((value) => !value)} /></section></section>
+              {selectedNode ? <section className="runner-node-panel-modal" role="dialog" aria-modal="false" aria-label="节点配置面板" data-testid="runner-node-panel-modal"><RunnerNodePanel node={selectedNode} graph={graph} runState={runState} onClose={() => setSelectedNodeId("")} onApply={(node) => { updateGraph({ ...graph, nodes: (graph.nodes || []).map((item) => item.id === node.id ? node : item) }); setSelectedNodeId(node.id); }} onRunNode={(nodeId) => void runWorkflow(nodeId)} onDelete={deleteGraphNodeById} /></section> : null}
               {debugDockOpen ? <RunnerDebugDock graph={graph} state={runState} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} onClose={() => setDebugDockOpen(false)} /> : null}
             </div>
           </>

@@ -39,8 +39,8 @@ export function createControlNode(type: ControlNodeType, graph: WorkflowGraph, p
     node.handler_name = id;
     node.handler = {
       name: id,
-      action: "cmd.run",
-      args: { cmd: "echo notify" },
+      action: "script.shell",
+      args: { script: "echo notify" },
     };
   }
   if (type === "group") {

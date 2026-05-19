@@ -22,7 +22,7 @@ import {
   validateActionArgs,
   validateTargets,
 } from "../utils/actionForm";
-import type { ActionSpec, WorkflowDefinition, WorkflowNode, WorkflowStep, WorkflowSummary } from "../types/workflow";
+import type { ActionSpec, NodeDebugResult, WorkflowDefinition, WorkflowNode, WorkflowStep, WorkflowSummary } from "../types/workflow";
 
 interface PropertyPanelProps {
   node: WorkflowNode | null;
@@ -30,11 +30,14 @@ interface PropertyPanelProps {
   workflow: WorkflowDefinition | null;
   workflows: WorkflowSummary[];
   diffSummary?: GraphDiffSummary;
+  nodeDebugging?: boolean;
+  nodeDebugResult?: NodeDebugResult | null;
   onUpdateNode: (nodeId: string, patch: Partial<WorkflowNode>) => void;
   onUpdateWorkflow: (patch: Partial<WorkflowDefinition>) => void;
+  onDebugNode?: () => void;
 }
 
-export default function PropertyPanel({ node, actions, workflow, workflows, diffSummary, onUpdateNode, onUpdateWorkflow }: PropertyPanelProps) {
+export default function PropertyPanel({ node, actions, workflow, workflows, diffSummary, nodeDebugging = false, nodeDebugResult = null, onUpdateNode, onUpdateWorkflow, onDebugNode }: PropertyPanelProps) {
   const [activeTab, setActiveTab] = useState("config");
   const [stepJSON, setStepJSON] = useState("{}");
   const [stepJSONError, setStepJSONError] = useState<string | null>(null);
@@ -142,6 +145,14 @@ export default function PropertyPanel({ node, actions, workflow, workflows, diff
                 {nodeAction(node) ? <Description label="Action">{nodeAction(node)}</Description> : null}
                 {node.state?.status ? <Description label="Run"><span className="tag">{node.state.status}</span></Description> : null}
               </div>
+              {node.type === "action" && onDebugNode ? (
+                <div className="node-debug-block">
+                  <button type="button" disabled={nodeDebugging} onClick={onDebugNode}>
+                    {nodeDebugging ? "调试中..." : "调试此节点"}
+                  </button>
+                  {nodeDebugResult && nodeDebugResult.node_id === node.id ? <NodeDebugPanel result={nodeDebugResult} /> : null}
+                </div>
+              ) : null}
               {node.type === "subflow" ? (
                 <>
                   <FormItem label="Workflow" feedback={subflowWorkflowFeedback(node, workflow)}>
@@ -295,6 +306,21 @@ function DiffPanel({ diffSummary }: { diffSummary?: GraphDiffSummary }) {
   const sections = diffSummary?.sections || [];
   if (!sections.length) return <div className="empty-state">No baseline diff available</div>;
   return <div className="diff-section-list">{sections.map((section) => <div key={section.kind} className={`diff-section ${section.changed ? "is-changed" : ""}`}><div className="diff-section-heading"><span className="tag">{section.kind}</span><strong>{section.title}</strong><small>{section.changed ? `${section.paths.length} change${section.paths.length === 1 ? "" : "s"}` : "unchanged"}</small></div>{section.paths.length ? <ul>{section.paths.map((path) => <li key={path}><code>{path}</code></li>)}</ul> : null}</div>)}</div>;
+}
+
+function NodeDebugPanel({ result }: { result: NodeDebugResult }) {
+  return (
+    <div className={`node-debug-result ${result.status === "success" ? "is-success" : "is-error"}`}>
+      <div className="node-debug-heading">
+        <span className="tag">{result.status}</span>
+        {result.action ? <small>{result.action}</small> : null}
+      </div>
+      {result.error ? <div className="inline-alert is-error">{result.error}</div> : null}
+      {result.stdout ? <pre className="json-panel">{result.stdout}</pre> : null}
+      {result.stderr ? <pre className="json-panel stderr">{result.stderr}</pre> : null}
+      {result.output ? <pre className="json-panel">{formatJSON(result.output)}</pre> : null}
+    </div>
+  );
 }
 
 function actionOptions(actions: ActionSpec[], currentAction: string) {

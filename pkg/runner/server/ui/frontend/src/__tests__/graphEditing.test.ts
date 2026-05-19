@@ -7,7 +7,7 @@ const baseGraph: WorkflowGraph = {
   workflow: { version: "v0.1", name: "editing" },
   nodes: [
     { id: "start", type: "start", position: { x: 10, y: 20 } },
-    { id: "run", type: "action", position: { x: 120, y: 20 }, step: { name: "run", action: "cmd.run" } },
+    { id: "run", type: "action", position: { x: 120, y: 20 }, step: { name: "run", action: "script.shell" } },
     { id: "end", type: "end", position: { x: 240, y: 20 } },
   ],
   edges: [{ id: "edge-start-run", source: "start", target: "run", kind: "next" }],
@@ -29,7 +29,7 @@ describe("graph editing helpers", () => {
       id: "handler",
       type: "handler",
       handler_name: "handler",
-      handler: { name: "handler", action: "cmd.run", args: { cmd: "echo notify" } },
+      handler: { name: "handler", action: "script.shell", args: { script: "echo notify" } },
     });
   });
 
@@ -76,7 +76,7 @@ describe("graph editing helpers", () => {
         id: `step-${index}`,
         type: "action" as const,
         position: { x: 0, y: 0 },
-        step: { name: `step-${index}`, action: "cmd.run", args: { cmd: "true" } },
+        step: { name: `step-${index}`, action: "script.shell", args: { script: "true" } },
       })),
       { id: "end", type: "end", position: { x: 0, y: 0 } },
     ];

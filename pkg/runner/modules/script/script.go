@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"runner/modules"
 )
@@ -42,6 +43,13 @@ func (m *Module) Apply(ctx context.Context, req modules.Request) (modules.Result
 	args, err := readArgs(req)
 	if err != nil {
 		return modules.Result{}, err
+	}
+	if timeout, ok, err := readStepTimeout(req); err != nil {
+		return modules.Result{}, err
+	} else if ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	var execCmd *exec.Cmd
@@ -93,6 +101,9 @@ func (m *Module) Apply(ctx context.Context, req modules.Request) (modules.Result
 		}
 	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, fmt.Errorf("script.%s failed: %w", m.language, ctxErr)
+		}
 		return result, fmt.Errorf("script.%s failed: %w", m.language, err)
 	}
 	return result, nil
@@ -142,6 +153,21 @@ func readArgs(req modules.Request) ([]string, error) {
 	default:
 		return nil, fmt.Errorf("args must be list or string")
 	}
+}
+
+func readStepTimeout(req modules.Request) (time.Duration, bool, error) {
+	raw := strings.TrimSpace(req.Step.Timeout)
+	if raw == "" {
+		return 0, false, nil
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid step timeout %q: %w", raw, err)
+	}
+	if timeout <= 0 {
+		return 0, false, fmt.Errorf("step timeout must be greater than zero")
+	}
+	return timeout, true, nil
 }
 
 func readString(req modules.Request, key string) (string, bool) {

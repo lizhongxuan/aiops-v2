@@ -8,6 +8,7 @@ import {
   graphToCanvasModel,
   graphToFlowModel,
   insertCatalogActionOnEdge,
+  removeGraphNode,
   updateGraphEdgeKind,
   validationIssueToCanvasFocus,
   validateGraphConnection,
@@ -205,6 +206,31 @@ describe("canvasGraphAdapter", () => {
 
     expect(next.nodes.find((node) => node.id === "pre-check").position).toEqual({ x: 320, y: 240 });
     expect(next.nodes.find((node) => node.id === "pre-check")).not.toHaveProperty("positionAbsolute");
+  });
+
+  it("removes action nodes with their incident graph edges while preserving system nodes", () => {
+    const source = {
+      version: "v1",
+      workflow: { name: "delete-demo" },
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "probe", type: "action", step: { action: "builtin.tcp_ping" } },
+        { id: "verify", type: "action", step: { action: "script.shell" } },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { id: "start-probe", source: "start", target: "probe", kind: "next" },
+        { id: "probe-verify", source: "probe", target: "verify", kind: "next" },
+        { id: "verify-end", source: "verify", target: "end", kind: "next" },
+      ],
+    };
+
+    const next = removeGraphNode(source, "probe");
+
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "verify", "end"]);
+    expect(next.edges).toEqual([{ id: "verify-end", source: "verify", target: "end", kind: "next" }]);
+    expect(source.nodes.map((node) => node.id)).toEqual(["start", "probe", "verify", "end"]);
+    expect(removeGraphNode(source, "start")).toBe(source);
   });
 
   it("converts backend graph into flow canvas nodes and semantic handles", () => {

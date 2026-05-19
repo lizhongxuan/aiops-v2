@@ -102,8 +102,7 @@ func DefaultActionSpecs() []ActionSpec {
 			NodeType:    "action",
 			Defaults:    map[string]any{"script": "set -euo pipefail\necho ok"},
 			ArgsSchema: actionArgsSchema(map[string]any{
-				"script_ref": envStringSchema("Stored script name"),
-				"script":     envStringSchema("Inline shell script"),
+				"script": envStringSchema("Inline shell script"),
 				"args": map[string]any{
 					"type":        "array",
 					"title":       "Arguments",
@@ -122,15 +121,14 @@ func DefaultActionSpecs() []ActionSpec {
 		},
 		{
 			Action:      "script.python",
-			Title:       "Stored Python Script",
+			Title:       "Python Script",
 			Category:    "script",
 			Description: "Run Python script content resolved by the script service or supplied inline.",
 			Risk:        "high",
 			NodeType:    "action",
-			Defaults:    map[string]any{"script_ref": "verify.py"},
+			Defaults:    map[string]any{"script": "import json\nprint(json.dumps({\"ok\": True}))"},
 			ArgsSchema: actionArgsSchema(map[string]any{
-				"script_ref": envStringSchema("Stored script name"),
-				"script":     envStringSchema("Inline Python script"),
+				"script": envStringSchema("Inline Python script"),
 				"args": map[string]any{
 					"type":        "array",
 					"title":       "Arguments",
@@ -143,8 +141,91 @@ func DefaultActionSpecs() []ActionSpec {
 			}, nil),
 			Outputs: commandOutputs(),
 			Examples: []ActionExample{{
-				Title: "Verify metrics",
-				Args:  map[string]any{"script_ref": "verify.py", "args": []string{"order-service"}},
+				Title: "Print JSON",
+				Args:  map[string]any{"script": "import json\nprint(json.dumps({\"ok\": True}))"},
+			}},
+		},
+		{
+			Action:       "http.request",
+			Title:        "HTTP Request",
+			Category:     "network",
+			Description:  "Send a governed HTTP request and validate the response status.",
+			Risk:         "medium",
+			NodeType:     "action",
+			RequiredArgs: []string{"url"},
+			Defaults:     map[string]any{"method": "GET", "url": "https://example.com/healthz", "expected_status": []int{200}, "timeout": "10s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"method":          enumStringSchema("HTTP method", []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}),
+				"url":             envStringSchema("Absolute HTTP or HTTPS URL"),
+				"headers":         envObjectSchema(),
+				"body":            envStringSchema("Raw request body"),
+				"body_json":       map[string]any{"title": "JSON body"},
+				"expected_status": intArraySchema("Expected status codes"),
+				"timeout":         envStringSchema("Request timeout"),
+				"timeout_ms":      integerSchema("Request timeout in milliseconds"),
+			}, []string{"url"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the response matched expectations."},
+				{Name: "status_code", Type: "integer", Description: "HTTP response status code."},
+				{Name: "headers", Type: "object", Description: "HTTP response headers."},
+				{Name: "body", Type: "string", Description: "Response body, subject to response limits."},
+				{Name: "elapsed_ms", Type: "integer", Description: "Elapsed request time in milliseconds."},
+			},
+			Examples: []ActionExample{{
+				Title: "GET health endpoint",
+				Args:  map[string]any{"method": "GET", "url": "https://example.com/healthz", "expected_status": []int{200}, "timeout": "5s"},
+			}},
+		},
+		{
+			Action:       "builtin.tcp_ping",
+			Title:        "TCP Ping",
+			Category:     "network",
+			Description:  "Check whether a TCP host and port are reachable.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"host", "port"},
+			Defaults:     map[string]any{"host": "example.com", "port": 443, "timeout": "3s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"host":    envStringSchema("Host name or IP address"),
+				"port":    integerSchema("TCP port"),
+				"timeout": envStringSchema("Dial timeout"),
+			}, []string{"host", "port"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the TCP port was reachable."},
+				{Name: "reachable", Type: "boolean", Description: "TCP reachability result."},
+				{Name: "latency_ms", Type: "integer", Description: "Dial latency in milliseconds."},
+				{Name: "remote_addr", Type: "string", Description: "Connected remote address."},
+			},
+			Examples: []ActionExample{{
+				Title: "Check HTTPS port",
+				Args:  map[string]any{"host": "example.com", "port": 443, "timeout": "3s"},
+			}},
+		},
+		{
+			Action:       "builtin.dns_resolve",
+			Title:        "DNS Resolve",
+			Category:     "network",
+			Description:  "Resolve DNS records using the runner host resolver.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"name"},
+			Defaults:     map[string]any{"name": "example.com", "record_type": "A", "timeout": "3s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"name":        envStringSchema("DNS name"),
+				"record_type": enumStringSchema("DNS record type", []string{"A", "AAAA", "CNAME", "TXT", "MX", "NS"}),
+				"expected":    stringArraySchema("Expected records"),
+				"timeout":     envStringSchema("Lookup timeout"),
+			}, []string{"name"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether lookup completed successfully."},
+				{Name: "record_type", Type: "string", Description: "Resolved record type."},
+				{Name: "records", Type: "array", Description: "Resolved records."},
+				{Name: "matched_expected", Type: "boolean", Description: "Whether all expected records were present."},
+				{Name: "resolver", Type: "string", Description: "Resolver source."},
+			},
+			Examples: []ActionExample{{
+				Title: "Resolve A records",
+				Args:  map[string]any{"name": "example.com", "record_type": "A", "timeout": "3s"},
 			}},
 		},
 		{
@@ -395,11 +476,11 @@ func (c *ActionCatalog) ValidateStep(step workflow.Step) []ActionValidationIssue
 	if action == "script.shell" || action == "script.python" {
 		hasScript := hasNonEmptyArg(step.Args, "script")
 		hasRef := hasNonEmptyArg(step.Args, "script_ref")
-		if !hasScript && !hasRef {
+		if !hasScript {
 			issues = append(issues, ActionValidationIssue{
 				Type:    "validation",
 				Field:   "args.script",
-				Message: fmt.Sprintf("action %q requires args.script or args.script_ref", action),
+				Message: fmt.Sprintf("action %q requires args.script", action),
 			})
 		}
 		if hasScript && hasRef {
@@ -795,6 +876,29 @@ func boolSchema(description string) map[string]any {
 	return map[string]any{
 		"type":        "boolean",
 		"description": description,
+	}
+}
+
+func integerSchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "integer",
+		"title": title,
+	}
+}
+
+func intArraySchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "array",
+		"title": title,
+		"items": map[string]any{"type": "integer"},
+	}
+}
+
+func stringArraySchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "array",
+		"title": title,
+		"items": map[string]any{"type": "string"},
 	}
 }
 

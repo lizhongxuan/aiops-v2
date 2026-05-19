@@ -1577,6 +1577,16 @@
   background: #0f7652;
 }
 
+.runner-node-panel-actions button.danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.runner-node-panel-actions button.danger:hover {
+  background: #fee2e2;
+}
+
 .runner-node-panel-tabs {
   display: flex;
   gap: 6px;
@@ -1854,13 +1864,16 @@
   cursor: pointer;
 }
 
-.runner-script-editor-modal textarea {
+.runner-script-editor-modal textarea,
+.node-config-form .runner-script-editor-modal textarea {
   width: 100%;
   min-height: 0;
   border: 0;
   resize: none;
   background: #0f172a;
   color: #e2e8f0;
+  -webkit-text-fill-color: #e2e8f0;
+  caret-color: #93c5fd;
   font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
   font-size: 13px;
   line-height: 1.65;
