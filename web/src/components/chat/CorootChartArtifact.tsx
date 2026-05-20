@@ -174,7 +174,7 @@ function CorootReportCharts({ reports, defaultReportName }: { reports: CorootCha
   }
 
   return (
-    <div className="mt-2 min-w-0 space-y-2" data-testid="coroot-native-charts">
+    <div className="mx-auto mt-2 min-w-0 w-full max-w-[640px] space-y-2" data-testid="coroot-native-charts">
       {visibleReports.length > 1 ? (
         <div className="flex gap-1 overflow-x-auto rounded-lg border border-slate-100 bg-slate-50 p-0.5" role="tablist" aria-label="Coroot 图表分组">
           {visibleReports.map((report) => {
@@ -337,10 +337,9 @@ function NativeChartPanel({ chart, title, framed = true }: { chart: CorootChart;
   const unit = unitFromChartTitle(title);
   const body = (
     <div className="space-y-2">
-      <div className="break-words text-center text-xs font-medium leading-5 text-slate-600">{title}</div>
       {lines.length ? <CorootSvgChart chart={chart} lines={lines} unit={unit} /> : <div className="text-sm text-slate-500">当前时间范围内暂无可用指标数据</div>}
       {lines.length && !chart.hide_legend ? (
-        <div className="flex max-h-16 min-w-0 flex-wrap gap-x-3 gap-y-1 overflow-auto text-[11px] text-slate-600">
+        <div className="flex max-h-10 min-w-0 flex-wrap gap-x-3 gap-y-0.5 overflow-auto text-[11px] leading-4 text-slate-600">
           {lines.slice(0, 12).map((line) => (
             <span key={line.name} className="flex min-w-0 max-w-full items-center gap-1">
               <span className="h-3 w-1.5 shrink-0 rounded-sm" style={{ backgroundColor: line.color }} />
@@ -356,7 +355,7 @@ function NativeChartPanel({ chart, title, framed = true }: { chart: CorootChart;
 
 function CorootSvgChart({ chart, lines, unit }: { chart: CorootChart; lines: ChartLine[]; unit: string }) {
   const width = 760;
-  const height = 288;
+  const height = 220;
   const pad = { left: 70, right: 22, top: 14, bottom: 44 };
   const [hover, setHover] = useState<ChartHover | null>(null);
   const allPoints = lines.flatMap((line) => line.points);
@@ -424,7 +423,7 @@ function CorootSvgChart({ chart, lines, unit }: { chart: CorootChart; lines: Cha
 
   return (
     <svg
-      className="h-72 min-h-[288px] w-full overflow-hidden"
+      className="h-[220px] w-full overflow-hidden"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label={text(chart.title) || "Coroot chart"}

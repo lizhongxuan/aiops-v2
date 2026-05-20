@@ -300,18 +300,24 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.textContent).toContain("CPU");
-    expect(container.textContent).toContain("CPU usage");
-    expect(container.textContent).toContain("container: checkout");
+    expect(container.textContent).not.toContain("CPU usage container: checkout, cores");
+    expect(container.textContent).not.toContain("container: checkout");
     expect(container.textContent).toContain("checkout-1");
     expect(container.textContent).toContain("Net");
     expect(container.textContent).not.toContain("Failed TCP connections");
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("CPU");
     expect(container.querySelectorAll('[data-testid="coroot-native-charts"] svg').length).toBe(1);
+    const nativeChartContainer = container.querySelector(
+      '[data-testid="coroot-native-charts"]',
+    );
+    expect(nativeChartContainer?.className).toContain("max-w-[640px]");
+    expect(nativeChartContainer?.className).toContain("w-full");
     const nativeSvg = container.querySelector(
       '[data-testid="coroot-native-charts"] svg',
     );
-    expect(nativeSvg?.className.baseVal).toContain("h-72");
-    expect(nativeSvg?.getAttribute("viewBox")).toBe("0 0 760 288");
+    expect(nativeSvg?.className.baseVal).toContain("h-[220px]");
+    expect(nativeSvg?.className.baseVal).toContain("w-full");
+    expect(nativeSvg?.getAttribute("viewBox")).toBe("0 0 760 220");
     expect(container.textContent).not.toContain("0cores");
     expect(container.textContent).not.toContain("chartReports");
 
@@ -321,7 +327,7 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Net");
-    expect(container.textContent).toContain("Failed TCP connections");
+    expect(container.textContent).not.toContain("Failed TCP connections");
     expect(container.textContent).toContain("->external:18090");
     expect(container.textContent).toContain("303m");
     expect(container.textContent).toContain("322m");
@@ -339,16 +345,16 @@ describe("AgentUiArtifactPart", () => {
       .split(" ")
       .map((point) => Number(point.split(",")[1]))
       .filter(Number.isFinite);
-    expect(Math.max(...firstLineYs) - Math.min(...firstLineYs)).toBeGreaterThan(80);
+    expect(Math.max(...firstLineYs) - Math.min(...firstLineYs)).toBeGreaterThan(45);
     Object.defineProperty(netSvg, "getBoundingClientRect", {
       configurable: true,
       value: () => ({
         left: 0,
         top: 0,
         width: 760,
-        height: 320,
+        height: 220,
         right: 760,
-        bottom: 320,
+        bottom: 220,
         x: 0,
         y: 0,
         toJSON: () => ({}),
@@ -479,7 +485,7 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.querySelectorAll('[data-testid="coroot-native-charts"] svg')).toHaveLength(1);
-    expect(container.textContent).toContain("Memory usage RSS + PageCache");
+    expect(container.textContent).not.toContain("Memory usage RSS + PageCache");
     expect(container.textContent).toContain("rss-pagecache");
     expect(container.textContent).not.toContain("RSS container: aiops-host-agent");
     expect(container.textContent).not.toContain("rss-container");
