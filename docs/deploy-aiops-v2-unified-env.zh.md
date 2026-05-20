@@ -6,7 +6,7 @@
 
 - 本机或单机部署：通过 `./scripts/start.sh` 启动。
 - 团队或生产部署：使用 PostgreSQL 作为主存储，配置由 ConfigMap/Secret/PVC 管理。
-- Coroot 接入：通过 `AIOPS_COROOT_*` 配置让 agent 能调用 Coroot 做服务分析，并在 UI 中展示服务 CPU/内存图表。
+- Coroot 接入：启动后在 `Coroot 观测` 页面配置 Base URL、Project ID 和 API Key；配置会持久化到数据存储。
 
 ## 1. 部署结构
 
@@ -66,11 +66,6 @@ AIOPS_WEB_DIST_DIR=web/dist
 # store: json is simplest for local/single-node use
 AIOPS_STORE_DRIVER=json
 
-# Coroot
-AIOPS_COROOT_BASE_URL=http://172.18.13.11:8000/
-AIOPS_COROOT_PROJECT=5hxbfx6p
-AIOPS_COROOT_TOKEN=<replace-with-coroot-api-token>
-
 # LLM
 AIOPS_LLM_PROVIDER=openai
 AIOPS_LLM_MODEL=gpt-5.4
@@ -84,7 +79,7 @@ chmod 600 .data/aiops.env
 注意：
 
 - 不要把 `.data/aiops.env` 提交到 git。
-- Coroot Token、LLM API Key、数据库密码都只放在本地 env 文件或 Secret 中。
+- LLM API Key、数据库密码都只放在本地 env 文件或 Secret 中。Coroot API Key 在启动后通过 `Coroot 观测` 页面保存。
 - 如果 `AIOPS_GRPC_ADDR` 不写死，`AIOPS_GRPC_AUTO_PORT=1` 可以在默认 `:18090` 被占用时自动选择 `:18190+`。
 
 ## 4. 数据存储选择
@@ -165,7 +160,7 @@ curl --noproxy '*' -sS \
 期望结果：
 
 - `ok` 为 `true`。
-- `project` 等于 `.data/aiops.env` 中的 `AIOPS_COROOT_PROJECT`。
+- `project` 等于 `Coroot 观测` 页面保存的 Project ID。
 - `applicationCount` 大于 0。
 
 确认 MCP 工具注册：
@@ -221,8 +216,6 @@ data:
   AIOPS_DATA_DIR: "/var/lib/aiops"
   AIOPS_WEB_DIST_DIR: "/app/web/dist"
   AIOPS_STORE_DRIVER: "postgres"
-  AIOPS_COROOT_BASE_URL: "http://coroot.coroot.svc.cluster.local:8080/"
-  AIOPS_COROOT_PROJECT: "5hxbfx6p"
   AIOPS_LLM_PROVIDER: "openai"
   AIOPS_LLM_MODEL: "gpt-5.4"
   AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
@@ -238,7 +231,6 @@ metadata:
 type: Opaque
 stringData:
   AIOPS_POSTGRES_DSN: "postgres://aiops:<password>@postgres.aiops.svc.cluster.local:5432/aiops?sslmode=disable"
-  AIOPS_COROOT_TOKEN: "<replace-with-coroot-api-token>"
   AIOPS_LLM_API_KEY: "<replace-with-llm-api-key>"
 ```
 
@@ -310,8 +302,8 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:18080/api/v1/coroot/test-connect
 
 常见原因：
 
-- `AIOPS_COROOT_BASE_URL` 不能从 aiops-v2 所在机器访问。
-- `AIOPS_COROOT_PROJECT` 写成了展示名而不是 URL 中的 project id。
+- `Coroot 观测` 页面保存的 Base URL 不能从 aiops-v2 所在机器访问。
+- `Coroot 观测` 页面保存的 Project ID 写成了展示名而不是 URL 中的 project id。
 - Token 无效或没有访问项目权限。
 
 ### 启动时提示 PostgreSQL 不可达

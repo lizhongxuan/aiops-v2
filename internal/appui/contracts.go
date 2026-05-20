@@ -49,6 +49,13 @@ type SettingsRepository interface {
 	SaveLLMConfig(config *store.LLMConfig) error
 }
 
+// CorootConfigRepository is the persisted backing store for the Coroot
+// observability page connection config.
+type CorootConfigRepository interface {
+	GetCorootConfig() (*store.CorootConfig, error)
+	SaveCorootConfig(config *store.CorootConfig) error
+}
+
 // MCPRepository is the persisted backing store for MCP server runtime config.
 type MCPRepository interface {
 	GetMCPServers() ([]store.MCPServerRecord, error)
@@ -93,6 +100,7 @@ type AgentEventService interface {
 
 type servicesConfig struct {
 	settings            SettingsRepository
+	coroot              CorootConfigRepository
 	hosts               HostRepository
 	mcps                MCPRepository
 	mcpReg              *mcp.Registry
@@ -122,6 +130,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 			return
 		}
 		cfg.settings = dataStore
+		if repo, ok := any(dataStore).(CorootConfigRepository); ok {
+			cfg.coroot = repo
+		}
 		cfg.hosts = dataStore
 		if repo, ok := any(dataStore).(MCPRepository); ok {
 			cfg.mcps = repo
@@ -151,6 +162,12 @@ func WithStore(dataStore store.Store) ServicesOption {
 func WithSettingsRepository(repo SettingsRepository) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.settings = repo
+	}
+}
+
+func WithCorootConfigRepository(repo CorootConfigRepository) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.coroot = repo
 	}
 }
 
@@ -272,6 +289,7 @@ type Services struct {
 	profiles       AgentProfileService
 	auth           AuthService
 	terminal       TerminalService
+	coroot         CorootConfigRepository
 	agentEvents    AgentEventService
 	incidents      IncidentService
 	postmortems    PostmortemService
@@ -339,6 +357,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
 		auth:           authService,
 		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
+		coroot:         cfg.coroot,
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
 		postmortems:    NewPostmortemService(incidentService),
@@ -368,6 +387,9 @@ func (s *Services) AgentProfileService() AgentProfileService {
 }
 func (s *Services) AuthService() AuthService         { return s.auth }
 func (s *Services) TerminalService() TerminalService { return s.terminal }
+func (s *Services) CorootConfigRepository() CorootConfigRepository {
+	return s.coroot
+}
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }

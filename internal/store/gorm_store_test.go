@@ -70,6 +70,9 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 	if err := first.SaveWebSettings(&WebSettings{Model: "gpt-5.4", Quota: "dev"}); err != nil {
 		t.Fatalf("SaveWebSettings() error = %v", err)
 	}
+	if err := first.SaveCorootConfig(&CorootConfig{BaseURL: "http://coroot.example", Token: "token", Project: "5hxbfx6p"}); err != nil {
+		t.Fatalf("SaveCorootConfig() error = %v", err)
+	}
 	if err := first.SaveHost(&HostRecord{ID: "host-1", Name: "web-1", Status: "online", Labels: map[string]string{"env": "prod"}}); err != nil {
 		t.Fatalf("SaveHost() error = %v", err)
 	}
@@ -117,6 +120,10 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 	settings, err := second.GetWebSettings()
 	if err != nil || settings.Model != "gpt-5.4" {
 		t.Fatalf("GetWebSettings() = %#v, %v", settings, err)
+	}
+	corootCfg, err := second.GetCorootConfig()
+	if err != nil || corootCfg.BaseURL != "http://coroot.example" || corootCfg.Project != "5hxbfx6p" {
+		t.Fatalf("GetCorootConfig() = %#v, %v", corootCfg, err)
 	}
 	host, err := second.GetHost("host-1")
 	if err != nil || host.Labels["env"] != "prod" {

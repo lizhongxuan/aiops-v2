@@ -174,7 +174,7 @@ function CorootReportCharts({ reports, defaultReportName }: { reports: CorootCha
   }
 
   return (
-    <div className="mx-auto mt-2 min-w-0 w-full max-w-[640px] space-y-2" data-testid="coroot-native-charts">
+    <div className="mx-auto mt-2 min-w-0 w-full max-w-[560px] space-y-2" data-testid="coroot-native-charts">
       {visibleReports.length > 1 ? (
         <div className="flex gap-1 overflow-x-auto rounded-lg border border-slate-100 bg-slate-50 p-0.5" role="tablist" aria-label="Coroot 图表分组">
           {visibleReports.map((report) => {
@@ -240,16 +240,25 @@ function CorootReportPanel({ report }: { report: VisibleCorootReport }) {
 
 function visibleWidgetsForReport(report: CorootChartReport) {
   const widgets = report.widgets || [];
-  if (!isMemoryReport(report)) {
-    return widgets;
+  if (isMemoryReport(report)) {
+    return widgets
+      .map((widget) => filterMemoryWidget(widget))
+      .filter(Boolean) as CorootWidget[];
   }
-  return widgets
-    .map((widget) => filterMemoryWidget(widget))
-    .filter(Boolean) as CorootWidget[];
+  if (isCpuReport(report)) {
+    return widgets
+      .map((widget) => filterCpuWidget(widget))
+      .filter(Boolean) as CorootWidget[];
+  }
+  return widgets;
 }
 
 function isMemoryReport(report: CorootChartReport) {
   return text(report.name).toLowerCase() === "memory";
+}
+
+function isCpuReport(report: CorootChartReport) {
+  return text(report.name).toLowerCase() === "cpu";
 }
 
 function filterMemoryWidget(widget: CorootWidget): CorootWidget | null {
@@ -280,6 +289,24 @@ function preferredMemoryCharts(groupTitle: unknown, charts: CorootChart[]) {
     return preferred ? [preferred] : charts;
   }
   return charts;
+}
+
+function filterCpuWidget(widget: CorootWidget): CorootWidget | null {
+  const group = widget.chart_group || widget.chartGroup;
+  const label = `${text(widget.chart?.title)} ${text(group?.title)}`.toLowerCase();
+  if (label.includes("throttled time") || label.includes("cpu consumers on")) {
+    return null;
+  }
+  if (!group || !label.includes("node cpu usage")) {
+    return widget;
+  }
+  const charts = (group.charts || []).filter((chart) => cleanCorootTabLabel(chart.title).toLowerCase() !== "overview");
+  return charts.length ? {
+    chart_group: {
+      ...group,
+      charts,
+    },
+  } : null;
 }
 
 function CorootWidgetChart({ widget }: { widget: CorootWidget }) {
@@ -377,8 +404,8 @@ function CorootSvgChart({ chart, lines, unit }: { chart: CorootChart; lines: Cha
   const xTicks = chartXTicks(xMin, xMax);
   const tooltipEntries = hover?.entries.slice(0, 3) || [];
   const tooltipWidth = hover
-    ? clamp(Math.max(360, Math.max(...tooltipEntries.map((entry) => tooltipSeriesName(entry.name).length), 0) * 7 + 128), 360, width - pad.left - pad.right)
-    : 360;
+    ? clamp(Math.max(460, Math.max(...tooltipEntries.map((entry) => tooltipSeriesName(entry.name).length), 0) * 8 + 154), 460, width - pad.left - pad.right)
+    : 460;
   const tooltipHeight = Math.min(120, 36 + tooltipEntries.length * 22);
   const tooltipX = hover
     ? clamp(hover.x + 12, pad.left, width - pad.right - tooltipWidth)
@@ -423,7 +450,7 @@ function CorootSvgChart({ chart, lines, unit }: { chart: CorootChart; lines: Cha
 
   return (
     <svg
-      className="h-[220px] w-full overflow-hidden"
+      className="h-[180px] w-full overflow-hidden"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label={text(chart.title) || "Coroot chart"}
@@ -556,6 +583,11 @@ function readCorootChartReports(artifact: AiopsTransportAgentUiArtifact, card?: 
 }
 
 function readDefaultCorootReportName(artifact: AiopsTransportAgentUiArtifact) {
+  const placementTopic = text(asRecord(asRecord(artifact.metadata).placement).topic);
+  const reportFromTopic = reportNameForPlacementTopic(placementTopic);
+  if (reportFromTopic) {
+    return reportFromTopic;
+  }
   for (const source of [artifact.inlineData, artifact.payload, artifact.metadata]) {
     const record = asRecord(source);
     const value = text(record.defaultReportName || record.defaultReport || record.preferredReportName);
@@ -563,6 +595,15 @@ function readDefaultCorootReportName(artifact: AiopsTransportAgentUiArtifact) {
       return value;
     }
   }
+  return "";
+}
+
+function reportNameForPlacementTopic(topic: string) {
+  const normalized = topic.toLowerCase();
+  if (normalized === "cpu") return "CPU";
+  if (normalized === "memory") return "Memory";
+  if (normalized === "net") return "Net";
+  if (normalized === "instances") return "Instances";
   return "";
 }
 

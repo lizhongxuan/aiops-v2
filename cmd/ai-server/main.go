@@ -75,7 +75,6 @@ func run() error {
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
 	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	corootEndpoint := corootEndpointFromEnv(os.Getenv)
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
@@ -224,7 +223,7 @@ func run() error {
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
 		return fmt.Errorf("init ops manual tools: %w", err)
 	}
-	if err := registerBuiltinIntegrations(mcpRegistry, corootEndpoint); err != nil {
+	if err := registerBuiltinIntegrations(mcpRegistry, dataStore); err != nil {
 		return fmt.Errorf("init builtin integrations: %w", err)
 	}
 
@@ -744,19 +743,6 @@ func (c opsManualWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Conte
 		})
 	}
 	return refs, nil
-}
-
-func corootEndpointFromEnv(getenv func(string) string) string {
-	for _, key := range []string{
-		"AIOPS_COROOT_ENDPOINT",
-		"AIOPS_COROOT_BASE_URL",
-		"COROOT_BASE_URL",
-	} {
-		if value := strings.TrimSpace(getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {

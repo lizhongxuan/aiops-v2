@@ -25,20 +25,52 @@ type corootInput struct {
 	SLOName    string   `json:"sloName,omitempty"`
 }
 
+type ClientProvider interface {
+	CorootClient(ctx context.Context) (*Client, error)
+}
+
+type ClientProviderFunc func(ctx context.Context) (*Client, error)
+
+func (f ClientProviderFunc) CorootClient(ctx context.Context) (*Client, error) {
+	return f(ctx)
+}
+
 func corootToolsWithClient(client *Client) []tooling.Tool {
+	return corootToolsWithClientProvider(ClientProviderFunc(func(context.Context) (*Client, error) {
+		return client, nil
+	}))
+}
+
+func corootToolsWithClientProvider(provider ClientProvider) []tooling.Tool {
 	visibility := tooling.Visibility{
 		SessionTypes: []string{"host", "workspace"},
 		Modes:        []string{"chat", "inspect", "plan", "execute"},
 	}
 
 	return []tooling.Tool{
-		newCorootTool("coroot.list_services", "List monitored services from Coroot with normalized health status", listServicesSchema, visibility, executeListServices(client)),
-		newCorootTool("coroot.service_metrics", "Get normalized Coroot metric summaries and native chart widgets for a service", serviceMetricsSchema, visibility, executeServiceMetrics(client)),
-		newCorootTool("coroot.rca_report", "Read Coroot RCA summary for a service or incident", rcaReportSchema, visibility, executeRCAReport(client)),
-		newCorootTool("coroot.service_topology", "Read Coroot service dependency topology for a service", serviceTopologySchema, visibility, executeServiceTopology(client)),
-		newCorootTool("coroot.alert_rules", "List Coroot alert rules as normalized read-only data", alertRulesSchema, visibility, executeAlertRules(client)),
-		newCorootTool("coroot.incident_timeline", "Read Coroot incident timeline and RCA milestones", incidentTimelineSchema, visibility, executeIncidentTimeline(client)),
-		newCorootTool("coroot.slo_status", "Read current Coroot SLO compliance status for services", sloStatusSchema, visibility, executeSLOStatus(client)),
+		newCorootTool("coroot.list_services", "List monitored services from Coroot with normalized health status", listServicesSchema, visibility, executeWithCorootClient(provider, executeListServices)),
+		newCorootTool("coroot.service_metrics", "Get normalized Coroot metric summaries and native chart widgets for a service", serviceMetricsSchema, visibility, executeWithCorootClient(provider, executeServiceMetrics)),
+		newCorootTool("coroot.rca_report", "Read Coroot RCA summary for a service or incident", rcaReportSchema, visibility, executeWithCorootClient(provider, executeRCAReport)),
+		newCorootTool("coroot.service_topology", "Read Coroot service dependency topology for a service", serviceTopologySchema, visibility, executeWithCorootClient(provider, executeServiceTopology)),
+		newCorootTool("coroot.alert_rules", "List Coroot alert rules as normalized read-only data", alertRulesSchema, visibility, executeWithCorootClient(provider, executeAlertRules)),
+		newCorootTool("coroot.incident_timeline", "Read Coroot incident timeline and RCA milestones", incidentTimelineSchema, visibility, executeWithCorootClient(provider, executeIncidentTimeline)),
+		newCorootTool("coroot.slo_status", "Read current Coroot SLO compliance status for services", sloStatusSchema, visibility, executeWithCorootClient(provider, executeSLOStatus)),
+	}
+}
+
+func executeWithCorootClient(
+	provider ClientProvider,
+	build func(*Client) func(context.Context, json.RawMessage) (any, *CorootRawRef, error),
+) func(context.Context, json.RawMessage) (any, *CorootRawRef, error) {
+	return func(ctx context.Context, input json.RawMessage) (any, *CorootRawRef, error) {
+		if provider == nil {
+			return nil, nil, &CorootError{Kind: "not_configured", Message: "coroot client provider is not configured"}
+		}
+		client, err := provider.CorootClient(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return build(client)(ctx, input)
 	}
 }
 
@@ -50,7 +82,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		InputSchemaData:  schema,
 		OutputSchemaData: corootToolOutputSchema,
 		PromptFunc: func(ctx tooling.PromptContext) string {
-			return "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured AIOPS_COROOT_PROJECT is used, and do not send default as a placeholder. For ambiguous targets, start with coroot.list_services as a read-only availability/service probe. When the user names a service or a listed service is warning/critical, call coroot.service_metrics to collect metric summaries and native chart/chart_group widgets before final RCA; chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts. When root-cause evidence is needed, call coroot.rca_report or coroot.service_topology. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
+			return "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured Coroot project is used, and do not send default as a placeholder. For ambiguous targets, start with coroot.list_services as a read-only availability/service probe. When the user names a service or a listed service is warning/critical, call coroot.service_metrics to collect metric summaries and native chart/chart_group widgets before final RCA; chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts. When root-cause evidence is needed, call coroot.rca_report or coroot.service_topology. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
 		},
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
@@ -201,6 +233,7 @@ func executeServiceMetrics(client *Client) func(context.Context, json.RawMessage
 			Service:       appID,
 			Metrics:       metrics,
 			ChartReports:  chartReports,
+			ChartSummary:  chartSummaryFromServiceMetrics(appID, metrics, chartReports),
 			RawRef:        rawRef,
 		}, rawRef, nil
 	}
@@ -531,6 +564,101 @@ func chartReportsFromApplication(raw json.RawMessage) []CorootChartReport {
 		})
 	}
 	return out
+}
+
+func chartSummaryFromServiceMetrics(service string, metrics []MetricSummary, reports []CorootChartReport) CorootChartSummary {
+	summary := CorootChartSummary{Service: strings.TrimSpace(service)}
+	for _, metric := range metrics {
+		item := CorootMetricChartSummary{
+			Name:       metric.Name,
+			Topic:      corootChartTopicFromName(firstNonBlank(metric.Name, metric.ChartTitle)),
+			Status:     metric.Status,
+			Value:      firstNonBlank(metric.Value, latestMetricValue(metric.Series), latestMetricValue([]MetricSeries{{Values: metric.Values}})),
+			Unit:       metric.Unit,
+			ChartTitle: metric.ChartTitle,
+		}
+		if len(metric.Series) > 0 {
+			item.SeriesCount = len(metric.Series)
+			for _, series := range metric.Series {
+				item.PointCount += len(series.Values)
+				item.SeriesNames = appendCorootUniqueString(item.SeriesNames, series.Name, 5)
+			}
+		} else if len(metric.Values) > 0 {
+			item.SeriesCount = 1
+			item.PointCount = len(metric.Values)
+		}
+		summary.MetricSummaries = append(summary.MetricSummaries, item)
+	}
+	for _, report := range reports {
+		item := CorootReportChartSummary{
+			Name:   report.Name,
+			Topic:  corootChartTopicFromName(report.Name),
+			Status: report.Status,
+		}
+		for _, widget := range report.Widgets {
+			if chart := objectField(widget, "chart"); len(chart) > 0 {
+				addCorootChartToReportSummary(&item, chart, firstNonBlank(stringFromAny(widget["title"]), stringFromAny(chart["title"])))
+			}
+			group := objectField(widget, "chart_group")
+			if len(group) == 0 {
+				continue
+			}
+			groupTitle := stringFromAny(group["title"])
+			for _, chart := range objectSlice(group["charts"]) {
+				addCorootChartToReportSummary(&item, chart, firstNonBlank(groupTitle, stringFromAny(chart["title"])))
+			}
+		}
+		summary.Reports = append(summary.Reports, item)
+	}
+	return summary
+}
+
+func addCorootChartToReportSummary(summary *CorootReportChartSummary, chart map[string]any, title string) {
+	if summary == nil || len(chart) == 0 {
+		return
+	}
+	if summary.Topic == "" {
+		summary.Topic = corootChartTopicFromName(firstNonBlank(title, stringFromAny(chart["title"])))
+	}
+	summary.ChartCount++
+	summary.Titles = appendCorootUniqueString(summary.Titles, firstNonBlank(title, stringFromAny(chart["title"])), 5)
+	for _, series := range objectSlice(chart["series"]) {
+		summary.SeriesCount++
+		summary.PointCount += len(transportAnySliceForCoroot(series["data"]))
+		summary.SeriesNames = appendCorootUniqueString(summary.SeriesNames, stringFromAny(series["name"]), 5)
+	}
+	if threshold := objectField(chart, "threshold"); len(threshold) > 0 {
+		summary.PointCount += len(transportAnySliceForCoroot(threshold["data"]))
+	}
+}
+
+func corootChartTopicFromName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(normalized, "net"), strings.Contains(normalized, "network"), strings.Contains(normalized, "tcp"):
+		return "net"
+	case strings.Contains(normalized, "cpu"):
+		return "cpu"
+	case strings.Contains(normalized, "memory"), strings.Contains(normalized, "mem"), strings.Contains(normalized, "rss"):
+		return "memory"
+	case strings.Contains(normalized, "instances"), strings.Contains(normalized, "instance"):
+		return "instances"
+	default:
+		return ""
+	}
+}
+
+func appendCorootUniqueString(values []string, value string, limit int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || (limit > 0 && len(values) >= limit) {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func corootChartWidgetFromRaw(widget map[string]any) (map[string]any, bool) {

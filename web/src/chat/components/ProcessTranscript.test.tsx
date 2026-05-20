@@ -62,6 +62,21 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML).toBe(streamingFinalMarkup);
   });
 
+  it("can hide final text when another renderer owns the answer document", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[]}
+          turnStatus="completed"
+          finalText="根因：外部依赖异常。"
+          renderFinalText={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).not.toContain("外部依赖异常");
+  });
+
   it("renders final answer text one step smaller without changing tool transcript text", async () => {
     const process = [
       makeBlock({

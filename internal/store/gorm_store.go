@@ -27,6 +27,7 @@ const (
 	gormNamespaceUICards             = "ui_cards"
 	gormNamespaceLLMConfig           = "llm_config"
 	gormNamespaceWebSettings         = "web_settings"
+	gormNamespaceCorootConfig        = "coroot_config"
 	gormNamespaceHosts               = "hosts"
 	gormNamespaceMCPServers          = "mcp_servers"
 	gormNamespaceSkillCatalog        = "skill_catalog"
@@ -324,6 +325,32 @@ func (s *GormStore) SaveWebSettings(settings *WebSettings) error {
 	}
 	cp := cloneWebSettings(*settings)
 	return s.saveKV(gormNamespaceWebSettings, gormSingletonKey, cp)
+}
+
+func (s *GormStore) GetCorootConfig() (*CorootConfig, error) {
+	var config CorootConfig
+	ok, err := s.loadKV(gormNamespaceCorootConfig, gormSingletonKey, &config)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("coroot config not found")
+	}
+	cp := cloneCorootConfig(config)
+	return &cp, nil
+}
+
+func (s *GormStore) SaveCorootConfig(config *CorootConfig) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	cp := cloneCorootConfig(*config)
+	now := time.Now().UTC()
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+	return s.saveKV(gormNamespaceCorootConfig, gormSingletonKey, cp)
 }
 
 func (s *GormStore) GetHost(id string) (*HostRecord, error) {

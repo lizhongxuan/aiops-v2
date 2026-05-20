@@ -121,6 +121,58 @@ describe("ChatPage", () => {
     expect(container.textContent).not.toContain("来源：coroot");
   });
 
+  it("places a completed Coroot chart after root cause and before evidence", async () => {
+    const state = sampleState();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      activeTurns: {},
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "completed",
+      completedAt: "2026-05-06T00:00:05Z",
+      process: [],
+      final: {
+        id: "final-1",
+        status: "completed",
+        text: [
+          "根因：外部依赖 external:18090 unknown。",
+          "",
+          "证据：",
+          "- Coroot RCA 查询成功",
+        ].join("\n"),
+      },
+      agentUiArtifacts: [
+        {
+          id: "artifact-coroot-net",
+          type: "coroot_chart",
+          titleZh: "aiops-host-agent 服务",
+          inlineData: {
+            mcpCard: {
+              uiKind: "readonly_chart",
+              title: "指标趋势",
+              visual: {
+                kind: "timeseries",
+                series: [{ name: "failed_tcp_connections", data: [{ timestamp: 1, value: 0.33 }] }],
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const text = container.textContent || "";
+    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(text.indexOf("aiops-host-agent 服务"));
+    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(text.indexOf("Coroot RCA 查询成功"));
+  });
+
   it("shows a lightweight Coroot chart notice while the assistant is still running", async () => {
     const state = sampleState();
     state.status = "working";

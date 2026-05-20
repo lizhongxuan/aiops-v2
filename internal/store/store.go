@@ -52,6 +52,10 @@ type Store interface {
 	GetWebSettings() (*WebSettings, error)
 	SaveWebSettings(settings *WebSettings) error
 
+	// Coroot connection config
+	GetCorootConfig() (*CorootConfig, error)
+	SaveCorootConfig(config *CorootConfig) error
+
 	// Hosts
 	GetHost(id string) (*HostRecord, error)
 	ListHosts() ([]HostRecord, error)
@@ -158,6 +162,19 @@ type WebSettings struct {
 	Models          []SettingModelOption `json:"models,omitempty"`
 }
 
+// CorootConfig stores the Coroot connection configured from the Coroot
+// observability page.
+type CorootConfig struct {
+	BaseURL       string    `json:"baseUrl,omitempty"`
+	Token         string    `json:"token,omitempty"`
+	Project       string    `json:"project,omitempty"`
+	IframeURL     string    `json:"iframeUrl,omitempty"`
+	Timeout       string    `json:"timeout,omitempty"`
+	LastSuccessAt string    `json:"lastSuccessAt,omitempty"`
+	CreatedAt     time.Time `json:"createdAt,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
+}
+
 // HostRecord stores one managed host entry for inventory-oriented pages.
 type HostRecord struct {
 	ID                string            `json:"id"`
@@ -242,20 +259,21 @@ type AgentProfileRecord map[string]any
 
 // JSONFileStore implements Store with in-memory state and async JSON file persistence.
 type JSONFileStore struct {
-	mu       sync.RWMutex
-	dataDir  string
-	sessions map[string]*runtimekernel.SessionState
-	tasks    map[string]*runtimekernel.WorkspaceTask
-	audits   []*runtimekernel.ApprovalRecord
-	uiCards  []UICard
-	llmCfg   *LLMConfig
-	webCfg   *WebSettings
-	hosts    map[string]*HostRecord
-	mcpSrv   []MCPServerRecord
-	skillCat []SkillCatalogEntry
-	agentMCP []AgentMCPCatalogEntry
-	profiles []AgentProfileRecord
-	spills   map[string]*tooling.ResultSpill
+	mu        sync.RWMutex
+	dataDir   string
+	sessions  map[string]*runtimekernel.SessionState
+	tasks     map[string]*runtimekernel.WorkspaceTask
+	audits    []*runtimekernel.ApprovalRecord
+	uiCards   []UICard
+	llmCfg    *LLMConfig
+	webCfg    *WebSettings
+	corootCfg *CorootConfig
+	hosts     map[string]*HostRecord
+	mcpSrv    []MCPServerRecord
+	skillCat  []SkillCatalogEntry
+	agentMCP  []AgentMCPCatalogEntry
+	profiles  []AgentProfileRecord
+	spills    map[string]*tooling.ResultSpill
 
 	opsManuals          map[string]opsmanual.OpsManual
 	opsManualCandidates map[string]opsmanual.ManualCandidate
@@ -536,6 +554,38 @@ func (s *JSONFileStore) SaveWebSettings(settings *WebSettings) error {
 	cp := cloneWebSettings(*settings)
 	s.webCfg = &cp
 	s.dirty["websettings"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Coroot connection config
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetCorootConfig() (*CorootConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.corootCfg == nil {
+		return nil, fmt.Errorf("coroot config not found")
+	}
+	cp := cloneCorootConfig(*s.corootCfg)
+	return &cp, nil
+}
+
+func (s *JSONFileStore) SaveCorootConfig(config *CorootConfig) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	cp := cloneCorootConfig(*config)
+	now := time.Now().UTC()
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.corootCfg = &cp
+	s.dirty["corootconfig"] = true
 	return nil
 }
 
@@ -1140,6 +1190,10 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			if err := s.writeJSON("web-settings.json", s.webCfg); err != nil {
 				return err
 			}
+		case key == "corootconfig":
+			if err := s.writeJSON("coroot-config.json", s.corootCfg); err != nil {
+				return err
+			}
 		case len(key) > 5 && key[:5] == "host:":
 			id := key[5:]
 			host, ok := s.hosts[id]
@@ -1336,6 +1390,16 @@ func (s *JSONFileStore) loadFromDisk() error {
 		}
 	}
 
+	// Load Coroot connection config
+	corootCfgPath := filepath.Join(s.dataDir, "coroot-config.json")
+	if raw, err := os.ReadFile(corootCfgPath); err == nil {
+		var cfg CorootConfig
+		if err := json.Unmarshal(raw, &cfg); err == nil {
+			cp := cloneCorootConfig(cfg)
+			s.corootCfg = &cp
+		}
+	}
+
 	// Load hosts
 	hostDir := filepath.Join(s.dataDir, "hosts")
 	hostEntries, err := os.ReadDir(hostDir)
@@ -1500,6 +1564,10 @@ func cloneWorkspaceTask(src *runtimekernel.WorkspaceTask) (*runtimekernel.Worksp
 
 func cloneWebSettings(src WebSettings) WebSettings {
 	src.Models = append([]SettingModelOption(nil), src.Models...)
+	return src
+}
+
+func cloneCorootConfig(src CorootConfig) CorootConfig {
 	return src
 }
 

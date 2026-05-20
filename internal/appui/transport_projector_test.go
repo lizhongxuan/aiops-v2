@@ -1034,7 +1034,7 @@ func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.
 		"toolCallId":"call-coroot-metrics",
 		"toolName":"coroot.service_metrics",
 		"displayKind":"coroot",
-		"inputSummary":"checkout cpu memory",
+		"inputSummary":"checkout net",
 		"outputPreview":{
 			"schemaVersion":"aiops.coroot/v1",
 			"tool":"coroot.service_metrics",
@@ -1061,6 +1061,7 @@ func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.
 		StartedAt:   now,
 		UpdatedAt:   now,
 		AgentItems: []agentstate.TurnItem{
+			{ID: "user-coroot-metrics", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "检查 checkout 网络异常"}, CreatedAt: now},
 			{ID: "tool-result-coroot-metrics", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics", Data: toolResultData}, CreatedAt: now},
 		},
 	}
@@ -1099,6 +1100,54 @@ func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.
 	if artifact.Metadata["service"] != "5hxbfx6p:smecloud:Deployment:web" || artifact.DataRef != "http://coroot/api/project/5hxbfx6p/app/web" {
 		t.Fatalf("artifact metadata=%#v dataRef=%q, want service and raw ref", artifact.Metadata, artifact.DataRef)
 	}
+	placement, ok := artifact.Metadata["placement"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata.placement type = %T, want map", artifact.Metadata["placement"])
+	}
+	if placement["topic"] != "net" || placement["priority"] != "primary" || placement["service"] != "5hxbfx6p:smecloud:Deployment:web" {
+		t.Fatalf("metadata.placement = %#v, want root_cause/evidence net primary placement", placement)
+	}
+	if !transportTestStringListContains(placement["supports"], "root_cause") {
+		t.Fatalf("metadata.placement.supports = %#v, want root_cause", placement["supports"])
+	}
+	if !transportTestStringListContains(placement["preferredAfter"], "root_cause") {
+		t.Fatalf("metadata.placement.preferredAfter = %#v, want root_cause", placement["preferredAfter"])
+	}
+	if !transportTestStringListContains(placement["preferredBefore"], "evidence") {
+		t.Fatalf("metadata.placement.preferredBefore = %#v, want evidence", placement["preferredBefore"])
+	}
+	chartSummary, ok := artifact.Metadata["chartSummary"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata.chartSummary type = %T, want map", artifact.Metadata["chartSummary"])
+	}
+	if chartSummary["service"] != "5hxbfx6p:smecloud:Deployment:web" || chartSummary["defaultReportName"] != "Net" {
+		t.Fatalf("metadata.chartSummary = %#v, want service and preferred Net report", chartSummary)
+	}
+	summaryJSON, err := json.Marshal(chartSummary)
+	if err != nil {
+		t.Fatalf("marshal metadata.chartSummary: %v", err)
+	}
+	if strings.Contains(string(summaryJSON), `"data"`) || strings.Contains(string(summaryJSON), `"values"`) {
+		t.Fatalf("metadata.chartSummary leaked raw series arrays: %s", summaryJSON)
+	}
+}
+
+func transportTestStringListContains(value any, want string) bool {
+	switch typed := value.(type) {
+	case []string:
+		for _, item := range typed {
+			if item == want {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if s, ok := item.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestTransportProjectorDeduplicatesCorootChartArtifactPerService(t *testing.T) {

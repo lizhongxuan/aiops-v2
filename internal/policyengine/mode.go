@@ -22,6 +22,16 @@ var readOnlyPatterns = []string{
 	"preflight",
 }
 
+var readOnlyExactNames = map[string]struct{}{
+	"coroot_list_services":      {},
+	"coroot_service_metrics":    {},
+	"coroot_rca_report":         {},
+	"coroot_service_topology":   {},
+	"coroot_alert_rules":        {},
+	"coroot_incident_timeline":  {},
+	"coroot_slo_status":         {},
+}
+
 // mutationPatterns identifies tools that modify state.
 var mutationPatterns = []string{
 	"write", "delete", "remove", "create", "update",
@@ -46,7 +56,17 @@ func containsAny(name string, patterns []string) bool {
 
 // isReadOnly reports whether the tool name matches read-only patterns.
 func isReadOnly(name string) bool {
+	if _, ok := readOnlyExactNames[normalizedReadOnlyName(name)]; ok {
+		return true
+	}
 	return containsAny(name, readOnlyPatterns)
+}
+
+func normalizedReadOnlyName(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	name = strings.ReplaceAll(name, ".", "_")
+	name = strings.ReplaceAll(name, "-", "_")
+	return name
 }
 
 // isMutation reports whether the tool name matches mutation patterns.

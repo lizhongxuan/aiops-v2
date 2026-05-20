@@ -198,6 +198,20 @@ func TestCorootServiceMetricsIncludesNativeChartReports(t *testing.T) {
 			t.Fatalf("chartReports missing %s: %#v", name, chartReports)
 		}
 	}
+	chartSummary, ok := body["chartSummary"].(map[string]any)
+	if !ok {
+		t.Fatalf("chartSummary type = %T, want compact summary map", body["chartSummary"])
+	}
+	if chartSummary["service"] != "prod:default:Deployment:checkout" {
+		t.Fatalf("chartSummary service = %#v, want service id", chartSummary["service"])
+	}
+	summaryJSON, err := json.Marshal(chartSummary)
+	if err != nil {
+		t.Fatalf("marshal chartSummary: %v", err)
+	}
+	if strings.Contains(string(summaryJSON), `"data"`) || strings.Contains(string(summaryJSON), `"values"`) {
+		t.Fatalf("chartSummary leaked raw series arrays: %s", summaryJSON)
+	}
 }
 
 func TestCorootToolReturnsStructuredError(t *testing.T) {
@@ -222,7 +236,7 @@ func TestCorootToolPromptTellsAgentToProbeInsteadOfAskUser(t *testing.T) {
 	})
 	tool := corootToolByName(t, tools, "coroot.list_services")
 	prompt := tool.Prompt(tooling.PromptContext{SessionType: "host", Mode: "chat", Metadata: tool.Metadata()})
-	for _, want := range []string{"aiops.coroot.project", "omit project", "do not send default as a placeholder", "availability/service probe", "call coroot.service_metrics", "call coroot.rca_report", "chartReports render as Agent-to-UI coroot_chart artifacts in chat", "instead of asking the user whether Coroot evidence exists"} {
+	for _, want := range []string{"aiops.coroot.project", "configured Coroot project", "omit project", "do not send default as a placeholder", "availability/service probe", "call coroot.service_metrics", "call coroot.rca_report", "chartReports render as Agent-to-UI coroot_chart artifacts in chat", "instead of asking the user whether Coroot evidence exists"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, want %q", prompt, want)
 		}

@@ -29,6 +29,7 @@ type ProcessTranscriptProps = {
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
   finalText?: string;
+  renderFinalText?: boolean;
   onApprovalDecision?: ApprovalDecisionHandler;
 };
 
@@ -52,6 +53,7 @@ export function ProcessTranscript({
   turnCompletedAt,
   turnUpdatedAt,
   finalText,
+  renderFinalText = true,
 }: ProcessTranscriptProps) {
   const visibleProcess = useMemo(() => process.filter(shouldShowInTranscript), [process]);
   const running = isProcessRunning(visibleProcess, turnStatus);
@@ -100,7 +102,7 @@ export function ProcessTranscript({
     }
   }, [live]);
 
-  if (!shouldRenderProcess && !renderedFinalText) {
+  if (!shouldRenderProcess && (!renderFinalText || !renderedFinalText)) {
     return null;
   }
 
@@ -156,7 +158,7 @@ export function ProcessTranscript({
           ) : null}
         </>
       ) : null}
-      {renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
+      {renderFinalText && renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
     </div>
   );
 }

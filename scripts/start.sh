@@ -26,8 +26,6 @@ Environment overrides:
   AIOPS_STORE_DRIVER=postgres  persisted backend store, default postgres for this script
   AIOPS_POSTGRES_DSN=postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable
                                PostgreSQL DSN used when AIOPS_STORE_DRIVER=postgres
-  AIOPS_COROOT_BASE_URL=http://127.0.0.1:8080
-                               when set, Coroot must be reachable before aiops-v2 starts
   AIOPS_OTEL_ENABLED=1         when enabled, AIOPS_OTEL_ENDPOINT must be reachable
   AIOPS_RUNNER_STUDIO_UPSTREAM_URL=http://127.0.0.1:19080
                                when set, Runner Studio upstream must be reachable
@@ -470,14 +468,10 @@ check_postgres_dependency() {
 }
 
 check_configured_dependencies() {
-  local coroot_url
   local runner_upstream_url
 
   check_postgres_dependency
   check_mysql_dependency
-
-  coroot_url="$(first_non_empty_env AIOPS_COROOT_BASE_URL COROOT_BASE_URL || true)"
-  check_url_dependency "coroot" "$coroot_url"
 
   if truthy "${AIOPS_OTEL_ENABLED:-}"; then
     check_url_dependency "otel" "${AIOPS_OTEL_ENDPOINT:-http://localhost:6006/v1/traces}"

@@ -184,6 +184,9 @@ func TestSemanticPromptCorootChartReportsAreRenderableArtifacts(t *testing.T) {
 		"Coroot service_metrics returns chartReports",
 		"Agent-to-UI coroot_chart artifacts",
 		"rendered directly in the chat UI",
+		"Coroot chart summaries",
+		"support root-cause conclusions",
+		"do not output UI layout or placement instructions",
 		"do not tell the user the chat cannot render Coroot-style charts",
 		"do not ask for a Coroot screenshot",
 	})

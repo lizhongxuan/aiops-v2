@@ -42,7 +42,6 @@ assert_contains "$help_output" "AIOPS_HTTP_ADDR=:18080"
 assert_contains "$help_output" "AIOPS_GRPC_AUTO_PORT=1"
 assert_contains "$help_output" "AIOPS_STORE_DRIVER=postgres"
 assert_contains "$help_output" "AIOPS_ENV_FILE=.data/aiops.env"
-assert_contains "$help_output" "AIOPS_COROOT_BASE_URL=http://127.0.0.1:8080"
 
 preserve_path() {
   local path="$1"
@@ -235,11 +234,10 @@ PY
     AIOPS_POSTGRES_DSN="postgres://postgres:postgres@127.0.0.1:${unused_port}/aiops?sslmode=disable" \
     "$SCRIPT"
 
-  assert_fails_with "dependency unavailable: coroot" \
-    env \
+  env \
     SKIP_WEB_BUILD=1 \
     SKIP_GO_BUILD=1 \
     AIOPS_STORE_DRIVER=json \
     AIOPS_COROOT_BASE_URL="http://127.0.0.1:${unused_port}" \
-    "$SCRIPT"
+    "$SCRIPT" --dry-run >/dev/null
 fi

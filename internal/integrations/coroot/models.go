@@ -64,7 +64,37 @@ type ServiceMetricsResult struct {
 	Service       string              `json:"service"`
 	Metrics       []MetricSummary     `json:"metrics"`
 	ChartReports  []CorootChartReport `json:"chartReports,omitempty"`
+	ChartSummary  CorootChartSummary  `json:"chartSummary,omitempty"`
 	RawRef        *CorootRawRef       `json:"rawRef,omitempty"`
+}
+
+type CorootChartSummary struct {
+	Service         string                     `json:"service,omitempty"`
+	MetricSummaries []CorootMetricChartSummary `json:"metricSummaries,omitempty"`
+	Reports         []CorootReportChartSummary `json:"reports,omitempty"`
+}
+
+type CorootMetricChartSummary struct {
+	Name        string   `json:"name"`
+	Topic       string   `json:"topic,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	Value       string   `json:"value,omitempty"`
+	Unit        string   `json:"unit,omitempty"`
+	ChartTitle  string   `json:"chartTitle,omitempty"`
+	SeriesCount int      `json:"seriesCount,omitempty"`
+	PointCount  int      `json:"pointCount,omitempty"`
+	SeriesNames []string `json:"seriesNames,omitempty"`
+}
+
+type CorootReportChartSummary struct {
+	Name        string   `json:"name"`
+	Topic       string   `json:"topic,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	ChartCount  int      `json:"chartCount,omitempty"`
+	SeriesCount int      `json:"seriesCount,omitempty"`
+	PointCount  int      `json:"pointCount,omitempty"`
+	Titles      []string `json:"titles,omitempty"`
+	SeriesNames []string `json:"seriesNames,omitempty"`
 }
 
 type CorootChartReport struct {

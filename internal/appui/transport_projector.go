@@ -1118,14 +1118,31 @@ func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string,
 		"visual": visual,
 	}
 	inlineData := cloneStringAnyMap(payload)
-	if defaultReportName := transportCorootPreferredReportName(chartReports, firstNonEmptyString(userQuery, tool.InputSummary)); defaultReportName != "" {
+	defaultReportName := transportCorootPreferredReportName(chartReports, firstNonEmptyString(userQuery, tool.InputSummary))
+	if defaultReportName != "" {
 		inlineData["defaultReportName"] = defaultReportName
 	}
 	inlineData["mcpCard"] = card
+	chartSummary := transportCorootChartSummaryFromPayload(payload, service, defaultReportName)
+	placementTopic := transportCorootTopicFromName(defaultReportName)
+	if placementTopic == "" {
+		placementTopic = transportCorootTopicFromChartSummary(chartSummary)
+	}
 	metadata := map[string]any{
 		"project":    project,
 		"service":    service,
 		"toolCallId": strings.TrimSpace(tool.ToolCallID),
+		"placement": map[string]any{
+			"supports":        []string{"root_cause"},
+			"preferredAfter":  []string{"root_cause"},
+			"preferredBefore": []string{"evidence"},
+			"topic":           placementTopic,
+			"priority":        "primary",
+			"service":         service,
+		},
+	}
+	if len(chartSummary) > 0 {
+		metadata["chartSummary"] = chartSummary
 	}
 	if len(rawRef) > 0 {
 		metadata["rawRef"] = rawRef
@@ -1152,6 +1169,203 @@ func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func transportCorootChartSummaryFromPayload(payload map[string]any, service string, defaultReportName string) map[string]any {
+	summary := cloneStringAnyMap(asStringAnyMap(payload["chartSummary"]))
+	if len(summary) == 0 {
+		summary = map[string]any{}
+		if metricSummaries := transportCorootMetricSummaries(payload["metrics"]); len(metricSummaries) > 0 {
+			summary["metricSummaries"] = metricSummaries
+		}
+		if reports := transportCorootReportSummaries(payload["chartReports"]); len(reports) > 0 {
+			summary["reports"] = reports
+		}
+	}
+	if strings.TrimSpace(service) != "" {
+		summary["service"] = strings.TrimSpace(service)
+	}
+	if strings.TrimSpace(defaultReportName) != "" {
+		summary["defaultReportName"] = strings.TrimSpace(defaultReportName)
+	}
+	return summary
+}
+
+func transportCorootMetricSummaries(value any) []map[string]any {
+	var out []map[string]any
+	for _, metric := range asStringAnyMapList(value) {
+		name := jsonStringValueFromMap(metric, "name")
+		item := map[string]any{
+			"name":  name,
+			"topic": transportCorootTopicFromName(firstNonEmptyString(name, jsonStringValueFromMap(metric, "chartTitle"))),
+		}
+		for _, key := range []string{"status", "value", "unit", "chartTitle"} {
+			if text := jsonStringValueFromMap(metric, key); text != "" {
+				item[key] = text
+			}
+		}
+		series := asStringAnyMapList(metric["series"])
+		if len(series) > 0 {
+			item["seriesCount"] = len(series)
+			pointCount := 0
+			var seriesNames []string
+			for _, seriesMap := range series {
+				pointCount += len(transportAnyList(seriesMap["values"]))
+				seriesNames = appendTransportUniqueString(seriesNames, jsonStringValueFromMap(seriesMap, "name"), 5)
+			}
+			if pointCount > 0 {
+				item["pointCount"] = pointCount
+			}
+			if len(seriesNames) > 0 {
+				item["seriesNames"] = seriesNames
+			}
+		} else if pointCount := len(transportAnyList(metric["values"])); pointCount > 0 {
+			item["seriesCount"] = 1
+			item["pointCount"] = pointCount
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func transportCorootReportSummaries(value any) []map[string]any {
+	var out []map[string]any
+	for _, report := range asStringAnyMapList(value) {
+		name := jsonStringValueFromMap(report, "name")
+		item := map[string]any{
+			"name":  name,
+			"topic": transportCorootTopicFromName(name),
+		}
+		if status := jsonStringValueFromMap(report, "status"); status != "" {
+			item["status"] = status
+		}
+		chartCount := 0
+		seriesCount := 0
+		pointCount := 0
+		var titles []string
+		var seriesNames []string
+		for _, widget := range asStringAnyMapList(report["widgets"]) {
+			if chart := asStringAnyMap(widget["chart"]); len(chart) > 0 {
+				chartCount++
+				title := firstNonEmptyString(jsonStringValueFromMap(widget, "title"), jsonStringValueFromMap(chart, "title"))
+				titles = appendTransportUniqueString(titles, title, 5)
+				if item["topic"] == "" {
+					item["topic"] = transportCorootTopicFromName(title)
+				}
+				sc, pc, names := transportCorootSeriesCounts(chart)
+				seriesCount += sc
+				pointCount += pc
+				for _, name := range names {
+					seriesNames = appendTransportUniqueString(seriesNames, name, 5)
+				}
+			}
+			group := asStringAnyMap(widget["chart_group"])
+			if len(group) == 0 {
+				continue
+			}
+			groupTitle := jsonStringValueFromMap(group, "title")
+			for _, chart := range asStringAnyMapList(group["charts"]) {
+				chartCount++
+				title := firstNonEmptyString(groupTitle, jsonStringValueFromMap(chart, "title"))
+				titles = appendTransportUniqueString(titles, title, 5)
+				if item["topic"] == "" {
+					item["topic"] = transportCorootTopicFromName(title)
+				}
+				sc, pc, names := transportCorootSeriesCounts(chart)
+				seriesCount += sc
+				pointCount += pc
+				for _, name := range names {
+					seriesNames = appendTransportUniqueString(seriesNames, name, 5)
+				}
+			}
+		}
+		if chartCount > 0 {
+			item["chartCount"] = chartCount
+		}
+		if seriesCount > 0 {
+			item["seriesCount"] = seriesCount
+		}
+		if pointCount > 0 {
+			item["pointCount"] = pointCount
+		}
+		if len(titles) > 0 {
+			item["titles"] = titles
+		}
+		if len(seriesNames) > 0 {
+			item["seriesNames"] = seriesNames
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func transportCorootSeriesCounts(chart map[string]any) (int, int, []string) {
+	seriesCount := 0
+	pointCount := 0
+	var names []string
+	for _, series := range asStringAnyMapList(chart["series"]) {
+		seriesCount++
+		pointCount += len(transportAnyList(series["data"]))
+		names = appendTransportUniqueString(names, jsonStringValueFromMap(series, "name"), 5)
+	}
+	if threshold := asStringAnyMap(chart["threshold"]); len(threshold) > 0 {
+		pointCount += len(transportAnyList(threshold["data"]))
+	}
+	return seriesCount, pointCount, names
+}
+
+func transportCorootTopicFromChartSummary(summary map[string]any) string {
+	for _, key := range []string{"defaultReportName", "topic"} {
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(summary, key)); topic != "" {
+			return topic
+		}
+	}
+	for _, report := range asStringAnyMapList(summary["reports"]) {
+		if topic := jsonStringValueFromMap(report, "topic"); topic != "" {
+			return topic
+		}
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(report, "name")); topic != "" {
+			return topic
+		}
+	}
+	for _, metric := range asStringAnyMapList(summary["metricSummaries"]) {
+		if topic := jsonStringValueFromMap(metric, "topic"); topic != "" {
+			return topic
+		}
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(metric, "name")); topic != "" {
+			return topic
+		}
+	}
+	return ""
+}
+
+func transportCorootTopicFromName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(normalized, "net"), strings.Contains(normalized, "network"), strings.Contains(normalized, "tcp"):
+		return "net"
+	case strings.Contains(normalized, "cpu"):
+		return "cpu"
+	case strings.Contains(normalized, "memory"), strings.Contains(normalized, "mem"), strings.Contains(normalized, "rss"):
+		return "memory"
+	case strings.Contains(normalized, "instances"), strings.Contains(normalized, "instance"):
+		return "instances"
+	default:
+		return ""
+	}
+}
+
+func appendTransportUniqueString(values []string, value string, limit int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || (limit > 0 && len(values) >= limit) {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func transportTurnUserText(turn AiopsTransportTurn) string {

@@ -236,7 +236,15 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/runner-studio/ai/", s.handleRunnerStudioAI)
 	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 
-	NewResourceServer().RegisterOnMux(s.mux)
+	resourceOpts := []ResourceServerOption{}
+	if provider, ok := s.ui.(interface {
+		CorootConfigRepository() appui.CorootConfigRepository
+	}); ok {
+		if repo := provider.CorootConfigRepository(); repo != nil {
+			resourceOpts = append(resourceOpts, WithCorootConfigRepository(repo))
+		}
+	}
+	NewResourceServer(resourceOpts...).RegisterOnMux(s.mux)
 
 	// Approval endpoints
 	s.mux.HandleFunc("/api/v1/approvals", s.handleApprovals)

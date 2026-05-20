@@ -68,6 +68,75 @@ func TestBuildModelInputDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t 
 	}
 }
 
+func TestBuildModelInputCompactsCorootChartReportsForModelContext(t *testing.T) {
+	history := []Message{
+		{Role: "user", Content: "检查 checkout 网络异常"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:   "call-coroot",
+				Name: "coroot.service_metrics",
+			}},
+		},
+		{
+			Role: "tool",
+			Content: `{
+				"schemaVersion":"aiops.coroot/v1",
+				"tool":"coroot.service_metrics",
+				"status":"ok",
+				"project":"prod",
+				"service":"prod:default:Deployment:checkout",
+				"metrics":[
+					{"name":"cpu","status":"ok","unit":"cores","chartTitle":"CPU usage","values":[[1710000000000,0.4],[1710000030000,0.6]],"series":[{"name":"checkout-1","values":[[1710000000000,0.4],[1710000030000,0.6]]}]}
+				],
+				"chartReports":[
+					{"name":"Net","status":"warning","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Failed TCP connections, per second","series":[{"name":"postgres","data":[0,1]}]}}]}
+				],
+				"rawRef":{"uri":"http://coroot/api/project/prod/app/checkout","digest":"sha256:abc","bytes":1024}
+			}`,
+			ToolResult: &ToolResult{
+				ToolCallID: "call-coroot",
+				Content: `{
+					"schemaVersion":"aiops.coroot/v1",
+					"tool":"coroot.service_metrics",
+					"status":"ok",
+					"project":"prod",
+					"service":"prod:default:Deployment:checkout",
+					"metrics":[
+						{"name":"cpu","status":"ok","unit":"cores","chartTitle":"CPU usage","values":[[1710000000000,0.4],[1710000030000,0.6]],"series":[{"name":"checkout-1","values":[[1710000000000,0.4],[1710000030000,0.6]]}]}
+					],
+					"chartReports":[
+						{"name":"Net","status":"warning","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Failed TCP connections, per second","series":[{"name":"postgres","data":[0,1]}]}}]}
+					],
+					"rawRef":{"uri":"http://coroot/api/project/prod/app/checkout","digest":"sha256:abc","bytes":1024}
+				}`,
+			},
+		},
+	}
+
+	input, err := buildModelInput(history, promptcompiler.CompiledPrompt{})
+	if err != nil {
+		t.Fatalf("buildModelInput() error = %v", err)
+	}
+	var joined strings.Builder
+	for _, msg := range input {
+		joined.WriteString(msg.Content)
+		joined.WriteString("\n")
+	}
+	got := joined.String()
+
+	for _, want := range []string{"chartSummary", "prod:default:Deployment:checkout", "Net", "warning", "pointCount"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("model input missing %q in compact Coroot summary:\n%s", want, got)
+		}
+	}
+	for _, leaked := range []string{`"chartReports"`, `"metrics"`, `"series"`, `"data"`, `"values"`, "1710000000000"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("model input leaked raw Coroot chart payload marker %q:\n%s", leaked, got)
+		}
+	}
+}
+
 func TestBuildPromptInputReturnsSemanticTrace(t *testing.T) {
 	result, err := buildPromptInput([]Message{{Role: "user", Content: "triage"}}, promptcompiler.CompiledPrompt{
 		System: promptcompiler.SystemPrompt{Content: "system layer"},

@@ -1,11 +1,12 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
-import { ArrowDown, Bot, LineChart } from "lucide-react";
+import { ArrowDown, Bot } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
-import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import { Button } from "@/components/ui/button";
+import type { AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
+import { AnswerDocumentRenderer } from "./AnswerDocumentRenderer";
 import { McpSurfacePart } from "./McpSurfacePart";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
@@ -93,8 +94,10 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
-  const artifacts = meta.agentUiArtifacts || [];
-  const hasDeferredCorootChart = (meta.deferredAgentUiArtifacts || []).some(isCorootChartArtifact);
+  const artifacts = (meta.agentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
+  const corootArtifacts = artifacts.filter(isCorootChartArtifact);
+  const otherArtifacts = artifacts.filter((artifact) => !isCorootChartArtifact(artifact));
+  const deferredArtifacts = (meta.deferredAgentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
   const finalText = messageText(message.content);
 
   return (
@@ -105,7 +108,7 @@ function AssistantMessage() {
             {meta.intent.text}
           </div>
         ) : null}
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) || finalText ? (
+        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
           <ProcessTranscript
             process={process}
             turnStatus={meta.turnStatus}
@@ -113,31 +116,26 @@ function AssistantMessage() {
             turnCompletedAt={meta.turnCompletedAt}
             turnUpdatedAt={meta.turnUpdatedAt}
             finalText={finalText}
+            renderFinalText={false}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
         ) : null}
-        {hasDeferredCorootChart ? <DeferredCorootChartNotice /> : null}
-        {artifacts.length ? (
+        {finalText || artifacts.length || deferredArtifacts.length ? (
+          <AnswerDocumentRenderer
+            finalText={finalText}
+            artifacts={corootArtifacts}
+            deferredArtifacts={deferredArtifacts}
+          />
+        ) : null}
+        {otherArtifacts.length ? (
           <div className="grid gap-2">
-            {artifacts.map((artifact) => (
+            {otherArtifacts.map((artifact) => (
               <AgentUiArtifactPart key={artifact.id} artifact={artifact} />
             ))}
           </div>
         ) : null}
       </div>
     </MessagePrimitive.Root>
-  );
-}
-
-function DeferredCorootChartNotice() {
-  return (
-    <div
-      data-testid="coroot-chart-deferred-notice"
-      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600"
-    >
-      <LineChart className="h-4 w-4 shrink-0 text-slate-400" />
-      <span>已生成 Coroot 图表，分析完成后展开</span>
-    </div>
   );
 }
 
