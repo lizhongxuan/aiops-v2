@@ -235,7 +235,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("delays ops manual search artifacts until the assistant turn is terminal", () => {
+  it("delays disruptive artifacts until the assistant turn is terminal", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -260,7 +260,8 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state, metadata());
 
     expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+      agentUiArtifacts: [],
+      deferredAgentUiArtifacts: [
         expect.objectContaining({
           id: "artifact-coroot-latency",
           type: "coroot_chart",
@@ -269,6 +270,9 @@ describe("aiopsTransportConverter", () => {
     });
     expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "ops_manual_search_result" })]),
+    );
+    expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "coroot_chart" })]),
     );
   });
 

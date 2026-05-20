@@ -1,5 +1,5 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
-import { ArrowDown, Bot } from "lucide-react";
+import { ArrowDown, Bot, LineChart } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
@@ -15,6 +15,7 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
   agentUiArtifacts?: unknown[];
+  deferredAgentUiArtifacts?: unknown[];
   intent?: { text?: string; status?: string } | null;
   userText?: string;
   turnStatus?: string;
@@ -93,6 +94,7 @@ function AssistantMessage() {
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
   const artifacts = meta.agentUiArtifacts || [];
+  const hasDeferredCorootChart = (meta.deferredAgentUiArtifacts || []).some(isCorootChartArtifact);
   const finalText = messageText(message.content);
 
   return (
@@ -114,6 +116,7 @@ function AssistantMessage() {
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
         ) : null}
+        {hasDeferredCorootChart ? <DeferredCorootChartNotice /> : null}
         {artifacts.length ? (
           <div className="grid gap-2">
             {artifacts.map((artifact) => (
@@ -124,6 +127,22 @@ function AssistantMessage() {
       </div>
     </MessagePrimitive.Root>
   );
+}
+
+function DeferredCorootChartNotice() {
+  return (
+    <div
+      data-testid="coroot-chart-deferred-notice"
+      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600"
+    >
+      <LineChart className="h-4 w-4 shrink-0 text-slate-400" />
+      <span>已生成 Coroot 图表，分析完成后展开</span>
+    </div>
+  );
+}
+
+function isCorootChartArtifact(value: unknown) {
+  return Boolean(value && typeof value === "object" && (value as { type?: string }).type === "coroot_chart");
 }
 
 function isPendingAssistantTurn(turnStatus?: string) {

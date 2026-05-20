@@ -50,7 +50,7 @@ describe("AgentUiArtifactPart", () => {
     expect(RCAReportArtifact).toBeTypeOf("function");
   });
 
-  it("renders a Coroot chart artifact with Chinese summary and Case link", async () => {
+  it("renders a Coroot chart artifact without duplicated summary/footer labels", async () => {
     await act(async () => {
       root.render(
         <AgentUiArtifactPart
@@ -87,10 +87,46 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.textContent).toContain("Coroot 延迟趋势");
-    expect(container.textContent).toContain("接口 P95 延迟在 14:03 后明显升高。");
+    expect(container.textContent).not.toContain("接口 P95 延迟在 14:03 后明显升高。");
     expect(container.textContent).toContain("p95_latency_ms");
     expect(container.textContent).toContain("已脱敏");
-    expect(container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent).toContain("查看 Case");
+    expect(container.textContent).not.toContain("来源：coroot");
+  });
+
+  it("renders Coroot service headers without redundant labels or none-redaction badges", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-coroot-aiops-host-agent",
+            type: "coroot_chart",
+            titleZh: "5hxbfx6p:_:Unknown:aiops-host-agent Coroot 图表",
+            summaryZh: "Coroot 服务原生图表与指标趋势",
+            redactionStatus: "none",
+            inlineData: {
+              mcpCard: {
+                uiKind: "readonly_chart",
+                title: "5hxbfx6p:_:Unknown:aiops-host-agent Coroot charts",
+                visual: {
+                  kind: "timeseries",
+                  series: [{ name: "cpu", data: [{ timestamp: 1, value: 1 }] }],
+                },
+              },
+            },
+          } as any}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain(
+      "5hxbfx6p:_:Unknown:aiops-host-agent 服务",
+    );
+    expect(container.textContent).not.toContain("5hxbfx6p:_:Unknown:aiops-host-agent 图表");
+    expect(container.textContent).not.toContain("Coroot 服务原生图表与指标趋势");
+    expect(container.textContent).not.toContain("Coroot 图表");
+    expect(container.textContent).not.toContain("Coroot charts");
+    expect(container.textContent).not.toContain("服务服务");
+    expect(container.textContent).not.toContain("未脱敏");
   });
 
   it("renders an unsupported artifact safely", async () => {
@@ -198,9 +234,267 @@ describe("AgentUiArtifactPart", () => {
     });
 
     expect(container.textContent).toContain("web-checkout p95 延迟");
-    expect(container.textContent).toContain("p95 从 420ms 升至 2.8s。");
+    expect(container.textContent).not.toContain("p95 从 420ms 升至 2.8s。");
     expect(container.textContent).toContain("p95");
-    expect(container.querySelector('a[href="/incidents/case-debug-2"]')?.textContent).toContain("查看 Case");
+    expect(container.querySelector('a[href="/incidents/case-debug-2"]')).toBeNull();
+    expect(container.textContent).not.toContain("来源：coroot-mcp");
+  });
+
+  it("renders native Coroot chart and chart_group widgets from service metrics", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-coroot-native-charts",
+            type: "coroot_chart",
+            titleZh: "Coroot 原生图表",
+            summaryZh: "展示 Coroot 返回的所有 chart/chart_group。",
+            source: "coroot",
+            inlineData: {
+              defaultReportName: "CPU",
+              chartReports: [
+                {
+                  name: "CPU",
+                  status: "ok",
+                  widgets: [
+                    {
+                      chart_group: {
+                        title: "CPU usage <selector>, cores",
+                        charts: [
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "container: checkout",
+                            series: [{ name: "checkout-1", data: [0.4, 0.6] }],
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+                {
+                  name: "Net",
+                  status: "warning",
+                  widgets: [
+                    {
+                      chart: {
+                        ctx: { from: 1710000000000, step: 30000 },
+                        title: "Failed TCP connections, per second",
+                        series: [
+                          { name: "->external:18090", data: [0.333, 0.32, 0.333] },
+                          { name: "aiops-host-agent@cosmic4eye-22", data: [0.31, 0.32, 0.31] },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
+              mcpCard: {
+                uiKind: "readonly_chart",
+                title: "Coroot 原生图表",
+                visual: { kind: "coroot_report_charts" },
+              },
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("CPU");
+    expect(container.textContent).toContain("CPU usage");
+    expect(container.textContent).toContain("container: checkout");
+    expect(container.textContent).toContain("checkout-1");
+    expect(container.textContent).toContain("Net");
+    expect(container.textContent).not.toContain("Failed TCP connections");
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("CPU");
+    expect(container.querySelectorAll('[data-testid="coroot-native-charts"] svg').length).toBe(1);
+    const nativeSvg = container.querySelector(
+      '[data-testid="coroot-native-charts"] svg',
+    );
+    expect(nativeSvg?.className.baseVal).toContain("h-72");
+    expect(nativeSvg?.getAttribute("viewBox")).toBe("0 0 760 288");
+    expect(container.textContent).not.toContain("0cores");
+    expect(container.textContent).not.toContain("chartReports");
+
+    const netTab = Array.from(container.querySelectorAll('[role="tab"]')).find((tab) => tab.textContent?.includes("Net")) as HTMLButtonElement;
+    await act(async () => {
+      netTab.click();
+    });
+
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Net");
+    expect(container.textContent).toContain("Failed TCP connections");
+    expect(container.textContent).toContain("->external:18090");
+    expect(container.textContent).toContain("303m");
+    expect(container.textContent).toContain("322m");
+    expect(container.textContent).toContain("340m");
+    expect(container.textContent).not.toContain("warning");
+    expect(container.textContent).not.toContain("最新");
+    expect(container.textContent).not.toContain("333mper second");
+    expect(container.textContent).not.toContain("CPU usage");
+
+    const netSvg = container.querySelector(
+      '[data-testid="coroot-native-charts"] svg',
+    ) as SVGSVGElement | null;
+    expect(netSvg).toBeTruthy();
+    const firstLineYs = (netSvg?.querySelector("polyline")?.getAttribute("points") || "")
+      .split(" ")
+      .map((point) => Number(point.split(",")[1]))
+      .filter(Number.isFinite);
+    expect(Math.max(...firstLineYs) - Math.min(...firstLineYs)).toBeGreaterThan(80);
+    Object.defineProperty(netSvg, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({
+        left: 0,
+        top: 0,
+        width: 760,
+        height: 320,
+        right: 760,
+        bottom: 320,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
+    });
+    await act(async () => {
+      netSvg?.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: 400,
+          clientY: 160,
+        }),
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="coroot-chart-tooltip"]'),
+    ).toBeTruthy();
+    expect(container.textContent).toContain("->external:18090");
+    expect(container.textContent).toContain("320m");
+    const tooltipRect = container.querySelector(
+      '[data-testid="coroot-chart-tooltip-box"]',
+    );
+    expect(Number(tooltipRect?.getAttribute("width"))).toBeGreaterThanOrEqual(360);
+    const tooltipValues = Array.from(
+      container.querySelectorAll('[data-testid="coroot-chart-tooltip-value"]'),
+    );
+    expect(Number(tooltipValues[0]?.getAttribute("x"))).toBeGreaterThan(320);
+    expect(container.textContent).not.toContain("aiops-host-agent@cosmic4eye-220");
+
+    await act(async () => {
+      netSvg?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    });
+    expect(
+      container.querySelector('[data-testid="coroot-chart-tooltip"]'),
+    ).toBeNull();
+  });
+
+  it("shows only the preferred Coroot Memory usage chart and hides redundant artifact footer", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-coroot-widget-tabs",
+            type: "coroot_chart",
+            titleZh: "Coroot 内存图表",
+            summaryZh: "展示 Memory report。",
+            source: "coroot",
+            evidenceRef: "http://coroot.example/api/project/default/app/service",
+            createdAt: "2026-05-20T00:27:19Z",
+            inlineData: {
+              defaultReportName: "Memory",
+              chartReports: [
+                {
+                  name: "Memory",
+                  status: "ok",
+                  widgets: [
+                    {
+                      chart_group: {
+                        title: "Memory usage RSS <selector>, bytes",
+                        charts: [
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "RSS container: aiops-host-agent",
+                            series: [{ name: "rss-container", data: [1024, 2048] }],
+                          },
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "RSS",
+                            series: [{ name: "rss", data: [1024, 1536] }],
+                          },
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "RSS + PageCache",
+                            series: [{ name: "rss-pagecache", data: [2048, 3072] }],
+                          },
+                        ],
+                      },
+                    },
+                    {
+                      chart_group: {
+                        title: "Memory stall time <selector>, seconds per second",
+                        charts: [
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "some",
+                            series: [{ name: "stall", data: [0, 1] }],
+                          },
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "full",
+                            series: [{ name: "stall-full", data: [0, 1] }],
+                          },
+                        ],
+                      },
+                    },
+                    {
+                      chart_group: {
+                        title: "Node memory usage (unreclaimable), %",
+                        charts: [
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "overview",
+                            series: [{ name: "node-memory", data: [33, 34] }],
+                          },
+                        ],
+                      },
+                    },
+                    {
+                      chart_group: {
+                        title: "Memory consumers <selector>, bytes",
+                        charts: [
+                          {
+                            ctx: { from: 1710000000000, step: 30000 },
+                            title: "cosmic4eye-22",
+                            series: [{ name: "mservice", data: [1024, 2048] }],
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          } as any}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll('[data-testid="coroot-native-charts"] svg')).toHaveLength(1);
+    expect(container.textContent).toContain("Memory usage RSS + PageCache");
+    expect(container.textContent).toContain("rss-pagecache");
+    expect(container.textContent).not.toContain("RSS container: aiops-host-agent");
+    expect(container.textContent).not.toContain("rss-container");
+    expect(container.textContent).not.toContain("Memory consumers");
+    expect(container.textContent).not.toContain("mservice");
+    expect(container.querySelector('[data-testid="coroot-chart-tabs"]')).toBeNull();
+    expect(container.querySelector('[data-testid="coroot-widget-tabs"]')).toBeNull();
+    expect(container.textContent).not.toContain("Memory stall time");
+    expect(container.textContent).not.toContain("stall-full");
+    expect(container.textContent).not.toContain("Node memory usage");
+    expect(container.textContent).not.toContain("node-memory");
+    expect(container.textContent).not.toContain("来源：coroot");
+    expect(container.textContent).not.toContain("生成时间：");
+    expect(container.textContent).not.toContain("查看证据");
+    expect(container.textContent).not.toContain("Memory usage RSS container");
   });
 
   it("renders unified actions for case, evidence, and prompt trace", async () => {

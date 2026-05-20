@@ -24,6 +24,18 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			forbidden: []string{"coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
+			name:      "named service abnormality",
+			input:     "分析 aiops-host-agent 异常情况",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics", "coroot.rca_report", "coroot.service_topology"},
+			forbidden: []string{"coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:      "coroot cpu chart",
+			input:     "查看 aiops-host-agent 的 cpu 图表",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
+			forbidden: []string{"coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
 			name:      "business impact",
 			input:     "order-api 故障会影响哪些业务能力和租户？",
 			wantTools: []string{"opsgraph.business_impact"},

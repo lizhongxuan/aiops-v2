@@ -453,7 +453,7 @@ function ToolDetailRow({
     }
   }, [toolRunning, detail.id]);
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       <button
         type="button"
         className={cn(
@@ -475,7 +475,7 @@ function ToolDetailRow({
       </button>
       {open && hasOutput ? (
         <div
-          className="rounded-lg bg-slate-100 px-3 py-2 font-mono text-[13px] leading-6 text-slate-500"
+          className="max-w-full overflow-hidden whitespace-pre-wrap break-words rounded-lg bg-slate-100 px-3 py-2 font-mono text-[13px] leading-6 text-slate-500"
           data-testid={`aiops-tool-output-${detail.id}`}
         >
           {detail.output}

@@ -33,7 +33,7 @@ func corootToolsWithClient(client *Client) []tooling.Tool {
 
 	return []tooling.Tool{
 		newCorootTool("coroot.list_services", "List monitored services from Coroot with normalized health status", listServicesSchema, visibility, executeListServices(client)),
-		newCorootTool("coroot.service_metrics", "Get normalized Coroot metric summaries for a service", serviceMetricsSchema, visibility, executeServiceMetrics(client)),
+		newCorootTool("coroot.service_metrics", "Get normalized Coroot metric summaries and native chart widgets for a service", serviceMetricsSchema, visibility, executeServiceMetrics(client)),
 		newCorootTool("coroot.rca_report", "Read Coroot RCA summary for a service or incident", rcaReportSchema, visibility, executeRCAReport(client)),
 		newCorootTool("coroot.service_topology", "Read Coroot service dependency topology for a service", serviceTopologySchema, visibility, executeServiceTopology(client)),
 		newCorootTool("coroot.alert_rules", "List Coroot alert rules as normalized read-only data", alertRulesSchema, visibility, executeAlertRules(client)),
@@ -50,7 +50,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		InputSchemaData:  schema,
 		OutputSchemaData: corootToolOutputSchema,
 		PromptFunc: func(ctx tooling.PromptContext) string {
-			return "Use the session-bound Coroot project from aiops.coroot.project when present; for ambiguous targets, start with coroot.list_services as a read-only availability/service probe. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
+			return "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured AIOPS_COROOT_PROJECT is used, and do not send default as a placeholder. For ambiguous targets, start with coroot.list_services as a read-only availability/service probe. When the user names a service or a listed service is warning/critical, call coroot.service_metrics to collect metric summaries and native chart/chart_group widgets before final RCA; chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts. When root-cause evidence is needed, call coroot.rca_report or coroot.service_topology. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
 		},
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
@@ -97,7 +97,7 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 		meta.Layer = tooling.ToolLayerDeferred
 		meta.Pack = "coroot_rca"
 		meta.DeferByDefault = true
-		meta.Triggers = []string{"RCA", "root cause", "根因", "延迟升高", "error rate", "SLO", "topology", "依赖"}
+		meta.Triggers = []string{"RCA", "root cause", "根因", "异常", "warning", "延迟升高", "error rate", "SLO", "topology", "依赖", "CPU", "memory", "内存", "net", "网络", "指标", "图表", "趋势", "时序", "metric", "metrics", "chart", "timeseries"}
 	case "coroot.alert_rules", "coroot.incident_timeline":
 		meta.Layer = tooling.ToolLayerDeferred
 		meta.Pack = "coroot_incident"
@@ -192,6 +192,7 @@ func executeServiceMetrics(client *Client) func(context.Context, json.RawMessage
 			return nil, rawRef, err
 		}
 		metrics := metricsFromApplication(raw, in.Metrics)
+		chartReports := chartReportsFromApplication(raw)
 		return ServiceMetricsResult{
 			SchemaVersion: corootSchemaVersion,
 			Tool:          "coroot.service_metrics",
@@ -199,6 +200,7 @@ func executeServiceMetrics(client *Client) func(context.Context, json.RawMessage
 			Project:       project,
 			Service:       appID,
 			Metrics:       metrics,
+			ChartReports:  chartReports,
 			RawRef:        rawRef,
 		}, rawRef, nil
 	}
@@ -464,7 +466,27 @@ func metricsFromApplication(raw json.RawMessage, wanted []string) []MetricSummar
 	candidates := []MetricSummary{
 		{Name: "status", Status: stringFromAny(app["status"]), Value: stringFromAny(app["status"])},
 	}
-	for _, key := range []string{"errors", "latency", "cpu", "memory", "instances", "restarts", "upstreams"} {
+	for _, key := range []string{"errors", "latency"} {
+		if metric := metricFromParam(key, objectField(app, key)); metric.Name != "" {
+			candidates = append(candidates, metric)
+		}
+	}
+	for _, spec := range []struct {
+		name       string
+		reportName string
+	}{
+		{name: "cpu", reportName: "CPU"},
+		{name: "memory", reportName: "Memory"},
+	} {
+		if metric := metricFromReport(spec.name, reportByName(obj, spec.reportName)); metric.Name != "" {
+			candidates = append(candidates, metric)
+			continue
+		}
+		if metric := metricFromParam(spec.name, objectField(app, spec.name)); metric.Name != "" {
+			candidates = append(candidates, metric)
+		}
+	}
+	for _, key := range []string{"instances", "restarts", "upstreams"} {
 		if metric := metricFromParam(key, objectField(app, key)); metric.Name != "" {
 			candidates = append(candidates, metric)
 		}
@@ -485,11 +507,277 @@ func metricsFromApplication(raw json.RawMessage, wanted []string) []MetricSummar
 	return out
 }
 
+func chartReportsFromApplication(raw json.RawMessage) []CorootChartReport {
+	obj := firstObject(raw)
+	var out []CorootChartReport
+	for _, report := range objectSlice(obj["reports"]) {
+		var widgets []map[string]any
+		for _, widget := range objectSlice(report["widgets"]) {
+			if chartWidget, ok := corootChartWidgetFromRaw(widget); ok {
+				widgets = append(widgets, chartWidget)
+			}
+		}
+		if len(widgets) == 0 {
+			continue
+		}
+		name := firstNonBlank(stringFromAny(report["name"]), stringFromAny(report["title"]))
+		if name == "" {
+			name = "Report"
+		}
+		out = append(out, CorootChartReport{
+			Name:    name,
+			Status:  stringFromAny(report["status"]),
+			Widgets: widgets,
+		})
+	}
+	return out
+}
+
+func corootChartWidgetFromRaw(widget map[string]any) (map[string]any, bool) {
+	if chart := objectField(widget, "chart"); len(chart) > 0 && corootChartHasData(chart) {
+		out := corootWidgetMetadata(widget)
+		out["chart"] = cloneCorootMap(chart)
+		return out, true
+	}
+	group := objectField(widget, "chart_group")
+	if len(group) == 0 {
+		return nil, false
+	}
+	var charts []any
+	for _, chart := range objectSlice(group["charts"]) {
+		if corootChartHasData(chart) {
+			charts = append(charts, cloneCorootMap(chart))
+		}
+	}
+	if len(charts) == 0 {
+		return nil, false
+	}
+	groupClone := cloneCorootMap(group)
+	groupClone["charts"] = charts
+	out := corootWidgetMetadata(widget)
+	out["chart_group"] = groupClone
+	return out, true
+}
+
+func corootWidgetMetadata(widget map[string]any) map[string]any {
+	out := map[string]any{}
+	for _, key := range []string{"title", "doc_link", "docLink"} {
+		if value, ok := widget[key]; ok {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func corootChartHasData(chart map[string]any) bool {
+	for _, series := range objectSlice(chart["series"]) {
+		if corootSeriesDataHasPoints(series["data"]) {
+			return true
+		}
+	}
+	if threshold := objectField(chart, "threshold"); len(threshold) > 0 {
+		return corootSeriesDataHasPoints(threshold["data"])
+	}
+	return false
+}
+
+func corootSeriesDataHasPoints(value any) bool {
+	for _, item := range transportAnySliceForCoroot(value) {
+		if item != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func transportAnySliceForCoroot(value any) []any {
+	switch v := value.(type) {
+	case []any:
+		return v
+	default:
+		return nil
+	}
+}
+
+func cloneCorootMap(value map[string]any) map[string]any {
+	if len(value) == 0 {
+		return map[string]any{}
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return map[string]any{}
+	}
+	return out
+}
+
 func metricFromParam(name string, obj map[string]any) MetricSummary {
 	if len(obj) == 0 {
 		return MetricSummary{}
 	}
 	return MetricSummary{Name: name, Status: stringFromAny(obj["status"]), Value: stringFromAny(obj["value"])}
+}
+
+func reportByName(obj map[string]any, name string) map[string]any {
+	for _, report := range objectSlice(obj["reports"]) {
+		if strings.EqualFold(stringFromAny(report["name"]), name) || strings.EqualFold(stringFromAny(report["title"]), name) {
+			return report
+		}
+	}
+	return nil
+}
+
+func metricFromReport(name string, report map[string]any) MetricSummary {
+	if len(report) == 0 {
+		return MetricSummary{}
+	}
+	for _, widget := range objectSlice(report["widgets"]) {
+		chart, chartTitle := firstChartFromWidget(widget)
+		if len(chart) == 0 {
+			continue
+		}
+		series := metricSeriesFromChart(chart)
+		if len(series) == 0 {
+			continue
+		}
+		values := series[0].Values
+		return MetricSummary{
+			Name:       name,
+			Status:     stringFromAny(report["status"]),
+			Value:      latestMetricValue(series),
+			Unit:       metricUnitFromTitle(chartTitle),
+			ChartTitle: chartTitle,
+			Values:     values,
+			Series:     series,
+		}
+	}
+	return MetricSummary{}
+}
+
+func firstChartFromWidget(widget map[string]any) (map[string]any, string) {
+	if chart := objectField(widget, "chart"); len(chart) > 0 {
+		title := firstNonBlank(stringFromAny(widget["title"]), stringFromAny(chart["title"]))
+		return chart, title
+	}
+	group := objectField(widget, "chart_group")
+	if len(group) == 0 {
+		return nil, ""
+	}
+	charts := objectSlice(group["charts"])
+	if len(charts) == 0 {
+		return nil, ""
+	}
+	title := firstNonBlank(stringFromAny(group["title"]), stringFromAny(charts[0]["title"]))
+	return charts[0], title
+}
+
+func metricSeriesFromChart(chart map[string]any) []MetricSeries {
+	ctx := objectField(chart, "ctx")
+	from := int64FromAny(ctx["from"])
+	step := int64FromAny(ctx["step"])
+	var out []MetricSeries
+	for _, rawSeries := range objectSlice(chart["series"]) {
+		values := metricValuesFromData(rawSeries["data"], from, step)
+		if len(values) == 0 {
+			continue
+		}
+		out = append(out, MetricSeries{
+			Name:   stringFromAny(rawSeries["name"]),
+			Value:  stringFromAny(rawSeries["value"]),
+			Values: values,
+		})
+	}
+	return out
+}
+
+func metricValuesFromData(value any, from int64, step int64) [][]float64 {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([][]float64, 0, len(items))
+	for idx, item := range items {
+		switch point := item.(type) {
+		case []any:
+			if len(point) < 2 {
+				continue
+			}
+			ts, okTS := floatFromAny(point[0])
+			val, okVal := floatFromAny(point[1])
+			if okTS && okVal {
+				out = append(out, []float64{ts, val})
+			}
+		default:
+			val, ok := floatFromAny(item)
+			if !ok {
+				continue
+			}
+			ts := float64(idx)
+			if from != 0 || step != 0 {
+				ts = float64(from + int64(idx)*step)
+			}
+			out = append(out, []float64{ts, val})
+		}
+	}
+	return out
+}
+
+func latestMetricValue(series []MetricSeries) string {
+	for _, item := range series {
+		if strings.TrimSpace(item.Value) != "" {
+			return strings.TrimSpace(item.Value)
+		}
+		if count := len(item.Values); count > 0 && len(item.Values[count-1]) > 1 {
+			return strconv.FormatFloat(item.Values[count-1][1], 'f', -1, 64)
+		}
+	}
+	return ""
+}
+
+func metricUnitFromTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if idx := strings.LastIndex(title, ","); idx >= 0 {
+		return strings.TrimSpace(title[idx+1:])
+	}
+	return ""
+}
+
+func int64FromAny(value any) int64 {
+	switch v := value.(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case string:
+		parsed, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func floatFromAny(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		parsed, err := v.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func sloFromParam(name string, obj map[string]any) []SLOStatus {

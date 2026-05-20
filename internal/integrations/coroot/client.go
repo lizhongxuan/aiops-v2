@@ -119,6 +119,11 @@ func (c *Client) DefaultProject() string {
 
 func (c *Client) ResolveProject(project string) string {
 	if project = strings.TrimSpace(project); project != "" {
+		if strings.EqualFold(project, "default") {
+			if configured := c.DefaultProject(); !strings.EqualFold(configured, "default") {
+				return configured
+			}
+		}
 		return project
 	}
 	return c.DefaultProject()
@@ -139,6 +144,7 @@ func (c *Client) GetJSON(ctx context.Context, apiPath string, query url.Values, 
 	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-Api-Key", c.token)
 	}
 
 	resp, err := c.httpClient.Do(req)

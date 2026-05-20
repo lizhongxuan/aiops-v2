@@ -41,19 +41,36 @@ type ListServicesResult struct {
 }
 
 type MetricSummary struct {
-	Name   string `json:"name"`
-	Status string `json:"status,omitempty"`
-	Value  string `json:"value,omitempty"`
+	Name       string         `json:"name"`
+	Status     string         `json:"status,omitempty"`
+	Value      string         `json:"value,omitempty"`
+	Unit       string         `json:"unit,omitempty"`
+	ChartTitle string         `json:"chartTitle,omitempty"`
+	Values     [][]float64    `json:"values,omitempty"`
+	Series     []MetricSeries `json:"series,omitempty"`
+}
+
+type MetricSeries struct {
+	Name   string      `json:"name,omitempty"`
+	Value  string      `json:"value,omitempty"`
+	Values [][]float64 `json:"values,omitempty"`
 }
 
 type ServiceMetricsResult struct {
-	SchemaVersion string          `json:"schemaVersion"`
-	Tool          string          `json:"tool"`
-	Status        string          `json:"status"`
-	Project       string          `json:"project"`
-	Service       string          `json:"service"`
-	Metrics       []MetricSummary `json:"metrics"`
-	RawRef        *CorootRawRef   `json:"rawRef,omitempty"`
+	SchemaVersion string              `json:"schemaVersion"`
+	Tool          string              `json:"tool"`
+	Status        string              `json:"status"`
+	Project       string              `json:"project"`
+	Service       string              `json:"service"`
+	Metrics       []MetricSummary     `json:"metrics"`
+	ChartReports  []CorootChartReport `json:"chartReports,omitempty"`
+	RawRef        *CorootRawRef       `json:"rawRef,omitempty"`
+}
+
+type CorootChartReport struct {
+	Name    string           `json:"name"`
+	Status  string           `json:"status,omitempty"`
+	Widgets []map[string]any `json:"widgets"`
 }
 
 type SLOStatus struct {

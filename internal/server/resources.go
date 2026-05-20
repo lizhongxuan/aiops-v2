@@ -74,6 +74,7 @@ func corootProxyConfigFromEnv() corootProxyConfig {
 	return corootProxyConfig{
 		BaseURL:   firstNonEmptyEnv("AIOPS_COROOT_BASE_URL", "COROOT_BASE_URL"),
 		Token:     firstNonEmptyEnv("AIOPS_COROOT_TOKEN", "COROOT_TOKEN"),
+		Project:   firstNonEmptyEnv("AIOPS_COROOT_PROJECT", "COROOT_PROJECT"),
 		IframeURL: firstNonEmptyEnv("AIOPS_COROOT_IFRAME_URL"),
 		Timeout:   timeout,
 	}

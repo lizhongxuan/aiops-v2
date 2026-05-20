@@ -21,6 +21,8 @@ Environment overrides:
   AIOPS_DATA_DIR=.data         persisted state directory, default .data
   AIOPS_WEB_DIST_DIR=web/dist  frontend dist directory, default web/dist
   AIOPS_SERVER_BIN=.data/bin/ai-server
+  AIOPS_ENV_FILE=.data/aiops.env
+                               unified KEY=VALUE file loaded without overriding explicit env vars
   AIOPS_STORE_DRIVER=postgres  persisted backend store, default postgres for this script
   AIOPS_POSTGRES_DSN=postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable
                                PostgreSQL DSN used when AIOPS_STORE_DRIVER=postgres
@@ -42,6 +44,52 @@ EOF
 
 log() {
   printf '[aiops-v2] %s\n' "$*"
+}
+
+trim_spaces() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_optional_quotes() {
+  local value="$1"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+load_env_file() {
+  local file="$1"
+  local line key value
+
+  [[ -n "$file" && -f "$file" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim_spaces "$line")"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    if [[ "$line" == export[[:space:]]* ]]; then
+      line="$(trim_spaces "${line#export}")"
+    fi
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="$(trim_spaces "${BASH_REMATCH[2]}")"
+      value="$(strip_optional_quotes "$value")"
+      if [[ -z "${!key+x}" ]]; then
+        export "$key=$value"
+      fi
+    fi
+  done <"$file"
+}
+
+load_env_files() {
+  AIOPS_ENV_FILE="${AIOPS_ENV_FILE:-.data/aiops.env}"
+  export AIOPS_ENV_FILE
+  load_env_file "$AIOPS_ENV_FILE"
 }
 
 require_command() {
@@ -457,6 +505,8 @@ for arg in "$@"; do
 done
 
 cd "$ROOT_DIR"
+
+load_env_files
 
 if [[ -n "${AIOPS_GRPC_ADDR+x}" ]]; then
   AIOPS_GRPC_ADDR_EXPLICIT=1

@@ -1026,6 +1026,216 @@ func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 19, 9, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-coroot-chart", "thread-coroot-chart")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-coroot-metrics",
+		"toolName":"coroot.service_metrics",
+		"displayKind":"coroot",
+		"inputSummary":"checkout cpu memory",
+		"outputPreview":{
+			"schemaVersion":"aiops.coroot/v1",
+			"tool":"coroot.service_metrics",
+			"status":"ok",
+			"project":"5hxbfx6p",
+			"service":"5hxbfx6p:smecloud:Deployment:web",
+			"metrics":[
+				{"name":"cpu","status":"ok","unit":"cores","chartTitle":"CPU usage <selector>, cores","values":[[1710000000000,0.4],[1710000030000,0.6]],"series":[{"name":"web-1","values":[[1710000000000,0.4],[1710000030000,0.6]]}]},
+				{"name":"memory","status":"warning","unit":"bytes","chartTitle":"Memory usage <selector>, bytes","values":[[1710000000000,1024],[1710000030000,2048]],"series":[{"name":"web-1","values":[[1710000000000,1024],[1710000030000,2048]]}]}
+			],
+			"chartReports":[
+				{"name":"CPU","status":"ok","widgets":[{"chart_group":{"title":"CPU usage <selector>, cores","charts":[{"ctx":{"from":1710000000000,"step":30000},"title":"container: web","series":[{"name":"web-1","data":[0.4,0.6]}]}]}}]},
+				{"name":"Net","status":"warning","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Failed TCP connections, per second","series":[{"name":"postgres","data":[0,1]}]}}]}
+			],
+			"rawRef":{"uri":"http://coroot/api/project/5hxbfx6p/app/web","digest":"sha256:abc","bytes":1024}
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-coroot-chart",
+		SessionID:   "session-coroot-chart",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-coroot-metrics", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-coroot-chart"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "coroot_chart" || artifact.Source != "coroot" || artifact.PermissionScope != "read" {
+		t.Fatalf("artifact = %+v, want coroot_chart from coroot", artifact)
+	}
+	card := artifact.InlineData["mcpCard"].(map[string]any)
+	visual := card["visual"].(map[string]any)
+	series, ok := visual["series"].([]map[string]any)
+	if !ok {
+		t.Fatalf("series type = %T, want []map[string]any", visual["series"])
+	}
+	if len(series) != 2 {
+		t.Fatalf("series len = %d, want cpu and memory series", len(series))
+	}
+	chartReports, ok := artifact.InlineData["chartReports"].([]any)
+	if !ok {
+		t.Fatalf("chartReports type = %T, want []any", artifact.InlineData["chartReports"])
+	}
+	if len(chartReports) != 2 {
+		t.Fatalf("chartReports len = %d, want native CPU and Net reports", len(chartReports))
+	}
+	if card["visual"].(map[string]any)["kind"] != "coroot_report_charts" {
+		t.Fatalf("visual kind = %#v, want coroot_report_charts", card["visual"].(map[string]any)["kind"])
+	}
+	if artifact.Metadata["service"] != "5hxbfx6p:smecloud:Deployment:web" || artifact.DataRef != "http://coroot/api/project/5hxbfx6p/app/web" {
+		t.Fatalf("artifact metadata=%#v dataRef=%q, want service and raw ref", artifact.Metadata, artifact.DataRef)
+	}
+}
+
+func TestTransportProjectorDeduplicatesCorootChartArtifactPerService(t *testing.T) {
+	now := time.Date(2026, 5, 20, 2, 50, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-coroot-chart-dedupe", "thread-coroot-chart-dedupe")
+	firstToolResultData := json.RawMessage(`{
+		"toolCallId":"call-coroot-metrics-24h",
+		"toolName":"coroot_service_metrics",
+		"displayKind":"coroot",
+		"inputSummary":"{\"service\":\"aiops-host-agent\",\"timeRange\":\"24h\",\"metrics\":[\"cpu\",\"memory\"]}",
+		"outputPreview":{
+			"schemaVersion":"aiops.coroot/v1",
+			"tool":"coroot.service_metrics",
+			"status":"ok",
+			"project":"5hxbfx6p",
+			"service":"5hxbfx6p:_:Unknown:aiops-host-agent",
+			"metrics":[],
+			"chartReports":[{"name":"CPU","status":"ok","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"CPU usage","series":[{"name":"node-1","data":[0.1,0.2]}]}}]}],
+			"rawRef":{"uri":"http://coroot/api/project/5hxbfx6p/app/aiops-host-agent?range=24h","digest":"sha256:24h","bytes":2048}
+		}
+	}`)
+	secondToolResultData := json.RawMessage(`{
+		"toolCallId":"call-coroot-metrics-1h",
+		"toolName":"coroot_service_metrics",
+		"displayKind":"coroot",
+		"inputSummary":"{\"service\":\"aiops-host-agent\",\"timeRange\":\"1h\",\"metrics\":[\"cpu\"]}",
+		"outputPreview":{
+			"schemaVersion":"aiops.coroot/v1",
+			"tool":"coroot.service_metrics",
+			"status":"ok",
+			"project":"5hxbfx6p",
+			"service":"5hxbfx6p:_:Unknown:aiops-host-agent",
+			"metrics":[],
+			"chartReports":[{"name":"CPU","status":"ok","widgets":[{"chart":{"ctx":{"from":1710003600000,"step":30000},"title":"CPU usage","series":[{"name":"node-1","data":[0.3,0.4]}]}}]}],
+			"rawRef":{"uri":"http://coroot/api/project/5hxbfx6p/app/aiops-host-agent?range=1h","digest":"sha256:1h","bytes":1024}
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-coroot-chart-dedupe",
+		SessionID:   "session-coroot-chart-dedupe",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-coroot-metrics-24h", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics 24h", Data: firstToolResultData}, CreatedAt: now},
+			{ID: "tool-result-coroot-metrics-1h", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics 1h", Data: secondToolResultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-coroot-chart-dedupe"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want one deduplicated coroot_chart", len(artifacts))
+	}
+	if artifacts[0].DataRef != "http://coroot/api/project/5hxbfx6p/app/aiops-host-agent?range=1h" {
+		t.Fatalf("DataRef = %q, want latest service metrics artifact", artifacts[0].DataRef)
+	}
+}
+
+func TestTransportProjectorProjectsCorootChartArtifactFromRawToolResultContent(t *testing.T) {
+	now := time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-coroot-raw-chart", "thread-coroot-raw-chart")
+	rawContent := `{
+		"schemaVersion":"aiops.coroot/v1",
+		"tool":"coroot.service_metrics",
+		"status":"ok",
+		"project":"5hxbfx6p",
+		"service":"5hxbfx6p:_:Unknown:aiops-host-agent",
+		"metrics":[],
+		"chartReports":[
+			{"name":"Instances","status":"ok","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Instances","series":[{"name":"up","data":[2,2]}]}}]},
+			{"name":"CPU","status":"ok","widgets":[{"chart_group":{"title":"CPU usage <selector>, cores","charts":[{"ctx":{"from":1710000000000,"step":30000},"title":"container: aiops-host-agent","series":[{"name":"aiops-host-agent@node-1","data":[0.0004,0.0006]}]}]}}]}
+		],
+		"rawRef":{"uri":"http://coroot/api/project/5hxbfx6p/app/aiops-host-agent","digest":"sha256:abc","bytes":4096}
+	}`
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-coroot-raw-metrics",
+		"toolName":"coroot_service_metrics",
+		"displayKind":"coroot",
+		"inputSummary":"aiops-host-agent metrics"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-coroot-raw-chart",
+		SessionID:   "session-coroot-raw-chart",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Iterations: []runtimekernel.IterationState{{
+			ID:          "iter-coroot-raw-chart",
+			SessionID:   "session-coroot-raw-chart",
+			TurnID:      "turn-coroot-raw-chart",
+			Iteration:   0,
+			Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+			ResumeState: runtimekernel.TurnResumeStateNone,
+			ToolResults: []runtimekernel.ToolResult{{ToolCallID: "call-coroot-raw-metrics", Content: rawContent}},
+			StartedAt:   now,
+			UpdatedAt:   now,
+		}},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-coroot-raw-metrics", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "查看 aiops-host-agent 的 CPU 图表"}, CreatedAt: now},
+			{ID: "tool-result-coroot-raw-metrics", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-coroot-raw-chart"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1 coroot_chart from raw tool result content", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "coroot_chart" {
+		t.Fatalf("artifact.Type = %q, want coroot_chart", artifact.Type)
+	}
+	chartReports := artifact.InlineData["chartReports"].([]any)
+	if len(chartReports) != 2 {
+		t.Fatalf("chartReports len = %d, want Instances and CPU reports", len(chartReports))
+	}
+	if artifact.InlineData["defaultReportName"] != "CPU" {
+		t.Fatalf("defaultReportName = %#v, want CPU", artifact.InlineData["defaultReportName"])
+	}
+	if artifact.DataRef != "http://coroot/api/project/5hxbfx6p/app/aiops-host-agent" {
+		t.Fatalf("DataRef = %q, want rawRef URI", artifact.DataRef)
+	}
+}
+
 func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1138,6 +1348,52 @@ func TestTransportProjectorCompactsOpsManualSearchProcessPreview(t *testing.T) {
 	}
 	if !strings.Contains(block.Text, "运维手册匹配：手册缺上下文") || strings.Contains(block.Text, "need_info") || strings.Contains(block.Text, "execution_surface") {
 		t.Fatalf("block text = %q, want human compact decision without internal missing fields", block.Text)
+	}
+}
+
+func TestTransportProjectorSkipsOpsManualNoMatchArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 19, 18, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-ops-manual-no-match", "thread-ops-manual-no-match")
+	searchPayload, _ := json.Marshal(map[string]any{
+		"decision": "no_match",
+		"summary":  "没有找到适用于 service 的可用运维手册。",
+		"manuals":  []map[string]any{},
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-search-no-match",
+		"toolName":"search_ops_manuals",
+		"displayKind":"ops_manual_search_result",
+		"outputPreview":` + string(searchPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-ops-manual-no-match",
+		SessionID: "session-ops-manual-no-match",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-search-no-match",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_search_result",
+					Summary: "no_match",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	transportTurn := projected.Turns["turn-ops-manual-no-match"]
+	if len(transportTurn.AgentUIArtifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want no Agent UI artifact for no_match ops manual search", transportTurn.AgentUIArtifacts)
 	}
 }
 

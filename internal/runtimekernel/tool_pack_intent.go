@@ -10,7 +10,7 @@ func applyIntentToolPacks(metadata map[string]string, input string) map[string]s
 	if text == "" {
 		return metadata
 	}
-	if containsAnyIntent(text, []string{"rca", "root cause", "根因", "延迟升高", "error rate", "slo", "topology", "依赖"}) {
+	if containsAnyIntent(text, []string{"rca", "root cause", "根因", "异常", "warning", "告警", "延迟升高", "error rate", "slo", "topology", "依赖", "cpu", "memory", "内存", "net", "网络", "指标", "图表", "趋势", "时序", "metric", "metrics", "chart", "charts", "timeseries"}) {
 		metadata = enableIntentToolPack(metadata, "coroot_rca")
 	}
 	if containsAnyIntent(text, []string{"incident", "alert", "告警", "事件", "timeline"}) {

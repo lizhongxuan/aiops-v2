@@ -125,6 +125,43 @@ func TestResourceServer_ApprovalAndProxyHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("coroot test connection probes configured project", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/coroot/api/project/5hxbfx6p/overview/applications" {
+				http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+				return
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				http.Error(w, "unexpected auth: "+got, http.StatusInternalServerError)
+				return
+			}
+			writeResourceJSON(w, http.StatusOK, map[string]any{
+				"context": map[string]any{"status": map[string]any{"status": "ok"}},
+				"data":    map[string]any{"applications": []string{"checkout"}},
+			})
+		}))
+		defer upstream.Close()
+		t.Setenv("AIOPS_COROOT_BASE_URL", upstream.URL+"/coroot")
+		t.Setenv("AIOPS_COROOT_TOKEN", "test-token")
+		t.Setenv("AIOPS_COROOT_PROJECT", "5hxbfx6p")
+		rs := NewResourceServer()
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/coroot/test-connection", nil)
+		rr := httptest.NewRecorder()
+
+		rs.handleCorootProxy(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status=%d want=%d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["ok"] != true || body["project"] != "5hxbfx6p" {
+			t.Fatalf("body=%#v want ok project", body)
+		}
+	})
+
 	t.Run("coroot proxy rejects non-whitelisted paths", func(t *testing.T) {
 		t.Setenv("AIOPS_COROOT_BASE_URL", "http://coroot.internal")
 		rs := NewResourceServer()

@@ -125,6 +125,81 @@ func TestCorootToolsReturnFixedSchemasFromUpstream(t *testing.T) {
 	}
 }
 
+func TestCorootServiceMetricsIncludesNativeChartReports(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/project/prod/overview/applications":
+			_, _ = w.Write([]byte(`{"data":{"applications":[{"id":"prod:default:Deployment:checkout","status":"ok"}]}}`))
+		case "/api/project/prod/app/prod:default:Deployment:checkout":
+			_, _ = w.Write([]byte(`{"data":{
+				"app_map":{"application":{"id":"prod:default:Deployment:checkout","status":"ok","indicators":[{"status":"ok","message":"CPU"},{"status":"warning","message":"Memory"}]}},
+				"reports":[
+					{"name":"CPU","status":"ok","widgets":[{"chart_group":{"title":"CPU usage <selector>, cores","charts":[{"ctx":{"from":1710000000000,"step":30000},"title":"container: checkout","series":[{"name":"checkout-1","data":[0.4,0.6],"value":""}]}]}}]},
+					{"name":"Memory","status":"warning","widgets":[
+						{"chart_group":{"title":"Memory usage <selector>, bytes","charts":[{"ctx":{"from":1710000000000,"step":30000},"title":"RSS container: checkout","series":[{"name":"checkout-1","data":[1024,2048],"value":""}]}]}},
+						{"table":{"header":["Instance"],"rows":[[{"value":"checkout-1"}]]}}
+					]},
+					{"name":"Net","status":"warning","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Failed TCP connections, per second","series":[{"name":"postgres","data":[0,1],"value":""}]}}]}
+				]
+			}}`))
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+
+	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.service_metrics"), `{"project":"prod","service":"checkout","metrics":["cpu","memory"]}`)
+	metrics := body["metrics"].([]any)
+	if len(metrics) != 2 {
+		t.Fatalf("metrics len = %d, want cpu and memory", len(metrics))
+	}
+	byName := map[string]map[string]any{}
+	for _, item := range metrics {
+		metric := item.(map[string]any)
+		byName[metric["name"].(string)] = metric
+	}
+	cpu := byName["cpu"]
+	if cpu == nil || cpu["chartTitle"] != "CPU usage <selector>, cores" || cpu["unit"] != "cores" {
+		t.Fatalf("cpu metric = %#v, want chart title and unit", cpu)
+	}
+	cpuValues := cpu["values"].([]any)
+	if len(cpuValues) != 2 || cpuValues[0].([]any)[0] != float64(1710000000000) || cpuValues[1].([]any)[1] != 0.6 {
+		t.Fatalf("cpu values = %#v, want timestamped chart points", cpuValues)
+	}
+	memory := byName["memory"]
+	if memory == nil || memory["chartTitle"] != "Memory usage <selector>, bytes" || memory["unit"] != "bytes" {
+		t.Fatalf("memory metric = %#v, want chart title and unit", memory)
+	}
+	series := memory["series"].([]any)
+	if len(series) != 1 || series[0].(map[string]any)["name"] != "checkout-1" {
+		t.Fatalf("memory series = %#v, want named chart series", series)
+	}
+	chartReports := body["chartReports"].([]any)
+	if len(chartReports) != 3 {
+		t.Fatalf("chartReports len = %d, want CPU, Memory, and Net reports", len(chartReports))
+	}
+	reportNames := map[string]bool{}
+	for _, rawReport := range chartReports {
+		report := rawReport.(map[string]any)
+		reportNames[report["name"].(string)] = true
+		widgets := report["widgets"].([]any)
+		if len(widgets) == 0 {
+			t.Fatalf("report %#v has no chart widgets", report)
+		}
+		for _, rawWidget := range widgets {
+			widget := rawWidget.(map[string]any)
+			if _, hasTable := widget["table"]; hasTable {
+				t.Fatalf("chartReports included non-chart widget: %#v", widget)
+			}
+		}
+	}
+	for _, name := range []string{"CPU", "Memory", "Net"} {
+		if !reportNames[name] {
+			t.Fatalf("chartReports missing %s: %#v", name, chartReports)
+		}
+	}
+}
+
 func TestCorootToolReturnsStructuredError(t *testing.T) {
 	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
@@ -147,7 +222,7 @@ func TestCorootToolPromptTellsAgentToProbeInsteadOfAskUser(t *testing.T) {
 	})
 	tool := corootToolByName(t, tools, "coroot.list_services")
 	prompt := tool.Prompt(tooling.PromptContext{SessionType: "host", Mode: "chat", Metadata: tool.Metadata()})
-	for _, want := range []string{"aiops.coroot.project", "availability/service probe", "instead of asking the user whether Coroot evidence exists"} {
+	for _, want := range []string{"aiops.coroot.project", "omit project", "do not send default as a placeholder", "availability/service probe", "call coroot.service_metrics", "call coroot.rca_report", "chartReports render as Agent-to-UI coroot_chart artifacts in chat", "instead of asking the user whether Coroot evidence exists"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, want %q", prompt, want)
 		}

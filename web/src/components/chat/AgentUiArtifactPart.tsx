@@ -18,7 +18,7 @@ type ArtifactAction = {
 };
 
 const ARTIFACT_LABELS: Record<string, string> = {
-  coroot_chart: "Coroot 图表",
+  coroot_chart: "服务",
   trace_summary: "Trace 摘要",
   topology_slice: "拓扑片段",
   rca_report: "根因分析",
@@ -58,50 +58,77 @@ export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
   }
 
   const typeLabel = ARTIFACT_LABELS[artifact.type] || "暂不支持的卡片类型";
-  const title = text(artifact.titleZh) || text(artifact.title) || typeLabel;
+  const title = artifactTitle(artifact, typeLabel);
   const summary = text(artifact.summaryZh) || text(artifact.summary) || (ARTIFACT_LABELS[artifact.type] ? "暂无摘要" : "该卡片类型未注册，已按安全模式展示。");
   const Icon = iconForArtifact(artifact.type);
   const actions = unifiedActionsForArtifact(artifact);
   const Renderer = rendererLookup.Renderer;
+  const isCorootChart = artifact.type === "coroot_chart";
+  const showSummary = !isCorootChart && Boolean(summary);
+  const showFooter = !isCorootChart && Boolean(artifact.source || artifact.createdAt || actions.length);
+  const showTypeBadge = !isCorootChart;
+  const redactionLabel = redactionStatusLabel(artifact.redactionStatus);
 
   if (SELF_RENDERED_TYPES.has(artifact.type)) {
     return <Renderer artifact={artifact} />;
   }
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm" data-testid="agent-ui-artifact">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 rounded-md bg-slate-100 p-1.5 text-slate-600">
-          <Icon className="h-4 w-4" />
+    <section className={`min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm ${isCorootChart ? "p-2 text-xs" : "p-3 text-sm"}`} data-testid="agent-ui-artifact">
+      <div className={`flex items-start ${isCorootChart ? "gap-1.5" : "gap-2"}`}>
+        <span className={`mt-0.5 rounded-md bg-slate-100 text-slate-600 ${isCorootChart ? "p-1" : "p-1.5"}`}>
+          <Icon className={isCorootChart ? "h-3.5 w-3.5" : "h-4 w-4"} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 font-medium text-slate-950">{title}</h3>
-            <Badge variant="outline">{typeLabel}</Badge>
-            {artifact.redactionStatus ? <Badge variant="secondary">{REDACTION_LABELS[artifact.redactionStatus] || artifact.redactionStatus}</Badge> : null}
+            {showTypeBadge ? <Badge variant="outline">{typeLabel}</Badge> : null}
+            {redactionLabel ? <Badge variant="secondary">{redactionLabel}</Badge> : null}
           </div>
-          <p className="mt-1 leading-6 text-slate-600">{summary}</p>
+          {showSummary ? <p className="mt-1 leading-6 text-slate-600">{summary}</p> : null}
         </div>
       </div>
 
       <Renderer artifact={artifact} />
       <InlineDataPreview artifact={artifact} />
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
-        {artifact.source ? <span>来源：{artifact.source}</span> : null}
-        {artifact.createdAt ? <span>生成时间：{formatDate(artifact.createdAt)}</span> : null}
-        {actions.map((action) => (
-          <a key={action.id} className="font-medium text-slate-900 underline-offset-4 hover:underline" href={action.href} aria-disabled={action.disabled || undefined}>
-            {action.label}
-          </a>
-        ))}
-      </div>
+      {showFooter ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
+          {artifact.source ? <span>来源：{artifact.source}</span> : null}
+          {artifact.createdAt ? <span>生成时间：{formatDate(artifact.createdAt)}</span> : null}
+          {actions.map((action) => (
+            <a key={action.id} className="font-medium text-slate-900 underline-offset-4 hover:underline" href={action.href} aria-disabled={action.disabled || undefined}>
+              {action.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
 
+function artifactTitle(artifact: AiopsTransportAgentUiArtifact, fallback: string) {
+  const value = text(artifact.titleZh) || text(artifact.title) || fallback;
+  if (artifact.type !== "coroot_chart") {
+    return value;
+  }
+  return value
+    .replace(/\s*Coroot\s*(?:charts|图表)\s*$/i, " 服务")
+    .replace(/\s*图表\s*$/i, " 服务")
+    .replace(/\s+/g, " ")
+    .trim() || fallback;
+}
+
+function redactionStatusLabel(value: unknown) {
+  const status = text(value).toLowerCase();
+  if (!status || status === "none") {
+    return "";
+  }
+  return REDACTION_LABELS[status] || text(value);
+}
+
 function InlineDataPreview({ artifact }: { artifact: AiopsTransportAgentUiArtifact }) {
-  if (artifact.type === "rca_report") {
+  if (artifact.type === "rca_report" || artifact.type === "coroot_chart") {
     return null;
   }
   const data = artifact.inlineData;

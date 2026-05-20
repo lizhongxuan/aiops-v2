@@ -912,22 +912,47 @@ func projectAssistantTransportSessionState(
 	if strings.TrimSpace(next.ThreadID) == "" {
 		next.ThreadID = strings.TrimSpace(firstAssistantTransportValue(next.SessionID, session.ID))
 	}
-	var latestTurn *runtimekernel.TurnSnapshot
-	if session.CurrentTurn != nil {
-		latestTurn = session.CurrentTurn
-	} else if count := len(session.TurnHistory); count > 0 {
-		latestTurn = &session.TurnHistory[count-1]
-	}
-	if latestTurn != nil {
-		projected, err := projector.ProjectTurnSnapshot(next, latestTurn)
-		if err != nil {
-			return next, err
+	turns := assistantTransportSessionTurns(session)
+	if len(turns) > 0 {
+		for i := range turns {
+			projected, err := projector.ProjectTurnSnapshot(next, &turns[i])
+			if err != nil {
+				return next, err
+			}
+			next = server.decorateAssistantTransportOpsManualFallback(projected, &turns[i])
 		}
-		return server.decorateAssistantTransportOpsManualFallback(projected, latestTurn), nil
+		return next, nil
 	}
 	next.Status = appui.AiopsTransportStatusIdle
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return next, nil
+}
+
+func assistantTransportSessionTurns(session *runtimekernel.SessionState) []runtimekernel.TurnSnapshot {
+	if session == nil {
+		return nil
+	}
+	turns := make([]runtimekernel.TurnSnapshot, 0, len(session.TurnHistory)+1)
+	indexByID := make(map[string]int, len(session.TurnHistory)+1)
+	appendTurn := func(turn *runtimekernel.TurnSnapshot) {
+		if turn == nil {
+			return
+		}
+		turnID := strings.TrimSpace(turn.ID)
+		if turnID != "" {
+			if idx, ok := indexByID[turnID]; ok {
+				turns[idx] = *turn
+				return
+			}
+			indexByID[turnID] = len(turns)
+		}
+		turns = append(turns, *turn)
+	}
+	for i := range session.TurnHistory {
+		appendTurn(&session.TurnHistory[i])
+	}
+	appendTurn(session.CurrentTurn)
+	return turns
 }
 
 func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.AiopsTransportState, turn *runtimekernel.TurnSnapshot) appui.AiopsTransportState {

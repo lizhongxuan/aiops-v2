@@ -1483,7 +1483,38 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).not.toContain("继续普通排查");
   });
 
-  it("hides stale cross-object reference_only manual hits for Kafka", async () => {
+  it("does not render no-match search cards when no usable manual exists", async () => {
+    await act(async () => {
+      root.render(
+        <OpsManualSearchResultArtifact
+          artifact={{
+            id: "artifact-kafka-no-match",
+            type: "ops_manual_search_result",
+            inlineData: {
+              decision: "no_match",
+              summary: "没有找到适用于 Kafka 的可用运维手册。",
+              operation_frame: {
+                object_type: "kafka",
+                operation_type: "rca_or_repair",
+              },
+              recommended_next_action:
+                "AI 会继续自动尝试只读排查；如果缺少目标、时间范围、权限或观测数据，会先让你补齐必要信息。",
+              manuals: [],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-search-result-card"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("无可用手册");
+    expect(container.textContent).not.toContain("没有找到适用于 Kafka");
+    expect(container.textContent).not.toContain("AI 会继续自动尝试只读排查");
+  });
+
+  it("does not render cross-object reference_only as a no-match card", async () => {
     await act(async () => {
       root.render(
         <OpsManualSearchResultArtifact
@@ -1517,76 +1548,16 @@ describe("OpsManualChatArtifacts", () => {
       );
     });
 
-    expect(container.textContent).toContain(
+    expect(
+      container.querySelector('[data-testid="ops-manual-search-result-card"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain(
       "未找到适用手册，AI 将继续只读排查",
     );
-    expect(container.textContent).toContain(
-      "没有找到适用于 Kafka 的可用运维手册。",
-    );
-    expect(container.textContent).toContain("AI 不使用不匹配的手册");
     expect(container.textContent).not.toContain("manual-k8s-pod-crashloop-rca");
     expect(container.textContent).not.toContain("Kubernetes Pod CrashLoop/OOM");
     expect(container.textContent).not.toContain("对象类型不匹配");
     expect(container.textContent).not.toContain("object_type differs");
-  });
-
-  it("hides cross-object manuals from Kafka no-match results", async () => {
-    await act(async () => {
-      root.render(
-        <OpsManualSearchResultArtifact
-          artifact={{
-            id: "artifact-kafka-no-match",
-            type: "ops_manual_search_result",
-            inlineData: {
-              decision: "no_match",
-              summary: "没有找到适用于 Kafka 的可用运维手册。",
-              operation_frame: {
-                object_type: "kafka",
-                operation_type: "rca_or_repair",
-              },
-              recommended_next_action:
-                "AI 会继续自动尝试只读排查；如果缺少目标、时间范围、权限或观测数据，会先让你补齐必要信息。",
-              manuals: [],
-            },
-          }}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain(
-      "未找到适用手册，AI 将继续只读排查",
-    );
-    expect(container.textContent).toContain("AI 会继续自动尝试只读排查");
-    expect(container.textContent).not.toContain("请在底部补充");
-    expect(container.textContent).not.toContain("打开补充表单");
-    expect(
-      container.querySelector('[data-testid="ops-manual-context-prompt"]'),
-    ).toBeNull();
-    expect(container.textContent).not.toContain("manual-k8s-pod-crashloop-rca");
-    expect(container.textContent).not.toContain("Kubernetes Pod CrashLoop/OOM");
-    expect(container.textContent).not.toContain("object_type differs");
-  });
-
-  it("rewrites stale no_match next action to read-only investigation guidance", async () => {
-    await act(async () => {
-      root.render(
-        <OpsManualSearchResultArtifact
-          artifact={{
-            id: "artifact-no-match-stale-next",
-            type: "ops_manual_search_result",
-            inlineData: {
-              decision: "no_match",
-              summary: "没有找到合适的运维手册。",
-              recommended_next_action: "继续普通 Agent 运维流程。",
-            },
-          }}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain("AI 不使用不匹配的手册");
-    expect(container.textContent).toContain("会先让你补齐必要信息");
-    expect(container.textContent).not.toContain("继续普通 Agent 运维流程");
   });
 
   it("does not dispatch a fixed context request from search need_info even when legacy required fields exist", async () => {

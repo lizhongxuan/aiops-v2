@@ -1267,6 +1267,35 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("hostname");
     expect(container.textContent).not.toContain("server-local");
   });
+
+  it("keeps long tool output inside the transcript container", async () => {
+    const longJson = `{"chartReports":[{"name":"Instances","widgets":[{"chart":{"ctx":{"from":1779194700000,"step":30000},"series":[{"name":"${"aiops-host-agent".repeat(18)}","data":[${Array(60).fill(2).join(",")}]}]}}]}]}`;
+    const process = [
+      makeBlock({
+        id: "tool-long-json",
+        kind: "tool",
+        status: "completed",
+        text: "Coroot chartReports",
+        outputPreview: longJson,
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-tool-row-tool-long-json"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const output = container.querySelector('[data-testid="aiops-tool-output-tool-long-json"]');
+    expect(output?.textContent).toContain("chartReports");
+    expect(output?.className).toContain("max-w-full");
+    expect(output?.className).toContain("overflow-hidden");
+    expect(output?.className).toContain("break-words");
+  });
 });
 
 describe("groupConsecutiveBlocks", () => {

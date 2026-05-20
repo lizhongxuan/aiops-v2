@@ -100,6 +100,7 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         intent: turn.intent || null,
         userText: turn.user?.text || "",
         agentUiArtifacts: visibleAgentUiArtifacts(turn),
+        deferredAgentUiArtifacts: deferredAgentUiArtifacts(turn),
       },
       unstable_annotations: [],
       unstable_data: [],
@@ -123,11 +124,22 @@ function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
 }
 
 function visibleAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
-  const artifacts = turn.agentUiArtifacts || [];
+  const artifacts = mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []);
   if (isTerminalTurn(turn.status)) {
-    return mergeOpsManualSearchAndPreflightArtifacts(artifacts);
+    return artifacts;
   }
-  return mergeOpsManualSearchAndPreflightArtifacts(artifacts).filter((artifact) => artifact.type !== "ops_manual_search_result");
+  return artifacts.filter((artifact) => !isDelayedWhileRunningArtifact(artifact));
+}
+
+function deferredAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
+  if (isTerminalTurn(turn.status)) {
+    return [];
+  }
+  return mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []).filter((artifact) => artifact.type === "coroot_chart");
+}
+
+function isDelayedWhileRunningArtifact(artifact: AiopsTransportAgentUiArtifact) {
+  return artifact.type === "ops_manual_search_result" || artifact.type === "coroot_chart";
 }
 
 function isTerminalTurn(status: AiopsTransportTurn["status"]) {

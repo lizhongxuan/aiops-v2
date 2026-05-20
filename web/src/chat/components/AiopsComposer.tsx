@@ -51,12 +51,15 @@ type ContextFormRequest = {
   workflowId?: string;
   submitAction?: string;
   key: string;
+  dismissKeys?: string[];
   title: string;
   summary?: string;
   contextText?: string;
   fields: ContextFormField[];
   force?: boolean;
 };
+
+const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX = "aiops:composer-context-request:dismissed:";
 
 export function AiopsComposer({
   className = "",
@@ -141,16 +144,37 @@ export function AiopsComposer({
             .filter((field) => field.id && field.label)
         : [];
       if (fields.length === 0) return;
-      const key = contextRequestKey(detail.artifactId ? String(detail.artifactId) : undefined, fields);
-      if (!detail.force && dismissedContextRequestKeysRef.current.has(key)) {
+      const key = contextRequestKey(
+        state.threadId || state.sessionId,
+        detail.artifactId ? String(detail.artifactId) : undefined,
+        fields,
+      );
+      const fallbackKey = contextRequestKey(
+        undefined,
+        detail.artifactId ? String(detail.artifactId) : undefined,
+        fields,
+      );
+      if (
+        [key, fallbackKey].some((candidate) =>
+          isDismissedContextRequestKey(
+            candidate,
+            dismissedContextRequestKeysRef.current,
+          ),
+        )
+      ) {
         return;
       }
+      dismissContextRequestKeys(
+        [key, fallbackKey],
+        dismissedContextRequestKeysRef.current,
+      );
       setContextRequest({
         artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
         manualId: detail.manualId ? String(detail.manualId) : undefined,
         workflowId: detail.workflowId ? String(detail.workflowId) : undefined,
         submitAction: detail.submitAction ? String(detail.submitAction) : undefined,
         key,
+        dismissKeys: [key, fallbackKey],
         title: String(detail.title || "补充运维信息"),
         summary: detail.summary ? String(detail.summary) : "",
         contextText: detail.contextText ? String(detail.contextText) : "",
@@ -159,7 +183,7 @@ export function AiopsComposer({
     }
     window.addEventListener("aiops:composer-context-request", handleContextRequest);
     return () => window.removeEventListener("aiops:composer-context-request", handleContextRequest);
-  }, []);
+  }, [state.sessionId, state.threadId]);
 
   const pendingApproval = selectComposerApproval(state);
   if (pendingApproval) {
@@ -183,11 +207,17 @@ export function AiopsComposer({
         variant={variant}
         className={className}
         onCancel={() => {
-          dismissedContextRequestKeysRef.current.add(contextRequest.key);
+          dismissContextRequestKeys(
+            contextRequest.dismissKeys || [contextRequest.key],
+            dismissedContextRequestKeysRef.current,
+          );
           setContextRequest(null);
         }}
         onComplete={() => {
-          dismissedContextRequestKeysRef.current.add(contextRequest.key);
+          dismissContextRequestKeys(
+            contextRequest.dismissKeys || [contextRequest.key],
+            dismissedContextRequestKeysRef.current,
+          );
           setContextRequest(null);
         }}
       />
@@ -493,8 +523,45 @@ function normalizeContextCandidates(value: unknown): ContextFormField["candidate
     .filter((candidate): candidate is NonNullable<ContextFormField["candidates"]>[number] => Boolean(candidate && (candidate.value !== undefined || candidate.label)));
 }
 
-function contextRequestKey(artifactId: string | undefined, fields: ContextFormField[]) {
-  return `${artifactId || "unknown"}:${fields.map((field) => field.id).join("|")}`;
+function contextRequestKey(
+  scopeId: string | undefined,
+  artifactId: string | undefined,
+  fields: ContextFormField[],
+) {
+  return `${scopeId || "unknown-thread"}:${artifactId || "unknown"}:${fields.map((field) => field.id).join("|")}`;
+}
+
+function dismissContextRequestKeys(keys: string[], memory: Set<string>) {
+  for (const key of keys) {
+    memory.add(key);
+    try {
+      window.localStorage.setItem(
+        `${DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX}${key}`,
+        "1",
+      );
+    } catch {
+      // Local storage may be unavailable in restricted browser contexts.
+    }
+  }
+}
+
+function isDismissedContextRequestKey(key: string, memory: Set<string>) {
+  if (memory.has(key)) {
+    return true;
+  }
+  try {
+    if (
+      window.localStorage.getItem(
+        `${DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX}${key}`,
+      ) === "1"
+    ) {
+      memory.add(key);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function GenerationConfirmationComposer({

@@ -160,6 +160,9 @@ export function OpsManualMatchArtifact({
     pick(data, "manualId", "manual_id"),
     text(pick(asRecord(pick(data, "manual")), "id")),
   );
+  if (normalizeDecision(state) === "no_match" && !manualId) {
+    return null;
+  }
   const workflowRef = asRecord(pick(data, "workflowRef", "workflow_ref")) || {};
   const workflowId = text(
     pick(workflowRef, "workflowId", "workflow_id"),
@@ -319,6 +322,9 @@ export function OpsManualSearchResultArtifact({
     rawManuals.length > 0 &&
     manuals.length === 0;
   const decision = crossObjectOnly ? "no_match" : rawDecision;
+  if (decision === "no_match") {
+    return null;
+  }
   const summary = crossObjectOnly
     ? crossObjectNoMatchSummary(operationFrame)
     : text(pick(data, "summary", "message"), defaultSearchSummary(decision));

@@ -175,6 +175,20 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptCorootChartReportsAreRenderableArtifacts(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"Coroot service_metrics returns chartReports",
+		"Agent-to-UI coroot_chart artifacts",
+		"rendered directly in the chat UI",
+		"do not tell the user the chat cannot render Coroot-style charts",
+		"do not ask for a Coroot screenshot",
+	})
+}
+
 func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {

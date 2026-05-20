@@ -136,6 +136,8 @@ SKIP_WEB_BUILD=1 SKIP_GO_BUILD=1 ./scripts/start.sh
 ./scripts/start.sh --dry-run
 ```
 
+部署和统一 env 文件说明见 `docs/deploy-aiops-v2-unified-env.zh.md`。
+
 ---
 
 ## 本地 Agent 调试与 Eval 闭环

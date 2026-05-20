@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -49,8 +50,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
 	resultPreviews := transportToolResultPreviews(turn)
+	resultPayloads := transportToolResultJSONPayloads(turn)
 	for _, item := range turn.AgentItems {
-		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews)
+		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads)
 	}
 	if turn.Lifecycle.IsTerminal() {
 		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
@@ -135,6 +137,31 @@ func transportToolResultPreviews(turn *runtimekernel.TurnSnapshot) map[string]st
 		}
 	}
 	return previews
+}
+
+func transportToolResultJSONPayloads(turn *runtimekernel.TurnSnapshot) map[string]json.RawMessage {
+	payloads := map[string]json.RawMessage{}
+	if turn == nil {
+		return payloads
+	}
+	for _, iteration := range turn.Iterations {
+		for _, result := range iteration.ToolResults {
+			toolCallID := strings.TrimSpace(result.ToolCallID)
+			content := strings.TrimSpace(result.Content)
+			if toolCallID == "" || content == "" {
+				continue
+			}
+			if _, exists := payloads[toolCallID]; exists {
+				continue
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(content), &obj); err != nil || len(obj) == 0 {
+				continue
+			}
+			payloads[toolCallID] = append(json.RawMessage(nil), []byte(content)...)
+		}
+	}
+	return payloads
 }
 
 func pruneTransportPendingApprovalsForTurn(state *AiopsTransportState, turnID string, activeIDs map[string]bool) {
@@ -259,6 +286,7 @@ func projectTurnItem(
 	turnID string,
 	item agentstate.TurnItem,
 	resultPreviews map[string]string,
+	resultPayloads map[string]json.RawMessage,
 ) AiopsTransportTurn {
 	switch item.Type {
 	case agentstate.TurnItemTypeUserMessage:
@@ -307,16 +335,25 @@ func projectTurnItem(
 	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
 		tool := decodeTransportToolPayload(item.Payload)
 		if item.Type == agentstate.TurnItemTypeToolResult {
-			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			artifactTool := tool
+			if len(artifactTool.OutputPreview) == 0 {
+				if raw := resultPayloads[strings.TrimSpace(artifactTool.ToolCallID)]; len(raw) > 0 {
+					artifactTool.OutputPreview = raw
+				}
+			}
+			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportOpsManualPreflightArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportOpsManualPreflightArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportOpsManualParamResolutionArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportOpsManualParamResolutionArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportCorootServiceMetricsArtifactFromToolPayload(turnID, item.ID, artifactTool, transportTurnUserText(turn)); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
 		}
@@ -733,6 +770,9 @@ func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool
 	if decision == "" {
 		decision = "unknown"
 	}
+	if isOpsManualNoMatchDecision(decision) {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	return AiopsTransportAgentUIArtifact{
 		ID:              "ops-manual-search:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
@@ -751,6 +791,15 @@ func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func isOpsManualNoMatchDecision(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case "no_match":
+		return true
+	default:
+		return false
+	}
 }
 
 func transportOpsManualPreflightArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
@@ -1023,6 +1072,301 @@ func opsManualParamResolutionArtifactActions(status string) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload, userQuery string) (AiopsTransportAgentUIArtifact, bool) {
+	if !isCorootServiceMetricsToolName(tool.ToolName) {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if len(tool.OutputPreview) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(tool.OutputPreview, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if strings.TrimSpace(jsonStringValueFromMap(payload, "tool")) != "coroot.service_metrics" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	series := corootChartSeriesFromMetrics(payload["metrics"])
+	chartReports := transportAnyList(payload["chartReports"])
+	if len(series) == 0 && len(chartReports) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	project := jsonStringValueFromMap(payload, "project")
+	service := jsonStringValueFromMap(payload, "service")
+	rawRef := asStringAnyMap(payload["rawRef"])
+	dataRef := jsonStringValueFromMap(rawRef, "uri")
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "ready")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	visualKind := "timeseries"
+	if len(chartReports) > 0 {
+		visualKind = "coroot_report_charts"
+	}
+	visual := map[string]any{
+		"kind": visualKind,
+	}
+	if len(series) > 0 {
+		visual["series"] = series
+	}
+	if len(chartReports) > 0 {
+		visual["reports"] = chartReports
+	}
+	card := map[string]any{
+		"uiKind": "readonly_chart",
+		"title":  firstNonEmptyString(service, "Coroot service") + " Coroot charts",
+		"visual": visual,
+	}
+	inlineData := cloneStringAnyMap(payload)
+	if defaultReportName := transportCorootPreferredReportName(chartReports, firstNonEmptyString(userQuery, tool.InputSummary)); defaultReportName != "" {
+		inlineData["defaultReportName"] = defaultReportName
+	}
+	inlineData["mcpCard"] = card
+	metadata := map[string]any{
+		"project":    project,
+		"service":    service,
+		"toolCallId": strings.TrimSpace(tool.ToolCallID),
+	}
+	if len(rawRef) > 0 {
+		metadata["rawRef"] = rawRef
+	}
+	artifactID := "coroot-chart:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "service-metrics")
+	if strings.TrimSpace(project) != "" || strings.TrimSpace(service) != "" {
+		artifactID = stableTransportID("coroot-chart", turnID, firstNonEmptyString(project, "project"), firstNonEmptyString(service, "service"))
+	}
+	return AiopsTransportAgentUIArtifact{
+		ID:              artifactID,
+		Type:            "coroot_chart",
+		Title:           "Coroot service charts",
+		TitleZh:         firstNonEmptyString(service, "服务") + " Coroot 图表",
+		Summary:         "Coroot service charts and metrics",
+		SummaryZh:       "Coroot 服务原生图表与指标趋势",
+		Status:          transportCorootArtifactStatus(status),
+		Severity:        transportCorootArtifactSeverity(corootFirstNonNil(payload["chartReports"], payload["metrics"])),
+		DataRef:         dataRef,
+		InlineData:      inlineData,
+		Metadata:        metadata,
+		Source:          "coroot",
+		PermissionScope: "read",
+		RedactionStatus: "none",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func transportTurnUserText(turn AiopsTransportTurn) string {
+	if turn.User == nil {
+		return ""
+	}
+	return strings.TrimSpace(turn.User.Text)
+}
+
+func transportCorootPreferredReportName(chartReports []any, query string) string {
+	reportNames := make([]string, 0, len(chartReports))
+	for _, report := range chartReports {
+		name := jsonStringValueFromMap(asStringAnyMap(report), "name")
+		if name != "" {
+			reportNames = append(reportNames, name)
+		}
+	}
+	if len(reportNames) == 0 {
+		return ""
+	}
+	normalizedQuery := strings.ToLower(strings.TrimSpace(query))
+	preferredTokens := []string{}
+	switch {
+	case transportContainsAny(normalizedQuery, "cpu", "处理器"):
+		preferredTokens = append(preferredTokens, "cpu")
+	case transportContainsAny(normalizedQuery, "memory", "mem", "内存", "rss"):
+		preferredTokens = append(preferredTokens, "memory")
+	case transportContainsAny(normalizedQuery, "network", "net", "tcp", "网络", "连接"):
+		preferredTokens = append(preferredTokens, "net")
+	case transportContainsAny(normalizedQuery, "logs", "log", "日志"):
+		preferredTokens = append(preferredTokens, "logs", "log")
+	case transportContainsAny(normalizedQuery, "instances", "instance", "实例", "restart", "重启", "pod", "容器"):
+		preferredTokens = append(preferredTokens, "instances", "instance")
+	}
+	for _, token := range preferredTokens {
+		if name := transportFindCorootReportByToken(reportNames, token); name != "" {
+			return name
+		}
+	}
+	if transportContainsAny(normalizedQuery, "根因", "异常", "服务", "情况", "health", "健康", "status") {
+		if name := transportFindCorootReportByToken(reportNames, "cpu"); name != "" {
+			return name
+		}
+	}
+	return reportNames[0]
+}
+
+func transportFindCorootReportByToken(reportNames []string, token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	for _, name := range reportNames {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		if normalized == token || strings.Contains(normalized, token) {
+			return name
+		}
+	}
+	return ""
+}
+
+func transportContainsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCorootServiceMetricsToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "coroot.service_metrics", "coroot_service_metrics":
+		return true
+	default:
+		return false
+	}
+}
+
+func corootChartSeriesFromMetrics(value any) []map[string]any {
+	var out []map[string]any
+	for _, item := range transportAnyList(value) {
+		metric, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		metricName := strings.ToLower(strings.TrimSpace(jsonStringValueFromMap(metric, "name")))
+		if metricName != "cpu" && metricName != "memory" {
+			continue
+		}
+		metricLabel := strings.ToUpper(metricName)
+		unit := jsonStringValueFromMap(metric, "unit")
+		for _, rawSeries := range transportAnyList(metric["series"]) {
+			seriesMap, ok := rawSeries.(map[string]any)
+			if !ok {
+				continue
+			}
+			data := corootChartDataFromValues(seriesMap["values"])
+			if len(data) == 0 {
+				continue
+			}
+			name := firstNonEmptyString(jsonStringValueFromMap(seriesMap, "name"), jsonStringValueFromMap(metric, "chartTitle"), metricLabel)
+			out = append(out, map[string]any{
+				"name": firstNonEmptyString(metricLabel+" / "+name, metricLabel),
+				"unit": unit,
+				"data": data,
+			})
+		}
+		if len(transportAnyList(metric["series"])) > 0 {
+			continue
+		}
+		data := corootChartDataFromValues(metric["values"])
+		if len(data) == 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name": firstNonEmptyString(metricLabel+" / "+jsonStringValueFromMap(metric, "chartTitle"), metricLabel),
+			"unit": unit,
+			"data": data,
+		})
+	}
+	return out
+}
+
+func corootChartDataFromValues(value any) []map[string]any {
+	var out []map[string]any
+	for _, item := range transportAnyList(value) {
+		switch point := item.(type) {
+		case []any:
+			if len(point) < 2 {
+				continue
+			}
+			timestamp, okTS := corootFloatValue(point[0])
+			metricValue, okValue := corootFloatValue(point[1])
+			if !okTS || !okValue {
+				continue
+			}
+			out = append(out, map[string]any{"timestamp": timestamp, "value": metricValue})
+		case map[string]any:
+			metricValue, okValue := corootFloatValue(point["value"])
+			if !okValue {
+				continue
+			}
+			row := map[string]any{"value": metricValue}
+			if timestamp, okTS := corootFloatValue(corootFirstNonNil(point["timestamp"], point["ts"], point["time"])); okTS {
+				row["timestamp"] = timestamp
+			}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func transportCorootArtifactStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "ok", "success", "ready":
+		return "ready"
+	case "warning", "error", "blocked", "running":
+		return strings.ToLower(strings.TrimSpace(status))
+	default:
+		return "ready"
+	}
+}
+
+func transportCorootArtifactSeverity(metrics any) string {
+	severity := "info"
+	for _, item := range transportAnyList(metrics) {
+		metric, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(jsonStringValueFromMap(metric, "status"))) {
+		case "critical", "error":
+			return "critical"
+		case "warning":
+			severity = "warning"
+		}
+	}
+	return severity
+}
+
+func corootFloatValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func corootFirstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func cloneStringAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
 }
 
 func opsManualPreflightSeverity(status string) string {
