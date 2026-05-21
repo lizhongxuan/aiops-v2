@@ -91,8 +91,10 @@ func TestOpsManualAPIRetrievePrepareAndConfirm(t *testing.T) {
 		Manual: opsmanual.OpsManual{
 			ID:               "manual-pg-backup",
 			Title:            "PostgreSQL backup",
-			WorkflowRef:      opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup"},
+			WorkflowRef:      opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup", WorkflowDigest: "sha256:test"},
 			Operation:        opsmanual.OperationProfile{TargetType: "postgresql", Action: "backup"},
+			RequiredContext:  opsmanual.RequiredContext{RequiredInputs: []string{"target_instance", "backup_path"}},
+			ParameterRules:   map[string]opsmanual.ParameterRule{"target_instance": {Required: true, Source: "user"}, "backup_path": {Required: true, Source: "user"}},
 			Validation:       []string{"backup file exists"},
 			CannotUseWhen:    []string{"目标实例未知"},
 			DocumentMarkdown: "PostgreSQL backup manual",
@@ -360,8 +362,8 @@ func TestOpsManualPreflightAPIReturnsPassed(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != opsmanual.PreflightStatusPassed || !payload.Ready || payload.NextAction != "start_dry_run" {
-		t.Fatalf("payload = %#v, want passed ready start_dry_run", payload)
+	if payload.Status != opsmanual.PreflightStatusPassed || !payload.Ready || payload.NextAction != "confirm_execution" {
+		t.Fatalf("payload = %#v, want passed ready confirm_execution", payload)
 	}
 }
 

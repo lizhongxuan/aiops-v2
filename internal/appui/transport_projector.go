@@ -378,6 +378,7 @@ func projectTurnItem(
 			DisplayKind:   displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
 			Status:        mapItemStatusToTransportProcessStatus(item.Status),
 			Text:          toolText,
+			Source:        strings.TrimSpace(tool.ToolName),
 			InputSummary:  tool.InputSummary,
 			OutputPreview: sanitizeOutputPreview(outputPreview),
 			RawRef:        tool.RawRef,
@@ -1027,13 +1028,13 @@ func upsertTransportAgentUIArtifact(items []AiopsTransportAgentUIArtifact, artif
 func opsManualPreflightSummaryZh(status string) string {
 	switch strings.TrimSpace(status) {
 	case "passed":
-		return "预检已通过，可以进入 Dry Run。"
+		return "预检已通过，可以确认或审批后执行。"
 	case "blocked":
 		return "预检被阻断，需要补充参数、权限或环境适配。"
 	case "failed":
 		return "预检失败，不能执行绑定工作流。"
 	case "not_applicable":
-		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+		return "该手册没有预检探针，需要人工确认或审批后执行。"
 	default:
 		return "已完成运维手册预检。"
 	}
@@ -1602,7 +1603,14 @@ func opsManualPreflightArtifactActions(status string, nextAction string) []map[s
 	nextAction = strings.TrimSpace(nextAction)
 	switch strings.TrimSpace(status) {
 	case "passed", "not_applicable":
-		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+		switch nextAction {
+		case "request_approval":
+			return []map[string]any{{"id": "request_approval", "label": "发起审批", "kind": "confirm"}}
+		case "execute_workflow":
+			return []map[string]any{{"id": "execute_workflow", "label": "执行 Workflow", "kind": "confirm"}}
+		default:
+			return []map[string]any{{"id": "confirm_execution", "label": "确认执行", "kind": "confirm"}}
+		}
 	case "blocked":
 		if nextAction == "request_permission" {
 			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
@@ -1653,7 +1661,7 @@ func opsManualSearchArtifactActions(decision string) []map[string]any {
 	case "direct_execute":
 		return []map[string]any{
 			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
-			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+			{"id": "run_preflight", "label": "运行预检", "kind": "panel"},
 		}
 	case "adapt":
 		return []map[string]any{

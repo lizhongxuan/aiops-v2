@@ -204,17 +204,37 @@ test.describe("Runner Studio", () => {
     await page.route("**/api/runner-studio/workflows/*/publish", (route) =>
       route.fulfill({ json: { name: "runner-blank", status: "published", published_graph_hash: "graph-hash-e2e" } }),
     );
-    await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) =>
+    await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) => route.abort());
+    await page.route("**/api/v1/ops-manuals/candidates/generate-from-workflow", (route) =>
       route.fulfill({
         json: {
-          id: "candidate-runner-blank",
-          review_status: "pending",
-          proposed_manual: {
-            id: "manual-runner-blank-draft",
-            title: "runner-blank 运维手册候选",
-            status: "draft",
-            workflow_ref: { workflow_id: "runner-blank" },
+          candidate: {
+            id: "candidate-runner-blank",
+            source_type: "workflow_reverse_generated",
+            review_status: "pending",
+            proposed_manual: {
+              id: "manual-runner-blank-draft",
+              title: "runner-blank 运维手册候选",
+              status: "draft",
+              workflow_ref: { workflow_id: "runner-blank", workflow_digest: "sha256:abc" },
+              operation: { target_type: "runner_workflow", action: "review_required", risk_level: "medium" },
+              document_markdown: "# runner-blank 运维手册候选\n\n## 适用范围\n- runner-blank",
+            },
+            structured_validation_report: {
+              status: "warning",
+              warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+              blocking: [],
+              passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+            },
+            user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
           },
+          validation_report: {
+            status: "warning",
+            warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+            blocking: [],
+            passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+          },
+          user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
         },
       }),
     );
@@ -287,26 +307,68 @@ test.describe("Runner Studio", () => {
     await expect(modal).toContainText("runner-blank");
     await expect(modal).toContainText("draft");
     await expect(modal).toContainText("只绑定 1 个 Runner Workflow");
-    await expect(modal).toContainText("后续仍需在运维手册页审核");
-    await expect(modal).toContainText("只读预览");
-    await expect(modal).toContainText("/settings/ops-manuals");
+    await expect(modal).toContainText("生成会读取 Runner Workflow YAML");
+    await expect(modal).toContainText("手册预览");
     await expect(page).toHaveURL(/\/runner\/runner-blank$/);
 
     const prepareRequest = page.waitForRequest((req) =>
-      req.url().includes("/api/v1/ops-manuals/candidates/prepare") && req.method() === "POST",
+      req.url().includes("/api/v1/ops-manuals/candidates/generate-from-workflow") && req.method() === "POST",
     );
     await page.getByTestId("runner-ops-manual-prepare").click();
     const request = await prepareRequest;
     expect(request.postDataJSON()).toMatchObject({
       workflow_id: "runner-blank",
-      workflow_name: "runner-blank",
-      draft_manual: {
-        title: "runner-blank 运维手册候选",
-        workflow_ref: { workflow_id: "runner-blank" },
-      },
+      options: { include_recent_run_records: true, use_llm_summary: false },
     });
-    await expect(modal).toContainText("已准备候选");
+    await expect(modal).toContainText("已生成候选");
+    await expect(modal).toContainText("系统识别到 runner-blank Workflow");
+    await expect(modal).toContainText("缺少近期成功闭环记录");
+    await expect(modal).toContainText("查看候选");
     await expect(page).toHaveURL(/\/runner\/runner-blank$/);
+
+    await page.route(/\/api\/v1\/ops-manuals(\?.*)?$/, (route) =>
+      route.fulfill({ json: { items: [] } }),
+    );
+    await page.route(/\/api\/v1\/ops-manuals\/candidates(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: "candidate-runner-blank",
+              source_type: "workflow_reverse_generated",
+              review_status: "pending",
+              proposed_manual: {
+                id: "manual-runner-blank-draft",
+                title: "runner-blank 运维手册候选",
+                status: "draft",
+                workflow_ref: { workflow_id: "runner-blank", workflow_digest: "sha256:abc" },
+                operation: { target_type: "runner_workflow", action: "review_required", risk_level: "medium" },
+                document_markdown: "# runner-blank 运维手册候选\n\n## 适用范围\n- runner-blank",
+              },
+              structured_validation_report: {
+                status: "warning",
+                warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+                blocking: [],
+                passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+              },
+              user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(/\/api\/v1\/ops-manuals\/run-records(\?.*)?$/, (route) =>
+      route.fulfill({ json: { items: [] } }),
+    );
+
+    await modal.getByRole("link", { name: "查看候选" }).click();
+    await expect(page).toHaveURL(/\/settings\/ops-manuals\?candidate=candidate-runner-blank$/);
+    await page.getByRole("tab", { name: "待审核手册" }).click();
+    await expect(page.getByText("由 Workflow 反向生成")).toBeVisible();
+    await expect(page.getByText("Workflow ID：runner-blank")).toBeVisible();
+    await expect(page.getByText("sha256:abc")).toBeVisible();
+    await expect(page.getByText("系统识别到 runner-blank Workflow")).toBeVisible();
+    await expect(page.getByText("缺少近期成功闭环记录").first()).toBeVisible();
   });
 
   test("surfaces Workflow type, HostProfileSnapshot, HostLease and ops manual binding context", async ({ page }) => {
@@ -355,7 +417,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-workflow-context")).toHaveCount(0);
   });
 
-  test("creates a blank workflow, drags nodes, configures I/O, validates, and dry-runs", async ({ page }) => {
+  test("creates a blank workflow, drags nodes, configures I/O, validates, and runs publish precheck", async ({ page }) => {
     await page.goto("/runner");
     await page.getByTestId("runner-open-manager").click();
     await page.getByTestId("workflow-create-blank").click();
@@ -416,6 +478,9 @@ test.describe("Runner Studio", () => {
 
     await clickToolbar(page, "validate");
     await expect(page.getByTestId("runner-studio-topbar")).toContainText("validated");
+    await page.getByTestId("runner-toolbar-more").click();
+    await expect(page.getByTestId("runner-toolbar-dry-run")).toContainText("发布前检查");
+    await expect(page.getByRole("menuitem", { name: "Dry Run" })).toHaveCount(0);
 
     const dryRunRequest = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/workflows/graph/dry-run") && req.method() === "POST",
@@ -539,7 +604,7 @@ test.describe("Runner Studio", () => {
     await page.getByTestId("runner-toolbar-more").click();
     await expect(page.getByTestId("runner-toolbar-more-menu")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-validate")).toBeVisible();
-    await expect(page.getByTestId("runner-toolbar-dry-run")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-dry-run")).toContainText("发布前检查");
     await expect(page.getByTestId("runner-toolbar-variables")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-publish")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-ai-generate")).toBeVisible();
@@ -997,7 +1062,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("canvas-node-ai-invalid")).toHaveCount(0);
   });
 
-  test("publish review requires graph hash, dry run hash, and publish note", async ({ page }) => {
+  test("publish review requires graph hash, publish precheck hash, and publish note", async ({ page }) => {
     await page.goto("/runner");
     await page.getByTestId("runner-open-manager").click();
     await page.getByTestId("workflow-create-blank").click();
@@ -1009,7 +1074,7 @@ test.describe("Runner Studio", () => {
 
     await clickToolbar(page, "validate");
     await clickToolbar(page, "publish");
-    await expect(page.getByText("Dry Run 未通过或已过期")).toBeVisible();
+    await expect(page.getByText("发布前检查未通过或已过期")).toBeVisible();
     await expect(page.getByTestId("publish-confirm")).toBeDisabled();
     await page.getByRole("button", { name: "取消" }).click();
 

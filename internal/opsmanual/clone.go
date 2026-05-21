@@ -186,7 +186,34 @@ func cloneCandidate(in ManualCandidate) ManualCandidate {
 	out := in
 	out.SourceRefs = cloneStrings(in.SourceRefs)
 	out.ValidationReport = cloneStrings(in.ValidationReport)
+	out.StructuredValidationReport = cloneManualCandidateValidation(in.StructuredValidationReport)
+	out.UserSummary = cloneManualGenerationUserSummary(in.UserSummary)
 	out.ProposedManual = cloneManual(in.ProposedManual)
+	return out
+}
+
+func cloneManualCandidateValidation(in ManualCandidateValidation) ManualCandidateValidation {
+	out := in
+	out.Passed = cloneValidationIssues(in.Passed)
+	out.Warnings = cloneValidationIssues(in.Warnings)
+	out.Blocking = cloneValidationIssues(in.Blocking)
+	return out
+}
+
+func cloneValidationIssues(in []ValidationIssue) []ValidationIssue {
+	if in == nil {
+		return nil
+	}
+	out := make([]ValidationIssue, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneManualGenerationUserSummary(in ManualGenerationUserSummary) ManualGenerationUserSummary {
+	out := in
+	out.Understood = cloneStrings(in.Understood)
+	out.Missing = cloneStrings(in.Missing)
+	out.NextSteps = cloneStrings(in.NextSteps)
 	return out
 }
 

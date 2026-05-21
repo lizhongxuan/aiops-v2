@@ -263,9 +263,24 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"run_ops_manual_preflight",
 		"pass the operation_frame",
 		"extracted parameters",
-		"preflight passed",
-		"Dry Run",
+		"After preflight passes",
+		"user confirmation or approval",
+		"do not add a runtime Dry Run step",
 	})
+}
+
+func TestDeveloperRulesDirectExecuteUsesPreflightThenConfirmation(t *testing.T) {
+	lines := developerAIOpsInvestigationLines(CompileContext{})
+	text := strings.Join(lines, "\n")
+	if !strings.Contains(text, "direct_execute means preflight-ready") {
+		t.Fatalf("missing direct_execute preflight-ready rule:\n%s", text)
+	}
+	if !strings.Contains(text, "After preflight passes, wait for explicit user confirmation or approval before Workflow execution") {
+		t.Fatalf("missing confirmation after preflight rule:\n%s", text)
+	}
+	if strings.Contains(text, "proceed to Dry Run only after preflight passed") {
+		t.Fatalf("runtime prompt still requires Dry Run:\n%s", text)
+	}
 }
 
 func TestSemanticPromptRiskBoundariesUseBlastRadius(t *testing.T) {

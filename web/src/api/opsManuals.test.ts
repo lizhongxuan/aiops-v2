@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createOpsManualsApi,
   normalizeOpsManual,
+  normalizeOpsManualCandidateValidation,
+  normalizeOpsManualGenerationResult,
+  normalizeOpsManualGenerationUserSummary,
   normalizeOpsManualMatch,
   normalizeOpsManualParamResolutionResult,
   normalizeOpsManualPreflightResult,
@@ -37,6 +40,7 @@ describe("ops manuals API", () => {
     await api.resolveOpsManualParams({ manual_id: "manual-redis-memory", request_text: "排查 Redis" });
     await api.runOpsManualPreflight({ manual_id: "manual-redis-memory", parameters: { target_instance: "redis-01" } });
     await api.prepareCandidate({ workflow_id: "wf/redis 1" });
+    await api.generateFromWorkflow({ workflow_id: "wf/redis 1", options: { include_recent_run_records: true } });
     await api.confirmCandidate("candidate/redis 1", { reviewer: "sre", review_decision: "approved" });
     await api.listRunRecords("manual/redis 1", { limit: 10 });
 
@@ -58,11 +62,99 @@ describe("ops manuals API", () => {
       { method: "POST", path: "/api/v1/ops-manuals/candidates/prepare", body: { workflow_id: "wf/redis 1" } },
       {
         method: "POST",
+        path: "/api/v1/ops-manuals/candidates/generate-from-workflow",
+        body: { workflow_id: "wf/redis 1", options: { include_recent_run_records: true } },
+      },
+      {
+        method: "POST",
         path: "/api/v1/ops-manuals/candidates/candidate%2Fredis%201/confirm",
         body: { reviewer: "sre", review_decision: "approved" },
       },
       { method: "GET", path: "/api/v1/ops-manuals/manual%2Fredis%201/run-records?limit=10" },
     ]);
+  });
+
+  it("normalizes workflow generation results from snake_case responses", () => {
+    const result = normalizeOpsManualGenerationResult({
+      candidate: {
+        id: "candidate-pg-restore",
+        source_type: "workflow_reverse_generated",
+        proposed_manual: {
+          id: "manual-candidate-pg-restore",
+          title: "pg restore",
+          workflow_ref: { workflow_id: "pg-restore", workflow_digest: "sha256:abc" },
+        },
+        structured_validation_report: {
+          status: "warning",
+          warnings: [{ code: "missing_recent_successful_run", field: "run_records", message: "缺少成功记录" }],
+        },
+        user_summary: {
+          understood: ["识别 PostgreSQL restore"],
+          missing: ["缺少成功记录"],
+          next_steps: ["先完成预检计划检查或一次成功闭环"],
+        },
+      },
+      validation_report: {
+        status: "warning",
+        passed: [{ code: "workflow_ref_present", field: "workflow_ref.workflow_id", message: "已绑定" }],
+        warnings: [{ code: "missing_recent_successful_run", field: "run_records", message: "缺少成功记录" }],
+      },
+      user_summary: {
+        understood: ["识别 PostgreSQL restore"],
+        missing: ["缺少成功记录"],
+        next_steps: ["先完成预检计划检查或一次成功闭环"],
+      },
+    });
+
+    expect(result).toMatchObject({
+      candidate: {
+        id: "candidate-pg-restore",
+        sourceType: "workflow_reverse_generated",
+        proposedManual: { workflowRef: { workflowId: "pg-restore", workflowDigest: "sha256:abc" } },
+        structuredValidationReport: { status: "warning", warnings: [{ code: "missing_recent_successful_run" }] },
+        userSummary: { nextSteps: ["先完成预检计划检查或一次成功闭环"] },
+      },
+      validationReport: {
+        status: "warning",
+        passed: [{ code: "workflow_ref_present" }],
+        warnings: [{ field: "run_records" }],
+        blocking: [],
+      },
+      userSummary: { understood: ["识别 PostgreSQL restore"], missing: ["缺少成功记录"], nextSteps: ["先完成预检计划检查或一次成功闭环"] },
+    });
+    expect(result.candidate.raw).toHaveProperty("structured_validation_report");
+  });
+
+  it("normalizes workflow generation results from camelCase responses and keeps empty arrays stable", () => {
+    const result = normalizeOpsManualGenerationResult({
+      candidate: {
+        id: "candidate-kubelet",
+        sourceType: "workflow_reverse_generated",
+        proposedManual: { id: "manual-candidate-kubelet", title: "kubelet repair" },
+        structuredValidationReport: { status: "passed" },
+        userSummary: { understood: ["识别 kubelet repair"], nextSteps: ["审核发布"] },
+      },
+      validationReport: { status: "passed" },
+      userSummary: { understood: ["识别 kubelet repair"], nextSteps: ["审核发布"] },
+    });
+
+    expect(result.validationReport).toMatchObject({ status: "passed", passed: [], warnings: [], blocking: [] });
+    expect(result.userSummary).toMatchObject({ understood: ["识别 kubelet repair"], missing: [], nextSteps: ["审核发布"] });
+    expect(result.candidate.structuredValidationReport).toMatchObject({ status: "passed", passed: [], warnings: [], blocking: [] });
+  });
+
+  it("normalizes validation and user summary fragments independently", () => {
+    expect(normalizeOpsManualCandidateValidation({ blocking: [{ code: "missing_action", message: "缺少动作" }] })).toMatchObject({
+      status: "unknown",
+      passed: [],
+      warnings: [],
+      blocking: [{ code: "missing_action", message: "缺少动作" }],
+    });
+    expect(normalizeOpsManualGenerationUserSummary({ next_steps: ["补 x_ops_manual"] })).toMatchObject({
+      understood: [],
+      missing: [],
+      nextSteps: ["补 x_ops_manual"],
+    });
   });
 
   it("normalizes snake_case and camelCase manual fields into camelCase views", () => {
@@ -190,7 +282,17 @@ describe("ops manuals API", () => {
       evidence: [{ name: "ssh_access", status: "passed", value: true }],
       missing_permissions: [],
       environment_diffs: [],
-      next_action: "start_dry_run",
+      workflow_digest: "sha256:workflow-pg-backup",
+      execution_plan: {
+        summary: "将对 pg-1 执行 2 个步骤",
+        workflow_status: "published",
+        target_hosts: ["pg-1"],
+        actions_used: ["builtin.tcp_ping", "script.shell"],
+        requires_approval: true,
+        risk_level: "high",
+        warnings: [{ code: "plan_warning", message: "需要审批" }],
+      },
+      next_action: "confirm_execution",
       checked_at: "2026-05-15T09:30:00Z",
       artifact_type: "ops_manual_preflight_result",
     });
@@ -200,11 +302,20 @@ describe("ops manuals API", () => {
       ready: true,
       manualId: "manual-pg-backup",
       workflowId: "workflow-pg-backup",
+      workflowDigest: "sha256:workflow-pg-backup",
       probeId: "pg-backup-readonly",
-      nextAction: "start_dry_run",
+      nextAction: "confirm_execution",
       artifactType: "ops_manual_preflight_result",
     });
     expect(result.evidence[0]).toMatchObject({ name: "ssh_access", status: "passed", value: true });
+    expect(result.executionPlan).toMatchObject({
+      summary: "将对 pg-1 执行 2 个步骤",
+      targetHosts: ["pg-1"],
+      actionsUsed: ["builtin.tcp_ping", "script.shell"],
+      requiresApproval: true,
+      riskLevel: "high",
+    });
+    expect(result.executionPlan.warnings[0]).toMatchObject({ code: "plan_warning", message: "需要审批" });
   });
 
   it("normalizes parameter resolution results for dynamic Agent-to-UI forms", () => {

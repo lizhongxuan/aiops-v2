@@ -68,6 +68,25 @@ export type OpsManualPreflightEvidence = {
   raw: LooseRecord;
 };
 
+export type OpsManualPreflightPlanWarning = {
+  code: string;
+  field: string;
+  message: string;
+  suggestion: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualPreflightExecutionPlan = {
+  summary: string;
+  workflowStatus: string;
+  targetHosts: string[];
+  actionsUsed: string[];
+  requiresApproval: boolean;
+  riskLevel: string;
+  warnings: OpsManualPreflightPlanWarning[];
+  raw: LooseRecord;
+};
+
 export type OpsManualPreflightRequest = {
   manual_id: string;
   workflow_id?: string;
@@ -83,10 +102,12 @@ export type OpsManualPreflightResult = {
   reason: string;
   manualId: string;
   workflowId: string;
+  workflowDigest: string;
   probeId: string;
   evidence: OpsManualPreflightEvidence[];
   missingPermissions: string[];
   environmentDiffs: string[];
+  executionPlan: OpsManualPreflightExecutionPlan;
   nextAction: string;
   checkedAt: string;
   artifactType: string;
@@ -249,11 +270,52 @@ export type OpsManualCandidateView = {
   sourceRefs: string[];
   proposedManual: OpsManualView;
   validationReport: string[];
+  structuredValidationReport: OpsManualCandidateValidationView;
+  userSummary: OpsManualGenerationUserSummaryView;
   reviewStatus: string;
   reviewer: string;
   reviewNote: string;
   createdAt: string;
   updatedAt: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualValidationIssueView = {
+  code: string;
+  field: string;
+  message: string;
+  evidence: string;
+  raw: LooseRecord;
+};
+
+export type OpsManualCandidateValidationView = {
+  status: string;
+  passed: OpsManualValidationIssueView[];
+  warnings: OpsManualValidationIssueView[];
+  blocking: OpsManualValidationIssueView[];
+  raw: LooseRecord;
+};
+
+export type OpsManualGenerationUserSummaryView = {
+  understood: string[];
+  missing: string[];
+  nextSteps: string[];
+  raw: LooseRecord;
+};
+
+export type OpsManualGenerateFromWorkflowRequest = {
+  workflow_id: string;
+  workflow_version?: string;
+  options?: {
+    include_recent_run_records?: boolean;
+    use_llm_summary?: boolean;
+  };
+};
+
+export type OpsManualGenerationResultView = {
+  candidate: OpsManualCandidateView;
+  validationReport: OpsManualCandidateValidationView;
+  userSummary: OpsManualGenerationUserSummaryView;
   raw: LooseRecord;
 };
 
@@ -416,6 +478,12 @@ function unwrapManual(input: unknown): LooseRecord {
   return isRecord(wrapped) ? wrapped : input;
 }
 
+function unwrapCandidate(input: unknown): LooseRecord {
+  if (!isRecord(input)) return {};
+  const wrapped = pick(input, "candidate", "manualCandidate", "manual_candidate", "item");
+  return isRecord(wrapped) ? wrapped : input;
+}
+
 export function normalizeWorkflowRef(input: unknown): WorkflowRefView {
   const source = isRecord(input) ? input : {};
   const workflowId = text(pick(source, "workflowId", "workflow_id", "id"));
@@ -502,6 +570,31 @@ export function normalizeOpsManualPreflightEvidence(input: unknown): OpsManualPr
   };
 }
 
+export function normalizeOpsManualPreflightPlanWarning(input: unknown): OpsManualPreflightPlanWarning {
+  const source = isRecord(input) ? input : {};
+  return {
+    code: text(pick(source, "code")),
+    field: text(pick(source, "field")),
+    message: text(pick(source, "message")),
+    suggestion: text(pick(source, "suggestion")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualPreflightExecutionPlan(input: unknown): OpsManualPreflightExecutionPlan {
+  const source = isRecord(input) ? input : {};
+  return {
+    summary: text(pick(source, "summary")),
+    workflowStatus: text(pick(source, "workflowStatus", "workflow_status")),
+    targetHosts: stringArray(pick(source, "targetHosts", "target_hosts")),
+    actionsUsed: stringArray(pick(source, "actionsUsed", "actions_used")),
+    requiresApproval: bool(pick(source, "requiresApproval", "requires_approval"), false),
+    riskLevel: text(pick(source, "riskLevel", "risk_level")),
+    warnings: asArray(pick(source, "warnings")).map(normalizeOpsManualPreflightPlanWarning),
+    raw: source,
+  };
+}
+
 export function normalizeOpsManualPreflightResult(input: unknown): OpsManualPreflightResult {
   const source = isRecord(input) ? input : {};
   return {
@@ -510,10 +603,12 @@ export function normalizeOpsManualPreflightResult(input: unknown): OpsManualPref
     reason: text(pick(source, "reason")),
     manualId: text(pick(source, "manualId", "manual_id")),
     workflowId: text(pick(source, "workflowId", "workflow_id")),
+    workflowDigest: text(pick(source, "workflowDigest", "workflow_digest")),
     probeId: text(pick(source, "probeId", "probe_id")),
     evidence: asArray(pick(source, "evidence")).map(normalizeOpsManualPreflightEvidence),
     missingPermissions: stringArray(pick(source, "missingPermissions", "missing_permissions")),
     environmentDiffs: stringArray(pick(source, "environmentDiffs", "environment_diffs")),
+    executionPlan: normalizeOpsManualPreflightExecutionPlan(pick(source, "executionPlan", "execution_plan")),
     nextAction: text(pick(source, "nextAction", "next_action")),
     checkedAt: text(pick(source, "checkedAt", "checked_at")),
     artifactType: text(pick(source, "artifactType", "artifact_type")),
@@ -691,8 +786,40 @@ export function normalizeOpsManualSearchResult(input: unknown): SearchOpsManuals
   };
 }
 
-export function normalizeOpsManualCandidate(input: unknown): OpsManualCandidateView {
+export function normalizeOpsManualValidationIssue(input: unknown): OpsManualValidationIssueView {
   const source = isRecord(input) ? input : {};
+  return {
+    code: text(pick(source, "code")),
+    field: text(pick(source, "field")),
+    message: text(pick(source, "message")),
+    evidence: text(pick(source, "evidence")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualCandidateValidation(input: unknown): OpsManualCandidateValidationView {
+  const source = isRecord(input) ? input : {};
+  return {
+    status: text(pick(source, "status"), "unknown"),
+    passed: asArray(pick(source, "passed")).map(normalizeOpsManualValidationIssue),
+    warnings: asArray(pick(source, "warnings")).map(normalizeOpsManualValidationIssue),
+    blocking: asArray(pick(source, "blocking")).map(normalizeOpsManualValidationIssue),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualGenerationUserSummary(input: unknown): OpsManualGenerationUserSummaryView {
+  const source = isRecord(input) ? input : {};
+  return {
+    understood: stringArray(pick(source, "understood")),
+    missing: stringArray(pick(source, "missing")),
+    nextSteps: stringArray(pick(source, "nextSteps", "next_steps")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualCandidate(input: unknown): OpsManualCandidateView {
+  const source = unwrapCandidate(input);
   const id = text(pick(source, "id", "candidateId", "candidate_id"), "unknown-candidate");
   return {
     id,
@@ -700,11 +827,26 @@ export function normalizeOpsManualCandidate(input: unknown): OpsManualCandidateV
     sourceRefs: stringArray(pick(source, "sourceRefs", "source_refs")),
     proposedManual: normalizeOpsManual(pick(source, "proposedManual", "proposed_manual", "manual")),
     validationReport: stringArray(pick(source, "validationReport", "validation_report")),
+    structuredValidationReport: normalizeOpsManualCandidateValidation(pick(source, "structuredValidationReport", "structured_validation_report")),
+    userSummary: normalizeOpsManualGenerationUserSummary(pick(source, "userSummary", "user_summary")),
     reviewStatus: text(pick(source, "reviewStatus", "review_status"), "pending"),
     reviewer: text(pick(source, "reviewer")),
     reviewNote: text(pick(source, "reviewNote", "review_note")),
     createdAt: text(pick(source, "createdAt", "created_at")),
     updatedAt: text(pick(source, "updatedAt", "updated_at")),
+    raw: source,
+  };
+}
+
+export function normalizeOpsManualGenerationResult(input: unknown): OpsManualGenerationResultView {
+  const source = isRecord(input) ? input : {};
+  const candidate = normalizeOpsManualCandidate(pick(source, "candidate"));
+  const validationSource = pick(source, "validationReport", "validation_report") || candidate.structuredValidationReport.raw;
+  const summarySource = pick(source, "userSummary", "user_summary") || candidate.userSummary.raw;
+  return {
+    candidate,
+    validationReport: normalizeOpsManualCandidateValidation(validationSource),
+    userSummary: normalizeOpsManualGenerationUserSummary(summarySource),
     raw: source,
   };
 }
@@ -840,6 +982,11 @@ export function createOpsManualsApi(client: OpsManualsHttpClient = httpClient) {
     async prepareCandidate(payload: Record<string, unknown>) {
       const response = await client.post("/api/v1/ops-manuals/candidates/prepare", payload);
       return normalizeOpsManualCandidate(response);
+    },
+
+    async generateFromWorkflow(payload: OpsManualGenerateFromWorkflowRequest) {
+      const response = await client.post("/api/v1/ops-manuals/candidates/generate-from-workflow", payload);
+      return normalizeOpsManualGenerationResult(response);
     },
 
     async confirmCandidate(id: string, payload: Record<string, unknown>) {

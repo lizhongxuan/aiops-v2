@@ -31,6 +31,8 @@ const SUPPORTED_CONFIRMATION_ACTIONS = new Set([
   "generate_ops_manual_candidate",
   "generate_runner_workflow_candidate",
   "start_runner_workflow_dry_run",
+  "confirm_runner_workflow_execution",
+  "request_runner_workflow_approval",
 ]);
 
 type ContextFormField = {
@@ -637,6 +639,8 @@ function confirmationTitle(action: string) {
   if (action === "generate_ops_manual_candidate") return "生成运维手册候选";
   if (action === "generate_runner_workflow_candidate") return "生成工作流候选";
   if (action === "start_runner_workflow_dry_run") return "进入 Dry Run";
+  if (action === "confirm_runner_workflow_execution") return "确认执行";
+  if (action === "request_runner_workflow_approval") return "发起审批";
   return "确认下一步";
 }
 
@@ -653,6 +657,20 @@ function confirmationCopy(action: string, sourceTitle: string) {
       description: `将基于「${sourceTitle}」进入 Runner Workflow Dry Run，只生成执行计划和校验结果，不会执行真实变更。`,
       confirmLabel: "确认进入 Dry Run",
       message: `确认进入 Dry Run：${sourceTitle}`,
+    };
+  }
+  if (action === "confirm_runner_workflow_execution") {
+    return {
+      description: `将基于「${sourceTitle}」确认执行绑定 Workflow。执行前仍会遵循当前风险策略和审批结果。`,
+      confirmLabel: "确认执行",
+      message: `确认执行 Workflow：${sourceTitle}`,
+    };
+  }
+  if (action === "request_runner_workflow_approval") {
+    return {
+      description: `将基于「${sourceTitle}」发起人工审批。审批通过后才允许执行绑定 Workflow。`,
+      confirmLabel: "发起审批",
+      message: `发起 Workflow 审批：${sourceTitle}`,
     };
   }
   return {

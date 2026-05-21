@@ -139,7 +139,7 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 		payload.Instructions = []string{
 			"Do not execute the workflow directly.",
 			"Say the manual is matched and the next step is Workflow preflight; do not say it will execute now.",
-			"Run run_ops_manual_preflight before Dry Run or mutation.",
+			"Run run_ops_manual_preflight before any confirmation, approval, workflow execution, or mutation.",
 			"Keep the assistant text short and do not repeat the Agent-to-UI card details.",
 		}
 	case core.DecisionAdapt:

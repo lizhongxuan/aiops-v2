@@ -260,7 +260,7 @@ export function OpsManualMatchArtifact({
 
       {state === "direct" || state === "direct_execute" ? (
         <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-600">
-          下一步：先运行预检，通过并确认后再进入 Dry Run。
+          下一步：先运行预检，通过后确认或审批执行。
         </div>
       ) : null}
 
@@ -2628,7 +2628,7 @@ function searchStage(decision: string) {
 
 function searchNextStep(decision: string, recommendedNextAction: string) {
   if (decision === "direct_execute")
-    return "下一步：AI 会先运行只读预检；通过并确认后再 Dry Run。";
+    return "下一步：AI 会先运行只读预检；通过后确认或审批执行。";
   if (decision === "adapt")
     return "下一步：AI 会生成适配 Workflow 草稿，并先做只读预检。";
   if (decision === "reference_only")
@@ -2722,7 +2722,7 @@ function referenceManualText(manualTitle: string, operationFrame?: LooseRecord) 
 function preflightManualText(manualTitle: string, operationFrame?: LooseRecord) {
   const operation = operationFrameLabel(operationFrame);
   const operationText = operation ? `当前请求：${operation}；` : "";
-  return `使用运维手册「${manualTitle}」运行只读预检。${operationText}只做预检探针，通过后再等待用户确认 Dry Run。`;
+  return `使用运维手册「${manualTitle}」运行只读预检。${operationText}只做预检探针，通过后再等待用户确认或审批执行。`;
 }
 
 function opsManualActionMetadata(
@@ -3010,7 +3010,10 @@ function normalizePreflightStatus(value: string) {
 
 function preflightNextActionLabel(action: string) {
   if (action === "run_preflight_probe") return "运行预检";
-  if (action === "start_dry_run") return "进入 Dry Run";
+  if (action === "confirm_execution") return "确认执行";
+  if (action === "request_approval") return "发起审批";
+  if (action === "execute_workflow") return "执行 Workflow";
+  if (action === "start_dry_run") return "历史发布前检查";
   if (action === "collect_required_context") return "补充 Workflow 参数";
   if (action === "request_permission") return "申请权限";
   if (action === "generate_workflow_variant") return "生成适配工作流";
@@ -3023,11 +3026,31 @@ function preflightActions(
   nextAction: string,
 ): PreflightAction[] {
   if (status === "passed" || status === "not_applicable") {
+    if (nextAction === "request_approval") {
+      return [
+        {
+          id: "request-approval",
+          label: "发起审批",
+          confirmationAction: "request_runner_workflow_approval",
+          primary: true,
+        },
+      ];
+    }
+    if (nextAction === "execute_workflow") {
+      return [
+        {
+          id: "execute-workflow",
+          label: "执行 Workflow",
+          confirmationAction: "confirm_runner_workflow_execution",
+          primary: true,
+        },
+      ];
+    }
     return [
       {
-        id: "start-dry-run",
-        label: "进入 Dry Run",
-        confirmationAction: "start_runner_workflow_dry_run",
+        id: "confirm-execution",
+        label: "确认执行",
+        confirmationAction: "confirm_runner_workflow_execution",
         primary: true,
       },
     ];

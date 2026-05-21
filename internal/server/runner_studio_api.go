@@ -81,6 +81,8 @@ func runnerStudioTargetPath(method, path string) (string, error) {
 		return "/api/v1/workflows/graph/dry-run", nil
 	case method == http.MethodPost && trimmed == "runs":
 		return "/api/v1/workflows/graph/runs", nil
+	case method == http.MethodGet && trimmed == "runs":
+		return "/api/v1/runs", nil
 	case method == http.MethodPost && trimmed == "workflows/graph/variables/resolve":
 		return "/api/v1/workflows/graph/variables/resolve", nil
 	case len(parts) == 3 && parts[0] == "workflows" && parts[2] == "graph" && (method == http.MethodGet || method == http.MethodPut):

@@ -8,10 +8,12 @@ import (
 )
 
 type Service struct {
-	repo           ManualRepository
-	discovery      ResourceDiscovery
-	sessionContext SessionOpsContextStore
-	hintProvider   HintProvider
+	repo                   ManualRepository
+	discovery              ResourceDiscovery
+	sessionContext         SessionOpsContextStore
+	hintProvider           HintProvider
+	workflowDigestResolver WorkflowDigestResolver
+	workflowPlanChecker    WorkflowPlanChecker
 }
 
 type PrepareManualCandidateRequest struct {
@@ -28,6 +30,16 @@ type ConfirmManualCandidateRequest struct {
 
 type ServiceOption func(*Service)
 
+type WorkflowDigestResolver interface {
+	ResolveWorkflowDigest(context.Context, string) (string, error)
+}
+
+type WorkflowDigestResolverFunc func(context.Context, string) (string, error)
+
+func (f WorkflowDigestResolverFunc) ResolveWorkflowDigest(ctx context.Context, workflowID string) (string, error) {
+	return f(ctx, workflowID)
+}
+
 func WithResourceDiscovery(discovery ResourceDiscovery) ServiceOption {
 	return func(s *Service) {
 		s.discovery = discovery
@@ -43,6 +55,18 @@ func WithSessionOpsContextStore(store SessionOpsContextStore) ServiceOption {
 func WithHintProvider(provider HintProvider) ServiceOption {
 	return func(s *Service) {
 		s.hintProvider = provider
+	}
+}
+
+func WithWorkflowDigestResolver(resolver WorkflowDigestResolver) ServiceOption {
+	return func(s *Service) {
+		s.workflowDigestResolver = resolver
+	}
+}
+
+func WithWorkflowPlanChecker(checker WorkflowPlanChecker) ServiceOption {
+	return func(s *Service) {
+		s.workflowPlanChecker = checker
 	}
 }
 
@@ -245,6 +269,32 @@ func (s *Service) PrepareManualCandidate(req PrepareManualCandidateRequest) (Man
 	return cloneCandidate(candidate), nil
 }
 
+func (s *Service) GenerateManualCandidateFromWorkflow(ctx context.Context, req WorkflowManualGenerationRequest) (WorkflowManualGenerationResult, error) {
+	repo, ok := s.repo.(CandidateRepository)
+	if !ok {
+		return WorkflowManualGenerationResult{}, fmt.Errorf("candidate repository is not configured")
+	}
+	result, err := GenerateWorkflowManualCandidate(ctx, req, nil)
+	if err != nil {
+		return WorkflowManualGenerationResult{}, err
+	}
+	candidate := result.Candidate
+	if candidate.StructuredValidationReport.Status == "blocked" {
+		candidate.ReviewStatus = "needs_fix"
+	} else {
+		candidate.ReviewStatus = "pending"
+	}
+	if err := repo.SaveCandidate(candidate); err != nil {
+		return WorkflowManualGenerationResult{}, err
+	}
+	saved := cloneCandidate(candidate)
+	return WorkflowManualGenerationResult{
+		Candidate:        saved,
+		ValidationReport: saved.StructuredValidationReport,
+		UserSummary:      saved.UserSummary,
+	}, nil
+}
+
 func (s *Service) ConfirmManualCandidate(id string, req ConfirmManualCandidateRequest) (OpsManual, error) {
 	repo, ok := s.repo.(CandidateRepository)
 	if !ok {
@@ -270,6 +320,15 @@ func (s *Service) ConfirmManualCandidate(id string, req ConfirmManualCandidateRe
 	if manual.CreatedAt == "" {
 		manual.CreatedAt = now
 	}
+	if s.workflowDigestResolver != nil {
+		currentDigest, err := s.workflowDigestResolver.ResolveWorkflowDigest(context.Background(), manual.WorkflowRef.WorkflowID)
+		if err != nil {
+			return OpsManual{}, err
+		}
+		if strings.TrimSpace(currentDigest) != "" && strings.TrimSpace(currentDigest) != strings.TrimSpace(manual.WorkflowRef.WorkflowDigest) {
+			return OpsManual{}, fmt.Errorf("workflow digest mismatch")
+		}
+	}
 	if err := s.repo.SaveManual(manual); err != nil {
 		return OpsManual{}, err
 	}
@@ -283,8 +342,25 @@ func validateManualForVerification(manual OpsManual) error {
 	if strings.TrimSpace(manual.WorkflowRef.WorkflowID) == "" {
 		return fmt.Errorf("verified ops manual requires exactly one workflow binding")
 	}
+	if strings.TrimSpace(manual.WorkflowRef.WorkflowDigest) == "" {
+		return fmt.Errorf("verified ops manual requires workflow digest")
+	}
 	if strings.TrimSpace(manual.Operation.TargetType) == "" || strings.TrimSpace(manual.Operation.Action) == "" {
 		return fmt.Errorf("verified ops manual requires target type and action")
+	}
+	for _, input := range nonEmptyStrings(manual.RequiredContext.RequiredInputs) {
+		if _, ok := manual.ParameterRules[input]; !ok {
+			return fmt.Errorf("verified ops manual requires parameter rule for required input %q", input)
+		}
+	}
+	for name, rule := range manual.ParameterRules {
+		if isSensitiveParameterKey(name) && !isEmptyValue(rule.DefaultValue) {
+			return fmt.Errorf("verified ops manual rejects sensitive default value for %q", name)
+		}
+	}
+	if riskLevelRank(manual.Operation.RiskLevel) >= riskLevelRank("high") &&
+		len(nonEmptyStrings(manual.RiskPolicy.ApprovalRequiredWhen)) == 0 {
+		return fmt.Errorf("verified high-risk ops manual requires approval policy")
 	}
 	if len(nonEmptyStrings(manual.Validation)) == 0 {
 		return fmt.Errorf("verified ops manual requires validation steps")

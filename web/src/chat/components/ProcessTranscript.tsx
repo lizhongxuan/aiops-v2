@@ -393,7 +393,11 @@ function MergedToolSummary({
 }) {
   const text = getMergedGroupSummaryText(group);
   const details = group.blocks.map(mergedBlockDetail).filter((detail) => detail.text);
-  const [open, setOpen] = useState(group.mergedKind === "command" || group.blocks.some(isBlockActive));
+  const toolLike = group.blocks.some((block) => {
+    const kind = groupingKindForBlock(block);
+    return kind === "tool" || kind === "mcp";
+  });
+  const [open, setOpen] = useState(group.mergedKind === "command" || toolLike || group.blocks.some(isBlockActive));
   if (!details.length) {
     return (
       <div className={cn("flex min-w-0 items-center gap-1.5 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}>
@@ -632,7 +636,7 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
   } else if (block.kind === "file") {
     text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
   } else {
-    text = stripHtml(block.text || "") || block.command || block.inputSummary || block.displayKind || "";
+    text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.command || block.inputSummary || block.displayKind || "";
   }
   return {
     id: block.id,
@@ -834,7 +838,7 @@ function toolSummaryText(block: AiopsProcessBlock): string {
     return isRunning ? `正在处理 ${cleaned}` : cleaned;
   }
   if (block.kind === "tool" || block.kind === "mcp") {
-    const text = stripHtml(block.text || "") || block.displayKind || "";
+    const text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.displayKind || "";
     const cleaned = cleanToolText(text) || "工具调用";
     return isRunning ? `正在调用 ${cleaned}` : cleaned;
   }
@@ -1133,6 +1137,27 @@ function cleanToolText(value: string) {
     return "";
   }
   return text;
+}
+
+function toolInvocationLabel(block: AiopsProcessBlock) {
+  if (block.kind !== "tool" && block.kind !== "mcp") return "";
+  const name = cleanToolText(stripHtml(block.source || "").trim());
+  const input = cleanToolInputSummary(block.inputSummary);
+  if (!name || /^(tool|mcp)$/i.test(name)) {
+    return input;
+  }
+  if (!input || input.toLowerCase() === name.toLowerCase()) {
+    return name;
+  }
+  return `${name} ${input}`;
+}
+
+function cleanToolInputSummary(value?: string) {
+  const text = stripHtml(value || "").replace(/\s+/g, " ").trim();
+  if (!text || /^(tool|mcp)$/i.test(text)) {
+    return "";
+  }
+  return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;
 }
 
 function unwrapProviderPayload(value: string) {

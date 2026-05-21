@@ -178,7 +178,7 @@ func developerAIOpsInvestigationLines(ctx CompileContext) []string {
 		"Coroot service_metrics returns chartReports that become Agent-to-UI coroot_chart artifacts rendered directly in the chat UI; Coroot chart summaries may support root-cause conclusions as evidence, but do not output UI layout or placement instructions; when chartReports are present, say the chart card is attached or visible, do not tell the user the chat cannot render Coroot-style charts, and do not ask for a Coroot screenshot.",
 		"Do not ask the user whether Coroot evidence exists; only ask for information the system cannot inspect, such as the missing target service, instance, symptom, or time window.",
 		"For direct_execute from search_ops_manuals, direct_execute means preflight-ready, not permission to execute Workflow or mutate; call run_ops_manual_preflight first, pass the operation_frame returned by search_ops_manuals, and include extracted parameters such as target_instance, namespace, pod_name, backup_path, or evidence flags.",
-		"For direct_execute, proceed to Dry Run only after preflight passed and the user confirms.",
+		"After preflight passes, wait for explicit user confirmation or approval before Workflow execution; do not add a runtime Dry Run step.",
 		"Do not inline full session facts into the prompt.",
 		"Do not inline full Letta hints into the prompt.",
 		"Do not inline full operations manual content into the prompt.",

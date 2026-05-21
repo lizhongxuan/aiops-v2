@@ -1431,6 +1431,58 @@ describe("groupConsecutiveBlocks", () => {
   });
 });
 
+describe("MergedToolSummary", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("shows merged tool call details by default", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({ id: "tool-coroot-apps", kind: "tool", text: "coroot.applications" }),
+            makeBlock({
+              id: "tool-coroot-health",
+              kind: "tool",
+              text: "Summary: warning services",
+              source: "coroot_list_services",
+              inputSummary: '{"status":"warning"}',
+            }),
+            makeBlock({ id: "tool-coroot-rca", kind: "tool", text: "coroot.rca" }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    const header = container.querySelector('[data-testid="aiops-process-header"]');
+    expect(header).toBeTruthy();
+    await act(async () => {
+      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("已调用 3 个工具");
+    expect(container.querySelector('[data-testid="aiops-merged-tool-details"]')).toBeTruthy();
+    expect(container.textContent).toContain("coroot.applications");
+    expect(container.textContent).toContain('coroot_list_services {"status":"warning"}');
+    expect(container.textContent).toContain("coroot.rca");
+  });
+});
+
 describe("getMergedSummaryText", () => {
   it("returns file summary with count", () => {
     expect(getMergedSummaryText("file", 6)).toBe("已探索 6 个文件");

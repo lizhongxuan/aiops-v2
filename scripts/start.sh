@@ -23,6 +23,10 @@ Environment overrides:
   AIOPS_SERVER_BIN=.data/bin/ai-server
   AIOPS_ENV_FILE=.data/aiops.env
                                unified KEY=VALUE file loaded without overriding explicit env vars
+  AIOPS_DEBUG_MODEL_INPUT_TRACE=1
+                               write Prompt Trace files for each LLM request, default 1
+  AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=.data/model-input-traces
+                               Prompt Trace output directory
   AIOPS_STORE_DRIVER=postgres  persisted backend store, default postgres for this script
   AIOPS_POSTGRES_DSN=postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable
                                PostgreSQL DSN used when AIOPS_STORE_DRIVER=postgres
@@ -512,6 +516,8 @@ export AIOPS_DATA_DIR="${AIOPS_DATA_DIR:-.data}"
 export AIOPS_HTTP_ADDR="${AIOPS_HTTP_ADDR:-:18080}"
 export AIOPS_GRPC_ADDR="${AIOPS_GRPC_ADDR:-:18090}"
 export AIOPS_WEB_DIST_DIR="${AIOPS_WEB_DIST_DIR:-web/dist}"
+export AIOPS_DEBUG_MODEL_INPUT_TRACE="${AIOPS_DEBUG_MODEL_INPUT_TRACE:-1}"
+export AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR="${AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR:-.data/model-input-traces}"
 export AIOPS_STORE_DRIVER="${AIOPS_STORE_DRIVER:-postgres}"
 case "$(lower "$AIOPS_STORE_DRIVER")" in
   postgres|postgresql)
@@ -544,6 +550,8 @@ AIOPS_GRPC_ADDR=$AIOPS_GRPC_ADDR
 AIOPS_GRPC_AUTO_PORT=$AIOPS_GRPC_AUTO_PORT
 AIOPS_DATA_DIR=$AIOPS_DATA_DIR
 AIOPS_WEB_DIST_DIR=$AIOPS_WEB_DIST_DIR
+AIOPS_DEBUG_MODEL_INPUT_TRACE=$AIOPS_DEBUG_MODEL_INPUT_TRACE
+AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=$AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR
 AIOPS_SERVER_BIN=$AIOPS_SERVER_BIN
 AIOPS_STORE_DRIVER=$AIOPS_STORE_DRIVER
 SKIP_WEB_BUILD=$SKIP_WEB_BUILD

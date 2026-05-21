@@ -396,7 +396,7 @@ func TestAssistantTransportRendersOpsManualPreflightToolArtifact(t *testing.T) {
 		Ready:      true,
 		ManualID:   "manual-pg-backup",
 		WorkflowID: "workflow-pg-backup",
-		NextAction: "start_dry_run",
+		NextAction: "confirm_execution",
 	})
 	artifact, ok := assistantTransportOpsManualPreflightArtifactFromToolResult("turn-preflight", "tool-result-preflight", runtimekernel.ToolResult{
 		ToolCallID: "call-preflight",
@@ -413,8 +413,8 @@ func TestAssistantTransportRendersOpsManualPreflightToolArtifact(t *testing.T) {
 	if artifact.Type != "ops_manual_preflight_result" || artifact.Status != "passed" || artifact.Severity != "success" {
 		t.Fatalf("artifact = %#v, want passed preflight artifact", artifact)
 	}
-	if len(artifact.Actions) != 1 || artifact.Actions[0]["id"] != "start_dry_run" {
-		t.Fatalf("actions = %#v, want start_dry_run", artifact.Actions)
+	if len(artifact.Actions) != 1 || artifact.Actions[0]["id"] != "confirm_execution" {
+		t.Fatalf("actions = %#v, want confirm_execution", artifact.Actions)
 	}
 }
 

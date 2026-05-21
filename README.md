@@ -1,64 +1,186 @@
-# AIOps Codex V2 — Eino Agent 后端
+# AIOps Codex V2
 
-基于 [Eino Agent Framework](https://github.com/cloudwego/eino)（含 ADK）重写的 AIOps Codex AI Server 后端。
+`aiops-v2` 是一个面向生产运维场景的 AI 运维工作台。它不是单纯的聊天后端，而是把 AI Chat、受治理工具调用、审批、Runner Workflow、运维手册、Run Record、Prompt Trace、Eval 回归和 React 前端页面收敛在同一个仓库里。
 
-前端页面仍在 `aiops-codex/` 目录，本项目只包含后端 AI Server。前后端通过 HTTP/WebSocket/gRPC API 通信，所有端点路径、方法和 JSON 结构保持向后兼容。
+核心目标：让 AI 能在明确边界内完成“理解问题 -> 调用只读证据 -> 匹配或生成运维手册 -> 预检 -> 确认/审批 -> 执行 -> 验证 -> 沉淀经验”的闭环，同时保证高风险动作不能被模型正文或前端状态绕过。
+
+## 功能介绍
+
+### AI Chat 与运行时
+
+- 基于 Eino Agent / ADK 组装模型调用、tool call、checkpoint、approval 和 resume。
+- `runtimekernel` 是唯一 turn 运行时内核；所有 host/workspace 运行都必须进入同一条 `RunTurn` / `ResumeTurn` 主链。
+- React Chat v2 使用 Codex 式 `Interleaved Transcript Blocks`：正文、命令、搜索、文件操作、MCP 工具、审批和最终回答按真实到达顺序交错展示。
+- 单机会话默认是可执行运维模式，不是只读闲聊；非只读或高风险动作必须经 Policy / Permission / Approval。
+
+### Runner Workflow
+
+- `pkg/runner` 提供独立 Runner module，支持 YAML workflow、graph workflow、builtin probes、shell/script/http action、run state、run record、workflow store 和 Runner Studio。
+- `web/src/pages/RunnerStudioPage.tsx` 提供可视化编排、节点配置、graph validate、发布前检查、publish review 和运行状态查看。
+- Runner Workflow 是生产操作的执行载体；Runbook 只做规划和提案，不直接执行工具。
+
+### 运维手册与闭环资产
+
+AIOps 的核心资产是“运维手册 + Runner Workflow + Run Record”：
+
+- 运维手册说明适用对象、操作类型、环境、参数、前置检查、验证方式、风险、不能使用条件和降级处理。
+- Runner Workflow 承载经过验证的步骤、参数定义、预检、执行和验证节点；发布或变更 Workflow 时必须通过发布前检查。
+- Run Record 记录真实执行环境、参数摘要、预检、审批、执行结果和验证结果，用于判断工作流是否可靠。
+- AI Chat 通过 `search_ops_manuals` 做结构化检索，不能只靠语义相似度决定是否执行。
+- Runner Studio 可以从真实 Workflow 反向生成 `workflow_reverse_generated` 运维手册候选，候选必须进入审核页，不能自动发布。
+
+### Web 产品面
+
+`web/` 是当前 React 产品前端，不再依赖旧项目目录。主要页面包括：
+
+- AI 对话：单机运维 Chat、工具过程、审批、Agent-to-UI artifact。
+- Runner Workflow：Workflow 库、可视化编排、运行、发布前检查、发布审核。
+- 运维手册：verified 手册库、候选审核、run record、workflow 只读预览。
+- Prompt Trace：查看本地模型输入 trace、prompt 分层、messages、tools、diff 和 raw。
+- LLM 配置、主机与租约、MCP 服务、Coroot 观测、Agent UI、Incident 工作台、OpsGraph 等运维辅助页面。
+
+### 调试、观测与 Eval
+
+- `modeltrace` 负责本地模型输入 trace 和 prompt fingerprint。
+- `observability` 可接 OpenTelemetry / Phoenix，本地看 agent turn、model call、tool call。
+- `cmd/agent-eval` 跑 mock/server eval case；`cmd/prompt-diagnose` 对失败 report 做归因。
+- `scripts/prompt-regression.sh` 串起 eval、baseline 对比和诊断输出。
 
 ## 架构概览
 
-```
-cmd/ai-server/main.go          # 启动入口，组装所有组件
+```text
+cmd/ai-server/main.go          # 启动入口，组装 ai-server、web/dist、API 和 runtime
+cmd/host-agent/                # host agent 入口
+cmd/agent-eval/                # Agent eval runner
+cmd/prompt-diagnose/           # Prompt / tool / policy 诊断工具
+web/                           # React 前端产品面
+pkg/runner/                    # Runner Workflow 独立 module
 internal/
-├── runtimekernel/              # RuntimeKernel — 唯一的 turn 运行时内核
-├── tooling/                    # 统一 Tool 抽象与 tool assembly 真源
-├── commands/                   # Prompt/slash/local command registry
-├── skills/                     # Skill catalog（通过 command surface 暴露）
-├── agents/                     # Agent definition registry
-├── mcp/                        # MCP server registry
-├── integrations/               # 内建 integrations（direct registration）
-├── plugins/                    # Plugin spec/loader/registrar 装配层
-├── promptcompiler/             # PromptCompiler — 四层结构化 Prompt 编译
-├── policyengine/               # PolicyEngine — 显式策略硬约束
-├── projection/                 # Projection — 生命周期事件投影
-├── modelrouter/                # ModelRouter — LLM Provider 路由与 Fallback
-├── agentmgr/                   # AgentManager — Multi-Agent 编排（ADK）
-├── spanstream/                 # SpanTree + MultiplexedStream 多路复用流
-├── modeltrace/                 # 本地模型输入 trace 文件与 prompt fingerprint
-├── observability/              # OpenTelemetry observer（本地 Phoenix trace UI）
-├── eval/                       # 本地 agent eval case / runner / scorer
-├── opsmanual/                  # 运维手册 + Runner Workflow 引用 + Run Record 可靠性记录
-├── server/                     # HTTP/WebSocket/gRPC API 兼容层
-├── store/                      # 数据持久化（内存 + JSON 异步写盘）
-├── settings/                   # settings precedence / governance 聚合
-├── hooks/                      # tool / turn lifecycle hooks
-├── permissions/                # tool 执行权限治理
-└── integration/                # 集成测试
+├── runtimekernel/             # 唯一 turn 运行时内核
+├── tooling/                   # Tool 抽象、registry、assembly 真源
+├── promptcompiler/            # 四层结构化 prompt 编译
+├── policyengine/              # 显式策略硬约束
+├── permissions/               # tool 执行权限治理
+├── appui/                     # Web/API view-model 与业务服务层
+├── server/                    # HTTP/WebSocket/gRPC transport 层
+├── opsmanual/                 # 运维手册、检索、候选、workflow 反向生成、run record
+├── runnerembed/               # ai-server 内嵌/桥接 Runner Studio
+├── modelrouter/               # LLM provider 路由与 fallback
+├── modeltrace/                # 本地模型输入 trace
+├── observability/             # OpenTelemetry / Phoenix trace
+├── eval/                      # eval case / runner / scorer
+├── mcp/                       # MCP server registry
+├── skills/                    # Skill catalog
+├── agents/                    # Agent definition registry
+├── hooks/                     # tool / turn lifecycle hooks
+├── settings/                  # settings precedence / governance
+└── store/                     # 内存、JSON、PostgreSQL 持久化
 ```
 
-## 当前注册模型（2026-04）
+## 固定规则要求
 
-- `Tool` 是唯一模型可调用对象；`PromptCompiler`、`RuntimeKernel`、`AgentFactory` 共享同一份 `AssembledTools`。
-- `skills` 不直接进入 tool pool，而是先进入 `SkillRegistry`，再通过 `CommandRegistry.ListSkillLikePromptCommands()` 暴露给 `SkillTool`。
-- `AgentDefinition`、`MCPServerConfig`、`settings / hooks / permissions` 都不是 tool；它们分别进入独立 registry 或治理层。
-- 旧 `capability` 兼容层已经删除；主运行链只认 `tooling.Tool`、`tooling.Registry`、`mcp.Registry`、`commands/skills/agents/...` 各自独立 registry。
+这些规则是项目级硬约束。新增功能、修 bug、改 UI 或接新集成时，先满足这里，再看后面的详细 guardrails。
 
-## AIOps 运维资产（2026-05）
+### 运行链路规则
 
-AIOps 的核心积累是“运维手册 + Runner Workflow + Run Record”：
+- 只有 `runtimekernel` 能驱动 turn 生命周期；不得新增第二套 turn loop、workspace runtime path、tool execution 旁路。
+- 模型要执行动作时必须走 `model -> tool_use checkpoint -> ToolDispatcher -> policy/permission/approval -> tool_result checkpoint -> next iteration`。
+- `NeedApproval`、`NeedEvidence`、blocked、resume 都必须有显式 checkpoint / pending state；不能只靠前端文案或局部变量表达。
+- trim、compaction、spill、tool result summary 只能走统一 context pipeline。
 
-- 运维手册说明工作流解决什么问题、适用于什么环境、参数如何填写、怎么验证、什么时候不能用。
-- Runner Workflow 负责经过验证的脚本步骤、参数定义、前置检查和验证步骤。
-- Run Record 记录每次执行后的真实环境、参数摘要、审批、Dry Run、执行结果和验证结果，用于判断工作流是否可靠。
+### Tool / Skill / MCP 注册规则
 
-AI Chat 不能用纯语义命中率决定是否执行。它必须先抽取 Operation Frame，再按目标对象、操作类型、平台、执行面、权限、参数和验证证据判断：可直接执行、需补充信息、需适配工作流变体，或只能参考手册逐步人工审核。
+- `Tool` 是唯一模型可调用对象；内置 tool、编排 tool、MCP dynamic tool 必须汇入同一套 tool registry / assembly 语义。
+- `SkillDefinition`、`AgentDefinition`、`MCPServerConfig`、settings、hooks、permissions 不是 tool，不能塞进 tool pool。
+- `PromptCompiler`、`RuntimeKernel`、Agent 组装必须共享同一份 `AssembledTools`。
+- dynamic MCP tool 只能通过 `mcp.Registry.OnServerConnected(...)` 进入运行时，并以 `IsMCP + MCPInfo` 表达来源。
+- 不允许新增 “仅 prompt 可见但 runtime 不可执行” 的私有工具旁路。
 
-运维手册运行开关：
+### Skills / MCP 可插拔封装规则
+
+新增功能或外部系统接入时，默认按 `docs/2026-05-21-aiops-v2-skills-mcp-pluggable-integration-design.zh.md` 的封装边界生成，不允许把具体厂商、产品、资源类型或 UI artifact 直接写死到 core。
+
+- 外部系统的可调用能力优先封装为 MCP server，通过 MCP runtime `list_tools/list_resources/call_tool` 进入 `mcp.Registry -> tooling.Assembler`。
+- 领域使用方式、模型行为边界、证据解释、失败处理和 provider-specific prompt 必须放进 Skill 或 plugin prompt assets；不能写进全局 `developer_rules.go` 的硬编码分支。
+- 多能力组合必须用 plugin bundle 表达，plugin manifest 负责声明 skills、MCP servers、Runner actions、OpsManual capability packs、Agent-to-UI renderers、settings 和 governance。
+- Core 只能认识抽象：`tool`、`skill`、`MCP server`、`resource`、`action spec`、`capability pack`、`artifact renderer`、policy、approval、audit；不能认识 Coroot、Prometheus、Kubernetes、Redis、PostgreSQL 等具体实现。
+- 观测、CMDB、云厂商、数据库、中间件、K8s、主机探针等新集成不能新增 `registerBuiltinIntegrations` 风格硬注册；如需默认启用，做成 built-in plugin。
+- OpsManual 的资源发现、taxonomy、参数解析 hint、preflight probe 必须来自 capability pack registry；不能继续在 `operation_frame.go`、`resource_discovery.go` 或 analyzer 里加 provider-specific keyword map。
+- Runner 新 action 必须通过 `runner_actions` plugin manifest 和 action registry 暴露；不能直接扩写 `DefaultActionSpecs()` 或默认 module registry 作为唯一入口。
+- Agent-to-UI 新 artifact 必须带 `renderer` / `schemaVersion`，由 renderer registry 查找；前端不能按 tool name、MCP server id 或 artifact type 前缀猜 provider。
+- Agent profile 默认 skills/MCP 绑定必须从 bootstrap profile manifest、plugin manifests 和用户配置合并；不能在 appui service 里写死具体 skill/MCP catalog。
+- 需要 LLM 的领域生成、摘要或润色能力必须接入 `ModelRouter` 或 skill/provider 注入；不能在领域代码里直接读取 provider env 并调用 SDK。
+- 插件只能贡献能力和 metadata，不能绕过 `ToolDispatcher`、Policy、Permission、Approval、ActionToken、audit、checkpoint 或 AssistantTransport 主链。
+
+### Web / React Chat 规则
+
+- React Chat 生产状态只能来自 `AiopsTransportState` / AssistantTransport；旧 `process[] + final`、legacy WebSocket reducer、页面私有 polling 不能重新成为主路径。
+- 所有 assistant 可见输出必须进入同一条有序时间线：正文、命令、搜索、文件、MCP、审批、artifact、最终回答按事件顺序渲染。
+- 前端不能从 assistant final Markdown/text 解析结构化 UI、执行状态、审批状态或 workflow 状态。
+- 页面和组件不能直接散写业务 `fetch(...)`；必须经专用 API client、`appui` view-model 或明确的域 API。
+- 单机会话审批入口只能是底部 composer approval；同一个 approval id 页面上只能出现一个决策入口。
+
+### 运维手册与 Runner Workflow 规则
+
+- AI Chat 必须先抽取 Operation Frame，再按目标对象、操作类型、平台、执行面、权限、参数和验证证据判断是否可执行。
+- `search_ops_manuals` 的结果只能给出 `direct_execute`、`need_info`、`adapt`、`reference_only`、`no_match` 等受控决策；不能用“命中率高”直接执行。
+- verified 运维手册引用 Runner Workflow 时必须携带 `workflow_digest`；真实执行前必须校验 digest，避免工作流漂移。
+- Workflow 反向生成手册时，结构化字段由规则生成：`operation`、`workflow_ref`、`parameter_rules`、`risk_policy`、`validation_report` 不允许由 LLM 决定。
+- LLM 只能润色 `document_markdown` 和 `user_summary`；输出必须经过敏感信息过滤，不能泄露 API key、secret ref、Authorization header 或原始脚本全文。
+- 候选手册只能进入 `draft` / `pending_review` / `needs_fix`，不能自动发布为 `verified`。
+
+### 安全与高风险动作规则
+
+- 非只读生产动作必须有明确风险、证据、审批和验证路径。
+- 高风险动作只能经 tool / policy / approval path 展示和执行，不能由模型正文伪造“已执行”。
+- 敏感参数、secret ref、API key、Authorization header 不能进入日志、README、fixture、LLM 输出或候选正文。
+- Prompt 不能替代硬策略；真正的 allow / deny / ask 必须进 `PolicyEngine` / `PermissionEngine`。
+
+### 测试与验收规则
+
+- deterministic 单测不能访问网络，不能依赖真实 LLM。
+- 真实 LLM 测试必须通过环境变量显式开启，并且不能打印 API key。
+- 涉及前端页面效果的改动必须跑 Playwright；涉及运维手册/Workflow 的改动必须覆盖真实 fixture、检索闭环和审核页。
+- 影响 prompt、tool lifecycle、source precedence、workflow execution、approval 或 Chat transport 的改动，必须同步更新 README 或设计文档。
+
+## 典型场景需求：Redis 内存异常排查到手册沉淀
+
+### 用户需求
+
+SRE 在 AI Chat 中输入：
+
+```text
+Redis used_memory_rss 持续升高，业务 p95 也升高。请先只读排查，确认风险后再决定是否进入修复流程。
+```
+
+系统需要完成的闭环：
+
+1. Chat 抽取 Operation Frame：目标对象为 `redis`，操作为 `rca_or_repair`，执行面可能是 `ssh` / `docker` / `kubernetes`。
+2. AI 优先调用只读证据工具，例如 Coroot 指标、容器状态、Redis INFO、慢查询、事件记录。
+3. 调用 `search_ops_manuals` 检索 verified 运维手册。
+4. 如果目标实例、执行入口或关键指标不足，返回 `need_info`，但不自动伪造固定底部表单；继续通过受控参数解析或普通 Chat 补齐。
+5. 如果命中 Redis 手册且 required inputs 完整，先运行只读 preflight；preflight 通过后必须等待用户确认或人工审批。
+6. 预检、审批、真实执行和验证结果必须写入 Run Record。
+7. 如果本次处理形成稳定闭环，但还没有手册，可以从成功闭环沉淀候选；如果已有 Runner Workflow，可以从 Workflow 反向生成运维手册候选。
+8. 候选进入运维手册审核页，审核人看到系统理解、缺口检查、workflow digest、风险策略、发布影响；审核通过后变为 verified，并参与后续 `search_ops_manuals` 检索。
+
+### 验收标准
+
+- 页面不能显示“已执行”除非后端 runtime 确实完成对应 tool / workflow。
+- Chat 中不能出现不匹配对象的可执行手册，例如 MySQL 备份不能暴露 PostgreSQL Workflow 的执行入口。
+- 高风险修复不能跳过 preflight、审批和验证；发布或变更 Workflow 时不能跳过发布前计划检查。
+- 生成的手册正文不能包含 secret ref、token、Authorization header 或原始 shell 脚本全文。
+- 发布后的手册在同对象同操作下能被检索命中；跨对象场景只能 reference 或 no_match。
+
+## 运行开关与本地存储
+
+运维手册相关开关：
 
 - `AIOPS_OPS_MANUAL_AUTO_RETRIEVAL=1`：兼容开关，允许 AI Chat 在模型没有显式调用 `search_ops_manuals` 时补插只读检索卡片；默认关闭，推荐让 LLM 根据工具契约自行决定是否调用运维手册检索。
 - `AIOPS_WORKFLOW_REFERENCE_GUARD_MODE=warn`：当 Runner Workflow 被 verified 运维手册引用时，编辑/导入/回滚从 hard block 降级为 warning；真实执行仍必须通过 `workflow_digest` 校验。
-- 检索默认使用结构化规则和持久化 Run Record 排序，不依赖向量数据库；生产可用 `AIOPS_STORE_DRIVER=postgres` + `AIOPS_POSTGRES_DSN` 使用 Gorm/PostgreSQL 持久化。
+- `AIOPS_STORE_DRIVER=postgres` + `AIOPS_POSTGRES_DSN`：使用 PostgreSQL/Gorm 持久化；默认可使用本地内存/JSON 存储。
 
-本地 PostgreSQL 启动示例：
+本地 PostgreSQL 示例：
 
 ```bash
 docker run -d --name aiops-postgres \
@@ -73,58 +195,28 @@ export AIOPS_POSTGRES_DSN='postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=
 ./scripts/start.sh
 ```
 
-## React Chat v2 终态规则（2026-05）
-
-React Chat 的终态生产规则固定为 Codex 式 `Interleaved Transcript Blocks`。本次改造是从旧版本 `process[] + final + metadata.unstable_state` 一步迁到 React v2，不保留过渡规则，不保留 v1/v2 双生产路径。
-
-assistant-ui 只负责 transport、runtime 和 UI primitives；AIOps 自己的 runtime、tool registry、skills、MCP、agent registry、policy、approval、artifact 语义仍由 AIOps 后端和 appui 管理。不要把 tool / skills / MCP / agent registry 搬进 assistant-ui，也不要用 assistant-ui 的通用 tool bubble 替代 AIOps 的过程时间线。
-
-生产链路固定为：
-
-```text
-TurnItem / runtime event
--> AiopsTransportState(v2).turns[turnId].blockOrder + blocksById
--> AssistantTransport data stream state ops
--> React Chat 按 blockOrder 原序渲染
-```
-
-所有 assistant 可见输出都必须进入同一条有序时间线：正文、命令、搜索、文件操作、MCP 工具、审批、变更摘要引用和最终回答按真实事件到达顺序交错展示。前端不得再把内容分成“AI 正文区、工具区、最终答案区”；后端不得从 assistant final Markdown/text 解析过程 UI。
-
-固定交互规则：
-
-- 单个命令或工具在 `queued/running` 时自动展开，并实时追加 stdout/stderr 或工具输出。
-- 单个命令或工具 `completed` 后自动折叠成一行灰色摘要。
-- 单个命令或工具 `failed/blocked/rejected` 后保持展开，直接暴露错误、审批或阻断原因。
-- 连续成功的短工具动作只在原时间线位置聚合成低噪音摘要，例如 `已探索 14 个文件,1 次搜索,2 个列表`；聚合不得跨越正文、审批或失败工具。
-- 最终回答是普通 `TextBlock`，不是特殊 `final.text` 区域。
-- `正在思考` 是时间线末尾的轻量状态 block，不和正在展开的工具同时竞争主视觉。
-
-终态实现边界：
-
-- Assistant message metadata 使用稳定自定义命名空间 `metadata.custom.aiops`，不使用 `metadata.unstable_state` 承载生产 transcript。
-- 长命令 stdout/stderr、长 tool output、多工具并发必须通过 `blocksById` 路径的 `append-text` 追加，不靠整 turn `set` 刷新。
-- `/api/v1/assistant/transport` 不能长期依赖固定高频轮询；终态必须使用事件驱动订阅，或至少使用动态 backoff 并在有输出时立即恢复短间隔。
-- `mcpSurfaces` / `artifacts` 使用 AIOps typed schema 表达 Agent-to-UI 卡片、artifact preview、iframe/app surface、command binding 和 lifecycle state；transcript block 只引用这些对象，不内联大体积产物。
-- Approval 的 UI 文案、transport decision 和 runtime decision 必须通过一套映射收敛，避免 `accept/reject/approved/denied/rejected` 多套表达扩散。
-
-设计和实施文档：
-
-- `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-design.md`
-- `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-todo.md`
-
 ## 快速开始
+
+推荐启动方式：
 
 ```bash
 cd aiops-v2
-./scripts/start.sh              # 推荐：构建 web/dist + ai-server，并由 ai-server 托管前端
+./scripts/start.sh              # 构建 web/dist + ai-server，并由 ai-server 托管前端
 ```
 
-如果只想手动执行各步骤：
+手动执行：
 
 ```bash
-go test ./...                   # 运行全部测试
-go build ./cmd/ai-server        # 编译
-AIOPS_DATA_DIR=.data ./ai-server # 启动（需配置 LLM Provider）
+go test ./...                   # 根模块测试
+go build ./cmd/ai-server        # 编译 ai-server
+AIOPS_DATA_DIR=.data ./ai-server # 启动，需配置 LLM Provider
+```
+
+Runner 子模块测试：
+
+```bash
+cd pkg/runner
+go test ./...
 ```
 
 常用启动覆盖：
@@ -676,7 +768,8 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
    - 它们不能创建新的 capability 类别，也不能偷偷拼出第二套 tool pool
 
 7. plugin / extension 只是装配层，不是 runtime 核心接口。
-   - 可分发的组件面是 `commands / skills / agents / hooks / mcp / lsp / output styles / settings`
+   - 可分发的基础组件面是 `commands / skills / agents / hooks / mcp / lsp / output styles / settings`
+   - AIOps 领域扩展面是 `opsmanual_capability_packs / runner_actions / agent_ui_renderers / agent_profiles / settings_schemas / permission_defaults`
    - `RuntimeKernel`、`PromptCompiler`、`AgentFactory` 不应直接感知 plugin/extension
 
 8. 旧兼容层已经删除，不允许重建。
@@ -730,10 +823,44 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 **新增 Plugin / Extension 能力**
 
 - 只允许贡献到已有 registry surface：`commands / skills / agents / hooks / mcp / lsp / output styles / settings`
-- builtin integration 只允许通过 `cmd/ai-server/registerBuiltinIntegrations(...)` 直连目标 registry
+- AIOps 领域能力只能贡献到已定义扩展面：`opsmanual_capability_packs / runner_actions / agent_ui_renderers / agent_profiles / settings_schemas / permission_defaults`
+- 新集成不允许新增 `cmd/ai-server/registerBuiltinIntegrations(...)` 风格硬注册；需要随产品默认启用时，做成 built-in plugin，由 plugin manifest 写入目标 registry
 - plugin 只允许通过 `plugins.ManifestLoader + Registrar`
 - 不允许让 plugin/extension 反向控制 `RuntimeKernel`、`PromptCompiler`、`AgentFactory`
 - 不允许因为 plugin 需要而新增第二套注册模型或运行时接口
+
+**新增外部系统 / Provider 集成**
+
+- 先判断它贡献的是哪类能力：可调用远端能力走 MCP server，模型行为和领域规则走 Skill，资源发现/参数解析/preflight 走 OpsManual capability pack，执行节点走 Runner action，前端展示走 Agent-to-UI renderer，配置走 settings schema
+- provider-specific tool description、使用顺序、证据解释和失败处理必须随 Skill 或 plugin prompt assets 分发，不能写进全局 promptcompiler 规则
+- core 代码不能用 provider 名称、tool name 前缀、MCP server id、artifact type 前缀来选择行为；必须通过 manifest metadata、registry lookup、schemaVersion 或 traits 表达
+- 任何新 provider 的 secrets、API key、endpoint、project id 只能走 settings/governance/secret ref，不能进入 README、fixture、prompt、artifact payload 或 Run Record 明文
+- 如果一个 provider 需要默认随产品安装，只能落为 `plugins/builtin/<provider>`，不能让 AI Server 主启动流程直接 import 并注册 provider 包
+
+**新增 OpsManual Capability Pack**
+
+- resource discovery、taxonomy aliases、middleware aliases、parameter hints、preflight probes 都必须通过 capability pack registry 汇总
+- `internal/opsmanual` core 只保留 OperationFrame、检索决策、preflight 状态机、审批和执行边界
+- 禁止继续在 `resource_discovery.go`、`operation_frame.go`、`workflow_manual_analyzer.go` 中追加 provider-specific keyword map 或命令探针
+- 禁用某个 capability pack 后，core 不能继续调用它对应的本地命令或远端 API
+
+**新增 Runner Action**
+
+- action spec、input/output schema、risk、approval、UI category/icon 必须来自 `runner_actions` registry
+- native module adapter 或 MCP action adapter 可以由 plugin 提供，但 workflow engine、run state、approval、secret handling 仍留在 Runner core
+- 禁止把新增 action 只写进 `DefaultActionSpecs()`、默认 module registry 或 Runner Studio 前端常量
+
+**新增 Agent-to-UI Artifact / Renderer**
+
+- artifact payload 必须携带稳定 `type`、`renderer`、`schemaVersion`，renderer metadata 由 plugin 或 backend app config 下发
+- 前端先按 `renderer` 查 registry，再按 `type + schemaVersion` 兼容查找，找不到必须落到通用 fallback renderer
+- 禁止在 `AgentUiArtifactPart.tsx`、MCP bundle resolver 或 card registry 里按 provider 名称写 `if coroot/prometheus/...` 分支
+
+**新增 Agent Profile 默认能力**
+
+- 默认 profile 只能从 bootstrap profile manifest、plugin manifests 和用户配置合并
+- plugin 可以声明 recommended skills/MCP servers，但不能覆盖用户关闭的能力
+- 缺失 skill/MCP server 必须显示 unavailable/blocked reason，不能静默当作可用能力
 
 **新增 Prompt / Policy / Governance 规则**
 
@@ -759,6 +886,9 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - 禁止让 plugin/extension 直接修改 `RuntimeKernel`、`PromptCompiler`、`AgentFactory` 的主逻辑
 - 禁止在 prompt helper、loop nudge 或局部 command 里散写系统级规则
 - 禁止为了新功能重建 `capability`、legacy adapter、compat manager
+- 禁止在 core 里硬编码 provider 名称、tool 前缀、artifact type 前缀、MCP server id 来决定行为
+- 禁止把 provider-specific prompt、UI renderer、Runner action、OpsManual taxonomy 写进全局 core 文件
+- 禁止通过前端 resolver 猜 provider；必须消费后端或 plugin manifest 下发的 renderer/preset metadata
 
 ### 4.1 以后不允许重新引入的旧入口
 
@@ -778,6 +908,8 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - 你想让某类对象既不是 tool、又要被模型直接调用
 - 你想让 plugin/extension 直接参与 runtime 决策
 - 你想绕过统一 source precedence 或 governance merge 逻辑
+- 你需要让 core 直接认识某个 provider、产品、资源类型或 artifact renderer
+- 你需要新增 plugin manifest 字段但没有对应 registry、验证规则和 fallback 行为
 
 ### 6. 提交前自检清单
 
@@ -788,9 +920,20 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - MCP 是否通过 `IsMCP + MCPInfo` 表达，而不是通过并列 kind 表达
 - plugin/extension 是否只做分发，不做 runtime 主逻辑
 - governance / precedence 是否复用了现有聚合逻辑，而不是局部重写
+- 新集成是否优先落成 MCP server + Skill + plugin manifest，而不是 core 硬编码
+- OpsManual/Runner/Agent-to-UI/Profile 是否走各自 registry，而不是在 core 或前端常量里写死 provider
+- 禁用对应 plugin 后，工具、资源发现、action、renderer、profile 推荐是否能消失或显示 unavailable
 - 是否补了单元测试；跨层不变量是否补了 property tests
 - 是否运行了 `go test ./...`
 - 是否运行了 `go build ./cmd/ai-server`
+
+涉及可插拔封装迁移或新增 provider 时，额外运行静态检查并确认命中只出现在 built-in plugin、provider package、测试或迁移文档中：
+
+```bash
+rg -n "coroot|Coroot|prometheus|Prometheus|grafana|Grafana" cmd internal/promptcompiler web/src
+rg -n "kubectl|docker ps|redis-server|postgres|mysqld" internal/opsmanual
+rg -n "DefaultActionSpecs|script\\.shell|builtin\\.tcp_ping" pkg/runner/server/service/action_catalog.go pkg/runner/engine/defaults.go
+```
 
 ## 通用规则
 
@@ -798,7 +941,7 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 2. 接口隔离：各层通过接口通信，禁止跨层直接引用实现
 3. 特殊情况必须确认：如果现有接口无法满足需求，必须先讨论方案，再修改接口或添加代码
 4. 测试覆盖：新增模块必须包含单元测试；涉及跨层正确性不变量的必须补 `pgregory.net/rapid` property tests
-5. 不修改 `aiops-codex/`：所有后端代码变更限定在 `aiops-v2/`
+5. 不回写旧项目目录：当前产品面和后端都在 `aiops-v2/`，不要把新功能拆回旧 `aiops-codex/`
 6. 任何影响四层 prompt 语义、tool lifecycle 真源、workspace/host 隔离、source precedence 的变更，都必须同步更新设计/README
 
 ---
@@ -850,12 +993,17 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 ## 📚 扩展文档
 
 - [注册规则升级设计方案](docs/registration-upgrade-design.md) — 基于 claude code 源码分析的注册机制增强计划
+- [Skills / MCP 可插拔集成改造设计方案](docs/2026-05-21-aiops-v2-skills-mcp-pluggable-integration-design.zh.md) — 外部系统、OpsManual、Runner、Agent-to-UI 和 profile 的插件化封装边界
 - [Agent Trace / Eval / Prompt 优化主指南](docs/agent-trace-eval-guide.zh.md) — 本地 trace、Prompt Trace、eval、诊断和 prompt 优化闭环
 
 ## 测试
 
 ```bash
-go test ./...                           # 全量测试
-go test -run TestProperty ./...         # 只跑属性测试
-go test -count=1 ./...                  # 清缓存跑
+go test ./...                           # 根 Go module 全量测试
+go test -run TestProperty ./...         # 根 Go module 属性测试
+go test -count=1 ./...                  # 根 Go module 清缓存测试
+cd pkg/runner && go test ./...          # Runner 子 module 测试
+cd web && npm test                      # 前端 Vitest
+cd web && npm run build                 # 前端构建
+cd web && npx playwright test --project=chromium # 页面 E2E
 ```

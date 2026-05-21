@@ -1318,6 +1318,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		finalItemID := fmt.Sprintf("%s-final-answer-%d", turnID, iteration)
 		iterationAssistantOutput := ""
+		modelCallStartedAt := time.Now()
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
 			if delta != "" {
 				iterationAssistantOutput += delta
@@ -1378,12 +1379,14 @@ func (k *EinoKernel) runHostIterationLoop(
 			})
 		})
 		if genErr != nil {
+			appendModelTraceResponse(tracePath, modelItemID, nil, time.Since(modelCallStartedAt), genErr)
 			finishObservedSpan(modelSpan, "failed", genErr.Error(), map[string]any{"error": genErr.Error()})
 			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, genErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, genErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, genErr
 		}
+		appendModelTraceResponse(tracePath, modelItemID, response, time.Since(modelCallStartedAt), nil)
 		toolCallCount := 0
 		if response != nil {
 			toolCallCount = len(response.ToolCalls)

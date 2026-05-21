@@ -1038,7 +1038,7 @@ describe("OpsManualChatArtifacts", () => {
       "workflow-redis-local-readonly-rca",
     );
     expect(container.textContent).toContain(
-      "下一步：AI 会先运行只读预检；通过并确认后再 Dry Run。",
+      "下一步：AI 会先运行只读预检；通过后确认或审批执行。",
     );
     expect(
       Array.from(container.querySelectorAll("button")).map((button) =>
@@ -1079,7 +1079,7 @@ describe("OpsManualChatArtifacts", () => {
                 manual_id: "manual-mysql-backup-ssh",
                 workflow_id: "workflow-mysql-backup-ssh",
                 probe_id: "check_mysql_backup_ssh_and_path",
-                next_action: "start_dry_run",
+                next_action: "confirm_execution",
                 evidence: [
                   { name: "ssh_access", status: "passed" },
                   { name: "connection_test", status: "passed" },
@@ -1113,13 +1113,13 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("ssh_access");
     expect(container.textContent).toContain("backup_path_writable");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).not.toContain(
-      "下一步：AI 会先运行只读预检；通过并确认后再 Dry Run。",
+      "下一步：AI 会先运行只读预检；通过后确认或审批执行。",
     );
   });
 
-  it("requests Dry Run confirmation when clicking a passed merged preflight action", async () => {
+  it("requests execution confirmation when clicking a passed merged preflight action", async () => {
     let detail: {
       action?: string;
       title?: string;
@@ -1159,7 +1159,7 @@ describe("OpsManualChatArtifacts", () => {
                 ready: true,
                 manual_id: "manual-mysql-backup-ssh",
                 workflow_id: "workflow-mysql-backup-ssh",
-                next_action: "start_dry_run",
+                next_action: "confirm_execution",
               },
             },
           }}
@@ -1168,15 +1168,15 @@ describe("OpsManualChatArtifacts", () => {
     });
 
     const dryRunButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("进入 Dry Run"),
+      (button) => button.textContent?.includes("确认执行"),
     );
     await act(async () => {
       dryRunButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(detail).toEqual({
-      action: "start_runner_workflow_dry_run",
-      title: "进入 Dry Run",
+      action: "confirm_runner_workflow_execution",
+      title: "确认执行",
       sourceTitle: "MySQL SSH 备份运维手册",
       artifactId: "artifact-direct-execute-merged-click",
     });
@@ -1261,7 +1261,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("Redis 内存压力排障");
     expect(container.textContent).toContain("workflow-redis-memory");
     expect(container.textContent).toContain(
-      "下一步：先运行预检，通过并确认后再进入 Dry Run。",
+      "下一步：先运行预检，通过后确认或审批执行。",
     );
     expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(container.textContent).not.toMatch(/\d+\s*%/);
@@ -1304,7 +1304,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).not.toMatch(/\d+\s*%/);
   });
 
-  it("renders passed preflight result with Dry Run action", async () => {
+  it("renders passed preflight result with confirm action", async () => {
     await act(async () => {
       root.render(
         <OpsManualPreflightResultArtifact
@@ -1316,7 +1316,7 @@ describe("OpsManualChatArtifacts", () => {
               ready: true,
               manual_id: "manual-redis-memory",
               workflow_id: "workflow-redis-memory",
-              next_action: "start_dry_run",
+              next_action: "confirm_execution",
               evidence: [
                 { name: "metrics_available", status: "passed", value: true },
               ],
@@ -1328,7 +1328,7 @@ describe("OpsManualChatArtifacts", () => {
 
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("可进入下一步");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
   });
 
   it("shows immediate running feedback after clicking param resolution preflight", async () => {
@@ -1407,7 +1407,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("预检失败");
     expect(container.textContent).toContain("target instance is not reachable");
     expect(container.textContent).toContain("查看降级步骤");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
   });
 
@@ -1436,7 +1436,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("没有可直接运行的工作流。");
     expect(container.textContent).toContain("1. 确认目标实例和备份路径");
     expect(container.textContent).toContain("3. 逐步生成备份命令并让用户确认");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
   });
 
@@ -1478,7 +1478,7 @@ describe("OpsManualChatArtifacts", () => {
     ).toEqual(["仅参考手册", "不使用"]);
     expect(container.textContent).not.toContain("按步骤执行");
     expect(container.textContent).not.toContain("运行预检");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
     expect(container.textContent).not.toContain("继续普通排查");
   });
@@ -1812,7 +1812,7 @@ describe("OpsManualChatArtifacts", () => {
               ready: true,
               manual_id: "manual-redis-memory",
               workflow_id: "workflow-redis-memory",
-              next_action: "start_dry_run",
+              next_action: "confirm_execution",
               evidence: [
                 { name: "metrics_available", status: "passed", value: true },
               ],
@@ -1824,7 +1824,7 @@ describe("OpsManualChatArtifacts", () => {
 
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("manual-redis-memory");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).not.toContain("运维手册预检");
     expect(container.textContent).not.toContain("预检已通过。");
     expect(container.textContent).not.toContain("来源：");

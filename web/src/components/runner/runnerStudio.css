@@ -4711,6 +4711,39 @@
   margin: 8px 0 0;
 }
 
+.runner-ops-manual-preview {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 10px 0 0;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.runner-ops-manual-issues {
+  display: grid;
+  gap: 4px;
+}
+
+.workflow-secondary-link {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-weight: 800;
+  padding: 8px 11px;
+  text-decoration: none;
+}
+
 .runner-run-failure-summary {
   color: #b91c1c;
   font-size: 12px;

@@ -336,7 +336,7 @@ export function createOpsManualPreflightFixtureState(overrides = {}) {
       inlineData: {
         decision: "direct_execute",
         summary: "找到可直接使用的运维手册，用户确认前不会执行 Runner Workflow。",
-        recommended_next_action: "运行 Node 0 预检，通过后再 Dry Run。",
+        recommended_next_action: "运行 Node 0 预检，通过后确认或审批执行。",
         operation_frame: { target: { type: "postgresql" }, operation: { action: "backup" } },
         searched_fields: ["object_type", "operation_type", "execution_surface", "environment"],
         manuals: [
@@ -362,11 +362,11 @@ export function createOpsManualPreflightFixtureState(overrides = {}) {
       inlineData: {
         status: "passed",
         ready: true,
-        reason: "只读探针通过，可以进入 Dry Run。",
+        reason: "只读探针通过，可以确认或审批后执行。",
         manual_id: "manual-pg-backup-ubuntu",
         workflow_id: "workflow-pg-backup-ubuntu",
         probe_id: "probe-pg-backup-readonly",
-        next_action: "start_dry_run",
+        next_action: "confirm_execution",
         evidence: [
           { name: "ssh_access", status: "passed", note: "只读连接检查" },
           { name: "pg_isready", status: "passed", note: "PostgreSQL 可用性检查" },

@@ -1,6 +1,10 @@
 package opsmanual
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestServiceRetrieveReturnsNeedMoreInfo(t *testing.T) {
 	repo := NewMemoryStore()
@@ -23,7 +27,7 @@ func TestServiceConfirmCandidateEntersVerifiedList(t *testing.T) {
 	candidate, err := service.PrepareManualCandidate(PrepareManualCandidateRequest{
 		SourceType: "workflow",
 		SourceRefs: []string{"workflow-redis-memory"},
-		Manual:     redisMemoryManual(),
+		Manual:     confirmableRedisMemoryManual(),
 	})
 	if err != nil {
 		t.Fatalf("PrepareManualCandidate() error = %v", err)
@@ -38,6 +42,105 @@ func TestServiceConfirmCandidateEntersVerifiedList(t *testing.T) {
 	manuals, err := service.ListManuals(ListManualsRequest{Status: ManualStatusVerified})
 	if err != nil || len(manuals) != 1 {
 		t.Fatalf("ListManuals() = %#v, %v", manuals, err)
+	}
+}
+
+func TestServiceGenerateManualCandidateFromWorkflowSavesCandidate(t *testing.T) {
+	repo := NewMemoryStore()
+	service := NewService(repo)
+	result, err := service.GenerateManualCandidateFromWorkflow(context.Background(), WorkflowManualGenerationRequest{
+		WorkflowID: "pg-restore",
+		RawYAML:    loadWorkflowReverseFixture(t, "pg_restore.yaml"),
+		ActionSpecs: []ActionSpecSummary{{
+			Action: "script.shell",
+			Risk:   "high",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("GenerateManualCandidateFromWorkflow() error = %v", err)
+	}
+	if result.Candidate.ID == "" || result.Candidate.SourceType != "workflow_reverse_generated" {
+		t.Fatalf("candidate = %#v, want workflow reverse generated candidate", result.Candidate)
+	}
+	if result.ValidationReport.Status == "" || len(result.UserSummary.Understood) == 0 {
+		t.Fatalf("result = %#v, want validation report and user summary", result)
+	}
+	candidates, err := service.ListCandidates()
+	if err != nil {
+		t.Fatalf("ListCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].ID != result.Candidate.ID {
+		t.Fatalf("candidates = %#v, want saved generated candidate", candidates)
+	}
+}
+
+func TestServiceGenerateManualCandidateFromWorkflowDoesNotSaveWhenRepoUnsupported(t *testing.T) {
+	service := NewService(manualOnlyRepository{})
+	_, err := service.GenerateManualCandidateFromWorkflow(context.Background(), WorkflowManualGenerationRequest{
+		WorkflowID: "pg-restore",
+		RawYAML:    loadWorkflowReverseFixture(t, "pg_restore.yaml"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "candidate repository is not configured") {
+		t.Fatalf("GenerateManualCandidateFromWorkflow() error = %v, want candidate repository error", err)
+	}
+}
+
+func TestConfirmManualCandidateRequiresWorkflowDigest(t *testing.T) {
+	repo := NewMemoryStore()
+	service := NewService(repo)
+	manual := confirmableRedisMemoryManual()
+	manual.WorkflowRef.WorkflowDigest = ""
+	candidate, err := service.PrepareManualCandidate(PrepareManualCandidateRequest{SourceType: "workflow", Manual: manual})
+	if err != nil {
+		t.Fatalf("PrepareManualCandidate() error = %v", err)
+	}
+	if _, err := service.ConfirmManualCandidate(candidate.ID, ConfirmManualCandidateRequest{Reviewer: "sre"}); err == nil {
+		t.Fatal("ConfirmManualCandidate() error = nil, want digest validation error")
+	}
+}
+
+func TestConfirmManualCandidateRequiresParameterRulesCoverRequiredInputs(t *testing.T) {
+	repo := NewMemoryStore()
+	service := NewService(repo)
+	manual := confirmableRedisMemoryManual()
+	manual.RequiredContext.RequiredInputs = []string{"target_instance", "backup_path"}
+	manual.ParameterRules = map[string]ParameterRule{"target_instance": {Required: true}}
+	candidate, err := service.PrepareManualCandidate(PrepareManualCandidateRequest{SourceType: "workflow", Manual: manual})
+	if err != nil {
+		t.Fatalf("PrepareManualCandidate() error = %v", err)
+	}
+	if _, err := service.ConfirmManualCandidate(candidate.ID, ConfirmManualCandidateRequest{Reviewer: "sre"}); err == nil {
+		t.Fatal("ConfirmManualCandidate() error = nil, want parameter rule coverage error")
+	}
+}
+
+func TestConfirmManualCandidateRejectsSensitiveDefaultValue(t *testing.T) {
+	repo := NewMemoryStore()
+	service := NewService(repo)
+	manual := confirmableRedisMemoryManual()
+	manual.ParameterRules["redis_password"] = ParameterRule{Required: true, DefaultValue: "plain-text"}
+	candidate, err := service.PrepareManualCandidate(PrepareManualCandidateRequest{SourceType: "workflow", Manual: manual})
+	if err != nil {
+		t.Fatalf("PrepareManualCandidate() error = %v", err)
+	}
+	if _, err := service.ConfirmManualCandidate(candidate.ID, ConfirmManualCandidateRequest{Reviewer: "sre"}); err == nil {
+		t.Fatal("ConfirmManualCandidate() error = nil, want sensitive default validation error")
+	}
+}
+
+func TestConfirmManualCandidateRequiresRiskPolicyForHighRisk(t *testing.T) {
+	repo := NewMemoryStore()
+	service := NewService(repo)
+	manual := confirmableRedisMemoryManual()
+	manual.Operation.RiskLevel = "high"
+	manual.RiskPolicy = RiskPolicy{}
+	manual.RunnableConditions.RequiresApproval = false
+	candidate, err := service.PrepareManualCandidate(PrepareManualCandidateRequest{SourceType: "workflow", Manual: manual})
+	if err != nil {
+		t.Fatalf("PrepareManualCandidate() error = %v", err)
+	}
+	if _, err := service.ConfirmManualCandidate(candidate.ID, ConfirmManualCandidateRequest{Reviewer: "sre"}); err == nil {
+		t.Fatal("ConfirmManualCandidate() error = nil, want high-risk policy validation error")
 	}
 }
 
@@ -99,4 +202,31 @@ func TestServiceDoesNotRetrieveUnconfirmedCandidate(t *testing.T) {
 	if len(matches) != 0 {
 		t.Fatalf("matches = %#v, want no matches before confirmation", matches)
 	}
+}
+
+func confirmableRedisMemoryManual() OpsManual {
+	manual := redisMemoryManual()
+	manual.WorkflowRef.WorkflowDigest = "sha256:test"
+	manual.ParameterRules = map[string]ParameterRule{
+		"target_instance": {Required: true, Source: "user"},
+	}
+	return manual
+}
+
+type manualOnlyRepository struct{}
+
+func (manualOnlyRepository) ListManuals(ListManualsRequest) ([]OpsManual, error) {
+	return nil, nil
+}
+
+func (manualOnlyRepository) GetManual(string) (OpsManual, error) {
+	return OpsManual{}, nil
+}
+
+func (manualOnlyRepository) SaveManual(OpsManual) error {
+	return nil
+}
+
+func (manualOnlyRepository) ListRunRecords(ListRunRecordsRequest) ([]RunRecord, error) {
+	return nil, nil
 }

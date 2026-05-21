@@ -27,6 +27,7 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
         newSessionLabel="新建会话"
         description="选择单台主机进行 AI Chat；消息发送仍走 AssistantTransport。"
         activeThreadId={activeThreadId}
+        skipInitialLoad={Boolean(resolvedInitialState)}
         terminalHref="/terminal/server-local"
         onThreadChange={(nextThreadId, nextInitialState, autoResume) => {
           setActiveThreadId(nextThreadId);

@@ -1,6 +1,7 @@
 package opsmanual
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -43,8 +44,8 @@ func (s *Service) RunPreflight(req PreflightRequest) (PreflightResult, error) {
 		result.Status = PreflightStatusNotApplicable
 		result.Ready = true
 		result.Reason = "manual has no preflight probe"
-		result.NextAction = "start_dry_run"
-		return result, nil
+		result.NextAction = "confirm_execution"
+		return s.applyWorkflowPlanCheck(context.Background(), result, manual, req), nil
 	}
 	if truthyParam(req.Parameters, "simulate_permission_missing") {
 		result.Status = PreflightStatusBlocked
@@ -72,7 +73,7 @@ func (s *Service) RunPreflight(req PreflightRequest) (PreflightResult, error) {
 	}
 	result.Status = PreflightStatusPassed
 	result.Ready = true
-	result.NextAction = "start_dry_run"
+	result.NextAction = "confirm_execution"
 	outputs := probe.RequiredOutputs
 	if len(outputs) == 0 {
 		outputs = []string{firstNonEmpty(probe.ID, "preflight_probe")}
@@ -84,7 +85,7 @@ func (s *Service) RunPreflight(req PreflightRequest) (PreflightResult, error) {
 			Value:  true,
 		})
 	}
-	return result, nil
+	return s.applyWorkflowPlanCheck(context.Background(), result, manual, req), nil
 }
 
 func basePreflightResult(manual OpsManual, req PreflightRequest) PreflightResult {
@@ -129,6 +130,49 @@ func effectivePreflightProbe(manual OpsManual) PreflightProbe {
 		TimeoutSeconds:  int(metadataFloat(rawMap, "timeout_seconds")),
 		RequiredOutputs: metadataStringSliceFromAny(firstAny(rawMap["required_outputs"], rawMap["requiredOutputs"])),
 	}
+}
+
+func (s *Service) applyWorkflowPlanCheck(ctx context.Context, result PreflightResult, manual OpsManual, req PreflightRequest) PreflightResult {
+	if s == nil || s.workflowPlanChecker == nil || strings.TrimSpace(result.WorkflowID) == "" {
+		return result
+	}
+	plan, err := s.workflowPlanChecker.CheckWorkflowPlan(ctx, WorkflowPlanCheckRequest{
+		Manual:         manual,
+		WorkflowID:     result.WorkflowID,
+		OperationFrame: req.OperationFrame,
+		Parameters:     req.Parameters,
+		RequestedBy:    req.RequestedBy,
+		TriggeredBy:    req.TriggeredBy,
+	})
+	if err != nil {
+		result.Status = PreflightStatusBlocked
+		result.Ready = false
+		result.Reason = "workflow plan check failed: " + err.Error()
+		result.NextAction = "fallback_guide"
+		return result
+	}
+	result.WorkflowDigest = firstNonEmpty(strings.TrimSpace(plan.WorkflowDigest), strings.TrimSpace(manual.WorkflowRef.WorkflowDigest))
+	result.ExecutionPlan = PreflightExecutionPlan{
+		Summary:          strings.TrimSpace(plan.Summary),
+		WorkflowStatus:   strings.TrimSpace(plan.WorkflowStatus),
+		TargetHosts:      cloneStrings(plan.TargetHosts),
+		ActionsUsed:      cloneStrings(plan.ActionsUsed),
+		RequiresApproval: plan.RequiresApproval,
+		RiskLevel:        firstNonEmpty(strings.TrimSpace(plan.RiskLevel), strings.TrimSpace(manual.Operation.RiskLevel)),
+		Warnings:         append([]PreflightPlanWarning(nil), plan.Warnings...),
+	}
+	planStatus := strings.TrimSpace(plan.Status)
+	if strings.EqualFold(planStatus, "blocked") || strings.EqualFold(planStatus, "failed") {
+		result.Status = PreflightStatusBlocked
+		result.Ready = false
+		result.Reason = firstNonEmpty(strings.TrimSpace(plan.Summary), "workflow plan check did not pass")
+		result.NextAction = "fallback_guide"
+		return result
+	}
+	if plan.RequiresApproval || manual.RunnableConditions.RequiresApproval || riskLevelRank(firstNonEmpty(plan.RiskLevel, manual.Operation.RiskLevel)) >= riskLevelRank("high") {
+		result.NextAction = "request_approval"
+	}
+	return result
 }
 
 func missingPreflightParams(manual OpsManual, req PreflightRequest) []string {

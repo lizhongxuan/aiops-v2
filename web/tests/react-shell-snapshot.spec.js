@@ -570,7 +570,7 @@ function opsManualDirectActionsState() {
             matched_fields: ["object_type", "operation_type", "execution_surface"],
           },
         ],
-        recommended_next_action: "运行只读预检，通过后再 Dry Run。",
+        recommended_next_action: "运行只读预检，通过后确认或审批执行。",
       },
     },
   );

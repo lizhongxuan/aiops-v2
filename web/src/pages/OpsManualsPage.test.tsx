@@ -31,22 +31,58 @@ const candidatesPayload = {
   items: [
     {
       id: "candidate-pg-backup",
-      source_type: "workflow",
+      source_type: "workflow_reverse_generated",
       source_refs: ["workflow-postgres-backup"],
       review_status: "pending",
       proposed_manual: {
         id: "manual-pg-backup-draft",
         title: "PostgreSQL 备份候选",
         status: "draft",
-        workflow_ref: { workflow_id: "workflow-postgres-backup" },
-        operation: { target_type: "postgresql", action: "backup" },
+        workflow_ref: { workflow_id: "workflow-postgres-backup", workflow_version: "v1", workflow_digest: "sha256:pg", storage_uri: "runner-studio://workflow-postgres-backup" },
+        operation: { target_type: "postgresql", action: "backup", risk_level: "medium" },
         applicability: { middleware: "postgresql", os: ["centos"], platform: ["vm"], execution_surface: ["ssh"] },
         required_context: { required_inputs: ["host", "backup_path"] },
         preconditions: ["确认磁盘空间"],
         validation: ["备份文件可校验"],
         cannot_use_when: ["无法确认数据库版本"],
       },
-      validation_report: ["缺少一次 Dry Run 记录"],
+      validation_report: ["缺少近期成功闭环记录"],
+      structured_validation_report: {
+        status: "warning",
+        warnings: [{ code: "missing_recent_successful_run", field: "run_records", message: "缺少近期成功闭环记录" }],
+        blocking: [],
+        passed: [{ code: "workflow_ref_present", field: "workflow_ref.workflow_id", message: "已绑定 Workflow" }],
+      },
+      user_summary: {
+        understood: ["系统识别到 PostgreSQL 备份 Workflow"],
+        missing: ["缺少近期成功闭环记录"],
+        next_steps: ["先完成预检计划检查或一次成功闭环后再发布"],
+      },
+    },
+    {
+      id: "candidate-pg-restore-blocked",
+      source_type: "workflow_reverse_generated",
+      review_status: "needs_fix",
+      proposed_manual: {
+        id: "manual-pg-restore-draft",
+        title: "PostgreSQL 恢复候选",
+        status: "draft",
+        workflow_ref: { workflow_id: "workflow-pg-restore" },
+        operation: { target_type: "postgresql", action: "restore", risk_level: "high" },
+        validation: [],
+        cannot_use_when: [],
+      },
+      structured_validation_report: {
+        status: "blocked",
+        blocking: [{ code: "missing_workflow_digest", field: "workflow_ref.workflow_digest", message: "缺少 Workflow digest" }],
+        warnings: [],
+        passed: [],
+      },
+      user_summary: {
+        understood: ["系统识别到 PostgreSQL 恢复 Workflow"],
+        missing: ["缺少 Workflow digest"],
+        next_steps: ["补齐 digest 后再审核"],
+      },
     },
   ],
 };
@@ -172,6 +208,16 @@ describe("OpsManualsPage", () => {
     const reviewTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("待审核手册"));
     await act(async () => reviewTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(container.textContent).toContain("PostgreSQL 备份候选");
+    expect(container.textContent).toContain("由 Workflow 反向生成");
+    expect(container.textContent).toContain("sha256:pg");
+    expect(container.textContent).toContain("runner-studio://workflow-postgres-backup");
+    expect(container.textContent).toContain("系统识别到 PostgreSQL 备份 Workflow");
+    expect(container.textContent).toContain("缺少近期成功闭环记录");
+    expect(container.textContent).toContain("审核通过后，该手册会变为 verified");
+    const warningConfirm = container.querySelector('[data-testid="ops-manual-candidate-confirm-candidate-pg-backup"]') as HTMLButtonElement | null;
+    const blockedConfirm = container.querySelector('[data-testid="ops-manual-candidate-confirm-candidate-pg-restore-blocked"]') as HTMLButtonElement | null;
+    expect(warningConfirm?.disabled).toBe(false);
+    expect(blockedConfirm?.disabled).toBe(true);
     expect(container.textContent).toContain("通过");
     expect(container.textContent).toContain("退回修改");
     expect(container.textContent).toContain("删除候选");

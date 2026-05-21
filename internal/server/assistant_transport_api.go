@@ -378,7 +378,7 @@ func (s *HTTPServer) assistantTransportOpsManualMatchArtifact(turnID string, com
 func assistantTransportOpsManualSummary(state string) string {
 	switch strings.TrimSpace(state) {
 	case "direct_execute", "direct":
-		return "已找到可直接使用的运维手册，仍需参数确认、环境预检查和 Dry Run。"
+		return "已找到可直接使用的运维手册，仍需参数确认、环境预检和确认或审批。"
 	case "adapt", "adapt_required":
 		return "找到相似运维手册，但当前环境存在差异，需要先生成变体并校验。"
 	case "reference_only":
@@ -410,7 +410,7 @@ func assistantTransportOpsManualActions(state string) []map[string]any {
 	case "direct_execute", "direct":
 		return []map[string]any{
 			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
-			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+			{"id": "run_preflight", "label": "运行预检", "kind": "panel"},
 		}
 	case "adapt", "adapt_required":
 		return []map[string]any{
@@ -429,13 +429,13 @@ func assistantTransportOpsManualActions(state string) []map[string]any {
 func assistantTransportOpsManualPreflightSummary(status string) string {
 	switch strings.TrimSpace(status) {
 	case "passed":
-		return "预检已通过，可以进入 Dry Run。"
+		return "预检已通过，可以确认或审批后执行。"
 	case "blocked":
 		return "预检被阻断，需要补充参数、权限或环境适配。"
 	case "failed":
 		return "预检失败，不能执行绑定工作流。"
 	case "not_applicable":
-		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+		return "该手册没有预检探针，需要人工确认或审批后执行。"
 	default:
 		return "已完成运维手册预检。"
 	}
@@ -457,14 +457,21 @@ func assistantTransportOpsManualPreflightSeverity(status string) string {
 }
 
 func assistantTransportOpsManualPreflightActions(status string, nextAction string) []map[string]any {
+	nextAction = strings.TrimSpace(nextAction)
 	switch strings.TrimSpace(status) {
 	case "passed", "not_applicable":
-		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+		if nextAction == "request_approval" {
+			return []map[string]any{{"id": "request_approval", "label": "发起审批", "kind": "confirm"}}
+		}
+		if nextAction == "execute_workflow" {
+			return []map[string]any{{"id": "execute_workflow", "label": "执行 Workflow", "kind": "confirm"}}
+		}
+		return []map[string]any{{"id": "confirm_execution", "label": "确认执行", "kind": "confirm"}}
 	case "blocked":
-		if strings.TrimSpace(nextAction) == "request_permission" {
+		if nextAction == "request_permission" {
 			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
 		}
-		if strings.TrimSpace(nextAction) == "generate_workflow_variant" {
+		if nextAction == "generate_workflow_variant" {
 			return []map[string]any{{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"}}
 		}
 		return []map[string]any{{"id": "collect_context", "label": "补充上下文", "kind": "form"}}

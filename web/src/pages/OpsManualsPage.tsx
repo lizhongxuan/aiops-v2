@@ -111,7 +111,7 @@ export function OpsManualsPage() {
           <div className="flex flex-wrap gap-2">
             <Badge variant="secondary">Workflow Library</Badge>
             <Badge variant="outline">人工审核</Badge>
-            <Badge variant="outline">Dry Run</Badge>
+            <Badge variant="outline">预检计划检查</Badge>
             <Badge variant="outline">Run Record</Badge>
           </div>
         </CardContent>
@@ -215,6 +215,10 @@ function CandidateReviewList({ candidates, onPreview }: { candidates: OpsManualC
     <section className="grid gap-2">
       {candidates.map((candidate) => {
         const manual = candidate.proposedManual;
+        const validation = candidate.structuredValidationReport;
+        const digestMissing = !manual.workflowRef.workflowDigest;
+        const blocked = validation.status === "blocked" || validation.blocking.length > 0;
+        const canConfirm = !digestMissing && !blocked;
         return (
           <Card key={candidate.id} size="sm" className="rounded-lg bg-white">
             <CardContent className="grid gap-3 pt-0">
@@ -225,11 +229,27 @@ function CandidateReviewList({ candidates, onPreview }: { candidates: OpsManualC
                     {manual.operation.targetType || "-"} / {manual.operation.action || "-"} · Workflow {manual.workflowRef.workflowId || "未绑定"}
                   </div>
                 </div>
-                <ToneBadge tone="warning">{candidate.reviewStatus || "pending"}</ToneBadge>
+                <div className="flex flex-wrap gap-2">
+                  <ToneBadge tone="warning">{candidate.reviewStatus || "pending"}</ToneBadge>
+                  <ToneBadge>{sourceTypeLabel(candidate.sourceType)}</ToneBadge>
+                </div>
               </div>
+              <div className="grid gap-1 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600 sm:grid-cols-2">
+                <span>Workflow ID：{manual.workflowRef.workflowId || "-"}</span>
+                <span>版本：{manual.workflowRef.workflowVersion || "-"}</span>
+                <span>Digest：{manual.workflowRef.workflowDigest || "缺失"}</span>
+                <span>Storage：{manual.workflowRef.storageUri || "-"}</span>
+              </div>
+              <CandidateSummary summary={candidate.userSummary} />
+              <CandidateValidationReport validation={validation} />
+              <p className="rounded-md border border-emerald-100 bg-emerald-50 p-2 text-xs leading-5 text-emerald-900">
+                审核通过后，该手册会变为 verified，并参与 AI Chat 的 search_ops_manuals 检索。
+              </p>
+              {digestMissing ? <p className="text-xs font-medium text-amber-700">Workflow digest 缺失，不能确认发布。</p> : null}
+              {!digestMissing && validation.status !== "blocked" ? <p className="text-xs text-amber-700">当前前端仅展示 digest；后端会在确认时执行最终校验。</p> : null}
               {candidate.validationReport.length ? <p className="text-xs leading-5 text-slate-500">{candidate.validationReport.join("；")}</p> : null}
               <div className="flex flex-wrap gap-2">
-                <Button type="button" size="sm" variant="outline" className="h-8 rounded-md">
+                <Button type="button" size="sm" variant="outline" className="h-8 rounded-md" disabled={!canConfirm} data-testid={`ops-manual-candidate-confirm-${candidate.id}`}>
                   <CheckCircle2 className="h-3.5 w-3.5" />
                   通过
                 </Button>
@@ -251,7 +271,10 @@ function CandidateReviewList({ candidates, onPreview }: { candidates: OpsManualC
                       workflowId: manual.workflowRef.workflowId,
                       title: manual.workflowRef.workflowId ? `${manual.workflowRef.workflowId} 只读草稿` : "未绑定 Workflow",
                       manualTitle: manual.title,
-                      validationReport: candidate.validationReport,
+                      validationReport: candidate.validationReport.length ? candidate.validationReport : [
+                        ...validation.blocking.map((issue) => issue.message),
+                        ...validation.warnings.map((issue) => issue.message),
+                      ],
                     })
                   }
                 >
@@ -264,6 +287,75 @@ function CandidateReviewList({ candidates, onPreview }: { candidates: OpsManualC
         );
       })}
     </section>
+  );
+}
+
+function sourceTypeLabel(sourceType: string) {
+  if (sourceType === "workflow_reverse_generated") return "由 Workflow 反向生成";
+  if (sourceType === "workflow_draft" || sourceType === "workflow") return "Workflow 草稿";
+  return sourceType || "手动候选";
+}
+
+function CandidateSummary({ summary }: { summary: OpsManualCandidateView["userSummary"] }) {
+  const sections = [
+    ["系统理解", summary.understood],
+    ["还缺什么", summary.missing],
+    ["下一步", summary.nextSteps],
+  ] as const;
+  return (
+    <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs">
+      {sections.map(([title, items]) => (
+        <div key={title}>
+          <div className="font-medium text-slate-600">{title}</div>
+          {items.length ? (
+            <ul className="mt-1 list-disc space-y-1 pl-5 text-slate-600">
+              {items.map((item) => <li key={`${title}-${item}`}>{item}</li>)}
+            </ul>
+          ) : (
+            <p className="mt-1 text-slate-400">暂无。</p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CandidateValidationReport({ validation }: { validation: OpsManualCandidateView["structuredValidationReport"] }) {
+  return (
+    <div className="grid gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs">
+      <div className="flex flex-wrap gap-2">
+        <ToneBadge tone={validation.status === "blocked" ? "danger" : validation.status === "warning" ? "warning" : "success"}>校验：{validation.status || "unknown"}</ToneBadge>
+        <ToneBadge>blocking {validation.blocking.length}</ToneBadge>
+        <ToneBadge>warnings {validation.warnings.length}</ToneBadge>
+        <ToneBadge>passed {validation.passed.length}</ToneBadge>
+      </div>
+      <ValidationIssues title="Blocking" tone="danger" issues={validation.blocking} />
+      <ValidationIssues title="Warnings" tone="warning" issues={validation.warnings} />
+      {validation.passed.length ? (
+        <details>
+          <summary className="cursor-pointer font-medium text-slate-600">已通过检查</summary>
+          <ValidationIssues title="Passed" tone="default" issues={validation.passed} />
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function ValidationIssues({ title, issues, tone }: { title: string; issues: OpsManualCandidateView["structuredValidationReport"]["warnings"]; tone: "danger" | "warning" | "default" }) {
+  if (!issues.length) return null;
+  const color = tone === "danger" ? "text-red-700" : tone === "warning" ? "text-amber-700" : "text-slate-600";
+  return (
+    <div>
+      <div className={`font-medium ${color}`}>{title}</div>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-slate-600">
+        {issues.map((issue) => (
+          <li key={`${issue.code}-${issue.field}-${issue.message}`}>
+            <span className={color}>{issue.message || issue.code}</span>
+            {issue.field || issue.evidence ? <span className="ml-1 text-slate-400">{[issue.field, issue.evidence].filter(Boolean).join(" · ")}</span> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -284,7 +376,7 @@ function WorkflowPreviewDialog({ preview, onOpenChange }: { preview: WorkflowPre
             <section className="rounded-lg border border-slate-200 bg-white p-3">
               <div className="text-xs font-medium text-slate-500">绑定 Workflow</div>
               <div className="mt-1 font-mono text-slate-900">{preview.workflowId || "未绑定"}</div>
-              <p className="mt-2 text-xs leading-5 text-slate-500">只读模式用于确认候选手册引用的工作流身份，避免审核时误改脚本或绕过 Dry Run。</p>
+              <p className="mt-2 text-xs leading-5 text-slate-500">只读模式用于确认候选手册引用的工作流身份，避免审核时误改脚本或绕过预检计划检查。</p>
             </section>
             <section className="rounded-lg border border-slate-200 bg-slate-50 p-3">
               <div className="text-xs font-medium text-slate-500">审核提示</div>
@@ -307,7 +399,7 @@ function WorkflowPreviewDialog({ preview, onOpenChange }: { preview: WorkflowPre
 
 function RunRecordList({ records, manuals, timelines }: { records: RunRecordView[]; manuals: OpsManualView[]; timelines: Record<string, OpsManualFlowTimelineEventView[]> }) {
   if (!records.length) {
-    return <EmptyState title="暂无执行记录" description="Runner Workflow 通过运维手册触发后，会记录 Dry Run、执行、验证和失败原因。" />;
+    return <EmptyState title="暂无执行记录" description="Runner Workflow 通过运维手册触发后，会记录预检、审批、执行、验证和失败原因。" />;
   }
   const manualTitleById = new Map(manuals.map((manual) => [manual.id, manual.title]));
   const summary = records.reduce(
@@ -339,7 +431,7 @@ function RunRecordList({ records, manuals, timelines }: { records: RunRecordView
                 <span>手册：{manualTitleById.get(record.manualId) || record.manualId || "-"}</span>
                 <span>Workflow：{record.workflowId || "-"}</span>
                 <span>预检：{statusLabel(record.preflightStatus) || "-"}</span>
-                <span>Dry Run：{statusLabel(record.dryRunStatus) || "-"}</span>
+                {record.dryRunStatus ? <span>历史发布前检查：{statusLabel(record.dryRunStatus)}</span> : null}
                 <span>验证：{statusLabel(record.validationStatus) || "-"}</span>
                 <span>操作人：{record.operator || "-"}</span>
                 <span>完成：{record.completedAt || "-"}</span>

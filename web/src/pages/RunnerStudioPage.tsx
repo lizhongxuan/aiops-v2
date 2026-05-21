@@ -38,6 +38,7 @@ type Workflow = {
   id?: string;
   name: string;
   title?: string;
+  version?: string;
   status?: string;
   workflow_type?: string;
   workflowType?: string;
@@ -115,7 +116,7 @@ const SECONDARY_TOOLBAR_ACTIONS = [
   ["import", "导入", Upload],
   ["export", "导出", Download],
   ["validate", "校验", CheckCircle],
-  ["dry-run", "Dry Run", FlaskConical],
+  ["dry-run", "发布前检查", FlaskConical],
   ["variables", "变量", Database],
   ["publish", "发布", Rocket],
   ["ai-generate", "AI 生成", Bot],
@@ -1386,6 +1387,32 @@ function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function renderTextList(value: unknown) {
+  const items = arrayValue(value).map((item) => String(item || "").trim()).filter(Boolean);
+  return items.length ? <ul>{items.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul> : <p>暂无。</p>;
+}
+
+function renderIssueList(title: string, value: unknown[]) {
+  const issues = value.map(objectValue).filter((item) => item.message || item.code);
+  if (!issues.length) return null;
+  return (
+    <div className="runner-ops-manual-issues">
+      <p>{title}</p>
+      <ul>
+        {issues.map((issue, index) => (
+          <li key={`${String(issue.code || title)}-${index}`}>
+            {String(issue.message || issue.code)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function normalizeHostGroups(value: unknown): RunnerHostGroup[] {
   if (Array.isArray(value)) {
     return value
@@ -1554,7 +1581,7 @@ function PublishReviewModal({ workflow, onClose, onPublished }: { workflow: Work
   const semanticChanges = Array.isArray(diffSummary.semantic_changes) ? diffSummary.semantic_changes : [];
   const riskSummary = workflow.risk_summary || workflow.riskSummary || {};
   const validationPassed = Boolean(validation.valid) && !validation.errors?.length;
-  const disabledReason = !validatedHash ? "缺少当前 validated_graph_hash，发布前必须先校验当前 graph。" : dryHash !== validatedHash ? "Dry Run 未通过或已过期，发布前必须重新 Dry Run 当前 graph。" : !validationPassed ? "校验未通过，修复错误后才能发布。" : !note.trim() ? "发布说明不能为空。" : "";
+  const disabledReason = !validatedHash ? "缺少当前 validated_graph_hash，发布前必须先校验当前 graph。" : dryHash !== validatedHash ? "发布前检查未通过或已过期，发布前必须重新检查当前 graph。" : !validationPassed ? "校验未通过，修复错误后才能发布。" : !note.trim() ? "发布说明不能为空。" : "";
   const canPublish = !disabledReason && !loading;
   async function publish() {
     if (!canPublish) return;
@@ -1580,7 +1607,7 @@ function PublishReviewModal({ workflow, onClose, onPublished }: { workflow: Work
             <ul>
               <li>状态：{workflow.status || "draft"}</li>
               <li>Validated hash：{validatedHash || "-"}</li>
-              <li>Dry Run hash：{dryHash || "-"}</li>
+              <li>发布前检查 hash：{dryHash || "-"}</li>
               <li>风险：{riskSummary.level || "unknown"}</li>
             </ul>
           </section>
@@ -1614,36 +1641,41 @@ function OpsManualCandidateModal({ workflow, graph, onClose }: { workflow: Workf
   const name = workflowKey(workflow);
   const title = workflow.title || workflow.name || name;
   const status = workflow.status || "draft";
-  const candidateTitle = `${title} 运维手册候选`;
-  const manualPath = `/settings/ops-manuals?workflow=${encodeURIComponent(name)}`;
+  const version = String(workflow.version || objectValue(graph.workflow).version || "");
+  const candidate = objectValue(result?.candidate);
+  const manual = objectValue(candidate.proposed_manual || candidate.proposedManual);
+  const workflowRef = objectValue(manual.workflow_ref || manual.workflowRef);
+  const operation = objectValue(manual.operation);
+  const validation = objectValue(result?.validation_report || result?.validationReport || candidate.structured_validation_report || candidate.structuredValidationReport);
+  const summary = objectValue(result?.user_summary || result?.userSummary || candidate.user_summary || candidate.userSummary);
+  const blocking = arrayValue(validation.blocking);
+  const warnings = arrayValue(validation.warnings);
+  const passed = arrayValue(validation.passed);
+  const manualPath = `/settings/ops-manuals?candidate=${encodeURIComponent(String(candidate.id || ""))}`;
   const nodeCount = graph.nodes?.length || 0;
-  const payload = {
-    workflow_id: name,
-    workflow_name: name,
-    source_type: "runner_workflow",
-    source_refs: [name],
-    draft_manual: {
-      title: candidateTitle,
-      status: "draft",
-      workflow_ref: { workflow_id: name },
-      operation: { target_type: "runner_workflow", action: objectValue(graph.workflow).workflow_type || workflow.workflow_type || workflow.workflowType || "review_required" },
-      required_context: { required_inputs: [], required_evidence: [] },
-      preconditions: ["确认 Workflow 已完成校验或 Dry Run", "确认执行目标、权限和回滚窗口"],
-      validation: ["复核候选手册内容", "绑定执行记录后再进入已验证手册"],
-      cannot_use_when: ["Workflow 尚未明确适用范围", "缺少后续复核"],
-      document_markdown: `# ${candidateTitle}\n\n由 Runner Workflow ${name} 准备，只读候选内容需在运维手册页审核后使用。`,
-    },
-  };
+  const documentMarkdown = String(manual.document_markdown || manual.documentMarkdown || "");
+  const mainLabel = loading ? "生成中" : result ? (blocking.length ? "保存草稿" : "提交审核") : "生成候选";
 
   async function prepareCandidate() {
     if (loading || result) return;
     setLoading(true);
     setError("");
     try {
-      const response = await requestJson("/api/v1/ops-manuals/candidates/prepare", { method: "POST", body: JSON.stringify(payload) });
+      const response = await requestJson("/api/v1/ops-manuals/candidates/generate-from-workflow", {
+        method: "POST",
+        body: JSON.stringify({
+          workflow_id: name,
+          workflow_version: version,
+          options: { include_recent_run_records: true, use_llm_summary: false },
+        }),
+      });
       setResult(objectValue(response));
     } catch (cause) {
-      setError(errorMessage(cause, "候选手册准备失败"));
+      const statusCode = Number((cause as { status?: number })?.status || 0);
+      if (statusCode === 503) setError("Runner Studio 服务不可用，无法读取 Workflow。");
+      else if (statusCode === 404) setError("Workflow 不存在或已被删除。");
+      else if (statusCode === 400) setError("请求参数缺失，无法生成运维手册。");
+      else setError(errorMessage(cause, "候选手册生成失败"));
     } finally {
       setLoading(false);
     }
@@ -1659,7 +1691,7 @@ function OpsManualCandidateModal({ workflow, graph, onClose }: { workflow: Workf
         <main className="publish-review-body">
           <section className="publish-review-card">
             <h3>确认范围</h3>
-            <p>将为当前 Runner Workflow 准备一个待审核 OpsManual 候选，不会发布或替换已验证手册。</p>
+            <p>将从当前 Runner Workflow 反向生成待审核运维手册候选，不会发布或替换已验证手册。</p>
             <ul>
               <li>Workflow：{title}</li>
               <li>状态：{status}</li>
@@ -1667,30 +1699,46 @@ function OpsManualCandidateModal({ workflow, graph, onClose }: { workflow: Workf
               <li>节点数：{nodeCount}</li>
             </ul>
           </section>
-          <section className="publish-review-card">
-            <h3>只读预览</h3>
-            <p>{candidateTitle}</p>
+          {result ? <section className="publish-review-card" data-testid="runner-ops-manual-profile">
+            <h3>手册画像</h3>
             <ul>
-              <li>AI Chat 引用键：ops_manual_candidate:{name}</li>
-              <li>运维手册页：{manualPath}</li>
-              <li>后续仍需在运维手册页审核、补全适用范围和验证记录。</li>
+              <li>对象：{String(operation.target_type || operation.targetType || "-")}</li>
+              <li>操作：{String(operation.action || "-")}</li>
+              <li>风险：{String(operation.risk_level || operation.riskLevel || "-")}</li>
+              <li>Workflow ID：{String(workflowRef.workflow_id || workflowRef.workflowId || name)}</li>
+              <li>Digest：{String(workflowRef.workflow_digest || workflowRef.workflowDigest || "-")}</li>
             </ul>
-          </section>
+          </section> : null}
+          {result ? <section className="publish-review-card" data-testid="runner-ops-manual-summary">
+            <h3>系统理解</h3>
+            {renderTextList(summary.understood)}
+          </section> : null}
+          {result ? <section className="publish-review-card" data-testid="runner-ops-manual-validation">
+            <h3>缺口检查</h3>
+            <p>Blocking：{blocking.length}，Warnings：{warnings.length}，Passed：{passed.length}</p>
+            {renderIssueList("阻断", blocking)}
+            {renderIssueList("提醒", warnings)}
+            {passed.length ? <p>已通过 {passed.length} 项结构化检查。</p> : null}
+          </section> : null}
           <section className="publish-review-card">
-            <h3>检查清单</h3>
-            <ul>
-              <li>确认候选只来自当前选中的 Workflow。</li>
-              <li>确认候选不会自动发布，必须经过验证和发布检查。</li>
-              <li>确认手册页和 AI Chat 可用该引用定位候选。</li>
-            </ul>
+            <h3>手册预览</h3>
+            {result ? <>
+              <p>{String(manual.title || title)}</p>
+              <pre className="runner-ops-manual-preview">{documentMarkdown}</pre>
+            </> : <ul>
+              <li>生成会读取 Runner Workflow YAML、ActionCatalog 和最近运行记录。</li>
+              <li>系统会输出可审核的结构化校验报告。</li>
+              <li>后续仍需在运维手册页确认后发布。</li>
+            </ul>}
           </section>
-          {result ? <p className="publish-review-warning">已准备候选：{String(result.id || result.candidate_id || "pending_review")}</p> : null}
+          {result ? <p className="publish-review-warning">已生成候选：{String(candidate.id || "pending_review")}</p> : null}
           {error ? <p className="publish-review-error" role="alert">{error}</p> : null}
         </main>
         <footer className="publish-review-footer">
           <button type="button" onClick={onClose}>取消</button>
+          {result ? <a className="workflow-secondary-link" data-testid="runner-ops-manual-view-candidate" href={manualPath}>查看候选</a> : null}
           <button type="button" className="primary" data-testid="runner-ops-manual-prepare" disabled={loading || Boolean(result)} onClick={() => void prepareCandidate()}>
-            <BookOpen size={15} />{loading ? "准备中" : result ? "已准备候选" : "准备候选"}
+            <BookOpen size={15} />{mainLabel}
           </button>
         </footer>
       </div>
@@ -1997,9 +2045,9 @@ export function RunnerStudioPage() {
       const dryRunResult = await requestJson("/api/runner-studio/workflows/graph/dry-run", { method: "POST", body: JSON.stringify({ workflow_name: name, graph: savedGraph, vars: {}, triggered_by: "ui" }) });
       const dryRun = dryRunResult.data || dryRunResult;
       upsertWorkflow(name, { status: dryRun.status || "dry_run_passed", validated_graph_hash: dryRun.validated_graph_hash || validation.validated_graph_hash || "", dry_run_graph_hash: dryRun.dry_run_graph_hash || dryRun.validated_graph_hash || validation.validated_graph_hash || "", validation_result: validation });
-      setSaveState({ status: "saved", message: "Dry Run 通过", lastSavedAt: formatSaveTime() });
+      setSaveState({ status: "saved", message: "发布前检查通过", lastSavedAt: formatSaveTime() });
     } catch (error) {
-      setSaveState({ status: "failed", message: "Dry Run 失败", error: (error as Error).message });
+      setSaveState({ status: "failed", message: "发布前检查失败", error: (error as Error).message });
     }
   }
 

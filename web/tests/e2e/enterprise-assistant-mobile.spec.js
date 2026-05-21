@@ -313,7 +313,7 @@ async function routeSharedApis(page) {
   await page.route("**/api/v1/debug/model-input-traces/file**", (route) =>
     route.fulfill({ json: { content: JSON.stringify(traceJson) } }),
   );
-  await page.route("**/api/v1/debug/model-input-traces?limit=150", (route) =>
+  await page.route("**/api/v1/debug/model-input-traces?limit=2000", (route) =>
     route.fulfill({
       json: {
         rootDir: ".data/model-input-traces",

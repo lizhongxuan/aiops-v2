@@ -535,7 +535,7 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("补充运维手册参数");
   });
 
-  it("replaces the textarea with a Dry Run confirmation panel", async () => {
+  it("replaces the textarea with an execution confirmation panel", async () => {
     const state = createInitialAiopsTransportState(
       "thread-dry-run-confirmation",
     );
@@ -556,8 +556,8 @@ describe("ChatPage", () => {
       window.dispatchEvent(
         new CustomEvent("aiops:composer-confirmation", {
           detail: {
-            action: "start_runner_workflow_dry_run",
-            title: "进入 Dry Run",
+            action: "confirm_runner_workflow_execution",
+            title: "确认执行",
             sourceTitle: "MySQL SSH 备份运维手册",
             artifactId: "artifact-preflight-passed",
           },
@@ -570,9 +570,9 @@ describe("ChatPage", () => {
         '[data-testid="ops-manual-generation-confirmation"]',
       ),
     ).not.toBeNull();
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).toContain("MySQL SSH 备份运维手册");
-    expect(container.textContent).toContain("不会执行真实变更");
+    expect(container.textContent).toContain("确认执行绑定 Workflow");
     expect(container.querySelector("textarea")).toBeNull();
 
     const cancel = Array.from(container.querySelectorAll("button")).find(

@@ -90,7 +90,7 @@ func runOpsManualPreflightModelResult(result core.PreflightResult, req core.Pref
 	}
 	switch result.Status {
 	case core.PreflightStatusPassed:
-		payload.Instructions = []string{"Preflight passed. Do not execute the workflow or Dry Run until the user confirms the next action."}
+		payload.Instructions = []string{"Preflight passed. Do not execute the workflow until the user confirms execution or completes required approval."}
 	case core.PreflightStatusBlocked, core.PreflightStatusFailed:
 		payload.Instructions = []string{"Preflight did not pass. State the concrete blocker briefly and use the manual fallback path instead of executing workflow."}
 	}

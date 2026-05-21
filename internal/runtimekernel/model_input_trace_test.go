@@ -226,6 +226,76 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	}
 }
 
+func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-response",
+		TurnID:    "turn-response",
+		Iteration: 1,
+		ModelInput: []*schema.Message{
+			schema.UserMessage("show trace"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+
+	response := &schema.Message{
+		Role:    schema.Assistant,
+		Content: "模型输出 api_key=ak-output-123",
+		ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+			PromptTokens:     21,
+			CompletionTokens: 8,
+			TotalTokens:      29,
+		}},
+	}
+	if err := appendModelTraceResponseFile(path, "llm-1", response, 456*time.Millisecond, nil); err != nil {
+		t.Fatalf("append response: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		Output     string `json:"output"`
+		DurationMs int64  `json:"duration_ms"`
+		Usage      struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+		LLMRequests []struct {
+			ID         string `json:"id"`
+			Output     string `json:"output"`
+			DurationMs int64  `json:"duration_ms"`
+			Usage      struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"llmRequests"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if len(payload.LLMRequests) != 1 || payload.LLMRequests[0].ID != "llm-1" {
+		t.Fatalf("llmRequests = %#v, want appended llm request", payload.LLMRequests)
+	}
+	if !strings.Contains(payload.Output, "[REDACTED]") || strings.Contains(payload.Output, "ak-output-123") {
+		t.Fatalf("output was not redacted: %q", payload.Output)
+	}
+	if payload.DurationMs != 456 || payload.LLMRequests[0].DurationMs != 456 {
+		t.Fatalf("duration_ms root/request = %d/%d, want 456", payload.DurationMs, payload.LLMRequests[0].DurationMs)
+	}
+	if payload.Usage.TotalTokens != 29 || payload.LLMRequests[0].Usage.PromptTokens != 21 || payload.LLMRequests[0].Usage.CompletionTokens != 8 {
+		t.Fatalf("usage root/request = %#v/%#v, want token usage", payload.Usage, payload.LLMRequests[0].Usage)
+	}
+}
+
 func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
@@ -318,6 +388,84 @@ func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 	}
 	if !strings.Contains(string(markdown), "## Diagnostic Trace") || !strings.Contains(string(markdown), "host:server-local") {
 		t.Fatalf("runtime markdown trace missing diagnostic section:\n%s", string(markdown))
+	}
+}
+
+func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	model := &sequentialLoopModel{responses: []*schema.Message{{
+		Role:    schema.Assistant,
+		Content: "诊断完成 token=secret-output",
+		ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+			PromptTokens:     30,
+			CompletionTokens: 12,
+			TotalTokens:      42,
+		}},
+	}}}
+	registry := tooling.NewRegistry()
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-runtime-response-trace",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		HostID:      "server-local",
+		TurnID:      "turn-runtime-response-trace",
+		Input:       "排查 Redis 是否异常",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+
+	session := kernel.sessions.Get("sess-runtime-response-trace")
+	if session == nil || session.CurrentTurn == nil || len(session.CurrentTurn.Iterations) == 0 {
+		t.Fatalf("missing current turn iterations: %#v", session)
+	}
+	tracePath := session.CurrentTurn.Iterations[0].ModelInputTraceFile
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read runtime trace %q: %v", tracePath, err)
+	}
+	var payload struct {
+		Output     string `json:"output"`
+		DurationMs int64  `json:"duration_ms"`
+		Usage      struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+		LLMRequests []struct {
+			ID         string `json:"id"`
+			Output     string `json:"output"`
+			DurationMs int64  `json:"duration_ms"`
+			Usage      struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		} `json:"llmRequests"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal runtime trace: %v", err)
+	}
+	if len(payload.LLMRequests) != 1 {
+		t.Fatalf("llmRequests len = %d, want 1\n%s", len(payload.LLMRequests), string(data))
+	}
+	if payload.Usage.TotalTokens != 42 || payload.LLMRequests[0].Usage.PromptTokens != 30 {
+		t.Fatalf("usage root/request = %#v/%#v, want model usage", payload.Usage, payload.LLMRequests[0].Usage)
+	}
+	if payload.DurationMs <= 0 || payload.LLMRequests[0].DurationMs <= 0 {
+		t.Fatalf("duration root/request = %d/%d, want positive", payload.DurationMs, payload.LLMRequests[0].DurationMs)
+	}
+	if !strings.Contains(payload.Output, "[REDACTED]") || strings.Contains(payload.Output, "secret-output") {
+		t.Fatalf("output was not redacted: %q", payload.Output)
 	}
 }
 

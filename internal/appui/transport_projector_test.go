@@ -236,6 +236,9 @@ func TestTransportProjectorProjectsToolMockAndEvidenceRefs(t *testing.T) {
 	}
 
 	toolBlock := findTransportProcessBlock(t, projected.Turns["turn-tool-evidence"].Process, AiopsTransportProcessKindTool)
+	if toolBlock.Source != "coroot.service_metrics" || !strings.Contains(toolBlock.InputSummary, "redis-local-01 memory") {
+		t.Fatalf("tool block source/input = %q/%q, want tool name and input summary", toolBlock.Source, toolBlock.InputSummary)
+	}
 	if !toolBlock.Mock {
 		t.Fatalf("tool block Mock = false, want true: %+v", toolBlock)
 	}
@@ -899,6 +902,57 @@ func TestTransportProjectorRendersOpsManualPreflightArtifact(t *testing.T) {
 	}
 	if len(artifacts[0].Actions) != 1 || artifacts[0].Actions[0]["id"] != "request_permission" {
 		t.Fatalf("actions = %#v, want request_permission", artifacts[0].Actions)
+	}
+}
+
+func TestTransportProjectorRendersOpsManualPreflightPassedConfirmationAction(t *testing.T) {
+	now := time.Date(2026, 5, 15, 9, 20, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-preflight-passed", "thread-preflight-passed")
+	preflightPayload, _ := json.Marshal(map[string]any{
+		"status":      "passed",
+		"ready":       true,
+		"manual_id":   "manual-redis-rca",
+		"workflow_id": "workflow-redis-rca",
+		"next_action": "confirm_execution",
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-preflight-passed",
+		"toolName":"run_ops_manual_preflight",
+		"displayKind":"ops_manual_preflight_result",
+		"outputPreview":` + string(preflightPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-preflight-passed",
+		SessionID: "session-preflight-passed",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-preflight-passed",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_preflight_result",
+					Summary: "passed",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts := projected.Turns["turn-preflight-passed"].AgentUIArtifacts
+	if len(artifacts) != 1 || artifacts[0].Type != "ops_manual_preflight_result" {
+		t.Fatalf("artifacts = %#v, want one ops_manual_preflight_result", artifacts)
+	}
+	if actions := artifacts[0].Actions; len(actions) != 1 || actions[0]["id"] != "confirm_execution" {
+		t.Fatalf("preflight passed actions = %#v, want confirm_execution", actions)
 	}
 }
 

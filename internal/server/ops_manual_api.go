@@ -17,6 +17,7 @@ const (
 	opsManualErrWorkflowDigest        = "workflow_digest_mismatch"
 	opsManualErrWorkflowVersion       = "workflow_version_locked"
 	opsManualErrInvalidOperationFrame = "invalid_operation_frame"
+	opsManualErrInvalidGenerationReq  = "invalid_workflow_generation_request"
 )
 
 type opsManualHTTPServices interface {
@@ -123,6 +124,31 @@ func (s *HTTPServer) handleOpsManuals(w http.ResponseWriter, r *http.Request) {
 		result, err := service.ListCandidates()
 		if err != nil {
 			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidOperationFrame, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && path == "candidates/generate-from-workflow":
+		var req appui.OpsManualGenerateFromWorkflowRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidGenerationReq, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.WorkflowID) == "" {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidGenerationReq, "workflow_id is required")
+			return
+		}
+		domainReq, err := s.opsManualGenerationRequestFromRunner(r.Context(), req)
+		if err != nil {
+			if sourceErr, ok := err.(workflowSourceError); ok {
+				writeOpsManualError(w, sourceErr.status, opsManualErrInvalidGenerationReq, sourceErr.message)
+				return
+			}
+			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidGenerationReq, err.Error())
+			return
+		}
+		result, err := service.GenerateManualCandidateFromWorkflow(r.Context(), req, domainReq)
+		if err != nil {
+			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidGenerationReq, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, result)

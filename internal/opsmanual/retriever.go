@@ -248,7 +248,7 @@ func evaluateManual(repo ManualRepository, manual OpsManual, frame OperationFram
 	default:
 		match.State = DecisionDirect
 		match.Reasons = append(match.Reasons, "manual structural conditions are satisfied")
-		match.RecommendedNextActions = []string{"fill_parameters", "run_precheck", "start_dry_run"}
+		match.RecommendedNextActions = []string{"fill_parameters", "run_precheck", "confirm_execution"}
 	}
 	return match
 }
@@ -320,6 +320,7 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		Manual:           cloneManual(manual),
 		BoundWorkflowID:  strings.TrimSpace(manual.WorkflowRef.WorkflowID),
 		RunRecordSummary: summary,
+		PreflightStatus:  PreflightStatusNotRun,
 	}
 	filter := hardFilterCandidate(manual, frame, summary)
 	if !filter.Allowed {
@@ -613,11 +614,11 @@ func searchSummary(decision DecisionState, hit *SearchManualHit, frame Operation
 func recommendedNextAction(decision DecisionState) string {
 	switch decision {
 	case DecisionDirectExecute:
-		return "运行 Node 0 预检，通过后再 Dry Run。"
+		return "运行 Node 0 预检，通过后确认或审批执行。"
 	case DecisionNeedInfo:
 		return "补充缺失信息后重新检索。"
 	case DecisionAdapt:
-		return "生成适配工作流草稿，用户审核后 Dry Run。"
+		return "生成适配工作流草稿，用户审核并完成发布前检查。"
 	case DecisionReference:
 		return "没有可直接运行的 Workflow；继续只读自动化排查，若缺目标、时间范围、权限或观测数据会说明阻塞原因。"
 	case DecisionNoMatch:
@@ -722,7 +723,7 @@ func manualMatchFromSearchHit(hit SearchManualHit, summary string) ManualMatch {
 func legacyActionsForSearchHit(hit SearchManualHit) []string {
 	switch hit.UsableMode {
 	case DecisionDirectExecute:
-		return []string{"fill_parameters", "run_preflight_probe", "start_dry_run"}
+		return []string{"fill_parameters", "run_preflight_probe", "confirm_execution"}
 	case DecisionAdapt:
 		return []string{"review_manual", "adapt_workflow"}
 	case DecisionNeedInfo:

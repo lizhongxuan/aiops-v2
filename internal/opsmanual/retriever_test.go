@@ -80,7 +80,12 @@ func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	if matches[0].State != DecisionDirect {
 		t.Fatalf("state = %q, want direct", matches[0].State)
 	}
-	for _, want := range []string{"fill_parameters", "run_preflight_probe", "start_dry_run"} {
+	for _, forbidden := range []string{"start_dry_run"} {
+		if contains(matches[0].RecommendedNextActions, forbidden) {
+			t.Fatalf("actions = %#v, must not contain %s", matches[0].RecommendedNextActions, forbidden)
+		}
+	}
+	for _, want := range []string{"fill_parameters", "run_preflight_probe", "confirm_execution"} {
 		if !contains(matches[0].RecommendedNextActions, want) {
 			t.Fatalf("actions = %#v, want %q", matches[0].RecommendedNextActions, want)
 		}
@@ -139,7 +144,7 @@ func TestSearchOpsManualsDirectExecuteForExactPostgresBackup(t *testing.T) {
 	if result.Manuals[0].PreflightStatus != PreflightStatusNotRun {
 		t.Fatalf("preflight status = %q, want not_run", result.Manuals[0].PreflightStatus)
 	}
-	if result.RecommendedNextAction != "运行 Node 0 预检，通过后再 Dry Run。" {
+	if result.RecommendedNextAction != "运行 Node 0 预检，通过后确认或审批执行。" {
 		t.Fatalf("recommended next action = %q, want preflight guidance", result.RecommendedNextAction)
 	}
 }

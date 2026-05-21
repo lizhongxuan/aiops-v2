@@ -1,6 +1,9 @@
 package opsmanual
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestRunPreflightPassed(t *testing.T) {
 	repo := NewMemoryStore()
@@ -20,8 +23,11 @@ func TestRunPreflightPassed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PreflightStatusPassed || !result.Ready || result.NextAction != "start_dry_run" {
-		t.Fatalf("result = %#v, want passed/ready/start_dry_run", result)
+	if result.Status != PreflightStatusPassed || !result.Ready || result.NextAction != "confirm_execution" {
+		t.Fatalf("result = %#v, want passed/ready/confirm_execution", result)
+	}
+	if result.NextAction == "start_dry_run" {
+		t.Fatalf("runtime preflight must not route to dry run: %#v", result)
 	}
 	if len(result.Evidence) != 2 || result.ArtifactType != "ops_manual_preflight_result" {
 		t.Fatalf("evidence/artifact = %#v, want evidence and artifact type", result)
@@ -90,8 +96,8 @@ func TestRunPreflightBlocksWhenProviderUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Ready || result.NextAction == "start_dry_run" {
-		t.Fatalf("result = %#v, provider unavailable must not enter dry run", result)
+	if result.Ready || result.NextAction == "confirm_execution" || result.NextAction == "request_approval" || result.NextAction == "execute_workflow" {
+		t.Fatalf("result = %#v, provider unavailable must not enter execution confirmation", result)
 	}
 	if result.Status != PreflightStatusBlocked && result.Status != PreflightStatusFailed {
 		t.Fatalf("result = %#v, want blocked or failed", result)
@@ -140,5 +146,57 @@ func TestRunPreflightNoProbeIsNotApplicable(t *testing.T) {
 	}
 	if result.Status != PreflightStatusNotApplicable || !result.Ready {
 		t.Fatalf("result = %#v, want not_applicable ready", result)
+	}
+	if result.NextAction != "confirm_execution" {
+		t.Fatalf("next action = %q, want confirm_execution", result.NextAction)
+	}
+}
+
+func TestRunPreflightMergesWorkflowPlanCheck(t *testing.T) {
+	repo := NewMemoryStore()
+	manual := redisRcaManual()
+	manual.WorkflowRef.WorkflowID = "wf-redis"
+	manual.PreflightProbe = PreflightProbe{ID: "redis_probe", RequiredOutputs: []string{"redis_ping"}}
+	if err := repo.SaveManual(manual); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(repo, WithWorkflowPlanChecker(WorkflowPlanCheckerFunc(
+		func(ctx context.Context, req WorkflowPlanCheckRequest) (WorkflowPlanCheckResult, error) {
+			if req.WorkflowID != "wf-redis" {
+				t.Fatalf("workflow id = %q", req.WorkflowID)
+			}
+			return WorkflowPlanCheckResult{
+				Status:           "passed",
+				WorkflowDigest:   "sha256:wf-redis",
+				WorkflowStatus:   "published",
+				TargetHosts:      []string{"redis-01"},
+				ActionsUsed:      []string{"builtin.tcp_ping", "script.shell"},
+				RequiresApproval: true,
+				RiskLevel:        "high",
+				Summary:          "将对 redis-01 执行 2 个步骤",
+			}, nil
+		},
+	)))
+	result, err := service.RunPreflight(PreflightRequest{
+		ManualID: manual.ID,
+		OperationFrame: OperationFrame{
+			Target: OperationTarget{Type: "redis", Name: "redis-01"},
+		},
+		Parameters: map[string]any{"target_instance": "redis-01"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PreflightStatusPassed || !result.Ready {
+		t.Fatalf("result = %#v", result)
+	}
+	if result.NextAction != "request_approval" {
+		t.Fatalf("next action = %q, want request_approval", result.NextAction)
+	}
+	if result.WorkflowDigest != "sha256:wf-redis" {
+		t.Fatalf("workflow digest = %q", result.WorkflowDigest)
+	}
+	if result.ExecutionPlan.Summary == "" || len(result.ExecutionPlan.ActionsUsed) != 2 {
+		t.Fatalf("execution plan missing: %#v", result.ExecutionPlan)
 	}
 }

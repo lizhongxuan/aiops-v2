@@ -57,71 +57,31 @@ func GenerateCandidateFromWorkflowDraft(input WorkflowDraftInput) (ManualCandida
 	if workflowID == "" {
 		return ManualCandidate{}, fmt.Errorf("workflow_id is required")
 	}
-	parsed := workflowDraftYAML{}
-	if strings.TrimSpace(input.YAML) != "" {
-		if err := yaml.Unmarshal([]byte(input.YAML), &parsed); err != nil {
-			return ManualCandidate{}, err
-		}
+	raw := strings.TrimSpace(input.YAML)
+	if raw == "" {
+		raw = workflowDraftFallbackYAML(workflowID, input.WorkflowVersion)
 	}
-	meta := mergeMetadata(parsed.XOpsManual, input.Metadata)
-	version := firstNonEmpty(input.WorkflowVersion, parsed.Version)
-	digest := firstNonEmpty(input.WorkflowDigest, digestIfRaw(input.YAML))
-	title := firstNonEmpty(metadataString(meta, "title"), parsed.Name, workflowID)
-	now := time.Now().UTC().Format(time.RFC3339)
-	manual := OpsManual{
-		ID:             "manual-candidate-" + slug(workflowID),
-		ManualFamilyID: firstNonEmpty(metadataString(meta, "manual_family_id"), slug(workflowID)),
-		Title:          title,
-		Status:         ManualStatusDraft,
-		Version:        version,
-		Owner:          metadataString(meta, "owner"),
-		WorkflowRef: WorkflowRef{
-			WorkflowID:      workflowID,
-			WorkflowVersion: version,
-			WorkflowDigest:  digest,
-			StorageURI:      strings.TrimSpace(input.StorageURI),
-		},
-		Operation: OperationProfile{
-			TargetType: metadataString(meta, "target_type"),
-			Action:     metadataString(meta, "action"),
-			RiskLevel:  metadataString(meta, "risk_level"),
-		},
-		Applicability: ApplicabilityProfile{
-			Middleware:       metadataString(meta, "middleware"),
-			ExecutionSurface: metadataStringSlice(meta, "execution_surface"),
-			Platform:         metadataStringSlice(meta, "platform"),
-			OS:               metadataStringSlice(meta, "os"),
-		},
-		RequiredContext: RequiredContext{
-			RequiredInputs:   metadataStringSlice(meta, "required_inputs"),
-			RequiredEvidence: metadataStringSlice(meta, "required_evidence"),
-		},
-		ParameterRules:   parameterRulesFromVars(parsed.Vars),
-		Validation:       metadataStringSlice(meta, "validation"),
-		CannotUseWhen:    metadataStringSlice(meta, "cannot_use_when"),
-		RiskNotes:        metadataStringSlice(meta, "risk_notes"),
-		DocumentMarkdown: workflowDraftMarkdown(title, parsed.Description),
-		SearchDoc:        strings.TrimSpace(title + " " + parsed.Description),
-		Metadata:         cloneMap(meta),
-		CreatedAt:        now,
-		UpdatedAt:        now,
+	analysis, err := AnalyzeWorkflowForManual(WorkflowManualGenerationRequest{
+		WorkflowID:      workflowID,
+		WorkflowVersion: input.WorkflowVersion,
+		WorkflowDigest:  input.WorkflowDigest,
+		StorageURI:      input.StorageURI,
+		RawYAML:         []byte(raw),
+	})
+	if err != nil {
+		return ManualCandidate{}, err
 	}
-	if len(manual.RequiredContext.RequiredInputs) == 0 {
-		for name, rule := range manual.ParameterRules {
-			if rule.Required {
-				manual.RequiredContext.RequiredInputs = append(manual.RequiredContext.RequiredInputs, name)
-			}
-		}
+	applyWorkflowDraftMetadataOverrides(&analysis, input.Metadata)
+	candidate, err := BuildWorkflowManualCandidate(analysis)
+	if err != nil {
+		return ManualCandidate{}, err
 	}
-	return ManualCandidate{
-		ID:             "candidate-" + slug(workflowID),
-		SourceType:     "workflow_draft",
-		SourceRefs:     []string{workflowID},
-		ProposedManual: manual,
-		ReviewStatus:   "pending",
-		CreatedAt:      now,
-		UpdatedAt:      now,
-	}, nil
+	candidate.SourceType = "workflow_draft"
+	candidate.ProposedManual.Metadata["source_type"] = "workflow_draft"
+	if values := metadataStringSlice(analysis.XOpsManual, "cannot_use_when"); len(values) > 0 {
+		candidate.ProposedManual.CannotUseWhen = values
+	}
+	return candidate, nil
 }
 
 func GenerateCandidateFromAIChat(req AIChatCandidateRequest) (AIChatCandidateResult, error) {
@@ -205,6 +165,50 @@ func ConvertScriptImportToWorkflowDraft(req ScriptImportRequest) (WorkflowDraftI
 		return WorkflowDraftInput{}, err
 	}
 	return WorkflowDraftInput{WorkflowID: id, WorkflowVersion: "draft", YAML: string(encoded), Metadata: meta}, nil
+}
+
+func workflowDraftFallbackYAML(workflowID string, version string) string {
+	return fmt.Sprintf("version: %s\nname: %s\n", firstNonEmpty(version, "draft"), workflowID)
+}
+
+func applyWorkflowDraftMetadataOverrides(analysis *WorkflowManualAnalysis, metadata map[string]any) {
+	if analysis == nil || len(metadata) == 0 {
+		return
+	}
+	analysis.XOpsManual = mergeMetadata(analysis.XOpsManual, metadata)
+	if value := metadataString(metadata, "target_type"); value != "" {
+		analysis.Operation.TargetType = value
+	}
+	if value := metadataString(metadata, "action"); value != "" {
+		analysis.Operation.Action = value
+	}
+	if value := metadataString(metadata, "risk_level"); value != "" {
+		analysis.Operation.RiskLevel = value
+	}
+	if value := metadataString(metadata, "middleware"); value != "" {
+		analysis.Applicability.Middleware = value
+	}
+	if values := metadataStringSlice(metadata, "execution_surface"); len(values) > 0 {
+		analysis.Applicability.ExecutionSurface = values
+	}
+	if values := metadataStringSlice(metadata, "platform"); len(values) > 0 {
+		analysis.Applicability.Platform = values
+	}
+	if values := metadataStringSlice(metadata, "os"); len(values) > 0 {
+		analysis.Applicability.OS = values
+	}
+	for _, input := range metadataStringSlice(metadata, "required_inputs") {
+		analysis.RequiredContext.RequiredInputs = appendUnique(analysis.RequiredContext.RequiredInputs, input)
+	}
+	for _, evidence := range metadataStringSlice(metadata, "required_evidence") {
+		analysis.RequiredContext.RequiredEvidence = appendUnique(analysis.RequiredContext.RequiredEvidence, evidence)
+	}
+	for _, hint := range metadataStringSlice(metadata, "validation") {
+		analysis.ValidationHints = appendUnique(analysis.ValidationHints, hint)
+	}
+	for _, hint := range metadataStringSlice(metadata, "cannot_use_when") {
+		analysis.CannotUseHints = appendUnique(analysis.CannotUseHints, hint)
+	}
 }
 
 func mergeMetadata(base, override map[string]any) map[string]any {
