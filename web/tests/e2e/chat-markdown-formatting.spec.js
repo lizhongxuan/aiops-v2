@@ -151,6 +151,10 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
     await expect(mdBody.locator("table")).toBeVisible();
     expect(await mdBody.locator("th").count()).toBe(4);
     expect(await mdBody.locator("tbody tr").count()).toBe(3);
+
+    const headerCell = mdBody.locator("th").first();
+    await expect(headerCell).toHaveCSS("padding-left", "12px");
+    await expect(headerCell).toHaveCSS("border-top-width", "1px");
   });
 
   test("code blocks preserve formatting", async ({ page }) => {
