@@ -126,7 +126,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "Nginx 状态检查结果" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ hasText: "Nginx 状态检查结果" });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     await expect(mdBody.locator("h2").first()).toBeVisible();
@@ -145,7 +145,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "服务健康状态" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ has: page.locator("table") });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     await expect(mdBody.locator("table")).toBeVisible();
@@ -162,7 +162,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "检查结果如下" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ hasText: "检查结果如下" });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     const codeBlocks = mdBody.locator("pre code");
@@ -182,7 +182,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "经过检查" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ hasText: "经过检查" });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     const html = await mdBody.innerHTML();
@@ -199,7 +199,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "诊断结果" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ hasText: "诊断结果" });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     await expect(mdBody.locator("h2").first()).toBeVisible();
@@ -222,7 +222,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const mdBody = page.locator(".markdown-body").filter({ hasText: "检查完成" });
+    const mdBody = page.locator(".aiops-message-markdown").filter({ hasText: "检查完成" });
     await expect(mdBody).toBeVisible({ timeout: 10000 });
 
     expect(await mdBody.locator("strong").count()).toBeGreaterThanOrEqual(2);
@@ -242,7 +242,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
     });
 
     // Wait for the user message to confirm page loaded
-    await expect(page.getByText("nginx 正常吗")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".aiops-message-markdown").filter({ hasText: "nginx 正常吗" })).toBeVisible({ timeout: 10000 });
     await page.waitForTimeout(1000);
 
     // The routing JSON should be cleaned by cleanDisplayText
@@ -268,7 +268,7 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
     });
 
     await page.waitForTimeout(1000);
-    const firstMd = page.locator(".markdown-body").first();
+    const firstMd = page.locator(".aiops-message-markdown").first();
     await expect(firstMd).toBeVisible({ timeout: 10000 });
 
     await page.screenshot({

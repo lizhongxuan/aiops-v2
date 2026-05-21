@@ -61,7 +61,7 @@ type ContextFormRequest = {
   force?: boolean;
 };
 
-const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX = "aiops:composer-context-request:dismissed:";
+const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX = "aiops:composer-context-request:dismissed:v2:";
 
 export function AiopsComposer({
   className = "",
@@ -166,7 +166,7 @@ export function AiopsComposer({
       ) {
         return;
       }
-      dismissContextRequestKeys(
+      rememberContextRequestKeys(
         [key, fallbackKey],
         dismissedContextRequestKeysRef.current,
       );
@@ -544,6 +544,12 @@ function dismissContextRequestKeys(keys: string[], memory: Set<string>) {
     } catch {
       // Local storage may be unavailable in restricted browser contexts.
     }
+  }
+}
+
+function rememberContextRequestKeys(keys: string[], memory: Set<string>) {
+  for (const key of keys) {
+    memory.add(key);
   }
 }
 

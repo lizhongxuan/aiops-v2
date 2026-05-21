@@ -36,6 +36,12 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			forbidden: []string{"coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
+			name:      "coroot incidents",
+			input:     "看下 Coroot incidents 最近有哪些事件",
+			wantTools: []string{"coroot.list_services", "coroot.incidents"},
+			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
 			name:      "business impact",
 			input:     "order-api 故障会影响哪些业务能力和租户？",
 			wantTools: []string{"opsgraph.business_impact"},
@@ -166,6 +172,7 @@ func intentPackRuntimeTestTools() []tooling.Tool {
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.rca_report", Layer: tooling.ToolLayerDeferred, Pack: "coroot_rca", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.service_topology", Layer: tooling.ToolLayerDeferred, Pack: "coroot_rca", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.alert_rules", Layer: tooling.ToolLayerDeferred, Pack: "coroot_incident", DeferByDefault: true}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.incidents", Layer: tooling.ToolLayerDeferred, Pack: "coroot_incident", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "opsgraph.business_impact", Layer: tooling.ToolLayerDeferred, Pack: "opsgraph", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_mcp_resource", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},

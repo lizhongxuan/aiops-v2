@@ -101,6 +101,7 @@ func TestChatModePolicy_AllowsProviderSafeCorootReadOnlyTools(t *testing.T) {
 		{"coroot_rca_report", "coroot.rca_report"},
 		{"coroot_service_topology", "coroot.service_topology"},
 		{"coroot_alert_rules", "coroot.alert_rules"},
+		{"coroot_incidents", "coroot.incidents"},
 		{"coroot_incident_timeline", "coroot.incident_timeline"},
 		{"coroot_slo_status", "coroot.slo_status"},
 	} {
@@ -267,6 +268,7 @@ func TestIsReadOnly(t *testing.T) {
 		{"ls_directory", true},
 		{"run_ops_manual_preflight", true},
 		{"coroot.service_metrics", true},
+		{"coroot_incidents", true},
 		{"coroot_rca_report", true},
 		{"file_write", false},
 		{"mysterious_tool", false},

@@ -696,8 +696,12 @@ Use filesystem skill.`)
 		Settings:     settingsRegistry,
 	}
 
-	if err := registerPluginsFromEnv(registrar); err != nil {
+	specs, err := registerPluginsFromEnv(registrar)
+	if err != nil {
 		t.Fatalf("registerPluginsFromEnv() error = %v", err)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("registerPluginsFromEnv() specs len = %d, want 1", len(specs))
 	}
 
 	if _, ok := commandRegistry.GetPrompt("deploy"); !ok {

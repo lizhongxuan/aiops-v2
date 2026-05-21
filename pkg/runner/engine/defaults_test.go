@@ -10,6 +10,8 @@ func TestDefaultRegistryIncludesHTTPAndBuiltinModules(t *testing.T) {
 		"builtin.http_check",
 		"builtin.ssl_expiry_check",
 		"builtin.dns_resolve",
+		"cmd.run",
+		"shell.run",
 	} {
 		if _, ok := reg.Get(action); !ok {
 			t.Fatalf("default registry missing %s", action)

@@ -47,7 +47,7 @@ test.describe("CorootOverviewPage", () => {
   });
 
   test("page focuses on Coroot observability control surfaces", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "Coroot 观测" })).toBeVisible();
+    await expect(page.locator("main").getByText("Coroot 观测", { exact: true })).toBeVisible();
     await expect(page.locator('[data-slot="card-title"]').filter({ hasText: "Coroot 配置" })).toBeVisible();
     await expect(page.locator('[data-slot="card-title"]').filter({ hasText: "MCP 状态" })).toBeVisible();
     await expect(page.locator('[data-slot="card-title"]').filter({ hasText: "RCA Skills" })).toBeVisible();

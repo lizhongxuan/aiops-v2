@@ -8,21 +8,26 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/tooling"
 )
 
 type corootInput struct {
-	Project    string   `json:"project,omitempty"`
-	Namespace  string   `json:"namespace,omitempty"`
-	Status     string   `json:"status,omitempty"`
-	Service    string   `json:"service,omitempty"`
-	TimeRange  string   `json:"timeRange,omitempty"`
-	Metrics    []string `json:"metrics,omitempty"`
-	IncidentID string   `json:"incidentId,omitempty"`
-	Depth      int      `json:"depth,omitempty"`
-	Severity   string   `json:"severity,omitempty"`
-	SLOName    string   `json:"sloName,omitempty"`
+	Project             string   `json:"project,omitempty"`
+	Namespace           string   `json:"namespace,omitempty"`
+	Status              string   `json:"status,omitempty"`
+	Service             string   `json:"service,omitempty"`
+	TimeRange           string   `json:"timeRange,omitempty"`
+	Metrics             []string `json:"metrics,omitempty"`
+	IncidentID          string   `json:"incidentId,omitempty"`
+	Depth               int      `json:"depth,omitempty"`
+	Severity            string   `json:"severity,omitempty"`
+	SLOName             string   `json:"sloName,omitempty"`
+	Query               string   `json:"query,omitempty"`
+	Limit               int      `json:"limit,omitempty"`
+	ShowResolved        *bool    `json:"showResolved,omitempty"`
+	ApplicationCategory string   `json:"applicationCategory,omitempty"`
 }
 
 type ClientProvider interface {
@@ -53,6 +58,7 @@ func corootToolsWithClientProvider(provider ClientProvider) []tooling.Tool {
 		newCorootTool("coroot.rca_report", "Read Coroot RCA summary for a service or incident", rcaReportSchema, visibility, executeWithCorootClient(provider, executeRCAReport)),
 		newCorootTool("coroot.service_topology", "Read Coroot service dependency topology for a service", serviceTopologySchema, visibility, executeWithCorootClient(provider, executeServiceTopology)),
 		newCorootTool("coroot.alert_rules", "List Coroot alert rules as normalized read-only data", alertRulesSchema, visibility, executeWithCorootClient(provider, executeAlertRules)),
+		newCorootTool("coroot.incidents", "List Coroot incidents as normalized read-only data", incidentsSchema, visibility, executeWithCorootClient(provider, executeIncidents)),
 		newCorootTool("coroot.incident_timeline", "Read Coroot incident timeline and RCA milestones", incidentTimelineSchema, visibility, executeWithCorootClient(provider, executeIncidentTimeline)),
 		newCorootTool("coroot.slo_status", "Read current Coroot SLO compliance status for services", sloStatusSchema, visibility, executeWithCorootClient(provider, executeSLOStatus)),
 	}
@@ -82,7 +88,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		InputSchemaData:  schema,
 		OutputSchemaData: corootToolOutputSchema,
 		PromptFunc: func(ctx tooling.PromptContext) string {
-			return "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured Coroot project is used, and do not send default as a placeholder. For ambiguous targets, start with coroot.list_services as a read-only availability/service probe. When the user names a service or a listed service is warning/critical, call coroot.service_metrics to collect metric summaries and native chart/chart_group widgets before final RCA; chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts. When root-cause evidence is needed, call coroot.rca_report or coroot.service_topology. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
+			return "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured Coroot project is used, and do not send default as a placeholder. For ambiguous targets, start with coroot.list_services as a read-only availability/service probe. When the user asks about incidents, alerts, incident ids, or the Coroot incidents page, call coroot.incidents before finalizing; for recent/latest incident lists, do not set status, severity, or applicationCategory unless the user explicitly asks for that filter. When the user names a service or a listed service is warning/critical, call coroot.service_metrics to collect metric summaries and native chart/chart_group widgets before final RCA; chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts. When root-cause evidence is needed, call coroot.rca_report or coroot.service_topology. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
 		},
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
@@ -130,11 +136,11 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 		meta.Pack = "coroot_rca"
 		meta.DeferByDefault = true
 		meta.Triggers = []string{"RCA", "root cause", "根因", "异常", "warning", "延迟升高", "error rate", "SLO", "topology", "依赖", "CPU", "memory", "内存", "net", "网络", "指标", "图表", "趋势", "时序", "metric", "metrics", "chart", "timeseries"}
-	case "coroot.alert_rules", "coroot.incident_timeline":
+	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
 		meta.Layer = tooling.ToolLayerDeferred
 		meta.Pack = "coroot_incident"
 		meta.DeferByDefault = true
-		meta.Triggers = []string{"incident", "alert", "告警", "事件", "timeline"}
+		meta.Triggers = []string{"incident", "incidents", "alert", "告警", "事件", "事故", "timeline"}
 	}
 	return meta
 }
@@ -314,6 +320,63 @@ func executeServiceTopology(client *Client) func(context.Context, json.RawMessag
 	}
 }
 
+func executeIncidents(client *Client) func(context.Context, json.RawMessage) (any, *CorootRawRef, error) {
+	return func(ctx context.Context, input json.RawMessage) (any, *CorootRawRef, error) {
+		in, err := decodeCorootInput(input)
+		if err != nil {
+			return nil, nil, err
+		}
+		project := client.ResolveProject(in.Project)
+		limit := normalizedIncidentLimit(in.Limit)
+		fetchLimit := limit
+		if corootIncidentHasClientSideFilters(in) && fetchLimit < 200 {
+			fetchLimit = 200
+		}
+		raw, rawRef, err := getCorootRaw(ctx, client, incidentsPath(project), url.Values{"limit": {strconv.Itoa(fetchLimit)}})
+		if err != nil {
+			return nil, rawRef, err
+		}
+		incidents := make([]IncidentSummary, 0)
+		for _, obj := range objectArray(raw) {
+			incident := incidentSummaryFromObject(obj)
+			if !corootIncidentMatches(incident, in) {
+				continue
+			}
+			incidents = append(incidents, incident)
+			if len(incidents) >= limit {
+				break
+			}
+		}
+		return IncidentsResult{
+			SchemaVersion: corootSchemaVersion,
+			Tool:          "coroot.incidents",
+			Status:        "ok",
+			Project:       project,
+			Incidents:     incidents,
+			RawRef:        rawRef,
+		}, rawRef, nil
+	}
+}
+
+func normalizedIncidentLimit(limit int) int {
+	if limit <= 0 {
+		return 50
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+func corootIncidentHasClientSideFilters(in corootInput) bool {
+	return strings.TrimSpace(in.Service) != "" ||
+		strings.TrimSpace(in.Query) != "" ||
+		strings.TrimSpace(in.Status) != "" ||
+		strings.TrimSpace(in.Severity) != "" ||
+		strings.TrimSpace(in.ApplicationCategory) != "" ||
+		in.ShowResolved != nil
+}
+
 func executeIncidentTimeline(client *Client) func(context.Context, json.RawMessage) (any, *CorootRawRef, error) {
 	return func(ctx context.Context, input json.RawMessage) (any, *CorootRawRef, error) {
 		in, err := decodeCorootInput(input)
@@ -457,6 +520,10 @@ func applicationPath(project, appID string) string {
 
 func incidentPath(project, incidentID string) string {
 	return "/api/project/" + url.PathEscape(project) + "/incident/" + url.PathEscape(incidentID)
+}
+
+func incidentsPath(project string) string {
+	return "/api/project/" + url.PathEscape(project) + "/incidents"
 }
 
 func rcaPath(project, appID string) string {
@@ -1021,6 +1088,131 @@ func topologyNeighbors(app map[string]any) []string {
 	return out
 }
 
+func incidentSummaryFromObject(obj map[string]any) IncidentSummary {
+	key := strings.TrimPrefix(firstNonBlank(stringFromAny(obj["key"]), stringFromAny(obj["id"])), "i-")
+	applicationID := stringFromAny(obj["application_id"])
+	rca := objectField(obj, "rca")
+	impact, _ := floatFromAny(firstNonNil(obj["impact"], nestedAny(obj, "details", "latency_impact", "percentage"), nestedAny(obj, "details", "availability_impact", "percentage")))
+	return IncidentSummary{
+		ID:                      corootIncidentDisplayID(key),
+		Key:                     key,
+		ApplicationID:           applicationID,
+		Application:             serviceName(applicationID),
+		ApplicationCategory:     stringFromAny(obj["application_category"]),
+		Severity:                stringFromAny(obj["severity"]),
+		State:                   corootIncidentState(obj),
+		Description:             stringFromAny(obj["short_description"]),
+		RCAStatus:               stringFromAny(rca["status"]),
+		RootCause:               firstNonBlank(stringFromAny(rca["root_cause"]), stringFromAny(rca["short_summary"])),
+		ImpactedRequestsPercent: impact,
+		OpenedAt:                corootTimestampString(obj["opened_at"]),
+		ResolvedAt:              corootTimestampString(obj["resolved_at"]),
+		DurationMs:              int64FromAny(obj["duration"]),
+	}
+}
+
+func corootIncidentMatches(incident IncidentSummary, in corootInput) bool {
+	if in.Service != "" && !serviceMatches(incident.ApplicationID, in.Service) {
+		return false
+	}
+	if in.ApplicationCategory != "" && !strings.EqualFold(incident.ApplicationCategory, in.ApplicationCategory) {
+		return false
+	}
+	if in.Severity != "" && !strings.EqualFold(incident.Severity, in.Severity) {
+		return false
+	}
+	if in.Status != "" {
+		status := strings.ToLower(strings.TrimSpace(in.Status))
+		switch status {
+		case "open":
+			if (in.ShowResolved == nil || !*in.ShowResolved) && incident.State == "resolved" {
+				return false
+			}
+		case "resolved":
+			if incident.State != "resolved" {
+				return false
+			}
+		default:
+			if !strings.EqualFold(incident.Severity, status) && !strings.EqualFold(incident.State, status) {
+				return false
+			}
+		}
+	}
+	if in.ShowResolved != nil && !*in.ShowResolved && incident.State == "resolved" {
+		return false
+	}
+	query := strings.ToLower(strings.TrimSpace(in.Query))
+	if query == "" {
+		return true
+	}
+	haystack := strings.ToLower(strings.Join([]string{
+		incident.ID,
+		incident.Key,
+		incident.ApplicationID,
+		incident.Application,
+		incident.ApplicationCategory,
+		incident.Description,
+		incident.Severity,
+		incident.State,
+		incident.RCAStatus,
+		incident.RootCause,
+	}, " "))
+	return strings.Contains(haystack, query)
+}
+
+func corootIncidentDisplayID(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if strings.HasPrefix(key, "i-") {
+		return key
+	}
+	return "i-" + key
+}
+
+func corootIncidentState(obj map[string]any) string {
+	if int64FromAny(obj["resolved_at"]) > 0 {
+		return "resolved"
+	}
+	if severity := strings.ToLower(stringFromAny(obj["severity"])); severity != "" {
+		return severity
+	}
+	return "open"
+}
+
+func corootTimestampString(value any) string {
+	ts := int64FromAny(value)
+	if ts <= 0 {
+		return ""
+	}
+	if ts > 1_000_000_000_000 {
+		return time.UnixMilli(ts).UTC().Format(time.RFC3339)
+	}
+	return time.Unix(ts, 0).UTC().Format(time.RFC3339)
+}
+
+func nestedAny(obj map[string]any, keys ...string) any {
+	var current any = obj
+	for _, key := range keys {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = m[key]
+	}
+	return current
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
 func timelineFromIncident(incident map[string]any) []TimelineEvent {
 	service := stringFromAny(incident["application_id"])
 	severity := stringFromAny(incident["severity"])
@@ -1066,6 +1258,10 @@ func rcaFromRaw(project, service, incidentID string, raw json.RawMessage, rawRef
 }
 
 func objectArray(raw json.RawMessage, keys ...string) []map[string]any {
+	var direct []map[string]any
+	if err := json.Unmarshal(raw, &direct); err == nil && len(direct) > 0 {
+		return direct
+	}
 	root := firstObject(raw)
 	for _, key := range keys {
 		if arr := objectSlice(root[key]); len(arr) > 0 {

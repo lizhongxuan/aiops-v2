@@ -626,11 +626,7 @@ function OpsManualProgressCard({
 
   useEffect(() => {
     if (!needsInput) return;
-    const key = `${artifact.id}:${fields.map((field) => field.id).join("|")}`;
-    if (dispatchedParamResolutionForms.has(key)) return;
     const timer = window.setTimeout(() => {
-      if (dispatchedParamResolutionForms.has(key)) return;
-      dispatchedParamResolutionForms.add(key);
       dispatchContextRequest(
         artifact.id,
         "补充运维手册参数",
@@ -1228,8 +1224,6 @@ export function OpsManualPreflightResultArtifact({
   );
 }
 
-const dispatchedParamResolutionForms = new Set<string>();
-
 export function OpsManualParamResolutionArtifact({
   artifact,
 }: {
@@ -1273,11 +1267,7 @@ export function OpsManualParamResolutionArtifact({
 
   useEffect(() => {
     if (!needsForm) return;
-    const key = `${artifact.id}:${fields.map((field) => field.id).join("|")}`;
-    if (dispatchedParamResolutionForms.has(key)) return;
     const timer = window.setTimeout(() => {
-      if (dispatchedParamResolutionForms.has(key)) return;
-      dispatchedParamResolutionForms.add(key);
       dispatchContextRequest(
         artifact.id,
         "补充运维手册参数",

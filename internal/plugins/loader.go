@@ -510,6 +510,7 @@ func cloneManifest(manifest Manifest) Manifest {
 	manifest.MCPServers = cloneMCPServerConfigs(manifest.MCPServers)
 	manifest.LSPServers = cloneLSPServers(manifest.LSPServers)
 	manifest.Settings = cloneSettingsEntries(manifest.Settings)
+	manifest.AIOps = cloneAIOpsManifest(manifest.AIOps)
 	manifest.AllowedMCPServers = append([]string(nil), manifest.AllowedMCPServers...)
 	manifest.AdditionalDirectories = append([]string(nil), manifest.AdditionalDirectories...)
 	return manifest

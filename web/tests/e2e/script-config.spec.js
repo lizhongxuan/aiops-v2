@@ -46,7 +46,7 @@ test.describe("ScriptConfigPage", () => {
   });
 
   test("page renders with title and stats", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "脚本配置管理" })).toBeVisible();
+    await expect(page.locator("main").getByText("脚本配置管理", { exact: true })).toBeVisible();
   });
 
   test("shows script names in left panel", async ({ page }) => {

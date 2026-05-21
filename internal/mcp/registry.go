@@ -29,6 +29,22 @@ type ServerConfig struct {
 	Source    string
 }
 
+type ServerState string
+
+const (
+	ServerStateDisconnected ServerState = "disconnected"
+	ServerStateConnecting   ServerState = "connecting"
+	ServerStateConnected    ServerState = "connected"
+	ServerStateFailed       ServerState = "failed"
+	ServerStateStale        ServerState = "stale"
+)
+
+type ServerStatus struct {
+	State        ServerState `json:"state,omitempty"`
+	LastError    string      `json:"lastError,omitempty"`
+	RefreshToken string      `json:"refreshToken,omitempty"`
+}
+
 // Resource describes an MCP resource exposed by a server.
 type Resource struct {
 	ServerID    string          `json:"serverId,omitempty"`
@@ -57,6 +73,7 @@ type Registry struct {
 	serverCfgs  map[string]ServerConfig
 	serverTools map[string][]tooling.Tool
 	serverState map[string]bool
+	statuses    map[string]ServerStatus
 	resources   map[string][]Resource
 	contents    map[string]map[string]ResourceContent
 }
@@ -67,6 +84,7 @@ func NewRegistry() *Registry {
 		serverCfgs:  make(map[string]ServerConfig),
 		serverTools: make(map[string][]tooling.Tool),
 		serverState: make(map[string]bool),
+		statuses:    make(map[string]ServerStatus),
 		resources:   make(map[string][]Resource),
 		contents:    make(map[string]map[string]ResourceContent),
 	}
@@ -114,6 +132,9 @@ func (r *Registry) RegisterServer(cfg ServerConfig) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.serverCfgs[cfg.ID] = cfg
+	if _, ok := r.statuses[cfg.ID]; !ok {
+		r.statuses[cfg.ID] = ServerStatus{State: ServerStateDisconnected}
+	}
 	return nil
 }
 
@@ -138,6 +159,36 @@ func (r *Registry) IsServerDisabled(serverID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.serverState[strings.TrimSpace(serverID)]
+}
+
+func (r *Registry) SetServerStatus(serverID string, status ServerStatus) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return
+	}
+	if status.State == "" {
+		status.State = ServerStateDisconnected
+	}
+	status.LastError = strings.TrimSpace(status.LastError)
+	status.RefreshToken = strings.TrimSpace(status.RefreshToken)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statuses[serverID] = status
+}
+
+func (r *Registry) GetServerStatus(serverID string) (ServerStatus, bool) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return ServerStatus{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	status, ok := r.statuses[serverID]
+	if !ok {
+		return ServerStatus{}, false
+	}
+	return status, true
 }
 
 // GetServer returns a cloned server configuration by id.
@@ -300,6 +351,11 @@ func (r *Registry) OnServerConnected(serverID string, tools []tooling.Tool) erro
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.serverTools[serverID] = normalized
+	status := r.statuses[serverID]
+	status.State = ServerStateConnected
+	status.LastError = ""
+	status.RefreshToken = r.dynamicToolRefreshTokenLocked()
+	r.statuses[serverID] = status
 	return nil
 }
 
@@ -311,6 +367,10 @@ func (r *Registry) OnServerDisconnected(serverID string) {
 	delete(r.serverTools, serverID)
 	delete(r.resources, serverID)
 	delete(r.contents, serverID)
+	status := r.statuses[serverID]
+	status.State = ServerStateDisconnected
+	status.RefreshToken = r.dynamicToolRefreshTokenLocked()
+	r.statuses[serverID] = status
 }
 
 // UnregisterServer removes a server config and any connected tools.
@@ -323,6 +383,7 @@ func (r *Registry) UnregisterServer(serverID string) {
 	delete(r.serverTools, serverID)
 	delete(r.resources, serverID)
 	delete(r.contents, serverID)
+	delete(r.statuses, serverID)
 }
 
 // ListServerTools returns the connected tools for one server.
@@ -371,7 +432,10 @@ func (r *Registry) DynamicTools() []tooling.Tool {
 func (r *Registry) DynamicToolRefreshToken() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.dynamicToolRefreshTokenLocked()
+}
 
+func (r *Registry) dynamicToolRefreshTokenLocked() string {
 	h := sha256.New()
 
 	serverIDs := make([]string, 0, len(r.serverCfgs))
@@ -383,6 +447,10 @@ func (r *Registry) DynamicToolRefreshToken() string {
 		cfg := r.serverCfgs[serverID]
 		cfg.Disabled = r.serverState[serverID]
 		writeRegistryFingerprintPart(h, "server", serverFingerprint(cfg))
+		if status, ok := r.statuses[serverID]; ok {
+			writeRegistryFingerprintPart(h, "status", string(status.State))
+			writeRegistryFingerprintPart(h, "status-error", status.LastError)
+		}
 	}
 
 	serverToolIDs := make([]string, 0, len(r.serverTools))

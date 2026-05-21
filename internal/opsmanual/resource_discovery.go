@@ -48,8 +48,9 @@ type ResourceDiscovery interface {
 type DiscoveryCommandRunner func(ctx context.Context, command string, args ...string) ([]byte, error)
 
 type localResourceDiscovery struct {
-	run     DiscoveryCommandRunner
-	timeout time.Duration
+	run      DiscoveryCommandRunner
+	timeout  time.Duration
+	registry *CapabilityRegistry
 }
 
 func NewLocalResourceDiscovery() ResourceDiscovery {
@@ -57,10 +58,17 @@ func NewLocalResourceDiscovery() ResourceDiscovery {
 }
 
 func NewLocalResourceDiscoveryWithRunner(runner DiscoveryCommandRunner) ResourceDiscovery {
+	return NewLocalResourceDiscoveryWithRunnerAndRegistry(runner, nil)
+}
+
+func NewLocalResourceDiscoveryWithRunnerAndRegistry(runner DiscoveryCommandRunner, registry *CapabilityRegistry) ResourceDiscovery {
 	if runner == nil {
 		runner = defaultDiscoveryCommandRunner
 	}
-	return localResourceDiscovery{run: runner, timeout: 2 * time.Second}
+	if registry == nil {
+		registry = DefaultOpsManualCapabilityRegistry()
+	}
+	return localResourceDiscovery{run: runner, timeout: 2 * time.Second, registry: registry}
 }
 
 type noopResourceDiscovery struct{}
@@ -75,17 +83,27 @@ func (noopResourceDiscovery) DiscoverExecutionSurfaces(context.Context, string) 
 
 func (d localResourceDiscovery) DiscoverHostResources(ctx context.Context, host string) ([]ResourceCandidate, error) {
 	var out []ResourceCandidate
-	out = append(out, d.discoverDockerResources(ctx, host)...)
-	out = append(out, d.discoverHostProcessResources(ctx, host)...)
-	out = append(out, d.discoverK8sResources(ctx, host)...)
-	out = append(out, d.discoverCorootResources(ctx, host)...)
+	providers := d.registry.ResourceDiscoveryProviders()
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("%s", d.registry.UnavailableMessage("resource discovery"))
+	}
+	for _, provider := range providers {
+		switch strings.TrimSpace(provider.ID) {
+		case resourceProviderDocker:
+			out = append(out, d.discoverDockerResources(ctx, host)...)
+		case resourceProviderHost:
+			out = append(out, d.discoverHostProcessResources(ctx, host)...)
+		case resourceProviderKubernetes:
+			out = append(out, d.discoverK8sResources(ctx, host)...)
+		}
+	}
 	return dedupeResourceCandidates(out), nil
 }
 
 func (d localResourceDiscovery) DiscoverExecutionSurfaces(ctx context.Context, host string) ([]ParamCandidate, error) {
 	resources, err := d.DiscoverHostResources(ctx, host)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	var out []ParamCandidate
 	for _, resource := range resources {
@@ -285,10 +303,6 @@ func (d localResourceDiscovery) discoverK8sServices(ctx context.Context, host st
 		})
 	}
 	return out
-}
-
-func (d localResourceDiscovery) discoverCorootResources(context.Context, string) []ResourceCandidate {
-	return nil
 }
 
 func (d localResourceDiscovery) runWithTimeout(ctx context.Context, command string, args ...string) ([]byte, error) {

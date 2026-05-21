@@ -36,6 +36,34 @@ func (r *mcpRepoStub) SaveMCPServers(items []store.MCPServerRecord) error {
 	return nil
 }
 
+type mcpRuntimeStub struct {
+	registry     *mcp.Registry
+	connected    []string
+	refreshed    []string
+	disconnected []string
+}
+
+func (r *mcpRuntimeStub) Connect(_ context.Context, serverID string) error {
+	r.connected = append(r.connected, serverID)
+	return r.registry.OnServerConnected(serverID, []tooling.Tool{&tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: serverID + ".search", Description: "search"},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "ok"}, nil
+		},
+	}})
+}
+
+func (r *mcpRuntimeStub) Disconnect(_ context.Context, serverID string) error {
+	r.disconnected = append(r.disconnected, serverID)
+	r.registry.OnServerDisconnected(serverID)
+	return nil
+}
+
+func (r *mcpRuntimeStub) RefreshTools(ctx context.Context, serverID string) error {
+	r.refreshed = append(r.refreshed, serverID)
+	return r.Connect(ctx, serverID)
+}
+
 func TestMCPServiceListAndRuntimeActions(t *testing.T) {
 	repo := &mcpRepoStub{
 		items: []store.MCPServerRecord{
@@ -141,6 +169,50 @@ func TestMCPServiceListAndRuntimeActions(t *testing.T) {
 	}
 	if findMCPItem(deleted.Items, "search") != nil {
 		t.Fatal("search should be removed after delete")
+	}
+}
+
+func TestMCPServiceUsesRuntimeForConnectRefreshAndDisconnect(t *testing.T) {
+	repo := &mcpRepoStub{}
+	registry := mcp.NewRegistry()
+	runtime := &mcpRuntimeStub{registry: registry}
+	svc := NewMCPServiceWithRuntime(repo, registry, runtime)
+
+	created, err := svc.Create(context.Background(), MCPServerUpsert{
+		Name:      "docs",
+		Transport: "stdio",
+		Command:   "docs-mcp",
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(runtime.connected) != 1 || runtime.connected[0] != "docs" {
+		t.Fatalf("runtime connected = %#v, want docs", runtime.connected)
+	}
+	if got := findMCPItem(created.Items, "docs"); got == nil || got.ToolCount != 1 || got.Status != "connected" {
+		t.Fatalf("docs after create = %+v, want connected with tool count 1", got)
+	}
+
+	refreshed, err := svc.Act(context.Background(), "docs", "refresh")
+	if err != nil {
+		t.Fatalf("Act(refresh) error = %v", err)
+	}
+	if len(runtime.refreshed) != 1 || runtime.refreshed[0] != "docs" {
+		t.Fatalf("runtime refreshed = %#v, want docs", runtime.refreshed)
+	}
+	if got := findMCPItem(refreshed.Items, "docs"); got == nil || got.ToolCount != 1 {
+		t.Fatalf("docs after refresh = %+v, want tool count 1", got)
+	}
+
+	closed, err := svc.Act(context.Background(), "docs", "close")
+	if err != nil {
+		t.Fatalf("Act(close) error = %v", err)
+	}
+	if len(runtime.disconnected) != 1 || runtime.disconnected[0] != "docs" {
+		t.Fatalf("runtime disconnected = %#v, want docs", runtime.disconnected)
+	}
+	if got := findMCPItem(closed.Items, "docs"); got == nil || got.ToolCount != 0 || got.Status != "disconnected" {
+		t.Fatalf("docs after close = %+v, want disconnected with no tools", got)
 	}
 }
 

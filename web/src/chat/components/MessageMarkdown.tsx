@@ -50,7 +50,17 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
 }
 
 function normalizeFinalAnswerMarkdown(value: string) {
-  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(normalizeStandaloneSectionLabels(value)));
+  return normalizeLooseNestedListLabels(
+    normalizeDetachedSourceLinks(
+      normalizeStandaloneSectionLabels(stripRoutingMetadata(value)),
+    ),
+  );
+}
+
+function stripRoutingMetadata(value: string) {
+  return value
+    .replace(/(^|\n)\s*\{[^{}\n]*"route"\s*:\s*"[^"]*"[^{}\n]*\}\s*(?=\n|$)/g, "$1")
+    .trim();
 }
 
 function normalizeStandaloneSectionLabels(value: string) {

@@ -167,7 +167,7 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 		"do not expand a long next-step plan",
 		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
 		"resolve_ops_manual_params plus run_ops_manual_preflight have already passed",
-		"do not run extra host, shell, Docker, Kubernetes, or Coroot probes",
+		"do not run extra host, shell, Docker, Kubernetes, or observability probes",
 		"1-3 bullets total",
 		"no headings and no separate evidence section",
 		"concise conclusion with compact evidence",
@@ -175,20 +175,19 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 	})
 }
 
-func TestSemanticPromptCorootChartReportsAreRenderableArtifacts(t *testing.T) {
+func TestSemanticPromptDoesNotInlineProviderSpecificCorootRules(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
-	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+	assertPromptOmitsAll(t, "developer", compiled.Developer.Content, []string{
 		"Coroot service_metrics returns chartReports",
 		"Agent-to-UI coroot_chart artifacts",
-		"rendered directly in the chat UI",
 		"Coroot chart summaries",
-		"support root-cause conclusions",
-		"do not output UI layout or placement instructions",
-		"do not tell the user the chat cannot render Coroot-style charts",
-		"do not ask for a Coroot screenshot",
+	})
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"dynamically available observability tools",
+		"read-only evidence sources",
 	})
 }
 
@@ -227,7 +226,7 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"need_info",
 		"need_info with one or more manuals",
 		"immediate next tool call must be resolve_ops_manual_params with the matched manual_id",
-		"Do not run host commands, Coroot probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
+		"do not run host commands, monitoring probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
 		"need_info with no manuals",
 		"do not call resolve_ops_manual_params because there is no manual_id",
 		"call search_ops_manuals again with an explicit operation_frame",
@@ -237,9 +236,8 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"do not repeat questions or a template in prose",
 		"Do not duplicate Agent-to-UI card details",
 		"one short status sentence plus the smallest useful question or next action",
-		"Coroot tools are visible",
-		"session-bound aiops.coroot.project",
-		"Do not ask the user whether Coroot evidence exists",
+		"dynamically available observability tools are visible",
+		"Do not ask the user whether configured observability evidence exists",
 		"system cannot inspect",
 		"adapt",
 		"reference_only",
@@ -257,7 +255,7 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"do not duplicate the same fields as a multiline prose template",
 		"resolve_ops_manual_params returns ambiguous or need_user_input",
 		"stop tool use and wait for the user to submit the structured Agent-to-UI form",
-		"do not run host commands, Coroot probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
+		"do not run host commands, monitoring probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
 		"ask for user confirmation and then run it after confirmation",
 		"direct_execute",
 		"run_ops_manual_preflight",

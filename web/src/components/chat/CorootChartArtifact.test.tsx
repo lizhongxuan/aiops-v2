@@ -80,8 +80,8 @@ describe("CorootChartArtifact", () => {
       );
     });
 
-    expect(container.querySelector('[data-testid="coroot-native-charts"]')?.className).toContain("max-w-[560px]");
-    expect(container.querySelector('svg[role="img"]')?.className.baseVal).toContain("h-[180px]");
+    expect(container.querySelector('[data-testid="coroot-native-charts"]')?.className).toContain("max-w-[640px]");
+    expect(container.querySelector('svg[role="img"]')?.className.baseVal).toContain("h-[220px]");
   });
 
   it("filters low-value CPU charts from the Coroot report", async () => {

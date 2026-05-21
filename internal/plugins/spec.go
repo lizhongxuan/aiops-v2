@@ -25,6 +25,7 @@ type Manifest struct {
 	MCPServers                    []mcp.ServerConfig
 	LSPServers                    []lsp.ServerConfig
 	Settings                      []settings.Entry
+	AIOps                         AIOpsManifest
 	StrictPluginOnlyCustomization bool
 	AllowedMCPServers             []string
 	AdditionalDirectories         []string

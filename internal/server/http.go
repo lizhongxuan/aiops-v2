@@ -244,6 +244,13 @@ func (s *HTTPServer) registerRoutes() {
 			resourceOpts = append(resourceOpts, WithCorootConfigRepository(repo))
 		}
 	}
+	if provider, ok := s.ui.(interface {
+		UICardService() appui.UICardService
+	}); ok {
+		if service := provider.UICardService(); service != nil {
+			resourceOpts = append(resourceOpts, WithUICardService(service))
+		}
+	}
 	NewResourceServer(resourceOpts...).RegisterOnMux(s.mux)
 
 	// Approval endpoints

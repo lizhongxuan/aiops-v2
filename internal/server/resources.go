@@ -27,6 +27,14 @@ func WithCorootConfigRepository(repo appui.CorootConfigRepository) ResourceServe
 	}
 }
 
+func WithUICardService(service appui.UICardService) ResourceServerOption {
+	return func(rs *ResourceServer) {
+		if service != nil {
+			rs.uiCards = service
+		}
+	}
+}
+
 // NewResourceServer creates a ResourceServer and registers all resource routes.
 func NewResourceServer(opts ...ResourceServerOption) *ResourceServer {
 	rs := &ResourceServer{

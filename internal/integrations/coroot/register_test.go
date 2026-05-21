@@ -1,9 +1,11 @@
 package coroot
 
 import (
+	"context"
 	"testing"
 
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/tooling"
 )
 
@@ -26,18 +28,60 @@ func assertCorootVisibility(t *testing.T, tool tooling.Tool, session, mode strin
 	}
 }
 
-func TestRegisterBuiltinsRequiresRegistry(t *testing.T) {
-	if err := RegisterBuiltins(nil, "http://localhost:8080"); err == nil {
-		t.Fatal("expected nil registry to fail")
+type staticClientProvider struct {
+	client *Client
+}
+
+func (p staticClientProvider) CorootClient(context.Context) (*Client, error) {
+	return p.client, nil
+}
+
+func registerCorootPluginForTest(t *testing.T, registry *mcp.Registry) {
+	t.Helper()
+	client, err := NewClient(ClientConfigFromEnv("http://localhost:8080"))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	spec, err := BuiltinPluginSpec(staticClientProvider{client: client}, client.BaseURL())
+	if err != nil {
+		t.Fatalf("BuiltinPluginSpec() error = %v", err)
+	}
+	if err := (&plugins.Registrar{MCP: registry}).Register(spec); err != nil {
+		t.Fatalf("Register(plugin spec) error = %v", err)
 	}
 }
 
-func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
+func TestBuiltinPluginSpecRequiresClientProvider(t *testing.T) {
+	if _, err := BuiltinPluginSpec(nil, "http://localhost:8080"); err == nil {
+		t.Fatal("expected nil provider to fail")
+	}
+}
+
+func TestBuiltinPluginSpecWithoutDisplayEndpointRegistersBuiltinServer(t *testing.T) {
+	client, err := NewClient(ClientConfigFromEnv("http://localhost:8080"))
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	spec, err := BuiltinPluginSpec(staticClientProvider{client: client}, "")
+	if err != nil {
+		t.Fatalf("BuiltinPluginSpec() error = %v", err)
+	}
+	if len(spec.MCPServers) != 1 {
+		t.Fatalf("MCPServers len = %d, want 1", len(spec.MCPServers))
+	}
+	cfg := spec.MCPServers[0].Config
+	if cfg.Transport != "builtin" {
+		t.Fatalf("Transport = %q, want builtin", cfg.Transport)
+	}
+	if len(cfg.Command) != 0 {
+		t.Fatalf("Command = %#v, want empty command for in-process builtin server", cfg.Command)
+	}
+}
+
+func TestBuiltinPluginSpecRegistersCorootServerAndTools(t *testing.T) {
 	mcpRegistry := mcp.NewRegistry()
 
-	if err := RegisterBuiltins(mcpRegistry, "http://localhost:8080"); err != nil {
-		t.Fatalf("RegisterBuiltins() error = %v", err)
-	}
+	registerCorootPluginForTest(t, mcpRegistry)
 
 	cfg, ok := mcpRegistry.GetServer("coroot")
 	if !ok {
@@ -46,19 +90,19 @@ func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
 	if cfg.Name != "coroot" {
 		t.Fatalf("GetServer().Name = %q, want coroot", cfg.Name)
 	}
-	if cfg.Transport != "http" {
-		t.Fatalf("GetServer().Transport = %q, want http", cfg.Transport)
+	if cfg.Transport != "builtin" {
+		t.Fatalf("GetServer().Transport = %q, want builtin", cfg.Transport)
 	}
 	if len(cfg.Command) != 1 || cfg.Command[0] != "http://localhost:8080" {
 		t.Fatalf("GetServer().Command = %#v, want endpoint command", cfg.Command)
 	}
 
 	tools := mcpRegistry.ListServerTools("coroot")
-	if len(tools) != 7 {
-		t.Fatalf("ListServerTools(coroot) len = %d, want 7", len(tools))
+	if len(tools) != 8 {
+		t.Fatalf("ListServerTools(coroot) len = %d, want 8", len(tools))
 	}
-	if dynamic := mcpRegistry.DynamicTools(); len(dynamic) != 7 {
-		t.Fatalf("DynamicTools() len = %d, want 7", len(dynamic))
+	if dynamic := mcpRegistry.DynamicTools(); len(dynamic) != 8 {
+		t.Fatalf("DynamicTools() len = %d, want 8", len(dynamic))
 	}
 
 	for _, name := range []string{
@@ -67,6 +111,7 @@ func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
 		"coroot.rca_report",
 		"coroot.service_topology",
 		"coroot.alert_rules",
+		"coroot.incidents",
 		"coroot.incident_timeline",
 		"coroot.slo_status",
 	} {
@@ -94,11 +139,9 @@ func TestRegisterBuiltinsRegistersCorootServerAndTools(t *testing.T) {
 	}
 }
 
-func TestRegisterBuiltinsLayersCorootToolsIntoDeferredPacks(t *testing.T) {
+func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 	mcpRegistry := mcp.NewRegistry()
-	if err := RegisterBuiltins(mcpRegistry, "http://localhost:8080"); err != nil {
-		t.Fatalf("RegisterBuiltins() error = %v", err)
-	}
+	registerCorootPluginForTest(t, mcpRegistry)
 	tools := mcpRegistry.ListServerTools("coroot")
 
 	list := corootToolByName(t, tools, "coroot.list_services").Metadata()
@@ -111,7 +154,7 @@ func TestRegisterBuiltinsLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want coroot_rca deferred", name, meta.Layer, meta.Pack, meta.DeferByDefault)
 		}
 	}
-	for _, name := range []string{"coroot.alert_rules", "coroot.incident_timeline"} {
+	for _, name := range []string{"coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline"} {
 		meta := corootToolByName(t, tools, name).Metadata()
 		if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "coroot_incident" || !meta.DeferByDefault {
 			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want coroot_incident deferred", name, meta.Layer, meta.Pack, meta.DeferByDefault)
@@ -129,13 +172,13 @@ func TestRegisterBuiltinsLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 			t.Fatalf("coroot_rca tools = %v, want %s", rcaNames, want)
 		}
 	}
-	for _, forbidden := range []string{"coroot.alert_rules", "coroot.incident_timeline"} {
+	for _, forbidden := range []string{"coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline"} {
 		if containsCorootToolName(rcaNames, forbidden) {
 			t.Fatalf("coroot_rca tools = %v, should not include %s", rcaNames, forbidden)
 		}
 	}
 	incidentNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"coroot_incident"}}))
-	for _, want := range []string{"coroot.list_services", "coroot.alert_rules", "coroot.incident_timeline"} {
+	for _, want := range []string{"coroot.list_services", "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline"} {
 		if !containsCorootToolName(incidentNames, want) {
 			t.Fatalf("coroot_incident tools = %v, want %s", incidentNames, want)
 		}

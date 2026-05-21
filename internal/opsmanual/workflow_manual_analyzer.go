@@ -9,6 +9,13 @@ import (
 )
 
 func AnalyzeWorkflowForManual(req WorkflowManualGenerationRequest) (WorkflowManualAnalysis, error) {
+	return AnalyzeWorkflowForManualWithCapabilityRegistry(req, DefaultOpsManualCapabilityRegistry())
+}
+
+func AnalyzeWorkflowForManualWithCapabilityRegistry(req WorkflowManualGenerationRequest, registry *CapabilityRegistry) (WorkflowManualAnalysis, error) {
+	if registry == nil {
+		registry = DefaultOpsManualCapabilityRegistry()
+	}
 	workflowID := strings.TrimSpace(req.WorkflowID)
 	if workflowID == "" {
 		return WorkflowManualAnalysis{}, fmt.Errorf("workflow_id is required")
@@ -38,15 +45,16 @@ func AnalyzeWorkflowForManual(req WorkflowManualGenerationRequest) (WorkflowManu
 		RecentRuns:      cloneRunRecords(req.RecentRuns),
 	}
 
-	analysis.Operation = inferWorkflowOperation(wf, xOpsManual, &analysis)
-	analysis.Applicability = inferWorkflowApplicability(wf, xOpsManual)
-	analysis.ParameterRules = workflowParameterRules(wf, actionSpecs, &analysis)
+	analysis.Operation = inferWorkflowOperation(wf, xOpsManual, &analysis, registry)
+	analysis.Applicability = inferWorkflowApplicability(wf, xOpsManual, registry)
+	analysis.ParameterRules = workflowParameterRules(wf, actionSpecs, &analysis, registry)
 	analysis.RequiredContext.RequiredInputs = requiredInputsFromParameterRules(analysis.ParameterRules)
 	analysis.Steps = summarizeWorkflowSteps(wf, actionSpecs, &analysis)
 	analysis.GraphStages = summarizeWorkflowGraphStages(wf)
 	analysis.ValidationHints = workflowValidationHints(wf, analysis)
 	analysis.CannotUseHints = metadataStringSlice(xOpsManual, "cannot_use_when")
 	analysis.Operation.RiskLevel = inferWorkflowRiskLevel(wf, analysis, actionSpecs)
+	applyCapabilityPreflightProbe(&analysis, registry)
 	if analysis.Operation.RiskLevel == "" {
 		analysis.Operation.RiskLevel = "medium"
 	}
@@ -88,7 +96,7 @@ func workflowXOpsManual(wf workflow.Workflow) map[string]any {
 	return nil
 }
 
-func inferWorkflowOperation(wf workflow.Workflow, meta map[string]any, analysis *WorkflowManualAnalysis) OperationProfile {
+func inferWorkflowOperation(wf workflow.Workflow, meta map[string]any, analysis *WorkflowManualAnalysis, registry *CapabilityRegistry) OperationProfile {
 	op := OperationProfile{
 		TargetType: metadataString(meta, "target_type"),
 		Action:     metadataString(meta, "action"),
@@ -99,36 +107,11 @@ func inferWorkflowOperation(wf workflow.Workflow, meta map[string]any, analysis 
 		return op
 	}
 	text := workflowSemanticText(wf)
-	lower := strings.ToLower(text)
-	switch {
-	case containsAny(lower, "postgresql", "postgres", "pg-") && strings.Contains(lower, "restore"):
-		op.TargetType = firstNonEmpty(op.TargetType, "postgresql")
-		op.Action = firstNonEmpty(op.Action, "restore")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions postgresql restore")
-	case containsAny(lower, "postgresql", "postgres", "pg-") && containsAny(lower, "backup", "dump"):
-		op.TargetType = firstNonEmpty(op.TargetType, "postgresql")
-		op.Action = firstNonEmpty(op.Action, "backup")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions postgresql backup")
-	case strings.Contains(lower, "mysql") && containsAny(lower, "backup", "dump"):
-		op.TargetType = firstNonEmpty(op.TargetType, "mysql")
-		op.Action = firstNonEmpty(op.Action, "backup")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions mysql backup")
-	case strings.Contains(lower, "kubelet"):
-		op.TargetType = firstNonEmpty(op.TargetType, "kubelet")
-		op.Action = firstNonEmpty(op.Action, "repair")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions kubelet repair")
-	case containsAny(lower, "dns", "tcp", "tls", "ssl", "http") && containsAny(lower, "probe", "inspect", "check"):
-		op.TargetType = firstNonEmpty(op.TargetType, "network_service")
-		op.Action = firstNonEmpty(op.Action, "inspect")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions network probes")
-	case containsAny(lower, "incident", "itsm", "ticket", "chatops"):
-		op.TargetType = firstNonEmpty(op.TargetType, "incident")
-		op.Action = firstNonEmpty(op.Action, "create_or_notify")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions incident/chatops")
-	case strings.Contains(lower, "redis") && containsAny(lower, "memory", "rca", "diagnos", "dry run", "策略"):
-		op.TargetType = firstNonEmpty(op.TargetType, "redis")
-		op.Action = firstNonEmpty(op.Action, "rca_or_repair")
-		recordAnalysisEvidence(analysis, "operation", "workflow text mentions redis memory operation")
+	targetType, action, evidence := registry.InferWorkflowOperation(text)
+	if targetType != "" || action != "" {
+		op.TargetType = firstNonEmpty(op.TargetType, targetType)
+		op.Action = firstNonEmpty(op.Action, action)
+		recordAnalysisEvidence(analysis, "operation", firstNonEmpty(evidence, "capability taxonomy matched workflow operation"))
 	}
 	return op
 }
@@ -166,7 +149,7 @@ func mapValuesText(values map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-func inferWorkflowApplicability(wf workflow.Workflow, meta map[string]any) ApplicabilityProfile {
+func inferWorkflowApplicability(wf workflow.Workflow, meta map[string]any, registry *CapabilityRegistry) ApplicabilityProfile {
 	app := ApplicabilityProfile{
 		Middleware:       metadataString(meta, "middleware"),
 		ExecutionSurface: metadataStringSlice(meta, "execution_surface"),
@@ -176,38 +159,29 @@ func inferWorkflowApplicability(wf workflow.Workflow, meta map[string]any) Appli
 	}
 	text := strings.ToLower(workflowSemanticText(wf))
 	if app.Middleware == "" {
-		switch {
-		case containsAny(text, "postgresql", "postgres", "pg-"):
-			app.Middleware = "postgresql"
-		case strings.Contains(text, "mysql"):
-			app.Middleware = "mysql"
-		case strings.Contains(text, "redis"):
-			app.Middleware = "redis"
-		case strings.Contains(text, "kubelet"):
-			app.Middleware = "kubelet"
-		}
+		app.Middleware = registry.DetectMiddlewareType(text)
 	}
 	if len(app.ExecutionSurface) == 0 {
-		if containsAny(text, "ssh", "systemctl", "journalctl", "shell", "script.shell") {
-			app.ExecutionSurface = []string{"ssh"}
-		} else if containsAny(text, "http.request", "builtin.", "probe") {
-			app.ExecutionSurface = []string{"runner"}
+		if surface := registry.MatchExecutionSurface(text); surface != "" {
+			app.ExecutionSurface = []string{surface}
 		}
 	}
 	if len(app.Platform) == 0 {
-		if containsAny(text, "kube", "kubectl", "pod") {
-			app.Platform = []string{"kubernetes"}
+		if platform := registry.MatchPlatform(text); platform != "" {
+			app.Platform = []string{platform}
 		} else if len(wf.Inventory.Hosts) > 0 {
 			app.Platform = []string{"vm"}
 		}
 	}
-	if len(app.OS) == 0 && strings.Contains(text, "ubuntu") {
-		app.OS = []string{"ubuntu"}
+	if len(app.OS) == 0 {
+		if osName := registry.MatchOS(text); osName != "" {
+			app.OS = []string{osName}
+		}
 	}
 	return app
 }
 
-func workflowParameterRules(wf workflow.Workflow, actionSpecs map[string]ActionSpecSummary, analysis *WorkflowManualAnalysis) map[string]ParameterRule {
+func workflowParameterRules(wf workflow.Workflow, actionSpecs map[string]ActionSpecSummary, analysis *WorkflowManualAnalysis, registry *CapabilityRegistry) map[string]ParameterRule {
 	rules := map[string]ParameterRule{}
 	for key, value := range wf.Vars {
 		name := strings.TrimSpace(key)
@@ -261,7 +235,45 @@ func workflowParameterRules(wf workflow.Workflow, actionSpecs map[string]ActionS
 		}
 		collectSecretFindings("steps."+step.Name+".args", step.Args, analysis)
 	}
+	if analysis != nil && registry != nil {
+		for _, hint := range registry.ParameterHintsFor(analysis.Operation.TargetType, analysis.Operation.Action) {
+			if strings.TrimSpace(hint.ID) == "" {
+				continue
+			}
+			rule := rules[hint.ID]
+			rule.Source = firstNonEmpty(rule.Source, hint.Source)
+			if hint.Required {
+				rule.Required = true
+			}
+			rules[hint.ID] = rule
+		}
+	}
 	return rules
+}
+
+func applyCapabilityPreflightProbe(analysis *WorkflowManualAnalysis, registry *CapabilityRegistry) {
+	if analysis == nil || registry == nil {
+		return
+	}
+	probe, ok := registry.PreflightProbeFor(analysis.Operation.TargetType, analysis.Operation.Action)
+	if !ok {
+		return
+	}
+	if riskLevelRank(probe.RiskLevel) >= riskLevelRank("medium") {
+		analysis.Operation.RiskLevel = maxRiskLevel(analysis.Operation.RiskLevel, probe.RiskLevel)
+	}
+	if analysis.XOpsManual == nil {
+		analysis.XOpsManual = map[string]any{}
+	}
+	if _, exists := analysis.XOpsManual["preflight_probe"]; !exists {
+		analysis.XOpsManual["preflight_probe"] = map[string]any{
+			"id":         strings.TrimSpace(probe.ID),
+			"type":       "capability_pack",
+			"read_only":  true,
+			"risk_level": strings.TrimSpace(probe.RiskLevel),
+		}
+	}
+	recordAnalysisEvidence(analysis, "preflight_probe", "capability pack preflight probe "+strings.TrimSpace(probe.ID))
 }
 
 func requiredInputsFromParameterRules(rules map[string]ParameterRule) []string {
@@ -358,7 +370,7 @@ func workflowValidationHints(wf workflow.Workflow, analysis WorkflowManualAnalys
 		}
 	}
 	text := strings.ToLower(workflowSemanticText(wf))
-	for _, marker := range []string{"pg_isready", "node ready", "kubelet_ready", "health endpoint", "status_code"} {
+	for _, marker := range DefaultOpsManualCapabilityRegistry().WorkflowValidationMarkers() {
 		if strings.Contains(text, marker) {
 			hints = appendUnique(hints, marker)
 		}
@@ -459,7 +471,7 @@ func stepTextLooksDataMutating(text string) bool {
 }
 
 func stepTextLooksServiceRestart(text string) bool {
-	return containsAny(text, "systemctl restart", "systemctl stop", "systemctl start", "service restart", "restart kubelet", "stop postgres", "start postgres")
+	return DefaultOpsManualCapabilityRegistry().StepTextLooksServiceRestart(text)
 }
 
 func collectSecretFindings(prefix string, value any, analysis *WorkflowManualAnalysis) {

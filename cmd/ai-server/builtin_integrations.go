@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/integrations/coroot"
-	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/store"
 )
 
@@ -15,14 +15,28 @@ type corootConfigRepository interface {
 	GetCorootConfig() (*store.CorootConfig, error)
 }
 
-func registerBuiltinIntegrations(mcpRegistry *mcp.Registry, repo corootConfigRepository) error {
-	if mcpRegistry == nil {
-		return nil
+func builtinPluginSpecs(repo corootConfigRepository) ([]plugins.Spec, error) {
+	spec, err := coroot.BuiltinPluginSpec(storeCorootClientProvider{repo: repo}, "")
+	if err != nil {
+		return nil, err
 	}
-	if err := coroot.RegisterBuiltinsWithClientProvider(mcpRegistry, storeCorootClientProvider{repo: repo}, ""); err != nil {
-		return err
+	return []plugins.Spec{spec}, nil
+}
+
+func registerBuiltinPlugins(registrar *plugins.Registrar, repo corootConfigRepository) ([]plugins.Spec, error) {
+	if registrar == nil {
+		return nil, nil
 	}
-	return nil
+	specs, err := builtinPluginSpecs(repo)
+	if err != nil {
+		return nil, err
+	}
+	for _, spec := range specs {
+		if err := registrar.Register(spec); err != nil {
+			return nil, err
+		}
+	}
+	return specs, nil
 }
 
 type storeCorootClientProvider struct {

@@ -420,8 +420,18 @@ test.describe("Ops Manual workflow UX", () => {
   });
 
   test("short Redis troubleshooting input does not show typing precheck", async ({ page }) => {
+    await page.route("**/api/v1/llm-config", async (route) => {
+      await route.fulfill({
+        json: {
+          provider: "mock",
+          model: "browser-flow",
+          apiKeySet: true,
+          bifrostActive: true,
+        },
+      });
+    });
     await openFixturePage(page, "/", {
-      state: createChatFixtureState({ cards: [], runtime: idleRuntime() }),
+      state: null,
       sessions: createChatFixtureSessions(),
     });
 

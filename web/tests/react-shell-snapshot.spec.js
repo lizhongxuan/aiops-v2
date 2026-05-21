@@ -688,13 +688,13 @@ test("assistant final markdown keeps the same layout while running and after com
   await routeShellApis(page, () => resumeState);
 
   await page.goto("/");
-  const runningFinal = page.getByTestId("aiops-final-text");
+  const runningFinal = page.getByTestId("aiops-answer-document");
   await expect(runningFinal).toBeVisible();
   await expect(runningFinal).toHaveScreenshot("assistant-final-markdown-running.png");
 
   resumeState = finalMarkdownState("completed");
   await page.reload();
-  const completedFinal = page.getByTestId("aiops-final-text");
+  const completedFinal = page.getByTestId("aiops-answer-document");
   await expect(completedFinal).toBeVisible();
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });
@@ -706,9 +706,9 @@ test("running assistant text keeps the process header before tool blocks arrive"
   await page.goto("/");
   const transcript = page.getByTestId("aiops-process-transcript");
   await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
-  await expect(transcript).toContainText(runningPreludeText);
+  await expect(page.getByTestId("aiops-answer-document")).toContainText(runningPreludeText);
   await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
-  await expect(transcript).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
+  await expect(transcript.locator("..")).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
 });
 
 test("long terminal output stays inside a scrollable output box", async ({ page }) => {

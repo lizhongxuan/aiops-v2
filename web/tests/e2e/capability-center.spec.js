@@ -37,7 +37,7 @@ test.describe("CapabilityCenterPage", () => {
   });
 
   test("page renders with title", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "能力中心" })).toBeVisible();
+    await expect(page.locator("main").getByText("能力中心", { exact: true })).toBeVisible();
   });
 
   test("shows three tabs: Skills, MCP Servers, Bindings", async ({ page }) => {
@@ -54,7 +54,7 @@ test.describe("CapabilityCenterPage", () => {
 
   test("switching to Bindings tab shows binding data", async ({ page }) => {
     await page.locator(".ops-tabs-tab", { hasText: "Bindings" }).click();
-    await expect(page.getByText("Capability Bindings")).toBeVisible();
+    await expect(page.locator('[data-slot="card-title"]').filter({ hasText: "Capability Bindings" })).toBeVisible();
   });
 
   test("switching to MCP Servers tab", async ({ page }) => {

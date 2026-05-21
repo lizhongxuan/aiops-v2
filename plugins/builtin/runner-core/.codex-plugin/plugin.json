@@ -1,0 +1,137 @@
+{
+  "name": "runner-core",
+  "aiops": {
+    "runner_actions": [
+      {
+        "id": "script.shell",
+        "module": "script/shell",
+        "schema_version": "v1",
+        "title": "Shell Script",
+        "risk": "high",
+        "approval": "required",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "script", "icon": "terminal" }
+      },
+      {
+        "id": "script.python",
+        "module": "script/python",
+        "schema_version": "v1",
+        "title": "Python Script",
+        "risk": "high",
+        "approval": "required",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "script", "icon": "file-code" }
+      },
+      {
+        "id": "http.request",
+        "module": "http/request",
+        "schema_version": "v1",
+        "title": "HTTP Request",
+        "risk": "medium",
+        "approval": "policy",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "network", "icon": "globe" }
+      },
+      {
+        "id": "builtin.tcp_ping",
+        "module": "builtin/tcp_ping",
+        "schema_version": "v1",
+        "title": "TCP Ping",
+        "risk": "read_only",
+        "approval": "none",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "network", "icon": "network" }
+      },
+      {
+        "id": "builtin.http_check",
+        "module": "builtin/http_check",
+        "schema_version": "v1",
+        "title": "HTTP Check",
+        "risk": "read_only",
+        "approval": "none",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "network", "icon": "activity" }
+      },
+      {
+        "id": "builtin.ssl_expiry_check",
+        "module": "builtin/ssl_expiry_check",
+        "schema_version": "v1",
+        "title": "SSL Expiry Check",
+        "risk": "read_only",
+        "approval": "none",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "network", "icon": "shield-check" }
+      },
+      {
+        "id": "builtin.dns_resolve",
+        "module": "builtin/dns_resolve",
+        "schema_version": "v1",
+        "title": "DNS Resolve",
+        "risk": "read_only",
+        "approval": "none",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "network", "icon": "search" }
+      },
+      {
+        "id": "wait.event",
+        "module": "wait/event",
+        "schema_version": "v1",
+        "title": "Wait For Event",
+        "risk": "low",
+        "approval": "none",
+        "experimental": true,
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "clock" }
+      },
+      {
+        "id": "condition.evaluate",
+        "schema_version": "v1",
+        "title": "Condition",
+        "risk": "read_only",
+        "approval": "none",
+        "experimental": true,
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "split" }
+      },
+      {
+        "id": "variable.aggregate",
+        "schema_version": "v1",
+        "title": "Variable Aggregator",
+        "risk": "read_only",
+        "approval": "none",
+        "experimental": true,
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "combine" }
+      },
+      {
+        "id": "manual.approval",
+        "schema_version": "v1",
+        "title": "Manual Approval",
+        "risk": "medium",
+        "approval": "required",
+        "experimental": true,
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "check-circle" }
+      },
+      {
+        "id": "workflow.run",
+        "schema_version": "v1",
+        "title": "Subflow",
+        "risk": "medium",
+        "approval": "policy",
+        "experimental": true,
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "workflow" }
+      },
+      {
+        "id": "notify.send",
+        "schema_version": "v1",
+        "title": "Notify",
+        "risk": "low",
+        "approval": "none",
+        "input_schema": "builtin://runner-core/schemas/action-input.v1.json",
+        "ui": { "category": "control", "icon": "bell" }
+      }
+    ]
+  }
+}

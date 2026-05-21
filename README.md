@@ -1,8 +1,32 @@
-# AIOps Codex V2
+# AIOps V2
 
 `aiops-v2` 是一个面向生产运维场景的 AI 运维工作台。它不是单纯的聊天后端，而是把 AI Chat、受治理工具调用、审批、Runner Workflow、运维手册、Run Record、Prompt Trace、Eval 回归和 React 前端页面收敛在同一个仓库里。
 
 核心目标：让 AI 能在明确边界内完成“理解问题 -> 调用只读证据 -> 匹配或生成运维手册 -> 预检 -> 确认/审批 -> 执行 -> 验证 -> 沉淀经验”的闭环，同时保证高风险动作不能被模型正文或前端状态绕过。
+
+## AIOps 最终目标
+
+AIOps 的最终目标不是“能聊天”或“多一个监控面板”，而是把真实生产问题变成可解释、可处置、可验证、可沉淀的运维闭环。
+
+### 看见真实问题
+
+统一接入 Coroot、Alertmanager、K8s、日志、指标、链路、变更，过滤噪音，聚合成 Case。
+
+### 解释为什么出问题
+
+自动采集证据，输出可信 RCA：根因候选、支持证据、反证、缺失证据、置信度。
+
+### 知道该怎么处理
+
+匹配运维手册、Runner Workflow、历史 Case、Run Record，给出可执行计划。
+
+### 安全地执行和验证
+
+预检、Dry Run、审批、ActionToken、执行、回滚、验证恢复，全部审计。
+
+### 越用越有经验
+
+成功 Case 沉淀为手册，失败 Run Record 反哺禁用条件，SLO、MTTR、告警压降率证明价值。
 
 ## 功能介绍
 
@@ -10,7 +34,7 @@
 
 - 基于 Eino Agent / ADK 组装模型调用、tool call、checkpoint、approval 和 resume。
 - `runtimekernel` 是唯一 turn 运行时内核；所有 host/workspace 运行都必须进入同一条 `RunTurn` / `ResumeTurn` 主链。
-- React Chat v2 使用 Codex 式 `Interleaved Transcript Blocks`：正文、命令、搜索、文件操作、MCP 工具、审批和最终回答按真实到达顺序交错展示。
+- React Chat v2 使用 `Interleaved Transcript Blocks`：正文、命令、搜索、文件操作、MCP 工具、审批和最终回答按真实到达顺序交错展示。
 - 单机会话默认是可执行运维模式，不是只读闲聊；非只读或高风险动作必须经 Policy / Permission / Approval。
 
 ### Runner Workflow
@@ -104,6 +128,7 @@ internal/
 - 领域使用方式、模型行为边界、证据解释、失败处理和 provider-specific prompt 必须放进 Skill 或 plugin prompt assets；不能写进全局 `developer_rules.go` 的硬编码分支。
 - 多能力组合必须用 plugin bundle 表达，plugin manifest 负责声明 skills、MCP servers、Runner actions、OpsManual capability packs、Agent-to-UI renderers、settings 和 governance。
 - Core 只能认识抽象：`tool`、`skill`、`MCP server`、`resource`、`action spec`、`capability pack`、`artifact renderer`、policy、approval、audit；不能认识 Coroot、Prometheus、Kubernetes、Redis、PostgreSQL 等具体实现。
+- provider-specific 名称、命令、taxonomy、UI component 或兼容 schema 只能出现在 built-in plugin、capability pack、provider adapter、renderer component、测试 fixture 或迁移文档中；核心生产入口只能通过 registry/metadata 调用这些能力。
 - 观测、CMDB、云厂商、数据库、中间件、K8s、主机探针等新集成不能新增 `registerBuiltinIntegrations` 风格硬注册；如需默认启用，做成 built-in plugin。
 - OpsManual 的资源发现、taxonomy、参数解析 hint、preflight probe 必须来自 capability pack registry；不能继续在 `operation_frame.go`、`resource_discovery.go` 或 analyzer 里加 provider-specific keyword map。
 - Runner 新 action 必须通过 `runner_actions` plugin manifest 和 action registry 暴露；不能直接扩写 `DefaultActionSpecs()` 或默认 module registry 作为唯一入口。
@@ -629,7 +654,6 @@ go test ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diag
 - 过程行去重必须使用 typed semantic key（例如 `displayKind + command/inputSummary/queries/results`），不能只按可见文案去重，否则会把多次同名搜索或命令错误折叠掉
 - `已记录 X 条过程细项`、`明细已折叠`、`处理失败 X 条明细`、`准备上下文`、`编译提示词`、`准备工具`、`调用模型` 这类不面向用户的过程文案不得从上游生成；不得用组件条件或 CSS 隐藏作为修复
 - 如果新增字段需要“正在执行/等待审批/已停止/失败/Working”文案，必须能从 `AiopsTransportState.status`、turn status 或 `runtimeLiveness` 推导，不能靠 card title/status 文案正则
-- Codex 原生过程 UI 终态以 `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-design.md` 和 `docs/superpowers/specs/2026-05-08-aiops-v2-codex-chat-ui-todo.md` 为准；修改单机会话过程 UI 时必须同步更新对应验收项
 - 真实 LLM Playwright 回归只能通过 `AIOPS_TEST_LLM_BASE_URL`、`AIOPS_TEST_LLM_API_KEY`、`AIOPS_TEST_LLM_MODEL` 注入配置；API key 不允许写入源码、fixture、README、验收报告或截图命名
 - 真实 LLM Playwright 回归必须用临时 `AIOPS_DATA_DIR` 启动服务，并在测试结束后清理；不能把测试 API key 写入项目默认 `.data` 或可提交配置
 - 代码评审前必须运行：
@@ -642,7 +666,7 @@ rg -n "snapshot\\.toolInvocations|store\\.runtime\\.turn|processItemsByTurnId|ph
 
 以上命令在生产 `web/src` 中必须无旧 Chat truth source 命中；如有测试/fixture/debug 命中，必须明确不参与 React Chat 生产路径，否则先迁移到 `AiopsTransportState`。
 
-### 5.1 Codex-style 结构化流式输出规则
+### 5.1 结构化流式输出规则
 
 `aiops-v2` 的结构化流式输出主路径固定为：
 
@@ -941,7 +965,7 @@ rg -n "DefaultActionSpecs|script\\.shell|builtin\\.tcp_ping" pkg/runner/server/s
 2. 接口隔离：各层通过接口通信，禁止跨层直接引用实现
 3. 特殊情况必须确认：如果现有接口无法满足需求，必须先讨论方案，再修改接口或添加代码
 4. 测试覆盖：新增模块必须包含单元测试；涉及跨层正确性不变量的必须补 `pgregory.net/rapid` property tests
-5. 不回写旧项目目录：当前产品面和后端都在 `aiops-v2/`，不要把新功能拆回旧 `aiops-codex/`
+5. 不回写旧项目目录：当前产品面和后端都在 `aiops-v2/`
 6. 任何影响四层 prompt 语义、tool lifecycle 真源、workspace/host 隔离、source precedence 的变更，都必须同步更新设计/README
 
 ---

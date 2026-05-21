@@ -1,0 +1,37 @@
+{
+  "name": "opsmanual-core",
+  "aiops": {
+    "opsmanual_capability_packs": [
+      {
+        "id": "opsmanual-core.taxonomy",
+        "surfaces": ["taxonomy"],
+        "resource_types": ["redis", "postgresql", "mysql", "kafka", "kubernetes_pod", "kubernetes_workload", "host", "network", "tool"]
+      },
+      {
+        "id": "opsmanual-core.docker",
+        "surfaces": ["docker_exec"],
+        "resource_types": ["redis", "postgresql", "mysql", "kafka", "nginx", "elasticsearch"]
+      },
+      {
+        "id": "opsmanual-core.host",
+        "surfaces": ["ssh"],
+        "resource_types": ["redis", "postgresql", "mysql", "kafka", "nginx", "elasticsearch"]
+      },
+      {
+        "id": "opsmanual-core.kubernetes",
+        "surfaces": ["kubectl"],
+        "resource_types": ["redis", "postgresql", "mysql", "kafka", "kubernetes_pod", "kubernetes_workload"]
+      },
+      {
+        "id": "opsmanual-core.hints",
+        "surfaces": ["parameter_hints"],
+        "resource_types": ["target_instance", "execution_surface", "backup_path"]
+      },
+      {
+        "id": "opsmanual-core.preflight",
+        "surfaces": ["preflight_probe"],
+        "resource_types": ["redis", "postgresql", "kubelet"]
+      }
+    ]
+  }
+}

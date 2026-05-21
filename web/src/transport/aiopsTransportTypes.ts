@@ -144,6 +144,8 @@ export type AiopsTransportAgentUiArtifact = {
   status?: string;
   severity?: string;
   dataRef?: string;
+  renderer?: string;
+  schemaVersion?: string;
   inlineData?: unknown;
   payload?: Record<string, unknown>;
   metadata?: Record<string, unknown>;

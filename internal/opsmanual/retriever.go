@@ -225,8 +225,8 @@ func evaluateManual(repo ManualRepository, manual OpsManual, frame OperationFram
 		case strings.Contains(rule, "目标实例未知") && hasAny(frame.Evidence.Missing, "target_instance"):
 			missing = appendUnique(missing, "target_instance")
 			match.Reasons = append(match.Reasons, "manual cannot be used while target instance is unknown")
-		case strings.Contains(rule, "Kubernetes") && frame.Environment.Platform != "kubernetes":
-			match.Reasons = append(match.Reasons, "manual mentions Kubernetes applicability constraint")
+		case DefaultOpsManualCapabilityRegistry().ManualApplicabilityConstraintReason(rule, frame.Environment.Platform) != "":
+			match.Reasons = append(match.Reasons, DefaultOpsManualCapabilityRegistry().ManualApplicabilityConstraintReason(rule, frame.Environment.Platform))
 		case strings.Contains(rule, "无法确认数据库版本") || strings.Contains(lower, "database version"):
 			if !hasAny(frame.Evidence.Provided, "version", "pg_version") {
 				missing = appendUnique(missing, "version")
@@ -281,7 +281,7 @@ func normalizeSearchOperationFrame(req SearchOpsManualsRequest) OperationFrame {
 	if frame.Intent == "" {
 		frame.Intent = frame.Operation.Action
 	}
-	applyExplicitContextMetadata(&frame, frame.Metadata)
+	applyExplicitContextMetadata(&frame, frame.Metadata, DefaultOpsManualCapabilityRegistry())
 	if len(frame.TargetScope.Hosts) == 0 && frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
@@ -629,20 +629,7 @@ func recommendedNextAction(decision DecisionState) string {
 }
 
 func displayObjectType(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "redis":
-		return "Redis"
-	case "mysql":
-		return "MySQL"
-	case "postgresql", "postgres", "pg":
-		return "PostgreSQL"
-	case "kafka":
-		return "Kafka"
-	case "kubernetes_pod", "k8s_pod":
-		return "Kubernetes Pod"
-	default:
-		return strings.TrimSpace(value)
-	}
+	return DefaultOpsManualCapabilityRegistry().DisplayObjectType(value)
 }
 
 func nextQuestionsForMissing(missing []string) []string {

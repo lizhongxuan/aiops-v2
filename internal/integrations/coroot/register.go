@@ -1,48 +1,8 @@
 package coroot
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
-
-	"aiops-v2/internal/mcp"
 )
-
-func RegisterBuiltins(mcpRegistry *mcp.Registry, endpoint string) error {
-	cfg := ClientConfigFromEnv(endpoint)
-	client, err := NewClient(cfg)
-	if err != nil {
-		return err
-	}
-	return RegisterBuiltinsWithClientProvider(mcpRegistry, ClientProviderFunc(func(context.Context) (*Client, error) {
-		return client, nil
-	}), client.BaseURL())
-}
-
-func RegisterBuiltinsWithClientProvider(mcpRegistry *mcp.Registry, provider ClientProvider, displayEndpoint string) error {
-	if mcpRegistry == nil {
-		return fmt.Errorf("coroot: mcp registry is required")
-	}
-	if provider == nil {
-		return fmt.Errorf("coroot: client provider is required")
-	}
-	command := strings.TrimSpace(displayEndpoint)
-	if command == "" {
-		command = "configured-from-coroot-page"
-	}
-	if err := mcpRegistry.RegisterServer(mcp.ServerConfig{
-		ID:        "coroot",
-		Name:      "coroot",
-		Transport: "http",
-		Command:   []string{command},
-		Source:    "builtin",
-	}); err != nil {
-		return err
-	}
-
-	return mcpRegistry.OnServerConnected("coroot", corootToolsWithClientProvider(provider))
-}
 
 var listServicesSchema = json.RawMessage(`{
 	"type": "object",
@@ -102,6 +62,20 @@ var incidentTimelineSchema = json.RawMessage(`{
 		"service": {"type": "string", "description": "Service name"}
 	},
 	"required": ["incidentId"]
+}`)
+
+var incidentsSchema = json.RawMessage(`{
+	"type": "object",
+	"properties": {
+		"project": {"type": "string", "description": "Optional Coroot project id. Omit this field to use configured Coroot project; do not send default as a placeholder."},
+		"service": {"type": "string", "description": "Optional application/service name or Coroot application id to filter incidents"},
+		"query": {"type": "string", "description": "Optional free-text filter over incident id, application id/name, description, RCA status, and root cause"},
+		"status": {"type": "string", "enum": ["open", "critical", "warning", "resolved"], "description": "Optional incident state/severity filter. For recent/latest incident lists, omit this field unless the user explicitly asks for open, resolved, critical, or warning incidents."},
+		"severity": {"type": "string", "enum": ["critical", "warning"], "description": "Optional Coroot severity filter. For recent/latest incident lists, omit this field unless the user explicitly asks for a severity."},
+		"applicationCategory": {"type": "string", "enum": ["application", "monitoring"], "description": "Optional Coroot application category filter. For recent/latest incident lists, omit this field unless the user explicitly asks for application or monitoring incidents."},
+		"showResolved": {"type": "boolean", "description": "When false, resolved incidents are filtered out. Omit to include the latest incidents returned by Coroot."},
+		"limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum incidents to request from Coroot. Defaults to 50."}
+	}
 }`)
 
 var sloStatusSchema = json.RawMessage(`{

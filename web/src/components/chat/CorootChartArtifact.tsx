@@ -174,7 +174,7 @@ function CorootReportCharts({ reports, defaultReportName }: { reports: CorootCha
   }
 
   return (
-    <div className="mx-auto mt-2 min-w-0 w-full max-w-[560px] space-y-2" data-testid="coroot-native-charts">
+    <div className="mx-auto mt-2 min-w-0 w-full max-w-[640px] space-y-2" data-testid="coroot-native-charts">
       {visibleReports.length > 1 ? (
         <div className="flex gap-1 overflow-x-auto rounded-lg border border-slate-100 bg-slate-50 p-0.5" role="tablist" aria-label="Coroot 图表分组">
           {visibleReports.map((report) => {
@@ -450,7 +450,7 @@ function CorootSvgChart({ chart, lines, unit }: { chart: CorootChart; lines: Cha
 
   return (
     <svg
-      className="h-[180px] w-full overflow-hidden"
+      className="h-[220px] w-full overflow-hidden"
       viewBox={`0 0 ${width} ${height}`}
       role="img"
       aria-label={text(chart.title) || "Coroot chart"}

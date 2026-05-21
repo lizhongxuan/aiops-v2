@@ -37,6 +37,7 @@ import (
 	"aiops-v2/internal/integrations/toolsearch"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
+	mcpruntime "aiops-v2/internal/mcp/runtime"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/observability"
 	opsgraphstore "aiops-v2/internal/opsgraph"
@@ -161,6 +162,10 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	mcpRegistry := mcp.NewRegistry()
 	mcpRegistry.SetGovernance(governance)
+	mcpRuntime := mcpruntime.New(mcpruntime.RuntimeOptions{
+		Registry:      mcpRegistry,
+		ClientFactory: mcpruntime.DefaultClientFactory{},
+	})
 	toolAssembler := tooling.NewAssembler(toolRegistry, mcpRegistry)
 	agentFactory := agentmgr.NewAgentFactory(toolAssembler, compiler, router, policyEngine)
 	agentRegistry := agents.NewRegistry()
@@ -210,9 +215,15 @@ func run() error {
 		Settings:     settingsRegistry,
 		Governance:   governance,
 	}
-	if err := registerPluginsFromEnv(pluginRegistrar); err != nil {
+	pluginSpecs, err := registerPluginsFromEnv(pluginRegistrar)
+	if err != nil {
 		return fmt.Errorf("init plugins: %w", err)
 	}
+	builtinSpecs, err := registerBuiltinPlugins(pluginRegistrar, dataStore)
+	if err != nil {
+		return fmt.Errorf("init builtin plugins: %w", err)
+	}
+	pluginSpecs = append(pluginSpecs, builtinSpecs...)
 	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{EvidenceService: evidenceService}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
@@ -223,8 +234,8 @@ func run() error {
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
 		return fmt.Errorf("init ops manual tools: %w", err)
 	}
-	if err := registerBuiltinIntegrations(mcpRegistry, dataStore); err != nil {
-		return fmt.Errorf("init builtin integrations: %w", err)
+	if err := mcpRuntime.Start(ctx); err != nil {
+		return fmt.Errorf("start mcp runtime: %w", err)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -316,6 +327,8 @@ func run() error {
 	serviceOptions := []appui.ServicesOption{
 		appui.WithStore(dataStore),
 		appui.WithMCPRegistry(mcpRegistry),
+		appui.WithMCPRuntime(mcpRuntime),
+		appui.WithPluginSpecs(pluginSpecs),
 		appui.WithAuthManager(authManager),
 		appui.WithTerminalManager(terminalManager),
 		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
@@ -1073,14 +1086,14 @@ func loadPluginSpecsFromEnv() ([]plugins.Spec, error) {
 	return plugins.NewManifestLoader(dirs...).Load()
 }
 
-func registerPluginsFromEnv(registrar *plugins.Registrar) error {
+func registerPluginsFromEnv(registrar *plugins.Registrar) ([]plugins.Spec, error) {
 	if registrar == nil {
-		return nil
+		return nil, nil
 	}
 
 	specs, err := loadPluginSpecsFromEnv()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, spec := range specs {
 		if err := registrar.Register(spec); err != nil {
@@ -1091,10 +1104,10 @@ func registerPluginsFromEnv(registrar *plugins.Registrar) error {
 			if name == "" {
 				name = "<unnamed>"
 			}
-			return fmt.Errorf("register plugin %q: %w", name, err)
+			return nil, fmt.Errorf("register plugin %q: %w", name, err)
 		}
 	}
-	return nil
+	return specs, nil
 }
 
 func buildCommandRegistryFromSkills(skillRegistry *skills.Registry) *commands.CommandRegistry {

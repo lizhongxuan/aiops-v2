@@ -214,6 +214,130 @@ func TestCorootServiceMetricsIncludesNativeChartReports(t *testing.T) {
 	}
 }
 
+func TestCorootIncidentsListsAndFiltersNormalizedIncidents(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/project/prod/incidents" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Query().Get("limit") != "200" {
+			http.Error(w, "unexpected limit: "+r.URL.RawQuery, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{
+				"application_id":"prod:default:Deployment:checkout",
+				"key":"abc123",
+				"opened_at":1710000000000,
+				"resolved_at":1710000300000,
+				"severity":"critical",
+				"short_description":"High latency",
+				"application_category":"application",
+				"duration":300000,
+				"impact":7.4,
+				"rca":{"status":"OK","root_cause":"Postgres saturation","short_summary":"DB slow"}
+			},
+			{
+				"application_id":"prod:default:Deployment:payments",
+				"key":"def456",
+				"opened_at":1710000100000,
+				"resolved_at":0,
+				"severity":"warning",
+				"short_description":"Error rate",
+				"application_category":"application",
+				"duration":60000,
+				"impact":1.5,
+				"rca":{"status":"AI disabled"}
+			}
+		]}`))
+	})
+
+	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.incidents"), `{"project":"prod","limit":2,"service":"checkout","showResolved":true}`)
+	if body["tool"] != "coroot.incidents" || body["status"] != "ok" {
+		t.Fatalf("result header = %#v, want coroot.incidents ok", body)
+	}
+	incidents := body["incidents"].([]any)
+	if len(incidents) != 1 {
+		t.Fatalf("incidents len = %d, want filtered checkout incident", len(incidents))
+	}
+	incident := incidents[0].(map[string]any)
+	if incident["id"] != "i-abc123" || incident["key"] != "abc123" {
+		t.Fatalf("incident ids = %#v, want stable Coroot display id and key", incident)
+	}
+	if incident["application"] != "checkout" || incident["applicationId"] != "prod:default:Deployment:checkout" {
+		t.Fatalf("incident application fields = %#v", incident)
+	}
+	if incident["state"] != "resolved" || incident["severity"] != "critical" {
+		t.Fatalf("incident state/severity = %#v", incident)
+	}
+	if incident["impactedRequestsPercent"] != 7.4 {
+		t.Fatalf("impact = %#v, want 7.4", incident["impactedRequestsPercent"])
+	}
+	if incident["rootCause"] != "Postgres saturation" || incident["rcaStatus"] != "OK" {
+		t.Fatalf("incident RCA fields = %#v", incident)
+	}
+	if body["rawRef"].(map[string]any)["digest"] == "" {
+		t.Fatalf("rawRef missing digest: %#v", body["rawRef"])
+	}
+}
+
+func TestCorootIncidentsFetchesEnoughBeforeFilteringResolvedRecentIncidents(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/project/prod/incidents" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		if r.URL.Query().Get("limit") != "200" {
+			http.Error(w, "unexpected limit: "+r.URL.RawQuery, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[
+			{
+				"application_id":"prod:coroot:Deployment:coroot",
+				"key":"critical-monitoring",
+				"resolved_at":1710000400000,
+				"severity":"critical",
+				"short_description":"High latency",
+				"application_category":"monitoring",
+				"impact":15.9,
+				"rca":{"status":"AI disabled"}
+			},
+			{
+				"application_id":"prod:default:Deployment:nginx",
+				"key":"warning-app-1",
+				"resolved_at":1710000300000,
+				"severity":"warning",
+				"short_description":"High latency",
+				"application_category":"application",
+				"impact":7.4,
+				"rca":{"status":"AI disabled"}
+			},
+			{
+				"application_id":"prod:default:Deployment:rabbitmq-server",
+				"key":"warning-app-2",
+				"resolved_at":1710000200000,
+				"severity":"warning",
+				"short_description":"High latency",
+				"application_category":"application",
+				"impact":5.6,
+				"rca":{"status":"AI disabled"}
+			}
+		]}`))
+	})
+
+	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.incidents"), `{"project":"prod","limit":2,"applicationCategory":"application","severity":"warning","status":"open","showResolved":true}`)
+	incidents := body["incidents"].([]any)
+	if len(incidents) != 2 {
+		t.Fatalf("incidents len = %d, want two resolved warning application incidents after over-fetch/filter", len(incidents))
+	}
+	first := incidents[0].(map[string]any)
+	if first["id"] != "i-warning-app-1" || first["state"] != "resolved" {
+		t.Fatalf("first incident = %#v, want resolved application incident preserved by showResolved=true", first)
+	}
+}
+
 func TestCorootToolReturnsStructuredError(t *testing.T) {
 	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)

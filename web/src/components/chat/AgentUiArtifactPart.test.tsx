@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AgentUiArtifactPart } from "./AgentUiArtifactPart";
+import { AgentUiArtifactPart, AgentUiRendererBoundary } from "./AgentUiArtifactPart";
 import { CorootChartArtifact } from "./CorootChartArtifact";
 import { ExperienceMatchArtifact } from "./ExperienceMatchArtifact";
 import { RCAReportArtifact } from "./RCAReportArtifact";
@@ -148,11 +148,52 @@ describe("AgentUiArtifactPart", () => {
     expect(container.innerHTML).not.toContain("dangerouslySetInnerHTML");
   });
 
+  it("uses a local JSON fallback for artifacts with an unregistered renderer id", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-plugin-widget",
+            type: "unknown_widget",
+            renderer: "plugin.widget.v1",
+            title: "插件卡片",
+            payload: {
+              signal: "latency",
+              html: "<img src=x onerror=alert(1)>",
+            },
+          } as any}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("插件卡片");
+    expect(container.textContent).toContain("未注册的 renderer");
+    expect(container.textContent).toContain("signal");
+    expect(container.textContent).toContain("latency");
+    expect(container.innerHTML).not.toContain("onerror");
+  });
+
+  it("keeps renderer failures local to the artifact", async () => {
+    const ThrowingRenderer = () => {
+      throw new Error("boom");
+    };
+    await act(async () => {
+      root.render(
+        <AgentUiRendererBoundary artifact={{ id: "throwing", type: "trace_summary" }}>
+          <ThrowingRenderer />
+        </AgentUiRendererBoundary>,
+      );
+    });
+
+    expect(container.textContent).toContain("Renderer 渲染失败");
+  });
+
   it("routes renderer selection through the frontend registry", () => {
     const source = readFileSync(join(process.cwd(), "src/components/chat/AgentUiArtifactPart.tsx"), "utf8");
 
     expect(source).toContain("lookupAgentUiCardRenderer(defaultAgentUiCardRegistry");
     expect(source).not.toContain("switch (artifact.type)");
+    expect(source).not.toContain('artifact.type === "coroot_chart"');
   });
 
   it("renders terminal unsupported cards without exposing payload HTML", async () => {

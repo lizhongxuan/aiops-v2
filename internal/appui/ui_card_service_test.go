@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/store"
 )
 
@@ -53,6 +54,47 @@ func TestUICardServiceBuiltInTypesMatchFrontendRegistryContract(t *testing.T) {
 	sort.Strings(want)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("built-in kinds = %#v, want %#v", got, want)
+	}
+}
+
+func TestUICardServiceListsPluginRendererMetadata(t *testing.T) {
+	service := NewUICardService(nil, WithUICardPluginSpecs([]plugins.Spec{{
+		Name: "observability-plugin",
+		Manifest: plugins.Manifest{
+			Name: "observability-plugin",
+			AIOps: plugins.AIOpsManifest{
+				AgentUIRenderers: []plugins.AgentUIRendererManifest{{
+					ID:            "observability.chart.v1",
+					ArtifactTypes: []string{"observability.chart"},
+					SchemaVersion: "observability.chart.v1",
+					Component:     "CorootChartArtifact",
+					Fallback:      "json_summary",
+					Display: plugins.AgentUIRendererDisplayManifest{
+						Icon:       "line-chart",
+						HideFooter: true,
+					},
+				}},
+			},
+		},
+	}}))
+
+	renderers, err := service.ListRenderers()
+	if err != nil {
+		t.Fatalf("ListRenderers() error = %v", err)
+	}
+	if renderers.Total != 1 || renderers.Items[0].ID != "observability.chart.v1" {
+		t.Fatalf("ListRenderers() = %#v, want plugin renderer metadata", renderers)
+	}
+	if renderers.Items[0].Display["hide_footer"] != true {
+		t.Fatalf("renderer display = %#v, want hide_footer true", renderers.Items[0].Display)
+	}
+
+	cards, err := service.List(UICardListRequest{Kind: "observability.chart"})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if cards.Total != 1 || cards.Items[0].Renderer != "observability.chart.v1" {
+		t.Fatalf("plugin renderer card = %#v, want renderer-backed UI card", cards)
 	}
 }
 

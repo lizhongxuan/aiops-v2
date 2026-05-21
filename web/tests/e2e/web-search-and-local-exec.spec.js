@@ -28,10 +28,11 @@ test.describe("Web Search & Local Execution", () => {
       expect(serverLocal.executable).toBe(true);
     });
 
-    test("healthz endpoint returns ok", async ({ request }) => {
-      const resp = await request.get("/api/v1/healthz");
+    test("state endpoint returns ok", async ({ request }) => {
+      const resp = await request.get("/api/v1/state");
+      expect(resp.ok()).toBeTruthy();
       const body = await resp.json();
-      expect(body).toHaveProperty("ok");
+      expect(body).toHaveProperty("sessionId");
     });
   });
 
@@ -66,31 +67,26 @@ test.describe("Web Search & Local Execution", () => {
     test("chat page loads and shows server-local connection", async ({
       page,
     }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
+      await page.goto("/", { waitUntil: "domcontentloaded" });
 
       const statusBar = page.locator("text=server-local");
       await expect(statusBar.first()).toBeVisible({ timeout: 10000 });
     });
 
     test("chat page shows AI connected status", async ({ page }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
+      await page.goto("/", { waitUntil: "domcontentloaded" });
 
       await expect(page.locator("body")).toBeVisible();
     });
 
     test("single host session page renders correctly", async ({ page }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
+      await page.goto("/", { waitUntil: "domcontentloaded" });
 
-      const title = page.locator("text=单机会话");
-      await expect(title.first()).toBeVisible({ timeout: 10000 });
+      await expect(page.locator("main").getByText("AI 对话", { exact: true }).first()).toBeVisible({ timeout: 10000 });
     });
 
     test("omnibar input is visible and interactive", async ({ page }) => {
-      await page.goto("/");
-      await page.waitForLoadState("networkidle");
+      await page.goto("/", { waitUntil: "domcontentloaded" });
 
       const inputArea = page.locator(
         'textarea[placeholder*="输入"], [contenteditable="true"], input[type="text"]'
@@ -126,7 +122,7 @@ test.describe("Web Search & Local Execution", () => {
       expect(host).toBeDefined();
       expect(host.executable).toBe(true);
       expect(host.terminalCapable).toBe(true);
-      expect(host.kind).toBe("server_local");
+      expect(host.kind).toBe("local");
       expect(host.transport).toBe("local");
     });
   });

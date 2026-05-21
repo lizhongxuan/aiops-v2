@@ -10,7 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
+	"github.com/cloudwego/eino/schema"
 )
 
 type WorkflowManualLLMSummarizer interface {
@@ -40,6 +45,29 @@ type EnvWorkflowManualLLMSummarizer struct {
 	Client *http.Client
 }
 
+type WorkflowManualLLMModelRouter interface {
+	GetModel(modelrouter.AgentKind, modelrouter.ProviderConfig) (modelrouter.ChatModel, error)
+}
+
+type ModelRouterWorkflowManualLLMSummarizer struct {
+	Router         WorkflowManualLLMModelRouter
+	AgentKind      modelrouter.AgentKind
+	ProviderConfig modelrouter.ProviderConfig
+	SystemPrompt   string
+	PromptTemplate string
+}
+
+var defaultWorkflowManualLLMSummarizerState struct {
+	mu         sync.RWMutex
+	summarizer WorkflowManualLLMSummarizer
+}
+
+func SetDefaultWorkflowManualLLMSummarizer(summarizer WorkflowManualLLMSummarizer) {
+	defaultWorkflowManualLLMSummarizerState.mu.Lock()
+	defer defaultWorkflowManualLLMSummarizerState.mu.Unlock()
+	defaultWorkflowManualLLMSummarizerState.summarizer = summarizer
+}
+
 func GenerateWorkflowManualCandidate(ctx context.Context, req WorkflowManualGenerationRequest, summarizer WorkflowManualLLMSummarizer) (WorkflowManualGenerationResult, error) {
 	analysis, err := AnalyzeWorkflowForManual(req)
 	if err != nil {
@@ -51,7 +79,7 @@ func GenerateWorkflowManualCandidate(ctx context.Context, req WorkflowManualGene
 	}
 	if req.Options.UseLLMSummary {
 		if summarizer == nil {
-			summarizer = EnvWorkflowManualLLMSummarizer{}
+			summarizer = resolveDefaultWorkflowManualLLMSummarizer()
 		}
 		candidate = applyWorkflowManualLLMSummary(ctx, candidate, analysis, summarizer)
 	}
@@ -60,6 +88,25 @@ func GenerateWorkflowManualCandidate(ctx context.Context, req WorkflowManualGene
 		ValidationReport: candidate.StructuredValidationReport,
 		UserSummary:      candidate.UserSummary,
 	}, nil
+}
+
+func resolveDefaultWorkflowManualLLMSummarizer() WorkflowManualLLMSummarizer {
+	defaultWorkflowManualLLMSummarizerState.mu.RLock()
+	summarizer := defaultWorkflowManualLLMSummarizerState.summarizer
+	defaultWorkflowManualLLMSummarizerState.mu.RUnlock()
+	if summarizer != nil {
+		return summarizer
+	}
+	if workflowManualLLMEnvConfigured() {
+		return EnvWorkflowManualLLMSummarizer{}
+	}
+	return missingWorkflowManualLLMSummarizer{}
+}
+
+type missingWorkflowManualLLMSummarizer struct{}
+
+func (missingWorkflowManualLLMSummarizer) SummarizeWorkflowManual(context.Context, WorkflowManualLLMSummaryRequest) (WorkflowManualLLMSummaryResult, error) {
+	return WorkflowManualLLMSummaryResult{}, fmt.Errorf("workflow manual llm summarizer is not configured")
 }
 
 func applyWorkflowManualLLMSummary(ctx context.Context, candidate ManualCandidate, analysis WorkflowManualAnalysis, summarizer WorkflowManualLLMSummarizer) ManualCandidate {
@@ -97,6 +144,55 @@ func applyWorkflowManualLLMSummary(ctx context.Context, candidate ManualCandidat
 	return candidate
 }
 
+func (s ModelRouterWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Context, req WorkflowManualLLMSummaryRequest) (WorkflowManualLLMSummaryResult, error) {
+	if s.Router == nil {
+		return WorkflowManualLLMSummaryResult{}, fmt.Errorf("modelrouter is not configured")
+	}
+	agentKind := s.AgentKind
+	if strings.TrimSpace(string(agentKind)) == "" {
+		agentKind = modelrouter.AgentKindWorker
+	}
+	chatModel, err := s.Router.GetModel(agentKind, s.ProviderConfig)
+	if err != nil {
+		return WorkflowManualLLMSummaryResult{}, err
+	}
+	if chatModel == nil {
+		return WorkflowManualLLMSummaryResult{}, fmt.Errorf("modelrouter returned nil chat model")
+	}
+	systemPrompt := firstNonEmpty(strings.TrimSpace(s.SystemPrompt), defaultWorkflowManualLLMSystemPrompt())
+	userPrompt, err := renderWorkflowManualLLMPrompt(req, s.PromptTemplate)
+	if err != nil {
+		return WorkflowManualLLMSummaryResult{}, err
+	}
+	messages := []*schema.Message{
+		schema.SystemMessage(systemPrompt),
+		schema.UserMessage(userPrompt),
+	}
+	_, _ = modeltrace.Write(modeltrace.Request{
+		Kind:    "opsmanual-workflow-manual-llm-summary",
+		TraceID: strings.TrimSpace(req.Manual.WorkflowRef.WorkflowID),
+		Metadata: map[string]string{
+			"workflow_id": strings.TrimSpace(req.Manual.WorkflowRef.WorkflowID),
+			"language":    firstNonEmpty(req.Language, "zh-CN"),
+			"provider":    strings.TrimSpace(s.ProviderConfig.Provider),
+			"model":       strings.TrimSpace(s.ProviderConfig.Model),
+		},
+		Prompt: modeltrace.Prompt{
+			System:  systemPrompt,
+			Dynamic: userPrompt,
+		},
+		ModelInput: messages,
+	})
+	response, err := chatModel.Generate(ctx, messages)
+	if err != nil {
+		return WorkflowManualLLMSummaryResult{}, err
+	}
+	if response == nil || strings.TrimSpace(response.Content) == "" {
+		return WorkflowManualLLMSummaryResult{}, fmt.Errorf("modelrouter response is empty")
+	}
+	return parseWorkflowManualLLMResultContent(response.Content)
+}
+
 func (s EnvWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Context, req WorkflowManualLLMSummaryRequest) (WorkflowManualLLMSummaryResult, error) {
 	config, err := loadWorkflowManualLLMConfig()
 	if err != nil {
@@ -109,7 +205,7 @@ func (s EnvWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Cont
 	payload := openAIChatCompletionsRequest{
 		Model: config.Model,
 		Messages: []openAIChatMessage{
-			{Role: "system", Content: "你是 AIOps 运维手册编辑器。只根据结构化摘要润色中文手册，不改变任何结构化字段、风险级别、审批要求或参数规则。输出严格 JSON。"},
+			{Role: "system", Content: defaultWorkflowManualLLMSystemPrompt()},
 			{Role: "user", Content: workflowManualLLMPrompt(req)},
 		},
 		Temperature: 0.2,
@@ -143,14 +239,7 @@ func (s EnvWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Cont
 	if len(decoded.Choices) == 0 {
 		return WorkflowManualLLMSummaryResult{}, fmt.Errorf("llm response has no choices")
 	}
-	content := strings.TrimSpace(decoded.Choices[0].Message.Content)
-	content = strings.TrimPrefix(strings.TrimSuffix(content, "```"), "```json")
-	content = strings.TrimSpace(content)
-	var result WorkflowManualLLMSummaryResult
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
-		return WorkflowManualLLMSummaryResult{}, err
-	}
-	return result, nil
+	return parseWorkflowManualLLMResultContent(decoded.Choices[0].Message.Content)
 }
 
 func ValidateWorkflowManualLLMOutput(result WorkflowManualLLMSummaryResult, manual OpsManual) error {
@@ -177,6 +266,32 @@ func ValidateWorkflowManualLLMOutput(result WorkflowManualLLMSummaryResult, manu
 }
 
 func workflowManualLLMPrompt(req WorkflowManualLLMSummaryRequest) string {
+	prompt, _ := renderWorkflowManualLLMPrompt(req, "")
+	return prompt
+}
+
+func renderWorkflowManualLLMPrompt(req WorkflowManualLLMSummaryRequest, promptTemplate string) (string, error) {
+	payload := workflowManualLLMPromptPayload(req)
+	promptTemplate = strings.TrimSpace(promptTemplate)
+	if promptTemplate == "" {
+		return payload, nil
+	}
+	replacements := map[string]string{
+		"{{workflow_manual_payload}}": payload,
+		"{{payload}}":                 payload,
+		"{{language}}":                firstNonEmpty(req.Language, "zh-CN"),
+	}
+	rendered := promptTemplate
+	for marker, value := range replacements {
+		rendered = strings.ReplaceAll(rendered, marker, value)
+	}
+	if strings.Contains(rendered, "{{workflow_manual_payload}}") || strings.Contains(rendered, "{{payload}}") || strings.Contains(rendered, "{{language}}") {
+		return "", fmt.Errorf("workflow manual llm prompt template contains unreplaced placeholders")
+	}
+	return rendered, nil
+}
+
+func workflowManualLLMPromptPayload(req WorkflowManualLLMSummaryRequest) string {
 	redacted := map[string]any{
 		"language":          firstNonEmpty(req.Language, "zh-CN"),
 		"title":             req.Manual.Title,
@@ -203,6 +318,25 @@ func workflowManualLLMPrompt(req WorkflowManualLLMSummaryRequest) string {
 	}
 	raw, _ := json.Marshal(redacted)
 	return string(raw)
+}
+
+func defaultWorkflowManualLLMSystemPrompt() string {
+	return "你是 AIOps 运维手册编辑器。只根据结构化摘要润色中文手册，不改变任何结构化字段、风险级别、审批要求或参数规则。输出严格 JSON。"
+}
+
+func parseWorkflowManualLLMResultContent(content string) (WorkflowManualLLMSummaryResult, error) {
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		if newline := strings.Index(content, "\n"); newline >= 0 {
+			content = content[newline+1:]
+		}
+		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(content), "```"))
+	}
+	var result WorkflowManualLLMSummaryResult
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return WorkflowManualLLMSummaryResult{}, err
+	}
+	return result, nil
 }
 
 func workflowManualLLMRedactedSteps(analysis WorkflowManualAnalysis) []map[string]string {
@@ -266,6 +400,15 @@ func loadWorkflowManualLLMConfig() (workflowManualLLMConfig, error) {
 	}
 	config.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
 	return config, nil
+}
+
+func workflowManualLLMEnvConfigured() bool {
+	for _, key := range []string{"AIOPS_LLM_BASE_URL", "AIOPS_LLM_API_KEY", "AIOPS_LLM_MODEL", "AIOPS_LLM_CONFIG_FILE"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func readWorkflowManualLLMConfigFile(path string) ([]byte, error) {

@@ -10,6 +10,7 @@ import (
 	"aiops-v2/internal/incidents"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/opsmanual"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
@@ -104,8 +105,10 @@ type servicesConfig struct {
 	hosts               HostRepository
 	mcps                MCPRepository
 	mcpReg              *mcp.Registry
+	mcpRuntime          MCPRuntime
 	auth                *auth.Manager
 	terminal            *terminal.Manager
+	uiCards             UICardRepository
 	skills              SkillCatalogRepository
 	agentMCP            AgentMCPCatalogRepository
 	profiles            AgentProfileRepository
@@ -117,6 +120,7 @@ type servicesConfig struct {
 	credentialResolver  CredentialResolver
 	hostBootstrapRunner HostBootstrapRunner
 	hostAgentInstaller  HostAgentInstaller
+	pluginSpecs         []plugins.Spec
 }
 
 // ServicesOption customizes first-party Web services.
@@ -136,6 +140,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		cfg.hosts = dataStore
 		if repo, ok := any(dataStore).(MCPRepository); ok {
 			cfg.mcps = repo
+		}
+		if repo, ok := any(dataStore).(UICardRepository); ok {
+			cfg.uiCards = repo
 		}
 		if repo, ok := any(dataStore).(SkillCatalogRepository); ok {
 			cfg.skills = repo
@@ -189,6 +196,13 @@ func WithMCPRepository(repo MCPRepository) ServicesOption {
 func WithMCPRegistry(registry *mcp.Registry) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.mcpReg = registry
+	}
+}
+
+// WithMCPRuntime connects the MCP app service to the live runtime connector.
+func WithMCPRuntime(runtime MCPRuntime) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.mcpRuntime = runtime
 	}
 }
 
@@ -259,6 +273,12 @@ func WithOpsManualService(service OpsManualService) ServicesOption {
 	}
 }
 
+func WithPluginSpecs(specs []plugins.Spec) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.pluginSpecs = append([]plugins.Spec(nil), specs...)
+	}
+}
+
 // HTTPServices is the interface consumed by internal/server handlers.
 type HTTPServices interface {
 	ChatService() ChatService
@@ -289,6 +309,7 @@ type Services struct {
 	profiles       AgentProfileService
 	auth           AuthService
 	terminal       TerminalService
+	uiCards        UICardService
 	coroot         CorootConfigRepository
 	agentEvents    AgentEventService
 	incidents      IncidentService
@@ -343,6 +364,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
 		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
 	}
+	var uiCards UICardService
+	if cfg.uiCards != nil {
+		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
+	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
 		state:          NewStateService(sessions, builder),
@@ -353,10 +378,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		settings:       settingsService,
 		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
 		hostAgents:     NewHostAgentService(cfg.hosts),
-		mcps:           NewMCPService(cfg.mcps, registry),
-		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
+		mcps:           NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
+		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
 		auth:           authService,
 		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
+		uiCards:        uiCards,
 		coroot:         cfg.coroot,
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
@@ -387,6 +413,7 @@ func (s *Services) AgentProfileService() AgentProfileService {
 }
 func (s *Services) AuthService() AuthService         { return s.auth }
 func (s *Services) TerminalService() TerminalService { return s.terminal }
+func (s *Services) UICardService() UICardService     { return s.uiCards }
 func (s *Services) CorootConfigRepository() CorootConfigRepository {
 	return s.coroot
 }

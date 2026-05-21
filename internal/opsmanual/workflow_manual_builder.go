@@ -214,14 +214,22 @@ func keywordTokens(value string) []string {
 }
 
 func negativeKeywordsForTarget(target string, platform []string) []string {
-	all := []string{"postgresql", "mysql", "redis", "kubernetes", "kubelet", "network_service", "incident"}
+	registry := DefaultOpsManualCapabilityRegistry()
+	all := registry.WorkflowTargetTypes()
 	text := strings.ToLower(target + " " + strings.Join(platform, " "))
 	out := []string{}
 	for _, item := range all {
 		if strings.Contains(text, item) {
 			continue
 		}
-		if item == "kubernetes" && strings.Contains(text, "kube") {
+		matchedAlias := false
+		for _, alias := range registry.ObjectAliasesFor(item) {
+			if strings.TrimSpace(alias) != "" && strings.Contains(text, strings.ToLower(alias)) {
+				matchedAlias = true
+				break
+			}
+		}
+		if matchedAlias {
 			continue
 		}
 		out = appendUnique(out, item)

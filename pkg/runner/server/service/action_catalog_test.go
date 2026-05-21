@@ -13,8 +13,8 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 	catalog := NewActionCatalog()
 
 	items := catalog.List(context.Background(), ActionCatalogFilter{})
-	if len(items) != 11 {
-		t.Fatalf("expected 11 default specs, got %d", len(items))
+	if len(items) != 13 {
+		t.Fatalf("expected 13 default specs, got %d", len(items))
 	}
 	for i := 1; i < len(items); i++ {
 		prev := items[i-1].Category + "/" + items[i-1].Action
@@ -61,16 +61,12 @@ func TestActionCatalogDefaultIncludesPublishedRunnerActions(t *testing.T) {
 		"script.python",
 		"http.request",
 		"builtin.tcp_ping",
+		"builtin.http_check",
+		"builtin.ssl_expiry_check",
 		"builtin.dns_resolve",
 	} {
 		if _, ok := catalog.Get(context.Background(), action); !ok {
 			t.Fatalf("default catalog should include published runner action %q", action)
-		}
-	}
-
-	for _, action := range []string{"builtin.http_check", "builtin.ssl_expiry_check"} {
-		if _, ok := catalog.Get(context.Background(), action); ok {
-			t.Fatalf("default catalog should not expose %q", action)
 		}
 	}
 }
@@ -97,7 +93,7 @@ func TestActionCatalogManualApprovalRemainsExperimentalForClientFiltering(t *tes
 func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 	catalog := NewActionCatalog()
 
-	for _, action := range []string{"script.shell", "script.python", "http.request", "builtin.tcp_ping", "builtin.dns_resolve", "wait.event", "notify.send"} {
+	for _, action := range []string{"script.shell", "script.python", "http.request", "builtin.tcp_ping", "builtin.http_check", "builtin.ssl_expiry_check", "builtin.dns_resolve", "wait.event", "notify.send"} {
 		t.Run(action, func(t *testing.T) {
 			spec, ok := catalog.Get(context.Background(), action)
 			if !ok {
@@ -157,6 +153,14 @@ func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 			} else if action == "builtin.tcp_ping" {
 				if _, ok := outputProps["reachable"]; !ok {
 					t.Fatalf("%s outputs_schema missing reachable property: %+v", action, outputs)
+				}
+			} else if action == "builtin.http_check" {
+				if _, ok := outputProps["status_code"]; !ok {
+					t.Fatalf("%s outputs_schema missing status_code property: %+v", action, outputs)
+				}
+			} else if action == "builtin.ssl_expiry_check" {
+				if _, ok := outputProps["days_remaining"]; !ok {
+					t.Fatalf("%s outputs_schema missing days_remaining property: %+v", action, outputs)
 				}
 			} else if action == "builtin.dns_resolve" {
 				if _, ok := outputProps["records"]; !ok {

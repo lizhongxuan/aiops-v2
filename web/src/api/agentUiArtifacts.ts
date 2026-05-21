@@ -42,6 +42,8 @@ export interface AgentUIArtifact {
   evidenceRef: string;
   promptTraceId: string;
   dataRef: string;
+  renderer: string;
+  schemaVersion: string;
   permissionScope: string;
   redactionStatus: string;
   payload: Record<string, unknown>;
@@ -300,6 +302,8 @@ export function normalizeAgentUIArtifact(input: unknown): AgentUIArtifact {
     evidenceRef,
     promptTraceId,
     dataRef: compactText(source.dataRef || source.data_ref || payload.dataRef || payload.data_ref),
+    renderer: compactText(source.renderer || payload.renderer || metadata.renderer),
+    schemaVersion: compactText(source.schemaVersion || source.schema_version || payload.schemaVersion || payload.schema_version || metadata.schemaVersion || metadata.schema_version),
     permissionScope: compactText(source.permissionScope || source.permission_scope || payload.permissionScope || payload.permission_scope || metadata.permissionScope || metadata.permission_scope),
     redactionStatus: compactText(source.redactionStatus || source.redaction_status || payload.redactionStatus || payload.redaction_status || metadata.redactionStatus || metadata.redaction_status),
     payload: mcpCard ? payloadWithoutMcpCard(payload) : payload,

@@ -168,6 +168,32 @@ type IncidentTimelineResult struct {
 	RawRef        *CorootRawRef   `json:"rawRef,omitempty"`
 }
 
+type IncidentSummary struct {
+	ID                       string  `json:"id"`
+	Key                      string  `json:"key,omitempty"`
+	ApplicationID            string  `json:"applicationId,omitempty"`
+	Application              string  `json:"application,omitempty"`
+	ApplicationCategory      string  `json:"applicationCategory,omitempty"`
+	Severity                 string  `json:"severity,omitempty"`
+	State                    string  `json:"state,omitempty"`
+	Description              string  `json:"description,omitempty"`
+	RCAStatus                string  `json:"rcaStatus,omitempty"`
+	RootCause                string  `json:"rootCause,omitempty"`
+	ImpactedRequestsPercent  float64 `json:"impactedRequestsPercent"`
+	OpenedAt                 string  `json:"openedAt,omitempty"`
+	ResolvedAt               string  `json:"resolvedAt,omitempty"`
+	DurationMs               int64   `json:"durationMs,omitempty"`
+}
+
+type IncidentsResult struct {
+	SchemaVersion string            `json:"schemaVersion"`
+	Tool          string            `json:"tool"`
+	Status        string            `json:"status"`
+	Project       string            `json:"project"`
+	Incidents     []IncidentSummary `json:"incidents"`
+	RawRef        *CorootRawRef     `json:"rawRef,omitempty"`
+}
+
 type RCAReportResult struct {
 	SchemaVersion    string        `json:"schemaVersion"`
 	Tool             string        `json:"tool"`

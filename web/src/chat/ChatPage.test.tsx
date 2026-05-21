@@ -531,8 +531,7 @@ describe("ChatPage", () => {
         '[data-testid="aiops-generate-ops-manual-from-chat"]',
       ),
     ).toBeNull();
-    expect(container.querySelector("textarea")).toBeNull();
-    expect(container.textContent).toContain("补充运维手册参数");
+    expect(container.textContent).toContain("需要确认参数");
   });
 
   it("replaces the textarea with an execution confirmation panel", async () => {

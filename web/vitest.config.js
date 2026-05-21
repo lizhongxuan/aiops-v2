@@ -24,6 +24,7 @@ export default defineConfig({
       "tests/chat-ui-visual.spec.js",
       "tests/layout-responsive.spec.js",
       "tests/omnibar-paste-ui.spec.js",
+      "tests/ops-manual-param-resolution.spec.js",
       "tests/protocol-chat-ui.spec.js",
       "tests/protocol-choice-ui.spec.js",
       "tests/protocol-fixture-ui.spec.js",

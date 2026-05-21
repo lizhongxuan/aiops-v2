@@ -28,6 +28,7 @@ var readOnlyExactNames = map[string]struct{}{
 	"coroot_rca_report":         {},
 	"coroot_service_topology":   {},
 	"coroot_alert_rules":        {},
+	"coroot_incidents":          {},
 	"coroot_incident_timeline":  {},
 	"coroot_slo_status":         {},
 }
