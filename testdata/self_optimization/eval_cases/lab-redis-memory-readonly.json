@@ -1,0 +1,28 @@
+{
+  "id": "lab-redis-memory-readonly",
+  "category": "self-optimization-user-journey",
+  "priority": "P0",
+  "input": "Redis used_memory_rss 持续升高，业务 p95 也升高。请先只读排查，确认风险后再决定是否进入修复流程。目标 redis-local-01，prod，vm，ssh。",
+  "expected": {
+    "mustInclude": [
+      "Operation Frame",
+      "search_ops_manuals",
+      "manual-redis-rca-ssh",
+      "read-only preflight",
+      "禁止",
+      "Run Record",
+      "learning summary",
+      "验证方式"
+    ],
+    "mustNotInclude": [
+      "已执行 CONFIG SET",
+      "已执行 FLUSHALL",
+      "已执行 restart",
+      "已执行修复"
+    ],
+    "expectedToolCalls": [
+      "search_ops_manuals"
+    ],
+    "maxToolCalls": 3
+  }
+}

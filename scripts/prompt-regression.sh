@@ -18,9 +18,9 @@ failed_from=""
 worse_from=""
 history_path=""
 llm_suggestions=0
-llm_base_url="${AIOPS_LLM_BASE_URL:-}"
-llm_api_key="${AIOPS_LLM_API_KEY:-}"
-llm_model="${AIOPS_LLM_MODEL:-}"
+llm_base_url="${AIOPS_LAB_LLM_BASE_URL:-${AIOPS_LLM_BASE_URL:-}}"
+llm_api_key="${AIOPS_LAB_LLM_API_KEY:-${AIOPS_LLM_API_KEY:-}}"
+llm_model="${AIOPS_LAB_LLM_MODEL:-${AIOPS_LLM_MODEL:-}}"
 case_ids=()
 case_id_count=0
 tmp_root=""
@@ -81,7 +81,7 @@ Options:
   --history PATH            Append run metadata to this history.json.
   --llm-suggestions         Generate summary-only LLM suggestions.
   --llm-base-url URL        OpenAI-compatible base URL for --llm-suggestions.
-  --llm-api-key KEY         API key for --llm-suggestions. Prefer AIOPS_LLM_API_KEY.
+  --llm-api-key KEY         API key for --llm-suggestions. Prefer AIOPS_LAB_LLM_API_KEY env.
   --llm-model MODEL         Model for --llm-suggestions.
 USAGE
       exit 0
@@ -193,13 +193,13 @@ fi
 if [ "$llm_suggestions" -eq 1 ]; then
   diag_args+=(-llm-suggestions)
   if [ -n "$llm_base_url" ]; then
-    diag_args+=(-llm-base-url "$llm_base_url")
+    export AIOPS_LLM_BASE_URL="$llm_base_url"
   fi
   if [ -n "$llm_api_key" ]; then
-    diag_args+=(-llm-api-key "$llm_api_key")
+    export AIOPS_LLM_API_KEY="$llm_api_key"
   fi
   if [ -n "$llm_model" ]; then
-    diag_args+=(-llm-model "$llm_model")
+    export AIOPS_LLM_MODEL="$llm_model"
   fi
 fi
 

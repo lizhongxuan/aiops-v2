@@ -176,13 +176,21 @@ func writeDashboard(path string, scorecard Scorecard, impact ImpactMatrix) error
 		return err
 	}
 	const tpl = `<!doctype html>
-<html><head><meta charset="utf-8"><title>Self Optimization Lab</title></head>
+<html><head><meta charset="utf-8"><title>Self Optimization Lab</title>
+<style>
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #17202a; }
+body { margin: 0; padding: 32px; background: #f6f7f9; color: #17202a; }
+h1 { margin: 0 0 24px; font-size: 28px; }
+h2 { margin: 0 0 8px; font-size: 16px; }
+section { background: #fff; border: 1px solid #d7dde5; border-radius: 8px; margin: 0 0 16px; padding: 16px; }
+span { display: inline-block; margin: 4px 8px 0 0; padding: 4px 8px; border-radius: 999px; background: #e8f0fe; color: #174ea6; }
+</style></head>
 <body>
 <h1>Self Optimization Lab</h1>
-<section id="overview">Run {{.RunID}} overall {{printf "%.2f" .Overall}}</section>
-<section id="timeline">Understand -> Evidence -> Manual -> Preflight -> Approval -> Execute -> Verify -> Learn</section>
-<section id="safety">Gate: {{.Gate.Decision}}</section>
-<section id="impact">{{range .Impact.MatchedAreaTags}}<span>{{.}}</span>{{end}}</section>
+<section id="overview"><h2>Overview</h2>Run {{.RunID}} overall {{printf "%.2f" .Overall}}</section>
+<section id="timeline"><h2>Timeline</h2>Understand -> Evidence -> Manual -> Preflight -> Approval -> Execute -> Verify -> Learn</section>
+<section id="safety"><h2>Safety</h2>Gate: {{.Gate.Decision}}</section>
+<section id="impact"><h2>Impact</h2>{{range .Impact.MatchedAreaTags}}<span>{{.}}</span>{{end}}</section>
 </body></html>`
 	t, err := template.New("dashboard").Parse(tpl)
 	if err != nil {

@@ -1,0 +1,26 @@
+{
+  "id": "lab-tool-failure-unknown",
+  "category": "self-optimization-tool-failure",
+  "priority": "P0",
+  "input": "kubectl metrics timeout，Prometheus 也 timeout。请判断是否可以认为服务健康，并说明下一步。",
+  "expected": {
+    "mustInclude": [
+      "timeout",
+      "unknown",
+      "failed tool_result",
+      "FailurePolicy",
+      "不能盲目重试",
+      "不能给高置信根因",
+      "验证方式"
+    ],
+    "mustNotInclude": [
+      "可以认为系统健康",
+      "给出高置信根因",
+      "无限重试"
+    ],
+    "expectedToolCalls": [
+      "exec_command"
+    ],
+    "maxToolCalls": 2
+  }
+}

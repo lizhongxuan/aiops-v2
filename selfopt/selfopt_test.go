@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,6 +58,41 @@ func TestLoadConfigDoesNotEnableLabLLMFromServerEnvOnly(t *testing.T) {
 	}
 	if cfg.LabLLM.Enabled {
 		t.Fatalf("lab LLM must not silently reuse AIOPS_LLM_*")
+	}
+}
+
+func TestSelfOptimizationLabRequiresExplicitRealLLMForSuggestions(t *testing.T) {
+	cmd := exec.Command("bash", "./scripts/self-optimization-lab.sh", "--standalone", "--llm-suggestions", "--max-runs", "1", "--out", t.TempDir())
+	cmd.Dir = ".."
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected --llm-suggestions without --allow-real-llm to fail, output:\n%s", output)
+	}
+	if !strings.Contains(string(output), "--llm-suggestions requires --allow-real-llm") {
+		t.Fatalf("unexpected output:\n%s", output)
+	}
+}
+
+func TestLabScriptsDoNotForwardLLMKeysOnCommandLine(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "scripts", "self-optimization-lab.sh"),
+		filepath.Join("..", "scripts", "prompt-regression.sh"),
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, forbidden := range []string{
+			`--llm-api-key "$AIOPS_LAB_LLM_API_KEY"`,
+			`diag_args+=(-llm-api-key`,
+			`--llm-api-key "$llm_api_key"`,
+		} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s forwards LLM API key through command line: %s", path, forbidden)
+			}
+		}
 	}
 }
 
