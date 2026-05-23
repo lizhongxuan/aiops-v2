@@ -16,6 +16,51 @@
 
 ---
 
+## 实施状态更新：2026-05-23 独立目录子系统
+
+用户要求将自优化能力先实现为单独文件夹中的独立子系统。本轮实现不修改生产 RuntimeKernel、ToolDispatcher、Approval、Runner、OpsManual 或前端主链，新增目录为：
+
+```text
+selfopt/
+├── case.go
+├── cli.go
+├── config.go
+├── gate.go
+├── impact.go
+├── run.go
+├── secret.go
+├── selfopt_test.go
+├── time.go
+├── types.go
+└── cmd/selfopt/main.go
+```
+
+已完成：
+
+- [x] 独立 `selfopt/` 子系统目录，不进入生产运维执行主链。
+- [x] `AIOPS_LLM_*` 与 `AIOPS_LAB_LLM_*` 配置隔离，manifest 不写 API key。
+- [x] 旧 eval case 加载、metadata 默认值、P0 baseline policy 默认阻断。
+- [x] 基于 changed files 的 impact matrix，支持 prompt、opsmanual、runner、RCA、memory、chat-ui 等 area tags。
+- [x] P0 regression gate 和 P0 veto 阻断逻辑。
+- [x] secret scanner，覆盖 API key、Authorization、password、token、SSH private key。
+- [x] 离线 run 输出 `manifest.json`、`scorecard.json`、`case-scores.json`、`baseline-comparison.json`、`impact-matrix.json`、`regression-report.zh.md`。
+- [x] 静态 dashboard artifact：`dashboard/index.html`。
+- [x] 候选经验资产生成，默认 `pending_review` 并脱敏。
+- [x] 独立 CLI：`go run ./selfopt/cmd/selfopt`。
+- [x] TDD 验证：`go test ./selfopt ./selfopt/cmd/selfopt -count=1`。
+- [x] CLI smoke 验证：`go run ./selfopt/cmd/selfopt --run-id smoke --cases testdata/self_optimization/eval_cases --out <tmpdir> --changed internal/opsmanual/retriever.go --dashboard --asset-draft`。
+
+后续未完成：
+
+- [ ] 将现有 `scripts/self-optimization-lab.sh` 迁移为调用 `selfopt/cmd/selfopt` 的兼容 wrapper。
+- [ ] 接入真实 `cmd/agent-eval` / `prompt-regression.sh` 报告，而不是当前独立离线 scorer。
+- [ ] 添加 Playwright journey runner。
+- [ ] 添加 Coroot/K8s 沙箱环境。
+- [ ] 将 K8s install 和 Coroot RCA repair 两个 P0 journey 接入真实页面流程。
+- [ ] 添加 failed case draft、candidate manual、candidate workflow 的完整资产工厂。
+
+---
+
 ## 0. 一次性实施边界
 
 这些约束是实现期间的硬门禁。可以分阶段提交，但最终自优化系统必须同时满足。
