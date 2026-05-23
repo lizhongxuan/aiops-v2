@@ -30,6 +30,7 @@ test.describe("Self Optimization dashboard", () => {
     await expect(body).toContainText(/timeline/i);
     await expect(body).toContainText(/safety/i);
     await expect(body).toContainText(/Gate:\s+(pass|warn|block)/);
+    await expect(body).toContainText(/real aiops tests/i);
     await expect(body).toContainText(/impact/i);
   });
 });

@@ -20,6 +20,7 @@ llm_suggestions=0
 fail_fast=0
 fail_on_regression=0
 standalone=0
+real_aiops_tests=0
 dashboard=1
 asset_draft=1
 allow_real_llm=0
@@ -54,6 +55,7 @@ Options:
   --fail-on-regression             Fail a run when prompt-diagnose detects regression.
   --fail-fast                      Stop the current run on first failing step.
   --standalone                     Run the standalone selfopt subsystem instead of the legacy lab flow.
+  --real-aiops-tests               Standalone mode: run real aiops-v2 prompt-regression before selfopt import.
   --no-dashboard                   Standalone mode: skip static dashboard generation.
   --no-asset-draft                 Standalone mode: skip candidate asset draft generation.
   --allow-real-llm                 Allow explicit real LLM configuration for suggestions.
@@ -88,6 +90,7 @@ while [ "$#" -gt 0 ]; do
     --fail-on-regression) fail_on_regression=1; shift ;;
     --fail-fast) fail_fast=1; shift ;;
     --standalone) standalone=1; shift ;;
+    --real-aiops-tests) real_aiops_tests=1; shift ;;
     --no-dashboard) dashboard=0; shift ;;
     --no-asset-draft) asset_draft=0; shift ;;
     --allow-real-llm) allow_real_llm=1; shift ;;
@@ -138,17 +141,85 @@ standalone_changed_files() {
   fi
 }
 
+standalone_seed_baseline() {
+  local report="$1"
+  local baseline="$2"
+  if [ -s "$baseline" ] || [ ! -s "$report" ]; then
+    return 0
+  fi
+  cp "$report" "$baseline"
+}
+
+standalone_prompt_regression() {
+  local cases_dir="$1"
+  local out_dir="$2"
+  local run_id="$3"
+  local baseline="$4"
+  local cmd=(
+    bash ./scripts/prompt-regression.sh
+    --agent "$agent"
+    --cases "$cases_dir"
+    --out "$out_dir"
+    --run-id "$run_id"
+    --history "$history_path"
+    --draft-failed-cases
+  )
+  if [ -n "$priority" ]; then
+    cmd+=(--priority "$priority")
+  fi
+  if [ -s "$baseline" ]; then
+    cmd+=(--baseline "$baseline")
+  fi
+  if [ "$agent" = "server" ]; then
+    cmd+=(--server-url "$server_url" --poll-timeout "$poll_timeout" --poll-interval "$poll_interval")
+  fi
+  if [ "$llm_suggestions" -eq 1 ]; then
+    cmd+=(--llm-suggestions)
+  fi
+  if [ "$fail_on_regression" -eq 1 ]; then
+    cmd+=(--fail-on-regression)
+  fi
+  "${cmd[@]}"
+}
+
+run_standalone_real_aiops_tests() {
+  local run_id="$1"
+  local aiops_run_dir="$2"
+  mkdir -p "$aiops_run_dir"
+  if [ "$run_go_tests" -eq 1 ]; then
+    go test ./internal/memory ./internal/eval ./cmd/agent-eval ./internal/promptdiag ./cmd/prompt-diagnose ./cmd/agent-eval-case -count=1 >"$aiops_run_dir/go-test-eval-memory-promptdiag.log" 2>&1 || return 1
+    go test ./internal/opsmanual -run 'TestHybridRetrievalGoldenCases|TestSearchOpsManuals|TestLearningSummary|TestManualCandidateValidator|TestGenerateCandidate' -count=1 >"$aiops_run_dir/go-test-opsmanual-retrieval-learning.log" 2>&1 || return 1
+  fi
+  local core_baseline="$out_root/baselines/core-report.json"
+  if [ "$run_core" -eq 1 ]; then
+    standalone_prompt_regression "$core_cases" "$aiops_run_dir/prompt-regression-core" "$run_id-core" "$core_baseline" || return 1
+    standalone_seed_baseline "$aiops_run_dir/prompt-regression-core/eval/report.json" "$core_baseline"
+  fi
+  local synthetic_baseline="$out_root/baselines/synthetic-report.json"
+  if [ "$run_synthetic" -eq 1 ]; then
+    standalone_prompt_regression "$synthetic_cases" "$aiops_run_dir/prompt-regression-synthetic" "$run_id-synthetic" "$synthetic_baseline" || return 1
+    standalone_seed_baseline "$aiops_run_dir/prompt-regression-synthetic/eval/report.json" "$synthetic_baseline"
+  fi
+}
+
 run_standalone_once() {
   local seq="$1"
   local stamp
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   local run_id="self-opt-${stamp}-${seq}"
+  local real_aiops_args=()
+  if [ "$real_aiops_tests" -eq 1 ]; then
+    local aiops_run_dir="$out_root/$run_id/aiops-tests"
+    run_standalone_real_aiops_tests "$run_id" "$aiops_run_dir" || return 1
+    real_aiops_args=(--real-aiops-run-dir "$aiops_run_dir")
+  fi
   local cmd=(
     go run ./selfopt/cmd/selfopt
     --run-id "$run_id"
     --cases "$synthetic_cases"
     --out "$out_root"
     --changed "$(standalone_changed_files)"
+    "${real_aiops_args[@]}"
   )
   if [ "$dashboard" -eq 1 ]; then
     cmd+=(--dashboard)

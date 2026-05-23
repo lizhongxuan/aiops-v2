@@ -73,6 +73,45 @@ func TestSelfOptimizationLabRequiresExplicitRealLLMForSuggestions(t *testing.T) 
 	}
 }
 
+func TestSelfOptimizationLabStandaloneCanRunRealAIOpsTests(t *testing.T) {
+	root := t.TempDir()
+	casesDir := filepath.Join(root, "cases")
+	outDir := filepath.Join(root, "out")
+	writeFile(t, filepath.Join(casesDir, "case.json"), `{
+  "id": "lab-real-aiops-script",
+  "category": "selfopt-script-smoke",
+  "priority": "P0",
+  "input": "script smoke",
+  "expected": {"mustInclude": ["验证方式"]}
+}`)
+
+	cmd := exec.Command(
+		"bash", "./scripts/self-optimization-lab.sh",
+		"--standalone",
+		"--real-aiops-tests",
+		"--skip-go-tests",
+		"--skip-core",
+		"--synthetic-cases", casesDir,
+		"--out", outDir,
+		"--max-runs", "1",
+		"--no-asset-draft",
+	)
+	cmd.Dir = ".."
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected standalone real aiops tests to pass: %v\n%s", err, output)
+	}
+	latest := strings.TrimSpace(readFile(t, filepath.Join(outDir, "latest_run.txt")))
+	summary := readFile(t, filepath.Join(latest, "aiops-test-summary.json"))
+	if !strings.Contains(summary, "prompt-regression-synthetic") {
+		t.Fatalf("expected imported real aiops test summary, got %s", summary)
+	}
+	scorecard := readFile(t, filepath.Join(latest, "scorecard.json"))
+	if !strings.Contains(scorecard, `"aiopsTests"`) {
+		t.Fatalf("expected scorecard to include aiopsTests: %s", scorecard)
+	}
+}
+
 func TestLabScriptsDoNotForwardLLMKeysOnCommandLine(t *testing.T) {
 	paths := []string{
 		filepath.Join("..", "scripts", "self-optimization-lab.sh"),
@@ -251,6 +290,67 @@ func TestRunOfflineWritesReportsDashboardAndCandidateAssets(t *testing.T) {
 	}
 }
 
+func TestRunImportsRealAIOpsPromptRegressionReports(t *testing.T) {
+	root := t.TempDir()
+	casesDir := filepath.Join(root, "cases")
+	outDir := filepath.Join(root, "out")
+	realRunDir := filepath.Join(root, "aiops-run")
+	writeFile(t, filepath.Join(casesDir, "case.json"), `{
+  "id": "lab-real-aiops",
+  "priority": "P0",
+  "input": "real aiops smoke",
+  "expected": {"mustInclude": ["验证方式"]}
+}`)
+	writeFile(t, filepath.Join(realRunDir, "prompt-regression-synthetic", "eval", "report.json"), `{
+  "summary": {"total": 2, "passed": 1, "failed": 1, "avgScore": 0.66},
+  "cases": [
+    {"caseId": "case-pass", "passed": true, "score": 1.0},
+    {"caseId": "case-fail", "passed": false, "score": 0.32, "checks": [{"name":"mustInclude","passed":false}]}
+  ],
+  "baselineComparison": {
+    "summary": {"better": 0, "worse": 1, "same": 1, "new": 0, "missing": 0},
+    "cases": [
+      {"caseId": "case-regressed", "currentScore": 0.91, "status": "worse", "regressedChecks": ["manual"]}
+    ]
+  }
+}`)
+	writeFile(t, filepath.Join(realRunDir, "prompt-regression-synthetic", "diagnosis.json"), `{
+  "summary": {"total": 2, "passed": 1, "failed": 1, "avgScore": 0.66, "worse": 1},
+  "cases": [
+    {"caseId": "case-fail", "passed": false, "score": 0.32, "likelyRootCause": "missing required evidence", "failedChecks": ["mustInclude"]},
+    {"caseId": "case-regressed", "passed": true, "score": 0.91, "movement": "worse", "likelyRootCause": "baseline regression", "failedChecks": ["manual"]}
+  ]
+}`)
+
+	result, err := Run(RunOptions{
+		RunID:           "selfopt-real-run",
+		CasesDir:        casesDir,
+		OutDir:          outDir,
+		RealAIOpsRunDir: realRunDir,
+		Dashboard:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Gate.Decision != GateBlock {
+		t.Fatalf("real aiops failures should block gate, got %+v", result.Gate)
+	}
+	if result.Scorecard.AIOpsTests == nil {
+		t.Fatalf("scorecard missing real aiops test summary: %+v", result.Scorecard)
+	}
+	if result.Scorecard.AIOpsTests.Failed != 1 || result.Scorecard.AIOpsTests.Worse != 1 {
+		t.Fatalf("unexpected real aiops aggregate: %+v", result.Scorecard.AIOpsTests)
+	}
+	summary := readFile(t, filepath.Join(outDir, "selfopt-real-run", "aiops-test-summary.json"))
+	if !strings.Contains(summary, "case-fail") || !strings.Contains(summary, "case-regressed") {
+		t.Fatalf("summary should include failed and worse cases: %s", summary)
+	}
+	report := readFile(t, filepath.Join(outDir, "selfopt-real-run", "regression-report.zh.md"))
+	if !strings.Contains(report, "Real AIOps Tests") || !strings.Contains(report, "prompt-regression-synthetic") {
+		t.Fatalf("regression report missing real aiops section: %s", report)
+	}
+}
+
 func TestCLICommandRunsOfflineAndWritesLatestRun(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "cases")
@@ -292,6 +392,9 @@ func TestCLICommandRunsOfflineAndWritesLatestRun(t *testing.T) {
 
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -52,6 +52,7 @@ selfopt/
 - [x] 独立 CLI：`go run ./selfopt/cmd/selfopt`。
 - [x] `selfopt/reportreader` 可读取现有 `prompt-regression-*` 的 eval report 与 diagnosis，用于后续把旧实验室产物接入新子系统；空报告目录会失败，`movement=worse` 的通过 case 也会作为退化浮出。
 - [x] `scripts/self-optimization-lab.sh --standalone` 兼容 wrapper，可循环调用独立 `selfopt/cmd/selfopt`，并保留默认离线安全边界；`--llm-suggestions` 必须显式 `--allow-real-llm` 且只读取 `AIOPS_LAB_LLM_*`，API key 不通过命令行参数向下游传播。
+- [x] 对接真实 aiops-v2 本地测试链路：`--real-aiops-tests` 会先运行现有 `prompt-regression.sh` / `cmd/agent-eval`，再由 `selfopt --real-aiops-run-dir` 汇总真实报告并纳入 scorecard/gate。
 - [x] Dashboard HTML 改为显式 light theme，避免 browser-in-app 中出现黑屏/不可读渲染。
 - [x] Playwright dashboard smoke：`web/tests/e2e/self-optimization-dashboard.spec.js`，支持 `SELFOPT_DASHBOARD_REQUIRED=1` 防止显式 dashboard 回归测试假跳过。
 - [x] browser-in-app dashboard 真实渲染验证，保存截图 `/tmp/aiops-selfopt-dashboard.png`。
@@ -61,7 +62,7 @@ selfopt/
 
 后续未完成：
 
-- [ ] 接入真实 `cmd/agent-eval` / `prompt-regression.sh` 报告，而不是当前独立离线 scorer。
+- [x] 接入真实 `cmd/agent-eval` / `prompt-regression.sh` 报告，而不是当前独立离线 scorer。
 - [ ] 添加 Playwright journey runner。
 - [ ] 添加 Coroot/K8s 沙箱环境。
 - [ ] 将 K8s install 和 Coroot RCA repair 两个 P0 journey 接入真实页面流程。

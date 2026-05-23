@@ -12,12 +12,13 @@ import (
 func Main(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("selfopt", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var runID, casesDir, outDir, changed string
+	var runID, casesDir, outDir, changed, realAIOpsRunDir string
 	var dashboard, assetDraft, allowRealLLM, llmSuggestions, allowRemoteHost bool
 	fs.StringVar(&runID, "run-id", "selfopt-run", "run id")
 	fs.StringVar(&casesDir, "cases", "testdata/self_optimization/eval_cases", "case directory")
 	fs.StringVar(&outDir, "out", ".data/self-optimization-lab", "output directory")
 	fs.StringVar(&changed, "changed", "", "comma-separated changed files")
+	fs.StringVar(&realAIOpsRunDir, "real-aiops-run-dir", "", "existing aiops-v2 prompt-regression run directory to import")
 	fs.BoolVar(&dashboard, "dashboard", false, "write dashboard")
 	fs.BoolVar(&assetDraft, "asset-draft", false, "write candidate assets")
 	fs.BoolVar(&allowRealLLM, "allow-real-llm", false, "allow real LLM config")
@@ -32,13 +33,14 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		AllowRemoteHost: allowRemoteHost,
 	})
 	result, err := Run(RunOptions{
-		RunID:      runID,
-		CasesDir:   casesDir,
-		OutDir:     outDir,
-		Changed:    splitCSV(changed),
-		Dashboard:  dashboard,
-		AssetDraft: assetDraft,
-		Config:     cfg,
+		RunID:           runID,
+		CasesDir:        casesDir,
+		OutDir:          outDir,
+		Changed:         splitCSV(changed),
+		Dashboard:       dashboard,
+		AssetDraft:      assetDraft,
+		RealAIOpsRunDir: realAIOpsRunDir,
+		Config:          cfg,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "selfopt: %v\n", err)

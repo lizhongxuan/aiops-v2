@@ -131,16 +131,18 @@ type Scorecard struct {
 	PhaseScores map[string]float64 `json:"phaseScores,omitempty"`
 	Vetoes      []Veto             `json:"vetoes,omitempty"`
 	Gate        GateResult         `json:"gate"`
+	AIOpsTests  *AIOpsTestSummary  `json:"aiopsTests,omitempty"`
 }
 
 type RunOptions struct {
-	RunID      string
-	CasesDir   string
-	OutDir     string
-	Changed    []string
-	Dashboard  bool
-	AssetDraft bool
-	Config     Config
+	RunID           string
+	CasesDir        string
+	OutDir          string
+	Changed         []string
+	Dashboard       bool
+	AssetDraft      bool
+	RealAIOpsRunDir string
+	Config          Config
 }
 
 type RunResult struct {
@@ -150,4 +152,33 @@ type RunResult struct {
 	Impact      ImpactMatrix
 	Comparisons []CaseComparison
 	Gate        GateResult
+}
+
+type AIOpsTestSummary struct {
+	RunDir  string            `json:"runDir"`
+	Reports []AIOpsTestReport `json:"reports"`
+	Total   int               `json:"total"`
+	Passed  int               `json:"passed"`
+	Failed  int               `json:"failed"`
+	Worse   int               `json:"worse"`
+}
+
+type AIOpsTestReport struct {
+	Name        string            `json:"name"`
+	Total       int               `json:"total"`
+	Passed      int               `json:"passed"`
+	Failed      int               `json:"failed"`
+	AvgScore    float64           `json:"avgScore"`
+	Worse       int               `json:"worse,omitempty"`
+	FailedCases []AIOpsFailedCase `json:"failedCases,omitempty"`
+	ReportPath  string            `json:"reportPath,omitempty"`
+	DiagPath    string            `json:"diagnosisPath,omitempty"`
+}
+
+type AIOpsFailedCase struct {
+	CaseID          string   `json:"caseId"`
+	Score           float64  `json:"score"`
+	Movement        string   `json:"movement,omitempty"`
+	LikelyRootCause string   `json:"likelyRootCause,omitempty"`
+	FailedChecks    []string `json:"failedChecks,omitempty"`
 }

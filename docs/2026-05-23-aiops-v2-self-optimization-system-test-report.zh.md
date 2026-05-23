@@ -8,6 +8,7 @@
 
 - 独立 CLI：`go run ./selfopt/cmd/selfopt`
 - Wrapper：`./scripts/self-optimization-lab.sh --standalone`
+- 真实 aiops-v2 本地测试链路：`./scripts/self-optimization-lab.sh --standalone --real-aiops-tests`
 - 报告读取：`selfopt/reportreader`
 - Dashboard：`selfopt` 生成的 `dashboard/index.html`
 - Playwright dashboard smoke：`web/tests/e2e/self-optimization-dashboard.spec.js`
@@ -41,6 +42,8 @@ go test ./selfopt/reportreader -count=1
 - 没有任何 `prompt-regression-*/eval/report.json` 时必须返回错误，不能空报告假通过。
 - `--llm-suggestions` 未同时提供 `--allow-real-llm` 时 wrapper 必须失败。
 - lab LLM API key 不能通过命令行参数传给下游脚本或诊断进程。
+- `--real-aiops-run-dir` 导入的真实 prompt regression 报告必须进入 `aiops-test-summary.json`、`scorecard.json` 和 gate。
+- `--real-aiops-tests` 必须真实调用现有 `prompt-regression.sh`，并把产物交给 selfopt 汇总。
 
 ## 自动化验证
 
@@ -64,6 +67,17 @@ go test ./selfopt ./selfopt/cmd/selfopt ./selfopt/reportreader -count=1
 ```
 
 结果：通过。wrapper 调用 `selfopt/cmd/selfopt`，生成 manifest、scorecard、case scores、baseline comparison、impact matrix、regression report、dashboard 和 candidate asset draft。
+
+### 真实 aiops-v2 测试接入
+
+命令：
+
+```bash
+./scripts/self-optimization-lab.sh --standalone --real-aiops-tests --skip-go-tests --skip-core \
+  --synthetic-cases <tmpcases> --out <tmpdir> --max-runs 1 --no-asset-draft
+```
+
+结果：通过。wrapper 调用现有 `prompt-regression.sh`，`prompt-regression.sh` 调用 `cmd/agent-eval` 与 `cmd/prompt-diagnose`，selfopt 再读取生成的 `prompt-regression-synthetic/eval/report.json` 和 `diagnosis.json`，写入 `aiops-test-summary.json` 并纳入 `scorecard.aiopsTests` 与 gate。
 
 ### Playwright dashboard smoke
 
@@ -99,9 +113,9 @@ SELFOPT_DASHBOARD_FILE=<tmpdir>/pw/dashboard/index.html PLAYWRIGHT_SKIP_WEB_SERV
 - reportreader 初版会漏掉 `passed=true` 但 `movement=worse` 的退化 case，并且空 report 目录会静默成功。已补齐回归浮出和空报告错误。
 - legacy wrapper 初版的 `--llm-suggestions` 可能沿用生产 `AIOPS_LLM_*`。已改为必须显式 `--allow-real-llm`，且由 `prompt-regression.sh` 优先读取 `AIOPS_LAB_LLM_*`。
 - LLM key 初版会作为 `--llm-api-key` 命令行参数继续传递。已改为通过进程环境交给 `prompt-diagnose`，避免出现在 argv 和脚本日志里。
+- standalone 初版只跑离线 scorer。已新增 `--real-aiops-tests` 和 `--real-aiops-run-dir`，把真实 aiops-v2 本地 prompt regression 结果接入 scorecard/gate。
 
 ## 剩余风险
 
-- 当前 standalone scorer 仍是离线评分，尚未把真实 `cmd/agent-eval` / `prompt-regression.sh` 报告作为主输入。
 - 已添加 dashboard smoke，但完整 AI Chat journey runner、K8s 安装闭环和 Coroot RCA 修复闭环仍待接入真实页面流程。
 - 本轮没有启用真实 LLM 或远程主机模式；对应能力需要后续在显式开关和审批边界下单独验证。

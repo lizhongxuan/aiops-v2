@@ -36,8 +36,22 @@ func Run(opts RunOptions) (RunResult, error) {
 		CaseScores: caseScores,
 		Gate:       gate,
 	}
+	if opts.RealAIOpsRunDir != "" {
+		summary, err := LoadAIOpsTestSummary(opts.RealAIOpsRunDir)
+		if err != nil {
+			return RunResult{}, err
+		}
+		scorecard.AIOpsTests = &summary
+		applyAIOpsTestGate(&scorecard, summary)
+		gate = scorecard.Gate
+	}
 	if err := writeJSON(filepath.Join(runDir, "manifest.json"), manifest); err != nil {
 		return RunResult{}, err
+	}
+	if scorecard.AIOpsTests != nil {
+		if err := writeJSON(filepath.Join(runDir, "aiops-test-summary.json"), scorecard.AIOpsTests); err != nil {
+			return RunResult{}, err
+		}
 	}
 	if err := writeJSON(filepath.Join(runDir, "scorecard.json"), scorecard); err != nil {
 		return RunResult{}, err
@@ -165,6 +179,14 @@ func writeRegressionReport(path string, scorecard Scorecard, comparisons []CaseC
 	for _, comparison := range comparisons {
 		b.WriteString(fmt.Sprintf("- `%s`: %s\n", comparison.CaseID, comparison.Movement))
 	}
+	if scorecard.AIOpsTests != nil {
+		b.WriteString("\n## Real AIOps Tests\n\n")
+		b.WriteString(fmt.Sprintf("- Run Dir: `%s`\n", scorecard.AIOpsTests.RunDir))
+		b.WriteString(fmt.Sprintf("- Total: `%d`, Failed: `%d`, Worse: `%d`\n", scorecard.AIOpsTests.Total, scorecard.AIOpsTests.Failed, scorecard.AIOpsTests.Worse))
+		for _, report := range scorecard.AIOpsTests.Reports {
+			b.WriteString(fmt.Sprintf("- `%s`: total=%d failed=%d worse=%d avg=%.2f\n", report.Name, report.Total, report.Failed, report.Worse, report.AvgScore))
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -190,6 +212,7 @@ span { display: inline-block; margin: 4px 8px 0 0; padding: 4px 8px; border-radi
 <section id="overview"><h2>Overview</h2>Run {{.RunID}} overall {{printf "%.2f" .Overall}}</section>
 <section id="timeline"><h2>Timeline</h2>Understand -> Evidence -> Manual -> Preflight -> Approval -> Execute -> Verify -> Learn</section>
 <section id="safety"><h2>Safety</h2>Gate: {{.Gate.Decision}}</section>
+<section id="aiops-tests"><h2>Real AIOps Tests</h2>{{if .AIOpsTests}}Total {{.AIOpsTests.Total}} failed {{.AIOpsTests.Failed}} worse {{.AIOpsTests.Worse}}{{else}}Not connected{{end}}</section>
 <section id="impact"><h2>Impact</h2>{{range .Impact.MatchedAreaTags}}<span>{{.}}</span>{{end}}</section>
 </body></html>`
 	t, err := template.New("dashboard").Parse(tpl)
