@@ -10,10 +10,12 @@ import (
 	"aiops-v2/internal/incidents"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/opsmanual"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
+	"aiops-v2/internal/tooling"
 )
 
 // RuntimeGateway is the runtime-facing dependency used by the Web application
@@ -47,6 +49,13 @@ type SettingsRepository interface {
 	SaveWebSettings(settings *store.WebSettings) error
 	GetLLMConfig() (*store.LLMConfig, error)
 	SaveLLMConfig(config *store.LLMConfig) error
+}
+
+// CorootConfigRepository is the persisted backing store for the Coroot
+// observability page connection config.
+type CorootConfigRepository interface {
+	GetCorootConfig() (*store.CorootConfig, error)
+	SaveCorootConfig(config *store.CorootConfig) error
 }
 
 // MCPRepository is the persisted backing store for MCP server runtime config.
@@ -84,6 +93,13 @@ type HostRepository interface {
 	DeleteHost(id string) error
 }
 
+// ToolResultSpillRepository is the read-side store for externalized tool
+// results.
+type ToolResultSpillRepository interface {
+	GetToolResultSpill(id string) (*tooling.ResultSpill, error)
+	ListToolResultSpills() ([]*tooling.ResultSpill, error)
+}
+
 type AgentEventService interface {
 	Append(ctx context.Context, event AgentEvent) (AgentEvent, error)
 	Subscribe(ctx context.Context, sessionID string, afterSeq int64) (<-chan AgentEvent, func())
@@ -93,11 +109,14 @@ type AgentEventService interface {
 
 type servicesConfig struct {
 	settings            SettingsRepository
+	coroot              CorootConfigRepository
 	hosts               HostRepository
 	mcps                MCPRepository
 	mcpReg              *mcp.Registry
+	mcpRuntime          MCPRuntime
 	auth                *auth.Manager
 	terminal            *terminal.Manager
+	uiCards             UICardRepository
 	skills              SkillCatalogRepository
 	agentMCP            AgentMCPCatalogRepository
 	profiles            AgentProfileRepository
@@ -105,10 +124,12 @@ type servicesConfig struct {
 	incidents           incidents.Store
 	opsManuals          OpsManualService
 	opsManualRepo       opsmanual.ManualRepository
+	toolResultSpills    ToolResultSpillRepository
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
 	hostBootstrapRunner HostBootstrapRunner
 	hostAgentInstaller  HostAgentInstaller
+	pluginSpecs         []plugins.Spec
 }
 
 // ServicesOption customizes first-party Web services.
@@ -122,9 +143,15 @@ func WithStore(dataStore store.Store) ServicesOption {
 			return
 		}
 		cfg.settings = dataStore
+		if repo, ok := any(dataStore).(CorootConfigRepository); ok {
+			cfg.coroot = repo
+		}
 		cfg.hosts = dataStore
 		if repo, ok := any(dataStore).(MCPRepository); ok {
 			cfg.mcps = repo
+		}
+		if repo, ok := any(dataStore).(UICardRepository); ok {
+			cfg.uiCards = repo
 		}
 		if repo, ok := any(dataStore).(SkillCatalogRepository); ok {
 			cfg.skills = repo
@@ -144,6 +171,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		if repo, ok := any(dataStore).(opsmanual.ManualRepository); ok {
 			cfg.opsManualRepo = repo
 		}
+		if repo, ok := any(dataStore).(ToolResultSpillRepository); ok {
+			cfg.toolResultSpills = repo
+		}
 	}
 }
 
@@ -151,6 +181,12 @@ func WithStore(dataStore store.Store) ServicesOption {
 func WithSettingsRepository(repo SettingsRepository) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.settings = repo
+	}
+}
+
+func WithCorootConfigRepository(repo CorootConfigRepository) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.coroot = repo
 	}
 }
 
@@ -172,6 +208,13 @@ func WithMCPRepository(repo MCPRepository) ServicesOption {
 func WithMCPRegistry(registry *mcp.Registry) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.mcpReg = registry
+	}
+}
+
+// WithMCPRuntime connects the MCP app service to the live runtime connector.
+func WithMCPRuntime(runtime MCPRuntime) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.mcpRuntime = runtime
 	}
 }
 
@@ -242,6 +285,12 @@ func WithOpsManualService(service OpsManualService) ServicesOption {
 	}
 }
 
+func WithPluginSpecs(specs []plugins.Spec) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.pluginSpecs = append([]plugins.Spec(nil), specs...)
+	}
+}
+
 // HTTPServices is the interface consumed by internal/server handlers.
 type HTTPServices interface {
 	ChatService() ChatService
@@ -272,6 +321,8 @@ type Services struct {
 	profiles       AgentProfileService
 	auth           AuthService
 	terminal       TerminalService
+	uiCards        UICardService
+	coroot         CorootConfigRepository
 	agentEvents    AgentEventService
 	incidents      IncidentService
 	postmortems    PostmortemService
@@ -281,6 +332,7 @@ type Services struct {
 	erp            ERPContextService
 	changes        ChangeContextService
 	opsManuals     OpsManualService
+	toolSpills     ToolResultSpillRepository
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -311,7 +363,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		if repo == nil {
 			repo = opsmanual.NewMemoryStore()
 		}
-		opsManualService = NewOpsManualService(opsmanual.NewService(repo, opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery())))
+		opsManualService = NewOpsManualService(opsmanual.NewService(
+			repo,
+			opsmanual.WithResourceDiscovery(opsmanual.NewLocalResourceDiscovery()),
+			opsmanual.WithSessionOpsContextStore(opsmanual.NewMemorySessionOpsContextStore()),
+		))
 	}
 	var hostBootstrap *HostBootstrapService
 	hostAgentInstaller := cfg.hostAgentInstaller
@@ -320,6 +376,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
 		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
+	}
+	var uiCards UICardService
+	if cfg.uiCards != nil {
+		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
 	return &Services{
 		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
@@ -331,10 +391,12 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		settings:       settingsService,
 		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
 		hostAgents:     NewHostAgentService(cfg.hosts),
-		mcps:           NewMCPService(cfg.mcps, registry),
-		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles)),
+		mcps:           NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
+		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
 		auth:           authService,
 		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
+		uiCards:        uiCards,
+		coroot:         cfg.coroot,
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
 		postmortems:    NewPostmortemService(incidentService),
@@ -344,6 +406,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		erp:            NewERPContextService(),
 		changes:        NewChangeContextService(),
 		opsManuals:     opsManualService,
+		toolSpills:     cfg.toolResultSpills,
 	}
 }
 
@@ -364,6 +427,10 @@ func (s *Services) AgentProfileService() AgentProfileService {
 }
 func (s *Services) AuthService() AuthService         { return s.auth }
 func (s *Services) TerminalService() TerminalService { return s.terminal }
+func (s *Services) UICardService() UICardService     { return s.uiCards }
+func (s *Services) CorootConfigRepository() CorootConfigRepository {
+	return s.coroot
+}
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
@@ -375,6 +442,9 @@ func (s *Services) OpsGraphService() OpsGraphService           { return s.opsgra
 func (s *Services) ERPContextService() ERPContextService       { return s.erp }
 func (s *Services) ChangeContextService() ChangeContextService { return s.changes }
 func (s *Services) OpsManualService() OpsManualService         { return s.opsManuals }
+func (s *Services) ToolResultSpillRepository() ToolResultSpillRepository {
+	return s.toolSpills
+}
 
 type ChatCommand struct {
 	SessionID       string
@@ -690,6 +760,7 @@ type LLMConfigView struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	CompactModel     string `json:"compactModel,omitempty"`
@@ -703,6 +774,7 @@ type LLMConfigUpdate struct {
 	Model            string `json:"model,omitempty"`
 	APIKey           string `json:"apiKey,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	FallbackAPIKey   string `json:"fallbackApiKey,omitempty"`
@@ -710,9 +782,10 @@ type LLMConfigUpdate struct {
 }
 
 type LLMConfigUpdateResult struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
+	OK               bool   `json:"ok"`
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 }
 
 type HostUpsert struct {

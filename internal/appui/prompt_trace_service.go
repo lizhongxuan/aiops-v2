@@ -15,8 +15,8 @@ import (
 	"aiops-v2/internal/modeltrace"
 )
 
-const defaultPromptTraceLimit = 100
-const maxPromptTraceLimit = 200
+const defaultPromptTraceLimit = 500
+const maxPromptTraceLimit = 2000
 
 type PromptTraceListRequest struct {
 	Limit  int
@@ -46,9 +46,18 @@ type PromptTraceItem struct {
 	ModifiedAt        string            `json:"modifiedAt,omitempty"`
 	VisibleTools      []string          `json:"visibleTools,omitempty"`
 	MessageCount      int               `json:"messageCount,omitempty"`
+	LLMRequestCount   int               `json:"llmRequestCount,omitempty"`
+	Usage             *PromptTraceUsage `json:"usage,omitempty"`
+	AverageDurationMs int64             `json:"averageDurationMs,omitempty"`
 	UserPromptPreview string            `json:"userPromptPreview,omitempty"`
 	PromptFingerprint map[string]string `json:"promptFingerprint,omitempty"`
 	Metadata          map[string]string `json:"metadata,omitempty"`
+}
+
+type PromptTraceUsage struct {
+	PromptTokens     int `json:"promptTokens,omitempty"`
+	CompletionTokens int `json:"completionTokens,omitempty"`
+	TotalTokens      int `json:"totalTokens,omitempty"`
 }
 
 type PromptTraceFileRequest struct {
@@ -76,6 +85,30 @@ type promptTraceMessage struct {
 	SemanticRole string `json:"semanticRole"`
 	PromptLayer  string `json:"promptLayer"`
 	Content      string `json:"content"`
+}
+
+type promptTraceUsagePayload struct {
+	PromptTokens          int `json:"prompt_tokens"`
+	PromptTokensCamel     int `json:"promptTokens"`
+	InputTokens           int `json:"input_tokens"`
+	InputTokensCamel      int `json:"inputTokens"`
+	CompletionTokens      int `json:"completion_tokens"`
+	CompletionTokensCamel int `json:"completionTokens"`
+	OutputTokens          int `json:"output_tokens"`
+	OutputTokensCamel     int `json:"outputTokens"`
+	TotalTokens           int `json:"total_tokens"`
+	TotalTokensCamel      int `json:"totalTokens"`
+	Total                 int `json:"total"`
+}
+
+type promptTraceLLMRequestPayload struct {
+	Usage           promptTraceUsagePayload `json:"usage"`
+	DurationMs      float64                 `json:"durationMs"`
+	DurationMSSnake float64                 `json:"duration_ms"`
+	LatencyMs       float64                 `json:"latencyMs"`
+	LatencyMSSnake  float64                 `json:"latency_ms"`
+	ElapsedMs       float64                 `json:"elapsedMs"`
+	ElapsedMSSnake  float64                 `json:"elapsed_ms"`
 }
 
 func NewPromptTraceService(rootDir string) PromptTraceService {
@@ -201,16 +234,27 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339Nano),
 	}
 	var payload struct {
-		Kind              string               `json:"kind"`
-		CreatedAt         string               `json:"createdAt"`
-		SessionID         string               `json:"sessionId"`
-		TurnID            string               `json:"turnId"`
-		Iteration         int                  `json:"iteration"`
-		VisibleTools      []string             `json:"visibleTools"`
-		PromptFingerprint map[string]string    `json:"promptFingerprint"`
-		CaseID            string               `json:"caseId"`
-		Metadata          map[string]string    `json:"metadata"`
-		ModelInput        []promptTraceMessage `json:"modelInput"`
+		Kind               string                         `json:"kind"`
+		CreatedAt          string                         `json:"createdAt"`
+		SessionID          string                         `json:"sessionId"`
+		TurnID             string                         `json:"turnId"`
+		Iteration          int                            `json:"iteration"`
+		VisibleTools       []string                       `json:"visibleTools"`
+		PromptFingerprint  map[string]string              `json:"promptFingerprint"`
+		CaseID             string                         `json:"caseId"`
+		Metadata           map[string]string              `json:"metadata"`
+		ModelInput         []promptTraceMessage           `json:"modelInput"`
+		Usage              promptTraceUsagePayload        `json:"usage"`
+		DurationMs         float64                        `json:"durationMs"`
+		DurationMSSnake    float64                        `json:"duration_ms"`
+		LatencyMs          float64                        `json:"latencyMs"`
+		LatencyMSSnake     float64                        `json:"latency_ms"`
+		ElapsedMs          float64                        `json:"elapsedMs"`
+		ElapsedMSSnake     float64                        `json:"elapsed_ms"`
+		LLMRequests        []promptTraceLLMRequestPayload `json:"llmRequests"`
+		LLMRequestsSnake   []promptTraceLLMRequestPayload `json:"llm_requests"`
+		ModelRequests      []promptTraceLLMRequestPayload `json:"modelRequests"`
+		ModelRequestsSnake []promptTraceLLMRequestPayload `json:"model_requests"`
 	}
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
@@ -227,6 +271,7 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 	item.CaseID = firstPromptTraceNonEmpty(payload.CaseID, payload.Metadata["eval.caseId"], payload.Metadata["caseId"], derivePromptTraceCaseID(item.SessionID), derivePromptTraceCaseID(item.RelativePath))
 	item.VisibleTools = append([]string(nil), payload.VisibleTools...)
 	item.MessageCount = len(payload.ModelInput)
+	item.LLMRequestCount, item.Usage, item.AverageDurationMs = promptTraceLLMStats(payload.Usage, promptTraceFirstDuration(payload.DurationMs, payload.DurationMSSnake, payload.LatencyMs, payload.LatencyMSSnake, payload.ElapsedMs, payload.ElapsedMSSnake), payload.LLMRequests, payload.LLMRequestsSnake, payload.ModelRequests, payload.ModelRequestsSnake)
 	item.UserPromptPreview = promptTraceUserPromptPreview(payload.ModelInput)
 	item.PromptFingerprint = cleanPromptTraceFingerprint(payload.PromptFingerprint)
 	item.Metadata = cleanPromptTraceFingerprint(payload.Metadata)
@@ -274,6 +319,85 @@ func promptTracePreviewText(value string, maxRunes int) string {
 		return text
 	}
 	return string(runes[:maxRunes]) + "..."
+}
+
+func promptTraceLLMStats(rootUsage promptTraceUsagePayload, rootDuration float64, groups ...[]promptTraceLLMRequestPayload) (int, *PromptTraceUsage, int64) {
+	requests := make([]promptTraceLLMRequestPayload, 0)
+	for _, group := range groups {
+		requests = append(requests, group...)
+	}
+	if len(requests) == 0 {
+		usage := promptTraceNormalizeUsage(rootUsage)
+		duration := promptTraceRoundDuration(rootDuration)
+		count := 0
+		if usage != nil || duration > 0 {
+			count = 1
+		}
+		return count, usage, duration
+	}
+	total := PromptTraceUsage{}
+	durationTotal := int64(0)
+	durationCount := int64(0)
+	for _, request := range requests {
+		if usage := promptTraceNormalizeUsage(request.Usage); usage != nil {
+			total.PromptTokens += usage.PromptTokens
+			total.CompletionTokens += usage.CompletionTokens
+			total.TotalTokens += usage.TotalTokens
+		}
+		if duration := promptTraceRoundDuration(promptTraceFirstDuration(request.DurationMs, request.DurationMSSnake, request.LatencyMs, request.LatencyMSSnake, request.ElapsedMs, request.ElapsedMSSnake)); duration > 0 {
+			durationTotal += duration
+			durationCount++
+		}
+	}
+	var usage *PromptTraceUsage
+	if total.PromptTokens > 0 || total.CompletionTokens > 0 || total.TotalTokens > 0 {
+		usage = &total
+	}
+	averageDuration := int64(0)
+	if durationCount > 0 {
+		averageDuration = durationTotal / durationCount
+	}
+	return len(requests), usage, averageDuration
+}
+
+func promptTraceNormalizeUsage(usage promptTraceUsagePayload) *PromptTraceUsage {
+	out := PromptTraceUsage{
+		PromptTokens:     firstPromptTraceInt(usage.PromptTokens, usage.PromptTokensCamel, usage.InputTokens, usage.InputTokensCamel),
+		CompletionTokens: firstPromptTraceInt(usage.CompletionTokens, usage.CompletionTokensCamel, usage.OutputTokens, usage.OutputTokensCamel),
+		TotalTokens:      firstPromptTraceInt(usage.TotalTokens, usage.TotalTokensCamel, usage.Total),
+	}
+	if out.TotalTokens == 0 && (out.PromptTokens > 0 || out.CompletionTokens > 0) {
+		out.TotalTokens = out.PromptTokens + out.CompletionTokens
+	}
+	if out.PromptTokens == 0 && out.CompletionTokens == 0 && out.TotalTokens == 0 {
+		return nil
+	}
+	return &out
+}
+
+func promptTraceFirstDuration(values ...float64) float64 {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func promptTraceRoundDuration(value float64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	return int64(value + 0.5)
+}
+
+func firstPromptTraceInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func filterPromptTraceItems(items []PromptTraceItem, req PromptTraceListRequest) []PromptTraceItem {

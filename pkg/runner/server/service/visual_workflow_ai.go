@@ -106,7 +106,7 @@ func hostResourceCheckDraftGraph(name, instruction string) visual.Graph {
 				Ports:    actionNodePorts(),
 				Step: &workflow.Step{
 					Name:    "check-host-resources",
-					Action:  "shell.run",
+					Action:  "script.shell",
 					Targets: []string{"local"},
 					Timeout: "2m",
 					Args: map[string]any{
@@ -143,11 +143,11 @@ func hostResourceCheckDraftGraph(name, instruction string) visual.Graph {
 				Ports:    actionNodePorts(),
 				Step: &workflow.Step{
 					Name:    "summarize-result",
-					Action:  "cmd.run",
+					Action:  "script.shell",
 					Targets: []string{"local"},
 					Timeout: "30s",
 					Args: map[string]any{
-						"cmd": "echo resource_check_completed",
+						"script": "echo resource_check_completed",
 					},
 				},
 				Outputs: []visual.OutputParamSpec{

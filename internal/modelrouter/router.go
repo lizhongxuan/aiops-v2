@@ -53,6 +53,27 @@ type ProviderConfig struct {
 
 	// MaxTokens limits the maximum number of tokens in the response.
 	MaxTokens int
+
+	// MaxContextTokens overrides the model context window when a gateway or
+	// operator exposes a custom limit. Empty config defaults to 200K.
+	MaxContextTokens int
+}
+
+// ModelCapabilities describes the routing-visible context and generation
+// capabilities for a provider/model pair. Runtime callers use this to choose
+// context governance budgets without hard-coding provider-specific constants.
+type ModelCapabilities struct {
+	Provider              string `json:"provider"`
+	Model                 string `json:"model"`
+	MaxContextTokens      int    `json:"maxContextTokens"`
+	MaxOutputTokens       int    `json:"maxOutputTokens"`
+	ExactTokenCount       bool   `json:"exactTokenCount"`
+	CacheEdit             bool   `json:"cacheEdit"`
+	SmallContextMode      bool   `json:"smallContextMode"`
+	SupportsReasoning     bool   `json:"supportsReasoning,omitempty"`
+	SupportsToolCalls     bool   `json:"supportsToolCalls,omitempty"`
+	SupportsStreaming     bool   `json:"supportsStreaming,omitempty"`
+	SupportsNativeWebTool bool   `json:"supportsNativeWebTool,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -126,7 +147,9 @@ type Router struct {
 // ProviderFactory constructs a provider model on demand.
 type ProviderFactory func(ctx context.Context, agentKind AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error)
 
-// ProviderConfigResolver resolves the current product-level LLM config.
+// ProviderConfigResolver resolves the current product-level LLM config. When a
+// model gateway does not expose context metadata, MaxContextTokens should be
+// set by the product-level settings and defaults to 200K.
 type ProviderConfigResolver interface {
 	ResolveProviderConfig(agentKind AgentKind) (ProviderConfig, bool)
 }
@@ -199,6 +222,15 @@ func (r *Router) GetModel(agentKind AgentKind, config ProviderConfig) (ChatModel
 	return nil, &ProviderNotFoundError{Provider: provider}
 }
 
+// ResolveModelCapabilities returns the best-known capabilities for the
+// effective provider/model route without constructing a ChatModel.
+func (r *Router) ResolveModelCapabilities(agentKind AgentKind, config ProviderConfig) ModelCapabilities {
+	config = r.resolveEffectiveProviderConfig(agentKind, config)
+	provider := r.resolveProvider(agentKind, config)
+	model := resolveProviderModel(provider, config)
+	return capabilitiesForProviderModel(provider, model, config)
+}
+
 func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config ProviderConfig) ProviderConfig {
 	if r.configResolver == nil {
 		return config
@@ -221,6 +253,9 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	}
 	if config.MaxTokens > 0 {
 		resolved.MaxTokens = config.MaxTokens
+	}
+	if config.MaxContextTokens > 0 {
+		resolved.MaxContextTokens = config.MaxContextTokens
 	}
 	return resolved
 }
@@ -364,6 +399,76 @@ func resolveProviderTemperature(config ProviderConfig) float64 {
 
 func resolveProviderMaxTokens(config ProviderConfig) int {
 	return config.MaxTokens
+}
+
+func capabilitiesForProviderModel(provider, model string, config ProviderConfig) ModelCapabilities {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	normalizedModel := strings.ToLower(model)
+	if model == "" {
+		model = resolveProviderModel(provider, config)
+		normalizedModel = strings.ToLower(model)
+	}
+
+	caps := ModelCapabilities{
+		Provider:          provider,
+		Model:             model,
+		MaxContextTokens:  200000,
+		MaxOutputTokens:   16000,
+		ExactTokenCount:   false,
+		CacheEdit:         false,
+		SupportsToolCalls: true,
+		SupportsStreaming: true,
+	}
+
+	switch provider {
+	case "openai":
+		caps.ExactTokenCount = true
+		caps.CacheEdit = true
+		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o")
+		caps.SupportsNativeWebTool = true
+		switch {
+		case strings.Contains(normalizedModel, "gpt-5.4"), strings.Contains(normalizedModel, "gpt-5.5"):
+			caps.MaxContextTokens = 200000
+			caps.MaxOutputTokens = 32000
+		case strings.Contains(normalizedModel, "gpt-5"), strings.Contains(normalizedModel, "gpt-4.1"):
+			caps.MaxContextTokens = 128000
+			caps.MaxOutputTokens = 32000
+		case strings.Contains(normalizedModel, "gpt-4o"), strings.Contains(normalizedModel, "o4"), strings.Contains(normalizedModel, "o3"):
+			caps.MaxContextTokens = 128000
+			caps.MaxOutputTokens = 16000
+		}
+	case "anthropic":
+		caps.MaxContextTokens = 200000
+		caps.MaxOutputTokens = 8192
+		caps.SupportsReasoning = strings.Contains(normalizedModel, "sonnet") || strings.Contains(normalizedModel, "opus")
+	case "ollama":
+		caps.MaxContextTokens = 32000
+		caps.MaxOutputTokens = 4096
+		caps.ExactTokenCount = false
+		caps.CacheEdit = false
+	}
+
+	if strings.Contains(normalizedModel, "20k") {
+		caps.MaxContextTokens = 20000
+	} else if strings.Contains(normalizedModel, "32k") {
+		caps.MaxContextTokens = 32000
+	}
+	if config.MaxTokens > 0 {
+		caps.MaxOutputTokens = config.MaxTokens
+	}
+	if config.MaxContextTokens > 0 {
+		caps.MaxContextTokens = clampContextWindow(config.MaxContextTokens)
+	}
+	caps.SmallContextMode = caps.MaxContextTokens <= 32000
+	return caps
+}
+
+func clampContextWindow(value int) int {
+	if value < 10000 {
+		return 10000
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------

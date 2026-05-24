@@ -116,6 +116,83 @@ func TestApplyUserTurnCorrectionSwitchesFocusAndDropsOldDockerFacts(t *testing.T
 	}
 }
 
+func TestApplyUserTurnStagingInquiryDoesNotConfirmSelectedLocalHost(t *testing.T) {
+	state := ApplyUserTurn(State{}, UserTurn{
+		SessionID: "sess-1",
+		HostID:    "server-local",
+		Input:     "现在看 staging 环境的 Redis，只需要排查，不要沿用刚才本地环境。",
+		Now:       fixedTime(),
+	})
+
+	if state.LastIntent != IntentNewInquiry {
+		t.Fatalf("LastIntent = %q, want %q", state.LastIntent, IntentNewInquiry)
+	}
+	if state.CurrentFocus == nil {
+		t.Fatal("CurrentFocus is nil, want staging redis focus without confirmed local host")
+	}
+	if state.CurrentFocus.Environment != "staging" || state.CurrentFocus.TargetKind != "redis" {
+		t.Fatalf("CurrentFocus = %#v, want staging redis focus", state.CurrentFocus)
+	}
+	if state.CurrentFocus.HostID != "" {
+		t.Fatalf("CurrentFocus.HostID = %q, want empty because staging host is unconfirmed", state.CurrentFocus.HostID)
+	}
+
+	section, ok := BuildRuntimeEnvironmentSection(state)
+	if !ok {
+		t.Fatal("BuildRuntimeEnvironmentSection returned false")
+	}
+	for _, want := range []string{"ContextIntent: new_inquiry", "environment=staging", "target=redis"} {
+		if !strings.Contains(section.Content, want) {
+			t.Fatalf("section missing %q:\n%s", want, section.Content)
+		}
+	}
+	for _, forbidden := range []string{"host=server-local", "deployment=docker", "container=aiops-env-redis-a"} {
+		if strings.Contains(section.Content, forbidden) {
+			t.Fatalf("section leaked local focus fact %q:\n%s", forbidden, section.Content)
+		}
+	}
+}
+
+func TestApplyUserTurnExactR05CorrectionDropsSelectedLocalDockerFacts(t *testing.T) {
+	state := ApplyUserTurn(State{}, UserTurn{
+		SessionID: "sess-1",
+		HostID:    "server-local",
+		Input:     "检查本机 Docker Redis aiops-env-redis-a。",
+		Now:       fixedTime(),
+	})
+	state = ApplyUserTurn(state, UserTurn{
+		SessionID: "sess-1",
+		HostID:    "server-local",
+		Input:     "不对，现在要检查主机 B 二进制部署的 Redis。",
+		Now:       fixedTime().Add(time.Minute),
+	})
+
+	if state.LastIntent != IntentCorrection {
+		t.Fatalf("LastIntent = %q, want %q", state.LastIntent, IntentCorrection)
+	}
+	if state.CurrentFocus == nil {
+		t.Fatal("CurrentFocus is nil, want host-b host_process redis focus")
+	}
+	if state.CurrentFocus.HostID != "host-b" || state.CurrentFocus.DeploymentKind != DeploymentHostProcess {
+		t.Fatalf("CurrentFocus = %#v, want host-b host_process", state.CurrentFocus)
+	}
+
+	section, ok := BuildRuntimeEnvironmentSection(state)
+	if !ok {
+		t.Fatal("BuildRuntimeEnvironmentSection returned false")
+	}
+	for _, want := range []string{"ContextIntent: correction", "host=host-b", "deployment=host_process"} {
+		if !strings.Contains(section.Content, want) {
+			t.Fatalf("section missing %q:\n%s", want, section.Content)
+		}
+	}
+	for _, forbidden := range []string{"host=server-local", "deployment=docker", "aiops-env-redis-a"} {
+		if strings.Contains(section.Content, forbidden) {
+			t.Fatalf("section leaked old local docker fact %q:\n%s", forbidden, section.Content)
+		}
+	}
+}
+
 func TestBuildRuntimeEnvironmentSectionRedactsSensitiveFacts(t *testing.T) {
 	state := ApplyUserTurn(State{}, UserTurn{
 		SessionID: "sess-1",

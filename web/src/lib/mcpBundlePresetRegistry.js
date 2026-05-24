@@ -3,8 +3,6 @@ import { compactText } from "./workspaceViewModel";
 export const MCP_BUNDLE_PRESET_KEYS = Object.freeze({
   MIDDLEWARE_SERVICE_MONITOR: "middleware_service_monitor",
   ROOT_CAUSE_REMEDIATION: "root_cause_remediation",
-  COROOT_SERVICE_MONITOR: "coroot_service_monitor",
-  COROOT_INCIDENT_RCA: "coroot_incident_rca",
 });
 
 function buildSectionTitle(kind) {
@@ -125,86 +123,9 @@ const REMEDIATION_PRESET = Object.freeze({
   cardBlueprints: REMEDIATION_SECTION_BLUEPRINTS,
 });
 
-const COROOT_MONITOR_SECTION_BLUEPRINTS = Object.freeze({
-  overview: () => [
-    makeBlueprint("readonly_summary", "服务概览", "Coroot 服务健康状态与摘要指标"),
-    makeBlueprint("readonly_summary", "KPI 指标", "关键性能指标条"),
-  ],
-  trends: () => [
-    makeBlueprint("readonly_chart", "指标趋势", "Coroot 服务关键指标时间序列"),
-  ],
-  alerts: () => [
-    makeBlueprint("readonly_chart", "告警列表", "Coroot 服务当前告警状态表"),
-  ],
-  topology: () => [
-    makeBlueprint("topology_card", "拓扑概览", "Coroot 服务依赖拓扑摘要"),
-  ],
-});
-
-const COROOT_RCA_SECTION_BLUEPRINTS = Object.freeze({
-  incident_timeline: (source = {}) => [
-    makeBlueprint(
-      "readonly_summary",
-      "事件时间线",
-      compactText(source.incidentSummary || source.incident_summary || "Coroot 事件时间线"),
-    ),
-  ],
-  root_cause: (source = {}) => [
-    makeBlueprint(
-      "readonly_summary",
-      "根因分析",
-      compactText(source.rootCause || source.root_cause || "Coroot RCA 根因定位"),
-    ),
-  ],
-  evidence: (source = {}) => {
-    const items = Array.isArray(source.evidence) ? source.evidence : [];
-    if (items.length) return items;
-    return [
-      makeBlueprint("readonly_summary", "证据链", compactText(source.evidenceHint || "Coroot RCA 关联证据")),
-    ];
-  },
-  suggestions: (source = {}) => {
-    const items = Array.isArray(source.suggestions) ? source.suggestions : [];
-    if (items.length) return items;
-    return [
-      makeBlueprint("action_panel", "修复建议", compactText(source.suggestionHint || "Coroot RCA 修复建议")),
-    ];
-  },
-});
-
-const COROOT_MONITOR_PRESET = Object.freeze({
-  key: MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR,
-  label: "coroot service monitor",
-  bundleKind: "monitor_bundle",
-  sectionKinds: ["overview", "trends", "alerts", "topology"],
-  sectionTitles: {
-    overview: "服务概览",
-    trends: "指标趋势",
-    alerts: "告警列表",
-    topology: "拓扑概览",
-  },
-  cardBlueprints: COROOT_MONITOR_SECTION_BLUEPRINTS,
-});
-
-const COROOT_RCA_PRESET = Object.freeze({
-  key: MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA,
-  label: "coroot incident rca",
-  bundleKind: "remediation_bundle",
-  sectionKinds: ["incident_timeline", "root_cause", "evidence", "suggestions"],
-  sectionTitles: {
-    incident_timeline: "事件时间线",
-    root_cause: "根因分析",
-    evidence: "证据链",
-    suggestions: "修复建议",
-  },
-  cardBlueprints: COROOT_RCA_SECTION_BLUEPRINTS,
-});
-
 export const MCP_BUNDLE_PRESET_REGISTRY = Object.freeze({
   [MONITOR_PRESET.key]: MONITOR_PRESET,
   [REMEDIATION_PRESET.key]: REMEDIATION_PRESET,
-  [COROOT_MONITOR_PRESET.key]: COROOT_MONITOR_PRESET,
-  [COROOT_RCA_PRESET.key]: COROOT_RCA_PRESET,
 });
 
 export function getMcpBundlePresetRegistry() {

@@ -90,6 +90,35 @@ func TestChatModePolicy_UsesMCPMetadata(t *testing.T) {
 	assertDecision(t, "chat/mcp_mutation", p.CheckTool(mcpToolInput("coroot.file_write")), PolicyActionDeny)
 }
 
+func TestChatModePolicy_AllowsProviderSafeCorootReadOnlyTools(t *testing.T) {
+	p := &ChatModePolicy{}
+	for _, tc := range []struct {
+		callName      string
+		canonicalName string
+	}{
+		{"coroot_list_services", "coroot.list_services"},
+		{"coroot_service_metrics", "coroot.service_metrics"},
+		{"coroot_rca_report", "coroot.rca_report"},
+		{"coroot_service_topology", "coroot.service_topology"},
+		{"coroot_alert_rules", "coroot.alert_rules"},
+		{"coroot_incidents", "coroot.incidents"},
+		{"coroot_incident_timeline", "coroot.incident_timeline"},
+		{"coroot_slo_status", "coroot.slo_status"},
+	} {
+		input := PolicyInput{
+			ToolName: tc.callName,
+			Tool: tooling.ToolMetadata{
+				Name:      tc.canonicalName,
+				IsMCP:     true,
+				Domain:    "coroot",
+				RiskLevel: tooling.ToolRiskLow,
+			},
+			Mode: ModeChat,
+		}
+		assertDecision(t, "chat/coroot_readonly/"+tc.callName, p.CheckTool(input), PolicyActionAllow)
+	}
+}
+
 func TestInspectModePolicy_AllowsReadOnlyAndWebSearch(t *testing.T) {
 	p := &InspectModePolicy{}
 	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "show_config", "status_check", "ls_dir", "cat_file", "head_file", "tail_log", "web_search"} {
@@ -238,6 +267,9 @@ func TestIsReadOnly(t *testing.T) {
 		{"tail_log", true},
 		{"ls_directory", true},
 		{"run_ops_manual_preflight", true},
+		{"coroot.service_metrics", true},
+		{"coroot_incidents", true},
+		{"coroot_rca_report", true},
 		{"file_write", false},
 		{"mysterious_tool", false},
 	}

@@ -129,6 +129,44 @@ func TestToolSearchReturnsDeferredPackSummaryWithoutExpandingPromptCatalog(t *te
 	}
 }
 
+func TestToolSearchScoresDeferredPacksByBestToolMatch(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "coroot.application_logs",
+			Description:    "Read Coroot application logs",
+			SearchHint:     "logs error log logging",
+			Domain:         "coroot",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "coroot_logs",
+			DeferByDefault: true,
+		},
+	})
+	for _, toolName := range []string{"coroot.traces_overview", "coroot.application_traces", "coroot.nodes_overview", "coroot.get_node"} {
+		mustRegister(t, registry, &tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:           toolName,
+				Description:    "Read Coroot operational data",
+				SearchHint:     "coroot overview",
+				Domain:         "coroot",
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           "coroot_large",
+				DeferByDefault: true,
+			},
+		})
+	}
+
+	content := runToolSearchWithProvider(t, registry, "coroot logs")
+	logsPos := strings.Index(content, `"name":"coroot_logs"`)
+	largePos := strings.Index(content, `"name":"coroot_large"`)
+	if logsPos < 0 {
+		t.Fatalf("content missing coroot_logs: %s", content)
+	}
+	if largePos >= 0 && largePos < logsPos {
+		t.Fatalf("content ranked broad larger pack ahead of specific logs pack: %s", content)
+	}
+}
+
 func mustRegister(t *testing.T, registry *tooling.Registry, tool tooling.Tool) {
 	t.Helper()
 	if err := registry.Register(tool); err != nil {

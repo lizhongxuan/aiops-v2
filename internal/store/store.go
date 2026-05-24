@@ -52,6 +52,10 @@ type Store interface {
 	GetWebSettings() (*WebSettings, error)
 	SaveWebSettings(settings *WebSettings) error
 
+	// Coroot connection config
+	GetCorootConfig() (*CorootConfig, error)
+	SaveCorootConfig(config *CorootConfig) error
+
 	// Hosts
 	GetHost(id string) (*HostRecord, error)
 	ListHosts() ([]HostRecord, error)
@@ -138,6 +142,7 @@ type LLMConfig struct {
 	Model            string `json:"model"`
 	APIKey           string `json:"apiKey"`
 	BaseURL          string `json:"baseURL"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider"`
 	FallbackModel    string `json:"fallbackModel"`
 	FallbackAPIKey   string `json:"fallbackApiKey"`
@@ -156,6 +161,19 @@ type WebSettings struct {
 	Model           string               `json:"model,omitempty"`
 	ReasoningEffort string               `json:"reasoningEffort,omitempty"`
 	Models          []SettingModelOption `json:"models,omitempty"`
+}
+
+// CorootConfig stores the Coroot connection configured from the Coroot
+// observability page.
+type CorootConfig struct {
+	BaseURL       string    `json:"baseUrl,omitempty"`
+	Token         string    `json:"token,omitempty"`
+	Project       string    `json:"project,omitempty"`
+	IframeURL     string    `json:"iframeUrl,omitempty"`
+	Timeout       string    `json:"timeout,omitempty"`
+	LastSuccessAt string    `json:"lastSuccessAt,omitempty"`
+	CreatedAt     time.Time `json:"createdAt,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
 }
 
 // HostRecord stores one managed host entry for inventory-oriented pages.
@@ -242,24 +260,26 @@ type AgentProfileRecord map[string]any
 
 // JSONFileStore implements Store with in-memory state and async JSON file persistence.
 type JSONFileStore struct {
-	mu       sync.RWMutex
-	dataDir  string
-	sessions map[string]*runtimekernel.SessionState
-	tasks    map[string]*runtimekernel.WorkspaceTask
-	audits   []*runtimekernel.ApprovalRecord
-	uiCards  []UICard
-	llmCfg   *LLMConfig
-	webCfg   *WebSettings
-	hosts    map[string]*HostRecord
-	mcpSrv   []MCPServerRecord
-	skillCat []SkillCatalogEntry
-	agentMCP []AgentMCPCatalogEntry
-	profiles []AgentProfileRecord
-	spills   map[string]*tooling.ResultSpill
+	mu        sync.RWMutex
+	dataDir   string
+	sessions  map[string]*runtimekernel.SessionState
+	tasks     map[string]*runtimekernel.WorkspaceTask
+	audits    []*runtimekernel.ApprovalRecord
+	uiCards   []UICard
+	llmCfg    *LLMConfig
+	webCfg    *WebSettings
+	corootCfg *CorootConfig
+	hosts     map[string]*HostRecord
+	mcpSrv    []MCPServerRecord
+	skillCat  []SkillCatalogEntry
+	agentMCP  []AgentMCPCatalogEntry
+	profiles  []AgentProfileRecord
+	spills    map[string]*tooling.ResultSpill
 
 	opsManuals          map[string]opsmanual.OpsManual
 	opsManualCandidates map[string]opsmanual.ManualCandidate
 	opsManualRunRecords map[string]opsmanual.RunRecord
+	opsManualGuidedChat map[string]opsmanual.ManualGuidedChatEvent
 
 	// Async write control
 	dirty    map[string]bool // tracks which data sets need flushing
@@ -288,6 +308,7 @@ func NewJSONFileStore(dataDir string, flushInterval time.Duration) (*JSONFileSto
 		opsManuals:          make(map[string]opsmanual.OpsManual),
 		opsManualCandidates: make(map[string]opsmanual.ManualCandidate),
 		opsManualRunRecords: make(map[string]opsmanual.RunRecord),
+		opsManualGuidedChat: make(map[string]opsmanual.ManualGuidedChatEvent),
 		stopCh:              make(chan struct{}),
 		doneCh:              make(chan struct{}),
 		interval:            flushInterval,
@@ -534,6 +555,38 @@ func (s *JSONFileStore) SaveWebSettings(settings *WebSettings) error {
 	cp := cloneWebSettings(*settings)
 	s.webCfg = &cp
 	s.dirty["websettings"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Coroot connection config
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetCorootConfig() (*CorootConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.corootCfg == nil {
+		return nil, fmt.Errorf("coroot config not found")
+	}
+	cp := cloneCorootConfig(*s.corootCfg)
+	return &cp, nil
+}
+
+func (s *JSONFileStore) SaveCorootConfig(config *CorootConfig) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	cp := cloneCorootConfig(*config)
+	now := time.Now().UTC()
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = now
+	}
+	cp.UpdatedAt = now
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.corootCfg = &cp
+	s.dirty["corootconfig"] = true
 	return nil
 }
 
@@ -968,6 +1021,23 @@ func (s *JSONFileStore) SaveOpsManualRunRecord(record opsmanual.RunRecord) error
 	return nil
 }
 
+func (s *JSONFileStore) SaveManualGuidedChatEvent(event opsmanual.ManualGuidedChatEvent) error {
+	if strings.TrimSpace(event.ID) == "" {
+		return fmt.Errorf("ops manual manual-guided chat event id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opsManualGuidedChat[event.ID] = cloneManualGuidedChatEvent(event)
+	s.dirty["opsmanualmanualguidedevent:"+event.ID] = true
+	return nil
+}
+
+func (s *JSONFileStore) ListManualGuidedChatEvents(req opsmanual.ListManualGuidedChatEventsRequest) ([]opsmanual.ManualGuidedChatEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return filterManualGuidedChatEvents(s.opsManualGuidedChat, req), nil
+}
+
 func (s *JSONFileStore) ListManuals(req opsmanual.ListManualsRequest) ([]opsmanual.OpsManual, error) {
 	manuals, err := s.ListOpsManuals()
 	if err != nil {
@@ -992,7 +1062,9 @@ func (s *JSONFileStore) SaveManual(manual opsmanual.OpsManual) error {
 }
 
 func (s *JSONFileStore) ListRunRecords(req opsmanual.ListRunRecordsRequest) ([]opsmanual.RunRecord, error) {
-	return s.ListOpsManualRunRecords(req.ManualID, req.WorkflowID, req.Limit)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return filterOpsManualRunRecordsByRequest(s.opsManualRunRecords, req), nil
 }
 
 func (s *JSONFileStore) GetCandidate(id string) (opsmanual.ManualCandidate, error) {
@@ -1119,6 +1191,10 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			if err := s.writeJSON("web-settings.json", s.webCfg); err != nil {
 				return err
 			}
+		case key == "corootconfig":
+			if err := s.writeJSON("coroot-config.json", s.corootCfg); err != nil {
+				return err
+			}
 		case len(key) > 5 && key[:5] == "host:":
 			id := key[5:]
 			host, ok := s.hosts[id]
@@ -1179,6 +1255,10 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			}
 		case len(key) > 19 && key[:19] == "opsmanualrunrecord:":
 			if err := s.writeJSON("ops-manual-run-records.json", mapValues(s.opsManualRunRecords, cloneOpsManualRunRecord)); err != nil {
+				return err
+			}
+		case len(key) > 27 && key[:27] == "opsmanualmanualguidedevent:":
+			if err := s.writeJSON("ops-manual-manual-guided-events.json", mapValues(s.opsManualGuidedChat, cloneManualGuidedChatEvent)); err != nil {
 				return err
 			}
 		}
@@ -1311,6 +1391,16 @@ func (s *JSONFileStore) loadFromDisk() error {
 		}
 	}
 
+	// Load Coroot connection config
+	corootCfgPath := filepath.Join(s.dataDir, "coroot-config.json")
+	if raw, err := os.ReadFile(corootCfgPath); err == nil {
+		var cfg CorootConfig
+		if err := json.Unmarshal(raw, &cfg); err == nil {
+			cp := cloneCorootConfig(cfg)
+			s.corootCfg = &cp
+		}
+	}
+
 	// Load hosts
 	hostDir := filepath.Join(s.dataDir, "hosts")
 	hostEntries, err := os.ReadDir(hostDir)
@@ -1416,6 +1506,14 @@ func (s *JSONFileStore) loadFromDisk() error {
 			}
 		}
 	}
+	if raw, err := os.ReadFile(filepath.Join(s.dataDir, "ops-manual-manual-guided-events.json")); err == nil {
+		var items []opsmanual.ManualGuidedChatEvent
+		if err := json.Unmarshal(raw, &items); err == nil {
+			for _, item := range items {
+				s.opsManualGuidedChat[item.ID] = cloneManualGuidedChatEvent(item)
+			}
+		}
+	}
 
 	return nil
 }
@@ -1467,6 +1565,10 @@ func cloneWorkspaceTask(src *runtimekernel.WorkspaceTask) (*runtimekernel.Worksp
 
 func cloneWebSettings(src WebSettings) WebSettings {
 	src.Models = append([]SettingModelOption(nil), src.Models...)
+	return src
+}
+
+func cloneCorootConfig(src CorootConfig) CorootConfig {
 	return src
 }
 
@@ -1564,6 +1666,18 @@ func cloneOpsManualRunRecord(src opsmanual.RunRecord) opsmanual.RunRecord {
 	return dst
 }
 
+func cloneManualGuidedChatEvent(src opsmanual.ManualGuidedChatEvent) opsmanual.ManualGuidedChatEvent {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return src
+	}
+	var dst opsmanual.ManualGuidedChatEvent
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		return src
+	}
+	return dst
+}
+
 func mapValues[T any](items map[string]T, clone func(T) T) []T {
 	out := make([]T, 0, len(items))
 	for _, item := range items {
@@ -1591,12 +1705,23 @@ func sortOpsManualCandidates(items []opsmanual.ManualCandidate) {
 }
 
 func filterOpsManualRunRecords(records map[string]opsmanual.RunRecord, manualID string, workflowID string, limit int) []opsmanual.RunRecord {
+	return filterOpsManualRunRecordsByRequest(records, opsmanual.ListRunRecordsRequest{
+		ManualID:   manualID,
+		WorkflowID: workflowID,
+		Limit:      limit,
+	})
+}
+
+func filterOpsManualRunRecordsByRequest(records map[string]opsmanual.RunRecord, req opsmanual.ListRunRecordsRequest) []opsmanual.RunRecord {
 	out := make([]opsmanual.RunRecord, 0, len(records))
 	for _, record := range records {
-		if manualID != "" && record.ManualID != manualID {
+		if req.OpsManualFlowID != "" && record.OpsManualFlowID != req.OpsManualFlowID {
 			continue
 		}
-		if workflowID != "" && record.WorkflowID != workflowID {
+		if req.ManualID != "" && record.ManualID != req.ManualID {
+			continue
+		}
+		if req.WorkflowID != "" && record.WorkflowID != req.WorkflowID {
 			continue
 		}
 		out = append(out, cloneOpsManualRunRecord(record))
@@ -1615,8 +1740,42 @@ func filterOpsManualRunRecords(records map[string]opsmanual.RunRecord, manualID 
 		}
 		return left > right
 	})
+	limit := req.Limit
 	if limit <= 0 {
 		limit = 50
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func filterManualGuidedChatEvents(events map[string]opsmanual.ManualGuidedChatEvent, req opsmanual.ListManualGuidedChatEventsRequest) []opsmanual.ManualGuidedChatEvent {
+	out := make([]opsmanual.ManualGuidedChatEvent, 0, len(events))
+	for _, event := range events {
+		if req.OpsManualFlowID != "" && event.OpsManualFlowID != req.OpsManualFlowID {
+			continue
+		}
+		if req.SessionID != "" && event.SessionID != req.SessionID {
+			continue
+		}
+		if req.ManualID != "" && event.ManualID != req.ManualID {
+			continue
+		}
+		if req.WorkflowID != "" && event.WorkflowID != req.WorkflowID {
+			continue
+		}
+		out = append(out, cloneManualGuidedChatEvent(event))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
 	}
 	if len(out) > limit {
 		out = out[:limit]

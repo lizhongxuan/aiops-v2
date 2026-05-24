@@ -35,6 +35,10 @@ func updateOpsManualFlowTurnMetadata(metadata map[string]string, result ToolResu
 		metadata = ensureTurnMetadata(metadata)
 		metadata["opsManualMatched"] = "true"
 		metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], opsManualFlowPackName)
+		if opsManualSearchDecision(result.Display.Data) == "direct_execute" {
+			metadata["opsManualDirectExecute"] = "true"
+			metadata["enableTool"] = appendMetadataListValue(metadata["enableTool"], opsManualPreflightToolName)
+		}
 	case opsManualParamResolutionType:
 		if !opsManualParamsResolved(result.Display.Data) {
 			return metadata
@@ -65,6 +69,19 @@ func opsManualSearchMatchedManual(data json.RawMessage) bool {
 		return false
 	}
 	return len(payload.Manuals) > 0
+}
+
+func opsManualSearchDecision(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var payload struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(payload.Decision))
 }
 
 func opsManualParamsResolved(data json.RawMessage) bool {

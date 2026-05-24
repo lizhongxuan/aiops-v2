@@ -15,6 +15,7 @@ type ChatPageProps = {
 
 export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) {
   const resolvedInitialState = useMemo(() => initialState ?? resolveUiFixtureState() ?? undefined, [initialState]);
+  const shouldSkipInitialLoad = Boolean(initialState);
   const [activeThreadId, setActiveThreadId] = useState(resolvedInitialState?.threadId || threadId);
   const [activeInitialState, setActiveInitialState] = useState(resolvedInitialState);
   const [activeAutoResume, setActiveAutoResume] = useState(false);
@@ -27,6 +28,7 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
         newSessionLabel="新建会话"
         description="选择单台主机进行 AI Chat；消息发送仍走 AssistantTransport。"
         activeThreadId={activeThreadId}
+        skipInitialLoad={shouldSkipInitialLoad}
         terminalHref="/terminal/server-local"
         onThreadChange={(nextThreadId, nextInitialState, autoResume) => {
           setActiveThreadId(nextThreadId);

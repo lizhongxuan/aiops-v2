@@ -2,6 +2,7 @@ package promptinput
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -188,5 +189,32 @@ func TestBuilderInjectsLimitedMemoryWithTraceBeforeCurrentEvidence(t *testing.T)
 	}
 	if !traceHas(result.Trace, "memory", "memory", "mem-1") {
 		t.Fatalf("trace missing memory item: %#v", result.Trace)
+	}
+}
+
+func TestPromptInputOpsManualContextDoesNotGrowLinearlyAcrossTurns(t *testing.T) {
+	var history []Message
+	for i := 0; i < 100; i++ {
+		history = append(history,
+			Message{Role: "user", Content: "排查 Redis"},
+			Message{Role: "assistant", ToolCalls: []ToolCall{{ID: fmt.Sprintf("search-%03d", i), Name: "search_ops_manuals"}}},
+			Message{Role: "tool", Content: strings.Repeat("ops_manual_search_result artifact ref ", 20), ToolResult: &ToolResult{ToolCallID: fmt.Sprintf("search-%03d", i), Content: strings.Repeat("ops_manual_search_result artifact ref ", 20)}},
+			Message{Role: "assistant", ToolCalls: []ToolCall{{ID: fmt.Sprintf("params-%03d", i), Name: "resolve_ops_manual_params"}}},
+			Message{Role: "tool", Content: strings.Repeat("ops_manual_param_resolution artifact ref ", 20), ToolResult: &ToolResult{ToolCallID: fmt.Sprintf("params-%03d", i), Content: strings.Repeat("ops_manual_param_resolution artifact ref ", 20)}},
+			Message{Role: "assistant", Content: fmt.Sprintf("第 %d 轮结果摘要", i)},
+		)
+	}
+	history = append(history, Message{Role: "user", Content: "继续检查 Redis"})
+
+	result, err := Builder{}.Build(BuildRequest{History: history})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	joined := joinedMessageContent(result.Messages)
+	if strings.Contains(joined, "ops_manual_search_result artifact ref") || strings.Contains(joined, "ops_manual_param_resolution artifact ref") {
+		t.Fatalf("model input leaked historical ops manual artifacts:\n%s", joined)
+	}
+	if len(joined) > 6000 {
+		t.Fatalf("model input size = %d, want bounded non-linear growth", len(joined))
 	}
 }

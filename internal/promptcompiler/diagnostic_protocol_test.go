@@ -23,6 +23,9 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 		"置信度校准",
 		"输出契约",
 		"安全边界",
+		"choose only the sections the user needs",
+		"do not force a fixed template",
+		"Put section label and first sentence on the same line",
 		"permission denied != 服务正常",
 		"policy blocked != 目标系统状态",
 		"timeout != 根因",
@@ -30,11 +33,9 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 		"empty output != 一定无异常",
 		"结论",
 		"置信度",
-		"支持证据",
-		"反向证据",
-		"缺失证据",
-		"最小风险下一步",
-		"需要审批的动作",
+		"关键证据",
+		"仍缺少的证据",
+		"下一步",
 	} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("diagnostic protocol missing %q:\n%s", want, section)

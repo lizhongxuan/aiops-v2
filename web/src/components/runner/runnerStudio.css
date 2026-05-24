@@ -1577,6 +1577,16 @@
   background: #0f7652;
 }
 
+.runner-node-panel-actions button.danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.runner-node-panel-actions button.danger:hover {
+  background: #fee2e2;
+}
+
 .runner-node-panel-tabs {
   display: flex;
   gap: 6px;
@@ -1854,13 +1864,16 @@
   cursor: pointer;
 }
 
-.runner-script-editor-modal textarea {
+.runner-script-editor-modal textarea,
+.node-config-form .runner-script-editor-modal textarea {
   width: 100%;
   min-height: 0;
   border: 0;
   resize: none;
   background: #0f172a;
   color: #e2e8f0;
+  -webkit-text-fill-color: #e2e8f0;
+  caret-color: #93c5fd;
   font-family: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
   font-size: 13px;
   line-height: 1.65;
@@ -4696,6 +4709,39 @@
 .publish-review-card p,
 .publish-review-card ul {
   margin: 8px 0 0;
+}
+
+.runner-ops-manual-preview {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 10px 0 0;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.runner-ops-manual-issues {
+  display: grid;
+  gap: 4px;
+}
+
+.workflow-secondary-link {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-weight: 800;
+  padding: 8px 11px;
+  text-decoration: none;
 }
 
 .runner-run-failure-summary {

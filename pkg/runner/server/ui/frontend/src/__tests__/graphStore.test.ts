@@ -14,11 +14,11 @@ const graph: WorkflowGraph = {
 
 const actions: ActionSpec[] = [
   {
-    action: "cmd.run",
-    title: "Command",
-    category: "command",
+    action: "script.shell",
+    title: "Shell Script",
+    category: "script",
     node_type: "action",
-    defaults: { cmd: "echo ok" },
+    defaults: { script: "echo ok" },
   },
 ];
 
@@ -33,15 +33,15 @@ describe("graph store editing actions", () => {
     __resetGraphStoreForTests({ graph: cloneGraph(graph), actions });
     const store = useGraphStore();
 
-    store.addActionNodeFromCatalog("cmd.run", { x: 240, y: 160 });
+    store.addActionNodeFromCatalog("script.shell", { x: 240, y: 160 });
     store.addControlNode("join", { x: 400, y: 160 });
     store.addControlNode("handler", { x: 400, y: 280 });
 
-    expect(store.state.graph?.nodes.map((node) => node.id)).toEqual(["start", "end", "cmd-run", "join", "handler"]);
+    expect(store.state.graph?.nodes.map((node) => node.id)).toEqual(["start", "end", "script-shell", "join", "handler"]);
     expect(store.state.selectedNodeId).toBe("handler");
     expect(store.state.dirty).toBe(true);
-    expect(store.state.graph?.nodes.find((node) => node.id === "cmd-run")?.step?.args).toEqual({ cmd: "echo ok" });
-    expect(store.state.graph?.nodes.find((node) => node.id === "handler")?.handler).toMatchObject({ action: "cmd.run" });
+    expect(store.state.graph?.nodes.find((node) => node.id === "script-shell")?.step?.args).toEqual({ script: "echo ok" });
+    expect(store.state.graph?.nodes.find((node) => node.id === "handler")?.handler).toMatchObject({ action: "script.shell" });
   });
 
   it("loads workflow summaries for subflow selection with the graph and action catalog", async () => {
@@ -87,7 +87,7 @@ describe("graph store editing actions", () => {
       ui: { resource_version: "sha256:new" },
       nodes: [
         { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run", args: { cmd: "echo ok" } } },
+        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell", args: { script: "echo ok" } } },
         { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
       ],
     };
@@ -213,17 +213,17 @@ describe("graph store editing actions", () => {
     __resetGraphStoreForTests({ graph: cloneGraph(graph), actions });
     const store = useGraphStore();
 
-    store.addActionNodeFromCatalog("cmd.run", { x: 240, y: 160 });
-    store.connectNodes("start", "cmd-run");
-    store.connectNodes("cmd-run", "end");
+    store.addActionNodeFromCatalog("script.shell", { x: 240, y: 160 });
+    store.connectNodes("start", "script-shell");
+    store.connectNodes("script-shell", "end");
     expect(store.state.graph?.edges).toHaveLength(2);
 
     store.autoLayout();
     const startX = store.state.graph?.nodes.find((node) => node.id === "start")?.position.x || 0;
-    const actionX = store.state.graph?.nodes.find((node) => node.id === "cmd-run")?.position.x || 0;
+    const actionX = store.state.graph?.nodes.find((node) => node.id === "script-shell")?.position.x || 0;
     expect(startX).toBeLessThan(actionX);
 
-    store.selectNode("cmd-run");
+    store.selectNode("script-shell");
     store.deleteSelectedNode();
     expect(store.state.graph?.nodes.map((node) => node.id)).toEqual(["start", "end"]);
     expect(store.state.graph?.edges).toEqual([]);
@@ -253,14 +253,14 @@ describe("graph store editing actions", () => {
     const store = useGraphStore();
 
     store.addControlNode("parallel", { x: 220, y: 120 });
-    store.addActionNodeFromCatalog("cmd.run", { x: 420, y: 60 });
-    store.addActionNodeFromCatalog("cmd.run", { x: 420, y: 180 });
+    store.addActionNodeFromCatalog("script.shell", { x: 420, y: 60 });
+    store.addActionNodeFromCatalog("script.shell", { x: 420, y: 180 });
     store.addControlNode("join", { x: 640, y: 120 });
     store.connectNodes("start", "parallel");
-    store.connectNodes("parallel", "cmd-run");
-    store.connectNodes("parallel", "cmd-run-2");
-    store.connectNodes("cmd-run", "join");
-    store.connectNodes("cmd-run-2", "join");
+    store.connectNodes("parallel", "script-shell");
+    store.connectNodes("parallel", "script-shell-2");
+    store.connectNodes("script-shell", "join");
+    store.connectNodes("script-shell-2", "join");
     store.connectNodes("join", "end");
 
     await store.validateGraph();
@@ -282,21 +282,21 @@ describe("graph store editing actions", () => {
     __resetGraphStoreForTests({ graph: cloneGraph(graph), actions });
     const store = useGraphStore();
 
-    store.addActionNodeFromCatalog("cmd.run", { x: 240, y: 160 });
+    store.addActionNodeFromCatalog("script.shell", { x: 240, y: 160 });
     store.copySelectedNode();
-    expect(store.state.clipboardNode?.id).toBe("cmd-run");
+    expect(store.state.clipboardNode?.id).toBe("script-shell");
 
     store.pasteNode();
-    const pasted = store.state.graph?.nodes.find((node) => node.id === "cmd-run-copy");
-    expect(pasted?.step?.name).toBe("cmd-run-copy");
+    const pasted = store.state.graph?.nodes.find((node) => node.id === "script-shell-copy");
+    expect(pasted?.step?.name).toBe("script-shell-copy");
     expect(pasted?.position).toEqual({ x: 276, y: 196 });
 
     store.undo();
-    expect(store.state.graph?.nodes.some((node) => node.id === "cmd-run-copy")).toBe(false);
+    expect(store.state.graph?.nodes.some((node) => node.id === "script-shell-copy")).toBe(false);
     expect(store.state.historyFuture).toHaveLength(1);
 
     store.redo();
-    expect(store.state.graph?.nodes.some((node) => node.id === "cmd-run-copy")).toBe(true);
+    expect(store.state.graph?.nodes.some((node) => node.id === "script-shell-copy")).toBe(true);
   });
 
   it("updates workflow vars and inventory through the same graph history", () => {
@@ -320,6 +320,80 @@ describe("graph store editing actions", () => {
     store.undo();
     expect(store.state.graph?.workflow.vars).toBeUndefined();
     expect(store.state.graph?.workflow.inventory).toBeUndefined();
+  });
+
+  it("does not push history or dirty the graph for no-op edits", () => {
+    __resetGraphStoreForTests({ graph: cloneGraph(graph), actions, dirty: false });
+    const store = useGraphStore();
+
+    store.updateNode("start", { label: "Start" });
+    store.updateWorkflow({ name: "store-test" });
+    store.replaceGraph(cloneGraph(graph));
+
+    expect(store.state.historyPast).toHaveLength(0);
+    expect(store.state.historyFuture).toHaveLength(0);
+    expect(store.state.dirty).toBe(false);
+  });
+
+  it("sanitizes runtime state from undo and redo snapshots", () => {
+    __resetGraphStoreForTests({
+      graph: {
+        ...cloneGraph(graph),
+        nodes: [
+          { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 }, state: { status: "running" } },
+          { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
+        ],
+        edges: [{ id: "start-end", source: "start", target: "end", kind: "next", state: { status: "selected" } }],
+      },
+      actions,
+    });
+    const store = useGraphStore();
+
+    store.updateNode("start", { label: "Begin" });
+    store.undo();
+
+    expect(store.state.graph?.nodes.find((node) => node.id === "start")?.state).toBeUndefined();
+    expect(store.state.graph?.edges[0]?.state).toBeUndefined();
+    expect(store.state.validation).toBeNull();
+    expect(store.state.dryRun).toBeNull();
+  });
+
+  it("debugs the selected action node without changing run state", async () => {
+    const actionGraph: WorkflowGraph = {
+      ...cloneGraph(graph),
+      workflow: { ...graph.workflow, vars: { service: "api" } },
+      nodes: [
+        { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
+        { id: "dns", type: "action", position: { x: 280, y: 120 }, step: { name: "dns", action: "builtin.dns_resolve", args: { name: "localhost" } } },
+        { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
+      ],
+    };
+    let debugBody = "";
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/workflows/graph/nodes/dns/debug")) {
+        debugBody = String(init?.body || "");
+        return new Response(
+          JSON.stringify({ node_id: "dns", action: "builtin.dns_resolve", status: "success", output: { ok: true, records: ["127.0.0.1"] } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    __resetGraphStoreForTests({ graph: actionGraph, actions, selectedNodeId: "dns", offline: false });
+    const store = useGraphStore();
+
+    await store.debugSelectedNode();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/workflows/graph/nodes/dns/debug",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(debugBody).toContain('"mode":"dry_run"');
+    expect(debugBody).toContain('"vars":{"service":"api"}');
+    expect(store.state.nodeDebugResult?.status).toBe("success");
+    expect(store.state.run.runId).toBeUndefined();
   });
 
   it("updates graph immediately and refreshes compiled YAML preview after form edits", async () => {
@@ -392,7 +466,7 @@ describe("graph store editing actions", () => {
       ...cloneGraph(graph),
       nodes: [
         { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run", args: { cmd: "echo ok" } } },
+        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell", args: { script: "echo ok" } } },
         { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
       ],
       edges: [
@@ -405,7 +479,7 @@ describe("graph store editing actions", () => {
     __resetGraphStoreForTests({ graph: cloneGraph(semanticGraph), baselineGraph: cloneGraph(semanticGraph), actions, offline: false });
     const store = useGraphStore();
 
-    store.updateNode("run", { step: { name: "run", action: "cmd.run", args: { cmd: "hostname" } } });
+    store.updateNode("run", { step: { name: "run", action: "script.shell", args: { script: "hostname" } } });
     await store.saveDraft();
 
     expect(store.executionSemanticsChanged.value).toBe(true);
@@ -592,6 +666,8 @@ describe("graph store editing actions", () => {
     expect(store.state.graph?.workflow.description).toBe("rolled back");
     expect(store.state.workflowStatus).toBe("draft");
     expect(store.state.dirty).toBe(false);
+    expect(store.state.historyPast).toHaveLength(0);
+    expect(store.state.historyFuture).toHaveLength(0);
   });
 
   it("exports and imports workflow bundles through the workflow bundle API", async () => {
@@ -669,7 +745,7 @@ describe("graph store editing actions", () => {
       workflow: { version: "v0.1", name: "parsed" },
       nodes: [
         { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run" } },
+        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell" } },
         { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
       ],
     };
@@ -696,7 +772,7 @@ describe("graph store editing actions", () => {
       workflow: { version: "v0.1", name: "run-history" },
       nodes: [
         { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run" } },
+        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell" } },
         { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
       ],
     };
@@ -756,7 +832,7 @@ describe("graph store editing actions", () => {
       ...cloneGraph(graph),
       nodes: [
         { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run" }, state: { status: "running" } },
+        { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell" }, state: { status: "running" } },
         { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
       ],
     };
@@ -804,7 +880,7 @@ describe("graph store editing actions", () => {
         ...cloneGraph(graph),
         nodes: [
           { id: "start", type: "start", label: "Start", position: { x: 80, y: 120 } },
-          { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "cmd.run" } },
+          { id: "run", type: "action", position: { x: 280, y: 120 }, step: { name: "run", action: "script.shell" } },
           { id: "end", type: "end", label: "End", position: { x: 520, y: 120 } },
         ],
       },

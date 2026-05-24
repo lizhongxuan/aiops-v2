@@ -6,6 +6,11 @@ const ACTIONS = {
   items: [
     { action: "cmd.run", label: "Command", category: "command", description: "Run a shell command through /bin/sh -c on each target." },
     { action: "shell.run", label: "Shell Script", category: "script", description: "Run inline shell script content through /bin/sh.", defaults: { script: "set -e\necho ok" } },
+    { action: "script.shell", label: "Shell Script", category: "script", description: "Run shell script content resolved by the script service or supplied inline.", defaults: { script: "set -euo pipefail\necho ok" } },
+    { action: "script.python", label: "Python Script", category: "script", description: "Run Python script content resolved by the script service or supplied inline.", defaults: { script: "print('ok')" } },
+    { action: "http.request", label: "HTTP Request", category: "network", description: "Send a governed HTTP request and validate the response status.", defaults: { method: "GET", url: "https://example.com/healthz", expected_status: [200], timeout: "10s" } },
+    { action: "builtin.tcp_ping", label: "TCP Ping", category: "network", description: "Check whether a TCP host and port are reachable.", defaults: { host: "example.com", port: 443, timeout: "3s" } },
+    { action: "builtin.dns_resolve", label: "DNS Resolve", category: "network", description: "Resolve DNS records using the runner host resolver.", defaults: { name: "example.com", record_type: "A", timeout: "3s" } },
     { action: "condition.evaluate", label: "Condition", category: "control", description: "Evaluate a graph condition node or condition edge." },
     { action: "manual.approval", label: "Manual Approval", category: "control", description: "Pause a graph run until an operator approves or rejects the node." },
     { action: "notify.send", label: "Notify", category: "control", description: "Send a notification or trigger an external notification channel." },
@@ -168,12 +173,12 @@ test.describe("Runner Studio", () => {
           {
             type: "host_result",
             run_id: "run-e2e",
-            step: "shell-run",
+            step: "script-shell",
             host: "server-local",
             status: "success",
             output: { stdout: "ok", exit_code: 0 },
           },
-          { type: "step_finish", run_id: "run-e2e", step: "shell-run", status: "success" },
+          { type: "step_finish", run_id: "run-e2e", step: "script-shell", status: "success" },
           { type: "run_finish", run_id: "run-e2e", status: "success" },
         ],
       }),
@@ -199,17 +204,37 @@ test.describe("Runner Studio", () => {
     await page.route("**/api/runner-studio/workflows/*/publish", (route) =>
       route.fulfill({ json: { name: "runner-blank", status: "published", published_graph_hash: "graph-hash-e2e" } }),
     );
-    await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) =>
+    await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) => route.abort());
+    await page.route("**/api/v1/ops-manuals/candidates/generate-from-workflow", (route) =>
       route.fulfill({
         json: {
-          id: "candidate-runner-blank",
-          review_status: "pending",
-          proposed_manual: {
-            id: "manual-runner-blank-draft",
-            title: "runner-blank 运维手册候选",
-            status: "draft",
-            workflow_ref: { workflow_id: "runner-blank" },
+          candidate: {
+            id: "candidate-runner-blank",
+            source_type: "workflow_reverse_generated",
+            review_status: "pending",
+            proposed_manual: {
+              id: "manual-runner-blank-draft",
+              title: "runner-blank 运维手册候选",
+              status: "draft",
+              workflow_ref: { workflow_id: "runner-blank", workflow_digest: "sha256:abc" },
+              operation: { target_type: "runner_workflow", action: "review_required", risk_level: "medium" },
+              document_markdown: "# runner-blank 运维手册候选\n\n## 适用范围\n- runner-blank",
+            },
+            structured_validation_report: {
+              status: "warning",
+              warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+              blocking: [],
+              passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+            },
+            user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
           },
+          validation_report: {
+            status: "warning",
+            warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+            blocking: [],
+            passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+          },
+          user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
         },
       }),
     );
@@ -282,26 +307,68 @@ test.describe("Runner Studio", () => {
     await expect(modal).toContainText("runner-blank");
     await expect(modal).toContainText("draft");
     await expect(modal).toContainText("只绑定 1 个 Runner Workflow");
-    await expect(modal).toContainText("后续仍需在运维手册页审核");
-    await expect(modal).toContainText("只读预览");
-    await expect(modal).toContainText("/settings/ops-manuals");
+    await expect(modal).toContainText("生成会读取 Runner Workflow YAML");
+    await expect(modal).toContainText("手册预览");
     await expect(page).toHaveURL(/\/runner\/runner-blank$/);
 
     const prepareRequest = page.waitForRequest((req) =>
-      req.url().includes("/api/v1/ops-manuals/candidates/prepare") && req.method() === "POST",
+      req.url().includes("/api/v1/ops-manuals/candidates/generate-from-workflow") && req.method() === "POST",
     );
     await page.getByTestId("runner-ops-manual-prepare").click();
     const request = await prepareRequest;
     expect(request.postDataJSON()).toMatchObject({
       workflow_id: "runner-blank",
-      workflow_name: "runner-blank",
-      draft_manual: {
-        title: "runner-blank 运维手册候选",
-        workflow_ref: { workflow_id: "runner-blank" },
-      },
+      options: { include_recent_run_records: true, use_llm_summary: false },
     });
-    await expect(modal).toContainText("已准备候选");
+    await expect(modal).toContainText("已生成候选");
+    await expect(modal).toContainText("系统识别到 runner-blank Workflow");
+    await expect(modal).toContainText("缺少近期成功闭环记录");
+    await expect(modal).toContainText("查看候选");
     await expect(page).toHaveURL(/\/runner\/runner-blank$/);
+
+    await page.route(/\/api\/v1\/ops-manuals(\?.*)?$/, (route) =>
+      route.fulfill({ json: { items: [] } }),
+    );
+    await page.route(/\/api\/v1\/ops-manuals\/candidates(\?.*)?$/, (route) =>
+      route.fulfill({
+        json: {
+          items: [
+            {
+              id: "candidate-runner-blank",
+              source_type: "workflow_reverse_generated",
+              review_status: "pending",
+              proposed_manual: {
+                id: "manual-runner-blank-draft",
+                title: "runner-blank 运维手册候选",
+                status: "draft",
+                workflow_ref: { workflow_id: "runner-blank", workflow_digest: "sha256:abc" },
+                operation: { target_type: "runner_workflow", action: "review_required", risk_level: "medium" },
+                document_markdown: "# runner-blank 运维手册候选\n\n## 适用范围\n- runner-blank",
+              },
+              structured_validation_report: {
+                status: "warning",
+                warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+                blocking: [],
+                passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+              },
+              user_summary: { understood: ["系统识别到 runner-blank Workflow"], missing: ["缺少近期成功闭环记录"], next_steps: ["先审核候选"] },
+            },
+          ],
+        },
+      }),
+    );
+    await page.route(/\/api\/v1\/ops-manuals\/run-records(\?.*)?$/, (route) =>
+      route.fulfill({ json: { items: [] } }),
+    );
+
+    await modal.getByRole("link", { name: "查看候选" }).click();
+    await expect(page).toHaveURL(/\/settings\/ops-manuals\?candidate=candidate-runner-blank$/);
+    await page.getByRole("tab", { name: "待审核手册" }).click();
+    await expect(page.getByText("由 Workflow 反向生成")).toBeVisible();
+    await expect(page.getByText("Workflow ID：runner-blank")).toBeVisible();
+    await expect(page.getByText("sha256:abc")).toBeVisible();
+    await expect(page.getByText("系统识别到 runner-blank Workflow")).toBeVisible();
+    await expect(page.getByText("缺少近期成功闭环记录").first()).toBeVisible();
   });
 
   test("surfaces Workflow type, HostProfileSnapshot, HostLease and ops manual binding context", async ({ page }) => {
@@ -350,7 +417,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-workflow-context")).toHaveCount(0);
   });
 
-  test("creates a blank workflow, drags nodes, configures I/O, validates, and dry-runs", async ({ page }) => {
+  test("creates a blank workflow, drags nodes, configures I/O, validates, and runs publish precheck", async ({ page }) => {
     await page.goto("/runner");
     await page.getByTestId("runner-open-manager").click();
     await page.getByTestId("workflow-create-blank").click();
@@ -368,11 +435,16 @@ test.describe("Runner Studio", () => {
     await page.getByTestId("runner-node-picker-toggle").click();
     await expect(page.getByTestId("runner-node-picker")).toBeVisible();
     await expect(page.getByTestId("catalog-action-cmd-run")).toHaveCount(0);
+    await expect(page.getByTestId("catalog-action-shell-run")).toHaveCount(0);
     await expect(page.getByTestId("catalog-action-notify-send")).toHaveCount(0);
     await expect(page.getByTestId("catalog-action-variable-aggregate")).toHaveCount(0);
-    await expect(page.getByTestId("catalog-action-shell-run")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-script-shell")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-script-python")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-http-request")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-builtin-tcp_ping")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-builtin-dns_resolve")).toBeVisible();
     await expect(page.getByTestId("catalog-action-condition-evaluate")).toBeVisible();
-    await expect(page.getByTestId("catalog-action-manual-approval")).toBeVisible();
+    await expect(page.getByTestId("catalog-action-manual-approval")).toHaveCount(0);
     const dropzoneBox = await page.getByTestId("runner-canvas-dropzone").boundingBox();
     const flowBox = await page.locator(".runner-canvas-react .react-flow").boundingBox();
     expect(dropzoneBox).not.toBeNull();
@@ -380,17 +452,16 @@ test.describe("Runner Studio", () => {
     expect(Math.abs(Math.round(flowBox.x) - Math.round(dropzoneBox.x))).toBeLessThanOrEqual(2);
     expect(Math.abs(Math.round(flowBox.width) - Math.round(dropzoneBox.width))).toBeLessThanOrEqual(2);
 
-    await page.getByTestId("catalog-action-shell-run").dragTo(page.getByTestId("runner-canvas-dropzone"));
+    await page.getByTestId("catalog-action-script-shell").dragTo(page.getByTestId("runner-canvas-dropzone"));
     await page.getByTestId("catalog-action-condition-evaluate").dragTo(page.getByTestId("runner-canvas-dropzone"));
-    await page.getByTestId("catalog-action-manual-approval").dragTo(page.getByTestId("runner-canvas-dropzone"));
-    await expect(page.getByTestId("canvas-node-shell-run")).toBeVisible();
+    await expect(page.getByTestId("canvas-node-script-shell")).toBeVisible();
     await expect(page.getByTestId("canvas-node-condition-evaluate")).toBeVisible();
-    await expect(page.getByTestId("canvas-node-manual-approval")).toBeVisible();
-    await expect(page.getByTestId("canvas-node-shell-run")).not.toContainText("shell.run");
-    await expect(page.getByTestId("canvas-node-shell-run")).not.toContainText("执行 shell 脚本片段，可配置输入、输出、重试和超时。");
-    await expect(page.getByTestId("canvas-node-shell-run")).not.toContainText("1 in · 2 out");
+    await expect(page.getByTestId("canvas-node-manual-approval")).toHaveCount(0);
+    await expect(page.getByTestId("canvas-node-script-shell")).not.toContainText("script.shell");
+    await expect(page.getByTestId("canvas-node-script-shell")).not.toContainText("执行 shell 脚本内容，可配置输入、输出、重试和超时。");
+    await expect(page.getByTestId("canvas-node-script-shell")).not.toContainText("1 in · 2 out");
 
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     await expect(page.getByTestId("runner-node-panel")).toBeVisible();
     await expect(page.getByTestId("runner-node-panel-tab-input")).toHaveCount(0);
     await expect(page.getByTestId("runner-node-panel-tab-output")).toHaveCount(0);
@@ -407,6 +478,9 @@ test.describe("Runner Studio", () => {
 
     await clickToolbar(page, "validate");
     await expect(page.getByTestId("runner-studio-topbar")).toContainText("validated");
+    await page.getByTestId("runner-toolbar-more").click();
+    await expect(page.getByTestId("runner-toolbar-dry-run")).toContainText("发布前检查");
+    await expect(page.getByRole("menuitem", { name: "Dry Run" })).toHaveCount(0);
 
     const dryRunRequest = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/workflows/graph/dry-run") && req.method() === "POST",
@@ -416,10 +490,10 @@ test.describe("Runner Studio", () => {
 
     await page.reload();
     await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
-    await expect(page.getByTestId("canvas-node-shell-run")).toBeVisible();
+    await expect(page.getByTestId("canvas-node-script-shell")).toBeVisible();
     await expect(page.getByTestId("canvas-node-condition-evaluate")).toBeVisible();
-    await expect(page.getByTestId("canvas-node-manual-approval")).toBeVisible();
-    await page.getByTestId("canvas-node-shell-run").click();
+    await expect(page.getByTestId("canvas-node-manual-approval")).toHaveCount(0);
+    await page.getByTestId("canvas-node-script-shell").click();
     await expect(page.getByLabel("输入变量名")).toHaveValue("backup_id");
     await expect(page.getByLabel("输出变量名")).toHaveValue("restore_lsn");
     await page.getByTestId("runner-node-panel-close").click();
@@ -451,16 +525,16 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-run-panel")).toHaveCount(0);
     await page.getByTestId("runner-run-history-row-run-e2e").click();
     await expect(page.getByTestId("runner-run-panel")).toContainText("run-e2e");
-    await expect(page.getByTestId("runner-run-panel")).toContainText("shell-run");
+    await expect(page.getByTestId("runner-run-panel")).toContainText("script-shell");
     await expect(page.getByTestId("runner-run-panel")).toContainText("ok");
     await page.getByTestId("runner-run-history-back").click();
     await expect(page.getByTestId("runner-run-panel")).toHaveCount(0);
     await expect(page.getByTestId("canvas-node-start")).toHaveClass(/run-success/);
-    await expect(page.getByTestId("canvas-node-shell-run")).toHaveClass(/run-success/);
+    await expect(page.getByTestId("canvas-node-script-shell")).toHaveClass(/run-success/);
     await expect(page.getByTestId("canvas-node-end")).toHaveCount(0);
 
     await page.getByTestId("runner-run-drawer-close").click();
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     await expect(page.getByTestId("runner-node-panel-apply")).toContainText("保存");
     await expect(page.getByTestId("runner-node-panel-apply")).not.toContainText("应用");
     await page.getByTestId("runner-node-panel-open-run").click();
@@ -468,7 +542,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-node-panel-tab-last-run")).toHaveClass(/active/);
     await expect(page.getByTestId("runner-node-last-run-view")).toBeVisible();
     await expect(page.getByTestId("runner-node-last-run-view")).not.toContainText("失败原因");
-    await expect(page.getByTestId("runner-node-last-run-view")).not.toContainText("step shell-run finished with status=success");
+    await expect(page.getByTestId("runner-node-last-run-view")).not.toContainText("step script-shell finished with status=success");
     await expect(page.getByTestId("runner-node-run-details")).toHaveCount(0);
   });
 
@@ -530,7 +604,7 @@ test.describe("Runner Studio", () => {
     await page.getByTestId("runner-toolbar-more").click();
     await expect(page.getByTestId("runner-toolbar-more-menu")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-validate")).toBeVisible();
-    await expect(page.getByTestId("runner-toolbar-dry-run")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-dry-run")).toContainText("发布前检查");
     await expect(page.getByTestId("runner-toolbar-variables")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-publish")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-ai-generate")).toBeVisible();
@@ -642,9 +716,9 @@ test.describe("Runner Studio", () => {
     await expect(page.locator(".runner-canvas-toolbar")).toHaveCount(0);
     await expect(page.locator(".react-flow__controls").getByTestId("runner-node-picker-toggle")).toBeVisible();
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
     const canvasBoxBeforePanel = await page.getByTestId("runner-canvas-dropzone").boundingBox();
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     const canvasBoxAfterPanel = await page.getByTestId("runner-canvas-dropzone").boundingBox();
     expect(canvasBoxBeforePanel).not.toBeNull();
     expect(canvasBoxAfterPanel).not.toBeNull();
@@ -656,10 +730,12 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-node-targets")).not.toContainText("运行主机标签");
     await expect(page.getByTestId("runner-node-targets")).not.toContainText("步骤会按标签展开目标主机");
     await expect(page.getByTestId("runner-node-script-editor")).toBeVisible();
-    await expect(page.getByTestId("runner-node-script-editor")).toHaveValue("set -e\necho ok");
+    await expect(page.getByTestId("runner-node-script-editor")).toHaveValue("set -euo pipefail\necho ok");
     await page.getByTestId("runner-node-script-expand").click();
     await expect(page.getByTestId("runner-script-editor-modal")).toBeVisible();
-    await expect(page.getByTestId("runner-script-editor-modal-textarea")).toHaveValue("set -e\necho ok");
+    await expect(page.getByTestId("runner-script-editor-modal-textarea")).toHaveValue("set -euo pipefail\necho ok");
+    await expect(page.getByTestId("runner-script-editor-modal-textarea")).toHaveCSS("background-color", "rgb(15, 23, 42)");
+    await expect(page.getByTestId("runner-script-editor-modal-textarea")).toHaveCSS("color", "rgb(226, 232, 240)");
     await page.getByTestId("runner-script-editor-modal-close").click();
     await expect(page.getByTestId("runner-script-editor-modal")).toHaveCount(0);
     await expect(page.getByTestId("runner-code-input-variables")).toBeVisible();
@@ -685,8 +761,8 @@ test.describe("Runner Studio", () => {
     await page.getByTestId("runner-node-panel-apply").click();
 
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     await expect(page.getByTestId("runner-node-targets")).toBeVisible();
     await expect(page.getByTestId("runner-node-target-options")).toContainText("web");
     await expect(page.getByTestId("runner-node-target-options")).toContainText("db");
@@ -705,7 +781,7 @@ test.describe("Runner Studio", () => {
     expect(graph.workflow.inventory.groups.web.hosts).toEqual(["web-01", "web-02"]);
     expect(graph.workflow.inventory.groups.db.hosts).toEqual(["db-01"]);
     expect(graph.workflow.inventory.hosts["web-01"].address).toBe("web-01");
-    expect(graph.nodes.find((node) => node.id === "shell-run").step.targets).toEqual(["web", "db"]);
+    expect(graph.nodes.find((node) => node.id === "script-shell").step.targets).toEqual(["web", "db"]);
     expect(graph.nodes.find((node) => node.id === "end")).toBeTruthy();
   });
 
@@ -720,6 +796,26 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-canvas-context-menu")).toHaveCount(0);
   });
 
+  test("deletes selected workflow nodes from the keyboard and node panel", async ({ page }) => {
+    await createBlankWorkflow(page);
+
+    await page.getByTestId("runner-node-picker-toggle").click();
+    await page.getByTestId("catalog-action-script-shell").click();
+    await page.getByTestId("canvas-node-script-shell").click();
+    await expect(page.getByTestId("runner-node-panel")).toBeVisible();
+    await page.keyboard.press("Delete");
+    await expect(page.getByTestId("canvas-node-script-shell")).toHaveCount(0);
+    await expect(page.getByTestId("runner-node-panel")).toHaveCount(0);
+
+    await page.getByTestId("runner-node-picker-toggle").click();
+    await page.getByTestId("catalog-action-builtin-tcp_ping").click();
+    await page.getByTestId("canvas-node-builtin-tcp-ping").click();
+    await expect(page.getByTestId("runner-node-panel-delete")).toBeVisible();
+    await page.getByTestId("runner-node-panel-delete").click();
+    await expect(page.getByTestId("canvas-node-builtin-tcp-ping")).toHaveCount(0);
+    await expect(page.getByTestId("runner-node-panel")).toHaveCount(0);
+  });
+
   test("adds nodes at the canvas context position and persists manual edge changes", async ({ page }) => {
     await createBlankWorkflow(page);
     const canvas = page.getByTestId("runner-canvas-dropzone");
@@ -730,8 +826,8 @@ test.describe("Runner Studio", () => {
     await page.mouse.click(canvasBox.x + clickPoint.x, canvasBox.y + clickPoint.y, { button: "right" });
     await expect(page.getByTestId("runner-canvas-context-menu")).toBeVisible();
     await page.getByTestId("runner-context-add-node").click();
-    await page.getByTestId("catalog-action-shell-run").click();
-    const firstNodeBox = await page.getByTestId("canvas-node-shell-run").boundingBox();
+    await page.getByTestId("catalog-action-script-shell").click();
+    const firstNodeBox = await page.getByTestId("canvas-node-script-shell").boundingBox();
     expect(firstNodeBox).not.toBeNull();
     expect(Math.abs(firstNodeBox.x + firstNodeBox.width / 2 - (canvasBox.x + clickPoint.x))).toBeLessThan(130);
     expect(Math.abs(firstNodeBox.y + firstNodeBox.height / 2 - (canvasBox.y + clickPoint.y))).toBeLessThan(110);
@@ -743,15 +839,15 @@ test.describe("Runner Studio", () => {
     await page.mouse.click(canvasBox.x + secondClickPoint.x, canvasBox.y + secondClickPoint.y, { button: "right" });
     await expect(page.getByTestId("runner-canvas-context-menu")).toBeVisible();
     await page.getByTestId("runner-context-add-node").click();
-    await page.getByTestId("catalog-action-shell-run").click();
-    await expect(page.getByTestId("canvas-node-shell-run-2")).toBeVisible();
-    const secondNodeBox = await page.getByTestId("canvas-node-shell-run-2").boundingBox();
+    await page.getByTestId("catalog-action-script-shell").click();
+    await expect(page.getByTestId("canvas-node-script-shell-2")).toBeVisible();
+    const secondNodeBox = await page.getByTestId("canvas-node-script-shell-2").boundingBox();
     expect(secondNodeBox).not.toBeNull();
     expect(Math.abs(secondNodeBox.x + secondNodeBox.width / 2 - (canvasBox.x + secondClickPoint.x))).toBeLessThan(40);
     expect(Math.abs(secondNodeBox.y + secondNodeBox.height / 2 - (canvasBox.y + secondClickPoint.y))).toBeLessThan(40);
 
-    const sourceHandle = await page.getByTestId("canvas-node-shell-run").getByTitle("下一步").boundingBox();
-    const targetHandle = await page.getByTestId("canvas-node-shell-run-2").locator(".runner-canvas-handle.input").boundingBox();
+    const sourceHandle = await page.getByTestId("canvas-node-script-shell").getByTitle("下一步").boundingBox();
+    const targetHandle = await page.getByTestId("canvas-node-script-shell-2").locator(".runner-canvas-handle.input").boundingBox();
     expect(sourceHandle).not.toBeNull();
     expect(targetHandle).not.toBeNull();
     await page.mouse.move(sourceHandle.x + sourceHandle.width / 2, sourceHandle.y + sourceHandle.height / 2);
@@ -765,15 +861,15 @@ test.describe("Runner Studio", () => {
     await page.getByTestId("runner-toolbar-save").click();
     const graphWithManualEdge = (await saveManualEdge).postDataJSON().graph;
     expect(graphWithManualEdge.edges).toEqual(
-      expect.arrayContaining([expect.objectContaining({ source: "shell-run", target: "shell-run-2" })]),
+      expect.arrayContaining([expect.objectContaining({ source: "script-shell", target: "script-shell-2" })]),
     );
 
     const firstEdge = page.locator(".runner-flow-edge-hover-path").first();
     await firstEdge.hover({ force: true });
     await expect(page.getByRole("button", { name: "在连线上插入节点" })).toBeVisible();
-    await expect(page.getByTestId("runner-edge-delete-start-shell-run-next")).toHaveCount(0);
+    await expect(page.getByTestId("runner-edge-delete-start-script-shell-next")).toHaveCount(0);
     const startHandle = await page.getByTestId("canvas-node-start").getByTitle("下一步").boundingBox();
-    const firstNodeInput = await page.getByTestId("canvas-node-shell-run").locator(".runner-canvas-handle.input").boundingBox();
+    const firstNodeInput = await page.getByTestId("canvas-node-script-shell").locator(".runner-canvas-handle.input").boundingBox();
     expect(startHandle).not.toBeNull();
     expect(firstNodeInput).not.toBeNull();
     const edgeClickX = startHandle.x + startHandle.width / 2 + (firstNodeInput.x + firstNodeInput.width / 2 - (startHandle.x + startHandle.width / 2)) * 0.25;
@@ -787,7 +883,7 @@ test.describe("Runner Studio", () => {
     );
     await page.getByTestId("runner-toolbar-save").click();
     const graphAfterDelete = (await saveAfterDelete).postDataJSON().graph;
-    expect(graphAfterDelete.edges.some((edge) => edge.source === "start" && edge.target === "shell-run")).toBe(false);
+    expect(graphAfterDelete.edges.some((edge) => edge.source === "start" && edge.target === "script-shell")).toBe(false);
   });
 
   test("keeps run details closed on failed run submission and surfaces the failure reason", async ({ page }) => {
@@ -795,13 +891,13 @@ test.describe("Runner Studio", () => {
     await page.route("**/api/runner-studio/runs", (route) =>
       route.fulfill({
         status: 500,
-        json: { error: "shell.run requires args.script" },
+        json: { error: "script.shell requires args.script" },
       }),
     );
 
     await createBlankWorkflow(page);
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
 
     const runRequest = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/runs") && req.method() === "POST",
@@ -822,7 +918,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-run-panel")).toHaveCount(0);
     await page.locator(".runner-run-history-row").click();
     await expect(page.getByTestId("runner-run-panel")).toContainText("运行提交失败");
-    await expect(page.getByTestId("runner-run-panel")).toContainText("shell.run requires args.script");
+    await expect(page.getByTestId("runner-run-panel")).toContainText("script.shell requires args.script");
     await expect(page.getByTestId("runner-run-panel")).not.toContainText("暂无日志。");
   });
 
@@ -835,24 +931,24 @@ test.describe("Runner Studio", () => {
           {
             type: "host_result",
             run_id: "run-e2e",
-            step: "shell-run",
+            step: "script-shell",
             host: "server-local",
             status: "failed",
-            message: "shell.run failed: exit status 9",
+            message: "script.shell failed: exit status 9",
             output: {
               stdout: "about-to-fail stdout\n",
               stderr: "intentional failure: missing deployment token\n",
             },
           },
-          { type: "node_finished", run_id: "run-e2e", status: "failed", message: "shell.run failed: exit status 9", output: { node_id: "shell-run" } },
-          { type: "run_finish", run_id: "run-e2e", status: "failed", message: "shell.run failed: exit status 9" },
+          { type: "node_finished", run_id: "run-e2e", status: "failed", message: "script.shell failed: exit status 9", output: { node_id: "script-shell" } },
+          { type: "run_finish", run_id: "run-e2e", status: "failed", message: "script.shell failed: exit status 9" },
         ],
       }),
     );
 
     await createBlankWorkflow(page);
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
 
     const runRequest = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/runs") && req.method() === "POST",
@@ -862,7 +958,7 @@ test.describe("Runner Studio", () => {
 
     await expect(page.getByTestId("runner-run-drawer")).toHaveCount(0);
     await expect(page.getByTestId("runner-studio-topbar")).toContainText("运行失败");
-    await expect(page.getByTestId("canvas-node-shell-run")).toHaveClass(/run-failed/);
+    await expect(page.getByTestId("canvas-node-script-shell")).toHaveClass(/run-failed/);
 
     await page.getByTestId("runner-toolbar-run-details").click();
     await expect(page.getByTestId("runner-run-history-panel")).toBeVisible();
@@ -874,18 +970,18 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-run-history-panel")).toContainText("运行记录");
     await expect(page.getByTestId("runner-run-history-panel")).toContainText("run-e2e");
     await expect(page.getByTestId("runner-run-history-panel")).toContainText("failed");
-    await expect(page.getByTestId("runner-run-history-panel")).toContainText("shell-run");
+    await expect(page.getByTestId("runner-run-history-panel")).toContainText("script-shell");
     await expect(page.getByTestId("runner-run-panel")).toHaveCount(0);
     await page.getByTestId("runner-run-history-row-run-e2e").click();
     await expect(page.getByTestId("runner-run-detail-panel")).toBeVisible();
-    await expect(page.getByTestId("runner-run-panel")).toContainText("运行失败：shell.run failed: exit status 9");
+    await expect(page.getByTestId("runner-run-panel")).toContainText("运行失败：script.shell failed: exit status 9");
     await expect(page.getByTestId("runner-run-panel")).toContainText("intentional failure: missing deployment token");
-    await expect(page.getByTestId("runner-run-panel")).not.toContainText("运行提交失败：shell.run failed");
+    await expect(page.getByTestId("runner-run-panel")).not.toContainText("运行提交失败：script.shell failed");
     const hasHorizontalOverflow = await page.getByTestId("runner-run-drawer").locator(".runner-studio-run-drawer-body").evaluate((node) => node.scrollWidth > node.clientWidth + 1);
     expect(hasHorizontalOverflow).toBe(false);
 
     await page.getByTestId("runner-run-drawer-close").click();
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     await page.getByTestId("runner-node-panel-open-run").click();
     await expect(page.getByTestId("runner-run-drawer")).toHaveCount(0);
     await expect(page.getByTestId("runner-node-panel-tab-last-run")).toHaveClass(/active/);
@@ -905,7 +1001,7 @@ test.describe("Runner Studio", () => {
 
     await createBlankWorkflow(page);
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
 
     const runRequest = page.waitForRequest((req) =>
       req.url().includes("/api/runner-studio/runs") && req.method() === "POST",
@@ -918,7 +1014,7 @@ test.describe("Runner Studio", () => {
 
     await expect(page.getByTestId("runner-run-drawer")).toHaveCount(0);
     await expect(page.getByTestId("runner-studio-topbar")).toContainText("运行失败");
-    await page.getByTestId("canvas-node-shell-run").click();
+    await page.getByTestId("canvas-node-script-shell").click();
     await page.getByTestId("runner-node-panel-open-run").click();
 
     await expect(page.getByTestId("runner-run-drawer")).toHaveCount(0);
@@ -932,7 +1028,7 @@ test.describe("Runner Studio", () => {
   test("shows localized filtered edge insert picker cards", async ({ page }) => {
     await createBlankWorkflow(page);
     await page.getByTestId("runner-node-picker-toggle").click();
-    await page.getByTestId("catalog-action-shell-run").click();
+    await page.getByTestId("catalog-action-script-shell").click();
 
     const initialEdge = page.locator(".runner-flow-edge-hover-path").first();
     await expect(initialEdge).toBeVisible();
@@ -941,9 +1037,10 @@ test.describe("Runner Studio", () => {
 
     const picker = page.getByTestId("runner-edge-node-picker");
     await expect(picker).toBeVisible();
-    await expect(picker).toContainText("执行 shell 脚本片段，可配置输入、输出、重试和超时。");
+    await expect(picker).toContainText("执行 shell 脚本内容，可配置输入、输出、重试和超时。");
     await expect(picker).toContainText("根据变量或表达式选择 IF / ELSE 后续路径。");
-    await expect(picker).toContainText("在高风险步骤前暂停，等待人工确认后继续。");
+    await expect(picker).toContainText("检查 TCP 主机端口是否可达。");
+    await expect(picker).not.toContainText("在高风险步骤前暂停，等待人工确认后继续。");
     await expect(picker).not.toContainText("Command");
     await expect(picker).not.toContainText("Notify");
     await expect(picker).not.toContainText("Variable Aggregator");
@@ -965,7 +1062,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("canvas-node-ai-invalid")).toHaveCount(0);
   });
 
-  test("publish review requires graph hash, dry run hash, and publish note", async ({ page }) => {
+  test("publish review requires graph hash, publish precheck hash, and publish note", async ({ page }) => {
     await page.goto("/runner");
     await page.getByTestId("runner-open-manager").click();
     await page.getByTestId("workflow-create-blank").click();
@@ -977,7 +1074,7 @@ test.describe("Runner Studio", () => {
 
     await clickToolbar(page, "validate");
     await clickToolbar(page, "publish");
-    await expect(page.getByText("Dry Run 未通过或已过期")).toBeVisible();
+    await expect(page.getByText("发布前检查未通过或已过期")).toBeVisible();
     await expect(page.getByTestId("publish-confirm")).toBeDisabled();
     await page.getByRole("button", { name: "取消" }).click();
 

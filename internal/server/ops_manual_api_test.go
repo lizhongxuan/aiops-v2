@@ -91,8 +91,10 @@ func TestOpsManualAPIRetrievePrepareAndConfirm(t *testing.T) {
 		Manual: opsmanual.OpsManual{
 			ID:               "manual-pg-backup",
 			Title:            "PostgreSQL backup",
-			WorkflowRef:      opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup"},
+			WorkflowRef:      opsmanual.WorkflowRef{WorkflowID: "workflow-pg-backup", WorkflowDigest: "sha256:test"},
 			Operation:        opsmanual.OperationProfile{TargetType: "postgresql", Action: "backup"},
+			RequiredContext:  opsmanual.RequiredContext{RequiredInputs: []string{"target_instance", "backup_path"}},
+			ParameterRules:   map[string]opsmanual.ParameterRule{"target_instance": {Required: true, Source: "user"}, "backup_path": {Required: true, Source: "user"}},
 			Validation:       []string{"backup file exists"},
 			CannotUseWhen:    []string{"目标实例未知"},
 			DocumentMarkdown: "PostgreSQL backup manual",
@@ -194,6 +196,110 @@ func TestOpsManualAPIRetrievePrepareAndConfirm(t *testing.T) {
 	}
 }
 
+func TestOpsManualFlowTimelineAPIAssociatesEvents(t *testing.T) {
+	repo := opsmanual.NewMemoryStore()
+	if err := repo.SaveManual(serverRedisManual()); err != nil {
+		t.Fatalf("SaveManual() error = %v", err)
+	}
+	if err := repo.SaveParamResolutionEvent(opsmanual.ParamResolutionEvent{
+		ID:              "param-event-1",
+		SessionID:       "sess-1",
+		TurnID:          "turn-1",
+		OpsManualFlowID: "flow-redis-1",
+		ManualID:        "manual-redis-memory",
+		WorkflowID:      "workflow-redis-memory",
+		Result: opsmanual.ParamResolutionResult{
+			Status: opsmanual.ParamResolutionResolved,
+			ResolvedParams: []opsmanual.ResolvedParam{{
+				ID: "target_instance", Value: "redis-1", Source: "user_form",
+			}},
+		},
+		CreatedAt: "2026-05-19T10:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveParamResolutionEvent() error = %v", err)
+	}
+	if err := repo.SaveRunRecord(opsmanual.RunRecord{
+		ID:               "run-record-1",
+		SessionID:        "sess-1",
+		OpsManualFlowID:  "flow-redis-1",
+		ManualID:         "manual-redis-memory",
+		WorkflowID:       "workflow-redis-memory",
+		WorkflowDigest:   "sha256:abc",
+		PreflightStatus:  "passed",
+		DryRunStatus:     "passed",
+		ExecutionStatus:  "success",
+		ValidationStatus: "passed",
+		UserFeedback:     "applicable",
+		CompletedAt:      "2026-05-19T10:05:00Z",
+	}); err != nil {
+		t.Fatalf("SaveRunRecord() error = %v", err)
+	}
+	if err := repo.SaveManualGuidedChatEvent(opsmanual.ManualGuidedChatEvent{
+		ID:              "manual-guided-1",
+		SessionID:       "sess-1",
+		OpsManualFlowID: "flow-redis-1",
+		ManualID:        "manual-redis-memory",
+		WorkflowID:      "workflow-redis-memory",
+		ReferenceMode:   "manual_guided_chat",
+		StageSummary:    "只参考手册继续只读排查",
+		WorkflowRunID:   "",
+		RedactionStatus: "redacted",
+		CreatedAt:       "2026-05-19T10:03:00Z",
+	}); err != nil {
+		t.Fatalf("SaveManualGuidedChatEvent() error = %v", err)
+	}
+	service := appui.NewOpsManualService(opsmanual.NewService(repo))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithWebAssets(http.NotFoundHandler()))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/ops-manuals/flows/flow-redis-1/timeline")
+	if err != nil {
+		t.Fatalf("GET timeline error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET timeline status = %d, want 200", resp.StatusCode)
+	}
+	var payload struct {
+		Items []opsmanual.FlowTimelineEvent `json:"items"`
+		Total int                           `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode timeline payload: %v", err)
+	}
+	if payload.Total != 9 {
+		t.Fatalf("timeline payload = %#v, want nine events", payload)
+	}
+	wantTypes := map[string]bool{
+		"search":                  false,
+		"param_resolution":        false,
+		"user_form_submit":        false,
+		"preflight":               false,
+		"dry_run":                 false,
+		"execution":               false,
+		"verification":            false,
+		"user_feedback":           false,
+		"manual_guided_reference": false,
+	}
+	for _, event := range payload.Items {
+		if event.OpsManualFlowID != "flow-redis-1" || event.ManualID != "manual-redis-memory" || event.WorkflowID != "workflow-redis-memory" || event.SessionID != "sess-1" {
+			t.Fatalf("timeline event = %#v, want shared flow/manual/workflow/session", event)
+		}
+		if event.RedactionStatus != "redacted" {
+			t.Fatalf("timeline event = %#v, want redacted status", event)
+		}
+		if _, ok := wantTypes[event.Type]; ok {
+			wantTypes[event.Type] = true
+		}
+	}
+	for eventType, seen := range wantTypes {
+		if !seen {
+			t.Fatalf("timeline payload = %#v, missing event type %s", payload, eventType)
+		}
+	}
+}
+
 func TestOpsManualSearchAPIReturnsAdaptForCentOSPostgresBackup(t *testing.T) {
 	repo := opsmanual.NewMemoryStore()
 	if err := repo.SaveManual(serverPGBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu")); err != nil {
@@ -256,8 +362,8 @@ func TestOpsManualPreflightAPIReturnsPassed(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != opsmanual.PreflightStatusPassed || !payload.Ready || payload.NextAction != "start_dry_run" {
-		t.Fatalf("payload = %#v, want passed ready start_dry_run", payload)
+	if payload.Status != opsmanual.PreflightStatusPassed || !payload.Ready || payload.NextAction != "confirm_execution" {
+		t.Fatalf("payload = %#v, want passed ready confirm_execution", payload)
 	}
 }
 

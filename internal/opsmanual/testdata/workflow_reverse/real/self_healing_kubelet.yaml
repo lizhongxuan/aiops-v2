@@ -1,0 +1,71 @@
+version: v0.1
+name: self-healing-kubelet
+description: Detect kubelet health, restart it when unhealthy, and verify node readiness.
+inventory:
+  groups:
+    kube_nodes:
+      hosts:
+        - node-a
+        - node-b
+  hosts:
+    node-a:
+      address: "http://127.0.0.1:7072"
+    node-b:
+      address: "http://127.0.0.1:7073"
+vars:
+  kubelet_health_url: "https://127.0.0.1:10250/healthz"
+  node_ready_timeout: 120
+plan:
+  mode: manual-approve
+  strategy: sequential
+steps:
+  - name: probe kubelet health
+    targets: [kube_nodes]
+    action: builtin.http_check
+    continue_on_error: true
+    args:
+      url: "${kubelet_health_url}"
+      expected_status: [200]
+      body_contains: "ok"
+      insecure_skip_verify: true
+      timeout: 5s
+
+  - name: capture kubelet diagnostics
+    targets: [kube_nodes]
+    action: script.shell
+    args:
+      export_vars: true
+      script: |
+        set -euo pipefail
+        systemctl is-active kubelet || true
+        journalctl -u kubelet -n 80 --no-pager || true
+        echo "BOPS_EXPORT:KUBELET_DIAGNOSTICS_CAPTURED=true"
+
+  - name: restart kubelet
+    targets: [kube_nodes]
+    action: script.shell
+    retries: 1
+    timeout: 2m
+    args:
+      export_vars: true
+      script: |
+        set -euo pipefail
+        systemctl restart kubelet
+        echo "BOPS_EXPORT:KUBELET_RESTARTED=true"
+
+  - name: verify node ready
+    targets: [kube_nodes]
+    action: script.shell
+    timeout: 3m
+    args:
+      export_vars: true
+      script: |
+        set -euo pipefail
+        deadline=$((SECONDS + node_ready_timeout))
+        until systemctl is-active --quiet kubelet; do
+          if [ "$SECONDS" -ge "$deadline" ]; then
+            exit 1
+          fi
+          sleep 5
+        done
+        echo "BOPS_EXPORT:KUBELET_READY=true"

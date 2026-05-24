@@ -19,6 +19,7 @@ export function RCAReportArtifact({ artifact }: { artifact: AiopsTransportAgentU
   const report = normalizeRCAReport(artifact.inlineData);
   const restricted = ["restricted", "denied", "forbidden"].includes(text(artifact.permissionScope).toLowerCase());
   const title = text(artifact.titleZh) || text(artifact.title) || "根因分析";
+  const showEvidenceSummary = restricted || report.evidenceRefs.length > 0 || report.rawRefs.length > 0;
 
   return (
     <div className="mt-3 space-y-4 border-t border-slate-100 pt-3" data-testid="rca-report-artifact">
@@ -57,9 +58,11 @@ export function RCAReportArtifact({ artifact }: { artifact: AiopsTransportAgentU
         </div>
       ) : null}
 
-      <div className="border-t border-slate-100 pt-3">
-        <RCAEvidenceList evidenceRefs={report.evidenceRefs} rawRefs={report.rawRefs} restricted={restricted} />
-      </div>
+      {showEvidenceSummary ? (
+        <div className="border-t border-slate-100 pt-3">
+          <RCAEvidenceList evidenceRefs={report.evidenceRefs} rawRefs={report.rawRefs} restricted={restricted} />
+        </div>
+      ) : null}
     </div>
   );
 }

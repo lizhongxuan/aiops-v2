@@ -38,6 +38,11 @@ func (rs *ResourceServer) handleUICards(w http.ResponseWriter, r *http.Request) 
 	parts := splitResourcePath(path)
 	switch r.Method {
 	case http.MethodGet:
+		if len(parts) == 1 && parts[0] == "renderers" {
+			result, err := service.ListRenderers()
+			writeResourceResult(w, result, err)
+			return
+		}
 		if len(parts) == 0 {
 			result, err := service.List(appui.UICardListRequest{
 				Status: strings.TrimSpace(r.URL.Query().Get("status")),

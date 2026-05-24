@@ -26,32 +26,39 @@ func (s *Service) ResolveOpsManualParams(req ResolveOpsManualParamsRequest) (Par
 		frame = BuildOperationFrame(req.RequestText, req.Metadata)
 	}
 	frame = normalizeResolutionFrame(frame, manual, req.RequestText)
-	ledger := buildResolutionLedger(req, frame)
 	workflowParams := workflowParamRequirementsFromMetadata(manual.Metadata["workflow_parameters"])
 	requirements := BuildParamRequirements(manual, workflowParams)
-	result := ResolveParamsForManual(context.Background(), manual, frame, requirements, ledger, discoveryFromRequest(req.Metadata, s.discovery))
+	ledger := s.buildResolutionLedger(context.Background(), req, frame, requirements)
+	result := ResolveParamsForManualWithHints(context.Background(), manual, frame, requirements, ledger, discoveryFromRequest(req.Metadata, s.discovery), s.hintProvider)
 	result.ManualID = manual.ID
 	result.WorkflowID = firstNonEmpty(strings.TrimSpace(req.WorkflowID), strings.TrimSpace(manual.WorkflowRef.WorkflowID))
+	result.OpsManualFlowID = BuildOpsManualFlowIDFromMetadata(req.Metadata, result.ManualID, result.WorkflowID, frame)
 	result.OperationFrame = frame
 	result.ArtifactType = paramResolutionArtifactType
 	result.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	if repo, ok := s.repo.(ParamResolutionEventRepository); ok {
 		_ = repo.SaveParamResolutionEvent(ParamResolutionEvent{
-			ID:             "param-resolution-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
-			SessionID:      metadataString(req.Metadata, "session_id"),
-			TurnID:         metadataString(req.Metadata, "turn_id"),
-			ManualID:       result.ManualID,
-			WorkflowID:     result.WorkflowID,
-			OperationFrame: frame,
-			Result:         result,
-			CreatedAt:      result.CreatedAt,
+			ID:              "param-resolution-" + time.Now().UTC().Format("20060102T150405.000000000Z"),
+			SessionID:       metadataString(req.Metadata, "session_id"),
+			TurnID:          metadataString(req.Metadata, "turn_id"),
+			OpsManualFlowID: result.OpsManualFlowID,
+			ManualID:        result.ManualID,
+			WorkflowID:      result.WorkflowID,
+			OperationFrame:  frame,
+			Result:          result,
+			CreatedAt:       result.CreatedAt,
 		})
 	}
+	s.writeResolvedSessionFacts(context.Background(), req, requirements, result)
 	return result, nil
 }
 
 func ResolveParamsForManual(ctx context.Context, manual OpsManual, frame OperationFrame, requirements []ParamRequirement, ledger OperationContextLedger, discovery ResourceDiscovery) ParamResolutionResult {
-	registry := NewDefaultParamResolverRegistry(discovery)
+	return ResolveParamsForManualWithHints(ctx, manual, frame, requirements, ledger, discovery, nil)
+}
+
+func ResolveParamsForManualWithHints(ctx context.Context, manual OpsManual, frame OperationFrame, requirements []ParamRequirement, ledger OperationContextLedger, discovery ResourceDiscovery, hints HintProvider) ParamResolutionResult {
+	registry := NewParamResolverRegistry(discovery, hints)
 	resolved := map[string]ResolvedParam{}
 	result := ParamResolutionResult{
 		Status: ParamResolutionUnresolved,
@@ -92,6 +99,12 @@ func ResolveParamsForManual(ctx context.Context, manual OpsManual, frame Operati
 			node.Ambiguous = &ambiguous
 			result.AmbiguousParams = append(result.AmbiguousParams, ambiguous)
 			result.Fields = append(result.Fields, formFieldFromAmbiguous(ambiguous))
+		case len(candidates) > 0 && candidatesRequireCurrentConfirmation(candidates):
+			missing := MissingParam{ParamRequirement: node.Requirement, Reason: "requires current confirmation/discovery", Candidates: candidates}
+			node.Status = string(ParamResolutionNeedUserInput)
+			node.Missing = &missing
+			result.MissingParams = append(result.MissingParams, missing)
+			result.Fields = append(result.Fields, formFieldFromMissing(missing))
 		case node.Requirement.Required:
 			missing := MissingParam{ParamRequirement: node.Requirement, Reason: firstNonEmpty(resolverResult.Message, "no candidate")}
 			node.Status = string(ParamResolutionNeedUserInput)
@@ -115,6 +128,18 @@ func ResolveParamsForManual(ctx context.Context, manual OpsManual, frame Operati
 	}
 	result.Fields = dedupeParamResolutionFormFields(result.Fields)
 	return result
+}
+
+func candidatesRequireCurrentConfirmation(candidates []ParamCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	for _, candidate := range candidates {
+		if candidate.Metadata == nil || candidate.Metadata["requires_current_confirmation"] != true {
+			return false
+		}
+	}
+	return true
 }
 
 func buildParamResolutionGraph(requirements []ParamRequirement) ParamResolutionGraph {
@@ -191,6 +216,7 @@ func formFieldFromMissing(missing MissingParam) ParamResolutionFormField {
 		UIControl:   firstNonEmpty(missing.UIControl, DefaultParamUIControl(missing.ParamRequirement)),
 		Placeholder: placeholder,
 		Default:     missing.DefaultValue,
+		Candidates:  cloneParamCandidates(missing.Candidates),
 	}
 }
 
@@ -239,14 +265,212 @@ func normalizeResolutionFrame(frame OperationFrame, manual OpsManual, text strin
 func buildResolutionLedger(req ResolveOpsManualParamsRequest, frame OperationFrame) OperationContextLedger {
 	ledger := NewOperationContextLedger()
 	ledger.Merge(LedgerFromOperationFrame(frame))
-	ledger.Merge(LedgerFromKnownParams(req.KnownParams, "user"))
-	if host := firstNonEmpty(metadataString(req.Metadata, "selected_host"), metadataString(req.Metadata, "current_host"), metadataString(req.Metadata, "aiops.target.hostId")); host != "" {
+	ledger.Merge(LedgerFromKnownParams(req.KnownParams, "user_form"))
+	if host := metadataString(req.Metadata, "aiops.target.hostId"); host != "" {
+		ledger.AddFact(OperationContextFact{Key: "target_host", Value: host, Source: "tool_execution_host", Confidence: 0.9})
+	}
+	if host := firstNonEmpty(metadataString(req.Metadata, "selected_host"), metadataString(req.Metadata, "current_host")); host != "" {
 		ledger.AddFact(OperationContextFact{Key: "target_host", Value: host, Source: "selected_host", Confidence: 0.95})
 	}
 	if backupPath := extractBackupPath(firstNonEmpty(req.RequestText, frame.RawText)); backupPath != "" {
 		ledger.AddFact(OperationContextFact{Key: "backup_path", Value: backupPath, Source: "conversation", Confidence: 0.78})
 	}
 	return ledger
+}
+
+func (s *Service) buildResolutionLedger(ctx context.Context, req ResolveOpsManualParamsRequest, frame OperationFrame, requirements []ParamRequirement) OperationContextLedger {
+	ledger := buildResolutionLedger(req, frame)
+	if s == nil || s.sessionContext == nil {
+		return ledger
+	}
+	sessionID := metadataString(req.Metadata, "session_id")
+	if strings.TrimSpace(sessionID) == "" {
+		return ledger
+	}
+	facts, err := s.sessionContext.ListFacts(ctx, sessionID, SessionOpsFactFilter{Now: time.Now().UTC()})
+	if err != nil {
+		return ledger
+	}
+	ledger.Merge(LedgerFromSessionOpsFacts(facts, requirements, frame))
+	return ledger
+}
+
+func LedgerFromSessionOpsFacts(facts []SessionOpsFact, requirements []ParamRequirement, frame OperationFrame) OperationContextLedger {
+	ledger := NewOperationContextLedger()
+	relevant := relevantSessionFactKeys(requirements, frame)
+	for _, fact := range facts {
+		if !sessionFactRelevant(fact, relevant) {
+			continue
+		}
+		if sessionFactAutoResolveBlocked(fact.Key) {
+			continue
+		}
+		converted, ok := operationContextFactFromSessionFact(fact)
+		if !ok {
+			continue
+		}
+		ledger.AddFact(converted)
+	}
+	return ledger
+}
+
+func relevantSessionFactKeys(requirements []ParamRequirement, frame OperationFrame) map[string]bool {
+	keys := map[string]bool{}
+	for _, req := range requirements {
+		id := strings.TrimSpace(req.ID)
+		if id == "" {
+			continue
+		}
+		keys[id] = true
+		switch NormalizeParamType(req.ID, req.Type) {
+		case "host_ref":
+			keys[SessionOpsFactTargetHost] = true
+		case "resource_ref":
+			keys[SessionOpsFactTargetInstance] = true
+			switch strings.TrimSpace(firstNonEmpty(frame.ObjectType, frame.Target.Type, frame.Operation.TargetType)) {
+			case "redis":
+				keys["redis_instance"] = true
+			case "postgresql":
+				keys["pg_instance"] = true
+			case "mysql":
+				keys["mysql_instance"] = true
+			}
+		}
+	}
+	return keys
+}
+
+func sessionFactRelevant(fact SessionOpsFact, relevant map[string]bool) bool {
+	key := strings.TrimSpace(fact.Key)
+	return key != "" && relevant[key]
+}
+
+func sessionFactAutoResolveBlocked(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "backup_path", "approval_reason", "change_window", "delete_object", "restore_target":
+		return true
+	default:
+		return false
+	}
+}
+
+func operationContextFactFromSessionFact(fact SessionOpsFact) (OperationContextFact, bool) {
+	key := strings.TrimSpace(fact.Key)
+	if key == "" {
+		return OperationContextFact{}, false
+	}
+	value := fact.Value
+	if fact.Sensitive {
+		if strings.TrimSpace(fact.SecretRef) == "" || !fact.ConfirmedByUser {
+			return OperationContextFact{}, false
+		}
+		value = fact.SecretRef
+	}
+	if !valuePresent(value) {
+		return OperationContextFact{}, false
+	}
+	confidence := 0.74
+	if fact.ConfirmedByUser {
+		confidence = 0.87
+	}
+	if fact.Confidence > 0 && fact.Confidence < confidence {
+		confidence = fact.Confidence
+	}
+	return OperationContextFact{
+		Key:             key,
+		Value:           value,
+		Source:          "session_fact",
+		Confidence:      confidence,
+		ConfirmedByUser: fact.ConfirmedByUser,
+		Sensitive:       fact.Sensitive,
+		CreatedAt:       fact.CreatedAt.Format(time.RFC3339),
+	}, true
+}
+
+func (s *Service) writeResolvedSessionFacts(ctx context.Context, req ResolveOpsManualParamsRequest, requirements []ParamRequirement, result ParamResolutionResult) {
+	if s == nil || s.sessionContext == nil || result.Status != ParamResolutionResolved {
+		return
+	}
+	sessionID := metadataString(req.Metadata, "session_id")
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	requirementsByID := map[string]ParamRequirement{}
+	for _, requirement := range requirements {
+		requirementsByID[requirement.ID] = requirement
+	}
+	now := time.Now().UTC()
+	for _, param := range result.ResolvedParams {
+		requirement := requirementsByID[param.ID]
+		if requirement.Sensitive || NormalizeParamType(requirement.ID, requirement.Type) == "secret_ref" {
+			if ref := secretRefFromResolvedParam(param); ref != "" {
+				_ = s.sessionContext.UpsertFact(ctx, sessionID, SessionOpsFact{
+					Key:             param.ID,
+					Value:           nil,
+					Source:          "user_form",
+					Confidence:      1,
+					ConfirmedByUser: true,
+					Sensitive:       true,
+					SecretRef:       ref,
+					ExpiresAt:       now.Add(2 * time.Hour),
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				})
+			}
+			continue
+		}
+		key := sessionFactKeyForResolvedParam(param.ID)
+		if strings.TrimSpace(key) == "" || !valuePresent(param.Value) {
+			continue
+		}
+		source, ttl, confirmed := sessionWritebackPolicy(param.Source)
+		_ = s.sessionContext.UpsertFact(ctx, sessionID, SessionOpsFact{
+			Key:             key,
+			Value:           param.Value,
+			Source:          source,
+			Confidence:      param.Confidence,
+			ConfirmedByUser: confirmed,
+			EvidenceRef:     param.Evidence,
+			ExpiresAt:       now.Add(ttl),
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		})
+	}
+}
+
+func sessionFactKeyForResolvedParam(paramID string) string {
+	switch strings.TrimSpace(paramID) {
+	case "target_host":
+		return SessionOpsFactTargetHost
+	case "target_instance", "redis_instance", "pg_instance", "mysql_instance":
+		return SessionOpsFactTargetInstance
+	default:
+		return strings.TrimSpace(paramID)
+	}
+}
+
+func sessionWritebackPolicy(source string) (string, time.Duration, bool) {
+	switch strings.TrimSpace(source) {
+	case "user", "user_form", "known_params":
+		return "user_form", 2 * time.Hour, true
+	case "operation_frame":
+		return "operation_frame", 2 * time.Hour, false
+	case "resource_discovery", "docker", "k8s", "host_readonly", "coroot":
+		return "resource_discovery", 15 * time.Minute, false
+	default:
+		return "param_resolution", 30 * time.Minute, false
+	}
+}
+
+func secretRefFromResolvedParam(param ResolvedParam) string {
+	if ref := metadataString(param.Metadata, "secret_ref"); ref != "" {
+		return ref
+	}
+	value := strings.TrimSpace(fmt.Sprint(param.Value))
+	if strings.HasPrefix(value, "secret://") || strings.HasPrefix(value, "secret_ref:") {
+		return value
+	}
+	return ""
 }
 
 func operationFrameEmptyValue(frame OperationFrame) bool {

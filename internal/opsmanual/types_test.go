@@ -108,9 +108,10 @@ func TestOpsManualEnhancedContractRoundTrips(t *testing.T) {
 			Steps:       []string{"读取事件", "检查上次退出原因"},
 		},
 		Verification: VerificationProfile{
-			LastVerifiedAt:       "2026-05-15T00:00:00Z",
-			VerifiedBy:           "ops-review",
-			RequiredRunnerDryRun: true,
+			LastVerifiedAt:        "2026-05-15T00:00:00Z",
+			VerifiedBy:            "ops-review",
+			RequiredPreflightPlan: true,
+			RequiredRunnerDryRun:  true,
 		},
 	}
 
@@ -128,7 +129,7 @@ func TestOpsManualEnhancedContractRoundTrips(t *testing.T) {
 	if err := json.Unmarshal(raw, &restored); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if restored.PreflightProbe.ID != "check_pod_status_and_rbac" || restored.RetrievalProfile.MinScore.DirectExecute != 0.82 {
+	if restored.PreflightProbe.ID != "check_pod_status_and_rbac" || restored.RetrievalProfile.MinScore.DirectExecute != 0.82 || !restored.Verification.RequiredPreflightPlan {
 		t.Fatalf("restored enhanced fields = %#v", restored)
 	}
 }
@@ -189,7 +190,7 @@ func TestPreflightResultContractRoundTrips(t *testing.T) {
 		Reason:       "all probes passed",
 		ManualID:     "manual-k8s-pod-crashloop",
 		WorkflowID:   "workflow-k8s-pod-rca",
-		NextAction:   "start_dry_run",
+		NextAction:   "confirm_execution",
 		Evidence:     []PreflightEvidence{{Name: "rbac_read_ok", Status: "passed", Value: true}},
 		CheckedAt:    "2026-05-15T00:00:00Z",
 		ArtifactType: "ops_manual_preflight_result",
@@ -204,6 +205,45 @@ func TestPreflightResultContractRoundTrips(t *testing.T) {
 	}
 	if restored.Status != PreflightStatusPassed || !restored.Ready || len(restored.Evidence) != 1 {
 		t.Fatalf("restored preflight result = %#v", restored)
+	}
+}
+
+func TestPreflightResultCarriesExecutionPlanContract(t *testing.T) {
+	result := PreflightResult{
+		Status:         PreflightStatusPassed,
+		Ready:          true,
+		NextAction:     "confirm_execution",
+		WorkflowDigest: "sha256:workflow",
+		ExecutionPlan: PreflightExecutionPlan{
+			Summary:          "将对 redis-01 执行 2 个步骤",
+			TargetHosts:      []string{"redis-01"},
+			ActionsUsed:      []string{"builtin.tcp_ping", "script.shell"},
+			RequiresApproval: false,
+			RiskLevel:        "medium",
+			Warnings: []PreflightPlanWarning{{
+				Code:       "dry_run_variable",
+				Field:      "steps.vars",
+				Message:    "variable \"window\" is referenced before it is defined",
+				Suggestion: "Define the variable before running.",
+			}},
+		},
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored PreflightResult
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.NextAction != "confirm_execution" || restored.WorkflowDigest != "sha256:workflow" {
+		t.Fatalf("restored = %#v", restored)
+	}
+	if len(restored.ExecutionPlan.TargetHosts) != 1 || restored.ExecutionPlan.TargetHosts[0] != "redis-01" {
+		t.Fatalf("execution plan not preserved: %#v", restored.ExecutionPlan)
+	}
+	if restored.ExecutionPlan.Warnings[0].Code != "dry_run_variable" {
+		t.Fatalf("warnings not preserved: %#v", restored.ExecutionPlan.Warnings)
 	}
 }
 

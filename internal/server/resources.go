@@ -2,10 +2,7 @@ package server
 
 import (
 	"net/http"
-	"os"
-	"strings"
 	"sync"
-	"time"
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/store"
@@ -14,21 +11,71 @@ import (
 // ResourceServer provides CRUD endpoints for resource management and audit APIs.
 type ResourceServer struct {
 	mux            *http.ServeMux
-	coroot         corootProxyConfig
+	corootConfig   appui.CorootConfigRepository
 	uiCards        appui.UICardService
 	agentArtifacts appui.AgentUIArtifactService
 }
 
+// ResourceServerOption customizes resource-only API dependencies.
+type ResourceServerOption func(*ResourceServer)
+
+func WithCorootConfigRepository(repo appui.CorootConfigRepository) ResourceServerOption {
+	return func(rs *ResourceServer) {
+		if repo != nil {
+			rs.corootConfig = repo
+		}
+	}
+}
+
+func WithUICardService(service appui.UICardService) ResourceServerOption {
+	return func(rs *ResourceServer) {
+		if service != nil {
+			rs.uiCards = service
+		}
+	}
+}
+
 // NewResourceServer creates a ResourceServer and registers all resource routes.
-func NewResourceServer() *ResourceServer {
+func NewResourceServer(opts ...ResourceServerOption) *ResourceServer {
 	rs := &ResourceServer{
 		mux:            http.NewServeMux(),
-		coroot:         corootProxyConfigFromEnv(),
+		corootConfig:   &resourceCorootConfigRepository{},
 		uiCards:        appui.NewUICardService(&resourceUICardRepository{}),
 		agentArtifacts: appui.NewAgentUIArtifactService(nil),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(rs)
+		}
+	}
 	rs.registerRoutes()
 	return rs
+}
+
+type resourceCorootConfigRepository struct {
+	mu     sync.RWMutex
+	config *store.CorootConfig
+}
+
+func (r *resourceCorootConfigRepository) GetCorootConfig() (*store.CorootConfig, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.config == nil {
+		return nil, errCorootConfigNotFound
+	}
+	cp := *r.config
+	return &cp, nil
+}
+
+func (r *resourceCorootConfigRepository) SaveCorootConfig(config *store.CorootConfig) error {
+	if config == nil {
+		return errCorootConfigNil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *config
+	r.config = &cp
+	return nil
 }
 
 type resourceUICardRepository struct {
@@ -61,29 +108,4 @@ func (rs *ResourceServer) RegisterOnMux(mux *http.ServeMux) {
 
 func (rs *ResourceServer) registerRoutes() {
 	rs.RegisterOnMux(rs.mux)
-}
-
-func corootProxyConfigFromEnv() corootProxyConfig {
-	timeout := 30 * time.Second
-	if raw := strings.TrimSpace(os.Getenv("AIOPS_COROOT_TIMEOUT")); raw != "" {
-		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
-			timeout = parsed
-		}
-	}
-
-	return corootProxyConfig{
-		BaseURL:   firstNonEmptyEnv("AIOPS_COROOT_BASE_URL", "COROOT_BASE_URL"),
-		Token:     firstNonEmptyEnv("AIOPS_COROOT_TOKEN", "COROOT_TOKEN"),
-		IframeURL: firstNonEmptyEnv("AIOPS_COROOT_IFRAME_URL"),
-		Timeout:   timeout,
-	}
-}
-
-func firstNonEmptyEnv(keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
 }

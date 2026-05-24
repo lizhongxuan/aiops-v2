@@ -19,24 +19,27 @@ type RunRecordRepository interface {
 }
 
 type MemoryStore struct {
-	mu          sync.RWMutex
-	manuals     map[string]OpsManual
-	candidates  map[string]ManualCandidate
-	records     map[string]RunRecord
-	paramEvents map[string]ParamResolutionEvent
+	mu                 sync.RWMutex
+	manuals            map[string]OpsManual
+	candidates         map[string]ManualCandidate
+	records            map[string]RunRecord
+	paramEvents        map[string]ParamResolutionEvent
+	manualGuidedEvents map[string]ManualGuidedChatEvent
 }
 
 var _ ManualRepository = (*MemoryStore)(nil)
 var _ CandidateRepository = (*MemoryStore)(nil)
 var _ RunRecordRepository = (*MemoryStore)(nil)
 var _ ParamResolutionEventRepository = (*MemoryStore)(nil)
+var _ ManualGuidedChatEventRepository = (*MemoryStore)(nil)
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		manuals:     map[string]OpsManual{},
-		candidates:  map[string]ManualCandidate{},
-		records:     map[string]RunRecord{},
-		paramEvents: map[string]ParamResolutionEvent{},
+		manuals:            map[string]OpsManual{},
+		candidates:         map[string]ManualCandidate{},
+		records:            map[string]RunRecord{},
+		paramEvents:        map[string]ParamResolutionEvent{},
+		manualGuidedEvents: map[string]ManualGuidedChatEvent{},
 	}
 }
 
@@ -138,6 +141,9 @@ func (s *MemoryStore) ListRunRecords(req ListRunRecordsRequest) ([]RunRecord, er
 	defer s.mu.RUnlock()
 	out := make([]RunRecord, 0, len(s.records))
 	for _, record := range s.records {
+		if req.OpsManualFlowID != "" && record.OpsManualFlowID != req.OpsManualFlowID {
+			continue
+		}
 		if req.ManualID != "" && record.ManualID != req.ManualID {
 			continue
 		}
@@ -186,6 +192,42 @@ func (s *MemoryStore) ListParamResolutionEvents(req ListParamResolutionEventsReq
 			continue
 		}
 		out = append(out, cloneParamResolutionEvent(event))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt == out[j].CreatedAt {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt > out[j].CreatedAt
+	})
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SaveManualGuidedChatEvent(event ManualGuidedChatEvent) error {
+	if strings.TrimSpace(event.ID) == "" {
+		return fmt.Errorf("ops manual manual-guided chat event id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.manualGuidedEvents[event.ID] = cloneManualGuidedChatEvent(event)
+	return nil
+}
+
+func (s *MemoryStore) ListManualGuidedChatEvents(req ListManualGuidedChatEventsRequest) ([]ManualGuidedChatEvent, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ManualGuidedChatEvent, 0, len(s.manualGuidedEvents))
+	for _, event := range s.manualGuidedEvents {
+		if !manualGuidedChatEventMatchesRequest(event, req) {
+			continue
+		}
+		out = append(out, cloneManualGuidedChatEvent(event))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt == out[j].CreatedAt {

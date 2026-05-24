@@ -15,12 +15,27 @@ const mcpConfigFileName = "mcp-servers.json"
 type defaultMCPService struct {
 	repo     MCPRepository
 	registry *mcp.Registry
+	runtime  MCPRuntime
 }
 
 func NewMCPService(repo MCPRepository, registry *mcp.Registry) MCPService {
 	return &defaultMCPService{
 		repo:     repo,
 		registry: registry,
+	}
+}
+
+type MCPRuntime interface {
+	Connect(ctx context.Context, serverID string) error
+	Disconnect(ctx context.Context, serverID string) error
+	RefreshTools(ctx context.Context, serverID string) error
+}
+
+func NewMCPServiceWithRuntime(repo MCPRepository, registry *mcp.Registry, runtime MCPRuntime) MCPService {
+	return &defaultMCPService{
+		repo:     repo,
+		registry: registry,
+		runtime:  runtime,
 	}
 }
 
@@ -149,7 +164,7 @@ func (s *defaultMCPService) collectItems() []MCPServerView {
 			record.Disabled = record.Disabled || cfg.Disabled || registry.IsServerDisabled(name)
 			record.Status = statusForRegistry(registry, name, record.Status, record.Disabled)
 			record.ToolCount = len(registry.ListServerTools(name))
-			record.ResourceCount = 0
+			record.ResourceCount = len(registry.ListResources(name))
 			records[name] = record
 		}
 	}
@@ -162,17 +177,18 @@ func (s *defaultMCPService) collectItems() []MCPServerView {
 	return items
 }
 
-func (s *defaultMCPService) applyRuntime(_ context.Context, name string) error {
+func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error {
 	record, err := s.getRecord(name)
 	if err != nil {
 		return err
 	}
 	if record.Disabled {
+		_ = s.disconnectRuntime(ctx, record.Name)
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
 		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = 0
+		record.ResourceCount = s.registryResourceCount(record.Name)
 		return s.persist(record)
 	}
 	if err := s.register(record); err != nil {
@@ -182,14 +198,22 @@ func (s *defaultMCPService) applyRuntime(_ context.Context, name string) error {
 		return err
 	}
 	s.setRegistryDisabled(record.Name, false)
+	if err := s.connectRuntime(ctx, record.Name); err != nil {
+		record.Status = "error"
+		record.Error = err.Error()
+		record.ToolCount = s.registryToolCount(record.Name)
+		record.ResourceCount = s.registryResourceCount(record.Name)
+		_ = s.persist(record)
+		return err
+	}
 	record.Status = "connected"
 	record.Error = ""
 	record.ToolCount = s.registryToolCount(record.Name)
-	record.ResourceCount = 0
+	record.ResourceCount = s.registryResourceCount(record.Name)
 	return s.persist(record)
 }
 
-func (s *defaultMCPService) refreshAll(_ context.Context) error {
+func (s *defaultMCPService) refreshAll(ctx context.Context) error {
 	if s.repo == nil {
 		return nil
 	}
@@ -200,10 +224,14 @@ func (s *defaultMCPService) refreshAll(_ context.Context) error {
 	for _, item := range items {
 		record := cloneMCPServerRecord(item)
 		if record.Disabled {
+			_ = s.disconnectRuntime(ctx, record.Name)
 			s.setRegistryDisabled(record.Name, true)
 			record.Status = "disconnected"
 			record.Error = ""
 		} else if err := s.register(record); err != nil {
+			record.Status = "error"
+			record.Error = err.Error()
+		} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 			record.Status = "error"
 			record.Error = err.Error()
 		} else {
@@ -212,7 +240,7 @@ func (s *defaultMCPService) refreshAll(_ context.Context) error {
 			record.Error = ""
 		}
 		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = 0
+		record.ResourceCount = s.registryResourceCount(record.Name)
 		if err := s.persist(record); err != nil {
 			return err
 		}
@@ -220,20 +248,24 @@ func (s *defaultMCPService) refreshAll(_ context.Context) error {
 	return nil
 }
 
-func (s *defaultMCPService) refreshOne(_ context.Context, name string) error {
+func (s *defaultMCPService) refreshOne(ctx context.Context, name string) error {
 	record, err := s.getRecord(name)
 	if err != nil {
 		return err
 	}
 	if record.Disabled {
+		_ = s.disconnectRuntime(ctx, record.Name)
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
 		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = 0
+		record.ResourceCount = s.registryResourceCount(record.Name)
 		return s.persist(record)
 	}
 	if err := s.register(record); err != nil {
+		record.Status = "error"
+		record.Error = err.Error()
+	} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
 		record.Error = err.Error()
 	} else {
@@ -241,22 +273,23 @@ func (s *defaultMCPService) refreshOne(_ context.Context, name string) error {
 		record.Status = "connected"
 		record.Error = ""
 		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = 0
+		record.ResourceCount = s.registryResourceCount(record.Name)
 	}
 	return s.persist(record)
 }
 
-func (s *defaultMCPService) setDisabled(_ context.Context, name string, disabled bool) error {
+func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabled bool) error {
 	record, err := s.getRecord(name)
 	if err != nil {
 		return err
 	}
 	record.Disabled = disabled
 	if disabled {
+		_ = s.disconnectRuntime(ctx, record.Name)
 		record.Status = "disconnected"
 		record.Error = ""
 		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = 0
+		record.ResourceCount = s.registryResourceCount(record.Name)
 		s.setRegistryDisabled(record.Name, true)
 		return s.persist(record)
 	}
@@ -267,10 +300,18 @@ func (s *defaultMCPService) setDisabled(_ context.Context, name string, disabled
 		return err
 	}
 	s.setRegistryDisabled(record.Name, false)
+	if err := s.connectRuntime(ctx, record.Name); err != nil {
+		record.Status = "error"
+		record.Error = err.Error()
+		record.ToolCount = s.registryToolCount(record.Name)
+		record.ResourceCount = s.registryResourceCount(record.Name)
+		_ = s.persist(record)
+		return err
+	}
 	record.Status = "connected"
 	record.Error = ""
 	record.ToolCount = s.registryToolCount(record.Name)
-	record.ResourceCount = 0
+	record.ResourceCount = s.registryResourceCount(record.Name)
 	return s.persist(record)
 }
 
@@ -364,6 +405,7 @@ func (s *defaultMCPService) setRegistryDisabled(name string, disabled bool) {
 }
 
 func (s *defaultMCPService) unregister(name string) {
+	_ = s.disconnectRuntime(context.Background(), name)
 	if registry := s.resolveRegistry(); registry != nil {
 		registry.UnregisterServer(name)
 	}
@@ -374,6 +416,34 @@ func (s *defaultMCPService) registryToolCount(name string) int {
 		return len(registry.ListServerTools(name))
 	}
 	return 0
+}
+
+func (s *defaultMCPService) registryResourceCount(name string) int {
+	if registry := s.resolveRegistry(); registry != nil {
+		return len(registry.ListResources(name))
+	}
+	return 0
+}
+
+func (s *defaultMCPService) connectRuntime(ctx context.Context, name string) error {
+	if s.runtime == nil {
+		return nil
+	}
+	return s.runtime.Connect(ctx, name)
+}
+
+func (s *defaultMCPService) refreshRuntime(ctx context.Context, name string) error {
+	if s.runtime == nil {
+		return nil
+	}
+	return s.runtime.RefreshTools(ctx, name)
+}
+
+func (s *defaultMCPService) disconnectRuntime(ctx context.Context, name string) error {
+	if s.runtime == nil {
+		return nil
+	}
+	return s.runtime.Disconnect(ctx, name)
 }
 
 func (s *defaultMCPService) resolveRegistry() *mcp.Registry {
@@ -502,6 +572,18 @@ func statusForRegistry(registry *mcp.Registry, name, fallback string, disabled b
 	}
 	if registry == nil {
 		return firstNonEmpty(fallback, "disconnected")
+	}
+	if status, ok := registry.GetServerStatus(name); ok && status.State != "" {
+		switch status.State {
+		case mcp.ServerStateFailed:
+			return "error"
+		case mcp.ServerStateDisconnected:
+			if strings.TrimSpace(fallback) != "" {
+				return fallback
+			}
+		default:
+			return string(status.State)
+		}
 	}
 	if _, ok := registry.GetServer(name); ok {
 		return "connected"

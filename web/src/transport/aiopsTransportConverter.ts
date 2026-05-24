@@ -97,9 +97,11 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         turnCompletedAt: turn.completedAt,
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
         process: turn.process || [],
+        contextGovernance: turn.contextGovernance || [],
         intent: turn.intent || null,
         userText: turn.user?.text || "",
         agentUiArtifacts: visibleAgentUiArtifacts(turn),
+        deferredAgentUiArtifacts: deferredAgentUiArtifacts(turn),
       },
       unstable_annotations: [],
       unstable_data: [],
@@ -112,7 +114,7 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
-  if (turn.final?.text || turn.intent?.text || (turn.process || []).length > 0) {
+  if (turn.final?.text || (turn.process || []).length > 0) {
     return true;
   }
   // Always show the message for failed/canceled turns so the error is visible
@@ -123,11 +125,22 @@ function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
 }
 
 function visibleAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
-  const artifacts = turn.agentUiArtifacts || [];
+  const artifacts = mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []);
   if (isTerminalTurn(turn.status)) {
-    return mergeOpsManualSearchAndPreflightArtifacts(artifacts);
+    return artifacts;
   }
-  return mergeOpsManualSearchAndPreflightArtifacts(artifacts).filter((artifact) => artifact.type !== "ops_manual_search_result");
+  return artifacts.filter((artifact) => !isDelayedWhileRunningArtifact(artifact));
+}
+
+function deferredAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
+  if (isTerminalTurn(turn.status)) {
+    return [];
+  }
+  return mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []).filter((artifact) => artifact.type === "coroot_chart");
+}
+
+function isDelayedWhileRunningArtifact(artifact: AiopsTransportAgentUiArtifact) {
+  return artifact.type === "ops_manual_search_result" || artifact.type === "coroot_chart";
 }
 
 function isTerminalTurn(status: AiopsTransportTurn["status"]) {
@@ -210,9 +223,20 @@ function findFollowingMatchingPreflight(artifacts: AiopsTransportAgentUiArtifact
 
 function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAgentUiArtifact, search: AiopsTransportAgentUiArtifact) {
   const resolutionData = asRecord(paramResolution.inlineData);
+  const resolutionFlowID = opsManualFlowID(resolutionData);
+  const searchData = asRecord(search.inlineData);
+  const searchFlowID = opsManualFlowID(searchData);
   const resolutionManualID = text(pick(resolutionData, "manualId", "manual_id"));
   const resolutionWorkflowID = text(pick(resolutionData, "workflowId", "workflow_id"));
-  const searchData = asRecord(search.inlineData);
+  const resolutionWorkflowIDForMatching = resolutionWorkflowID === searchFlowID ? "" : resolutionWorkflowID;
+  if (resolutionFlowID && searchFlowID) {
+    if (resolutionFlowID === searchFlowID) {
+      return true;
+    }
+    if (resolutionWorkflowID !== searchFlowID) {
+      return false;
+    }
+  }
   const manuals = arrayRecords(pick(searchData, "manuals", "hits", "matches", "items"));
   if (!manuals.length) {
     return true;
@@ -226,16 +250,21 @@ function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAg
       text(pick(workflowRef, "workflowId", "workflow_id")),
     );
     const manualMatches = !resolutionManualID || !hitManualID || resolutionManualID === hitManualID;
-    const workflowMatches = !resolutionWorkflowID || !hitWorkflowID || resolutionWorkflowID === hitWorkflowID;
+    const workflowMatches = !resolutionWorkflowIDForMatching || !hitWorkflowID || resolutionWorkflowIDForMatching === hitWorkflowID;
     return manualMatches && workflowMatches;
   });
 }
 
 function opsManualPreflightMatchesSearch(preflight: AiopsTransportAgentUiArtifact, search: AiopsTransportAgentUiArtifact) {
   const preflightData = asRecord(preflight.inlineData);
+  const preflightFlowID = opsManualFlowID(preflightData);
+  const searchData = asRecord(search.inlineData);
+  const searchFlowID = opsManualFlowID(searchData);
+  if (preflightFlowID && searchFlowID) {
+    return preflightFlowID === searchFlowID;
+  }
   const manualID = text(pick(preflightData, "manualId", "manual_id"));
   const workflowID = text(pick(preflightData, "workflowId", "workflow_id"));
-  const searchData = asRecord(search.inlineData);
   if (search.type === "ops_manual_param_resolution") {
     const resolutionManualID = text(pick(searchData, "manualId", "manual_id"));
     const resolutionWorkflowID = text(pick(searchData, "workflowId", "workflow_id"));
@@ -277,6 +306,10 @@ function pick(record: Record<string, unknown>, ...keys: string[]): unknown {
     }
   }
   return undefined;
+}
+
+function opsManualFlowID(record: Record<string, unknown>): string {
+  return text(pick(record, "opsManualFlowId", "ops_manual_flow_id"));
 }
 
 function text(value: unknown, fallback = ""): string {

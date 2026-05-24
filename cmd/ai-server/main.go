@@ -37,6 +37,7 @@ import (
 	"aiops-v2/internal/integrations/toolsearch"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
+	mcpruntime "aiops-v2/internal/mcp/runtime"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/observability"
 	opsgraphstore "aiops-v2/internal/opsgraph"
@@ -75,7 +76,6 @@ func run() error {
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
 	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	corootEndpoint := corootEndpointFromEnv(os.Getenv)
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
 	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
@@ -162,6 +162,10 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	mcpRegistry := mcp.NewRegistry()
 	mcpRegistry.SetGovernance(governance)
+	mcpRuntime := mcpruntime.New(mcpruntime.RuntimeOptions{
+		Registry:      mcpRegistry,
+		ClientFactory: mcpruntime.DefaultClientFactory{},
+	})
 	toolAssembler := tooling.NewAssembler(toolRegistry, mcpRegistry)
 	agentFactory := agentmgr.NewAgentFactory(toolAssembler, compiler, router, policyEngine)
 	agentRegistry := agents.NewRegistry()
@@ -211,9 +215,15 @@ func run() error {
 		Settings:     settingsRegistry,
 		Governance:   governance,
 	}
-	if err := registerPluginsFromEnv(pluginRegistrar); err != nil {
+	pluginSpecs, err := registerPluginsFromEnv(pluginRegistrar)
+	if err != nil {
 		return fmt.Errorf("init plugins: %w", err)
 	}
+	builtinSpecs, err := registerBuiltinPlugins(pluginRegistrar, dataStore)
+	if err != nil {
+		return fmt.Errorf("init builtin plugins: %w", err)
+	}
+	pluginSpecs = append(pluginSpecs, builtinSpecs...)
 	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{EvidenceService: evidenceService}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
@@ -224,8 +234,8 @@ func run() error {
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
 		return fmt.Errorf("init ops manual tools: %w", err)
 	}
-	if err := registerBuiltinIntegrations(mcpRegistry, corootEndpoint); err != nil {
-		return fmt.Errorf("init builtin integrations: %w", err)
+	if err := mcpRuntime.Start(ctx); err != nil {
+		return fmt.Errorf("start mcp runtime: %w", err)
 	}
 
 	// ---------------------------------------------------------------------------
@@ -317,6 +327,8 @@ func run() error {
 	serviceOptions := []appui.ServicesOption{
 		appui.WithStore(dataStore),
 		appui.WithMCPRegistry(mcpRegistry),
+		appui.WithMCPRuntime(mcpRuntime),
+		appui.WithPluginSpecs(pluginSpecs),
 		appui.WithAuthManager(authManager),
 		appui.WithTerminalManager(terminalManager),
 		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
@@ -746,19 +758,6 @@ func (c opsManualWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Conte
 	return refs, nil
 }
 
-func corootEndpointFromEnv(getenv func(string) string) string {
-	for _, key := range []string{
-		"AIOPS_COROOT_ENDPOINT",
-		"AIOPS_COROOT_BASE_URL",
-		"COROOT_BASE_URL",
-	} {
-		if value := strings.TrimSpace(getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {
 	otelCfg := observability.ConfigFromEnv(getenv)
 	otelProvider, err := observability.Init(ctx, otelCfg)
@@ -822,9 +821,10 @@ func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelro
 		return modelrouter.ProviderConfig{}, false
 	}
 	return modelrouter.ProviderConfig{
-		Provider: provider,
-		Model:    model,
-		BaseURL:  strings.TrimSpace(cfg.BaseURL),
+		Provider:         provider,
+		Model:            model,
+		BaseURL:          strings.TrimSpace(cfg.BaseURL),
+		MaxContextTokens: normalizeLLMContextWindow(cfg.MaxContextTokens),
 	}, true
 }
 
@@ -837,6 +837,16 @@ func (r *storeLLMResolver) currentConfig() (*store.LLMConfig, bool) {
 		return nil, false
 	}
 	return cfg, true
+}
+
+func normalizeLLMContextWindow(value int) int {
+	if value <= 0 {
+		return 200000
+	}
+	if value < 10000 {
+		return 10000
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------
@@ -1087,14 +1097,14 @@ func loadPluginSpecsFromEnv() ([]plugins.Spec, error) {
 	return plugins.NewManifestLoader(dirs...).Load()
 }
 
-func registerPluginsFromEnv(registrar *plugins.Registrar) error {
+func registerPluginsFromEnv(registrar *plugins.Registrar) ([]plugins.Spec, error) {
 	if registrar == nil {
-		return nil
+		return nil, nil
 	}
 
 	specs, err := loadPluginSpecsFromEnv()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, spec := range specs {
 		if err := registrar.Register(spec); err != nil {
@@ -1105,10 +1115,10 @@ func registerPluginsFromEnv(registrar *plugins.Registrar) error {
 			if name == "" {
 				name = "<unnamed>"
 			}
-			return fmt.Errorf("register plugin %q: %w", name, err)
+			return nil, fmt.Errorf("register plugin %q: %w", name, err)
 		}
 	}
-	return nil
+	return specs, nil
 }
 
 func buildCommandRegistryFromSkills(skillRegistry *skills.Registry) *commands.CommandRegistry {

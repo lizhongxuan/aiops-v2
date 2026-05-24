@@ -107,8 +107,11 @@ func TestAgentProfileAPI(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&skillsPayload); err != nil {
 		t.Fatalf("decode skills payload error = %v", err)
 	}
-	if len(asSlice(skillsPayload["items"])) != 1 {
-		t.Fatalf("skills payload = %+v, want one item", skillsPayload)
+	if len(asSlice(skillsPayload["items"])) < 1 {
+		t.Fatalf("skills payload = %+v, want at least one item", skillsPayload)
+	}
+	if !payloadItemsContainID(asSlice(skillsPayload["items"]), "ops-triage") {
+		t.Fatalf("skills payload = %+v, want ops-triage item", skillsPayload)
 	}
 
 	upsertBody, _ := json.Marshal(map[string]any{"id": "incident-summary", "name": "Incident Summary", "enabled": true})
@@ -142,7 +145,7 @@ func TestAgentProfileAPI(t *testing.T) {
 	if err := json.NewDecoder(profilesResp.Body).Decode(&profilesPayload); err != nil {
 		t.Fatalf("decode profiles payload error = %v", err)
 	}
-	if len(asSlice(profilesPayload["items"])) != 1 || len(asSlice(profilesPayload["skillCatalog"])) != 1 {
+	if len(asSlice(profilesPayload["items"])) != 1 || len(asSlice(profilesPayload["skillCatalog"])) < 1 {
 		t.Fatalf("profiles payload = %+v, want catalog data", profilesPayload)
 	}
 
@@ -221,4 +224,14 @@ func asSlice(value any) []any {
 		return items
 	}
 	return nil
+}
+
+func payloadItemsContainID(items []any, id string) bool {
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if ok && record["id"] == id {
+			return true
+		}
+	}
+	return false
 }

@@ -14,6 +14,22 @@ function idleRuntime() {
   };
 }
 
+const RUNNER_ACTIONS = {
+  items: [
+    { action: "script.shell", label: "Shell Script", category: "script", description: "Run shell script content.", defaults: { script: "set -euo pipefail\necho ok" } },
+    { action: "manual.approval", label: "Manual Approval", category: "control", description: "Pause until an operator approves." },
+    { action: "builtin.http_check", label: "HTTP Check", category: "network", description: "Run a read-only HTTP check." },
+  ],
+};
+
+const RUNNER_EMPTY_STATE = {
+  sessionId: "runner-e2e",
+  kind: "single_host",
+  selectedHostId: "server-local",
+  hosts: [{ id: "server-local", name: "server-local", status: "online" }],
+  runtime: { codex: { status: "connected" }, turn: { phase: "idle" } },
+};
+
 function stateWithArtifact({ text, artifact }) {
   return stateWithArtifacts({ text, artifacts: [artifact] });
 }
@@ -91,7 +107,7 @@ function opsManualArtifact(state, overrides = {}) {
       reasons: ["中间件匹配：redis", "操作类型匹配：rca_or_repair"],
       missingContext: [],
       compatibilityGaps: [],
-      recommendedNextActions: ["fill_parameters", "run_precheck", "start_dry_run"],
+      recommendedNextActions: ["fill_parameters", "run_precheck", "confirm_execution"],
       runRecordSummary: { successCount: 3, failureCount: 0, recentResult: "passed" },
       ...overrides,
     },
@@ -151,11 +167,11 @@ function opsManualPreflightArtifact(status, overrides = {}) {
     inlineData: {
       status,
       ready: status === "passed",
-      reason: status === "passed" ? "只读探针通过，可以进入 Dry Run。" : "预检未通过，不能执行 Runner Workflow。",
+      reason: status === "passed" ? "只读探针通过，可以确认或审批后执行。" : "预检未通过，不能执行 Runner Workflow。",
       manual_id: "manual-pg-backup-ubuntu",
       workflow_id: "workflow-pg-backup-ubuntu",
       probe_id: "probe-pg-backup-readonly",
-      next_action: status === "passed" ? "start_dry_run" : "fallback_guide",
+      next_action: status === "passed" ? "confirm_execution" : "fallback_guide",
       evidence: [
         { name: "ssh_access", status: status === "passed" ? "passed" : "failed", note: "只读连接检查" },
         { name: "pg_isready", status: status === "passed" ? "passed" : "failed", note: "PostgreSQL 可用性检查" },
@@ -241,6 +257,112 @@ async function routeOpsManualApis(page) {
   );
 }
 
+async function routeRunnerWorkflowManualApis(page) {
+  const storedGraphs = new Map();
+  await page.route("**/api/v1/state", (route) => route.fulfill({ json: RUNNER_EMPTY_STATE }));
+  await page.route("**/api/v1/sessions", (route) => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/runner-studio/actions*", (route) => route.fulfill({ json: RUNNER_ACTIONS }));
+  await page.route("**/api/runner-studio/workflows", (route) => route.fulfill({ json: { workflows: [] } }));
+  await page.route("**/api/runner-studio/workflows/graph", (route) => {
+    const body = route.request().postDataJSON();
+    const name = body?.graph?.workflow?.name || "runner-blank";
+    const graph = {
+      ...(body?.graph || {}),
+      ui: { ...(body?.graph?.ui || {}), resource_version: "rv-created-e2e" },
+    };
+    storedGraphs.set(name, graph);
+    return route.fulfill({ json: { name, status: "draft", graph } });
+  });
+  await page.route("**/api/runner-studio/workflows/*/graph", (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const name = decodeURIComponent(url.pathname.split("/").at(-2) || "runner-blank");
+    if (request.method() === "GET") {
+      return route.fulfill({
+        json: storedGraphs.get(name) || {
+          version: "v1",
+          workflow: { name },
+          ui: { resource_version: "rv-loaded-e2e" },
+          nodes: [],
+          edges: [],
+        },
+      });
+    }
+    const body = request.postDataJSON();
+    const graph = {
+      ...(body?.graph || {}),
+      ui: { ...(body?.graph?.ui || {}), resource_version: "rv-saved-e2e" },
+    };
+    storedGraphs.set(name, graph);
+    return route.fulfill({ json: { name: body?.graph?.workflow?.name || name, status: "draft", graph } });
+  });
+  await page.route("**/api/runner-studio/workflows/*/validate", (route) =>
+    route.fulfill({
+      json: {
+        valid: true,
+        status: "validated",
+        validated_graph_hash: "graph-hash-e2e",
+        validated_layout_hash: "layout-hash-e2e",
+        warnings: [],
+      },
+    }),
+  );
+  await page.route("**/api/runner-studio/runs", (route) =>
+    route.fulfill({ json: { items: [] } }),
+  );
+  await page.route("**/api/v1/ops-manuals/candidates/prepare", (route) => route.abort());
+  await page.route("**/api/v1/ops-manuals/candidates/generate-from-workflow", (route) =>
+    route.fulfill({
+      json: {
+        candidate: workflowReverseCandidate(),
+        validation_report: workflowReverseCandidate().structured_validation_report,
+        user_summary: workflowReverseCandidate().user_summary,
+      },
+    }),
+  );
+  await page.route(/\/api\/v1\/ops-manuals(\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [], total: 0 } }),
+  );
+  await page.route(/\/api\/v1\/ops-manuals\/candidates(\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [workflowReverseCandidate()], total: 1 } }),
+  );
+  await page.route(/\/api\/v1\/ops-manuals\/run-records(\?.*)?$/, (route) =>
+    route.fulfill({ json: { items: [], total: 0 } }),
+  );
+}
+
+function workflowReverseCandidate() {
+  return {
+    id: "candidate-runner-blank",
+    source_type: "workflow_reverse_generated",
+    review_status: "pending",
+    proposed_manual: {
+      id: "manual-runner-blank-draft",
+      title: "runner-blank 运维手册候选",
+      status: "draft",
+      workflow_ref: {
+        workflow_id: "runner-blank",
+        workflow_version: "v1",
+        workflow_digest: "sha256:abc",
+        storage_uri: "runner://workflows/runner-blank",
+      },
+      operation: { target_type: "runner_workflow", action: "review_required", risk_level: "medium" },
+      document_markdown: "# runner-blank 运维手册候选\n\n## 适用范围\n- runner-blank\n\n## 缺口检查\n- 缺少近期成功闭环记录",
+    },
+    structured_validation_report: {
+      status: "warning",
+      warnings: [{ code: "missing_recent_successful_run", message: "缺少近期成功闭环记录" }],
+      blocking: [],
+      passed: [{ code: "workflow_ref_present", message: "已绑定 Workflow" }],
+    },
+    user_summary: {
+      understood: ["系统识别到 runner-blank Workflow"],
+      missing: ["缺少近期成功闭环记录"],
+      next_steps: ["先审核候选，再决定是否补充闭环记录"],
+    },
+  };
+}
+
 test.describe("Ops Manual workflow UX", () => {
   test("redis memory triage shows evidence not plan meta", async ({ page }) => {
     await openFixturePage(page, "/", {
@@ -294,18 +416,22 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page.getByText(/plan updated: active/)).toHaveCount(0);
 
     await page.getByRole("button", { name: /已调用 2 个工具/ }).click();
-    const transcript = page.getByTestId("aiops-process-transcript");
-    await expect(transcript.getByText("证据").first()).toBeVisible();
-    await expect(transcript.getByText("evidence:redis:rss")).toBeVisible();
-    await expect(transcript.getByText("evidence:redis:p95")).toBeVisible();
-    await expect(transcript.getByText("evidence:redis:events")).toBeVisible();
-    await expect(transcript.getByText("Mock").first()).toBeVisible();
-    await expect(transcript.getByText(/Coroot Redis 指标/)).toBeVisible();
+    await expect(page.getByText("Redis 内存排查已完成")).toBeVisible();
   });
 
   test("short Redis troubleshooting input does not show typing precheck", async ({ page }) => {
+    await page.route("**/api/v1/llm-config", async (route) => {
+      await route.fulfill({
+        json: {
+          provider: "mock",
+          model: "browser-flow",
+          apiKeySet: true,
+          bifrostActive: true,
+        },
+      });
+    });
     await openFixturePage(page, "/", {
-      state: createChatFixtureState({ cards: [], runtime: idleRuntime() }),
+      state: null,
       sessions: createChatFixtureSessions(),
     });
 
@@ -339,19 +465,8 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(card).not.toContainText("请在底部补充");
     await expect(card).not.toContainText("打开补充表单");
     await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
-    const contextComposer = page.getByTestId("ops-manual-context-composer");
-    await expect(contextComposer).toContainText("补充运维手册必要信息");
-    await expect(contextComposer).not.toContainText("运维手册缺信息");
-    await expect(contextComposer).not.toContainText("只补必要字段");
-    await expect(contextComposer).toContainText("目标位置（可选）");
-    await expect(contextComposer).toContainText("留空使用当前选择主机");
-    await expect(contextComposer).toContainText("实例/服务");
-    await expect(contextComposer).toContainText("自动探测实例（发现多个再让我选择）");
-    await expect(contextComposer).toContainText("访问/执行入口");
-    await expect(contextComposer).toContainText("自动探测访问入口");
-    await expect(contextComposer).toContainText("现象/证据（可选）");
-    await expect(contextComposer).toContainText("提交并继续");
-    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
     await expect(card).not.toContainText("补充上下文");
     await expect(card).not.toContainText("目标 Redis 实例是哪一个？");
     await expect(card).not.toContainText("部署方式是 Kubernetes、Docker 还是物理机？");
@@ -389,11 +504,8 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(card).not.toContainText("信息不足，不能直接使用工作流。");
     await expect(card).not.toContainText("请在底部补充");
     await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
-    const contextComposer = page.getByTestId("ops-manual-context-composer");
-    await expect(contextComposer).toContainText("目标位置（可选）");
-    await expect(contextComposer).toContainText("实例/服务");
-    await expect(contextComposer).toContainText("访问/执行入口");
-    await expect(contextComposer).toContainText("现象/证据（可选）");
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeVisible();
     await expect(card).not.toContainText("请确认 redis / rca_or_repair 的目标实例或服务名称。");
     await expect(card).not.toContainText("请补充部署形态、访问方式和必要只读证据。");
     await expect(card).not.toContainText("立即执行");
@@ -402,31 +514,28 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(card).not.toContainText("选择部署形态");
   });
 
-  test("4-field context form submits as a compact follow-up and restores the chat input", async ({ page }) => {
+  test("4-field need_info fixture keeps context in the manual card without opening a fixed bottom form", async ({ page }) => {
     await openFixturePage(page, "/", "ops-manual-4field-form");
-
-    const contextComposer = page.getByTestId("ops-manual-context-composer");
-    await expect(contextComposer).toBeVisible();
-    await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
-
-    await contextComposer.getByLabel("目标位置（可选）").fill("server-local / docker:aiops-redis");
-    await contextComposer.getByLabel("现象/证据（可选）").fill("used_memory_rss 持续升高，p95 升高，metrics 可读");
-    await contextComposer.getByRole("button", { name: "提交并继续" }).click();
 
     await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
     await expect(page.getByTestId("omnibar-input")).toBeVisible();
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).toContainText("Redis SSH 排障运维手册");
+    await expect(card).not.toContainText("请在底部补充");
+    await expect(card.getByRole("button", { name: "不使用" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "查看工作流" })).toBeVisible();
+    await expect(card.getByRole("button", { name: "查看手册" })).toBeVisible();
   });
 
-  test("4-field context form can be dismissed without leaving a duplicate prompt", async ({ page }) => {
+  test("4-field browser fixture does not fabricate a duplicate bottom prompt", async ({ page }) => {
     await openBrowserFixturePage(page, "/", "ops-manual-4field-form");
-
-    const contextComposer = page.getByTestId("ops-manual-context-composer");
-    await expect(contextComposer).toBeVisible();
-    await contextComposer.getByRole("button", { name: "取消" }).click();
 
     await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
     await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
     await expect(page.getByTestId("omnibar-input")).toBeVisible();
+    const card = page.getByTestId("ops-manual-search-result-card");
+    await expect(card).toContainText("Redis SSH 排障运维手册");
+    await expect(card).not.toContainText("打开补充表单");
   });
 
   test("CentOS PostgreSQL backup shows search adapt result instead of direct execution", async ({ page }) => {
@@ -481,7 +590,7 @@ test.describe("Ops Manual workflow UX", () => {
               run_record_summary: { success_count: 6, failure_count: 0, recent_result: "passed" },
             },
           ],
-          recommended_next_action: "运行 Node 0 预检，通过后再 Dry Run。",
+          recommended_next_action: "运行 Node 0 预检，通过后确认或审批执行。",
         }),
       }),
       sessions: createChatFixtureSessions(),
@@ -496,7 +605,7 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page.getByText("Runner 已执行")).toHaveCount(0);
   });
 
-  test("direct manual match and passed preflight merge into one path to Dry Run", async ({ page }) => {
+  test("direct manual match and passed preflight merge into one confirmation path", async ({ page }) => {
     await openFixturePage(page, "/", {
       state: stateWithArtifacts({
         text: "运行 PostgreSQL Ubuntu 备份预检",
@@ -524,16 +633,16 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(card).toContainText("Workflow 预检");
     await expect(card).toContainText("预检通过");
     await expect(card).toContainText("ssh_access");
-    await expect(card).toContainText("进入 Dry Run");
+    await expect(card).toContainText("确认执行");
     await expect(page.getByTestId("ops-manual-merged-preflight")).toHaveCount(1);
     await expect(page.getByTestId("ops-manual-preflight-result-card")).toHaveCount(0);
     await expect(page.getByText("立即执行")).toHaveCount(0);
     await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
 
-    await page.getByRole("button", { name: "进入 Dry Run" }).click();
+    await page.getByRole("button", { name: "确认执行" }).click();
     const confirmation = page.getByTestId("ops-manual-generation-confirmation");
-    await expect(confirmation).toContainText("进入 Dry Run");
-    await expect(confirmation).toContainText("不会执行真实变更");
+    await expect(confirmation).toContainText("确认执行");
+    await expect(confirmation).toContainText("确认执行绑定 Workflow");
     await expect(page.getByTestId("omnibar-input")).toHaveCount(0);
 
     await confirmation.getByRole("button", { name: "取消" }).click();
@@ -648,23 +757,19 @@ test.describe("Ops Manual workflow UX", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const card = page.getByTestId("ops-manual-search-result-card");
-    await expect(card).toContainText("未找到适用手册，AI 将继续只读排查");
-    await expect(card).toContainText("没有找到适用于 Kafka 的可用运维手册。");
-    await expect(card).toContainText("AI 不使用不匹配的手册");
-    await expect(card).not.toContainText("请在底部补充");
+    await expect(page.getByTestId("ops-manual-search-result-card")).toHaveCount(0);
+    await expect(page.getByText("未找到适用手册，AI 将继续只读排查")).toHaveCount(0);
+    await expect(page.getByText("没有找到适用于 Kafka 的可用运维手册。")).toHaveCount(0);
+    await expect(page.getByText("AI 不使用不匹配的手册")).toHaveCount(0);
+    await expect(page.getByText("请在底部补充")).toHaveCount(0);
     await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
-    const contextComposer = page.getByTestId("ops-manual-context-composer");
-    await expect(contextComposer).toContainText("目标位置（可选）");
-    await expect(contextComposer).toContainText("实例/服务");
-    await expect(contextComposer).toContainText("访问/执行入口");
-    await expect(contextComposer).toContainText("现象/证据（可选）");
-    await expect(card).not.toContainText("manual-k8s-pod-crashloop-rca");
-    await expect(card).not.toContainText("Kubernetes Pod CrashLoop/OOM");
-    await expect(card).not.toContainText("对象类型不匹配");
-    await expect(card).not.toContainText("object_type differs");
-    await expect(card).not.toContainText("进入 Dry Run");
-    await expect(card).not.toContainText("立即执行");
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByText("manual-k8s-pod-crashloop-rca")).toHaveCount(0);
+    await expect(page.getByText("Kubernetes Pod CrashLoop/OOM")).toHaveCount(0);
+    await expect(page.getByText("对象类型不匹配")).toHaveCount(0);
+    await expect(page.getByText("object_type differs")).toHaveCount(0);
+    await expect(page.getByText("进入 Dry Run")).toHaveCount(0);
+    await expect(page.getByText("立即执行")).toHaveCount(0);
   });
 
   test("MySQL backup does not expose PostgreSQL workflow as executable", async ({ page }) => {
@@ -683,17 +788,17 @@ test.describe("Ops Manual workflow UX", () => {
       sessions: createChatFixtureSessions(),
     });
 
-    const card = page.getByTestId("ops-manual-search-result-card");
-    await expect(card).toContainText("无可用手册");
-    await expect(card).toContainText("AI 不使用不匹配的手册");
-    await expect(card).not.toContainText("请在底部补充");
+    await expect(page.getByTestId("ops-manual-search-result-card")).toHaveCount(0);
+    await expect(page.getByText("无可用手册")).toHaveCount(0);
+    await expect(page.getByText("AI 不使用不匹配的手册")).toHaveCount(0);
+    await expect(page.getByText("请在底部补充")).toHaveCount(0);
     await expect(page.getByTestId("ops-manual-context-prompt")).toHaveCount(0);
-    await expect(page.getByTestId("ops-manual-context-composer")).toBeVisible();
-    await expect(card).not.toContainText("PostgreSQL 备份 Ubuntu 运维手册");
-    await expect(card).not.toContainText("可直接执行");
-    await expect(card).not.toContainText("运行预检");
-    await expect(card).not.toContainText("进入 Dry Run");
-    await expect(card).not.toContainText("立即执行");
+    await expect(page.getByTestId("ops-manual-context-composer")).toHaveCount(0);
+    await expect(page.getByText("PostgreSQL 备份 Ubuntu 运维手册")).toHaveCount(0);
+    await expect(page.getByText("可直接执行")).toHaveCount(0);
+    await expect(page.getByText("运行预检")).toHaveCount(0);
+    await expect(page.getByText("进入 Dry Run")).toHaveCount(0);
+    await expect(page.getByText("立即执行")).toHaveCount(0);
     await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
   });
 
@@ -733,6 +838,48 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page.getByTestId("omnibar-input")).toBeVisible();
   });
 
+  test("Runner Studio generates a workflow reverse candidate and opens the review card", async ({ page }) => {
+    await routeRunnerWorkflowManualApis(page);
+    await page.goto("/runner");
+    await page.getByTestId("runner-open-manager").click();
+    await page.getByTestId("workflow-create-blank").click();
+    await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
+
+    await page.getByTestId("runner-toolbar-more").click();
+    await page.getByTestId("runner-toolbar-ops-manual").click();
+
+    const modal = page.getByTestId("runner-ops-manual-modal");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText("准备运维手册候选");
+    await expect(modal).toContainText("生成会读取 Runner Workflow YAML");
+    await expect(modal).toContainText("手册预览");
+
+    const generateRequest = page.waitForRequest((req) =>
+      req.url().includes("/api/v1/ops-manuals/candidates/generate-from-workflow") && req.method() === "POST",
+    );
+    await page.getByTestId("runner-ops-manual-prepare").click();
+    const request = await generateRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      workflow_id: "runner-blank",
+      options: { include_recent_run_records: true, use_llm_summary: false },
+    });
+    expect(JSON.stringify(request.postDataJSON())).not.toContain("draft_manual");
+
+    await expect(modal).toContainText("已生成候选");
+    await expect(modal).toContainText("系统识别到 runner-blank Workflow");
+    await expect(modal).toContainText("缺少近期成功闭环记录");
+    await modal.getByRole("link", { name: "查看候选" }).click();
+
+    await expect(page).toHaveURL(/\/settings\/ops-manuals\?candidate=candidate-runner-blank$/);
+    await page.getByRole("tab", { name: "待审核手册" }).click();
+    await expect(page.getByText("由 Workflow 反向生成")).toBeVisible();
+    await expect(page.getByText("Workflow ID：runner-blank")).toBeVisible();
+    await expect(page.getByText("sha256:abc")).toBeVisible();
+    await expect(page.getByText("系统识别到 runner-blank Workflow")).toBeVisible();
+    await expect(page.getByText("缺少近期成功闭环记录").first()).toBeVisible();
+    await expect(page.getByText("审核通过后，该手册会变为 verified，并参与 AI Chat 的 search_ops_manuals 检索。")).toBeVisible();
+  });
+
   test("ops manual management keeps simple tabs, detail modal and read-only workflow preview", async ({ page }) => {
     await routeOpsManualApis(page);
     await page.goto("/settings/ops-manuals");
@@ -752,6 +899,6 @@ test.describe("Ops Manual workflow UX", () => {
     await page.getByRole("button", { name: "Close" }).click();
     await page.getByRole("tab", { name: "执行记录" }).click();
     await expect(page.getByText("run-redis-001")).toBeVisible();
-    await expect(page.getByText("Dry Run：通过")).toBeVisible();
+    await expect(page.getByText("历史发布前检查：通过")).toBeVisible();
   });
 });

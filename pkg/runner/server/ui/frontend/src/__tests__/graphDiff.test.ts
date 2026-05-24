@@ -19,7 +19,7 @@ const baseGraph: WorkflowGraph = {
       id: "run",
       type: "action",
       position: { x: 320, y: 120 },
-      step: { name: "run", action: "cmd.run", targets: ["local"], args: { cmd: "uptime" } },
+      step: { name: "run", action: "script.shell", targets: ["local"], args: { script: "uptime" } },
     },
     { id: "end", type: "end", position: { x: 560, y: 120 }, label: "End" },
   ],
@@ -32,7 +32,7 @@ const baseGraph: WorkflowGraph = {
 describe("graph diff summary", () => {
   it("separates execution, layout, and metadata changes", () => {
     const execution = cloneGraph(baseGraph);
-    execution.nodes[1].step = { ...execution.nodes[1].step, args: { cmd: "hostname" } };
+    execution.nodes[1].step = { ...execution.nodes[1].step, args: { script: "hostname" } };
     expect(buildGraphDiffSummary(baseGraph, execution).sections.map((section) => [section.kind, section.changed])).toEqual([
       ["execution", true],
       ["layout", false],

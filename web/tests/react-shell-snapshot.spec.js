@@ -300,6 +300,89 @@ function longTerminalOutputState() {
   };
 }
 
+function contextCompactionTransportState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "context-compaction-session",
+    threadId: "context-compaction-session",
+    status: "working",
+    currentTurnId: "turn-context-compaction",
+    turns: {
+      "turn-context-compaction": {
+        id: "turn-context-compaction",
+        status: "working",
+        startedAt: "2026-05-22T08:00:00.000Z",
+        updatedAt: "2026-05-22T08:00:04.000Z",
+        user: {
+          id: "user-context-compaction",
+          text: "继续排查 nginx 超时，并保留关键摘要。",
+          createdAt: "2026-05-22T08:00:00.000Z",
+        },
+        contextGovernance: [
+          {
+            id: "ctxgov-context-l4",
+            layer: "L4",
+            kind: "context.compaction.started",
+            message: "正在压缩上下文，当前任务会继续",
+            referenceIds: ["spill-1"],
+            createdAt: "2026-05-22T08:00:01.000Z",
+          },
+          {
+            id: "ctxgov-context-l5",
+            layer: "L5",
+            kind: "context.compaction.failed",
+            message: "上下文过长，已使用本地摘要继续",
+            createdAt: "2026-05-22T08:00:02.000Z",
+          },
+        ],
+        process: [
+          {
+            id: "tool-context-spill",
+            kind: "tool",
+            displayKind: "logs_query",
+            status: "completed",
+            text: "logs_query nginx timeout",
+            outputPreview: "Large nginx log result was externalized. Summary: 17 upstream timeout lines.",
+            evidenceRefs: ["spill-1"],
+            materializationTier: "large",
+            originalBytes: 48213,
+            inlineBytes: 920,
+            externalReferences: [
+              {
+                id: "spill-1",
+                kind: "blob",
+                title: "nginx raw timeout logs",
+                summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+                contentType: "text/plain",
+                bytes: 48213,
+              },
+            ],
+            updatedAt: "2026-05-22T08:00:03.000Z",
+          },
+        ],
+        final: {
+          id: "final-context-compaction",
+          text: "我正在整理旧上下文，关键摘要会保留在当前对话里。",
+          status: "running",
+        },
+      },
+    },
+    turnOrder: ["turn-context-compaction"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: { "turn-context-compaction": true },
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 5,
+    updatedAt: "2026-05-22T08:00:04.000Z",
+  };
+}
+
 const rcaReportTransportState = {
   schemaVersion: "aiops.transport.v2",
   sessionId: "rca-report-session",
@@ -423,6 +506,209 @@ const rcaReportTransportState = {
   updatedAt: "2026-05-15T02:00:12.000Z",
 };
 
+function artifactTransportState(sessionId, userText, artifact) {
+  const artifacts = Array.isArray(artifact) ? artifact : [artifact];
+  const turnId = `turn-${sessionId}`;
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId,
+    threadId: sessionId,
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: "2026-05-19T10:00:00.000Z",
+        completedAt: "2026-05-19T10:00:08.000Z",
+        updatedAt: "2026-05-19T10:00:08.000Z",
+        user: {
+          id: `user-${sessionId}`,
+          text: userText,
+          createdAt: "2026-05-19T10:00:00.000Z",
+        },
+        process: [],
+        agentUiArtifacts: artifacts,
+        final: {
+          id: `final-${sessionId}`,
+          text: "已完成运维手册判定。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 1,
+    updatedAt: "2026-05-19T10:00:08.000Z",
+  };
+}
+
+function opsManualMergedParamConfirmationState() {
+  return artifactTransportState(
+    "ops-manual-merged-param-confirmation",
+    "按运维手册判断：对 MySQL 做备份",
+    [
+      {
+        id: "artifact-ops-manual-mysql-search",
+        type: "ops_manual_search_result",
+        titleZh: "运维手册检索",
+        source: "tool:search_ops_manuals",
+        redactionStatus: "redacted",
+        inlineData: {
+          decision: "need_info",
+          summary: "信息不足，不能直接使用工作流。",
+          ops_manual_flow_id: "flow-mysql-search",
+          operation_frame: {
+            target: { type: "mysql" },
+            operation: { action: "backup" },
+            target_scope: { hosts: ["server-local"] },
+          },
+          manuals: [
+            {
+              manual: {
+                id: "manual-mysql-backup-ssh",
+                title: "MySQL SSH 备份运维手册",
+              },
+              bound_workflow_id: "workflow-mysql-backup-ssh",
+              usable_mode: "need_info",
+              matched_fields: ["object_type", "operation_type"],
+              workflow_preview: {
+                title: "MySQL SSH 备份工作流",
+                nodes: [
+                  { id: "collect", title: "检查实例", command: "docker ps --filter name=mysql" },
+                  { id: "backup", title: "生成备份", command: "mysqldump --single-transaction" },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      {
+        id: "artifact-ops-manual-mysql-params",
+        type: "ops_manual_param_resolution",
+        titleZh: "运维手册参数解析",
+        source: "tool:resolve_ops_manual_params",
+        redactionStatus: "redacted",
+        inlineData: {
+          status: "need_user_input",
+          ops_manual_flow_id: "flow-regenerated-param",
+          manual_id: "manual-mysql-backup-ssh",
+          workflow_id: "flow-mysql-search",
+          resolved_params: [
+            { id: "target_host", value: "server-local", source: "user_form", evidence: "context fact: target_host" },
+            { id: "target_instance", value: "docker:aiops-mysql", source: "docker", evidence: "docker ps: image=mysql:8.0 ports=33306 status=Up" },
+          ],
+          fields: [
+            {
+              id: "backup_path",
+              label: "备份路径",
+              type: "path",
+              ui_control: "text",
+              required: true,
+              placeholder: "例如 /data/backups",
+            },
+          ],
+        },
+      },
+    ],
+  );
+}
+
+function opsManualDirectActionsState() {
+  return artifactTransportState(
+    "ops-manual-direct-actions",
+    "排查 redis-01 内存上涨",
+    {
+      id: "artifact-ops-manual-direct-actions",
+      type: "ops_manual_search_result",
+      titleZh: "运维手册检索",
+      source: "tool:search_ops_manuals",
+      redactionStatus: "redacted",
+      inlineData: {
+        decision: "direct_execute",
+        summary: "找到可进入预检的 Redis 运维手册。",
+        ops_manual_flow_id: "flow-redis-direct-actions",
+        operation_frame: {
+          target: { type: "redis", name: "redis-01" },
+          operation: { action: "rca_or_repair" },
+          target_scope: { hosts: ["redis-01"] },
+        },
+        manuals: [
+          {
+            manual: {
+              id: "manual-redis-rca-ssh",
+              title: "Redis SSH 排障运维手册",
+            },
+            bound_workflow_id: "workflow-redis-rca-ssh",
+            usable_mode: "direct_execute",
+            matched_fields: ["object_type", "operation_type", "execution_surface"],
+          },
+        ],
+        recommended_next_action: "运行只读预检，通过后确认或审批执行。",
+      },
+    },
+  );
+}
+
+function opsManualDynamicCandidatesState() {
+  return artifactTransportState(
+    "ops-manual-dynamic-candidates",
+    "补齐 Redis 运维手册参数",
+    {
+      id: "artifact-ops-manual-dynamic-candidates",
+      type: "ops_manual_param_resolution",
+      titleZh: "运维手册参数解析",
+      source: "tool:resolve_ops_manual_params",
+      redactionStatus: "redacted",
+      inlineData: {
+        status: "ambiguous",
+        manual_id: "manual-redis-rca-ssh",
+        workflow_id: "workflow-redis-rca-ssh",
+        ops_manual_flow_id: "flow-redis-dynamic-candidates",
+        fields: [
+          {
+            id: "target_instance",
+            label: "实例/服务",
+            type: "resource_ref",
+            ui_control: "select",
+            required: true,
+            candidates: [
+              {
+                value: "docker:redis-prod-a",
+                label: "redis-prod-a | image redis:7.2 | ports 6379/tcp | health healthy",
+              },
+              {
+                value: "k8s:redis-cache-0",
+                label: "redis-cache-0 | namespace prod-cache | image redis:7.2.4 | phase Running",
+              },
+            ],
+          },
+          {
+            id: "execution_surface",
+            label: "访问/执行入口",
+            type: "enum",
+            ui_control: "select",
+            required: true,
+            candidates: [
+              { value: "ssh:redis-01", label: "ssh redis-01 | service redis-server | port 6379" },
+              { value: "kubectl:prod-cache", label: "kubectl prod-cache | deployment redis | health ready" },
+            ],
+          },
+        ],
+      },
+    },
+  );
+}
+
 function dataStreamForState(state) {
   return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
 }
@@ -485,13 +771,13 @@ test("assistant final markdown keeps the same layout while running and after com
   await routeShellApis(page, () => resumeState);
 
   await page.goto("/");
-  const runningFinal = page.getByTestId("aiops-final-text");
+  const runningFinal = page.getByTestId("aiops-answer-document");
   await expect(runningFinal).toBeVisible();
   await expect(runningFinal).toHaveScreenshot("assistant-final-markdown-running.png");
 
   resumeState = finalMarkdownState("completed");
   await page.reload();
-  const completedFinal = page.getByTestId("aiops-final-text");
+  const completedFinal = page.getByTestId("aiops-answer-document");
   await expect(completedFinal).toBeVisible();
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });
@@ -503,9 +789,9 @@ test("running assistant text keeps the process header before tool blocks arrive"
   await page.goto("/");
   const transcript = page.getByTestId("aiops-process-transcript");
   await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
-  await expect(transcript).toContainText(runningPreludeText);
+  await expect(page.getByTestId("aiops-answer-document")).toContainText(runningPreludeText);
   await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
-  await expect(transcript).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
+  await expect(transcript.locator("..")).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
 });
 
 test("long terminal output stays inside a scrollable output box", async ({ page }) => {
@@ -537,4 +823,89 @@ test("chat renders rca report artifact", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("rca-report-artifact")).toBeVisible();
   await expect(page).toHaveScreenshot("chat-rca-report-artifact.png", { fullPage: true });
+});
+
+test("chat shows context compaction and externalized evidence states", async ({ page }) => {
+  const state = contextCompactionTransportState();
+  await routeShellApis(page, state);
+  await page.route("**/api/external-references/spill-1", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "spill-1",
+        kind: "blob",
+        contentType: "text/plain",
+        summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+        content: "2026-05-22T08:00:01Z upstream timed out while connecting to service-a",
+        bytes: 82,
+        digest: "",
+        title: "nginx raw timeout logs",
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+  await expect(page.getByText("正在重试压缩")).toHaveCount(0);
+  await expect(page.getByText("已外溢")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /查看原始证据/ })).toHaveCount(0);
+  const toolRow = page.getByTestId("aiops-tool-row-tool-context-spill");
+  if ((await toolRow.count()) === 0) {
+    await page.getByTestId("aiops-process-header").click();
+  }
+  await expect(toolRow).toBeVisible();
+  await toolRow.click();
+  await expect(page.getByText("结果较大，仅显示摘要。")).toBeVisible();
+  await expect(page.getByText(/upstream timed out/)).toHaveCount(0);
+  await expect(page.getByTestId("context-status-notice")).toHaveScreenshot("context-compaction-notice.png");
+  await expect(page.getByTestId("aiops-process-transcript")).toHaveScreenshot("context-compaction-process.png");
+});
+
+test("ops manual direct hit shows distinct skip reference and preflight actions", async ({ page }) => {
+  await routeShellApis(page, opsManualDirectActionsState());
+
+  await page.goto("/");
+  const card = page.getByTestId("ops-manual-search-result-card");
+  await expect(card).toContainText("运行预检");
+  await expect(card).toContainText("仅参考手册");
+  await expect(card).toContainText("不使用");
+  await expect(card).toHaveScreenshot("ops-manual-direct-three-actions.png");
+
+  await card.getByRole("button", { name: "仅参考手册" }).click();
+  await expect(card.getByTestId("ops-manual-reference-submitted")).toContainText(
+    "不进入 Workflow 预检",
+  );
+  await expect(card.getByTestId("ops-manual-preflight-running")).toHaveCount(0);
+  await expect(card).toHaveScreenshot("ops-manual-reference-only-selected.png");
+});
+
+test("ops manual dynamic candidates keep long environment labels inside the card", async ({ page }) => {
+  await routeShellApis(page, opsManualDynamicCandidatesState());
+
+  await page.goto("/");
+  const card = page.getByTestId("ops-manual-param-resolution-card");
+  await expect(card).toContainText("image redis:7.2");
+  await expect(card).toContainText("namespace prod-cache");
+  await expect(card).toContainText("health ready");
+  await expect(card).toHaveScreenshot("ops-manual-dynamic-candidates.png");
+});
+
+test("ops manual search and parameter confirmation merge into one card", async ({ page }) => {
+  await routeShellApis(page, opsManualMergedParamConfirmationState());
+
+  await page.goto("/");
+  const card = page.getByTestId("ops-manual-progress-card");
+  await expect(card).toBeVisible();
+  await expect(page.getByTestId("ops-manual-search-result-card")).toHaveCount(0);
+  await expect(page.getByTestId("ops-manual-param-resolution-card")).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "不使用" })).toHaveCount(1);
+  await expect(card.getByText("备份路径")).toHaveCount(0);
+  await expect(card.getByText("目标主机")).toBeVisible();
+  await expect(card.getByText("目标实例")).toBeVisible();
+  await expect(card.getByText("server-local")).toHaveCount(0);
+  await expect(card.getByText("docker:aiops-mysql")).toHaveCount(0);
+
+  await card.getByRole("button", { name: "查看详细参数" }).click();
+  await expect(card.getByText("server-local")).toBeVisible();
+  await expect(card.getByText("docker:aiops-mysql")).toBeVisible();
+  await expect(card).toHaveScreenshot("ops-manual-merged-param-confirmation.png");
 });

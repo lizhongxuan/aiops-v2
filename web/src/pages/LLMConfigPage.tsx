@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Field, LoadingState, SelectField, SettingsPageFrame, StatGrid, StatusAlert } from "@/pages/settingsComponents";
-import { fetchLlmConfig, type LlmConfigView, updateLlmConfig } from "@/pages/settingsApi";
+import { DEFAULT_LLM_CONTEXT_TOKENS, fetchLlmConfig, type LlmConfigView, normalizeLlmContextTokens, updateLlmConfig } from "@/pages/settingsApi";
 
 const providers = [
   { label: "OpenAI", value: "openai" },
@@ -31,7 +31,7 @@ export function LLMConfigPage() {
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<LlmConfigView | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
-  const [form, setForm] = useState({ provider: "openai", model: "gpt-5.4", apiKey: "", baseURL: "" });
+  const [form, setForm] = useState({ provider: "openai", model: "gpt-5.4", apiKey: "", baseURL: "", maxContextTokens: String(DEFAULT_LLM_CONTEXT_TOKENS) });
 
   const modelOptions = useMemo(() => (modelPresets[form.provider] || []).map((model) => ({ label: model, value: model })), [form.provider]);
   const needsApiKey = form.provider !== "ollama";
@@ -47,6 +47,7 @@ export function LLMConfigPage() {
         model: next.model || "gpt-5.4",
         apiKey: "",
         baseURL: next.baseURL || "",
+        maxContextTokens: String(normalizeLlmContextTokens(next.maxContextTokens)),
       });
       setMessage(null);
     } catch (error) {
@@ -61,6 +62,8 @@ export function LLMConfigPage() {
     try {
       const payload = { ...form };
       if (!payload.apiKey) delete (payload as { apiKey?: string }).apiKey;
+      payload.maxContextTokens = String(normalizeLlmContextTokens(payload.maxContextTokens));
+      setForm((prev) => ({ ...prev, maxContextTokens: payload.maxContextTokens }));
       const result = await updateLlmConfig(payload);
       setMessage({ type: result.ok === false ? "info" : "success", text: result.message || result.error || "配置已保存" });
       await load();
@@ -95,6 +98,7 @@ export function LLMConfigPage() {
             items={[
               { label: "Provider", value: config?.provider || form.provider },
               { label: "Model", value: config?.model || form.model },
+              { label: "Context", value: normalizeLlmContextTokens(config?.maxContextTokens || form.maxContextTokens).toLocaleString() },
               { label: "API Key", value: config?.apiKeySet ? config.apiKeyMasked || "已设置" : "未设置", tone: config?.apiKeySet ? "ok" : "warn" },
               { label: "模型状态", value: connected ? "已配置" : "未连接", tone: connected ? "ok" : "bad" },
             ]}
@@ -116,6 +120,7 @@ export function LLMConfigPage() {
                       model: modelPresets[provider]?.[0] || form.model,
                       apiKey: "",
                       baseURL: provider === "ollama" ? defaultBaseURL(provider) : "",
+                      maxContextTokens: form.maxContextTokens,
                     })
                   }
                 />
@@ -127,6 +132,16 @@ export function LLMConfigPage() {
                     <option key={option.value} value={option.value} />
                   ))}
                 </datalist>
+              </Field>
+              <Field label="上下文大小" hint="未填写时默认 200000；保存时最小为 10000。">
+                <Input
+                  data-testid="llm-context-tokens-input"
+                  type="number"
+                  min={10000}
+                  step={1000}
+                  value={form.maxContextTokens}
+                  onChange={(event) => setForm((prev) => ({ ...prev, maxContextTokens: event.target.value }))}
+                />
               </Field>
               {needsApiKey ? (
                 <Field label="API Key" hint={config?.apiKeySet ? "已设置时留空会保持原密钥。" : "Provider 需要 API Key。"}>

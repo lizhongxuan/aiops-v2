@@ -12,8 +12,11 @@ function jsonResponse(payload: unknown) {
 
 function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input);
+  if (url.includes("/api/v1/coroot/config") && init?.method === "PUT") {
+    return jsonResponse({ configured: true, baseUrl: "https://saved-coroot.example", project: "prod", tokenConfigured: true });
+  }
   if (url.includes("/api/v1/coroot/config")) {
-    return jsonResponse({ configured: true, baseUrl: "https://coroot.example", lastSuccessAt: "2026-05-12T09:30:00+08:00" });
+    return jsonResponse({ configured: true, baseUrl: "https://coroot.example", project: "5hxbfx6p", tokenConfigured: true, lastSuccessAt: "2026-05-12T09:30:00+08:00" });
   }
   if (url.includes("/api/v1/mcp/servers")) {
     return jsonResponse({ items: [{ name: "coroot-rca", status: "connected", toolCount: 5, resourceCount: 2 }] });
@@ -91,6 +94,8 @@ describe("CorootOverviewPage", () => {
     expect(container.textContent).toContain("Coroot 观测");
     expect(container.textContent).toContain("Coroot 配置");
     expect(container.textContent).toContain("https://coroot.example");
+    expect(container.textContent).toContain("Project ID");
+    expect(container.textContent).toContain("API Key");
     expect(container.textContent).toContain("MCP 状态");
     expect(container.textContent).toContain("coroot-rca");
     expect(container.textContent).toContain("RCA Skills");
@@ -116,4 +121,41 @@ describe("CorootOverviewPage", () => {
     );
     expect(container.textContent).toContain("连接正常");
   });
+
+  it("saves Coroot connection settings from the observability page", async () => {
+    await renderCorootRoute();
+
+    const baseUrl = container.querySelector<HTMLInputElement>('input[name="baseUrl"]');
+    const project = container.querySelector<HTMLInputElement>('input[name="project"]');
+    const token = container.querySelector<HTMLInputElement>('input[name="token"]');
+    expect(baseUrl).toBeTruthy();
+    expect(project).toBeTruthy();
+    expect(token).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(baseUrl!, "https://saved-coroot.example");
+      setInputValue(project!, "prod");
+      setInputValue(token!, "new-token");
+    });
+
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("保存配置"));
+    expect(button).toBeTruthy();
+    await act(async () => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/v1/coroot/config"),
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining("https://saved-coroot.example"),
+      }),
+    );
+    expect(container.textContent).toContain("配置已保存");
+  });
 });
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}

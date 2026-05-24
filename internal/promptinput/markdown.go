@@ -11,6 +11,7 @@ func RenderMarkdown(trace PromptInputTrace) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# Prompt Input Trace")
 	fmt.Fprintln(&b)
+	renderTraceMetrics(&b, trace)
 	if len(trace.Items) == 0 {
 		fmt.Fprintln(&b, "_No prompt input trace items._")
 		return b.String()
@@ -33,6 +34,36 @@ func RenderMarkdown(trace PromptInputTrace) string {
 		)
 	}
 	return b.String()
+}
+
+func renderTraceMetrics(b *strings.Builder, trace PromptInputTrace) {
+	var lines []string
+	if trace.OpsContextCapsuleChars > 0 {
+		lines = append(lines, fmt.Sprintf("- ops_context_capsule_chars: `%d`", trace.OpsContextCapsuleChars))
+	}
+	if trace.SessionFactCount > 0 {
+		lines = append(lines, fmt.Sprintf("- session_fact_count: `%d`", trace.SessionFactCount))
+	}
+	if trace.LettaHintCount > 0 {
+		lines = append(lines, fmt.Sprintf("- letta_hint_count: `%d`", trace.LettaHintCount))
+	}
+	if trace.MemoryItemCount > 0 {
+		lines = append(lines, fmt.Sprintf("- memory_item_count: `%d`", trace.MemoryItemCount))
+	}
+	if len(trace.VisibleOpsManualTools) > 0 {
+		lines = append(lines, fmt.Sprintf("- visible_ops_manual_tools: `%s`", escapeBackticks(strings.Join(trace.VisibleOpsManualTools, ", "))))
+	}
+	if len(trace.DroppedContextReasons) > 0 {
+		lines = append(lines, fmt.Sprintf("- dropped_context_reasons: `%s`", escapeBackticks(strings.Join(trace.DroppedContextReasons, ", "))))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Fprintln(b, "## Metrics")
+	for _, line := range lines {
+		fmt.Fprintln(b, line)
+	}
+	fmt.Fprintln(b)
 }
 
 // RenderDiffMarkdown renders a redacted human-readable semantic diff.

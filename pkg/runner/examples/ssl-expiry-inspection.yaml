@@ -1,0 +1,58 @@
+version: v0.1
+name: ssl-expiry-inspection
+description: Inspect public TLS certificate expiry and open a ticket when renewal is inside the warning window.
+inventory:
+  hosts:
+    probe-runner:
+      address: "http://127.0.0.1:7072"
+vars:
+  primary_host: "api.example.com"
+  secondary_host: "console.example.com"
+  warn_days: 30
+  ticket_url: "https://itsm.example.com/api/v1/incidents"
+plan:
+  mode: auto
+  strategy: sequential
+steps:
+  - name: inspect primary certificate
+    targets: [probe-runner]
+    action: builtin.ssl_expiry_check
+    args:
+      host: "${primary_host}"
+      port: 443
+      server_name: "${primary_host}"
+      warn_days: "${warn_days}"
+      timeout: 5s
+
+  - name: inspect secondary certificate
+    targets: [probe-runner]
+    action: builtin.ssl_expiry_check
+    args:
+      host: "${secondary_host}"
+      port: 443
+      server_name: "${secondary_host}"
+      warn_days: "${warn_days}"
+      timeout: 5s
+
+  - name: create renewal ticket
+    targets: [probe-runner]
+    action: http.request
+    when: "vars.days_remaining < vars.warn_days"
+    args:
+      method: POST
+      url: "${ticket_url}"
+      auth:
+        type: bearer
+        secret_ref: "itsm/api-token"
+      headers:
+        Content-Type: application/json
+      body_json:
+        title: "TLS certificate renewal required"
+        service: edge
+        primary_host: "${primary_host}"
+        secondary_host: "${secondary_host}"
+        warn_days: "${warn_days}"
+      expected_status: [200, 201, 202]
+      timeout: 10s
+      redactions:
+        - "Authorization"

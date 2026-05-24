@@ -77,8 +77,16 @@ func TestResolveOpsManualParamsToolExecutesAndCachesForPreflight(t *testing.T) {
 	preflightTool, _ := registry.Get("run_ops_manual_preflight")
 	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{SessionID: "sess-redis", TurnID: "turn-redis"})
 
-	if _, err := searchTool.Execute(ctx, json.RawMessage(`{"text":"排查 Redis","metadata":{"selected_host":"server-local","resource_candidates":[{"id":"docker:aiops-redis","name":"aiops-redis","type":"redis","source":"docker","confidence":0.92}]}}`)); err != nil {
+	searchResult, err := searchTool.Execute(ctx, json.RawMessage(`{"text":"排查 Redis","metadata":{"selected_host":"server-local","resource_candidates":[{"id":"docker:aiops-redis","name":"aiops-redis","type":"redis","source":"docker","confidence":0.92}]}}`))
+	if err != nil {
 		t.Fatal(err)
+	}
+	var searchPayload core.SearchOpsManualsResult
+	if searchResult.Display == nil {
+		t.Fatal("search result missing display payload")
+	}
+	if err := json.Unmarshal(searchResult.Display.Data, &searchPayload); err != nil {
+		t.Fatalf("search display data is not SearchResult: %v", err)
 	}
 	result, err := resolveTool.Execute(ctx, json.RawMessage(`{"manual_id":"manual-redis-rca","metadata":{"selected_host":"server-local","resource_candidates":[{"id":"docker:aiops-redis","name":"aiops-redis","type":"redis","source":"docker","confidence":0.92}]}}`))
 	if err != nil {
@@ -97,6 +105,12 @@ func TestResolveOpsManualParamsToolExecutesAndCachesForPreflight(t *testing.T) {
 	if payload.Status != core.ParamResolutionResolved {
 		t.Fatalf("payload = %#v, want resolved", payload)
 	}
+	if payload.OpsManualFlowID == "" {
+		t.Fatal("param resolution payload missing ops_manual_flow_id")
+	}
+	if payload.OpsManualFlowID != searchPayload.OpsManualFlowID {
+		t.Fatalf("param resolution flow id = %q, want search flow id %q", payload.OpsManualFlowID, searchPayload.OpsManualFlowID)
+	}
 
 	preflight, err := preflightTool.Execute(ctx, json.RawMessage(`{"manual_id":"manual-redis-rca","operation_frame":{},"parameters":{}}`))
 	if err != nil {
@@ -108,6 +122,9 @@ func TestResolveOpsManualParamsToolExecutesAndCachesForPreflight(t *testing.T) {
 	}
 	if preflightPayload.Status != core.PreflightStatusPassed {
 		t.Fatalf("preflight payload = %#v, want passed using cached resolved params", preflightPayload)
+	}
+	if preflightPayload.OpsManualFlowID != payload.OpsManualFlowID {
+		t.Fatalf("preflight flow id = %q, want param resolution flow id %q", preflightPayload.OpsManualFlowID, payload.OpsManualFlowID)
 	}
 }
 

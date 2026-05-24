@@ -3,9 +3,13 @@ package appui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
+	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
 )
 
@@ -155,8 +159,8 @@ func TestAgentProfileServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgentProfiles() error = %v", err)
 	}
-	if len(list.Items) != 2 || len(list.SkillCatalog) != 2 || len(list.McpCatalog) != 2 {
-		t.Fatalf("ListAgentProfiles() = %+v, want 2 items and both catalogs", list)
+	if len(list.Items) != 2 || len(list.SkillCatalog) != 4 || len(list.McpCatalog) != 3 {
+		t.Fatalf("ListAgentProfiles() = %+v, want 2 profiles and bootstrap-merged catalogs", list)
 	}
 
 	profile, err := svc.GetAgentProfile(context.Background())
@@ -276,4 +280,202 @@ func TestAgentProfileServiceCatalogMutations(t *testing.T) {
 	if len(repo.mcpCatalog) != 0 {
 		t.Fatalf("repo.mcpCatalog = %+v, want empty slice", repo.mcpCatalog)
 	}
+}
+
+func TestAgentProfileServiceMergesPluginRecommendationsWithoutReopeningUserDisabledBindings(t *testing.T) {
+	repo := &agentProfileRepoStub{
+		skillCatalog: []store.SkillCatalogEntry{
+			{ID: "plugin-triage", Name: "User Plugin Triage", DefaultEnabled: false, DefaultActivationMode: "disabled"},
+		},
+		profiles: []store.AgentProfileRecord{
+			{
+				"id":          "main-agent",
+				"name":        "User Main Agent",
+				"description": "user profile survives",
+				"skills": []any{
+					map[string]any{"id": "plugin-triage", "name": "User Plugin Triage", "enabled": false, "activationMode": "disabled"},
+					map[string]any{"id": "incident-summary", "name": "Incident Summary", "enabled": true, "activationMode": "default_enabled"},
+				},
+				"mcps": []any{
+					map[string]any{"id": "plugin-mcp", "name": "Plugin MCP", "enabled": false, "permission": "readonly"},
+				},
+			},
+		},
+	}
+	svc := NewAgentProfileService(
+		newAgentProfileRepositories(repo, repo, repo),
+		WithAgentProfilePluginSpecs([]plugins.Spec{testAgentProfilePluginSpec()}),
+		WithAgentProfilePolicySettings(AgentProfilePolicySettings{
+			DisabledSkills: map[string]string{"incident-summary": "disabled by tenant policy"},
+		}),
+	)
+
+	list, err := svc.ListAgentProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentProfiles() error = %v", err)
+	}
+	main := findAgentProfileTest(t, list.Items, "main-agent")
+	if main["description"] != "user profile survives" {
+		t.Fatalf("profile description = %v, want saved user profile value", main["description"])
+	}
+
+	pluginSkill := findBindingTest(t, main["skills"], "plugin-triage")
+	if got := profileBool(pluginSkill["enabled"]); got {
+		t.Fatalf("plugin skill enabled = true, want user-disabled binding to stay disabled")
+	}
+	if pluginSkill["name"] != "User Plugin Triage" {
+		t.Fatalf("plugin skill name = %v, want user catalog override", pluginSkill["name"])
+	}
+
+	policySkill := findBindingTest(t, main["skills"], "incident-summary")
+	if got := profileBool(policySkill["enabled"]); got {
+		t.Fatalf("policy-disabled skill enabled = true, want policy to override user config")
+	}
+	if reason := profileString(policySkill["unavailableReason"]); !strings.Contains(reason, "tenant policy") {
+		t.Fatalf("policy-disabled skill unavailableReason = %q, want policy reason", reason)
+	}
+
+	pluginMCP := findBindingTest(t, main["mcps"], "plugin-mcp")
+	if got := profileBool(pluginMCP["enabled"]); got {
+		t.Fatalf("plugin MCP enabled = true, want user-disabled binding to stay disabled")
+	}
+
+	missingMCP := findBindingTest(t, main["mcps"], "missing-mcp")
+	if got := profileBool(missingMCP["enabled"]); got {
+		t.Fatalf("missing MCP enabled = true, want unavailable binding disabled")
+	}
+	if reason := profileString(missingMCP["unavailableReason"]); !strings.Contains(reason, "missing-mcp") || !strings.Contains(reason, "not registered") {
+		t.Fatalf("missing MCP unavailableReason = %q, want explicit missing-server reason", reason)
+	}
+
+	if got := findSkillCatalogItemTest(list.SkillCatalog, "plugin-triage"); got == nil || got.Name != "User Plugin Triage" || got.DefaultEnabled {
+		t.Fatalf("plugin skill catalog = %+v, want user override to win", got)
+	}
+	if got := findMcpCatalogItemTest(list.McpCatalog, "plugin-mcp"); got == nil || got.Name != "Plugin MCP" || !got.DefaultEnabled {
+		t.Fatalf("plugin MCP catalog = %+v, want plugin MCP recommendation in catalog", got)
+	}
+}
+
+func TestAgentProfileServicePluginRecommendationsDisappearOrBecomeUnavailableWhenPluginDisabled(t *testing.T) {
+	withPlugin := NewAgentProfileService(
+		newAgentProfileRepositories(&agentProfileRepoStub{}, &agentProfileRepoStub{}, &agentProfileRepoStub{}),
+		WithAgentProfilePluginSpecs([]plugins.Spec{testAgentProfilePluginSpec()}),
+	)
+	withPluginList, err := withPlugin.ListAgentProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentProfiles() with plugin error = %v", err)
+	}
+	withPluginMain := findAgentProfileTest(t, withPluginList.Items, "main-agent")
+	if binding := findBindingTest(t, withPluginMain["skills"], "plugin-triage"); binding == nil {
+		t.Fatalf("plugin skill recommendation missing while plugin is enabled")
+	}
+	if binding := findBindingTest(t, withPluginMain["mcps"], "plugin-mcp"); binding == nil {
+		t.Fatalf("plugin MCP recommendation missing while plugin is enabled")
+	}
+
+	withoutPlugin := NewAgentProfileService(newAgentProfileRepositories(&agentProfileRepoStub{}, &agentProfileRepoStub{}, &agentProfileRepoStub{}))
+	withoutPluginList, err := withoutPlugin.ListAgentProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentProfiles() without plugin error = %v", err)
+	}
+	withoutPluginMain := findAgentProfileTest(t, withoutPluginList.Items, "main-agent")
+	if binding := findBindingTest(t, withoutPluginMain["skills"], "plugin-triage"); binding != nil {
+		t.Fatalf("plugin skill recommendation = %+v, want absent when plugin is disabled", binding)
+	}
+	if binding := findBindingTest(t, withoutPluginMain["mcps"], "plugin-mcp"); binding != nil {
+		t.Fatalf("plugin MCP recommendation = %+v, want absent when plugin is disabled", binding)
+	}
+
+	savedRepo := &agentProfileRepoStub{
+		profiles: []store.AgentProfileRecord{
+			{
+				"id": "main-agent",
+				"skills": []any{
+					map[string]any{"id": "plugin-triage", "name": "Plugin Triage", "enabled": true},
+				},
+				"mcps": []any{
+					map[string]any{"id": "plugin-mcp", "name": "Plugin MCP", "enabled": true, "permission": "readonly"},
+				},
+			},
+		},
+	}
+	savedWithoutPlugin := NewAgentProfileService(newAgentProfileRepositories(savedRepo, savedRepo, savedRepo))
+	savedList, err := savedWithoutPlugin.ListAgentProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentProfiles() saved without plugin error = %v", err)
+	}
+	savedMain := findAgentProfileTest(t, savedList.Items, "main-agent")
+	savedSkill := findBindingTest(t, savedMain["skills"], "plugin-triage")
+	if reason := profileString(savedSkill["unavailableReason"]); !strings.Contains(reason, "not registered") {
+		t.Fatalf("saved plugin skill unavailableReason = %q, want unavailable after plugin disabled", reason)
+	}
+	savedMCP := findBindingTest(t, savedMain["mcps"], "plugin-mcp")
+	if reason := profileString(savedMCP["unavailableReason"]); !strings.Contains(reason, "not registered") {
+		t.Fatalf("saved plugin MCP unavailableReason = %q, want unavailable after plugin disabled", reason)
+	}
+}
+
+func testAgentProfilePluginSpec() plugins.Spec {
+	return plugins.Spec{
+		Name: "observability",
+		Manifest: plugins.Manifest{
+			Name: "observability",
+			AIOps: plugins.AIOpsManifest{
+				AgentProfiles: []plugins.AgentProfileManifest{
+					{
+						ID:                    "main-agent",
+						RecommendedSkills:     []string{"plugin-triage"},
+						RecommendedMCPServers: []string{"plugin-mcp", "missing-mcp"},
+						Mode:                  "suggested",
+					},
+				},
+			},
+		},
+		Skills: []skills.Definition{
+			{Name: "plugin-triage", Description: "Plugin triage skill"},
+		},
+		MCPServers: []plugins.MCPServerSpec{
+			{Config: mcp.ServerConfig{ID: "plugin-mcp", Name: "Plugin MCP", Transport: "http"}},
+		},
+	}
+}
+
+func findAgentProfileTest(t *testing.T, profiles []store.AgentProfileRecord, id string) store.AgentProfileRecord {
+	t.Helper()
+	for _, profile := range profiles {
+		if profileString(profile["id"]) == id {
+			return profile
+		}
+	}
+	t.Fatalf("profile %q not found in %+v", id, profiles)
+	return nil
+}
+
+func findBindingTest(t *testing.T, raw any, id string) map[string]any {
+	t.Helper()
+	for _, item := range asAnySlice(raw) {
+		binding := asAnyMap(item)
+		if profileString(binding["id"]) == id {
+			return binding
+		}
+	}
+	return nil
+}
+
+func findSkillCatalogItemTest(items []SkillCatalogItem, id string) *SkillCatalogItem {
+	for i := range items {
+		if items[i].ID == id {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func findMcpCatalogItemTest(items []McpCatalogItem, id string) *McpCatalogItem {
+	for i := range items {
+		if items[i].ID == id {
+			return &items[i]
+		}
+	}
+	return nil
 }

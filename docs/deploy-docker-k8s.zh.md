@@ -120,15 +120,13 @@ LLM 首次引导配置：
 | 变量 | 说明 |
 | --- | --- |
 | `AIOPS_ACTION_TOKEN_SECRET` | runbook/action token 签名密钥 |
-| `AIOPS_COROOT_BASE_URL` / `COROOT_BASE_URL` | Coroot API 地址 |
-| `AIOPS_COROOT_TOKEN` / `COROOT_TOKEN` | Coroot Token |
-| `AIOPS_COROOT_PROJECT` / `COROOT_PROJECT` | Coroot project，默认 `default` |
-| `AIOPS_COROOT_IFRAME_URL` | Coroot iframe 地址 |
 | `AIOPS_OTEL_ENABLED` | 是否启用 OpenTelemetry trace |
 | `AIOPS_OTEL_ENDPOINT` | OTLP HTTP trace endpoint |
 | `AIOPS_DEBUG_MODEL_INPUT_TRACE` | 是否落盘模型输入 trace |
 | `AIOPS_SKILLS_DIRS` | 额外 skills 目录，多个目录用系统 path separator 分隔 |
 | `AIOPS_PLUGIN_DIRS` | 额外插件目录，多个目录用系统 path separator 分隔 |
+
+Coroot 不再通过启动 env 配置；启动后在 `Coroot 观测` 页面填写 Base URL、Project ID 和 API Key，配置会写入 `${AIOPS_DATA_DIR}` 对应的数据存储。
 
 ## Kubernetes 部署
 

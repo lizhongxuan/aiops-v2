@@ -135,6 +135,16 @@ func TestSemanticPromptAIOpsInvestigationLoopIsOperational(t *testing.T) {
 		"opsManualSkipped=true",
 		"do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight",
 		"ordinary safe read-only investigation",
+		"opsManualAction=reference_ops_manual",
+		"manual-guided chat",
+		"must still require explicit user confirmation before mutation",
+		"if current evidence conflicts with the manual, stop applying the manual",
+		"direct_execute means preflight-ready",
+		"not permission to execute Workflow or mutate",
+		"Do not inline full session facts",
+		"Do not inline full Letta hints",
+		"Do not inline full operations manual content",
+		"Do not inline raw artifact payloads",
 		"pre-change state",
 		"rollback or recovery path",
 		"symptom, metric, log, or service state",
@@ -157,11 +167,27 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 		"do not expand a long next-step plan",
 		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
 		"resolve_ops_manual_params plus run_ops_manual_preflight have already passed",
-		"do not run extra host, shell, Docker, Kubernetes, or Coroot probes",
+		"do not run extra host, shell, Docker, Kubernetes, or observability probes",
 		"1-3 bullets total",
 		"no headings and no separate evidence section",
 		"concise conclusion with compact evidence",
 		"no change was executed in one bullet",
+	})
+}
+
+func TestSemanticPromptDoesNotInlineProviderSpecificCorootRules(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptOmitsAll(t, "developer", compiled.Developer.Content, []string{
+		"Coroot service_metrics returns chartReports",
+		"Agent-to-UI coroot_chart artifacts",
+		"Coroot chart summaries",
+	})
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"dynamically available observability tools",
+		"read-only evidence sources",
 	})
 }
 
@@ -173,7 +199,10 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
 		"search_ops_manuals",
 		"operations manuals",
-		"complex operations task",
+		"explicitly asks to use operations manuals",
+		"fix, recover, restart, roll back, migrate, back up, scale, or change",
+		"not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent",
+		"排查mservice异常问题",
 		"high-risk actions",
 		"service restart",
 		"configuration changes",
@@ -182,12 +211,6 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"recovery",
 		"migration",
 		"cluster changes",
-		"middleware or infrastructure target",
-		"short or underspecified",
-		"排查 Redis",
-		"do not ask prose follow-up questions first",
-		"before asking follow-up questions",
-		"missing fields",
 		"original request text",
 		"preserve negations",
 		"不重启",
@@ -200,19 +223,18 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"need_info",
 		"need_info with one or more manuals",
 		"immediate next tool call must be resolve_ops_manual_params with the matched manual_id",
-		"Do not run host commands, Coroot probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
+		"do not run host commands, monitoring probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
 		"need_info with no manuals",
 		"do not call resolve_ops_manual_params because there is no manual_id",
-		"call search_ops_manuals again with an explicit operation_frame",
+		"do not call search_ops_manuals again just to fill missing fields",
 		"ask only the smallest missing object or action question",
-		"missing ops manual matching context, not a Workflow preflight failure",
+		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals",
 		"fill the bottom form",
 		"do not repeat questions or a template in prose",
 		"Do not duplicate Agent-to-UI card details",
 		"one short status sentence plus the smallest useful question or next action",
-		"Coroot tools are visible",
-		"session-bound aiops.coroot.project",
-		"Do not ask the user whether Coroot evidence exists",
+		"dynamically available observability tools are visible",
+		"Do not ask the user whether configured observability evidence exists",
 		"system cannot inspect",
 		"adapt",
 		"reference_only",
@@ -230,15 +252,30 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"do not duplicate the same fields as a multiline prose template",
 		"resolve_ops_manual_params returns ambiguous or need_user_input",
 		"stop tool use and wait for the user to submit the structured Agent-to-UI form",
-		"do not run host commands, Coroot probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
+		"do not run host commands, monitoring probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
 		"ask for user confirmation and then run it after confirmation",
 		"direct_execute",
 		"run_ops_manual_preflight",
 		"pass the operation_frame",
 		"extracted parameters",
-		"preflight passed",
-		"Dry Run",
+		"After preflight passes",
+		"user confirmation or approval",
+		"do not add a runtime Dry Run step",
 	})
+}
+
+func TestDeveloperRulesDirectExecuteUsesPreflightThenConfirmation(t *testing.T) {
+	lines := developerAIOpsInvestigationLines(CompileContext{})
+	text := strings.Join(lines, "\n")
+	if !strings.Contains(text, "direct_execute means preflight-ready") {
+		t.Fatalf("missing direct_execute preflight-ready rule:\n%s", text)
+	}
+	if !strings.Contains(text, "After preflight passes, wait for explicit user confirmation or approval before Workflow execution") {
+		t.Fatalf("missing confirmation after preflight rule:\n%s", text)
+	}
+	if strings.Contains(text, "proceed to Dry Run only after preflight passed") {
+		t.Fatalf("runtime prompt still requires Dry Run:\n%s", text)
+	}
 }
 
 func TestSemanticPromptRiskBoundariesUseBlastRadius(t *testing.T) {

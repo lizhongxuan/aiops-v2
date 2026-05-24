@@ -7,7 +7,10 @@ deploy/k8s/*
 !/deploy/k8s/**
 !/docs/
 docs/*
+!/docs/tech-sharing/
+!/docs/tech-sharing/**
 !/docs/deploy-docker-k8s.zh.md
+!/docs/deploy-aiops-v2-unified-env.zh.md
 !/docs/2026-05-18-aiops-v2-diagnosis-accuracy-*.zh.md
 !/docs/superpowers/
 docs/superpowers/*

@@ -31,6 +31,8 @@ const SUPPORTED_CONFIRMATION_ACTIONS = new Set([
   "generate_ops_manual_candidate",
   "generate_runner_workflow_candidate",
   "start_runner_workflow_dry_run",
+  "confirm_runner_workflow_execution",
+  "request_runner_workflow_approval",
 ]);
 
 type ContextFormField = {
@@ -51,12 +53,15 @@ type ContextFormRequest = {
   workflowId?: string;
   submitAction?: string;
   key: string;
+  dismissKeys?: string[];
   title: string;
   summary?: string;
   contextText?: string;
   fields: ContextFormField[];
   force?: boolean;
 };
+
+const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX = "aiops:composer-context-request:dismissed:v2:";
 
 export function AiopsComposer({
   className = "",
@@ -141,16 +146,37 @@ export function AiopsComposer({
             .filter((field) => field.id && field.label)
         : [];
       if (fields.length === 0) return;
-      const key = contextRequestKey(detail.artifactId ? String(detail.artifactId) : undefined, fields);
-      if (!detail.force && dismissedContextRequestKeysRef.current.has(key)) {
+      const key = contextRequestKey(
+        state.threadId || state.sessionId,
+        detail.artifactId ? String(detail.artifactId) : undefined,
+        fields,
+      );
+      const fallbackKey = contextRequestKey(
+        undefined,
+        detail.artifactId ? String(detail.artifactId) : undefined,
+        fields,
+      );
+      if (
+        [key, fallbackKey].some((candidate) =>
+          isDismissedContextRequestKey(
+            candidate,
+            dismissedContextRequestKeysRef.current,
+          ),
+        )
+      ) {
         return;
       }
+      rememberContextRequestKeys(
+        [key, fallbackKey],
+        dismissedContextRequestKeysRef.current,
+      );
       setContextRequest({
         artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
         manualId: detail.manualId ? String(detail.manualId) : undefined,
         workflowId: detail.workflowId ? String(detail.workflowId) : undefined,
         submitAction: detail.submitAction ? String(detail.submitAction) : undefined,
         key,
+        dismissKeys: [key, fallbackKey],
         title: String(detail.title || "补充运维信息"),
         summary: detail.summary ? String(detail.summary) : "",
         contextText: detail.contextText ? String(detail.contextText) : "",
@@ -159,7 +185,7 @@ export function AiopsComposer({
     }
     window.addEventListener("aiops:composer-context-request", handleContextRequest);
     return () => window.removeEventListener("aiops:composer-context-request", handleContextRequest);
-  }, []);
+  }, [state.sessionId, state.threadId]);
 
   const pendingApproval = selectComposerApproval(state);
   if (pendingApproval) {
@@ -183,11 +209,17 @@ export function AiopsComposer({
         variant={variant}
         className={className}
         onCancel={() => {
-          dismissedContextRequestKeysRef.current.add(contextRequest.key);
+          dismissContextRequestKeys(
+            contextRequest.dismissKeys || [contextRequest.key],
+            dismissedContextRequestKeysRef.current,
+          );
           setContextRequest(null);
         }}
         onComplete={() => {
-          dismissedContextRequestKeysRef.current.add(contextRequest.key);
+          dismissContextRequestKeys(
+            contextRequest.dismissKeys || [contextRequest.key],
+            dismissedContextRequestKeysRef.current,
+          );
           setContextRequest(null);
         }}
       />
@@ -493,8 +525,51 @@ function normalizeContextCandidates(value: unknown): ContextFormField["candidate
     .filter((candidate): candidate is NonNullable<ContextFormField["candidates"]>[number] => Boolean(candidate && (candidate.value !== undefined || candidate.label)));
 }
 
-function contextRequestKey(artifactId: string | undefined, fields: ContextFormField[]) {
-  return `${artifactId || "unknown"}:${fields.map((field) => field.id).join("|")}`;
+function contextRequestKey(
+  scopeId: string | undefined,
+  artifactId: string | undefined,
+  fields: ContextFormField[],
+) {
+  return `${scopeId || "unknown-thread"}:${artifactId || "unknown"}:${fields.map((field) => field.id).join("|")}`;
+}
+
+function dismissContextRequestKeys(keys: string[], memory: Set<string>) {
+  for (const key of keys) {
+    memory.add(key);
+    try {
+      window.localStorage.setItem(
+        `${DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX}${key}`,
+        "1",
+      );
+    } catch {
+      // Local storage may be unavailable in restricted browser contexts.
+    }
+  }
+}
+
+function rememberContextRequestKeys(keys: string[], memory: Set<string>) {
+  for (const key of keys) {
+    memory.add(key);
+  }
+}
+
+function isDismissedContextRequestKey(key: string, memory: Set<string>) {
+  if (memory.has(key)) {
+    return true;
+  }
+  try {
+    if (
+      window.localStorage.getItem(
+        `${DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX}${key}`,
+      ) === "1"
+    ) {
+      memory.add(key);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
 }
 
 function GenerationConfirmationComposer({
@@ -570,6 +645,8 @@ function confirmationTitle(action: string) {
   if (action === "generate_ops_manual_candidate") return "生成运维手册候选";
   if (action === "generate_runner_workflow_candidate") return "生成工作流候选";
   if (action === "start_runner_workflow_dry_run") return "进入 Dry Run";
+  if (action === "confirm_runner_workflow_execution") return "确认执行";
+  if (action === "request_runner_workflow_approval") return "发起审批";
   return "确认下一步";
 }
 
@@ -586,6 +663,20 @@ function confirmationCopy(action: string, sourceTitle: string) {
       description: `将基于「${sourceTitle}」进入 Runner Workflow Dry Run，只生成执行计划和校验结果，不会执行真实变更。`,
       confirmLabel: "确认进入 Dry Run",
       message: `确认进入 Dry Run：${sourceTitle}`,
+    };
+  }
+  if (action === "confirm_runner_workflow_execution") {
+    return {
+      description: `将基于「${sourceTitle}」确认执行绑定 Workflow。执行前仍会遵循当前风险策略和审批结果。`,
+      confirmLabel: "确认执行",
+      message: `确认执行 Workflow：${sourceTitle}`,
+    };
+  }
+  if (action === "request_runner_workflow_approval") {
+    return {
+      description: `将基于「${sourceTitle}」发起人工审批。审批通过后才允许执行绑定 Workflow。`,
+      confirmLabel: "发起审批",
+      message: `发起 Workflow 审批：${sourceTitle}`,
     };
   }
   return {

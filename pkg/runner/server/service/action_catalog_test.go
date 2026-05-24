@@ -13,8 +13,8 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 	catalog := NewActionCatalog()
 
 	items := catalog.List(context.Background(), ActionCatalogFilter{})
-	if len(items) != 8 {
-		t.Fatalf("expected 8 default specs, got %d", len(items))
+	if len(items) != 13 {
+		t.Fatalf("expected 13 default specs, got %d", len(items))
 	}
 	for i := 1; i < len(items); i++ {
 		prev := items[i-1].Category + "/" + items[i-1].Action
@@ -29,7 +29,7 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 			t.Fatalf("%s should not be in the default catalog", action)
 		}
 	}
-	for _, action := range []string{"script.shell", "script.python", "wait.event"} {
+	for _, action := range []string{"script.shell", "script.python", "http.request", "builtin.tcp_ping", "builtin.dns_resolve", "wait.event"} {
 		if _, ok := catalog.Get(context.Background(), action); !ok {
 			t.Fatalf("%s should be present", action)
 		}
@@ -53,10 +53,47 @@ func TestActionCatalogDefaultSpecsAreDeterministicAndValid(t *testing.T) {
 	}
 }
 
+func TestActionCatalogDefaultIncludesPublishedRunnerActions(t *testing.T) {
+	catalog := NewActionCatalog()
+
+	for _, action := range []string{
+		"script.shell",
+		"script.python",
+		"http.request",
+		"builtin.tcp_ping",
+		"builtin.http_check",
+		"builtin.ssl_expiry_check",
+		"builtin.dns_resolve",
+	} {
+		if _, ok := catalog.Get(context.Background(), action); !ok {
+			t.Fatalf("default catalog should include published runner action %q", action)
+		}
+	}
+}
+
+func TestActionCatalogManualApprovalRemainsExperimentalForClientFiltering(t *testing.T) {
+	catalog := NewActionCatalog()
+
+	approval, ok := catalog.Get(context.Background(), "manual.approval")
+	if !ok {
+		t.Fatal("manual.approval may exist in catalog for graph runtime metadata")
+	}
+	if !approval.Experimental {
+		t.Fatalf("manual.approval should stay experimental so clients can filter it: %+v", approval)
+	}
+
+	stable := catalog.List(context.Background(), ActionCatalogFilter{Experimental: catalogBoolPtr(false)})
+	for _, item := range stable {
+		if item.Action == "manual.approval" {
+			t.Fatalf("manual.approval should be omitted when clients request non-experimental catalog items")
+		}
+	}
+}
+
 func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 	catalog := NewActionCatalog()
 
-	for _, action := range []string{"script.shell", "script.python", "wait.event", "notify.send"} {
+	for _, action := range []string{"script.shell", "script.python", "http.request", "builtin.tcp_ping", "builtin.http_check", "builtin.ssl_expiry_check", "builtin.dns_resolve", "wait.event", "notify.send"} {
 		t.Run(action, func(t *testing.T) {
 			spec, ok := catalog.Get(context.Background(), action)
 			if !ok {
@@ -108,6 +145,26 @@ func TestActionCatalogStructuredIOSchemasForCoreActions(t *testing.T) {
 			} else if action == "wait.event" {
 				if _, ok := outputProps["event"]; !ok {
 					t.Fatalf("%s outputs_schema missing event property: %+v", action, outputs)
+				}
+			} else if action == "http.request" {
+				if _, ok := outputProps["status_code"]; !ok {
+					t.Fatalf("%s outputs_schema missing status_code property: %+v", action, outputs)
+				}
+			} else if action == "builtin.tcp_ping" {
+				if _, ok := outputProps["reachable"]; !ok {
+					t.Fatalf("%s outputs_schema missing reachable property: %+v", action, outputs)
+				}
+			} else if action == "builtin.http_check" {
+				if _, ok := outputProps["status_code"]; !ok {
+					t.Fatalf("%s outputs_schema missing status_code property: %+v", action, outputs)
+				}
+			} else if action == "builtin.ssl_expiry_check" {
+				if _, ok := outputProps["days_remaining"]; !ok {
+					t.Fatalf("%s outputs_schema missing days_remaining property: %+v", action, outputs)
+				}
+			} else if action == "builtin.dns_resolve" {
+				if _, ok := outputProps["records"]; !ok {
+					t.Fatalf("%s outputs_schema missing records property: %+v", action, outputs)
 				}
 			} else if _, ok := outputProps["stdout"]; !ok {
 				t.Fatalf("%s outputs_schema missing stdout property: %+v", action, outputs)
@@ -209,8 +266,8 @@ func TestActionCatalogValidateStep(t *testing.T) {
 			"script_ref": "restore.sh",
 		},
 	})
-	if len(scriptWithRef) != 0 {
-		t.Fatalf("script_ref should be accepted for stored scripts: %+v", scriptWithRef)
+	if len(scriptWithRef) != 1 || scriptWithRef[0].Field != "args.script" {
+		t.Fatalf("script_ref alone should not satisfy args.script, got %+v", scriptWithRef)
 	}
 
 	scriptConflict := catalog.ValidateStep(workflow.Step{
@@ -231,6 +288,17 @@ func TestActionCatalogValidateStep(t *testing.T) {
 	})
 	if len(unknown) != 1 || unknown[0].Field != "action" {
 		t.Fatalf("expected unknown action issue, got %+v", unknown)
+	}
+
+	validProbes := []workflow.Step{
+		{Name: "http", Action: "http.request", Args: map[string]any{"url": "https://example.com/healthz"}},
+		{Name: "tcp", Action: "builtin.tcp_ping", Args: map[string]any{"host": "example.com", "port": 443}},
+		{Name: "dns", Action: "builtin.dns_resolve", Args: map[string]any{"name": "example.com"}},
+	}
+	for _, step := range validProbes {
+		if issues := catalog.ValidateStep(step); len(issues) != 0 {
+			t.Fatalf("%s should validate, got %+v", step.Action, issues)
+		}
 	}
 }
 
@@ -296,4 +364,8 @@ func portIDs(ports []ActionPortSpec) []string {
 		out = append(out, port.ID)
 	}
 	return out
+}
+
+func catalogBoolPtr(value bool) *bool {
+	return &value
 }

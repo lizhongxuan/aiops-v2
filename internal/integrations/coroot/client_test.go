@@ -53,6 +53,26 @@ func TestClientGetJSONUnwrapsCorootDataAndSetsAuth(t *testing.T) {
 	}
 }
 
+func TestClientResolveProjectTreatsDefaultAsPlaceholderWhenConfiguredProjectDiffers(t *testing.T) {
+	client, err := NewClient(ClientConfig{
+		BaseURL: "http://coroot.example",
+		Project: "5hxbfx6p",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if got := client.ResolveProject("default"); got != "5hxbfx6p" {
+		t.Fatalf("ResolveProject(default) = %q, want configured project", got)
+	}
+	if got := client.ResolveProject(""); got != "5hxbfx6p" {
+		t.Fatalf("ResolveProject(empty) = %q, want configured project", got)
+	}
+	if got := client.ResolveProject("prod-west"); got != "prod-west" {
+		t.Fatalf("ResolveProject(prod-west) = %q, want explicit project", got)
+	}
+}
+
 func TestClientGetJSONMapsUpstreamFailures(t *testing.T) {
 	tests := []struct {
 		name       string

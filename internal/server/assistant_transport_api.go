@@ -110,13 +110,66 @@ func (s *HTTPServer) decorateAssistantTransportAgentUIArtifacts(state appui.Aiop
 	}
 	switch strings.TrimSpace(command.AddMessage.Metadata["opsManualAction"]) {
 	case "":
-		return state
+		if !assistantTransportOpsManualSkipped(command.AddMessage.Metadata) {
+			return state
+		}
 	case "generate_ops_manual_candidate", "generate_runner_workflow_candidate":
 		return state
+	}
+	if assistantTransportOpsManualSkipped(command.AddMessage.Metadata) {
+		s.recordAssistantTransportOpsManualSuppression(
+			firstAssistantTransportValue(state.SessionID, command.AddMessage.SessionID),
+			command.AddMessage,
+		)
+	}
+	if assistantTransportOpsManualReference(command.AddMessage.Metadata) {
+		s.recordAssistantTransportManualGuidedReference(
+			firstAssistantTransportValue(state.SessionID, command.AddMessage.SessionID),
+			command.AddMessage,
+		)
 	}
 	state.Turns[turnID] = turn
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state
+}
+
+func (s *HTTPServer) recordAssistantTransportOpsManualSuppression(sessionID string, command *appui.TransportAddMessageCommand) {
+	if s == nil || command == nil {
+		return
+	}
+	service := s.opsManualService()
+	if service == nil {
+		return
+	}
+	_ = service.RecordSuppression(context.Background(), strings.TrimSpace(sessionID), command.Message.Text, command.Metadata)
+}
+
+func (s *HTTPServer) recordAssistantTransportManualGuidedReference(sessionID string, command *appui.TransportAddMessageCommand) {
+	if s == nil || command == nil {
+		return
+	}
+	service := s.opsManualService()
+	if service == nil {
+		return
+	}
+	_ = service.RecordManualGuidedReference(context.Background(), strings.TrimSpace(sessionID), command.Message.Text, command.Metadata)
+}
+
+func assistantTransportOpsManualSkipped(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "skip_ops_manual") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualSkipped"]), "true")
+}
+
+func assistantTransportOpsManualReference(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "reference_ops_manual")
 }
 
 func assistantTransportOpsManualSearchArtifactFromToolResult(turnID string, itemID string, tool runtimekernel.ToolResult) (appui.AiopsTransportAgentUIArtifact, bool) {
@@ -137,6 +190,9 @@ func assistantTransportOpsManualSearchArtifactFromToolResult(turnID string, item
 	decision := strings.TrimSpace(fmt.Sprint(payload["decision"]))
 	if decision == "" {
 		decision = "unknown"
+	}
+	if !assistantTransportActionableOpsManualSearchPayload(payload) {
+		return appui.AiopsTransportAgentUIArtifact{}, false
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	idPart := firstAssistantTransportValue(strings.TrimSpace(itemID), "search")
@@ -325,7 +381,7 @@ func (s *HTTPServer) assistantTransportOpsManualMatchArtifact(turnID string, com
 func assistantTransportOpsManualSummary(state string) string {
 	switch strings.TrimSpace(state) {
 	case "direct_execute", "direct":
-		return "已找到可直接使用的运维手册，仍需参数确认、环境预检查和 Dry Run。"
+		return "已找到可直接使用的运维手册，仍需参数确认、环境预检和确认或审批。"
 	case "adapt", "adapt_required":
 		return "找到相似运维手册，但当前环境存在差异，需要先生成变体并校验。"
 	case "reference_only":
@@ -357,7 +413,7 @@ func assistantTransportOpsManualActions(state string) []map[string]any {
 	case "direct_execute", "direct":
 		return []map[string]any{
 			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
-			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+			{"id": "run_preflight", "label": "运行预检", "kind": "panel"},
 		}
 	case "adapt", "adapt_required":
 		return []map[string]any{
@@ -376,13 +432,13 @@ func assistantTransportOpsManualActions(state string) []map[string]any {
 func assistantTransportOpsManualPreflightSummary(status string) string {
 	switch strings.TrimSpace(status) {
 	case "passed":
-		return "预检已通过，可以进入 Dry Run。"
+		return "预检已通过，可以确认或审批后执行。"
 	case "blocked":
 		return "预检被阻断，需要补充参数、权限或环境适配。"
 	case "failed":
 		return "预检失败，不能执行绑定工作流。"
 	case "not_applicable":
-		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+		return "该手册没有预检探针，需要人工确认或审批后执行。"
 	default:
 		return "已完成运维手册预检。"
 	}
@@ -404,14 +460,21 @@ func assistantTransportOpsManualPreflightSeverity(status string) string {
 }
 
 func assistantTransportOpsManualPreflightActions(status string, nextAction string) []map[string]any {
+	nextAction = strings.TrimSpace(nextAction)
 	switch strings.TrimSpace(status) {
 	case "passed", "not_applicable":
-		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+		if nextAction == "request_approval" {
+			return []map[string]any{{"id": "request_approval", "label": "发起审批", "kind": "confirm"}}
+		}
+		if nextAction == "execute_workflow" {
+			return []map[string]any{{"id": "execute_workflow", "label": "执行 Workflow", "kind": "confirm"}}
+		}
+		return []map[string]any{{"id": "confirm_execution", "label": "确认执行", "kind": "confirm"}}
 	case "blocked":
-		if strings.TrimSpace(nextAction) == "request_permission" {
+		if nextAction == "request_permission" {
 			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
 		}
-		if strings.TrimSpace(nextAction) == "generate_workflow_variant" {
+		if nextAction == "generate_workflow_variant" {
 			return []map[string]any{{"id": "generate_variant", "label": "生成适配工作流", "kind": "confirm"}}
 		}
 		return []map[string]any{{"id": "collect_context", "label": "补充上下文", "kind": "form"}}
@@ -859,22 +922,47 @@ func projectAssistantTransportSessionState(
 	if strings.TrimSpace(next.ThreadID) == "" {
 		next.ThreadID = strings.TrimSpace(firstAssistantTransportValue(next.SessionID, session.ID))
 	}
-	var latestTurn *runtimekernel.TurnSnapshot
-	if session.CurrentTurn != nil {
-		latestTurn = session.CurrentTurn
-	} else if count := len(session.TurnHistory); count > 0 {
-		latestTurn = &session.TurnHistory[count-1]
-	}
-	if latestTurn != nil {
-		projected, err := projector.ProjectTurnSnapshot(next, latestTurn)
-		if err != nil {
-			return next, err
+	turns := assistantTransportSessionTurns(session)
+	if len(turns) > 0 {
+		for i := range turns {
+			projected, err := projector.ProjectTurnSnapshot(next, &turns[i])
+			if err != nil {
+				return next, err
+			}
+			next = server.decorateAssistantTransportOpsManualFallback(projected, &turns[i])
 		}
-		return server.decorateAssistantTransportOpsManualFallback(projected, latestTurn), nil
+		return next, nil
 	}
 	next.Status = appui.AiopsTransportStatusIdle
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return next, nil
+}
+
+func assistantTransportSessionTurns(session *runtimekernel.SessionState) []runtimekernel.TurnSnapshot {
+	if session == nil {
+		return nil
+	}
+	turns := make([]runtimekernel.TurnSnapshot, 0, len(session.TurnHistory)+1)
+	indexByID := make(map[string]int, len(session.TurnHistory)+1)
+	appendTurn := func(turn *runtimekernel.TurnSnapshot) {
+		if turn == nil {
+			return
+		}
+		turnID := strings.TrimSpace(turn.ID)
+		if turnID != "" {
+			if idx, ok := indexByID[turnID]; ok {
+				turns[idx] = *turn
+				return
+			}
+			indexByID[turnID] = len(turns)
+		}
+		turns = append(turns, *turn)
+	}
+	for i := range session.TurnHistory {
+		appendTurn(&session.TurnHistory[i])
+	}
+	appendTurn(session.CurrentTurn)
+	return turns
 }
 
 func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.AiopsTransportState, turn *runtimekernel.TurnSnapshot) appui.AiopsTransportState {
@@ -891,6 +979,9 @@ func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.Aio
 	}
 	userText := firstAssistantTransportValue(strings.TrimSpace(projectedTurnUserText(projectedTurn)), assistantTransportTurnUserText(turn))
 	if strings.TrimSpace(userText) == "" {
+		return state
+	}
+	if !opsmanual.ShouldSearchForOpsManuals(userText) {
 		return state
 	}
 	artifact, ok := s.assistantTransportOpsManualSearchFallbackArtifact(turnID, userText)
@@ -988,6 +1079,29 @@ func (s *HTTPServer) assistantTransportOpsManualSearchFallbackArtifact(turnID st
 	})
 }
 
+func assistantTransportActionableOpsManualSearchPayload(payload map[string]any) bool {
+	decision := strings.TrimSpace(fmt.Sprint(payload["decision"]))
+	if decision == string(opsmanual.DecisionNoMatch) {
+		return false
+	}
+	return assistantTransportOpsManualSearchPayloadHasManual(payload)
+}
+
+func assistantTransportOpsManualSearchPayloadHasManual(payload map[string]any) bool {
+	for _, key := range []string{"manuals", "hits", "matches"} {
+		if values, ok := payload[key].([]any); ok && len(values) > 0 {
+			return true
+		}
+	}
+	if manual, ok := payload["manual"]; ok && manual != nil {
+		return true
+	}
+	if manualID := strings.TrimSpace(fmt.Sprint(payload["manual_id"])); manualID != "" && manualID != "<nil>" {
+		return true
+	}
+	return false
+}
+
 func assistantTransportSessionTurnIsTerminal(session *runtimekernel.SessionState) bool {
 	turn := assistantTransportLatestSessionTurn(session)
 	if turn == nil {
@@ -1028,7 +1142,22 @@ func assistantTransportTurnFingerprint(turn *runtimekernel.TurnSnapshot) string 
 		strings.TrimSpace(turn.FinalOutput),
 		strings.TrimSpace(turn.Error),
 		assistantTransportTurnCompletedAtFingerprint(turn),
+		fmt.Sprintf("%d", len(turn.ContextGovernanceEvents)),
+		assistantTransportLatestGovernanceFingerprint(turn),
 	}, "|")
+}
+
+func assistantTransportLatestGovernanceFingerprint(turn *runtimekernel.TurnSnapshot) string {
+	if turn == nil || len(turn.ContextGovernanceEvents) == 0 {
+		return ""
+	}
+	event := turn.ContextGovernanceEvents[len(turn.ContextGovernanceEvents)-1]
+	return strings.Join([]string{
+		strings.TrimSpace(event.ID),
+		string(event.Layer),
+		strings.TrimSpace(event.Kind),
+		event.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, ":")
 }
 
 func assistantTransportTurnCompletedAtFingerprint(turn *runtimekernel.TurnSnapshot) string {
@@ -1228,6 +1357,12 @@ func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTrans
 			cloned.Process[idx] = assistantTransportCloneProcessBlock(block)
 		}
 	}
+	if len(turn.ContextGovernance) > 0 {
+		cloned.ContextGovernance = make([]appui.AiopsContextGovernanceEvent, len(turn.ContextGovernance))
+		for idx, event := range turn.ContextGovernance {
+			cloned.ContextGovernance[idx] = assistantTransportCloneContextGovernanceEvent(event)
+		}
+	}
 	if len(turn.AgentUIArtifacts) > 0 {
 		cloned.AgentUIArtifacts = make([]appui.AiopsTransportAgentUIArtifact, len(turn.AgentUIArtifacts))
 		for idx, artifact := range turn.AgentUIArtifacts {
@@ -1262,9 +1397,32 @@ func assistantTransportCloneProcessBlock(block appui.AiopsProcessBlock) appui.Ai
 	if len(block.Results) > 0 {
 		cloned.Results = append([]appui.AiopsSearchResult(nil), block.Results...)
 	}
+	if len(block.ExternalReferences) > 0 {
+		cloned.ExternalReferences = append([]appui.AiopsExternalReference(nil), block.ExternalReferences...)
+	}
 	if block.ExitCode != nil {
 		exitCode := *block.ExitCode
 		cloned.ExitCode = &exitCode
+	}
+	return cloned
+}
+
+func assistantTransportCloneContextGovernanceEvent(event appui.AiopsContextGovernanceEvent) appui.AiopsContextGovernanceEvent {
+	cloned := event
+	if len(event.Budget) > 0 {
+		cloned.Budget = make(map[string]any, len(event.Budget))
+		for key, value := range event.Budget {
+			cloned.Budget[key] = value
+		}
+	}
+	if len(event.ReferenceIDs) > 0 {
+		cloned.ReferenceIDs = append([]string(nil), event.ReferenceIDs...)
+	}
+	if len(event.CompactedIDs) > 0 {
+		cloned.CompactedIDs = append([]string(nil), event.CompactedIDs...)
+	}
+	if len(event.DroppedGroupIDs) > 0 {
+		cloned.DroppedGroupIDs = append([]string(nil), event.DroppedGroupIDs...)
 	}
 	return cloned
 }

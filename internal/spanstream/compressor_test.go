@@ -42,6 +42,36 @@ func (m *mockSummaryModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
+type capturingSummaryModel struct {
+	response string
+	messages []*schema.Message
+}
+
+func (m *capturingSummaryModel) Generate(_ context.Context, msgs []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.messages = cloneCompressorSchemaMessages(msgs)
+	return &schema.Message{Role: schema.Assistant, Content: m.response}, nil
+}
+
+func (m *capturingSummaryModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (m *capturingSummaryModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
+func cloneCompressorSchemaMessages(messages []*schema.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages))
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		cp := *msg
+		out = append(out, &cp)
+	}
+	return out
+}
+
 func TestNewContextCompressor(t *testing.T) {
 	mock := &mockSummaryModel{response: "test"}
 	cc := NewContextCompressor(mock, 4)
@@ -120,6 +150,37 @@ func TestCompressSyncSuccess(t *testing.T) {
 	}
 	if mock.calls.Load() != 1 {
 		t.Fatalf("expected 1 model call, got %d", mock.calls.Load())
+	}
+}
+
+func TestCompressorUsesAIOpsCompactionPrompt(t *testing.T) {
+	capture := &capturingSummaryModel{response: "AIOps compact summary"}
+	cc := NewContextCompressor(capture, 1)
+
+	_, err := cc.Compress(context.Background(), &Span{ID: "compact", Type: SpanTypeSummary, Name: "compact"}, []Message{
+		{Role: "tool", Content: "evidenceRefs: ev-1\npending approvals: approval-1"},
+	})
+	if err != nil {
+		t.Fatalf("Compress returned error: %v", err)
+	}
+	if len(capture.messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(capture.messages))
+	}
+	system := capture.messages[0].Content
+	for _, want := range []string{
+		"Do NOT call tools",
+		"用户当前目标",
+		"当前事故",
+		"已确认事实和 evidenceRefs",
+		"pending approvals",
+		"Runner / OpsManual / MCP / Skills",
+	} {
+		if !strings.Contains(system, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, system)
+		}
+	}
+	if !strings.Contains(capture.messages[1].Content, "transcript/ref") {
+		t.Fatalf("user prompt missing transcript/ref hint:\n%s", capture.messages[1].Content)
 	}
 }
 

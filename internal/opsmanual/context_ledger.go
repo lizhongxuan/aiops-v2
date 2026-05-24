@@ -104,7 +104,7 @@ func (l OperationContextLedger) RedactedFacts() OperationContextLedger {
 func LedgerFromOperationFrame(frame OperationFrame) OperationContextLedger {
 	ledger := NewOperationContextLedger()
 	if host := firstHostFromFrame(frame); host != "" {
-		ledger.AddFact(OperationContextFact{Key: "target_host", Value: host, Source: "operation_frame", Confidence: 0.86})
+		ledger.AddFact(OperationContextFact{Key: "target_host", Value: host, Source: "operation_frame", Confidence: 0.92})
 	}
 	if target := strings.TrimSpace(frame.Target.Name); target != "" {
 		key := "target_instance"
@@ -116,7 +116,10 @@ func LedgerFromOperationFrame(frame OperationFrame) OperationContextLedger {
 		case "mysql":
 			key = "mysql_instance"
 		}
-		ledger.AddFact(OperationContextFact{Key: key, Value: target, Source: "operation_frame", Confidence: 0.9})
+		ledger.AddFact(OperationContextFact{Key: "target_instance", Value: target, Source: "operation_frame", Confidence: 0.92})
+		if key != "target_instance" {
+			ledger.AddFact(OperationContextFact{Key: key, Value: target, Source: "operation_frame", Confidence: 0.92})
+		}
 	}
 	for key, value := range frame.RequiredParams {
 		ledger.AddFact(OperationContextFact{Key: key, Value: value, Source: "operation_frame", Confidence: 0.85})
@@ -137,7 +140,7 @@ func LedgerFromKnownParams(params map[string]any, source string) OperationContex
 	ledger := NewOperationContextLedger()
 	for key, value := range params {
 		sensitive := strings.Contains(strings.ToLower(key), "password") || strings.Contains(strings.ToLower(key), "token") || strings.Contains(strings.ToLower(key), "secret")
-		ledger.AddFact(OperationContextFact{Key: key, Value: value, Source: firstNonEmpty(source, "known_params"), Confidence: 0.96, ConfirmedByUser: source == "user", Sensitive: sensitive})
+		ledger.AddFact(OperationContextFact{Key: key, Value: value, Source: firstNonEmpty(source, "known_params"), Confidence: 0.98, ConfirmedByUser: source == "user" || source == "user_form", Sensitive: sensitive})
 	}
 	return ledger
 }
@@ -154,12 +157,16 @@ func firstHostFromFrame(frame OperationFrame) string {
 
 func defaultFactConfidence(source string) float64 {
 	switch strings.TrimSpace(source) {
-	case "user":
+	case "user", "user_form", "known_params":
 		return 1
 	case "selected_host":
-		return 0.95
+		return 0.88
+	case "tool_execution_host":
+		return 0.9
 	case "operation_frame":
-		return 0.85
+		return 0.92
+	case "session_fact":
+		return 0.87
 	case "conversation":
 		return 0.72
 	default:
@@ -168,6 +175,9 @@ func defaultFactConfidence(source string) float64 {
 }
 
 func shouldReplaceFact(existing, next OperationContextFact) bool {
+	if sourcePriority(next.Source) != sourcePriority(existing.Source) {
+		return sourcePriority(next.Source) > sourcePriority(existing.Source)
+	}
 	if existing.ConfirmedByUser && !next.ConfirmedByUser {
 		return false
 	}
@@ -181,4 +191,27 @@ func shouldReplaceFact(existing, next OperationContextFact) bool {
 		return true
 	}
 	return false
+}
+
+func sourcePriority(source string) int {
+	switch strings.TrimSpace(source) {
+	case "user", "user_form", "known_params":
+		return 90
+	case "operation_frame":
+		return 80
+	case "tool_execution_host":
+		return 70
+	case "selected_host":
+		return 60
+	case "session_fact":
+		return 50
+	case "resource_discovery", "docker", "k8s", "host_readonly", "coroot":
+		return 40
+	case "run_record", "letta_hint":
+		return 30
+	case "manual_default":
+		return 20
+	default:
+		return 10
+	}
 }

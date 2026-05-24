@@ -101,6 +101,27 @@ const traceJson = {
       },
     },
   ],
+  contextGovernance: [
+    {
+      id: "cg-budget-1",
+      layer: "L4",
+      kind: "context.compaction.started",
+      message: "compacting previous turns",
+      budget: {
+        autoCompactThreshold: 167000,
+        blockingLimit: 177000,
+      },
+      referenceIds: ["ref-context-1"],
+      compactedIds: ["segment-1"],
+    },
+    {
+      id: "cg-materialized-1",
+      layer: "L5",
+      kind: "tool_result.materialized",
+      message: "materialized large tool result",
+      referenceIds: ["tool-ref-1"],
+    },
+  ],
 };
 
 const traceTwoJson = {
@@ -162,6 +183,11 @@ describe("PromptTracePage", () => {
         jsonPath: ".data/model-input-traces/sess-1/turn-1/iteration-001.json",
         markdownPath: ".data/model-input-traces/sess-1/turn-1/iteration-001.md",
         relativePath: "sess-1/turn-1/iteration-001.json",
+        createdAt: "2026-05-12T09:12:00+08:00",
+        userPromptPreview: "检查 checkout p95 延迟",
+        llmRequestCount: 1,
+        usage: { promptTokens: 21, completionTokens: 8, totalTokens: 29 },
+        averageDurationMs: 456,
         promptFingerprint: traceJson.promptFingerprint,
       },
     ];
@@ -192,7 +218,8 @@ describe("PromptTracePage", () => {
     expect(container.textContent).toContain("会话");
     expect(container.textContent).toContain("用户请求");
     expect(container.textContent).toContain("LLM 请求");
-    expect(container.textContent).toContain("会话列表");
+    expect(container.textContent).toContain("历史会话");
+    expect(container.textContent).not.toContain("会话列表");
     expect(container.textContent).not.toContain("每个会话可包含多次用户请求。");
     expect(container.textContent).toContain("用户请求列表");
     expect(container.textContent).toContain("选择某次用户发出的对话请求。");
@@ -203,9 +230,9 @@ describe("PromptTracePage", () => {
     expect(container.textContent).not.toContain("System Prompt");
     expect(container.querySelector('[data-testid="prompt-trace-scroll"]')?.className).toContain("overflow-x-auto");
     expect(container.querySelector('[data-testid="prompt-trace-scroll"]')?.className).toContain("overflow-y-hidden");
-    expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).toContain("grid-cols-[minmax(220px,280px)_minmax(260px,340px)_minmax(360px,1fr)]");
+    expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).toContain("grid-cols-[minmax(180px,240px)_minmax(220px,300px)_minmax(260px,1fr)]");
     expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).not.toContain("xl:grid-cols");
-    expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).toContain("min-w-[900px]");
+    expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).toContain("min-w-[720px]");
     expect(container.querySelector('[data-testid="prompt-trace-layout"]')?.className).toContain("overflow-hidden");
     expect(container.querySelector('[data-testid="prompt-trace-llm-list"]')?.className).toContain("min-w-0");
     expect(container.querySelector('[data-testid="prompt-trace-llm-list"]')?.className).toContain("overflow-auto");
@@ -217,20 +244,33 @@ describe("PromptTracePage", () => {
     const llmRequestButton = container.querySelector('[data-testid="prompt-trace-llm-card"]') as HTMLButtonElement | null;
     expect(sessionButton?.className).toContain("h-28");
     expect(userRequestButton?.className).toContain("h-28");
-    expect(llmRequestButton?.className).toContain("h-28");
+    expect(llmRequestButton?.className).toContain("h-20");
+    expect(llmRequestButton?.className).not.toContain("h-28");
     expect(sessionButton?.className).toContain("overflow-hidden");
     expect(userRequestButton?.className).toContain("overflow-hidden");
     expect(llmRequestButton?.className).toContain("overflow-hidden");
     expect(sessionButton?.getAttribute("title")).toContain("sess-1");
     expect(sessionButton?.getAttribute("title")).toContain("Case case-checkout-1");
     expect(sessionButton?.textContent).not.toContain("Case case-checkout-1");
+    expect(sessionButton?.textContent).toContain("检查 checkout p95 延迟");
+    expect(container.querySelector('[data-testid="prompt-trace-session-title"]')?.textContent).not.toContain("sess-1");
     expect(userRequestButton?.getAttribute("title")).toContain("检查 checkout p95 延迟");
     expect(userRequestButton?.getAttribute("title")).not.toContain("LLM 请求");
     expect(userRequestButton?.getAttribute("title")).not.toContain("Turn turn-1");
     expect(userRequestButton?.textContent).not.toContain("LLM 请求");
     expect(userRequestButton?.textContent).not.toContain("Turn turn-1");
     expect(userRequestButton?.textContent).toContain("turn-1");
+    expect(userRequestButton?.textContent).toContain("Token 29");
+    expect(userRequestButton?.textContent).toContain("平均 456ms");
     expect(llmRequestButton?.getAttribute("title")).toContain("sess-1/turn-1/iteration-001.json");
+    expect(llmRequestButton?.getAttribute("title")).toContain("Token 29");
+    expect(llmRequestButton?.getAttribute("title")).toContain("平均响应 456ms");
+    expect(llmRequestButton?.getAttribute("title")).not.toContain("LLM 请求 1");
+    expect(llmRequestButton?.getAttribute("title")).not.toContain("iteration 1");
+    expect(llmRequestButton?.textContent).not.toContain("LLM 请求");
+    expect(llmRequestButton?.textContent).not.toContain("iteration 1");
+    expect(llmRequestButton?.textContent).toContain("Token 29");
+    expect(llmRequestButton?.textContent).toContain("456ms");
     expect(llmRequestButton?.textContent).not.toContain("查看详情");
     expect(container.querySelector('[data-testid="prompt-trace-session-title"]')?.className).toContain("line-clamp-2");
     expect(container.querySelector('[data-testid="prompt-trace-turn-preview"]')?.className).toContain("line-clamp-2");
@@ -252,6 +292,21 @@ describe("PromptTracePage", () => {
     expect(document.body.textContent).toContain("Messages");
     expect(document.body.textContent).toContain("Tools");
     expect(document.body.textContent).toContain("Prompt chars");
+    expect(document.body.textContent).toContain("Total tokens");
+    expect(document.body.textContent).toContain("Avg response");
+    expect(document.body.textContent).toContain("LLM 返回内容");
+    expect(document.body.textContent).toContain("图表已生成");
+    expect(document.body.textContent).toContain("prompt 21 / completion 8 / total 29");
+    expect(document.body.textContent).toContain("456 ms");
+    expect(document.body.textContent).toContain("Context Budget");
+    expect(document.body.textContent).toContain("Compaction Events");
+    expect(document.body.textContent).toContain("Tool Result Materialization");
+    expect(document.body.textContent).toContain("External References");
+    expect(document.body.textContent).toContain("Auto Compact");
+    expect(document.body.textContent).toContain("167,000");
+    expect(document.body.textContent).not.toContain("retry 1/3");
+    expect(document.body.textContent).toContain("segment-1");
+    expect(document.body.textContent).toContain("tool-ref-1");
     expect(document.body.textContent).not.toContain("coroot-checkout-latency-chart");
     expect(document.body.textContent).not.toContain("工具调用 coroot.query_latency");
     expect(document.body.textContent).not.toContain("EvidenceRef ev-coroot-latency");
@@ -317,5 +372,75 @@ describe("PromptTracePage", () => {
 
     const previewsAfter = Array.from(container.querySelectorAll('[data-testid="prompt-trace-turn-preview"]')).map((node) => node.textContent || "");
     expect(previewsAfter).toEqual(["检查 checkout p95 延迟", "修复 PG 集群主从复制延迟"]);
+  });
+
+  it("sorts LLM requests by request order inside the selected turn", async () => {
+    activeTraceList = [
+      {
+        id: "trace-iter-2",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        iteration: 2,
+        createdAt: "2026-05-12T09:13:00+08:00",
+        jsonPath: ".data/model-input-traces/sess-1/turn-1/iteration-002.json",
+        relativePath: "sess-1/turn-1/iteration-002.json",
+        userPromptPreview: "检查 checkout p95 延迟",
+        promptFingerprint: traceJson.promptFingerprint,
+      },
+      {
+        id: "trace-iter-1",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        iteration: 1,
+        createdAt: "2026-05-12T09:12:00+08:00",
+        jsonPath: ".data/model-input-traces/sess-1/turn-1/iteration-001.json",
+        relativePath: "sess-1/turn-1/iteration-001.json",
+        userPromptPreview: "检查 checkout p95 延迟",
+        promptFingerprint: traceJson.promptFingerprint,
+      },
+    ];
+    activeFiles = {
+      ".data/model-input-traces/sess-1/turn-1/iteration-001.json": traceJson,
+      ".data/model-input-traces/sess-1/turn-1/iteration-002.json": { ...traceJson, iteration: 2 },
+    };
+
+    await act(async () => {
+      root.render(<PromptTracePage />);
+    });
+    await flush();
+
+    const llmPaths = Array.from(container.querySelectorAll('[data-testid="prompt-trace-llm-path"]')).map((node) => node.textContent || "");
+    expect(llmPaths).toEqual([
+      "sess-1/turn-1/iteration-001.json",
+      "sess-1/turn-1/iteration-002.json",
+    ]);
+  });
+
+  it("shows context governance empty states without blanking the detail dialog", async () => {
+    activeFiles = {
+      ".data/model-input-traces/sess-1/turn-1/iteration-001.json": {
+        ...traceJson,
+        contextGovernance: undefined,
+      },
+    };
+
+    await act(async () => {
+      root.render(<PromptTracePage />);
+    });
+    await flush();
+
+    const llmButton = container.querySelector('[data-testid="prompt-trace-llm-card"]') as HTMLButtonElement | null;
+    await act(async () => {
+      llmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const dialogText = document.body.querySelector('[role="dialog"]')?.textContent || "";
+    expect(dialogText).toContain("LLM 请求详情");
+    expect(dialogText).toContain("Context Budget");
+    expect(dialogText).toContain("Compaction Events");
+    expect(dialogText).toContain("Tool Result Materialization");
+    expect(dialogText).toContain("External References");
+    expect(dialogText.match(/暂无上下文治理事件/g)).toHaveLength(4);
   });
 });

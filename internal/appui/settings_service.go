@@ -87,10 +87,11 @@ func (s *defaultSettingsService) UpdateSettings(ctx context.Context, payload Web
 
 func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, error) {
 	view := LLMConfigView{
-		Provider:      "openai",
-		Model:         "gpt-5.4",
-		CompactModel:  "gpt-5.4-mini",
-		BifrostActive: false,
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		MaxContextTokens: 200000,
+		CompactModel:     "gpt-5.4-mini",
+		BifrostActive:    false,
 	}
 	if s.repo == nil {
 		return view, nil
@@ -102,6 +103,7 @@ func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, e
 	view.Provider = strings.TrimSpace(firstNonEmpty(cfg.Provider, view.Provider))
 	view.Model = strings.TrimSpace(firstNonEmpty(cfg.Model, view.Model))
 	view.BaseURL = strings.TrimSpace(cfg.BaseURL)
+	view.MaxContextTokens = normalizeLLMContextWindow(cfg.MaxContextTokens)
 	view.FallbackProvider = strings.TrimSpace(cfg.FallbackProvider)
 	view.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
 	view.CompactModel = strings.TrimSpace(firstNonEmpty(cfg.CompactModel, view.CompactModel))
@@ -117,9 +119,10 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	}
 	current, _ := s.repo.GetLLMConfig()
 	next := &store.LLMConfig{
-		Provider:     "openai",
-		Model:        "gpt-5.4",
-		CompactModel: "gpt-5.4-mini",
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		MaxContextTokens: 200000,
+		CompactModel:     "gpt-5.4-mini",
 	}
 	if current != nil {
 		*next = *current
@@ -134,6 +137,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		next.APIKey = trimmed
 	}
 	next.BaseURL = strings.TrimSpace(payload.BaseURL)
+	next.MaxContextTokens = normalizeLLMContextWindow(payload.MaxContextTokens)
 	next.FallbackProvider = strings.TrimSpace(payload.FallbackProvider)
 	next.FallbackModel = strings.TrimSpace(payload.FallbackModel)
 	if trimmed := strings.TrimSpace(payload.FallbackAPIKey); trimmed != "" {
@@ -166,9 +170,20 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	}
 	s.syncAuthFromLLMConfig(ctx, next)
 	return LLMConfigUpdateResult{
-		OK:      true,
-		Message: "配置已保存。",
+		OK:               true,
+		Message:          "配置已保存。",
+		MaxContextTokens: next.MaxContextTokens,
 	}, nil
+}
+
+func normalizeLLMContextWindow(value int) int {
+	if value <= 0 {
+		return 200000
+	}
+	if value < 10000 {
+		return 10000
+	}
+	return value
 }
 
 func (s *defaultSettingsService) syncAuthFromLLMConfig(ctx context.Context, cfg *store.LLMConfig) {

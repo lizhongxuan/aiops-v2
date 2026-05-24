@@ -18,12 +18,14 @@ func newSearchOpsManualsTool(service *core.Service, cache *turnSearchContextCach
 	}
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        searchOpsManualsToolName,
-			Aliases:     []string{"ops_manual.search"},
-			Origin:      tooling.ToolOriginBuiltin,
-			Layer:       tooling.ToolLayerCore,
-			Description: "Search verified ops manuals for an operations request and return an auditable decision: direct_execute, need_info, adapt, reference_only, or no_match. Preserve explicit user targets, negations, and clearly stated semantics in text or operation_frame.",
-			RiskLevel:   tooling.ToolRiskLow,
+			Name:           searchOpsManualsToolName,
+			Aliases:        []string{"ops_manual.search"},
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "ops_manual_flow",
+			DeferByDefault: true,
+			Description:    "Search verified ops manuals for an operations request and return an auditable decision: direct_execute, need_info, adapt, reference_only, or no_match. Preserve explicit user targets, negations, and clearly stated semantics in text or operation_frame.",
+			RiskLevel:      tooling.ToolRiskLow,
 		},
 		Visibility:      visibility,
 		InputSchemaData: searchOpsManualsInputSchema,
@@ -82,8 +84,11 @@ type searchOpsManualsModelManual struct {
 
 type searchOpsManualsModelPayload struct {
 	Decision              string                        `json:"decision"`
+	OpsManualFlowID       string                        `json:"ops_manual_flow_id,omitempty"`
 	Summary               string                        `json:"summary"`
 	Manuals               []searchOpsManualsModelManual `json:"manuals,omitempty"`
+	SuppressedManuals     []string                      `json:"suppressed_manuals,omitempty"`
+	SuppressionReason     string                        `json:"suppression_reason,omitempty"`
 	NextQuestions         []string                      `json:"next_questions,omitempty"`
 	RecommendedNextAction string                        `json:"recommended_next_action,omitempty"`
 	Instructions          []string                      `json:"instructions,omitempty"`
@@ -92,7 +97,10 @@ type searchOpsManualsModelPayload struct {
 func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsManualsModelPayload {
 	payload := searchOpsManualsModelPayload{
 		Decision:              string(result.Decision),
+		OpsManualFlowID:       result.OpsManualFlowID,
 		Summary:               result.Summary,
+		SuppressedManuals:     limitStrings(result.SuppressedManuals, 3),
+		SuppressionReason:     result.SuppressionReason,
 		NextQuestions:         limitStrings(result.NextQuestions, 2),
 		RecommendedNextAction: result.RecommendedNextAction,
 	}
@@ -123,17 +131,17 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 			payload.Instructions = []string{
 				"Do not execute the workflow.",
 				"No matched manual_id is available yet; do not call resolve_ops_manual_params.",
-				"If the user request already states object, action, target, environment, evidence, or risk, call search_ops_manuals again with an explicit operation_frame that preserves those semantics.",
 				"If object or action is genuinely missing, ask only the smallest missing question instead of a fixed target/location/execution/symptom template.",
-				"Do not run host commands, Coroot probes, ordinary shell checks, or normal investigation until the ops manual search has either matched a manual or returned no_match/reference_only.",
-				"Tell the user this is missing ops manual matching context, not a Workflow preflight failure.",
+				"Do not call search_ops_manuals again just to fill missing fields.",
+				"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals.",
+				"Continue ordinary safe read-only investigation when the user asked to investigate or diagnose.",
 			}
 		}
 	case core.DecisionDirectExecute:
 		payload.Instructions = []string{
 			"Do not execute the workflow directly.",
 			"Say the manual is matched and the next step is Workflow preflight; do not say it will execute now.",
-			"Run run_ops_manual_preflight before Dry Run or mutation.",
+			"Run run_ops_manual_preflight before any confirmation, approval, workflow execution, or mutation.",
 			"Keep the assistant text short and do not repeat the Agent-to-UI card details.",
 		}
 	case core.DecisionAdapt:
@@ -143,14 +151,14 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 		}
 	case core.DecisionReference:
 		payload.Instructions = []string{
-			"Say there is no directly runnable Workflow for this request, so no bound Workflow should run.",
+			"Do not mention operations manual search or runnable Workflow status unless the user explicitly asked about manuals.",
 			"Continue safe read-only investigation with available tools when the target, time window, permissions, and data sources are sufficient.",
 			"If read-only automation cannot continue, state the concrete blocker: missing target cluster/service/consumer group, time window, Kafka tooling, metrics/log source, permission, or host/session availability.",
 			"Keep the assistant text short and do not repeat the Agent-to-UI card details.",
 		}
 	case core.DecisionNoMatch:
 		payload.Instructions = []string{
-			"Say no usable operations manual or bound Workflow was found for this request.",
+			"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals.",
 			"Do not mention or expose cross-object manuals as references unless the user explicitly asks for analogous patterns.",
 			"Continue normal safe read-only evidence-driven investigation with available tools.",
 			"If read-only automation cannot continue, state the concrete blocker: missing target cluster/service/consumer group, time window, Kafka tooling, metrics/log source, permission, or host/session availability.",

@@ -13,7 +13,7 @@ describe("aiopsTransportRuntime", () => {
     const state = createInitialAiopsTransportState("thread-1");
 
     expect(state).toMatchObject({
-      schemaVersion: "aiops.transport.v1",
+      schemaVersion: "aiops.transport.v2",
       sessionId: "",
       threadId: "thread-1",
       status: "idle",

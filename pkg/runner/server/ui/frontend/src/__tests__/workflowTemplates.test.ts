@@ -3,9 +3,9 @@ import { createWorkflowGraphFromTemplate, prepareWorkflowGraphForCreate } from "
 import type { WorkflowGraph } from "../types/workflow";
 
 describe("workflow templates", () => {
-  it("creates a runnable cmd.run starter graph without runtime state", () => {
+  it("creates a runnable script.shell starter graph without runtime state", () => {
     const graph = createWorkflowGraphFromTemplate({
-      kind: "cmd-run-basic",
+      kind: "script-shell-basic",
       name: "visual-create-smoke",
       version: "v0.1",
       description: "smoke workflow",
@@ -15,18 +15,18 @@ describe("workflow templates", () => {
     expect(graph.layout?.direction).toBe("LR");
     expect(graph.nodes.map((node) => [node.id, node.type])).toEqual([
       ["start", "start"],
-      ["run-command", "action"],
+      ["run-script", "action"],
       ["end", "end"],
     ]);
     expect(graph.nodes[1].step).toEqual({
-      id: "run-command",
-      name: "run-command",
-      action: "cmd.run",
-      args: { cmd: "echo hello" },
+      id: "run-script",
+      name: "run-script",
+      action: "script.shell",
+      args: { script: "echo hello" },
     });
     expect(graph.edges.map((edge) => [edge.id, edge.source, edge.target, edge.kind])).toEqual([
-      ["start-run-command", "start", "run-command", "next"],
-      ["run-command-end", "run-command", "end", "next"],
+      ["start-run-script", "start", "run-script", "next"],
+      ["run-script-end", "run-script", "end", "next"],
     ]);
     expect(JSON.stringify(graph)).not.toContain("resource_version");
     expect(JSON.stringify(graph)).not.toContain('"state"');
@@ -37,7 +37,7 @@ describe("workflow templates", () => {
     expect(shell.nodes.find((node) => node.id === "run-shell")?.step).toMatchObject({
       id: "run-shell",
       name: "run-shell",
-      action: "shell.run",
+      action: "script.shell",
       args: { script: "echo hello" },
     });
 
@@ -47,7 +47,7 @@ describe("workflow templates", () => {
       timeout: "30m",
       on_timeout: "reject",
     });
-    expect(approval.edges.map((edge) => edge.id)).toEqual(["start-approve", "approve-run-command", "run-command-end"]);
+    expect(approval.edges.map((edge) => edge.id)).toEqual(["start-approve", "approve-run-script", "run-script-end"]);
   });
 
   it("prepares cloned graphs for create by replacing metadata and clearing runtime state", () => {

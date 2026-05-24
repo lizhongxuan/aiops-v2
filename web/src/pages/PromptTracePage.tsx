@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -17,12 +17,21 @@ type TraceItem = {
   visibleTools?: string[];
   createdAt?: string;
   modifiedAt?: string;
+  llmRequestCount?: number;
+  usage?: TraceUsage;
+  averageDurationMs?: number;
   userPromptPreview?: string;
   relativePath?: string;
   jsonPath?: string;
   markdownPath?: string;
   diffPath?: string;
   promptFingerprint?: Record<string, string>;
+};
+
+type TraceUsage = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
 };
 
 type TraceListPayload = { traces?: TraceItem[]; rootDir?: string; selectedId?: string };
@@ -37,6 +46,7 @@ type AgentUiSources = {
 };
 
 const TRACE_LIST_CARD_CLASS = "h-28 min-h-28 max-h-28 shrink-0 overflow-hidden rounded-lg border p-3 text-left text-sm";
+const TRACE_LLM_CARD_CLASS = "h-20 min-h-20 max-h-20 shrink-0 overflow-hidden rounded-lg border p-3 text-left text-sm";
 const TRACE_LIST_CARD_ACTIVE_CLASS = "border-slate-900 bg-slate-50";
 const TRACE_LIST_CARD_IDLE_CLASS = "border-slate-200 bg-white";
 const TWO_LINE_CLAMP_STYLE: CSSProperties = {
@@ -66,7 +76,8 @@ function compactTraceLabel(value = "", maxLength = 30) {
 
 function sessionCardTitle(group: TraceSessionGroup) {
   return [
-    group.label,
+    group.topic || group.label,
+    `会话 ${group.label}`,
     group.latestAt ? `最近 ${displayTime(group.latestAt)}` : "",
     `用户请求 ${group.turns.length}`,
     `LLM 请求 ${group.traces.length}`,
@@ -82,14 +93,39 @@ function turnCardTitle(turn: TraceTurnGroup, preview: string) {
   ].filter(Boolean).join("\n");
 }
 
-function llmCardTitle(trace: TraceItem, index: number) {
+function llmCardTitle(trace: TraceItem) {
   return [
-    `LLM 请求 ${index + 1}`,
-    `iteration ${trace.iteration ?? "-"}`,
     trace.relativePath || trace.id,
+    trace.createdAt ? displayTime(trace.createdAt) : "",
+    trace.usage?.totalTokens ? `Token ${formatNumber(trace.usage.totalTokens)}` : "",
+    trace.averageDurationMs ? `平均响应 ${formatDurationMs(trace.averageDurationMs)}` : "",
     trace.promptFingerprint?.stableHash ? `stable ${trace.promptFingerprint.stableHash}` : "",
     trace.visibleTools?.length ? `工具 ${trace.visibleTools.join("，")}` : "",
   ].filter(Boolean).join("\n");
+}
+
+function formatNumber(value = 0) {
+  return (Number(value) || 0).toLocaleString();
+}
+
+function formatDurationMs(value = 0) {
+  const ms = Number(value) || 0;
+  if (ms <= 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+}
+
+function traceTurnStats(turn: TraceTurnGroup) {
+  const usage = turn.traces.reduce<TraceUsage>((sum, trace) => ({
+    promptTokens: (sum.promptTokens || 0) + (trace.usage?.promptTokens || 0),
+    completionTokens: (sum.completionTokens || 0) + (trace.usage?.completionTokens || 0),
+    totalTokens: (sum.totalTokens || 0) + (trace.usage?.totalTokens || 0),
+  }), {});
+  const durations = turn.traces.map((trace) => Number(trace.averageDurationMs) || 0).filter((value) => value > 0);
+  return {
+    usage,
+    averageDurationMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0,
+  };
 }
 
 export function PromptTracePage() {
@@ -107,7 +143,7 @@ export function PromptTracePage() {
     setLoading(true);
     setError("");
     try {
-      const payload = await requestJson<TraceListPayload>("/api/v1/debug/model-input-traces?limit=150");
+      const payload = await requestJson<TraceListPayload>("/api/v1/debug/model-input-traces?limit=2000");
       setTraces(payload.traces || []);
       setSelectedId((current) => payload.selectedId || current || payload.traces?.[0]?.id || "");
     } catch (cause) {
@@ -174,11 +210,11 @@ export function PromptTracePage() {
       >
         <div
           data-testid="prompt-trace-layout"
-          className="grid h-full min-w-[900px] grid-cols-[minmax(220px,280px)_minmax(260px,340px)_minmax(360px,1fr)] gap-4 overflow-hidden"
+          className="grid h-full min-w-[720px] grid-cols-[minmax(180px,240px)_minmax(220px,300px)_minmax(260px,1fr)] gap-3 overflow-hidden"
         >
         <Card className="flex min-h-0 min-w-0 flex-col rounded-lg bg-white">
           <CardHeader>
-            <CardTitle>会话列表</CardTitle>
+            <CardTitle>历史会话</CardTitle>
           </CardHeader>
           <CardContent className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] gap-3">
             <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索会话 / Turn / Hash / Case" />
@@ -193,7 +229,7 @@ export function PromptTracePage() {
                   className={`${TRACE_LIST_CARD_CLASS} ${group.id === selectedSessionGroup?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
                   onClick={() => { setSelectedId(group.traces[0]?.id || ""); setActiveView("overview"); }}
                 >
-                  <span data-testid="prompt-trace-session-title" className="block line-clamp-2 break-all font-medium leading-5" style={TWO_LINE_CLAMP_STYLE}>{group.label}</span>
+                  <span data-testid="prompt-trace-session-title" className="block line-clamp-2 break-words font-medium leading-5" style={TWO_LINE_CLAMP_STYLE}>{group.topic || group.label}</span>
                   <span className="mt-1 block truncate text-xs text-slate-500">最近 {displayTime(group.latestAt)}</span>
                   <span className="mt-2 flex flex-wrap gap-2">
                     <ToneBadge>用户请求 {group.turns.length}</ToneBadge>
@@ -215,6 +251,7 @@ export function PromptTracePage() {
             {selectedSessionGroup?.turns.length ? selectedSessionGroup.turns.map((turn) => {
               const sourceRequest = sourceUserRequests.find((request) => request.turnId === turn.id) || null;
               const preview = turn.preview || sourceRequest?.content || sourceRequest?.preview || turn.label || "未记录用户消息";
+              const stats = traceTurnStats(turn);
               return (
                 <button
                   key={turn.id}
@@ -227,6 +264,8 @@ export function PromptTracePage() {
                   <div data-testid="prompt-trace-turn-preview" className="line-clamp-2 overflow-hidden text-sm font-medium leading-5 text-slate-950" style={TWO_LINE_CLAMP_STYLE}>{preview}</div>
                   <div className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
                     <ToneBadge><span className="block max-w-[180px] truncate">{compactTraceLabel(turn.label)}</span></ToneBadge>
+                    {stats.usage.totalTokens ? <ToneBadge>Token {formatNumber(stats.usage.totalTokens)}</ToneBadge> : null}
+                    {stats.averageDurationMs ? <ToneBadge>平均 {formatDurationMs(stats.averageDurationMs)}</ToneBadge> : null}
                   </div>
                   <div className="mt-1 truncate text-xs text-slate-500">{displayTime(turn.latestAt)}</div>
                 </button>
@@ -241,21 +280,19 @@ export function PromptTracePage() {
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
             <div className="flex min-h-0 min-w-0 flex-col gap-2 overflow-auto" data-testid="prompt-trace-llm-list">
-              {(selectedTurnGroup?.traces || []).map((trace, index) => (
+              {(selectedTurnGroup?.traces || []).map((trace) => (
                 <button
                   key={trace.id}
                   type="button"
                   data-testid="prompt-trace-llm-card"
-                  title={llmCardTitle(trace, index)}
-                  className={`${TRACE_LIST_CARD_CLASS} min-w-0 ${trace.id === selectedTrace?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
+                  title={llmCardTitle(trace)}
+                  className={`${TRACE_LLM_CARD_CLASS} min-w-0 ${trace.id === selectedTrace?.id ? TRACE_LIST_CARD_ACTIVE_CLASS : TRACE_LIST_CARD_IDLE_CLASS}`}
                   onClick={() => { setSelectedId(trace.id); setActiveView("overview"); setDetailOpen(true); }}
                 >
-                  <span className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-medium">LLM 请求 {index + 1}</span>
-                    <ToneBadge>iteration {trace.iteration ?? "-"}</ToneBadge>
-                  </span>
-                  <span data-testid="prompt-trace-llm-path" className="mt-2 block max-w-full truncate font-mono text-xs text-slate-500" title={trace.relativePath || trace.id}>{trace.relativePath || trace.id}</span>
+                  <span data-testid="prompt-trace-llm-path" className="block max-w-full truncate font-mono text-xs text-slate-500" title={trace.relativePath || trace.id}>{trace.relativePath || trace.id}</span>
                   <span className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
+                    {trace.usage?.totalTokens ? <ToneBadge>Token {formatNumber(trace.usage.totalTokens)}</ToneBadge> : null}
+                    {trace.averageDurationMs ? <ToneBadge>{trace.llmRequestCount && trace.llmRequestCount > 1 ? "平均 " : ""}{formatDurationMs(trace.averageDurationMs)}</ToneBadge> : null}
                     {trace.promptFingerprint?.stableHash ? <ToneBadge>stable {shortHash(trace.promptFingerprint.stableHash)}</ToneBadge> : null}
                     {trace.visibleTools?.length ? <ToneBadge>工具 {trace.visibleTools.length}</ToneBadge> : null}
                   </span>
@@ -318,6 +355,9 @@ function PromptTraceDetailDialog({
   selectedTraceMessageCount?: number;
   selectedTraceVisibleTools?: string[];
 }) {
+  const llmRequests = (traceViewModel?.agentUiSources?.userRequests || []).flatMap((request) => request.llmRequests || []);
+  const contextGovernance = traceViewModel?.contextGovernance;
+  const contextGovernanceEmptyText = contextGovernance?.emptyText || "暂无上下文治理事件";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showCloseButton={false} className="max-h-[88vh] overflow-hidden sm:max-w-5xl">
@@ -350,11 +390,35 @@ function PromptTraceDetailDialog({
 
           <div className="mt-4 grid gap-4">
             {activeView === "overview" ? (
-              <section className="grid gap-3 md:grid-cols-3">
+              <section className="grid gap-3 md:grid-cols-5">
                 <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Messages</CardDescription><CardTitle>{traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0}</CardTitle></CardHeader></Card>
                 <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Tools</CardDescription><CardTitle>{traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0}</CardTitle></CardHeader></Card>
                 <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Prompt chars</CardDescription><CardTitle>{traceViewModel?.summary.promptCharCount ?? 0}</CardTitle></CardHeader></Card>
-                <pre className="md:col-span-3 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{JSON.stringify({ summary: traceViewModel?.summary, warnings: traceViewModel?.warnings }, null, 2)}</pre>
+                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Total tokens</CardDescription><CardTitle>{selectedTrace?.usage?.totalTokens ? formatNumber(selectedTrace.usage.totalTokens) : "-"}</CardTitle></CardHeader></Card>
+                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Avg response</CardDescription><CardTitle>{selectedTrace?.averageDurationMs ? formatDurationMs(selectedTrace.averageDurationMs) : "-"}</CardTitle></CardHeader></Card>
+                {llmRequests.length ? (
+                  <section className="md:col-span-5 rounded-lg border border-slate-200 bg-white p-4">
+                    <h3 className="font-medium text-slate-950">LLM 返回内容</h3>
+                    <div className="mt-3 grid gap-3">
+                      {llmRequests.map((request) => (
+                        <div key={request.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                          <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+                            <ToneBadge>{request.id}</ToneBadge>
+                            <ToneBadge>{request.detail?.tokens || "暂无 token 信息"}</ToneBadge>
+                            <ToneBadge>{request.detail?.duration || "暂无耗时"}</ToneBadge>
+                          </div>
+                          <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-white">{request.detail?.output || "暂无输出"}</pre>
+                          {request.detail?.error && request.detail.error !== "暂无错误" ? <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-red-950 p-3 text-xs text-white">{request.detail.error}</pre> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                <ContextGovernancePanels
+                  contextGovernance={contextGovernance}
+                  emptyText={contextGovernanceEmptyText}
+                />
+                <pre className="md:col-span-5 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{JSON.stringify({ summary: traceViewModel?.summary, warnings: traceViewModel?.warnings }, null, 2)}</pre>
               </section>
             ) : null}
 
@@ -370,6 +434,121 @@ function PromptTraceDetailDialog({
   );
 }
 
+type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
+
+function ContextGovernancePanels({
+  contextGovernance,
+  emptyText,
+}: {
+  contextGovernance?: ContextGovernanceViewModel;
+  emptyText: string;
+}) {
+  return (
+    <section className="md:col-span-5 grid gap-3 md:grid-cols-2">
+      <ContextPanel title="Context Budget">
+        {contextGovernance?.budgetEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.budgetEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                  {event.budgetItems.map((item) => (
+                    <div key={item.key} className="rounded-md border border-slate-200 bg-white p-2">
+                      <div className="truncate text-slate-500" title={item.key}>{item.label}</div>
+                      <div className="mt-1 font-mono font-medium text-slate-950">{formatGovernanceValue(item.value)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="Compaction Events">
+        {contextGovernance?.compactionEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.compactionEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                {event.compactedIds.length ? <ReferenceLine label="Compacted" values={event.compactedIds} /> : null}
+                {event.droppedGroupIds.length ? <ReferenceLine label="Dropped" values={event.droppedGroupIds} /> : null}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="Tool Result Materialization">
+        {contextGovernance?.materializationEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.materializationEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                {event.referenceIds.length ? <ReferenceLine label="Refs" values={event.referenceIds} /> : null}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="External References">
+        {contextGovernance?.externalReferences.length ? (
+          <div className="grid gap-2">
+            {contextGovernance.externalReferences.map((reference) => (
+              <div key={reference.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                <ToneBadge>{reference.layer || "context"}</ToneBadge>
+                <span className="min-w-0 flex-1 truncate font-mono text-slate-950" title={reference.referenceId}>{reference.referenceId}</span>
+                <span className="truncate text-slate-500" title={reference.kind}>{reference.kind}</span>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+    </section>
+  );
+}
+
+function ContextPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="font-medium text-slate-950">{title}</h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function EventHeader({ event }: { event: ContextGovernanceViewModel["events"][number] }) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+        {event.layer ? <ToneBadge>{event.layer}</ToneBadge> : null}
+        {event.kind ? <ToneBadge>{event.kind}</ToneBadge> : null}
+        {event.retryLabel ? <ToneBadge>retry {event.retryLabel}</ToneBadge> : null}
+        {event.timeout ? <ToneBadge>timeout</ToneBadge> : null}
+      </div>
+      {event.message ? <p className="text-sm text-slate-700">{event.message}</p> : null}
+    </div>
+  );
+}
+
+function ReferenceLine({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div className="mt-3 flex min-w-0 flex-wrap gap-2 text-xs">
+      <span className="text-slate-500">{label}</span>
+      {values.map((value) => <ToneBadge key={value}><span className="block max-w-[220px] truncate" title={value}>{value}</span></ToneBadge>)}
+    </div>
+  );
+}
+
+function EmptyGovernanceState({ text }: { text: string }) {
+  return <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">{text}</p>;
+}
+
+function formatGovernanceValue(value: string | number) {
+  return typeof value === "number" ? formatNumber(value) : value || "-";
+}
+
 type TraceTurnGroup = {
   id: string;
   label: string;
@@ -381,6 +560,7 @@ type TraceTurnGroup = {
 type TraceSessionGroup = {
   id: string;
   label: string;
+  topic: string;
   traces: TraceItem[];
   turns: TraceTurnGroup[];
   caseIds: string[];
@@ -394,6 +574,7 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
     const group = groups.get(sessionId) || {
       id: sessionId,
       label: trace.sessionId || "未知会话",
+      topic: "",
       traces: [],
       turns: [],
       caseIds: [],
@@ -425,7 +606,11 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
       turn.latestAt = latestTime(turn.latestAt, trace.createdAt || trace.modifiedAt || "");
       turns.set(turnId, turn);
     }
+    for (const turn of turns.values()) {
+      turn.traces.sort(compareTraceRequestOrder);
+    }
     group.turns = Array.from(turns.values()).sort(compareLatestDesc);
+    group.topic = group.turns.find((turn) => turn.preview)?.preview || group.label;
     group.traces.sort(compareTraceDesc);
   }
 
@@ -452,4 +637,14 @@ function compareLatestDesc(left: { latestAt: string }, right: { latestAt: string
 
 function compareTraceDesc(left: TraceItem, right: TraceItem) {
   return new Date(right.createdAt || right.modifiedAt || 0).getTime() - new Date(left.createdAt || left.modifiedAt || 0).getTime();
+}
+
+function compareTraceRequestOrder(left: TraceItem, right: TraceItem) {
+  const leftIteration = typeof left.iteration === "number" ? left.iteration : Number.MAX_SAFE_INTEGER;
+  const rightIteration = typeof right.iteration === "number" ? right.iteration : Number.MAX_SAFE_INTEGER;
+  if (leftIteration !== rightIteration) return leftIteration - rightIteration;
+  const leftTime = new Date(left.createdAt || left.modifiedAt || 0).getTime();
+  const rightTime = new Date(right.createdAt || right.modifiedAt || 0).getTime();
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  return String(left.relativePath || left.id).localeCompare(String(right.relativePath || right.id));
 }

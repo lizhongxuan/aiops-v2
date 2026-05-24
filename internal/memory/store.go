@@ -43,7 +43,11 @@ func (s *JSONStore) Put(ctx context.Context, item Item) (Item, error) {
 	if item.CreatedAt.IsZero() {
 		item.CreatedAt = now
 	}
-	item.Text = redactSecrets(item.Text)
+	redactedText := redactSecrets(item.Text)
+	if redactedText != item.Text {
+		item.Redacted = true
+	}
+	item.Text = redactedText
 	s.items = append(s.items, item)
 	if err := s.saveLocked(); err != nil {
 		return Item{}, err

@@ -13,6 +13,7 @@ import (
 // context into provider model messages and a semantic prompt-input trace.
 func (Builder) Build(req BuildRequest) (BuildResult, error) {
 	promptMessages := promptcompiler.CompiledPromptToMessages(req.Compiled)
+	opsContextMessages := opsContextMessages(req)
 	memoryMessages := memoryMessages(req)
 
 	history := MessagesForCurrentTurnModelInput(req.History)
@@ -21,14 +22,25 @@ func (Builder) Build(req BuildRequest) (BuildResult, error) {
 		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
 	}
 
-	resultMessages := make([]*schema.Message, 0, len(promptMessages)+len(memoryMessages)+len(runtimeMessages))
+	resultMessages := make([]*schema.Message, 0, len(promptMessages)+len(opsContextMessages)+len(memoryMessages)+len(runtimeMessages))
 	resultMessages = append(resultMessages, promptMessages...)
+	resultMessages = append(resultMessages, opsContextMessages...)
 	resultMessages = append(resultMessages, memoryMessages...)
 	resultMessages = append(resultMessages, runtimeMessages...)
 	return BuildResult{
 		Messages: resultMessages,
 		Trace:    buildTrace(req, promptMessages, memoryMessagesFromRequest(req), history, runtimeMessages),
 	}, nil
+}
+
+func opsContextMessages(req BuildRequest) []*schema.Message {
+	capsule := strings.TrimSpace(req.OpsContextCapsule)
+	if capsule == "" {
+		return nil
+	}
+	msg := schema.SystemMessage("Ops context capsule:\n" + capsule)
+	msg.Extra = map[string]any{"prompt_layer": "ops_context_capsule", "semantic_role": "ops_context_capsule"}
+	return []*schema.Message{msg}
 }
 
 func memoryMessages(req BuildRequest) []*schema.Message {

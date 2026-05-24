@@ -19,9 +19,7 @@ data:
   AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
   # OpenAI-compatible gateway example:
   # AIOPS_LLM_BASE_URL: "https://api.openai.com/v1"
-  # Optional Coroot integration:
-  # AIOPS_COROOT_BASE_URL: "http://coroot.coroot.svc.cluster.local:8080"
-  # AIOPS_COROOT_PROJECT: "default"
+  # Coroot is configured from the Coroot Observability page after startup.
 ---
 apiVersion: v1
 kind: Secret
@@ -32,8 +30,6 @@ type: Opaque
 stringData:
   AIOPS_LLM_API_KEY: "replace-with-your-api-key"
   AIOPS_ACTION_TOKEN_SECRET: "replace-with-a-random-long-secret"
-  # Optional Coroot token:
-  # AIOPS_COROOT_TOKEN: "replace-with-coroot-token"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

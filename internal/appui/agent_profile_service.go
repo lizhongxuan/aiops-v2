@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"aiops-v2/internal/plugins"
+	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
 )
 
@@ -62,11 +64,38 @@ func (r mergedAgentProfileRepositories) SaveAgentProfiles(items []store.AgentPro
 }
 
 type defaultAgentProfileService struct {
-	repo agentProfileRepositories
+	repo        agentProfileRepositories
+	pluginSpecs []plugins.Spec
+	policy      AgentProfilePolicySettings
 }
 
-func NewAgentProfileService(repo agentProfileRepositories) AgentProfileService {
-	return &defaultAgentProfileService{repo: repo}
+type AgentProfileServiceOption func(*defaultAgentProfileService)
+
+type AgentProfilePolicySettings struct {
+	DisabledSkills     map[string]string
+	DisabledMCPServers map[string]string
+}
+
+func WithAgentProfilePluginSpecs(specs []plugins.Spec) AgentProfileServiceOption {
+	return func(s *defaultAgentProfileService) {
+		s.pluginSpecs = cloneAgentProfilePluginSpecs(specs)
+	}
+}
+
+func WithAgentProfilePolicySettings(policy AgentProfilePolicySettings) AgentProfileServiceOption {
+	return func(s *defaultAgentProfileService) {
+		s.policy = cloneAgentProfilePolicySettings(policy)
+	}
+}
+
+func NewAgentProfileService(repo agentProfileRepositories, options ...AgentProfileServiceOption) AgentProfileService {
+	svc := &defaultAgentProfileService{repo: repo}
+	for _, option := range options {
+		if option != nil {
+			option(svc)
+		}
+	}
+	return svc
 }
 
 func (s *defaultAgentProfileService) ListSkillCatalog(context.Context) ([]SkillCatalogItem, error) {
@@ -352,47 +381,66 @@ func (s *defaultAgentProfileService) ImportAgentProfiles(_ context.Context, payl
 }
 
 func (s *defaultAgentProfileService) skillCatalogEntries() ([]store.SkillCatalogEntry, error) {
+	defaults := defaultSkillCatalogEntries()
+	pluginEntries := s.pluginSkillCatalogEntries()
 	if s.repo == nil {
-		return defaultSkillCatalogEntries(), nil
+		return mergeSkillCatalogEntrySets(defaults, pluginEntries, nil), nil
 	}
 	items, err := s.repo.GetSkillCatalog()
 	if err != nil {
 		return nil, err
 	}
-	if len(items) == 0 {
-		return defaultSkillCatalogEntries(), nil
-	}
-	return append([]store.SkillCatalogEntry(nil), items...), nil
+	return mergeSkillCatalogEntrySets(defaults, pluginEntries, items), nil
 }
 
 func (s *defaultAgentProfileService) mcpCatalogEntries() ([]store.AgentMCPCatalogEntry, error) {
+	defaults := defaultMcpCatalogEntries()
+	pluginEntries := s.pluginMcpCatalogEntries()
 	if s.repo == nil {
-		return defaultMcpCatalogEntries(), nil
+		return mergeMcpCatalogEntrySets(defaults, pluginEntries, nil), nil
 	}
 	items, err := s.repo.GetAgentMCPCatalog()
 	if err != nil {
 		return nil, err
 	}
-	if len(items) == 0 {
-		return defaultMcpCatalogEntries(), nil
-	}
-	return append([]store.AgentMCPCatalogEntry(nil), items...), nil
+	return mergeMcpCatalogEntrySets(defaults, pluginEntries, items), nil
 }
 
 func (s *defaultAgentProfileService) profileEntries() ([]store.AgentProfileRecord, error) {
+	skills, err := s.skillCatalogEntries()
+	if err != nil {
+		return nil, err
+	}
+	mcps, err := s.mcpCatalogEntries()
+	if err != nil {
+		return nil, err
+	}
+	defaults := s.defaultProfileEntries(skills, mcps)
 	if s.repo == nil {
-		return defaultAgentProfilesList(), nil
+		return defaults, nil
 	}
 	items, err := s.repo.GetAgentProfiles()
 	if err != nil {
 		return nil, err
 	}
 	if len(items) == 0 {
-		return defaultAgentProfilesList(), nil
+		return defaults, nil
 	}
+	defaultByID := profileMap(defaults)
 	out := make([]store.AgentProfileRecord, 0, len(items))
 	for _, item := range items {
-		out = append(out, cloneProfile(item))
+		id := strings.TrimSpace(stringField(item, "id"))
+		base := defaultByID[id]
+		if base != nil {
+			base = cloneProfile(base)
+			delete(base, "skills")
+			delete(base, "mcps")
+			delete(base, "mcpServers")
+		}
+		for _, recommendation := range s.pluginProfileRecommendationsForID(id, skills, mcps) {
+			base = mergeProfileWithCatalogBindings(base, recommendation)
+		}
+		out = append(out, s.finalizeProfile(mergeProfileWithCatalogBindings(base, item), skills, mcps))
 	}
 	return out, nil
 }
@@ -548,9 +596,446 @@ func normalizeMcpCatalogItem(item McpCatalogItem) (store.AgentMCPCatalogEntry, e
 	}, nil
 }
 
+func (s *defaultAgentProfileService) pluginSkillCatalogEntries() []store.SkillCatalogEntry {
+	recommended := s.pluginRecommendedSkillIDs()
+	entries := make([]store.SkillCatalogEntry, 0)
+	for _, spec := range s.pluginSpecs {
+		for _, def := range spec.Skills {
+			id := strings.TrimSpace(def.Name)
+			if id == "" {
+				continue
+			}
+			_, defaultEnabled := recommended[id]
+			mode := "explicit_only"
+			if defaultEnabled {
+				mode = "default_enabled"
+			}
+			entries = append(entries, store.SkillCatalogEntry{
+				ID:                    id,
+				Name:                  id,
+				Description:           strings.TrimSpace(def.Description),
+				Source:                pluginSourceLabel(spec.Name),
+				DefaultEnabled:        defaultEnabled,
+				DefaultActivationMode: mode,
+			})
+		}
+	}
+	return entries
+}
+
+func (s *defaultAgentProfileService) pluginMcpCatalogEntries() []store.AgentMCPCatalogEntry {
+	recommended := s.pluginRecommendedMCPIDs()
+	entries := make([]store.AgentMCPCatalogEntry, 0)
+	for _, spec := range s.pluginSpecs {
+		for _, server := range spec.MCPServers {
+			cfg := server.Config
+			id := strings.TrimSpace(cfg.ID)
+			if id == "" {
+				continue
+			}
+			_, defaultEnabled := recommended[id]
+			entries = append(entries, store.AgentMCPCatalogEntry{
+				ID:             id,
+				Name:           strings.TrimSpace(firstNonEmpty(cfg.Name, id)),
+				Type:           strings.TrimSpace(firstNonEmpty(cfg.Transport, "stdio")),
+				Source:         pluginSourceLabel(spec.Name),
+				DefaultEnabled: defaultEnabled,
+				Permission:     "readonly",
+			})
+		}
+	}
+	return entries
+}
+
+func (s *defaultAgentProfileService) pluginRecommendedSkillIDs() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, spec := range s.pluginSpecs {
+		for _, profile := range spec.Manifest.AIOps.AgentProfiles {
+			for _, id := range profile.RecommendedSkills {
+				if trimmed := strings.TrimSpace(id); trimmed != "" {
+					out[trimmed] = struct{}{}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func (s *defaultAgentProfileService) pluginRecommendedMCPIDs() map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, spec := range s.pluginSpecs {
+		for _, profile := range spec.Manifest.AIOps.AgentProfiles {
+			for _, id := range profile.RecommendedMCPServers {
+				if trimmed := strings.TrimSpace(id); trimmed != "" {
+					out[trimmed] = struct{}{}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func mergeSkillCatalogEntrySets(sets ...[]store.SkillCatalogEntry) []store.SkillCatalogEntry {
+	merged := map[string]store.SkillCatalogEntry{}
+	for _, set := range sets {
+		for _, entry := range set {
+			entry.ID = strings.TrimSpace(entry.ID)
+			if entry.ID == "" {
+				continue
+			}
+			if strings.TrimSpace(entry.Name) == "" {
+				entry.Name = entry.ID
+			}
+			merged[entry.ID] = entry
+		}
+	}
+	keys := make([]string, 0, len(merged))
+	for id := range merged {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	out := make([]store.SkillCatalogEntry, 0, len(keys))
+	for _, id := range keys {
+		out = append(out, merged[id])
+	}
+	return out
+}
+
+func mergeMcpCatalogEntrySets(sets ...[]store.AgentMCPCatalogEntry) []store.AgentMCPCatalogEntry {
+	merged := map[string]store.AgentMCPCatalogEntry{}
+	for _, set := range sets {
+		for _, entry := range set {
+			entry.ID = strings.TrimSpace(entry.ID)
+			if entry.ID == "" {
+				continue
+			}
+			if strings.TrimSpace(entry.Name) == "" {
+				entry.Name = entry.ID
+			}
+			if strings.TrimSpace(entry.Type) == "" {
+				entry.Type = "stdio"
+			}
+			if strings.TrimSpace(entry.Permission) == "" {
+				entry.Permission = "readonly"
+			}
+			merged[entry.ID] = entry
+		}
+	}
+	keys := make([]string, 0, len(merged))
+	for id := range merged {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	out := make([]store.AgentMCPCatalogEntry, 0, len(keys))
+	for _, id := range keys {
+		out = append(out, merged[id])
+	}
+	return out
+}
+
+func (s *defaultAgentProfileService) defaultProfileEntries(skills []store.SkillCatalogEntry, mcps []store.AgentMCPCatalogEntry) []store.AgentProfileRecord {
+	defaults := defaultAgentProfilesList()
+	byID := profileMap(defaults)
+	for _, spec := range s.pluginSpecs {
+		for _, profile := range spec.Manifest.AIOps.AgentProfiles {
+			id := strings.TrimSpace(profile.ID)
+			if id == "" {
+				continue
+			}
+			base := byID[id]
+			if base == nil {
+				base = store.AgentProfileRecord{
+					"id":   id,
+					"name": firstNonEmpty(strings.TrimSpace(profile.DisplayName), id),
+					"type": id,
+				}
+			}
+			byID[id] = mergeProfileWithCatalogBindings(base, pluginProfileRecommendations(profile, spec.Name, skills, mcps))
+		}
+	}
+	keys := make([]string, 0, len(byID))
+	for id := range byID {
+		keys = append(keys, id)
+	}
+	sort.Strings(keys)
+	out := make([]store.AgentProfileRecord, 0, len(keys))
+	for _, id := range keys {
+		out = append(out, s.finalizeProfile(byID[id], skills, mcps))
+	}
+	return out
+}
+
+func (s *defaultAgentProfileService) pluginProfileRecommendationsForID(id string, skills []store.SkillCatalogEntry, mcps []store.AgentMCPCatalogEntry) []store.AgentProfileRecord {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil
+	}
+	var out []store.AgentProfileRecord
+	for _, spec := range s.pluginSpecs {
+		for _, profile := range spec.Manifest.AIOps.AgentProfiles {
+			if strings.TrimSpace(profile.ID) == id {
+				out = append(out, pluginProfileRecommendations(profile, spec.Name, skills, mcps))
+			}
+		}
+	}
+	return out
+}
+
+func pluginProfileRecommendations(profile plugins.AgentProfileManifest, pluginName string, skills []store.SkillCatalogEntry, mcps []store.AgentMCPCatalogEntry) store.AgentProfileRecord {
+	record := store.AgentProfileRecord{
+		"id": strings.TrimSpace(profile.ID),
+	}
+	if displayName := strings.TrimSpace(profile.DisplayName); displayName != "" {
+		record["name"] = displayName
+	}
+	skillCatalog := skillCatalogMap(skills)
+	mcpCatalog := mcpCatalogMap(mcps)
+	skillBindings := make([]any, 0, len(profile.RecommendedSkills))
+	for _, id := range profile.RecommendedSkills {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		entry := skillCatalog[id]
+		skillBindings = append(skillBindings, map[string]any{
+			"id":             id,
+			"name":           firstNonEmpty(entry.Name, id),
+			"enabled":        true,
+			"activationMode": "default_enabled",
+			"source":         pluginSourceLabel(pluginName),
+			"recommended":    true,
+		})
+	}
+	mcpBindings := make([]any, 0, len(profile.RecommendedMCPServers))
+	for _, id := range profile.RecommendedMCPServers {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		entry := mcpCatalog[id]
+		mcpBindings = append(mcpBindings, map[string]any{
+			"id":          id,
+			"name":        firstNonEmpty(entry.Name, id),
+			"enabled":     true,
+			"permission":  firstNonEmpty(entry.Permission, "readonly"),
+			"source":      pluginSourceLabel(pluginName),
+			"recommended": true,
+		})
+	}
+	if len(skillBindings) > 0 {
+		record["skills"] = skillBindings
+	}
+	if len(mcpBindings) > 0 {
+		record["mcps"] = mcpBindings
+	}
+	return record
+}
+
+func (s *defaultAgentProfileService) finalizeProfile(profile store.AgentProfileRecord, skills []store.SkillCatalogEntry, mcps []store.AgentMCPCatalogEntry) store.AgentProfileRecord {
+	out := cloneProfile(profile)
+	if out == nil {
+		out = store.AgentProfileRecord{}
+	}
+	out["skills"] = s.finalizeSkillBindings(out["skills"], skillCatalogMap(skills))
+	out["mcps"] = s.finalizeMcpBindings(firstNonNil(out["mcps"], out["mcpServers"]), mcpCatalogMap(mcps))
+	delete(out, "mcpServers")
+	return out
+}
+
+func (s *defaultAgentProfileService) finalizeSkillBindings(raw any, catalog map[string]store.SkillCatalogEntry) []any {
+	items := asAnySlice(raw)
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		binding := cloneAnyMap(asAnyMap(item))
+		id := strings.TrimSpace(profileString(binding["id"]))
+		if id == "" {
+			continue
+		}
+		entry, ok := catalog[id]
+		if strings.TrimSpace(profileString(binding["name"])) == "" {
+			binding["name"] = firstNonEmpty(entry.Name, id)
+		}
+		if _, exists := binding["enabled"]; !exists {
+			binding["enabled"] = ok && entry.DefaultEnabled
+		}
+		if strings.TrimSpace(profileString(binding["activationMode"])) == "" {
+			binding["activationMode"] = firstNonEmpty(entry.DefaultActivationMode, "explicit_only")
+		}
+		if !ok {
+			binding["enabled"] = false
+			binding["available"] = false
+			binding["unavailableReason"] = fmt.Sprintf("skill %q is not registered by enabled plugins or catalog", id)
+		}
+		if reason := strings.TrimSpace(s.policy.DisabledSkills[id]); reason != "" {
+			binding["enabled"] = false
+			binding["available"] = false
+			binding["unavailableReason"] = reason
+		}
+		out = append(out, binding)
+	}
+	return out
+}
+
+func (s *defaultAgentProfileService) finalizeMcpBindings(raw any, catalog map[string]store.AgentMCPCatalogEntry) []any {
+	items := asAnySlice(raw)
+	out := make([]any, 0, len(items))
+	for _, item := range items {
+		binding := cloneAnyMap(asAnyMap(item))
+		id := strings.TrimSpace(profileString(binding["id"]))
+		if id == "" {
+			continue
+		}
+		entry, ok := catalog[id]
+		if strings.TrimSpace(profileString(binding["name"])) == "" {
+			binding["name"] = firstNonEmpty(entry.Name, id)
+		}
+		if _, exists := binding["enabled"]; !exists {
+			binding["enabled"] = ok && entry.DefaultEnabled
+		}
+		if strings.TrimSpace(profileString(binding["permission"])) == "" {
+			binding["permission"] = firstNonEmpty(entry.Permission, "readonly")
+		}
+		if !ok {
+			binding["enabled"] = false
+			binding["available"] = false
+			binding["unavailableReason"] = fmt.Sprintf("MCP server %q is not registered by enabled plugins or catalog", id)
+		}
+		if reason := strings.TrimSpace(s.policy.DisabledMCPServers[id]); reason != "" {
+			binding["enabled"] = false
+			binding["available"] = false
+			binding["unavailableReason"] = reason
+		}
+		out = append(out, binding)
+	}
+	return out
+}
+
+func mergeProfileWithCatalogBindings(base, override store.AgentProfileRecord) store.AgentProfileRecord {
+	merged := mergeProfile(base, override)
+	if base != nil || override != nil {
+		merged["skills"] = mergeProfileBindings(baseValue(base, "skills"), override["skills"])
+		merged["mcps"] = mergeProfileBindings(firstNonNil(baseValue(base, "mcps"), baseValue(base, "mcpServers")), firstNonNil(override["mcps"], override["mcpServers"]))
+		delete(merged, "mcpServers")
+	}
+	return merged
+}
+
+func mergeProfileBindings(baseRaw, overrideRaw any) []any {
+	merged := map[string]map[string]any{}
+	order := make([]string, 0)
+	add := func(raw any) {
+		for _, item := range asAnySlice(raw) {
+			binding := cloneAnyMap(asAnyMap(item))
+			id := strings.TrimSpace(profileString(binding["id"]))
+			if id == "" {
+				continue
+			}
+			if _, exists := merged[id]; !exists {
+				order = append(order, id)
+			}
+			merged[id] = binding
+		}
+	}
+	add(baseRaw)
+	add(overrideRaw)
+	out := make([]any, 0, len(order))
+	for _, id := range order {
+		out = append(out, merged[id])
+	}
+	return out
+}
+
+func profileMap(profiles []store.AgentProfileRecord) map[string]store.AgentProfileRecord {
+	out := make(map[string]store.AgentProfileRecord, len(profiles))
+	for _, profile := range profiles {
+		id := strings.TrimSpace(stringField(profile, "id"))
+		if id != "" {
+			out[id] = cloneProfile(profile)
+		}
+	}
+	return out
+}
+
+func skillCatalogMap(entries []store.SkillCatalogEntry) map[string]store.SkillCatalogEntry {
+	out := make(map[string]store.SkillCatalogEntry, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			out[id] = entry
+		}
+	}
+	return out
+}
+
+func mcpCatalogMap(entries []store.AgentMCPCatalogEntry) map[string]store.AgentMCPCatalogEntry {
+	out := make(map[string]store.AgentMCPCatalogEntry, len(entries))
+	for _, entry := range entries {
+		if id := strings.TrimSpace(entry.ID); id != "" {
+			out[id] = entry
+		}
+	}
+	return out
+}
+
+func baseValue(profile store.AgentProfileRecord, key string) any {
+	if profile == nil {
+		return nil
+	}
+	return profile[key]
+}
+
+func pluginSourceLabel(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "plugin"
+	}
+	return "plugin:" + name
+}
+
+func cloneAgentProfilePluginSpecs(specs []plugins.Spec) []plugins.Spec {
+	out := make([]plugins.Spec, 0, len(specs))
+	for _, spec := range specs {
+		cp := spec
+		cp.Manifest.AIOps = cloneAgentProfileAIOpsManifest(spec.Manifest.AIOps)
+		cp.Skills = append([]skills.Definition(nil), spec.Skills...)
+		cp.MCPServers = append([]plugins.MCPServerSpec(nil), spec.MCPServers...)
+		out = append(out, cp)
+	}
+	return out
+}
+
+func cloneAgentProfileAIOpsManifest(manifest plugins.AIOpsManifest) plugins.AIOpsManifest {
+	manifest.AgentProfiles = append([]plugins.AgentProfileManifest(nil), manifest.AgentProfiles...)
+	for i := range manifest.AgentProfiles {
+		manifest.AgentProfiles[i].RecommendedSkills = append([]string(nil), manifest.AgentProfiles[i].RecommendedSkills...)
+		manifest.AgentProfiles[i].RecommendedMCPServers = append([]string(nil), manifest.AgentProfiles[i].RecommendedMCPServers...)
+	}
+	return manifest
+}
+
+func cloneAgentProfilePolicySettings(policy AgentProfilePolicySettings) AgentProfilePolicySettings {
+	return AgentProfilePolicySettings{
+		DisabledSkills:     cloneAgentProfileStringMap(policy.DisabledSkills),
+		DisabledMCPServers: cloneAgentProfileStringMap(policy.DisabledMCPServers),
+	}
+}
+
+func cloneAgentProfileStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for key, value := range src {
+		if trimmed := strings.TrimSpace(key); trimmed != "" {
+			out[trimmed] = strings.TrimSpace(value)
+		}
+	}
+	return out
+}
+
 func defaultSkillCatalogEntries() []store.SkillCatalogEntry {
 	return []store.SkillCatalogEntry{
 		{ID: "ops-triage", Name: "Ops Triage", Description: "快速归类问题并给出最小干预路径。", Source: "built-in", DefaultEnabled: true, DefaultActivationMode: "default_enabled"},
+		{ID: "coroot-rca", Name: "Coroot RCA", Description: "基于 Coroot MCP 聚合证据做服务、SLO、依赖和 incident 根因分析。", Source: "project", DefaultEnabled: false, DefaultActivationMode: "explicit_only"},
 		{ID: "incident-summary", Name: "Incident Summary", Description: "把诊断过程整理成可交付摘要。", Source: "local", DefaultEnabled: true, DefaultActivationMode: "default_enabled"},
 		{ID: "safe-change-review", Name: "Safe Change Review", Description: "在执行前做变更影响检查。", Source: "built-in", DefaultEnabled: false, DefaultActivationMode: "disabled"},
 	}
@@ -627,6 +1112,7 @@ func defaultAgentProfiles() map[string]store.AgentProfileRecord {
 			},
 			"skills": []any{
 				map[string]any{"id": "ops-triage", "name": "Ops Triage", "enabled": true, "activationMode": "default_enabled"},
+				map[string]any{"id": "coroot-rca", "name": "Coroot RCA", "enabled": false, "activationMode": "explicit_only"},
 				map[string]any{"id": "incident-summary", "name": "Incident Summary", "enabled": true, "activationMode": "default_enabled"},
 				map[string]any{"id": "safe-change-review", "name": "Safe Change Review", "enabled": false, "activationMode": "disabled"},
 			},

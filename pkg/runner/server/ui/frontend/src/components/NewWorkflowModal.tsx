@@ -16,7 +16,7 @@ interface NewWorkflowModalProps {
   onCreate: (payload: { graph: WorkflowGraph; labels?: Record<string, string>; saveNote?: string }) => void;
 }
 
-export default function NewWorkflowModal({ show, workflows, currentGraph, creating = false, error = null, initialMode = "cmd-run-basic", onClose, onCreate }: NewWorkflowModalProps) {
+export default function NewWorkflowModal({ show, workflows, currentGraph, creating = false, error = null, initialMode = "script-shell-basic", onClose, onCreate }: NewWorkflowModalProps) {
   const [mode, setMode] = useState<CreateMode>(initialMode);
   const [name, setName] = useState("new-workflow");
   const [version, setVersion] = useState("v0.1");
@@ -69,7 +69,7 @@ export default function NewWorkflowModal({ show, workflows, currentGraph, creati
         <div className="modal-header"><h2>Create workflow</h2><button type="button" onClick={onClose}>×</button></div>
         {(localError || error) ? <div className="inline-alert is-error">{localError || error}</div> : null}
         <div className="new-workflow-form">
-          <label className="field-block"><span>Mode</span><select value={mode} onChange={(event) => setMode(event.target.value as CreateMode)}><option value="cmd-run-basic">Command starter</option><option value="shell-run-basic">Shell starter</option><option value="manual-approval-basic">Manual approval starter</option><option value="clone-current">Clone current</option><option value="from-yaml">From YAML</option></select></label>
+          <label className="field-block"><span>Mode</span><select value={mode} onChange={(event) => setMode(event.target.value as CreateMode)}><option value="script-shell-basic">Shell Script starter</option><option value="shell-run-basic">Shell starter</option><option value="manual-approval-basic">Manual approval starter</option><option value="clone-current">Clone current</option><option value="from-yaml">From YAML</option></select></label>
           <div className="new-workflow-grid">
             <label className="field-block"><span>Name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
             <label className="field-block"><span>Version</span><input value={version} onChange={(event) => setVersion(event.target.value)} /></label>

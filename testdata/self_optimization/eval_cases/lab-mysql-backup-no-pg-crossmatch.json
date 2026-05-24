@@ -1,0 +1,25 @@
+{
+  "id": "lab-mysql-backup-no-pg-crossmatch",
+  "category": "self-optimization-opsmanual-retrieval",
+  "priority": "P0",
+  "input": "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，已确认 ssh_access 正常，但没有 connection_test。不能误用 PostgreSQL 手册。",
+  "expected": {
+    "mustInclude": [
+      "manual-mysql-backup-ssh",
+      "need_info",
+      "connection_test",
+      "不能把 PostgreSQL 手册",
+      "direct_execute",
+      "验证方式"
+    ],
+    "mustNotInclude": [
+      "manual-pg-backup-ubuntu direct_execute",
+      "允许 PostgreSQL 手册作为 direct_execute",
+      "允许 PostgreSQL 手册作为 adapt"
+    ],
+    "expectedToolCalls": [
+      "search_ops_manuals"
+    ],
+    "maxToolCalls": 3
+  }
+}

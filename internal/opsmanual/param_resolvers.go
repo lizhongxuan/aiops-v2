@@ -20,6 +20,7 @@ type ParamResolverRequest struct {
 	AlreadyResolved   map[string]ResolvedParam
 	RunRecords        []RunRecord
 	ResourceDiscovery ResourceDiscovery
+	HintProvider      HintProvider
 }
 
 type ParamResolverResult struct {
@@ -30,15 +31,24 @@ type ParamResolverResult struct {
 type ParamResolverRegistry struct {
 	resolvers []ParamResolver
 	discovery ResourceDiscovery
+	hints     HintProvider
 	timeout   time.Duration
 }
 
 func NewDefaultParamResolverRegistry(discovery ResourceDiscovery) ParamResolverRegistry {
+	return NewParamResolverRegistry(discovery, nil)
+}
+
+func NewParamResolverRegistry(discovery ResourceDiscovery, hints HintProvider) ParamResolverRegistry {
 	if discovery == nil {
 		discovery = noopResourceDiscovery{}
 	}
+	if hints == nil {
+		hints = NoopHintProvider{}
+	}
 	return ParamResolverRegistry{
 		discovery: discovery,
+		hints:     hints,
 		timeout:   3 * time.Second,
 		resolvers: []ParamResolver{
 			selectedHostResolver{},
@@ -50,6 +60,7 @@ func NewDefaultParamResolverRegistry(discovery ResourceDiscovery) ParamResolverR
 			hostReadonlyResolver{},
 			dockerResourceResolver{},
 			k8sResourceResolver{},
+			hintParamResolver{},
 		},
 	}
 }
@@ -65,6 +76,9 @@ func (r ParamResolverRegistry) Names() []string {
 func (r ParamResolverRegistry) Resolve(ctx context.Context, req ParamResolverRequest) (ParamResolverResult, []ParamResolverLog) {
 	if req.ResourceDiscovery == nil {
 		req.ResourceDiscovery = r.discovery
+	}
+	if req.HintProvider == nil {
+		req.HintProvider = r.hints
 	}
 	var combined ParamResolverResult
 	var logs []ParamResolverLog
@@ -134,6 +148,9 @@ func (conversationResolver) Name() string { return "conversation" }
 func (conversationResolver) Resolve(_ context.Context, req ParamResolverRequest) (ParamResolverResult, error) {
 	if req.Requirement.Sensitive || NormalizeParamType(req.Requirement.ID, req.Requirement.Type) == "secret_ref" {
 		if fact, ok := req.Ledger.FindByType(req.Requirement.ID); ok && fact.ConfirmedByUser && fact.Confidence >= 0.95 {
+			if !secretRefValuePresent(fact.Value) {
+				return ParamResolverResult{}, nil
+			}
 			return ParamResolverResult{Candidates: []ParamCandidate{candidateFromFact(fact)}}, nil
 		}
 		return ParamResolverResult{}, nil
@@ -209,8 +226,13 @@ type corootServiceResolver struct{}
 
 func (corootServiceResolver) Name() string { return "coroot" }
 
-func (corootServiceResolver) Resolve(context.Context, ParamResolverRequest) (ParamResolverResult, error) {
-	return ParamResolverResult{}, nil
+func (corootServiceResolver) Resolve(_ context.Context, req ParamResolverRequest) (ParamResolverResult, error) {
+	if NormalizeParamType(req.Requirement.ID, req.Requirement.Type) != "resource_ref" {
+		return ParamResolverResult{}, nil
+	}
+	return ParamResolverResult{
+		Message: "coroot provider unavailable: no configured read-only Coroot provider; no resource candidate was fabricated.",
+	}, nil
 }
 
 type hostReadonlyResolver struct{}
@@ -321,9 +343,60 @@ func resourceCandidatesForRequirement(resources []ResourceCandidate, req ParamRe
 			Source:     source,
 			Confidence: confidence,
 			Evidence:   firstNonEmpty(resource.Evidence, "read-only resource discovery"),
+			Metadata:   resourceCandidateMetadata(resource),
 		})
 	}
 	return out
+}
+
+func resourceCandidateMetadata(resource ResourceCandidate) map[string]any {
+	metadata := map[string]any{}
+	addStringMetadata(metadata, "id", resource.ID)
+	addStringMetadata(metadata, "name", resource.Name)
+	addStringMetadata(metadata, "type", resource.Type)
+	addStringMetadata(metadata, "host", resource.Host)
+	addStringMetadata(metadata, "surface", resource.Surface)
+	addStringMetadata(metadata, "source", resource.Source)
+	addStringMetadata(metadata, "cluster", resource.Cluster)
+	addStringMetadata(metadata, "namespace", resource.Namespace)
+	addStringMetadata(metadata, "pod", resource.Pod)
+	addStringMetadata(metadata, "service", resource.Service)
+	addStringMetadata(metadata, "image", resource.Image)
+	addStringMetadata(metadata, "health", resource.Health)
+	addStringMetadata(metadata, "created_at", resource.CreatedAt)
+	addStringMetadata(metadata, "systemd_service", resource.SystemdService)
+	addStringMetadata(metadata, "process_owner", resource.ProcessOwner)
+	addStringMetadata(metadata, "version", resource.Version)
+	addStringMetadata(metadata, "phase", resource.Phase)
+	addStringsMetadata(metadata, "ports", resource.Ports)
+	addStringsMetadata(metadata, "mounts", resource.Mounts)
+	addStringsMetadata(metadata, "networks", resource.Networks)
+	addStringsMetadata(metadata, "listening_ports", resource.ListeningPorts)
+	addStringsMetadata(metadata, "container_images", resource.ContainerImages)
+	if len(resource.Labels) > 0 {
+		metadata["labels"] = cloneStringMap(resource.Labels)
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func addStringMetadata(metadata map[string]any, key string, value string) {
+	if strings.TrimSpace(value) != "" {
+		metadata[key] = strings.TrimSpace(value)
+	}
+}
+
+func addStringsMetadata(metadata map[string]any, key string, values []string) {
+	if len(values) > 0 {
+		metadata[key] = append([]string(nil), values...)
+	}
+}
+
+func secretRefValuePresent(value any) bool {
+	trimmed := strings.TrimSpace(fmt.Sprint(value))
+	return strings.HasPrefix(trimmed, "secret://") || strings.HasPrefix(trimmed, "secret_ref:")
 }
 
 type k8sResourceResolver struct{}
@@ -332,6 +405,76 @@ func (k8sResourceResolver) Name() string { return "k8s" }
 
 func (k8sResourceResolver) Resolve(context.Context, ParamResolverRequest) (ParamResolverResult, error) {
 	return ParamResolverResult{}, nil
+}
+
+type hintParamResolver struct{}
+
+func (hintParamResolver) Name() string { return "hint_provider" }
+
+func (hintParamResolver) Resolve(ctx context.Context, req ParamResolverRequest) (ParamResolverResult, error) {
+	if req.HintProvider == nil || explicitRequirementValuePresent(req) {
+		return ParamResolverResult{}, nil
+	}
+	hints, err := req.HintProvider.ParamHints(ctx, HintQuery{
+		Text:           req.OperationFrame.RawText,
+		OperationFrame: req.OperationFrame,
+		Manual:         req.Manual,
+		Requirement:    req.Requirement,
+		Now:            time.Now().UTC(),
+		Limit:          5,
+	})
+	if err != nil || len(hints) == 0 {
+		return ParamResolverResult{}, err
+	}
+	candidates := make([]ParamCandidate, 0, len(hints))
+	for _, hint := range hints {
+		candidate, ok := paramCandidateFromHint(hint, req.Requirement)
+		if ok {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return ParamResolverResult{Candidates: dedupeParamCandidates(candidates)}, nil
+}
+
+func explicitRequirementValuePresent(req ParamResolverRequest) bool {
+	if req.Requirement.ID == "target_instance" && strings.TrimSpace(req.OperationFrame.Target.Name) != "" {
+		return true
+	}
+	if req.OperationFrame.RequiredParams != nil && valuePresent(req.OperationFrame.RequiredParams[req.Requirement.ID]) {
+		return true
+	}
+	return metadataString(req.OperationFrame.Metadata, req.Requirement.ID) != ""
+}
+
+func paramCandidateFromHint(hint ParamHint, req ParamRequirement) (ParamCandidate, bool) {
+	if !hint.Redacted || strings.TrimSpace(hint.ParamID) != strings.TrimSpace(req.ID) || !valuePresent(hint.Value) {
+		return ParamCandidate{}, false
+	}
+	if (req.Sensitive || NormalizeParamType(req.ID, req.Type) == "secret_ref") && !secretRefValuePresent(hint.Value) {
+		return ParamCandidate{}, false
+	}
+	source := firstNonEmpty(strings.TrimSpace(hint.Source), "memory_hint")
+	if source != "memory_hint" && source != "letta_hint" {
+		source = "memory_hint"
+	}
+	confidence := hint.Confidence
+	if confidence <= 0 {
+		confidence = 0.72
+	}
+	if confidence >= 0.85 {
+		confidence = 0.84
+	}
+	return ParamCandidate{
+		Value:      hint.Value,
+		Label:      firstNonEmpty(strings.TrimSpace(hint.Label), fmt.Sprint(hint.Value)),
+		Source:     source,
+		Confidence: roundScore(confidence),
+		Evidence:   firstNonEmpty(strings.TrimSpace(hint.Evidence), source+" requires current confirmation/discovery"),
+		Metadata: map[string]any{
+			"requires_current_confirmation": true,
+			"hint_source":                   source,
+		},
+	}, true
 }
 
 func resourceMatchesManualApplicability(resource ResourceCandidate, manual OpsManual) bool {

@@ -61,12 +61,12 @@ test.describe("LabEnvironmentPage", () => {
   });
 
   test("page renders with title", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "实验环境管理" })).toBeVisible();
+    await expect(page.locator("main").getByText("实验环境管理", { exact: true })).toBeVisible();
   });
 
   test("shows running/stopped stats", async ({ page }) => {
-    await expect(page.locator(".stat-ok strong")).toHaveText("1");
-    await expect(page.locator(".stat-warn strong")).toHaveText("1");
+    await expect(page.locator(".stat-ok")).toContainText("1");
+    await expect(page.locator(".stat-warn")).toContainText("1");
   });
 
   test("environment list shows entries", async ({ page }) => {

@@ -116,7 +116,7 @@ func appuiRedisManual() opsmanual.OpsManual {
 		ID:          "manual-redis-memory",
 		Title:       "Redis memory pressure",
 		Status:      opsmanual.ManualStatusVerified,
-		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-redis-memory"},
+		WorkflowRef: opsmanual.WorkflowRef{WorkflowID: "workflow-redis-memory", WorkflowDigest: "sha256:test"},
 		Operation:   opsmanual.OperationProfile{TargetType: "redis", Action: "rca_or_repair"},
 		Applicability: opsmanual.ApplicabilityProfile{
 			Middleware:       "redis",
@@ -129,6 +129,7 @@ func appuiRedisManual() opsmanual.OpsManual {
 		Preconditions:    []string{"can connect"},
 		Validation:       []string{"memory recovered"},
 		CannotUseWhen:    []string{"目标实例未知"},
+		ParameterRules:   map[string]opsmanual.ParameterRule{"target_instance": {Required: true, Source: "user"}},
 		DocumentMarkdown: "Redis manual",
 	}
 }

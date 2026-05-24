@@ -144,3 +144,55 @@ func TestProviderNotFoundError_Error(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, err.Error())
 	}
 }
+
+func TestResolveModelCapabilitiesForLargeOpenAIModel(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{Model: "gpt-5.4", MaxTokens: 24000})
+
+	if caps.Provider != "openai" || caps.Model != "gpt-5.4" {
+		t.Fatalf("capabilities route = %s/%s, want openai/gpt-5.4", caps.Provider, caps.Model)
+	}
+	if caps.MaxContextTokens != 200000 {
+		t.Fatalf("max context = %d, want 200000", caps.MaxContextTokens)
+	}
+	if caps.MaxOutputTokens != 24000 {
+		t.Fatalf("max output = %d, want override 24000", caps.MaxOutputTokens)
+	}
+	if !caps.ExactTokenCount || !caps.CacheEdit {
+		t.Fatalf("expected openai capabilities to include exact token count and cache edit: %#v", caps)
+	}
+	if caps.SmallContextMode {
+		t.Fatalf("large model should not use small context mode: %#v", caps)
+	}
+}
+
+func TestResolveModelCapabilitiesForSmallContextModel(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{Provider: "openai", Model: "ops-20k"})
+
+	if caps.MaxContextTokens != 20000 {
+		t.Fatalf("max context = %d, want 20000", caps.MaxContextTokens)
+	}
+	if !caps.SmallContextMode {
+		t.Fatalf("expected small context mode: %#v", caps)
+	}
+}
+
+func TestResolveModelCapabilitiesUsesManualContextWindowOverride(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:         "openai",
+		Model:            "gpt-5.4",
+		MaxContextTokens: 9000,
+	})
+
+	if caps.MaxContextTokens != 10000 {
+		t.Fatalf("max context = %d, want min-clamped 10000", caps.MaxContextTokens)
+	}
+	if !caps.SmallContextMode {
+		t.Fatalf("expected manual 10K context to enable small context mode: %#v", caps)
+	}
+}

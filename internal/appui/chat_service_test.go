@@ -479,8 +479,8 @@ func TestChatService_SendMessageDefaultsToLatestSessionWhenSessionIDMissing(t *t
 	if runReq.SessionID != latest.ID {
 		t.Fatalf("RunTurn sessionId = %q, want latest session %q", runReq.SessionID, latest.ID)
 	}
-	if runReq.HostID != "server-local" {
-		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	if runReq.HostID != serverLocalHostID {
+		t.Fatalf("RunTurn hostId = %q, want %s", runReq.HostID, serverLocalHostID)
 	}
 }
 
@@ -544,6 +544,27 @@ func TestChatService_SendMessageCarriesClientIDs(t *testing.T) {
 	}
 	if result.ClientTurnID != "client-turn-1" {
 		t.Fatalf("TurnResponse ClientTurnID = %q, want client-turn-1", result.ClientTurnID)
+	}
+}
+
+func TestChatService_SendMessageDefaultsNewHostSessionToServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-new-host-default",
+		Content:   "排查 Redis",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	}
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
 	}
 }
 

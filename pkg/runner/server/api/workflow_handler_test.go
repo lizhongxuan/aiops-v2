@@ -144,7 +144,7 @@ func TestWorkflowRoutesPublishRequiresRiskAcknowledgement(t *testing.T) {
 
 	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows", map[string]any{
 		"name": "api-publish-risk",
-		"yaml": testAPIWorkflowYAMLWithAction("api-publish-risk", "shell.run", "script", "echo risky"),
+		"yaml": testAPIWorkflowYAMLWithAction("api-publish-risk", "script.shell", "script", "echo risky"),
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("create workflow status = %d payload=%s", code, payload)
@@ -172,7 +172,7 @@ func TestWorkflowRoutesPublishRequiresWarningAcknowledgement(t *testing.T) {
 
 	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows", map[string]any{
 		"name": "api-publish-warning",
-		"yaml": testAPIWorkflowYAML("api-publish-warning", "echo ${missing_token}"),
+		"yaml": testAPIWorkflowYAMLWithAction("api-publish-warning", "builtin.dns_resolve", "name", "${missing_token}"),
 	})
 	if code != http.StatusCreated {
 		t.Fatalf("create workflow status = %d payload=%s", code, payload)
@@ -592,7 +592,7 @@ func (s apiWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Context, _ 
 }
 
 func testAPIWorkflowYAML(name, cmd string) string {
-	return testAPIWorkflowYAMLWithAction(name, "cmd.run", "cmd", cmd)
+	return testAPIWorkflowYAMLWithAction(name, "builtin.dns_resolve", "name", cmd)
 }
 
 func validateWorkflowRoute(t *testing.T, router http.Handler, name string) {

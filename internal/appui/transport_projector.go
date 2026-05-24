@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		projectedTurn.ID = turnID
 	}
 	projectedTurn.Process = nil
+	projectedTurn.ContextGovernance = projectContextGovernanceEvents(turn.ContextGovernanceEvents)
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
 	projectedTurn.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), projectedTurn.UpdatedAt)
 	if turn.CompletedAt != nil {
@@ -49,8 +51,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
 	resultPreviews := transportToolResultPreviews(turn)
+	resultPayloads := transportToolResultJSONPayloads(turn)
 	for _, item := range turn.AgentItems {
-		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews)
+		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads)
 	}
 	if turn.Lifecycle.IsTerminal() {
 		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
@@ -135,6 +138,119 @@ func transportToolResultPreviews(turn *runtimekernel.TurnSnapshot) map[string]st
 		}
 	}
 	return previews
+}
+
+func transportToolResultJSONPayloads(turn *runtimekernel.TurnSnapshot) map[string]json.RawMessage {
+	payloads := map[string]json.RawMessage{}
+	if turn == nil {
+		return payloads
+	}
+	for _, iteration := range turn.Iterations {
+		for _, result := range iteration.ToolResults {
+			toolCallID := strings.TrimSpace(result.ToolCallID)
+			content := strings.TrimSpace(result.Content)
+			if toolCallID == "" || content == "" {
+				continue
+			}
+			if _, exists := payloads[toolCallID]; exists {
+				continue
+			}
+			var obj map[string]any
+			if err := json.Unmarshal([]byte(content), &obj); err != nil || len(obj) == 0 {
+				continue
+			}
+			payloads[toolCallID] = append(json.RawMessage(nil), []byte(content)...)
+		}
+	}
+	return payloads
+}
+
+func projectContextGovernanceEvents(events []runtimekernel.ContextGovernanceEvent) []AiopsContextGovernanceEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	sorted := runtimekernel.SortContextGovernanceEvents(events)
+	out := make([]AiopsContextGovernanceEvent, 0, len(sorted))
+	seen := map[string]struct{}{}
+	for _, event := range sorted {
+		if event.Layer == "" || strings.TrimSpace(event.Kind) == "" {
+			continue
+		}
+		key := strings.TrimSpace(event.ID)
+		if key == "" {
+			key = fmt.Sprintf("%s:%s:%s", event.Layer, event.Kind, event.CreatedAt.UTC().Format(time.RFC3339Nano))
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, AiopsContextGovernanceEvent{
+			ID:              strings.TrimSpace(event.ID),
+			Layer:           string(event.Layer),
+			Kind:            strings.TrimSpace(event.Kind),
+			Message:         strings.TrimSpace(event.Message),
+			Budget:          projectContextBudget(event.Budget),
+			ReferenceIDs:    cleanTransportStringList(event.ReferenceIDs),
+			CompactedIDs:    cleanTransportStringList(event.CompactedIDs),
+			DroppedGroupIDs: cleanTransportStringList(event.DroppedGroupIDs),
+			RetryAttempt:    event.RetryAttempt,
+			RetryMax:        event.RetryMax,
+			Timeout:         event.Timeout,
+			CreatedAt:       transportTimestamp(event.CreatedAt),
+		})
+	}
+	return out
+}
+
+func projectContextBudget(budget runtimekernel.ContextBudgetThresholds) map[string]any {
+	if budget.MaxContextTokens == 0 &&
+		budget.ReservedOutputTokens == 0 &&
+		budget.EffectiveContextWindow == 0 &&
+		budget.WarningThreshold == 0 &&
+		budget.AutoCompactThreshold == 0 &&
+		budget.BlockingLimit == 0 {
+		return nil
+	}
+	return map[string]any{
+		"maxContextTokens":       budget.MaxContextTokens,
+		"reservedOutputTokens":   budget.ReservedOutputTokens,
+		"effectiveContextWindow": budget.EffectiveContextWindow,
+		"warningThreshold":       budget.WarningThreshold,
+		"autoCompactThreshold":   budget.AutoCompactThreshold,
+		"blockingLimit":          budget.BlockingLimit,
+		"smallContextMode":       budget.SmallContextMode,
+	}
+}
+
+func projectExternalReferences(refs []runtimekernel.ExternalReference) []AiopsExternalReference {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]AiopsExternalReference, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, AiopsExternalReference{
+			ID:          id,
+			Kind:        strings.TrimSpace(ref.Kind),
+			URI:         strings.TrimSpace(ref.URI),
+			CardRef:     strings.TrimSpace(ref.CardRef),
+			FilePath:    strings.TrimSpace(ref.FilePath),
+			Title:       strings.TrimSpace(ref.Title),
+			Summary:     strings.TrimSpace(ref.Summary),
+			ContentType: strings.TrimSpace(ref.ContentType),
+			Digest:      strings.TrimSpace(ref.Digest),
+			Bytes:       ref.Bytes,
+		})
+	}
+	return out
 }
 
 func pruneTransportPendingApprovalsForTurn(state *AiopsTransportState, turnID string, activeIDs map[string]bool) {
@@ -259,6 +375,7 @@ func projectTurnItem(
 	turnID string,
 	item agentstate.TurnItem,
 	resultPreviews map[string]string,
+	resultPayloads map[string]json.RawMessage,
 ) AiopsTransportTurn {
 	switch item.Type {
 	case agentstate.TurnItemTypeUserMessage:
@@ -307,16 +424,25 @@ func projectTurnItem(
 	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult:
 		tool := decodeTransportToolPayload(item.Payload)
 		if item.Type == agentstate.TurnItemTypeToolResult {
-			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			artifactTool := tool
+			if len(artifactTool.OutputPreview) == 0 {
+				if raw := resultPayloads[strings.TrimSpace(artifactTool.ToolCallID)]; len(raw) > 0 {
+					artifactTool.OutputPreview = raw
+				}
+			}
+			if artifact, ok := transportOpsManualSearchArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportOpsManualPreflightArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportOpsManualPreflightArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportOpsManualParamResolutionArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportOpsManualParamResolutionArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, tool); ok {
+			if artifact, ok := transportCorootServiceMetricsArtifactFromToolPayload(turnID, item.ID, artifactTool, transportTurnUserText(turn)); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
+			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
 		}
@@ -334,21 +460,29 @@ func projectTurnItem(
 		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
 			outputPreview = resultPreviews[tool.ToolCallID]
 		}
+		if shouldSuppressOpsManualSearchProcessBlock(tool, outputPreview) {
+			return turn
+		}
 		toolText, outputPreview = compactOpsManualSearchProcessText(tool.DisplayKind, toolText, outputPreview)
 		block := AiopsProcessBlock{
-			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
-			Kind:          blockKind,
-			DisplayKind:   displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
-			Status:        mapItemStatusToTransportProcessStatus(item.Status),
-			Text:          toolText,
-			InputSummary:  tool.InputSummary,
-			OutputPreview: sanitizeOutputPreview(outputPreview),
-			RawRef:        tool.RawRef,
-			EvidenceRefs:  cleanTransportStringList(tool.EvidenceRefs),
-			Mock:          tool.Mock,
-			ExitCode:      tool.ExitCode,
-			DurationMs:    tool.DurationMs,
-			UpdatedAt:     transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+			ID:                  TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
+			Kind:                blockKind,
+			DisplayKind:         displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
+			Status:              mapItemStatusToTransportProcessStatus(item.Status),
+			Text:                toolText,
+			Source:              strings.TrimSpace(tool.ToolName),
+			InputSummary:        tool.InputSummary,
+			OutputPreview:       sanitizeOutputPreview(outputPreview),
+			RawRef:              tool.RawRef,
+			EvidenceRefs:        cleanTransportStringList(tool.EvidenceRefs),
+			Mock:                tool.Mock,
+			ExitCode:            tool.ExitCode,
+			DurationMs:          tool.DurationMs,
+			MaterializationTier: strings.TrimSpace(tool.MaterializationTier),
+			OriginalBytes:       tool.OriginalBytes,
+			InlineBytes:         tool.InlineBytes,
+			ExternalReferences:  projectExternalReferences(tool.ExternalReferences),
+			UpdatedAt:           transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 		}
 		switch blockKind {
 		case AiopsTransportProcessKindSearch:
@@ -699,21 +833,26 @@ func decodeUserMessageText(raw json.RawMessage) string {
 }
 
 type transportToolPayload struct {
-	ID            string          `json:"id"`
-	ToolCallID    string          `json:"toolCallId"`
-	ToolName      string          `json:"toolName"`
-	Name          string          `json:"name"`
-	DisplayKind   string          `json:"displayKind"`
-	InputSummary  string          `json:"inputSummary"`
-	OutputSummary string          `json:"outputSummary"`
-	Arguments     json.RawMessage `json:"arguments"`
-	OutputPreview json.RawMessage `json:"outputPreview"`
-	RawRef        string          `json:"rawRef"`
-	EvidenceRefs  []string        `json:"evidenceRefs"`
-	Mock          bool            `json:"mock"`
-	ExitCode      *int            `json:"exitCode"`
-	DurationMs    int64           `json:"durationMs"`
-	Error         string          `json:"error"`
+	ID                  string                            `json:"id"`
+	ToolCallID          string                            `json:"toolCallId"`
+	ToolName            string                            `json:"toolName"`
+	Name                string                            `json:"name"`
+	DisplayKind         string                            `json:"displayKind"`
+	InputSummary        string                            `json:"inputSummary"`
+	OutputSummary       string                            `json:"outputSummary"`
+	Arguments           json.RawMessage                   `json:"arguments"`
+	OutputPreview       json.RawMessage                   `json:"outputPreview"`
+	DisplayData         json.RawMessage                   `json:"displayData"`
+	RawRef              string                            `json:"rawRef"`
+	EvidenceRefs        []string                          `json:"evidenceRefs"`
+	MaterializationTier string                            `json:"materializationTier"`
+	OriginalBytes       int64                             `json:"originalBytes"`
+	InlineBytes         int64                             `json:"inlineBytes"`
+	ExternalReferences  []runtimekernel.ExternalReference `json:"externalReferences"`
+	Mock                bool                              `json:"mock"`
+	ExitCode            *int                              `json:"exitCode"`
+	DurationMs          int64                             `json:"durationMs"`
+	Error               string                            `json:"error"`
 }
 
 func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
@@ -733,6 +872,9 @@ func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool
 	if decision == "" {
 		decision = "unknown"
 	}
+	if !isActionableOpsManualSearchPayload(payload) {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	return AiopsTransportAgentUIArtifact{
 		ID:              "ops-manual-search:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "result"),
@@ -751,6 +893,38 @@ func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func isOpsManualNoMatchDecision(decision string) bool {
+	switch strings.TrimSpace(decision) {
+	case "no_match":
+		return true
+	default:
+		return false
+	}
+}
+
+func isActionableOpsManualSearchPayload(payload map[string]any) bool {
+	decision := strings.TrimSpace(jsonStringValueFromMap(payload, "decision"))
+	if isOpsManualNoMatchDecision(decision) {
+		return false
+	}
+	return opsManualSearchPayloadHasManual(payload)
+}
+
+func opsManualSearchPayloadHasManual(payload map[string]any) bool {
+	for _, key := range []string{"manuals", "hits", "matches"} {
+		if values, ok := payload[key].([]any); ok && len(values) > 0 {
+			return true
+		}
+	}
+	if manual, ok := payload["manual"]; ok && manual != nil {
+		return true
+	}
+	if manualID := strings.TrimSpace(jsonStringValueFromMap(payload, "manual_id")); manualID != "" {
+		return true
+	}
+	return false
 }
 
 func transportOpsManualPreflightArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
@@ -978,13 +1152,13 @@ func upsertTransportAgentUIArtifact(items []AiopsTransportAgentUIArtifact, artif
 func opsManualPreflightSummaryZh(status string) string {
 	switch strings.TrimSpace(status) {
 	case "passed":
-		return "预检已通过，可以进入 Dry Run。"
+		return "预检已通过，可以确认或审批后执行。"
 	case "blocked":
 		return "预检被阻断，需要补充参数、权限或环境适配。"
 	case "failed":
 		return "预检失败，不能执行绑定工作流。"
 	case "not_applicable":
-		return "该手册没有预检探针，可进入人工确认或 Dry Run。"
+		return "该手册没有预检探针，需要人工确认或审批后执行。"
 	default:
 		return "已完成运维手册预检。"
 	}
@@ -1025,6 +1199,523 @@ func opsManualParamResolutionArtifactActions(status string) []map[string]any {
 	}
 }
 
+func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload, userQuery string) (AiopsTransportAgentUIArtifact, bool) {
+	if !isCorootServiceMetricsToolName(tool.ToolName) {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := corootDisplayDataForTransportArtifact(tool)
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if strings.TrimSpace(jsonStringValueFromMap(payload, "tool")) != "coroot.service_metrics" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	series := corootChartSeriesFromMetrics(payload["metrics"])
+	chartReports := transportAnyList(payload["chartReports"])
+	if len(series) == 0 && len(chartReports) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	project := jsonStringValueFromMap(payload, "project")
+	service := jsonStringValueFromMap(payload, "service")
+	rawRef := asStringAnyMap(payload["rawRef"])
+	dataRef := jsonStringValueFromMap(rawRef, "uri")
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "ready")
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	visualKind := "timeseries"
+	if len(chartReports) > 0 {
+		visualKind = "coroot_report_charts"
+	}
+	visual := map[string]any{
+		"kind": visualKind,
+	}
+	if len(series) > 0 {
+		visual["series"] = series
+	}
+	if len(chartReports) > 0 {
+		visual["reports"] = chartReports
+	}
+	card := map[string]any{
+		"uiKind": "readonly_chart",
+		"title":  firstNonEmptyString(service, "Coroot service") + " Coroot charts",
+		"visual": visual,
+	}
+	inlineData := cloneStringAnyMap(payload)
+	defaultReportName := transportCorootPreferredReportName(chartReports, firstNonEmptyString(userQuery, tool.InputSummary))
+	if defaultReportName != "" {
+		inlineData["defaultReportName"] = defaultReportName
+	}
+	inlineData["mcpCard"] = card
+	chartSummary := transportCorootChartSummaryFromPayload(payload, service, defaultReportName)
+	placementTopic := transportCorootTopicFromName(defaultReportName)
+	if placementTopic == "" {
+		placementTopic = transportCorootTopicFromChartSummary(chartSummary)
+	}
+	metadata := map[string]any{
+		"project":    project,
+		"service":    service,
+		"toolCallId": strings.TrimSpace(tool.ToolCallID),
+		"placement": map[string]any{
+			"supports":        []string{"root_cause"},
+			"preferredAfter":  []string{"root_cause"},
+			"preferredBefore": []string{"evidence"},
+			"topic":           placementTopic,
+			"priority":        "primary",
+			"service":         service,
+		},
+	}
+	if len(chartSummary) > 0 {
+		metadata["chartSummary"] = chartSummary
+	}
+	if len(rawRef) > 0 {
+		metadata["rawRef"] = rawRef
+	}
+	artifactID := "coroot-chart:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "service-metrics")
+	if strings.TrimSpace(project) != "" || strings.TrimSpace(service) != "" {
+		artifactID = stableTransportID("coroot-chart", turnID, firstNonEmptyString(project, "project"), firstNonEmptyString(service, "service"))
+	}
+	return AiopsTransportAgentUIArtifact{
+		ID:              artifactID,
+		Type:            "coroot_chart",
+		Title:           "Coroot service charts",
+		TitleZh:         firstNonEmptyString(service, "服务") + " Coroot 图表",
+		Summary:         "Coroot service charts and metrics",
+		SummaryZh:       "Coroot 服务原生图表与指标趋势",
+		Status:          transportCorootArtifactStatus(status),
+		Severity:        transportCorootArtifactSeverity(corootFirstNonNil(payload["chartReports"], payload["metrics"])),
+		DataRef:         dataRef,
+		InlineData:      inlineData,
+		Metadata:        metadata,
+		Source:          "coroot",
+		PermissionScope: "read",
+		RedactionStatus: "none",
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func corootDisplayDataForTransportArtifact(tool transportToolPayload) json.RawMessage {
+	if len(tool.DisplayData) > 0 {
+		return tool.DisplayData
+	}
+	return tool.OutputPreview
+}
+
+func transportCorootChartSummaryFromPayload(payload map[string]any, service string, defaultReportName string) map[string]any {
+	summary := cloneStringAnyMap(asStringAnyMap(payload["chartSummary"]))
+	if len(summary) == 0 {
+		summary = map[string]any{}
+		if metricSummaries := transportCorootMetricSummaries(payload["metrics"]); len(metricSummaries) > 0 {
+			summary["metricSummaries"] = metricSummaries
+		}
+		if reports := transportCorootReportSummaries(payload["chartReports"]); len(reports) > 0 {
+			summary["reports"] = reports
+		}
+	}
+	if strings.TrimSpace(service) != "" {
+		summary["service"] = strings.TrimSpace(service)
+	}
+	if strings.TrimSpace(defaultReportName) != "" {
+		summary["defaultReportName"] = strings.TrimSpace(defaultReportName)
+	}
+	return summary
+}
+
+func transportCorootMetricSummaries(value any) []map[string]any {
+	var out []map[string]any
+	for _, metric := range asStringAnyMapList(value) {
+		name := jsonStringValueFromMap(metric, "name")
+		item := map[string]any{
+			"name":  name,
+			"topic": transportCorootTopicFromName(firstNonEmptyString(name, jsonStringValueFromMap(metric, "chartTitle"))),
+		}
+		for _, key := range []string{"status", "value", "unit", "chartTitle"} {
+			if text := jsonStringValueFromMap(metric, key); text != "" {
+				item[key] = text
+			}
+		}
+		series := asStringAnyMapList(metric["series"])
+		if len(series) > 0 {
+			item["seriesCount"] = len(series)
+			pointCount := 0
+			var seriesNames []string
+			for _, seriesMap := range series {
+				pointCount += len(transportAnyList(seriesMap["values"]))
+				seriesNames = appendTransportUniqueString(seriesNames, jsonStringValueFromMap(seriesMap, "name"), 5)
+			}
+			if pointCount > 0 {
+				item["pointCount"] = pointCount
+			}
+			if len(seriesNames) > 0 {
+				item["seriesNames"] = seriesNames
+			}
+		} else if pointCount := len(transportAnyList(metric["values"])); pointCount > 0 {
+			item["seriesCount"] = 1
+			item["pointCount"] = pointCount
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func transportCorootReportSummaries(value any) []map[string]any {
+	var out []map[string]any
+	for _, report := range asStringAnyMapList(value) {
+		name := jsonStringValueFromMap(report, "name")
+		item := map[string]any{
+			"name":  name,
+			"topic": transportCorootTopicFromName(name),
+		}
+		if status := jsonStringValueFromMap(report, "status"); status != "" {
+			item["status"] = status
+		}
+		chartCount := 0
+		seriesCount := 0
+		pointCount := 0
+		var titles []string
+		var seriesNames []string
+		for _, widget := range asStringAnyMapList(report["widgets"]) {
+			if chart := asStringAnyMap(widget["chart"]); len(chart) > 0 {
+				chartCount++
+				title := firstNonEmptyString(jsonStringValueFromMap(widget, "title"), jsonStringValueFromMap(chart, "title"))
+				titles = appendTransportUniqueString(titles, title, 5)
+				if item["topic"] == "" {
+					item["topic"] = transportCorootTopicFromName(title)
+				}
+				sc, pc, names := transportCorootSeriesCounts(chart)
+				seriesCount += sc
+				pointCount += pc
+				for _, name := range names {
+					seriesNames = appendTransportUniqueString(seriesNames, name, 5)
+				}
+			}
+			group := asStringAnyMap(widget["chart_group"])
+			if len(group) == 0 {
+				continue
+			}
+			groupTitle := jsonStringValueFromMap(group, "title")
+			for _, chart := range asStringAnyMapList(group["charts"]) {
+				chartCount++
+				title := firstNonEmptyString(groupTitle, jsonStringValueFromMap(chart, "title"))
+				titles = appendTransportUniqueString(titles, title, 5)
+				if item["topic"] == "" {
+					item["topic"] = transportCorootTopicFromName(title)
+				}
+				sc, pc, names := transportCorootSeriesCounts(chart)
+				seriesCount += sc
+				pointCount += pc
+				for _, name := range names {
+					seriesNames = appendTransportUniqueString(seriesNames, name, 5)
+				}
+			}
+		}
+		if chartCount > 0 {
+			item["chartCount"] = chartCount
+		}
+		if seriesCount > 0 {
+			item["seriesCount"] = seriesCount
+		}
+		if pointCount > 0 {
+			item["pointCount"] = pointCount
+		}
+		if len(titles) > 0 {
+			item["titles"] = titles
+		}
+		if len(seriesNames) > 0 {
+			item["seriesNames"] = seriesNames
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func transportCorootSeriesCounts(chart map[string]any) (int, int, []string) {
+	seriesCount := 0
+	pointCount := 0
+	var names []string
+	for _, series := range asStringAnyMapList(chart["series"]) {
+		seriesCount++
+		pointCount += len(transportAnyList(series["data"]))
+		names = appendTransportUniqueString(names, jsonStringValueFromMap(series, "name"), 5)
+	}
+	if threshold := asStringAnyMap(chart["threshold"]); len(threshold) > 0 {
+		pointCount += len(transportAnyList(threshold["data"]))
+	}
+	return seriesCount, pointCount, names
+}
+
+func transportCorootTopicFromChartSummary(summary map[string]any) string {
+	for _, key := range []string{"defaultReportName", "topic"} {
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(summary, key)); topic != "" {
+			return topic
+		}
+	}
+	for _, report := range asStringAnyMapList(summary["reports"]) {
+		if topic := jsonStringValueFromMap(report, "topic"); topic != "" {
+			return topic
+		}
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(report, "name")); topic != "" {
+			return topic
+		}
+	}
+	for _, metric := range asStringAnyMapList(summary["metricSummaries"]) {
+		if topic := jsonStringValueFromMap(metric, "topic"); topic != "" {
+			return topic
+		}
+		if topic := transportCorootTopicFromName(jsonStringValueFromMap(metric, "name")); topic != "" {
+			return topic
+		}
+	}
+	return ""
+}
+
+func transportCorootTopicFromName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(normalized, "net"), strings.Contains(normalized, "network"), strings.Contains(normalized, "tcp"):
+		return "net"
+	case strings.Contains(normalized, "cpu"):
+		return "cpu"
+	case strings.Contains(normalized, "memory"), strings.Contains(normalized, "mem"), strings.Contains(normalized, "rss"):
+		return "memory"
+	case strings.Contains(normalized, "instances"), strings.Contains(normalized, "instance"):
+		return "instances"
+	default:
+		return ""
+	}
+}
+
+func appendTransportUniqueString(values []string, value string, limit int) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || (limit > 0 && len(values) >= limit) {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func transportTurnUserText(turn AiopsTransportTurn) string {
+	if turn.User == nil {
+		return ""
+	}
+	return strings.TrimSpace(turn.User.Text)
+}
+
+func transportCorootPreferredReportName(chartReports []any, query string) string {
+	reportNames := make([]string, 0, len(chartReports))
+	for _, report := range chartReports {
+		name := jsonStringValueFromMap(asStringAnyMap(report), "name")
+		if name != "" {
+			reportNames = append(reportNames, name)
+		}
+	}
+	if len(reportNames) == 0 {
+		return ""
+	}
+	normalizedQuery := strings.ToLower(strings.TrimSpace(query))
+	preferredTokens := []string{}
+	switch {
+	case transportContainsAny(normalizedQuery, "cpu", "处理器"):
+		preferredTokens = append(preferredTokens, "cpu")
+	case transportContainsAny(normalizedQuery, "memory", "mem", "内存", "rss"):
+		preferredTokens = append(preferredTokens, "memory")
+	case transportContainsAny(normalizedQuery, "network", "net", "tcp", "网络", "连接"):
+		preferredTokens = append(preferredTokens, "net")
+	case transportContainsAny(normalizedQuery, "logs", "log", "日志"):
+		preferredTokens = append(preferredTokens, "logs", "log")
+	case transportContainsAny(normalizedQuery, "instances", "instance", "实例", "restart", "重启", "pod", "容器"):
+		preferredTokens = append(preferredTokens, "instances", "instance")
+	}
+	for _, token := range preferredTokens {
+		if name := transportFindCorootReportByToken(reportNames, token); name != "" {
+			return name
+		}
+	}
+	if transportContainsAny(normalizedQuery, "根因", "异常", "服务", "情况", "health", "健康", "status") {
+		if name := transportFindCorootReportByToken(reportNames, "cpu"); name != "" {
+			return name
+		}
+	}
+	return reportNames[0]
+}
+
+func transportFindCorootReportByToken(reportNames []string, token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	for _, name := range reportNames {
+		normalized := strings.ToLower(strings.TrimSpace(name))
+		if normalized == token || strings.Contains(normalized, token) {
+			return name
+		}
+	}
+	return ""
+}
+
+func transportContainsAny(value string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCorootServiceMetricsToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "coroot.service_metrics", "coroot_service_metrics":
+		return true
+	default:
+		return false
+	}
+}
+
+func corootChartSeriesFromMetrics(value any) []map[string]any {
+	var out []map[string]any
+	for _, item := range transportAnyList(value) {
+		metric, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		metricName := strings.ToLower(strings.TrimSpace(jsonStringValueFromMap(metric, "name")))
+		if metricName != "cpu" && metricName != "memory" {
+			continue
+		}
+		metricLabel := strings.ToUpper(metricName)
+		unit := jsonStringValueFromMap(metric, "unit")
+		for _, rawSeries := range transportAnyList(metric["series"]) {
+			seriesMap, ok := rawSeries.(map[string]any)
+			if !ok {
+				continue
+			}
+			data := corootChartDataFromValues(seriesMap["values"])
+			if len(data) == 0 {
+				continue
+			}
+			name := firstNonEmptyString(jsonStringValueFromMap(seriesMap, "name"), jsonStringValueFromMap(metric, "chartTitle"), metricLabel)
+			out = append(out, map[string]any{
+				"name": firstNonEmptyString(metricLabel+" / "+name, metricLabel),
+				"unit": unit,
+				"data": data,
+			})
+		}
+		if len(transportAnyList(metric["series"])) > 0 {
+			continue
+		}
+		data := corootChartDataFromValues(metric["values"])
+		if len(data) == 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"name": firstNonEmptyString(metricLabel+" / "+jsonStringValueFromMap(metric, "chartTitle"), metricLabel),
+			"unit": unit,
+			"data": data,
+		})
+	}
+	return out
+}
+
+func corootChartDataFromValues(value any) []map[string]any {
+	var out []map[string]any
+	for _, item := range transportAnyList(value) {
+		switch point := item.(type) {
+		case []any:
+			if len(point) < 2 {
+				continue
+			}
+			timestamp, okTS := corootFloatValue(point[0])
+			metricValue, okValue := corootFloatValue(point[1])
+			if !okTS || !okValue {
+				continue
+			}
+			out = append(out, map[string]any{"timestamp": timestamp, "value": metricValue})
+		case map[string]any:
+			metricValue, okValue := corootFloatValue(point["value"])
+			if !okValue {
+				continue
+			}
+			row := map[string]any{"value": metricValue}
+			if timestamp, okTS := corootFloatValue(corootFirstNonNil(point["timestamp"], point["ts"], point["time"])); okTS {
+				row["timestamp"] = timestamp
+			}
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func transportCorootArtifactStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "ok", "success", "ready":
+		return "ready"
+	case "warning", "error", "blocked", "running":
+		return strings.ToLower(strings.TrimSpace(status))
+	default:
+		return "ready"
+	}
+}
+
+func transportCorootArtifactSeverity(metrics any) string {
+	severity := "info"
+	for _, item := range transportAnyList(metrics) {
+		metric, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(jsonStringValueFromMap(metric, "status"))) {
+		case "critical", "error":
+			return "critical"
+		case "warning":
+			severity = "warning"
+		}
+	}
+	return severity
+}
+
+func corootFloatValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func corootFirstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
+}
+
+func cloneStringAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(source))
+	for key, value := range source {
+		out[key] = value
+	}
+	return out
+}
+
 func opsManualPreflightSeverity(status string) string {
 	switch strings.TrimSpace(status) {
 	case "passed":
@@ -1044,7 +1735,14 @@ func opsManualPreflightArtifactActions(status string, nextAction string) []map[s
 	nextAction = strings.TrimSpace(nextAction)
 	switch strings.TrimSpace(status) {
 	case "passed", "not_applicable":
-		return []map[string]any{{"id": "start_dry_run", "label": "进入 Dry Run", "kind": "panel"}}
+		switch nextAction {
+		case "request_approval":
+			return []map[string]any{{"id": "request_approval", "label": "发起审批", "kind": "confirm"}}
+		case "execute_workflow":
+			return []map[string]any{{"id": "execute_workflow", "label": "执行 Workflow", "kind": "confirm"}}
+		default:
+			return []map[string]any{{"id": "confirm_execution", "label": "确认执行", "kind": "confirm"}}
+		}
 	case "blocked":
 		if nextAction == "request_permission" {
 			return []map[string]any{{"id": "request_permission", "label": "申请权限", "kind": "panel"}}
@@ -1095,7 +1793,7 @@ func opsManualSearchArtifactActions(decision string) []map[string]any {
 	case "direct_execute":
 		return []map[string]any{
 			{"id": "fill_parameters", "label": "填写参数", "kind": "panel"},
-			{"id": "dry_run", "label": "Dry Run", "kind": "panel"},
+			{"id": "run_preflight", "label": "运行预检", "kind": "panel"},
 		}
 	case "adapt":
 		return []map[string]any{
@@ -1199,6 +1897,21 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
 	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
+}
+
+func shouldSuppressOpsManualSearchProcessBlock(tool transportToolPayload, outputPreview string) bool {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_search_result" && strings.TrimSpace(tool.ToolName) != "search_ops_manuals" {
+		return false
+	}
+	outputPreview = strings.TrimSpace(outputPreview)
+	if outputPreview == "" {
+		return true
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(outputPreview), &payload); err != nil || len(payload) == 0 {
+		return true
+	}
+	return !isActionableOpsManualSearchPayload(payload)
 }
 
 func compactOpsManualSearchProcessText(displayKind, text, outputPreview string) (string, string) {

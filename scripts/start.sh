@@ -20,12 +20,17 @@ Environment overrides:
   AIOPS_GRPC_AUTO_PORT=1       when AIOPS_GRPC_ADDR is unset, use :18190+ if :18090 is busy
   AIOPS_DATA_DIR=.data         persisted state directory, default .data
   AIOPS_WEB_DIST_DIR=web/dist  frontend dist directory, default web/dist
+  AIOPS_SKILLS_DIRS=skills     colon-separated SKILL.md roots, default skills
   AIOPS_SERVER_BIN=.data/bin/ai-server
+  AIOPS_ENV_FILE=.data/aiops.env
+                               unified KEY=VALUE file loaded without overriding explicit env vars
+  AIOPS_DEBUG_MODEL_INPUT_TRACE=1
+                               write Prompt Trace files for each LLM request, default 1
+  AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=.data/model-input-traces
+                               Prompt Trace output directory
   AIOPS_STORE_DRIVER=postgres  persisted backend store, default postgres for this script
   AIOPS_POSTGRES_DSN=postgres://aiops:aiops@127.0.0.1:55432/aiops?sslmode=disable
                                PostgreSQL DSN used when AIOPS_STORE_DRIVER=postgres
-  AIOPS_COROOT_BASE_URL=http://127.0.0.1:8080
-                               when set, Coroot must be reachable before aiops-v2 starts
   AIOPS_OTEL_ENABLED=1         when enabled, AIOPS_OTEL_ENDPOINT must be reachable
   AIOPS_RUNNER_STUDIO_UPSTREAM_URL=http://127.0.0.1:19080
                                when set, Runner Studio upstream must be reachable
@@ -42,6 +47,52 @@ EOF
 
 log() {
   printf '[aiops-v2] %s\n' "$*"
+}
+
+trim_spaces() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_optional_quotes() {
+  local value="$1"
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+load_env_file() {
+  local file="$1"
+  local line key value
+
+  [[ -n "$file" && -f "$file" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim_spaces "$line")"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    if [[ "$line" == export[[:space:]]* ]]; then
+      line="$(trim_spaces "${line#export}")"
+    fi
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="$(trim_spaces "${BASH_REMATCH[2]}")"
+      value="$(strip_optional_quotes "$value")"
+      if [[ -z "${!key+x}" ]]; then
+        export "$key=$value"
+      fi
+    fi
+  done <"$file"
+}
+
+load_env_files() {
+  AIOPS_ENV_FILE="${AIOPS_ENV_FILE:-.data/aiops.env}"
+  export AIOPS_ENV_FILE
+  load_env_file "$AIOPS_ENV_FILE"
 }
 
 require_command() {
@@ -422,14 +473,10 @@ check_postgres_dependency() {
 }
 
 check_configured_dependencies() {
-  local coroot_url
   local runner_upstream_url
 
   check_postgres_dependency
   check_mysql_dependency
-
-  coroot_url="$(first_non_empty_env AIOPS_COROOT_BASE_URL COROOT_BASE_URL || true)"
-  check_url_dependency "coroot" "$coroot_url"
 
   if truthy "${AIOPS_OTEL_ENABLED:-}"; then
     check_url_dependency "otel" "${AIOPS_OTEL_ENDPOINT:-http://localhost:6006/v1/traces}"
@@ -458,6 +505,8 @@ done
 
 cd "$ROOT_DIR"
 
+load_env_files
+
 if [[ -n "${AIOPS_GRPC_ADDR+x}" ]]; then
   AIOPS_GRPC_ADDR_EXPLICIT=1
 else
@@ -468,6 +517,9 @@ export AIOPS_DATA_DIR="${AIOPS_DATA_DIR:-.data}"
 export AIOPS_HTTP_ADDR="${AIOPS_HTTP_ADDR:-:18080}"
 export AIOPS_GRPC_ADDR="${AIOPS_GRPC_ADDR:-:18090}"
 export AIOPS_WEB_DIST_DIR="${AIOPS_WEB_DIST_DIR:-web/dist}"
+export AIOPS_SKILLS_DIRS="${AIOPS_SKILLS_DIRS:-skills}"
+export AIOPS_DEBUG_MODEL_INPUT_TRACE="${AIOPS_DEBUG_MODEL_INPUT_TRACE:-1}"
+export AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR="${AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR:-.data/model-input-traces}"
 export AIOPS_STORE_DRIVER="${AIOPS_STORE_DRIVER:-postgres}"
 case "$(lower "$AIOPS_STORE_DRIVER")" in
   postgres|postgresql)
@@ -500,6 +552,9 @@ AIOPS_GRPC_ADDR=$AIOPS_GRPC_ADDR
 AIOPS_GRPC_AUTO_PORT=$AIOPS_GRPC_AUTO_PORT
 AIOPS_DATA_DIR=$AIOPS_DATA_DIR
 AIOPS_WEB_DIST_DIR=$AIOPS_WEB_DIST_DIR
+AIOPS_SKILLS_DIRS=$AIOPS_SKILLS_DIRS
+AIOPS_DEBUG_MODEL_INPUT_TRACE=$AIOPS_DEBUG_MODEL_INPUT_TRACE
+AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=$AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR
 AIOPS_SERVER_BIN=$AIOPS_SERVER_BIN
 AIOPS_STORE_DRIVER=$AIOPS_STORE_DRIVER
 SKIP_WEB_BUILD=$SKIP_WEB_BUILD

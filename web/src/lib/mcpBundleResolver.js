@@ -113,54 +113,7 @@ export function resolveMcpBundlePresetKey(source = {}, defaults = {}) {
   const normalizedDefaults = asObject(defaults);
   const explicitBundleKind = compactText(normalizedSource.bundleKind || normalizedSource.bundle_kind || normalizedDefaults.bundleKind).toLowerCase();
 
-  // Coroot-specific resolution FIRST: detect coroot source, mcpServer, or
-  // toolName prefix so that generic bundleKind values like "monitor_bundle"
-  // still route to the Coroot-specific presets when the data originates from
-  // Coroot.
-  const mcpServer = compactText(normalizedSource.mcpServer || normalizedSource.mcp_server || normalizedDefaults.mcpServer).toLowerCase();
-  const payloadSource = compactText(normalizedSource.source || normalizedDefaults.source).toLowerCase();
-  const toolName = compactText(normalizedSource.toolName || normalizedSource.tool_name || normalizedDefaults.toolName).toLowerCase();
-  // Recognised Coroot toolName prefixes — used both for the isCoroot gate and
-  // for finer-grained preset routing inside the Coroot branch.
-  const COROOT_TOOL_PREFIXES = [
-    "coroot.",           // generic catch-all  (e.g. coroot.list_services)
-    "coroot.topology",   // service dependency topology
-    "coroot.host_overview", // host overview / host metrics
-    "coroot.service_overview", // service overview
-    "coroot.alerts",     // alert queries
-    "coroot.rca",        // root-cause analysis
-    "coroot.metrics",    // raw metric queries
-  ];
-
-  const isCorootToolName = toolName.startsWith("coroot.") ||
-    COROOT_TOOL_PREFIXES.some(
-      (prefix) => toolName === prefix || toolName.startsWith(prefix),
-    );
-
-  const isCoroot =
-    mcpServer.includes("coroot") ||
-    payloadSource.includes("coroot") ||
-    isCorootToolName ||
-    explicitBundleKind === "coroot_service_monitor" ||
-    explicitBundleKind === "coroot_incident_rca" ||
-    explicitBundleKind === "coroot_host_overview" ||
-    explicitBundleKind === "coroot_topology";
-
-  if (isCoroot) {
-    // RCA-specific routing
-    if (
-      hasRemediationSignal(normalizedSource) ||
-      explicitBundleKind === "coroot_incident_rca" ||
-      toolName.startsWith("coroot.rca")
-    ) {
-      return MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA;
-    }
-    // Topology, host overview, service overview, and all other Coroot data
-    // route to the Coroot service monitor preset (which includes topology section).
-    return MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR;
-  }
-
-  // Generic explicit bundleKind fallback (non-Coroot payloads).
+  // Generic explicit bundleKind fallback.
   if (explicitBundleKind === "remediation_bundle") {
     return MCP_BUNDLE_PRESET_KEYS.ROOT_CAUSE_REMEDIATION;
   }

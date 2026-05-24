@@ -147,67 +147,16 @@ describe("mcpBundleResolver", () => {
   });
 });
 
-describe("Coroot toolName prefix routing", () => {
-  it("routes coroot.topology toolName to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.topology" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot.host_overview toolName to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.host_overview" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot.service_overview toolName to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.service_overview" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot.alerts toolName to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.alerts" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot.rca toolName to COROOT_INCIDENT_RCA", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.rca" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA);
-  });
-
-  it("routes coroot.rca.analyze toolName to COROOT_INCIDENT_RCA", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.rca.analyze" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA);
-  });
-
-  it("routes coroot.metrics toolName to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ toolName: "coroot.metrics" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot_host_overview bundleKind to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ bundleKind: "coroot_host_overview" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot_topology bundleKind to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ bundleKind: "coroot_topology" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes via mcpServer containing coroot to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ mcpServer: "coroot-mcp-server" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes via source containing coroot to COROOT_SERVICE_MONITOR", () => {
-    const key = resolveMcpBundlePresetKey({ source: "coroot" });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_SERVICE_MONITOR);
-  });
-
-  it("routes coroot source with remediation signal to COROOT_INCIDENT_RCA", () => {
-    const key = resolveMcpBundlePresetKey({
-      source: "coroot",
-      rootCauseType: "memory_leak",
-    });
-    expect(key).toBe(MCP_BUNDLE_PRESET_KEYS.COROOT_INCIDENT_RCA);
+describe("provider-neutral routing", () => {
+  it("does not infer a provider preset from tool/server/source prefixes", () => {
+    expect(resolveMcpBundlePresetKey({ toolName: "provider.topology" })).toBe(
+      MCP_BUNDLE_PRESET_KEYS.MIDDLEWARE_SERVICE_MONITOR,
+    );
+    expect(resolveMcpBundlePresetKey({ mcpServer: "provider-mcp-server" })).toBe(
+      MCP_BUNDLE_PRESET_KEYS.MIDDLEWARE_SERVICE_MONITOR,
+    );
+    expect(resolveMcpBundlePresetKey({ source: "provider" })).toBe(
+      MCP_BUNDLE_PRESET_KEYS.MIDDLEWARE_SERVICE_MONITOR,
+    );
   });
 });

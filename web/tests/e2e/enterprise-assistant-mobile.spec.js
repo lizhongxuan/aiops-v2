@@ -187,7 +187,7 @@ const hostLeasesPayload = {
 
 function chatState() {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "mobile-chat-session",
     threadId: "mobile-chat-session",
     status: "idle",
@@ -313,7 +313,7 @@ async function routeSharedApis(page) {
   await page.route("**/api/v1/debug/model-input-traces/file**", (route) =>
     route.fulfill({ json: { content: JSON.stringify(traceJson) } }),
   );
-  await page.route("**/api/v1/debug/model-input-traces?limit=150", (route) =>
+  await page.route("**/api/v1/debug/model-input-traces?limit=2000", (route) =>
     route.fulfill({
       json: {
         rootDir: ".data/model-input-traces",
@@ -398,24 +398,24 @@ test.describe("企业级智能运维助手移动端关键流程", () => {
 
     const traceScroller = page.getByTestId("prompt-trace-scroll");
     await expect(traceScroller).toBeVisible();
-    await expect(page.getByText("会话列表")).toBeVisible();
+    await expect(page.getByText("历史会话")).toBeVisible();
     await page.getByText("mobile-chat-session").first().click();
     await traceScroller.evaluate((node) => { node.scrollLeft = 300; });
     await expect(page.getByText("用户请求列表")).toBeVisible();
     await page.getByRole("button", { name: /页面按钮很慢/ }).click();
     await traceScroller.evaluate((node) => { node.scrollLeft = 620; });
     await expect(page.getByText("LLM 请求列表")).toBeVisible();
-    await page.getByRole("button", { name: /查看详情/ }).click();
+    await page.getByTestId("prompt-trace-llm-card").click();
     await expect(page.getByRole("dialog", { name: "LLM 请求详情" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Agent-to-UI 来源" })).toBeVisible();
-    await expect(page.getByText("System Prompt", { exact: true })).toBeVisible();
-    await expect(page.getByText("coroot-mobile-latency-chart")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "LLM 返回内容" })).toBeVisible();
+    await expect(page.getByText("llm-request-mobile-1", { exact: true })).toBeVisible();
+    await expect(page.getByText("图表已生成")).toBeVisible();
   });
 
   test("主机画像详情字段在移动端不重叠", async ({ page }) => {
     await page.goto("/settings/hosts");
 
-    await expect(page.getByRole("heading", { name: "主机与租约" })).toBeVisible();
+    await expect(page.locator("main").getByText("主机与租约", { exact: true })).toBeVisible();
     const detail = page.locator("aside").filter({ hasText: "基础信息" }).first();
     await expect(detail).toContainText("运行环境");
     await expect(detail).toContainText("已安装 Agent");

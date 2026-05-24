@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/plugins"
 )
 
 func TestUICardsAPIListCRUDAndSubresources(t *testing.T) {
@@ -113,5 +114,42 @@ func TestUICardsAPIListCRUDAndSubresources(t *testing.T) {
 	defer deleteBuiltIn.Body.Close()
 	if deleteBuiltIn.StatusCode != http.StatusConflict {
 		t.Fatalf("DELETE built-in status = %d, want 409", deleteBuiltIn.StatusCode)
+	}
+}
+
+func TestUICardsAPIRenderersFromPluginService(t *testing.T) {
+	service := appui.NewUICardService(&resourceUICardRepository{}, appui.WithUICardPluginSpecs([]plugins.Spec{{
+		Name: "observability-plugin",
+		Manifest: plugins.Manifest{
+			Name: "observability-plugin",
+			AIOps: plugins.AIOpsManifest{
+				AgentUIRenderers: []plugins.AgentUIRendererManifest{{
+					ID:            "observability.chart.v1",
+					ArtifactTypes: []string{"observability.chart"},
+					SchemaVersion: "observability.chart.v1",
+					Component:     "CorootChartArtifact",
+					Fallback:      "json_summary",
+				}},
+			},
+		},
+	}}))
+	ts := httptest.NewServer(NewResourceServer(WithUICardService(service)).Handler())
+	defer ts.Close()
+
+	renderersResp, err := http.Get(ts.URL + "/api/v1/ui-cards/renderers")
+	if err != nil {
+		t.Fatalf("GET /api/v1/ui-cards/renderers error = %v", err)
+	}
+	defer renderersResp.Body.Close()
+	if renderersResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/ui-cards/renderers status = %d, want 200", renderersResp.StatusCode)
+	}
+	var renderersPayload map[string]any
+	if err := json.NewDecoder(renderersResp.Body).Decode(&renderersPayload); err != nil {
+		t.Fatal(err)
+	}
+	renderers := asSlice(renderersPayload["items"])
+	if len(renderers) != 1 || renderers[0].(map[string]any)["id"] != "observability.chart.v1" {
+		t.Fatalf("renderers payload = %#v, want plugin renderer metadata", renderersPayload)
 	}
 }

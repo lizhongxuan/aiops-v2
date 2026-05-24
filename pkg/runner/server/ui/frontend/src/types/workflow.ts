@@ -262,6 +262,23 @@ export interface DryRunResult extends ValidationResult {
   yaml?: string;
 }
 
+export interface NodeDebugRequest {
+  graph: WorkflowGraph;
+  vars?: Record<string, unknown>;
+  target?: string;
+  mode?: "dry_run" | "mock" | "local" | "run" | string;
+}
+
+export interface NodeDebugResult {
+  node_id: string;
+  action?: string;
+  status: "success" | "failed" | "skipped" | string;
+  output?: Record<string, unknown>;
+  stdout?: string;
+  stderr?: string;
+  error?: string;
+}
+
 export interface PathSimulation {
   reachable_node_ids: string[];
   selected_edge_ids: string[];

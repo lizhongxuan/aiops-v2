@@ -1,0 +1,12 @@
+{
+  "id": "coroot.chart.v1",
+  "artifact_types": ["coroot_chart", "observability.chart"],
+  "schema_version": "coroot.chart.v1",
+  "component": "CorootChartArtifact",
+  "fallback": "json_summary",
+  "display": {
+    "title_field": "title",
+    "icon": "activity",
+    "hide_footer": true
+  }
+}

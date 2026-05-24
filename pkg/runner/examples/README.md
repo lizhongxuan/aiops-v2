@@ -5,7 +5,7 @@ Examples for the standalone runner library.
 - `runner-simple`: run a workflow
 - `runner-plan`: generate plan JSON
 - `agent-server` + `agent-dispatch`: dispatch steps to a remote agent
-- `shell.run`: inline shell script step (no script store required)
+- `script.shell`: inline shell script step (no script store required)
 - `web-ui`: static page to run YAML and view per-step logs
 
 ## runner-simple
@@ -40,12 +40,12 @@ go run ./runner/examples/agent-dispatch --token runner-token ./runner/examples/a
 go run ./runner/examples/agent-dispatch --token runner-token ./runner/examples/pg-restore.yaml
 ```
 
-## shell.run example
+## script.shell example
 
 ```yaml
 steps:
   - name: inline shell
-    action: shell.run
+    action: script.shell
     args:
       script: |
         echo "hello from shell"

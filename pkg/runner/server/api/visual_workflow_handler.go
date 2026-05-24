@@ -167,6 +167,29 @@ func (h *visualWorkflowHandler) DryRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *visualWorkflowHandler) DebugNode(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeDebugNodeRequest(r)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	nodeID := strings.TrimSpace(r.PathValue("node_id"))
+	if nodeID == "" {
+		nodeID = strings.TrimSpace(req.NodeID)
+	}
+	result, err := h.svc.DebugNode(r.Context(), nodeID, service.VisualWorkflowDebugRequest{
+		Graph:  req.Graph,
+		Vars:   req.Vars,
+		Target: req.Target,
+		Mode:   req.Mode,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *visualWorkflowHandler) SubmitRun(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeGraphRunRequest(r)
 	if err != nil {
@@ -294,6 +317,14 @@ type graphRunRequest struct {
 	RunScope         string         `json:"run_scope"`
 }
 
+type debugNodeRequest struct {
+	NodeID string         `json:"node_id,omitempty"`
+	Graph  visual.Graph   `json:"graph"`
+	Vars   map[string]any `json:"vars"`
+	Target string         `json:"target"`
+	Mode   string         `json:"mode"`
+}
+
 type variableResolveRequest struct {
 	Graph  visual.Graph `json:"graph"`
 	NodeID string       `json:"node_id,omitempty"`
@@ -374,6 +405,21 @@ func decodeGraphRunRequest(r *http.Request) (graphRunRequest, error) {
 	}
 	if isEmptyVisualGraph(req.Graph) {
 		return graphRunRequest{}, fmt.Errorf("graph is required")
+	}
+	return req, nil
+}
+
+func decodeDebugNodeRequest(r *http.Request) (debugNodeRequest, error) {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return debugNodeRequest{}, err
+	}
+	var req debugNodeRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return debugNodeRequest{}, err
+	}
+	if isEmptyVisualGraph(req.Graph) {
+		return debugNodeRequest{}, fmt.Errorf("graph is required")
 	}
 	return req, nil
 }

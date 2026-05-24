@@ -4,6 +4,7 @@ import { buildGraphDiffSummary } from "../utils/graphDiff";
 import type {
   ActionSpec,
   DryRunResult,
+  NodeDebugResult,
   RunEvent,
   ValidationResult,
   WorkflowBundle,
@@ -24,6 +25,7 @@ import {
 } from "../utils/graphEditing";
 import { applyRunStateToGraph, createInitialRunState, reduceRunEvent, type RunState } from "../utils/runEventReducer";
 import { prepareWorkflowGraphForCreate } from "../utils/workflowTemplates";
+import { sanitizeEditableGraph } from "../utils/graphHistory";
 
 interface GraphStoreState {
   graph: WorkflowGraph | null;
@@ -61,6 +63,8 @@ interface GraphStoreState {
   publishedAt: string;
   validation: ValidationResult | null;
   dryRun: DryRunResult | null;
+  nodeDebugging: boolean;
+  nodeDebugResult: NodeDebugResult | null;
   yamlPreview: string;
   run: RunState;
   historyPast: WorkflowGraph[];
@@ -113,6 +117,7 @@ export function useGraphStore() {
       state.offline = false;
       state.validation = null;
       state.dryRun = null;
+      state.nodeDebugResult = null;
       state.yamlPreview = "";
       state.dirty = false;
       state.riskAcknowledged = false;
@@ -155,21 +160,24 @@ export function useGraphStore() {
   function updateNode(nodeId: string, patch: Partial<WorkflowNode>) {
     if (!state.graph) return;
     if (!state.graph.nodes.some((node) => node.id === nodeId)) return;
-    pushHistory();
-    state.graph.nodes = state.graph.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node));
+    const nextGraph = {
+      ...state.graph,
+      nodes: state.graph.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node)),
+    };
+    if (!commitGraphEdit(nextGraph)) return;
     markDirty();
   }
 
   function updateWorkflow(patch: Partial<WorkflowDefinition>) {
     if (!state.graph) return;
-    pushHistory();
-    state.graph = {
+    const nextGraph = {
       ...state.graph,
       workflow: {
         ...state.graph.workflow,
         ...patch,
       },
     };
+    if (!commitGraphEdit(nextGraph)) return;
     markDirty();
   }
 
@@ -186,6 +194,7 @@ export function useGraphStore() {
     state.selectedNodeId = node.id;
     state.validation = null;
     state.dryRun = null;
+    state.nodeDebugResult = null;
     markDirty();
   }
 
@@ -231,7 +240,8 @@ export function useGraphStore() {
   }
 
   function replaceGraph(graph: WorkflowGraph) {
-    if (state.graph) pushHistory();
+    if (state.graph && !commitGraphEdit(graph)) return;
+    if (!state.graph) state.graph = graph;
     state.graph = graph;
     state.selectedNodeId = graph.nodes.some((node) => node.id === state.selectedNodeId) ? state.selectedNodeId : graph.nodes[0]?.id || null;
     state.validation = null;
@@ -268,6 +278,7 @@ export function useGraphStore() {
       state.publishedAt = "";
       state.validation = null;
       state.dryRun = null;
+      state.nodeDebugResult = null;
       state.yamlPreview = result.yaml || "";
       state.riskAcknowledged = false;
       state.warningAcknowledged = false;
@@ -404,8 +415,10 @@ export function useGraphStore() {
       state.dirty = false;
       state.validation = null;
       state.dryRun = null;
+      state.nodeDebugResult = null;
       upsertWorkflowOption({ ...result, name: result.name || graph.workflow.name, status: result.status || "draft" });
       await loadWorkflowVersions();
+      clearEditSession();
     } catch (error) {
       state.error = errorMessage(error);
     } finally {
@@ -451,6 +464,7 @@ export function useGraphStore() {
       state.publishedAt = "";
       state.validation = null;
       state.dryRun = null;
+      state.nodeDebugResult = null;
       state.yamlPreview = result.yaml || bundle.yaml;
       state.riskAcknowledged = false;
       state.warningAcknowledged = false;
@@ -531,6 +545,7 @@ export function useGraphStore() {
       state.selectedNodeId = graph.nodes[1]?.id || graph.nodes[0]?.id || null;
       state.validation = null;
       state.dryRun = null;
+      state.nodeDebugResult = null;
       state.yamlPreview = yaml;
       state.riskAcknowledged = false;
       state.warningAcknowledged = false;
@@ -587,6 +602,42 @@ export function useGraphStore() {
       state.error = errorMessage(error);
     } finally {
       state.canceling = false;
+    }
+  }
+
+  async function debugSelectedNode(options: { target?: string; mode?: string } = {}) {
+    if (!state.graph || !state.selectedNodeId) return;
+    const node = state.graph.nodes.find((item) => item.id === state.selectedNodeId);
+    if (!node) {
+      state.error = "Selected node does not exist.";
+      return;
+    }
+    if (node.type !== "action") {
+      state.error = "Only action nodes can be debugged.";
+      return;
+    }
+    state.nodeDebugging = true;
+    state.nodeDebugResult = null;
+    state.error = null;
+    try {
+      const request = {
+        graph: sanitizeEditableGraph(state.graph),
+        vars: state.graph.workflow.vars || {},
+        target: options.target || "local",
+        mode: options.mode || "dry_run",
+      };
+      state.nodeDebugResult = state.offline ? await mockApi.debugGraphNode(node.id, request) : await runnerApi.debugGraphNode(node.id, request);
+    } catch (error) {
+      const message = errorMessage(error);
+      state.nodeDebugResult = {
+        node_id: node.id,
+        action: node.step?.action,
+        status: "failed",
+        error: message,
+      };
+      state.error = message;
+    } finally {
+      state.nodeDebugging = false;
     }
   }
 
@@ -739,7 +790,7 @@ export function useGraphStore() {
     if (!state.graph || state.historyPast.length === 0) return;
     const previous = state.historyPast[state.historyPast.length - 1];
     state.historyPast = state.historyPast.slice(0, -1);
-    state.historyFuture = [cloneGraph(state.graph), ...state.historyFuture].slice(0, 50);
+    state.historyFuture = [sanitizeEditableGraph(state.graph), ...state.historyFuture].slice(0, 50);
     state.graph = previous;
     state.selectedNodeId = previous.nodes.some((node) => node.id === state.selectedNodeId) ? state.selectedNodeId : previous.nodes[0]?.id || null;
     markDirty();
@@ -749,7 +800,7 @@ export function useGraphStore() {
     if (!state.graph || state.historyFuture.length === 0) return;
     const next = state.historyFuture[0];
     state.historyFuture = state.historyFuture.slice(1);
-    state.historyPast = [...state.historyPast, cloneGraph(state.graph)].slice(-50);
+    state.historyPast = [...state.historyPast, sanitizeEditableGraph(state.graph)].slice(-50);
     state.graph = next;
     state.selectedNodeId = next.nodes.some((node) => node.id === state.selectedNodeId) ? state.selectedNodeId : next.nodes[0]?.id || null;
     markDirty();
@@ -790,6 +841,7 @@ export function useGraphStore() {
     importGraphYAML,
     submitRun,
     cancelRun,
+    debugSelectedNode,
     approveNode,
     rejectNode,
     replayRunHistory,
@@ -863,6 +915,8 @@ function initialGraphStoreState(): GraphStoreState {
     publishedAt: "",
     validation: null,
     dryRun: null,
+    nodeDebugging: false,
+    nodeDebugResult: null,
     yamlPreview: "",
     run: createInitialRunState(),
     historyPast: [],
@@ -969,6 +1023,7 @@ function markDirty() {
   state.yamlPreview = "";
   state.validation = null;
   state.dryRun = null;
+  state.nodeDebugResult = null;
   state.error = null;
   scheduleCompilePreview();
 }
@@ -1023,8 +1078,21 @@ function cancelScheduledCompilePreview() {
 
 function pushHistory() {
   if (!state.graph) return;
-  state.historyPast = [...state.historyPast, cloneGraph(state.graph)].slice(-50);
+  const current = sanitizeEditableGraph(state.graph);
+  const previous = state.historyPast[state.historyPast.length - 1];
+  if (previous && JSON.stringify(previous) === JSON.stringify(current)) return;
+  state.historyPast = [...state.historyPast, current].slice(-50);
   state.historyFuture = [];
+}
+
+function commitGraphEdit(nextGraph: WorkflowGraph) {
+  if (!state.graph) return false;
+  const current = sanitizeEditableGraph(state.graph);
+  const next = sanitizeEditableGraph(nextGraph);
+  if (JSON.stringify(current) === JSON.stringify(next)) return false;
+  pushHistory();
+  state.graph = nextGraph;
+  return true;
 }
 
 function cloneGraph(graph: WorkflowGraph): WorkflowGraph {

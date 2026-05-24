@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-const AiopsTransportSchemaVersion = "aiops.transport.v1"
+const AiopsTransportSchemaVersion = "aiops.transport.v2"
 
 type AiopsTransportStatus string
 
@@ -82,16 +82,17 @@ type AiopsTransportState struct {
 }
 
 type AiopsTransportTurn struct {
-	ID               string                          `json:"id"`
-	User             *AiopsTransportMessage          `json:"user,omitempty"`
-	Intent           *AiopsTransportIntent           `json:"intent,omitempty"`
-	Process          []AiopsProcessBlock             `json:"process,omitempty"`
-	AgentUIArtifacts []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
-	Final            *AiopsTransportFinal            `json:"final,omitempty"`
-	Status           AiopsTransportTurnStatus        `json:"status"`
-	StartedAt        string                          `json:"startedAt,omitempty"`
-	CompletedAt      string                          `json:"completedAt,omitempty"`
-	UpdatedAt        string                          `json:"updatedAt,omitempty"`
+	ID                string                          `json:"id"`
+	User              *AiopsTransportMessage          `json:"user,omitempty"`
+	Intent            *AiopsTransportIntent           `json:"intent,omitempty"`
+	Process           []AiopsProcessBlock             `json:"process,omitempty"`
+	ContextGovernance []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
+	AgentUIArtifacts  []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
+	Final             *AiopsTransportFinal            `json:"final,omitempty"`
+	Status            AiopsTransportTurnStatus        `json:"status"`
+	StartedAt         string                          `json:"startedAt,omitempty"`
+	CompletedAt       string                          `json:"completedAt,omitempty"`
+	UpdatedAt         string                          `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportMessage struct {
@@ -112,27 +113,59 @@ type AiopsTransportFinal struct {
 }
 
 type AiopsProcessBlock struct {
-	ID            string                      `json:"id"`
-	Kind          AiopsTransportProcessKind   `json:"kind"`
-	DisplayKind   string                      `json:"displayKind,omitempty"`
-	Status        AiopsTransportProcessStatus `json:"status"`
-	Text          string                      `json:"text"`
-	Command       string                      `json:"command,omitempty"`
-	InputSummary  string                      `json:"inputSummary,omitempty"`
-	OutputPreview string                      `json:"outputPreview,omitempty"`
-	Steps         []AiopsTransportPlanStep    `json:"steps,omitempty"`
-	Queries       []string                    `json:"queries,omitempty"`
-	Results       []AiopsSearchResult         `json:"results,omitempty"`
-	ApprovalID    string                      `json:"approvalId,omitempty"`
-	Source        string                      `json:"source,omitempty"`
-	Confidence    string                      `json:"confidence,omitempty"`
-	Window        string                      `json:"window,omitempty"`
-	RawRef        string                      `json:"rawRef,omitempty"`
-	EvidenceRefs  []string                    `json:"evidenceRefs,omitempty"`
-	Mock          bool                        `json:"mock,omitempty"`
-	ExitCode      *int                        `json:"exitCode,omitempty"`
-	DurationMs    int64                       `json:"durationMs,omitempty"`
-	UpdatedAt     string                      `json:"updatedAt,omitempty"`
+	ID                  string                      `json:"id"`
+	Kind                AiopsTransportProcessKind   `json:"kind"`
+	DisplayKind         string                      `json:"displayKind,omitempty"`
+	Status              AiopsTransportProcessStatus `json:"status"`
+	Text                string                      `json:"text"`
+	Command             string                      `json:"command,omitempty"`
+	InputSummary        string                      `json:"inputSummary,omitempty"`
+	OutputPreview       string                      `json:"outputPreview,omitempty"`
+	Steps               []AiopsTransportPlanStep    `json:"steps,omitempty"`
+	Queries             []string                    `json:"queries,omitempty"`
+	Results             []AiopsSearchResult         `json:"results,omitempty"`
+	ApprovalID          string                      `json:"approvalId,omitempty"`
+	Source              string                      `json:"source,omitempty"`
+	Confidence          string                      `json:"confidence,omitempty"`
+	Window              string                      `json:"window,omitempty"`
+	RawRef              string                      `json:"rawRef,omitempty"`
+	EvidenceRefs        []string                    `json:"evidenceRefs,omitempty"`
+	Mock                bool                        `json:"mock,omitempty"`
+	ExitCode            *int                        `json:"exitCode,omitempty"`
+	DurationMs          int64                       `json:"durationMs,omitempty"`
+	MaterializationTier string                      `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                       `json:"originalBytes,omitempty"`
+	InlineBytes         int64                       `json:"inlineBytes,omitempty"`
+	ExternalReferences  []AiopsExternalReference    `json:"externalReferences,omitempty"`
+	UpdatedAt           string                      `json:"updatedAt,omitempty"`
+}
+
+type AiopsContextGovernanceEvent struct {
+	ID              string         `json:"id,omitempty"`
+	Layer           string         `json:"layer"`
+	Kind            string         `json:"kind"`
+	Message         string         `json:"message,omitempty"`
+	Budget          map[string]any `json:"budget,omitempty"`
+	ReferenceIDs    []string       `json:"referenceIds,omitempty"`
+	CompactedIDs    []string       `json:"compactedIds,omitempty"`
+	DroppedGroupIDs []string       `json:"droppedGroupIds,omitempty"`
+	RetryAttempt    int            `json:"retryAttempt,omitempty"`
+	RetryMax        int            `json:"retryMax,omitempty"`
+	Timeout         bool           `json:"timeout,omitempty"`
+	CreatedAt       string         `json:"createdAt,omitempty"`
+}
+
+type AiopsExternalReference struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind,omitempty"`
+	URI         string `json:"uri,omitempty"`
+	CardRef     string `json:"cardRef,omitempty"`
+	FilePath    string `json:"filePath,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	Digest      string `json:"digest,omitempty"`
+	Bytes       int64  `json:"bytes,omitempty"`
 }
 
 type AiopsTransportPlanStep struct {

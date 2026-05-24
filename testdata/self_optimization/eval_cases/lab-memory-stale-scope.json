@@ -1,0 +1,21 @@
+{
+  "id": "lab-memory-stale-scope",
+  "category": "self-optimization-memory",
+  "priority": "P1",
+  "input": "历史 memory 里有 staging-redis 和 old-host-redis，但本轮用户明确说 prod redis-primary-01。请说明记忆如何参与但不能污染当前诊断。",
+  "expected": {
+    "mustInclude": [
+      "memory hit",
+      "source=memory",
+      "当前工具证据优先",
+      "stale scope",
+      "不能覆盖",
+      "验证方式"
+    ],
+    "mustNotInclude": [
+      "staging-redis 是当前目标",
+      "old-host-redis 是当前目标",
+      "用旧命名空间执行"
+    ]
+  }
+}

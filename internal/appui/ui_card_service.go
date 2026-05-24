@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/store"
 )
 
@@ -25,6 +26,7 @@ type UICardService interface {
 	UpdateStatus(id string, status string) (store.UICard, error)
 	Versions(id string) ([]UICardVersion, error)
 	CreateVersion(id string) (store.UICard, error)
+	ListRenderers() (AgentUIRendererMetadataList, error)
 	Validate(req UICardValidationRequest) (UICardValidationResult, error)
 	Preview(req UICardPreviewRequest) (UICardPreviewResult, error)
 }
@@ -79,12 +81,42 @@ type UICardPreviewResult struct {
 	Validation UICardValidationResult `json:"validation"`
 }
 
-type defaultUICardService struct {
-	repo UICardRepository
+type AgentUIRendererMetadata struct {
+	ID            string         `json:"id"`
+	ArtifactTypes []string       `json:"artifact_types,omitempty"`
+	SchemaVersion string         `json:"schema_version,omitempty"`
+	Component     string         `json:"component,omitempty"`
+	Fallback      string         `json:"fallback,omitempty"`
+	Display       map[string]any `json:"display,omitempty"`
+	Plugin        string         `json:"plugin,omitempty"`
 }
 
-func NewUICardService(repo UICardRepository) UICardService {
-	return &defaultUICardService{repo: repo}
+type AgentUIRendererMetadataList struct {
+	Items []AgentUIRendererMetadata `json:"items"`
+	Total int                       `json:"total"`
+}
+
+type defaultUICardService struct {
+	repo        UICardRepository
+	pluginSpecs []plugins.Spec
+}
+
+type UICardServiceOption func(*defaultUICardService)
+
+func WithUICardPluginSpecs(specs []plugins.Spec) UICardServiceOption {
+	return func(s *defaultUICardService) {
+		s.pluginSpecs = cloneUICardPluginSpecs(specs)
+	}
+}
+
+func NewUICardService(repo UICardRepository, options ...UICardServiceOption) UICardService {
+	svc := &defaultUICardService{repo: repo}
+	for _, option := range options {
+		if option != nil {
+			option(svc)
+		}
+	}
+	return svc
 }
 
 func (s *defaultUICardService) List(req UICardListRequest) (UICardListResult, error) {
@@ -141,7 +173,7 @@ func (s *defaultUICardService) Create(card store.UICard) (store.UICard, error) {
 	if err != nil {
 		return store.UICard{}, err
 	}
-	for _, item := range append(defaultUICardDefinitions(), existing...) {
+	for _, item := range append(s.defaultUICardDefinitions(), existing...) {
 		if item.ID == card.ID {
 			return store.UICard{}, fmt.Errorf("ui card %q already exists", card.ID)
 		}
@@ -186,7 +218,7 @@ func (s *defaultUICardService) Update(id string, patch store.UICard) (store.UICa
 		}
 		return merged, nil
 	}
-	for _, card := range defaultUICardDefinitions() {
+	for _, card := range s.defaultUICardDefinitions() {
 		if card.ID == id {
 			return store.UICard{}, fmt.Errorf("built-in ui card %q cannot be updated", id)
 		}
@@ -196,7 +228,7 @@ func (s *defaultUICardService) Update(id string, patch store.UICard) (store.UICa
 
 func (s *defaultUICardService) Delete(id string) error {
 	id = strings.TrimSpace(id)
-	for _, card := range defaultUICardDefinitions() {
+	for _, card := range s.defaultUICardDefinitions() {
 		if card.ID == id {
 			return fmt.Errorf("built-in ui card %q cannot be deleted", id)
 		}
@@ -249,6 +281,11 @@ func (s *defaultUICardService) CreateVersion(id string) (store.UICard, error) {
 	return s.Update(id, card)
 }
 
+func (s *defaultUICardService) ListRenderers() (AgentUIRendererMetadataList, error) {
+	items := agentUIRendererMetadataFromPluginSpecs(s.pluginSpecs)
+	return AgentUIRendererMetadataList{Items: items, Total: len(items)}, nil
+}
+
 func (s *defaultUICardService) Validate(req UICardValidationRequest) (UICardValidationResult, error) {
 	var errors []string
 	card := req.Card
@@ -291,7 +328,7 @@ func (s *defaultUICardService) allCards() ([]store.UICard, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(defaultUICardDefinitions(), persisted...), nil
+	return append(s.defaultUICardDefinitions(), persisted...), nil
 }
 
 func (s *defaultUICardService) persistedCards() ([]store.UICard, error) {
@@ -319,7 +356,15 @@ func (s *defaultUICardService) savePersisted(cards []store.UICard) error {
 	return s.repo.SaveUICards(cards)
 }
 
+func (s *defaultUICardService) defaultUICardDefinitions() []store.UICard {
+	return defaultUICardDefinitionsWithPluginSpecs(s.pluginSpecs)
+}
+
 func defaultUICardDefinitions() []store.UICard {
+	return defaultUICardDefinitionsWithPluginSpecs(nil)
+}
+
+func defaultUICardDefinitionsWithPluginSpecs(pluginSpecs []plugins.Spec) []store.UICard {
 	now := time.Date(2026, 5, 16, 0, 0, 0, 0, time.UTC)
 	baseSchema := map[string]any{"type": "object", "additionalProperties": true}
 	policy := map[string]any{"dangerousKeys": dangerousUICardKeys()}
@@ -339,9 +384,9 @@ func defaultUICardDefinitions() []store.UICard {
 		{"workflow-result", "workflow_result", "Workflow Result", "Shows Runner workflow execution result.", []any{"open_workflow_run"}, map[string]any{"id": "sample-workflow-result", "type": "workflow_result", "payload": map[string]any{"status": "success"}}},
 		{"verification-result", "verification_result", "Verification Result", "Shows recovery or validation proof.", []any{"open_evidence"}, map[string]any{"id": "sample-verification-result", "type": "verification_result", "payload": map[string]any{"status": "passed"}}},
 		{"experience-match", "experience_match", "Experience Match", "Shows matched legacy experience-pack evidence.", []any{"open_case"}, map[string]any{"id": "sample-experience-match", "type": "experience_match", "payload": map[string]any{"match": "redis-memory"}}},
-		{"ops-manual-match", "ops_manual_match", "Ops Manual Match", "Shows selected ops manual and workflow readiness.", []any{"open_ops_manual", "start_dry_run"}, map[string]any{"id": "sample-ops-manual-match", "type": "ops_manual_match", "payload": map[string]any{"manualId": "manual-demo"}}},
-		{"ops-manual-search-result", "ops_manual_search_result", "Ops Manual Search Result", "Shows ops manual retrieval decisions.", []any{"run_preflight_probe", "start_dry_run", "review_manual"}, map[string]any{"id": "sample-ops-manual-search-result", "type": "ops_manual_search_result", "payload": map[string]any{"decision": "need_info", "summary": "missing target instance"}}},
-		{"ops-manual-preflight-result", "ops_manual_preflight_result", "Ops Manual Preflight Result", "Shows ops manual preflight readiness.", []any{"start_dry_run", "request_permission", "collect_context"}, map[string]any{"id": "sample-ops-manual-preflight-result", "type": "ops_manual_preflight_result", "payload": map[string]any{"status": "passed", "ready": true}}},
+		{"ops-manual-match", "ops_manual_match", "Ops Manual Match", "Shows selected ops manual and workflow readiness.", []any{"open_ops_manual", "confirm_execution"}, map[string]any{"id": "sample-ops-manual-match", "type": "ops_manual_match", "payload": map[string]any{"manualId": "manual-demo"}}},
+		{"ops-manual-search-result", "ops_manual_search_result", "Ops Manual Search Result", "Shows ops manual retrieval decisions.", []any{"run_preflight_probe", "confirm_execution", "review_manual"}, map[string]any{"id": "sample-ops-manual-search-result", "type": "ops_manual_search_result", "payload": map[string]any{"decision": "need_info", "summary": "missing target instance"}}},
+		{"ops-manual-preflight-result", "ops_manual_preflight_result", "Ops Manual Preflight Result", "Shows ops manual preflight readiness.", []any{"confirm_execution", "request_approval", "request_permission", "collect_context"}, map[string]any{"id": "sample-ops-manual-preflight-result", "type": "ops_manual_preflight_result", "payload": map[string]any{"status": "passed", "ready": true}}},
 		{"ops-manual-fallback-guide", "ops_manual_fallback_guide", "Ops Manual Fallback Guide", "Shows manual step-by-step fallback instructions.", []any{"open_ops_manual"}, map[string]any{"id": "sample-ops-manual-fallback-guide", "type": "ops_manual_fallback_guide", "payload": map[string]any{"step": "read-only probe"}}},
 		{"runner-workflow-generation", "runner_workflow_generation", "Runner Workflow Generation", "Shows Runner workflow draft generation progress.", []any{"open_workflow_run"}, map[string]any{"id": "sample-runner-workflow-generation", "type": "runner_workflow_generation", "payload": map[string]any{"status": "running"}}},
 	}
@@ -363,6 +408,44 @@ func defaultUICardDefinitions() []store.UICard {
 			BundleSupport:     []string{"web"},
 			PlacementDefaults: []string{"assistant_turn"},
 			Summary:           spec.summary,
+			Status:            "active",
+			BuiltIn:           true,
+			Version:           1,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		})
+	}
+	for _, renderer := range agentUIRendererMetadataFromPluginSpecs(pluginSpecs) {
+		id := strings.TrimSpace(renderer.ID)
+		if id == "" {
+			continue
+		}
+		kind := ""
+		if len(renderer.ArtifactTypes) > 0 {
+			kind = renderer.ArtifactTypes[0]
+		}
+		if kind == "" {
+			kind = id
+		}
+		cards = append(cards, store.UICard{
+			ID:              id,
+			Name:            firstNonEmptyString(renderer.Component, id),
+			Kind:            kind,
+			Renderer:        id,
+			RendererVersion: "plugin",
+			SchemaVersion:   renderer.SchemaVersion,
+			PayloadSchema:   cloneMap(baseSchema),
+			MetadataSchema:  cloneMap(baseSchema),
+			DisplayPolicy:   cloneMap(renderer.Display),
+			RedactionPolicy: cloneMap(policy),
+			SamplePayloads: []map[string]any{{
+				"id":       id + "-sample",
+				"name":     "sample",
+				"artifact": map[string]any{"id": id + "-artifact", "type": kind, "renderer": id},
+			}},
+			BundleSupport:     []string{"web"},
+			PlacementDefaults: []string{"assistant_turn"},
+			Summary:           fmt.Sprintf("Plugin renderer %s from %s.", id, firstNonEmptyString(renderer.Plugin, "plugin")),
 			Status:            "active",
 			BuiltIn:           true,
 			Version:           1,
@@ -490,6 +573,64 @@ func cloneMap(input map[string]any) map[string]any {
 	out := make(map[string]any, len(input))
 	for key, value := range input {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneUICardPluginSpecs(specs []plugins.Spec) []plugins.Spec {
+	out := make([]plugins.Spec, len(specs))
+	for i, spec := range specs {
+		out[i] = spec
+		out[i].Manifest.AIOps.AgentUIRenderers = append([]plugins.AgentUIRendererManifest(nil), spec.Manifest.AIOps.AgentUIRenderers...)
+		for j := range out[i].Manifest.AIOps.AgentUIRenderers {
+			out[i].Manifest.AIOps.AgentUIRenderers[j].ArtifactTypes = append([]string(nil), spec.Manifest.AIOps.AgentUIRenderers[j].ArtifactTypes...)
+		}
+	}
+	return out
+}
+
+func agentUIRendererMetadataFromPluginSpecs(specs []plugins.Spec) []AgentUIRendererMetadata {
+	var items []AgentUIRendererMetadata
+	seen := map[string]bool{}
+	for _, spec := range specs {
+		pluginName := strings.TrimSpace(spec.Name)
+		if pluginName == "" {
+			pluginName = strings.TrimSpace(spec.Manifest.Name)
+		}
+		for _, renderer := range spec.Manifest.AIOps.AgentUIRenderers {
+			id := strings.TrimSpace(renderer.ID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			items = append(items, AgentUIRendererMetadata{
+				ID:            id,
+				ArtifactTypes: append([]string(nil), renderer.ArtifactTypes...),
+				SchemaVersion: strings.TrimSpace(renderer.SchemaVersion),
+				Component:     strings.TrimSpace(renderer.Component),
+				Fallback:      strings.TrimSpace(renderer.Fallback),
+				Display:       agentUIRendererDisplayMap(renderer.Display),
+				Plugin:        pluginName,
+			})
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items
+}
+
+func agentUIRendererDisplayMap(display plugins.AgentUIRendererDisplayManifest) map[string]any {
+	out := map[string]any{}
+	if value := strings.TrimSpace(display.TitleField); value != "" {
+		out["title_field"] = value
+	}
+	if value := strings.TrimSpace(display.Icon); value != "" {
+		out["icon"] = value
+	}
+	if display.HideFooter {
+		out["hide_footer"] = true
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

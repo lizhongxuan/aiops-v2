@@ -24,6 +24,7 @@ import {
   type SessionSummary,
 } from "@/pages/settingsApi";
 import { resolveUiFixtureSessions, resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
+import { fetchAssistantTransportResumeState } from "@/transport/assistantTransportControl";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
@@ -45,6 +46,7 @@ type SessionContextBarProps = {
   newSessionLabel: string;
   description: string;
   activeThreadId: string;
+  skipInitialLoad?: boolean;
   terminalHref?: string;
   onThreadChange: (threadId: string, initialState?: AiopsTransportState, autoResume?: boolean) => void;
   children: ReactNode;
@@ -74,6 +76,7 @@ export function SessionContextBar({
   newSessionLabel,
   description,
   activeThreadId,
+  skipInitialLoad = false,
   terminalHref,
   onThreadChange,
   children,
@@ -163,7 +166,8 @@ export function SessionContextBar({
             : "",
           nextSessions.find((session) => normalizeKind(session.kind) === kind)?.id,
         ) || "";
-      applySession(nextActive, nextSessions, false, nextHosts);
+      const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
+      applySession(nextActive, nextSessions, true, nextHosts, hydratedState);
     } finally {
       setBusy(false);
       setActiveAction(null);
@@ -208,7 +212,9 @@ export function SessionContextBar({
       const payload = await activateSession(sessionId);
       const nextSessions = payload.sessions || payload.items || sessions;
       setSessions(nextSessions);
-      applySession(payload.activeSessionId || sessionId, nextSessions, true);
+      const nextActive = payload.activeSessionId || sessionId;
+      const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
+      applySession(nextActive, nextSessions, true, hosts, hydratedState);
       setComposerFocusNonce((value) => value + 1);
     } catch (error) {
       console.error(error);
@@ -240,8 +246,14 @@ export function SessionContextBar({
     await createAndActivateSession();
   }
 
-  function applySession(sessionId: string, sourceSessions = sessions, force = false, sourceHosts = hosts) {
-    return applySessionWithOverride(sessionId, sourceSessions, force, sourceHosts);
+  function applySession(
+    sessionId: string,
+    sourceSessions = sessions,
+    force = false,
+    sourceHosts = hosts,
+    hydratedInitialState?: AiopsTransportState | null,
+  ) {
+    return applySessionWithOverride(sessionId, sourceSessions, force, sourceHosts, undefined, hydratedInitialState);
   }
 
   function applySessionWithOverride(
@@ -250,6 +262,7 @@ export function SessionContextBar({
     force = false,
     sourceHosts = hosts,
     hostIdOverride?: string,
+    hydratedInitialState?: AiopsTransportState | null,
   ) {
     if (!sessionId) return;
     const session = sourceSessions.find((item) => item.id === sessionId);
@@ -257,16 +270,32 @@ export function SessionContextBar({
     setActiveSessionId(sessionId);
     setTarget(nextTarget);
     if (force || sessionId !== activeThreadId) {
-      const initialState = createInitialAiopsTransportState(sessionId);
+      const initialState = hydratedInitialState || createInitialAiopsTransportState(sessionId);
       initialState.sessionId = sessionId;
       initialState.threadId = sessionId;
-      onThreadChange(sessionId, initialState, shouldAutoResumeSession(session));
+      onThreadChange(sessionId, initialState, hydratedInitialState ? false : shouldAutoResumeSession(session));
+    }
+  }
+
+  async function hydrateTerminalSessionState(sessionId: string, sourceSessions = sessions) {
+    const session = sourceSessions.find((item) => item.id === sessionId);
+    if (!shouldHydrateTerminalSession(session)) {
+      return null;
+    }
+    try {
+      return await fetchAssistantTransportResumeState(sessionId);
+    } catch (error) {
+      console.error(error);
+      return null;
     }
   }
 
   useEffect(() => {
+    if (skipInitialLoad) {
+      return;
+    }
     void load();
-  }, []);
+  }, [skipInitialLoad]);
 
   useEffect(() => {
     return () => {
@@ -632,6 +661,13 @@ function shouldAutoResumeSession(session?: SessionSummary | null) {
     return true;
   }
   return firstText(session.status).toLowerCase() !== "empty";
+}
+
+function shouldHydrateTerminalSession(session?: SessionSummary | null) {
+  if (!session || (session.messageCount || 0) <= 0) {
+    return false;
+  }
+  return ["completed", "failed", "canceled"].includes(firstText(session.status).toLowerCase());
 }
 
 function targetValueFromSession(

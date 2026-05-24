@@ -89,13 +89,11 @@ test.describe("MCP runtime page", () => {
     await page.goto("/mcp");
     await waitForStable(page);
 
-    await expect(page.locator(".header-title", { hasText: "MCP 服务器" })).toBeVisible();
-    await expect(page.locator(".runtime-list-item", { hasText: "coroot-rca" })).toBeVisible();
-    await expect(page.locator(".runtime-list-item", { hasText: "connected" })).toBeVisible();
+    await expect(page.locator("main").getByText("MCP Servers", { exact: true })).toBeVisible();
+    await expect(page.getByRole("row", { name: /coroot-rca.*connected/ })).toBeVisible();
 
-    await page.locator(".mcp-header-actions .compact-btn", { hasText: "刷新" }).click();
+    await page.getByRole("button", { name: "刷新全部" }).click();
     await expect.poll(() => refreshCalls).toBe(1);
-    await expect(page.locator(".runtime-list-item", { hasText: "4 tools" })).toBeVisible();
-    await expect(page.locator(".runtime-list-item", { hasText: "2 resources" })).toBeVisible();
+    await expect(page.getByRole("row", { name: /coroot-rca.*4 \/ 2/ })).toBeVisible();
   });
 });

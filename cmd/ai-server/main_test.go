@@ -205,6 +205,42 @@ func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
 	}
 }
 
+func TestStoreLLMResolverIncludesManualContextWindow(t *testing.T) {
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			BaseURL:          "http://127.0.0.1:8317/v1",
+			MaxContextTokens: 9000,
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.MaxContextTokens != 10000 {
+		t.Fatalf("MaxContextTokens = %d, want min-clamped 10000", cfg.MaxContextTokens)
+	}
+}
+
+func TestStoreLLMResolverDefaultsManualContextWindow(t *testing.T) {
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.MaxContextTokens != 200000 {
+		t.Fatalf("MaxContextTokens = %d, want default 200000", cfg.MaxContextTokens)
+	}
+}
+
 func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.T) {
 	toolRegistry := tooling.NewRegistry()
 	mcpRegistry := mcp.NewRegistry()
@@ -375,53 +411,6 @@ func TestVisibleAIOpsToolsHaveOutputSchema(t *testing.T) {
 		if len(bytes.TrimSpace(tool.OutputSchema())) == 0 {
 			t.Fatalf("tool %q missing OutputSchemaData", tool.Metadata().Name)
 		}
-	}
-}
-
-func TestCorootEndpointFromEnv(t *testing.T) {
-	tests := []struct {
-		name string
-		env  map[string]string
-		want string
-	}{
-		{
-			name: "prefers explicit endpoint",
-			env: map[string]string{
-				"AIOPS_COROOT_ENDPOINT": " http://coroot-endpoint.internal ",
-				"AIOPS_COROOT_BASE_URL": "http://coroot-base.internal",
-				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
-			},
-			want: "http://coroot-endpoint.internal",
-		},
-		{
-			name: "falls back to aiops base url",
-			env: map[string]string{
-				"AIOPS_COROOT_BASE_URL": " http://127.0.0.1:18180 ",
-				"COROOT_BASE_URL":       "http://coroot-fallback.internal",
-			},
-			want: "http://127.0.0.1:18180",
-		},
-		{
-			name: "falls back to coroot base url",
-			env: map[string]string{
-				"COROOT_BASE_URL": " http://coroot.local ",
-			},
-			want: "http://coroot.local",
-		},
-		{
-			name: "returns empty when unset",
-			env:  map[string]string{},
-			want: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := corootEndpointFromEnv(func(key string) string { return tt.env[key] })
-			if got != tt.want {
-				t.Fatalf("corootEndpointFromEnv() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -743,8 +732,12 @@ Use filesystem skill.`)
 		Settings:     settingsRegistry,
 	}
 
-	if err := registerPluginsFromEnv(registrar); err != nil {
+	specs, err := registerPluginsFromEnv(registrar)
+	if err != nil {
 		t.Fatalf("registerPluginsFromEnv() error = %v", err)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("registerPluginsFromEnv() specs len = %d, want 1", len(specs))
 	}
 
 	if _, ok := commandRegistry.GetPrompt("deploy"); !ok {

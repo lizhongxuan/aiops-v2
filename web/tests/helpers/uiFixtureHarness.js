@@ -105,6 +105,22 @@ export async function installUiFixture(page, fixture) {
       body: JSON.stringify({ accepted: true }),
     }),
   );
+  await page.route("**/api/external-references/spill-1", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "spill-1",
+        kind: "blob",
+        contentType: "text/plain",
+        summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+        content: "2026-05-22T08:00:01Z upstream timed out while connecting to service-a",
+        bytes: 82,
+        digest: "",
+        title: "nginx raw timeout logs",
+      }),
+    }),
+  );
 }
 
 export async function openFixturePage(page, routePath, fixture) {

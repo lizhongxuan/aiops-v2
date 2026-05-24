@@ -27,6 +27,7 @@ describe("ChatPage", () => {
     act(() => {
       root.unmount();
     });
+    window.localStorage.clear();
     container.remove();
   });
 
@@ -63,6 +64,23 @@ describe("ChatPage", () => {
 
   it("renders Agent-to-UI artifacts inside assistant messages", async () => {
     const state = sampleState();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      activeTurns: {},
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "completed",
+      completedAt: "2026-05-06T00:00:05Z",
+      final: {
+        id: "final-1",
+        text: "payment-api is healthy after restart.",
+        status: "completed",
+      },
+    };
     state.turns["turn-1"].agentUiArtifacts = [
       {
         id: "artifact-coroot-latency",
@@ -95,13 +113,150 @@ describe("ChatPage", () => {
     });
 
     expect(container.textContent).toContain("Coroot 延迟趋势");
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "接口 P95 延迟在 14:03 后明显升高。",
     );
     expect(container.textContent).toContain("p95_latency_ms");
-    expect(
-      container.querySelector('a[href="/incidents/case-debug-1"]')?.textContent,
-    ).toContain("查看 Case");
+    expect(container.querySelector('a[href="/incidents/case-debug-1"]')).toBeNull();
+    expect(container.textContent).not.toContain("来源：coroot");
+  });
+
+  it("places a completed Coroot chart after root cause and before evidence", async () => {
+    const state = sampleState();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      activeTurns: {},
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "completed",
+      completedAt: "2026-05-06T00:00:05Z",
+      process: [],
+      final: {
+        id: "final-1",
+        status: "completed",
+        text: [
+          "根因：外部依赖 external:18090 unknown。",
+          "",
+          "证据：",
+          "- Coroot RCA 查询成功",
+        ].join("\n"),
+      },
+      agentUiArtifacts: [
+        {
+          id: "artifact-coroot-net",
+          type: "coroot_chart",
+          titleZh: "aiops-host-agent 服务",
+          inlineData: {
+            mcpCard: {
+              uiKind: "readonly_chart",
+              title: "指标趋势",
+              visual: {
+                kind: "timeseries",
+                series: [{ name: "failed_tcp_connections", data: [{ timestamp: 1, value: 0.33 }] }],
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const text = container.textContent || "";
+    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(text.indexOf("aiops-host-agent 服务"));
+    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(text.indexOf("Coroot RCA 查询成功"));
+  });
+
+  it("shows a lightweight Coroot chart notice while the assistant is still running", async () => {
+    const state = sampleState();
+    state.status = "working";
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      activeTurns: { "turn-1": true },
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      process: [],
+      final: {
+        id: "final-1",
+        status: "running",
+        text: "我先读取 Coroot 指标并继续分析。",
+      },
+      agentUiArtifacts: [
+        {
+          id: "artifact-coroot-latency",
+          type: "coroot_chart",
+          titleZh: "aiops-host-agent 服务",
+          inlineData: {
+            mcpCard: {
+              uiKind: "readonly_chart",
+              title: "指标趋势",
+              visual: {
+                kind: "timeseries",
+                series: [
+                  {
+                    name: "p95_latency_ms",
+                    data: [{ timestamp: 1, value: 980 }],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(container.textContent).toContain("我先读取 Coroot 指标并继续分析。");
+    expect(container.textContent).toContain("已生成 Coroot 图表，分析完成后展开");
+    expect(container.textContent).not.toContain("aiops-host-agent 服务");
+    expect(container.textContent).not.toContain("p95_latency_ms");
+  });
+
+  it("shows context compaction status from assistant transport metadata", async () => {
+    const state = sampleState();
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      contextGovernance: [
+        {
+          id: "ctxgov-chat-l4",
+          layer: "L4",
+          kind: "context.compaction.started",
+          message: "正在压缩上下文，当前任务会继续",
+        },
+        {
+          id: "ctxgov-chat-l5",
+          layer: "L5",
+          kind: "context.compaction.failed",
+          message: "上下文过长，已使用本地摘要继续",
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(container.textContent).toContain("上下文过长，已使用本地摘要继续");
+    expect(container.textContent).not.toContain("正在重试压缩");
   });
 
   it("uses the current turn approval when stale approvals remain in transport state", async () => {
@@ -410,11 +565,10 @@ describe("ChatPage", () => {
         '[data-testid="aiops-generate-ops-manual-from-chat"]',
       ),
     ).toBeNull();
-    expect(container.querySelector("textarea")).toBeNull();
-    expect(container.textContent).toContain("补充运维手册参数");
+    expect(container.textContent).toContain("需要确认参数");
   });
 
-  it("replaces the textarea with a Dry Run confirmation panel", async () => {
+  it("replaces the textarea with an execution confirmation panel", async () => {
     const state = createInitialAiopsTransportState(
       "thread-dry-run-confirmation",
     );
@@ -435,8 +589,8 @@ describe("ChatPage", () => {
       window.dispatchEvent(
         new CustomEvent("aiops:composer-confirmation", {
           detail: {
-            action: "start_runner_workflow_dry_run",
-            title: "进入 Dry Run",
+            action: "confirm_runner_workflow_execution",
+            title: "确认执行",
             sourceTitle: "MySQL SSH 备份运维手册",
             artifactId: "artifact-preflight-passed",
           },
@@ -449,9 +603,9 @@ describe("ChatPage", () => {
         '[data-testid="ops-manual-generation-confirmation"]',
       ),
     ).not.toBeNull();
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).toContain("MySQL SSH 备份运维手册");
-    expect(container.textContent).toContain("不会执行真实变更");
+    expect(container.textContent).toContain("确认执行绑定 Workflow");
     expect(container.querySelector("textarea")).toBeNull();
 
     const cancel = Array.from(container.querySelectorAll("button")).find(
@@ -532,6 +686,88 @@ describe("ChatPage", () => {
     );
     await act(async () => {
       cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+  });
+
+  it("keeps a canceled dynamic ops manual parameter form dismissed after remount", async () => {
+    const requestDetail = {
+      artifactId: "artifact-param-resolution-cancel",
+      force: true,
+      title: "补充运维手册参数",
+      manualId: "manual-pg-backup",
+      workflowId: "workflow-pg-backup",
+      submitAction: "submit_ops_manual_param_form",
+      fields: [
+        {
+          id: "backup_path",
+          label: "备份路径",
+          type: "path",
+          uiControl: "text",
+          required: true,
+          placeholder: "例如 /data/backups",
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatPage
+          initialState={createInitialAiopsTransportState(
+            "thread-context-form-cancel",
+          )}
+          threadId="thread-context-form-cancel"
+        />,
+      );
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-context-request", {
+          detail: requestDetail,
+        }),
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).not.toBeNull();
+
+    const cancel = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("取消"),
+    );
+    await act(async () => {
+      cancel?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-context-composer"]'),
+    ).toBeNull();
+    expect(container.querySelector("textarea")).not.toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <ChatPage
+          initialState={createInitialAiopsTransportState(
+            "thread-context-form-cancel-reloaded",
+          )}
+          threadId="thread-context-form-cancel-reloaded"
+        />,
+      );
+    });
+    await act(async () => {
+      window.dispatchEvent(
+        new CustomEvent("aiops:composer-context-request", {
+          detail: requestDetail,
+        }),
+      );
     });
 
     expect(

@@ -100,6 +100,10 @@ describe("RCAReportArtifact", () => {
     expect(container.textContent).toContain("catalog 依赖");
     expect(container.textContent).toContain("传播路径");
     expect(container.textContent).toContain("关键指标");
+    expect(container.textContent).toContain("已纳入 2 条 RCA 证据");
+    expect(container.textContent).not.toContain("Evidence：");
+    expect(container.textContent).not.toContain("ev-1");
+    expect(container.textContent).not.toContain("coroot://project/default/checkout");
   });
 
   it("renders inconclusive status", async () => {

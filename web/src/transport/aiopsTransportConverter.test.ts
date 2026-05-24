@@ -19,7 +19,7 @@ function metadata(overrides = {}): AssistantTransportConnectionMetadata {
 
 function createState(): AiopsTransportState {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "sess-1",
     threadId: "thread-1",
     status: "idle",
@@ -202,6 +202,31 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("does not create an assistant message for completed turns that only have intent metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      id: "turn-1",
+      status: "completed",
+      startedAt: "2026-05-06T00:00:00Z",
+      completedAt: "2026-05-06T00:00:05Z",
+      user: {
+        id: "user-1",
+        text: "检查 Redis 状态",
+        createdAt: "2026-05-06T00:00:00Z",
+      },
+      intent: { text: "检查 Redis 状态", status: "status_check" },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "user",
+      content: [{ type: "text", text: "检查 Redis 状态" }],
+    });
+  });
+
   it("attaches turn Agent-to-UI artifacts to assistant message metadata", () => {
     const state = createState();
     state.turns["turn-1"] = {
@@ -235,7 +260,37 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("delays ops manual search artifacts until the assistant turn is terminal", () => {
+  it("attaches context governance events to assistant message metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      contextGovernance: [
+        {
+          id: "ctxgov-1",
+          layer: "L4",
+          kind: "context.compaction.started",
+          message: "正在压缩上下文，当前任务会继续",
+          retryAttempt: 1,
+          retryMax: 3,
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      contextGovernance: [
+        expect.objectContaining({
+          id: "ctxgov-1",
+          layer: "L4",
+          kind: "context.compaction.started",
+        }),
+      ],
+    });
+  });
+
+  it("delays disruptive artifacts until the assistant turn is terminal", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -260,7 +315,8 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state, metadata());
 
     expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+      agentUiArtifacts: [],
+      deferredAgentUiArtifacts: [
         expect.objectContaining({
           id: "artifact-coroot-latency",
           type: "coroot_chart",
@@ -269,6 +325,9 @@ describe("aiopsTransportConverter", () => {
     });
     expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ type: "ops_manual_search_result" })]),
+    );
+    expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "coroot_chart" })]),
     );
   });
 
@@ -417,6 +476,128 @@ describe("aiopsTransportConverter", () => {
         expect.objectContaining({ id: "artifact-ops-manual-preflight" }),
       ]),
     );
+  });
+
+  it("merges legacy parameter resolution when workflow_id carries the search flow id", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "need_info",
+            ops_manual_flow_id: "flow-search-mysql",
+            manuals: [
+              {
+                manual: { id: "manual-mysql-backup-ssh", title: "MySQL SSH 备份运维手册" },
+                bound_workflow_id: "workflow-mysql-backup-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-params",
+          type: "ops_manual_param_resolution",
+          inlineData: {
+            status: "need_user_input",
+            ops_manual_flow_id: "flow-regenerated-params",
+            manual_id: "manual-mysql-backup-ssh",
+            workflow_id: "flow-search-mysql",
+            fields: [{ id: "backup_path", label: "备份路径" }],
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-params",
+      type: "ops_manual_search_result",
+      inlineData: {
+        original_search_artifact_id: "artifact-ops-manual-search",
+        merged_param_resolution: expect.objectContaining({
+          artifact_id: "artifact-ops-manual-params",
+          manual_id: "manual-mysql-backup-ssh",
+          workflow_id: "flow-search-mysql",
+        }),
+      },
+    });
+  });
+
+  it("uses ops_manual_flow_id before manual and workflow heuristics when merging preflight results", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "artifact-ops-manual-search-a",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "direct_execute",
+            ops_manual_flow_id: "flow-a",
+            manuals: [
+              {
+                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                bound_workflow_id: "workflow-redis-rca-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-search-b",
+          type: "ops_manual_search_result",
+          inlineData: {
+            decision: "direct_execute",
+            ops_manual_flow_id: "flow-b",
+            manuals: [
+              {
+                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                bound_workflow_id: "workflow-redis-rca-ssh",
+              },
+            ],
+          },
+        },
+        {
+          id: "artifact-ops-manual-preflight-b",
+          type: "ops_manual_preflight_result",
+          inlineData: {
+            status: "passed",
+            ready: true,
+            ops_manual_flow_id: "flow-b",
+            manual_id: "manual-redis-rca-ssh",
+            workflow_id: "workflow-redis-rca-ssh",
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts?.[0]).toMatchObject({
+      id: "artifact-ops-manual-search-a",
+      inlineData: expect.not.objectContaining({
+        merged_preflight_result: expect.anything(),
+      }),
+    });
+    expect(artifacts?.[1]).toMatchObject({
+      id: "artifact-ops-manual-search-b",
+      inlineData: {
+        ops_manual_flow_id: "flow-b",
+        merged_preflight_result: expect.objectContaining({
+          artifact_id: "artifact-ops-manual-preflight-b",
+          ops_manual_flow_id: "flow-b",
+        }),
+      },
+    });
   });
 
   it("treats working and blocked transport states as running", () => {

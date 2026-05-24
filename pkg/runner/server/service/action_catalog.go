@@ -12,8 +12,9 @@ import (
 )
 
 type ActionCatalog struct {
-	mu    sync.RWMutex
-	specs map[string]ActionSpec
+	mu                sync.RWMutex
+	specs             map[string]ActionSpec
+	missingActionHint string
 }
 
 type ActionCatalogFilter struct {
@@ -38,6 +39,7 @@ type ActionSpec struct {
 	DefaultPorts   ActionDefaultPorts `json:"default_ports,omitempty"`
 	Defaults       map[string]any     `json:"defaults,omitempty"`
 	RequiredArgs   []string           `json:"required_args,omitempty"`
+	ArgConflicts   [][]string         `json:"arg_conflicts,omitempty"`
 	Outputs        []OutputSpec       `json:"outputs,omitempty"`
 	Examples       []ActionExample    `json:"examples,omitempty"`
 	InputExamples  []ActionIOExample  `json:"input_examples,omitempty"`
@@ -81,8 +83,19 @@ type ActionValidationIssue struct {
 }
 
 func NewActionCatalog(specs ...ActionSpec) *ActionCatalog {
-	c := &ActionCatalog{specs: map[string]ActionSpec{}}
-	for _, spec := range DefaultActionSpecs() {
+	c := NewActionCatalogFromRegistry(NewDefaultActionRegistry())
+	for _, spec := range specs {
+		_ = c.Register(spec)
+	}
+	return c
+}
+
+func NewActionCatalogFromRegistry(registry *ActionRegistry, specs ...ActionSpec) *ActionCatalog {
+	c := &ActionCatalog{
+		specs:             map[string]ActionSpec{},
+		missingActionHint: "enable the runner-core plugin or install a plugin that provides this action",
+	}
+	for _, spec := range registry.List() {
 		_ = c.Register(spec)
 	}
 	for _, spec := range specs {
@@ -91,19 +104,23 @@ func NewActionCatalog(specs ...ActionSpec) *ActionCatalog {
 	return c
 }
 
-func DefaultActionSpecs() []ActionSpec {
+// RunnerCoreActionTemplates returns compatibility templates for known built-in actions.
+// The runner-core plugin manifest controls which templates are registered by
+// default; ActionCatalog does not consume this list directly.
+func RunnerCoreActionTemplates() []ActionSpec {
 	return []ActionSpec{
 		{
-			Action:      "script.shell",
-			Title:       "Shell Script",
-			Category:    "script",
-			Description: "Run shell script content resolved by the script service or supplied inline.",
-			Risk:        "high",
-			NodeType:    "action",
-			Defaults:    map[string]any{"script": "set -euo pipefail\necho ok"},
+			Action:       actionScriptShell,
+			Title:        "Shell Script",
+			Category:     "script",
+			Description:  "Run shell script content resolved by the script service or supplied inline.",
+			Risk:         "high",
+			NodeType:     "action",
+			Defaults:     map[string]any{"script": "set -euo pipefail\necho ok"},
+			RequiredArgs: []string{"script"},
+			ArgConflicts: [][]string{{"script", "script_ref"}},
 			ArgsSchema: actionArgsSchema(map[string]any{
-				"script_ref": envStringSchema("Stored script name"),
-				"script":     envStringSchema("Inline shell script"),
+				"script": envStringSchema("Inline shell script"),
 				"args": map[string]any{
 					"type":        "array",
 					"title":       "Arguments",
@@ -121,16 +138,17 @@ func DefaultActionSpecs() []ActionSpec {
 			}},
 		},
 		{
-			Action:      "script.python",
-			Title:       "Stored Python Script",
-			Category:    "script",
-			Description: "Run Python script content resolved by the script service or supplied inline.",
-			Risk:        "high",
-			NodeType:    "action",
-			Defaults:    map[string]any{"script_ref": "verify.py"},
+			Action:       actionScriptPython,
+			Title:        "Python Script",
+			Category:     "script",
+			Description:  "Run Python script content resolved by the script service or supplied inline.",
+			Risk:         "high",
+			NodeType:     "action",
+			Defaults:     map[string]any{"script": "import json\nprint(json.dumps({\"ok\": True}))"},
+			RequiredArgs: []string{"script"},
+			ArgConflicts: [][]string{{"script", "script_ref"}},
 			ArgsSchema: actionArgsSchema(map[string]any{
-				"script_ref": envStringSchema("Stored script name"),
-				"script":     envStringSchema("Inline Python script"),
+				"script": envStringSchema("Inline Python script"),
 				"args": map[string]any{
 					"type":        "array",
 					"title":       "Arguments",
@@ -143,8 +161,154 @@ func DefaultActionSpecs() []ActionSpec {
 			}, nil),
 			Outputs: commandOutputs(),
 			Examples: []ActionExample{{
-				Title: "Verify metrics",
-				Args:  map[string]any{"script_ref": "verify.py", "args": []string{"order-service"}},
+				Title: "Print JSON",
+				Args:  map[string]any{"script": "import json\nprint(json.dumps({\"ok\": True}))"},
+			}},
+		},
+		{
+			Action:       "http.request",
+			Title:        "HTTP Request",
+			Category:     "network",
+			Description:  "Send a governed HTTP request and validate the response status.",
+			Risk:         "medium",
+			NodeType:     "action",
+			RequiredArgs: []string{"url"},
+			Defaults:     map[string]any{"method": "GET", "url": "https://example.com/healthz", "expected_status": []int{200}, "timeout": "10s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"method":          enumStringSchema("HTTP method", []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}),
+				"url":             envStringSchema("Absolute HTTP or HTTPS URL"),
+				"headers":         envObjectSchema(),
+				"body":            envStringSchema("Raw request body"),
+				"body_json":       map[string]any{"title": "JSON body"},
+				"expected_status": intArraySchema("Expected status codes"),
+				"timeout":         envStringSchema("Request timeout"),
+				"timeout_ms":      integerSchema("Request timeout in milliseconds"),
+			}, []string{"url"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the response matched expectations."},
+				{Name: "status_code", Type: "integer", Description: "HTTP response status code."},
+				{Name: "headers", Type: "object", Description: "HTTP response headers."},
+				{Name: "body", Type: "string", Description: "Response body, subject to response limits."},
+				{Name: "elapsed_ms", Type: "integer", Description: "Elapsed request time in milliseconds."},
+			},
+			Examples: []ActionExample{{
+				Title: "GET health endpoint",
+				Args:  map[string]any{"method": "GET", "url": "https://example.com/healthz", "expected_status": []int{200}, "timeout": "5s"},
+			}},
+		},
+		{
+			Action:       actionBuiltinTCPPing,
+			Title:        "TCP Ping",
+			Category:     "network",
+			Description:  "Check whether a TCP host and port are reachable.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"host", "port"},
+			Defaults:     map[string]any{"host": "example.com", "port": 443, "timeout": "3s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"host":    envStringSchema("Host name or IP address"),
+				"port":    integerSchema("TCP port"),
+				"timeout": envStringSchema("Dial timeout"),
+			}, []string{"host", "port"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the TCP port was reachable."},
+				{Name: "reachable", Type: "boolean", Description: "TCP reachability result."},
+				{Name: "latency_ms", Type: "integer", Description: "Dial latency in milliseconds."},
+				{Name: "remote_addr", Type: "string", Description: "Connected remote address."},
+			},
+			Examples: []ActionExample{{
+				Title: "Check HTTPS port",
+				Args:  map[string]any{"host": "example.com", "port": 443, "timeout": "3s"},
+			}},
+		},
+		{
+			Action:       actionBuiltinHTTPCheck,
+			Title:        "HTTP Check",
+			Category:     "network",
+			Description:  "Check an HTTP or HTTPS endpoint status and optional response content.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"url"},
+			Defaults:     map[string]any{"url": "https://example.com/healthz", "method": "GET", "expected_status": []int{200}, "timeout": "5s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"url":                  envStringSchema("Absolute HTTP or HTTPS URL"),
+				"host":                 envStringSchema("Host name used when url is omitted"),
+				"port":                 integerSchema("TCP port used when url is omitted"),
+				"method":               enumStringSchema("HTTP method", []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}),
+				"expected_status":      intArraySchema("Expected status codes"),
+				"body_contains":        envStringSchema("Text expected in the response body"),
+				"json_path":            envStringSchema("JSON path expected in the response body"),
+				"timeout":              envStringSchema("Request timeout"),
+				"insecure_skip_verify": boolSchema("Skip TLS certificate verification for HTTPS requests."),
+			}, []string{"url"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the endpoint matched all checks."},
+				{Name: "matched", Type: "boolean", Description: "Whether status and response checks matched."},
+				{Name: "status_code", Type: "integer", Description: "HTTP response status code."},
+				{Name: "body_excerpt", Type: "string", Description: "Response body excerpt."},
+				{Name: "elapsed_ms", Type: "integer", Description: "Elapsed request time in milliseconds."},
+			},
+			Examples: []ActionExample{{
+				Title: "Check health endpoint",
+				Args:  map[string]any{"url": "https://example.com/healthz", "expected_status": []int{200}, "timeout": "5s"},
+			}},
+		},
+		{
+			Action:       "builtin.ssl_expiry_check",
+			Title:        "SSL Expiry Check",
+			Category:     "network",
+			Description:  "Check the peer certificate expiry for a TLS endpoint.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"host"},
+			Defaults:     map[string]any{"host": "example.com", "port": 443, "min_days": 14, "timeout": "5s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"host":                 envStringSchema("TLS endpoint host name"),
+				"port":                 integerSchema("TLS endpoint port"),
+				"server_name":          envStringSchema("SNI server name"),
+				"min_days":             integerSchema("Minimum acceptable days remaining"),
+				"warn_days":            integerSchema("Compatibility alias for min_days"),
+				"timeout":              envStringSchema("Dial timeout"),
+				"insecure_skip_verify": boolSchema("Skip TLS certificate verification."),
+			}, []string{"host"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether the certificate is valid beyond the threshold."},
+				{Name: "subject", Type: "string", Description: "Certificate subject common name."},
+				{Name: "issuer", Type: "string", Description: "Certificate issuer common name."},
+				{Name: "not_after", Type: "string", Description: "Certificate expiration timestamp."},
+				{Name: "days_remaining", Type: "integer", Description: "Days until expiration."},
+				{Name: "elapsed_ms", Type: "integer", Description: "Elapsed check time in milliseconds."},
+			},
+			Examples: []ActionExample{{
+				Title: "Check certificate expiry",
+				Args:  map[string]any{"host": "example.com", "port": 443, "min_days": 14, "timeout": "5s"},
+			}},
+		},
+		{
+			Action:       "builtin.dns_resolve",
+			Title:        "DNS Resolve",
+			Category:     "network",
+			Description:  "Resolve DNS records using the runner host resolver.",
+			Risk:         "read_only",
+			NodeType:     "action",
+			RequiredArgs: []string{"name"},
+			Defaults:     map[string]any{"name": "example.com", "record_type": "A", "timeout": "3s"},
+			ArgsSchema: actionArgsSchema(map[string]any{
+				"name":        envStringSchema("DNS name"),
+				"record_type": enumStringSchema("DNS record type", []string{"A", "AAAA", "CNAME", "TXT", "MX", "NS"}),
+				"expected":    stringArraySchema("Expected records"),
+				"timeout":     envStringSchema("Lookup timeout"),
+			}, []string{"name"}),
+			Outputs: []OutputSpec{
+				{Name: "ok", Type: "boolean", Description: "Whether lookup completed successfully."},
+				{Name: "record_type", Type: "string", Description: "Resolved record type."},
+				{Name: "records", Type: "array", Description: "Resolved records."},
+				{Name: "matched_expected", Type: "boolean", Description: "Whether all expected records were present."},
+				{Name: "resolver", Type: "string", Description: "Resolver source."},
+			},
+			Examples: []ActionExample{{
+				Title: "Resolve A records",
+				Args:  map[string]any{"name": "example.com", "record_type": "A", "timeout": "3s"},
 			}},
 		},
 		{
@@ -374,7 +538,7 @@ func (c *ActionCatalog) ValidateStep(step workflow.Step) []ActionValidationIssue
 		return []ActionValidationIssue{{
 			Type:    "validation",
 			Field:   "action",
-			Message: fmt.Sprintf("action %q is not in the catalog", action),
+			Message: fmt.Sprintf("action %q is not registered in the runner action registry; %s", action, c.missingActionHint),
 		}}
 	}
 
@@ -392,21 +556,19 @@ func (c *ActionCatalog) ValidateStep(step workflow.Step) []ActionValidationIssue
 			})
 		}
 	}
-	if action == "script.shell" || action == "script.python" {
-		hasScript := hasNonEmptyArg(step.Args, "script")
-		hasRef := hasNonEmptyArg(step.Args, "script_ref")
-		if !hasScript && !hasRef {
-			issues = append(issues, ActionValidationIssue{
-				Type:    "validation",
-				Field:   "args.script",
-				Message: fmt.Sprintf("action %q requires args.script or args.script_ref", action),
-			})
+	for _, conflict := range spec.ArgConflicts {
+		var present []string
+		for _, arg := range conflict {
+			arg = strings.TrimSpace(arg)
+			if arg != "" && hasNonEmptyArg(step.Args, arg) {
+				present = append(present, arg)
+			}
 		}
-		if hasScript && hasRef {
+		if len(present) > 1 {
 			issues = append(issues, ActionValidationIssue{
 				Type:    "validation",
-				Field:   "args.script_ref",
-				Message: fmt.Sprintf("action %q cannot use args.script and args.script_ref together", action),
+				Field:   "args." + present[len(present)-1],
+				Message: fmt.Sprintf("action %q cannot use args.%s together", action, strings.Join(present, " and args.")),
 			})
 		}
 	}
@@ -443,6 +605,7 @@ func normalizeActionSpec(spec ActionSpec) (ActionSpec, error) {
 		spec.Capabilities = defaultActionCapabilities(spec)
 	}
 	spec.DefaultPorts = normalizeActionDefaultPorts(spec.DefaultPorts)
+	spec.ArgConflicts = normalizeArgConflicts(spec.ArgConflicts)
 	if len(spec.DefaultPorts.Inputs) == 0 && len(spec.DefaultPorts.Outputs) == 0 {
 		spec.DefaultPorts = defaultActionPorts(spec)
 	}
@@ -493,6 +656,7 @@ func cloneActionSpec(spec ActionSpec) ActionSpec {
 	spec.Capabilities = append([]string{}, spec.Capabilities...)
 	spec.DefaultPorts = cloneActionDefaultPorts(spec.DefaultPorts)
 	spec.RequiredArgs = append([]string{}, spec.RequiredArgs...)
+	spec.ArgConflicts = cloneStringMatrix(spec.ArgConflicts)
 	spec.Outputs = append([]OutputSpec{}, spec.Outputs...)
 	spec.Examples = cloneActionExamples(spec.Examples)
 	spec.InputExamples = cloneActionIOExamples(spec.InputExamples)
@@ -565,6 +729,35 @@ func normalizeCatalogStringList(input []string) []string {
 		out = append(out, value)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func normalizeArgConflicts(input [][]string) [][]string {
+	out := make([][]string, 0, len(input))
+	seenRules := map[string]struct{}{}
+	for _, rule := range input {
+		normalized := normalizeCatalogStringList(rule)
+		if len(normalized) < 2 {
+			continue
+		}
+		key := strings.Join(normalized, "\x00")
+		if _, ok := seenRules[key]; ok {
+			continue
+		}
+		seenRules[key] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func cloneStringMatrix(input [][]string) [][]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make([][]string, len(input))
+	for i, row := range input {
+		out[i] = append([]string{}, row...)
+	}
 	return out
 }
 
@@ -795,6 +988,29 @@ func boolSchema(description string) map[string]any {
 	return map[string]any{
 		"type":        "boolean",
 		"description": description,
+	}
+}
+
+func integerSchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "integer",
+		"title": title,
+	}
+}
+
+func intArraySchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "array",
+		"title": title,
+		"items": map[string]any{"type": "integer"},
+	}
+}
+
+func stringArraySchema(title string) map[string]any {
+	return map[string]any{
+		"type":  "array",
+		"title": title,
+		"items": map[string]any{"type": "string"},
 	}
 }
 

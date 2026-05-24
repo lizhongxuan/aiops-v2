@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -35,7 +36,7 @@ func TestVisualWorkflowRoutesCompileAndCatalog(t *testing.T) {
 		t.Fatalf("compiled workflow mismatch: %+v", compiled.Workflow)
 	}
 
-	code, payload = serveJSON(t, router, http.MethodGet, "/api/v1/actions/catalog?category=command", nil)
+	code, payload = serveJSON(t, router, http.MethodGet, "/api/v1/actions/catalog?category=script", nil)
 	if code != http.StatusOK {
 		t.Fatalf("catalog status = %d payload=%s", code, payload)
 	}
@@ -50,11 +51,11 @@ func TestVisualWorkflowRoutesCompileAndCatalog(t *testing.T) {
 	if catalog.Version != "v1" || catalog.Capabilities["schema"] != "json_schema" {
 		t.Fatalf("catalog metadata mismatch: version=%q capabilities=%+v", catalog.Version, catalog.Capabilities)
 	}
-	if len(catalog.Items) != 1 || catalog.Items[0].Action != "cmd.run" {
+	if !apiCatalogHasAction(catalog.Items, "script.shell") {
 		t.Fatalf("catalog filter mismatch: %+v", catalog.Items)
 	}
 
-	code, payload = serveJSON(t, router, http.MethodGet, "/api/v1/actions?category=command", nil)
+	code, payload = serveJSON(t, router, http.MethodGet, "/api/v1/actions?category=script", nil)
 	if code != http.StatusOK {
 		t.Fatalf("actions alias status = %d payload=%s", code, payload)
 	}
@@ -64,7 +65,7 @@ func TestVisualWorkflowRoutesCompileAndCatalog(t *testing.T) {
 	if err := json.Unmarshal(payload, &aliasCatalog); err != nil {
 		t.Fatalf("decode actions alias response: %v", err)
 	}
-	if len(aliasCatalog.Items) != 1 || aliasCatalog.Items[0].Action != "cmd.run" {
+	if !apiCatalogHasAction(aliasCatalog.Items, "script.shell") {
 		t.Fatalf("actions alias filter mismatch: %+v", aliasCatalog.Items)
 	}
 }
@@ -73,7 +74,7 @@ func TestVisualWorkflowActionCatalogReturnsStructuredIOSchema(t *testing.T) {
 	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
 	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
 
-	code, payload := serveJSON(t, router, http.MethodGet, "/api/v1/actions/catalog?category=command", nil)
+	code, payload := serveJSON(t, router, http.MethodGet, "/api/v1/actions/catalog?category=script", nil)
 	if code != http.StatusOK {
 		t.Fatalf("catalog status = %d payload=%s", code, payload)
 	}
@@ -87,39 +88,36 @@ func TestVisualWorkflowActionCatalogReturnsStructuredIOSchema(t *testing.T) {
 	if catalog.Capabilities["structured_io_schema"] != true {
 		t.Fatalf("structured_io_schema capability missing: %+v", catalog.Capabilities)
 	}
-	if len(catalog.Items) != 1 || catalog.Items[0].Action != "cmd.run" {
-		t.Fatalf("catalog command filter mismatch: %+v", catalog.Items)
+	if !apiCatalogHasAction(catalog.Items, "script.shell") {
+		t.Fatalf("catalog script filter mismatch: %+v", catalog.Items)
 	}
-	item := catalog.Items[0]
+	item := apiCatalogItem(t, catalog.Items, "script.shell")
 	if len(item.ArgsSchema) == 0 || !json.Valid(item.ArgsSchema) {
-		t.Fatalf("cmd.run should retain valid args_schema: %s", string(item.ArgsSchema))
+		t.Fatalf("script.shell should retain valid args_schema: %s", string(item.ArgsSchema))
 	}
 	if len(item.InputsSchema) == 0 || !json.Valid(item.InputsSchema) {
-		t.Fatalf("cmd.run missing valid inputs_schema: %s", string(item.InputsSchema))
+		t.Fatalf("script.shell missing valid inputs_schema: %s", string(item.InputsSchema))
 	}
 	if len(item.OutputsSchema) == 0 || !json.Valid(item.OutputsSchema) {
-		t.Fatalf("cmd.run missing valid outputs_schema: %s", string(item.OutputsSchema))
+		t.Fatalf("script.shell missing valid outputs_schema: %s", string(item.OutputsSchema))
 	}
 	if len(item.InputExamples) == 0 || len(item.OutputExamples) == 0 {
-		t.Fatalf("cmd.run missing structured IO examples: %+v", item)
+		t.Fatalf("script.shell missing structured IO examples: %+v", item)
 	}
 	var rawCatalog map[string]any
 	if err := json.Unmarshal(payload, &rawCatalog); err != nil {
 		t.Fatalf("decode raw catalog response: %v", err)
 	}
 	rawItems, ok := rawCatalog["items"].([]any)
-	if !ok || len(rawItems) != 1 {
+	if !ok || len(rawItems) == 0 {
 		t.Fatalf("raw catalog items mismatch: %+v", rawCatalog["items"])
 	}
-	rawItem, ok := rawItems[0].(map[string]any)
-	if !ok {
-		t.Fatalf("raw catalog item mismatch: %+v", rawItems[0])
-	}
+	rawItem := rawCatalogActionItem(t, rawItems, "script.shell")
 	if _, ok := rawItem["input_schema"]; !ok {
-		t.Fatalf("cmd.run should expose input_schema alias for Studio clients: %+v", rawItem)
+		t.Fatalf("script.shell should expose input_schema alias for Studio clients: %+v", rawItem)
 	}
 	if _, ok := rawItem["output_schema"]; !ok {
-		t.Fatalf("cmd.run should expose output_schema alias for Studio clients: %+v", rawItem)
+		t.Fatalf("script.shell should expose output_schema alias for Studio clients: %+v", rawItem)
 	}
 }
 
@@ -161,8 +159,8 @@ func TestVisualWorkflowAIDraftRouteGeneratesHostResourceWorkflow(t *testing.T) {
 	if len(response.CandidateGraph.Nodes) < 3 || len(response.CandidateGraph.Edges) < 2 {
 		t.Fatalf("candidate graph too small: nodes=%d edges=%d", len(response.CandidateGraph.Nodes), len(response.CandidateGraph.Edges))
 	}
-	if !graphHasAction(response.CandidateGraph, "shell.run") {
-		t.Fatalf("candidate graph should include shell.run resource check node: %+v", response.CandidateGraph.Nodes)
+	if !graphHasAction(response.CandidateGraph, "script.shell") {
+		t.Fatalf("candidate graph should include script.shell resource check node: %+v", response.CandidateGraph.Nodes)
 	}
 	if err := visual.ValidateGraph(response.CandidateGraph); err != nil {
 		t.Fatalf("candidate graph should be valid for save/apply: %v", err)
@@ -521,13 +519,106 @@ func TestVisualWorkflowRouteDryRunMarksNamedWorkflowDryRunPassed(t *testing.T) {
 	}
 }
 
+func TestVisualWorkflowDebugNodeHandlerRunsBuiltinTCPPing(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
+	handler := &visualWorkflowHandler{svc: svc}
+	req := newDebugNodeRequest(t, "probe", map[string]any{
+		"graph": debugAPIGraph("probe", workflow.Step{
+			Name:   "probe",
+			Action: "builtin.tcp_ping",
+			Args:   map[string]any{"host": host, "port": port},
+		}),
+		"mode": "run",
+	})
+	rec := httptest.NewRecorder()
+
+	handler.DebugNode(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("debug status = %d payload=%s", rec.Code, rec.Body.String())
+	}
+	var result service.VisualWorkflowDebugResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode debug response: %v", err)
+	}
+	if result.NodeID != "probe" || result.Action != "builtin.tcp_ping" || result.Status != "success" {
+		t.Fatalf("debug result mismatch: %+v", result)
+	}
+}
+
+func TestVisualWorkflowDebugNodeRouteBindsNodeID(t *testing.T) {
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
+	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
+	graph := debugAPIGraph("dns", workflow.Step{
+		Name:   "dns",
+		Action: "builtin.dns_resolve",
+		Args:   map[string]any{"name": "localhost"},
+	})
+
+	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows/graph/nodes/dns/debug", map[string]any{
+		"graph": graph,
+	})
+	if code != http.StatusOK {
+		t.Fatalf("route debug status = %d payload=%s", code, payload)
+	}
+	var result service.VisualWorkflowDebugResult
+	if err := json.Unmarshal(payload, &result); err != nil {
+		t.Fatalf("decode route debug response: %v", err)
+	}
+	if result.NodeID != "dns" || result.Action != "builtin.dns_resolve" || result.Status != "dry_run" {
+		t.Fatalf("route debug result mismatch: %+v", result)
+	}
+}
+
+func TestVisualWorkflowDebugNodeHandlerCoversErrors(t *testing.T) {
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
+	handler := &visualWorkflowHandler{svc: svc}
+	graph := debugAPIGraph("request", workflow.Step{
+		Name:   "request",
+		Action: "http.request",
+		Args:   map[string]any{"url": "http://example.invalid", "method": "POST"},
+	})
+
+	req := newDebugNodeRequest(t, "missing", map[string]any{"graph": graph})
+	rec := httptest.NewRecorder()
+	handler.DebugNode(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing node status = %d payload=%s", rec.Code, rec.Body.String())
+	}
+
+	req = newDebugNodeRequest(t, "start", map[string]any{"graph": graph})
+	rec = httptest.NewRecorder()
+	handler.DebugNode(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-action status = %d payload=%s", rec.Code, rec.Body.String())
+	}
+
+	req = newDebugNodeRequest(t, "request", map[string]any{"graph": graph, "mode": "run"})
+	rec = httptest.NewRecorder()
+	handler.DebugNode(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("blocked write method status = %d payload=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestVisualWorkflowRouteSubmitRequiresRiskAcknowledgement(t *testing.T) {
 	runSvc := service.NewRunService(service.RunServiceConfig{MaxConcurrentRuns: 1}, nil, nil, state.NewInMemoryRunStore(), queue.NewMemoryQueue(4), events.NewHub(), metrics.NewCollector())
 	defer runSvc.Close()
 	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{RunService: runSvc})
 	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
 	graph := sampleAPIGraph()
-	graph.Nodes[1].Step.Action = "shell.run"
+	graph.Nodes[1].Step.Action = "script.shell"
 	graph.Nodes[1].Step.Args = map[string]any{"script": "echo acknowledged"}
 
 	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows/graph/runs", map[string]any{"graph": graph})
@@ -622,8 +713,8 @@ func sampleAPIGraph() visual.Graph {
 			{ID: "start", Type: visual.NodeTypeStart},
 			{ID: "run", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:   "run",
-				Action: "cmd.run",
-				Args:   map[string]any{"cmd": "echo ok"},
+				Action: "builtin.dns_resolve",
+				Args:   map[string]any{"name": "localhost", "record_type": "A"},
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
@@ -662,14 +753,14 @@ func manualApprovalAPIGraph() visual.Graph {
 			{ID: "after", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:    "after",
 				Targets: []string{"local"},
-				Action:  "cmd.run",
-				Args:    map[string]any{"cmd": "echo after"},
+				Action:  "builtin.dns_resolve",
+				Args:    map[string]any{"name": "localhost", "record_type": "A"},
 			}},
 			{ID: "notify", Type: visual.NodeTypeAction, Step: &workflow.Step{
 				Name:    "notify",
 				Targets: []string{"local"},
-				Action:  "cmd.run",
-				Args:    map[string]any{"cmd": "echo notify"},
+				Action:  "builtin.dns_resolve",
+				Args:    map[string]any{"name": "localhost", "record_type": "A"},
 			}},
 			{ID: "end", Type: visual.NodeTypeEnd},
 		},
@@ -681,6 +772,37 @@ func manualApprovalAPIGraph() visual.Graph {
 			{ID: "notify-end", Source: "notify", Target: "end", Kind: visual.EdgeKindSuccess},
 		},
 	}
+}
+
+func debugAPIGraph(nodeID string, step workflow.Step) visual.Graph {
+	return visual.Graph{
+		Version: visual.GraphVersion,
+		Workflow: workflow.Workflow{
+			Version: "v0.1",
+			Name:    "api-debug",
+		},
+		Nodes: []visual.Node{
+			{ID: "start", Type: visual.NodeTypeStart},
+			{ID: nodeID, Type: visual.NodeTypeAction, Step: &step},
+			{ID: "end", Type: visual.NodeTypeEnd},
+		},
+		Edges: []visual.Edge{
+			{ID: "start-" + nodeID, Source: "start", Target: nodeID, Kind: visual.EdgeKindNext},
+			{ID: nodeID + "-end", Source: nodeID, Target: "end", Kind: visual.EdgeKindSuccess},
+		},
+	}
+}
+
+func newDebugNodeRequest(t *testing.T, nodeID string, body map[string]any) *http.Request {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal debug request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workflows/graph/nodes/"+nodeID+"/debug", bytes.NewReader(raw))
+	req.SetPathValue("node_id", nodeID)
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
 
 func waitAPIRunNodeStatus(t *testing.T, svc *service.RunService, runID, nodeID, status string, timeout time.Duration) {
@@ -767,4 +889,39 @@ func graphHasAction(graph visual.Graph, action string) bool {
 		}
 	}
 	return false
+}
+
+func apiCatalogHasAction(items []service.ActionSpec, action string) bool {
+	for _, item := range items {
+		if item.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
+func apiCatalogItem(t *testing.T, items []service.ActionSpec, action string) service.ActionSpec {
+	t.Helper()
+	for _, item := range items {
+		if item.Action == action {
+			return item
+		}
+	}
+	t.Fatalf("missing catalog action %q in %+v", action, items)
+	return service.ActionSpec{}
+}
+
+func rawCatalogActionItem(t *testing.T, items []any, action string) map[string]any {
+	t.Helper()
+	for _, item := range items {
+		rawItem, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("raw catalog item mismatch: %+v", item)
+		}
+		if rawItem["action"] == action {
+			return rawItem
+		}
+	}
+	t.Fatalf("missing raw catalog action %q in %+v", action, items)
+	return nil
 }

@@ -1,9 +1,12 @@
 package opsmanual
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
+	"time"
 )
 
 type ManualRepository interface {
@@ -23,12 +26,17 @@ type ListManualsRequest struct {
 }
 
 type ListRunRecordsRequest struct {
-	ManualID   string
-	WorkflowID string
-	Limit      int
+	OpsManualFlowID string
+	ManualID        string
+	WorkflowID      string
+	Limit           int
 }
 
 func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (SearchOpsManualsResult, error) {
+	return SearchOpsManualsWithHintProvider(context.Background(), repo, req, nil)
+}
+
+func SearchOpsManualsWithHintProvider(ctx context.Context, repo ManualRepository, req SearchOpsManualsRequest, provider HintProvider) (SearchOpsManualsResult, error) {
 	if repo == nil {
 		return SearchOpsManualsResult{}, fmt.Errorf("manual repository is nil")
 	}
@@ -43,10 +51,16 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	}
 	hits := generateCandidates(repo, manuals, frame)
 	sortSearchHits(hits)
+	hits = applyManualHintsToSearchHits(ctx, hits, frame, req, provider)
 	if req.Limit > 0 && len(hits) > req.Limit {
 		hits = hits[:req.Limit]
 	}
 	result.Manuals = hits
+	if len(hits) > 0 {
+		result.OpsManualFlowID = BuildOpsManualFlowIDFromMetadata(req.Metadata, hits[0].Manual.ID, firstNonEmpty(hits[0].BoundWorkflowID, hits[0].Manual.WorkflowRef.WorkflowID), frame)
+	} else {
+		result.OpsManualFlowID = BuildOpsManualFlowIDFromMetadata(req.Metadata, "", "", frame)
+	}
 	if len(hits) == 0 {
 		result.Decision = noHitDecision(frame)
 		result.Summary = searchSummary(result.Decision, nil, frame)
@@ -61,6 +75,92 @@ func SearchOpsManuals(repo ManualRepository, req SearchOpsManualsRequest) (Searc
 	}
 	result.RecommendedNextAction = recommendedNextAction(result.Decision)
 	return result, nil
+}
+
+func applyManualHintsToSearchHits(ctx context.Context, hits []SearchManualHit, frame OperationFrame, req SearchOpsManualsRequest, provider HintProvider) []SearchManualHit {
+	if len(hits) == 0 || provider == nil {
+		return hits
+	}
+	hints, err := provider.ManualHints(ctx, HintQuery{
+		Text:           firstNonEmpty(strings.TrimSpace(req.Text), strings.TrimSpace(frame.RawText)),
+		OperationFrame: frame,
+		SessionID:      firstMetadataAnyValue(req.Metadata, "session_id", "sessionId"),
+		ProjectID:      firstMetadataAnyValue(req.Metadata, "project_id", "projectId"),
+		Now:            time.Now().UTC(),
+		Limit:          8,
+	})
+	if err != nil || len(hints) == 0 {
+		return hits
+	}
+	original := make(map[string]int, len(hits))
+	for idx, hit := range hits {
+		original[hit.Manual.ID] = idx
+	}
+	hintSources := map[string][]string{}
+	for _, hint := range hints {
+		if !manualHintUsableForFrame(hint, frame) {
+			continue
+		}
+		manualID := strings.TrimSpace(hint.ManualID)
+		if manualID == "" {
+			continue
+		}
+		source := firstNonEmpty(strings.TrimSpace(hint.Source), "memory_hint")
+		if source != "memory_hint" && source != "letta_hint" {
+			source = "memory_hint"
+		}
+		hintSources[manualID] = appendUnique(hintSources[manualID], source)
+	}
+	if len(hintSources) == 0 {
+		return hits
+	}
+	for idx := range hits {
+		if sources := hintSources[hits[idx].Manual.ID]; len(sources) > 0 {
+			for _, source := range sources {
+				hits[idx].HintSources = appendUnique(hits[idx].HintSources, source)
+			}
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		if manualHintNearTie(hits[i], hits[j], frame) {
+			leftHinted := len(hits[i].HintSources) > 0
+			rightHinted := len(hits[j].HintSources) > 0
+			if leftHinted != rightHinted {
+				return leftHinted
+			}
+		}
+		return original[hits[i].Manual.ID] < original[hits[j].Manual.ID]
+	})
+	return hits
+}
+
+func manualHintUsableForFrame(hint ManualHint, frame OperationFrame) bool {
+	if !hint.Redacted {
+		return false
+	}
+	now := time.Now().UTC()
+	if !hint.ExpiresAt.IsZero() && !hint.ExpiresAt.After(now) {
+		return false
+	}
+	return hintScopeMatches(hint.ObjectType, frame.Target.Type) && hintActionMatches(hint.Action, frame.Operation.Action)
+}
+
+func manualHintNearTie(left SearchManualHit, right SearchManualHit, frame OperationFrame) bool {
+	if !sameObjectActionSearchHit(left, frame) || !sameObjectActionSearchHit(right, frame) {
+		return false
+	}
+	if rankSearchHit(left) != rankSearchHit(right) {
+		return false
+	}
+	return math.Abs(left.ScoreBreakdown.FinalScore-right.ScoreBreakdown.FinalScore) <= 0.03
+}
+
+func sameObjectActionSearchHit(hit SearchManualHit, frame OperationFrame) bool {
+	manualTarget := firstNonEmpty(hit.Manual.Operation.TargetType, hit.Manual.Applicability.Middleware)
+	return strings.TrimSpace(manualTarget) != "" &&
+		strings.TrimSpace(frame.Target.Type) != "" &&
+		equalFold(manualTarget, frame.Target.Type) &&
+		operationsCompatibleForSearch(hit.Manual.Operation.Action, frame.Operation.Action)
 }
 
 func generateCandidates(repo ManualRepository, manuals []OpsManual, frame OperationFrame) []SearchManualHit {
@@ -125,8 +225,8 @@ func evaluateManual(repo ManualRepository, manual OpsManual, frame OperationFram
 		case strings.Contains(rule, "目标实例未知") && hasAny(frame.Evidence.Missing, "target_instance"):
 			missing = appendUnique(missing, "target_instance")
 			match.Reasons = append(match.Reasons, "manual cannot be used while target instance is unknown")
-		case strings.Contains(rule, "Kubernetes") && frame.Environment.Platform != "kubernetes":
-			match.Reasons = append(match.Reasons, "manual mentions Kubernetes applicability constraint")
+		case DefaultOpsManualCapabilityRegistry().ManualApplicabilityConstraintReason(rule, frame.Environment.Platform) != "":
+			match.Reasons = append(match.Reasons, DefaultOpsManualCapabilityRegistry().ManualApplicabilityConstraintReason(rule, frame.Environment.Platform))
 		case strings.Contains(rule, "无法确认数据库版本") || strings.Contains(lower, "database version"):
 			if !hasAny(frame.Evidence.Provided, "version", "pg_version") {
 				missing = appendUnique(missing, "version")
@@ -148,7 +248,7 @@ func evaluateManual(repo ManualRepository, manual OpsManual, frame OperationFram
 	default:
 		match.State = DecisionDirect
 		match.Reasons = append(match.Reasons, "manual structural conditions are satisfied")
-		match.RecommendedNextActions = []string{"fill_parameters", "run_precheck", "start_dry_run"}
+		match.RecommendedNextActions = []string{"fill_parameters", "run_precheck", "confirm_execution"}
 	}
 	return match
 }
@@ -181,7 +281,7 @@ func normalizeSearchOperationFrame(req SearchOpsManualsRequest) OperationFrame {
 	if frame.Intent == "" {
 		frame.Intent = frame.Operation.Action
 	}
-	applyExplicitContextMetadata(&frame, frame.Metadata)
+	applyExplicitContextMetadata(&frame, frame.Metadata, DefaultOpsManualCapabilityRegistry())
 	if len(frame.TargetScope.Hosts) == 0 && frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
@@ -220,6 +320,7 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		Manual:           cloneManual(manual),
 		BoundWorkflowID:  strings.TrimSpace(manual.WorkflowRef.WorkflowID),
 		RunRecordSummary: summary,
+		PreflightStatus:  PreflightStatusNotRun,
 	}
 	filter := hardFilterCandidate(manual, frame, summary)
 	if !filter.Allowed {
@@ -513,11 +614,11 @@ func searchSummary(decision DecisionState, hit *SearchManualHit, frame Operation
 func recommendedNextAction(decision DecisionState) string {
 	switch decision {
 	case DecisionDirectExecute:
-		return "运行 Node 0 预检，通过后再 Dry Run。"
+		return "运行 Node 0 预检，通过后确认或审批执行。"
 	case DecisionNeedInfo:
 		return "补充缺失信息后重新检索。"
 	case DecisionAdapt:
-		return "生成适配工作流草稿，用户审核后 Dry Run。"
+		return "生成适配工作流草稿，用户审核并完成发布前检查。"
 	case DecisionReference:
 		return "没有可直接运行的 Workflow；继续只读自动化排查，若缺目标、时间范围、权限或观测数据会说明阻塞原因。"
 	case DecisionNoMatch:
@@ -528,20 +629,7 @@ func recommendedNextAction(decision DecisionState) string {
 }
 
 func displayObjectType(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "redis":
-		return "Redis"
-	case "mysql":
-		return "MySQL"
-	case "postgresql", "postgres", "pg":
-		return "PostgreSQL"
-	case "kafka":
-		return "Kafka"
-	case "kubernetes_pod", "k8s_pod":
-		return "Kubernetes Pod"
-	default:
-		return strings.TrimSpace(value)
-	}
+	return DefaultOpsManualCapabilityRegistry().DisplayObjectType(value)
 }
 
 func nextQuestionsForMissing(missing []string) []string {
@@ -622,7 +710,7 @@ func manualMatchFromSearchHit(hit SearchManualHit, summary string) ManualMatch {
 func legacyActionsForSearchHit(hit SearchManualHit) []string {
 	switch hit.UsableMode {
 	case DecisionDirectExecute:
-		return []string{"fill_parameters", "run_preflight_probe", "start_dry_run"}
+		return []string{"fill_parameters", "run_preflight_probe", "confirm_execution"}
 	case DecisionAdapt:
 		return []string{"review_manual", "adapt_workflow"}
 	case DecisionNeedInfo:

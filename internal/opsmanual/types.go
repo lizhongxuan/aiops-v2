@@ -119,13 +119,14 @@ type ParamRequirement struct {
 }
 
 type ParamCandidate struct {
-	Value            any     `json:"value"`
-	Label            string  `json:"label,omitempty"`
-	Hint             string  `json:"hint,omitempty"`
-	Source           string  `json:"source,omitempty"`
-	Confidence       float64 `json:"confidence,omitempty"`
-	Evidence         string  `json:"evidence,omitempty"`
-	FreshnessSeconds int     `json:"freshness_seconds,omitempty"`
+	Value            any            `json:"value"`
+	Label            string         `json:"label,omitempty"`
+	Hint             string         `json:"hint,omitempty"`
+	Source           string         `json:"source,omitempty"`
+	Confidence       float64        `json:"confidence,omitempty"`
+	Evidence         string         `json:"evidence,omitempty"`
+	FreshnessSeconds int            `json:"freshness_seconds,omitempty"`
+	Metadata         map[string]any `json:"metadata,omitempty"`
 }
 
 type ResolvedParam struct {
@@ -141,7 +142,8 @@ type ResolvedParam struct {
 
 type MissingParam struct {
 	ParamRequirement
-	Reason string `json:"reason,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
+	Candidates []ParamCandidate `json:"candidates,omitempty"`
 }
 
 type AmbiguousParam struct {
@@ -211,6 +213,7 @@ type ParamResolutionFormField struct {
 
 type ParamResolutionResult struct {
 	Status          ParamResolutionStatus      `json:"status"`
+	OpsManualFlowID string                     `json:"ops_manual_flow_id,omitempty"`
 	ManualID        string                     `json:"manual_id,omitempty"`
 	WorkflowID      string                     `json:"workflow_id,omitempty"`
 	OperationFrame  OperationFrame             `json:"operation_frame"`
@@ -267,9 +270,10 @@ type FallbackGuide struct {
 }
 
 type VerificationProfile struct {
-	LastVerifiedAt       string `json:"last_verified_at,omitempty"`
-	VerifiedBy           string `json:"verified_by,omitempty"`
-	RequiredRunnerDryRun bool   `json:"required_runner_dry_run,omitempty"`
+	LastVerifiedAt        string `json:"last_verified_at,omitempty"`
+	VerifiedBy            string `json:"verified_by,omitempty"`
+	RequiredPreflightPlan bool   `json:"required_preflight_plan,omitempty"`
+	RequiredRunnerDryRun  bool   `json:"required_runner_dry_run,omitempty"`
 }
 
 type OperationFrame struct {
@@ -342,9 +346,12 @@ type SearchOpsManualsRequest struct {
 
 type SearchOpsManualsResult struct {
 	Decision              DecisionState     `json:"decision"`
+	OpsManualFlowID       string            `json:"ops_manual_flow_id,omitempty"`
 	Summary               string            `json:"summary"`
 	OperationFrame        OperationFrame    `json:"operation_frame"`
 	Manuals               []SearchManualHit `json:"manuals"`
+	SuppressedManuals     []string          `json:"suppressed_manuals,omitempty"`
+	SuppressionReason     string            `json:"suppression_reason,omitempty"`
 	NextQuestions         []string          `json:"next_questions,omitempty"`
 	RecommendedNextAction string            `json:"recommended_next_action,omitempty"`
 	SearchedFields        []string          `json:"searched_fields,omitempty"`
@@ -363,23 +370,28 @@ type SearchManualHit struct {
 	BlockedReasons    []string         `json:"blocked_reasons,omitempty"`
 	RecommendedAction string           `json:"recommended_action,omitempty"`
 	RunRecordSummary  RunRecordSummary `json:"run_record_summary,omitempty"`
+	HintSources       []string         `json:"hint_sources,omitempty"`
 }
 
 type ManualCandidate struct {
-	ID               string    `json:"id"`
-	SourceType       string    `json:"source_type"`
-	SourceRefs       []string  `json:"source_refs,omitempty"`
-	ProposedManual   OpsManual `json:"proposed_manual"`
-	ValidationReport []string  `json:"validation_report,omitempty"`
-	ReviewStatus     string    `json:"review_status"`
-	Reviewer         string    `json:"reviewer,omitempty"`
-	ReviewNote       string    `json:"review_note,omitempty"`
-	CreatedAt        string    `json:"created_at,omitempty"`
-	UpdatedAt        string    `json:"updated_at,omitempty"`
+	ID                         string                      `json:"id"`
+	SourceType                 string                      `json:"source_type"`
+	SourceRefs                 []string                    `json:"source_refs,omitempty"`
+	ProposedManual             OpsManual                   `json:"proposed_manual"`
+	ValidationReport           []string                    `json:"validation_report,omitempty"`
+	StructuredValidationReport ManualCandidateValidation   `json:"structured_validation_report,omitempty"`
+	UserSummary                ManualGenerationUserSummary `json:"user_summary,omitempty"`
+	ReviewStatus               string                      `json:"review_status"`
+	Reviewer                   string                      `json:"reviewer,omitempty"`
+	ReviewNote                 string                      `json:"review_note,omitempty"`
+	CreatedAt                  string                      `json:"created_at,omitempty"`
+	UpdatedAt                  string                      `json:"updated_at,omitempty"`
 }
 
 type RunRecord struct {
 	ID                  string             `json:"id"`
+	SessionID           string             `json:"session_id,omitempty"`
+	OpsManualFlowID     string             `json:"ops_manual_flow_id,omitempty"`
 	ManualID            string             `json:"manual_id,omitempty"`
 	WorkflowID          string             `json:"workflow_id"`
 	WorkflowVersion     string             `json:"workflow_version,omitempty"`
@@ -388,11 +400,13 @@ type RunRecord struct {
 	EnvironmentSnapshot EnvironmentProfile `json:"environment_snapshot"`
 	RedactedParameters  map[string]any     `json:"redacted_parameters,omitempty"`
 	ApprovalRef         string             `json:"approval_ref,omitempty"`
+	PreflightStatus     string             `json:"preflight_status,omitempty"`
 	DryRunStatus        string             `json:"dry_run_status,omitempty"`
 	ExecutionStatus     string             `json:"execution_status,omitempty"`
 	ValidationStatus    string             `json:"validation_status,omitempty"`
 	RollbackStatus      string             `json:"rollback_status,omitempty"`
 	FailureReason       string             `json:"failure_reason,omitempty"`
+	UserFeedback        string             `json:"user_feedback,omitempty"`
 	Operator            string             `json:"operator,omitempty"`
 	StartedAt           string             `json:"started_at,omitempty"`
 	CompletedAt         string             `json:"completed_at,omitempty"`
@@ -430,12 +444,13 @@ const (
 )
 
 type PreflightRequest struct {
-	ManualID       string         `json:"manual_id"`
-	WorkflowID     string         `json:"workflow_id,omitempty"`
-	OperationFrame OperationFrame `json:"operation_frame"`
-	Parameters     map[string]any `json:"parameters,omitempty"`
-	RequestedBy    string         `json:"requested_by,omitempty"`
-	TriggeredBy    string         `json:"triggered_by,omitempty"`
+	OpsManualFlowID string         `json:"ops_manual_flow_id,omitempty"`
+	ManualID        string         `json:"manual_id"`
+	WorkflowID      string         `json:"workflow_id,omitempty"`
+	OperationFrame  OperationFrame `json:"operation_frame"`
+	Parameters      map[string]any `json:"parameters,omitempty"`
+	RequestedBy     string         `json:"requested_by,omitempty"`
+	TriggeredBy     string         `json:"triggered_by,omitempty"`
 }
 
 type PreflightEvidence struct {
@@ -445,17 +460,37 @@ type PreflightEvidence struct {
 	Note   string `json:"note,omitempty"`
 }
 
+type PreflightPlanWarning struct {
+	Code       string `json:"code,omitempty"`
+	Field      string `json:"field,omitempty"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"`
+}
+
+type PreflightExecutionPlan struct {
+	Summary          string                 `json:"summary,omitempty"`
+	WorkflowStatus   string                 `json:"workflow_status,omitempty"`
+	TargetHosts      []string               `json:"target_hosts,omitempty"`
+	ActionsUsed      []string               `json:"actions_used,omitempty"`
+	RequiresApproval bool                   `json:"requires_approval,omitempty"`
+	RiskLevel        string                 `json:"risk_level,omitempty"`
+	Warnings         []PreflightPlanWarning `json:"warnings,omitempty"`
+}
+
 type PreflightResult struct {
-	Status             PreflightStatus     `json:"status"`
-	Ready              bool                `json:"ready"`
-	Reason             string              `json:"reason,omitempty"`
-	ManualID           string              `json:"manual_id,omitempty"`
-	WorkflowID         string              `json:"workflow_id,omitempty"`
-	ProbeID            string              `json:"probe_id,omitempty"`
-	Evidence           []PreflightEvidence `json:"evidence,omitempty"`
-	MissingPermissions []string            `json:"missing_permissions,omitempty"`
-	EnvironmentDiffs   []string            `json:"environment_diffs,omitempty"`
-	NextAction         string              `json:"next_action,omitempty"`
-	CheckedAt          string              `json:"checked_at,omitempty"`
-	ArtifactType       string              `json:"artifact_type,omitempty"`
+	Status             PreflightStatus        `json:"status"`
+	OpsManualFlowID    string                 `json:"ops_manual_flow_id,omitempty"`
+	Ready              bool                   `json:"ready"`
+	Reason             string                 `json:"reason,omitempty"`
+	ManualID           string                 `json:"manual_id,omitempty"`
+	WorkflowID         string                 `json:"workflow_id,omitempty"`
+	WorkflowDigest     string                 `json:"workflow_digest,omitempty"`
+	ProbeID            string                 `json:"probe_id,omitempty"`
+	Evidence           []PreflightEvidence    `json:"evidence,omitempty"`
+	MissingPermissions []string               `json:"missing_permissions,omitempty"`
+	EnvironmentDiffs   []string               `json:"environment_diffs,omitempty"`
+	ExecutionPlan      PreflightExecutionPlan `json:"execution_plan,omitempty"`
+	NextAction         string                 `json:"next_action,omitempty"`
+	CheckedAt          string                 `json:"checked_at,omitempty"`
+	ArtifactType       string                 `json:"artifact_type,omitempty"`
 }

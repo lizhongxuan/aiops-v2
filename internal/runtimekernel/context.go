@@ -16,7 +16,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // DefaultMaxTokens is the default context window size if not configured.
-const DefaultMaxTokens = 128000
+const DefaultMaxTokens = 200000
 
 // ContextCompactionPlan describes the split between the compactable prefix and
 // the retained suffix of a message history.
@@ -35,6 +35,7 @@ type ContextPipelineOptions struct {
 	Compressor       *spanstream.ContextCompressor
 	PendingApprovals []PendingApproval
 	PendingEvidence  []PendingEvidence
+	BudgetPolicy     ContextBudgetPolicy
 }
 
 // ContextPipelineResult contains the compacted view that is safe to show the model.
@@ -42,6 +43,7 @@ type ContextPipelineResult struct {
 	Messages           []Message
 	CompactedSegments  []CompactedSegment
 	ExternalReferences []ExternalReference
+	GovernanceEvents   []ContextGovernanceEvent
 }
 
 // EstimateTokens provides a rough token estimate for a message.
@@ -198,9 +200,19 @@ func SplitContextForCompaction(cw *ContextWindow, messages []Message) ContextCom
 // a synthetic summary message, and only falls back to additional suffix trimming
 // after the summary has been introduced.
 func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Message, opts ContextPipelineOptions) (ContextPipelineResult, error) {
+	thresholds := contextPipelineThresholds(cw, opts.BudgetPolicy)
+	micro := MicrocompactMessages(messages, MicrocompactOptions{
+		SessionID:        opts.SessionID,
+		TurnID:           opts.TurnID,
+		Iteration:        opts.Iteration,
+		SmallContextMode: thresholds.SmallContextMode,
+	})
+	governanceEvents := append([]ContextGovernanceEvent(nil), micro.Events...)
+	messages = micro.Messages
+
 	plan := SplitContextForCompaction(cw, messages)
 	if !plan.Compacted {
-		return ContextPipelineResult{Messages: plan.Retained}, nil
+		return ContextPipelineResult{Messages: plan.Retained, GovernanceEvents: governanceEvents}, nil
 	}
 
 	hardKeepCount := 4
@@ -223,21 +235,48 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 	if len(plan.Compactable) == 0 {
 		result := append([]Message(nil), plan.Retained...)
 		recomputeContextWindow(cw, result)
-		return ContextPipelineResult{Messages: result}, nil
+		return ContextPipelineResult{Messages: result, GovernanceEvents: governanceEvents}, nil
 	}
 
 	refs := collectMessageReferences(plan.Compactable)
 	summary := heuristicCompactionSummary(plan.Compactable)
+	startedEvent := BuildContextGovernanceEvent(ContextGovernanceEvent{
+		ID:           fmt.Sprintf("ctxgov-%s-%d-l4-started", opts.TurnID, opts.Iteration),
+		Layer:        ContextGovernanceLayerL4,
+		Kind:         "context.compaction.started",
+		SessionID:    opts.SessionID,
+		TurnID:       opts.TurnID,
+		Iteration:    opts.Iteration,
+		Message:      "正在压缩上下文，当前任务会继续",
+		Budget:       thresholds,
+		ReferenceIDs: referenceIDs(refs),
+	})
+	governanceEvents = append(governanceEvents, startedEvent)
 	if opts.Compressor != nil {
-		compressorMessages := make([]spanstream.Message, 0, len(plan.Compactable))
-		for _, msg := range plan.Compactable {
-			compressorMessages = append(compressorMessages, spanstream.Message{
-				Role:    msg.Role,
-				Content: msg.Content,
-			})
-		}
-		if compressed, err := opts.Compressor.Compress(ctx, nil, compressorMessages); err == nil && strings.TrimSpace(compressed) != "" {
+		compactCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		compressed, err := compressOnce(compactCtx, opts.Compressor, plan.Compactable)
+		cancel()
+		if err == nil && strings.TrimSpace(compressed) != "" {
 			summary = compressed
+		} else if err != nil {
+			message := "上下文压缩失败，已使用本地摘要继续"
+			layer := ContextGovernanceLayerL4
+			if isPromptTooLongError(err) {
+				message = "上下文过长，已使用本地摘要继续"
+				layer = ContextGovernanceLayerL5
+			}
+			governanceEvents = append(governanceEvents, BuildContextGovernanceEvent(ContextGovernanceEvent{
+				ID:           fmt.Sprintf("ctxgov-%s-%d-l4-failed", opts.TurnID, opts.Iteration),
+				Layer:        layer,
+				Kind:         "context.compaction.failed",
+				SessionID:    opts.SessionID,
+				TurnID:       opts.TurnID,
+				Iteration:    opts.Iteration,
+				Message:      message,
+				Budget:       thresholds,
+				ReferenceIDs: referenceIDs(refs),
+				Timeout:      compactCtx.Err() == context.DeadlineExceeded,
+			}))
 		}
 	}
 	segmentID := fmt.Sprintf("cmp-%s-%d-%d", opts.TurnID, opts.Iteration, plan.TrimmedCount)
@@ -284,11 +323,75 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		ExternalReferences: refs,
 		CreatedAt:          time.Now(),
 	}
+	governanceEvents = append(governanceEvents, BuildContextGovernanceEvent(ContextGovernanceEvent{
+		ID:           fmt.Sprintf("ctxgov-%s-%d-l4-completed", opts.TurnID, opts.Iteration),
+		Layer:        ContextGovernanceLayerL4,
+		Kind:         "context.compaction.completed",
+		SessionID:    opts.SessionID,
+		TurnID:       opts.TurnID,
+		Iteration:    opts.Iteration,
+		Message:      "已整理早期上下文",
+		Budget:       thresholds,
+		ReferenceIDs: referenceIDs(refs),
+		CompactedIDs: []string{segment.ID},
+	}))
 	return ContextPipelineResult{
 		Messages:           resultMessages,
 		CompactedSegments:  []CompactedSegment{segment},
 		ExternalReferences: refs,
+		GovernanceEvents:   governanceEvents,
 	}, nil
+}
+
+func compressOnce(ctx context.Context, compressor *spanstream.ContextCompressor, messages []Message) (string, error) {
+	compressorMessages := messagesForCompressor(messages)
+	return compressor.Compress(ctx, nil, compressorMessages)
+}
+
+func messagesForCompressor(messages []Message) []spanstream.Message {
+	out := make([]spanstream.Message, 0, len(messages))
+	for _, msg := range messages {
+		content := msg.Content
+		if msg.ToolResult != nil {
+			content = msg.ToolResult.Content
+		}
+		out = append(out, spanstream.Message{
+			Role:    msg.Role,
+			Content: content,
+		})
+	}
+	return out
+}
+
+func isPromptTooLongError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"prompt too long",
+		"context length",
+		"maximum context",
+		"too many tokens",
+		"tokens exceed",
+		"exceeds context",
+	} {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func contextPipelineThresholds(cw *ContextWindow, policy ContextBudgetPolicy) ContextBudgetThresholds {
+	maxTokens := DefaultMaxTokens
+	if cw != nil && cw.MaxTokens > 0 {
+		maxTokens = cw.MaxTokens
+	}
+	if policy.MaxContextTokens <= 0 {
+		policy = DefaultContextBudgetPolicy(maxTokens, policy.ModelMaxOutputTokens)
+	}
+	return policy.Thresholds()
 }
 
 func recomputeContextWindow(cw *ContextWindow, messages []Message) {

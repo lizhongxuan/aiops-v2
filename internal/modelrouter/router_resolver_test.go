@@ -89,9 +89,10 @@ func TestGetModel_ProviderConfigResolverOverridesDefaultRouting(t *testing.T) {
 	})
 	r.SetProviderConfigResolver(&providerConfigResolverStub{
 		config: ProviderConfig{
-			Provider: "openai",
-			Model:    "gpt-5.4",
-			BaseURL:  "http://127.0.0.1:8317/v1",
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			BaseURL:          "http://127.0.0.1:8317/v1",
+			MaxContextTokens: 64000,
 		},
 		ok: true,
 	})
@@ -105,5 +106,10 @@ func TestGetModel_ProviderConfigResolverOverridesDefaultRouting(t *testing.T) {
 	}
 	if got := m.(*mockModel).name; got != "openai|gpt-5.4|http://127.0.0.1:8317/v1" {
 		t.Fatalf("model config = %q, want saved provider/model/baseURL", got)
+	}
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{})
+	if caps.MaxContextTokens != 64000 {
+		t.Fatalf("capabilities max context = %d, want resolver override 64000", caps.MaxContextTokens)
 	}
 }

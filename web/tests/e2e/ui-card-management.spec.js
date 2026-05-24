@@ -43,37 +43,40 @@ test.describe("UICardManagementPage", () => {
   });
 
   test("page renders with title and stats", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "UI 卡片管理" })).toBeVisible();
-    await expect(page.locator(".uic-stat strong").first()).toBeVisible();
+    await expect(page.locator("main").getByText("UI Cards", { exact: true })).toBeVisible();
+    await expect(page.locator("main").getByText("总计")).toBeVisible();
+    await expect(page.locator("main").getByText("3", { exact: true }).first()).toBeVisible();
   });
 
   test("overview tab shows kind groups", async ({ page }) => {
-    await expect(page.locator(".ops-card").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
+    await expect(page.locator("main").getByText("1 cards")).toHaveCount(3);
   });
 
   test("list tab shows card table", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "卡片列表" }).click();
-    await expect(page.locator(".ops-data-table-table")).toBeVisible();
-    await expect(page.getByText("摘要卡片").first()).toBeVisible();
+    await page.getByRole("button", { name: "Registry" }).click();
+    await expect(page.getByRole("table")).toBeVisible();
+    await expect(page.getByRole("row", { name: /摘要卡片.*readonly_summary.*McpSummaryCard/ })).toBeVisible();
   });
 
   test("clicking detail button shows card details", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "卡片列表" }).click();
-    const table = page.locator(".ops-data-table-table");
-    await table.getByRole("button", { name: "详情" }).first().click();
-    await expect(page.locator(".ops-descriptions")).toBeVisible();
+    await page.getByRole("button", { name: "Detail" }).click();
+    await expect(page.getByRole("heading", { name: "摘要卡片" })).toBeVisible();
+    await expect(page.locator("main").getByText("Renderer", { exact: true })).toBeVisible();
+    await expect(page.locator("dd").filter({ hasText: "McpSummaryCard" })).toBeVisible();
   });
 
-  test("clicking edit button opens editor", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "卡片列表" }).click();
-    const table = page.locator(".ops-data-table-table");
-    await table.getByRole("button", { name: "编辑" }).first().click();
-    await expect(page.locator(".ops-form")).toBeVisible();
+  test("preview tab renders local preview", async ({ page }) => {
+    await page.getByRole("button", { name: "Preview" }).click();
+    await expect(page.getByRole("heading", { name: "Preview" })).toBeVisible();
+    await page.getByRole("button", { name: "运行 Preview" }).click();
+    await expect(page.locator("main").getByText("Local Preview")).toBeVisible();
+    await expect(page.locator("main").getByText("摘要卡片 — 预览")).toBeVisible();
   });
 
-  test("debugger tab is accessible", async ({ page }) => {
-    await page.locator(".ops-tabs-tab", { hasText: "触发调试器" }).click();
-    // The card header contains "触发调试器"
-    await expect(page.locator(".ops-card-header", { hasText: "触发调试器" })).toBeVisible();
+  test("versions tab is accessible", async ({ page }) => {
+    await page.getByRole("button", { name: "Versions" }).click();
+    await expect(page.getByRole("heading", { name: "Versions" })).toBeVisible();
+    await expect(page.locator("main").getByText("当前版本 1，状态 active")).toBeVisible();
   });
 });

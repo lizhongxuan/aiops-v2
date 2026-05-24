@@ -141,15 +141,24 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 
 // buildSummaryPrompt constructs the messages for the summary extraction call.
 func (cc *ContextCompressor) buildSummaryPrompt(span *Span, messages []Message) []*schema.Message {
-	// System instruction for summarization
 	systemMsg := &schema.Message{
 		Role: schema.System,
-		Content: "You are a concise summarizer. Given a conversation or tool output, " +
-			"produce a brief summary (1-2 sentences) that captures the key findings or actions. " +
-			"Focus on results, errors, and important data points. Do not include pleasantries.",
+		Content: strings.Join([]string{
+			"CRITICAL: Respond with TEXT ONLY. Do NOT call tools.",
+			"请为 AIOps 长会话生成可继续工作的上下文摘要，必须保留：",
+			"1. 用户当前目标和最新约束",
+			"2. 当前事故 / 服务 / 主机 / 时间窗",
+			"3. 已确认事实和 evidenceRefs",
+			"4. 已排除假设",
+			"5. 当前最可能 root cause / hypotheses",
+			"6. 已执行工具和关键结果摘要",
+			"7. pending approvals / denied approvals / action token 状态",
+			"8. Runner / OpsManual / MCP / Skills 当前状态",
+			"9. 仍需继续做的下一步",
+			"10. 用户明确反馈和偏好",
+		}, "\n"),
 	}
 
-	// Build the content to summarize
 	var contentBuilder strings.Builder
 	if span != nil {
 		contentBuilder.WriteString(fmt.Sprintf("Task: %s (type: %s)\n\n", span.Name, span.Type))
@@ -160,7 +169,7 @@ func (cc *ContextCompressor) buildSummaryPrompt(span *Span, messages []Message) 
 
 	userMsg := &schema.Message{
 		Role:    schema.User,
-		Content: "Summarize the following conversation/output:\n\n" + contentBuilder.String(),
+		Content: "Summarize the following conversation/output as an AIOps continuation summary. Include transcript/ref hints and keep evidence references auditable.\n\n" + contentBuilder.String(),
 	}
 
 	return []*schema.Message{systemMsg, userMsg}

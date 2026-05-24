@@ -26,6 +26,10 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
   "caseId": "case-1",
   "visibleTools": ["exec_command"],
   "promptFingerprint": {"stableHash": "stable-hash"},
+  "llmRequests": [
+    {"id": "llm-1", "usage": {"prompt_tokens": 21, "completion_tokens": 8, "total_tokens": 29}, "duration_ms": 456},
+    {"id": "llm-2", "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}, "duration_ms": 544}
+  ],
   "modelInput": [
     {"providerRole": "system"},
     {"providerRole": "user", "content": "检查 checkout p95 延迟 token=super-secret"},
@@ -56,6 +60,12 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
 	if trace.MarkdownPath == "" || trace.DiffPath == "" {
 		t.Fatalf("trace paths missing markdown/diff: %#v", trace)
 	}
+	if trace.LLMRequestCount != 2 || trace.AverageDurationMs != 500 {
+		t.Fatalf("trace llm stats = count %d avg %d, want 2 and 500", trace.LLMRequestCount, trace.AverageDurationMs)
+	}
+	if trace.Usage == nil || trace.Usage.PromptTokens != 31 || trace.Usage.CompletionTokens != 13 || trace.Usage.TotalTokens != 44 {
+		t.Fatalf("trace usage = %#v, want summed token usage", trace.Usage)
+	}
 	if !strings.Contains(trace.UserPromptPreview, "再次查看 payment 状态") {
 		t.Fatalf("user prompt preview = %q, want latest turn user message", trace.UserPromptPreview)
 	}
@@ -69,6 +79,15 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
 	}
 	if file.Format != "markdown" || file.Content != "# Model Input Trace\n\nprompt" {
 		t.Fatalf("file = %#v", file)
+	}
+}
+
+func TestPromptTraceServiceAllowsLargeHistoryWindow(t *testing.T) {
+	if got := normalizePromptTraceLimit(2000); got != 2000 {
+		t.Fatalf("normalizePromptTraceLimit(2000) = %d, want 2000", got)
+	}
+	if got := normalizePromptTraceLimit(5000); got != 2000 {
+		t.Fatalf("normalizePromptTraceLimit(5000) = %d, want max 2000", got)
 	}
 }
 

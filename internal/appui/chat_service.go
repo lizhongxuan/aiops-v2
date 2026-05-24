@@ -96,6 +96,9 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		HostID:          cmd.HostID,
 		Metadata:        cmd.Metadata,
 	}
+	if strings.TrimSpace(req.HostID) == "" && req.SessionType == runtimekernel.SessionTypeHost {
+		req.HostID = serverLocalHostID
+	}
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}

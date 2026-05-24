@@ -10,6 +10,7 @@ func TestParamResolutionEventStoreMemoryAndFileRoundTrip(t *testing.T) {
 		ID:        "evt-1",
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
+		OpsManualFlowID: "flow-redis-1",
 		ManualID:  "manual-redis-rca",
 		Result: ParamResolutionResult{
 			Status:         ParamResolutionResolved,
@@ -29,6 +30,10 @@ func TestParamResolutionEventStoreMemoryAndFileRoundTrip(t *testing.T) {
 	memEvents, err := mem.ListParamResolutionEvents(ListParamResolutionEventsRequest{SessionID: "sess-1"})
 	if err != nil || len(memEvents) != 1 || memEvents[0].Result.ResolvedParams[0].ID != "target_host" {
 		t.Fatalf("memory events = %#v, err=%v", memEvents, err)
+	}
+	flowEvents, err := mem.ListParamResolutionEvents(ListParamResolutionEventsRequest{OpsManualFlowID: "flow-redis-1"})
+	if err != nil || len(flowEvents) != 1 || flowEvents[0].SessionID != "sess-1" {
+		t.Fatalf("flow events = %#v, err=%v", flowEvents, err)
 	}
 
 	path := filepath.Join(t.TempDir(), "library.json")

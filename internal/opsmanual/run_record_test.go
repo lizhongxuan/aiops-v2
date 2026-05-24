@@ -4,6 +4,9 @@ import "testing"
 
 func TestBuildRunRecordFromWorkflowResultRedactsParametersAndSetsDigest(t *testing.T) {
 	record, err := BuildRunRecordFromWorkflowResult(WorkflowResult{
+		ID:              "run-flow-1",
+		OpsManualFlowID: "flow-redis-1",
+		SessionID:       "sess-1",
 		ManualID:        "manual-redis",
 		WorkflowID:      "wf-redis",
 		WorkflowVersion: "v2",
@@ -28,6 +31,9 @@ func TestBuildRunRecordFromWorkflowResultRedactsParametersAndSetsDigest(t *testi
 	}
 	if record.WorkflowDigest == "" {
 		t.Fatalf("WorkflowDigest is empty, want computed digest")
+	}
+	if record.OpsManualFlowID != "flow-redis-1" || record.SessionID != "sess-1" {
+		t.Fatalf("record flow/session = %#v, want flow and session association", record)
 	}
 	if record.RedactedParameters["target_instance"] != "redis-1" {
 		t.Fatalf("target_instance = %#v, want preserved", record.RedactedParameters["target_instance"])

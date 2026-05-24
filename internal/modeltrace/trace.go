@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,24 +49,25 @@ type Request struct {
 }
 
 type payload struct {
-	SchemaVersion         int                          `json:"schemaVersion"`
-	Kind                  string                       `json:"kind,omitempty"`
-	CreatedAt             string                       `json:"createdAt"`
-	TraceID               string                       `json:"traceId,omitempty"`
-	SessionID             string                       `json:"sessionId,omitempty"`
-	TurnID                string                       `json:"turnId,omitempty"`
-	Iteration             int                          `json:"iteration,omitempty"`
-	CaseID                string                       `json:"caseId,omitempty"`
-	Metadata              map[string]string            `json:"metadata,omitempty"`
-	VisibleTools          []string                     `json:"visibleTools,omitempty"`
-	VisibleToolCount      int                          `json:"visibleToolCount,omitempty"`
-	PromptCharCount       int                          `json:"promptCharCount,omitempty"`
-	ToolRegistryCharCount int                          `json:"toolRegistryCharCount,omitempty"`
-	PromptFingerprint     map[string]string            `json:"promptFingerprint,omitempty"`
-	Prompt                Prompt                       `json:"prompt"`
-	ModelInput            []traceMessage               `json:"modelInput"`
-	PromptInputTrace      promptinput.PromptInputTrace `json:"promptInputTrace,omitempty"`
-	DiagnosticTrace       *diagnostics.DiagnosticTrace `json:"diagnosticTrace,omitempty"`
+	SchemaVersion         int                                      `json:"schemaVersion"`
+	Kind                  string                                   `json:"kind,omitempty"`
+	CreatedAt             string                                   `json:"createdAt"`
+	TraceID               string                                   `json:"traceId,omitempty"`
+	SessionID             string                                   `json:"sessionId,omitempty"`
+	TurnID                string                                   `json:"turnId,omitempty"`
+	Iteration             int                                      `json:"iteration,omitempty"`
+	CaseID                string                                   `json:"caseId,omitempty"`
+	Metadata              map[string]string                        `json:"metadata,omitempty"`
+	VisibleTools          []string                                 `json:"visibleTools,omitempty"`
+	VisibleToolCount      int                                      `json:"visibleToolCount,omitempty"`
+	PromptCharCount       int                                      `json:"promptCharCount,omitempty"`
+	ToolRegistryCharCount int                                      `json:"toolRegistryCharCount,omitempty"`
+	PromptFingerprint     map[string]string                        `json:"promptFingerprint,omitempty"`
+	Prompt                Prompt                                   `json:"prompt"`
+	ModelInput            []traceMessage                           `json:"modelInput"`
+	ContextGovernance     []promptinput.ContextGovernanceTraceItem `json:"contextGovernance,omitempty"`
+	PromptInputTrace      promptinput.PromptInputTrace             `json:"promptInputTrace,omitempty"`
+	DiagnosticTrace       *diagnostics.DiagnosticTrace             `json:"diagnosticTrace,omitempty"`
 }
 
 type traceMessage struct {
@@ -147,6 +149,7 @@ func buildPayload(req Request) payload {
 		PromptFingerprint:     copyStringMap(req.PromptFingerprint),
 		Prompt:                redactPrompt(req.Prompt),
 		ModelInput:            modelInput,
+		ContextGovernance:     redactContextGovernanceTraceItems(req.PromptInputTrace.ContextGovernance),
 		PromptInputTrace:      redactPromptInputTrace(req.PromptInputTrace),
 		DiagnosticTrace:       diagnosticTracePayload(req.DiagnosticTrace),
 	}
@@ -237,14 +240,56 @@ func redactToolCalls(calls []schema.ToolCall) []schema.ToolCall {
 }
 
 func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.PromptInputTrace {
-	if len(trace.Items) == 0 {
+	if len(trace.Items) == 0 && trace.OpsContextCapsuleChars == 0 && trace.SessionFactCount == 0 && trace.LettaHintCount == 0 && trace.MemoryItemCount == 0 && len(trace.VisibleOpsManualTools) == 0 && len(trace.DroppedContextReasons) == 0 && len(trace.ContextGovernance) == 0 {
 		return promptinput.PromptInputTrace{}
 	}
-	out := promptinput.PromptInputTrace{Items: make([]promptinput.TraceItem, 0, len(trace.Items))}
+	out := promptinput.PromptInputTrace{
+		Items:                  make([]promptinput.TraceItem, 0, len(trace.Items)),
+		OpsContextCapsuleChars: trace.OpsContextCapsuleChars,
+		SessionFactCount:       trace.SessionFactCount,
+		LettaHintCount:         trace.LettaHintCount,
+		MemoryItemCount:        trace.MemoryItemCount,
+		VisibleOpsManualTools:  append([]string(nil), trace.VisibleOpsManualTools...),
+		DroppedContextReasons:  append([]string(nil), trace.DroppedContextReasons...),
+		ContextGovernance:      redactContextGovernanceTraceItems(trace.ContextGovernance),
+	}
 	for _, item := range trace.Items {
 		item.ID = diagnostics.RedactSensitiveText(item.ID)
 		item.Content = diagnostics.RedactSensitiveText(item.Content)
 		out.Items = append(out.Items, item)
+	}
+	return out
+}
+
+func redactContextGovernanceTraceItems(items []promptinput.ContextGovernanceTraceItem) []promptinput.ContextGovernanceTraceItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]promptinput.ContextGovernanceTraceItem, 0, len(items))
+	for _, item := range items {
+		item.Layer = diagnostics.RedactSensitiveText(item.Layer)
+		item.Kind = diagnostics.RedactSensitiveText(item.Kind)
+		item.Message = diagnostics.RedactSensitiveText(item.Message)
+		item.ReferenceIDs = redactStringSlice(item.ReferenceIDs)
+		if len(item.Budget) > 0 {
+			budget := make(map[string]int, len(item.Budget))
+			for key, value := range item.Budget {
+				budget[diagnostics.RedactSensitiveText(key)] = value
+			}
+			item.Budget = budget
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func redactStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		out = append(out, diagnostics.RedactSensitiveText(value))
 	}
 	return out
 }
@@ -310,6 +355,9 @@ func renderMarkdown(payload payload) string {
 			fmt.Fprintf(&b, "- Prompt fingerprint: `%s`\n", stable)
 		}
 	}
+	if len(payload.ContextGovernance) > 0 {
+		fmt.Fprintf(&b, "\n%s", renderContextGovernanceMarkdown(payload.ContextGovernance))
+	}
 	fmt.Fprintf(&b, "\n## Prompt Delta\n\n```text\n%s\n```\n", payload.Prompt.Dynamic)
 	fmt.Fprintf(&b, "\n## Model Input\n")
 	for _, msg := range payload.ModelInput {
@@ -323,7 +371,7 @@ func renderMarkdown(payload payload) string {
 			fmt.Fprintf(&b, "\nTool calls:\n\n```json\n%s\n```\n", string(data))
 		}
 	}
-	if len(payload.PromptInputTrace.Items) > 0 {
+	if !promptInputTraceEmpty(payload.PromptInputTrace) {
 		traceMarkdown := promptinput.RenderMarkdown(payload.PromptInputTrace)
 		traceMarkdown = strings.Replace(traceMarkdown, "# Prompt Input Trace", "## Prompt Input Trace", 1)
 		fmt.Fprintf(&b, "\n%s", traceMarkdown)
@@ -332,6 +380,82 @@ func renderMarkdown(payload payload) string {
 		fmt.Fprintf(&b, "\n%s", renderDiagnosticTraceMarkdown(*payload.DiagnosticTrace))
 	}
 	return b.String()
+}
+
+func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
+	return len(trace.Items) == 0 &&
+		trace.OpsContextCapsuleChars == 0 &&
+		trace.SessionFactCount == 0 &&
+		trace.LettaHintCount == 0 &&
+		trace.MemoryItemCount == 0 &&
+		len(trace.VisibleOpsManualTools) == 0 &&
+		len(trace.DroppedContextReasons) == 0 &&
+		len(trace.ContextGovernance) == 0
+}
+
+func renderContextGovernanceMarkdown(items []promptinput.ContextGovernanceTraceItem) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Context Governance\n\n")
+	fmt.Fprintf(&b, "| # | layer | kind | message | retry |\n")
+	fmt.Fprintf(&b, "|---:|---|---|---|---|\n")
+	for i, item := range items {
+		retry := ""
+		if item.RetryAttempt > 0 || item.RetryMax > 0 {
+			retry = fmt.Sprintf("%d/%d", item.RetryAttempt, item.RetryMax)
+		}
+		fmt.Fprintf(
+			&b,
+			"| %d | %s | %s | %s | %s |\n",
+			i,
+			escapeMarkdownCell(item.Layer),
+			escapeMarkdownCell(item.Kind),
+			escapeMarkdownCell(item.Message),
+			escapeMarkdownCell(retry),
+		)
+	}
+	renderContextBudgetMarkdown(&b, items)
+	renderExternalReferencesMarkdown(&b, items)
+	return b.String()
+}
+
+func renderContextBudgetMarkdown(b *strings.Builder, items []promptinput.ContextGovernanceTraceItem) {
+	fmt.Fprintf(b, "\n### Budget\n")
+	wrote := false
+	for _, item := range items {
+		if len(item.Budget) == 0 {
+			continue
+		}
+		fmt.Fprintf(b, "- `%s/%s`", escapeBackticks(item.Layer), escapeBackticks(item.Kind))
+		for _, key := range sortedIntMapKeys(item.Budget) {
+			fmt.Fprintf(b, " %s=`%d`", escapeBackticks(key), item.Budget[key])
+		}
+		fmt.Fprintln(b)
+		wrote = true
+	}
+	if !wrote {
+		fmt.Fprintln(b, "_None._")
+	}
+}
+
+func renderExternalReferencesMarkdown(b *strings.Builder, items []promptinput.ContextGovernanceTraceItem) {
+	fmt.Fprintf(b, "\n### External References\n")
+	wrote := false
+	for _, item := range items {
+		if len(item.ReferenceIDs) == 0 {
+			continue
+		}
+		fmt.Fprintf(
+			b,
+			"- `%s/%s`: `%s`\n",
+			escapeBackticks(item.Layer),
+			escapeBackticks(item.Kind),
+			escapeBackticks(strings.Join(item.ReferenceIDs, "`, `")),
+		)
+		wrote = true
+	}
+	if !wrote {
+		fmt.Fprintln(b, "_None._")
+	}
 }
 
 func renderDiagnosticTraceMarkdown(trace diagnostics.DiagnosticTrace) string {
@@ -375,6 +499,15 @@ func writeMarkdownList(b *strings.Builder, title string, values []string) {
 	}
 }
 
+func sortedIntMapKeys(in map[string]int) []string {
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func copyStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -410,4 +543,14 @@ func sanitizePath(value string) string {
 		return "unknown"
 	}
 	return value
+}
+
+func escapeMarkdownCell(value string) string {
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	value = strings.ReplaceAll(value, "|", "\\|")
+	return value
+}
+
+func escapeBackticks(value string) string {
+	return strings.ReplaceAll(value, "`", "'")
 }

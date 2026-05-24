@@ -41,6 +41,7 @@ export type AiopsTransportTurn = {
   user?: AiopsTransportMessage;
   intent?: AiopsTransportIntent;
   process?: AiopsProcessBlock[];
+  contextGovernance?: AiopsContextGovernanceEvent[];
   agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
   final?: AiopsTransportFinal;
   status: AiopsTransportTurnStatus;
@@ -87,7 +88,39 @@ export type AiopsProcessBlock = {
   mock?: boolean;
   exitCode?: number;
   durationMs?: number;
+  materializationTier?: string;
+  originalBytes?: number;
+  inlineBytes?: number;
+  externalReferences?: AiopsExternalReference[];
   updatedAt?: string;
+};
+
+export type AiopsContextGovernanceEvent = {
+  id?: string;
+  layer: string;
+  kind: string;
+  message?: string;
+  budget?: Record<string, unknown>;
+  referenceIds?: string[];
+  compactedIds?: string[];
+  droppedGroupIds?: string[];
+  retryAttempt?: number;
+  retryMax?: number;
+  timeout?: boolean;
+  createdAt?: string;
+};
+
+export type AiopsExternalReference = {
+  id: string;
+  kind?: string;
+  uri?: string;
+  cardRef?: string;
+  filePath?: string;
+  title?: string;
+  summary?: string;
+  contentType?: string;
+  digest?: string;
+  bytes?: number;
 };
 
 export type AiopsTransportPlanStep = {
@@ -144,6 +177,8 @@ export type AiopsTransportAgentUiArtifact = {
   status?: string;
   severity?: string;
   dataRef?: string;
+  renderer?: string;
+  schemaVersion?: string;
   inlineData?: unknown;
   payload?: Record<string, unknown>;
   metadata?: Record<string, unknown>;

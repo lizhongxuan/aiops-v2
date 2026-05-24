@@ -17,6 +17,7 @@ const (
 	opsManualErrWorkflowDigest        = "workflow_digest_mismatch"
 	opsManualErrWorkflowVersion       = "workflow_version_locked"
 	opsManualErrInvalidOperationFrame = "invalid_operation_frame"
+	opsManualErrInvalidGenerationReq  = "invalid_workflow_generation_request"
 )
 
 type opsManualHTTPServices interface {
@@ -126,14 +127,48 @@ func (s *HTTPServer) handleOpsManuals(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodPost && path == "candidates/generate-from-workflow":
+		var req appui.OpsManualGenerateFromWorkflowRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidGenerationReq, "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.WorkflowID) == "" {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidGenerationReq, "workflow_id is required")
+			return
+		}
+		domainReq, err := s.opsManualGenerationRequestFromRunner(r.Context(), req)
+		if err != nil {
+			if sourceErr, ok := err.(workflowSourceError); ok {
+				writeOpsManualError(w, sourceErr.status, opsManualErrInvalidGenerationReq, sourceErr.message)
+				return
+			}
+			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidGenerationReq, err.Error())
+			return
+		}
+		result, err := service.GenerateManualCandidateFromWorkflow(r.Context(), req, domainReq)
+		if err != nil {
+			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidGenerationReq, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	case r.Method == http.MethodGet && path == "run-records":
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		result, err := service.ListRunRecords(appui.OpsManualRunRecordsRequest{
-			WorkflowID: r.URL.Query().Get("workflow_id"),
-			Limit:      limit,
+			OpsManualFlowID: r.URL.Query().Get("ops_manual_flow_id"),
+			WorkflowID:      r.URL.Query().Get("workflow_id"),
+			Limit:           limit,
 		})
 		if err != nil {
 			writeOpsManualError(w, http.StatusInternalServerError, opsManualErrInvalidOperationFrame, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "flows/") && strings.HasSuffix(path, "/timeline"):
+		flowID := strings.TrimSuffix(strings.TrimPrefix(path, "flows/"), "/timeline")
+		result, err := service.FlowTimeline(flowID)
+		if err != nil {
+			writeOpsManualError(w, http.StatusBadRequest, opsManualErrInvalidOperationFrame, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, result)

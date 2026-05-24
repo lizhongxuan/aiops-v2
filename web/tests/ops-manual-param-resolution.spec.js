@@ -120,7 +120,7 @@ test("Redis 参数自动补齐后不弹补信息表单，可直接运行预检",
     }),
   ]));
 
-  await expect(page.getByTestId("ops-manual-param-resolution-card")).toContainText("参数已补齐，可进入预检");
+  await expect(page.locator("main").getByText("参数已补齐，下一步运行预检")).toBeVisible();
   await expect(page.getByRole("button", { name: "运行预检" })).toBeVisible();
   await expect(page.getByText("补充运维手册参数")).toHaveCount(0);
 });
@@ -280,12 +280,12 @@ test("刷新页面后参数解析卡不重复且表单保持单份", async ({ pa
     }),
   ]));
 
-  await expect(page.getByTestId("ops-manual-param-resolution-card")).toHaveCount(1);
+  await expect(page.locator("main").getByText("补充运维手册参数")).toHaveCount(1);
   await expect(page.locator("form").filter({ hasText: "补充运维手册参数" })).toHaveCount(1);
 
   await page.reload({ waitUntil: "networkidle" });
 
-  await expect(page.getByTestId("ops-manual-param-resolution-card")).toHaveCount(1);
+  await expect(page.locator("main").getByText("补充运维手册参数")).toHaveCount(1);
   await expect(page.locator("form").filter({ hasText: "补充运维手册参数" })).toHaveCount(1);
 });
 

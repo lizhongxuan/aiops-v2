@@ -1,0 +1,548 @@
+version: v0.1
+name: runner_candidate_candidate_pack_1778718004043520000_redis_dry_run
+description: Redis 内存策略调整运维过程，包含预检查、审批、Dry Run、受控执行、验证和回滚。
+x_runner_ui:
+    version: v1
+    nodes:
+        - id: start
+          type: start
+          position:
+            x: 80
+            "y": 160
+          label: Start
+          ports:
+            - id: next
+              type: output
+              label: 下一步
+          data:
+            label: Start
+            ui:
+                host_groups:
+                    - hosts:
+                        - local
+                      label: local
+          ui:
+            host_groups:
+                - hosts:
+                    - local
+                  label: local
+        - id: precheck
+          type: action
+          position:
+            x: 300
+            "y": 120
+          step: experience-precheck
+          label: 环境预检查
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 环境预检查
+        - id: approval
+          type: manual_approval
+          position:
+            x: 520
+            "y": 120
+          step: experience-approval
+          label: 人工审批
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: approved
+              type: output
+              label: 通过
+            - id: rejected
+              type: output
+              label: 拒绝
+          data:
+            label: 人工审批
+            approval:
+                subjects:
+                    - sre
+                timeout: 30m
+                on_timeout: reject
+        - id: dry_run
+          type: action
+          position:
+            x: 740
+            "y": 120
+          step: experience-dry-run
+          label: Dry Run
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: Dry Run
+        - id: execute
+          type: action
+          position:
+            x: 960
+            "y": 120
+          step: experience-execute
+          label: 受控执行
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 受控执行
+        - id: validate
+          type: action
+          position:
+            x: 1180
+            "y": 120
+          step: experience-validate
+          label: 恢复验证
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 恢复验证
+        - id: rollback
+          type: action
+          position:
+            x: 960
+            "y": 300
+          step: experience-rollback
+          label: 受控回滚
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 受控回滚
+        - id: end
+          type: end
+          position:
+            x: 1400
+            "y": 160
+          label: End
+          ports:
+            - id: in
+              type: input
+              label: 输入
+          data:
+            label: End
+    edges:
+        - id: start-precheck
+          source: start
+          source_port: next
+          target: precheck
+          target_port: in
+          kind: next
+        - id: precheck-approval
+          source: precheck
+          source_port: next
+          target: approval
+          target_port: in
+          kind: next
+        - id: approval-dry-run
+          source: approval
+          source_port: approved
+          target: dry_run
+          target_port: in
+          kind: approval_approved
+        - id: approval-end
+          source: approval
+          source_port: rejected
+          target: end
+          target_port: in
+          kind: approval_rejected
+        - id: dry-run-execute
+          source: dry_run
+          source_port: next
+          target: execute
+          target_port: in
+          kind: next
+        - id: execute-validate
+          source: execute
+          source_port: next
+          target: validate
+          target_port: in
+          kind: next
+        - id: validate-end
+          source: validate
+          source_port: next
+          target: end
+          target_port: in
+          kind: next
+        - id: precheck-rollback
+          source: precheck
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: dry-run-rollback
+          source: dry_run
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: execute-rollback
+          source: execute
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: rollback-end
+          source: rollback
+          source_port: next
+          target: end
+          target_port: in
+          kind: next
+x_runner_graph:
+    version: v1
+    nodes:
+        - id: start
+          type: start
+          position:
+            x: 80
+            "y": 160
+          label: Start
+          ports:
+            - id: next
+              type: output
+              label: 下一步
+          data:
+            label: Start
+            ui:
+                host_groups:
+                    - hosts:
+                        - local
+                      label: local
+          ui:
+            host_groups:
+                - hosts:
+                    - local
+                  label: local
+        - id: precheck
+          type: action
+          position:
+            x: 300
+            "y": 120
+          step: experience-precheck
+          label: 环境预检查
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 环境预检查
+        - id: approval
+          type: manual_approval
+          position:
+            x: 520
+            "y": 120
+          step: experience-approval
+          label: 人工审批
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: approved
+              type: output
+              label: 通过
+            - id: rejected
+              type: output
+              label: 拒绝
+          data:
+            label: 人工审批
+            approval:
+                subjects:
+                    - sre
+                timeout: 30m
+                on_timeout: reject
+        - id: dry_run
+          type: action
+          position:
+            x: 740
+            "y": 120
+          step: experience-dry-run
+          label: Dry Run
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: Dry Run
+        - id: execute
+          type: action
+          position:
+            x: 960
+            "y": 120
+          step: experience-execute
+          label: 受控执行
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 受控执行
+        - id: validate
+          type: action
+          position:
+            x: 1180
+            "y": 120
+          step: experience-validate
+          label: 恢复验证
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 恢复验证
+        - id: rollback
+          type: action
+          position:
+            x: 960
+            "y": 300
+          step: experience-rollback
+          label: 受控回滚
+          ports:
+            - id: in
+              type: input
+              label: 输入
+            - id: next
+              type: output
+              label: 下一步
+            - id: failure
+              type: output
+              label: 失败
+          data:
+            label: 受控回滚
+        - id: end
+          type: end
+          position:
+            x: 1400
+            "y": 160
+          label: End
+          ports:
+            - id: in
+              type: input
+              label: 输入
+          data:
+            label: End
+    edges:
+        - id: start-precheck
+          source: start
+          source_port: next
+          target: precheck
+          target_port: in
+          kind: next
+        - id: precheck-approval
+          source: precheck
+          source_port: next
+          target: approval
+          target_port: in
+          kind: next
+        - id: approval-dry-run
+          source: approval
+          source_port: approved
+          target: dry_run
+          target_port: in
+          kind: approval_approved
+        - id: approval-end
+          source: approval
+          source_port: rejected
+          target: end
+          target_port: in
+          kind: approval_rejected
+        - id: dry-run-execute
+          source: dry_run
+          source_port: next
+          target: execute
+          target_port: in
+          kind: next
+        - id: execute-validate
+          source: execute
+          source_port: next
+          target: validate
+          target_port: in
+          kind: next
+        - id: validate-end
+          source: validate
+          source_port: next
+          target: end
+          target_port: in
+          kind: next
+        - id: precheck-rollback
+          source: precheck
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: dry-run-rollback
+          source: dry_run
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: execute-rollback
+          source: execute
+          source_port: failure
+          target: rollback
+          target_port: in
+          kind: failure
+        - id: rollback-end
+          source: rollback
+          source_port: next
+          target: end
+          target_port: in
+          kind: next
+inventory:
+    groups:
+        local:
+            hosts:
+                - local
+            vars: {}
+    hosts:
+        local:
+            address: local
+            vars: {}
+    vars: {}
+plan:
+    mode: auto
+    strategy: graph
+steps:
+    - name: experience-precheck
+      id: precheck
+      targets: []
+      action: shell.run
+      args:
+        script: echo check host lease, OS, package manager and required privileges
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []
+    - name: experience-approval
+      id: approval
+      targets: []
+      action: manual.approval
+      args:
+        risk_reason: 经验包生成的 Runner 草稿必须人工确认参数、爆炸半径和回滚策略。
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []
+    - name: experience-dry-run
+      id: dry_run
+      targets: []
+      action: shell.run
+      args:
+        script: echo estimate blast radius and render execution plan
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []
+    - name: experience-execute
+      id: execute
+      targets: []
+      action: shell.run
+      args:
+        script: echo review and replace this placeholder with approved Runner steps
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []
+    - name: experience-validate
+      id: validate
+      targets: []
+      action: shell.run
+      args:
+        script: echo run readonly validation probes and proof of recovery
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []
+    - name: experience-rollback
+      id: rollback
+      targets: []
+      action: shell.run
+      args:
+        script: echo rollback with approved recovery plan
+      must_vars: []
+      when: ""
+      loop: []
+      retries: 0
+      timeout: ""
+      continue_on_error: false
+      expect_vars: []
+      notify: []

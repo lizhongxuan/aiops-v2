@@ -1,8 +1,10 @@
 package opsmanual
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRetrieveManualsRedisTriageNeedsMoreInfo(t *testing.T) {
@@ -78,7 +80,12 @@ func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	if matches[0].State != DecisionDirect {
 		t.Fatalf("state = %q, want direct", matches[0].State)
 	}
-	for _, want := range []string{"fill_parameters", "run_preflight_probe", "start_dry_run"} {
+	for _, forbidden := range []string{"start_dry_run"} {
+		if contains(matches[0].RecommendedNextActions, forbidden) {
+			t.Fatalf("actions = %#v, must not contain %s", matches[0].RecommendedNextActions, forbidden)
+		}
+	}
+	for _, want := range []string{"fill_parameters", "run_preflight_probe", "confirm_execution"} {
 		if !contains(matches[0].RecommendedNextActions, want) {
 			t.Fatalf("actions = %#v, want %q", matches[0].RecommendedNextActions, want)
 		}
@@ -137,7 +144,7 @@ func TestSearchOpsManualsDirectExecuteForExactPostgresBackup(t *testing.T) {
 	if result.Manuals[0].PreflightStatus != PreflightStatusNotRun {
 		t.Fatalf("preflight status = %q, want not_run", result.Manuals[0].PreflightStatus)
 	}
-	if result.RecommendedNextAction != "运行 Node 0 预检，通过后再 Dry Run。" {
+	if result.RecommendedNextAction != "运行 Node 0 预检，通过后确认或审批执行。" {
 		t.Fatalf("recommended next action = %q, want preflight guidance", result.RecommendedNextAction)
 	}
 }
@@ -488,6 +495,172 @@ func TestSearchOpsManualsNoMatchAccuracyForUnrelatedRequests(t *testing.T) {
 		if result.Decision == DecisionDirectExecute || result.Decision == DecisionAdapt {
 			t.Fatalf("SearchOpsManuals(%q) decision = %q, want no executable match; result=%#v", text, result.Decision, result)
 		}
+	}
+}
+
+func TestOpsManualSuppressionFiltersSameManualScope(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	service := NewService(repo, WithSessionOpsContextStore(store))
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+
+	if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(OpsManualSuppression{
+		ManualID:    "manual-pg-backup-ubuntu",
+		ObjectType:  "postgresql",
+		Action:      "backup",
+		TargetScope: "host:pg-ubuntu-01",
+		Reason:      "user_opt_out",
+	}, now)); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+
+	result, err := service.SearchOpsManuals(SearchOpsManualsRequest{
+		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{
+			"session_id":  "sess-suppressed",
+			"target_name": "pg-ubuntu-01",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionNoMatch {
+		t.Fatalf("decision = %q, want no_match after suppression; result=%#v", result.Decision, result)
+	}
+	if len(result.Manuals) != 0 {
+		t.Fatalf("manuals = %#v, want suppressed manual removed", result.Manuals)
+	}
+	if !hasAny(result.SuppressedManuals, "manual-pg-backup-ubuntu") {
+		t.Fatalf("suppressed manuals = %#v, want manual-pg-backup-ubuntu", result.SuppressedManuals)
+	}
+	if result.SuppressionReason != "user_opt_out" {
+		t.Fatalf("suppression reason = %q, want user_opt_out", result.SuppressionReason)
+	}
+}
+
+func TestOpsManualSuppressionDoesNotFilterDifferentScopeOrAction(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, tt := range []struct {
+		name        string
+		suppression OpsManualSuppression
+	}{
+		{
+			name: "different scope",
+			suppression: OpsManualSuppression{
+				ManualID:    "manual-pg-backup-ubuntu",
+				ObjectType:  "postgresql",
+				Action:      "backup",
+				TargetScope: "host:pg-ubuntu-02",
+				Reason:      "user_opt_out",
+			},
+		},
+		{
+			name: "different action",
+			suppression: OpsManualSuppression{
+				ManualID:    "manual-pg-backup-ubuntu",
+				ObjectType:  "postgresql",
+				Action:      "restore",
+				TargetScope: "host:pg-ubuntu-01",
+				Reason:      "user_opt_out",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := NewMemoryStore()
+			store := NewMemorySessionOpsContextStore()
+			service := NewService(repo, WithSessionOpsContextStore(store))
+			mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+			if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(tt.suppression, now)); err != nil {
+				t.Fatalf("UpsertFact() error = %v", err)
+			}
+			result, err := service.SearchOpsManuals(SearchOpsManualsRequest{
+				Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+				Metadata: map[string]any{
+					"session_id":  "sess-suppressed",
+					"target_name": "pg-ubuntu-01",
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != DecisionDirectExecute {
+				t.Fatalf("decision = %q, want direct_execute; result=%#v", result.Decision, result)
+			}
+			if len(result.Manuals) != 1 || result.Manuals[0].Manual.ID != "manual-pg-backup-ubuntu" {
+				t.Fatalf("manuals = %#v, want backup manual", result.Manuals)
+			}
+		})
+	}
+}
+
+func TestOpsManualSuppressionCanBeOverriddenByExplicitUse(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	service := NewService(repo, WithSessionOpsContextStore(store))
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(OpsManualSuppression{
+		ManualID:    "manual-pg-backup-ubuntu",
+		ObjectType:  "postgresql",
+		Action:      "backup",
+		TargetScope: "host:pg-ubuntu-01",
+		Reason:      "user_opt_out",
+	}, now)); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+
+	result, err := service.SearchOpsManuals(SearchOpsManualsRequest{
+		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{
+			"session_id":      "sess-suppressed",
+			"target_name":     "pg-ubuntu-01",
+			"opsManualAction": "use_ops_manual",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionDirectExecute {
+		t.Fatalf("decision = %q, want direct_execute when explicit use overrides suppression; result=%#v", result.Decision, result)
+	}
+	if len(result.Manuals) != 1 || result.Manuals[0].Manual.ID != "manual-pg-backup-ubuntu" {
+		t.Fatalf("manuals = %#v, want backup manual", result.Manuals)
+	}
+}
+
+func TestOpsManualSuppressionExpires(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	repo := NewMemoryStore()
+	store := NewMemorySessionOpsContextStore()
+	service := NewService(repo, WithSessionOpsContextStore(store))
+	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(OpsManualSuppression{
+		ManualID:    "manual-pg-backup-ubuntu",
+		ObjectType:  "postgresql",
+		Action:      "backup",
+		TargetScope: "host:pg-ubuntu-01",
+		Reason:      "user_opt_out",
+	}, now.Add(-2*time.Hour))); err != nil {
+		t.Fatalf("UpsertFact() error = %v", err)
+	}
+
+	result, err := service.SearchOpsManuals(SearchOpsManualsRequest{
+		Text: "在 Ubuntu 主机 pg-ubuntu-01 上通过 ssh 做 PostgreSQL 备份，备份到 /data/backups，已确认 ssh_access 和 pg_isready 正常",
+		Metadata: map[string]any{
+			"session_id":  "sess-suppressed",
+			"target_name": "pg-ubuntu-01",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision != DecisionDirectExecute {
+		t.Fatalf("decision = %q, want direct_execute after suppression expiry; result=%#v", result.Decision, result)
 	}
 }
 

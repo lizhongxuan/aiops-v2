@@ -72,3 +72,49 @@ func TestJSONStoreSearchFiltersStaleAndLimitsResults(t *testing.T) {
 		t.Fatalf("stale memory should not be returned: %#v", results)
 	}
 }
+
+func TestJSONStorePersistsStructuredHintMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "memory.json")
+	store := NewJSONStore(Config{Path: path, Enabled: true})
+	if _, err := store.Put(context.Background(), Item{
+		Scope:           ScopeProject,
+		ProjectID:       "proj",
+		Kind:            KindOpsManualParamHint,
+		ObjectType:      "redis",
+		OperationAction: "rca_or_repair",
+		ManualID:        "manual-redis-rca",
+		ParamID:         "target_instance",
+		ParamValue:      "redis-a",
+		ParamLabel:      "redis-a",
+		Source:          "memory_hint",
+		Redacted:        true,
+		Text:            "redis target_instance redis-a",
+	}); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if _, err := store.Put(context.Background(), Item{
+		Scope:      ScopeProject,
+		ProjectID:  "proj",
+		Kind:       KindOpsManualParamHint,
+		ParamID:    "target_instance",
+		ParamValue: "redis-stale",
+		Redacted:   true,
+		Stale:      true,
+		Text:       "redis target_instance redis-stale",
+	}); err != nil {
+		t.Fatalf("Put(stale) error = %v", err)
+	}
+
+	reopened := NewJSONStore(Config{Path: path, Enabled: true})
+	results, err := reopened.Search(context.Background(), Query{Scope: ScopeProject, ProjectID: "proj", Text: "redis", Limit: 10})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v, want one non-stale hint", results)
+	}
+	hint := results[0]
+	if hint.Kind != KindOpsManualParamHint || hint.ParamID != "target_instance" || hint.ParamValue != "redis-a" || !hint.Redacted {
+		t.Fatalf("hint = %#v, want structured redacted param hint metadata", hint)
+	}
+}

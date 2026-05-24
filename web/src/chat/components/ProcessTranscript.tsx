@@ -29,6 +29,7 @@ type ProcessTranscriptProps = {
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
   finalText?: string;
+  renderFinalText?: boolean;
   onApprovalDecision?: ApprovalDecisionHandler;
 };
 
@@ -36,6 +37,7 @@ type ApprovalDecisionHandler = (approvalId: string, decision: "accept" | "reject
 
 const TOOL_TRANSCRIPT_TEXT_CLASS = "text-[14px] leading-6";
 const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
+const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
 
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
@@ -52,6 +54,7 @@ export function ProcessTranscript({
   turnCompletedAt,
   turnUpdatedAt,
   finalText,
+  renderFinalText = true,
 }: ProcessTranscriptProps) {
   const visibleProcess = useMemo(() => process.filter(shouldShowInTranscript), [process]);
   const running = isProcessRunning(visibleProcess, turnStatus);
@@ -100,7 +103,7 @@ export function ProcessTranscript({
     }
   }, [live]);
 
-  if (!shouldRenderProcess && !renderedFinalText) {
+  if (!shouldRenderProcess && (!renderFinalText || !renderedFinalText)) {
     return null;
   }
 
@@ -156,7 +159,7 @@ export function ProcessTranscript({
           ) : null}
         </>
       ) : null}
-      {renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
+      {renderFinalText && renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
     </div>
   );
 }
@@ -391,7 +394,11 @@ function MergedToolSummary({
 }) {
   const text = getMergedGroupSummaryText(group);
   const details = group.blocks.map(mergedBlockDetail).filter((detail) => detail.text);
-  const [open, setOpen] = useState(group.mergedKind === "command" || group.blocks.some(isBlockActive));
+  const toolLike = group.blocks.some((block) => {
+    const kind = groupingKindForBlock(block);
+    return kind === "tool" || kind === "mcp";
+  });
+  const [open, setOpen] = useState(group.mergedKind === "command" || toolLike || group.blocks.some(isBlockActive));
   if (!details.length) {
     return (
       <div className={cn("flex min-w-0 items-center gap-1.5 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}>
@@ -453,7 +460,7 @@ function ToolDetailRow({
     }
   }, [toolRunning, detail.id]);
   return (
-    <div className="space-y-2">
+    <div className="min-w-0 space-y-2">
       <button
         type="button"
         className={cn(
@@ -475,7 +482,7 @@ function ToolDetailRow({
       </button>
       {open && hasOutput ? (
         <div
-          className="rounded-lg bg-slate-100 px-3 py-2 font-mono text-[13px] leading-6 text-slate-500"
+          className="max-w-full overflow-hidden whitespace-pre-wrap break-words rounded-lg bg-slate-100 px-3 py-2 font-mono text-[13px] leading-6 text-slate-500"
           data-testid={`aiops-tool-output-${detail.id}`}
         >
           {detail.output}
@@ -564,16 +571,7 @@ function EvidenceRefs({ refs }: { refs?: string[] }) {
   if (!refs?.length) {
     return null;
   }
-  return (
-    <div className="flex flex-wrap gap-1.5 text-[13px] leading-5 text-slate-400">
-      <span>证据</span>
-      {refs.map((ref) => (
-        <code key={ref} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] text-slate-500">
-          {ref}
-        </code>
-      ))}
-    </div>
-  );
+  return null;
 }
 
 function commandRowStatusLabel(status?: AiopsProcessBlock["status"]) {
@@ -630,7 +628,7 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
   } else if (block.kind === "file") {
     text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
   } else {
-    text = stripHtml(block.text || "") || block.command || block.inputSummary || block.displayKind || "";
+    text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.command || block.inputSummary || block.displayKind || "";
   }
   return {
     id: block.id,
@@ -638,16 +636,46 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
     status: block.status,
     approvalId: block.approvalId,
     evidenceRefs: uniqueLines(block.evidenceRefs || []),
+    externalized: isExternalizedProcessBlock(block),
     mock: Boolean(block.mock),
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
     output: hasOutputPreview && (block.kind === "command" || block.kind === "tool" || block.kind === "mcp")
-      ? cleanCommandOutput(block.outputPreview)
+      ? compactOutputPreviewForBlock(block)
       : "",
   };
 }
 
+function isExternalizedProcessBlock(block: AiopsProcessBlock) {
+  const tier = (block.materializationTier || "").toLowerCase();
+  return Boolean(block.externalReferences?.length || tier === "large" || tier === "externalized" || tier === "summary");
+}
+
 function cleanCommandOutput(value?: string) {
   return stripHtml(value || "").trim();
+}
+
+function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
+  const output = cleanCommandOutput(block.outputPreview);
+  if (!output) {
+    return "";
+  }
+  if (block.kind !== "command" && (isExternalizedProcessBlock(block) || isLargeStructuredPayload(output))) {
+    return truncateToolOutputPreview(output);
+  }
+  return output;
+}
+
+function truncateToolOutputPreview(value: string) {
+  const text = value.trim();
+  if (text.length <= MAX_TOOL_OUTPUT_PREVIEW_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, MAX_TOOL_OUTPUT_PREVIEW_CHARS).trimEnd()}...`;
+}
+
+function isLargeStructuredPayload(value: string) {
+  const text = value.trim();
+  return text.length > 280 && (isRawPayloadLine(text) || /\bchartReports\b|\bwidgets\b|\bseries\b/.test(text));
 }
 
 function statusLabel(status?: string) {
@@ -832,7 +860,7 @@ function toolSummaryText(block: AiopsProcessBlock): string {
     return isRunning ? `正在处理 ${cleaned}` : cleaned;
   }
   if (block.kind === "tool" || block.kind === "mcp") {
-    const text = stripHtml(block.text || "") || block.displayKind || "";
+    const text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.displayKind || "";
     const cleaned = cleanToolText(text) || "工具调用";
     return isRunning ? `正在调用 ${cleaned}` : cleaned;
   }
@@ -1131,6 +1159,30 @@ function cleanToolText(value: string) {
     return "";
   }
   return text;
+}
+
+function toolInvocationLabel(block: AiopsProcessBlock) {
+  if (block.kind !== "tool" && block.kind !== "mcp") return "";
+  const name = cleanToolText(stripHtml(block.source || "").trim());
+  const input = cleanToolInputSummary(block.inputSummary);
+  if (!name || /^(tool|mcp)$/i.test(name)) {
+    return input;
+  }
+  if (!input || input.toLowerCase() === name.toLowerCase()) {
+    return name;
+  }
+  return `${name} ${input}`;
+}
+
+function cleanToolInputSummary(value?: string) {
+  const text = stripHtml(value || "").replace(/\s+/g, " ").trim();
+  if (!text || /^(tool|mcp)$/i.test(text)) {
+    return "";
+  }
+  if (isRawPayloadLine(text)) {
+    return "";
+  }
+  return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;
 }
 
 function unwrapProviderPayload(value: string) {

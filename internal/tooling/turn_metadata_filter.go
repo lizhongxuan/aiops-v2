@@ -41,10 +41,13 @@ func IsToolVisibleForTurnMetadata(meta ToolMetadata, metadata map[string]string)
 		default:
 			return true
 		}
+	case opsManualReferenceOnly(metadata) && meta.Name == "run_ops_manual_preflight":
+		return false
 	case meta.Name == "resolve_ops_manual_params":
-		return metadataBool(metadata, "opsManualMatched")
+		return metadataBool(metadata, "opsManualMatched") || opsManualParamFormSubmitted(metadata)
 	case meta.Name == "run_ops_manual_preflight":
-		return metadataBool(metadata, "opsManualParamsResolved") && metadataListContains(metadata, "enableTool", "run_ops_manual_preflight")
+		return (metadataBool(metadata, "opsManualParamsResolved") && metadataListContains(metadata, "enableTool", "run_ops_manual_preflight")) ||
+			metadataBool(metadata, "opsManualDirectExecute")
 	default:
 		return true
 	}
@@ -124,4 +127,18 @@ func opsManualsOptedOut(metadata map[string]string) bool {
 		return true
 	}
 	return strings.EqualFold(strings.TrimSpace(metadata["opsManualSkipped"]), "true")
+}
+
+func opsManualReferenceOnly(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "reference_ops_manual")
+}
+
+func opsManualParamFormSubmitted(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata["opsManualAction"]), "submit_ops_manual_param_form")
 }

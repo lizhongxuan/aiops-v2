@@ -10,9 +10,16 @@ var backupPathPattern = regexp.MustCompile(`(?i)(/data/[^\s，。；,;]+|/[^\s�
 var labeledTargetPattern = regexp.MustCompile(`(?im)(?:目标实例/服务|目标实例|目标服务|目标对象|实例|服务)\s*[:：]\s*([^\n\r，。；,;]+)`)
 
 func BuildOperationFrame(text string, metadata map[string]any) OperationFrame {
+	return BuildOperationFrameWithCapabilityRegistry(text, metadata, DefaultOpsManualCapabilityRegistry())
+}
+
+func BuildOperationFrameWithCapabilityRegistry(text string, metadata map[string]any, registry *CapabilityRegistry) OperationFrame {
+	if registry == nil {
+		registry = DefaultOpsManualCapabilityRegistry()
+	}
 	lower := strings.ToLower(text)
 	frame := OperationFrame{RawText: text, Metadata: cloneMap(metadata), RequiredParams: map[string]any{}}
-	frame.Target.Type = detectObjectType(text)
+	frame.Target.Type = registry.DetectObjectType(text)
 	frame.ObjectType = frame.Target.Type
 	frame.Target.Name = firstNonEmpty(
 		metadataString(metadata, "target_name"),
@@ -25,9 +32,9 @@ func BuildOperationFrame(text string, metadata map[string]any) OperationFrame {
 	if frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
-	applyExplicitContextMetadata(&frame, metadata)
+	applyExplicitContextMetadata(&frame, metadata, registry)
 	frame.Operation.TargetType = frame.Target.Type
-	frame.Operation.Action = detectOperationType(text)
+	frame.Operation.Action = registry.DetectOperationType(text)
 	if frame.Operation.Action == "" && frame.Target.Type != "" {
 		frame.Operation.Action = "rca_or_repair"
 	}
@@ -37,41 +44,25 @@ func BuildOperationFrame(text string, metadata map[string]any) OperationFrame {
 		"prod": {"生产", "prod", "production"},
 		"test": {"测试", "test", "staging"},
 	})
-	frame.Environment.OS = firstMatch(lower, map[string][]string{
-		"ubuntu": {"ubuntu"},
-		"centos": {"centos"},
-		"rocky":  {"rocky"},
-		"rhel":   {"rhel"},
-		"debian": {"debian"},
-	})
-	frame.Environment.Platform = firstMatch(lower, map[string][]string{
-		"kubernetes": {"k8s", "kubernetes", "kubectl"},
-		"docker":     {"docker"},
-		"vm":         {"主机", "虚拟机", "vm", "ssh"},
-	})
-	frame.Environment.ExecutionSurface = firstMatch(lower, map[string][]string{
-		"kubectl":     {"kubectl"},
-		"docker_exec": {"docker exec"},
-		"ssh":         {"ssh", "systemctl"},
-	})
+	frame.Environment.OS = registry.MatchOS(lower)
+	frame.Environment.Platform = registry.MatchPlatform(lower)
+	frame.Environment.ExecutionSurface = registry.MatchExecutionSurface(lower)
 	frame.Environment.OSVersion = metadataString(metadata, "os_version")
 	if frame.Environment.OSVersion == "" {
 		frame.Environment.OSVersion = extractOSVersion(lower)
 	}
-	frame.Environment.Runtime = firstMatch(lower, map[string][]string{
-		"systemd": {"systemd", "systemctl"},
-		"docker":  {"docker"},
-	})
+	frame.Environment.Runtime = registry.MatchRuntime(lower)
 	frame.Environment.PackageManager = packageManagerForOS(frame.Environment.OS)
-	frame.Evidence.Provided = evidenceFromText(lower)
+	frame.Evidence.Provided = registry.EvidenceFromText(lower)
 	mergeMetadataEvidence(&frame, metadata)
 	if backupPath := firstNonEmpty(metadataString(metadata, "backup_path"), extractBackupPath(text)); backupPath != "" {
 		frame.Metadata = ensureMap(frame.Metadata)
 		frame.Metadata["backup_path"] = backupPath
 		frame.RequiredParams["backup_path"] = backupPath
 	}
-	frame.Evidence.Missing = missingContext(frame, lower)
-	if frame.Operation.Stateful || frame.Target.Type == "redis" || frame.Target.Type == "postgresql" || frame.Target.Type == "mysql" || frame.Target.Type == "kafka" {
+	applyCapabilityParameterHintsToFrame(&frame, registry)
+	frame.Evidence.Missing = missingContext(frame, lower, registry)
+	if frame.Operation.Stateful || registry.IsStatefulTargetType(frame.Target.Type) {
 		frame.Operation.Stateful = true
 		frame.Risk.Level = "medium"
 		frame.Risk.Reason = "stateful middleware operation"
@@ -139,42 +130,6 @@ func extractLabeledTargetName(text, targetType string) string {
 	return candidate
 }
 
-func evidenceFromText(text string) []string {
-	var out []string
-	for _, item := range []string{"ssh_access", "pg_isready", "used_memory_rss", "coroot", "p95", "metrics", "pg_version", "disk_free", "connection_test", "rbac_read_ok", "kubectl_access", "pod_exists", "version"} {
-		if strings.Contains(text, item) {
-			out = appendUnique(out, item)
-		}
-	}
-	if strings.Contains(text, "readonly") || strings.Contains(text, "只读") || strings.Contains(text, "不写入") || strings.Contains(text, "no write") {
-		out = appendUnique(out, "readonly")
-	}
-	if strings.Contains(text, "kubectl") {
-		out = appendUnique(out, "kubectl_access")
-	}
-	if strings.Contains(text, "crashloopbackoff") || strings.Contains(text, "频繁重启") || strings.Contains(text, "反复重启") {
-		out = appendUnique(out, "pod_restart")
-		out = appendUnique(out, "symptom")
-	}
-	if strings.Contains(text, "oomkilled") || strings.Contains(text, "内存打爆") {
-		out = appendUnique(out, "oom")
-		out = appendUnique(out, "symptom")
-	}
-	if strings.Contains(text, "指标") {
-		out = appendUnique(out, "metrics")
-	}
-	if strings.Contains(text, "lag") || strings.Contains(text, "rebalance") || strings.Contains(text, "broker") || strings.Contains(text, "partition") {
-		out = appendUnique(out, "symptom")
-		out = appendUnique(out, "metrics")
-	}
-	if strings.Contains(text, "症状") || strings.Contains(text, "持续上涨") || strings.Contains(text, "升高") ||
-		strings.Contains(text, "symptom") || strings.Contains(text, "rising") || strings.Contains(text, "increasing") ||
-		strings.Contains(text, "growth") || strings.Contains(text, "timeout") || strings.Contains(text, "latency") {
-		out = appendUnique(out, "symptom")
-	}
-	return out
-}
-
 func hasPositiveRestartIntent(lower string) bool {
 	if strings.Contains(lower, "no restart") || strings.Contains(lower, "without restart") ||
 		strings.Contains(lower, "do not restart") || strings.Contains(lower, "不重启") || strings.Contains(lower, "无需重启") {
@@ -186,12 +141,12 @@ func hasPositiveRestartIntent(lower string) bool {
 	return strings.Contains(lower, "重启") || strings.Contains(lower, "restart") || strings.Contains(lower, "systemctl restart")
 }
 
-func missingContext(frame OperationFrame, lower string) []string {
+func missingContext(frame OperationFrame, lower string, registry *CapabilityRegistry) []string {
 	var missing []string
 	if frame.Target.Name == "" {
 		missing = appendUnique(missing, "target_instance")
 	}
-	if frame.Environment.Env == "" && shouldRequireEnvironment(frame) {
+	if frame.Environment.Env == "" && shouldRequireEnvironment(frame, registry) {
 		missing = appendUnique(missing, "environment")
 	}
 	if frame.Environment.ExecutionSurface == "" {
@@ -201,17 +156,56 @@ func missingContext(frame OperationFrame, lower string) []string {
 		if !hasAny(frame.Evidence.Provided, "symptom") {
 			missing = appendUnique(missing, "symptom")
 		}
-		if frame.Target.Type != "kubernetes_pod" && !hasAny(frame.Evidence.Provided, "metrics", "used_memory_rss", "p95", "coroot") {
+		if !registry.MetricsExemptTargetType(frame.Target.Type) && !registry.HasMetricEvidence(frame.Evidence.Provided) {
 			missing = appendUnique(missing, "metrics")
 		}
 	}
 	if frame.Operation.Action == "backup" && metadataString(frame.Metadata, "backup_path") == "" && metadataString(frame.RequiredParams, "backup_path") == "" && !strings.Contains(lower, "backup_path") {
 		missing = appendUnique(missing, "backup_path")
 	}
+	for name, value := range frame.RequiredParams {
+		name = strings.TrimSpace(name)
+		if name != "" && !valuePresent(value) {
+			missing = appendUnique(missing, name)
+		}
+	}
 	return missing
 }
 
-func applyExplicitContextMetadata(frame *OperationFrame, metadata map[string]any) {
+func applyCapabilityParameterHintsToFrame(frame *OperationFrame, registry *CapabilityRegistry) {
+	if frame == nil || registry == nil {
+		return
+	}
+	if frame.RequiredParams == nil {
+		frame.RequiredParams = map[string]any{}
+	}
+	for _, hint := range registry.ParameterHintsFor(frame.Target.Type, frame.Operation.Action) {
+		if !hint.Required {
+			continue
+		}
+		if capabilityHintSatisfied(*frame, hint.ID) {
+			continue
+		}
+		if _, exists := frame.RequiredParams[hint.ID]; !exists {
+			frame.RequiredParams[hint.ID] = ""
+		}
+	}
+}
+
+func capabilityHintSatisfied(frame OperationFrame, id string) bool {
+	switch strings.TrimSpace(id) {
+	case "target_instance":
+		return strings.TrimSpace(frame.Target.Name) != "" || len(frame.TargetScope.Hosts) > 0
+	case "execution_surface":
+		return strings.TrimSpace(frame.Environment.ExecutionSurface) != ""
+	case "backup_path":
+		return metadataString(frame.Metadata, "backup_path") != "" || valuePresent(frame.RequiredParams["backup_path"])
+	default:
+		return valuePresent(frame.RequiredParams[id]) || metadataString(frame.Metadata, id) != ""
+	}
+}
+
+func applyExplicitContextMetadata(frame *OperationFrame, metadata map[string]any, registry *CapabilityRegistry) {
 	if frame == nil {
 		return
 	}
@@ -225,16 +219,16 @@ func applyExplicitContextMetadata(frame *OperationFrame, metadata map[string]any
 			frame.Target.Name = podName
 		}
 	}
-	if frame.Target.Type == "kubernetes_pod" && frame.Target.Name != "" && !valuePresent(frame.RequiredParams["pod_name"]) {
-		frame.RequiredParams["pod_name"] = frame.Target.Name
+	if param := registry.TargetNameParamFor(frame.Target.Type); param != "" && frame.Target.Name != "" && !valuePresent(frame.RequiredParams[param]) {
+		frame.RequiredParams[param] = frame.Target.Name
 	}
 	if frame.Target.Name != "" {
 		frame.TargetScope.Hosts = appendUnique(frame.TargetScope.Hosts, frame.Target.Name)
 	}
 }
 
-func shouldRequireEnvironment(frame OperationFrame) bool {
-	if frame.Target.Type == "kubernetes_pod" && frame.TargetScope.Namespace != "" {
+func shouldRequireEnvironment(frame OperationFrame, registry *CapabilityRegistry) bool {
+	if registry != nil && registry.IsNamespaceScopedTargetType(frame.Target.Type) && frame.TargetScope.Namespace != "" {
 		return false
 	}
 	return true

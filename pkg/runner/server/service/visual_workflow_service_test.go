@@ -3,6 +3,9 @@ package service
 import (
 	"context"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -718,6 +721,120 @@ func TestVisualWorkflowServiceDryRunReturnsValidationErrors(t *testing.T) {
 	}
 }
 
+func TestVisualWorkflowServiceDebugNodeRunsBuiltinTCPPingWithoutRunRecord(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+	host, port, _ := net.SplitHostPort(ln.Addr().String())
+	graph := singleDebugNodeGraph("probe", workflow.Step{
+		Name:   "probe",
+		Action: "builtin.tcp_ping",
+		Args:   map[string]any{"host": host, "port": port},
+	})
+	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{})
+
+	result, err := svc.DebugNode(context.Background(), "probe", VisualWorkflowDebugRequest{Graph: graph, Mode: "run"})
+	if err != nil {
+		t.Fatalf("debug node: %v", err)
+	}
+	if result.NodeID != "probe" || result.Action != "builtin.tcp_ping" || result.Status != "success" {
+		t.Fatalf("debug result metadata mismatch: %+v", result)
+	}
+	if result.Output["ok"] != true || result.Output["reachable"] != true {
+		t.Fatalf("tcp debug output mismatch: %+v", result.Output)
+	}
+}
+
+func TestVisualWorkflowServiceDebugNodeAllowsHTTPRequestGetAndBlocksWriteMethod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+	graph := singleDebugNodeGraph("request", workflow.Step{
+		Name:   "request",
+		Action: "http.request",
+		Args:   map[string]any{"url": server.URL, "method": "GET", "allow_private_networks": true},
+	})
+	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{})
+
+	result, err := svc.DebugNode(context.Background(), "request", VisualWorkflowDebugRequest{Graph: graph, Mode: "run"})
+	if err != nil {
+		t.Fatalf("debug GET: %v", err)
+	}
+	if result.Status != "success" || result.Output["status_code"] == nil {
+		t.Fatalf("GET debug output mismatch: %+v", result)
+	}
+
+	graph.Nodes[1].Step.Args["method"] = "POST"
+	if _, err := svc.DebugNode(context.Background(), "request", VisualWorkflowDebugRequest{Graph: graph, Mode: "run"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("POST real debug error = %v, want ErrInvalid", err)
+	}
+	result, err = svc.DebugNode(context.Background(), "request", VisualWorkflowDebugRequest{Graph: graph})
+	if err != nil {
+		t.Fatalf("POST dry-run debug: %v", err)
+	}
+	if result.Status != "dry_run" || result.Mode != "dry_run" {
+		t.Fatalf("POST dry-run result mismatch: %+v", result)
+	}
+}
+
+func TestVisualWorkflowServiceDebugNodeRejectsMissingAndNonActionNodes(t *testing.T) {
+	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{})
+	graph := sampleVisualGraph()
+	if _, err := svc.DebugNode(context.Background(), "missing", VisualWorkflowDebugRequest{Graph: graph}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing node error = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.DebugNode(context.Background(), "start", VisualWorkflowDebugRequest{Graph: graph}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("non-action node error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestVisualWorkflowServiceDebugNodePythonRunHasTimeout(t *testing.T) {
+	graph := singleDebugNodeGraph("py", workflow.Step{
+		Name:    "py",
+		Action:  "script.python",
+		Timeout: "50ms",
+		Args:    map[string]any{"script": "import time\ntime.sleep(1)"},
+	})
+	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{})
+
+	result, err := svc.DebugNode(context.Background(), "py", VisualWorkflowDebugRequest{Graph: graph, Mode: "run"})
+	if err != nil {
+		t.Fatalf("debug python timeout should return failed result, got error: %v", err)
+	}
+	if result.Status != "failed" || !strings.Contains(result.Error, "deadline exceeded") {
+		t.Fatalf("python timeout result mismatch: %+v", result)
+	}
+}
+
+func TestVisualWorkflowServiceDebugNodeShellRunRejectedButDryRunAllowed(t *testing.T) {
+	graph := singleDebugNodeGraph("sh", workflow.Step{
+		Name:   "sh",
+		Action: "script.shell",
+		Args:   map[string]any{"script": "echo no-prod"},
+	})
+	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{})
+
+	if _, err := svc.DebugNode(context.Background(), "sh", VisualWorkflowDebugRequest{Graph: graph, Mode: "run"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("shell real debug error = %v, want ErrInvalid", err)
+	}
+	result, err := svc.DebugNode(context.Background(), "sh", VisualWorkflowDebugRequest{Graph: graph})
+	if err != nil {
+		t.Fatalf("shell dry-run debug: %v", err)
+	}
+	if result.Status != "dry_run" || result.Output["diff"] == nil {
+		t.Fatalf("shell dry-run result mismatch: %+v", result)
+	}
+}
+
 func TestVisualWorkflowServiceValidateUsesPreprocessor(t *testing.T) {
 	svc := NewVisualWorkflowService(VisualWorkflowServiceConfig{
 		Preprocessor: NewPreprocessor(nil, nil, []string{"script.python"}),
@@ -1158,6 +1275,28 @@ func sampleVisualGraph() visual.Graph {
 			{ID: "check-repair", Source: "check", Target: "repair", Kind: visual.EdgeKindCondition, Condition: "vars.disk_full == true"},
 			{ID: "repair-notify", Source: "repair", Target: "notify", Kind: visual.EdgeKindSuccess},
 			{ID: "repair-end", Source: "repair", Target: "end", Kind: visual.EdgeKindSuccess},
+		},
+	}
+}
+
+func singleDebugNodeGraph(nodeID string, step workflow.Step) visual.Graph {
+	return visual.Graph{
+		Version: visual.GraphVersion,
+		Workflow: workflow.Workflow{
+			Name:    "debug-demo",
+			Version: "v0.1",
+			Inventory: workflow.Inventory{
+				Hosts: map[string]workflow.Host{"local": {Address: "127.0.0.1"}},
+			},
+		},
+		Nodes: []visual.Node{
+			{ID: "start", Type: visual.NodeTypeStart},
+			{ID: nodeID, Type: visual.NodeTypeAction, Step: &step},
+			{ID: "end", Type: visual.NodeTypeEnd},
+		},
+		Edges: []visual.Edge{
+			{ID: "start-" + nodeID, Source: "start", Target: nodeID, Kind: visual.EdgeKindNext},
+			{ID: nodeID + "-end", Source: nodeID, Target: "end", Kind: visual.EdgeKindSuccess},
 		},
 	}
 }

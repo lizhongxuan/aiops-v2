@@ -31,22 +31,58 @@ const candidatesPayload = {
   items: [
     {
       id: "candidate-pg-backup",
-      source_type: "workflow",
+      source_type: "workflow_reverse_generated",
       source_refs: ["workflow-postgres-backup"],
       review_status: "pending",
       proposed_manual: {
         id: "manual-pg-backup-draft",
         title: "PostgreSQL 备份候选",
         status: "draft",
-        workflow_ref: { workflow_id: "workflow-postgres-backup" },
-        operation: { target_type: "postgresql", action: "backup" },
+        workflow_ref: { workflow_id: "workflow-postgres-backup", workflow_version: "v1", workflow_digest: "sha256:pg", storage_uri: "runner-studio://workflow-postgres-backup" },
+        operation: { target_type: "postgresql", action: "backup", risk_level: "medium" },
         applicability: { middleware: "postgresql", os: ["centos"], platform: ["vm"], execution_surface: ["ssh"] },
         required_context: { required_inputs: ["host", "backup_path"] },
         preconditions: ["确认磁盘空间"],
         validation: ["备份文件可校验"],
         cannot_use_when: ["无法确认数据库版本"],
       },
-      validation_report: ["缺少一次 Dry Run 记录"],
+      validation_report: ["缺少近期成功闭环记录"],
+      structured_validation_report: {
+        status: "warning",
+        warnings: [{ code: "missing_recent_successful_run", field: "run_records", message: "缺少近期成功闭环记录" }],
+        blocking: [],
+        passed: [{ code: "workflow_ref_present", field: "workflow_ref.workflow_id", message: "已绑定 Workflow" }],
+      },
+      user_summary: {
+        understood: ["系统识别到 PostgreSQL 备份 Workflow"],
+        missing: ["缺少近期成功闭环记录"],
+        next_steps: ["先完成预检计划检查或一次成功闭环后再发布"],
+      },
+    },
+    {
+      id: "candidate-pg-restore-blocked",
+      source_type: "workflow_reverse_generated",
+      review_status: "needs_fix",
+      proposed_manual: {
+        id: "manual-pg-restore-draft",
+        title: "PostgreSQL 恢复候选",
+        status: "draft",
+        workflow_ref: { workflow_id: "workflow-pg-restore" },
+        operation: { target_type: "postgresql", action: "restore", risk_level: "high" },
+        validation: [],
+        cannot_use_when: [],
+      },
+      structured_validation_report: {
+        status: "blocked",
+        blocking: [{ code: "missing_workflow_digest", field: "workflow_ref.workflow_digest", message: "缺少 Workflow digest" }],
+        warnings: [],
+        passed: [],
+      },
+      user_summary: {
+        understood: ["系统识别到 PostgreSQL 恢复 Workflow"],
+        missing: ["缺少 Workflow digest"],
+        next_steps: ["补齐 digest 后再审核"],
+      },
     },
   ],
 };
@@ -55,11 +91,14 @@ const runRecordsPayload = {
   items: [
     {
       id: "run-redis-1",
+      ops_manual_flow_id: "flow-redis-1",
       manual_id: "manual-redis-memory",
       workflow_id: "workflow-redis-memory",
+      preflight_status: "passed",
       dry_run_status: "passed",
       execution_status: "success",
       validation_status: "passed",
+      user_feedback: "applicable",
       operator: "sre",
       completed_at: "2026-05-14T09:00:00+08:00",
     },
@@ -77,12 +116,27 @@ const runRecordsPayload = {
   ],
 };
 
+const flowTimelinePayload = {
+  items: [
+    { id: "search-1", type: "search", ops_manual_flow_id: "flow-redis-1", summary: "direct_execute", redaction_status: "redacted", created_at: "2026-05-14T08:59:00+08:00" },
+    { id: "param-1", type: "param_resolution", ops_manual_flow_id: "flow-redis-1", summary: "resolved", redaction_status: "redacted", created_at: "2026-05-14T08:59:10+08:00" },
+    { id: "form-1", type: "user_form_submit", ops_manual_flow_id: "flow-redis-1", summary: "target_instance", redaction_status: "redacted", created_at: "2026-05-14T08:59:20+08:00" },
+    { id: "preflight-1", type: "preflight", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T08:59:30+08:00" },
+    { id: "dry-run-1", type: "dry_run", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T08:59:40+08:00" },
+    { id: "execution-1", type: "execution", ops_manual_flow_id: "flow-redis-1", summary: "success", redaction_status: "redacted", created_at: "2026-05-14T09:00:00+08:00" },
+    { id: "verification-1", type: "verification", ops_manual_flow_id: "flow-redis-1", summary: "passed", redaction_status: "redacted", created_at: "2026-05-14T09:00:05+08:00" },
+    { id: "feedback-1", type: "user_feedback", ops_manual_flow_id: "flow-redis-1", summary: "applicable", redaction_status: "redacted", created_at: "2026-05-14T09:00:10+08:00" },
+    { id: "reference-1", type: "manual_guided_reference", ops_manual_flow_id: "flow-redis-1", summary: "只参考手册", redaction_status: "redacted", created_at: "2026-05-14T09:00:20+08:00" },
+  ],
+};
+
 function jsonResponse(payload: unknown) {
   return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
 
 function mockFetch(input: RequestInfo | URL) {
   const url = String(input);
+  if (url.includes("/api/v1/ops-manuals/flows/flow-redis-1/timeline")) return jsonResponse(flowTimelinePayload);
   if (url.includes("/api/v1/ops-manuals/candidates")) return jsonResponse(candidatesPayload);
   if (url.includes("/api/v1/ops-manuals/run-records")) return jsonResponse(runRecordsPayload);
   if (url.includes("/api/v1/ops-manuals")) return jsonResponse(manualsPayload);
@@ -154,6 +208,16 @@ describe("OpsManualsPage", () => {
     const reviewTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("待审核手册"));
     await act(async () => reviewTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(container.textContent).toContain("PostgreSQL 备份候选");
+    expect(container.textContent).toContain("由 Workflow 反向生成");
+    expect(container.textContent).toContain("sha256:pg");
+    expect(container.textContent).toContain("runner-studio://workflow-postgres-backup");
+    expect(container.textContent).toContain("系统识别到 PostgreSQL 备份 Workflow");
+    expect(container.textContent).toContain("缺少近期成功闭环记录");
+    expect(container.textContent).toContain("审核通过后，该手册会变为 verified");
+    const warningConfirm = container.querySelector('[data-testid="ops-manual-candidate-confirm-candidate-pg-backup"]') as HTMLButtonElement | null;
+    const blockedConfirm = container.querySelector('[data-testid="ops-manual-candidate-confirm-candidate-pg-restore-blocked"]') as HTMLButtonElement | null;
+    expect(warningConfirm?.disabled).toBe(false);
+    expect(blockedConfirm?.disabled).toBe(true);
     expect(container.textContent).toContain("通过");
     expect(container.textContent).toContain("退回修改");
     expect(container.textContent).toContain("删除候选");
@@ -165,6 +229,16 @@ describe("OpsManualsPage", () => {
     expect(container.textContent).toContain("成功 1");
     expect(container.textContent).toContain("失败 1");
     expect(container.textContent).toContain("指标未恢复");
+    expect(container.textContent).toContain("流程时间线");
+    expect(container.textContent).toContain("检索");
+    expect(container.textContent).toContain("参数解析");
+    expect(container.textContent).toContain("用户表单");
+    expect(container.textContent).toContain("预检");
+    expect(container.textContent).toContain("Dry Run");
+    expect(container.textContent).toContain("执行");
+    expect(container.textContent).toContain("验证");
+    expect(container.textContent).toContain("用户反馈");
+    expect(container.textContent).toContain("仅参考手册");
     expect(container.textContent ?? "").not.toMatch(/Gene|Capsule|GEP|EvolutionEvent/);
   });
 

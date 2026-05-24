@@ -1,11 +1,13 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
 import { ArrowDown, Bot } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
-import type { AiopsProcessBlock, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import { Button } from "@/components/ui/button";
+import type { AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
+import { AnswerDocumentRenderer } from "./AnswerDocumentRenderer";
+import { ContextStatusNotice } from "./ContextStatusNotice";
 import { McpSurfacePart } from "./McpSurfacePart";
 import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
@@ -14,7 +16,9 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
+  contextGovernance?: AiopsContextGovernanceEvent[];
   agentUiArtifacts?: unknown[];
+  deferredAgentUiArtifacts?: unknown[];
   intent?: { text?: string; status?: string } | null;
   userText?: string;
   turnStatus?: string;
@@ -92,18 +96,18 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
-  const artifacts = meta.agentUiArtifacts || [];
+  const contextStatusEvent = latestContextStatusEvent(meta.contextGovernance || []);
+  const artifacts = (meta.agentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
+  const corootArtifacts = artifacts.filter(isCorootChartArtifact);
+  const otherArtifacts = artifacts.filter((artifact) => !isCorootChartArtifact(artifact));
+  const deferredArtifacts = (meta.deferredAgentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
   const finalText = messageText(message.content);
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
       <div className="w-full space-y-3">
-        {meta.intent?.text ? (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            {meta.intent.text}
-          </div>
-        ) : null}
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) || finalText ? (
+        <ContextStatusNotice event={contextStatusEvent} />
+        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
           <ProcessTranscript
             process={process}
             turnStatus={meta.turnStatus}
@@ -111,12 +115,20 @@ function AssistantMessage() {
             turnCompletedAt={meta.turnCompletedAt}
             turnUpdatedAt={meta.turnUpdatedAt}
             finalText={finalText}
+            renderFinalText={false}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}
           />
         ) : null}
-        {artifacts.length ? (
+        {finalText || artifacts.length || deferredArtifacts.length ? (
+          <AnswerDocumentRenderer
+            finalText={finalText}
+            artifacts={corootArtifacts}
+            deferredArtifacts={deferredArtifacts}
+          />
+        ) : null}
+        {otherArtifacts.length ? (
           <div className="grid gap-2">
-            {artifacts.map((artifact) => (
+            {otherArtifacts.map((artifact) => (
               <AgentUiArtifactPart key={artifact.id} artifact={artifact} />
             ))}
           </div>
@@ -124,6 +136,20 @@ function AssistantMessage() {
       </div>
     </MessagePrimitive.Root>
   );
+}
+
+function latestContextStatusEvent(events: AiopsContextGovernanceEvent[]) {
+  const candidates = events.filter((event) => isVisibleContextStatusEvent(event));
+  return candidates[candidates.length - 1] || null;
+}
+
+function isVisibleContextStatusEvent(event: AiopsContextGovernanceEvent) {
+  const kind = (event.kind || "").toLowerCase();
+  return kind.includes("context.compaction") || kind === "context.small_context.enabled";
+}
+
+function isCorootChartArtifact(value: unknown) {
+  return Boolean(value && typeof value === "object" && (value as { type?: string }).type === "coroot_chart");
 }
 
 function isPendingAssistantTurn(turnStatus?: string) {

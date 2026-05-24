@@ -48,7 +48,7 @@ test.describe("GeneratorWorkshopPage", () => {
   });
 
   test("page renders with title", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: "Generator Workshop" })).toBeVisible();
+    await expect(page.locator("main").getByText("Generator Workshop", { exact: true })).toBeVisible();
   });
 
   test("source selection shows three radio options", async ({ page }) => {

@@ -80,6 +80,7 @@ type rawManifest struct {
 	MCPServers                    []mcp.ServerConfig `json:"mcpServers"`
 	LSPServers                    []lsp.ServerConfig `json:"lspServers"`
 	Settings                      []settings.Entry   `json:"settings"`
+	AIOps                         json.RawMessage    `json:"aiops"`
 	StrictPluginOnlyCustomization bool               `json:"strictPluginOnlyCustomization"`
 	AllowedMCPServers             []string           `json:"allowedMcpServers"`
 	AdditionalDirectories         []string           `json:"additionalDirectories"`
@@ -219,6 +220,10 @@ func normalizeManifest(manifestPath string, raw rawManifest) (Manifest, error) {
 			return Manifest{}, fmt.Errorf("hooksConfig %q: %w", hooksConfig, err)
 		}
 	}
+	aiops, err := parseAIOpsManifest(raw.AIOps, raw.StrictPluginOnlyCustomization)
+	if err != nil {
+		return Manifest{}, err
+	}
 
 	return Manifest{
 		Name:                          name,
@@ -232,6 +237,7 @@ func normalizeManifest(manifestPath string, raw rawManifest) (Manifest, error) {
 		MCPServers:                    cloneMCPServerConfigs(raw.MCPServers),
 		LSPServers:                    cloneLSPServers(raw.LSPServers),
 		Settings:                      cloneSettingsEntries(raw.Settings),
+		AIOps:                         aiops,
 		StrictPluginOnlyCustomization: raw.StrictPluginOnlyCustomization,
 		AllowedMCPServers:             dedupeNonEmptyStrings(raw.AllowedMCPServers),
 		AdditionalDirectories:         dedupeNonEmptyStrings(raw.AdditionalDirectories),

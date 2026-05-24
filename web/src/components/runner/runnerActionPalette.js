@@ -1,23 +1,30 @@
 import { getNodeTypeDefinition } from "./nodeTypeRegistry";
 
-const USEFUL_NODE_KEYS = new Set(["shell", "condition", "approval"]);
+const RECOMMENDED_ACTIONS = new Set([
+  "script.shell",
+  "script.python",
+  "http.request",
+  "builtin.tcp_ping",
+  "builtin.dns_resolve",
+  "condition.evaluate",
+]);
 const ACTION_ORDER = new Map([
-  ["cmd.run", 10],
-  ["shell.run", 20],
-  ["condition.evaluate", 30],
-  ["condition.branch", 30],
-  ["manual.approval", 40],
-  ["approval.wait", 40],
-  ["notify.send", 50],
-  ["notify.handler", 50],
-  ["variable.aggregate", 60],
+  ["script.shell", 10],
+  ["script.python", 20],
+  ["http.request", 30],
+  ["builtin.tcp_ping", 40],
+  ["builtin.dns_resolve", 50],
+  ["condition.evaluate", 60],
 ]);
 
 const CATEGORY_LABELS = {
   command: "命令",
   script: "脚本",
+  network: "网络",
   control: "逻辑",
   基础: "命令",
+  脚本: "脚本",
+  网络: "网络",
   逻辑: "逻辑",
   治理: "治理",
 };
@@ -27,7 +34,7 @@ function actionIdentity(action = {}) {
 }
 
 export function isRunnerPaletteActionUseful(action = {}) {
-  return USEFUL_NODE_KEYS.has(getNodeTypeDefinition(action).key);
+  return RECOMMENDED_ACTIONS.has(actionIdentity(action));
 }
 
 export function getRunnerActionDescription(action = {}) {
@@ -42,7 +49,8 @@ export function getRunnerActionCategoryLabel(action = {}) {
   const definition = getNodeTypeDefinition(action);
   if (definition.key === "condition" || definition.key === "variable-aggregator") return "逻辑";
   if (definition.key === "approval" || definition.key === "notify") return "治理";
-  if (definition.key === "shell") return "脚本";
+  if (definition.key === "shell" || definition.key === "script-shell" || definition.key === "script-python") return "脚本";
+  if (definition.key === "http-request" || definition.key === "tcp-ping" || definition.key === "dns-resolve") return "网络";
   if (definition.key === "command") return "命令";
   const raw = String(action.category || definition.category || "其他");
   return CATEGORY_LABELS[raw] || raw;

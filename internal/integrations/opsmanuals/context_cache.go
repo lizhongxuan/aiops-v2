@@ -78,6 +78,12 @@ func (c *turnSearchContextCache) enrichParamResolutionRequest(ctx context.Contex
 			req.WorkflowID = result.Manuals[0].Manual.WorkflowRef.WorkflowID
 		}
 	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]any{}
+	}
+	if !valuePresent(req.Metadata["ops_manual_flow_id"]) {
+		req.Metadata["ops_manual_flow_id"] = result.OpsManualFlowID
+	}
 	if req.KnownParams == nil {
 		req.KnownParams = map[string]any{}
 	}
@@ -96,12 +102,13 @@ func enrichSearchRequestFromExecutionContext(ctx context.Context, req core.Searc
 	if !ok {
 		return req
 	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]any{}
+	}
+	ensureExecutionMetadata(req.Metadata, execCtx)
 	hostID := strings.TrimSpace(execCtx.HostID)
 	if hostID == "" {
 		return req
-	}
-	if req.Metadata == nil {
-		req.Metadata = map[string]any{}
 	}
 	ensureHostMetadata(req.Metadata, hostID)
 	if operationFrameEmpty(req.OperationFrame) {
@@ -122,12 +129,13 @@ func enrichResolveRequestFromExecutionContext(ctx context.Context, req core.Reso
 	if !ok {
 		return req
 	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]any{}
+	}
+	ensureExecutionMetadata(req.Metadata, execCtx)
 	hostID := strings.TrimSpace(execCtx.HostID)
 	if hostID == "" {
 		return req
-	}
-	if req.Metadata == nil {
-		req.Metadata = map[string]any{}
 	}
 	ensureHostMetadata(req.Metadata, hostID)
 	if req.OperationFrame.Metadata == nil {
@@ -154,6 +162,21 @@ func ensureHostMetadata(metadata map[string]any, hostID string) {
 		if !valuePresent(metadata[key]) {
 			metadata[key] = hostID
 		}
+	}
+}
+
+func ensureExecutionMetadata(metadata map[string]any, execCtx tooling.ToolExecutionContext) {
+	if metadata == nil {
+		return
+	}
+	if strings.TrimSpace(execCtx.SessionID) != "" && !valuePresent(metadata["session_id"]) {
+		metadata["session_id"] = strings.TrimSpace(execCtx.SessionID)
+	}
+	if strings.TrimSpace(execCtx.TurnID) != "" && !valuePresent(metadata["turn_id"]) {
+		metadata["turn_id"] = strings.TrimSpace(execCtx.TurnID)
+	}
+	if strings.TrimSpace(execCtx.ToolCallID) != "" && !valuePresent(metadata["tool_call_id"]) {
+		metadata["tool_call_id"] = strings.TrimSpace(execCtx.ToolCallID)
 	}
 }
 
@@ -190,6 +213,9 @@ func (c *turnSearchContextCache) enrichPreflightRequest(ctx context.Context, req
 	}
 	if req.Parameters == nil {
 		req.Parameters = map[string]any{}
+	}
+	if strings.TrimSpace(req.OpsManualFlowID) == "" {
+		req.OpsManualFlowID = result.OpsManualFlowID
 	}
 	c.mu.Lock()
 	resolution, hasResolution := c.resolutions[key]

@@ -349,6 +349,74 @@ describe("OpsManualChatArtifacts", () => {
     window.removeEventListener("aiops:composer-context-request", handler);
   });
 
+  it("renders discovery metadata details for dynamic resource candidates", async () => {
+    await act(async () => {
+      root.render(
+        <OpsManualParamResolutionArtifact
+          artifact={{
+            id: "artifact-param-metadata-candidates",
+            type: "ops_manual_param_resolution",
+            inlineData: {
+              status: "ambiguous",
+              manual_id: "manual-redis-rca-ssh",
+              workflow_id: "workflow-redis-rca-ssh",
+              fields: [
+                {
+                  id: "target_instance",
+                  label: "实例/服务",
+                  type: "resource_ref",
+                  ui_control: "select",
+                  required: true,
+                  candidates: [
+                    {
+                      value: "docker:aiops-redis",
+                      label: "aiops-redis",
+                      source: "docker",
+                      metadata: {
+                        image: "redis:7.2",
+                        ports: ["0.0.0.0:6379->6379/tcp"],
+                        health: "healthy",
+                      },
+                    },
+                    {
+                      value: "k8s:pod:cache/redis-0",
+                      label: "redis-0",
+                      source: "k8s",
+                      metadata: {
+                        namespace: "cache",
+                        phase: "Running",
+                        container_images: ["redis:7.2.4"],
+                      },
+                    },
+                    {
+                      value: "host:redis:redis-server",
+                      label: "redis-server",
+                      source: "host_readonly",
+                      metadata: {
+                        systemd_service: "redis-server.service",
+                        listening_ports: ["6379"],
+                        process_owner: "redis",
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("aiops-redis");
+    expect(container.textContent).toContain("image redis:7.2");
+    expect(container.textContent).toContain("ports 0.0.0.0:6379->6379/tcp");
+    expect(container.textContent).toContain("health healthy");
+    expect(container.textContent).toContain("namespace cache");
+    expect(container.textContent).toContain("phase Running");
+    expect(container.textContent).toContain("service redis-server.service");
+    expect(container.textContent).toContain("owner redis");
+  });
+
   it("renders missing parameter resolution without a fixed four-field fallback", async () => {
     let detail: { fields?: Array<{ id: string }> } | null = null;
     const handler = (event: Event) => {
@@ -573,9 +641,11 @@ describe("OpsManualChatArtifacts", () => {
             type: "ops_manual_search_result",
             inlineData: {
               decision: "need_info",
+              ops_manual_flow_id: "flow-redis-skip",
               operation_frame: {
-                target: { type: "redis" },
+                target: { type: "redis", name: "redis-01" },
                 operation: { action: "rca_or_repair" },
+                target_scope: { hosts: ["redis-01"] },
               },
               required_context_fields: [
                 {
@@ -586,6 +656,7 @@ describe("OpsManualChatArtifacts", () => {
               ],
               manuals: [
                 {
+                  bound_workflow_id: "workflow-redis-rca-ssh",
                   manual: {
                     id: "manual-redis-rca-ssh",
                     title: "Redis SSH 排障运维手册",
@@ -618,12 +689,134 @@ describe("OpsManualChatArtifacts", () => {
     expect(detail?.metadata?.opsManualAction).toBe("skip_ops_manual");
     expect(detail?.metadata?.opsManualSkipped).toBe("true");
     expect(detail?.metadata?.opsManualManualId).toBe("manual-redis-rca-ssh");
+    expect(detail?.metadata?.manual_id).toBe("manual-redis-rca-ssh");
+    expect(detail?.metadata?.workflow_id).toBe("workflow-redis-rca-ssh");
+    expect(detail?.metadata?.object_type).toBe("redis");
+    expect(detail?.metadata?.action).toBe("rca_or_repair");
+    expect(detail?.metadata?.target_scope).toBe("host:redis-01");
+    expect(detail?.metadata?.ops_manual_flow_id).toBe("flow-redis-skip");
     expect(detail?.text).not.toContain("\n");
     expect(detail?.text).not.toContain("��");
     expect(container.textContent).toContain(
       "已切换为普通只读排查，等待 Agent 继续处理。",
     );
     expect((skipButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+
+    window.removeEventListener("aiops:composer-context-submit", handler);
+  });
+
+  it("sends distinct metadata for skip, reference-only, and run-preflight actions on a direct manual hit", async () => {
+    const events: Array<{
+      text?: string;
+      artifactId?: string;
+      metadata?: Record<string, string>;
+    }> = [];
+    const handler = (event: Event) => {
+      events.push((event as CustomEvent).detail);
+    };
+    window.addEventListener("aiops:composer-context-submit", handler);
+
+    await act(async () => {
+      root.render(
+        <OpsManualSearchResultArtifact
+          artifact={{
+            id: "artifact-direct-actions",
+            type: "ops_manual_search_result",
+            inlineData: {
+              decision: "direct_execute",
+              ops_manual_flow_id: "flow-redis-direct-actions",
+              operation_frame: {
+                target: { type: "redis", name: "redis-01" },
+                operation: { action: "rca_or_repair" },
+                target_scope: { hosts: ["redis-01"] },
+              },
+              manuals: [
+                {
+                  bound_workflow_id: "workflow-redis-rca-ssh",
+                  usable_mode: "direct_execute",
+                  manual: {
+                    id: "manual-redis-rca-ssh",
+                    title: "Redis SSH 排障运维手册",
+                  },
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    const referenceButton = buttons.find((button) =>
+      button.textContent?.includes("仅参考手册"),
+    );
+    const preflightButton = buttons.find((button) =>
+      button.textContent?.includes("运行预检"),
+    );
+    const skipButton = buttons.find((button) =>
+      button.textContent?.includes("不使用"),
+    );
+    expect(referenceButton).toBeTruthy();
+    expect(preflightButton).toBeTruthy();
+    expect(skipButton).toBeTruthy();
+
+    await act(async () => {
+      referenceButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(events.at(-1)).toMatchObject({
+      artifactId: "artifact-direct-actions",
+      metadata: {
+        opsManualAction: "reference_ops_manual",
+        opsManualManualId: "manual-redis-rca-ssh",
+        opsManualWorkflowId: "workflow-redis-rca-ssh",
+        object_type: "redis",
+        action: "rca_or_repair",
+        target_scope: "host:redis-01",
+        ops_manual_flow_id: "flow-redis-direct-actions",
+      },
+    });
+    expect(events.at(-1)?.text).toContain("仅参考运维手册");
+    expect(
+      container.querySelector('[data-testid="ops-manual-preflight-running"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      preflightButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(events.at(-1)).toMatchObject({
+      artifactId: "artifact-direct-actions",
+      metadata: {
+        opsManualAction: "run_ops_manual_preflight",
+        opsManualManualId: "manual-redis-rca-ssh",
+        opsManualWorkflowId: "workflow-redis-rca-ssh",
+        ops_manual_flow_id: "flow-redis-direct-actions",
+      },
+    });
+    expect(container.textContent).toContain("预检中");
+    expect(
+      container.querySelector('[data-testid="ops-manual-preflight-running"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      skipButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(events.at(-1)).toMatchObject({
+      artifactId: "artifact-direct-actions",
+      metadata: {
+        opsManualAction: "skip_ops_manual",
+        opsManualSkipped: "true",
+        manual_id: "manual-redis-rca-ssh",
+        workflow_id: "workflow-redis-rca-ssh",
+        ops_manual_flow_id: "flow-redis-direct-actions",
+      },
+    });
+    expect(events.map((event) => event.metadata?.opsManualAction)).toEqual([
+      "reference_ops_manual",
+      "run_ops_manual_preflight",
+      "skip_ops_manual",
+    ]);
 
     window.removeEventListener("aiops:composer-context-submit", handler);
   });
@@ -845,9 +1038,13 @@ describe("OpsManualChatArtifacts", () => {
       "workflow-redis-local-readonly-rca",
     );
     expect(container.textContent).toContain(
-      "下一步：AI 会先运行只读预检；通过并确认后再 Dry Run。",
+      "下一步：AI 会先运行只读预检；通过后确认或审批执行。",
     );
-    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(
+      Array.from(container.querySelectorAll("button")).map((button) =>
+        button.textContent?.trim(),
+      ),
+    ).toEqual(["运行预检", "仅参考手册", "不使用"]);
     expect(container.textContent).not.toContain("Runner 已执行");
     expect(container.textContent).not.toMatch(/\d+\s*%/);
   });
@@ -882,7 +1079,7 @@ describe("OpsManualChatArtifacts", () => {
                 manual_id: "manual-mysql-backup-ssh",
                 workflow_id: "workflow-mysql-backup-ssh",
                 probe_id: "check_mysql_backup_ssh_and_path",
-                next_action: "start_dry_run",
+                next_action: "confirm_execution",
                 evidence: [
                   { name: "ssh_access", status: "passed" },
                   { name: "connection_test", status: "passed" },
@@ -916,13 +1113,13 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("ssh_access");
     expect(container.textContent).toContain("backup_path_writable");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).not.toContain(
-      "下一步：AI 会先运行只读预检；通过并确认后再 Dry Run。",
+      "下一步：AI 会先运行只读预检；通过后确认或审批执行。",
     );
   });
 
-  it("requests Dry Run confirmation when clicking a passed merged preflight action", async () => {
+  it("requests execution confirmation when clicking a passed merged preflight action", async () => {
     let detail: {
       action?: string;
       title?: string;
@@ -962,7 +1159,7 @@ describe("OpsManualChatArtifacts", () => {
                 ready: true,
                 manual_id: "manual-mysql-backup-ssh",
                 workflow_id: "workflow-mysql-backup-ssh",
-                next_action: "start_dry_run",
+                next_action: "confirm_execution",
               },
             },
           }}
@@ -971,15 +1168,15 @@ describe("OpsManualChatArtifacts", () => {
     });
 
     const dryRunButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("进入 Dry Run"),
+      (button) => button.textContent?.includes("确认执行"),
     );
     await act(async () => {
       dryRunButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(detail).toEqual({
-      action: "start_runner_workflow_dry_run",
-      title: "进入 Dry Run",
+      action: "confirm_runner_workflow_execution",
+      title: "确认执行",
       sourceTitle: "MySQL SSH 备份运维手册",
       artifactId: "artifact-direct-execute-merged-click",
     });
@@ -1064,7 +1261,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("Redis 内存压力排障");
     expect(container.textContent).toContain("workflow-redis-memory");
     expect(container.textContent).toContain(
-      "下一步：先运行预检，通过并确认后再进入 Dry Run。",
+      "下一步：先运行预检，通过后确认或审批执行。",
     );
     expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(container.textContent).not.toMatch(/\d+\s*%/);
@@ -1107,7 +1304,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).not.toMatch(/\d+\s*%/);
   });
 
-  it("renders passed preflight result with Dry Run action", async () => {
+  it("renders passed preflight result with confirm action", async () => {
     await act(async () => {
       root.render(
         <OpsManualPreflightResultArtifact
@@ -1119,7 +1316,7 @@ describe("OpsManualChatArtifacts", () => {
               ready: true,
               manual_id: "manual-redis-memory",
               workflow_id: "workflow-redis-memory",
-              next_action: "start_dry_run",
+              next_action: "confirm_execution",
               evidence: [
                 { name: "metrics_available", status: "passed", value: true },
               ],
@@ -1131,7 +1328,7 @@ describe("OpsManualChatArtifacts", () => {
 
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("可进入下一步");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
   });
 
   it("shows immediate running feedback after clicking param resolution preflight", async () => {
@@ -1210,7 +1407,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("预检失败");
     expect(container.textContent).toContain("target instance is not reachable");
     expect(container.textContent).toContain("查看降级步骤");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
   });
 
@@ -1239,7 +1436,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("没有可直接运行的工作流。");
     expect(container.textContent).toContain("1. 确认目标实例和备份路径");
     expect(container.textContent).toContain("3. 逐步生成备份命令并让用户确认");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
   });
 
@@ -1274,15 +1471,50 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain("AI 会继续自动只读排查");
     expect(container.textContent).toContain("先让你补齐必要信息");
     expect(container.textContent).toContain("参考关系");
-    expect(container.querySelectorAll("button")).toHaveLength(0);
+    expect(
+      Array.from(container.querySelectorAll("button")).map((button) =>
+        button.textContent?.trim(),
+      ),
+    ).toEqual(["仅参考手册", "不使用"]);
     expect(container.textContent).not.toContain("按步骤执行");
     expect(container.textContent).not.toContain("运行预检");
-    expect(container.textContent).not.toContain("进入 Dry Run");
+    expect(container.textContent).not.toContain("确认执行");
     expect(container.textContent).not.toContain("立即执行");
     expect(container.textContent).not.toContain("继续普通排查");
   });
 
-  it("hides stale cross-object reference_only manual hits for Kafka", async () => {
+  it("does not render no-match search cards when no usable manual exists", async () => {
+    await act(async () => {
+      root.render(
+        <OpsManualSearchResultArtifact
+          artifact={{
+            id: "artifact-kafka-no-match",
+            type: "ops_manual_search_result",
+            inlineData: {
+              decision: "no_match",
+              summary: "没有找到适用于 Kafka 的可用运维手册。",
+              operation_frame: {
+                object_type: "kafka",
+                operation_type: "rca_or_repair",
+              },
+              recommended_next_action:
+                "AI 会继续自动尝试只读排查；如果缺少目标、时间范围、权限或观测数据，会先让你补齐必要信息。",
+              manuals: [],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-manual-search-result-card"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("无可用手册");
+    expect(container.textContent).not.toContain("没有找到适用于 Kafka");
+    expect(container.textContent).not.toContain("AI 会继续自动尝试只读排查");
+  });
+
+  it("does not render cross-object reference_only as a no-match card", async () => {
     await act(async () => {
       root.render(
         <OpsManualSearchResultArtifact
@@ -1316,76 +1548,16 @@ describe("OpsManualChatArtifacts", () => {
       );
     });
 
-    expect(container.textContent).toContain(
+    expect(
+      container.querySelector('[data-testid="ops-manual-search-result-card"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain(
       "未找到适用手册，AI 将继续只读排查",
     );
-    expect(container.textContent).toContain(
-      "没有找到适用于 Kafka 的可用运维手册。",
-    );
-    expect(container.textContent).toContain("AI 不使用不匹配的手册");
     expect(container.textContent).not.toContain("manual-k8s-pod-crashloop-rca");
     expect(container.textContent).not.toContain("Kubernetes Pod CrashLoop/OOM");
     expect(container.textContent).not.toContain("对象类型不匹配");
     expect(container.textContent).not.toContain("object_type differs");
-  });
-
-  it("hides cross-object manuals from Kafka no-match results", async () => {
-    await act(async () => {
-      root.render(
-        <OpsManualSearchResultArtifact
-          artifact={{
-            id: "artifact-kafka-no-match",
-            type: "ops_manual_search_result",
-            inlineData: {
-              decision: "no_match",
-              summary: "没有找到适用于 Kafka 的可用运维手册。",
-              operation_frame: {
-                object_type: "kafka",
-                operation_type: "rca_or_repair",
-              },
-              recommended_next_action:
-                "AI 会继续自动尝试只读排查；如果缺少目标、时间范围、权限或观测数据，会先让你补齐必要信息。",
-              manuals: [],
-            },
-          }}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain(
-      "未找到适用手册，AI 将继续只读排查",
-    );
-    expect(container.textContent).toContain("AI 会继续自动尝试只读排查");
-    expect(container.textContent).not.toContain("请在底部补充");
-    expect(container.textContent).not.toContain("打开补充表单");
-    expect(
-      container.querySelector('[data-testid="ops-manual-context-prompt"]'),
-    ).toBeNull();
-    expect(container.textContent).not.toContain("manual-k8s-pod-crashloop-rca");
-    expect(container.textContent).not.toContain("Kubernetes Pod CrashLoop/OOM");
-    expect(container.textContent).not.toContain("object_type differs");
-  });
-
-  it("rewrites stale no_match next action to read-only investigation guidance", async () => {
-    await act(async () => {
-      root.render(
-        <OpsManualSearchResultArtifact
-          artifact={{
-            id: "artifact-no-match-stale-next",
-            type: "ops_manual_search_result",
-            inlineData: {
-              decision: "no_match",
-              summary: "没有找到合适的运维手册。",
-              recommended_next_action: "继续普通 Agent 运维流程。",
-            },
-          }}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain("AI 不使用不匹配的手册");
-    expect(container.textContent).toContain("会先让你补齐必要信息");
-    expect(container.textContent).not.toContain("继续普通 Agent 运维流程");
   });
 
   it("does not dispatch a fixed context request from search need_info even when legacy required fields exist", async () => {
@@ -1640,7 +1812,7 @@ describe("OpsManualChatArtifacts", () => {
               ready: true,
               manual_id: "manual-redis-memory",
               workflow_id: "workflow-redis-memory",
-              next_action: "start_dry_run",
+              next_action: "confirm_execution",
               evidence: [
                 { name: "metrics_available", status: "passed", value: true },
               ],
@@ -1652,7 +1824,7 @@ describe("OpsManualChatArtifacts", () => {
 
     expect(container.textContent).toContain("预检通过");
     expect(container.textContent).toContain("manual-redis-memory");
-    expect(container.textContent).toContain("进入 Dry Run");
+    expect(container.textContent).toContain("确认执行");
     expect(container.textContent).not.toContain("运维手册预检");
     expect(container.textContent).not.toContain("预检已通过。");
     expect(container.textContent).not.toContain("来源：");
@@ -1739,8 +1911,23 @@ describe("OpsManualChatArtifacts", () => {
     ).toBeNull();
     expect(container.textContent).not.toContain("等待备份路径");
     expect(container.textContent).toContain("PostgreSQL 备份 Ubuntu 运维手册");
-    expect(container.textContent).toContain("目标主机");
-    expect(container.textContent).toContain("server-local");
+    const resolvedParams = container.querySelector(
+      '[data-testid="ops-manual-resolved-params"]',
+    ) as HTMLElement;
+    expect(resolvedParams).not.toBeNull();
+    expect(resolvedParams.textContent).toContain("目标主机");
+    expect(resolvedParams.textContent).toContain("目标实例");
+    expect(resolvedParams.textContent).toContain("查看详细参数");
+    expect(resolvedParams.textContent).not.toContain("server-local");
+    expect(resolvedParams.textContent).not.toContain("docker:aiops-postgres");
+    await act(async () => {
+      resolvedParams.querySelector("button")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(resolvedParams.textContent).toContain("server-local");
+    expect(resolvedParams.textContent).toContain("docker:aiops-postgres");
+    expect(resolvedParams.textContent).toContain("context fact: target_host");
     expect(container.textContent).not.toContain("手册命中");
     expect(container.textContent).not.toContain("参数解析");
     expect(container.textContent).not.toContain("Workflow 预检");

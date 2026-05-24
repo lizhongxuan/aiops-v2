@@ -49,6 +49,50 @@ describe("agent UI card registry", () => {
     });
   });
 
+  it("looks up renderers by renderer id and type plus schema version", () => {
+    const registry = createAgentUiCardRegistry([
+      {
+        ...definition("observability.chart", "active", DummyRenderer),
+        renderer: "observability.chart.v1",
+        artifactTypes: ["observability.chart", "legacy_observability_chart"],
+        schemaVersion: "observability.chart.v1",
+      },
+    ]);
+
+    expect(lookupAgentUiCardRenderer(registry, {
+      id: "by-renderer",
+      type: "unknown_widget",
+      renderer: "observability.chart.v1",
+      payload: {},
+    } as any)).toMatchObject({
+      state: "active",
+      Renderer: DummyRenderer,
+    });
+    expect(lookupAgentUiCardRenderer(registry, {
+      id: "by-schema",
+      type: "legacy_observability_chart",
+      schemaVersion: "observability.chart.v1",
+      payload: {},
+    } as any)).toMatchObject({
+      state: "active",
+      Renderer: DummyRenderer,
+    });
+  });
+
+  it("uses JSON fallback when a renderer id is present but unregistered", () => {
+    const registry = createAgentUiCardRegistry([]);
+
+    expect(lookupAgentUiCardRenderer(registry, {
+      id: "unknown-renderer",
+      type: "unknown_widget",
+      renderer: "plugin.widget.v1",
+      payload: { safe: true },
+    } as any)).toMatchObject({
+      state: "fallback_renderer",
+      reason: "未注册的 renderer，已使用 JSON 摘要安全展示。",
+    });
+  });
+
   it("returns disabled, missing renderer, unsupported, and invalid-payload terminal states", () => {
     const registry = createAgentUiCardRegistry([
       definition("trace_summary", "disabled", DummyRenderer),

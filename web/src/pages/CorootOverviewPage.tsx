@@ -1,4 +1,4 @@
-import { CheckCircle2, Settings, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Save, Settings, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -10,8 +10,21 @@ import { SettingsPageFrame, StatusAlert, ToneBadge } from "@/pages/settingsCompo
 type CorootConfig = {
   configured?: boolean;
   baseUrl?: string;
+  proxyBaseUrl?: string;
+  iframeUrl?: string;
   iframeMode?: boolean;
+  project?: string;
+  timeout?: string;
+  tokenConfigured?: boolean;
   lastSuccessAt?: string;
+};
+
+type CorootConfigDraft = {
+  baseUrl: string;
+  project: string;
+  token: string;
+  iframeUrl: string;
+  timeout: string;
 };
 
 type McpServer = {
@@ -76,6 +89,7 @@ function caseIdOf(item: EvidenceItem | ArtifactItem) {
 
 export function CorootOverviewPage() {
   const [config, setConfig] = useState<CorootConfig>({});
+  const [draft, setDraft] = useState<CorootConfigDraft>(() => draftFromConfig({}));
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
@@ -99,6 +113,7 @@ export function CorootOverviewPage() {
         requestJson<{ items?: ArtifactItem[] }>("/api/v1/agent-ui-artifacts?source=coroot").catch(() => ({ items: [] })),
       ]);
       setConfig(nextConfig);
+      setDraft(draftFromConfig(nextConfig));
       setMcpServers(itemsFrom<McpServer>(mcpPayload));
       setEvidence(itemsFrom<EvidenceItem>(evidencePayload));
       setArtifacts(itemsFrom<ArtifactItem>(artifactPayload));
@@ -117,6 +132,20 @@ export function CorootOverviewPage() {
       setMessage({ type: "success", text: "连接正常" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "测试连接失败" });
+    }
+  }
+
+  async function saveConfig() {
+    try {
+      const nextConfig = await requestJson<CorootConfig>("/api/v1/coroot/config", {
+        method: "PUT",
+        body: JSON.stringify(draft),
+      });
+      setConfig(nextConfig);
+      setDraft(draftFromConfig(nextConfig));
+      setMessage({ type: "success", text: "配置已保存" });
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "保存 Coroot 配置失败" });
     }
   }
 
@@ -157,13 +186,68 @@ export function CorootOverviewPage() {
           <Card className="rounded-lg bg-white">
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Settings className="size-4" />Coroot 配置</CardTitle>
-              <CardDescription>这里只保存连接信息，不做完整指标大盘。</CardDescription>
+              <CardDescription>连接信息从这里保存并持久化，服务启动参数不再作为 Coroot 配置来源。</CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-2 text-sm text-slate-700">
-              <InfoRow label="配置状态" value={config.configured === false ? "未配置" : "已配置"} />
-              <InfoRow label="Base URL" value={text(config.baseUrl, "未设置")} />
-              <InfoRow label="iframe 模式" value={config.iframeMode ? "开启" : "关闭"} />
-              <InfoRow label="最近成功连接" value={text(config.lastSuccessAt, "暂无")} />
+            <CardContent className="grid gap-4 text-sm text-slate-700">
+              <div className="grid gap-2">
+                <InfoRow label="配置状态" value={config.configured === false ? "未配置" : "已配置"} />
+                <InfoRow label="Base URL" value={text(config.baseUrl, "未设置")} />
+                <InfoRow label="Project ID" value={text(config.project, "default")} />
+                <InfoRow label="API Key" value={config.tokenConfigured ? "已保存" : "未设置"} />
+                <InfoRow label="最近成功连接" value={text(config.lastSuccessAt, "暂无")} />
+              </div>
+              <form
+                className="grid gap-3 rounded-lg border bg-slate-50 p-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveConfig();
+                }}
+              >
+                <ConfigInput
+                  label="Base URL"
+                  name="baseUrl"
+                  value={draft.baseUrl}
+                  placeholder="例如 http://172.18.13.11:8000"
+                  required
+                  onChange={(value) => setDraft((current) => ({ ...current, baseUrl: value }))}
+                />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ConfigInput
+                    label="Project ID"
+                    name="project"
+                    value={draft.project}
+                    placeholder="default"
+                    onChange={(value) => setDraft((current) => ({ ...current, project: value }))}
+                  />
+                  <ConfigInput
+                    label="API Key"
+                    name="token"
+                    type="password"
+                    value={draft.token}
+                    placeholder={config.tokenConfigured ? "已保存，留空表示不修改" : "粘贴 Coroot API Key"}
+                    onChange={(value) => setDraft((current) => ({ ...current, token: value }))}
+                  />
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <ConfigInput
+                    label="Iframe URL"
+                    name="iframeUrl"
+                    value={draft.iframeUrl}
+                    placeholder="可选，默认使用内置代理"
+                    onChange={(value) => setDraft((current) => ({ ...current, iframeUrl: value }))}
+                  />
+                  <ConfigInput
+                    label="Timeout"
+                    name="timeout"
+                    value={draft.timeout}
+                    placeholder="30s"
+                    onChange={(value) => setDraft((current) => ({ ...current, timeout: value }))}
+                  />
+                </div>
+                <div className="flex justify-end">
+                  <Button type="submit"><Save />保存配置</Button>
+                </div>
+              </form>
             </CardContent>
           </Card>
 
@@ -225,6 +309,49 @@ export function CorootOverviewPage() {
         </aside>
       </div>
     </SettingsPageFrame>
+  );
+}
+
+function draftFromConfig(config: CorootConfig): CorootConfigDraft {
+  return {
+    baseUrl: text(config.baseUrl, ""),
+    project: text(config.project, "default"),
+    token: "",
+    iframeUrl: text(config.iframeUrl, ""),
+    timeout: text(config.timeout, "30s"),
+  };
+}
+
+function ConfigInput({
+  label,
+  name,
+  value,
+  placeholder,
+  type = "text",
+  required = false,
+  onChange,
+}: {
+  label: string;
+  name: string;
+  value: string;
+  placeholder?: string;
+  type?: string;
+  required?: boolean;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="grid gap-1 text-xs font-medium text-slate-600">
+      <span>{label}</span>
+      <input
+        className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-slate-400"
+        name={name}
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        required={required}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
   );
 }
 

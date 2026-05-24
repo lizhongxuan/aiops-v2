@@ -1,7 +1,9 @@
+import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Activity, AlertTriangle, CheckCircle2, GitBranch, LineChart, ListChecks, ShieldCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { defaultAgentUiCardRegistry, lookupAgentUiCardRenderer } from "@/lib/agentUiCardRegistry";
+import type { AgentUiCardDisplay } from "@/lib/agentUiCardDefinitions";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
 import { InvalidArtifactCard } from "./InvalidArtifactCard";
 import { UnsupportedArtifactCard } from "./UnsupportedArtifactCard";
@@ -17,36 +19,11 @@ type ArtifactAction = {
   disabled?: boolean;
 };
 
-const ARTIFACT_LABELS: Record<string, string> = {
-  coroot_chart: "Coroot 图表",
-  trace_summary: "Trace 摘要",
-  topology_slice: "拓扑片段",
-  rca_report: "根因分析",
-  workflow_result: "Workflow 结果",
-  verification_result: "验证结果",
-  experience_match: "经验命中",
-  ops_manual_match: "运维手册判定",
-  ops_manual_search_result: "运维手册检索",
-  ops_manual_param_resolution: "运维手册参数解析",
-  ops_manual_param_form: "运维手册参数表单",
-  ops_manual_preflight_result: "运维手册预检",
-  ops_manual_fallback_guide: "运维手册降级步骤",
-  runner_workflow_generation: "Workflow 生成进度",
-};
-
 const REDACTION_LABELS: Record<string, string> = {
   redacted: "已脱敏",
   none: "未脱敏",
   restricted: "权限受限",
 };
-
-const SELF_RENDERED_TYPES = new Set([
-  "ops_manual_match",
-  "ops_manual_search_result",
-  "ops_manual_param_resolution",
-  "ops_manual_param_form",
-  "ops_manual_preflight_result",
-]);
 
 export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
   const rendererLookup = lookupAgentUiCardRenderer(defaultAgentUiCardRegistry, artifact);
@@ -57,51 +34,121 @@ export function AgentUiArtifactPart({ artifact }: AgentUiArtifactPartProps) {
     return <UnsupportedArtifactCard artifact={artifact} reason={rendererLookup.reason} />;
   }
 
-  const typeLabel = ARTIFACT_LABELS[artifact.type] || "暂不支持的卡片类型";
-  const title = text(artifact.titleZh) || text(artifact.title) || typeLabel;
-  const summary = text(artifact.summaryZh) || text(artifact.summary) || (ARTIFACT_LABELS[artifact.type] ? "暂无摘要" : "该卡片类型未注册，已按安全模式展示。");
-  const Icon = iconForArtifact(artifact.type);
+  const display = rendererLookup.definition?.display || {};
+  const typeLabel = display.label || rendererLookup.definition?.label || "暂不支持的卡片类型";
+  const title = artifactTitle(artifact, typeLabel, display);
+  const summary = text(artifact.summaryZh) || text(artifact.summary) || (rendererLookup.state === "fallback_renderer" ? rendererLookup.reason : "") || (rendererLookup.definition ? "暂无摘要" : "该卡片类型未注册，已按安全模式展示。");
+  const Icon = iconForName(display.icon);
   const actions = unifiedActionsForArtifact(artifact);
   const Renderer = rendererLookup.Renderer;
+  const compact = display.density === "compact";
+  const showSummary = !display.hideSummary && Boolean(summary);
+  const showFooter = !display.hideFooter && Boolean(artifact.source || artifact.createdAt || actions.length);
+  const showTypeBadge = !display.hideTypeBadge;
+  const redactionLabel = redactionStatusLabel(artifact.redactionStatus);
 
-  if (SELF_RENDERED_TYPES.has(artifact.type)) {
-    return <Renderer artifact={artifact} />;
+  if (display.selfRendered) {
+    return (
+      <AgentUiRendererBoundary artifact={artifact}>
+        <Renderer artifact={artifact} />
+      </AgentUiRendererBoundary>
+    );
   }
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm" data-testid="agent-ui-artifact">
-      <div className="flex items-start gap-2">
-        <span className="mt-0.5 rounded-md bg-slate-100 p-1.5 text-slate-600">
-          <Icon className="h-4 w-4" />
+    <section className={`min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm ${compact ? "p-2 text-xs" : "p-3 text-sm"}`} data-testid="agent-ui-artifact">
+      <div className={`flex items-start ${compact ? "gap-1.5" : "gap-2"}`}>
+        <span className={`mt-0.5 rounded-md bg-slate-100 text-slate-600 ${compact ? "p-1" : "p-1.5"}`}>
+          <Icon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 font-medium text-slate-950">{title}</h3>
-            <Badge variant="outline">{typeLabel}</Badge>
-            {artifact.redactionStatus ? <Badge variant="secondary">{REDACTION_LABELS[artifact.redactionStatus] || artifact.redactionStatus}</Badge> : null}
+            {showTypeBadge ? <Badge variant="outline">{typeLabel}</Badge> : null}
+            {redactionLabel ? <Badge variant="secondary">{redactionLabel}</Badge> : null}
           </div>
-          <p className="mt-1 leading-6 text-slate-600">{summary}</p>
+          {showSummary ? <p className="mt-1 leading-6 text-slate-600">{summary}</p> : null}
         </div>
       </div>
 
-      <Renderer artifact={artifact} />
-      <InlineDataPreview artifact={artifact} />
+      <AgentUiRendererBoundary artifact={artifact}>
+        <Renderer artifact={artifact} />
+      </AgentUiRendererBoundary>
+      <InlineDataPreview artifact={artifact} suppress={Boolean(display.suppressInlineData)} />
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
-        {artifact.source ? <span>来源：{artifact.source}</span> : null}
-        {artifact.createdAt ? <span>生成时间：{formatDate(artifact.createdAt)}</span> : null}
-        {actions.map((action) => (
-          <a key={action.id} className="font-medium text-slate-900 underline-offset-4 hover:underline" href={action.href} aria-disabled={action.disabled || undefined}>
-            {action.label}
-          </a>
-        ))}
-      </div>
+      {showFooter ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
+          {artifact.source ? <span>来源：{artifact.source}</span> : null}
+          {artifact.createdAt ? <span>生成时间：{formatDate(artifact.createdAt)}</span> : null}
+          {actions.map((action) => (
+            <a key={action.id} className="font-medium text-slate-900 underline-offset-4 hover:underline" href={action.href} aria-disabled={action.disabled || undefined}>
+              {action.label}
+            </a>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
 
-function InlineDataPreview({ artifact }: { artifact: AiopsTransportAgentUiArtifact }) {
-  if (artifact.type === "rca_report") {
+type AgentUiRendererBoundaryProps = {
+  artifact: AiopsTransportAgentUiArtifact;
+  children: ReactNode;
+};
+
+type AgentUiRendererBoundaryState = {
+  error?: Error;
+};
+
+export class AgentUiRendererBoundary extends Component<AgentUiRendererBoundaryProps, AgentUiRendererBoundaryState> {
+  state: AgentUiRendererBoundaryState = {};
+
+  static getDerivedStateFromError(error: Error): AgentUiRendererBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(_error: Error, _info: ErrorInfo) {
+    // React still records the component stack in development; the UI remains local to this card.
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="agent-ui-renderer-error">
+          Renderer 渲染失败，已保留卡片外壳。
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function artifactTitle(artifact: AiopsTransportAgentUiArtifact, fallback: string, display: AgentUiCardDisplay = {}) {
+  const value = text(artifact.titleZh) || text(artifact.title) || fallback;
+  if (display.titleTransform !== "strip_chart_suffix_to_subject") {
+    return value;
+  }
+  const subjectLabel = text(display.subjectLabel) || fallback;
+  const providerLabel = text(display.providerLabel);
+  const providerSuffix = providerLabel ? new RegExp(`\\s*${escapeRegExp(providerLabel)}\\s*(?:charts|图表)\\s*$`, "i") : null;
+  const withoutProviderSuffix = providerSuffix ? value.replace(providerSuffix, ` ${subjectLabel}`) : value;
+  return withoutProviderSuffix
+    .replace(/\s*(?:charts|图表)\s*$/i, ` ${subjectLabel}`)
+    .replace(new RegExp(`(${escapeRegExp(subjectLabel)})\\s+\\1$`), subjectLabel)
+    .replace(/\s+/g, " ")
+    .trim() || fallback;
+}
+
+function redactionStatusLabel(value: unknown) {
+  const status = text(value).toLowerCase();
+  if (!status || status === "none") {
+    return "";
+  }
+  return REDACTION_LABELS[status] || text(value);
+}
+
+function InlineDataPreview({ artifact, suppress }: { artifact: AiopsTransportAgentUiArtifact; suppress?: boolean }) {
+  if (suppress) {
     return null;
   }
   const data = artifact.inlineData;
@@ -232,30 +279,17 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function iconForArtifact(type: string) {
-  switch (type) {
-    case "coroot_chart":
-      return LineChart;
-    case "trace_summary":
-      return Activity;
-    case "topology_slice":
-    case "rca_report":
-      return GitBranch;
-    case "workflow_result":
-      return ListChecks;
-    case "verification_result":
-      return CheckCircle2;
-    case "experience_match":
-    case "ops_manual_match":
-    case "ops_manual_search_result":
-    case "ops_manual_preflight_result":
-    case "ops_manual_fallback_guide":
-      return ShieldCheck;
-    case "runner_workflow_generation":
-      return GitBranch;
-    default:
-      return AlertTriangle;
-  }
+function iconForName(name?: string) {
+  const icons = {
+    activity: Activity,
+    alert: AlertTriangle,
+    "check-circle": CheckCircle2,
+    "git-branch": GitBranch,
+    "line-chart": LineChart,
+    "list-checks": ListChecks,
+    "shield-check": ShieldCheck,
+  } as const;
+  return icons[text(name) as keyof typeof icons] || AlertTriangle;
 }
 
 function text(value?: unknown) {
@@ -268,6 +302,10 @@ function text(value?: unknown) {
     .replace(/\bjavascript:/gi, "")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function formatDate(value: string) {

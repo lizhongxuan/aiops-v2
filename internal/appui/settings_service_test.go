@@ -52,10 +52,11 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 			ReasoningEffort: "high",
 		},
 		llm: &store.LLMConfig{
-			Provider:     "openai",
-			Model:        "gpt-5.4",
-			APIKey:       "sk-test-12345678",
-			CompactModel: "gpt-5.4-mini",
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			APIKey:           "sk-test-12345678",
+			MaxContextTokens: 131072,
+			CompactModel:     "gpt-5.4-mini",
 		},
 	}
 	svc := NewSettingsService(repo)
@@ -75,6 +76,9 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	if !llmView.APIKeySet || llmView.APIKeyMasked == "" {
 		t.Fatalf("llmView = %+v, want masked api key", llmView)
 	}
+	if llmView.MaxContextTokens != 131072 {
+		t.Fatalf("llmView.MaxContextTokens = %d, want 131072", llmView.MaxContextTokens)
+	}
 
 	updated, err := svc.UpdateSettings(context.Background(), WebSettingsPayload{
 		Model:           "claude-3-opus",
@@ -88,14 +92,18 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	}
 
 	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
-		Provider: "anthropic",
-		Model:    "claude-sonnet-4",
+		Provider:         "anthropic",
+		Model:            "claude-sonnet-4",
+		MaxContextTokens: 9000,
 	})
 	if err != nil {
 		t.Fatalf("UpdateLLMConfig() error = %v", err)
 	}
 	if !result.OK || repo.llm.Provider != "anthropic" || repo.llm.APIKey != "sk-test-12345678" {
 		t.Fatalf("result = %+v repo.llm = %+v, want merged llm config", result, repo.llm)
+	}
+	if result.MaxContextTokens != 10000 || repo.llm.MaxContextTokens != 10000 {
+		t.Fatalf("result = %+v repo.llm = %+v, want min context 10000", result, repo.llm)
 	}
 }
 
@@ -114,8 +122,8 @@ func TestSettingsServiceDefaultsToGPT54WhenRepoIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLLMConfig() error = %v", err)
 	}
-	if llmView.Model != "gpt-5.4" || llmView.CompactModel != "gpt-5.4-mini" {
-		t.Fatalf("llmView = %+v, want gpt-5.4 / gpt-5.4-mini defaults", llmView)
+	if llmView.Model != "gpt-5.4" || llmView.CompactModel != "gpt-5.4-mini" || llmView.MaxContextTokens != 200000 {
+		t.Fatalf("llmView = %+v, want gpt-5.4 / gpt-5.4-mini / 200000 defaults", llmView)
 	}
 }
 

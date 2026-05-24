@@ -11,20 +11,6 @@ const markdown = new MarkdownIt({
   linkify: true,
 });
 
-type MarkdownToken = {
-  type: string;
-  content: string;
-  children?: MarkdownToken[] | null;
-  attrGet?: (name: string) => string | null;
-  attrSet?: (name: string, value: string) => void;
-};
-
-markdown.core.ruler.after("linkify", "compact_auto_link_text", (state: { tokens: MarkdownToken[] }) => {
-  for (const token of state.tokens) {
-    compactInlineAutoLinks(token.children || []);
-  }
-});
-
 markdown.renderer.rules.link_open = (tokens, index, options, _env, self) => {
   const token = tokens[index];
   const href = token.attrGet("href") || "";
@@ -42,7 +28,7 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
   }
   return (
     <div
-      className="aiops-message-markdown space-y-1.5 break-words [&_a]:cursor-copy [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-0.5 [&_li>p]:m-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol_ul]:mt-0.5 [&_ol_ul]:pl-5 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ul_ul]:mt-0.5 [&_ul_ul]:pl-5"
+      className="aiops-message-markdown space-y-1.5 overflow-x-auto break-words [&_a]:cursor-copy [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-0.5 [&_li>p]:m-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol_ul]:mt-0.5 [&_ol_ul]:pl-5 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_table]:my-2 [&_table]:w-full [&_table]:min-w-[560px] [&_table]:border-collapse [&_table]:text-sm [&_tbody_tr:nth-child(even)]:bg-slate-50/70 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:text-slate-700 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-700 [&_ul]:list-disc [&_ul]:pl-5 [&_ul_ul]:mt-0.5 [&_ul_ul]:pl-5"
       onClick={copyLinkInsteadOfNavigating}
       dangerouslySetInnerHTML={{ __html: markdown.render(trimmed) }}
     />
@@ -50,28 +36,48 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
 }
 
 function normalizeFinalAnswerMarkdown(value: string) {
-  return normalizeLooseNestedListLabels(normalizeDetachedSourceLinks(normalizeStandaloneSectionLabels(value)));
+  return normalizeLooseNestedListLabels(
+    normalizeDetachedSourceLinks(
+      normalizeStandaloneSectionLabels(stripRoutingMetadata(value)),
+    ),
+  );
+}
+
+function stripRoutingMetadata(value: string) {
+  return value
+    .replace(/(^|\n)\s*\{[^{}\n]*"route"\s*:\s*"[^"]*"[^{}\n]*\}\s*(?=\n|$)/g, "$1")
+    .trim();
 }
 
 function normalizeStandaloneSectionLabels(value: string) {
   const labels = [
     "根因",
+    "Root Cause",
     "证据",
+    "关键证据",
+    "支持证据",
+    "反向证据",
+    "缺失证据",
     "影响面",
     "下一步",
+    "最小风险下一步",
+    "需要审批的动作",
     "结论",
+    "置信度",
     "建议",
     "处理结果",
     "当前状态",
     "风险",
     "原因",
   ];
-  const labelPattern = labels.join("|");
+  const labelPattern = labels.map(escapeRegExp).join("|");
+  const standaloneLabelPattern = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(${labelPattern})\\s*[：:]\\s*(?:\\*\\*)?\\s*$`, "i");
+  const sectionStartPattern = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(${labelPattern})\\s*[：:]`, "i");
   const lines = value.replace(/\r\n/g, "\n").split("\n");
   const output: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const matched = line.match(new RegExp(`^\\s*(${labelPattern})\\s*[：:]\\s*$`));
+    const matched = line.match(standaloneLabelPattern);
     if (!matched) {
       output.push(line);
       continue;
@@ -81,9 +87,9 @@ function normalizeStandaloneSectionLabels(value: string) {
       nextIndex += 1;
     }
     const nextLine = lines[nextIndex] || "";
-    const nextIsSection = new RegExp(`^\\s*(${labelPattern})\\s*[：:]`).test(nextLine);
+    const nextIsSection = sectionStartPattern.test(nextLine);
     if (!nextLine.trim() || nextIsSection || /^(\s*[-*+]|\s*\d+[.)])\s+/.test(nextLine)) {
-      output.push(line);
+      output.push(`**${matched[1]}：**`);
       continue;
     }
     if (output.length && output[output.length - 1].trim()) {
@@ -94,6 +100,10 @@ function normalizeStandaloneSectionLabels(value: string) {
     index = nextIndex;
   }
   return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeDetachedSourceLinks(value: string) {
@@ -117,22 +127,6 @@ function normalizeLooseNestedListLabels(value: string) {
     output.push(line);
   }
   return output.join("\n");
-}
-
-function compactInlineAutoLinks(tokens: MarkdownToken[]) {
-  for (let index = 0; index < tokens.length - 2; index += 1) {
-    const open = tokens[index];
-    const text = tokens[index + 1];
-    const close = tokens[index + 2];
-    if (open.type !== "link_open" || text.type !== "text" || close.type !== "link_close" || !open.attrGet) {
-      continue;
-    }
-    const href = open.attrGet("href") || "";
-    if (!href || normalizeUrlForCompare(text.content) !== normalizeUrlForCompare(href)) {
-      continue;
-    }
-    text.content = summarizeUrl(href);
-  }
 }
 
 function copyLinkInsteadOfNavigating(event: MouseEvent<HTMLDivElement>) {
@@ -173,20 +167,6 @@ function copyTextBySelection(value: string) {
   textarea.select();
   document.execCommand?.("copy");
   textarea.remove();
-}
-
-function normalizeUrlForCompare(value: string) {
-  return value.replace(/&amp;/g, "&").replace(/\/$/, "");
-}
-
-function summarizeUrl(value: string) {
-  try {
-    const url = new URL(value);
-    const path = url.pathname && url.pathname !== "/" ? ` ${url.pathname}` : "";
-    return `${url.hostname}${path}`;
-  } catch {
-    return value;
-  }
 }
 
 function normalizeReadableTimestamps(value: string) {

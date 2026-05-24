@@ -365,6 +365,84 @@ describe("parsePromptTrace", () => {
       duration: "暂无耗时",
     });
   });
+
+  it("parses context governance events into budget, compaction, materialization, and external references", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      contextGovernance: [
+        {
+          id: "cg-budget-1",
+          layer: "L4",
+          kind: "context.compaction.started",
+          message: "compacting context token=secret-context-token",
+          budget: {
+            maxContextTokens: 200000,
+            autoCompactThreshold: 167000,
+            blockingLimit: 177000,
+          },
+          referenceIds: ["ref-1", "ref-2"],
+          compactedIds: ["segment-1"],
+          droppedGroupIds: ["old-tool-results"],
+        },
+        {
+          id: "cg-materialized-1",
+          layer: "L5",
+          kind: "tool_result.materialized",
+          message: "large tool result externalized",
+          referenceIds: ["tool-ref-1"],
+        },
+      ],
+    }));
+
+    expect(vm.contextGovernance.summary).toMatchObject({
+      eventCount: 2,
+      budgetEventCount: 1,
+      compactionEventCount: 1,
+      materializationEventCount: 1,
+      externalReferenceCount: 3,
+      hasCompaction: true,
+      hasMaterialization: true,
+      hasExternalReferences: true,
+    });
+    expect(vm.contextGovernance.events[0]).toMatchObject({
+      id: "cg-budget-1",
+      layer: "L4",
+      kind: "context.compaction.started",
+      retryLabel: "",
+      referenceIds: ["ref-1", "ref-2"],
+      compactedIds: ["segment-1"],
+      droppedGroupIds: ["old-tool-results"],
+      hasCompaction: true,
+    });
+    expect(vm.contextGovernance.budgetEvents[0].budgetItems).toEqual([
+      { key: "autoCompactThreshold", label: "Auto Compact", value: 167000 },
+      { key: "blockingLimit", label: "Blocking Limit", value: 177000 },
+      { key: "maxContextTokens", label: "Max Context", value: 200000 },
+    ]);
+    expect(vm.contextGovernance.materializationEvents[0]).toMatchObject({
+      id: "cg-materialized-1",
+      hasMaterialization: true,
+    });
+    expect(vm.contextGovernance.externalReferences.map((item) => item.referenceId)).toEqual(["ref-1", "ref-2", "tool-ref-1"]);
+    expect(JSON.stringify(vm.contextGovernance)).not.toContain("secret-context-token");
+    expect(JSON.stringify(vm.contextGovernance)).toContain("[已脱敏]");
+  });
+
+  it("returns a stable empty context governance view model", () => {
+    const vm = parsePromptTrace(sampleTrace());
+
+    expect(vm.contextGovernance.emptyText).toBe("暂无上下文治理事件");
+    expect(vm.contextGovernance.summary).toMatchObject({
+      eventCount: 0,
+      hasCompaction: false,
+      hasMaterialization: false,
+      hasExternalReferences: false,
+    });
+    expect(vm.contextGovernance.events).toEqual([]);
+    expect(vm.contextGovernance.budgetEvents).toEqual([]);
+    expect(vm.contextGovernance.compactionEvents).toEqual([]);
+    expect(vm.contextGovernance.materializationEvents).toEqual([]);
+    expect(vm.contextGovernance.externalReferences).toEqual([]);
+  });
 });
 
 describe("shortHash", () => {
