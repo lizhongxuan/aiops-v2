@@ -79,11 +79,6 @@ export function ProcessBlockPart({ block, compact = false }: ProcessBlockPartPro
           ))}
         </div>
       ) : null}
-      {block.evidenceRefs?.length ? (
-        <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-500">
-          {block.evidenceRefs.map((ref) => <span key={ref}>证据 {ref}</span>)}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -112,6 +107,13 @@ function iconForKind(kind: AiopsProcessBlock["kind"]) {
 }
 
 function labelForBlock(block: AiopsProcessBlock) {
+  const displayKind = (block.displayKind || "").toLowerCase();
+  if (displayKind === "context.compaction" || displayKind === "context.compaction.started") {
+    return "上下文压缩";
+  }
+  if (displayKind === "context.microcompact" || displayKind === "context.microcompact.completed") {
+    return "上下文整理";
+  }
   return block.displayKind || block.kind;
 }
 

@@ -36,6 +36,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		projectedTurn.ID = turnID
 	}
 	projectedTurn.Process = nil
+	projectedTurn.ContextGovernance = projectContextGovernanceEvents(turn.ContextGovernanceEvents)
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
 	projectedTurn.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), projectedTurn.UpdatedAt)
 	if turn.CompletedAt != nil {
@@ -162,6 +163,94 @@ func transportToolResultJSONPayloads(turn *runtimekernel.TurnSnapshot) map[strin
 		}
 	}
 	return payloads
+}
+
+func projectContextGovernanceEvents(events []runtimekernel.ContextGovernanceEvent) []AiopsContextGovernanceEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	sorted := runtimekernel.SortContextGovernanceEvents(events)
+	out := make([]AiopsContextGovernanceEvent, 0, len(sorted))
+	seen := map[string]struct{}{}
+	for _, event := range sorted {
+		if event.Layer == "" || strings.TrimSpace(event.Kind) == "" {
+			continue
+		}
+		key := strings.TrimSpace(event.ID)
+		if key == "" {
+			key = fmt.Sprintf("%s:%s:%s", event.Layer, event.Kind, event.CreatedAt.UTC().Format(time.RFC3339Nano))
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, AiopsContextGovernanceEvent{
+			ID:              strings.TrimSpace(event.ID),
+			Layer:           string(event.Layer),
+			Kind:            strings.TrimSpace(event.Kind),
+			Message:         strings.TrimSpace(event.Message),
+			Budget:          projectContextBudget(event.Budget),
+			ReferenceIDs:    cleanTransportStringList(event.ReferenceIDs),
+			CompactedIDs:    cleanTransportStringList(event.CompactedIDs),
+			DroppedGroupIDs: cleanTransportStringList(event.DroppedGroupIDs),
+			RetryAttempt:    event.RetryAttempt,
+			RetryMax:        event.RetryMax,
+			Timeout:         event.Timeout,
+			CreatedAt:       transportTimestamp(event.CreatedAt),
+		})
+	}
+	return out
+}
+
+func projectContextBudget(budget runtimekernel.ContextBudgetThresholds) map[string]any {
+	if budget.MaxContextTokens == 0 &&
+		budget.ReservedOutputTokens == 0 &&
+		budget.EffectiveContextWindow == 0 &&
+		budget.WarningThreshold == 0 &&
+		budget.AutoCompactThreshold == 0 &&
+		budget.BlockingLimit == 0 {
+		return nil
+	}
+	return map[string]any{
+		"maxContextTokens":       budget.MaxContextTokens,
+		"reservedOutputTokens":   budget.ReservedOutputTokens,
+		"effectiveContextWindow": budget.EffectiveContextWindow,
+		"warningThreshold":       budget.WarningThreshold,
+		"autoCompactThreshold":   budget.AutoCompactThreshold,
+		"blockingLimit":          budget.BlockingLimit,
+		"smallContextMode":       budget.SmallContextMode,
+	}
+}
+
+func projectExternalReferences(refs []runtimekernel.ExternalReference) []AiopsExternalReference {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]AiopsExternalReference, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, AiopsExternalReference{
+			ID:          id,
+			Kind:        strings.TrimSpace(ref.Kind),
+			URI:         strings.TrimSpace(ref.URI),
+			CardRef:     strings.TrimSpace(ref.CardRef),
+			FilePath:    strings.TrimSpace(ref.FilePath),
+			Title:       strings.TrimSpace(ref.Title),
+			Summary:     strings.TrimSpace(ref.Summary),
+			ContentType: strings.TrimSpace(ref.ContentType),
+			Digest:      strings.TrimSpace(ref.Digest),
+			Bytes:       ref.Bytes,
+		})
+	}
+	return out
 }
 
 func pruneTransportPendingApprovalsForTurn(state *AiopsTransportState, turnID string, activeIDs map[string]bool) {
@@ -371,22 +460,29 @@ func projectTurnItem(
 		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
 			outputPreview = resultPreviews[tool.ToolCallID]
 		}
+		if shouldSuppressOpsManualSearchProcessBlock(tool, outputPreview) {
+			return turn
+		}
 		toolText, outputPreview = compactOpsManualSearchProcessText(tool.DisplayKind, toolText, outputPreview)
 		block := AiopsProcessBlock{
-			ID:            TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
-			Kind:          blockKind,
-			DisplayKind:   displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
-			Status:        mapItemStatusToTransportProcessStatus(item.Status),
-			Text:          toolText,
-			Source:        strings.TrimSpace(tool.ToolName),
-			InputSummary:  tool.InputSummary,
-			OutputPreview: sanitizeOutputPreview(outputPreview),
-			RawRef:        tool.RawRef,
-			EvidenceRefs:  cleanTransportStringList(tool.EvidenceRefs),
-			Mock:          tool.Mock,
-			ExitCode:      tool.ExitCode,
-			DurationMs:    tool.DurationMs,
-			UpdatedAt:     transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
+			ID:                  TransportProcessBlockStableID(turnID, string(blockKind), sourceID),
+			Kind:                blockKind,
+			DisplayKind:         displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
+			Status:              mapItemStatusToTransportProcessStatus(item.Status),
+			Text:                toolText,
+			Source:              strings.TrimSpace(tool.ToolName),
+			InputSummary:        tool.InputSummary,
+			OutputPreview:       sanitizeOutputPreview(outputPreview),
+			RawRef:              tool.RawRef,
+			EvidenceRefs:        cleanTransportStringList(tool.EvidenceRefs),
+			Mock:                tool.Mock,
+			ExitCode:            tool.ExitCode,
+			DurationMs:          tool.DurationMs,
+			MaterializationTier: strings.TrimSpace(tool.MaterializationTier),
+			OriginalBytes:       tool.OriginalBytes,
+			InlineBytes:         tool.InlineBytes,
+			ExternalReferences:  projectExternalReferences(tool.ExternalReferences),
+			UpdatedAt:           transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 		}
 		switch blockKind {
 		case AiopsTransportProcessKindSearch:
@@ -737,21 +833,26 @@ func decodeUserMessageText(raw json.RawMessage) string {
 }
 
 type transportToolPayload struct {
-	ID            string          `json:"id"`
-	ToolCallID    string          `json:"toolCallId"`
-	ToolName      string          `json:"toolName"`
-	Name          string          `json:"name"`
-	DisplayKind   string          `json:"displayKind"`
-	InputSummary  string          `json:"inputSummary"`
-	OutputSummary string          `json:"outputSummary"`
-	Arguments     json.RawMessage `json:"arguments"`
-	OutputPreview json.RawMessage `json:"outputPreview"`
-	RawRef        string          `json:"rawRef"`
-	EvidenceRefs  []string        `json:"evidenceRefs"`
-	Mock          bool            `json:"mock"`
-	ExitCode      *int            `json:"exitCode"`
-	DurationMs    int64           `json:"durationMs"`
-	Error         string          `json:"error"`
+	ID                  string                            `json:"id"`
+	ToolCallID          string                            `json:"toolCallId"`
+	ToolName            string                            `json:"toolName"`
+	Name                string                            `json:"name"`
+	DisplayKind         string                            `json:"displayKind"`
+	InputSummary        string                            `json:"inputSummary"`
+	OutputSummary       string                            `json:"outputSummary"`
+	Arguments           json.RawMessage                   `json:"arguments"`
+	OutputPreview       json.RawMessage                   `json:"outputPreview"`
+	DisplayData         json.RawMessage                   `json:"displayData"`
+	RawRef              string                            `json:"rawRef"`
+	EvidenceRefs        []string                          `json:"evidenceRefs"`
+	MaterializationTier string                            `json:"materializationTier"`
+	OriginalBytes       int64                             `json:"originalBytes"`
+	InlineBytes         int64                             `json:"inlineBytes"`
+	ExternalReferences  []runtimekernel.ExternalReference `json:"externalReferences"`
+	Mock                bool                              `json:"mock"`
+	ExitCode            *int                              `json:"exitCode"`
+	DurationMs          int64                             `json:"durationMs"`
+	Error               string                            `json:"error"`
 }
 
 func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
@@ -771,7 +872,7 @@ func transportOpsManualSearchArtifactFromToolPayload(turnID, itemID string, tool
 	if decision == "" {
 		decision = "unknown"
 	}
-	if isOpsManualNoMatchDecision(decision) {
+	if !isActionableOpsManualSearchPayload(payload) {
 		return AiopsTransportAgentUIArtifact{}, false
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -801,6 +902,29 @@ func isOpsManualNoMatchDecision(decision string) bool {
 	default:
 		return false
 	}
+}
+
+func isActionableOpsManualSearchPayload(payload map[string]any) bool {
+	decision := strings.TrimSpace(jsonStringValueFromMap(payload, "decision"))
+	if isOpsManualNoMatchDecision(decision) {
+		return false
+	}
+	return opsManualSearchPayloadHasManual(payload)
+}
+
+func opsManualSearchPayloadHasManual(payload map[string]any) bool {
+	for _, key := range []string{"manuals", "hits", "matches"} {
+		if values, ok := payload[key].([]any); ok && len(values) > 0 {
+			return true
+		}
+	}
+	if manual, ok := payload["manual"]; ok && manual != nil {
+		return true
+	}
+	if manualID := strings.TrimSpace(jsonStringValueFromMap(payload, "manual_id")); manualID != "" {
+		return true
+	}
+	return false
 }
 
 func transportOpsManualPreflightArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
@@ -1079,11 +1203,12 @@ func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string,
 	if !isCorootServiceMetricsToolName(tool.ToolName) {
 		return AiopsTransportAgentUIArtifact{}, false
 	}
-	if len(tool.OutputPreview) == 0 {
+	data := corootDisplayDataForTransportArtifact(tool)
+	if len(data) == 0 {
 		return AiopsTransportAgentUIArtifact{}, false
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(tool.OutputPreview, &payload); err != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return AiopsTransportAgentUIArtifact{}, false
 	}
 	if strings.TrimSpace(jsonStringValueFromMap(payload, "tool")) != "coroot.service_metrics" {
@@ -1170,6 +1295,13 @@ func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string,
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func corootDisplayDataForTransportArtifact(tool transportToolPayload) json.RawMessage {
+	if len(tool.DisplayData) > 0 {
+		return tool.DisplayData
+	}
+	return tool.OutputPreview
 }
 
 func transportCorootChartSummaryFromPayload(payload map[string]any, service string, defaultReportName string) map[string]any {
@@ -1765,6 +1897,21 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
 	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
+}
+
+func shouldSuppressOpsManualSearchProcessBlock(tool transportToolPayload, outputPreview string) bool {
+	if strings.TrimSpace(tool.DisplayKind) != "ops_manual_search_result" && strings.TrimSpace(tool.ToolName) != "search_ops_manuals" {
+		return false
+	}
+	outputPreview = strings.TrimSpace(outputPreview)
+	if outputPreview == "" {
+		return true
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(outputPreview), &payload); err != nil || len(payload) == 0 {
+		return true
+	}
+	return !isActionableOpsManualSearchPayload(payload)
 }
 
 func compactOpsManualSearchProcessText(displayKind, text, outputPreview string) (string, string) {

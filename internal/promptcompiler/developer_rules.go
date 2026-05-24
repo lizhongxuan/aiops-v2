@@ -151,19 +151,19 @@ func developerAIOpsInvestigationLines(ctx CompileContext) []string {
 		"Gather direct evidence before naming a root cause.",
 		"Prefer narrowing hypotheses over broad speculation.",
 		"Separate observed facts from inference.",
+		"For AIOps/RCA answers, use only the sections needed for the current question; keep confidence inline with the conclusion, and avoid label-only paragraphs or long ungrouped dependency lists.",
 		"If the user explicitly says they do not want to use operations manuals, or metadata opsManualAction=skip_ops_manual or opsManualSkipped=true is present, treat operations manuals as opted out for the current continuation: do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight; continue ordinary safe read-only investigation instead.",
 		"If metadata opsManualAction=reference_ops_manual is present, enter manual-guided chat: use the manual only as read-only guidance, do not call run_ops_manual_preflight, and do not start Workflow execution from that continuation; manual-guided chat must still require explicit user confirmation before mutation, and if current evidence conflicts with the manual, stop applying the manual.",
-		"Call search_ops_manuals to search operations manuals when the user explicitly asks to use operations manuals, requests a complex operations task, names a middleware or infrastructure target for troubleshooting/status/change work, or before high-risk actions such as service restart, configuration changes, database operations, backup, recovery, migration, or cluster changes.",
-		"For short or underspecified middleware and infrastructure operations requests such as 排查 Redis, 检查 pg 状态, MySQL 备份, Pod CrashLoopBackOff, or Kafka lag, call search_ops_manuals first and do not ask prose follow-up questions first.",
-		"Call search_ops_manuals before asking follow-up questions about missing fields; the tool returns missing fields and the allowed decision state.",
+		"Call search_ops_manuals only when the user explicitly asks to use operations manuals, asks you to fix, recover, restart, roll back, migrate, back up, scale, or change an operations target, or before high-risk actions such as service restart, configuration changes, database operations, backup, recovery, migration, or cluster changes.",
+		"search_ops_manuals is not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent. For example, 排查mservice异常问题 should gather evidence or ask for missing investigation context, not search manuals.",
 		"When calling search_ops_manuals, pass the user's original request text and preserve negations such as 不重启, no restart, readonly, and 只读排查.",
 		"When the user clearly states object, action, target, environment, or evidence, pass those semantics as an explicit operation_frame; do not rely on backend natural-language keyword guessing to infer the target instance or decide whether a manual is runnable.",
 		"When the user names a concrete instance, service, pod, container, host, or resource for an ops manual request, put that exact name in operation_frame.target.name or known_params.target_instance; keep the selected/current host in target_scope.hosts and do not replace the resource name with the host.",
 		"Do not use LLM judgment alone to decide an operations manual match; use the search_ops_manuals decision and missing fields returned by the tool.",
 		"Treat need_info, adapt, reference_only, and no_match as non-executable for the bound Workflow; never run a Workflow from those decisions.",
 		"When search_ops_manuals returns need_info with one or more manuals, the immediate next tool call must be resolve_ops_manual_params with the matched manual_id; do not run host commands, monitoring probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns.",
-		"When search_ops_manuals returns need_info with no manuals, do not call resolve_ops_manual_params because there is no manual_id; if the user request already contains object/action/target/environment/evidence/risk semantics, call search_ops_manuals again with an explicit operation_frame, otherwise ask only the smallest missing object or action question.",
-		"When search_ops_manuals returns need_info, say this is missing ops manual matching context, not a Workflow preflight failure; if the Agent-to-UI compact form is present, tell the user to fill the bottom form and do not repeat questions or a template in prose.",
+		"When search_ops_manuals returns need_info with no manuals, do not call resolve_ops_manual_params because there is no manual_id; do not call search_ops_manuals again just to fill missing fields; ask only the smallest missing object or action question when investigation cannot continue.",
+		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals; if the Agent-to-UI compact form is present, tell the user to fill the bottom form and do not repeat questions or a template in prose.",
 		"When search_ops_manuals returns reference_only or no_match, do not stop at reference guidance; continue safe read-only evidence-driven investigation with available monitoring, metrics, logs, Kafka, host, or dynamically available observability tools.",
 		"If read-only automation cannot continue, explicitly name the blocker, such as missing target cluster, service, consumer group, time window, Kafka tooling, metrics/log source, permission, or host/session availability.",
 		"Do not present a cross-object manual as a reference for the user's target; for example, do not show a Kubernetes Pod manual as a Kafka troubleshooting reference unless the user explicitly asks for analogous patterns.",
@@ -222,11 +222,12 @@ func developerFinalAnswerLines(ctx CompileContext) []string {
 	lines := []string{
 		"For simple answers, lead with the answer or outcome.",
 		"Match response structure to task complexity; do not use headers for tiny answers.",
-		"For AIOps/RCA answers, use Root Cause, Evidence, Impact, and Next Steps when it improves scanability.",
+		"For AIOps/RCA answers, use concise sections only when they improve scanability; do not force Root Cause, Evidence, Impact, and Next Steps onto every answer.",
+		"When using sections, write the label and first sentence together, for example `结论（置信度：中）：...`; avoid `置信度:` on one line and the value on the next.",
 		"Report verification honestly: passed, failed, skipped, or unavailable.",
 	}
 	if strings.TrimSpace(ctx.AnswerStyle) != "" {
-		lines = append(lines, "For AIOps/RCA answers, prefer concise sections for root cause, evidence, impact, and next steps.")
+		lines = append(lines, "For AIOps/RCA answers, prefer concise sections only when they improve scanability, and omit irrelevant sections.")
 	}
 	if ctx.ShowRawReasoning {
 		lines = append(lines, "Raw reasoning display is debug-only and must never be shown in normal user-facing chat.")

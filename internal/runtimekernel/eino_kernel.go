@@ -510,7 +510,7 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	var agentOutput string
 	var runErr error
 	var blocked *TurnResult
-	agentOutput, blocked, runErr = k.runHostIterationLoop(runCtx, chatModel, req, session, turnID, preTurnEvent, turnSpanID)
+	agentOutput, blocked, runErr = k.runHostIterationLoop(runCtx, chatModel, agentKind, req, session, turnID, preTurnEvent, turnSpanID)
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
 			snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
@@ -805,7 +805,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		ClientMessageID: snapshot.ClientMessageID,
 		HostID:          session.HostID,
 	}
-	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
+	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, agentKind, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
 			k.markTurnCanceled(session, snapshot, "user stop")
@@ -1040,7 +1040,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	turnMetadata := applyIntentToolPacks(cloneTurnMetadata(req.Metadata), req.Input)
+	turnMetadata := applyIntentToolPacks(applyContinuationToolPacks(cloneTurnMetadata(req.Metadata), req.Input, session), req.Input)
 	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
 	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 	if len(preTurnEvent.AdditionalContext) > 0 {
@@ -1172,6 +1172,50 @@ func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map
 	return applyRuntimeFeatureFlags(compileCtx, flags)
 }
 
+func (k *EinoKernel) contextBudgetPolicyForSession(session *SessionState, agentKind modelrouter.AgentKind) ContextBudgetPolicy {
+	caps := modelrouter.ModelCapabilities{
+		MaxContextTokens: DefaultMaxTokens,
+		MaxOutputTokens:  20000,
+	}
+	if k != nil && k.modelRouter != nil {
+		caps = k.modelRouter.ResolveModelCapabilities(agentKind, modelrouter.ProviderConfig{})
+	}
+	if caps.MaxContextTokens <= 0 {
+		caps.MaxContextTokens = DefaultMaxTokens
+	}
+	if caps.MaxContextTokens < 10000 {
+		caps.MaxContextTokens = 10000
+	}
+	if caps.MaxOutputTokens <= 0 {
+		caps.MaxOutputTokens = 20000
+	}
+	effectiveMaxContextTokens := caps.MaxContextTokens
+	if session != nil {
+		if shouldAdoptModelContextWindow(session.Context.MaxTokens, caps.MaxContextTokens) {
+			session.Context.MaxTokens = caps.MaxContextTokens
+		}
+		if session.Context.MaxTokens > 0 {
+			effectiveMaxContextTokens = session.Context.MaxTokens
+		}
+		recomputeContextWindow(&session.Context, session.Messages)
+	}
+	return DefaultContextBudgetPolicy(effectiveMaxContextTokens, caps.MaxOutputTokens)
+}
+
+func shouldAdoptModelContextWindow(current, modelWindow int) bool {
+	if modelWindow <= 0 {
+		return false
+	}
+	return current <= 0 || current == 128000 || current > modelWindow
+}
+
+func agentKindForSession(session *SessionState) modelrouter.AgentKind {
+	if session != nil && session.Type == SessionTypeWorkspace {
+		return modelrouter.AgentKindPlanner
+	}
+	return modelrouter.AgentKindWorker
+}
+
 func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featureflag.Flags) promptcompiler.CompileContext {
 	ctx.DisableDiagnosticProtocol = !flags.DiagnosticProtocol
 	return ctx
@@ -1190,6 +1234,7 @@ func (k *EinoKernel) assembleToolPool(session SessionType, mode Mode, metadata m
 func (k *EinoKernel) runHostIterationLoop(
 	ctx context.Context,
 	chatModel modelrouter.ChatModel,
+	agentKind modelrouter.AgentKind,
 	req TurnRequest,
 	session *SessionState,
 	turnID string,
@@ -1202,7 +1247,9 @@ func (k *EinoKernel) runHostIterationLoop(
 	toolDispatches := countActualToolDispatches(snapshot)
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 	var lastReasoningPersist time.Time
-	turnMetadata := applyIntentToolPacks(cloneTurnMetadata(req.Metadata), req.Input)
+	turnMetadata := applyIntentToolPacks(applyContinuationToolPacks(cloneTurnMetadata(req.Metadata), req.Input, session), req.Input)
+	budgetPolicy := k.contextBudgetPolicyForSession(session, agentKind)
+	thresholds := budgetPolicy.Thresholds()
 
 	for iteration := len(snapshot.Iterations); iteration < maxIterations; iteration++ {
 		k.emitIterationStage(session.ID, turnID, iteration, "context_pipeline", turnSpanID)
@@ -1213,16 +1260,34 @@ func (k *EinoKernel) runHostIterationLoop(
 			Compressor:       k.compressor,
 			PendingApprovals: session.PendingApprovals,
 			PendingEvidence:  session.PendingEvidence,
+			BudgetPolicy:     budgetPolicy,
 		})
 		if contextErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, contextErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("context pipeline: %w", contextErr)
 		}
-		contextMessages := contextState.Messages
+		contextMessages, observationEvents := modelVisibleMessagesWithObservationDedupe(session, contextState.Messages)
+		contextState.GovernanceEvents = append(contextState.GovernanceEvents, observationEvents...)
+		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, contextState.GovernanceEvents...)
+		appendContextGovernanceEvents(&session.ContextGovernanceEvents, contextState.GovernanceEvents...)
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
+		compileCtx.AssembledTools = filterToolsForContextMode(compileCtx.AssembledTools, thresholds)
+		if thresholds.SmallContextMode {
+			appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, ContextGovernanceEvent{
+				ID:        fmt.Sprintf("ctxgov-%s-%d-small-context", turnID, iteration),
+				Layer:     ContextGovernanceLayerL1,
+				Kind:      "context.small_context.enabled",
+				SessionID: session.ID,
+				TurnID:    turnID,
+				Iteration: iteration,
+				Message:   "当前模型上下文较小，系统会优先保留当前任务和关键证据",
+				Budget:    thresholds,
+			})
+			appendContextGovernanceEvents(&session.ContextGovernanceEvents, snapshot.ContextGovernanceEvents...)
+		}
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		if shouldSwitchToSynthesisOnly(req.Mode, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
@@ -1252,7 +1317,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
 		toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "call_model", turnSpanID)
-		promptBuild, modelErr := buildPromptInput(contextMessages, compiled)
+		promptBuild, modelErr := buildPromptInputWithContextGovernance(contextMessages, compiled, append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...))
 		if modelErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
@@ -1417,25 +1482,26 @@ func (k *EinoKernel) runHostIterationLoop(
 
 		checkpoint := newCheckpointMetadata(session.ID, turnID, iteration, len(snapshot.Iterations)+1, "assistant_response", TurnLifecycleRunning, TurnResumeStateNone)
 		iterState := IterationState{
-			ID:                  fmt.Sprintf("%s-iter-%d", turnID, iteration),
-			SessionID:           session.ID,
-			TurnID:              turnID,
-			Iteration:           iteration,
-			Lifecycle:           TurnLifecycleRunning,
-			ResumeState:         TurnResumeStateNone,
-			MessagesForModel:    append([]Message(nil), contextMessages...),
-			ToolProgress:        nil,
-			VisibleTools:        toolNames(compileCtx.AssembledTools),
-			RefreshedTools:      refreshedTools,
-			PromptDelta:         compiled.Dynamic.Content,
-			PromptFingerprint:   promptFingerprint,
-			ModelInputTraceFile: tracePath,
-			TokenBudget:         session.Context.MaxTokens,
-			Checkpoint:          checkpoint,
-			CompactedSegments:   append([]CompactedSegment(nil), contextState.CompactedSegments...),
-			ExternalReferences:  append([]ExternalReference(nil), contextState.ExternalReferences...),
-			StartedAt:           time.Now(),
-			UpdatedAt:           time.Now(),
+			ID:                      fmt.Sprintf("%s-iter-%d", turnID, iteration),
+			SessionID:               session.ID,
+			TurnID:                  turnID,
+			Iteration:               iteration,
+			Lifecycle:               TurnLifecycleRunning,
+			ResumeState:             TurnResumeStateNone,
+			MessagesForModel:        append([]Message(nil), contextMessages...),
+			ToolProgress:            nil,
+			VisibleTools:            toolNames(compileCtx.AssembledTools),
+			RefreshedTools:          refreshedTools,
+			PromptDelta:             compiled.Dynamic.Content,
+			PromptFingerprint:       promptFingerprint,
+			ModelInputTraceFile:     tracePath,
+			TokenBudget:             session.Context.MaxTokens,
+			Checkpoint:              checkpoint,
+			CompactedSegments:       append([]CompactedSegment(nil), contextState.CompactedSegments...),
+			ExternalReferences:      append([]ExternalReference(nil), contextState.ExternalReferences...),
+			ContextGovernanceEvents: append([]ContextGovernanceEvent(nil), contextState.GovernanceEvents...),
+			StartedAt:               time.Now(),
+			UpdatedAt:               time.Now(),
 		}
 
 		assistantMsg := runtimeMessageFromSchema(response)
@@ -1601,6 +1667,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			if last := latestIteration(snapshot); last != nil {
 				last.ToolResults = append(last.ToolResults, recordedResult)
 				appendExternalReferences(&last.ExternalReferences, recordedResult.ExternalReferences...)
+				appendContextGovernanceEvents(&last.ContextGovernanceEvents, latestToolResultGovernanceEvents(session, tc.ID)...)
 				last.UpdatedAt = time.Now()
 			}
 			snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
@@ -2437,10 +2504,34 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	if result.Display != nil {
 		payload["displayKind"] = result.Display.Type
 		if len(result.Display.Data) > 0 {
-			payload["outputPreview"] = append(json.RawMessage(nil), result.Display.Data...)
+			if toolDisplayDataShouldStayOutOfPreview(result.Display.Type) {
+				payload["displayData"] = append(json.RawMessage(nil), result.Display.Data...)
+			} else {
+				payload["outputPreview"] = append(json.RawMessage(nil), result.Display.Data...)
+			}
 		}
 	}
+	if result.MaterializationTier != "" {
+		payload["materializationTier"] = result.MaterializationTier
+	}
+	if result.OriginalBytes > 0 {
+		payload["originalBytes"] = result.OriginalBytes
+	}
+	if result.InlineBytes > 0 {
+		payload["inlineBytes"] = result.InlineBytes
+	}
+	if result.Spilled {
+		payload["spilled"] = true
+	}
+	if len(result.ExternalReferences) > 0 {
+		payload["externalReferences"] = result.ExternalReferences
+	}
 	return payload
+}
+
+func toolDisplayDataShouldStayOutOfPreview(displayType string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(displayType))
+	return normalized == "coroot" || strings.HasPrefix(normalized, "coroot.")
 }
 
 type terminalToolResultEnvelope struct {
@@ -2830,26 +2921,30 @@ func (k *EinoKernel) materializeToolResult(session *SessionState, snapshot *Turn
 		Error:      toolResult.Error,
 		References: normalizeToolResultReferences(toolResult.References, toolResult.Display),
 	}
-	budget := mergeResultBudget(meta.EffectiveResultBudget(defaultMaxInlineResultBytes), toolResult.ResultBudget, defaultMaxInlineResultBytes)
+	defaultInlineBytes := defaultInlineResultBytesForContext(k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())
+	budget := mergeResultBudget(meta.EffectiveResultBudget(defaultInlineBytes), toolResult.ResultBudget, defaultInlineBytes)
 	appendExternalReferences(&result.ExternalReferences, externalReferencesFromToolResultRefs(session, snapshot, iteration, result.References)...)
 
 	if toolResult.HasSpill() {
+		originalBytes := spillContentBytes(toolResult.Spill, toolResult.Content)
 		ref, err := k.persistToolResultSpill(session, snapshot, iteration, tc, meta, toolResult.Spill)
 		if err != nil {
 			return ToolResult{}, err
 		}
 		result.Spilled = true
 		result.Summary = fallbackSummary(toolResult.Spill.Summary, toolResult.Content, budget.MaxInlineResultBytes)
-		tier := classifyToolResultTier(spillContentBytes(toolResult.Spill, toolResult.Content), budget)
+		tier := classifyToolResultTier(originalBytes, budget)
 		result.Content = materializedInlineContent(toolResult.Content, result.Summary, ref, budget, tier)
 		result.References = appendToolResultReferences(result.References, toolResultReferenceFromExternalRef(ref))
 		appendExternalReferences(&result.ExternalReferences, ref)
+		finalizeToolResultMaterialization(session, snapshot, iteration, tc, &result, tier, originalBytes)
 		return result, nil
 	}
 
 	inlineBytes := len(toolResult.Content)
 	tier := classifyToolResultTier(inlineBytes, budget)
 	if tier == toolResultTierSmall {
+		finalizeToolResultMaterialization(session, snapshot, iteration, tc, &result, tier, inlineBytes)
 		return result, nil
 	}
 
@@ -2876,6 +2971,7 @@ func (k *EinoKernel) materializeToolResult(session *SessionState, snapshot *Turn
 	result.Content = materializedInlineContent(toolResult.Content, summary, ref, budget, tier)
 	result.References = appendToolResultReferences(result.References, toolResultReferenceFromExternalRef(ref))
 	appendExternalReferences(&result.ExternalReferences, ref)
+	finalizeToolResultMaterialization(session, snapshot, iteration, tc, &result, tier, inlineBytes)
 	return result, nil
 }
 
@@ -3163,6 +3259,80 @@ func externalReferenceLabel(ref ExternalReference) string {
 		return ref.ID
 	default:
 		return "external-reference"
+	}
+}
+
+func defaultInlineResultBytesForContext(thresholds ContextBudgetThresholds) int {
+	if thresholds.SmallContextMode {
+		return 1024
+	}
+	return defaultMaxInlineResultBytes
+}
+
+func finalizeToolResultMaterialization(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, result *ToolResult, tier toolResultMaterializationTier, originalBytes int) {
+	if result == nil {
+		return
+	}
+	result.MaterializationTier = string(tier)
+	result.OriginalBytes = int64(originalBytes)
+	result.InlineBytes = int64(len(result.Content))
+	if session == nil || snapshot == nil {
+		return
+	}
+	event := BuildContextGovernanceEvent(ContextGovernanceEvent{
+		ID:           fmt.Sprintf("ctxgov-%s-%d-%s-l1", snapshot.ID, iteration, tc.ID),
+		Layer:        ContextGovernanceLayerL1,
+		Kind:         "tool_result.materialized",
+		SessionID:    session.ID,
+		TurnID:       snapshot.ID,
+		Iteration:    iteration,
+		ToolCallID:   tc.ID,
+		ToolName:     firstNonBlankRuntimeString(tc.Name, result.ToolCallID),
+		Message:      "工具结果已按上下文预算整理",
+		ReferenceIDs: referenceIDsFromExternalReferences(result.ExternalReferences),
+	})
+	appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, event)
+	appendContextGovernanceEvents(&session.ContextGovernanceEvents, event)
+}
+
+func latestToolResultGovernanceEvents(session *SessionState, toolCallID string) []ContextGovernanceEvent {
+	if session == nil || strings.TrimSpace(toolCallID) == "" {
+		return nil
+	}
+	var out []ContextGovernanceEvent
+	for _, event := range session.ContextGovernanceEvents {
+		if event.ToolCallID == toolCallID {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func appendContextGovernanceEvents(target *[]ContextGovernanceEvent, events ...ContextGovernanceEvent) {
+	if target == nil || len(events) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(*target))
+	for _, event := range *target {
+		if event.ID != "" {
+			seen[event.ID] = struct{}{}
+		}
+	}
+	for _, event := range events {
+		if event.Layer == "" || event.Kind == "" {
+			continue
+		}
+		event = BuildContextGovernanceEvent(event)
+		key := event.ID
+		if key == "" {
+			key = fmt.Sprintf("%s:%s:%s:%d:%s", event.Layer, event.Kind, event.TurnID, event.Iteration, event.ToolCallID)
+			event.ID = "ctxgov-" + digestContent(key)[:12]
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*target = append(*target, event)
 	}
 }
 

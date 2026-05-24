@@ -37,6 +37,7 @@ type ApprovalDecisionHandler = (approvalId: string, decision: "accept" | "reject
 
 const TOOL_TRANSCRIPT_TEXT_CLASS = "text-[14px] leading-6";
 const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
+const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
 
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
@@ -570,16 +571,7 @@ function EvidenceRefs({ refs }: { refs?: string[] }) {
   if (!refs?.length) {
     return null;
   }
-  return (
-    <div className="flex flex-wrap gap-1.5 text-[13px] leading-5 text-slate-400">
-      <span>证据</span>
-      {refs.map((ref) => (
-        <code key={ref} className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] text-slate-500">
-          {ref}
-        </code>
-      ))}
-    </div>
-  );
+  return null;
 }
 
 function commandRowStatusLabel(status?: AiopsProcessBlock["status"]) {
@@ -644,16 +636,46 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
     status: block.status,
     approvalId: block.approvalId,
     evidenceRefs: uniqueLines(block.evidenceRefs || []),
+    externalized: isExternalizedProcessBlock(block),
     mock: Boolean(block.mock),
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
     output: hasOutputPreview && (block.kind === "command" || block.kind === "tool" || block.kind === "mcp")
-      ? cleanCommandOutput(block.outputPreview)
+      ? compactOutputPreviewForBlock(block)
       : "",
   };
 }
 
+function isExternalizedProcessBlock(block: AiopsProcessBlock) {
+  const tier = (block.materializationTier || "").toLowerCase();
+  return Boolean(block.externalReferences?.length || tier === "large" || tier === "externalized" || tier === "summary");
+}
+
 function cleanCommandOutput(value?: string) {
   return stripHtml(value || "").trim();
+}
+
+function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
+  const output = cleanCommandOutput(block.outputPreview);
+  if (!output) {
+    return "";
+  }
+  if (block.kind !== "command" && (isExternalizedProcessBlock(block) || isLargeStructuredPayload(output))) {
+    return truncateToolOutputPreview(output);
+  }
+  return output;
+}
+
+function truncateToolOutputPreview(value: string) {
+  const text = value.trim();
+  if (text.length <= MAX_TOOL_OUTPUT_PREVIEW_CHARS) {
+    return text;
+  }
+  return `${text.slice(0, MAX_TOOL_OUTPUT_PREVIEW_CHARS).trimEnd()}...`;
+}
+
+function isLargeStructuredPayload(value: string) {
+  const text = value.trim();
+  return text.length > 280 && (isRawPayloadLine(text) || /\bchartReports\b|\bwidgets\b|\bseries\b/.test(text));
 }
 
 function statusLabel(status?: string) {
@@ -1155,6 +1177,9 @@ function toolInvocationLabel(block: AiopsProcessBlock) {
 function cleanToolInputSummary(value?: string) {
   const text = stripHtml(value || "").replace(/\s+/g, " ").trim();
   if (!text || /^(tool|mcp)$/i.test(text)) {
+    return "";
+  }
+  if (isRawPayloadLine(text)) {
     return "";
   }
   return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;

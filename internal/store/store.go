@@ -142,6 +142,7 @@ type LLMConfig struct {
 	Model            string `json:"model"`
 	APIKey           string `json:"apiKey"`
 	BaseURL          string `json:"baseURL"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider"`
 	FallbackModel    string `json:"fallbackModel"`
 	FallbackAPIKey   string `json:"fallbackApiKey"`

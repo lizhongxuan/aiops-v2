@@ -46,6 +46,7 @@ type BuildRequest struct {
 	SessionFactCount      int
 	LettaHintCount        int
 	DroppedContextReasons []string
+	ContextGovernance     []ContextGovernanceTraceItem
 }
 
 // BuildResult is the provider-facing model input plus its explainable trace.
@@ -56,13 +57,14 @@ type BuildResult struct {
 
 // PromptInputTrace records where each prompt input item came from.
 type PromptInputTrace struct {
-	Items                  []TraceItem `json:"items"`
-	OpsContextCapsuleChars int         `json:"opsContextCapsuleChars,omitempty"`
-	SessionFactCount       int         `json:"sessionFactCount,omitempty"`
-	LettaHintCount         int         `json:"lettaHintCount,omitempty"`
-	MemoryItemCount        int         `json:"memoryItemCount,omitempty"`
-	VisibleOpsManualTools  []string    `json:"visibleOpsManualTools,omitempty"`
-	DroppedContextReasons  []string    `json:"droppedContextReasons,omitempty"`
+	Items                  []TraceItem                  `json:"items"`
+	OpsContextCapsuleChars int                          `json:"opsContextCapsuleChars,omitempty"`
+	SessionFactCount       int                          `json:"sessionFactCount,omitempty"`
+	LettaHintCount         int                          `json:"lettaHintCount,omitempty"`
+	MemoryItemCount        int                          `json:"memoryItemCount,omitempty"`
+	VisibleOpsManualTools  []string                     `json:"visibleOpsManualTools,omitempty"`
+	DroppedContextReasons  []string                     `json:"droppedContextReasons,omitempty"`
+	ContextGovernance      []ContextGovernanceTraceItem `json:"contextGovernance,omitempty"`
 }
 
 // TraceItem is one semantic prompt-input trace entry.
@@ -74,6 +76,16 @@ type TraceItem struct {
 	ID           string `json:"id,omitempty"`
 	Status       string `json:"status,omitempty"`
 	Content      string `json:"content,omitempty"`
+}
+
+type ContextGovernanceTraceItem struct {
+	Layer        string         `json:"layer"`
+	Kind         string         `json:"kind"`
+	Message      string         `json:"message,omitempty"`
+	Budget       map[string]int `json:"budget,omitempty"`
+	ReferenceIDs []string       `json:"referenceIds,omitempty"`
+	RetryAttempt int            `json:"retryAttempt,omitempty"`
+	RetryMax     int            `json:"retryMax,omitempty"`
 }
 
 type MemoryItem struct {

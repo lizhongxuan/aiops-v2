@@ -209,6 +209,7 @@ const llmPayload = {
   apiKeySet: true,
   apiKeyMasked: "sk-***",
   baseURL: "https://api.openai.com/v1",
+  maxContextTokens: 131072,
   bifrostActive: true,
 };
 
@@ -278,6 +279,11 @@ async function flush() {
       await Promise.resolve();
     }
   });
+}
+
+function requestBodyFromCall(call: unknown[]) {
+  const init = call[1] as RequestInit | undefined;
+  return JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
 }
 
 describe("React settings pages", () => {
@@ -499,5 +505,38 @@ describe("React settings pages", () => {
       "/api/v1/agent-profiles/import",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("loads and saves the LLM context size", async () => {
+    await renderPath("/settings/llm");
+
+    const contextInput = container.querySelector('[data-testid="llm-context-tokens-input"]') as HTMLInputElement;
+    expect(contextInput?.value).toBe("131072");
+    expect(contextInput?.min).toBe("10000");
+
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    await act(async () => {
+      saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const llmPutCall = vi.mocked(globalThis.fetch).mock.calls.find((call) => String(call[0]).endsWith("/api/v1/llm-config") && (call[1] as RequestInit | undefined)?.method === "PUT");
+    expect(llmPutCall).toBeTruthy();
+    expect(requestBodyFromCall(llmPutCall as unknown[]).maxContextTokens).toBe(131072);
+  });
+
+  it("shows the default LLM context size when the API does not return one", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/llm-config") && init?.method !== "PUT") {
+        return jsonResponse({ ...llmPayload, maxContextTokens: undefined });
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/llm");
+
+    const contextInput = container.querySelector('[data-testid="llm-context-tokens-input"]') as HTMLInputElement;
+    expect(contextInput?.value).toBe("200000");
   });
 });

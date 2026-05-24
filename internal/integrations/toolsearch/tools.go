@@ -266,13 +266,16 @@ func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolM
 	if pack.domain == "" {
 		pack.domain = meta.Domain
 	}
-	pack.score += scoreTool(tooling.ToolMetadata{
+	score := scoreTool(tooling.ToolMetadata{
 		Name:        strings.Join([]string{meta.Pack, meta.Name}, " "),
 		Description: meta.Description,
 		SearchHint:  meta.SearchHint,
 		Domain:      meta.Domain,
 		Aliases:     meta.Aliases,
 	}, terms)
+	if score > pack.score {
+		pack.score = score
+	}
 }
 
 func shouldOmit(name string) bool {

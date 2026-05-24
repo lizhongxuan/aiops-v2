@@ -69,7 +69,7 @@ function isAiopsTransportState(value: unknown): value is AiopsTransportState {
   return Boolean(
     value &&
       typeof value === "object" &&
-      (value as { schemaVersion?: unknown }).schemaVersion === "aiops.transport.v1" &&
+      (value as { schemaVersion?: unknown }).schemaVersion === "aiops.transport.v2" &&
       typeof (value as { sessionId?: unknown }).sessionId === "string" &&
       typeof (value as { threadId?: unknown }).threadId === "string",
   );

@@ -422,6 +422,70 @@ func TestProperty31_StoreRoundTrip(t *testing.T) {
 	})
 }
 
+func TestContextGovernanceAndObservationRoundTrip(t *testing.T) {
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	dataDir := t.TempDir()
+	store, err := NewJSONFileStore(dataDir, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	session := &runtimekernel.SessionState{
+		ID:   "s-context-roundtrip",
+		Type: runtimekernel.SessionTypeHost,
+		Mode: runtimekernel.ModeExecute,
+		ObservationState: runtimekernel.ObservationState{
+			Records: []runtimekernel.ObservationRecord{{
+				Key:       "logs.search|target=web-1|window=10m|sourceVersion=v1|query=error",
+				Digest:    "sha256:abc",
+				SourceRef: "ev-1",
+				Summary:   "10 errors from nginx",
+			}},
+		},
+		ContextGovernanceEvents: []runtimekernel.ContextGovernanceEvent{{
+			ID:        "ctxgov-1",
+			Layer:     runtimekernel.ContextGovernanceLayerL4,
+			Kind:      "context.compaction.started",
+			SessionID: "s-context-roundtrip",
+			TurnID:    "turn-1",
+			Message:   "正在压缩上下文，当前任务会继续",
+			CreatedAt: now,
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	restarted, err := NewJSONFileStore(dataDir, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("create restarted store: %v", err)
+	}
+	defer restarted.Close()
+	restored, err := restarted.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if len(restored.ObservationState.Records) != 1 {
+		t.Fatalf("observation records = %d, want 1", len(restored.ObservationState.Records))
+	}
+	if got := restored.ObservationState.Records[0].SourceRef; got != "ev-1" {
+		t.Fatalf("observation source ref = %q, want ev-1", got)
+	}
+	if len(restored.ContextGovernanceEvents) != 1 {
+		t.Fatalf("context governance events = %d, want 1", len(restored.ContextGovernanceEvents))
+	}
+	if got := restored.ContextGovernanceEvents[0].Kind; got != "context.compaction.started" {
+		t.Fatalf("context governance kind = %q", got)
+	}
+}
+
 // TestProperty32_ToolResultSpillRoundTrip verifies that spilled tool results
 // survive a flush/restart cycle without losing their externalized payload.
 func TestProperty32_ToolResultSpillRoundTrip(t *testing.T) {

@@ -191,6 +191,9 @@ func assistantTransportOpsManualSearchArtifactFromToolResult(turnID string, item
 	if decision == "" {
 		decision = "unknown"
 	}
+	if !assistantTransportActionableOpsManualSearchPayload(payload) {
+		return appui.AiopsTransportAgentUIArtifact{}, false
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	idPart := firstAssistantTransportValue(strings.TrimSpace(itemID), "search")
 	return appui.AiopsTransportAgentUIArtifact{
@@ -978,6 +981,9 @@ func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.Aio
 	if strings.TrimSpace(userText) == "" {
 		return state
 	}
+	if !opsmanual.ShouldSearchForOpsManuals(userText) {
+		return state
+	}
 	artifact, ok := s.assistantTransportOpsManualSearchFallbackArtifact(turnID, userText)
 	if !ok {
 		return state
@@ -1073,6 +1079,29 @@ func (s *HTTPServer) assistantTransportOpsManualSearchFallbackArtifact(turnID st
 	})
 }
 
+func assistantTransportActionableOpsManualSearchPayload(payload map[string]any) bool {
+	decision := strings.TrimSpace(fmt.Sprint(payload["decision"]))
+	if decision == string(opsmanual.DecisionNoMatch) {
+		return false
+	}
+	return assistantTransportOpsManualSearchPayloadHasManual(payload)
+}
+
+func assistantTransportOpsManualSearchPayloadHasManual(payload map[string]any) bool {
+	for _, key := range []string{"manuals", "hits", "matches"} {
+		if values, ok := payload[key].([]any); ok && len(values) > 0 {
+			return true
+		}
+	}
+	if manual, ok := payload["manual"]; ok && manual != nil {
+		return true
+	}
+	if manualID := strings.TrimSpace(fmt.Sprint(payload["manual_id"])); manualID != "" && manualID != "<nil>" {
+		return true
+	}
+	return false
+}
+
 func assistantTransportSessionTurnIsTerminal(session *runtimekernel.SessionState) bool {
 	turn := assistantTransportLatestSessionTurn(session)
 	if turn == nil {
@@ -1113,7 +1142,22 @@ func assistantTransportTurnFingerprint(turn *runtimekernel.TurnSnapshot) string 
 		strings.TrimSpace(turn.FinalOutput),
 		strings.TrimSpace(turn.Error),
 		assistantTransportTurnCompletedAtFingerprint(turn),
+		fmt.Sprintf("%d", len(turn.ContextGovernanceEvents)),
+		assistantTransportLatestGovernanceFingerprint(turn),
 	}, "|")
+}
+
+func assistantTransportLatestGovernanceFingerprint(turn *runtimekernel.TurnSnapshot) string {
+	if turn == nil || len(turn.ContextGovernanceEvents) == 0 {
+		return ""
+	}
+	event := turn.ContextGovernanceEvents[len(turn.ContextGovernanceEvents)-1]
+	return strings.Join([]string{
+		strings.TrimSpace(event.ID),
+		string(event.Layer),
+		strings.TrimSpace(event.Kind),
+		event.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}, ":")
 }
 
 func assistantTransportTurnCompletedAtFingerprint(turn *runtimekernel.TurnSnapshot) string {
@@ -1313,6 +1357,12 @@ func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTrans
 			cloned.Process[idx] = assistantTransportCloneProcessBlock(block)
 		}
 	}
+	if len(turn.ContextGovernance) > 0 {
+		cloned.ContextGovernance = make([]appui.AiopsContextGovernanceEvent, len(turn.ContextGovernance))
+		for idx, event := range turn.ContextGovernance {
+			cloned.ContextGovernance[idx] = assistantTransportCloneContextGovernanceEvent(event)
+		}
+	}
 	if len(turn.AgentUIArtifacts) > 0 {
 		cloned.AgentUIArtifacts = make([]appui.AiopsTransportAgentUIArtifact, len(turn.AgentUIArtifacts))
 		for idx, artifact := range turn.AgentUIArtifacts {
@@ -1347,9 +1397,32 @@ func assistantTransportCloneProcessBlock(block appui.AiopsProcessBlock) appui.Ai
 	if len(block.Results) > 0 {
 		cloned.Results = append([]appui.AiopsSearchResult(nil), block.Results...)
 	}
+	if len(block.ExternalReferences) > 0 {
+		cloned.ExternalReferences = append([]appui.AiopsExternalReference(nil), block.ExternalReferences...)
+	}
 	if block.ExitCode != nil {
 		exitCode := *block.ExitCode
 		cloned.ExitCode = &exitCode
+	}
+	return cloned
+}
+
+func assistantTransportCloneContextGovernanceEvent(event appui.AiopsContextGovernanceEvent) appui.AiopsContextGovernanceEvent {
+	cloned := event
+	if len(event.Budget) > 0 {
+		cloned.Budget = make(map[string]any, len(event.Budget))
+		for key, value := range event.Budget {
+			cloned.Budget[key] = value
+		}
+	}
+	if len(event.ReferenceIDs) > 0 {
+		cloned.ReferenceIDs = append([]string(nil), event.ReferenceIDs...)
+	}
+	if len(event.CompactedIDs) > 0 {
+		cloned.CompactedIDs = append([]string(nil), event.CompactedIDs...)
+	}
+	if len(event.DroppedGroupIDs) > 0 {
+		cloned.DroppedGroupIDs = append([]string(nil), event.DroppedGroupIDs...)
 	}
 	return cloned
 }

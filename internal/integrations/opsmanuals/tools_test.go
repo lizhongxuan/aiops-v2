@@ -36,8 +36,8 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	if meta.RiskLevel != tooling.ToolRiskLow {
 		t.Fatalf("risk level = %q, want low", meta.RiskLevel)
 	}
-	if meta.Layer != tooling.ToolLayerCore || meta.Pack != "" || meta.DeferByDefault {
-		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want core with no pack", meta.Layer, meta.Pack, meta.DeferByDefault)
+	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
+		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
 	if len(meta.Description) > 600 {
 		t.Fatalf("description length = %d, want <= 600: %q", len(meta.Description), meta.Description)
@@ -341,7 +341,7 @@ func TestSearchOpsManualsReferenceOnlyInstructsReadOnlyAutomationOrBlocker(t *te
 		t.Fatalf("recommended_next_action = %q, want read-only continuation", payload.RecommendedNextAction)
 	}
 	for _, want := range []string{
-		"no directly runnable Workflow",
+		"Do not mention operations manual search or runnable Workflow status unless the user explicitly asked about manuals.",
 		"Continue safe read-only investigation",
 		"state the concrete blocker",
 		"Kafka tooling",
@@ -376,8 +376,8 @@ func TestSearchOpsManualsNeedInfoWithoutManualDoesNotInstructParamResolution(t *
 	}
 	for _, want := range []string{
 		"No matched manual_id is available yet; do not call resolve_ops_manual_params.",
-		"call search_ops_manuals again with an explicit operation_frame",
 		"ask only the smallest missing question",
+		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals.",
 	} {
 		if !containsString(payload.Instructions, want) {
 			t.Fatalf("instructions = %#v, want %q", payload.Instructions, want)
@@ -455,7 +455,7 @@ func TestSearchOpsManualsNoMatchInstructsReadOnlyAutomationOrBlocker(t *testing.
 		t.Fatalf("recommended_next_action = %q, want read-only continuation", payload.RecommendedNextAction)
 	}
 	for _, want := range []string{
-		"no usable operations manual or bound Workflow",
+		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals.",
 		"Do not mention or expose cross-object manuals",
 		"Continue normal safe read-only evidence-driven investigation",
 		"state the concrete blocker",

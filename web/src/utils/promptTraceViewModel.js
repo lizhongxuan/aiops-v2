@@ -15,6 +15,7 @@ const LLM_REQUEST_ID_KEYS = ["llmRequestId", "llm_request_id", "modelCallId", "m
 const TOOL_CALL_ID_KEYS = ["toolCallId", "tool_call_id", "callId", "call_id"];
 const EVIDENCE_REF_KEYS = ["evidenceRef", "evidence_ref", "evidenceId", "evidence_id", "rawRef", "raw_ref"];
 const CASE_ID_KEYS = ["caseId", "case_id", "incidentId", "incident_id"];
+const CONTEXT_GOVERNANCE_EMPTY_TEXT = "暂无上下文治理事件";
 const REDACTION_STATUS_LABELS = {
   redacted: "已脱敏",
   partial: "部分脱敏",
@@ -102,6 +103,7 @@ export function parsePromptTrace(input) {
   const toolRegistryText = redactSensitiveText(compactText(prompt.tools) || layers.find((item) => item.promptLayer === "tool_index")?.content || "");
   const riskyTools = visibleTools.filter((tool) => RISKY_TOOLS.has(tool));
   const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
+  const contextGovernance = buildContextGovernanceViewModel(payload);
 
   return {
     raw: redactSensitiveValue(payload),
@@ -132,6 +134,7 @@ export function parsePromptTrace(input) {
     },
     agentUiSources,
     agentUiArtifacts: agentUiSources.flatArtifacts,
+    contextGovernance,
     warnings,
   };
 }
@@ -322,6 +325,127 @@ function buildAgentUiSources(payload = {}, layers = [], context = {}) {
     userRequests,
     flatArtifacts,
   };
+}
+
+function buildContextGovernanceViewModel(payload = {}) {
+  const events = [
+    ...collectionToRecords(payload.contextGovernance, "id"),
+    ...collectionToRecords(payload.context_governance, "id"),
+    ...collectionToRecords(payload.metadata?.contextGovernance, "id"),
+    ...collectionToRecords(payload.metadata?.context_governance, "id"),
+  ].map(normalizeContextGovernanceEvent);
+
+  const budgetEvents = events.filter((event) => event.budgetItems.length > 0);
+  const compactionEvents = events.filter((event) => {
+    const kind = event.kind.toLowerCase();
+    return kind.includes("compact") || event.compactedIds.length > 0 || event.droppedGroupIds.length > 0;
+  });
+  const materializationEvents = events.filter((event) => {
+    const kind = event.kind.toLowerCase();
+    return kind.includes("material") || kind.includes("spill") || kind.includes("externalize") || kind.includes("tool_result") || kind.includes("tool.result");
+  });
+  const externalReferences = events.flatMap((event) => event.referenceIds.map((referenceId) => ({
+    id: `${event.id}-ref-${referenceId}`,
+    referenceId,
+    eventId: event.id,
+    layer: event.layer,
+    kind: event.kind,
+    label: `${event.layer || "context"} / ${event.kind || "event"}`,
+  })));
+
+  return {
+    emptyText: CONTEXT_GOVERNANCE_EMPTY_TEXT,
+    events,
+    summary: {
+      eventCount: events.length,
+      budgetEventCount: budgetEvents.length,
+      compactionEventCount: compactionEvents.length,
+      materializationEventCount: materializationEvents.length,
+      externalReferenceCount: externalReferences.length,
+      hasCompaction: compactionEvents.length > 0,
+      hasMaterialization: materializationEvents.length > 0,
+      hasExternalReferences: externalReferences.length > 0,
+    },
+    budgetEvents,
+    compactionEvents,
+    materializationEvents,
+    externalReferences,
+  };
+}
+
+function normalizeContextGovernanceEvent(source, index) {
+  const metadata = metadataFor(source);
+  const id = redactSensitiveText(firstText(source.id, metadata.id, `context-governance-${index + 1}`));
+  const layer = redactSensitiveText(firstText(source.layer, metadata.layer));
+  const kind = redactSensitiveText(firstText(source.kind, source.type, metadata.kind, metadata.type));
+  const message = redactSensitiveText(firstText(source.message, source.summary, metadata.message, metadata.summary));
+  const retryAttempt = numberOrZero(firstText(source.retryAttempt, source.retry_attempt, metadata.retryAttempt, metadata.retry_attempt));
+  const retryMax = numberOrZero(firstText(source.retryMax, source.retry_max, metadata.retryMax, metadata.retry_max));
+  const referenceIds = collectStringList(source.referenceIds, source.reference_ids, source.references, source.refs, metadata.referenceIds, metadata.reference_ids);
+  const compactedIds = collectStringList(source.compactedIds, source.compacted_ids, metadata.compactedIds, metadata.compacted_ids);
+  const droppedGroupIds = collectStringList(source.droppedGroupIds, source.dropped_group_ids, metadata.droppedGroupIds, metadata.dropped_group_ids);
+  const budgetItems = normalizeBudgetItems(firstObject(source.budget, metadata.budget));
+
+  return {
+    id,
+    layer,
+    kind,
+    message,
+    createdAt: redactSensitiveText(firstText(source.createdAt, source.created_at, metadata.createdAt, metadata.created_at)),
+    timeout: Boolean(source.timeout || metadata.timeout),
+    retryAttempt,
+    retryMax,
+    retryLabel: retryAttempt || retryMax ? `${retryAttempt || 0}/${retryMax || 0}` : "",
+    budgetItems,
+    referenceIds,
+    compactedIds,
+    droppedGroupIds,
+    hasCompaction: kind.toLowerCase().includes("compact") || compactedIds.length > 0 || droppedGroupIds.length > 0,
+    hasMaterialization: /material|spill|externalize|tool[._-]?result/.test(kind.toLowerCase()),
+    raw: redactSensitiveValue(source),
+  };
+}
+
+function normalizeBudgetItems(budget = {}) {
+  if (!isPlainObject(budget)) return [];
+  return Object.entries(budget)
+    .map(([key, value]) => ({
+      key: redactSensitiveText(key),
+      label: budgetLabel(key),
+      value: Number.isFinite(Number(value)) ? Number(value) : compactText(value),
+    }))
+    .filter((item) => item.key)
+    .sort((left, right) => left.key.localeCompare(right.key));
+}
+
+function budgetLabel(key = "") {
+  const labels = {
+    maxContextTokens: "Max Context",
+    reservedOutputTokens: "Reserved Output",
+    effectiveContextWindow: "Effective Window",
+    warningThreshold: "Warning",
+    autoCompactThreshold: "Auto Compact",
+    blockingLimit: "Blocking Limit",
+    smallContextMode: "Small Context",
+  };
+  return labels[key] || key;
+}
+
+function collectStringList(...values) {
+  const out = [];
+  for (const value of values) {
+    const entries = Array.isArray(value) ? value : compactText(value) ? [value] : [];
+    for (const entry of entries) {
+      const text = redactSensitiveText(compactText(entry));
+      if (text && !out.includes(text)) out.push(text);
+    }
+  }
+  return out;
+}
+
+function numberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
 function findLast(items, predicate) {

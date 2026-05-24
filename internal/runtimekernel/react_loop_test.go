@@ -298,6 +298,7 @@ func newKernelForLoopTests(
 	}
 	projector := &testMockEventEmitter{}
 	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
+	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: DefaultMaxTokens}})
 	return NewEinoKernel(EinoKernelConfig{
 		ToolSource:  source,
 		Compiler:    compiler,
@@ -338,6 +339,7 @@ func newLoopKernelWithDeps(
 	}
 	projector := &testMockEventEmitter{}
 	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
+	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: DefaultMaxTokens}})
 
 	return NewEinoKernel(EinoKernelConfig{
 		ToolSource:  &testMockToolAssemblySource{registry: registry},
@@ -2176,6 +2178,25 @@ func TestRunTurn_LargeToolResultIsSummarizedAndSpilled(t *testing.T) {
 	}
 	if len(toolMsg.ToolResult.ExternalReferences) != 1 {
 		t.Fatalf("tool message external references = %d, want 1", len(toolMsg.ToolResult.ExternalReferences))
+	}
+	if toolMsg.ToolResult.MaterializationTier != "large" {
+		t.Fatalf("materialization tier = %q, want large", toolMsg.ToolResult.MaterializationTier)
+	}
+	if toolMsg.ToolResult.OriginalBytes != int64(len(largeContent)) {
+		t.Fatalf("original bytes = %d, want %d", toolMsg.ToolResult.OriginalBytes, len(largeContent))
+	}
+	if toolMsg.ToolResult.InlineBytes != int64(len(toolMsg.ToolResult.Content)) {
+		t.Fatalf("inline bytes = %d, want %d", toolMsg.ToolResult.InlineBytes, len(toolMsg.ToolResult.Content))
+	}
+	materializedEvents := latestToolResultGovernanceEvents(session, "call-large")
+	if len(materializedEvents) != 1 {
+		t.Fatalf("materialization events = %#v, want 1", materializedEvents)
+	}
+	if got := materializedEvents[0]; got.Layer != ContextGovernanceLayerL1 || got.Kind != "tool_result.materialized" {
+		t.Fatalf("materialization event = %#v, want L1 tool_result.materialized", got)
+	}
+	if len(materializedEvents[0].ReferenceIDs) != 1 || materializedEvents[0].ReferenceIDs[0] != ref.ID {
+		t.Fatalf("materialization reference ids = %#v, want %q", materializedEvents[0].ReferenceIDs, ref.ID)
 	}
 	if toolMsg.Content == largeContent {
 		t.Fatal("expected inline tool content to be summarized, not full payload")

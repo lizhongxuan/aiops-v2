@@ -11,20 +11,6 @@ const markdown = new MarkdownIt({
   linkify: true,
 });
 
-type MarkdownToken = {
-  type: string;
-  content: string;
-  children?: MarkdownToken[] | null;
-  attrGet?: (name: string) => string | null;
-  attrSet?: (name: string, value: string) => void;
-};
-
-markdown.core.ruler.after("linkify", "compact_auto_link_text", (state: { tokens: MarkdownToken[] }) => {
-  for (const token of state.tokens) {
-    compactInlineAutoLinks(token.children || []);
-  }
-});
-
 markdown.renderer.rules.link_open = (tokens, index, options, _env, self) => {
   const token = tokens[index];
   const href = token.attrGet("href") || "";
@@ -66,22 +52,32 @@ function stripRoutingMetadata(value: string) {
 function normalizeStandaloneSectionLabels(value: string) {
   const labels = [
     "根因",
+    "Root Cause",
     "证据",
+    "关键证据",
+    "支持证据",
+    "反向证据",
+    "缺失证据",
     "影响面",
     "下一步",
+    "最小风险下一步",
+    "需要审批的动作",
     "结论",
+    "置信度",
     "建议",
     "处理结果",
     "当前状态",
     "风险",
     "原因",
   ];
-  const labelPattern = labels.join("|");
+  const labelPattern = labels.map(escapeRegExp).join("|");
+  const standaloneLabelPattern = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(${labelPattern})\\s*[：:]\\s*(?:\\*\\*)?\\s*$`, "i");
+  const sectionStartPattern = new RegExp(`^\\s*(?:#{1,6}\\s*)?(?:\\*\\*)?(${labelPattern})\\s*[：:]`, "i");
   const lines = value.replace(/\r\n/g, "\n").split("\n");
   const output: string[] = [];
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const matched = line.match(new RegExp(`^\\s*(${labelPattern})\\s*[：:]\\s*$`));
+    const matched = line.match(standaloneLabelPattern);
     if (!matched) {
       output.push(line);
       continue;
@@ -91,9 +87,9 @@ function normalizeStandaloneSectionLabels(value: string) {
       nextIndex += 1;
     }
     const nextLine = lines[nextIndex] || "";
-    const nextIsSection = new RegExp(`^\\s*(${labelPattern})\\s*[：:]`).test(nextLine);
+    const nextIsSection = sectionStartPattern.test(nextLine);
     if (!nextLine.trim() || nextIsSection || /^(\s*[-*+]|\s*\d+[.)])\s+/.test(nextLine)) {
-      output.push(line);
+      output.push(`**${matched[1]}：**`);
       continue;
     }
     if (output.length && output[output.length - 1].trim()) {
@@ -104,6 +100,10 @@ function normalizeStandaloneSectionLabels(value: string) {
     index = nextIndex;
   }
   return output.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeDetachedSourceLinks(value: string) {
@@ -127,22 +127,6 @@ function normalizeLooseNestedListLabels(value: string) {
     output.push(line);
   }
   return output.join("\n");
-}
-
-function compactInlineAutoLinks(tokens: MarkdownToken[]) {
-  for (let index = 0; index < tokens.length - 2; index += 1) {
-    const open = tokens[index];
-    const text = tokens[index + 1];
-    const close = tokens[index + 2];
-    if (open.type !== "link_open" || text.type !== "text" || close.type !== "link_close" || !open.attrGet) {
-      continue;
-    }
-    const href = open.attrGet("href") || "";
-    if (!href || normalizeUrlForCompare(text.content) !== normalizeUrlForCompare(href)) {
-      continue;
-    }
-    text.content = summarizeUrl(href);
-  }
 }
 
 function copyLinkInsteadOfNavigating(event: MouseEvent<HTMLDivElement>) {
@@ -183,20 +167,6 @@ function copyTextBySelection(value: string) {
   textarea.select();
   document.execCommand?.("copy");
   textarea.remove();
-}
-
-function normalizeUrlForCompare(value: string) {
-  return value.replace(/&amp;/g, "&").replace(/\/$/, "");
-}
-
-function summarizeUrl(value: string) {
-  try {
-    const url = new URL(value);
-    const path = url.pathname && url.pathname !== "/" ? ` ${url.pathname}` : "";
-    return `${url.hostname}${path}`;
-  } catch {
-    return value;
-  }
 }
 
 function normalizeReadableTimestamps(value: string) {

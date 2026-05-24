@@ -182,6 +182,60 @@ func TestWriteIncludesPromptInputTraceBudgetMetrics(t *testing.T) {
 	}
 }
 
+func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-governance",
+		TurnID:    "turn-governance",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			ContextGovernance: []promptinput.ContextGovernanceTraceItem{{
+				Layer:        "L4",
+				Kind:         "context.compaction.started",
+				Message:      "compacting token=plain-token",
+				Budget:       map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
+				ReferenceIDs: []string{"ref-1", "artifact-token=plain-token"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{`"contextGovernance"`, `"layer": "L4"`, `"kind": "context.compaction.started"`, `"autoCompactThreshold": 167000`, `"referenceIds"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
+		}
+	}
+	if strings.Contains(jsonText, "plain-token") {
+		t.Fatalf("json trace leaked secret:\n%s", jsonText)
+	}
+
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	md := string(markdown)
+	for _, want := range []string{"## Context Governance", "### Budget", "autoCompactThreshold=`167000`", "### External References", "ref-1"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown trace missing %q:\n%s", want, md)
+		}
+	}
+	if strings.Contains(md, "1/3") {
+		t.Fatalf("markdown trace should not include retry progress:\n%s", md)
+	}
+	if strings.Contains(md, "plain-token") {
+		t.Fatalf("markdown trace leaked secret:\n%s", md)
+	}
+}
+
 func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnabledEnv, "true")

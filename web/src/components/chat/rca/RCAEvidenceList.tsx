@@ -11,21 +11,13 @@ export function RCAEvidenceList({
     return <p className="text-xs text-amber-800">权限受限，仅展示 RCA 摘要和可见结论。</p>;
   }
 
+  const evidenceCount = evidenceRefs.length + rawRefs.length;
+  if (!evidenceCount) {
+    return null;
+  }
   return (
-    <div className="grid gap-2 text-xs text-slate-600">
-      <div>Evidence：{evidenceRefs.length ? evidenceRefs.join(", ") : "未提供"}</div>
-      {rawRefs.map((ref, index) => {
-        const uri = display(ref.uri);
-        return uri ? (
-          <div key={`${uri}-${index}`} className="break-all font-mono text-[11px] text-slate-500">
-            {uri}
-          </div>
-        ) : null;
-      })}
-    </div>
+    <p className="text-xs leading-5 text-slate-500">
+      已纳入 {evidenceCount} 条 RCA 证据，关键内容已在结论、传播路径和指标段落中展示。
+    </p>
   );
-}
-
-function display(value: unknown): string {
-  return typeof value === "string" || typeof value === "number" ? String(value) : "";
 }

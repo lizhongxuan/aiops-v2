@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
@@ -34,14 +35,142 @@ func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) 
 }
 
 func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt) (promptinput.BuildResult, error) {
+	return buildPromptInputWithContextGovernance(history, compiled, nil)
+}
+
+func buildPromptInputWithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent) (promptinput.BuildResult, error) {
 	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{
-		History:  promptInputMessagesFromRuntime(history),
-		Compiled: compiled,
+		History:           promptInputMessagesFromRuntime(history),
+		Compiled:          compiled,
+		ContextGovernance: promptInputContextGovernanceFromRuntime(governance),
 	})
 	if err != nil {
 		return promptinput.BuildResult{}, err
 	}
 	return result, nil
+}
+
+func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []Message) ([]Message, []ContextGovernanceEvent) {
+	if session == nil {
+		return append([]Message(nil), history...), nil
+	}
+	out := append([]Message(nil), history...)
+	var events []ContextGovernanceEvent
+	for i, msg := range out {
+		record, ok := observationRecordFromMessage(msg)
+		if !ok {
+			continue
+		}
+		result := session.ObservationState.Check(record)
+		if result.Event.Layer != "" && result.Event.Kind != "" {
+			result.Event.ID = fmt.Sprintf("ctxgov-%s-%d-l2-%d", firstNonBlankRuntimeString(msg.ClientTurnID, msg.ID, "message"), i, len(events))
+			result.Event.SessionID = session.ID
+			result.Event.TurnID = msg.ClientTurnID
+			result.Event = BuildContextGovernanceEvent(result.Event)
+			events = append(events, result.Event)
+		}
+		if result.ModelVisibleContent == "" || msg.ToolResult == nil {
+			continue
+		}
+		cp := *msg.ToolResult
+		cp.Content = result.ModelVisibleContent
+		out[i].ToolResult = &cp
+		out[i].Content = result.ModelVisibleContent
+	}
+	return out, events
+}
+
+func observationRecordFromMessage(msg Message) (ObservationRecord, bool) {
+	if msg.ToolResult == nil {
+		return ObservationRecord{}, false
+	}
+	content := strings.TrimSpace(firstNonBlankRuntimeString(msg.ToolResult.Content, msg.Content))
+	if content == "" || !strings.HasPrefix(content, "{") {
+		return ObservationRecord{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return ObservationRecord{}, false
+	}
+	key := runtimeStringFromMap(payload, "observationKey")
+	if key == "" {
+		key = runtimeStringFromMap(payload, "observation_key")
+	}
+	if key == "" {
+		return ObservationRecord{}, false
+	}
+	sourceRef := firstNonBlankRuntimeString(
+		runtimeStringFromMap(payload, "evidenceRef"),
+		runtimeStringFromMap(payload, "evidence_ref"),
+		runtimeStringFromMap(payload, "sourceRef"),
+		runtimeStringFromMap(payload, "source_ref"),
+	)
+	summary := runtimeStringFromMap(payload, "summary")
+	if summary == "" {
+		summary = summarizeSnippet(content)
+	}
+	digest := firstNonBlankRuntimeString(
+		runtimeStringFromMap(payload, "digest"),
+		runtimeStringFromMap(payload, "contentDigest"),
+		runtimeStringFromMap(payload, "content_digest"),
+	)
+	if digest == "" {
+		digest = ObservationDigest(summary)
+	}
+	return ObservationRecord{
+		Key:       key,
+		Digest:    digest,
+		SourceRef: sourceRef,
+		Summary:   summary,
+		ToolName:  runtimeStringFromMap(payload, "tool"),
+		Target:    runtimeStringFromMap(payload, "target"),
+		Window:    runtimeStringFromMap(payload, "window"),
+	}, true
+}
+
+func promptInputContextGovernanceFromRuntime(events []ContextGovernanceEvent) []promptinput.ContextGovernanceTraceItem {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]promptinput.ContextGovernanceTraceItem, 0, len(events))
+	for _, event := range SortContextGovernanceEvents(events) {
+		if event.Layer == "" || event.Kind == "" {
+			continue
+		}
+		item := promptinput.ContextGovernanceTraceItem{
+			Layer:        string(event.Layer),
+			Kind:         event.Kind,
+			Message:      event.Message,
+			Budget:       contextBudgetTraceMap(event.Budget),
+			ReferenceIDs: append([]string(nil), event.ReferenceIDs...),
+			RetryAttempt: event.RetryAttempt,
+			RetryMax:     event.RetryMax,
+		}
+		if len(event.DroppedGroupIDs) > 0 {
+			item.ReferenceIDs = append(item.ReferenceIDs, event.DroppedGroupIDs...)
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func contextBudgetTraceMap(budget ContextBudgetThresholds) map[string]int {
+	if budget.MaxContextTokens == 0 &&
+		budget.ReservedOutputTokens == 0 &&
+		budget.EffectiveContextWindow == 0 &&
+		budget.WarningThreshold == 0 &&
+		budget.AutoCompactThreshold == 0 &&
+		budget.BlockingLimit == 0 {
+		return nil
+	}
+	return map[string]int{
+		"maxContextTokens":       budget.MaxContextTokens,
+		"reservedOutputTokens":   budget.ReservedOutputTokens,
+		"effectiveContextWindow": budget.EffectiveContextWindow,
+		"warningThreshold":       budget.WarningThreshold,
+		"autoCompactThreshold":   budget.AutoCompactThreshold,
+		"blockingLimit":          budget.BlockingLimit,
+	}
 }
 
 func messagesForCurrentTurnModelInput(history []Message) []Message {

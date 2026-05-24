@@ -187,7 +187,7 @@ const hostLeasesPayload = {
 
 function chatState() {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "mobile-chat-session",
     threadId: "mobile-chat-session",
     status: "idle",

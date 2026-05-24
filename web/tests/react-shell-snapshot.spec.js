@@ -300,6 +300,89 @@ function longTerminalOutputState() {
   };
 }
 
+function contextCompactionTransportState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "context-compaction-session",
+    threadId: "context-compaction-session",
+    status: "working",
+    currentTurnId: "turn-context-compaction",
+    turns: {
+      "turn-context-compaction": {
+        id: "turn-context-compaction",
+        status: "working",
+        startedAt: "2026-05-22T08:00:00.000Z",
+        updatedAt: "2026-05-22T08:00:04.000Z",
+        user: {
+          id: "user-context-compaction",
+          text: "继续排查 nginx 超时，并保留关键摘要。",
+          createdAt: "2026-05-22T08:00:00.000Z",
+        },
+        contextGovernance: [
+          {
+            id: "ctxgov-context-l4",
+            layer: "L4",
+            kind: "context.compaction.started",
+            message: "正在压缩上下文，当前任务会继续",
+            referenceIds: ["spill-1"],
+            createdAt: "2026-05-22T08:00:01.000Z",
+          },
+          {
+            id: "ctxgov-context-l5",
+            layer: "L5",
+            kind: "context.compaction.failed",
+            message: "上下文过长，已使用本地摘要继续",
+            createdAt: "2026-05-22T08:00:02.000Z",
+          },
+        ],
+        process: [
+          {
+            id: "tool-context-spill",
+            kind: "tool",
+            displayKind: "logs_query",
+            status: "completed",
+            text: "logs_query nginx timeout",
+            outputPreview: "Large nginx log result was externalized. Summary: 17 upstream timeout lines.",
+            evidenceRefs: ["spill-1"],
+            materializationTier: "large",
+            originalBytes: 48213,
+            inlineBytes: 920,
+            externalReferences: [
+              {
+                id: "spill-1",
+                kind: "blob",
+                title: "nginx raw timeout logs",
+                summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+                contentType: "text/plain",
+                bytes: 48213,
+              },
+            ],
+            updatedAt: "2026-05-22T08:00:03.000Z",
+          },
+        ],
+        final: {
+          id: "final-context-compaction",
+          text: "我正在整理旧上下文，关键摘要会保留在当前对话里。",
+          status: "running",
+        },
+      },
+    },
+    turnOrder: ["turn-context-compaction"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: { "turn-context-compaction": true },
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 5,
+    updatedAt: "2026-05-22T08:00:04.000Z",
+  };
+}
+
 const rcaReportTransportState = {
   schemaVersion: "aiops.transport.v2",
   sessionId: "rca-report-session",
@@ -740,6 +823,41 @@ test("chat renders rca report artifact", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("rca-report-artifact")).toBeVisible();
   await expect(page).toHaveScreenshot("chat-rca-report-artifact.png", { fullPage: true });
+});
+
+test("chat shows context compaction and externalized evidence states", async ({ page }) => {
+  const state = contextCompactionTransportState();
+  await routeShellApis(page, state);
+  await page.route("**/api/external-references/spill-1", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "spill-1",
+        kind: "blob",
+        contentType: "text/plain",
+        summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+        content: "2026-05-22T08:00:01Z upstream timed out while connecting to service-a",
+        bytes: 82,
+        digest: "",
+        title: "nginx raw timeout logs",
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+  await expect(page.getByText("正在重试压缩")).toHaveCount(0);
+  await expect(page.getByText("已外溢")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /查看原始证据/ })).toHaveCount(0);
+  const toolRow = page.getByTestId("aiops-tool-row-tool-context-spill");
+  if ((await toolRow.count()) === 0) {
+    await page.getByTestId("aiops-process-header").click();
+  }
+  await expect(toolRow).toBeVisible();
+  await toolRow.click();
+  await expect(page.getByText("结果较大，仅显示摘要。")).toBeVisible();
+  await expect(page.getByText(/upstream timed out/)).toHaveCount(0);
+  await expect(page.getByTestId("context-status-notice")).toHaveScreenshot("context-compaction-notice.png");
+  await expect(page.getByTestId("aiops-process-transcript")).toHaveScreenshot("context-compaction-process.png");
 });
 
 test("ops manual direct hit shows distinct skip reference and preflight actions", async ({ page }) => {

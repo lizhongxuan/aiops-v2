@@ -165,7 +165,7 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        "",
 			"threadId":         "thread-1",
 			"status":           "idle",
@@ -218,7 +218,7 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 }
 
-func TestAssistantTransportAddsOpsManualNeedMoreInfoArtifactWhenFallbackEnabled(t *testing.T) {
+func TestAssistantTransportDoesNotAutoSearchOpsManualForDiagnosisWhenFallbackEnabled(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	repo := opsmanual.NewMemoryStore()
 	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
@@ -244,14 +244,11 @@ func TestAssistantTransportAddsOpsManualNeedMoreInfoArtifactWhenFallbackEnabled(
 	if strings.Contains(text, `"type":"ops_manual_match"`) {
 		t.Fatalf("response = %q, should not use legacy ops_manual_match fallback", text)
 	}
-	if !strings.Contains(text, `"type":"ops_manual_search_result"`) || !strings.Contains(text, `"status":"need_info"`) {
-		t.Fatalf("response = %q, should add terminal ops manual search fallback", text)
+	if strings.Contains(text, `"type":"ops_manual_search_result"`) {
+		t.Fatalf("response = %q, should not auto search ops manuals for diagnosis-only requests", text)
 	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, should still run the chat turn", text)
-	}
-	if strings.Contains(text, "命中 14%") || strings.Contains(text, "命中率") {
-		t.Fatalf("response = %q, should not expose percentage hit rate", text)
 	}
 }
 
@@ -311,7 +308,7 @@ func TestAssistantTransportDoesNotAutoSearchOpsManualByDefault(t *testing.T) {
 	}
 }
 
-func TestAssistantTransportAddsOpsManualNeedInfoArtifactForTextOnlyFallback(t *testing.T) {
+func TestAssistantTransportAddsOpsManualNeedInfoArtifactForResolutionFallback(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	repo := opsmanual.NewMemoryStore()
 	if err := repo.SaveManual(assistantTransportRedisManual()); err != nil {
@@ -323,7 +320,7 @@ func TestAssistantTransportAddsOpsManualNeedInfoArtifactForTextOnlyFallback(t *t
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
-	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual", "生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 排查")
+	payload := assistantTransportAddMessagePayload(t, "", "thread-ops-manual", "生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 修复")
 	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
@@ -348,6 +345,16 @@ func TestAssistantTransportRendersOpsManualSearchToolArtifact(t *testing.T) {
 		Decision:      opsmanual.DecisionNeedInfo,
 		Summary:       "缺少目标实例、环境、症状和指标。",
 		NextQuestions: []string{"目标 Redis 实例是哪一个？"},
+		Manuals: []opsmanual.SearchManualHit{
+			{
+				Manual: opsmanual.OpsManual{
+					ID:    "manual-redis-memory",
+					Title: "Redis 内存压力排障",
+				},
+				UsableMode:        opsmanual.DecisionNeedInfo,
+				RecommendedAction: "collect_context",
+			},
+		},
 	}
 	raw, _ := json.Marshal(result)
 	turn := &runtimekernel.TurnSnapshot{
@@ -463,7 +470,7 @@ func TestAssistantTransportAddsTerminalOpsManualSearchFallbackWhenModelSkipsTool
 			CompletedAt: &completedAt,
 			FinalOutput: "请补充目标实例和现象。",
 			AgentItems: []agentstate.TurnItem{
-				{ID: "user-redis", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "排查 Redis"}, CreatedAt: now},
+				{ID: "user-redis", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "修复 Redis"}, CreatedAt: now},
 				{ID: "final-redis", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "请补充目标实例和现象。"}, CreatedAt: completedAt},
 			},
 		},
@@ -713,7 +720,7 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 
 	payload := map[string]any{
 		"state": map[string]any{
-			"schemaVersion": "aiops.transport.v1",
+			"schemaVersion": "aiops.transport.v2",
 			"sessionId":     session.ID,
 			"threadId":      session.ID,
 			"status":        "blocked",
@@ -874,7 +881,7 @@ func TestAssistantTransportAPIStreamsFailedStateAndErrorRecordOnBackendError(t *
 
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        "",
 			"threadId":         "thread-1",
 			"status":           "idle",
@@ -1359,7 +1366,7 @@ func assistantTransportAddMessagePayloadWithMetadata(t *testing.T, sessionID, th
 	t.Helper()
 	body := map[string]any{
 		"state": map[string]any{
-			"schemaVersion":    "aiops.transport.v1",
+			"schemaVersion":    "aiops.transport.v2",
 			"sessionId":        sessionID,
 			"threadId":         threadID,
 			"status":           "idle",

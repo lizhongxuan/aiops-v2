@@ -18,6 +18,27 @@ test.describe("browser fixture entry", () => {
     await expect(page.locator("body")).toContainText("等待审批");
   });
 
+  test("loads completed context compaction fixture with composer enabled after reload", async ({ page }) => {
+    await openBrowserFixturePage(page, "/", "context-compaction");
+
+    await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+    await expect(page.getByText("正在重试压缩")).toHaveCount(0);
+    await expect(page.getByText("LLM 未配置")).toHaveCount(0);
+    await expect(page.getByText("请先创建会话")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeEnabled();
+    await expect(page.getByTestId("omnibar-primary-action")).toHaveAttribute("aria-label", "send message");
+
+    await page.reload();
+
+    await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+    await expect(page.getByText("LLM 未配置")).toHaveCount(0);
+    await expect(page.getByText("请先创建会话")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
+    await expect(page.getByTestId("omnibar-input")).toBeEnabled();
+    await expect(page.getByTestId("omnibar-primary-action")).toHaveAttribute("aria-label", "send message");
+  });
+
   test("loads ops manual preflight fixture without route mocks", async ({ page }) => {
     await openBrowserFixturePage(page, "/", "ops-manual-preflight");
 

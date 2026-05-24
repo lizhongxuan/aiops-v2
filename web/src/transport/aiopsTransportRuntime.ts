@@ -17,7 +17,7 @@ export type AiopsTransportCommandActions = {
 
 export function createInitialAiopsTransportState(threadId = "default"): AiopsTransportState {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "",
     threadId,
     status: "idle",

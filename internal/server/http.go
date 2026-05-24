@@ -209,6 +209,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/llm-config", s.handleLLMConfig)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces", s.handlePromptTraces)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces/file", s.handlePromptTraceFile)
+	s.mux.HandleFunc("/api/external-references/", s.handleExternalReference)
+	s.mux.HandleFunc("/api/v1/external-references/", s.handleExternalReference)
 	s.mux.HandleFunc("/api/v1/hosts", s.handleHosts)
 	s.mux.HandleFunc("/api/v1/hosts/", s.handleHosts)
 	s.mux.HandleFunc("/api/v1/host-agents/register", s.handleHostAgents)

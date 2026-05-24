@@ -2,6 +2,8 @@ import { buildHostListViewModel } from "@/lib/hostListViewModel";
 
 type JsonMap = Record<string, unknown>;
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
+export const DEFAULT_LLM_CONTEXT_TOKENS = 200000;
+export const MIN_LLM_CONTEXT_TOKENS = 10000;
 
 function parseResponseBody(text: string, contentType: string) {
   const trimmed = text.trim();
@@ -50,7 +52,15 @@ export type LlmConfigView = {
   apiKeySet?: boolean;
   apiKeyMasked?: string;
   baseURL?: string;
+  maxContextTokens?: number;
   bifrostActive?: boolean;
+};
+
+export type LlmConfigUpdateResult = {
+  ok?: boolean;
+  message?: string;
+  error?: string;
+  maxContextTokens?: number;
 };
 
 export type LlmConfigUpdate = {
@@ -58,7 +68,16 @@ export type LlmConfigUpdate = {
   model: string;
   apiKey?: string;
   baseURL?: string;
+  maxContextTokens?: number | string | null;
 };
+
+export function normalizeLlmContextTokens(value: LlmConfigUpdate["maxContextTokens"]) {
+  if (value === undefined || value === null || value === "") return DEFAULT_LLM_CONTEXT_TOKENS;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return DEFAULT_LLM_CONTEXT_TOKENS;
+  if (numeric <= 0) return DEFAULT_LLM_CONTEXT_TOKENS;
+  return Math.max(MIN_LLM_CONTEXT_TOKENS, Math.trunc(numeric));
+}
 
 export type SessionKind = "single_host" | "workspace";
 
@@ -190,7 +209,10 @@ export function fetchLlmConfig() {
 }
 
 export function updateLlmConfig(payload: LlmConfigUpdate) {
-  return request<{ ok?: boolean; message?: string; error?: string }>("/api/v1/llm-config", { method: "PUT", body: payload });
+  return request<LlmConfigUpdateResult>("/api/v1/llm-config", {
+    method: "PUT",
+    body: { ...payload, maxContextTokens: normalizeLlmContextTokens(payload.maxContextTokens) },
+  });
 }
 
 export function fetchSkillCatalog() {

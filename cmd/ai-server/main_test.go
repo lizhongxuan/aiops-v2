@@ -205,6 +205,42 @@ func TestOpenConfiguredStoreRejectsUnknownDriver(t *testing.T) {
 	}
 }
 
+func TestStoreLLMResolverIncludesManualContextWindow(t *testing.T) {
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			BaseURL:          "http://127.0.0.1:8317/v1",
+			MaxContextTokens: 9000,
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.MaxContextTokens != 10000 {
+		t.Fatalf("MaxContextTokens = %d, want min-clamped 10000", cfg.MaxContextTokens)
+	}
+}
+
+func TestStoreLLMResolverDefaultsManualContextWindow(t *testing.T) {
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.MaxContextTokens != 200000 {
+		t.Fatalf("MaxContextTokens = %d, want default 200000", cfg.MaxContextTokens)
+	}
+}
+
 func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.T) {
 	toolRegistry := tooling.NewRegistry()
 	mcpRegistry := mcp.NewRegistry()

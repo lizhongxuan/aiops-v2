@@ -15,6 +15,7 @@ import (
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
+	"aiops-v2/internal/tooling"
 )
 
 // RuntimeGateway is the runtime-facing dependency used by the Web application
@@ -92,6 +93,13 @@ type HostRepository interface {
 	DeleteHost(id string) error
 }
 
+// ToolResultSpillRepository is the read-side store for externalized tool
+// results.
+type ToolResultSpillRepository interface {
+	GetToolResultSpill(id string) (*tooling.ResultSpill, error)
+	ListToolResultSpills() ([]*tooling.ResultSpill, error)
+}
+
 type AgentEventService interface {
 	Append(ctx context.Context, event AgentEvent) (AgentEvent, error)
 	Subscribe(ctx context.Context, sessionID string, afterSeq int64) (<-chan AgentEvent, func())
@@ -116,6 +124,7 @@ type servicesConfig struct {
 	incidents           incidents.Store
 	opsManuals          OpsManualService
 	opsManualRepo       opsmanual.ManualRepository
+	toolResultSpills    ToolResultSpillRepository
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
 	hostBootstrapRunner HostBootstrapRunner
@@ -161,6 +170,9 @@ func WithStore(dataStore store.Store) ServicesOption {
 		}
 		if repo, ok := any(dataStore).(opsmanual.ManualRepository); ok {
 			cfg.opsManualRepo = repo
+		}
+		if repo, ok := any(dataStore).(ToolResultSpillRepository); ok {
+			cfg.toolResultSpills = repo
 		}
 	}
 }
@@ -320,6 +332,7 @@ type Services struct {
 	erp            ERPContextService
 	changes        ChangeContextService
 	opsManuals     OpsManualService
+	toolSpills     ToolResultSpillRepository
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -393,6 +406,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		erp:            NewERPContextService(),
 		changes:        NewChangeContextService(),
 		opsManuals:     opsManualService,
+		toolSpills:     cfg.toolResultSpills,
 	}
 }
 
@@ -428,6 +442,9 @@ func (s *Services) OpsGraphService() OpsGraphService           { return s.opsgra
 func (s *Services) ERPContextService() ERPContextService       { return s.erp }
 func (s *Services) ChangeContextService() ChangeContextService { return s.changes }
 func (s *Services) OpsManualService() OpsManualService         { return s.opsManuals }
+func (s *Services) ToolResultSpillRepository() ToolResultSpillRepository {
+	return s.toolSpills
+}
 
 type ChatCommand struct {
 	SessionID       string
@@ -743,6 +760,7 @@ type LLMConfigView struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	CompactModel     string `json:"compactModel,omitempty"`
@@ -756,6 +774,7 @@ type LLMConfigUpdate struct {
 	Model            string `json:"model,omitempty"`
 	APIKey           string `json:"apiKey,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	FallbackAPIKey   string `json:"fallbackApiKey,omitempty"`
@@ -763,9 +782,10 @@ type LLMConfigUpdate struct {
 }
 
 type LLMConfigUpdateResult struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
+	OK               bool   `json:"ok"`
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 }
 
 type HostUpsert struct {

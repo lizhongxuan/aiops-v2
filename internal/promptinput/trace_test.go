@@ -97,6 +97,42 @@ func TestPromptInputTraceIncludesOpsContextBudgetMetrics(t *testing.T) {
 	}
 }
 
+func TestPromptInputTraceCarriesContextGovernance(t *testing.T) {
+	req := BuildRequest{
+		Compiled: promptcompiler.CompiledPrompt{
+			System: promptcompiler.SystemPrompt{Content: "system layer"},
+		},
+		ContextGovernance: []ContextGovernanceTraceItem{{
+			Layer:        "L4",
+			Kind:         "context.compaction.started",
+			Message:      "compacting context",
+			Budget:       map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
+			ReferenceIDs: []string{"ref-1", "ref-2"},
+			RetryAttempt: 1,
+			RetryMax:     3,
+		}},
+	}
+	result, err := Builder{}.Build(req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	req.ContextGovernance[0].Budget["autoCompactThreshold"] = 1
+	req.ContextGovernance[0].ReferenceIDs[0] = "mutated"
+
+	got := result.Trace.ContextGovernance
+	if len(got) != 1 {
+		t.Fatalf("context governance length = %d, want 1", len(got))
+	}
+	if got[0].Layer != "L4" ||
+		got[0].Kind != "context.compaction.started" ||
+		got[0].Budget["autoCompactThreshold"] != 167000 ||
+		got[0].ReferenceIDs[0] != "ref-1" ||
+		got[0].RetryAttempt != 1 ||
+		got[0].RetryMax != 3 {
+		t.Fatalf("context governance trace = %#v", got[0])
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -30,4 +30,29 @@ describe("settingsApi", () => {
 
     await expect(updateLlmConfig({ provider: "openai", model: "gpt-5.4" })).rejects.toThrow("upstream connect error");
   });
+
+  it("adds the default LLM context size when the update payload omits it", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4" });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/llm-config",
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.4", maxContextTokens: 200000 }),
+      }),
+    );
+  });
+
+  it("normalizes small, decimal, and empty LLM context sizes before saving", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })));
+
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4", maxContextTokens: "9999.8" });
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4", maxContextTokens: "12000.8" });
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4", maxContextTokens: "" });
+
+    const bodies = fetchSpy.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)));
+    expect(bodies.map((body) => body.maxContextTokens)).toEqual([10000, 12000, 200000]);
+  });
 });

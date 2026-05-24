@@ -159,7 +159,7 @@ func TestAgentProfileServiceLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAgentProfiles() error = %v", err)
 	}
-	if len(list.Items) != 2 || len(list.SkillCatalog) != 3 || len(list.McpCatalog) != 3 {
+	if len(list.Items) != 2 || len(list.SkillCatalog) != 4 || len(list.McpCatalog) != 3 {
 		t.Fatalf("ListAgentProfiles() = %+v, want 2 profiles and bootstrap-merged catalogs", list)
 	}
 

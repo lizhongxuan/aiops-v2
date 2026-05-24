@@ -161,6 +161,88 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsContextGovernanceAndExternalizedToolResult(t *testing.T) {
+	now := time.Date(2026, 5, 22, 8, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-context", "thread-context")
+	toolData := json.RawMessage(`{
+		"toolCallId":"call-large-logs",
+		"toolName":"logs.search",
+		"displayKind":"logs.search",
+		"inputSummary":"nginx timeout logs",
+		"outputSummary":"large logs externalized",
+		"outputPreview":"Large nginx log result was externalized.",
+		"materializationTier":"large",
+		"originalBytes":48213,
+		"inlineBytes":920,
+		"externalReferences":[{
+			"id":"spill-1",
+			"kind":"blob",
+			"uri":"store://tool-spills/spill-1",
+			"title":"nginx raw logs",
+			"summary":"17 upstream timeout lines",
+			"contentType":"text/plain",
+			"digest":"sha256:abc",
+			"bytes":48213
+		}]
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-context",
+		SessionID:   "session-context",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		ContextGovernanceEvents: []runtimekernel.ContextGovernanceEvent{
+			{
+				ID:        "ctxgov-l4-started",
+				Layer:     runtimekernel.ContextGovernanceLayerL4,
+				Kind:      "context.compaction.started",
+				Message:   "正在压缩上下文，当前任务会继续",
+				Budget:    runtimekernel.DefaultContextBudgetPolicy(20000, 8000).Thresholds(),
+				CreatedAt: now,
+			},
+			{
+				ID:        "ctxgov-l5-failed",
+				Layer:     runtimekernel.ContextGovernanceLayerL5,
+				Kind:      "context.compaction.failed",
+				Message:   "上下文过长，已使用本地摘要继续",
+				CreatedAt: now.Add(time.Second),
+			},
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-large-logs", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "logs.search", Summary: "large logs", Data: toolData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedTurn := projected.Turns["turn-context"]
+	if len(projectedTurn.ContextGovernance) != 2 {
+		t.Fatalf("context governance = %#v, want 2 events", projectedTurn.ContextGovernance)
+	}
+	if projectedTurn.ContextGovernance[1].RetryAttempt != 0 || projectedTurn.ContextGovernance[1].RetryMax != 0 {
+		t.Fatalf("retry counters = %#v, want none", projectedTurn.ContextGovernance[1])
+	}
+	if got := projectedTurn.ContextGovernance[0].Budget["smallContextMode"]; got != true {
+		t.Fatalf("smallContextMode budget = %#v, want true", got)
+	}
+	if len(projectedTurn.Process) != 1 {
+		t.Fatalf("process blocks = %d, want 1", len(projectedTurn.Process))
+	}
+	block := projectedTurn.Process[0]
+	if block.MaterializationTier != "large" || block.OriginalBytes != 48213 || block.InlineBytes != 920 {
+		t.Fatalf("materialization = %#v", block)
+	}
+	if len(block.ExternalReferences) != 1 || block.ExternalReferences[0].ID != "spill-1" {
+		t.Fatalf("external references = %#v", block.ExternalReferences)
+	}
+}
+
 func TestTransportProjectorPreservesCommandWhenToolResultOnlyHasOutput(t *testing.T) {
 	now := time.Date(2026, 5, 7, 14, 38, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1186,6 +1268,65 @@ func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.
 	}
 }
 
+func TestTransportProjectorUsesCorootDisplayDataForChartsWithoutProcessPreviewLeak(t *testing.T) {
+	now := time.Date(2026, 5, 19, 9, 45, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-coroot-display-chart", "thread-coroot-display-chart")
+	displayData := json.RawMessage(`{
+		"schemaVersion":"aiops.coroot/v1",
+		"tool":"coroot.service_metrics",
+		"status":"ok",
+		"project":"5hxbfx6p",
+		"service":"5hxbfx6p:smecloud:Deployment:web",
+		"metrics":[],
+		"chartReports":[
+			{"name":"CPU","status":"ok","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"CPU usage","series":[{"name":"web-1","data":[0.4,0.6]}]}}]}
+		],
+		"rawRef":{"uri":"http://coroot/api/project/5hxbfx6p/app/web","digest":"sha256:abc","bytes":1024}
+	}`)
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-coroot-display-metrics",
+		"toolName":"coroot.service_metrics",
+		"displayKind":"coroot",
+		"inputSummary":"web metrics",
+		"outputPreview":{"schemaVersion":"aiops.coroot/v1","tool":"coroot.service_metrics","status":"ok","service":"5hxbfx6p:smecloud:Deployment:web","chartSummary":{"service":"5hxbfx6p:smecloud:Deployment:web","reports":[{"name":"CPU","pointCount":2}]}},
+		"displayData":` + string(displayData) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-coroot-display-chart",
+		SessionID:   "session-coroot-display-chart",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-coroot-display-metrics", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "查看 web CPU 图表"}, CreatedAt: now},
+			{ID: "tool-result-coroot-display-metrics", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "Coroot metrics", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedTurn := projected.Turns["turn-coroot-display-chart"]
+	if len(projectedTurn.AgentUIArtifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want coroot chart artifact from displayData", len(projectedTurn.AgentUIArtifacts))
+	}
+	artifact := projectedTurn.AgentUIArtifacts[0]
+	chartReports, ok := artifact.InlineData["chartReports"].([]any)
+	if !ok || len(chartReports) != 1 {
+		t.Fatalf("artifact chartReports = %#v, want native charts from displayData", artifact.InlineData["chartReports"])
+	}
+	if len(projectedTurn.Process) != 1 {
+		t.Fatalf("process len = %d, want one tool block", len(projectedTurn.Process))
+	}
+	if strings.Contains(projectedTurn.Process[0].OutputPreview, "chartReports") || strings.Contains(projectedTurn.Process[0].OutputPreview, `"data"`) {
+		t.Fatalf("process output preview leaked raw Coroot chart payload: %s", projectedTurn.Process[0].OutputPreview)
+	}
+}
+
 func transportTestStringListContains(value any, want string) bool {
 	switch typed := value.(type) {
 	case []string:
@@ -1497,6 +1638,58 @@ func TestTransportProjectorSkipsOpsManualNoMatchArtifact(t *testing.T) {
 	transportTurn := projected.Turns["turn-ops-manual-no-match"]
 	if len(transportTurn.AgentUIArtifacts) != 0 {
 		t.Fatalf("artifacts = %#v, want no Agent UI artifact for no_match ops manual search", transportTurn.AgentUIArtifacts)
+	}
+	if len(transportTurn.Process) != 0 {
+		t.Fatalf("process = %#v, want no process row for no_match ops manual search", transportTurn.Process)
+	}
+}
+
+func TestTransportProjectorSkipsOpsManualNeedInfoWithoutManual(t *testing.T) {
+	now := time.Date(2026, 5, 19, 18, 5, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-ops-manual-need-info-empty", "thread-ops-manual-need-info-empty")
+	searchPayload, _ := json.Marshal(map[string]any{
+		"decision": "need_info",
+		"summary":  "缺少运维对象和操作类型。",
+		"manuals":  []map[string]any{},
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-search-need-info-empty",
+		"toolName":"search_ops_manuals",
+		"displayKind":"ops_manual_search_result",
+		"outputPreview":` + string(searchPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-ops-manual-need-info-empty",
+		SessionID: "session-ops-manual-need-info-empty",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-search-need-info-empty",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "ops_manual_search_result",
+					Summary: "need_info",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	transportTurn := projected.Turns["turn-ops-manual-need-info-empty"]
+	if len(transportTurn.AgentUIArtifacts) != 0 {
+		t.Fatalf("artifacts = %#v, want no Agent UI artifact without a matched manual", transportTurn.AgentUIArtifacts)
+	}
+	if len(transportTurn.Process) != 0 {
+		t.Fatalf("process = %#v, want no process row without a matched manual", transportTurn.Process)
 	}
 }
 

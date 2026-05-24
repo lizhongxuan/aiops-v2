@@ -101,6 +101,27 @@ const traceJson = {
       },
     },
   ],
+  contextGovernance: [
+    {
+      id: "cg-budget-1",
+      layer: "L4",
+      kind: "context.compaction.started",
+      message: "compacting previous turns",
+      budget: {
+        autoCompactThreshold: 167000,
+        blockingLimit: 177000,
+      },
+      referenceIds: ["ref-context-1"],
+      compactedIds: ["segment-1"],
+    },
+    {
+      id: "cg-materialized-1",
+      layer: "L5",
+      kind: "tool_result.materialized",
+      message: "materialized large tool result",
+      referenceIds: ["tool-ref-1"],
+    },
+  ],
 };
 
 const traceTwoJson = {
@@ -277,6 +298,15 @@ describe("PromptTracePage", () => {
     expect(document.body.textContent).toContain("图表已生成");
     expect(document.body.textContent).toContain("prompt 21 / completion 8 / total 29");
     expect(document.body.textContent).toContain("456 ms");
+    expect(document.body.textContent).toContain("Context Budget");
+    expect(document.body.textContent).toContain("Compaction Events");
+    expect(document.body.textContent).toContain("Tool Result Materialization");
+    expect(document.body.textContent).toContain("External References");
+    expect(document.body.textContent).toContain("Auto Compact");
+    expect(document.body.textContent).toContain("167,000");
+    expect(document.body.textContent).not.toContain("retry 1/3");
+    expect(document.body.textContent).toContain("segment-1");
+    expect(document.body.textContent).toContain("tool-ref-1");
     expect(document.body.textContent).not.toContain("coroot-checkout-latency-chart");
     expect(document.body.textContent).not.toContain("工具调用 coroot.query_latency");
     expect(document.body.textContent).not.toContain("EvidenceRef ev-coroot-latency");
@@ -384,5 +414,33 @@ describe("PromptTracePage", () => {
       "sess-1/turn-1/iteration-001.json",
       "sess-1/turn-1/iteration-002.json",
     ]);
+  });
+
+  it("shows context governance empty states without blanking the detail dialog", async () => {
+    activeFiles = {
+      ".data/model-input-traces/sess-1/turn-1/iteration-001.json": {
+        ...traceJson,
+        contextGovernance: undefined,
+      },
+    };
+
+    await act(async () => {
+      root.render(<PromptTracePage />);
+    });
+    await flush();
+
+    const llmButton = container.querySelector('[data-testid="prompt-trace-llm-card"]') as HTMLButtonElement | null;
+    await act(async () => {
+      llmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const dialogText = document.body.querySelector('[role="dialog"]')?.textContent || "";
+    expect(dialogText).toContain("LLM 请求详情");
+    expect(dialogText).toContain("Context Budget");
+    expect(dialogText).toContain("Compaction Events");
+    expect(dialogText).toContain("Tool Result Materialization");
+    expect(dialogText).toContain("External References");
+    expect(dialogText.match(/暂无上下文治理事件/g)).toHaveLength(4);
   });
 });

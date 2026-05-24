@@ -21,10 +21,11 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 	defer dataStore.Close()
 
 	if err := dataStore.SaveLLMConfig(&store.LLMConfig{
-		Provider:     "openai",
-		Model:        "gpt-4o",
-		APIKey:       "sk-test-12345678",
-		CompactModel: "gpt-4o-mini",
+		Provider:         "openai",
+		Model:            "gpt-4o",
+		APIKey:           "sk-test-12345678",
+		MaxContextTokens: 131072,
+		CompactModel:     "gpt-4o-mini",
 	}); err != nil {
 		t.Fatalf("SaveLLMConfig() error = %v", err)
 	}
@@ -74,5 +75,34 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 	}
 	if llm["apiKeyMasked"] == "" {
 		t.Fatalf("llm response = %+v, want apiKeyMasked", llm)
+	}
+	if llm["maxContextTokens"] != float64(131072) {
+		t.Fatalf("llm response = %+v, want maxContextTokens 131072", llm)
+	}
+
+	updateLLMBody, _ := json.Marshal(map[string]any{
+		"provider":         "openai",
+		"model":            "gpt-5.4",
+		"maxContextTokens": 9000,
+	})
+	updateLLMReq, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/llm-config", bytes.NewReader(updateLLMBody))
+	if err != nil {
+		t.Fatalf("new llm update request: %v", err)
+	}
+	updateLLMReq.Header.Set("Content-Type", "application/json")
+	updateLLMResp, err := http.DefaultClient.Do(updateLLMReq)
+	if err != nil {
+		t.Fatalf("PUT /api/v1/llm-config error = %v", err)
+	}
+	defer updateLLMResp.Body.Close()
+	if updateLLMResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT /api/v1/llm-config status = %d, want 200", updateLLMResp.StatusCode)
+	}
+	var updateLLM map[string]any
+	if err := json.NewDecoder(updateLLMResp.Body).Decode(&updateLLM); err != nil {
+		t.Fatalf("decode llm update response error = %v", err)
+	}
+	if updateLLM["maxContextTokens"] != float64(10000) {
+		t.Fatalf("llm update response = %+v, want maxContextTokens 10000", updateLLM)
 	}
 }

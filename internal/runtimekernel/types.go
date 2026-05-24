@@ -15,24 +15,26 @@ import (
 
 // SessionState represents the full state of a session (host or workspace).
 type SessionState struct {
-	ID                 string                 `json:"id"`
-	Type               SessionType            `json:"type"`
-	Mode               Mode                   `json:"mode"`
-	HostID             string                 `json:"hostId,omitempty"`
-	Messages           []Message              `json:"messages"`
-	Context            ContextWindow          `json:"context"`
-	Activity           ActivityStats          `json:"activity"`
-	CurrentTurn        *TurnSnapshot          `json:"currentTurn,omitempty"`
-	TurnHistory        []TurnSnapshot         `json:"turnHistory,omitempty"`
-	PendingApprovals   []PendingApproval      `json:"pendingApprovals,omitempty"`
-	PendingEvidence    []PendingEvidence      `json:"pendingEvidence,omitempty"`
-	ApprovalGrants     []SessionApprovalGrant `json:"approvalGrants,omitempty"`
-	LatestCheckpoint   *CheckpointMetadata    `json:"latestCheckpoint,omitempty"`
-	CompactedSegments  []CompactedSegment     `json:"compactedSegments,omitempty"`
-	ExternalReferences []ExternalReference    `json:"externalReferences,omitempty"`
-	EnvironmentContext envcontext.State       `json:"environmentContext,omitempty"`
-	CreatedAt          time.Time              `json:"createdAt"`
-	UpdatedAt          time.Time              `json:"updatedAt"`
+	ID                      string                   `json:"id"`
+	Type                    SessionType              `json:"type"`
+	Mode                    Mode                     `json:"mode"`
+	HostID                  string                   `json:"hostId,omitempty"`
+	Messages                []Message                `json:"messages"`
+	Context                 ContextWindow            `json:"context"`
+	Activity                ActivityStats            `json:"activity"`
+	CurrentTurn             *TurnSnapshot            `json:"currentTurn,omitempty"`
+	TurnHistory             []TurnSnapshot           `json:"turnHistory,omitempty"`
+	PendingApprovals        []PendingApproval        `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence        `json:"pendingEvidence,omitempty"`
+	ApprovalGrants          []SessionApprovalGrant   `json:"approvalGrants,omitempty"`
+	LatestCheckpoint        *CheckpointMetadata      `json:"latestCheckpoint,omitempty"`
+	CompactedSegments       []CompactedSegment       `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference      `json:"externalReferences,omitempty"`
+	ObservationState        ObservationState         `json:"observationState,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent `json:"contextGovernanceEvents,omitempty"`
+	EnvironmentContext      envcontext.State         `json:"environmentContext,omitempty"`
+	CreatedAt               time.Time                `json:"createdAt"`
+	UpdatedAt               time.Time                `json:"updatedAt"`
 }
 
 // SessionApprovalGrant records an explicit "approve for this session" decision
@@ -116,6 +118,11 @@ func (s SessionState) Validate() error {
 			return fmt.Errorf("external reference[%d]: %w", i, err)
 		}
 	}
+	for i := range s.ContextGovernanceEvents {
+		if s.ContextGovernanceEvents[i].Layer == "" || s.ContextGovernanceEvents[i].Kind == "" {
+			return fmt.Errorf("context governance event[%d] is incomplete", i)
+		}
+	}
 	return nil
 }
 
@@ -152,14 +159,17 @@ type ToolCall struct {
 
 // ToolResult represents the result of a tool execution.
 type ToolResult struct {
-	ToolCallID         string                `json:"toolCallId"`
-	Content            string                `json:"content"`
-	Summary            string                `json:"summary,omitempty"`
-	Display            *ToolDisplayPayload   `json:"display,omitempty"`
-	Error              string                `json:"error,omitempty"`
-	References         []ToolResultReference `json:"references,omitempty"`
-	Spilled            bool                  `json:"spilled,omitempty"`
-	ExternalReferences []ExternalReference   `json:"externalReferences,omitempty"`
+	ToolCallID          string                `json:"toolCallId"`
+	Content             string                `json:"content"`
+	Summary             string                `json:"summary,omitempty"`
+	Display             *ToolDisplayPayload   `json:"display,omitempty"`
+	Error               string                `json:"error,omitempty"`
+	References          []ToolResultReference `json:"references,omitempty"`
+	Spilled             bool                  `json:"spilled,omitempty"`
+	ExternalReferences  []ExternalReference   `json:"externalReferences,omitempty"`
+	MaterializationTier string                `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                 `json:"originalBytes,omitempty"`
+	InlineBytes         int64                 `json:"inlineBytes,omitempty"`
 }
 
 // Validate checks the tool result payload.
@@ -520,33 +530,34 @@ func (s CompactedSegment) Validate() error {
 
 // TurnSnapshot freezes the turn-level state at a stable boundary.
 type TurnSnapshot struct {
-	ID                    string                `json:"id"`
-	ClientTurnID          string                `json:"clientTurnId,omitempty"`
-	ClientMessageID       string                `json:"clientMessageId,omitempty"`
-	SessionID             string                `json:"sessionId"`
-	SessionType           SessionType           `json:"sessionType"`
-	Mode                  Mode                  `json:"mode"`
-	Lifecycle             TurnLifecycleState    `json:"lifecycle"`
-	ResumeState           TurnResumeState       `json:"resumeState"`
-	Iteration             int                   `json:"iteration"`
-	StartedAt             time.Time             `json:"startedAt"`
-	UpdatedAt             time.Time             `json:"updatedAt"`
-	CompletedAt           *time.Time            `json:"completedAt,omitempty"`
-	StablePromptHash      string                `json:"stablePromptHash,omitempty"`
-	StableToolFingerprint string                `json:"stableToolFingerprint,omitempty"`
-	GovernanceSnapshot    string                `json:"governanceSnapshot,omitempty"`
-	TraceContext          TraceContextCarrier   `json:"traceContext,omitempty"`
-	PromptSections        []string              `json:"promptSections,omitempty"`
-	LatestCheckpoint      *CheckpointMetadata   `json:"latestCheckpoint,omitempty"`
-	Iterations            []IterationState      `json:"iterations,omitempty"`
-	AgentItems            []agentstate.TurnItem `json:"agentItems,omitempty"`
-	PendingApprovals      []PendingApproval     `json:"pendingApprovals,omitempty"`
-	PendingEvidence       []PendingEvidence     `json:"pendingEvidence,omitempty"`
-	HiddenTools           []string              `json:"hiddenTools,omitempty"`
-	CompactedSegments     []CompactedSegment    `json:"compactedSegments,omitempty"`
-	ExternalReferences    []ExternalReference   `json:"externalReferences,omitempty"`
-	FinalOutput           string                `json:"finalOutput,omitempty"`
-	Error                 string                `json:"error,omitempty"`
+	ID                      string                   `json:"id"`
+	ClientTurnID            string                   `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                   `json:"clientMessageId,omitempty"`
+	SessionID               string                   `json:"sessionId"`
+	SessionType             SessionType              `json:"sessionType"`
+	Mode                    Mode                     `json:"mode"`
+	Lifecycle               TurnLifecycleState       `json:"lifecycle"`
+	ResumeState             TurnResumeState          `json:"resumeState"`
+	Iteration               int                      `json:"iteration"`
+	StartedAt               time.Time                `json:"startedAt"`
+	UpdatedAt               time.Time                `json:"updatedAt"`
+	CompletedAt             *time.Time               `json:"completedAt,omitempty"`
+	StablePromptHash        string                   `json:"stablePromptHash,omitempty"`
+	StableToolFingerprint   string                   `json:"stableToolFingerprint,omitempty"`
+	GovernanceSnapshot      string                   `json:"governanceSnapshot,omitempty"`
+	TraceContext            TraceContextCarrier      `json:"traceContext,omitempty"`
+	PromptSections          []string                 `json:"promptSections,omitempty"`
+	LatestCheckpoint        *CheckpointMetadata      `json:"latestCheckpoint,omitempty"`
+	Iterations              []IterationState         `json:"iterations,omitempty"`
+	AgentItems              []agentstate.TurnItem    `json:"agentItems,omitempty"`
+	PendingApprovals        []PendingApproval        `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence        `json:"pendingEvidence,omitempty"`
+	HiddenTools             []string                 `json:"hiddenTools,omitempty"`
+	CompactedSegments       []CompactedSegment       `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference      `json:"externalReferences,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent `json:"contextGovernanceEvents,omitempty"`
+	FinalOutput             string                   `json:"finalOutput,omitempty"`
+	Error                   string                   `json:"error,omitempty"`
 }
 
 // Validate checks the turn snapshot.
@@ -607,36 +618,42 @@ func (s TurnSnapshot) Validate() error {
 			return fmt.Errorf("external reference[%d]: %w", i, err)
 		}
 	}
+	for i := range s.ContextGovernanceEvents {
+		if s.ContextGovernanceEvents[i].Layer == "" || s.ContextGovernanceEvents[i].Kind == "" {
+			return fmt.Errorf("context governance event[%d] is incomplete", i)
+		}
+	}
 	return nil
 }
 
 // IterationState captures a single model/tool iteration within a turn.
 type IterationState struct {
-	ID                  string               `json:"id"`
-	SessionID           string               `json:"sessionId"`
-	TurnID              string               `json:"turnId"`
-	Iteration           int                  `json:"iteration"`
-	Lifecycle           TurnLifecycleState   `json:"lifecycle"`
-	ResumeState         TurnResumeState      `json:"resumeState"`
-	MessagesForModel    []Message            `json:"messagesForModel,omitempty"`
-	ToolCalls           []ToolCall           `json:"toolCalls,omitempty"`
-	ToolProgress        []ToolProgressUpdate `json:"toolProgress,omitempty"`
-	ToolResults         []ToolResult         `json:"toolResults,omitempty"`
-	VisibleTools        []string             `json:"visibleTools,omitempty"`
-	RefreshedTools      []string             `json:"refreshedTools,omitempty"`
-	PromptDelta         string               `json:"promptDelta,omitempty"`
-	PromptFingerprint   map[string]string    `json:"promptFingerprint,omitempty"`
-	ModelInputTraceFile string               `json:"modelInputTraceFile,omitempty"`
-	TokenBudget         int                  `json:"tokenBudget,omitempty"`
-	ResultBudget        int                  `json:"resultBudget,omitempty"`
-	Checkpoint          *CheckpointMetadata  `json:"checkpoint,omitempty"`
-	PendingApprovals    []PendingApproval    `json:"pendingApprovals,omitempty"`
-	PendingEvidence     []PendingEvidence    `json:"pendingEvidence,omitempty"`
-	CompactedSegments   []CompactedSegment   `json:"compactedSegments,omitempty"`
-	ExternalReferences  []ExternalReference  `json:"externalReferences,omitempty"`
-	StartedAt           time.Time            `json:"startedAt"`
-	UpdatedAt           time.Time            `json:"updatedAt"`
-	CompletedAt         *time.Time           `json:"completedAt,omitempty"`
+	ID                      string                   `json:"id"`
+	SessionID               string                   `json:"sessionId"`
+	TurnID                  string                   `json:"turnId"`
+	Iteration               int                      `json:"iteration"`
+	Lifecycle               TurnLifecycleState       `json:"lifecycle"`
+	ResumeState             TurnResumeState          `json:"resumeState"`
+	MessagesForModel        []Message                `json:"messagesForModel,omitempty"`
+	ToolCalls               []ToolCall               `json:"toolCalls,omitempty"`
+	ToolProgress            []ToolProgressUpdate     `json:"toolProgress,omitempty"`
+	ToolResults             []ToolResult             `json:"toolResults,omitempty"`
+	VisibleTools            []string                 `json:"visibleTools,omitempty"`
+	RefreshedTools          []string                 `json:"refreshedTools,omitempty"`
+	PromptDelta             string                   `json:"promptDelta,omitempty"`
+	PromptFingerprint       map[string]string        `json:"promptFingerprint,omitempty"`
+	ModelInputTraceFile     string                   `json:"modelInputTraceFile,omitempty"`
+	TokenBudget             int                      `json:"tokenBudget,omitempty"`
+	ResultBudget            int                      `json:"resultBudget,omitempty"`
+	Checkpoint              *CheckpointMetadata      `json:"checkpoint,omitempty"`
+	PendingApprovals        []PendingApproval        `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence        `json:"pendingEvidence,omitempty"`
+	CompactedSegments       []CompactedSegment       `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference      `json:"externalReferences,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent `json:"contextGovernanceEvents,omitempty"`
+	StartedAt               time.Time                `json:"startedAt"`
+	UpdatedAt               time.Time                `json:"updatedAt"`
+	CompletedAt             *time.Time               `json:"completedAt,omitempty"`
 }
 
 // Validate checks the iteration state.
@@ -687,6 +704,11 @@ func (s IterationState) Validate() error {
 	for i := range s.ExternalReferences {
 		if err := s.ExternalReferences[i].Validate(); err != nil {
 			return fmt.Errorf("external reference[%d]: %w", i, err)
+		}
+	}
+	for i := range s.ContextGovernanceEvents {
+		if s.ContextGovernanceEvents[i].Layer == "" || s.ContextGovernanceEvents[i].Kind == "" {
+			return fmt.Errorf("context governance event[%d] is incomplete", i)
 		}
 	}
 	return nil

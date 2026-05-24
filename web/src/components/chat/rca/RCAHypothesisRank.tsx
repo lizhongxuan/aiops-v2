@@ -16,8 +16,8 @@ export function RCAHypothesisRank({ hypotheses }: { hypotheses: Array<Record<str
               <span className="font-medium text-slate-900">{display(hypothesis.titleZh) || display(hypothesis.title) || "候选假设"}</span>
               <span className="shrink-0 text-xs text-slate-500">{Math.round(confidence(hypothesis.confidence) * 100)}%</span>
             </div>
-            {support.length ? <p className="mt-1 text-xs text-slate-500">支持证据：{support.join(", ")}</p> : null}
-            {contradictions.length ? <p className="mt-1 text-xs text-amber-700">矛盾证据：{contradictions.join(", ")}</p> : null}
+            {support.length ? <p className="mt-1 text-xs text-slate-500">支持证据：{support.length} 条</p> : null}
+            {contradictions.length ? <p className="mt-1 text-xs text-amber-700">矛盾证据：{contradictions.length} 条</p> : null}
             {missing.length ? <p className="mt-1 text-xs text-slate-500">缺失证据：{missing.join("；")}</p> : null}
           </li>
         );

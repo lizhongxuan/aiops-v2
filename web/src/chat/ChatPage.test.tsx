@@ -225,6 +225,40 @@ describe("ChatPage", () => {
     expect(container.textContent).not.toContain("p95_latency_ms");
   });
 
+  it("shows context compaction status from assistant transport metadata", async () => {
+    const state = sampleState();
+    state.pendingApprovals = {};
+    state.runtimeLiveness = {
+      ...state.runtimeLiveness,
+      pendingApprovals: {},
+    };
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      contextGovernance: [
+        {
+          id: "ctxgov-chat-l4",
+          layer: "L4",
+          kind: "context.compaction.started",
+          message: "正在压缩上下文，当前任务会继续",
+        },
+        {
+          id: "ctxgov-chat-l5",
+          layer: "L5",
+          kind: "context.compaction.failed",
+          message: "上下文过长，已使用本地摘要继续",
+        },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(container.textContent).toContain("上下文过长，已使用本地摘要继续");
+    expect(container.textContent).not.toContain("正在重试压缩");
+  });
+
   it("uses the current turn approval when stale approvals remain in transport state", async () => {
     const state = sampleState();
     state.pendingApprovals = {

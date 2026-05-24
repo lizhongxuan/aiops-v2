@@ -46,7 +46,7 @@ describe("MessageMarkdown", () => {
     expect(container.querySelector("strong")?.textContent).toBe("safe");
   });
 
-  it("shows long URLs as copyable summaries instead of full text", async () => {
+  it("shows long URLs in full while keeping copy-on-click", async () => {
     const writes: string[] = [];
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -63,8 +63,8 @@ describe("MessageMarkdown", () => {
     });
 
     const link = container.querySelector("a");
-    expect(link?.textContent).toBe("api.coingecko.com /api/v3/simple/price");
-    expect(container.textContent).not.toContain("include_market_cap=true");
+    expect(link?.textContent).toBe(url);
+    expect(container.textContent).toContain("include_market_cap=true");
 
     await act(async () => {
       link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -73,14 +73,28 @@ describe("MessageMarkdown", () => {
     expect(writes).toEqual([url]);
   });
 
-  it("keeps a source label and its URL in one compact paragraph", async () => {
+  it("keeps a source label and its full URL in one paragraph", async () => {
     await act(async () => {
       root.render(<MessageMarkdown text={"来源：\n\nhttps://www.coinbase.com/price/bitcoin"} />);
     });
 
     const paragraphs = container.querySelectorAll("p");
     expect(paragraphs).toHaveLength(1);
-    expect(paragraphs[0].textContent).toBe("来源： www.coinbase.com /price/bitcoin");
+    expect(paragraphs[0].textContent).toBe("来源： https://www.coinbase.com/price/bitcoin");
+  });
+
+  it("preserves full Coroot application URLs with protocol and port", async () => {
+    const url = "http://172.18.13.11:8000/p/5hxbfx6p/applications/5hxbfx6p:smecloud:Deployment:mservice/SLO";
+
+    await act(async () => {
+      root.render(<MessageMarkdown text={`coroot中,5hxbfx6p项目有个mservice,排查其下游异常的问题。\n${url}`} />);
+    });
+
+    const link = container.querySelector("a");
+    expect(link?.textContent).toBe(url);
+    expect(container.textContent).toContain(url);
+    expect(container.textContent).toContain("http://");
+    expect(container.textContent).toContain(":8000");
   });
 
   it("keeps short section labels with their content and separates sections", async () => {
@@ -110,6 +124,44 @@ describe("MessageMarkdown", () => {
     ]);
     expect(container.querySelectorAll("p")).toHaveLength(3);
     expect(container.querySelectorAll("strong")).toHaveLength(3);
+  });
+
+  it("normalizes bold detached RCA labels and confidence values", async () => {
+    await act(async () => {
+      root.render(
+        <MessageMarkdown
+          text={[
+            "**根因：**",
+            "",
+            "Coroot 证据不足，暂不能确认具体接口故障。",
+            "置信度：",
+            "",
+            "中",
+            "**缺失证据：**",
+            "",
+            "需要 failed connections 的时间范围和目标地址。",
+          ].join("\n")}
+        />,
+      );
+    });
+
+    const paragraphs = Array.from(container.querySelectorAll("p")).map((paragraph) => paragraph.textContent || "");
+    expect(paragraphs).toEqual([
+      "根因： Coroot 证据不足，暂不能确认具体接口故障。",
+      "置信度： 中",
+      "缺失证据： 需要 failed connections 的时间范围和目标地址。",
+    ]);
+    expect(container.textContent).not.toContain("置信度：\n中");
+    expect(container.querySelectorAll("strong")).toHaveLength(3);
+  });
+
+  it("emphasizes standalone section labels before lists", async () => {
+    await act(async () => {
+      root.render(<MessageMarkdown text={"支持证据：\n\n- mservice 下游 external-postgres 为 critical\n- tracing 有 error spans"} />);
+    });
+
+    expect(container.querySelector("p strong")?.textContent).toBe("支持证据：");
+    expect(container.querySelectorAll("ul li")).toHaveLength(2);
   });
 
   it("falls back to selection copy when clipboard api rejects", async () => {

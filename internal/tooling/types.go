@@ -146,30 +146,49 @@ type ToolGovernance struct {
 
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
-	Name             string                  `json:"name"`
-	Aliases          []string                `json:"aliases,omitempty"`
-	Description      string                  `json:"description,omitempty"`
-	Domain           string                  `json:"domain,omitempty"`
-	Mock             bool                    `json:"mock,omitempty"`
-	Origin           ToolOrigin              `json:"origin,omitempty"`
-	SearchHint       string                  `json:"searchHint,omitempty"`
-	ShouldDefer      bool                    `json:"shouldDefer,omitempty"`
-	AlwaysLoad       bool                    `json:"alwaysLoad,omitempty"`
-	Layer            ToolLayer               `json:"layer,omitempty"`
-	Pack             string                  `json:"pack,omitempty"`
-	DeferByDefault   bool                    `json:"deferByDefault,omitempty"`
-	Profiles         []string                `json:"profiles,omitempty"`
-	Triggers         []string                `json:"triggers,omitempty"`
-	RecordEvidence   bool                    `json:"recordEvidence,omitempty"`
-	IsMCP            bool                    `json:"isMCP,omitempty"`
-	IsLSP            bool                    `json:"isLSP,omitempty"`
-	RiskLevel        ToolRiskLevel           `json:"riskLevel,omitempty"`
-	Mutating         bool                    `json:"mutating,omitempty"`
-	RequiresApproval bool                    `json:"requiresApproval,omitempty"`
-	ResultBudget     ResultBudget            `json:"resultBudget,omitempty"`
-	FailurePolicy    ToolFailurePolicy       `json:"failurePolicy,omitempty"`
-	MCPInfo          MCPInfo                 `json:"mcpInfo,omitempty"`
-	ProviderNative   *ProviderNativeToolInfo `json:"providerNative,omitempty"`
+	Name                   string                  `json:"name"`
+	Aliases                []string                `json:"aliases,omitempty"`
+	Description            string                  `json:"description,omitempty"`
+	Domain                 string                  `json:"domain,omitempty"`
+	Mock                   bool                    `json:"mock,omitempty"`
+	Origin                 ToolOrigin              `json:"origin,omitempty"`
+	SearchHint             string                  `json:"searchHint,omitempty"`
+	ShouldDefer            bool                    `json:"shouldDefer,omitempty"`
+	AlwaysLoad             bool                    `json:"alwaysLoad,omitempty"`
+	Layer                  ToolLayer               `json:"layer,omitempty"`
+	Pack                   string                  `json:"pack,omitempty"`
+	DeferByDefault         bool                    `json:"deferByDefault,omitempty"`
+	Profiles               []string                `json:"profiles,omitempty"`
+	Triggers               []string                `json:"triggers,omitempty"`
+	RecordEvidence         bool                    `json:"recordEvidence,omitempty"`
+	DedupeEligible         bool                    `json:"dedupeEligible,omitempty"`
+	MicrocompactEligible   bool                    `json:"microcompactEligible,omitempty"`
+	ObservationKeyHints    []string                `json:"observationKeyHints,omitempty"`
+	SmallContextBudgetHint int                     `json:"smallContextBudgetHint,omitempty"`
+	IsMCP                  bool                    `json:"isMCP,omitempty"`
+	IsLSP                  bool                    `json:"isLSP,omitempty"`
+	RiskLevel              ToolRiskLevel           `json:"riskLevel,omitempty"`
+	Mutating               bool                    `json:"mutating,omitempty"`
+	RequiresApproval       bool                    `json:"requiresApproval,omitempty"`
+	ResultBudget           ResultBudget            `json:"resultBudget,omitempty"`
+	FailurePolicy          ToolFailurePolicy       `json:"failurePolicy,omitempty"`
+	MCPInfo                MCPInfo                 `json:"mcpInfo,omitempty"`
+	ProviderNative         *ProviderNativeToolInfo `json:"providerNative,omitempty"`
+}
+
+// ToolAllowedInSmallContext reports whether a tool should remain visible when
+// the selected model has a very small context window.
+func ToolAllowedInSmallContext(meta ToolMetadata) bool {
+	if meta.AlwaysLoad || meta.Layer == ToolLayerCore {
+		return true
+	}
+	if meta.SmallContextBudgetHint > 0 && meta.SmallContextBudgetHint <= 4096 {
+		return true
+	}
+	if meta.EffectiveResultBudget(4096).MaxInlineResultBytes > 4096 {
+		return false
+	}
+	return !meta.Mutating || meta.RequiresApproval
 }
 
 // HasMCPSource reports whether the metadata identifies an MCP-backed tool.

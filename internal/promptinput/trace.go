@@ -82,6 +82,7 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		MemoryItemCount:        len(memories),
 		VisibleOpsManualTools:  visibleOpsManualTools(req.Tools),
 		DroppedContextReasons:  append([]string(nil), req.DroppedContextReasons...),
+		ContextGovernance:      cloneContextGovernanceTraceItems(req.ContextGovernance),
 	}
 }
 
@@ -146,6 +147,25 @@ func visibleOpsManualTools(tools []promptcompiler.Tool) []string {
 		case "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight":
 			out = append(out, name)
 		}
+	}
+	return out
+}
+
+func cloneContextGovernanceTraceItems(items []ContextGovernanceTraceItem) []ContextGovernanceTraceItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]ContextGovernanceTraceItem, 0, len(items))
+	for _, item := range items {
+		item.ReferenceIDs = append([]string(nil), item.ReferenceIDs...)
+		if len(item.Budget) > 0 {
+			budget := make(map[string]int, len(item.Budget))
+			for key, value := range item.Budget {
+				budget[key] = value
+			}
+			item.Budget = budget
+		}
+		out = append(out, item)
 	}
 	return out
 }

@@ -3,7 +3,9 @@ package runtimekernel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,6 +18,7 @@ import (
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/spanstream"
 	"aiops-v2/internal/tooling"
 )
 
@@ -74,6 +77,14 @@ func (p *testPanicCompiler) CompileForEino(_ promptcompiler.CompileContext) ([]*
 // testMockChatModel implements model.ChatModel for testing.
 type testMockChatModel struct{}
 
+type testProviderConfigResolver struct {
+	config modelrouter.ProviderConfig
+}
+
+func (r testProviderConfigResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelrouter.ProviderConfig, bool) {
+	return r.config, true
+}
+
 func (m *testMockChatModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
 	return &schema.Message{Role: schema.Assistant, Content: "mock response"}, nil
 }
@@ -83,6 +94,20 @@ func (m *testMockChatModel) Stream(_ context.Context, _ []*schema.Message, _ ...
 }
 
 func (m *testMockChatModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
+type promptTooLongSummaryModel struct{}
+
+func (m *promptTooLongSummaryModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("prompt too long: context length exceeded")
+}
+
+func (m *promptTooLongSummaryModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("stream not implemented")
+}
+
+func (m *promptTooLongSummaryModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
@@ -215,6 +240,7 @@ func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
 		"mock": &testMockChatModel{},
 	}
 	router := modelrouter.NewRouter("mock", providers, nil)
+	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
 	return NewEinoKernel(EinoKernelConfig{
 		ToolSource:  &testMockToolAssemblySource{registry: registry},
@@ -625,6 +651,49 @@ func TestSplitContextForCompaction(t *testing.T) {
 	}
 	if cw.UsedTokens > cw.MaxTokens && cw.Messages > 1 {
 		t.Fatalf("UsedTokens (%d) should not exceed MaxTokens (%d) when more than one message remains", cw.UsedTokens, cw.MaxTokens)
+	}
+}
+
+func TestApplyContextPipelineDoesNotRetryPromptTooLong(t *testing.T) {
+	compressor := spanstream.NewContextCompressor(&promptTooLongSummaryModel{}, 1)
+	messages := []Message{
+		testToolResultMessage("tr-1", "logs.search", strings.Repeat("old logs ", 20), "ref-old"),
+		{ID: "assistant-1", Role: "assistant", Content: strings.Repeat("old analysis ", 20)},
+		testToolResultMessage("tr-2", "metrics.query", strings.Repeat("old metrics ", 20), "ref-metrics"),
+		{ID: "assistant-2", Role: "assistant", Content: strings.Repeat("more analysis ", 20)},
+		testToolResultMessage("tr-3", "trace.query", strings.Repeat("old traces ", 20), "ref-traces"),
+		{ID: "user-latest", Role: "user", Content: strings.Repeat("latest user constraint ", 20)},
+	}
+	cw := &ContextWindow{MaxTokens: 20}
+
+	result, err := ApplyContextPipeline(context.Background(), cw, messages, ContextPipelineOptions{
+		SessionID:    "sess-l5",
+		TurnID:       "turn-l5",
+		Iteration:    2,
+		Compressor:   compressor,
+		BudgetPolicy: DefaultContextBudgetPolicy(20000, 8000),
+	})
+	if err != nil {
+		t.Fatalf("ApplyContextPipeline returned error: %v", err)
+	}
+	if len(result.CompactedSegments) == 0 || strings.Contains(result.CompactedSegments[0].Summary, "compressed after retry") {
+		t.Fatalf("summary message = %#v, want local fallback summary", result.Messages)
+	}
+	var tooLongEvent *ContextGovernanceEvent
+	for i := range result.GovernanceEvents {
+		if result.GovernanceEvents[i].Layer == ContextGovernanceLayerL5 && result.GovernanceEvents[i].Kind == "context.compaction.failed" {
+			tooLongEvent = &result.GovernanceEvents[i]
+			break
+		}
+	}
+	if tooLongEvent == nil {
+		t.Fatalf("governance events = %#v, want single L5 failed event", result.GovernanceEvents)
+	}
+	if tooLongEvent.RetryAttempt != 0 || tooLongEvent.RetryMax != 0 {
+		t.Fatalf("too long event = %#v, want no retry counters", tooLongEvent)
+	}
+	if len(tooLongEvent.DroppedGroupIDs) != 0 {
+		t.Fatalf("too long event dropped groups = %#v, want none", tooLongEvent)
 	}
 }
 

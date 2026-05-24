@@ -167,7 +167,7 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
   const assistantText = finalText || [...cards].reverse().find((card) => card?.type === "AssistantMessageCard")?.text || "";
 
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId,
     threadId,
     status: resolvedStatus,
@@ -292,6 +292,129 @@ export function createChatFixtureSessions(overrides = {}) {
         preview: "帮我看下 nginx 中间件的状态，并给我一个处理建议。",
         selectedHostId: "web-01",
         lastActivityAt: "2026-04-03T10:00:10Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+export function createContextCompactionFixtureState(overrides = {}) {
+  const now = "2026-05-22T08:00:00Z";
+  const state = createChatFixtureState({
+    sessionId: "context-compaction-session",
+    threadId: "context-compaction-session",
+    status: "idle",
+    cards: [
+      {
+        id: "user-context-compaction",
+        type: "UserMessageCard",
+        role: "user",
+        text: "继续排查 nginx 超时，并保留关键摘要。",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "web-01" },
+      codex: { status: "connected", retryAttempt: 1, retryMax: 3 },
+      activity: {
+        viewedFiles: [],
+        searchedWebQueries: [],
+        searchedContentQueries: [],
+      },
+    },
+    finalText: "我正在整理旧上下文，关键摘要会保留在当前对话里。",
+  });
+  const turnId = state.currentTurnId;
+  state.turns[turnId] = {
+    ...state.turns[turnId],
+    status: "completed",
+    startedAt: now,
+    completedAt: "2026-05-22T08:00:04Z",
+    updatedAt: now,
+    contextGovernance: [
+      {
+        id: "ctxgov-fixture-l4",
+        layer: "L4",
+        kind: "context.compaction.started",
+        message: "正在压缩上下文，当前任务会继续",
+        budget: {
+          maxContextTokens: 20000,
+          warningThreshold: 13260,
+          autoCompactThreshold: 14960,
+          blockingLimit: 15980,
+          smallContextMode: true,
+        },
+        referenceIds: ["spill-1"],
+        createdAt: now,
+      },
+      {
+        id: "ctxgov-fixture-l5",
+        layer: "L5",
+        kind: "context.compaction.failed",
+        message: "上下文过长，已使用本地摘要继续",
+        createdAt: "2026-05-22T08:00:02Z",
+      },
+    ],
+    process: [
+      {
+        id: "tool-context-spill",
+        kind: "tool",
+        displayKind: "logs_query",
+        status: "completed",
+        text: "logs_query nginx timeout",
+        outputPreview: "Large nginx log result was externalized. Summary: 17 upstream timeout lines.",
+        evidenceRefs: ["spill-1"],
+        materializationTier: "large",
+        originalBytes: 48213,
+        inlineBytes: 920,
+        externalReferences: [
+          {
+            id: "spill-1",
+            kind: "blob",
+            title: "nginx raw timeout logs",
+            summary: "17 upstream timeout lines from nginx in the last 10 minutes.",
+            contentType: "text/plain",
+            bytes: 48213,
+          },
+        ],
+        updatedAt: "2026-05-22T08:00:03Z",
+      },
+      {
+        id: "process-context-compact",
+        kind: "system",
+        displayKind: "context.compaction",
+        status: "completed",
+        text: "已保留当前目标、审批状态和关键上下文。",
+        updatedAt: "2026-05-22T08:00:04Z",
+      },
+    ],
+    final: state.turns[turnId]?.final
+      ? {
+          ...state.turns[turnId].final,
+          status: "completed",
+        }
+      : state.turns[turnId]?.final,
+  };
+  return {
+    ...state,
+    ...overrides,
+  };
+}
+
+export function createContextCompactionFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "context-compaction-session",
+    sessions: [
+      {
+        id: "context-compaction-session",
+        kind: "single_host",
+        title: "Context compaction",
+        status: "completed",
+        messageCount: 1,
+        preview: "继续排查 nginx 超时，并保留关键摘要。",
+        selectedHostId: "web-01",
+        lastActivityAt: "2026-05-22T08:00:04Z",
       },
     ],
     ...overrides,
@@ -1040,6 +1163,13 @@ export function resolveUiFixturePreset(key = "") {
         name: "chat",
         state: createChatFixtureState(),
         sessions: createChatFixtureSessions(),
+      };
+    case "context-compaction":
+    case "context_compaction":
+      return {
+        name: "context-compaction",
+        state: createContextCompactionFixtureState(),
+        sessions: createContextCompactionFixtureSessions(),
       };
     case "protocol":
     case "workspace":

@@ -1035,6 +1035,7 @@ func cloneAgentProfileStringMap(src map[string]string) map[string]string {
 func defaultSkillCatalogEntries() []store.SkillCatalogEntry {
 	return []store.SkillCatalogEntry{
 		{ID: "ops-triage", Name: "Ops Triage", Description: "快速归类问题并给出最小干预路径。", Source: "built-in", DefaultEnabled: true, DefaultActivationMode: "default_enabled"},
+		{ID: "coroot-rca", Name: "Coroot RCA", Description: "基于 Coroot MCP 聚合证据做服务、SLO、依赖和 incident 根因分析。", Source: "project", DefaultEnabled: false, DefaultActivationMode: "explicit_only"},
 		{ID: "incident-summary", Name: "Incident Summary", Description: "把诊断过程整理成可交付摘要。", Source: "local", DefaultEnabled: true, DefaultActivationMode: "default_enabled"},
 		{ID: "safe-change-review", Name: "Safe Change Review", Description: "在执行前做变更影响检查。", Source: "built-in", DefaultEnabled: false, DefaultActivationMode: "disabled"},
 	}
@@ -1111,6 +1112,7 @@ func defaultAgentProfiles() map[string]store.AgentProfileRecord {
 			},
 			"skills": []any{
 				map[string]any{"id": "ops-triage", "name": "Ops Triage", "enabled": true, "activationMode": "default_enabled"},
+				map[string]any{"id": "coroot-rca", "name": "Coroot RCA", "enabled": false, "activationMode": "explicit_only"},
 				map[string]any{"id": "incident-summary", "name": "Incident Summary", "enabled": true, "activationMode": "default_enabled"},
 				map[string]any{"id": "safe-change-review", "name": "Safe Change Review", "enabled": false, "activationMode": "disabled"},
 			},

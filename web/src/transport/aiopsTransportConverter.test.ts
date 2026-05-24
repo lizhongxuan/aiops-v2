@@ -19,7 +19,7 @@ function metadata(overrides = {}): AssistantTransportConnectionMetadata {
 
 function createState(): AiopsTransportState {
   return {
-    schemaVersion: "aiops.transport.v1",
+    schemaVersion: "aiops.transport.v2",
     sessionId: "sess-1",
     threadId: "thread-1",
     status: "idle",
@@ -202,6 +202,31 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("does not create an assistant message for completed turns that only have intent metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      id: "turn-1",
+      status: "completed",
+      startedAt: "2026-05-06T00:00:00Z",
+      completedAt: "2026-05-06T00:00:05Z",
+      user: {
+        id: "user-1",
+        text: "检查 Redis 状态",
+        createdAt: "2026-05-06T00:00:00Z",
+      },
+      intent: { text: "检查 Redis 状态", status: "status_check" },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      role: "user",
+      content: [{ type: "text", text: "检查 Redis 状态" }],
+    });
+  });
+
   it("attaches turn Agent-to-UI artifacts to assistant message metadata", () => {
     const state = createState();
     state.turns["turn-1"] = {
@@ -230,6 +255,36 @@ describe("aiopsTransportConverter", () => {
           type: "coroot_chart",
           titleZh: "Coroot 延迟趋势",
           caseId: "case-debug-1",
+        }),
+      ],
+    });
+  });
+
+  it("attaches context governance events to assistant message metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      contextGovernance: [
+        {
+          id: "ctxgov-1",
+          layer: "L4",
+          kind: "context.compaction.started",
+          message: "正在压缩上下文，当前任务会继续",
+          retryAttempt: 1,
+          retryMax: 3,
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      contextGovernance: [
+        expect.objectContaining({
+          id: "ctxgov-1",
+          layer: "L4",
+          kind: "context.compaction.started",
         }),
       ],
     });

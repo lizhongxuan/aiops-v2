@@ -531,6 +531,7 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
 		"mock": &testMockChatModel{},
 	}
 	router := modelrouter.NewRouter("mock", providers, nil)
+	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
 	return NewEinoKernel(EinoKernelConfig{
 		ToolSource:  registry,
@@ -553,6 +554,7 @@ func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compile
 		"mock": &testMockChatModel{},
 	}
 	router := modelrouter.NewRouter("mock", providers, nil)
+	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
 	return NewEinoKernel(EinoKernelConfig{
 		ToolSource:  registry,

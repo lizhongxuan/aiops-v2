@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -356,6 +356,8 @@ function PromptTraceDetailDialog({
   selectedTraceVisibleTools?: string[];
 }) {
   const llmRequests = (traceViewModel?.agentUiSources?.userRequests || []).flatMap((request) => request.llmRequests || []);
+  const contextGovernance = traceViewModel?.contextGovernance;
+  const contextGovernanceEmptyText = contextGovernance?.emptyText || "暂无上下文治理事件";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showCloseButton={false} className="max-h-[88vh] overflow-hidden sm:max-w-5xl">
@@ -412,6 +414,10 @@ function PromptTraceDetailDialog({
                     </div>
                   </section>
                 ) : null}
+                <ContextGovernancePanels
+                  contextGovernance={contextGovernance}
+                  emptyText={contextGovernanceEmptyText}
+                />
                 <pre className="md:col-span-5 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{JSON.stringify({ summary: traceViewModel?.summary, warnings: traceViewModel?.warnings }, null, 2)}</pre>
               </section>
             ) : null}
@@ -426,6 +432,121 @@ function PromptTraceDetailDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
+
+function ContextGovernancePanels({
+  contextGovernance,
+  emptyText,
+}: {
+  contextGovernance?: ContextGovernanceViewModel;
+  emptyText: string;
+}) {
+  return (
+    <section className="md:col-span-5 grid gap-3 md:grid-cols-2">
+      <ContextPanel title="Context Budget">
+        {contextGovernance?.budgetEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.budgetEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+                  {event.budgetItems.map((item) => (
+                    <div key={item.key} className="rounded-md border border-slate-200 bg-white p-2">
+                      <div className="truncate text-slate-500" title={item.key}>{item.label}</div>
+                      <div className="mt-1 font-mono font-medium text-slate-950">{formatGovernanceValue(item.value)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="Compaction Events">
+        {contextGovernance?.compactionEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.compactionEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                {event.compactedIds.length ? <ReferenceLine label="Compacted" values={event.compactedIds} /> : null}
+                {event.droppedGroupIds.length ? <ReferenceLine label="Dropped" values={event.droppedGroupIds} /> : null}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="Tool Result Materialization">
+        {contextGovernance?.materializationEvents.length ? (
+          <div className="grid gap-3">
+            {contextGovernance.materializationEvents.map((event) => (
+              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                <EventHeader event={event} />
+                {event.referenceIds.length ? <ReferenceLine label="Refs" values={event.referenceIds} /> : null}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+
+      <ContextPanel title="External References">
+        {contextGovernance?.externalReferences.length ? (
+          <div className="grid gap-2">
+            {contextGovernance.externalReferences.map((reference) => (
+              <div key={reference.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                <ToneBadge>{reference.layer || "context"}</ToneBadge>
+                <span className="min-w-0 flex-1 truncate font-mono text-slate-950" title={reference.referenceId}>{reference.referenceId}</span>
+                <span className="truncate text-slate-500" title={reference.kind}>{reference.kind}</span>
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={emptyText} />}
+      </ContextPanel>
+    </section>
+  );
+}
+
+function ContextPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <h3 className="font-medium text-slate-950">{title}</h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function EventHeader({ event }: { event: ContextGovernanceViewModel["events"][number] }) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+        {event.layer ? <ToneBadge>{event.layer}</ToneBadge> : null}
+        {event.kind ? <ToneBadge>{event.kind}</ToneBadge> : null}
+        {event.retryLabel ? <ToneBadge>retry {event.retryLabel}</ToneBadge> : null}
+        {event.timeout ? <ToneBadge>timeout</ToneBadge> : null}
+      </div>
+      {event.message ? <p className="text-sm text-slate-700">{event.message}</p> : null}
+    </div>
+  );
+}
+
+function ReferenceLine({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div className="mt-3 flex min-w-0 flex-wrap gap-2 text-xs">
+      <span className="text-slate-500">{label}</span>
+      {values.map((value) => <ToneBadge key={value}><span className="block max-w-[220px] truncate" title={value}>{value}</span></ToneBadge>)}
+    </div>
+  );
+}
+
+function EmptyGovernanceState({ text }: { text: string }) {
+  return <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">{text}</p>;
+}
+
+function formatGovernanceValue(value: string | number) {
+  return typeof value === "number" ? formatNumber(value) : value || "-";
 }
 
 type TraceTurnGroup = {

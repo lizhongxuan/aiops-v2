@@ -361,7 +361,7 @@ func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *
 	r := NewRegistry()
 	for _, meta := range []ToolMetadata{
 		{Name: "host_read", Description: "host", Layer: ToolLayerCore},
-		{Name: "search_ops_manuals", Description: "search", Layer: ToolLayerCore},
+		{Name: "search_ops_manuals", Description: "search", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
 		{Name: "resolve_ops_manual_params", Description: "resolve", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
 		{Name: "run_ops_manual_preflight", Description: "preflight", Layer: ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true},
 	} {
@@ -377,14 +377,26 @@ func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *
 	}
 
 	initial := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", nil))
-	for _, want := range []string{"host_read", "search_ops_manuals"} {
+	for _, want := range []string{"host_read"} {
 		if !containsToolNameForRegistryTest(initial, want) {
 			t.Fatalf("initial tools = %v, want %q", initial, want)
 		}
 	}
-	for _, forbidden := range []string{"resolve_ops_manual_params", "run_ops_manual_preflight"} {
+	for _, forbidden := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"} {
 		if containsToolNameForRegistryTest(initial, forbidden) {
 			t.Fatalf("initial tools = %v, should not include %q", initial, forbidden)
+		}
+	}
+
+	manualIntent := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"enableToolPack": "ops_manual_flow",
+	}))
+	if !containsToolNameForRegistryTest(manualIntent, "search_ops_manuals") {
+		t.Fatalf("manual intent tools = %v, want search_ops_manuals", manualIntent)
+	}
+	for _, forbidden := range []string{"resolve_ops_manual_params", "run_ops_manual_preflight"} {
+		if containsToolNameForRegistryTest(manualIntent, forbidden) {
+			t.Fatalf("manual intent tools = %v, should not include %q before match/direct_execute", manualIntent, forbidden)
 		}
 	}
 

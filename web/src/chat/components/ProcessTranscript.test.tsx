@@ -407,7 +407,7 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("读取最近 30 分钟 Kubernetes events");
   });
 
-  it("shows mock and evidence refs on tool and command rows", async () => {
+  it("shows mock rows without leaking internal evidence refs", async () => {
     const process = [
       makeBlock({
         id: "tool-mock-evidence",
@@ -438,10 +438,9 @@ describe("ProcessTranscript", () => {
 
     expect(container.querySelector('[data-testid="aiops-tool-row-tool-mock-evidence"]')?.textContent).toContain("Mock");
     expect(container.querySelector('[data-testid="aiops-command-row-cmd-mock-evidence"]')?.textContent).toContain("Mock");
-    expect(container.textContent).toContain("证据");
-    expect(container.textContent).toContain("evidence:redis:rss");
-    expect(container.textContent).toContain("evidence:redis:events");
-    expect(container.textContent).toContain("evidence:k8s:events");
+    expect(container.textContent).not.toContain("evidence:redis:rss");
+    expect(container.textContent).not.toContain("evidence:redis:events");
+    expect(container.textContent).not.toContain("evidence:k8s:events");
   });
 
   it("lets expanded command rows in merged groups grow without clipping sibling rows", async () => {
@@ -1117,6 +1116,50 @@ describe("ProcessTranscript", () => {
     expect(search).toBeGreaterThan(second);
   });
 
+  it("keeps externalized tool evidence internal in normal chat", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-spilled",
+        kind: "tool",
+        status: "completed",
+        displayKind: "logs_query",
+        text: "logs_query",
+        outputPreview: "summary only",
+        materializationTier: "large",
+        externalReferences: [
+          {
+            id: "spill-1",
+            kind: "blob",
+            title: "nginx raw logs",
+            summary: "raw log summary",
+          },
+        ],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+
+    const header = container.querySelector('[data-testid="aiops-process-header"]');
+    expect(header?.getAttribute("aria-expanded")).toBe("false");
+
+    await expandProcessTranscript();
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-tool-row-tool-spilled"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(container.textContent).toContain("logs_query");
+    expect(container.textContent).toContain("summary only");
+    expect(container.textContent).not.toContain("结果较大，仅显示摘要。");
+    expect(container.textContent).not.toContain("已外溢");
+    expect(container.textContent).not.toContain("原始证据");
+    expect(container.textContent).not.toContain("查看原始证据");
+    expect(container.textContent).not.toContain("nginx raw logs");
+    expect(container.textContent).not.toContain("raw log summary");
+  });
+
   it("keeps assistant narration in order around grouped commands and grouped searches", async () => {
     const process = [
       makeBlock({
@@ -1283,7 +1326,7 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).not.toContain("server-local");
   });
 
-  it("keeps long tool output inside the transcript container", async () => {
+  it("truncates long structured tool output instead of replacing it with a fixed message", async () => {
     const longJson = `{"chartReports":[{"name":"Instances","widgets":[{"chart":{"ctx":{"from":1779194700000,"step":30000},"series":[{"name":"${"aiops-host-agent".repeat(18)}","data":[${Array(60).fill(2).join(",")}]}]}}]}]}`;
     const process = [
       makeBlock({
@@ -1307,6 +1350,10 @@ describe("ProcessTranscript", () => {
 
     const output = container.querySelector('[data-testid="aiops-tool-output-tool-long-json"]');
     expect(output?.textContent).toContain("chartReports");
+    expect(output?.textContent).toContain("aiops-host-agent");
+    expect(output?.textContent).toContain("...");
+    expect(output?.textContent).not.toBe("结果较大，仅显示摘要。");
+    expect((output?.textContent || "").length).toBeLessThanOrEqual(720);
     expect(output?.className).toContain("max-w-full");
     expect(output?.className).toContain("overflow-hidden");
     expect(output?.className).toContain("break-words");
@@ -1478,7 +1525,8 @@ describe("MergedToolSummary", () => {
     expect(container.textContent).toContain("已调用 3 个工具");
     expect(container.querySelector('[data-testid="aiops-merged-tool-details"]')).toBeTruthy();
     expect(container.textContent).toContain("coroot.applications");
-    expect(container.textContent).toContain('coroot_list_services {"status":"warning"}');
+    expect(container.textContent).toContain("coroot_list_services");
+    expect(container.textContent).not.toContain('{"status":"warning"}');
     expect(container.textContent).toContain("coroot.rca");
   });
 });

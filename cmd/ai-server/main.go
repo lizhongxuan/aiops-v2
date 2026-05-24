@@ -821,9 +821,10 @@ func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelro
 		return modelrouter.ProviderConfig{}, false
 	}
 	return modelrouter.ProviderConfig{
-		Provider: provider,
-		Model:    model,
-		BaseURL:  strings.TrimSpace(cfg.BaseURL),
+		Provider:         provider,
+		Model:            model,
+		BaseURL:          strings.TrimSpace(cfg.BaseURL),
+		MaxContextTokens: normalizeLLMContextWindow(cfg.MaxContextTokens),
 	}, true
 }
 
@@ -836,6 +837,16 @@ func (r *storeLLMResolver) currentConfig() (*store.LLMConfig, bool) {
 		return nil, false
 	}
 	return cfg, true
+}
+
+func normalizeLLMContextWindow(value int) int {
+	if value <= 0 {
+		return 200000
+	}
+	if value < 10000 {
+		return 10000
+	}
+	return value
 }
 
 // ---------------------------------------------------------------------------

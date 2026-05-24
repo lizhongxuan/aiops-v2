@@ -234,6 +234,35 @@ func TestToolResultAgentItemDataExtractsEvidenceRefsFromStructuredOutput(t *test
 	}
 }
 
+func TestToolResultAgentItemDataKeepsCorootDisplayDataOutOfOutputPreview(t *testing.T) {
+	tc := ToolCall{
+		ID:   "call-coroot",
+		Name: "coroot.service_metrics",
+	}
+	result := ToolResult{
+		ToolCallID: "call-coroot",
+		Content:    `{"schemaVersion":"aiops.coroot/v1","tool":"coroot.service_metrics","status":"ok","service":"checkout","chartSummary":{"service":"checkout","reports":[{"name":"CPU","pointCount":2}]}}`,
+		Display: &ToolDisplayPayload{
+			Type: "coroot",
+			Data: json.RawMessage(`{"schemaVersion":"aiops.coroot/v1","tool":"coroot.service_metrics","status":"ok","service":"checkout","chartReports":[{"name":"CPU","widgets":[{"chart":{"series":[{"name":"checkout","data":[0.1,0.2]}]}}]}]}`),
+		},
+	}
+
+	data := toolResultAgentItemData("turn-1", tc, result)
+
+	preview := strings.TrimSpace(string(data["outputPreview"].(json.RawMessage)))
+	if strings.Contains(preview, "chartReports") || strings.Contains(preview, `"data"`) {
+		t.Fatalf("outputPreview leaked raw Coroot display data: %s", preview)
+	}
+	if !strings.Contains(preview, "chartSummary") {
+		t.Fatalf("outputPreview = %s, want compact model-facing summary", preview)
+	}
+	displayData := strings.TrimSpace(string(data["displayData"].(json.RawMessage)))
+	if !strings.Contains(displayData, "chartReports") {
+		t.Fatalf("displayData = %s, want native chart payload retained for UI artifacts", displayData)
+	}
+}
+
 func TestRunTurn_UpdatePlanToolWritesPlanTurnItem(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
