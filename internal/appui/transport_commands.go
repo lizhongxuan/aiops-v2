@@ -2,9 +2,12 @@ package appui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/hostops"
 )
 
 type TransportCommandType string
@@ -184,13 +187,14 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		return state, TransportCommandResult{}, nil
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
+	route := detectHostOpsTransportRoute(messageText, command.Metadata)
 	resp, err := h.chat.SendMessage(ctx, ChatCommand{
 		SessionID:       strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
 		Content:         messageText,
 		HostID:          strings.TrimSpace(command.HostID),
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),
 		ClientTurnID:    strings.TrimSpace(command.ClientTurnID),
-		Metadata:        cloneStringMetadata(command.Metadata),
+		Metadata:        route.metadata,
 	})
 	if err != nil {
 		return state, TransportCommandResult{}, err
@@ -217,8 +221,88 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		state.Turns[turnID] = turn
 		state.RuntimeLiveness.ActiveTurns[turnID] = true
 	}
+	if route.decision.Kind == hostops.RouteKindHostOps {
+		state = addHostOpsMissionFromRoute(state, route, resp.TurnID)
+	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
+}
+
+type hostOpsTransportRoute struct {
+	decision hostops.RouteDecision
+	metadata map[string]string
+}
+
+func detectHostOpsTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
+	nextMetadata := cloneStringMetadata(metadata)
+	mentions := hostops.ParseHostMentions(messageText)
+	decision := hostops.DetectRoute(messageText, mentions)
+	if decision.Kind != hostops.RouteKindHostOps {
+		return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+	}
+	nextMetadata["aiops.hostops.routeKind"] = string(decision.Kind)
+	nextMetadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
+	nextMetadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
+	if serialized, err := json.Marshal(decision.Mentions); err == nil {
+		nextMetadata["aiops.hostops.mentions"] = string(serialized)
+	}
+	return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+}
+
+func addHostOpsMissionFromRoute(state AiopsTransportState, route hostOpsTransportRoute, turnID string) AiopsTransportState {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
+	}
+	missionID := strings.TrimSpace(route.metadata["aiops.hostops.missionId"])
+	if missionID == "" {
+		missionID = "hostops:" + turnID
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := string(hostops.HostMissionStatusPlanning)
+	if route.decision.PlanRequired {
+		status = string(hostops.HostMissionStatusWaitingPlanAcceptance)
+	}
+	mission := state.HostMissions[missionID]
+	if mission.ID == "" {
+		mission.ID = missionID
+		mission.CreatedAt = now
+	}
+	mission.TurnID = turnID
+	mission.Status = status
+	mission.PlanRequired = route.decision.PlanRequired
+	mission.PlanAccepted = false
+	mission.MentionedHosts = transportHostMentionsFromHostOps(route.decision.Mentions)
+	mission.UpdatedAt = now
+	state.HostMissions[missionID] = mission
+	state.ActiveHostMissionID = missionID
+	return state
+}
+
+func transportHostMentionsFromHostOps(mentions []hostops.HostMention) []AiopsTransportHostMention {
+	result := make([]AiopsTransportHostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		result = append(result, AiopsTransportHostMention{
+			TokenID:     mention.TokenID,
+			Raw:         mention.Raw,
+			HostID:      mention.HostID,
+			Address:     mention.Address,
+			DisplayName: mention.DisplayName,
+			Source:      string(mention.Source),
+			Resolved:    mention.Resolved,
+		})
+	}
+	return result
+}
+
+func boolMetadataString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func (h *TransportCommandHandler) applyRetry(ctx context.Context, state AiopsTransportState, command *TransportRetryCommand) (AiopsTransportState, TransportCommandResult, error) {

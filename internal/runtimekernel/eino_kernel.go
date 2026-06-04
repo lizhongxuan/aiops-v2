@@ -2267,6 +2267,10 @@ func enrichCompileContext(
 	if hostID != "" && strings.TrimSpace(compileCtx.HostContext) == "" {
 		compileCtx.HostContext = hostID
 	}
+	if hostOpsManagerRequested(metadata) {
+		compileCtx.HostOpsManager = true
+		compileCtx.HostOpsPlanRequired = hostOpsPlanRequired(metadata)
+	}
 	if sessionBinding := sessionBindingPromptSection(metadata); sessionBinding != "" {
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
 			Title:   "Session Binding",
@@ -2300,6 +2304,41 @@ func enrichCompileContext(
 		Content: "The AIOps UI/API for this session may be served on 127.0.0.1:8080. For service/container changes on server-local, check host ports with lsof before binding and do not bind new workloads to 127.0.0.1:8080 or host port 8080. Choose a free alternate port such as 18080 when exposing test services.",
 	})
 	return compileCtx
+}
+
+func hostOpsManagerRequested(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if strings.TrimSpace(metadata["aiops.hostops.mentions"]) != "" {
+		return true
+	}
+	return hostOpsPlanRequired(metadata)
+}
+
+func hostOpsPlanRequired(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"aiops.hostops.planRequired",
+		"aiops.hostops.clientDetectedMultiHost",
+		"aiops.hostops.serverDetectedMultiHost",
+	} {
+		if metadataBool(metadata[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func updateRuntimeEnvironmentContext(session *SessionState, req TurnRequest, now time.Time) {

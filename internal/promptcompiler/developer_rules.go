@@ -39,6 +39,7 @@ func developerInstructionSections(ctx CompileContext) []string {
 		{title: "Operating Contract", lines: developerOperatingContractLines()},
 		{title: "Task Triage", lines: developerTaskTriageLines(ctx)},
 		{title: "Planning and Status Tracking", lines: developerPlanningLines(ctx)},
+		{title: "Host Operations Manager", lines: developerHostOpsManagerLines(ctx)},
 		{title: "Responsiveness", lines: developerResponsivenessLines()},
 		{title: "Evidence and Inference", lines: developerEvidenceLines(ctx)},
 		{title: "Diagnostic Protocol", lines: developerDiagnosticProtocolLines(ctx)},
@@ -77,6 +78,22 @@ func renderDeveloperSection(section developerSection) string {
 		lines = append(lines, "- "+line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func developerHostOpsManagerLines(ctx CompileContext) []string {
+	if !ctx.HostOpsManager && !ctx.HostOpsPlanRequired {
+		return nil
+	}
+	lines := []string{
+		"当用户消息包含多个 @主机 时，你必须先制定结构化计划。",
+		"你不能直接在任何被 @ 的主机上执行命令。",
+		"你必须为每个被 @ 的唯一主机启动一个独立 host-bound 子 Agent。",
+		"当前主 Agent 只负责计划、分派、汇总和用户确认；主机运维动作必须交给对应子 Agent。",
+	}
+	if ctx.HostOpsPlanRequired {
+		lines = append(lines, "在计划被用户接受之前，只允许做只读预检查和计划细化，不允许执行变更。")
+	}
+	return lines
 }
 
 func developerOperatingContractLines() []string {
@@ -379,6 +396,12 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 		constraints = append(constraints, "Report results back to the planner upon completion.")
 	case AgentKindPlanner:
 		constraints = append(constraints, "Coordinate worker agents, do not execute host operations directly.")
+	}
+	if ctx.HostOpsManager || ctx.HostOpsPlanRequired {
+		constraints = append(constraints, "Host operations manager route: do not execute commands on mentioned hosts directly; delegate each unique host to its own host-bound child agent.")
+	}
+	if ctx.HostOpsPlanRequired {
+		constraints = append(constraints, "Multi-host host operations require a structured plan before mutation.")
 	}
 
 	return constraints

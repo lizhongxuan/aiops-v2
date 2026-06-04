@@ -87,6 +87,12 @@ type CompileContext struct {
 	// stable prompt envelope.
 	EvidenceReminders []string
 
+	// HostOpsManager marks the current turn as a host operation manager route.
+	HostOpsManager bool
+
+	// HostOpsPlanRequired requires a structured plan before host mutations.
+	HostOpsPlanRequired bool
+
 	// Deprecated: compatibility-only legacy field from the pre-unified prompt path.
 	// PromptCompiler ignores these assets; MCP guidance should come from assembled tools.
 	MCPPromptAssets []string

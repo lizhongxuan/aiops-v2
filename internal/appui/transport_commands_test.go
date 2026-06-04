@@ -203,6 +203,52 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	}
 }
 
+func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@1.1.1.1和@1.1.1.2作为pg节点，搭建主从集群"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if chat.sendCmd.Metadata["aiops.hostops.routeKind"] != "host_ops" {
+		t.Fatalf("routeKind metadata = %q, want host_ops", chat.sendCmd.Metadata["aiops.hostops.routeKind"])
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.planRequired"] != "true" {
+		t.Fatalf("planRequired metadata = %q, want true", chat.sendCmd.Metadata["aiops.hostops.planRequired"])
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"] != "true" {
+		t.Fatalf("serverDetectedMultiHost metadata = %q, want true", chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"])
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.mentions"] == "" {
+		t.Fatal("expected serialized server-side mentions metadata")
+	}
+
+	missionID := nextState.ActiveHostMissionID
+	if missionID == "" {
+		t.Fatal("ActiveHostMissionID is empty")
+	}
+	mission := nextState.HostMissions[missionID]
+	if mission.ID != missionID || mission.TurnID != "turn-1" {
+		t.Fatalf("mission identity = %+v, want active mission for turn-1", mission)
+	}
+	if mission.Status != "waiting_plan_acceptance" || !mission.PlanRequired || mission.PlanAccepted {
+		t.Fatalf("mission status/plan = %+v, want waiting required unaccepted", mission)
+	}
+	if len(mission.MentionedHosts) != 2 {
+		t.Fatalf("mentioned hosts = %+v, want 2", mission.MentionedHosts)
+	}
+}
+
 func TestTransportCommandsHostPlanAcceptCallsHostOpsService(t *testing.T) {
 	hostOps := &transportCommandHostOpsServiceStub{}
 	handler := NewTransportCommandHandler(nil, nil, nil, nil).WithHostOpsService(hostOps)
