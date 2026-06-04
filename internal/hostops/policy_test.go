@@ -26,3 +26,26 @@ func TestPlanGateAllowsMutatingAfterPlanAccepted(t *testing.T) {
 		t.Fatalf("EnforcePlanGate(mutating accepted) error = %v", err)
 	}
 }
+
+func TestEnforceHostBindingRejectsCrossHost(t *testing.T) {
+	ctx := ToolContext{AgentKind: AgentKindHostChild, BoundHostID: "host-a"}
+	err := EnforceHostBinding(ctx, "host-b")
+	if !errors.Is(err, ErrCrossHostDenied) {
+		t.Fatalf("err = %v, want ErrCrossHostDenied", err)
+	}
+}
+
+func TestEnforceHostBindingDefaultsEmptyRequestedHostToBoundHost(t *testing.T) {
+	ctx := ToolContext{AgentKind: AgentKindHostChild, BoundHostID: "host-a"}
+	if err := EnforceHostBinding(ctx, ""); err != nil {
+		t.Fatalf("EnforceHostBinding(empty) error = %v", err)
+	}
+}
+
+func TestEnforceHostBindingRejectsManagerDirectHostCommand(t *testing.T) {
+	ctx := ToolContext{AgentKind: AgentKindManager}
+	err := EnforceHostBinding(ctx, "host-a")
+	if !errors.Is(err, ErrManagerDirectHostDenied) {
+		t.Fatalf("err = %v, want ErrManagerDirectHostDenied", err)
+	}
+}
