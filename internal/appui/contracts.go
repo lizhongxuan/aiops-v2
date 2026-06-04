@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/auth"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/incidents"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/opsmanual"
@@ -105,6 +106,29 @@ type AgentEventService interface {
 	Subscribe(ctx context.Context, sessionID string, afterSeq int64) (<-chan AgentEvent, func())
 	Projection(ctx context.Context, sessionID string) (AgentEventProjection, error)
 	Replay(ctx context.Context, sessionID string, afterSeq int64) ([]AgentEvent, error)
+}
+
+type HostOperationView struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+type HostChildAgentView struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+type HostChildTranscriptView struct {
+	ChildAgentID string                   `json:"childAgentId"`
+	Items        []hostops.TranscriptItem `json:"items"`
+}
+
+type HostOpsService interface {
+	AcceptPlan(ctx context.Context, missionID, planID string) (HostOperationView, error)
+	RevisePlan(ctx context.Context, missionID, instruction string) (HostOperationView, error)
+	SendChildMessage(ctx context.Context, childAgentID, content string) (HostChildAgentView, error)
+	StopChildAgent(ctx context.Context, childAgentID string) (HostChildAgentView, error)
+	ChildTranscript(ctx context.Context, childAgentID string) (HostChildTranscriptView, error)
 }
 
 type servicesConfig struct {

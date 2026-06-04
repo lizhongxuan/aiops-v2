@@ -199,6 +199,7 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/chat/stop", s.handleChatStop)
 	s.mux.HandleFunc("/api/v1/assistant/transport", s.handleAssistantTransport)
 	s.mux.HandleFunc("/api/v1/assistant/resume", s.handleAssistantTransportResume)
+	s.mux.HandleFunc("/api/v1/host-ops/child-agents/", s.handleHostOpsChildAgents)
 
 	// State endpoint
 	s.mux.HandleFunc("/api/v1/state", s.handleGetState)
