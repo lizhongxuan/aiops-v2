@@ -59,9 +59,12 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
 }
 
 function HostOpsWorkspace() {
-  const state = useAssistantTransportState() as AiopsTransportState;
+  const state = useAssistantTransportState() as AiopsTransportState | undefined;
   const [activeChildAgentId, setActiveChildAgentId] = useState<string | null>(null);
-  const activeChildAgent = activeChildAgentId ? state.childAgents[activeChildAgentId] : undefined;
+  if (!state) {
+    return null;
+  }
+  const activeChildAgent = activeChildAgentId ? (state.childAgents || {})[activeChildAgentId] : undefined;
 
   return (
     <>

@@ -49,6 +49,18 @@ describe("HostOpsStatusPanel", () => {
 
     expect(openChildAgent).toHaveBeenCalledWith("child-1");
   });
+
+  it("ignores legacy transport states without host operation maps", async () => {
+    const legacyState = createInitialAiopsTransportState("legacy-thread") as Partial<AiopsTransportState>;
+    delete legacyState.hostMissions;
+    delete legacyState.childAgents;
+
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={legacyState as AiopsTransportState} />);
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+  });
 });
 
 function sampleHostOpsState(): AiopsTransportState {

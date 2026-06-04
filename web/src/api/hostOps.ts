@@ -1,4 +1,5 @@
 import httpClient from "./httpClient";
+import { resolveUiFixtureRuntime } from "@/lib/uiFixtureRuntime";
 
 export type HostTranscriptItemType =
   | "manager_message"
@@ -33,6 +34,10 @@ type HostOpsHttpClient = {
 export function createHostOpsApi(client: HostOpsHttpClient = httpClient) {
   return {
     async getChildAgentTranscript(childAgentId: string): Promise<HostChildAgentTranscript> {
+      const fixtureTranscript = getFixtureChildAgentTranscript(childAgentId);
+      if (fixtureTranscript) {
+        return normalizeChildAgentTranscript(fixtureTranscript);
+      }
       const payload = await client.get(
         `/api/v1/host-ops/child-agents/${encodeURIComponent(childAgentId)}/transcript`,
       );
@@ -88,6 +93,18 @@ function stringValue(value: unknown): string {
 function optionalString(value: unknown): string | undefined {
   const normalized = stringValue(value);
   return normalized ? normalized : undefined;
+}
+
+function getFixtureChildAgentTranscript(childAgentId: string): unknown | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+  const fixture =
+    (window as unknown as { __CODEX_UI_FIXTURE__?: unknown }).__CODEX_UI_FIXTURE__ ?? resolveUiFixtureRuntime();
+  if (!isRecord(fixture) || !isRecord(fixture.state) || !isRecord(fixture.state.hostOpsTranscripts)) {
+    return undefined;
+  }
+  return fixture.state.hostOpsTranscripts[childAgentId];
 }
 
 const hostOpsApi = createHostOpsApi();

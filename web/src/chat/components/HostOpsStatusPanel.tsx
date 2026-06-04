@@ -43,11 +43,12 @@ function HostOpsStatusPanelView({ state, onOpenChildAgent }: Required<Pick<HostO
 }
 
 export function selectActiveHostMission(state: AiopsTransportState): AiopsTransportHostMission | undefined {
+  const hostMissions = state.hostMissions || {};
   if (state.activeHostMissionId) {
-    return state.hostMissions[state.activeHostMissionId];
+    return hostMissions[state.activeHostMissionId];
   }
 
-  return Object.values(state.hostMissions).find((mission) =>
+  return Object.values(hostMissions).find((mission) =>
     !["completed", "failed", "cancelled"].includes(String(mission.status)),
   );
 }

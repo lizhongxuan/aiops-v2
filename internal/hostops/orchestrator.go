@@ -51,6 +51,22 @@ func NewOrchestrator(store MissionStore, transcript TranscriptStore, spawner Chi
 	return &Orchestrator{store: store, transcript: transcript, spawner: spawner}
 }
 
+func (o *Orchestrator) AcceptPlan(ctx context.Context, missionID, planID string) error {
+	if o == nil || o.store == nil {
+		return ErrMissionNotFound
+	}
+	mission, err := o.store.GetMission(ctx, strings.TrimSpace(missionID))
+	if err != nil {
+		return err
+	}
+	mission.PlanAccepted = true
+	mission.Status = HostMissionStatusSpawningChildren
+	if strings.TrimSpace(planID) != "" {
+		mission.UpdatedAt = time.Now().UTC()
+	}
+	return o.store.SaveMission(ctx, mission)
+}
+
 func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assignments []ChildAgentAssignment) ([]HostChildAgent, error) {
 	if o == nil || o.store == nil {
 		return nil, ErrMissionNotFound

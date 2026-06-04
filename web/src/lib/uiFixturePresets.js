@@ -298,6 +298,161 @@ export function createChatFixtureSessions(overrides = {}) {
   };
 }
 
+export function createHostOpsThreeHostsFixtureState(overrides = {}) {
+  const now = "2026-06-04T10:00:00Z";
+  const state = createChatFixtureState({
+    sessionId: "hostops-three-hosts",
+    threadId: "hostops-three-hosts",
+    status: "working",
+    cards: [
+      {
+        id: "user-hostops-three-hosts",
+        type: "UserMessageCard",
+        role: "user",
+        text: "@1.1.1.1和@1.1.1.2作为pg节点,搭建一个主从集群,@1.1.1.3作为pg_mon.",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    runtime: {
+      turn: { active: true, phase: "thinking", hostId: "workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+  });
+  const turnId = state.currentTurnId;
+  state.turns[turnId] = {
+    ...state.turns[turnId],
+    status: "working",
+    startedAt: now,
+    updatedAt: "2026-06-04T10:00:02Z",
+    process: [
+      {
+        id: "hostops-plan",
+        kind: "plan",
+        displayKind: "plan",
+        status: "running",
+        text: "PostgreSQL 主从集群计划",
+        steps: [
+          { id: "confirm", text: "确认三台主机角色和运行态入口", status: "pending" },
+          { id: "precheck", text: "补充失败测试覆盖剩余条目和结果合入口", status: "pending" },
+          { id: "primary", text: "初始化 @1.1.1.1 PostgreSQL 主库", status: "pending" },
+          { id: "standby", text: "配置 @1.1.1.2 PostgreSQL 从库复制", status: "pending" },
+          { id: "monitor", text: "部署 @1.1.1.3 pg_mon 并验证", status: "pending" },
+        ],
+        updatedAt: now,
+      },
+      {
+        id: "hostops-subagents",
+        kind: "subagent",
+        displayKind: "hostops.spawn_host_agent",
+        status: "running",
+        text: "3 个 host-bound 子 Agent 已启动",
+        updatedAt: "2026-06-04T10:00:02Z",
+      },
+    ],
+  };
+  state.activeHostMissionId = "mission-1";
+  state.hostMissions = {
+    "mission-1": {
+      id: "mission-1",
+      turnId,
+      status: "running",
+      planRequired: true,
+      planAccepted: true,
+      mentionedHosts: [
+        { tokenId: "mention-1", raw: "@1.1.1.1", hostId: "host-a", address: "1.1.1.1", displayName: "@1.1.1.1", source: "inventory", resolved: true },
+        { tokenId: "mention-2", raw: "@1.1.1.2", hostId: "host-b", address: "1.1.1.2", displayName: "@1.1.1.2", source: "inventory", resolved: true },
+        { tokenId: "mention-3", raw: "@1.1.1.3", hostId: "host-c", address: "1.1.1.3", displayName: "@1.1.1.3", source: "inventory", resolved: true },
+      ],
+      childAgentIds: ["child-1", "child-2", "child-3"],
+      planSteps: state.turns[turnId].process[0].steps,
+      managerAgentId: "manager-1",
+      activeChildAgentId: "child-1",
+      createdAt: now,
+      updatedAt: "2026-06-04T10:00:02Z",
+    },
+  };
+  state.childAgents = {
+    "child-1": {
+      id: "child-1",
+      missionId: "mission-1",
+      parentAgentId: "manager-1",
+      sessionId: "host-child:mission-1:host-a",
+      hostId: "host-a",
+      hostAddress: "1.1.1.1",
+      hostDisplayName: "@1.1.1.1",
+      role: "pg primary",
+      task: "初始化 PostgreSQL 主库",
+      status: "running",
+      startedAt: "2026-06-04T10:00:01Z",
+      updatedAt: "2026-06-04T10:00:02Z",
+    },
+    "child-2": {
+      id: "child-2",
+      missionId: "mission-1",
+      parentAgentId: "manager-1",
+      sessionId: "host-child:mission-1:host-b",
+      hostId: "host-b",
+      hostAddress: "1.1.1.2",
+      hostDisplayName: "@1.1.1.2",
+      role: "pg standby",
+      task: "配置 PostgreSQL 从库复制",
+      status: "running",
+      startedAt: "2026-06-04T10:00:01Z",
+      updatedAt: "2026-06-04T10:00:02Z",
+    },
+    "child-3": {
+      id: "child-3",
+      missionId: "mission-1",
+      parentAgentId: "manager-1",
+      sessionId: "host-child:mission-1:host-c",
+      hostId: "host-c",
+      hostAddress: "1.1.1.3",
+      hostDisplayName: "@1.1.1.3",
+      role: "pg_mon",
+      task: "部署 pg_mon",
+      status: "waiting",
+      startedAt: "2026-06-04T10:00:01Z",
+      updatedAt: "2026-06-04T10:00:02Z",
+    },
+  };
+  state.runtimeLiveness = {
+    ...state.runtimeLiveness,
+    activeTurns: { [turnId]: true },
+    activeAgents: { "manager-1": true, "child-1": true, "child-2": true, "child-3": true },
+  };
+  state.hostOpsTranscripts = {
+    "child-1": {
+      childAgentId: "child-1",
+      items: [
+        { id: "child-1-item-1", type: "manager_message", content: "检查PG版本", status: "completed", createdAt: "2026-06-04T10:00:03Z" },
+        { id: "child-1-item-2", type: "assistant_message", content: "PostgreSQL 15 已检测到", status: "completed", createdAt: "2026-06-04T10:00:04Z" },
+      ],
+    },
+  };
+  return { ...state, ...overrides };
+}
+
+export function createHostOpsThreeHostsFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "hostops-three-hosts",
+    sessions: [
+      {
+        id: "hostops-three-hosts",
+        kind: "single_host",
+        title: "@主机 PostgreSQL 集群",
+        status: "running",
+        messageCount: 1,
+        preview: "@1.1.1.1 和 @1.1.1.2 作为 pg 节点",
+        selectedHostId: "workspace",
+        lastActivityAt: "2026-06-04T10:00:02Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 export function createContextCompactionFixtureState(overrides = {}) {
   const now = "2026-05-22T08:00:00Z";
   const state = createChatFixtureState({
@@ -1170,6 +1325,13 @@ export function resolveUiFixturePreset(key = "") {
         name: "context-compaction",
         state: createContextCompactionFixtureState(),
         sessions: createContextCompactionFixtureSessions(),
+      };
+    case "host-ops-three-hosts":
+    case "hostops-three-hosts":
+      return {
+        name: "host-ops-three-hosts",
+        state: createHostOpsThreeHostsFixtureState(),
+        sessions: createHostOpsThreeHostsFixtureSessions(),
       };
     case "protocol":
     case "workspace":

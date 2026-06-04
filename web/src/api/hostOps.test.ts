@@ -53,4 +53,28 @@ describe("hostOps API", () => {
       items: [],
     });
   });
+
+  it("uses browser fixture transcript when available", async () => {
+    const http = createRecordingHttpClient({ childAgentId: "child-1", items: [] });
+    const previousFixture = (window as unknown as { __CODEX_UI_FIXTURE__?: unknown }).__CODEX_UI_FIXTURE__;
+    (window as unknown as { __CODEX_UI_FIXTURE__?: unknown }).__CODEX_UI_FIXTURE__ = {
+      state: {
+        hostOpsTranscripts: {
+          "child-1": {
+            childAgentId: "child-1",
+            items: [{ id: "item-1", type: "assistant_message", content: "PostgreSQL 15" }],
+          },
+        },
+      },
+    };
+    const api = createHostOpsApi(http);
+
+    await expect(api.getChildAgentTranscript("child-1")).resolves.toMatchObject({
+      childAgentId: "child-1",
+      items: [{ id: "item-1", content: "PostgreSQL 15" }],
+    });
+    expect(http.calls).toEqual([]);
+
+    (window as unknown as { __CODEX_UI_FIXTURE__?: unknown }).__CODEX_UI_FIXTURE__ = previousFixture;
+  });
 });
