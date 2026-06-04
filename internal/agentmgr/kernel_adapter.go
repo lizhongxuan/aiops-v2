@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/runtimekernel"
 )
 
@@ -80,6 +81,105 @@ func (a *KernelAdapter) SpawnAndRunPlanner(ctx context.Context, missionID, sessi
 	}
 
 	return result.Output, nil
+}
+
+func (a *KernelAdapter) SpawnHostChild(ctx context.Context, req hostops.SpawnHostChildRequest) (hostops.HostChildAgent, error) {
+	if a == nil || a.factory == nil || a.manager == nil {
+		return hostops.HostChildAgent{}, fmt.Errorf("agent manager adapter is not available")
+	}
+	if req.HostID == "" {
+		return hostops.HostChildAgent{}, fmt.Errorf("hostId is required")
+	}
+	if req.MissionID == "" {
+		return hostops.HostChildAgent{}, fmt.Errorf("missionId is required")
+	}
+	if req.SessionID == "" {
+		req.SessionID = fmt.Sprintf("host-child:%s:%s", req.MissionID, req.HostID)
+	}
+	if req.ChildAgentID == "" {
+		req.ChildAgentID = fmt.Sprintf("host-child-%s-%d", req.HostID, time.Now().UnixNano())
+	}
+	if _, err := a.factory.CreateHostChildAgent(ctx, req); err != nil {
+		return hostops.HostChildAgent{}, err
+	}
+	_, err := a.manager.Spawn(ctx, SpawnRequest{
+		ID:        req.ChildAgentID,
+		Kind:      AgentKindWorker,
+		MissionID: req.MissionID,
+		ParentID:  req.ParentAgentID,
+		HostID:    req.HostID,
+		SessionID: req.SessionID,
+		Task:      req.Task,
+	})
+	if err != nil {
+		return hostops.HostChildAgent{}, err
+	}
+	return hostops.HostChildAgent{
+		ID:               req.ChildAgentID,
+		MissionID:        req.MissionID,
+		ParentAgentID:    req.ParentAgentID,
+		SessionID:        req.SessionID,
+		HostID:           req.HostID,
+		HostAddress:      req.HostAddress,
+		Role:             req.Role,
+		Task:             req.Task,
+		Status:           hostops.HostChildAgentStatusSpawning,
+		LastInputPreview: req.Task,
+		StartedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
+		PlanStepIDs:      nil,
+	}, nil
+}
+
+func (a *KernelAdapter) SendMessage(_ context.Context, childAgentID, content string) (hostops.HostChildAgent, error) {
+	if a == nil || a.manager == nil {
+		return hostops.HostChildAgent{}, fmt.Errorf("agent manager adapter is not available")
+	}
+	inst := a.manager.GetInstance(childAgentID)
+	if inst == nil {
+		return hostops.HostChildAgent{}, fmt.Errorf("host child agent %q not found", childAgentID)
+	}
+	return hostops.HostChildAgent{
+		ID:                inst.ID,
+		MissionID:         inst.MissionID,
+		ParentAgentID:     inst.ParentID,
+		SessionID:         inst.SessionID,
+		HostID:            inst.HostID,
+		Task:              inst.Task,
+		Status:            hostops.HostChildAgentStatusWaiting,
+		LastInputPreview:  content,
+		LastOutputPreview: inst.Output,
+		Error:             inst.Error,
+		StartedAt:         inst.CreatedAt,
+		UpdatedAt:         time.Now().UTC(),
+	}, nil
+}
+
+func (a *KernelAdapter) Stop(ctx context.Context, childAgentID string) (hostops.HostChildAgent, error) {
+	if a == nil || a.manager == nil {
+		return hostops.HostChildAgent{}, fmt.Errorf("agent manager adapter is not available")
+	}
+	if err := a.manager.KillAgent(ctx, childAgentID); err != nil {
+		return hostops.HostChildAgent{}, err
+	}
+	inst := a.manager.GetInstance(childAgentID)
+	if inst == nil {
+		return hostops.HostChildAgent{}, fmt.Errorf("host child agent %q not found", childAgentID)
+	}
+	now := time.Now().UTC()
+	return hostops.HostChildAgent{
+		ID:            inst.ID,
+		MissionID:     inst.MissionID,
+		ParentAgentID: inst.ParentID,
+		SessionID:     inst.SessionID,
+		HostID:        inst.HostID,
+		Task:          inst.Task,
+		Status:        hostops.HostChildAgentStatusCancelled,
+		Error:         inst.Error,
+		StartedAt:     inst.CreatedAt,
+		UpdatedAt:     now,
+		CompletedAt:   &now,
+	}, nil
 }
 
 // CollectResults returns all terminal agent results for the given mission,

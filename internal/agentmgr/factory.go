@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agents"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
@@ -197,10 +198,21 @@ func (f *AgentFactory) assembleToolSet(session, mode string, allowedTools []stri
 // It resolves the model, compiles the prompt with host context, and assembles
 // tools visible in the host session for the given mode.
 func (f *AgentFactory) CreateHostAgent(ctx context.Context, hostID string, mode string) (*AgentConfig, error) {
+	return f.createHostAgent(ctx, hostID, mode, "", nil)
+}
+
+func (f *AgentFactory) CreateHostChildAgent(ctx context.Context, req hostops.SpawnHostChildRequest) (*AgentConfig, error) {
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return nil, fmt.Errorf("hostID is required for host child agent")
+	}
+	return f.createHostAgent(ctx, hostID, "execute", strings.TrimSpace(req.MissionID), []string{hostChildPromptAsset(req)})
+}
+
+func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode string, missionID string, skillAssets []string) (*AgentConfig, error) {
 	if hostID == "" {
 		return nil, fmt.Errorf("hostID is required for host agent")
 	}
-
 	// Resolve model via ModelRouter (use worker kind for host agents — single host).
 	agentKind := modelrouter.AgentKindWorker
 	providerCfg := modelrouter.ProviderConfig{}
@@ -221,10 +233,11 @@ func (f *AgentFactory) CreateHostAgent(ctx context.Context, hostID string, mode 
 
 	// Compile prompt via PromptCompiler with host context.
 	compileCtx := compileContextWithAssembledTools(promptcompiler.CompileContext{
-		SessionType: "host",
-		Mode:        mode,
-		HostContext: hostID,
-		AgentKind:   promptcompiler.AgentKindWorker,
+		SessionType:       "host",
+		Mode:              mode,
+		HostContext:       hostID,
+		SkillPromptAssets: append([]string(nil), skillAssets...),
+		AgentKind:         promptcompiler.AgentKindWorker,
 	}, toolSet.assembled)
 	instructions, err := f.compiler.CompileForEino(compileCtx)
 	if err != nil {
@@ -244,7 +257,32 @@ func (f *AgentFactory) CreateHostAgent(ctx context.Context, hostID string, mode 
 		Tools:         toolSet.runtime,
 		MaxIterations: maxIter,
 		HostID:        hostID,
+		MissionID:     missionID,
 	}, nil
+}
+
+func hostChildPromptAsset(req hostops.SpawnHostChildRequest) string {
+	hostID := strings.TrimSpace(req.HostID)
+	display := agentFirstNonEmpty(req.HostDisplayName, req.HostAddress, hostID)
+	task := strings.TrimSpace(req.Task)
+	if task == "" {
+		task = "按 manager 分派完成本机运维任务，并回报证据。"
+	}
+	return fmt.Sprintf(
+		"你是 host-bound 运维子 Agent。\n你的绑定主机是 %s，hostId=%s。\n你只能对这个主机执行检查、配置、安装或诊断。\n如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。\n当前任务：%s",
+		display,
+		hostID,
+		task,
+	)
+}
+
+func agentFirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ package agentmgr
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -10,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agents"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
@@ -22,12 +24,12 @@ import (
 
 // mockCompiler implements promptcompiler.Compiler for testing.
 type mockCompiler struct {
-	compileFunc        func(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error)
-	compileForEino     func(ctx promptcompiler.CompileContext) ([]*schema.Message, error)
-	compileCalls       []promptcompiler.CompileContext
+	compileFunc         func(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error)
+	compileForEino      func(ctx promptcompiler.CompileContext) ([]*schema.Message, error)
+	compileCalls        []promptcompiler.CompileContext
 	compileForEinoCalls []promptcompiler.CompileContext
-	lastCompileCtx     promptcompiler.CompileContext
-	lastCompileForEino promptcompiler.CompileContext
+	lastCompileCtx      promptcompiler.CompileContext
+	lastCompileForEino  promptcompiler.CompileContext
 }
 
 func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
@@ -66,7 +68,7 @@ type mockChatModel struct {
 type mockTool struct {
 	name        string
 	description string
-	meta tooling.ToolMetadata
+	meta        tooling.ToolMetadata
 	readOnly    bool
 	sessions    []string
 	modes       []string
@@ -302,6 +304,39 @@ func TestCreateHostAgent_EmptyHostID(t *testing.T) {
 	_, err := factory.CreateHostAgent(context.Background(), "", "chat")
 	if err == nil {
 		t.Fatal("expected error for empty hostID")
+	}
+}
+
+func TestCreateHostChildAgentAddsBoundPromptAsset(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	compiler := factory.compiler.(*mockCompiler)
+
+	cfg, err := factory.CreateHostChildAgent(context.Background(), hostops.SpawnHostChildRequest{
+		MissionID:       "mission-1",
+		HostID:          "host-a",
+		HostDisplayName: "pg-primary",
+		Task:            "prepare pg primary",
+	})
+	if err != nil {
+		t.Fatalf("CreateHostChildAgent() error = %v", err)
+	}
+	if cfg.HostID != "host-a" || cfg.MissionID != "mission-1" {
+		t.Fatalf("cfg = %+v, want host-a/mission-1", cfg)
+	}
+	if len(compiler.lastCompileForEino.SkillPromptAssets) != 1 {
+		t.Fatalf("SkillPromptAssets = %#v, want one host child prompt", compiler.lastCompileForEino.SkillPromptAssets)
+	}
+	prompt := compiler.lastCompileForEino.SkillPromptAssets[0]
+	for _, want := range []string{
+		"你是 host-bound 运维子 Agent。",
+		"你的绑定主机是 pg-primary，hostId=host-a。",
+		"你只能对这个主机执行检查、配置、安装或诊断。",
+		"如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("host child prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
