@@ -19,6 +19,7 @@ import type { AiopsTransportApproval, AiopsTransportState } from "@/transport/ai
 import { buildOpsManualParamFormSubmit, resolveStopDispatchTarget } from "./aiopsComposerActions";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
+import { buildHostMentionMetadata, parseHostMentionCandidates } from "../hostMentions";
 
 type GenerationConfirmation = {
   action: string;
@@ -837,11 +838,15 @@ function TargetAwareSendButton({
         const text = composer.getState().text.trim();
         if (!text) return;
         composer.setText("");
+        const mentions = parseHostMentionCandidates(text);
         const command = {
           type: "add-message",
           message: {
             role: "user",
-            metadata: target.metadata,
+            metadata: {
+              ...target.metadata,
+              ...buildHostMentionMetadata(mentions),
+            },
             ...(target.hostId ? { hostId: target.hostId } : {}),
             parts: [{ type: "text", text }],
           },
