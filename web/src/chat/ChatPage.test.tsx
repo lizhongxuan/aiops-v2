@@ -303,6 +303,25 @@ describe("ChatPage", () => {
     expect(container.querySelector("textarea")).toBeNull();
   });
 
+  it("renders the host ops status panel above the composer when a host mission is active", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const panel = container.querySelector('[data-testid="host-ops-status-panel"]');
+    const composer = container.querySelector('[data-testid="aiops-composer-shell"]');
+
+    expect(panel).not.toBeNull();
+    expect(composer).not.toBeNull();
+    expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(container.textContent).toContain("3 个后台智能体");
+  });
+
   it("shows immediate feedback after submitting an approval decision", async () => {
     await act(async () => {
       root.render(<ChatPage initialState={sampleState()} />);
@@ -1139,6 +1158,91 @@ function sampleState(): AiopsTransportState {
       pendingApprovals: { "approval-1": true },
       pendingUserInputs: {},
       activeCommandStreams: {},
+    },
+  };
+}
+
+function sampleStateWithHostOps(): AiopsTransportState {
+  return {
+    ...sampleState(),
+    activeHostMissionId: "mission-1",
+    hostMissions: {
+      "mission-1": {
+        id: "mission-1",
+        turnId: "turn-1",
+        status: "running",
+        planRequired: true,
+        planAccepted: true,
+        mentionedHosts: [
+          {
+            tokenId: "mention-1",
+            raw: "@1.1.1.1",
+            hostId: "host-1",
+            address: "1.1.1.1",
+            displayName: "Franklin",
+            source: "inventory",
+            resolved: true,
+          },
+          {
+            tokenId: "mention-2",
+            raw: "@1.1.1.2",
+            hostId: "host-2",
+            address: "1.1.1.2",
+            displayName: "Harriet",
+            source: "inventory",
+            resolved: true,
+          },
+          {
+            tokenId: "mention-3",
+            raw: "@1.1.1.3",
+            hostId: "host-3",
+            address: "1.1.1.3",
+            displayName: "Grace",
+            source: "inventory",
+            resolved: true,
+          },
+        ],
+        childAgentIds: ["child-1", "child-2", "child-3"],
+        planSteps: [
+          { id: "step-1", title: "确认 PostgreSQL 拓扑", status: "pending" },
+          { id: "step-2", title: "初始化主库", status: "pending" },
+          { id: "step-3", title: "配置从库复制", status: "pending" },
+          { id: "step-4", title: "部署监控节点", status: "pending" },
+          { id: "step-5", title: "执行最终验证", status: "pending" },
+        ],
+      },
+    } as AiopsTransportState["hostMissions"],
+    childAgents: {
+      "child-1": {
+        id: "child-1",
+        missionId: "mission-1",
+        sessionId: "session-child-1",
+        hostId: "host-1",
+        hostAddress: "1.1.1.1",
+        hostDisplayName: "Franklin",
+        status: "running",
+        task: "初始化主库",
+      },
+      "child-2": {
+        id: "child-2",
+        missionId: "mission-1",
+        sessionId: "session-child-2",
+        hostId: "host-2",
+        hostAddress: "1.1.1.2",
+        hostDisplayName: "Harriet",
+        status: "running",
+        task: "配置从库复制",
+      },
+      "child-3": {
+        id: "child-3",
+        missionId: "mission-1",
+        sessionId: "session-child-3",
+        hostId: "host-3",
+        hostAddress: "1.1.1.3",
+        hostDisplayName: "Grace",
+        status: "waiting",
+        task: "部署监控节点",
+      },
     },
   };
 }

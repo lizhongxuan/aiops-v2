@@ -6,6 +6,7 @@ import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { AiopsComposer } from "./components/AiopsComposer";
 import { AiopsThread } from "./components/AiopsThread";
+import { HostOpsStatusPanel } from "./components/HostOpsStatusPanel";
 import { SessionContextBar } from "./components/SessionContextBar";
 
 type ChatPageProps = {
@@ -44,7 +45,10 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
         >
           <div className="grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white">
             <AiopsThread />
-            <AiopsComposer variant="chat" />
+            <div className="mx-auto w-full max-w-thread px-4">
+              <HostOpsStatusPanel />
+              <AiopsComposer variant="chat" />
+            </div>
           </div>
         </ChatTransportProvider>
       </SessionContextBar>
