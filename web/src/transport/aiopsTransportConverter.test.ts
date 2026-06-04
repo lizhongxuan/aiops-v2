@@ -290,6 +290,66 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("passes host operation state through assistant message metadata", () => {
+    const state = createState();
+    state.activeHostMissionId = "mission-1";
+    state.hostMissions = {
+      "mission-1": {
+        id: "mission-1",
+        turnId: "turn-1",
+        status: "running",
+        planRequired: true,
+        planAccepted: true,
+        mentionedHosts: [
+          {
+            tokenId: "mention-1",
+            raw: "@1.1.1.1",
+            hostId: "host-a",
+            address: "1.1.1.1",
+            displayName: "Franklin",
+            source: "inventory",
+            resolved: true,
+          },
+        ],
+        childAgentIds: ["child-a"],
+        planSteps: [{ id: "prepare-primary", text: "准备主库", status: "running" }],
+      },
+    };
+    state.childAgents = {
+      "child-a": {
+        id: "child-a",
+        missionId: "mission-1",
+        sessionId: "host-child:a",
+        hostId: "host-a",
+        hostAddress: "1.1.1.1",
+        hostDisplayName: "Franklin",
+        status: "running",
+        task: "准备主库",
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      activeHostMissionId: "mission-1",
+      hostMissions: {
+        "mission-1": expect.objectContaining({
+          id: "mission-1",
+          childAgentIds: ["child-a"],
+          planSteps: [expect.objectContaining({ id: "prepare-primary", text: "准备主库" })],
+        }),
+      },
+      childAgents: {
+        "child-a": expect.objectContaining({
+          id: "child-a",
+          hostId: "host-a",
+          status: "running",
+        }),
+      },
+    });
+  });
+
   it("delays disruptive artifacts until the assistant turn is terminal", () => {
     const state = createState();
     state.status = "working";

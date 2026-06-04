@@ -253,6 +253,7 @@ type AiopsTransportHostMission struct {
 	PlanAccepted       bool                        `json:"planAccepted"`
 	MentionedHosts     []AiopsTransportHostMention `json:"mentionedHosts"`
 	ChildAgentIDs      []string                    `json:"childAgentIds"`
+	PlanSteps          []AiopsTransportPlanStep    `json:"planSteps,omitempty"`
 	ManagerAgentID     string                      `json:"managerAgentId,omitempty"`
 	ActiveChildAgentID string                      `json:"activeChildAgentId,omitempty"`
 	CreatedAt          string                      `json:"createdAt,omitempty"`

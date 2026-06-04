@@ -85,6 +85,8 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		}
 	}
 
+	next = projectHostOpsMissionFromTurn(next, turnID, projectedTurn, turn)
+
 	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
 	if projectedTurn.Final != nil && projectedTurn.Final.Status == "" {
 		projectedTurn.Final.Status = mapTurnStatusToFinalStatus(projectedTurn.Status)
@@ -448,6 +450,7 @@ func projectTurnItem(
 			if artifact, ok := transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
+			projectHostOpsToolPayload(state, turnID, tool, firstNonZeroTime(item.UpdatedAt, item.CreatedAt))
 		}
 		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
 		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
@@ -498,6 +501,10 @@ func projectTurnItem(
 			block.Command = firstNonEmptyString(tool.InputSummary, tool.ToolName)
 			if block.Text == "" || block.Text == tool.OutputSummary {
 				block.Text = block.Command
+			}
+		case AiopsTransportProcessKindSubagent:
+			if block.Text == "" {
+				block.Text = firstNonEmptyString(tool.OutputSummary, tool.InputSummary, "host subagent update")
 			}
 		}
 		if sourceID != "" {
@@ -622,6 +629,230 @@ func projectAssistantFinalProcessBlock(
 	}
 	turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	return turn
+}
+
+func projectHostOpsMissionFromTurn(state AiopsTransportState, turnID string, projectedTurn AiopsTransportTurn, snapshot *runtimekernel.TurnSnapshot) AiopsTransportState {
+	if snapshot == nil || !isHostOpsTurnMetadata(snapshot.Metadata) {
+		return state
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	if state.ChildAgents == nil {
+		state.ChildAgents = map[string]AiopsTransportChildAgent{}
+	}
+	missionID := strings.TrimSpace(snapshot.Metadata["aiops.hostops.missionId"])
+	if missionID == "" {
+		missionID = "hostops:" + turnID
+	}
+	now := transportTimestamp(firstNonZeroTime(snapshot.UpdatedAt, snapshot.StartedAt))
+	mission := state.HostMissions[missionID]
+	if mission.ID == "" {
+		mission.ID = missionID
+		mission.CreatedAt = transportTimestamp(snapshot.StartedAt)
+	}
+	mission.TurnID = turnID
+	mission.ManagerAgentID = firstNonEmptyString(strings.TrimSpace(snapshot.Metadata["aiops.hostops.managerAgentId"]), mission.ManagerAgentID)
+	mission.PlanRequired = metadataBool(snapshot.Metadata, "aiops.hostops.planRequired") || mission.PlanRequired
+	mission.PlanAccepted = metadataBool(snapshot.Metadata, "aiops.hostops.planAccepted") || mission.PlanAccepted
+	if mission.Status == "" {
+		if mission.PlanRequired && !mission.PlanAccepted {
+			mission.Status = "waiting_plan_acceptance"
+		} else {
+			mission.Status = "planning"
+		}
+	}
+	if mentions := decodeTransportHostMentionsMetadata(snapshot.Metadata["aiops.hostops.mentions"]); len(mentions) > 0 {
+		mission.MentionedHosts = mentions
+	}
+	if steps := latestHostOpsPlanSteps(projectedTurn.Process); len(steps) > 0 {
+		mission.PlanSteps = steps
+	}
+	for childID, child := range state.ChildAgents {
+		if child.MissionID == missionID && !transportStringSliceContains(mission.ChildAgentIDs, childID) {
+			mission.ChildAgentIDs = append(mission.ChildAgentIDs, childID)
+		}
+	}
+	if len(mission.ChildAgentIDs) > 0 && mission.Status != "completed" && mission.Status != "failed" && mission.Status != "cancelled" {
+		mission.Status = "running"
+	}
+	mission.UpdatedAt = now
+	state.HostMissions[missionID] = mission
+	state.ActiveHostMissionID = missionID
+	return state
+}
+
+func isHostOpsTurnMetadata(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if strings.TrimSpace(metadata["aiops.hostops.routeKind"]) == "host_ops" {
+		return true
+	}
+	return strings.TrimSpace(metadata["aiops.hostops.mentions"]) != ""
+}
+
+func metadataBool(metadata map[string]string, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(metadata[key])) {
+	case "true", "1", "yes", "y":
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeTransportHostMentionsMetadata(raw string) []AiopsTransportHostMention {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var mentions []AiopsTransportHostMention
+	if err := json.Unmarshal([]byte(raw), &mentions); err != nil {
+		return nil
+	}
+	out := make([]AiopsTransportHostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		if strings.TrimSpace(mention.Raw) == "" && strings.TrimSpace(mention.HostID) == "" && strings.TrimSpace(mention.Address) == "" {
+			continue
+		}
+		out = append(out, AiopsTransportHostMention{
+			TokenID:     strings.TrimSpace(mention.TokenID),
+			Raw:         strings.TrimSpace(mention.Raw),
+			HostID:      strings.TrimSpace(mention.HostID),
+			Address:     strings.TrimSpace(mention.Address),
+			DisplayName: strings.TrimSpace(mention.DisplayName),
+			Source:      strings.TrimSpace(mention.Source),
+			Resolved:    mention.Resolved,
+		})
+	}
+	return out
+}
+
+func latestHostOpsPlanSteps(blocks []AiopsProcessBlock) []AiopsTransportPlanStep {
+	for i := len(blocks) - 1; i >= 0; i-- {
+		block := blocks[i]
+		if block.Kind == AiopsTransportProcessKindPlan && len(block.Steps) > 0 {
+			return append([]AiopsTransportPlanStep(nil), block.Steps...)
+		}
+	}
+	return nil
+}
+
+func projectHostOpsToolPayload(state *AiopsTransportState, turnID string, tool transportToolPayload, updatedAt time.Time) {
+	if state == nil || !isHostOpsToolPayload(tool) {
+		return
+	}
+	payload := tool.OutputPreview
+	if len(payload) == 0 {
+		payload = tool.DisplayData
+	}
+	if len(payload) == 0 {
+		return
+	}
+	var decoded struct {
+		Children []AiopsTransportChildAgent `json:"children"`
+		Child    AiopsTransportChildAgent   `json:"child"`
+	}
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return
+	}
+	children := decoded.Children
+	if strings.TrimSpace(decoded.Child.ID) != "" {
+		children = append(children, decoded.Child)
+	}
+	if len(children) == 0 {
+		return
+	}
+	if state.ChildAgents == nil {
+		state.ChildAgents = map[string]AiopsTransportChildAgent{}
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	for _, child := range children {
+		child = normalizeProjectedHostChild(child, turnID, updatedAt)
+		if child.ID == "" {
+			continue
+		}
+		state.ChildAgents[child.ID] = child
+		projectHostChildLiveness(state, child)
+		if child.MissionID != "" {
+			mission := state.HostMissions[child.MissionID]
+			if mission.ID == "" {
+				mission.ID = child.MissionID
+				mission.TurnID = turnID
+				mission.CreatedAt = child.StartedAt
+			}
+			if !transportStringSliceContains(mission.ChildAgentIDs, child.ID) {
+				mission.ChildAgentIDs = append(mission.ChildAgentIDs, child.ID)
+			}
+			mission.ActiveChildAgentID = child.ID
+			mission.UpdatedAt = firstNonEmptyString(child.UpdatedAt, transportTimestamp(updatedAt))
+			state.HostMissions[child.MissionID] = mission
+		}
+	}
+}
+
+func isHostOpsToolPayload(tool transportToolPayload) bool {
+	displayKind := strings.ToLower(strings.TrimSpace(tool.DisplayKind))
+	toolName := strings.ToLower(strings.TrimSpace(tool.ToolName))
+	return strings.HasPrefix(displayKind, "hostops.") ||
+		toolName == "spawn_host_agent" ||
+		toolName == "send_host_agent_message" ||
+		toolName == "wait_host_agents" ||
+		toolName == "stop_host_agent"
+}
+
+func normalizeProjectedHostChild(child AiopsTransportChildAgent, turnID string, updatedAt time.Time) AiopsTransportChildAgent {
+	child.ID = strings.TrimSpace(child.ID)
+	child.MissionID = strings.TrimSpace(child.MissionID)
+	if child.MissionID == "" {
+		child.MissionID = "hostops:" + turnID
+	}
+	child.ParentAgentID = strings.TrimSpace(child.ParentAgentID)
+	child.SessionID = strings.TrimSpace(child.SessionID)
+	child.HostID = strings.TrimSpace(child.HostID)
+	child.HostAddress = strings.TrimSpace(child.HostAddress)
+	child.HostDisplayName = firstNonEmptyString(strings.TrimSpace(child.HostDisplayName), child.HostAddress, child.HostID)
+	child.Role = strings.TrimSpace(child.Role)
+	child.Task = strings.TrimSpace(child.Task)
+	child.Status = strings.TrimSpace(child.Status)
+	if child.Status == "" {
+		child.Status = "running"
+	}
+	child.PlanStepIDs = cleanTransportStringList(child.PlanStepIDs)
+	child.LastInputPreview = strings.TrimSpace(child.LastInputPreview)
+	child.LastOutputPreview = strings.TrimSpace(child.LastOutputPreview)
+	child.Error = strings.TrimSpace(child.Error)
+	if child.StartedAt == "" {
+		child.StartedAt = transportTimestamp(updatedAt)
+	}
+	child.UpdatedAt = firstNonEmptyString(strings.TrimSpace(child.UpdatedAt), transportTimestamp(updatedAt))
+	return child
+}
+
+func projectHostChildLiveness(state *AiopsTransportState, child AiopsTransportChildAgent) {
+	if state == nil || strings.TrimSpace(child.ID) == "" {
+		return
+	}
+	if state.RuntimeLiveness.ActiveAgents == nil {
+		state.RuntimeLiveness.ActiveAgents = map[string]bool{}
+	}
+	switch strings.ToLower(strings.TrimSpace(child.Status)) {
+	case "completed", "failed", "cancelled", "canceled":
+		delete(state.RuntimeLiveness.ActiveAgents, child.ID)
+	default:
+		state.RuntimeLiveness.ActiveAgents[child.ID] = true
+	}
+}
+
+func transportStringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureAiopsTransportState(state AiopsTransportState) AiopsTransportState {
@@ -1882,6 +2113,8 @@ func detectTransportToolBlockKind(envelopeKind, displayKind, toolName string) Ai
 	kind := strings.ToLower(firstNonEmptyString(displayKind, envelopeKind))
 	name := strings.ToLower(strings.TrimSpace(toolName))
 	switch {
+	case strings.HasPrefix(kind, "hostops."), name == "spawn_host_agent", name == "send_host_agent_message", name == "wait_host_agents", name == "stop_host_agent":
+		return AiopsTransportProcessKindSubagent
 	case strings.Contains(kind, "browser.search"), name == "web_search":
 		return AiopsTransportProcessKindSearch
 	case kind == "command", name == "exec_command":

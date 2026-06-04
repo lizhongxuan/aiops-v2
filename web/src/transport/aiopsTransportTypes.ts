@@ -235,6 +235,7 @@ export type AiopsTransportHostMission = {
   planAccepted: boolean;
   mentionedHosts: AiopsTransportHostMention[];
   childAgentIds: string[];
+  planSteps?: AiopsTransportPlanStep[];
   managerAgentId?: string;
   activeChildAgentId?: string;
   createdAt?: string;

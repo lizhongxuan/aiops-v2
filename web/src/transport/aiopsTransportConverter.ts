@@ -50,7 +50,7 @@ function orderedTurnMessages(state: AiopsTransportState) {
     if (userMessage) {
       messages.push(userMessage);
     }
-    const assistantMessage = toAssistantThreadMessage(turn, state.lastError);
+    const assistantMessage = toAssistantThreadMessage(state, turn);
     if (assistantMessage) {
       messages.push(assistantMessage);
     }
@@ -72,7 +72,7 @@ function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   };
 }
 
-function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string): ThreadMessage | null {
+function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTransportTurn): ThreadMessage | null {
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
@@ -80,8 +80,8 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
   let content: ThreadMessage["content"] = [];
   if (turn.final?.text) {
     content = [{ type: "text", text: turn.final.text }];
-  } else if (turn.status === "failed" && lastError) {
-    content = [{ type: "text", text: lastError }];
+  } else if (turn.status === "failed" && state.lastError) {
+    content = [{ type: "text", text: state.lastError }];
   }
   return {
     id: `${turn.id}:assistant`,
@@ -102,6 +102,9 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         userText: turn.user?.text || "",
         agentUiArtifacts: visibleAgentUiArtifacts(turn),
         deferredAgentUiArtifacts: deferredAgentUiArtifacts(turn),
+        activeHostMissionId: state.activeHostMissionId,
+        hostMissions: state.hostMissions || {},
+        childAgents: state.childAgents || {},
       },
       unstable_annotations: [],
       unstable_data: [],
