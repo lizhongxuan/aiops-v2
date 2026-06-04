@@ -43,6 +43,7 @@ const (
 	AiopsTransportProcessKindApproval  AiopsTransportProcessKind = "approval"
 	AiopsTransportProcessKindMCP       AiopsTransportProcessKind = "mcp"
 	AiopsTransportProcessKindSystem    AiopsTransportProcessKind = "system"
+	AiopsTransportProcessKindSubagent  AiopsTransportProcessKind = "subagent"
 )
 
 type AiopsTransportProcessStatus string
@@ -65,20 +66,23 @@ const (
 )
 
 type AiopsTransportState struct {
-	SchemaVersion    string                              `json:"schemaVersion"`
-	SessionID        string                              `json:"sessionId"`
-	ThreadID         string                              `json:"threadId"`
-	Status           AiopsTransportStatus                `json:"status"`
-	CurrentTurnID    string                              `json:"currentTurnId,omitempty"`
-	Turns            map[string]AiopsTransportTurn       `json:"turns"`
-	TurnOrder        []string                            `json:"turnOrder"`
-	PendingApprovals map[string]AiopsTransportApproval   `json:"pendingApprovals"`
-	McpSurfaces      map[string]AiopsTransportMcpSurface `json:"mcpSurfaces"`
-	Artifacts        map[string]AiopsTransportArtifact   `json:"artifacts"`
-	RuntimeLiveness  AiopsRuntimeLiveness                `json:"runtimeLiveness"`
-	LastError        string                              `json:"lastError,omitempty"`
-	Seq              int64                               `json:"seq"`
-	UpdatedAt        string                              `json:"updatedAt"`
+	SchemaVersion       string                               `json:"schemaVersion"`
+	SessionID           string                               `json:"sessionId"`
+	ThreadID            string                               `json:"threadId"`
+	Status              AiopsTransportStatus                 `json:"status"`
+	CurrentTurnID       string                               `json:"currentTurnId,omitempty"`
+	Turns               map[string]AiopsTransportTurn        `json:"turns"`
+	TurnOrder           []string                             `json:"turnOrder"`
+	PendingApprovals    map[string]AiopsTransportApproval    `json:"pendingApprovals"`
+	McpSurfaces         map[string]AiopsTransportMcpSurface  `json:"mcpSurfaces"`
+	Artifacts           map[string]AiopsTransportArtifact    `json:"artifacts"`
+	RuntimeLiveness     AiopsRuntimeLiveness                 `json:"runtimeLiveness"`
+	HostMissions        map[string]AiopsTransportHostMission `json:"hostMissions,omitempty"`
+	ChildAgents         map[string]AiopsTransportChildAgent  `json:"childAgents,omitempty"`
+	ActiveHostMissionID string                               `json:"activeHostMissionId,omitempty"`
+	LastError           string                               `json:"lastError,omitempty"`
+	Seq                 int64                                `json:"seq"`
+	UpdatedAt           string                               `json:"updatedAt"`
 }
 
 type AiopsTransportTurn struct {
@@ -241,6 +245,50 @@ type AiopsRuntimeLiveness struct {
 	ActiveCommandStreams map[string]bool `json:"activeCommandStreams"`
 }
 
+type AiopsTransportHostMission struct {
+	ID                 string                      `json:"id"`
+	TurnID             string                      `json:"turnId"`
+	Status             string                      `json:"status"`
+	PlanRequired       bool                        `json:"planRequired"`
+	PlanAccepted       bool                        `json:"planAccepted"`
+	MentionedHosts     []AiopsTransportHostMention `json:"mentionedHosts"`
+	ChildAgentIDs      []string                    `json:"childAgentIds"`
+	ManagerAgentID     string                      `json:"managerAgentId,omitempty"`
+	ActiveChildAgentID string                      `json:"activeChildAgentId,omitempty"`
+	CreatedAt          string                      `json:"createdAt,omitempty"`
+	UpdatedAt          string                      `json:"updatedAt,omitempty"`
+}
+
+type AiopsTransportHostMention struct {
+	TokenID     string `json:"tokenId"`
+	Raw         string `json:"raw"`
+	HostID      string `json:"hostId,omitempty"`
+	Address     string `json:"address,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+	Source      string `json:"source"`
+	Resolved    bool   `json:"resolved"`
+}
+
+type AiopsTransportChildAgent struct {
+	ID                string   `json:"id"`
+	MissionID         string   `json:"missionId"`
+	ParentAgentID     string   `json:"parentAgentId,omitempty"`
+	SessionID         string   `json:"sessionId"`
+	HostID            string   `json:"hostId"`
+	HostAddress       string   `json:"hostAddress,omitempty"`
+	HostDisplayName   string   `json:"hostDisplayName"`
+	Role              string   `json:"role,omitempty"`
+	Task              string   `json:"task,omitempty"`
+	Status            string   `json:"status"`
+	PlanStepIDs       []string `json:"planStepIds,omitempty"`
+	LastInputPreview  string   `json:"lastInputPreview,omitempty"`
+	LastOutputPreview string   `json:"lastOutputPreview,omitempty"`
+	Error             string   `json:"error,omitempty"`
+	StartedAt         string   `json:"startedAt,omitempty"`
+	UpdatedAt         string   `json:"updatedAt,omitempty"`
+	CompletedAt       string   `json:"completedAt,omitempty"`
+}
+
 func NewAiopsTransportState(sessionID, threadID string) AiopsTransportState {
 	return AiopsTransportState{
 		SchemaVersion:    AiopsTransportSchemaVersion,
@@ -252,6 +300,8 @@ func NewAiopsTransportState(sessionID, threadID string) AiopsTransportState {
 		PendingApprovals: map[string]AiopsTransportApproval{},
 		McpSurfaces:      map[string]AiopsTransportMcpSurface{},
 		Artifacts:        map[string]AiopsTransportArtifact{},
+		HostMissions:     map[string]AiopsTransportHostMission{},
+		ChildAgents:      map[string]AiopsTransportChildAgent{},
 		RuntimeLiveness: AiopsRuntimeLiveness{
 			ActiveTurns:          map[string]bool{},
 			ActiveAgents:         map[string]bool{},

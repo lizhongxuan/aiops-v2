@@ -13,7 +13,8 @@ export type AiopsTransportProcessKind =
   | "evidence"
   | "approval"
   | "mcp"
-  | "system";
+  | "system"
+  | "subagent";
 
 export type AiopsTransportProcessStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "rejected";
 
@@ -31,6 +32,9 @@ export type AiopsTransportState = {
   mcpSurfaces: Record<string, AiopsTransportMcpSurface>;
   artifacts: Record<string, AiopsTransportArtifact>;
   runtimeLiveness: AiopsRuntimeLiveness;
+  hostMissions: Record<string, AiopsTransportHostMission>;
+  childAgents: Record<string, AiopsTransportChildAgent>;
+  activeHostMissionId?: string;
   lastError?: string;
   seq: number;
   updatedAt: string;
@@ -201,4 +205,68 @@ export type AiopsRuntimeLiveness = {
   pendingApprovals: Record<string, boolean>;
   pendingUserInputs: Record<string, boolean>;
   activeCommandStreams: Record<string, boolean>;
+};
+
+export type HostMissionStatus =
+  | "planning"
+  | "waiting_plan_acceptance"
+  | "spawning_children"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type HostChildAgentStatus =
+  | "planned"
+  | "spawning"
+  | "running"
+  | "waiting"
+  | "approval_required"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AiopsTransportHostMission = {
+  id: string;
+  turnId: string;
+  status: HostMissionStatus | string;
+  planRequired: boolean;
+  planAccepted: boolean;
+  mentionedHosts: AiopsTransportHostMention[];
+  childAgentIds: string[];
+  managerAgentId?: string;
+  activeChildAgentId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AiopsTransportHostMention = {
+  tokenId: string;
+  raw: string;
+  hostId?: string;
+  address?: string;
+  displayName?: string;
+  source: "inventory" | "ip_literal" | "hostname_literal" | string;
+  resolved: boolean;
+};
+
+export type AiopsTransportChildAgent = {
+  id: string;
+  missionId: string;
+  parentAgentId?: string;
+  sessionId: string;
+  hostId: string;
+  hostAddress?: string;
+  hostDisplayName: string;
+  role?: string;
+  task?: string;
+  status: HostChildAgentStatus | string;
+  planStepIds?: string[];
+  lastInputPreview?: string;
+  lastOutputPreview?: string;
+  error?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
 };

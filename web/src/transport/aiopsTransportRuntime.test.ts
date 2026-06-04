@@ -31,6 +31,9 @@ describe("aiopsTransportRuntime", () => {
       },
       seq: 0,
     });
+    expect(state.hostMissions).toEqual({});
+    expect(state.childAgents).toEqual({});
+    expect(state.activeHostMissionId).toBeUndefined();
     expect(new Date(state.updatedAt).toString()).not.toBe("Invalid Date");
   });
 

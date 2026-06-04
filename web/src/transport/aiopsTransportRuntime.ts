@@ -26,6 +26,8 @@ export function createInitialAiopsTransportState(threadId = "default"): AiopsTra
     pendingApprovals: {},
     mcpSurfaces: {},
     artifacts: {},
+    hostMissions: {},
+    childAgents: {},
     runtimeLiveness: {
       activeTurns: {},
       activeAgents: {},
