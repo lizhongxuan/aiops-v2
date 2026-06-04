@@ -24,18 +24,20 @@ export function HostSubagentStatusRow({ mission, state, onOpenChildAgent }: Host
       <div className="mb-1 text-xs font-medium text-zinc-700">{childAgents.length} 个后台智能体</div>
       <div className="grid min-w-0 gap-1">
         {childAgents.map((childAgent) => (
-          <div key={childAgent.id} className="flex min-w-0 items-center gap-2 text-xs text-zinc-600">
+          <button
+            key={childAgent.id}
+            type="button"
+            className="flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left text-xs text-zinc-600 hover:bg-zinc-50"
+            data-testid={`host-subagent-status-row-${childAgent.id}`}
+            onClick={() => onOpenChildAgent?.(childAgent.id)}
+          >
             <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{formatHostLabel(childAgent)}</span>
             <span className="shrink-0 text-zinc-400">{formatStatus(childAgent.status)}</span>
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50"
-              onClick={() => onOpenChildAgent?.(childAgent.id)}
-            >
+            <span className="shrink-0 rounded-md border border-zinc-200 px-2 py-0.5 text-xs font-medium text-zinc-700">
               打开
-            </button>
-          </div>
+            </span>
+          </button>
         ))}
       </div>
     </div>

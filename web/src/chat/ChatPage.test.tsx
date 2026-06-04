@@ -2,9 +2,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getChildAgentTranscript } from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
+
+vi.mock("@/api/hostOps", () => ({
+  getChildAgentTranscript: vi.fn(),
+}));
 
 describe("ChatPage", () => {
   let container: HTMLDivElement;
@@ -18,6 +23,7 @@ describe("ChatPage", () => {
       disconnect() {}
     };
     HTMLElement.prototype.scrollTo = function scrollTo() {};
+    vi.mocked(getChildAgentTranscript).mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -320,6 +326,56 @@ describe("ChatPage", () => {
     expect(composer).not.toBeNull();
     expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(container.textContent).toContain("3 个后台智能体");
+  });
+
+  it("opens a child agent transcript drawer from the host ops status row", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+    vi.mocked(getChildAgentTranscript).mockResolvedValue({
+      childAgentId: "child-1",
+      items: [
+        {
+          id: "item-manager",
+          type: "manager_message",
+          content: "初始化 Franklin 上的主库",
+          createdAt: "2026-06-04T01:00:00Z",
+        },
+        {
+          id: "item-assistant",
+          type: "assistant_message",
+          content: "已连接主机并准备执行 pg_isready。",
+          createdAt: "2026-06-04T01:01:00Z",
+        },
+        {
+          id: "item-tool",
+          type: "tool_call",
+          toolName: "shell",
+          content: "pg_isready -h 127.0.0.1",
+          createdAt: "2026-06-04T01:02:00Z",
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const open = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("打开"),
+    );
+
+    await act(async () => {
+      open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(getChildAgentTranscript).toHaveBeenCalledWith("child-1");
+    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Franklin");
+    expect(document.body.textContent).toContain("初始化 Franklin 上的主库");
+    expect(document.body.textContent).toContain("pg_isready -h 127.0.0.1");
   });
 
   it("shows immediate feedback after submitting an approval decision", async () => {
@@ -1245,6 +1301,13 @@ function sampleStateWithHostOps(): AiopsTransportState {
       },
     },
   };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 function countText(text: string, pattern: string) {
