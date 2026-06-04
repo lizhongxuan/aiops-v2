@@ -1,0 +1,33 @@
+{
+  "name": "single_readonly_tool",
+  "userInput": "读取 api 服务指标",
+  "availableTools": [
+    {
+      "name": "read_metrics",
+      "description": "Read service metrics.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["namespace"],
+        "properties": {
+          "namespace": { "type": "string" },
+          "service": { "type": "string" }
+        }
+      },
+      "result": "api metrics are healthy"
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_metrics",
+      "name": "read_metrics",
+      "arguments": {
+        "namespace": "prod",
+        "service": "api"
+      }
+    }
+  ],
+  "modelFinalOutput": "api 服务指标正常。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"]
+}

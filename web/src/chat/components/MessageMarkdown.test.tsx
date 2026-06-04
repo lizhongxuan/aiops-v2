@@ -97,6 +97,20 @@ describe("MessageMarkdown", () => {
     expect(container.textContent).toContain(":8000");
   });
 
+  it("renders tool trigger mentions as blue icon badges without changing ordinary email text", async () => {
+    await act(async () => {
+      root.render(<MessageMarkdown text="@add_workflow 每天下午6点自动抓取数据库和中间件故障案例新闻，联系 ops@example.com" />);
+    });
+
+    const trigger = container.querySelector('[data-tool-trigger="add_workflow"]');
+    expect(trigger).toBeTruthy();
+    expect(trigger?.textContent).toBe("@add_workflow");
+    expect(trigger?.className).toContain("text-blue-700");
+    expect(trigger?.querySelector("[data-tool-trigger-icon]")?.textContent).toBe("@");
+    expect(container.textContent).toContain("ops@example.com");
+    expect(container.querySelector('[data-tool-trigger="example"]')).toBeNull();
+  });
+
   it("keeps short section labels with their content and separates sections", async () => {
     await act(async () => {
       root.render(

@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/spanstream"
 	"aiops-v2/internal/tooling"
 )
@@ -57,15 +59,19 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup         ToolLookup
-	policy         *policyengine.Engine
-	permissions    *permissions.Engine
-	hooks          *hooks.Registry
-	projector      EventEmitter
-	spanSource     SpanStreamSource // optional: span tracking for tool calls
-	observer       Observer
-	progressSink   ToolProgressSink
-	approvalGrants []SessionApprovalGrant
+	lookup          ToolLookup
+	policy          *policyengine.Engine
+	permissions     *permissions.Engine
+	hooks           *hooks.Registry
+	projector       EventEmitter
+	spanSource      SpanStreamSource // optional: span tracking for tool calls
+	observer        Observer
+	progressSink    ToolProgressSink
+	approvalGrants  []SessionApprovalGrant
+	toolSurfaceFP   string
+	retryConfig     ReadOnlyRetryConfig
+	retryMu         sync.Mutex
+	retriesThisTurn int
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -122,6 +128,16 @@ func (d *ToolDispatcher) WithProgressSink(sink ToolProgressSink) *ToolDispatcher
 	return d
 }
 
+func (d *ToolDispatcher) WithToolSurfaceFingerprint(fingerprint string) *ToolDispatcher {
+	d.toolSurfaceFP = strings.TrimSpace(fingerprint)
+	return d
+}
+
+func (d *ToolDispatcher) WithReadOnlyRetryConfig(config ReadOnlyRetryConfig) *ToolDispatcher {
+	d.retryConfig = normalizeReadOnlyRetryConfig(config)
+	return d
+}
+
 func (d *ToolDispatcher) runtimeObserver() Observer {
 	if d == nil || d.observer == nil {
 		return NoopObserver{}
@@ -142,6 +158,7 @@ type DispatchResult struct {
 	Source      string
 	Approval    *tooling.PermissionApprovalPayload
 	HiddenTools []string
+	Attempts    []ToolAttemptState
 }
 
 // Dispatch executes a tool call through the policy pipeline:
@@ -184,18 +201,24 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 		return errResult
 	}
+	argsHash := toolArgumentsHash(tc.Arguments)
+	mcpServerID, mcpServerState := mcpObserverAttrs(desc.Metadata)
 	observedCtx, observedToolSpan := d.runtimeObserver().StartToolCall(ctx, ToolCallSpanAttrs{
-		SessionID:  sessionID,
-		TurnID:     turnID,
-		ToolName:   firstNonEmpty(tc.Name, desc.Metadata.Name),
-		ToolCallID: tc.ID,
-		Risk:       string(desc.Metadata.RiskLevel.Normalize()),
+		SessionID:              sessionID,
+		TurnID:                 turnID,
+		ToolName:               firstNonEmpty(tc.Name, desc.Metadata.Name),
+		ToolCallID:             tc.ID,
+		Risk:                   string(desc.Metadata.RiskLevel.Normalize()),
+		ArgumentsHash:          argsHash,
+		ToolSurfaceFingerprint: d.toolSurfaceFP,
+		MCPServerID:            mcpServerID,
+		MCPServerState:         mcpServerState,
 	})
 	if observedCtx != nil {
 		ctx = observedCtx
 	}
 	defer func() {
-		finishObservedToolSpan(observedToolSpan, turnID, tc, result)
+		finishObservedToolSpan(observedToolSpan, turnID, tc, result, argsHash, d.toolSurfaceFP, mcpServerID, mcpServerState)
 	}()
 
 	toolEvent := hooks.ToolEvent{
@@ -219,6 +242,15 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if len(toolEvent.UpdatedInput) > 0 {
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
+	}
+
+	if err := toolfailure.ValidateArguments(desc.InputSchema, tc.Arguments); err != nil {
+		errMsg := "invalid arguments: " + err.Error()
+		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", desc.Metadata)
+		if d.spanSource != nil && toolSpanID != "" {
+			d.spanSource.FailSpan(toolSpanID, errMsg)
+		}
+		return result
 	}
 
 	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc)
@@ -405,9 +437,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		return result
 	}
 
-	toolResult, execErr := executor.Execute(ctx, tc.Arguments)
+	toolResult, retryAttempts, execErr := d.executeToolWithReadOnlyRetry(ctx, tc, desc, executor)
 	if execErr != nil {
 		result := d.emitToolFailed(sessionID, turnID, tc, execErr.Error(), "tool", "tool_failed", desc.Metadata)
+		result.Attempts = append(result.Attempts, retryAttempts...)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, execErr.Error())
 		}
@@ -418,6 +451,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	}
 	if toolResult.Error != "" {
 		result := d.emitToolFailed(sessionID, turnID, tc, toolResult.Error, "tool", "tool_failed", desc.Metadata)
+		result.Attempts = append(result.Attempts, retryAttempts...)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, toolResult.Error)
 		}
@@ -427,6 +461,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		streamedResult, streamErr := d.consumeStreamingToolResult(sessionID, turnID, tc, toolSpanID, toolResult)
 		if streamErr != nil {
 			result := d.emitToolFailed(sessionID, turnID, tc, streamErr.Error(), "tool", "tool_failed", desc.Metadata)
+			result.Attempts = append(result.Attempts, retryAttempts...)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, streamErr.Error())
 			}
@@ -439,6 +474,7 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		toolEvent.Result = &toolResult
 		if err := d.hooks.RunToolStage(ctx, hooks.StagePostToolUse, &toolEvent); err != nil {
 			result := d.emitToolFailed(sessionID, turnID, tc, "post_tool_use: "+err.Error(), "hook", "tool_failed", desc.Metadata)
+			result.Attempts = append(result.Attempts, retryAttempts...)
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "post_tool_use: "+err.Error())
 			}
@@ -495,7 +531,150 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		Outcome:     "tool_result",
 		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
+		Attempts:    append([]ToolAttemptState(nil), retryAttempts...),
 	}
+}
+
+func (d *ToolDispatcher) executeToolWithReadOnlyRetry(ctx context.Context, tc ToolCall, desc ToolDescriptor, executor ToolExecutor) (tooling.ToolResult, []ToolAttemptState, error) {
+	result, err := executor.Execute(ctx, tc.Arguments)
+	attempts := make([]ToolAttemptState, 0)
+	retriesForCall := 0
+	for {
+		failureText := toolExecutionFailureText(result, err)
+		if strings.TrimSpace(failureText) == "" {
+			if retriesForCall > 0 {
+				attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeCompleted, "", "read-only retry completed", 0))
+			}
+			return result, attempts, err
+		}
+		failureKind := classifyToolExecutionFailure(desc, failureText)
+		decision := DecideReadOnlyRetry(ReadOnlyRetryInput{
+			Config:                          d.retryConfig,
+			Mutating:                        !toolExecutionIsClearlyReadOnly(desc, executor, tc.Arguments),
+			FailureKind:                     failureKind,
+			OriginalArgumentsHash:           toolArgumentsHash(tc.Arguments),
+			EffectiveArgumentsHash:          toolArgumentsHash(tc.Arguments),
+			OriginalToolSurfaceFingerprint:  d.toolSurfaceFP,
+			EffectiveToolSurfaceFingerprint: d.toolSurfaceFP,
+			CompletedRetryAttemptsForCall:   retriesForCall,
+			CompletedRetryAttemptsForTurn:   d.currentReadOnlyRetriesThisTurn(),
+		})
+		if !decision.Allowed {
+			if decision.Eligible {
+				attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeSkipped, failureKind, decision.Reason, int(decision.Backoff/time.Millisecond)))
+			}
+			return result, attempts, err
+		}
+		if decision.Backoff > 0 {
+			timer := time.NewTimer(decision.Backoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeSkipped, failureKind, "context canceled during retry backoff", int(decision.Backoff/time.Millisecond)))
+				return result, attempts, err
+			case <-timer.C:
+			}
+		}
+		if !d.reserveReadOnlyRetryForTurn() {
+			attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeSkipped, failureKind, "retry per-turn budget exhausted", int(decision.Backoff/time.Millisecond)))
+			return result, attempts, err
+		}
+		attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeStarted, failureKind, decision.Reason, int(decision.Backoff/time.Millisecond)))
+		retriesForCall++
+		result, err = executor.Execute(ctx, tc.Arguments)
+		if strings.TrimSpace(toolExecutionFailureText(result, err)) != "" && retriesForCall >= normalizeReadOnlyRetryConfig(d.retryConfig).MaxPerCall {
+			nextKind := classifyToolExecutionFailure(desc, toolExecutionFailureText(result, err))
+			attempts = append(attempts, d.newRetryAttempt(tc, desc, ToolAttemptOutcomeFailed, nextKind, "read-only retry failed", 0))
+			return result, attempts, err
+		}
+	}
+}
+
+type dynamicReadOnlyChecker interface {
+	IsReadOnly(json.RawMessage) bool
+}
+
+type dynamicDestructiveChecker interface {
+	IsDestructive(json.RawMessage) bool
+}
+
+func toolExecutionIsClearlyReadOnly(desc ToolDescriptor, executor ToolExecutor, args json.RawMessage) bool {
+	if desc.Metadata.EffectiveGovernance(0).Mutating {
+		return false
+	}
+	if checker, ok := executor.(dynamicDestructiveChecker); ok && checker.IsDestructive(args) {
+		return false
+	}
+	checker, ok := executor.(dynamicReadOnlyChecker)
+	if !ok {
+		return false
+	}
+	return checker.IsReadOnly(args)
+}
+
+func toolExecutionFailureText(result tooling.ToolResult, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return strings.TrimSpace(result.Error)
+}
+
+func classifyToolExecutionFailure(desc ToolDescriptor, failureText string) string {
+	source := "tool"
+	if desc.Metadata.IsMCP || strings.TrimSpace(desc.Metadata.MCPInfo.ServerID) != "" {
+		source = "mcp"
+	}
+	decision := toolfailure.NewClassifier().Classify(toolfailure.ClassificationInput{
+		Source:  source,
+		Outcome: "tool_failed",
+		Error:   failureText,
+	})
+	return string(decision.Kind)
+}
+
+func (d *ToolDispatcher) newRetryAttempt(tc ToolCall, desc ToolDescriptor, outcome ToolAttemptOutcome, failureKind, reason string, backoffMillis int) ToolAttemptState {
+	now := time.Now()
+	toolName := firstNonEmpty(desc.Metadata.Name, tc.Name)
+	argsHash := toolArgumentsHash(tc.Arguments)
+	return ToolAttemptState{
+		ToolCallID:             tc.ID,
+		ToolName:               toolName,
+		Action:                 ToolAttemptActionRetry,
+		TriggerFailureKind:     strings.TrimSpace(failureKind),
+		OriginalArgumentsHash:  argsHash,
+		EffectiveArgumentsHash: argsHash,
+		ToolSurfaceFingerprint: d.toolSurfaceFP,
+		DecisionReason:         strings.TrimSpace(reason),
+		BackoffMillis:          backoffMillis,
+		Outcome:                outcome,
+		StartedAt:              now,
+		CompletedAt:            now,
+	}
+}
+
+func (d *ToolDispatcher) currentReadOnlyRetriesThisTurn() int {
+	if d == nil {
+		return 0
+	}
+	d.retryMu.Lock()
+	defer d.retryMu.Unlock()
+	return d.retriesThisTurn
+}
+
+func (d *ToolDispatcher) reserveReadOnlyRetryForTurn() bool {
+	if d == nil {
+		return false
+	}
+	cfg := normalizeReadOnlyRetryConfig(d.retryConfig)
+	d.retryMu.Lock()
+	defer d.retryMu.Unlock()
+	if d.retriesThisTurn >= cfg.MaxPerTurn {
+		return false
+	}
+	d.retriesThisTurn++
+	return true
 }
 
 func cloneSessionApprovalGrants(grants []SessionApprovalGrant) []SessionApprovalGrant {
@@ -544,7 +723,7 @@ func sessionApprovalToolNameMatches(grantToolName, callName string, meta tooling
 	return false
 }
 
-func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, result DispatchResult) {
+func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, result DispatchResult, argsHash, toolSurfaceFingerprint, mcpServerID, mcpServerState string) {
 	if span == nil {
 		return
 	}
@@ -566,8 +745,29 @@ func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, resul
 		"tool.result_truncated": resultTruncated,
 		"tool.raw_ref":          rawRef,
 	}
+	if argsHash != "" {
+		attrs["tool.args_hash"] = argsHash
+	}
+	if toolSurfaceFingerprint != "" {
+		attrs["tool.surface_fingerprint"] = toolSurfaceFingerprint
+	}
+	if mcpServerID != "" {
+		attrs["mcp.server_id"] = mcpServerID
+	}
+	if mcpServerState != "" {
+		attrs["mcp.server_state"] = mcpServerState
+	}
 	if result.Error != "" {
 		attrs["error"] = result.Error
+		if failureKind := failureKindForDispatchResult(result); failureKind != "" {
+			attrs["tool.failure_kind"] = failureKind
+		}
+	}
+	if len(result.Attempts) > 0 {
+		lastAttempt := result.Attempts[len(result.Attempts)-1]
+		attrs["tool.attempt_count"] = len(result.Attempts)
+		attrs["tool.last_attempt_action"] = string(lastAttempt.Action)
+		attrs["tool.last_attempt_outcome"] = string(lastAttempt.Outcome)
 	}
 	span.SetAttributes(attrs)
 	switch {
@@ -579,6 +779,17 @@ func finishObservedToolSpan(span ObservedSpan, turnID string, tc ToolCall, resul
 		span.SetStatus("completed", "")
 	}
 	span.End()
+}
+
+func mcpObserverAttrs(meta tooling.ToolMetadata) (serverID string, serverState string) {
+	if !meta.HasMCPSource() {
+		return "", ""
+	}
+	serverID = strings.TrimSpace(meta.MCPInfo.ServerID)
+	if serverID == "" {
+		serverID = strings.TrimSpace(meta.MCPInfo.ServerName)
+	}
+	return serverID, "connected"
 }
 
 func (d *ToolDispatcher) consumeStreamingToolResult(sessionID, turnID string, tc ToolCall, toolSpanID string, result tooling.ToolResult) (tooling.ToolResult, error) {

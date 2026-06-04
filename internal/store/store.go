@@ -231,8 +231,13 @@ type SkillCatalogEntry struct {
 	Name                  string    `json:"name"`
 	Description           string    `json:"description,omitempty"`
 	Source                string    `json:"source,omitempty"`
+	SourceScope           string    `json:"sourceScope,omitempty"`
 	DefaultEnabled        bool      `json:"defaultEnabled,omitempty"`
 	DefaultActivationMode string    `json:"defaultActivationMode,omitempty"`
+	InvocationMode        string    `json:"invocationMode,omitempty"`
+	Risk                  string    `json:"risk,omitempty"`
+	AllowedTools          []string  `json:"allowedTools,omitempty"`
+	DeniedTools           []string  `json:"deniedTools,omitempty"`
 	CreatedAt             time.Time `json:"createdAt,omitempty"`
 	UpdatedAt             time.Time `json:"updatedAt,omitempty"`
 }
@@ -243,8 +248,12 @@ type AgentMCPCatalogEntry struct {
 	Name                         string    `json:"name"`
 	Type                         string    `json:"type,omitempty"`
 	Source                       string    `json:"source,omitempty"`
+	SourceScope                  string    `json:"sourceScope,omitempty"`
 	DefaultEnabled               bool      `json:"defaultEnabled,omitempty"`
 	Permission                   string    `json:"permission,omitempty"`
+	ApprovalStatus               string    `json:"approvalStatus,omitempty"`
+	RuntimeStatus                string    `json:"runtimeStatus,omitempty"`
+	Risk                         string    `json:"risk,omitempty"`
 	RequiresExplicitUserApproval bool      `json:"requiresExplicitUserApproval,omitempty"`
 	CreatedAt                    time.Time `json:"createdAt,omitempty"`
 	UpdatedAt                    time.Time `json:"updatedAt,omitempty"`
@@ -1606,11 +1615,24 @@ func cloneMCPServerRecords(src []MCPServerRecord) []MCPServerRecord {
 func cloneSkillCatalogEntries(src []SkillCatalogEntry) []SkillCatalogEntry {
 	out := make([]SkillCatalogEntry, len(src))
 	copy(out, src)
+	for i := range out {
+		out[i].AllowedTools = cloneStringSlice(out[i].AllowedTools)
+		out[i].DeniedTools = cloneStringSlice(out[i].DeniedTools)
+	}
 	return out
 }
 
 func cloneAgentMCPCatalogEntries(src []AgentMCPCatalogEntry) []AgentMCPCatalogEntry {
 	out := make([]AgentMCPCatalogEntry, len(src))
+	copy(out, src)
+	return out
+}
+
+func cloneStringSlice(src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
 	copy(out, src)
 	return out
 }

@@ -31,6 +31,8 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	runtimestate "aiops-v2/internal/runtimekernel/state"
+	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/spanstream"
 	"aiops-v2/internal/tooling"
 )
@@ -236,11 +238,48 @@ func (k *EinoKernel) requestTurnCancel(sessionID, turnID, reason string) bool {
 	return true
 }
 
+func validateTurnLifecycleTransition(snapshot *TurnSnapshot, transition runtimestate.TurnTransitionType, to TurnLifecycleState) error {
+	if snapshot == nil {
+		return fmt.Errorf("turn snapshot is required")
+	}
+	fromState, ok := turnLifecycleStateForValidator(snapshot.Lifecycle)
+	if !ok {
+		return fmt.Errorf("unsupported turn lifecycle %q", snapshot.Lifecycle)
+	}
+	toState, ok := turnLifecycleStateForValidator(to)
+	if !ok {
+		return fmt.Errorf("unsupported turn lifecycle %q", to)
+	}
+	return runtimestate.NewValidator().Validate(fromState, transition, toState)
+}
+
+func turnLifecycleStateForValidator(lifecycle TurnLifecycleState) (runtimestate.TurnLifecycle, bool) {
+	switch lifecycle {
+	case TurnLifecyclePending:
+		return runtimestate.LifecycleCreated, true
+	case TurnLifecycleRunning:
+		return runtimestate.LifecycleRunning, true
+	case TurnLifecycleSuspended, TurnLifecycleResumable:
+		return runtimestate.LifecycleBlocked, true
+	case TurnLifecycleCompleted:
+		return runtimestate.LifecycleCompleted, true
+	case TurnLifecycleFailed:
+		return runtimestate.LifecycleFailed, true
+	case TurnLifecycleCanceled:
+		return runtimestate.LifecycleCancelled, true
+	default:
+		return "", false
+	}
+}
+
 func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
 	if session == nil || snapshot == nil {
 		return false
 	}
 	if snapshot.Lifecycle == TurnLifecycleCanceled {
+		return false
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCancelled, TurnLifecycleCanceled); err != nil {
 		return false
 	}
 	now := time.Now()
@@ -497,7 +536,9 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	if modelErr != nil {
 		snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
 		appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, -1), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
-		k.markTurnFailedFromError(session, snapshot, modelErr, "get_model_failed")
+		if transitionErr := k.markTurnFailedFromError(session, snapshot, modelErr, "get_model_failed"); transitionErr != nil {
+			return TurnResult{}, transitionErr
+		}
 		if k.spanSource != nil && turnSpanID != "" {
 			k.spanSource.FailSpan(turnSpanID, modelErr.Error())
 		}
@@ -529,7 +570,9 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 			k.spanSource.FailSpan(turnSpanID, runErr.Error())
 		}
 		if snapshot := session.CurrentTurn; snapshot != nil && snapshot.ID == turnID {
-			k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot))
+			if transitionErr := k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot)); transitionErr != nil {
+				return TurnResult{}, transitionErr
+			}
 		}
 		return TurnResult{}, fmt.Errorf("run agent: %w", runErr)
 	}
@@ -724,6 +767,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
 	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
+		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+			return TurnResult{}, err
+		}
 		now := time.Now()
 		snapshot.Lifecycle = TurnLifecycleFailed
 		snapshot.ResumeState = TurnResumeStateNone
@@ -779,7 +825,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 			Input:       resumeInput,
 			Metadata:    req.Metadata,
 		}, time.Now())
-		k.markSnapshotResuming(session, snapshot, "resume_user_input")
+		if err := k.markSnapshotResuming(session, snapshot, "resume_user_input"); err != nil {
+			return TurnResult{}, err
+		}
 	} else if toolCall, ok := pendingToolCall(snapshot); ok {
 		if isSessionApprovalResumeDecision(req.Decision) {
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
@@ -793,7 +841,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 			return *blocked, nil
 		}
 	} else {
-		k.markSnapshotResuming(session, snapshot, "resume_checkpoint")
+		if err := k.markSnapshotResuming(session, snapshot, "resume_checkpoint"); err != nil {
+			return TurnResult{}, err
+		}
 	}
 
 	resumeReq := TurnRequest{
@@ -819,7 +869,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 				Status:          "cancelled",
 			}, nil
 		}
-		k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot))
+		if transitionErr := k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot)); transitionErr != nil {
+			return TurnResult{}, transitionErr
+		}
 		return TurnResult{}, fmt.Errorf("resume turn: %w", runErr)
 	}
 	if blocked != nil {
@@ -1312,6 +1364,13 @@ func (k *EinoKernel) runHostIterationLoop(
 		stablePromptHash := promptContentHash(compiled.Stable.Content)
 		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
 		toolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		visibleToolNames := toolNames(compileCtx.AssembledTools)
+		toolSurfaceSnapshot := ToolSurfaceSnapshotRef{
+			ID:          fmt.Sprintf("toolsurface-%s-%d", turnID, iteration),
+			Fingerprint: toolFingerprint,
+			ToolNames:   append([]string(nil), visibleToolNames...),
+			CreatedAt:   time.Now(),
+		}
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
@@ -1336,7 +1395,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			Metadata:         turnMetadata,
 			Compiled:         compiled,
 			ModelInput:       modelInput,
-			VisibleTools:     toolNames(compileCtx.AssembledTools),
+			VisibleTools:     visibleToolNames,
 			PromptInputTrace: promptBuild.Trace,
 			PromptInputDiff:  promptInputDiff,
 			DiagnosticTrace:  buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
@@ -1356,7 +1415,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			"calling model",
 			map[string]any{
 				"iteration":         iteration,
-				"visibleTools":      toolNames(compileCtx.AssembledTools),
+				"visibleTools":      visibleToolNames,
 				"traceFile":         traceFile,
 				"traceDiffFile":     traceDiffFile,
 				"promptFingerprint": promptFingerprint,
@@ -1373,7 +1432,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			ModelName:         modelNameForTrace(chatModel),
 			PromptStableHash:  stablePromptHash,
 			PromptFingerprint: promptFingerprint,
-			VisibleTools:      toolNames(compileCtx.AssembledTools),
+			VisibleTools:      visibleToolNames,
 			MessageCount:      len(modelInput),
 			TraceFile:         traceFile,
 			TraceDiffFile:     traceDiffFile,
@@ -1490,7 +1549,9 @@ func (k *EinoKernel) runHostIterationLoop(
 			ResumeState:             TurnResumeStateNone,
 			MessagesForModel:        append([]Message(nil), contextMessages...),
 			ToolProgress:            nil,
-			VisibleTools:            toolNames(compileCtx.AssembledTools),
+			ToolSurfaceFingerprint:  toolFingerprint,
+			ToolSurfaceSnapshot:     &toolSurfaceSnapshot,
+			VisibleTools:            visibleToolNames,
 			RefreshedTools:          refreshedTools,
 			PromptDelta:             compiled.Dynamic.Content,
 			PromptFingerprint:       promptFingerprint,
@@ -1516,6 +1577,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		snapshot.Iteration = iteration
 		snapshot.StablePromptHash = stablePromptHash
 		snapshot.StableToolFingerprint = toolFingerprint
+		snapshot.ToolSurfaceSnapshot = &toolSurfaceSnapshot
 		snapshot.UpdatedAt = time.Now()
 		snapshot.LatestCheckpoint = checkpoint
 		appendCompactedSegments(&snapshot.CompactedSegments, contextState.CompactedSegments...)
@@ -1532,6 +1594,9 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
+				return "", nil, err
+			}
 			now := time.Now()
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
@@ -1591,6 +1656,7 @@ func (k *EinoKernel) runHostIterationLoop(
 
 		appendToolCallState := func(tc ToolCall) string {
 			toolItemID := toolCallItemID(turnID, tc)
+			queueToolInvocation(snapshot, iteration, tc, toolMetadataForToolCall(compileCtx.AssembledTools, tc))
 			appendAgentItem(snapshot, newAgentItem(
 				toolItemID,
 				agentstate.TurnItemTypeToolCall,
@@ -1608,9 +1674,13 @@ func (k *EinoKernel) runHostIterationLoop(
 			if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
 				dispatchResult.Metadata = toolMetadataForToolCall(compileCtx.AssembledTools, tc)
 			}
+			appendToolAttemptStates(snapshot, tc.ID, dispatchResult.Attempts)
 			if dispatchResult.Blocked {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusBlocked, dispatchResult.Reason)
-				k.markTurnBlocked(session, snapshot, tc, dispatchResult)
+				markToolInvocationBlocked(snapshot, tc.ID)
+				if transitionErr := k.markTurnBlocked(session, snapshot, tc, dispatchResult); transitionErr != nil {
+					return nil, transitionErr
+				}
 				return &TurnResult{
 					SessionType:     req.SessionType,
 					Mode:            req.Mode,
@@ -1626,7 +1696,10 @@ func (k *EinoKernel) runHostIterationLoop(
 				if !shouldFeedToolFailureBackToModel(dispatchResult) {
 					updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, dispatchResult.Error)
 					appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, dispatchResult.Error, map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
-					k.markTurnFailed(session, snapshot, tc, dispatchResult)
+					markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+					if transitionErr := k.markTurnFailed(session, snapshot, tc, dispatchResult); transitionErr != nil {
+						return nil, transitionErr
+					}
 					return nil, fmt.Errorf("tool %q failed: %s", tc.Name, dispatchResult.Error)
 				}
 				dispatchResult.Result = failedToolResultForModel(tc, dispatchResult)
@@ -1640,6 +1713,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			if materializeErr != nil {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
+				markToolInvocationFailed(snapshot, tc.ID, "")
 				k.persistTurnSnapshot(session, snapshot)
 				return nil, fmt.Errorf("materialize tool result %q: %w", tc.Name, materializeErr)
 			}
@@ -1655,6 +1729,11 @@ func (k *EinoKernel) runHostIterationLoop(
 			))
 			if planItem, ok := planItemFromToolCall(turnID, tc); ok {
 				appendAgentItem(snapshot, planItem)
+			}
+			if recordedResult.Error != "" {
+				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+			} else {
+				markToolInvocationCompleted(snapshot, tc.ID)
 			}
 			toolMsg := Message{
 				ID:         fmt.Sprintf("msg-%d", time.Now().UnixNano()),
@@ -1699,6 +1778,10 @@ func (k *EinoKernel) runHostIterationLoop(
 					toolItemIDs[j] = appendToolCallState(batchCall)
 				}
 				k.persistTurnSnapshot(session, snapshot)
+				for _, batchCall := range batch {
+					markToolInvocationRunning(snapshot, batchCall.ID)
+				}
+				k.persistTurnSnapshot(session, snapshot)
 
 				results := make([]DispatchResult, len(batch))
 				var wg sync.WaitGroup
@@ -1706,7 +1789,7 @@ func (k *EinoKernel) runHostIterationLoop(
 					wg.Add(1)
 					go func(index int, call ToolCall) {
 						defer wg.Done()
-						dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 						results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
 					}(j, batchCall)
 				}
@@ -1725,6 +1808,8 @@ func (k *EinoKernel) runHostIterationLoop(
 			i++
 			toolItemID := appendToolCallState(tc)
 			k.persistTurnSnapshot(session, snapshot)
+			markToolInvocationRunning(snapshot, tc.ID)
+			k.persistTurnSnapshot(session, snapshot)
 			dispatchResult := DispatchResult{
 				ToolCallID: tc.ID,
 				Metadata:   toolMetadataForToolCall(compileCtx.AssembledTools, tc),
@@ -1733,7 +1818,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			} else {
-				dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
 					toolDispatches++
@@ -1756,6 +1841,9 @@ func (k *EinoKernel) runHostIterationLoop(
 	}
 
 	now := time.Now()
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+		return "", nil, err
+	}
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = "iteration limit exceeded"
@@ -2126,9 +2214,32 @@ func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolRe
 	if errText == "" {
 		errText = "tool execution failed"
 	}
+	decision := toolfailure.NewClassifier().Classify(toolfailure.ClassificationInput{
+		Source:  result.Source,
+		Outcome: result.Outcome,
+		Error:   errText,
+	})
+	allowedNextActions := []string{}
+	if decision.RequiresUser || decision.Kind == toolfailure.KindToolNotFound {
+		allowedNextActions = append(allowedNextActions, string(toolfailure.ActionAskUser))
+	}
+	body, marshalErr := json.Marshal(map[string]any{
+		"type":               "tool_error",
+		"toolCallId":         tc.ID,
+		"toolName":           toolName,
+		"failureKind":        string(decision.Kind),
+		"retryable":          false,
+		"userActionRequired": decision.RequiresUser,
+		"message":            fmt.Sprintf("%s failed: %s", toolName, errText),
+		"allowedNextActions": allowedNextActions,
+	})
+	content := string(body)
+	if marshalErr != nil {
+		content = fmt.Sprintf(`{"type":"tool_error","toolCallId":%q,"toolName":%q,"failureKind":"%s","retryable":false,"userActionRequired":false,"message":%q,"allowedNextActions":[]}`, tc.ID, toolName, decision.Kind, fmt.Sprintf("%s failed: %s", toolName, errText))
+	}
 	return tooling.ToolResult{
 		ToolCallID: tc.ID,
-		Content:    fmt.Sprintf("%s failed: %s", toolName, errText),
+		Content:    content,
 		Error:      errText,
 		Display: &tooling.ToolDisplayPayload{
 			Type:  "tool_error",
@@ -2335,18 +2446,29 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
-	k.markSnapshotResuming(session, snapshot, "resume_tool_approval")
+	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
+		return nil, err
+	}
 	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, nil, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
-	dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+	markToolInvocationRunning(snapshot, toolCall.ID)
+	k.persistTurnSnapshot(session, snapshot)
 	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
+	appendToolAttemptStates(snapshot, toolCall.ID, result.Attempts)
 	if result.Blocked {
-		k.markTurnBlocked(session, snapshot, toolCall, result)
+		markToolInvocationBlocked(snapshot, toolCall.ID)
+		if err := k.markTurnBlocked(session, snapshot, toolCall, result); err != nil {
+			return nil, err
+		}
 		return blockedTurnResult(session, snapshot, result.Reason), nil
 	}
 	if result.Error != "" {
 		if !shouldFeedToolFailureBackToModel(result) {
-			k.markTurnFailed(session, snapshot, toolCall, result)
+			markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+			if err := k.markTurnFailed(session, snapshot, toolCall, result); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("tool %q failed: %s", toolCall.Name, result.Error)
 		}
 		result.Result = failedToolResultForModel(toolCall, result)
@@ -2356,6 +2478,7 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	}
 	recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result)
 	if materializeErr != nil {
+		markToolInvocationFailed(snapshot, toolCall.ID, "")
 		return nil, fmt.Errorf("materialize resumed tool result %q: %w", toolCall.Name, materializeErr)
 	}
 	appendAgentItem(snapshot, newAgentItem(
@@ -2365,6 +2488,11 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 		truncateString(recordedResult.Content, 240),
 		map[string]string{"toolCallId": toolCall.ID, "toolName": toolCall.Name},
 	))
+	if recordedResult.Error != "" {
+		markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+	} else {
+		markToolInvocationCompleted(snapshot, toolCall.ID)
+	}
 	k.persistTurnSnapshot(session, snapshot)
 	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, compileCtx, dispatcher)
 }
@@ -2405,9 +2533,12 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 			tc.Name,
 			tc,
 		))
+		queueToolInvocation(snapshot, snapshot.Iteration, tc, toolMetadataForToolCall(compileCtx.AssembledTools, tc))
+		k.persistTurnSnapshot(session, snapshot)
+		markToolInvocationRunning(snapshot, tc.ID)
 		k.persistTurnSnapshot(session, snapshot)
 
-		dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+		dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 		dispatchResult := dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
 		if dispatchResult.ToolCallID == "" {
 			dispatchResult.ToolCallID = tc.ID
@@ -2415,16 +2546,23 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
 			dispatchResult.Metadata = toolMetadataForToolCall(compileCtx.AssembledTools, tc)
 		}
+		appendToolAttemptStates(snapshot, tc.ID, dispatchResult.Attempts)
 		if dispatchResult.Blocked {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusBlocked, dispatchResult.Reason)
-			k.markTurnBlocked(session, snapshot, tc, dispatchResult)
+			markToolInvocationBlocked(snapshot, tc.ID)
+			if err := k.markTurnBlocked(session, snapshot, tc, dispatchResult); err != nil {
+				return nil, err
+			}
 			return blockedTurnResult(session, snapshot, dispatchResult.Reason), nil
 		}
 		if dispatchResult.Error != "" {
 			if !shouldFeedToolFailureBackToModel(dispatchResult) {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, dispatchResult.Error)
 				appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, dispatchResult.Error, map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
-				k.markTurnFailed(session, snapshot, tc, dispatchResult)
+				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+				if err := k.markTurnFailed(session, snapshot, tc, dispatchResult); err != nil {
+					return nil, err
+				}
 				return nil, fmt.Errorf("tool %q failed: %s", tc.Name, dispatchResult.Error)
 			}
 			dispatchResult.Result = failedToolResultForModel(tc, dispatchResult)
@@ -2437,6 +2575,7 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		if materializeErr != nil {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
+			markToolInvocationFailed(snapshot, tc.ID, "")
 			k.persistTurnSnapshot(session, snapshot)
 			return nil, fmt.Errorf("materialize resumed tool result %q: %w", tc.Name, materializeErr)
 		}
@@ -2450,6 +2589,11 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		))
 		if planItem, ok := planItemFromToolCall(snapshot.ID, tc); ok {
 			appendAgentItem(snapshot, planItem)
+		}
+		if recordedResult.Error != "" {
+			markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+		} else {
+			markToolInvocationCompleted(snapshot, tc.ID)
 		}
 		k.persistTurnSnapshot(session, snapshot)
 	}
@@ -2659,9 +2803,12 @@ func appendResumeInputMessage(session *SessionState, input string) {
 	recomputeContextWindow(&session.Context, session.Messages)
 }
 
-func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) {
+func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
 	if session == nil || snapshot == nil {
-		return
+		return fmt.Errorf("session and snapshot are required")
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
+		return err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
@@ -2683,6 +2830,7 @@ func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnS
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
 func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
@@ -2706,6 +2854,8 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 		WithSessionApprovalGrants(session.ApprovalGrants).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
+		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
+		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(featureflag.FromEnv(os.Getenv))).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
 	return dispatcher
 }
@@ -3414,6 +3564,7 @@ func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRe
 		SessionID:       session.ID,
 		SessionType:     req.SessionType,
 		Mode:            req.Mode,
+		Metadata:        cloneTurnMetadata(req.Metadata),
 		Lifecycle:       TurnLifecycleRunning,
 		ResumeState:     TurnResumeStateNone,
 		StartedAt:       now,
@@ -3432,7 +3583,10 @@ func (k *EinoKernel) persistTurnSnapshot(session *SessionState, snapshot *TurnSn
 	k.sessions.Update(session)
 }
 
-func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) {
+func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionToolInvocationBlocked, TurnLifecycleSuspended); err != nil {
+		return err
+	}
 	now := time.Now()
 	reason := result.Reason
 	command := approvalCommandForToolCall(tc)
@@ -3538,11 +3692,15 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			Payload:   payload,
 		})
 	}
+	return nil
 }
 
-func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) {
+func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
 	if session == nil || snapshot == nil {
-		return
+		return fmt.Errorf("session and snapshot are required")
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+		return err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleFailed
@@ -3570,11 +3728,15 @@ func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapsho
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
-func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) {
+func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) error {
 	if session == nil || snapshot == nil || snapshot.Lifecycle.IsTerminal() {
-		return
+		return nil
+	}
+	if transitionErr := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); transitionErr != nil {
+		return transitionErr
 	}
 	now := time.Now()
 	errText := ""
@@ -3605,6 +3767,7 @@ func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *Tu
 		last.CompletedAt = &now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
 func inferTurnFailureCheckpointKind(snapshot *TurnSnapshot) string {

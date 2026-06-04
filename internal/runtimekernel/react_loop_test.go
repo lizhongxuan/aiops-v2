@@ -702,9 +702,7 @@ func TestRunTurn_RejectsRemovedOpsToolCallAsMissingToolResult(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(failureToolMessage, "runbook.match failed") || !strings.Contains(failureToolMessage, "tool not found: runbook.match") {
-		t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
-	}
+	assertStructuredToolError(t, failureToolMessage, "call-runbook", "runbook.match", "tool_not_found", "tool not found: runbook.match")
 
 	session := kernel.sessions.Get("sess-removed-tool")
 	if session == nil || session.CurrentTurn == nil {
@@ -769,9 +767,7 @@ func TestRunTurn_RejectsLegacyOpsToolPrefixesAsMissingToolResults(t *testing.T) 
 					break
 				}
 			}
-			if !strings.Contains(failureToolMessage, tc.toolName+" failed") || !strings.Contains(failureToolMessage, "tool not found: "+tc.toolName) {
-				t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
-			}
+			assertStructuredToolError(t, failureToolMessage, "call-"+tc.name, tc.toolName, "tool_not_found", "tool not found: "+tc.toolName)
 		})
 	}
 }
@@ -2866,11 +2862,35 @@ func TestRunTurn_RefreshesToolsBetweenIterations(t *testing.T) {
 	if session.CurrentTurn.StableToolFingerprint == "" {
 		t.Fatal("expected stable tool fingerprint to be recorded")
 	}
+	if session.CurrentTurn.ToolSurfaceSnapshot == nil {
+		t.Fatal("expected turn tool surface snapshot ref")
+	}
+	if session.CurrentTurn.ToolSurfaceSnapshot.Fingerprint != session.CurrentTurn.StableToolFingerprint {
+		t.Fatalf("turn tool surface snapshot fingerprint = %q, want stable fingerprint %q", session.CurrentTurn.ToolSurfaceSnapshot.Fingerprint, session.CurrentTurn.StableToolFingerprint)
+	}
+	if !containsString(session.CurrentTurn.ToolSurfaceSnapshot.ToolNames, "read_remote_metrics") {
+		t.Fatalf("turn tool surface snapshot tools = %v, want read_remote_metrics", session.CurrentTurn.ToolSurfaceSnapshot.ToolNames)
+	}
 	if session.CurrentTurn.StablePromptHash == "" {
 		t.Fatal("expected stable prompt hash to be recorded")
 	}
 	if len(session.CurrentTurn.Iterations) != 2 {
 		t.Fatalf("iterations = %d, want 2", len(session.CurrentTurn.Iterations))
+	}
+	if session.CurrentTurn.Iterations[0].ToolSurfaceFingerprint == "" {
+		t.Fatal("expected iteration[0] tool surface fingerprint to be recorded")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint == "" {
+		t.Fatal("expected iteration[1] tool surface fingerprint to be recorded")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint != session.CurrentTurn.StableToolFingerprint {
+		t.Fatalf("latest iteration tool surface fingerprint = %q, want current turn stable fingerprint %q", session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint, session.CurrentTurn.StableToolFingerprint)
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot == nil {
+		t.Fatal("expected iteration[1] tool surface snapshot ref")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot.Fingerprint != session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint {
+		t.Fatalf("iteration[1] snapshot fingerprint = %q, want %q", session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot.Fingerprint, session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint)
 	}
 	if !containsString(session.CurrentTurn.Iterations[1].RefreshedTools, "read_remote_metrics") {
 		t.Fatalf("iteration[1] refreshed tools = %v, want read_remote_metrics", session.CurrentTurn.Iterations[1].RefreshedTools)
@@ -3526,6 +3546,59 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func assertStructuredToolError(t *testing.T, content, toolCallID, toolName, failureKind, messagePart string) {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		t.Fatalf("tool error content is not structured JSON: %v\n%s", err, content)
+	}
+	for _, field := range []string{
+		"type",
+		"toolCallId",
+		"toolName",
+		"failureKind",
+		"retryable",
+		"userActionRequired",
+		"message",
+		"allowedNextActions",
+	} {
+		if _, ok := raw[field]; !ok {
+			t.Fatalf("tool error content missing field %q: %s", field, content)
+		}
+	}
+	var body struct {
+		Type               string   `json:"type"`
+		ToolCallID         string   `json:"toolCallId"`
+		ToolName           string   `json:"toolName"`
+		FailureKind        string   `json:"failureKind"`
+		Retryable          bool     `json:"retryable"`
+		UserActionRequired bool     `json:"userActionRequired"`
+		Message            string   `json:"message"`
+		AllowedNextActions []string `json:"allowedNextActions"`
+	}
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		t.Fatalf("tool error content is not structured JSON: %v\n%s", err, content)
+	}
+	if body.Type != "tool_error" {
+		t.Fatalf("tool error type = %q, want tool_error", body.Type)
+	}
+	if body.ToolCallID != toolCallID || body.ToolName != toolName || body.FailureKind != failureKind {
+		t.Fatalf("tool error identity = call:%q tool:%q kind:%q, want call:%q tool:%q kind:%q", body.ToolCallID, body.ToolName, body.FailureKind, toolCallID, toolName, failureKind)
+	}
+	if !strings.Contains(body.Message, messagePart) {
+		t.Fatalf("tool error message = %q, want to contain %q", body.Message, messagePart)
+	}
+	if body.Retryable {
+		t.Fatalf("tool error retryable = true, want false in phase 1")
+	}
+	if body.UserActionRequired {
+		t.Fatalf("tool error userActionRequired = true, want false for tool_not_found")
+	}
+	if !containsString(body.AllowedNextActions, "ask_user") {
+		t.Fatalf("tool error allowedNextActions = %v, want ask_user", body.AllowedNextActions)
+	}
 }
 
 func hasProtocolKind(state promptcompiler.ProtocolPromptState, kind string) bool {

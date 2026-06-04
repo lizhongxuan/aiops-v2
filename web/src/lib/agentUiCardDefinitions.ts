@@ -81,5 +81,5 @@ export const agentUiCardDefinitions: AgentUiCardDefinition[] = [
   { type: "ops_manual_param_form", label: "运维手册参数表单", lifecycle: "active", display: { icon: "shield-check", selfRendered: true } },
   { type: "ops_manual_preflight_result", label: "运维手册预检", lifecycle: "active", display: { icon: "shield-check", selfRendered: true } },
   { type: "ops_manual_fallback_guide", label: "运维手册降级步骤", lifecycle: "active", display: { icon: "shield-check" } },
-  { type: "runner_workflow_generation", label: "Workflow 生成进度", lifecycle: "active", display: { icon: "git-branch" } },
+  { type: "runner_workflow_generation", label: "Workflow 生成进度", lifecycle: "active", display: { icon: "git-branch", selfRendered: true } },
 ];

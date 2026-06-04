@@ -72,6 +72,7 @@ func (m *Module) Apply(ctx context.Context, req modules.Request) (modules.Result
 			result.Output["vars"] = exports
 		}
 	}
+	modules.AttachNodeResult(result.Output, stdoutText)
 	if err != nil {
 		return result, fmt.Errorf("shell.run failed: %w", err)
 	}

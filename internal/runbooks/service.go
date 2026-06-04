@@ -27,6 +27,8 @@ type NextActionRequest struct {
 	InstanceID string `json:"instanceId"`
 	SessionID  string `json:"sessionId"`
 	TurnID     string `json:"turnId"`
+	TenantID   string `json:"tenantId,omitempty"`
+	UserID     string `json:"userId,omitempty"`
 }
 
 type ObserveResultRequest struct {
@@ -135,6 +137,8 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 	claims := actionproposal.ActionTokenClaims{
 		SessionID:        req.SessionID,
 		TurnID:           req.TurnID,
+		TenantID:         req.TenantID,
+		UserID:           req.UserID,
 		IncidentID:       instance.IncidentID,
 		ToolName:         step.Tool,
 		InputHash:        inputHash,
@@ -158,6 +162,8 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 	return actionproposal.ActionProposal{
 		SessionID:        req.SessionID,
 		TurnID:           req.TurnID,
+		TenantID:         req.TenantID,
+		UserID:           req.UserID,
 		IncidentID:       instance.IncidentID,
 		Source:           actionproposal.SourceRunbook,
 		ToolName:         step.Tool,

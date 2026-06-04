@@ -237,9 +237,6 @@ func validateBootstrapHost(host store.HostRecord) error {
 	if strings.TrimSpace(host.SSHUser) == "" {
 		return fmt.Errorf("ssh user is required")
 	}
-	if strings.TrimSpace(host.SSHCredentialRef) == "" {
-		return fmt.Errorf("ssh credential ref is required")
-	}
 	if host.SSHPort <= 0 {
 		return fmt.Errorf("ssh port is required")
 	}

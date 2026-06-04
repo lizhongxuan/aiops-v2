@@ -81,6 +81,29 @@ func TestHostBootstrapServiceSubmitsBuiltinWorkflowWithRedactedVars(t *testing.T
 	}
 }
 
+func TestHostBootstrapServiceSubmitsWorkflowWithoutSSHCredentialRef(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:           "prod-web-01",
+		Address:      "10.0.0.11",
+		SSHUser:      "ubuntu",
+		SSHPort:      22,
+		AgentVersion: "v0.1.0",
+	})
+	runner := &fakeHostBootstrapRunner{run: HostInstallRun{RunID: "run-1", WorkflowID: BuiltinHostAgentInstallWorkflowID, Status: "queued"}}
+	service := NewHostBootstrapService(repo, runner)
+
+	run, err := service.Install(context.Background(), "prod-web-01", HostInstallRequest{AgentVersion: "v0.1.0"})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if run.RunID != "run-1" {
+		t.Fatalf("RunID = %q", run.RunID)
+	}
+	if got := runner.vars["ssh_credential_ref"]; got != "" {
+		t.Fatalf("ssh_credential_ref = %v, want empty", got)
+	}
+}
+
 func TestHostBootstrapServiceMapsSubmitFailureToInstallFailed(t *testing.T) {
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "prod-web-01",

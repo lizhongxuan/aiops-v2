@@ -21,12 +21,29 @@ var (
 
 // ServerConfig stores the registration-time configuration for an MCP server.
 type ServerConfig struct {
-	ID        string
-	Name      string
-	Transport string
-	Command   []string
-	Disabled  bool
-	Source    string
+	ID          string
+	Name        string
+	Transport   string
+	Command     []string
+	Disabled    bool
+	Source      string
+	TenantScope TenantScope
+	UserScope   UserScope
+	Profiles    []string
+}
+
+type TenantScope struct {
+	TenantIDs []string `json:"tenantIds,omitempty"`
+}
+
+type UserScope struct {
+	UserIDs []string `json:"userIds,omitempty"`
+}
+
+type DynamicToolOptions struct {
+	TenantID string
+	UserID   string
+	Profile  string
 }
 
 type ServerState string
@@ -403,6 +420,11 @@ func (r *Registry) ListServerTools(serverID string) []tooling.Tool {
 
 // DynamicTools returns all connected tools across servers in stable order.
 func (r *Registry) DynamicTools() []tooling.Tool {
+	return r.DynamicToolsWithOptions(DynamicToolOptions{})
+}
+
+// DynamicToolsWithOptions returns connected tools visible to one scoped request.
+func (r *Registry) DynamicToolsWithOptions(opts DynamicToolOptions) []tooling.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -418,12 +440,60 @@ func (r *Registry) DynamicTools() []tooling.Tool {
 		if r.serverState[serverID] {
 			continue
 		}
+		if !serverConfigVisibleToOptions(r.serverCfgs[serverID], opts) {
+			continue
+		}
 		sort.Slice(tools, func(i, j int) bool {
 			return tools[i].Metadata().Name < tools[j].Metadata().Name
 		})
 		out = append(out, tools...)
 	}
 	return out
+}
+
+func (r *Registry) DynamicToolsForScope(scope tooling.DynamicToolScope) []tooling.Tool {
+	return r.DynamicToolsWithOptions(DynamicToolOptions{
+		TenantID: scope.TenantID,
+		UserID:   scope.UserID,
+		Profile:  scope.Profile,
+	})
+}
+
+func serverConfigVisibleToOptions(cfg ServerConfig, opts DynamicToolOptions) bool {
+	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.UserID = strings.TrimSpace(opts.UserID)
+	opts.Profile = strings.TrimSpace(opts.Profile)
+	hasRequestScope := opts.TenantID != "" || opts.UserID != "" || opts.Profile != ""
+	hasConfigScope := len(cfg.TenantScope.TenantIDs) > 0 || len(cfg.UserScope.UserIDs) > 0 || len(cfg.Profiles) > 0
+	if !hasRequestScope {
+		return true
+	}
+	if !hasConfigScope {
+		return false
+	}
+	if len(cfg.TenantScope.TenantIDs) > 0 && !containsTrimmed(cfg.TenantScope.TenantIDs, opts.TenantID) {
+		return false
+	}
+	if len(cfg.UserScope.UserIDs) > 0 && !containsTrimmed(cfg.UserScope.UserIDs, opts.UserID) {
+		return false
+	}
+	if len(cfg.Profiles) > 0 && !containsTrimmed(cfg.Profiles, opts.Profile) {
+		return false
+	}
+	return true
+}
+
+func containsTrimmed(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // DynamicToolRefreshToken returns a stable token that changes when the
@@ -605,6 +675,9 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 
 func cloneServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.Command = append([]string(nil), cfg.Command...)
+	cfg.TenantScope.TenantIDs = append([]string(nil), cfg.TenantScope.TenantIDs...)
+	cfg.UserScope.UserIDs = append([]string(nil), cfg.UserScope.UserIDs...)
+	cfg.Profiles = append([]string(nil), cfg.Profiles...)
 	return cfg
 }
 

@@ -383,6 +383,90 @@ func TestToolDispatcher_FailurePolicyFailTurnDoesNotFeedFailureBackToModel(t *te
 	}
 }
 
+func TestToolDispatcher_RejectsArgumentsMissingRequiredSchemaFieldBeforeExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"read_metrics": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "read_metrics",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+					InputSchema: json.RawMessage(`{
+						"type":"object",
+						"required":["namespace"],
+						"properties":{
+							"namespace":{"type":"string"},
+							"service":{"type":"string"}
+						}
+					}`),
+				},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-schema", "turn-schema", ToolCall{
+		ID:        "call-schema",
+		Name:      "read_metrics",
+		Arguments: json.RawMessage(`{"service":"api"}`),
+	}, SessionTypeHost, ModeInspect)
+
+	if result.Outcome != "tool_failed" || result.Source != "runtime" {
+		t.Fatalf("dispatch result = %#v, want runtime tool_failed", result)
+	}
+	if !strings.Contains(result.Error, "invalid arguments") || !strings.Contains(result.Error, "namespace") {
+		t.Fatalf("dispatch error = %q, want invalid arguments mentioning namespace", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 when schema validation fails", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s before schema validation passed", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_RejectsMalformedJSONArgumentsBeforeExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"read_metrics": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "read_metrics",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+				},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-schema", "turn-schema", ToolCall{
+		ID:        "call-schema",
+		Name:      "read_metrics",
+		Arguments: json.RawMessage(`{`),
+	}, SessionTypeHost, ModeInspect)
+
+	if result.Outcome != "tool_failed" || result.Source != "runtime" {
+		t.Fatalf("dispatch result = %#v, want runtime tool_failed", result)
+	}
+	if !strings.Contains(result.Error, "invalid arguments") {
+		t.Fatalf("dispatch error = %q, want invalid arguments", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 when JSON validation fails", executor.calls)
+	}
+}
+
 type permissionCheckingExecutor struct {
 	decision tooling.PermissionDecision
 	calls    int

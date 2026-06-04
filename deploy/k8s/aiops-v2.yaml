@@ -76,6 +76,9 @@ spec:
                 name: aiops-v2-config
             - secretRef:
                 name: aiops-v2-secret
+          env:
+            - name: KUBECONFIG
+              value: /etc/kubernetes/admin.conf
           ports:
             - name: http
               containerPort: 8080
@@ -107,10 +110,24 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/aiops
+            - name: host-kubectl
+              mountPath: /usr/local/bin/kubectl
+              readOnly: true
+            - name: host-kubeconfig
+              mountPath: /etc/kubernetes/admin.conf
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: aiops-v2-data
+        - name: host-kubectl
+          hostPath:
+            path: /usr/local/bin/kubectl
+            type: File
+        - name: host-kubeconfig
+          hostPath:
+            path: /etc/kubernetes/admin.conf
+            type: File
 ---
 apiVersion: v1
 kind: Service

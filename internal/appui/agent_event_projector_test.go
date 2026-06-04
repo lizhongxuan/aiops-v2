@@ -3,6 +3,7 @@ package appui
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,45 @@ func TestAgentEventProjector_ReplayMatchesRealtimeApplyForStructuredTurn(t *test
 	if !reflect.DeepEqual(realtime.FinalMessages, replay.FinalMessages) {
 		t.Fatalf("FinalMessages realtime=%#v replay=%#v", realtime.FinalMessages, replay.FinalMessages)
 	}
+}
+
+func TestAgentEventProjectorDoesNotExposeFallbackRetryManualStates(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "排查 payment-api"}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, ToolPayload{
+			ToolCallID:    "tool-completed",
+			ToolName:      "coroot.service_metrics",
+			OutputSummary: "metrics collected",
+		}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseFailed, AgentEventStatusFailed, 3, ToolPayload{
+			ToolCallID:   "tool-failed",
+			ToolName:     "coroot.missing_tool",
+			InputSummary: "missing tool",
+			Error:        "tool not found",
+		}),
+		testAgentEvent(AgentEventApproval, AgentEventPhaseRequested, AgentEventStatusBlocked, 4, ApprovalPayload{
+			ApprovalID:   "approval-blocked",
+			ApprovalType: "command",
+			Command:      "kubectl rollout restart deployment/payment-api",
+			Reason:       "mutating command",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	assertAgentEventProjectionHasStatuses(t, proj, []AgentEventStatus{
+		AgentEventStatusRunning,
+		AgentEventStatusCompleted,
+		AgentEventStatusFailed,
+		AgentEventStatusBlocked,
+	})
+	assertNoForbiddenAgentEventProjectionStates(t, proj, []string{
+		"fallback_planned",
+		"retry_scheduled",
+		"manual_reconcile",
+	})
 }
 
 func TestAgentEventProjector_ReasoningDeltaCreatesThinkingTimelineRow(t *testing.T) {
@@ -693,5 +733,49 @@ func TestAgentEventProjectorApplyDoesNotMutateInputMapFields(t *testing.T) {
 	}
 	if next.FinalMessages["turn-1"].Status != AgentEventStatusCompleted {
 		t.Fatalf("next FinalMessages status = %q, want completed", next.FinalMessages["turn-1"].Status)
+	}
+}
+
+func assertAgentEventProjectionHasStatuses(t *testing.T, proj AgentEventProjection, required []AgentEventStatus) {
+	t.Helper()
+	seen := map[AgentEventStatus]bool{}
+	for _, row := range proj.Timeline {
+		seen[row.Status] = true
+	}
+	for _, group := range proj.ProcessGroups {
+		for _, row := range group {
+			seen[row.Status] = true
+		}
+	}
+	for _, agent := range proj.Agents {
+		seen[agent.Status] = true
+	}
+	for _, approval := range proj.Approvals {
+		seen[approval.Status] = true
+	}
+	for _, artifact := range proj.Artifacts {
+		seen[artifact.Status] = true
+	}
+	for _, final := range proj.FinalMessages {
+		seen[final.Status] = true
+	}
+	for _, status := range required {
+		if !seen[status] {
+			t.Fatalf("agent event statuses = %#v, missing %q", seen, status)
+		}
+	}
+}
+
+func assertNoForbiddenAgentEventProjectionStates(t *testing.T, proj AgentEventProjection, forbidden []string) {
+	t.Helper()
+	raw, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("marshal agent event projection: %v", err)
+	}
+	body := string(raw)
+	for _, state := range forbidden {
+		if strings.Contains(body, state) {
+			t.Fatalf("agent event projection exposed forbidden state %q: %s", state, body)
+		}
 	}
 }

@@ -16,6 +16,16 @@ type DynamicToolProvider interface {
 	DynamicTools() []Tool
 }
 
+type DynamicToolScope struct {
+	TenantID string
+	UserID   string
+	Profile  string
+}
+
+type ScopedDynamicToolProvider interface {
+	DynamicToolsForScope(DynamicToolScope) []Tool
+}
+
 // DynamicToolRefreshTokenProvider optionally supplies a stable token that
 // changes whenever the provider's dynamic tool surface changes.
 type DynamicToolRefreshTokenProvider interface {
@@ -55,7 +65,7 @@ func (a *Assembler) AssembleToolsWithOptions(session, mode string, opts Assemble
 	merged := opts
 	merged.ExtraTools = append([]Tool(nil), opts.ExtraTools...)
 	for _, provider := range a.providers {
-		merged.ExtraTools = append(merged.ExtraTools, provider.DynamicTools()...)
+		merged.ExtraTools = append(merged.ExtraTools, dynamicToolsForAssembleOptions(provider, opts)...)
 	}
 
 	if a.registry == nil {
@@ -98,12 +108,15 @@ func (a *Assembler) StableToolFingerprint(session, mode string, opts AssembleOpt
 	}
 
 	h := sha256.New()
+	writeFingerprintPart(h, "scope-tenant", opts.TenantID)
+	writeFingerprintPart(h, "scope-user", opts.UserID)
+	writeFingerprintPart(h, "scope-profile", opts.Profile)
 
 	for _, provider := range a.providers {
 		if tokenProvider, ok := any(provider).(DynamicToolRefreshTokenProvider); ok {
 			writeFingerprintPart(h, "provider-token", tokenProvider.DynamicToolRefreshToken())
 		} else {
-			for _, tool := range provider.DynamicTools() {
+			for _, tool := range dynamicToolsForAssembleOptions(provider, opts) {
 				writeFingerprintPart(h, "provider-tool", fingerprintTool(session, mode, tool))
 			}
 		}
@@ -114,6 +127,20 @@ func (a *Assembler) StableToolFingerprint(session, mode string, opts AssembleOpt
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func dynamicToolsForAssembleOptions(provider DynamicToolProvider, opts AssembleOptions) []Tool {
+	if provider == nil {
+		return nil
+	}
+	if scoped, ok := any(provider).(ScopedDynamicToolProvider); ok {
+		return scoped.DynamicToolsForScope(DynamicToolScope{
+			TenantID: strings.TrimSpace(opts.TenantID),
+			UserID:   strings.TrimSpace(opts.UserID),
+			Profile:  strings.TrimSpace(opts.Profile),
+		})
+	}
+	return provider.DynamicTools()
 }
 
 func fingerprintTool(session, mode string, tool Tool) string {

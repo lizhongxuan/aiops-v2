@@ -2,15 +2,29 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
+
+type apiHostSSHPasswordStore struct {
+	hostID   string
+	password string
+	ref      string
+}
+
+func (s *apiHostSSHPasswordStore) StoreHostSSHPassword(_ context.Context, hostID, password string) (string, error) {
+	s.hostID = hostID
+	s.password = password
+	return s.ref, nil
+}
 
 func TestHostAPI_CRUDRemovedEndpointsAndSelect(t *testing.T) {
 	dataDir := t.TempDir()
@@ -82,6 +96,72 @@ func TestHostAPI_CRUDRemovedEndpointsAndSelect(t *testing.T) {
 	}
 }
 
+func TestHostAPICreateAcceptsSSHPasswordWithoutLeakingPlaintext(t *testing.T) {
+	dataDir := t.TempDir()
+	dataStore, err := store.NewJSONFileStore(dataDir, 10)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer dataStore.Close()
+
+	passwordStore := &apiHostSSHPasswordStore{ref: "secret://hosts/generated/ssh-password"}
+	sessionMgr := runtimekernel.NewSessionManager(dataStore)
+	srv := NewHTTPServer(appui.NewServices(
+		sessionAPITestRuntime{},
+		sessionMgr,
+		appui.WithStore(dataStore),
+		appui.WithHostSSHPasswordStore(passwordStore),
+	))
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	createBody, _ := json.Marshal(map[string]any{
+		"address":       "10.0.0.11",
+		"sshUser":       "ubuntu",
+		"sshPort":       22,
+		"sshPassword":   "ssh-password-from-browser",
+		"installViaSsh": true,
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/hosts", "application/json", bytes.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("POST /api/v1/hosts error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/v1/hosts status = %d, want 200", resp.StatusCode)
+	}
+	var payload appui.HostMutationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response error = %v", err)
+	}
+	if payload.Host.ID == "" {
+		t.Fatal("response host ID is empty")
+	}
+	if passwordStore.hostID != payload.Host.ID || passwordStore.password != "ssh-password-from-browser" {
+		t.Fatalf("password store called with hostID=%q password=%q", passwordStore.hostID, passwordStore.password)
+	}
+	if payload.Host.SSHCredentialRef != "secret://hosts/generated/ssh-password" {
+		t.Fatalf("SSHCredentialRef = %q", payload.Host.SSHCredentialRef)
+	}
+	responseJSON, _ := json.Marshal(payload)
+	if strings.Contains(string(responseJSON), "ssh-password-from-browser") {
+		t.Fatalf("response leaked ssh password: %s", responseJSON)
+	}
+	stored, err := dataStore.GetHost(payload.Host.ID)
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if stored.Name != "" {
+		t.Fatalf("stored Name = %q, want blank", stored.Name)
+	}
+	if stored.SSHCredentialRef != "secret://hosts/generated/ssh-password" {
+		t.Fatalf("stored SSHCredentialRef = %q", stored.SSHCredentialRef)
+	}
+	if stored.Status != "offline" || stored.InstallState != "inventory" || stored.Transport != "manual" {
+		t.Fatalf("stored host state = %+v, want saved inventory config only", stored)
+	}
+}
+
 func TestHostAPIInstallRetriesHostAgentWorkflow(t *testing.T) {
 	dataDir := t.TempDir()
 	dataStore, err := store.NewJSONFileStore(dataDir, 10)
@@ -126,7 +206,7 @@ func TestHostAPIInstallRetriesHostAgentWorkflow(t *testing.T) {
 	}
 }
 
-func TestHostAPISSHTestRejectsMissingCredentialRef(t *testing.T) {
+func TestHostAPISSHTestAcceptsMissingCredentialRef(t *testing.T) {
 	dataDir := t.TempDir()
 	dataStore, err := store.NewJSONFileStore(dataDir, 10)
 	if err != nil {
@@ -154,7 +234,7 @@ func TestHostAPISSHTestRejectsMissingCredentialRef(t *testing.T) {
 		t.Fatalf("POST ssh test error = %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("POST ssh test status = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST ssh test status = %d, want 200", resp.StatusCode)
 	}
 }

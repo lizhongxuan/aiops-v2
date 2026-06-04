@@ -501,3 +501,68 @@ func TestValidateTurnRecoveryPreconditions(t *testing.T) {
 		t.Fatal("snapshot without checkpoint or iteration history should not be resumable")
 	}
 }
+
+func TestRecoverTurnFromSnapshotMarksRunningMutatingInvocationSideEffectUnknown(t *testing.T) {
+	now := time.Now()
+	snapshot := &TurnSnapshot{
+		ID:          "turn-side-effect",
+		SessionID:   "sess-side-effect",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		Lifecycle:   TurnLifecycleSuspended,
+		ResumeState: TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		LatestCheckpoint: &CheckpointMetadata{
+			ID:          "chk-side-effect",
+			SessionID:   "sess-side-effect",
+			TurnID:      "turn-side-effect",
+			Iteration:   1,
+			Sequence:    1,
+			Lifecycle:   TurnLifecycleSuspended,
+			ResumeState: TurnResumeStatePendingApproval,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		},
+		PendingApprovals: []PendingApproval{{ID: "approval-side-effect", SessionID: "sess-side-effect", TurnID: "turn-side-effect", Iteration: 1, ToolName: "restart_service", CreatedAt: now, UpdatedAt: now}},
+		Iterations: []IterationState{{
+			ID:          "turn-side-effect-iter-1",
+			SessionID:   "sess-side-effect",
+			TurnID:      "turn-side-effect",
+			Iteration:   1,
+			Lifecycle:   TurnLifecycleSuspended,
+			ResumeState: TurnResumeStatePendingApproval,
+			StartedAt:   now,
+			UpdatedAt:   now,
+			ToolInvocations: []ToolInvocationState{
+				{ID: "mutating", ToolCallID: "call-mutating", ToolName: "restart_service", Status: ToolInvocationRunning, Mutating: true, StartedAt: now, UpdatedAt: now},
+				{ID: "readonly", ToolCallID: "call-readonly", ToolName: "read_metrics", Status: ToolInvocationRunning, StartedAt: now, UpdatedAt: now},
+			},
+		}},
+	}
+
+	result, err := RecoverTurnFromSnapshot(snapshot, func() (TurnResult, error) {
+		return TurnResult{SessionType: SessionTypeHost, Mode: ModeExecute, SessionID: snapshot.SessionID, TurnID: snapshot.ID, Status: "blocked"}, nil
+	})
+	if err != nil {
+		t.Fatalf("RecoverTurnFromSnapshot error = %v", err)
+	}
+	if result.Status != "blocked" {
+		t.Fatalf("recover result status = %q, want blocked", result.Status)
+	}
+	invocations := snapshot.Iterations[0].ToolInvocations
+	if invocations[0].Status != ToolInvocationFailed || invocations[0].FailureKind != "side_effect_unknown" || invocations[0].CompletedAt == nil {
+		t.Fatalf("mutating invocation = %#v, want failed side_effect_unknown", invocations[0])
+	}
+	if len(invocations[0].Attempts) == 0 {
+		t.Fatalf("mutating invocation attempts = %#v, want manual reconcile attempt", invocations[0].Attempts)
+	}
+	lastAttempt := invocations[0].Attempts[len(invocations[0].Attempts)-1]
+	if lastAttempt.Action != ToolAttemptActionManualReconcile || lastAttempt.Outcome != ToolAttemptOutcomePlanned || lastAttempt.TriggerFailureKind != "side_effect_unknown" {
+		t.Fatalf("manual reconcile attempt = %#v, want planned side_effect_unknown", lastAttempt)
+	}
+	if invocations[1].Status != ToolInvocationRunning || invocations[1].FailureKind != "" {
+		t.Fatalf("readonly invocation = %#v, want unchanged running", invocations[1])
+	}
+}

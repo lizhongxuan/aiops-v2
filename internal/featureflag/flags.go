@@ -2,7 +2,9 @@ package featureflag
 
 import (
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/tooling"
 )
@@ -18,6 +20,12 @@ const (
 	envDisabledTools         = "AIOPS_DISABLED_TOOLS"
 	envDeferredTools         = "AIOPS_DEFERRED_TOOLS"
 	envExperimentalMetaTools = "AIOPS_EXPERIMENTAL_META_TOOLS"
+	envReadOnlyToolRetry     = "AIOPS_FLAG_READONLY_TOOL_RETRY"
+
+	envReadOnlyToolRetryMaxPerCall    = "AIOPS_READONLY_TOOL_RETRY_MAX_PER_CALL"
+	envReadOnlyToolRetryMaxPerTurn    = "AIOPS_READONLY_TOOL_RETRY_MAX_PER_TURN"
+	envReadOnlyToolRetryBackoffBaseMS = "AIOPS_READONLY_TOOL_RETRY_BACKOFF_BASE_MS"
+	envReadOnlyToolRetryBackoffMaxMS  = "AIOPS_READONLY_TOOL_RETRY_BACKOFF_MAX_MS"
 )
 
 // Flags controls unified tool metadata exposure and related experiments.
@@ -32,11 +40,23 @@ type Flags struct {
 	DisabledTools         []string
 	DeferredTools         []string
 	ExperimentalMetaTools []string
+
+	ReadOnlyToolRetryEnabled     bool
+	ReadOnlyToolRetryMaxPerCall  int
+	ReadOnlyToolRetryMaxPerTurn  int
+	ReadOnlyToolRetryBackoffBase time.Duration
+	ReadOnlyToolRetryBackoffMax  time.Duration
 }
 
 // Default returns the zero-value flag set.
 func Default() Flags {
-	return Flags{DiagnosticProtocol: true}
+	return Flags{
+		DiagnosticProtocol:           true,
+		ReadOnlyToolRetryMaxPerCall:  1,
+		ReadOnlyToolRetryMaxPerTurn:  3,
+		ReadOnlyToolRetryBackoffBase: 300 * time.Millisecond,
+		ReadOnlyToolRetryBackoffMax:  2 * time.Second,
+	}
 }
 
 // FromEnv builds a flag set from environment variables using the provided lookup.
@@ -56,6 +76,11 @@ func FromEnv(lookup func(string) string) Flags {
 	f.DisabledTools = parseList(lookup(envDisabledTools))
 	f.DeferredTools = parseList(lookup(envDeferredTools))
 	f.ExperimentalMetaTools = parseList(lookup(envExperimentalMetaTools))
+	f.ReadOnlyToolRetryEnabled = parseBool(lookup(envReadOnlyToolRetry))
+	f.ReadOnlyToolRetryMaxPerCall = parsePositiveInt(lookup(envReadOnlyToolRetryMaxPerCall), f.ReadOnlyToolRetryMaxPerCall)
+	f.ReadOnlyToolRetryMaxPerTurn = parsePositiveInt(lookup(envReadOnlyToolRetryMaxPerTurn), f.ReadOnlyToolRetryMaxPerTurn)
+	f.ReadOnlyToolRetryBackoffBase = parseMillisDuration(lookup(envReadOnlyToolRetryBackoffBaseMS), f.ReadOnlyToolRetryBackoffBase)
+	f.ReadOnlyToolRetryBackoffMax = parseMillisDuration(lookup(envReadOnlyToolRetryBackoffMaxMS), f.ReadOnlyToolRetryBackoffMax)
 	return f
 }
 
@@ -72,6 +97,12 @@ func (f Flags) Clone() Flags {
 		DisabledTools:         cloneStrings(f.DisabledTools),
 		DeferredTools:         cloneStrings(f.DeferredTools),
 		ExperimentalMetaTools: cloneStrings(f.ExperimentalMetaTools),
+
+		ReadOnlyToolRetryEnabled:     f.ReadOnlyToolRetryEnabled,
+		ReadOnlyToolRetryMaxPerCall:  f.ReadOnlyToolRetryMaxPerCall,
+		ReadOnlyToolRetryMaxPerTurn:  f.ReadOnlyToolRetryMaxPerTurn,
+		ReadOnlyToolRetryBackoffBase: f.ReadOnlyToolRetryBackoffBase,
+		ReadOnlyToolRetryBackoffMax:  f.ReadOnlyToolRetryBackoffMax,
 	}
 }
 
@@ -140,6 +171,26 @@ func parseList(value string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func parseMillisDuration(value string, fallback time.Duration) time.Duration {
+	millis := parsePositiveInt(value, -1)
+	if millis <= 0 {
+		return fallback
+	}
+	return time.Duration(millis) * time.Millisecond
 }
 
 func containsString(values []string, target string) bool {

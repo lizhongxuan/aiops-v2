@@ -468,31 +468,7 @@ func workflowReferenceGuardModeFromEnv(getenv func(string) string) runnerservice
 }
 
 func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
-	if getenv == nil {
-		getenv = func(string) string { return "" }
-	}
-	driver := strings.ToLower(strings.TrimSpace(getenv("AIOPS_STORE_DRIVER")))
-	switch driver {
-	case "", "json", "file":
-		return store.NewJSONFileStore(dataDir, 5*time.Second)
-	case "postgres", "postgresql":
-		dsn := strings.TrimSpace(getenv("AIOPS_POSTGRES_DSN"))
-		if dsn == "" {
-			dsn = strings.TrimSpace(getenv("DATABASE_URL"))
-		}
-		if dsn == "" {
-			return nil, fmt.Errorf("AIOPS_POSTGRES_DSN is required when AIOPS_STORE_DRIVER=postgres")
-		}
-		return store.NewPostgresStore(dsn)
-	case "mysql":
-		dsn := strings.TrimSpace(getenv("AIOPS_MYSQL_DSN"))
-		if dsn == "" {
-			return nil, fmt.Errorf("AIOPS_MYSQL_DSN is required when AIOPS_STORE_DRIVER=mysql")
-		}
-		return store.NewMySQLStore(dsn)
-	default:
-		return nil, fmt.Errorf("unsupported store driver %q", driver)
-	}
+	return store.OpenConfiguredStore(store.OpenConfigFromEnv(dataDir, getenv))
 }
 
 func runnerStudioUpstreamFromEnv(getenv func(string) string) string {

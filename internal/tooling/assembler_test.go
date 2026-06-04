@@ -20,6 +20,22 @@ func (p dynamicToolProviderStub) DynamicToolRefreshToken() string {
 	return p.token
 }
 
+type scopedDynamicToolProviderStub struct {
+	toolsByTenant map[string][]Tool
+}
+
+func (p scopedDynamicToolProviderStub) DynamicTools() []Tool {
+	var out []Tool
+	for _, tools := range p.toolsByTenant {
+		out = append(out, tools...)
+	}
+	return out
+}
+
+func (p scopedDynamicToolProviderStub) DynamicToolsForScope(scope DynamicToolScope) []Tool {
+	return append([]Tool(nil), p.toolsByTenant[scope.TenantID]...)
+}
+
 func TestAssemblerMergesRegistryExtraAndDynamicTools(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(&mockTool{
@@ -56,6 +72,35 @@ func TestAssemblerMergesRegistryExtraAndDynamicTools(t *testing.T) {
 	pool := assembler.AssembleToolPoolWithOptions("host", "inspect", AssembleOptions{})
 	if len(pool) != 2 {
 		t.Fatalf("AssembleToolPoolWithOptions() len = %d, want registry+dynamic tools", len(pool))
+	}
+}
+
+func TestAssemblerPassesTurnMetadataScopeToDynamicProviders(t *testing.T) {
+	tenantATool := &mockTool{meta: ToolMetadata{Name: "tenant_a_tool", Description: "tenant a"}, enabled: true, readOnly: true, concurrency: true, description: "tenant a"}
+	tenantBTool := &mockTool{meta: ToolMetadata{Name: "tenant_b_tool", Description: "tenant b"}, enabled: true, readOnly: true, concurrency: true, description: "tenant b"}
+	assembler := NewAssembler(NewRegistry(), scopedDynamicToolProviderStub{
+		toolsByTenant: map[string][]Tool{
+			"tenant-a": {tenantATool},
+			"tenant-b": {tenantBTool},
+		},
+	})
+
+	tenantA := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{
+		"tenantId": "tenant-a",
+	}))
+	if strings.Join(tenantA, ",") != "tenant_a_tool" {
+		t.Fatalf("tenant-a tools = %#v, want only tenant_a_tool", tenantA)
+	}
+	tenantB := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{
+		"tenantId": "tenant-b",
+	}))
+	if strings.Join(tenantB, ",") != "tenant_b_tool" {
+		t.Fatalf("tenant-b tools = %#v, want only tenant_b_tool", tenantB)
+	}
+	fpA := assembler.StableToolFingerprint("host", "inspect", AssembleOptionsForTurnMetadata(map[string]string{"tenantId": "tenant-a"}))
+	fpB := assembler.StableToolFingerprint("host", "inspect", AssembleOptionsForTurnMetadata(map[string]string{"tenantId": "tenant-b"}))
+	if fpA == "" || fpB == "" || fpA == fpB {
+		t.Fatalf("fingerprints by tenant = %q/%q, want distinct non-empty values", fpA, fpB)
 	}
 }
 

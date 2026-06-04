@@ -127,6 +127,7 @@ type servicesConfig struct {
 	toolResultSpills    ToolResultSpillRepository
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
+	sshPasswordStore    HostSSHPasswordStore
 	hostBootstrapRunner HostBootstrapRunner
 	hostAgentInstaller  HostAgentInstaller
 	pluginSpecs         []plugins.Spec
@@ -267,6 +268,12 @@ func WithCredentialResolver(resolver CredentialResolver) ServicesOption {
 	}
 }
 
+func WithHostSSHPasswordStore(store HostSSHPasswordStore) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.sshPasswordStore = store
+	}
+}
+
 func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.hostBootstrapRunner = runner
@@ -377,6 +384,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
 		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
 	}
+	sshPasswordStore := cfg.sshPasswordStore
+	if sshPasswordStore == nil {
+		sshPasswordStore = NewLocalHostSSHPasswordStore(defaultHostInstallSecretDir())
+	}
 	var uiCards UICardService
 	if cfg.uiCards != nil {
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
@@ -389,7 +400,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
 		choices:        NewChoiceService(runtime, sessions),
 		settings:       settingsService,
-		hosts:          NewHostService(sessionStore, cfg.hosts, builder, hostBootstrap),
+		hosts:          NewHostServiceWithOptions(sessionStore, cfg.hosts, builder, hostBootstrap, WithHostServiceSSHPasswordStore(sshPasswordStore)),
 		hostAgents:     NewHostAgentService(cfg.hosts),
 		mcps:           NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
 		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
@@ -795,6 +806,7 @@ type HostUpsert struct {
 	SSHUser          string            `json:"sshUser"`
 	SSHPort          int               `json:"sshPort"`
 	SSHCredentialRef string            `json:"sshCredentialRef"`
+	SSHPassword      string            `json:"sshPassword,omitempty"`
 	AgentVersion     string            `json:"agentVersion"`
 	Labels           map[string]string `json:"labels"`
 	InstallViaSSH    bool              `json:"installViaSsh"`
@@ -803,11 +815,13 @@ type HostUpsert struct {
 type HostInstallRequest struct {
 	AgentVersion     string `json:"agentVersion"`
 	SSHCredentialRef string `json:"sshCredentialRef"`
+	SSHPassword      string `json:"sshPassword,omitempty"`
 	Force            bool   `json:"force"`
 }
 
 type HostSSHTestRequest struct {
 	SSHCredentialRef string `json:"sshCredentialRef"`
+	SSHPassword      string `json:"sshPassword,omitempty"`
 }
 
 type HostSSHTestResponse struct {
@@ -901,14 +915,19 @@ type MCPServersPayload struct {
 }
 
 type SkillCatalogItem struct {
-	ID                    string `json:"id"`
-	Name                  string `json:"name"`
-	Description           string `json:"description,omitempty"`
-	Source                string `json:"source,omitempty"`
-	Enabled               bool   `json:"enabled,omitempty"`
-	DefaultEnabled        bool   `json:"defaultEnabled,omitempty"`
-	ActivationMode        string `json:"activationMode,omitempty"`
-	DefaultActivationMode string `json:"defaultActivationMode,omitempty"`
+	ID                    string   `json:"id"`
+	Name                  string   `json:"name"`
+	Description           string   `json:"description,omitempty"`
+	Source                string   `json:"source,omitempty"`
+	SourceScope           string   `json:"sourceScope,omitempty"`
+	Enabled               bool     `json:"enabled,omitempty"`
+	DefaultEnabled        bool     `json:"defaultEnabled,omitempty"`
+	ActivationMode        string   `json:"activationMode,omitempty"`
+	DefaultActivationMode string   `json:"defaultActivationMode,omitempty"`
+	InvocationMode        string   `json:"invocationMode,omitempty"`
+	Risk                  string   `json:"risk,omitempty"`
+	AllowedTools          []string `json:"allowedTools,omitempty"`
+	DeniedTools           []string `json:"deniedTools,omitempty"`
 }
 
 type SkillCatalogPayload struct {
@@ -921,9 +940,13 @@ type McpCatalogItem struct {
 	Name                         string `json:"name"`
 	Type                         string `json:"type,omitempty"`
 	Source                       string `json:"source,omitempty"`
+	SourceScope                  string `json:"sourceScope,omitempty"`
 	Enabled                      bool   `json:"enabled,omitempty"`
 	DefaultEnabled               bool   `json:"defaultEnabled,omitempty"`
 	Permission                   string `json:"permission,omitempty"`
+	ApprovalStatus               string `json:"approvalStatus,omitempty"`
+	RuntimeStatus                string `json:"runtimeStatus,omitempty"`
+	Risk                         string `json:"risk,omitempty"`
 	RequiresExplicitUserApproval bool   `json:"requiresExplicitUserApproval,omitempty"`
 }
 
@@ -952,15 +975,40 @@ type AgentProfilesImportPayload struct {
 }
 
 type AgentProfilePreview struct {
-	ProfileID         string           `json:"profileId"`
-	ProfileType       string           `json:"profileType,omitempty"`
-	SystemPrompt      string           `json:"systemPrompt,omitempty"`
-	SystemPromptLines int              `json:"systemPromptLines"`
-	CommandSummary    []string         `json:"commandSummary,omitempty"`
-	CapabilitySummary []string         `json:"capabilitySummary,omitempty"`
-	EnabledSkills     []map[string]any `json:"enabledSkills,omitempty"`
-	EnabledMcps       []map[string]any `json:"enabledMcps,omitempty"`
-	Runtime           map[string]any   `json:"runtime,omitempty"`
+	ProfileID          string             `json:"profileId"`
+	ProfileType        string             `json:"profileType,omitempty"`
+	SystemPrompt       string             `json:"systemPrompt,omitempty"`
+	SystemPromptLines  int                `json:"systemPromptLines"`
+	CommandSummary     []string           `json:"commandSummary,omitempty"`
+	CapabilitySummary  []string           `json:"capabilitySummary,omitempty"`
+	EnabledSkills      []map[string]any   `json:"enabledSkills,omitempty"`
+	EnabledMcps        []map[string]any   `json:"enabledMcps,omitempty"`
+	CapabilitySnapshot CapabilitySnapshot `json:"capabilitySnapshot,omitempty"`
+	Runtime            map[string]any     `json:"runtime,omitempty"`
+}
+
+type CapabilitySnapshot struct {
+	TenantID    string                   `json:"tenantId,omitempty"`
+	UserID      string                   `json:"userId,omitempty"`
+	ProfileID   string                   `json:"profileId,omitempty"`
+	Fingerprint string                   `json:"fingerprint"`
+	Items       []CapabilitySnapshotItem `json:"items"`
+}
+
+type CapabilitySnapshotItem struct {
+	ID             string   `json:"id"`
+	Kind           string   `json:"kind"`
+	Enabled        bool     `json:"enabled"`
+	Source         string   `json:"source,omitempty"`
+	SourceScope    string   `json:"sourceScope,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	Policy         string   `json:"policy,omitempty"`
+	RuntimeStatus  string   `json:"runtimeStatus,omitempty"`
+	Risk           string   `json:"risk,omitempty"`
+	InvocationMode string   `json:"invocationMode,omitempty"`
+	ApprovalStatus string   `json:"approvalStatus,omitempty"`
+	AllowedTools   []string `json:"allowedTools,omitempty"`
+	DeniedTools    []string `json:"deniedTools,omitempty"`
 }
 
 type AgentRuntimePromptSettings struct {

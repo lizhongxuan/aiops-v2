@@ -161,6 +161,65 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorDoesNotExposeFallbackRetryManualStates(t *testing.T) {
+	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-harness", "thread-harness")
+	completedTool := json.RawMessage(`{
+		"toolCallId":"tool-completed",
+		"toolName":"coroot.service_metrics",
+		"displayKind":"tool",
+		"inputSummary":"payment-api metrics",
+		"outputSummary":"metrics collected"
+	}`)
+	failedTool := json.RawMessage(`{
+		"toolCallId":"tool-failed",
+		"toolName":"coroot.missing_tool",
+		"displayKind":"tool",
+		"inputSummary":"missing tool",
+		"outputSummary":"tool not found"
+	}`)
+	approvalData := json.RawMessage(`{
+		"approvalId":"approval-blocked",
+		"approvalType":"command",
+		"command":"kubectl rollout restart deployment/payment-api",
+		"reason":"mutating command"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-harness-states",
+		SessionID:   "session-harness",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "reasoning-running", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "checking current tool surface"}, CreatedAt: now},
+			{ID: "tool-completed", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "metrics collected", Data: completedTool}, CreatedAt: now.Add(100 * time.Millisecond)},
+			{ID: "tool-failed", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusFailed, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "tool not found", Data: failedTool}, CreatedAt: now.Add(200 * time.Millisecond)},
+			{ID: "approval-blocked", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{Summary: "需要审批", Data: approvalData}, CreatedAt: now.Add(300 * time.Millisecond)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	assertTransportProjectionHasProcessStatuses(t, projected, []AiopsTransportProcessStatus{
+		AiopsTransportProcessStatusRunning,
+		AiopsTransportProcessStatusCompleted,
+		AiopsTransportProcessStatusFailed,
+		AiopsTransportProcessStatusBlocked,
+	})
+	assertNoForbiddenTransportProjectionStates(t, projected, []string{
+		"fallback_planned",
+		"retry_scheduled",
+		"manual_reconcile",
+	})
+}
+
 func TestTransportProjectorProjectsContextGovernanceAndExternalizedToolResult(t *testing.T) {
 	now := time.Date(2026, 5, 22, 8, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1162,6 +1221,55 @@ func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsRunnerWorkflowGenerationArtifact(t *testing.T) {
+	now := time.Date(2026, 5, 25, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-workflowgen", "thread-workflowgen")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"workflow-generation-plan",
+		"toolName":"workflow_generation.plan",
+		"displayKind":"runner_workflow_generation",
+		"outputPreview":{
+			"schemaVersion":"aiops.runner_workflow_generation/v1",
+			"workflowTitle":"AI 新闻摘要工作流",
+			"workflowId":"wfgen-1",
+			"status":"plan_ready",
+			"steps":[
+				{"id":"search-news","title":"搜索 AI 新闻","status":"waiting"},
+				{"id":"extract-key-news","title":"提取关键新闻","status":"waiting"}
+			]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-workflowgen",
+		SessionID:   "session-workflowgen",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-workflowgen", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "workflow generation plan", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-workflowgen"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "runner_workflow_generation" || artifact.TitleZh != "Runner Workflow 生成进度" {
+		t.Fatalf("artifact = %+v, want runner workflow generation artifact", artifact)
+	}
+	if artifact.InlineData["workflowTitle"] != "AI 新闻摘要工作流" {
+		t.Fatalf("inlineData = %#v", artifact.InlineData)
+	}
+}
+
 func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.T) {
 	now := time.Date(2026, 5, 19, 9, 30, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1699,6 +1807,35 @@ func TestOpsManualSearchReferenceOnlySummaryPromotesReadOnlyInvestigation(t *tes
 	}
 	if actions := opsManualSearchArtifactActions("reference_only"); len(actions) != 0 {
 		t.Fatalf("actions = %#v, want no executable or step-by-step action for reference_only search", actions)
+	}
+}
+
+func assertTransportProjectionHasProcessStatuses(t *testing.T, projected AiopsTransportState, required []AiopsTransportProcessStatus) {
+	t.Helper()
+	seen := map[AiopsTransportProcessStatus]bool{}
+	for _, turn := range projected.Turns {
+		for _, block := range turn.Process {
+			seen[block.Status] = true
+		}
+	}
+	for _, status := range required {
+		if !seen[status] {
+			t.Fatalf("transport process statuses = %#v, missing %q", seen, status)
+		}
+	}
+}
+
+func assertNoForbiddenTransportProjectionStates(t *testing.T, projected AiopsTransportState, forbidden []string) {
+	t.Helper()
+	raw, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatalf("marshal transport projection: %v", err)
+	}
+	body := string(raw)
+	for _, state := range forbidden {
+		if strings.Contains(body, state) {
+			t.Fatalf("transport projection exposed forbidden state %q: %s", state, body)
+		}
 	}
 }
 

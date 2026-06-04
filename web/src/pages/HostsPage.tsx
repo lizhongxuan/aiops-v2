@@ -1,10 +1,10 @@
-import { ExternalLink, Plus, RotateCcw, Save, Search, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Plus, Save, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { listHostLeases, listHostProfiles, listHostReportHistory } from "@/api/hostProfiles";
 import {
@@ -35,9 +35,7 @@ type HostDraft = {
   address: string;
   sshUser: string;
   sshPort: string;
-  transport: string;
-  installViaSsh: boolean;
-  sshCredentialRef: string;
+  sshPassword: string;
   agentVersion: string;
   labelsText: string;
 };
@@ -48,9 +46,7 @@ const blankDraft: HostDraft = {
   address: "",
   sshUser: "root",
   sshPort: "22",
-  transport: "ssh_bootstrap",
-  installViaSsh: true,
-  sshCredentialRef: "",
+  sshPassword: "",
   agentVersion: "v0.1.0",
   labelsText: "",
 };
@@ -72,6 +68,7 @@ export function HostsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [dialogMessage, setDialogMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [draft, setDraft] = useState<HostDraft>(blankDraft);
@@ -121,42 +118,48 @@ export function HostsPage() {
   function openCreate() {
     setEditingHost(null);
     setDraft(blankDraft);
+    setDialogMessage(null);
     setDialogOpen(true);
   }
 
   function openEdit(host: HostRecord) {
     setEditingHost(host);
+    setDialogMessage(null);
     setDraft({
       id: host.id || "",
       name: host.name || "",
       address: host.address || host.name || host.id || "",
       sshUser: host.sshUser || "root",
       sshPort: String(host.sshPort || "22"),
-      transport: host.transport || "ssh_bootstrap",
-      installViaSsh: host.transport === "ssh_bootstrap" || host.status === "installing" || host.installState === "pending_install",
-      sshCredentialRef: host.sshCredentialRef || "",
+      sshPassword: "",
       agentVersion: host.agentVersion || "v0.1.0",
       labelsText: formatLabels(host.labels),
     });
     setDialogOpen(true);
   }
 
+  function changeDialogOpen(open: boolean) {
+    setDialogOpen(open);
+    if (!open) setDialogMessage(null);
+  }
+
   async function saveHost() {
     setSaving(true);
+    setDialogMessage(null);
     try {
-      const payload = {
-        id: draft.id,
-        name: draft.name || draft.address || draft.id,
+      const payload: Record<string, unknown> = {
+        name: draft.name.trim(),
         address: draft.address,
         sshUser: draft.sshUser,
         sshPort: Number(draft.sshPort) || 22,
-        transport: draft.transport,
-        installViaSsh: draft.installViaSsh,
-        sshCredentialRef: draft.sshCredentialRef,
+        transport: "manual",
+        installViaSsh: false,
+        sshPassword: draft.sshPassword,
         agentVersion: draft.agentVersion || "v0.1.0",
         labels: parseLabels(draft.labelsText),
       };
       if (editingHost?.id) {
+        payload.id = draft.id;
         await updateHost(editingHost.id, payload);
       } else {
         await createHost(payload);
@@ -165,7 +168,7 @@ export function HostsPage() {
       setMessage({ type: "success", text: "主机信息已保存" });
       await load();
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "保存主机失败" });
+      setDialogMessage({ type: "error", text: error instanceof Error ? error.message : "保存主机失败" });
     } finally {
       setSaving(false);
     }
@@ -181,17 +184,17 @@ export function HostsPage() {
     }
   }
 
-  async function retryInstall(host: HostRecord) {
+  async function installAgent(host: HostRecord) {
     try {
       await retryHostInstall(host.id, {
         agentVersion: host.agentVersion || "v0.1.0",
         sshCredentialRef: host.sshCredentialRef || "",
         force: false,
       });
-      setMessage({ type: "success", text: "已重新提交安装任务" });
+      setMessage({ type: "success", text: "已提交 Agent 安装任务" });
       await load();
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "重新提交安装失败" });
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "安装 Agent 失败" });
     }
   }
 
@@ -327,12 +330,10 @@ export function HostsPage() {
                                   </Link>
                                 </Button>
                               ) : null}
-                              {row.canRetryInstall ? (
-                                <Button variant="outline" onClick={() => void retryInstall(row.raw)}>
-                                  <RotateCcw />
-                                  重试
-                                </Button>
-                              ) : null}
+                              <Button variant="outline" onClick={() => void installAgent(row.raw)} disabled={row.heartbeat === "installing"}>
+                                <Download />
+                                安装 Agent
+                              </Button>
                               <Button variant="outline" onClick={() => navigate(`/terminal/${row.id}`)} disabled={!row.canOpenSsh}>
                                 终端
                               </Button>
@@ -358,16 +359,15 @@ export function HostsPage() {
         </>
       )}
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <Dialog open={dialogOpen} onOpenChange={changeDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{editingHost ? "编辑主机" : "接入主机"}</DialogTitle>
+            <DialogDescription>填写主机接入信息并保存配置。SSH 用户必须是 root 或具备 sudo 权限。</DialogDescription>
           </DialogHeader>
+          {dialogMessage ? <StatusAlert type={dialogMessage.type} title={dialogMessage.type === "error" ? "操作失败" : "操作完成"} message={dialogMessage.text} /> : null}
           <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Host ID">
-              <Input value={draft.id} onChange={(event) => setDraft((prev) => ({ ...prev, id: event.target.value }))} disabled={Boolean(editingHost)} />
-            </Field>
-            <Field label="名称">
+            <Field label="名称（可选）">
               <Input value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} />
             </Field>
             <Field label="地址">
@@ -379,32 +379,17 @@ export function HostsPage() {
             <Field label="SSH 端口">
               <Input value={draft.sshPort} onChange={(event) => setDraft((prev) => ({ ...prev, sshPort: event.target.value }))} />
             </Field>
-            <Field label="SSH 安装">
-              <label className="flex h-8 items-center gap-2 rounded-lg border bg-white px-2.5 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={draft.installViaSsh}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, installViaSsh: event.target.checked }))}
-                />
-                通过 SSH 安装 host-agent
-              </label>
-            </Field>
-            <Field label="SSH 凭据引用" hint="仅填写 secret:// 或 vault 引用，不填写密码或私钥内容。">
-              <Input value={draft.sshCredentialRef} onChange={(event) => setDraft((prev) => ({ ...prev, sshCredentialRef: event.target.value }))} placeholder="secret://ops/prod-web-01-ssh-key" />
+            <Field label="SSH 密码" hint="可选。保存后仅由服务端内部 secret 使用；编辑时留空表示保留已保存密码或使用默认 SSH 认证。">
+              <Input
+                type="password"
+                value={draft.sshPassword}
+                onChange={(event) => setDraft((prev) => ({ ...prev, sshPassword: event.target.value }))}
+                placeholder="输入 SSH 用户密码"
+                autoComplete="new-password"
+              />
             </Field>
             <Field label="Agent 版本">
               <Input value={draft.agentVersion} onChange={(event) => setDraft((prev) => ({ ...prev, agentVersion: event.target.value }))} placeholder="v0.1.0" />
-            </Field>
-            <Field label="Transport">
-              <SelectField
-                value={draft.transport}
-                onChange={(transport) => setDraft((prev) => ({ ...prev, transport }))}
-                options={[
-                  { label: "ssh_bootstrap", value: "ssh_bootstrap" },
-                  { label: "grpc_reverse", value: "grpc_reverse" },
-                  { label: "local", value: "local" },
-                ]}
-              />
             </Field>
             <div className="md:col-span-2">
               <Field label="标签" hint="用逗号或换行分隔，例如 env=prod, role=web, cluster=ops-k8s">
@@ -416,7 +401,7 @@ export function HostsPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => void saveHost()} disabled={saving || !draft.id}>
+            <Button onClick={() => void saveHost()} disabled={saving || !draft.address || !draft.sshUser}>
               <Save />
               保存
             </Button>

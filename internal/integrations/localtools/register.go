@@ -573,6 +573,8 @@ func checkExecCommandActionToken(ctx context.Context, input json.RawMessage, req
 	if hasExecCtx {
 		expected.SessionID = execCtx.SessionID
 		expected.TurnID = execCtx.TurnID
+		expected.TenantID = execCtx.TenantID
+		expected.UserID = execCtx.UserID
 		expected.IncidentID = execCtx.IncidentID
 	}
 	claims, err := signer.Verify(token, expected)

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,6 +52,381 @@ func TestRuntimeModelInputCompatibilityAdapters(t *testing.T) {
 	if len(roundTrip) != 2 || roundTrip[0].ToolCalls[0].Name != "read_file" || roundTrip[1].ToolResult.ToolCallID != "call-1" {
 		t.Fatalf("runtimeMessagesFromPromptInput() = %#v, want tool call/result preserved", roundTrip)
 	}
+}
+
+type aiChatHarnessGoldenCase struct {
+	Name                   string                  `json:"name"`
+	UserInput              string                  `json:"userInput"`
+	ModelToolCalls         []aiChatGoldenToolCall  `json:"modelToolCalls,omitempty"`
+	ModelFinalOutput       string                  `json:"modelFinalOutput,omitempty"`
+	AvailableTools         []aiChatGoldenTool      `json:"availableTools,omitempty"`
+	ExpectedStatus         string                  `json:"expectedStatus"`
+	ExpectedVisibleStates  []string                `json:"expectedVisibleStates,omitempty"`
+	ForbiddenVisibleStates []string                `json:"forbiddenVisibleStates,omitempty"`
+	ExpectedFailureKind    string                  `json:"expectedFailureKind,omitempty"`
+	ExpectedAttempts       []aiChatExpectedAttempt `json:"expectedAttempts,omitempty"`
+}
+
+type aiChatGoldenToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+type aiChatGoldenTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	Result      string          `json:"result,omitempty"`
+	RiskLevel   string          `json:"riskLevel,omitempty"`
+	Mutating    bool            `json:"mutating,omitempty"`
+}
+
+type aiChatExpectedAttempt struct {
+	ToolCallID         string `json:"toolCallId"`
+	Action             string `json:"action"`
+	Outcome            string `json:"outcome"`
+	TriggerFailureKind string `json:"triggerFailureKind,omitempty"`
+}
+
+func loadAIChatHarnessGoldenCases(t *testing.T, dir string) []aiChatHarnessGoldenCase {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read golden cases from %s: %v", dir, err)
+	}
+	cases := make([]aiChatHarnessGoldenCase, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read golden case %s: %v", path, err)
+		}
+		var tc aiChatHarnessGoldenCase
+		if err := json.Unmarshal(data, &tc); err != nil {
+			t.Fatalf("decode golden case %s: %v", path, err)
+		}
+		if strings.TrimSpace(tc.Name) == "" {
+			t.Fatalf("golden case %s missing name", path)
+		}
+		if strings.TrimSpace(tc.ExpectedStatus) == "" {
+			t.Fatalf("golden case %s missing expectedStatus", path)
+		}
+		cases = append(cases, tc)
+	}
+	if len(cases) == 0 {
+		t.Fatalf("no golden cases found in %s", dir)
+	}
+	return cases
+}
+
+func loadGoldenCaseByName(t *testing.T, dir, name string) aiChatHarnessGoldenCase {
+	t.Helper()
+	for _, tc := range loadAIChatHarnessGoldenCases(t, dir) {
+		if tc.Name == name {
+			return tc
+		}
+	}
+	t.Fatalf("golden case %q not found in %s", name, dir)
+	return aiChatHarnessGoldenCase{}
+}
+
+func runGoldenTurn(t *testing.T, tc aiChatHarnessGoldenCase) (TurnResult, *TurnSnapshot, []LifecycleEvent) {
+	t.Helper()
+
+	responses := make([]*schema.Message, 0, 2)
+	if len(tc.ModelToolCalls) > 0 {
+		responses = append(responses, schema.AssistantMessage("", schemaToolCallsFromGolden(tc.ModelToolCalls)))
+	}
+	if strings.TrimSpace(tc.ModelFinalOutput) != "" || len(tc.ModelToolCalls) == 0 {
+		responses = append(responses, schema.AssistantMessage(tc.ModelFinalOutput, nil))
+	}
+	model := &sequentialLoopModel{responses: responses}
+	registry := tooling.NewRegistry()
+	for _, toolSpec := range tc.AvailableTools {
+		toolDef := staticToolFromGolden(t, toolSpec)
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("register golden tool %q: %v", toolSpec.Name, err)
+		}
+	}
+	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, &testMockCompiler{}, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-golden-" + tc.Name,
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-golden-" + tc.Name,
+		Input:       tc.UserInput,
+	})
+	if err != nil && tc.ExpectedStatus != "error" {
+		t.Fatalf("RunTurn returned error: %v", err)
+	}
+	session := kernel.sessions.Get("sess-golden-" + tc.Name)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing current turn snapshot for golden case %s", tc.Name)
+	}
+	return result, session.CurrentTurn, append([]LifecycleEvent(nil), emitter.events...)
+}
+
+func schemaToolCallsFromGolden(calls []aiChatGoldenToolCall) []schema.ToolCall {
+	out := make([]schema.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, schema.ToolCall{
+			ID:   call.ID,
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      call.Name,
+				Arguments: string(call.Arguments),
+			},
+		})
+	}
+	return out
+}
+
+func staticToolFromGolden(t *testing.T, spec aiChatGoldenTool) *tooling.StaticTool {
+	t.Helper()
+	meta := tooling.ToolMetadata{
+		Name:        spec.Name,
+		Description: firstNonEmpty(spec.Description, spec.Name),
+		Origin:      tooling.ToolOriginBuiltin,
+		Mutating:    spec.Mutating,
+	}
+	if spec.RiskLevel != "" {
+		meta.RiskLevel = tooling.ToolRiskLevel(spec.RiskLevel)
+	}
+	inputSchema := spec.InputSchema
+	if len(inputSchema) == 0 {
+		inputSchema = json.RawMessage(`{"type":"object"}`)
+	}
+	result := firstNonEmpty(spec.Result, fmt.Sprintf("%s result", spec.Name))
+	return &tooling.StaticTool{
+		Meta:            meta,
+		InputSchemaData: inputSchema,
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return !spec.Mutating },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: result}, nil
+		},
+	}
+}
+
+func assertGoldenTurnContract(t *testing.T, tc aiChatHarnessGoldenCase, result TurnResult, snapshot *TurnSnapshot, events []LifecycleEvent) {
+	t.Helper()
+
+	if result.Status != tc.ExpectedStatus {
+		t.Fatalf("result status = %q, want %q; result=%#v", result.Status, tc.ExpectedStatus, result)
+	}
+	assertNoNewTransportStates(t, events, tc.ForbiddenVisibleStates)
+	for _, state := range tc.ExpectedVisibleStates {
+		if !goldenStateObserved(state, snapshot, events) {
+			t.Fatalf("expected visible state %q was not observed; snapshot lifecycle=%q events=%v", state, snapshot.Lifecycle, eventTypes(events))
+		}
+	}
+	assertFailureKindIfExpected(t, snapshot, tc.ExpectedFailureKind)
+	assertToolInvocationsRecorded(t, tc, snapshot)
+	assertCheckpointSequenceMonotonic(t, snapshot)
+	if strings.TrimSpace(snapshot.StableToolFingerprint) == "" {
+		t.Fatal("expected stable tool fingerprint to be recorded")
+	}
+	if len(snapshot.Iterations) > 0 && strings.TrimSpace(snapshot.Iterations[len(snapshot.Iterations)-1].ToolSurfaceFingerprint) == "" {
+		t.Fatal("expected latest iteration tool surface fingerprint to be recorded")
+	}
+}
+
+func assertNoNewTransportStates(t *testing.T, events []LifecycleEvent, forbidden []string) {
+	t.Helper()
+	if len(forbidden) == 0 {
+		forbidden = []string{"fallback_planned", "retry_scheduled", "manual_reconcile"}
+	}
+	eventTypes := eventTypes(events)
+	for _, blocked := range forbidden {
+		for _, eventType := range eventTypes {
+			if eventType == blocked {
+				t.Fatalf("forbidden visible state/event %q observed in %v", blocked, eventTypes)
+			}
+		}
+	}
+}
+
+func assertFailureKindIfExpected(t *testing.T, snapshot *TurnSnapshot, expected string) {
+	t.Helper()
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return
+	}
+	for _, iter := range snapshot.Iterations {
+		for _, result := range iter.ToolResults {
+			if failureKindFromToolResult(result) == expected {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected failure kind %q not found in tool results", expected)
+}
+
+func assertToolInvocationsRecorded(t *testing.T, tc aiChatHarnessGoldenCase, snapshot *TurnSnapshot) {
+	t.Helper()
+	if len(tc.ModelToolCalls) == 0 {
+		return
+	}
+	invocations := make([]ToolInvocationState, 0, len(tc.ModelToolCalls))
+	for _, iter := range snapshot.Iterations {
+		invocations = append(invocations, iter.ToolInvocations...)
+	}
+	if len(invocations) < len(tc.ModelToolCalls) {
+		t.Fatalf("tool invocations = %#v, want at least %d", invocations, len(tc.ModelToolCalls))
+	}
+	for _, call := range tc.ModelToolCalls {
+		inv, ok := findGoldenToolInvocation(invocations, call.ID)
+		if !ok {
+			t.Fatalf("missing tool invocation state for call %q; invocations=%#v", call.ID, invocations)
+		}
+		if inv.ToolName != call.Name {
+			t.Fatalf("invocation tool name = %q, want %q", inv.ToolName, call.Name)
+		}
+		if strings.TrimSpace(inv.ArgumentsHash) == "" {
+			t.Fatalf("invocation %q missing arguments hash", call.ID)
+		}
+		if strings.TrimSpace(inv.ToolSurfaceFingerprint) == "" {
+			t.Fatalf("invocation %q missing tool surface fingerprint", call.ID)
+		}
+		switch {
+		case tc.ExpectedFailureKind != "":
+			if inv.Status != ToolInvocationFailed {
+				t.Fatalf("invocation %q status = %q, want failed", call.ID, inv.Status)
+			}
+			if inv.FailureKind != tc.ExpectedFailureKind {
+				t.Fatalf("invocation %q failure kind = %q, want %q", call.ID, inv.FailureKind, tc.ExpectedFailureKind)
+			}
+		case tc.ExpectedStatus == "blocked":
+			if inv.Status != ToolInvocationBlocked {
+				t.Fatalf("invocation %q status = %q, want blocked", call.ID, inv.Status)
+			}
+		default:
+			if inv.Status != ToolInvocationCompleted {
+				t.Fatalf("invocation %q status = %q, want completed", call.ID, inv.Status)
+			}
+			if inv.CompletedAt == nil {
+				t.Fatalf("invocation %q missing completedAt", call.ID)
+			}
+		}
+	}
+	assertGoldenExpectedAttempts(t, tc, invocations)
+}
+
+func assertGoldenExpectedAttempts(t *testing.T, tc aiChatHarnessGoldenCase, invocations []ToolInvocationState) {
+	t.Helper()
+	for _, expected := range tc.ExpectedAttempts {
+		inv, ok := findGoldenToolInvocation(invocations, expected.ToolCallID)
+		if !ok {
+			t.Fatalf("expected attempt for missing invocation %q", expected.ToolCallID)
+		}
+		found := false
+		for _, attempt := range inv.Attempts {
+			if string(attempt.Action) != expected.Action || string(attempt.Outcome) != expected.Outcome {
+				continue
+			}
+			if expected.TriggerFailureKind != "" && attempt.TriggerFailureKind != expected.TriggerFailureKind {
+				continue
+			}
+			found = true
+			break
+		}
+		if !found {
+			t.Fatalf("invocation %q attempts = %#v, want action=%q outcome=%q failure=%q", expected.ToolCallID, inv.Attempts, expected.Action, expected.Outcome, expected.TriggerFailureKind)
+		}
+	}
+}
+
+func findGoldenToolInvocation(invocations []ToolInvocationState, toolCallID string) (ToolInvocationState, bool) {
+	for _, invocation := range invocations {
+		if invocation.ToolCallID == toolCallID {
+			return invocation, true
+		}
+	}
+	return ToolInvocationState{}, false
+}
+
+func failureKindFromToolResult(result ToolResult) string {
+	if strings.TrimSpace(result.Content) == "" {
+		return ""
+	}
+	var payload struct {
+		Type        string `json:"type"`
+		FailureKind string `json:"failureKind"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		return ""
+	}
+	if payload.Type != "tool_error" {
+		return ""
+	}
+	return payload.FailureKind
+}
+
+func assertCheckpointSequenceMonotonic(t *testing.T, snapshot *TurnSnapshot) {
+	t.Helper()
+	lastSeq := 0
+	for _, iter := range snapshot.Iterations {
+		if iter.Checkpoint == nil {
+			continue
+		}
+		if iter.Checkpoint.Sequence < lastSeq {
+			t.Fatalf("checkpoint sequence regressed from %d to %d", lastSeq, iter.Checkpoint.Sequence)
+		}
+		lastSeq = iter.Checkpoint.Sequence
+	}
+	if snapshot.LatestCheckpoint != nil && snapshot.LatestCheckpoint.Sequence < lastSeq {
+		t.Fatalf("latest checkpoint sequence = %d, want >= %d", snapshot.LatestCheckpoint.Sequence, lastSeq)
+	}
+}
+
+func goldenStateObserved(state string, snapshot *TurnSnapshot, events []LifecycleEvent) bool {
+	state = strings.TrimSpace(state)
+	switch state {
+	case "completed":
+		return snapshot.Lifecycle == TurnLifecycleCompleted || hasEventType(events, EventToolCompleted)
+	case "failed":
+		if snapshot.Lifecycle == TurnLifecycleFailed || hasEventType(events, EventToolFailed) {
+			return true
+		}
+		for _, iter := range snapshot.Iterations {
+			for _, result := range iter.ToolResults {
+				if result.Error != "" {
+					return true
+				}
+			}
+		}
+	case "blocked":
+		return snapshot.Lifecycle == TurnLifecycleSuspended || hasEventType(events, EventApprovalNeeded)
+	case "running":
+		return hasEventType(events, EventToolStarted) || len(snapshot.Iterations) > 0
+	}
+	return false
+}
+
+func hasEventType(events []LifecycleEvent, typ EventType) bool {
+	for _, event := range events {
+		if event.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func eventTypes(events []LifecycleEvent) []string {
+	out := make([]string, 0, len(events))
+	for _, event := range events {
+		out = append(out, string(event.Type))
+	}
+	return out
 }
 
 func TestLegacyRuntimeSchemaAdaptersPreserveRolesAndToolCalls(t *testing.T) {

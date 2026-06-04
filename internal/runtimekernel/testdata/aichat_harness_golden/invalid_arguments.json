@@ -1,0 +1,41 @@
+{
+  "name": "invalid_arguments",
+  "userInput": "读取缺少 namespace 的指标",
+  "availableTools": [
+    {
+      "name": "read_metrics",
+      "description": "Read service metrics.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["namespace"],
+        "properties": {
+          "namespace": { "type": "string" },
+          "service": { "type": "string" }
+        }
+      },
+      "result": "should not run"
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_invalid",
+      "name": "read_metrics",
+      "arguments": {
+        "service": "api"
+      }
+    }
+  ],
+  "modelFinalOutput": "缺少 namespace 参数，无法读取指标。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "failed", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedFailureKind": "invalid_arguments",
+  "expectedAttempts": [
+    {
+      "toolCallId": "call_invalid",
+      "action": "validate",
+      "outcome": "failed",
+      "triggerFailureKind": "invalid_arguments"
+    }
+  ]
+}

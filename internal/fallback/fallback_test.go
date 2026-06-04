@@ -14,6 +14,8 @@ func TestPlanExecCreatesReadOnlyTerminalProposalWhenNoRunbookMatches(t *testing.
 	result, err := service.PlanExec(PlanExecRequest{
 		SessionID:    "sess-1",
 		TurnID:       "turn-1",
+		TenantID:     "tenant-a",
+		UserID:       "user-a",
 		IncidentID:   "inc-1",
 		Goal:         "检查磁盘",
 		WhyNoRunbook: "runbook.match returned no high coverage candidate",
@@ -34,6 +36,9 @@ func TestPlanExecCreatesReadOnlyTerminalProposalWhenNoRunbookMatches(t *testing.
 	if action.ToolName != "exec_"+"command" || action.Risk != actionproposal.RiskLow || action.ApprovalRequired || action.ActionToken == "" {
 		t.Fatalf("action = %#v, want read-only terminal proposal with token", action)
 	}
+	if action.TenantID != "tenant-a" || action.UserID != "user-a" {
+		t.Fatalf("action tenant/user = %q/%q, want tenant-a/user-a", action.TenantID, action.UserID)
+	}
 	inputHash, err := actionproposal.NormalizedInputHash(action.ToolInput)
 	if err != nil {
 		t.Fatalf("hash input: %v", err)
@@ -41,6 +46,8 @@ func TestPlanExecCreatesReadOnlyTerminalProposalWhenNoRunbookMatches(t *testing.
 	if _, err := actionproposal.NewSigner([]byte("fallback-secret"), func() time.Time { return now }).Verify(action.ActionToken, actionproposal.ActionTokenClaims{
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
+		TenantID:   "tenant-a",
+		UserID:     "user-a",
 		IncidentID: "inc-1",
 		ToolName:   action.ToolName,
 		InputHash:  inputHash,

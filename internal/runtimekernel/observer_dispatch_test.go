@@ -21,12 +21,18 @@ func TestToolDispatcherObserverRecordsToolOutcome(t *testing.T) {
 					desc: ToolDescriptor{Metadata: tooling.ToolMetadata{
 						Name:      "read_log",
 						RiskLevel: tooling.ToolRiskLow,
+						IsMCP:     true,
+						MCPInfo: tooling.MCPInfo{
+							ServerID: "mcp-a",
+						},
 					}},
 					executor: &mockToolExecutor{result: largeResult},
 				},
 			},
 		}
-		dispatcher := NewToolDispatcher(lookup, nil, emitter).WithObserver(observer)
+		dispatcher := NewToolDispatcher(lookup, nil, emitter).
+			WithObserver(observer).
+			WithToolSurfaceFingerprint("surface-fp-1")
 
 		result := dispatcher.Dispatch(context.Background(), "sess-tool", "turn-tool", ToolCall{
 			ID:        "call-read-log",
@@ -44,6 +50,9 @@ func TestToolDispatcherObserverRecordsToolOutcome(t *testing.T) {
 		if call.ToolName != "read_log" || call.ToolCallID != "call-read-log" || call.Risk != "low" {
 			t.Fatalf("tool call attrs = %#v", call)
 		}
+		if call.MCPServerID != "mcp-a" || call.MCPServerState != "connected" {
+			t.Fatalf("mcp attrs = %q/%q, want mcp-a/connected", call.MCPServerID, call.MCPServerState)
+		}
 		span := observer.spans[0]
 		if span.status != "completed" {
 			t.Fatalf("span status = %q, want completed", span.status)
@@ -56,6 +65,12 @@ func TestToolDispatcherObserverRecordsToolOutcome(t *testing.T) {
 		}
 		if got, ok := span.attrs["tool.result_bytes"].(int); !ok || got != len([]byte(largeResult)) {
 			t.Fatalf("tool.result_bytes = %#v, want %d", span.attrs["tool.result_bytes"], len([]byte(largeResult)))
+		}
+		if span.attrs["mcp.server_state"] != "connected" {
+			t.Fatalf("mcp.server_state = %#v, want connected", span.attrs["mcp.server_state"])
+		}
+		if span.attrs["mcp.server_id"] != "mcp-a" {
+			t.Fatalf("mcp.server_id = %#v, want mcp-a", span.attrs["mcp.server_id"])
 		}
 	})
 
@@ -70,7 +85,9 @@ func TestToolDispatcherObserverRecordsToolOutcome(t *testing.T) {
 				},
 			},
 		}
-		dispatcher := NewToolDispatcher(lookup, nil, emitter).WithObserver(observer)
+		dispatcher := NewToolDispatcher(lookup, nil, emitter).
+			WithObserver(observer).
+			WithToolSurfaceFingerprint("surface-fp-1")
 
 		result := dispatcher.Dispatch(context.Background(), "sess-tool", "turn-tool", ToolCall{
 			ID:   "call-fragile",
@@ -86,6 +103,55 @@ func TestToolDispatcherObserverRecordsToolOutcome(t *testing.T) {
 		}
 		if span.attrs["error"] != "boom" || span.attrs["tool.outcome"] != "tool_failed" {
 			t.Fatalf("failure span attrs = %#v", span.attrs)
+		}
+		if span.attrs["tool.failure_kind"] != "tool_business_error" {
+			t.Fatalf("tool.failure_kind = %#v, want tool_business_error", span.attrs["tool.failure_kind"])
+		}
+		if span.attrs["tool.args_hash"] == "" {
+			t.Fatalf("tool.args_hash missing in attrs: %#v", span.attrs)
+		}
+		if span.attrs["tool.surface_fingerprint"] != "surface-fp-1" {
+			t.Fatalf("tool.surface_fingerprint = %#v, want surface-fp-1", span.attrs["tool.surface_fingerprint"])
+		}
+	})
+
+	t.Run("invalid arguments records audit hash", func(t *testing.T) {
+		observer := &toolRecordingObserver{}
+		emitter := &testMockEventEmitter{}
+		executor := &mockToolExecutor{result: "should not run"}
+		lookup := &mockToolLookup{
+			tools: map[string]mockToolEntry{
+				"schema_tool": {
+					desc: ToolDescriptor{
+						Metadata:    tooling.ToolMetadata{Name: "schema_tool"},
+						InputSchema: json.RawMessage(`{"type":"object"}`),
+					},
+					executor: executor,
+				},
+			},
+		}
+		dispatcher := NewToolDispatcher(lookup, nil, emitter).
+			WithObserver(observer).
+			WithToolSurfaceFingerprint("surface-fp-1")
+
+		result := dispatcher.Dispatch(context.Background(), "sess-tool", "turn-tool", ToolCall{
+			ID:        "call-invalid",
+			Name:      "schema_tool",
+			Arguments: json.RawMessage(`{"unterminated"`),
+		}, SessionTypeHost, ModeExecute)
+
+		if result.Error == "" {
+			t.Fatalf("dispatch result = %#v, want invalid arguments error", result)
+		}
+		if executor.calls != 0 {
+			t.Fatalf("executor calls = %d, want 0", executor.calls)
+		}
+		span := observer.spans[0]
+		if span.attrs["tool.args_hash"] == "" {
+			t.Fatalf("tool.args_hash missing for malformed args: %#v", span.attrs)
+		}
+		if span.attrs["tool.failure_kind"] != "invalid_arguments" {
+			t.Fatalf("tool.failure_kind = %#v, want invalid_arguments", span.attrs["tool.failure_kind"])
 		}
 	})
 

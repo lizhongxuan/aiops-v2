@@ -237,6 +237,18 @@ const profilesPayload = {
   mcpCatalog: mcpPayload.items,
 };
 
+const agentProfilePreviewPayload = {
+  profileId: "main-agent",
+  capabilitySnapshot: {
+    fingerprint: "sha256:preview",
+    items: [
+      { id: "coroot", kind: "mcp_server", enabled: true, source: "profile", sourceScope: "user", reason: "enabled by profile sre", runtimeStatus: "connected", risk: "low" },
+      { id: "dangerous-shell", kind: "skill", enabled: false, source: "admin_policy", sourceScope: "managed", reason: "disabled by admin deny", risk: "high" },
+      { id: "plugin-shell", kind: "mcp_server", enabled: false, source: "plugin:ops", sourceScope: "plugin", reason: "pending explicit approval", runtimeStatus: "pending_approval", risk: "high" },
+    ],
+  },
+};
+
 function jsonResponse(payload: unknown) {
   return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
@@ -266,6 +278,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.endsWith("/api/v1/agent-mcps")) return jsonResponse(mcpPayload);
   if (url.includes("/api/v1/agent-mcps/")) return jsonResponse({ items: mcpPayload.items, item: mcpPayload.items[0] });
   if (url.endsWith("/api/v1/agent-profiles")) return jsonResponse(profilesPayload);
+  if (url.includes("/api/v1/agent-profile/preview")) return jsonResponse(agentProfilePreviewPayload);
   if (url.endsWith("/api/v1/agent-profile")) return jsonResponse(init?.method === "PUT" ? profilesPayload.items[0] : profilesPayload.items[0]);
   if (url.endsWith("/api/v1/agent-profile/reset")) return jsonResponse(profilesPayload.items[0]);
   if (url.endsWith("/api/v1/agent-profiles/export")) return jsonResponse(profilesPayload);
@@ -284,6 +297,17 @@ async function flush() {
 function requestBodyFromCall(call: unknown[]) {
   const init = call[1] as RequestInit | undefined;
   return JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+}
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function inputInField(root: Element | null | undefined, labelText: string) {
+  const label = Array.from(root?.querySelectorAll("label") || []).find((item) => item.textContent?.includes(labelText));
+  return label?.querySelector("input") as HTMLInputElement | null;
 }
 
 describe("React settings pages", () => {
@@ -346,6 +370,22 @@ describe("React settings pages", () => {
 
     expect(container.textContent).toContain(expectedText);
     expect(container.textContent).not.toContain("Migration Placeholder");
+  });
+
+  it("renders Agent Profile Effective Capabilities preview with source and disabled reasons", async () => {
+    await renderPath("/settings/agent");
+
+    expect(container.textContent).toContain("Effective Capabilities");
+    expect(container.textContent).toContain("sha256:preview");
+    expect(container.textContent).toContain("coroot");
+    expect(container.textContent).toContain("connected");
+    expect(container.textContent).toContain("disabled by admin deny");
+    expect(container.textContent).toContain("pending explicit approval");
+
+    const enabledList = container.querySelector('[data-testid="effective-capabilities-enabled"]');
+    expect(enabledList?.textContent).toContain("coroot");
+    expect(enabledList?.textContent).not.toContain("dangerous-shell");
+    expect(enabledList?.textContent).not.toContain("plugin-shell");
   });
 
   it("moves settings page actions into the app shell header", async () => {
@@ -415,6 +455,120 @@ describe("React settings pages", () => {
 
     const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
     expect(accessTab).toBeTruthy();
+  });
+
+  it("shows host access save errors inside the host dialog layer", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/hosts/") && init?.method === "PUT") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "ssh credential ref is required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/hosts");
+
+    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
+    expect(accessTab).toBeTruthy();
+    await act(async () => accessTab?.click());
+    await flush();
+
+    const editButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("编辑"));
+    expect(editButton).toBeTruthy();
+    await act(async () => editButton?.click());
+    await flush();
+
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.textContent).toContain("编辑主机");
+    const saveButton = Array.from(dialog?.querySelectorAll("button") || []).find((button) => button.textContent?.includes("保存"));
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton?.click());
+    await flush();
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some((call) => String(call[0]).endsWith("/api/v1/hosts/host-prod-07") && (call[1] as RequestInit | undefined)?.method === "PUT"),
+    ).toBe(true);
+
+    const dialogAfterSave = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialogAfterSave?.textContent).toContain("ssh credential ref is required");
+    expect(container.querySelector('[role="alert"]')?.textContent || "").not.toContain("ssh credential ref is required");
+  });
+
+  it("saves host access configuration without installing the agent", async () => {
+    await renderPath("/settings/hosts");
+
+    const createButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入主机"));
+    expect(createButton).toBeTruthy();
+    await act(async () => createButton?.click());
+    await flush();
+
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.textContent).toContain("SSH 密码");
+    expect(dialog?.textContent).not.toContain("SSH 凭据引用");
+    expect(dialog?.textContent).not.toContain("Host ID");
+    expect(dialog?.textContent).toContain("名称（可选）");
+    expect(dialog?.textContent).not.toContain("接入方式");
+    expect(dialog?.textContent).not.toContain("SSH 安装 Agent");
+    expect(dialog?.textContent).not.toContain("Agent 主动上报");
+    expect(dialog?.textContent).not.toContain("服务本机");
+    expect(dialog?.textContent).not.toContain("Transport");
+    expect(dialog?.textContent).toContain("SSH 用户必须是 root 或具备 sudo 权限");
+
+    const addressInput = inputInField(dialog, "地址");
+    const userInput = inputInField(dialog, "SSH 用户");
+    const passwordInput = inputInField(dialog, "SSH 密码");
+    expect(passwordInput?.type).toBe("password");
+    await act(async () => {
+      setInputValue(addressInput!, "172.18.13.13");
+      setInputValue(userInput!, "kduser");
+      setInputValue(passwordInput!, "ssh-user-password");
+    });
+
+    const saveButton = Array.from(dialog?.querySelectorAll("button") || []).find((button) => button.textContent?.includes("保存"));
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton?.click());
+    await flush();
+
+    const createCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/hosts") && (call[1] as RequestInit | undefined)?.method === "POST");
+    expect(createCall).toBeTruthy();
+    const body = requestBodyFromCall(createCall!);
+    expect(body).not.toHaveProperty("id");
+    expect(body.name).toBe("");
+    expect(body.transport).toBe("manual");
+    expect(body.installViaSsh).toBe(false);
+    expect(body.sshPassword).toBe("ssh-user-password");
+    expect(body).not.toHaveProperty("sshCredentialRef");
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some((call) => String(call[0]).includes("/install") && (call[1] as RequestInit | undefined)?.method === "POST"),
+    ).toBe(false);
+  });
+
+  it("installs host agent from the host access list action", async () => {
+    await renderPath("/settings/hosts");
+
+    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
+    expect(accessTab).toBeTruthy();
+    await act(async () => accessTab?.click());
+    await flush();
+
+    const installButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装 Agent"));
+    expect(installButton).toBeTruthy();
+    await act(async () => installButton?.click());
+    await flush();
+
+    const installCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/hosts/host-prod-07/install") && (call[1] as RequestInit | undefined)?.method === "POST");
+    expect(installCall).toBeTruthy();
+    const body = requestBodyFromCall(installCall!);
+    expect(body.agentVersion).toBe("1.8.4");
+    expect(body.force).toBe(false);
   });
 
   it("renders Ops Manual tabs, candidates, and run records in Chinese", async () => {

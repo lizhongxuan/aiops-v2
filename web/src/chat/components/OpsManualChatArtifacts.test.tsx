@@ -1705,6 +1705,217 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).not.toContain("secret_ref=***");
   });
 
+  it("opens runner workflow generation drawer and dispatches generate confirmation", async () => {
+    let detail: unknown = null;
+    const handler = (event: Event) => {
+      detail = (event as CustomEvent).detail;
+    };
+    window.addEventListener("aiops:composer-confirmation", handler);
+
+    await act(async () => {
+      root.render(
+        <RunnerWorkflowGenerationArtifact
+          artifact={{
+            id: "artifact-generation-confirm",
+            type: "runner_workflow_generation",
+            inlineData: {
+              workflowTitle: "AI 新闻摘要工作流",
+              workflowId: "wfgen-1",
+              generationAvailable: true,
+              validationProvider: "docker",
+              validationScenario: "news-summary-return-only",
+              validationDetails: {
+                allowedImages: ["python:3.12-slim", "python:3.12-bookworm"],
+              },
+              steps: [
+                { id: "search-news", title: "搜索 AI 新闻", status: "waiting" },
+                { id: "extract-news", title: "提取关键新闻", status: "waiting" },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    const imageSelect = container.querySelector('[data-testid="runner-workflow-validation-image"]') as HTMLSelectElement | null;
+    expect(imageSelect?.value).toBe("python:3.12-slim");
+    await act(async () => {
+      if (imageSelect) {
+        imageSelect.value = "python:3.12-bookworm";
+        imageSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    const generateButton = Array.from(container.querySelectorAll("button")).find(
+      (item) => item.textContent?.includes("生成"),
+    );
+    await act(async () => {
+      generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(detail).toMatchObject({
+      action: "generate_runner_workflow_candidate",
+      title: "生成 Runner Workflow 草稿",
+      sourceTitle: "AI 新闻摘要工作流",
+      artifactId: "artifact-generation-confirm",
+      metadata: {
+        workflowValidationImage: "python:3.12-bookworm",
+      },
+    });
+
+    const detailsButton = Array.from(container.querySelectorAll("button")).find(
+      (item) => item.textContent?.includes("查看详情"),
+    );
+    await act(async () => {
+      detailsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("Runner Workflow 生成详情");
+    expect(document.body.textContent).toContain("Provider：docker");
+    expect(document.body.textContent).toContain("news-summary-return-only");
+
+    window.removeEventListener("aiops:composer-confirmation", handler);
+  });
+
+  it("renders pre-generation plan steps as adjustable outline, not final fixed nodes", async () => {
+    await act(async () => {
+      root.render(
+        <RunnerWorkflowGenerationArtifact
+          artifact={{
+            id: "artifact-generation-provisional-plan",
+            type: "runner_workflow_generation",
+            inlineData: {
+              workflowTitle: "数据库与中间件故障复盘工作流",
+              generationAvailable: true,
+              planIsProvisional: true,
+              steps: [
+                {
+                  id: "search-ops-incidents",
+                  title: "搜索故障案例",
+                  status: "waiting",
+                  summary: "获取数据库与中间件故障案例候选列表。",
+                },
+                {
+                  id: "extract-ops-lessons",
+                  title: "提取运维经验",
+                  status: "waiting",
+                  summary: "从故障案例中提取可复盘的运维经验。",
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("初始生成大纲");
+    expect(container.textContent).toContain("生成过程中可拆分、合并或调整节点");
+    expect(container.textContent).toContain("搜索故障案例");
+    expect(container.textContent).toContain("可调整");
+    expect(container.textContent).not.toContain("等待中");
+  });
+
+  it("opens node details with script and validation context", async () => {
+    await act(async () => {
+      root.render(
+        <RunnerWorkflowGenerationArtifact
+          artifact={{
+            id: "artifact-generation-node-details",
+            type: "runner_workflow_generation",
+            inlineData: {
+              workflowTitle: "数据库与中间件故障复盘工作流",
+              validationProvider: "docker",
+              validationScenario: "ops-incident-return-only",
+              validationDetails: {
+                mode: "docker",
+                summary: "Docker validation passed.",
+                networkPolicy: "none",
+                allowedImages: ["python:3.12-slim"],
+              },
+              steps: [
+                {
+                  id: "search-ops-incidents",
+                  title: "搜索故障案例",
+                  status: "passed",
+                  action: "script.python",
+                  scriptLanguage: "python",
+                  scriptPreview: "print('AIOPS_NODE_RESULT_BEGIN')",
+                  validationStatus: "passed",
+                  validationSummary: "节点脚本在 Docker 中执行成功。",
+                  validationStdout: "AIOPS_NODE_RESULT_BEGIN\n{\"ok\": true}\nAIOPS_NODE_RESULT_END",
+                  validationStderr: "",
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    const nodeButton = container.querySelector(
+      '[data-testid="runner-workflow-node-search-ops-incidents"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      nodeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(nodeButton?.tagName).toBe("BUTTON");
+    expect(container.textContent).not.toContain("节点详情");
+    expect(document.body.textContent).toContain("Runner Workflow 生成详情");
+    const drawer = document.body.querySelector(
+      '[role="dialog"]',
+    ) as HTMLElement | null;
+    expect(drawer?.className).toContain("top-[72px]");
+    expect(drawer?.className).toContain("h-[calc(100dvh-72px)]");
+    expect(drawer?.className).toContain("sm:!max-w-[760px]");
+    expect(document.body.textContent).toContain("节点详情");
+    expect(document.body.textContent).toContain("Python 脚本");
+    expect(document.body.textContent).toContain("script.python");
+    expect(document.body.textContent).toContain("print('AIOPS_NODE_RESULT_BEGIN')");
+    const scriptPreview = document.body.querySelector("pre") as HTMLElement | null;
+    expect(scriptPreview?.className).toContain("max-h-[520px]");
+    expect(scriptPreview?.className).toContain("min-h-[240px]");
+    expect(document.body.textContent).not.toContain("只读节点");
+    expect(document.body.textContent).not.toContain("Docker 验证方式");
+    expect(document.body.textContent).toContain("验证镜像");
+    expect(document.body.textContent).toContain("python:3.12-slim");
+    expect(document.body.textContent).toContain("执行输出");
+    expect(document.body.textContent).toContain("{\"ok\": true}");
+  });
+
+  it("renders runner workflow generation artifact without raw inline fields", async () => {
+    await act(async () => {
+      root.render(
+        <AgentUiArtifactPart
+          artifact={{
+            id: "artifact-generation-dispatch",
+            type: "runner_workflow_generation",
+            titleZh: "Runner Workflow 生成进度",
+            summaryZh: "工作流计划已生成，等待确认后生成草稿。",
+            source: "aiops.workflow_generation",
+            createdAt: "2026-05-25T10:00:00+08:00",
+            inlineData: {
+              workflowTitle: "AI 新闻摘要工作流",
+              generationAvailable: true,
+              actions: [{ id: "generate_workflow", label: "生成", kind: "confirm" }],
+              draftWorkflowId: "",
+              outputs: [{ id: "delivery", target: "return" }],
+              planVersion: 1,
+              requiredSlots: [],
+              steps: [{ id: "search-news", title: "搜索 AI 新闻", status: "waiting" }],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("AI 新闻摘要工作流");
+    expect(container.textContent).toContain("搜索 AI 新闻");
+    expect(container.textContent).not.toContain("generationAvailable");
+    expect(container.textContent).not.toContain("draftWorkflowId");
+    expect(container.textContent).not.toContain("planVersion");
+    expect(container.textContent).not.toContain("来源：");
+    expect(container.textContent).not.toContain("生成时间：");
+  });
+
   it("does not render manual approval steps in runner workflow generation progress", async () => {
     await act(async () => {
       root.render(

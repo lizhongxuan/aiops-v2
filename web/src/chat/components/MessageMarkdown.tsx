@@ -5,11 +5,49 @@ type MessageMarkdownProps = {
   text: string;
 };
 
+const TOOL_TRIGGER_NAMES = new Set(["add_workflow"]);
+
 const markdown = new MarkdownIt({
   breaks: true,
   html: false,
   linkify: true,
 });
+
+markdown.inline.ruler.before("text", "tool_trigger", (state, silent) => {
+  const marker = state.src[state.pos];
+  if (marker !== "@" && marker !== "＠") {
+    return false;
+  }
+  if (!isToolTriggerBoundary(state.src[state.pos - 1] || "")) {
+    return false;
+  }
+  const match = state.src.slice(state.pos + 1).match(/^([A-Za-z][A-Za-z0-9_-]{1,63})(?![A-Za-z0-9_-])/);
+  if (!match || !TOOL_TRIGGER_NAMES.has(match[1].toLowerCase())) {
+    return false;
+  }
+  if (!silent) {
+    const token = state.push("tool_trigger", "span", 0);
+    token.content = `${marker}${match[1]}`;
+    token.meta = { marker, name: match[1] };
+  }
+  state.pos += marker.length + match[1].length;
+  return true;
+});
+
+markdown.renderer.rules.tool_trigger = (tokens, index) => {
+  const token = tokens[index];
+  const rawName = typeof token.meta?.name === "string" ? token.meta.name : token.content.replace(/^[@＠]/, "");
+  const marker = typeof token.meta?.marker === "string" ? token.meta.marker : token.content.slice(0, 1);
+  const name = escapeHtml(rawName);
+  const triggerName = escapeAttribute(rawName);
+  const icon = escapeHtml(marker);
+  return [
+    `<span class="aiops-tool-trigger inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-1.5 py-0.5 align-baseline font-medium leading-5 text-blue-700 shadow-sm ring-1 ring-blue-100/70" data-tool-trigger="${triggerName}" title="工具触发标签 ${escapeAttribute(`${marker}${rawName}`)}">`,
+    `<span data-tool-trigger-icon="true" aria-hidden="true" class="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-semibold leading-none text-white">${icon}</span>`,
+    `<span>${name}</span>`,
+    "</span>",
+  ].join("");
+};
 
 markdown.renderer.rules.link_open = (tokens, index, options, _env, self) => {
   const token = tokens[index];
@@ -104,6 +142,22 @@ function normalizeStandaloneSectionLabels(value: string) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isToolTriggerBoundary(value: string) {
+  return !value || /[\s([{<"'“‘，,。；;：:！!？?、]/.test(value);
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function escapeAttribute(value: string) {
+  return escapeHtml(value).replace(/'/g, "&#39;");
 }
 
 function normalizeDetachedSourceLinks(value: string) {

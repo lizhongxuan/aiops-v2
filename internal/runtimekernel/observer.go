@@ -58,16 +58,21 @@ type ModelCallSpanAttrs struct {
 }
 
 type ToolCallSpanAttrs struct {
-	SessionID       string
-	TurnID          string
-	ToolName        string
-	ToolCallID      string
-	Risk            string
-	Outcome         string
-	ResultBytes     int
-	ResultTruncated bool
-	RawRef          string
-	Error           string
+	SessionID              string
+	TurnID                 string
+	ToolName               string
+	ToolCallID             string
+	Risk                   string
+	ArgumentsHash          string
+	ToolSurfaceFingerprint string
+	MCPServerID            string
+	MCPServerState         string
+	FailureKind            string
+	Outcome                string
+	ResultBytes            int
+	ResultTruncated        bool
+	RawRef                 string
+	Error                  string
 }
 
 type NoopObserver struct{}

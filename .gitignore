@@ -12,6 +12,7 @@ docs/*
 !/docs/deploy-docker-k8s.zh.md
 !/docs/deploy-aiops-v2-unified-env.zh.md
 !/docs/2026-05-18-aiops-v2-diagnosis-accuracy-*.zh.md
+!/docs/2026-06-04-ai-chat-host-mention-plan-subagents-design.zh.md
 !/docs/superpowers/
 docs/superpowers/*
 !/docs/superpowers/plans/

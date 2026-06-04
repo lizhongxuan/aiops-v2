@@ -230,17 +230,28 @@ func TestAgentProfileServiceCatalogMutations(t *testing.T) {
 	svc := NewAgentProfileService(newAgentProfileRepositories(repo, repo, repo))
 
 	skillResult, err := svc.SaveSkillCatalogItem(context.Background(), SkillCatalogItem{
-		ID:          "ops-triage",
-		Name:        "Ops Triage",
-		Description: "triage",
-		Source:      "built-in",
-		Enabled:     true,
+		ID:             "ops-triage",
+		Name:           "Ops Triage",
+		Description:    "triage",
+		Source:         "built-in",
+		SourceScope:    "builtin",
+		Enabled:        true,
+		InvocationMode: "model_auto",
+		Risk:           "low",
+		AllowedTools:   []string{"read_metrics"},
+		DeniedTools:    []string{"exec_command"},
 	})
 	if err != nil {
 		t.Fatalf("SaveSkillCatalogItem() error = %v", err)
 	}
 	if len(skillResult.Items) != 1 || skillResult.Items[0].ID != "ops-triage" {
 		t.Fatalf("SaveSkillCatalogItem() = %+v, want ops-triage", skillResult)
+	}
+	if skillResult.Items[0].InvocationMode != "model_auto" || skillResult.Items[0].SourceScope != "builtin" || skillResult.Items[0].Risk != "low" {
+		t.Fatalf("SaveSkillCatalogItem() guardrails = %+v", skillResult.Items[0])
+	}
+	if len(repo.skillCatalog) != 1 || len(repo.skillCatalog[0].AllowedTools) != 1 || len(repo.skillCatalog[0].DeniedTools) != 1 {
+		t.Fatalf("repo.skillCatalog guardrail tools = %+v", repo.skillCatalog)
 	}
 
 	skillAfterDelete, err := svc.DeleteSkillCatalogItem(context.Background(), "ops-triage")
@@ -252,18 +263,26 @@ func TestAgentProfileServiceCatalogMutations(t *testing.T) {
 	}
 
 	mcpResult, err := svc.SaveMcpCatalogItem(context.Background(), McpCatalogItem{
-		ID:         "filesystem",
-		Name:       "Filesystem MCP",
-		Type:       "stdio",
-		Source:     "built-in",
-		Enabled:    true,
-		Permission: "readonly",
+		ID:                           "filesystem",
+		Name:                         "Filesystem MCP",
+		Type:                         "stdio",
+		Source:                       "built-in",
+		SourceScope:                  "builtin",
+		Enabled:                      true,
+		Permission:                   "readonly",
+		ApprovalStatus:               "approved",
+		RuntimeStatus:                "connected",
+		Risk:                         "low",
+		RequiresExplicitUserApproval: false,
 	})
 	if err != nil {
 		t.Fatalf("SaveMcpCatalogItem() error = %v", err)
 	}
 	if len(mcpResult.Items) != 1 || mcpResult.Items[0].ID != "filesystem" {
 		t.Fatalf("SaveMcpCatalogItem() = %+v, want filesystem", mcpResult)
+	}
+	if mcpResult.Items[0].ApprovalStatus != "approved" || mcpResult.Items[0].SourceScope != "builtin" || mcpResult.Items[0].RuntimeStatus != "connected" {
+		t.Fatalf("SaveMcpCatalogItem() guardrails = %+v", mcpResult.Items[0])
 	}
 
 	mcpAfterDelete, err := svc.DeleteMcpCatalogItem(context.Background(), "filesystem")

@@ -44,6 +44,14 @@ func (m mockTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult,
 	return tooling.ToolResult{Content: "ok"}, nil
 }
 
+func toolNamesForTest(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
+}
+
 func TestRegistryRegisterServerAndGet(t *testing.T) {
 	r := NewRegistry()
 
@@ -109,6 +117,100 @@ func TestRegistryDynamicToolsLifecycle(t *testing.T) {
 	}
 	if got := r.DynamicTools(); len(got) != 0 {
 		t.Fatalf("DynamicTools() after disconnect len = %d, want 0", len(got))
+	}
+}
+
+func TestRegistryDynamicToolsWithTenantScope(t *testing.T) {
+	r := NewRegistry()
+
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-a",
+		Transport: "stdio",
+		Command:   []string{"tenant-a"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-a"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-a error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-b",
+		Transport: "stdio",
+		Command:   []string{"tenant-b"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-b"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-b error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "unscoped",
+		Transport: "stdio",
+		Command:   []string{"unscoped"},
+	}); err != nil {
+		t.Fatalf("RegisterServer unscoped error = %v", err)
+	}
+
+	if err := r.OnServerConnected("tenant-a", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_a_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-a error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-b", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_b_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-b error = %v", err)
+	}
+	if err := r.OnServerConnected("unscoped", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "unscoped_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected unscoped error = %v", err)
+	}
+
+	tenantATools := r.DynamicToolsWithOptions(DynamicToolOptions{TenantID: "tenant-a"})
+	if len(tenantATools) != 1 || tenantATools[0].Metadata().Name != "tenant_a_tool" {
+		t.Fatalf("tenant-a tools = %v, want only tenant_a_tool", toolNamesForTest(tenantATools))
+	}
+	tenantBTools := r.DynamicToolsWithOptions(DynamicToolOptions{TenantID: "tenant-b"})
+	if len(tenantBTools) != 1 || tenantBTools[0].Metadata().Name != "tenant_b_tool" {
+		t.Fatalf("tenant-b tools = %v, want only tenant_b_tool", toolNamesForTest(tenantBTools))
+	}
+	if all := r.DynamicTools(); len(all) != 3 {
+		t.Fatalf("legacy DynamicTools len = %d, want unchanged all connected tools", len(all))
+	}
+}
+
+func TestAssemblerCompileContextWithMetadataScopesMCPDynamicTools(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-a",
+		Transport: "stdio",
+		Command:   []string{"tenant-a"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-a"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-a error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-b",
+		Transport: "stdio",
+		Command:   []string{"tenant-b"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-b"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-b error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-a", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_a_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-a error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-b", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_b_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-b error = %v", err)
+	}
+	assembler := tooling.NewAssembler(tooling.NewRegistry(), r)
+
+	tenantATools := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{"tenantId": "tenant-a"}))
+	if strings.Join(tenantATools, ",") != "tenant_a_tool" {
+		t.Fatalf("tenant-a assembled tools = %#v, want tenant_a_tool", tenantATools)
+	}
+	tenantBTools := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{"tenantId": "tenant-b"}))
+	if strings.Join(tenantBTools, ",") != "tenant_b_tool" {
+		t.Fatalf("tenant-b assembled tools = %#v, want tenant_b_tool", tenantBTools)
 	}
 }
 

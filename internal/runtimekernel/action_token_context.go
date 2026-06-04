@@ -16,7 +16,7 @@ func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, t
 	execCtx.ToolName = tc.Name
 	execCtx.OriginalInput = append(json.RawMessage(nil), tc.Arguments...)
 
-	token, incidentID, hostID, stripped, hasToken := extractActionToken(tc.Arguments)
+	token, incidentID, hostID, tenantID, userID, stripped, hasToken := extractActionToken(tc.Arguments)
 	if hasToken {
 		execCtx.ActionToken = token
 	}
@@ -25,6 +25,12 @@ func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, t
 	}
 	if execCtx.HostID == "" {
 		execCtx.HostID = hostID
+	}
+	if execCtx.TenantID == "" {
+		execCtx.TenantID = tenantID
+	}
+	if execCtx.UserID == "" {
+		execCtx.UserID = userID
 	}
 	if len(stripped) == 0 {
 		stripped = append(json.RawMessage(nil), tc.Arguments...)
@@ -37,24 +43,34 @@ func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, t
 	return ctx, tc.Arguments
 }
 
-func extractActionToken(input json.RawMessage) (token string, incidentID string, hostID string, stripped json.RawMessage, hasToken bool) {
+func toolExecutionContextForDispatch(hostID string, metadata map[string]string) tooling.ToolExecutionContext {
+	return tooling.ToolExecutionContext{
+		HostID:   strings.TrimSpace(hostID),
+		TenantID: firstMetadataValue(metadata, "tenantId", "tenantID", "tenant_id"),
+		UserID:   firstMetadataValue(metadata, "userId", "userID", "user_id"),
+	}
+}
+
+func extractActionToken(input json.RawMessage) (token string, incidentID string, hostID string, tenantID string, userID string, stripped json.RawMessage, hasToken bool) {
 	stripped = append(json.RawMessage(nil), input...)
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(input, &obj); err != nil || obj == nil {
-		return "", "", "", stripped, false
+		return "", "", "", "", "", stripped, false
 	}
 	token = stringField(obj, "actionToken")
 	incidentID = firstStringField(obj, "incidentId", "incidentID")
 	hostID = firstStringField(obj, "hostId", "hostID", "targetHost", "targetHostId")
+	tenantID = firstStringField(obj, "tenantId", "tenantID")
+	userID = firstStringField(obj, "userId", "userID")
 	if token == "" {
-		return "", incidentID, hostID, stripped, false
+		return "", incidentID, hostID, tenantID, userID, stripped, false
 	}
 	delete(obj, "actionToken")
 	data, err := json.Marshal(obj)
 	if err != nil {
-		return token, incidentID, hostID, stripped, true
+		return token, incidentID, hostID, tenantID, userID, stripped, true
 	}
-	return token, incidentID, hostID, data, true
+	return token, incidentID, hostID, tenantID, userID, data, true
 }
 
 func schemaDeclaresActionToken(schema json.RawMessage) bool {

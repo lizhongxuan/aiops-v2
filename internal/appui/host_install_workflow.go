@@ -167,16 +167,18 @@ func hostAgentInstallScript(step string) string {
 func hostAgentInstallScriptBody(step string) string {
 	switch step {
 	case "validate-inputs":
-		return `for key in host_id ssh_host ssh_user ssh_credential_ref agent_version secret_dir repo_root; do
+		return `for key in host_id ssh_host ssh_user agent_version secret_dir repo_root; do
   required_var "$key"
 done
 case "$host_id" in ''|*[!A-Za-z0-9_.-]*) printf 'host_id contains unsupported characters\n' >&2; exit 64;; esac
 case "$ssh_user" in ''|*[!A-Za-z0-9_.-]*) printf 'ssh_user contains unsupported characters\n' >&2; exit 64;; esac
 case "$ssh_port" in ''|*[!0-9]*) printf 'ssh_port must be numeric\n' >&2; exit 64;; esac
-credential_file="$(secret_path_from_ref "$ssh_credential_ref")"
-if [ ! -s "$credential_file" ]; then
-  printf 'ssh credential ref is not readable: %s\n' "$ssh_credential_ref" >&2
-  exit 66
+if [ -n "${ssh_credential_ref:-}" ]; then
+  credential_file="$(secret_path_from_ref "$ssh_credential_ref")"
+  if [ ! -s "$credential_file" ]; then
+    printf 'ssh credential ref is not readable: %s\n' "$ssh_credential_ref" >&2
+    exit 66
+  fi
 fi
 printf 'RUNNER_EXPORT_remote_tmp=%s\n' "$remote_tmp"`
 	case "tcp-preflight":
@@ -467,28 +469,30 @@ setup_ssh_auth() {
   if [ "${ssh_auth_ready:-0}" = "1" ]; then
     return 0
   fi
-  credential_file="$(secret_path_from_ref "$ssh_credential_ref")"
-  credential_content="$(cat "$credential_file")"
   ssh_auth_args=""
-  if printf '%s\n' "$credential_content" | grep -q 'BEGIN .*PRIVATE KEY'; then
-    key_file="$(mktemp)"
-    remember_file "$key_file"
-    printf '%s\n' "$credential_content" > "$key_file"
-    chmod 600 "$key_file"
-    ssh_auth_args="-i $key_file -o IdentitiesOnly=yes"
-  else
-    askpass_file="$(mktemp)"
-    remember_file "$askpass_file"
-    cat > "$askpass_file" <<'ASKPASS'
+  if [ -n "${ssh_credential_ref:-}" ]; then
+    credential_file="$(secret_path_from_ref "$ssh_credential_ref")"
+    credential_content="$(cat "$credential_file")"
+    if printf '%s\n' "$credential_content" | grep -q 'BEGIN .*PRIVATE KEY'; then
+      key_file="$(mktemp)"
+      remember_file "$key_file"
+      printf '%s\n' "$credential_content" > "$key_file"
+      chmod 600 "$key_file"
+      ssh_auth_args="-i $key_file -o IdentitiesOnly=yes"
+    else
+      askpass_file="$(mktemp)"
+      remember_file "$askpass_file"
+      cat > "$askpass_file" <<'ASKPASS'
 #!/bin/sh
 printf '%s\n' "$AIOPS_SSH_PASSWORD"
 ASKPASS
-    chmod 700 "$askpass_file"
-    export AIOPS_SSH_PASSWORD="$credential_content"
-    export SSH_ASKPASS="$askpass_file"
-    export SSH_ASKPASS_REQUIRE=force
-    export DISPLAY=none
-    ssh_auth_args="-o PreferredAuthentications=password,keyboard-interactive,publickey -o PubkeyAuthentication=no"
+      chmod 700 "$askpass_file"
+      export AIOPS_SSH_PASSWORD="$credential_content"
+      export SSH_ASKPASS="$askpass_file"
+      export SSH_ASKPASS_REQUIRE=force
+      export DISPLAY=none
+      ssh_auth_args="-o PreferredAuthentications=password,keyboard-interactive,publickey -o PubkeyAuthentication=no"
+    fi
   fi
   ssh_auth_ready=1
 }

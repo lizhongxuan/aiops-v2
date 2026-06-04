@@ -21,6 +21,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
 
 type LooseRecord = Record<string, unknown>;
@@ -111,16 +118,20 @@ const ACTIONS_BY_STATE: Record<
 };
 
 const STEP_LABELS: Record<string, string> = {
+  planned: "可调整",
   waiting: "等待中",
   running: "执行中",
+  not_run: "未运行",
   passed: "已通过",
   failed: "失败",
   skipped: "已跳过",
 };
 
 const STEP_TONE: Record<string, string> = {
+  planned: "bg-blue-50 text-blue-700",
   waiting: "bg-slate-100 text-slate-600",
   running: "bg-sky-50 text-sky-700",
+  not_run: "bg-slate-100 text-slate-600",
   passed: "bg-emerald-50 text-emerald-700",
   failed: "bg-red-50 text-red-700",
   skipped: "bg-slate-50 text-slate-500",
@@ -1564,7 +1575,8 @@ export function RunnerWorkflowGenerationArtifact({
 }: {
   artifact: AiopsTransportAgentUiArtifact;
 }) {
-  const [previewOpen, setPreviewOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [selectedStepId, setSelectedStepId] = useState("");
   const data = artifactData(artifact);
   const title = text(
     pick(data, "workflowTitle", "workflow_title", "title"),
@@ -1574,6 +1586,27 @@ export function RunnerWorkflowGenerationArtifact({
     (step) => !isManualApprovalStep(step),
   );
   const workflowId = text(pick(data, "workflowId", "workflow_id"));
+  const draftWorkflowId = text(pick(data, "draftWorkflowId", "draft_workflow_id"));
+  const generationAvailable = Boolean(pick(data, "generationAvailable", "generation_available"));
+  const planIsProvisional =
+    Boolean(pick(data, "planIsProvisional", "plan_is_provisional")) ||
+    generationAvailable;
+  const validationProvider = text(pick(data, "validationProvider", "validation_provider"));
+  const validationScenario = text(pick(data, "validationScenario", "validation_scenario"));
+  const validationDetails = asRecord(pick(data, "validationDetails", "validation_details"));
+  const requiredSlots = arrayRecords(pick(data, "requiredSlots", "required_slots"));
+  const validationImageOptions = workflowValidationImageOptions(validationDetails);
+  const [validationImage, setValidationImage] = useState(validationImageOptions[0] || "python:3.12-slim");
+  useEffect(() => {
+    if (!validationImageOptions.includes(validationImage)) {
+      setValidationImage(validationImageOptions[0] || "python:3.12-slim");
+    }
+  }, [validationImage, validationImageOptions]);
+  const selectedStep =
+    steps.find((step) => workflowStepID(step) === selectedStepId) ||
+    steps.find((step) => Boolean(rawText(pick(step, "scriptPreview", "script_preview")))) ||
+    steps[0] ||
+    {};
 
   return (
     <div
@@ -1587,116 +1620,281 @@ export function RunnerWorkflowGenerationArtifact({
             {title}
           </div>
           <p className="mt-1 leading-5 text-slate-500">
-            节点会在对话中逐步生成；预览只读，不会跳转 Runner Studio
-            或修改工作流。
+            {planIsProvisional
+              ? "初始生成大纲，生成过程中可拆分、合并或调整节点；预览只读，不会跳转 Runner Studio 或修改工作流。"
+              : "节点会在对话中逐步生成；预览只读，不会跳转 Runner Studio 或修改工作流。"}
           </p>
+          {generationAvailable ? (
+            <label className="mt-3 inline-flex items-center gap-2 text-xs text-slate-600">
+              <span className="font-medium text-slate-500">验证镜像</span>
+              <select
+                data-testid="runner-workflow-validation-image"
+                className="h-7 rounded-md border border-slate-200 bg-white px-2 font-mono text-xs text-slate-700 shadow-sm"
+                value={validationImage}
+                onChange={(event) => setValidationImage(event.target.value)}
+              >
+                {validationImageOptions.map((image) => (
+                  <option key={image} value={image}>
+                    {image}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
+        {generationAvailable ? (
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-md bg-slate-950 text-white hover:bg-slate-800"
+            onClick={() => {
+              setDrawerOpen(true);
+              dispatchComposerConfirmation(
+                "generate_runner_workflow_candidate",
+                "生成 Runner Workflow 草稿",
+                title,
+                artifact.id,
+                { workflowValidationImage: validationImage },
+              );
+            }}
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            生成
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="sm"
           variant="outline"
           className="h-8 rounded-md"
-          onClick={() => setPreviewOpen(true)}
+          onClick={() => setDrawerOpen(true)}
         >
           <Eye className="h-3.5 w-3.5" />
-          预览 Runner 草稿
+          查看详情
         </Button>
       </div>
       <ol className="mt-3 grid gap-2">
         {steps.map((step, index) => {
-          const status = text(pick(step, "status", "state"), "waiting");
+          const status = workflowGenerationStepStatus(step, planIsProvisional);
           const Icon = iconForStep(status);
+          const stepID = workflowStepID(step) || String(index);
           return (
             <li
               key={text(pick(step, "id"), String(index))}
-              className="flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2"
+              className="rounded-md border border-slate-200 bg-white"
             >
-              <span
-                className={`mt-0.5 rounded-full p-1 ${STEP_TONE[status] || STEP_TONE.waiting}`}
+              <button
+                type="button"
+                className="flex w-full cursor-pointer items-start gap-2 p-2 text-left transition hover:bg-slate-50"
+                data-testid={`runner-workflow-node-${stepID}`}
+                onClick={() => {
+                  setSelectedStepId(stepID);
+                  setDrawerOpen(true);
+                }}
               >
-                <Icon className="h-3.5 w-3.5" />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium text-slate-900">
-                    {text(pick(step, "title", "name"), `节点 ${index + 1}`)}
+                <span
+                  className={`mt-0.5 rounded-full p-1 ${STEP_TONE[status] || STEP_TONE.waiting}`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-slate-900">
+                      {text(pick(step, "title", "name"), `节点 ${index + 1}`)}
+                    </span>
+                    <Badge
+                      variant="outline"
+                      className={STEP_TONE[status] || STEP_TONE.waiting}
+                    >
+                      {STEP_LABELS[status] || status}
+                    </Badge>
+                    {text(pick(step, "scriptLanguageLabel", "script_language_label")) ? (
+                      <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
+                        {text(pick(step, "scriptLanguageLabel", "script_language_label"))}
+                      </Badge>
+                    ) : null}
                   </span>
-                  <Badge
-                    variant="outline"
-                    className={STEP_TONE[status] || STEP_TONE.waiting}
-                  >
-                    {STEP_LABELS[status] || status}
-                  </Badge>
-                </div>
-                {text(pick(step, "summary", "description")) ? (
-                  <p className="mt-1 leading-5 text-slate-600">
-                    {text(pick(step, "summary", "description"))}
-                  </p>
-                ) : null}
-              </div>
+                  {text(pick(step, "summary", "description")) ? (
+                    <span className="mt-1 block leading-5 text-slate-600">
+                      {text(pick(step, "summary", "description"))}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
             </li>
           );
         })}
       </ol>
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-h-[86vh] overflow-y-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Runner Workflow 只读预览</DialogTitle>
-            <DialogDescription>
+      <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+        <SheetContent className="!top-[72px] !bottom-0 !h-[calc(100dvh-72px)] !w-[min(760px,calc(100vw-24px))] !max-w-none overflow-y-auto sm:!max-w-[760px]">
+          <SheetHeader>
+            <SheetTitle>Runner Workflow 生成详情</SheetTitle>
+            <SheetDescription>
               这是 AI 在对话中生成的 Runner
-              草稿预览，只读展示节点、状态和说明，不支持在弹窗内编辑或执行。
-            </DialogDescription>
-          </DialogHeader>
+              草稿预览，只读展示节点、状态和验证信息，不支持在侧栏内编辑或执行。
+            </SheetDescription>
+          </SheetHeader>
           <div className="grid gap-3 text-sm">
             <section className="rounded-lg border border-slate-200 bg-slate-50 p-3">
               <div className="text-xs font-medium text-slate-500">工作流</div>
               <div className="mt-1 font-medium text-slate-950">{title}</div>
-              {workflowId ? (
+              {workflowId || draftWorkflowId ? (
                 <div className="mt-1 font-mono text-xs text-slate-500">
-                  {workflowId}
+                  {draftWorkflowId || workflowId}
                 </div>
               ) : null}
             </section>
-            <section className="rounded-lg border border-slate-200 bg-white p-3">
-              <div className="text-xs font-medium text-slate-500">只读节点</div>
-              <ol className="mt-3 grid gap-2">
-                {steps.map((step, index) => {
-                  const status = text(pick(step, "status", "state"), "waiting");
-                  return (
-                    <li
-                      key={`preview-${text(pick(step, "id"), String(index))}`}
-                      className="rounded-md border border-slate-200 bg-slate-50 p-2"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium text-slate-950">
-                          {index + 1}.{" "}
-                          {text(
-                            pick(step, "title", "name"),
-                            `节点 ${index + 1}`,
-                          )}
-                        </span>
-                        <Badge
-                          variant="outline"
-                          className={STEP_TONE[status] || STEP_TONE.waiting}
-                        >
-                          {STEP_LABELS[status] || status}
-                        </Badge>
-                      </div>
-                      {text(pick(step, "summary", "description")) ? (
-                        <p className="mt-1 leading-5 text-slate-600">
-                          {text(pick(step, "summary", "description"))}
-                        </p>
-                      ) : null}
+            {Object.keys(selectedStep).length ? (
+              <WorkflowNodeDetailPanel step={selectedStep} validationDetails={validationDetails} />
+            ) : null}
+            {requiredSlots.length ? (
+              <section className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <div className="text-xs font-medium text-amber-700">
+                  需要补充
+                </div>
+                <ul className="mt-2 grid gap-1 text-sm text-amber-900">
+                  {requiredSlots.map((slot, index) => (
+                    <li key={text(pick(slot, "id"), String(index))}>
+                      {text(pick(slot, "question", "label"), `补充项 ${index + 1}`)}
                     </li>
-                  );
-                })}
-              </ol>
-            </section>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
+            {validationProvider || validationScenario ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="text-xs font-medium text-slate-500">验证</div>
+                <div className="mt-2 grid gap-1 text-sm text-slate-700">
+                  {validationProvider ? <div>Provider：{validationProvider}</div> : null}
+                  {validationScenario ? <div>场景：{validationScenario}</div> : null}
+                </div>
+              </section>
+            ) : null}
           </div>
-        </DialogContent>
-      </Dialog>
+        </SheetContent>
+      </Sheet>
     </div>
   );
+}
+
+function WorkflowNodeDetailPanel({
+  step,
+  validationDetails,
+}: {
+  step: LooseRecord;
+  validationDetails: LooseRecord;
+}) {
+  const title = text(pick(step, "title", "name"), "节点详情");
+  const action = text(pick(step, "action"), "-");
+  const scriptLanguageLabel = text(
+    pick(step, "scriptLanguageLabel", "script_language_label"),
+    scriptLabelFromAction(action),
+  );
+  const scriptPreview = rawText(pick(step, "scriptPreview", "script_preview"));
+  const validationStatus = text(pick(step, "validationStatus", "validation_status"));
+  const validationSummary = text(pick(step, "validationSummary", "validation_summary"));
+  const validationStdout = rawText(pick(step, "validationStdout", "validation_stdout"));
+  const validationStderr = rawText(pick(step, "validationStderr", "validation_stderr"));
+  const allowedImages = stringArray(pick(validationDetails, "allowedImages", "allowed_images"));
+  const selectedImage = text(
+    pick(validationDetails, "selectedImage", "selected_image", "image"),
+    allowedImages[0] || "",
+  );
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-3">
+      <div className="text-xs font-medium text-slate-500">节点详情</div>
+      <div className="mt-1 font-medium text-slate-950">{title}</div>
+      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+          {scriptLanguageLabel}
+        </Badge>
+        <Badge variant="outline" className="border-slate-200 bg-slate-50 font-mono text-slate-700">
+          {action}
+        </Badge>
+        {validationStatus ? (
+          <Badge variant="outline" className={STEP_TONE[validationStatus] || STEP_TONE.waiting}>
+            验证：{STEP_LABELS[validationStatus] || validationStatus}
+          </Badge>
+        ) : null}
+      </div>
+      {validationSummary ? (
+        <p className="mt-2 leading-5 text-slate-600">{validationSummary}</p>
+      ) : null}
+      {scriptPreview ? (
+        <div className="mt-3">
+          <div className="mb-1 text-xs font-medium text-slate-500">脚本预览</div>
+          <pre className="max-h-[520px] min-h-[240px] max-w-full overflow-auto rounded-md bg-slate-950 p-4 text-[13px] leading-6 text-slate-100 whitespace-pre-wrap break-words">
+            {scriptPreview}
+          </pre>
+        </div>
+      ) : (
+        <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2 text-slate-600">
+          草稿生成前只展示计划节点；点击生成后会显示节点脚本。
+        </div>
+      )}
+      {selectedImage ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-medium text-slate-500">验证镜像</span>
+          <Badge variant="outline" className="border-slate-200 bg-slate-50 font-mono text-slate-700">
+            {selectedImage}
+          </Badge>
+        </div>
+      ) : null}
+      {validationStdout || validationStderr ? (
+        <div className="mt-3 grid gap-2">
+          {validationStdout ? (
+            <details className="rounded-md border border-slate-200 bg-slate-50 p-2">
+              <summary className="cursor-pointer list-none text-xs font-medium text-slate-600 [&::-webkit-details-marker]:hidden">
+                执行输出
+              </summary>
+              <pre className="mt-2 max-h-48 max-w-full overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100 whitespace-pre-wrap break-words">
+                {validationStdout}
+              </pre>
+            </details>
+          ) : null}
+          {validationStderr ? (
+            <details className="rounded-md border border-rose-200 bg-rose-50 p-2">
+              <summary className="cursor-pointer list-none text-xs font-medium text-rose-700 [&::-webkit-details-marker]:hidden">
+                错误输出
+              </summary>
+              <pre className="mt-2 max-h-48 max-w-full overflow-auto rounded-md bg-slate-950 p-3 text-xs leading-5 text-slate-100 whitespace-pre-wrap break-words">
+                {validationStderr}
+              </pre>
+            </details>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function workflowStepID(step: LooseRecord) {
+  return text(pick(step, "id", "key")).toLowerCase().replace(/_/g, "-");
+}
+
+function workflowValidationImageOptions(validationDetails: LooseRecord) {
+  const images = [
+    ...stringArray(pick(validationDetails, "allowedImages", "allowed_images")),
+    text(pick(validationDetails, "selectedImage", "selected_image", "image")),
+    "python:3.12-slim",
+    "python:3.12-bookworm",
+    "python:3.11-slim",
+  ].filter(Boolean);
+  return Array.from(new Set(images));
+}
+
+function scriptLabelFromAction(action: string) {
+  switch (action) {
+    case "script.python":
+      return "Python 脚本";
+    case "script.shell":
+    case "script.bash":
+    case "shell":
+      return "Shell 脚本";
+    default:
+      return action || "未知脚本";
+  }
 }
 
 function dispatchComposerConfirmation(
@@ -1704,10 +1902,11 @@ function dispatchComposerConfirmation(
   title: string,
   sourceTitle: string,
   artifactId: string,
+  metadata?: Record<string, string>,
 ) {
   window.dispatchEvent(
     new CustomEvent("aiops:composer-confirmation", {
-      detail: { action, title, sourceTitle, artifactId },
+      detail: { action, title, sourceTitle, artifactId, metadata },
     }),
   );
 }
@@ -3156,6 +3355,17 @@ function isManualApprovalStep(step: LooseRecord): boolean {
   );
 }
 
+function workflowGenerationStepStatus(
+  step: LooseRecord,
+  planIsProvisional: boolean,
+) {
+  const status = text(pick(step, "status", "state"), "waiting");
+  if (planIsProvisional && (status === "waiting" || status === "pending")) {
+    return "planned";
+  }
+  return status;
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => text(item)).filter(Boolean);
@@ -3176,6 +3386,11 @@ function text(value: unknown, fallback = "") {
     .trim()
     .replace(/\s+/g, " ");
   return normalized || fallback;
+}
+
+function rawText(value: unknown, fallback = "") {
+  if (value === undefined || value === null) return fallback;
+  return String(value).trim() || fallback;
 }
 
 function booleanValue(value: unknown) {

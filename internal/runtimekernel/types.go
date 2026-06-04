@@ -198,6 +198,13 @@ type ToolProgressUpdate struct {
 	Timestamp  time.Time `json:"timestamp"`
 }
 
+type ToolSurfaceSnapshotRef struct {
+	ID          string    `json:"id"`
+	Fingerprint string    `json:"fingerprint"`
+	ToolNames   []string  `json:"toolNames,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
 // ---------------------------------------------------------------------------
 // ToolDisplayPayload is the structured UI output for tool results.
 // ---------------------------------------------------------------------------
@@ -536,6 +543,7 @@ type TurnSnapshot struct {
 	SessionID               string                   `json:"sessionId"`
 	SessionType             SessionType              `json:"sessionType"`
 	Mode                    Mode                     `json:"mode"`
+	Metadata                map[string]string        `json:"metadata,omitempty"`
 	Lifecycle               TurnLifecycleState       `json:"lifecycle"`
 	ResumeState             TurnResumeState          `json:"resumeState"`
 	Iteration               int                      `json:"iteration"`
@@ -544,6 +552,7 @@ type TurnSnapshot struct {
 	CompletedAt             *time.Time               `json:"completedAt,omitempty"`
 	StablePromptHash        string                   `json:"stablePromptHash,omitempty"`
 	StableToolFingerprint   string                   `json:"stableToolFingerprint,omitempty"`
+	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef  `json:"toolSurfaceSnapshot,omitempty"`
 	GovernanceSnapshot      string                   `json:"governanceSnapshot,omitempty"`
 	TraceContext            TraceContextCarrier      `json:"traceContext,omitempty"`
 	PromptSections          []string                 `json:"promptSections,omitempty"`
@@ -636,8 +645,11 @@ type IterationState struct {
 	ResumeState             TurnResumeState          `json:"resumeState"`
 	MessagesForModel        []Message                `json:"messagesForModel,omitempty"`
 	ToolCalls               []ToolCall               `json:"toolCalls,omitempty"`
+	ToolInvocations         []ToolInvocationState    `json:"toolInvocations,omitempty"`
 	ToolProgress            []ToolProgressUpdate     `json:"toolProgress,omitempty"`
 	ToolResults             []ToolResult             `json:"toolResults,omitempty"`
+	ToolSurfaceFingerprint  string                   `json:"toolSurfaceFingerprint,omitempty"`
+	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef  `json:"toolSurfaceSnapshot,omitempty"`
 	VisibleTools            []string                 `json:"visibleTools,omitempty"`
 	RefreshedTools          []string                 `json:"refreshedTools,omitempty"`
 	PromptDelta             string                   `json:"promptDelta,omitempty"`

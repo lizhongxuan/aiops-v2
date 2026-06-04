@@ -17,6 +17,7 @@ import (
 
 	"aiops-v2/internal/store"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -114,9 +115,6 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	if i == nil || i.repo == nil {
 		return HostInstallRun{}, fmt.Errorf("host repository is not configured")
 	}
-	if i.resolver == nil {
-		return HostInstallRun{}, fmt.Errorf("credential resolver is not configured")
-	}
 	if i.dialer == nil {
 		return HostInstallRun{}, fmt.Errorf("ssh dialer is not configured")
 	}
@@ -139,7 +137,7 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	}
 
 	i.setStep(&host, &run, "connect-ssh")
-	credential, err := i.resolver.ResolveSSHCredential(ctx, host.SSHCredentialRef)
+	credential, err := i.resolveSSHCredential(ctx, host.SSHCredentialRef)
 	if err != nil {
 		return i.failInstall(&host, run, "connect-ssh", "failed", err)
 	}
@@ -249,9 +247,6 @@ func (i *DirectHostAgentInstaller) TestSSH(ctx context.Context, hostID, credenti
 	if i == nil || i.repo == nil {
 		return HostSSHTestResponse{}, fmt.Errorf("host repository is not configured")
 	}
-	if i.resolver == nil {
-		return HostSSHTestResponse{}, fmt.Errorf("credential resolver is not configured")
-	}
 	if i.dialer == nil {
 		return HostSSHTestResponse{}, fmt.Errorf("ssh dialer is not configured")
 	}
@@ -269,7 +264,7 @@ func (i *DirectHostAgentInstaller) TestSSH(ctx context.Context, hostID, credenti
 	if err := validateBootstrapHost(next); err != nil {
 		return HostSSHTestResponse{}, err
 	}
-	credential, err := i.resolver.ResolveSSHCredential(ctx, next.SSHCredentialRef)
+	credential, err := i.resolveSSHCredential(ctx, next.SSHCredentialRef)
 	if err != nil {
 		return HostSSHTestResponse{}, err
 	}
@@ -332,6 +327,17 @@ func (i *DirectHostAgentInstaller) loadInstallHost(hostID string, req HostInstal
 		next.AgentVersion = "v0.1.0"
 	}
 	return next, nil
+}
+
+func (i *DirectHostAgentInstaller) resolveSSHCredential(ctx context.Context, ref string) (ResolvedSSHCredential, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ResolvedSSHCredential{}, nil
+	}
+	if i == nil || i.resolver == nil {
+		return ResolvedSSHCredential{}, fmt.Errorf("credential resolver is not configured")
+	}
+	return i.resolver.ResolveSSHCredential(ctx, ref)
 }
 
 func (i *DirectHostAgentInstaller) setStep(host *store.HostRecord, run *HostInstallRun, step string) {
@@ -701,17 +707,23 @@ func (b goBuildHostAgentArtifactBuilder) BuildHostAgentArtifact(ctx context.Cont
 	repoRoot := strings.TrimSpace(firstNonEmpty(b.RepoRoot, defaultHostInstallRepoRoot()))
 	artifactDir := filepath.Join(repoRoot, "artifacts", "host-agent", version, goos+"-"+goarch)
 	artifactPath := filepath.Join(artifactDir, "host-agent")
+	if data, err := os.ReadFile(artifactPath); err == nil && len(data) > 0 {
+		sum := sha256.Sum256(data)
+		return HostAgentArtifact{
+			Path:   artifactPath,
+			Bytes:  data,
+			SHA256: fmt.Sprintf("%x", sum[:]),
+		}, nil
+	}
 	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
 		return HostAgentArtifact{}, fmt.Errorf("create host-agent artifact dir: %w", err)
 	}
-	if info, err := os.Stat(artifactPath); err != nil || info == nil || info.Mode()&0o111 == 0 {
-		cmd := exec.CommandContext(ctx, "go", "build", "-o", artifactPath, "./cmd/host-agent")
-		cmd.Dir = repoRoot
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
-		output, buildErr := cmd.CombinedOutput()
-		if buildErr != nil {
-			return HostAgentArtifact{}, fmt.Errorf("build host-agent artifact: %w: %s", buildErr, strings.TrimSpace(string(output)))
-		}
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", artifactPath, "./cmd/host-agent")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	output, buildErr := cmd.CombinedOutput()
+	if buildErr != nil {
+		return HostAgentArtifact{}, fmt.Errorf("build host-agent artifact: %w: %s", buildErr, strings.TrimSpace(string(output)))
 	}
 	data, err := os.ReadFile(artifactPath)
 	if err != nil {
@@ -787,9 +799,55 @@ func sshAuthMethods(credential ResolvedSSHCredential) ([]ssh.AuthMethod, error) 
 		)
 	}
 	if len(methods) == 0 {
-		return nil, fmt.Errorf("ssh credential ref is required")
+		methods = append(methods, defaultSSHAuthMethods()...)
 	}
 	return methods, nil
+}
+
+func defaultSSHAuthMethods() []ssh.AuthMethod {
+	var methods []ssh.AuthMethod
+	if sock := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); sock != "" {
+		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+			conn, err := net.Dial("unix", sock)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = conn.Close() }()
+			signers, err := agent.NewClient(conn).Signers()
+			if err != nil {
+				return nil, err
+			}
+			if len(signers) == 0 {
+				return nil, fmt.Errorf("ssh agent has no identities")
+			}
+			return signers, nil
+		}))
+	}
+	for _, keyPath := range defaultSSHKeyPaths() {
+		data, err := os.ReadFile(keyPath)
+		if err != nil {
+			continue
+		}
+		signer, err := ssh.ParsePrivateKey(data)
+		if err != nil {
+			continue
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+	return methods
+}
+
+func defaultSSHKeyPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".ssh", "id_ecdsa"),
+		filepath.Join(home, ".ssh", "id_rsa"),
+		filepath.Join(home, ".ssh", "id_dsa"),
+	}
 }
 
 type goSSHBootstrapClient struct {

@@ -25,6 +25,7 @@ type GenerationConfirmation = {
   title: string;
   sourceTitle: string;
   artifactId?: string;
+  metadata?: Record<string, string>;
 };
 
 const SUPPORTED_CONFIRMATION_ACTIONS = new Set([
@@ -92,6 +93,7 @@ export function AiopsComposer({
         title: String(detail.title || confirmationTitle(action)),
         sourceTitle: String(detail.sourceTitle || "当前对话"),
         artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
+        metadata: detail.metadata && typeof detail.metadata === "object" ? detail.metadata : undefined,
       });
     }
     window.addEventListener("aiops:composer-confirmation", handleConfirmation);
@@ -599,6 +601,7 @@ function GenerationConfirmationComposer({
           ...target.metadata,
           opsManualAction: confirmation.action,
           sourceArtifactId: confirmation.artifactId,
+          ...confirmation.metadata,
         },
         ...(target.hostId ? { hostId: target.hostId } : {}),
         parts: [{ type: "text", text: copy.message }],

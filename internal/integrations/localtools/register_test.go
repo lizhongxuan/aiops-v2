@@ -401,6 +401,51 @@ func TestExecCommandToolRejectsWrongToolToken(t *testing.T) {
 	}
 }
 
+func TestExecCommandToolRejectsCrossTenantActionToken(t *testing.T) {
+	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	secret := []byte("localtools-secret")
+	tool := NewExecCommandTool(Options{
+		WorkingDir:        t.TempDir(),
+		ActionTokenSecret: secret,
+		Now:               func() time.Time { return now },
+	})
+	input := json.RawMessage(`{"command":"systemctl","args":["restart","erp-report.service"]}`)
+	hash, err := actionproposal.NormalizedInputHash(input)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	token, err := actionproposal.NewSigner(secret, func() time.Time { return now }).Sign(actionproposal.ActionTokenClaims{
+		SessionID:  "sess-1",
+		TurnID:     "turn-1",
+		TenantID:   "tenant-a",
+		UserID:     "user-a",
+		IncidentID: "inc-1",
+		ToolName:   "exec_command",
+		InputHash:  hash,
+		Source:     actionproposal.SourceRunbook,
+		Risk:       actionproposal.RiskHigh,
+		ExpiresAt:  now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{
+		SessionID:  "sess-1",
+		TurnID:     "turn-1",
+		TenantID:   "tenant-b",
+		UserID:     "user-a",
+		IncidentID: "inc-1",
+	})
+
+	decision := tool.CheckPermissions(ctx, injectActionToken(t, input, token))
+	if decision.Action != tooling.PermissionActionNeedEvidence {
+		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
+	}
+	if !strings.Contains(decision.Reason, "tenantId mismatch") {
+		t.Fatalf("reason = %q, want tenant mismatch", decision.Reason)
+	}
+}
+
 func TestExecCommandToolRejectsUnknownTokenSource(t *testing.T) {
 	now := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
 	secret := []byte("localtools-secret")

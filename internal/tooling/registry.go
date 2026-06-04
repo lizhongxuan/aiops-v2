@@ -15,6 +15,8 @@ type AssembleOptions struct {
 	ExtraTools             []Tool
 	EnabledPacks           []string
 	Profile                string
+	TenantID               string
+	UserID                 string
 	IncludeDebug           bool
 	IncludeDeferredCatalog bool
 	MetadataTransform      func(ToolMetadata) ToolMetadata

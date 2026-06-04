@@ -445,6 +445,9 @@ func projectTurnItem(
 			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
+			if artifact, ok := transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
 		}
 		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
 		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
@@ -1197,6 +1200,42 @@ func opsManualParamResolutionArtifactActions(status string) []map[string]any {
 	default:
 		return nil
 	}
+}
+
+func transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	if strings.TrimSpace(tool.DisplayKind) != "runner_workflow_generation" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		data = tool.DisplayData
+	}
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "plan_ready")
+	return AiopsTransportAgentUIArtifact{
+		ID:              "runner-workflow-generation:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "artifact"),
+		Type:            "runner_workflow_generation",
+		Title:           firstNonEmptyString(jsonStringValueFromMap(payload, "workflowTitle"), jsonStringValueFromMap(payload, "title"), "Runner Workflow generation"),
+		TitleZh:         "Runner Workflow 生成进度",
+		Summary:         firstNonEmptyString(jsonStringValueFromMap(payload, "summary"), jsonStringValueFromMap(payload, "requirement")),
+		SummaryZh:       firstNonEmptyString(jsonStringValueFromMap(payload, "summaryZh"), "初始生成大纲已生成，等待确认后生成草稿。"),
+		Status:          status,
+		Severity:        "info",
+		Source:          "aiops.workflow_generation",
+		PermissionScope: "draft",
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         asStringAnyMapList(payload["actions"]),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
 }
 
 func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload, userQuery string) (AiopsTransportAgentUIArtifact, bool) {

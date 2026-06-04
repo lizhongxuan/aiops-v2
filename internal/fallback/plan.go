@@ -26,6 +26,8 @@ type RunbookMatchSummary struct {
 type PlanExecRequest struct {
 	SessionID      string                `json:"sessionId"`
 	TurnID         string                `json:"turnId"`
+	TenantID       string                `json:"tenantId,omitempty"`
+	UserID         string                `json:"userId,omitempty"`
 	IncidentID     string                `json:"incidentId"`
 	Goal           string                `json:"goal"`
 	WhyNoRunbook   string                `json:"whyNoRunbook"`
