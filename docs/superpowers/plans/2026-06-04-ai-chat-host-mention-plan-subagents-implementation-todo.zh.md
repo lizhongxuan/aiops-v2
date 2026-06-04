@@ -12,14 +12,20 @@
 
 ## 0. 实施边界
 
-- [ ] 不改掉 `AGENTS.md` 要求的 structured transport 生产路径。
-- [ ] 不从 assistant final Markdown 解析 plan、child agent 或工具状态。
-- [ ] 不让主页面 manager agent 直接执行被 `@` 主机上的 shell/SSH/host-agent `/run`。
-- [ ] 不把多个 `@host` 合并给一个 child agent；唯一 resolved host 数等于 child agent 数。
-- [ ] 不允许 child agent 修改自己的绑定 host。
-- [ ] 多主机任务在 plan 未生成或未确认前，不执行 mutating host operation。
-- [ ] 所有 high-risk host operation 保持 approval/action token 治理。
-- [ ] UI 采用 Codex 风格紧凑状态面板：计划列表和子 Agent 状态行在同一个面板内，并紧贴 composer 上方。
+- [x] 不改掉 `AGENTS.md` 要求的 structured transport 生产路径。
+- [x] 不从 assistant final Markdown 解析 plan、child agent 或工具状态。
+- [x] 不让主页面 manager agent 直接执行被 `@` 主机上的 shell/SSH/host-agent `/run`。
+- [x] 不把多个 `@host` 合并给一个 child agent；唯一 resolved host 数等于 child agent 数。
+- [x] 不允许 child agent 修改自己的绑定 host。
+- [x] 多主机任务在 plan 未生成或未确认前，不执行 mutating host operation。
+- [x] 所有 high-risk host operation 保持 approval/action token 治理。
+- [x] UI 采用 Codex 风格紧凑状态面板：计划列表和子 Agent 状态行在同一个面板内，并紧贴 composer 上方。
+
+Result 2026-06-04:
+
+- Verified by Tasks 1-13 and final acceptance checklist.
+- Hostops implementation stays on `TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React`.
+- Browser-in-app and Playwright verified the Codex-style compact panel and subagent drawer.
 
 ## 1. 文件结构
 
