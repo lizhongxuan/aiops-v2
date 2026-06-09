@@ -211,8 +211,10 @@ function isSearchLikeBlock(block: AiopsProcessBlock) {
   if (block.kind === "search") {
     return true;
   }
-  const display = `${block.displayKind || ""} ${block.text || ""} ${block.command || ""} ${block.inputSummary || ""}`.toLowerCase();
-  return /\b(web_search|browse_url|search|browser)\b/.test(display);
+  const candidates = [block.displayKind, block.source, block.command].map((value) => (value || "").toLowerCase().trim());
+  return candidates.some((value) =>
+    /^(web_search|web[._-]search|search_web|browse_url|browser(?:[._-]|$))/.test(value),
+  );
 }
 
 function isProcessRunning(process: AiopsProcessBlock[], turnStatus?: string) {
@@ -1154,11 +1156,20 @@ function isGenericSearchLabel(value: string) {
 }
 
 function cleanToolText(value: string) {
-  const text = cleanSearchLine(value);
+  let text = unwrapProviderPayload(value || "");
+  text = decodeHtmlish(text)
+    .replace(/provider-native\s+/gi, "")
+    .replace(/\s*;\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = text.replace(/^["'""]+|["'""]+$/g, "").trim();
   if (/^(browse_url|browser|web_search|search)$/i.test(text)) {
     return "";
   }
-  return text;
+  if (!text || isInternalSearchLine(text) || isRawPayloadLine(text)) {
+    return "";
+  }
+  return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;
 }
 
 function toolInvocationLabel(block: AiopsProcessBlock) {

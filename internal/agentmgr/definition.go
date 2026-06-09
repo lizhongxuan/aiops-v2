@@ -41,8 +41,17 @@ type AgentDefinition struct {
 	// Description is the human-readable summary of the agent's role.
 	Description string
 
+	// Role controls generic runtime policy for tool access and mutation gates.
+	Role AgentRole
+
 	// Prompt is the raw prompt text for the agent definition.
 	Prompt string
+
+	// Discovery contains short, prompt-safe routing metadata.
+	Discovery agents.AgentDiscoveryMetadata
+
+	// Budget contains generic scheduling budget hints.
+	Budget agents.AgentBudgetMetadata
 
 	// PromptTemplate is the PromptCompiler template key used for this agent type.
 	PromptTemplate string
@@ -95,6 +104,8 @@ func (d AgentDefinition) ToRegistryDefinition() agents.Definition {
 		Source:        string(agents.SourceBuiltin),
 		Description:   d.Description,
 		Prompt:        prompt,
+		Discovery:     d.Discovery,
+		Budget:        d.Budget,
 		Tools:         append([]string(nil), d.Tools...),
 		Model:         d.Model,
 		Hooks:         append([]string(nil), d.Hooks...),
@@ -109,8 +120,11 @@ func FromRegistryDefinition(def agents.Definition) AgentDefinition {
 		Kind:           AgentKind(def.Kind),
 		Name:           def.Name,
 		Description:    def.Description,
+		Role:           AgentRoleExplore,
 		Prompt:         def.Prompt,
 		PromptTemplate: def.Prompt,
+		Discovery:      def.Discovery,
+		Budget:         def.Budget,
 		Tools:          append([]string(nil), def.Tools...),
 		MaxIterations:  def.MaxIterations,
 		Model:          def.Model,
@@ -179,6 +193,12 @@ type AgentResult struct {
 
 	// Duration is the total execution time.
 	Duration time.Duration
+
+	// ResultRefs points to bounded artifacts or evidence references returned by the agent.
+	ResultRefs []string
+
+	// Usage records bounded execution usage for notifications and traces.
+	Usage AgentUsage
 }
 
 // EvidenceReport is the standardized output contract for spawned operations
@@ -245,6 +265,12 @@ type AgentInstance struct {
 
 	// Task describes what this agent is doing.
 	Task string
+
+	// AssignmentSummary is a bounded self-contained assignment summary.
+	AssignmentSummary string
+
+	// EvidenceRequirement records the minimum evidence contract for this worker.
+	EvidenceRequirement EvidenceRequirement
 
 	// Output contains the execution output/summary.
 	Output string

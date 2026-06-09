@@ -11,19 +11,61 @@ import (
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/taskdepth"
 )
 
 type ModelInputDebugTraceRequest struct {
-	SessionID        string
-	TurnID           string
-	Iteration        int
-	Metadata         map[string]string
-	Compiled         promptcompiler.CompiledPrompt
-	ModelInput       []*schema.Message
-	VisibleTools     []string
-	PromptInputTrace promptinput.PromptInputTrace
-	PromptInputDiff  *promptinput.TraceDiff
-	DiagnosticTrace  diagnostics.DiagnosticTrace
+	SessionID                     string
+	TurnID                        string
+	Iteration                     int
+	Metadata                      map[string]string
+	Compiled                      promptcompiler.CompiledPrompt
+	ModelInput                    []*schema.Message
+	VisibleTools                  []string
+	PromptInputTrace              promptinput.PromptInputTrace
+	PromptInputDiff               *promptinput.TraceDiff
+	DiagnosticTrace               diagnostics.DiagnosticTrace
+	TaskDepth                     taskdepth.Profile
+	UXProgressTrace               *UXProgressTrace
+	EvidenceCoverage              *EvidenceCoverageDecision
+	GenericityTrace               *promptinput.GenericityTrace
+	PlanRequirementDecision       *promptinput.PlanRequirementDecisionTrace
+	PlanCompletionGate            *promptinput.PlanCompletionGateTrace
+	ReasoningEffort               string
+	ToolSurfaceFingerprint        string
+	ToolSurfacePolicySnapshotHash string
+	LoadedToolsDelta              []string
+	LoadedPacksDelta              []string
+	SkillIndexHash                string
+	LoadedSkillsDelta             []string
+	ToolSearchEvents              []promptinput.ToolSearchTraceEvent
+	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent
+	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent
+	SkillSearchEvents             []promptinput.SkillSearchTraceEvent
+	SkillReadEvents               []promptinput.SkillReadTraceEvent
+	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent
+	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace
+	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup
+	TaskClaims                    []promptinput.TaskClaimTrace
+	FailedToolSummaries           []promptinput.FailedToolSummary
+	AgentIndexHash                string
+	AgentIndexEntries             []promptinput.AgentIndexEntryTrace
+	AgentIndexDropped             []promptinput.DroppedAgentIndexEntryTrace
+	AgentIndexDelta               []string
+	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace
+	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
+	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
+	ResourceLocks                 []promptinput.ResourceLockTrace
+	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
+	AgentNotifications            []promptinput.AgentNotificationTrace
+	VerificationAgentReport       *promptinput.VerificationAgentReportTrace
+	VerificationReportRef         string
+	VerificationStatus            string
+	CompletionGate                *promptinput.CompletionGateTrace
+	SafetySignals                 []promptinput.SafetySignalTrace
+	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
+	ApprovalScope                 *promptinput.ApprovalScopeTrace
+	FinalEvidenceState            *FinalEvidenceState
 }
 
 func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]*schema.Message, error) {
@@ -47,6 +89,11 @@ func buildPromptInputWithContextGovernance(history []Message, compiled promptcom
 	if err != nil {
 		return promptinput.BuildResult{}, err
 	}
+	result.Trace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
+		Compiled:   compiled,
+		Messages:   result.Messages,
+		Governance: governance,
+	})
 	return result, nil
 }
 
@@ -57,6 +104,24 @@ func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []
 	out := append([]Message(nil), history...)
 	var events []ContextGovernanceEvent
 	for i, msg := range out {
+		resourceRecord, resourceOK := resourceReadRecordFromMessage(msg)
+		if resourceOK {
+			result := session.ObservationState.CheckResource(resourceRecord)
+			if result.Event.Layer != "" && result.Event.Kind != "" {
+				result.Event.ID = fmt.Sprintf("ctxgov-%s-%d-l2-resource-%d", firstNonBlankRuntimeString(msg.ClientTurnID, msg.ID, "message"), i, len(events))
+				result.Event.SessionID = session.ID
+				result.Event.TurnID = msg.ClientTurnID
+				result.Event = BuildContextGovernanceEvent(result.Event)
+				events = append(events, result.Event)
+			}
+			if result.ModelVisibleContent != "" && msg.ToolResult != nil {
+				cp := *msg.ToolResult
+				cp.Content = result.ModelVisibleContent
+				out[i].ToolResult = &cp
+				out[i].Content = result.ModelVisibleContent
+			}
+			continue
+		}
 		record, ok := observationRecordFromMessage(msg)
 		if !ok {
 			continue
@@ -78,6 +143,31 @@ func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []
 		out[i].Content = result.ModelVisibleContent
 	}
 	return out, events
+}
+
+func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
+	if msg.ToolResult == nil || len(msg.ToolResult.ExternalReferences) != 1 {
+		return ResourceReadRecord{}, false
+	}
+	ref := msg.ToolResult.ExternalReferences[0]
+	uri := firstNonBlankRuntimeString(ref.URI, ref.FilePath, ref.CardRef, ref.ID)
+	if strings.TrimSpace(uri) == "" || strings.TrimSpace(ref.Digest) == "" {
+		return ResourceReadRecord{}, false
+	}
+	return ResourceReadRecord{
+		Identity: ResourceIdentity{
+			URI:     uri,
+			Version: firstNonBlankRuntimeString(ref.Version, ref.ID),
+			Digest:  ref.Digest,
+			Range:   ref.Range,
+		},
+		SourceRef:   firstNonBlankRuntimeString(ref.ID, uri),
+		Summary:     firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
+		Preview:     contextArtifactBoundedSnippet(msg.ToolResult.Content),
+		Content:     msg.ToolResult.Content,
+		ContentType: ref.ContentType,
+		Bytes:       ref.Bytes,
+	}, true
 }
 
 func observationRecordFromMessage(msg Message) (ObservationRecord, bool) {
@@ -143,6 +233,7 @@ func promptInputContextGovernanceFromRuntime(events []ContextGovernanceEvent) []
 			Message:      event.Message,
 			Budget:       contextBudgetTraceMap(event.Budget),
 			ReferenceIDs: append([]string(nil), event.ReferenceIDs...),
+			Resource:     promptInputResourceTraceFromRuntime(event.Resource),
 			RetryAttempt: event.RetryAttempt,
 			RetryMax:     event.RetryMax,
 		}
@@ -152,6 +243,19 @@ func promptInputContextGovernanceFromRuntime(events []ContextGovernanceEvent) []
 		out = append(out, item)
 	}
 	return out
+}
+
+func promptInputResourceTraceFromRuntime(resource *ContextGovernanceResource) *promptinput.ResourceTraceItem {
+	if resource == nil {
+		return nil
+	}
+	return &promptinput.ResourceTraceItem{
+		URI:         resource.URI,
+		Digest:      resource.Digest,
+		ContentType: resource.ContentType,
+		Bytes:       resource.Bytes,
+		Range:       resource.Range,
+	}
 }
 
 func contextBudgetTraceMap(budget ContextBudgetThresholds) map[string]int {
@@ -183,11 +287,11 @@ func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
 	for _, msg := range history {
 		content := msg.Content
 		if msg.Role == "tool" {
-			content = compactCorootServiceMetricsForModel(content)
+			content = compactChartPayloadForModel(content)
 		}
 		toolResult := promptInputToolResultFromRuntime(msg.ToolResult)
 		if toolResult != nil {
-			toolResult.Content = compactCorootServiceMetricsForModel(toolResult.Content)
+			toolResult.Content = compactChartPayloadForModel(toolResult.Content)
 		}
 		out = append(out, promptinput.Message{
 			Role:       msg.Role,
@@ -199,7 +303,7 @@ func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
 	return out
 }
 
-func compactCorootServiceMetricsForModel(content string) string {
+func compactChartPayloadForModel(content string) string {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return content
@@ -208,19 +312,18 @@ func compactCorootServiceMetricsForModel(content string) string {
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
 		return content
 	}
-	if strings.TrimSpace(runtimeStringFromMap(payload, "tool")) != "coroot.service_metrics" {
-		return content
-	}
-	chartSummary := runtimeCorootChartSummaryFromPayload(payload)
+	chartSummary := runtimeGenericChartSummaryFromPayload(payload)
 	if len(chartSummary) == 0 {
 		return content
 	}
 	out := map[string]any{
-		"schemaVersion": "aiops.coroot_chart_summary/v1",
-		"tool":          "coroot.service_metrics",
+		"schemaVersion": "aiops.chart_summary/v1",
 		"chartSummary":  chartSummary,
 	}
-	for _, key := range []string{"status", "project", "service", "source"} {
+	if toolName := runtimeStringFromMap(payload, "tool"); toolName != "" {
+		out["tool"] = toolName
+	}
+	for _, key := range []string{"status", "project", "service", "source", "resource", "resourceId", "resourceType"} {
 		if value := runtimeStringFromMap(payload, key); value != "" {
 			out[key] = value
 		}
@@ -243,14 +346,14 @@ func compactCorootServiceMetricsForModel(content string) string {
 	return string(data)
 }
 
-func runtimeCorootChartSummaryFromPayload(payload map[string]any) map[string]any {
+func runtimeGenericChartSummaryFromPayload(payload map[string]any) map[string]any {
 	summary := runtimeCloneStringAnyMap(runtimeStringAnyMap(payload["chartSummary"]))
 	if len(summary) == 0 {
 		summary = map[string]any{}
-		if metricSummaries := runtimeCorootMetricSummaries(payload["metrics"]); len(metricSummaries) > 0 {
+		if metricSummaries := runtimeGenericMetricSummaries(payload["metrics"]); len(metricSummaries) > 0 {
 			summary["metricSummaries"] = metricSummaries
 		}
-		if reports := runtimeCorootReportSummaries(payload["chartReports"]); len(reports) > 0 {
+		if reports := runtimeGenericReportSummaries(payload["chartReports"]); len(reports) > 0 {
 			summary["reports"] = reports
 		}
 	}
@@ -260,13 +363,13 @@ func runtimeCorootChartSummaryFromPayload(payload map[string]any) map[string]any
 	return summary
 }
 
-func runtimeCorootMetricSummaries(value any) []map[string]any {
+func runtimeGenericMetricSummaries(value any) []map[string]any {
 	var out []map[string]any
 	for _, metric := range runtimeStringAnyMapList(value) {
 		name := runtimeStringFromMap(metric, "name")
 		item := map[string]any{
 			"name":  name,
-			"topic": runtimeCorootTopicFromName(firstNonBlankRuntimeString(name, runtimeStringFromMap(metric, "chartTitle"))),
+			"topic": runtimeGenericTopicFromName(firstNonBlankRuntimeString(name, runtimeStringFromMap(metric, "chartTitle"))),
 		}
 		for _, key := range []string{"status", "value", "unit", "chartTitle"} {
 			if text := runtimeStringFromMap(metric, key); text != "" {
@@ -297,13 +400,13 @@ func runtimeCorootMetricSummaries(value any) []map[string]any {
 	return out
 }
 
-func runtimeCorootReportSummaries(value any) []map[string]any {
+func runtimeGenericReportSummaries(value any) []map[string]any {
 	var out []map[string]any
 	for _, report := range runtimeStringAnyMapList(value) {
 		name := runtimeStringFromMap(report, "name")
 		item := map[string]any{
 			"name":  name,
-			"topic": runtimeCorootTopicFromName(name),
+			"topic": runtimeGenericTopicFromName(name),
 		}
 		if status := runtimeStringFromMap(report, "status"); status != "" {
 			item["status"] = status
@@ -319,9 +422,9 @@ func runtimeCorootReportSummaries(value any) []map[string]any {
 				title := firstNonBlankRuntimeString(runtimeStringFromMap(widget, "title"), runtimeStringFromMap(chart, "title"))
 				titles = appendRuntimeUniqueString(titles, title, 5)
 				if item["topic"] == "" {
-					item["topic"] = runtimeCorootTopicFromName(title)
+					item["topic"] = runtimeGenericTopicFromName(title)
 				}
-				sc, pc, names := runtimeCorootSeriesCounts(chart)
+				sc, pc, names := runtimeGenericSeriesCounts(chart)
 				seriesCount += sc
 				pointCount += pc
 				for _, name := range names {
@@ -338,9 +441,9 @@ func runtimeCorootReportSummaries(value any) []map[string]any {
 				title := firstNonBlankRuntimeString(groupTitle, runtimeStringFromMap(chart, "title"))
 				titles = appendRuntimeUniqueString(titles, title, 5)
 				if item["topic"] == "" {
-					item["topic"] = runtimeCorootTopicFromName(title)
+					item["topic"] = runtimeGenericTopicFromName(title)
 				}
-				sc, pc, names := runtimeCorootSeriesCounts(chart)
+				sc, pc, names := runtimeGenericSeriesCounts(chart)
 				seriesCount += sc
 				pointCount += pc
 				for _, name := range names {
@@ -368,7 +471,7 @@ func runtimeCorootReportSummaries(value any) []map[string]any {
 	return out
 }
 
-func runtimeCorootSeriesCounts(chart map[string]any) (int, int, []string) {
+func runtimeGenericSeriesCounts(chart map[string]any) (int, int, []string) {
 	seriesCount := 0
 	pointCount := 0
 	var names []string
@@ -383,7 +486,7 @@ func runtimeCorootSeriesCounts(chart map[string]any) (int, int, []string) {
 	return seriesCount, pointCount, names
 }
 
-func runtimeCorootTopicFromName(name string) string {
+func runtimeGenericTopicFromName(name string) string {
 	normalized := strings.ToLower(strings.TrimSpace(name))
 	switch {
 	case strings.Contains(normalized, "net"), strings.Contains(normalized, "network"), strings.Contains(normalized, "tcp"):
@@ -530,17 +633,211 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 
 func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
 	promptTrace := req.PromptInputTrace
+	if len(promptTrace.PromptSections) == 0 {
+		promptTrace.PromptSections = append([]promptcompiler.PromptSectionTrace(nil), req.Compiled.PromptSections...)
+	}
+	if len(promptTrace.ChangedSections) == 0 {
+		promptTrace.ChangedSections = append([]promptcompiler.ChangedPromptSection(nil), req.Compiled.ChangedSections...)
+	}
+	if promptInputContextUsageEmpty(promptTrace.ContextUsage) {
+		promptTrace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
+			Compiled: req.Compiled,
+			Messages: req.ModelInput,
+		})
+	}
 	if len(promptTrace.VisibleOpsManualTools) == 0 {
 		promptTrace.VisibleOpsManualTools = visibleOpsManualToolsFromNames(req.VisibleTools)
 	}
+	if promptTrace.TaskDepth == nil && req.TaskDepth.Level != "" {
+		promptTrace.TaskDepth = promptInputTaskDepthTrace(req.TaskDepth)
+	}
+	if promptTrace.EvidenceCoverage == nil && req.EvidenceCoverage != nil {
+		promptTrace.EvidenceCoverage = promptInputEvidenceCoverageTrace(*req.EvidenceCoverage)
+	}
+	if promptTrace.GenericityTrace == nil && req.GenericityTrace != nil {
+		genericity := *req.GenericityTrace
+		genericity.CoreRuleDomainTerms = append([]string(nil), req.GenericityTrace.CoreRuleDomainTerms...)
+		genericity.AllowedFixtureTerms = append([]string(nil), req.GenericityTrace.AllowedFixtureTerms...)
+		genericity.AllowedPluginTerms = append([]string(nil), req.GenericityTrace.AllowedPluginTerms...)
+		genericity.Violations = append([]string(nil), req.GenericityTrace.Violations...)
+		promptTrace.GenericityTrace = &genericity
+	}
+	if promptTrace.ToolSurfaceFingerprint == "" {
+		promptTrace.ToolSurfaceFingerprint = req.ToolSurfaceFingerprint
+	}
+	if promptTrace.ToolSurfacePolicySnapshotHash == "" {
+		promptTrace.ToolSurfacePolicySnapshotHash = req.ToolSurfacePolicySnapshotHash
+	}
+	if len(promptTrace.LoadedToolsDelta) == 0 {
+		promptTrace.LoadedToolsDelta = append([]string(nil), req.LoadedToolsDelta...)
+	}
+	if len(promptTrace.LoadedPacksDelta) == 0 {
+		promptTrace.LoadedPacksDelta = append([]string(nil), req.LoadedPacksDelta...)
+	}
+	if strings.TrimSpace(promptTrace.SkillIndexHash) == "" {
+		promptTrace.SkillIndexHash = strings.TrimSpace(req.SkillIndexHash)
+	}
+	if len(promptTrace.LoadedSkillsDelta) == 0 {
+		promptTrace.LoadedSkillsDelta = append([]string(nil), req.LoadedSkillsDelta...)
+	}
+	if len(promptTrace.ToolSearchEvents) == 0 {
+		promptTrace.ToolSearchEvents = append([]promptinput.ToolSearchTraceEvent(nil), req.ToolSearchEvents...)
+	}
+	if len(promptTrace.ToolSelectionEvents) == 0 {
+		promptTrace.ToolSelectionEvents = append([]promptinput.ToolSelectionTraceEvent(nil), req.ToolSelectionEvents...)
+	}
+	if len(promptTrace.RejectedToolCalls) == 0 {
+		promptTrace.RejectedToolCalls = append([]promptinput.RejectedToolCallTraceEvent(nil), req.RejectedToolCalls...)
+	}
+	if len(promptTrace.SkillSearchEvents) == 0 {
+		promptTrace.SkillSearchEvents = append([]promptinput.SkillSearchTraceEvent(nil), req.SkillSearchEvents...)
+	}
+	if len(promptTrace.SkillReadEvents) == 0 {
+		promptTrace.SkillReadEvents = append([]promptinput.SkillReadTraceEvent(nil), req.SkillReadEvents...)
+	}
+	if len(promptTrace.RejectedSkillActivations) == 0 {
+		promptTrace.RejectedSkillActivations = append([]promptinput.RejectedSkillActivationTraceEvent(nil), req.RejectedSkillActivations...)
+	}
+	if len(promptTrace.MCPInstructionDeltas) == 0 {
+		promptTrace.MCPInstructionDeltas = append([]promptinput.MCPInstructionDeltaTrace(nil), req.MCPInstructionDeltas...)
+	}
+	if len(promptTrace.ParallelDispatchGroups) == 0 {
+		promptTrace.ParallelDispatchGroups = append([]promptinput.ParallelDispatchTraceGroup(nil), req.ParallelDispatchGroups...)
+	}
+	if len(promptTrace.TaskClaims) == 0 {
+		promptTrace.TaskClaims = append([]promptinput.TaskClaimTrace(nil), req.TaskClaims...)
+	}
+	if len(promptTrace.FailedToolSummaries) == 0 {
+		promptTrace.FailedToolSummaries = append([]promptinput.FailedToolSummary(nil), req.FailedToolSummaries...)
+	}
+	if strings.TrimSpace(promptTrace.AgentIndexHash) == "" {
+		promptTrace.AgentIndexHash = strings.TrimSpace(req.AgentIndexHash)
+	}
+	if len(promptTrace.AgentIndexEntries) == 0 {
+		promptTrace.AgentIndexEntries = append([]promptinput.AgentIndexEntryTrace(nil), req.AgentIndexEntries...)
+	}
+	if len(promptTrace.AgentIndexDropped) == 0 {
+		promptTrace.AgentIndexDropped = append([]promptinput.DroppedAgentIndexEntryTrace(nil), req.AgentIndexDropped...)
+	}
+	if len(promptTrace.AgentIndexDelta) == 0 {
+		promptTrace.AgentIndexDelta = append([]string(nil), req.AgentIndexDelta...)
+	}
+	if promptTrace.AgentDelegationDecision == nil && req.AgentDelegationDecision != nil {
+		decision := *req.AgentDelegationDecision
+		promptTrace.AgentDelegationDecision = &decision
+	}
+	if len(promptTrace.AgentAssignmentLint) == 0 {
+		promptTrace.AgentAssignmentLint = append([]promptinput.AgentAssignmentLintTrace(nil), req.AgentAssignmentLint...)
+	}
+	if len(promptTrace.AgentParallelTraceGroups) == 0 {
+		promptTrace.AgentParallelTraceGroups = append([]promptinput.AgentParallelTraceGroup(nil), req.AgentParallelTraceGroups...)
+	}
+	if len(promptTrace.ResourceLocks) == 0 {
+		promptTrace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
+	}
+	if promptTrace.AgentFinalGate == nil && req.AgentFinalGate != nil {
+		gate := *req.AgentFinalGate
+		promptTrace.AgentFinalGate = &gate
+	}
+	if len(promptTrace.AgentNotifications) == 0 {
+		promptTrace.AgentNotifications = append([]promptinput.AgentNotificationTrace(nil), req.AgentNotifications...)
+	}
+	if promptTrace.VerificationAgentReport == nil && req.VerificationAgentReport != nil {
+		report := *req.VerificationAgentReport
+		promptTrace.VerificationAgentReport = &report
+	}
+	if strings.TrimSpace(promptTrace.VerificationReportRef) == "" {
+		promptTrace.VerificationReportRef = strings.TrimSpace(req.VerificationReportRef)
+	}
+	if strings.TrimSpace(promptTrace.VerificationStatus) == "" {
+		promptTrace.VerificationStatus = strings.TrimSpace(req.VerificationStatus)
+	}
+	if promptTrace.CompletionGate == nil && req.CompletionGate != nil {
+		gate := *req.CompletionGate
+		gate.Reasons = append([]string(nil), req.CompletionGate.Reasons...)
+		promptTrace.CompletionGate = &gate
+	}
+	if len(promptTrace.SafetySignals) == 0 {
+		promptTrace.SafetySignals = append([]promptinput.SafetySignalTrace(nil), req.SafetySignals...)
+	}
+	if promptTrace.UnexpectedStateGate == nil && req.UnexpectedStateGate != nil {
+		gate := *req.UnexpectedStateGate
+		gate.Sources = append([]string(nil), req.UnexpectedStateGate.Sources...)
+		gate.AffectedScopes = append([]string(nil), req.UnexpectedStateGate.AffectedScopes...)
+		gate.Reasons = append([]string(nil), req.UnexpectedStateGate.Reasons...)
+		promptTrace.UnexpectedStateGate = &gate
+	}
+	if promptTrace.ApprovalScope == nil && req.ApprovalScope != nil {
+		scope := *req.ApprovalScope
+		scope.AllowedActions = append([]string(nil), req.ApprovalScope.AllowedActions...)
+		scope.ResourceScopes = append([]string(nil), req.ApprovalScope.ResourceScopes...)
+		scope.Reasons = append([]string(nil), req.ApprovalScope.Reasons...)
+		promptTrace.ApprovalScope = &scope
+	}
+	if promptTrace.PlanRequirementDecision == nil && req.PlanRequirementDecision != nil {
+		decision := *req.PlanRequirementDecision
+		decision.Signals = append([]string(nil), req.PlanRequirementDecision.Signals...)
+		promptTrace.PlanRequirementDecision = &decision
+	}
+	if promptTrace.PlanCompletionGate == nil && req.PlanCompletionGate != nil {
+		gate := *req.PlanCompletionGate
+		gate.Reasons = append([]string(nil), req.PlanCompletionGate.Reasons...)
+		promptTrace.PlanCompletionGate = &gate
+	}
+	metadata := map[string]string{}
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	if req.TaskDepth.Level != "" {
+		metadata["taskDepth.level"] = string(req.TaskDepth.Level)
+		metadata["taskDepth.requiresPlan"] = fmt.Sprint(req.TaskDepth.RequiresPlan)
+		metadata["taskDepth.requiresEvidence"] = fmt.Sprint(req.TaskDepth.RequiresEvidence)
+	}
+	if req.UXProgressTrace != nil {
+		metadata["uxProgress.phase"] = strings.TrimSpace(req.UXProgressTrace.Phase)
+		metadata["uxProgress.currentStepId"] = strings.TrimSpace(req.UXProgressTrace.CurrentStepID)
+		metadata["uxProgress.pendingApprovals"] = strings.Join(req.UXProgressTrace.PendingApprovals, ",")
+	}
+	if req.EvidenceCoverage != nil {
+		metadata["evidenceCoverage.action"] = strings.TrimSpace(req.EvidenceCoverage.Action)
+		metadata["evidenceCoverage.missingDimensions"] = strings.Join(req.EvidenceCoverage.MissingDimensions, ",")
+	}
+	if effort := strings.TrimSpace(req.ReasoningEffort); effort != "" {
+		metadata["reasoningEffort.configured"] = effort
+	}
 	return modeltrace.Write(modeltrace.Request{
-		Kind:              "runtime_model_input",
-		SessionID:         req.SessionID,
-		TurnID:            req.TurnID,
-		Iteration:         req.Iteration,
-		Metadata:          req.Metadata,
-		VisibleTools:      req.VisibleTools,
-		PromptFingerprint: promptFingerprintMap(req.Compiled.Fingerprint),
+		Kind:                          "runtime_model_input",
+		SessionID:                     req.SessionID,
+		TurnID:                        req.TurnID,
+		Iteration:                     req.Iteration,
+		Metadata:                      metadata,
+		VisibleTools:                  req.VisibleTools,
+		PromptFingerprint:             promptFingerprintMap(req.Compiled.Fingerprint),
+		ToolSurfaceFingerprint:        promptTrace.ToolSurfaceFingerprint,
+		ToolSurfacePolicySnapshotHash: promptTrace.ToolSurfacePolicySnapshotHash,
+		LoadedToolsDelta:              promptTrace.LoadedToolsDelta,
+		LoadedPacksDelta:              promptTrace.LoadedPacksDelta,
+		SkillIndexHash:                promptTrace.SkillIndexHash,
+		LoadedSkillsDelta:             promptTrace.LoadedSkillsDelta,
+		ToolSearchEvents:              promptTrace.ToolSearchEvents,
+		ToolSelectionEvents:           promptTrace.ToolSelectionEvents,
+		RejectedToolCalls:             promptTrace.RejectedToolCalls,
+		SkillSearchEvents:             promptTrace.SkillSearchEvents,
+		SkillReadEvents:               promptTrace.SkillReadEvents,
+		RejectedSkillActivations:      promptTrace.RejectedSkillActivations,
+		MCPInstructionDeltas:          promptTrace.MCPInstructionDeltas,
+		ParallelDispatchGroups:        promptTrace.ParallelDispatchGroups,
+		TaskClaims:                    promptTrace.TaskClaims,
+		FailedToolSummaries:           promptTrace.FailedToolSummaries,
+		VerificationReportRef:         promptTrace.VerificationReportRef,
+		VerificationStatus:            promptTrace.VerificationStatus,
+		CompletionGate:                promptTrace.CompletionGate,
+		SafetySignals:                 promptTrace.SafetySignals,
+		UnexpectedStateGate:           promptTrace.UnexpectedStateGate,
+		ApprovalScope:                 promptTrace.ApprovalScope,
+		PlanRequirementDecision:       promptTrace.PlanRequirementDecision,
+		PlanCompletionGate:            promptTrace.PlanCompletionGate,
+		FinalEvidenceState:            req.FinalEvidenceState,
 		Prompt: modeltrace.Prompt{
 			StableHash: promptContentHash(req.Compiled.Stable.Content),
 			Stable:     req.Compiled.Stable.Content,
@@ -557,6 +854,32 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	})
 }
 
+func promptInputTaskDepthTrace(profile taskdepth.Profile) *promptinput.TaskDepthTrace {
+	if profile.Level == "" {
+		return nil
+	}
+	return &promptinput.TaskDepthTrace{
+		Level:              string(profile.Level),
+		Reasons:            append([]string(nil), profile.Reasons...),
+		RequiresPlan:       profile.RequiresPlan,
+		RequiresEvidence:   profile.RequiresEvidence,
+		RequiresValidation: profile.RequiresValidation,
+	}
+}
+
+func promptInputEvidenceCoverageTrace(decision EvidenceCoverageDecision) *promptinput.EvidenceCoverageTrace {
+	return &promptinput.EvidenceCoverageTrace{
+		Action:             strings.TrimSpace(decision.Action),
+		Coverage:           decision.Coverage,
+		RequiredDimensions: append([]string(nil), decision.RequiredDimensions...),
+		CoveredDimensions:  append([]string(nil), decision.CoveredDimensions...),
+		MissingDimensions:  append([]string(nil), decision.MissingDimensions...),
+		OpenQuestions:      append([]string(nil), decision.OpenQuestions...),
+		VerificationStatus: strings.TrimSpace(decision.VerificationStatus),
+		Reasons:            append([]string(nil), decision.Reasons...),
+	}
+}
+
 func visibleOpsManualToolsFromNames(names []string) []string {
 	var out []string
 	for _, name := range names {
@@ -566,6 +889,14 @@ func visibleOpsManualToolsFromNames(names []string) []string {
 		}
 	}
 	return out
+}
+
+func promptInputContextUsageEmpty(usage promptinput.ContextUsage) bool {
+	return usage.MaxContextTokens == 0 &&
+		usage.ReservedOutputTokens == 0 &&
+		usage.EstimatedInputTokens == 0 &&
+		len(usage.Categories) == 0 &&
+		len(usage.TopContributors) == 0
 }
 
 func promptFingerprintMap(fp promptcompiler.PromptFingerprint) map[string]string {

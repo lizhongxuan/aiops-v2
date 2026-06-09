@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/tooling"
@@ -85,28 +86,73 @@ type ResourceContent struct {
 
 // Registry tracks MCP server configuration and dynamically connected tools.
 type Registry struct {
-	mu          sync.RWMutex
-	governance  *settings.Governance
-	serverCfgs  map[string]ServerConfig
-	serverTools map[string][]tooling.Tool
-	serverState map[string]bool
-	statuses    map[string]ServerStatus
-	resources   map[string][]Resource
-	contents    map[string]map[string]ResourceContent
+	mu           sync.RWMutex
+	governance   *settings.Governance
+	serverCfgs   map[string]ServerConfig
+	serverTools  map[string][]tooling.Tool
+	serverState  map[string]bool
+	statuses     map[string]ServerStatus
+	resources    map[string][]Resource
+	contents     map[string]map[string]ResourceContent
+	instructions map[string]ServerInstruction
 }
 
 // NewRegistry creates an empty MCP server registry.
 func NewRegistry() *Registry {
 	r := &Registry{
-		serverCfgs:  make(map[string]ServerConfig),
-		serverTools: make(map[string][]tooling.Tool),
-		serverState: make(map[string]bool),
-		statuses:    make(map[string]ServerStatus),
-		resources:   make(map[string][]Resource),
-		contents:    make(map[string]map[string]ResourceContent),
+		serverCfgs:   make(map[string]ServerConfig),
+		serverTools:  make(map[string][]tooling.Tool),
+		serverState:  make(map[string]bool),
+		statuses:     make(map[string]ServerStatus),
+		resources:    make(map[string][]Resource),
+		contents:     make(map[string]map[string]ResourceContent),
+		instructions: make(map[string]ServerInstruction),
 	}
 	setDefaultRegistry(r)
 	return r
+}
+
+func (r *Registry) SetServerInstructions(serverID, text string) {
+	serverID = strings.TrimSpace(serverID)
+	text = strings.TrimSpace(text)
+	if serverID == "" || text == "" {
+		return
+	}
+	redacted := redactInstructionText(text)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.instructions[serverID] = ServerInstruction{
+		ServerID:  serverID,
+		Text:      redacted,
+		Hash:      serverInstructionHash(serverID, redacted),
+		UpdatedAt: time.Now(),
+	}
+}
+
+func (r *Registry) ListServerInstructions() []ServerInstruction {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ServerInstruction, 0, len(r.instructions))
+	for _, instruction := range r.instructions {
+		out = append(out, instruction)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
+	return out
+}
+
+func (r *Registry) ServerInstructionDelta(state *MCPInstructionSessionState) []MCPInstructionDelta {
+	r.mu.RLock()
+	instructions := make([]ServerInstruction, 0, len(r.instructions))
+	for _, instruction := range r.instructions {
+		instructions = append(instructions, instruction)
+	}
+	disabled := make(map[string]bool, len(r.serverState))
+	for serverID, value := range r.serverState {
+		disabled[serverID] = value
+	}
+	r.mu.RUnlock()
+	sort.Slice(instructions, func(i, j int) bool { return instructions[i].ServerID < instructions[j].ServerID })
+	return buildInstructionDelta(instructions, disabled, state)
 }
 
 // DefaultRegistry returns the most recently created registry, if any.
@@ -661,6 +707,11 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 	}
 	meta.Origin = tooling.ToolOriginMCP
 	meta.IsMCP = true
+	meta.Layer = tooling.ToolLayerDeferred
+	meta.DeferByDefault = true
+	if meta.Pack == "" {
+		meta.Pack = dynamicMCPToolPack(serverID)
+	}
 	if meta.MCPInfo.ServerID == "" {
 		meta.MCPInfo.ServerID = serverID
 	}
@@ -670,7 +721,90 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 	if meta.MCPInfo.ToolName == "" {
 		meta.MCPInfo.ToolName = meta.Name
 	}
+	readOnly := t.IsReadOnly(nil)
+	destructive := t.IsDestructive(nil)
+	if meta.RiskLevel == "" && readOnly && !destructive {
+		meta.RiskLevel = tooling.ToolRiskLow
+	}
+	if destructive {
+		meta.Mutating = true
+	}
+	if meta.AlwaysLoad && !mcpAlwaysLoadAllowed(meta, readOnly, destructive) {
+		meta.AlwaysLoad = false
+	}
+	meta.Triggers = appendUniqueMCPMetadata(meta.Triggers, "MCP tool", "dynamic tool", meta.MCPInfo.ServerName, meta.MCPInfo.ToolName)
+	meta.Discovery = normalizeMCPDiscovery(meta.Discovery, meta, readOnly, destructive)
 	return metadataOverrideTool{base: t, meta: meta}
+}
+
+func mcpAlwaysLoadAllowed(meta tooling.ToolMetadata, readOnly, destructive bool) bool {
+	return readOnly && !destructive && !meta.Mutating && !meta.RequiresApproval && meta.RiskLevel.Normalize() == tooling.ToolRiskLow
+}
+
+func normalizeMCPDiscovery(discovery tooling.ToolDiscoveryMetadata, meta tooling.ToolMetadata, readOnly, destructive bool) tooling.ToolDiscoveryMetadata {
+	if discovery.DiscoveryGroup == "" {
+		discovery.DiscoveryGroup = "mcp"
+	}
+	discovery.DiscoveryTags = appendUniqueMCPMetadata(discovery.DiscoveryTags, "mcp", "dynamic", meta.MCPInfo.ServerName, meta.MCPInfo.ToolName)
+	if len(discovery.ResourceTypes) == 0 {
+		discovery.ResourceTypes = []string{"mcp_tool"}
+	}
+	if len(discovery.OperationKinds) == 0 {
+		switch {
+		case destructive || meta.Mutating:
+			discovery.OperationKinds = []string{"write"}
+		case readOnly:
+			discovery.OperationKinds = []string{"read"}
+		default:
+			discovery.OperationKinds = []string{"execute"}
+		}
+	}
+	discovery.RequiresSelect = true
+	return discovery
+}
+
+func dynamicMCPToolPack(serverID string) string {
+	serverID = strings.ToLower(strings.TrimSpace(serverID))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range serverID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if b.Len() > 0 && !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	suffix := strings.Trim(b.String(), "_")
+	if suffix == "" {
+		suffix = "server"
+	}
+	return "mcp_dynamic_" + suffix
+}
+
+func appendUniqueMCPMetadata(values []string, extras ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(extras))
+	out := make([]string, 0, len(values)+len(extras))
+	for _, value := range append(append([]string(nil), values...), extras...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func cloneServerConfig(cfg ServerConfig) ServerConfig {

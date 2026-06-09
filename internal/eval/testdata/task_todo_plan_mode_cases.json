@@ -1,0 +1,62 @@
+[
+  {
+    "id": "PT01_complex_without_plan_gets_reminder",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "Analyze and implement a multi-step AIOps prompt/runtime change.",
+    "expected": {
+      "mustHavePlan": true,
+      "expectedPlanModeState": ["active"],
+      "expectedPlanRequirement": ["required", "multi_step"]
+    }
+  },
+  {
+    "id": "PT02_simple_question_no_plan_required",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "What is the current session id?",
+    "expected": {
+      "mustNotHavePlan": true,
+      "expectedPlanRequirement": ["not_required", "simple_read"]
+    }
+  },
+  {
+    "id": "PT03_pending_evidence_blocks_success_final",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "Finish only after verification evidence is available.",
+    "expected": {
+      "expectedPlanCompletionGate": ["block", "pending_evidence"]
+    }
+  },
+  {
+    "id": "PT04_plan_rejection_keeps_plan_active",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "Revise the rejected plan without executing mutations.",
+    "expected": {
+      "expectedPlanModeState": ["active", "rejected"],
+      "expectedPlanRejectionEvents": ["rejected"]
+    }
+  },
+  {
+    "id": "PT05_approved_scope_does_not_allow_unscoped_mutation",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "Execute only approved scoped changes.",
+    "expected": {
+      "expectedPlanApprovalScope": ["approvedScopes"],
+      "mustNotInclude": ["unscoped mutation allowed"]
+    }
+  },
+  {
+    "id": "PT06_compact_resume_restores_plan_state",
+    "category": "plan_mode",
+    "priority": "P1",
+    "input": "Resume after compaction and continue the active plan.",
+    "expected": {
+      "expectedPlanModeState": ["resume", "active"],
+      "expectedTaskClaims": ["pending_evidence"]
+    }
+  }
+]

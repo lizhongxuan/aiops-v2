@@ -51,10 +51,31 @@ type PromptCommand struct {
 	Source      string
 	LoadedFrom  string
 	WhenToUse   string
+	Discovery   SkillDiscoveryMetadata
+	Governance  SkillGovernanceMetadata
 }
 
 // LocalCommand is intentionally the same shape as PromptCommand for the minimal registry skeleton.
 type LocalCommand = PromptCommand
+
+type SkillDiscoveryMetadata struct {
+	WhenToUse        string
+	Preview          string
+	ResourceTypes    []string
+	TaskIntents      []string
+	Paths            []string
+	Modes            []string
+	ActivationMode   string
+	UserInvocable    bool
+	ModelInvocable   bool
+	RequiredForMatch bool
+}
+
+type SkillGovernanceMetadata struct {
+	Risk         string
+	AllowedTools []string
+	DeniedTools  []string
+}
 
 type promptRecord struct {
 	cmd   PromptCommand
@@ -293,6 +314,12 @@ func normalizePromptCommand(cmd PromptCommand) PromptCommand {
 
 func clonePromptCommand(cmd PromptCommand) PromptCommand {
 	cmd.Tools = append([]string(nil), cmd.Tools...)
+	cmd.Discovery.ResourceTypes = append([]string(nil), cmd.Discovery.ResourceTypes...)
+	cmd.Discovery.TaskIntents = append([]string(nil), cmd.Discovery.TaskIntents...)
+	cmd.Discovery.Paths = append([]string(nil), cmd.Discovery.Paths...)
+	cmd.Discovery.Modes = append([]string(nil), cmd.Discovery.Modes...)
+	cmd.Governance.AllowedTools = append([]string(nil), cmd.Governance.AllowedTools...)
+	cmd.Governance.DeniedTools = append([]string(nil), cmd.Governance.DeniedTools...)
 	return cmd
 }
 
@@ -326,11 +353,38 @@ func samePromptCommand(left, right PromptCommand) bool {
 		left.Source != right.Source ||
 		left.LoadedFrom != right.LoadedFrom ||
 		left.WhenToUse != right.WhenToUse ||
+		left.Discovery.WhenToUse != right.Discovery.WhenToUse ||
+		left.Discovery.Preview != right.Discovery.Preview ||
+		left.Discovery.ActivationMode != right.Discovery.ActivationMode ||
+		left.Discovery.UserInvocable != right.Discovery.UserInvocable ||
+		left.Discovery.ModelInvocable != right.Discovery.ModelInvocable ||
+		left.Discovery.RequiredForMatch != right.Discovery.RequiredForMatch ||
+		left.Governance.Risk != right.Governance.Risk ||
 		len(left.Tools) != len(right.Tools) {
 		return false
 	}
 	for i := range left.Tools {
 		if left.Tools[i] != right.Tools[i] {
+			return false
+		}
+	}
+	if !sameStringSlice(left.Discovery.ResourceTypes, right.Discovery.ResourceTypes) ||
+		!sameStringSlice(left.Discovery.TaskIntents, right.Discovery.TaskIntents) ||
+		!sameStringSlice(left.Discovery.Paths, right.Discovery.Paths) ||
+		!sameStringSlice(left.Discovery.Modes, right.Discovery.Modes) ||
+		!sameStringSlice(left.Governance.AllowedTools, right.Governance.AllowedTools) ||
+		!sameStringSlice(left.Governance.DeniedTools, right.Governance.DeniedTools) {
+		return false
+	}
+	return true
+}
+
+func sameStringSlice(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
 			return false
 		}
 	}

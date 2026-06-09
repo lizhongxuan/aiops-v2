@@ -83,15 +83,15 @@ func TestApplyPlanUpdateRejectsVagueSteps(t *testing.T) {
 func TestApplyPlanUpdateAcceptsVerifiableOpsStep(t *testing.T) {
 	next, err := ApplyPlanUpdate(PlanState{}, UpdatePlanArgs{
 		Steps: []PlanStep{{
-			ID:     "redis-metrics",
-			Text:   "查询 Coroot 中 redis-local-01 的 used_memory_rss 与 used_memory 指标并判断 RSS 增长是否脱离数据集增长",
+			ID:     "target-metrics",
+			Text:   "查询观测工具中的目标服务关键指标并判断资源增长是否脱离请求量增长",
 			Status: StepStatusInProgress,
 		}},
 	})
 	if err != nil {
 		t.Fatalf("ApplyPlanUpdate() error = %v", err)
 	}
-	if next.Steps[0].ID != "redis-metrics" {
+	if next.Steps[0].ID != "target-metrics" {
 		t.Fatalf("step was not kept: %#v", next.Steps[0])
 	}
 }

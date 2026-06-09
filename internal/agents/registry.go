@@ -37,6 +37,8 @@ type AgentTool struct {
 	Name          string
 	Description   string
 	Prompt        string
+	Discovery     AgentDiscoveryMetadata
+	Budget        AgentBudgetMetadata
 	Tools         []string
 	Model         string
 	Hooks         []string
@@ -51,6 +53,8 @@ type Definition struct {
 	Source        string
 	Description   string
 	Prompt        string
+	Discovery     AgentDiscoveryMetadata
+	Budget        AgentBudgetMetadata
 	Tools         []string
 	Model         string
 	Hooks         []string
@@ -65,6 +69,8 @@ func (d Definition) ToAgentTool() AgentTool {
 		Name:          d.Name,
 		Description:   d.Description,
 		Prompt:        d.Prompt,
+		Discovery:     cloneDiscoveryMetadata(d.Discovery),
+		Budget:        normalizeBudgetMetadata(d.Budget),
 		Tools:         append([]string(nil), d.Tools...),
 		Model:         d.Model,
 		Hooks:         append([]string(nil), d.Hooks...),
@@ -86,6 +92,14 @@ func (d Definition) Validate() error {
 	}
 	if d.MaxIterations < 0 {
 		return fmt.Errorf("max iterations must be non-negative, got %d", d.MaxIterations)
+	}
+	if d.Budget.MaxConcurrent < 0 {
+		return fmt.Errorf("max concurrent must be non-negative, got %d", d.Budget.MaxConcurrent)
+	}
+	switch d.Budget.CostClass {
+	case "", "low", "medium", "high":
+	default:
+		return fmt.Errorf("unknown cost class %q", d.Budget.CostClass)
 	}
 	return nil
 }
@@ -317,6 +331,7 @@ func sourcePriority(source string) int {
 }
 
 func cloneDefinition(def Definition) Definition {
+	def.Discovery = cloneDiscoveryMetadata(def.Discovery)
 	def.Tools = append([]string(nil), def.Tools...)
 	def.Hooks = append([]string(nil), def.Hooks...)
 	def.MCPServers = append([]string(nil), def.MCPServers...)

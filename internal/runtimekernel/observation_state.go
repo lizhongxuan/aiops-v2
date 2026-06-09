@@ -32,7 +32,8 @@ func (k ObservationKey) String() string {
 
 // ObservationState keeps the latest digest for repeated observations.
 type ObservationState struct {
-	Records []ObservationRecord `json:"records,omitempty"`
+	Records         []ObservationRecord  `json:"records,omitempty"`
+	ResourceRecords []ResourceReadRecord `json:"resourceRecords,omitempty"`
 }
 
 // ObservationRecord is the persisted digest and model-visible summary for one

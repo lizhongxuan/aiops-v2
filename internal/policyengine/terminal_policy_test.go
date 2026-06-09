@@ -23,6 +23,25 @@ func TestChatModeAllowsReadOnlyTerminalCommand(t *testing.T) {
 	}
 }
 
+func TestChatModeAllowsReadOnlyTerminalCommandDespiteHighRiskMetadata(t *testing.T) {
+	policy := &ChatModePolicy{}
+	decision := policy.CheckTool(PolicyInput{
+		ToolName: "exec_command",
+		Tool: tooling.ToolMetadata{
+			Name:      "exec_command",
+			RiskLevel: tooling.ToolRiskHigh,
+		},
+		Mode: ModeChat,
+		Arguments: json.RawMessage(`{
+			"command": "nproc",
+			"args": []
+		}`),
+	})
+	if decision.Action != PolicyActionAllow {
+		t.Fatalf("CheckTool() = %#v, want allow", decision)
+	}
+}
+
 func TestChatModeAllowsMacOSVersionReadOnlyTerminalCommand(t *testing.T) {
 	policy := &ChatModePolicy{}
 	decision := policy.CheckTool(PolicyInput{

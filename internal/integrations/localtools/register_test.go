@@ -26,6 +26,41 @@ func (r *fakeLLMRepo) GetLLMConfig() (*store.LLMConfig, error) {
 	return r.cfg, nil
 }
 
+type fakeHostLookup struct {
+	hosts map[string]store.HostRecord
+}
+
+func (h fakeHostLookup) GetHost(id string) (*store.HostRecord, error) {
+	host, ok := h.hosts[id]
+	if !ok {
+		return nil, nil
+	}
+	return &host, nil
+}
+
+type fakeHostAgentCommandRunner struct {
+	requests []HostAgentCommandRequest
+	results  []HostAgentCommandResult
+	errors   []error
+	result   HostAgentCommandResult
+	err      error
+}
+
+func (r *fakeHostAgentCommandRunner) RunHostAgentCommand(_ context.Context, req HostAgentCommandRequest) (HostAgentCommandResult, error) {
+	r.requests = append(r.requests, req)
+	index := len(r.requests) - 1
+	if index < len(r.errors) && r.errors[index] != nil {
+		return HostAgentCommandResult{}, r.errors[index]
+	}
+	if index < len(r.results) {
+		return r.results[index], nil
+	}
+	if r.err != nil {
+		return HostAgentCommandResult{}, r.err
+	}
+	return r.result, nil
+}
+
 func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 	registry := tooling.NewRegistry()
 	repo := &fakeLLMRepo{cfg: &store.LLMConfig{
@@ -85,10 +120,11 @@ func TestExecCommandToolSchemaIncludesActionTokenAndIntent(t *testing.T) {
 
 func TestCurrentModelConfigToolDoesNotLeakSecrets(t *testing.T) {
 	tool := NewCurrentModelConfigTool(&fakeLLMRepo{cfg: &store.LLMConfig{
-		Provider: "openai",
-		Model:    "gpt-5.4",
-		BaseURL:  "http://127.0.0.1:8317/v1",
-		APIKey:   "sk-secret",
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		BaseURL:         "http://127.0.0.1:8317/v1",
+		APIKey:          "sk-secret",
+		ReasoningEffort: "high",
 	}})
 
 	result, err := tool.Execute(context.Background(), nil)
@@ -107,6 +143,12 @@ func TestCurrentModelConfigToolDoesNotLeakSecrets(t *testing.T) {
 	}
 	if payload["apiKeySet"] != true {
 		t.Fatalf("apiKeySet = %v, want true", payload["apiKeySet"])
+	}
+	if payload["reasoningEffort"] != "high" || payload["supportsReasoning"] != true {
+		t.Fatalf("payload = %+v, want reasoningEffort high and supportsReasoning true", payload)
+	}
+	if !strings.Contains(string(tool.OutputSchema()), `"supportsReasoning"`) {
+		t.Fatalf("output schema missing supportsReasoning: %s", tool.OutputSchema())
 	}
 }
 
@@ -236,6 +278,160 @@ func TestExecCommandToolRequiresEvidenceForNonAllowlistedReadOnlyCommand(t *test
 	decision := tool.CheckPermissions(context.Background(), input)
 	if decision.Action != tooling.PermissionActionNeedEvidence {
 		t.Fatalf("CheckPermissions() = %#v, want need evidence", decision)
+	}
+}
+
+func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{Stdout: "8\n", ExitCode: 0},
+	}
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-kme": {
+				ID:          "host-kme",
+				Name:        "kme",
+				Address:     "172.18.13.12",
+				Executable:  true,
+				ControlMode: "managed",
+				Transport:   "agent_grpc",
+			},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-kme"})
+	input := json.RawMessage(`{"command":"nproc"}`)
+
+	decision := tool.CheckPermissions(ctx, input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow", decision)
+	}
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	if runner.requests[0].HostID != "host-kme" || runner.requests[0].Command != "nproc" {
+		t.Fatalf("runner request = %#v, want host-kme nproc", runner.requests[0])
+	}
+	var payload struct {
+		Source   string `json:"source"`
+		Stdout   string `json:"stdout"`
+		ExitCode int    `json:"exitCode"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Source != "host.agent_grpc" || payload.Stdout != "8\n" || payload.ExitCode != 0 {
+		t.Fatalf("payload = %#v, want agent grpc terminal result", payload)
+	}
+}
+
+func TestEnsurePostgreSQLInstalledSkipsExistingWithoutApproval(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{Stdout: "psql (PostgreSQL) 16.9\n", ExitCode: 0},
+	}
+	tool := NewEnsurePostgreSQLInstalledTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-pg": {
+				ID:          "host-pg",
+				Name:        "pg",
+				Address:     "172.18.13.12",
+				Executable:  true,
+				ControlMode: "managed",
+			},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-pg"})
+
+	decision := tool.CheckPermissions(ctx, json.RawMessage(`{}`))
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow when PostgreSQL already exists", decision)
+	}
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 2 {
+		t.Fatalf("runner calls = %d, want permission version check + execute version check", len(runner.requests))
+	}
+	var payload struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+		HostID  string `json:"hostId"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Status != "skipped_existing" || !strings.Contains(payload.Version, "PostgreSQL") || payload.HostID != "host-pg" {
+		t.Fatalf("payload = %#v, want existing PostgreSQL skip", payload)
+	}
+}
+
+func TestEnsurePostgreSQLInstalledRequiresApprovalWhenMissing(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{Stderr: "psql: not found", ExitCode: 127},
+	}
+	tool := NewEnsurePostgreSQLInstalledTool(Options{
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-pg": {ID: "host-pg", Executable: true, ControlMode: "managed"},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-pg"})
+
+	decision := tool.CheckPermissions(ctx, json.RawMessage(`{}`))
+	if decision.Action != tooling.PermissionActionNeedApproval {
+		t.Fatalf("CheckPermissions() = %#v, want approval when PostgreSQL is missing", decision)
+	}
+	if decision.Approval == nil || !strings.Contains(decision.Approval.ExpectedEffect, "psql --version") {
+		t.Fatalf("approval payload = %#v, want PostgreSQL expected effect", decision.Approval)
+	}
+}
+
+func TestEnsurePostgreSQLInstalledRunsInstallThroughBoundHostAgent(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		results: []HostAgentCommandResult{
+			{Stderr: "psql: not found", ExitCode: 127},
+			{Stdout: "install ok\npsql (PostgreSQL) 16.9\n", ExitCode: 0},
+			{Stdout: "psql (PostgreSQL) 16.9\n", ExitCode: 0},
+		},
+	}
+	tool := NewEnsurePostgreSQLInstalledTool(Options{
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-pg": {ID: "host-pg", Executable: true, ControlMode: "managed"},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-pg"})
+
+	result, err := tool.Execute(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 3 {
+		t.Fatalf("runner calls = %d, want version/install/version", len(runner.requests))
+	}
+	installArgs := strings.Join(runner.requests[1].Args, " ")
+	if runner.requests[1].HostID != "host-pg" || runner.requests[1].Command != "sh" || !strings.Contains(installArgs, "run_privileged apt-get install -y postgresql") {
+		t.Fatalf("install request = %#v, want bound host PostgreSQL shell script", runner.requests[1])
+	}
+	if !strings.Contains(installArgs, "sudo -n") || !strings.Contains(installArgs, "systemctl enable --now postgresql") || !strings.Contains(installArgs, "failed to start PostgreSQL service") {
+		t.Fatalf("install script = %q, want sudo and service verification", installArgs)
+	}
+	var payload struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Status != "installed" || !strings.Contains(payload.Version, "PostgreSQL") {
+		t.Fatalf("payload = %#v, want installed PostgreSQL result", payload)
 	}
 }
 

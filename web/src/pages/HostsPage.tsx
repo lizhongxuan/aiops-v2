@@ -166,6 +166,7 @@ export function HostsPage() {
       }
       setDialogOpen(false);
       setMessage({ type: "success", text: "主机信息已保存" });
+      setTab("access");
       await load();
     } catch (error) {
       setDialogMessage({ type: "error", text: error instanceof Error ? error.message : "保存主机失败" });
@@ -201,6 +202,12 @@ export function HostsPage() {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!loading && tab === "profiles" && hostProfiles.length === 0 && model.allRows.length > 0) {
+      setTab("access");
+    }
+  }, [hostProfiles.length, loading, model.allRows.length, tab]);
 
   return (
     <SettingsPageFrame

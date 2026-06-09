@@ -32,18 +32,113 @@ func TestToolSearchToolIsReadOnlyAndReturnsToolMatches(t *testing.T) {
 
 func TestToolSearchOmitsRemovedAndInternalTools(t *testing.T) {
 	registry := tooling.NewRegistry()
-	mustRegister(t, registry, fakeStaticTool("runbook.match", "old runbook"))
-	mustRegister(t, registry, fakeStaticTool("fallback.plan_exec", "old fallback"))
-	mustRegister(t, registry, fakeStaticTool("erp.business_metric", "mock erp"))
-	mustRegister(t, registry, fakeStaticTool("k8s.get_events", "mock kubernetes"))
-	mustRegister(t, registry, fakeStaticTool("update_plan", "internal plan"))
-	mustRegister(t, registry, fakeStaticTool("changes.recent_deployments", "deployment changes"))
+	for _, name := range []string{
+		"synthetic.legacy_match",
+		"synthetic.fallback_exec",
+		"synthetic.business_metric",
+		"synthetic.cluster_events",
+		"synthetic.recent_changes",
+	} {
+		mustRegister(t, registry, &tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:        name,
+				Description: "synthetic hidden tool",
+				Discovery: tooling.ToolDiscoveryMetadata{
+					HiddenFromDiscovery: true,
+				},
+			},
+		})
+	}
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "synthetic.internal_plan",
+			Description: "internal plan",
+			Layer:       tooling.ToolLayerInternal,
+		},
+	})
 
-	result := runToolSearch(t, registry, "plan metric changes")
-	for _, forbidden := range []string{"runbook.match", "fallback.plan_exec", "erp.business_metric", "k8s.get_events", "changes.recent_deployments", "update_plan"} {
+	result := runToolSearch(t, registry, "synthetic metric changes")
+	for _, forbidden := range []string{"synthetic.legacy_match", "synthetic.fallback_exec", "synthetic.business_metric", "synthetic.cluster_events", "synthetic.recent_changes", "synthetic.internal_plan"} {
 		if strings.Contains(result, forbidden) {
 			t.Fatalf("tool_search returned forbidden tool %q: %s", forbidden, result)
 		}
+	}
+}
+
+func TestToolSearchReturnsDiscoveryMetadata(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "synthetic.resource_reader",
+			Description: "Read bounded resources",
+			SearchHint:  "bounded resource evidence",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"resource"},
+				OperationKinds: []string{"read"},
+				RequiresSelect: true,
+			},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+	})
+
+	content := runToolSearch(t, registry, "resource evidence")
+	for _, want := range []string{`"capabilityKind":"read"`, `"resourceTypes":["resource"]`, `"operationKinds":["read"]`, `"requiresSelect":true`, `"selectHint"`} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content missing %s: %s", want, content)
+		}
+	}
+}
+
+func TestToolSearchSelectReturnsSelectionDelta(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "synthetic.resource_reader",
+			Description:    "Read bounded resources",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_resources",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"resource"},
+				OperationKinds: []string{"read"},
+				RequiresSelect: true,
+			},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+	})
+
+	tool := NewToolSearchTool(registry)
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"mode":"select","tools":["synthetic.resource_reader"],"packs":["synthetic_resources"],"reason":"read evidence for current task"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"mode":"select"`, `"loadedTools":["synthetic.resource_reader"]`, `"loadedPacks":["synthetic_resources"]`, `"reason":"read evidence for current task"`} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("select output missing %s: %s", want, result.Content)
+		}
+	}
+}
+
+func TestToolSearchSearchDoesNotReturnSelection(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "synthetic.resource_reader",
+			Description:    "Read bounded resources",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_resources",
+			DeferByDefault: true,
+		},
+	})
+
+	content := runToolSearch(t, registry, "bounded resources")
+	if strings.Contains(content, `"selection"`) || strings.Contains(content, `"loadedPacks"`) {
+		t.Fatalf("search should not select tools or packs: %s", content)
+	}
+	if !strings.Contains(content, `"mode":"search"`) {
+		t.Fatalf("search output should include mode=search: %s", content)
 	}
 }
 
@@ -85,7 +180,7 @@ func TestToolSearchSearchesAssemblerDynamicMCPTools(t *testing.T) {
 	}
 
 	content := runToolSearchWithProvider(t, tooling.NewAssembler(registry, mcpRegistry), "coroot metrics")
-	for _, want := range []string{`"name":"coroot.service_metrics"`, `"domain":"coroot"`} {
+	for _, want := range []string{`"kind":"pack"`, `"tools":["coroot.service_metrics"]`, `"domain":"coroot"`, `"requiresSelect":true`} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %s: %s", want, content)
 		}

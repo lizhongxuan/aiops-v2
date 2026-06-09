@@ -69,6 +69,8 @@ func loadSkillFile(path string) (Definition, error) {
 	if len(meta.tools) > 0 {
 		def.Tools = append([]string(nil), meta.tools...)
 	}
+	def.Discovery = meta.discovery
+	def.Governance = meta.governance
 
 	def.Prompt = strings.TrimSpace(body)
 	if def.Prompt == "" {
@@ -78,13 +80,15 @@ func loadSkillFile(path string) (Definition, error) {
 		def.Name = filepath.Base(filepath.Dir(path))
 	}
 
-	return def, nil
+	return normalizeDefinition(def), nil
 }
 
 type frontmatter struct {
 	name        string
 	description string
 	tools       []string
+	discovery   SkillDiscoveryMetadata
+	governance  SkillGovernanceMetadata
 }
 
 func parseFrontmatter(content string) (frontmatter, string) {
@@ -120,11 +124,9 @@ func parseMetadataLines(lines []string) frontmatter {
 		}
 
 		if strings.HasPrefix(line, "- ") {
-			if currentKey == "tools" {
-				value := strings.TrimSpace(strings.TrimPrefix(line, "- "))
-				if value != "" {
-					meta.tools = append(meta.tools, value)
-				}
+			value := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+			if value != "" {
+				addFrontmatterListValue(&meta, currentKey, value)
 			}
 			continue
 		}
@@ -134,7 +136,7 @@ func parseMetadataLines(lines []string) frontmatter {
 			continue
 		}
 
-		currentKey = strings.TrimSpace(strings.ToLower(key))
+		currentKey = canonicalFrontmatterKey(key)
 		value = strings.TrimSpace(value)
 
 		switch currentKey {
@@ -142,14 +144,27 @@ func parseMetadataLines(lines []string) frontmatter {
 			meta.name = trimQuotes(value)
 		case "description":
 			meta.description = trimQuotes(value)
+		case "whentouse":
+			meta.discovery.WhenToUse = trimQuotes(value)
+		case "preview":
+			meta.discovery.Preview = trimQuotes(value)
+		case "activationmode":
+			meta.discovery.ActivationMode = trimQuotes(value)
+		case "userinvocable":
+			meta.discovery.UserInvocable = parseFrontmatterBool(value)
+		case "modelinvocable":
+			meta.discovery.ModelInvocable = parseFrontmatterBool(value)
+		case "requiredformatch":
+			meta.discovery.RequiredForMatch = parseFrontmatterBool(value)
+		case "risk":
+			meta.governance.Risk = trimQuotes(value)
 		case "tools":
 			if value != "" {
-				for _, item := range strings.Split(value, ",") {
-					item = strings.TrimSpace(trimQuotes(item))
-					if item != "" {
-						meta.tools = append(meta.tools, item)
-					}
-				}
+				addFrontmatterListValue(&meta, currentKey, value)
+			}
+		case "resourcetypes", "taskintents", "paths", "modes", "allowedtools", "deniedtools":
+			if value != "" {
+				addFrontmatterListValue(&meta, currentKey, value)
 			}
 		default:
 			currentKey = ""
@@ -157,6 +172,42 @@ func parseMetadataLines(lines []string) frontmatter {
 	}
 
 	return meta
+}
+
+func canonicalFrontmatterKey(key string) string {
+	key = strings.TrimSpace(key)
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	return strings.ToLower(key)
+}
+
+func addFrontmatterListValue(meta *frontmatter, key, value string) {
+	values := splitMetadataListValue(value)
+	switch key {
+	case "tools":
+		meta.tools = append(meta.tools, values...)
+	case "resourcetypes":
+		meta.discovery.ResourceTypes = append(meta.discovery.ResourceTypes, values...)
+	case "taskintents":
+		meta.discovery.TaskIntents = append(meta.discovery.TaskIntents, values...)
+	case "paths":
+		meta.discovery.Paths = append(meta.discovery.Paths, values...)
+	case "modes":
+		meta.discovery.Modes = append(meta.discovery.Modes, values...)
+	case "allowedtools":
+		meta.governance.AllowedTools = append(meta.governance.AllowedTools, values...)
+	case "deniedtools":
+		meta.governance.DeniedTools = append(meta.governance.DeniedTools, values...)
+	}
+}
+
+func parseFrontmatterBool(value string) bool {
+	switch strings.ToLower(trimQuotes(value)) {
+	case "true", "yes", "y", "1", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func trimQuotes(value string) string {

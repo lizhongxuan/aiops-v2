@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	ToolPackHostOps          = "hostops"
 	ToolSpawnHostAgent       = "spawn_host_agent"
 	ToolSendHostAgentMessage = "send_host_agent_message"
 	ToolWaitHostAgents       = "wait_host_agents"
@@ -49,6 +50,7 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			Description:      "Spawn one host-bound child agent per assignment for a host operation mission.",
 			Origin:           tooling.ToolOriginBuiltin,
 			Layer:            tooling.ToolLayerMutation,
+			Pack:             ToolPackHostOps,
 			Domain:           "hostops",
 			Mutating:         true,
 			RiskLevel:        tooling.ToolRiskMedium,
@@ -81,6 +83,7 @@ func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 			Description:    "Send a manager follow-up message to one host-bound child agent.",
 			Origin:         tooling.ToolOriginBuiltin,
 			Layer:          tooling.ToolLayerMutation,
+			Pack:           ToolPackHostOps,
 			Domain:         "hostops",
 			Mutating:       true,
 			RiskLevel:      tooling.ToolRiskMedium,
@@ -111,6 +114,7 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			Description:    "Read current child agent statuses for a host operation mission.",
 			Origin:         tooling.ToolOriginBuiltin,
 			Layer:          tooling.ToolLayerCore,
+			Pack:           ToolPackHostOps,
 			Domain:         "hostops",
 			RiskLevel:      tooling.ToolRiskLow,
 			FailurePolicy:  tooling.ToolFailurePolicyFeedBackToModel,
@@ -140,6 +144,7 @@ func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			Description:    "Stop one host-bound child agent.",
 			Origin:         tooling.ToolOriginBuiltin,
 			Layer:          tooling.ToolLayerMutation,
+			Pack:           ToolPackHostOps,
 			Domain:         "hostops",
 			Mutating:       true,
 			RiskLevel:      tooling.ToolRiskMedium,

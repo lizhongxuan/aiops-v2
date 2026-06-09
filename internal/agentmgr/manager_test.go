@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/agentruntime"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,10 +23,10 @@ type testRunner struct {
 	err     error
 	delay   time.Duration
 	called  int
-	configs []*AgentConfig
+	configs []agentruntime.Config
 }
 
-func (r *testRunner) Run(ctx context.Context, config *AgentConfig) (string, error) {
+func (r *testRunner) Run(ctx context.Context, config agentruntime.Config) (string, error) {
 	r.mu.Lock()
 	r.called++
 	r.configs = append(r.configs, config)
@@ -213,6 +216,19 @@ func TestRunAgent_Success(t *testing.T) {
 	}
 	if inst.Output != "disk usage: 42%" {
 		t.Errorf("expected instance output, got %s", inst.Output)
+	}
+}
+
+func TestRunAgentReturnsErrorWhenRunnerMissing(t *testing.T) {
+	mgr := newTestManager(nil)
+	_, err := mgr.Spawn(context.Background(), validSpawnRequest("agent-1"))
+	if err != nil {
+		t.Fatalf("spawn error: %v", err)
+	}
+
+	_, err = mgr.RunAgent(context.Background(), "agent-1", &AgentConfig{Kind: AgentKindWorker})
+	if err == nil || !strings.Contains(err.Error(), "agent runner is required") {
+		t.Fatalf("RunAgent() error = %v, want missing runner error", err)
 	}
 }
 

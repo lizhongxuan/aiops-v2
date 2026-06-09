@@ -17,6 +17,9 @@ data:
   AIOPS_LLM_PROVIDER: "openai"
   AIOPS_LLM_MODEL: "gpt-5.4"
   AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
+  AIOPS_AGENT_SERVER_URL: "http://172.18.13.11:8001"
+  AIOPS_AGENT_GRPC_URL: "172.18.13.11:8002"
+  AIOPS_API_URL: "http://172.18.13.11:8001"
   # OpenAI-compatible gateway example:
   # AIOPS_LLM_BASE_URL: "https://api.openai.com/v1"
   # Coroot is configured from the Coroot Observability page after startup.
@@ -84,6 +87,7 @@ spec:
               containerPort: 8080
             - name: grpc
               containerPort: 18090
+              hostPort: 8002
           readinessProbe:
             httpGet:
               path: /

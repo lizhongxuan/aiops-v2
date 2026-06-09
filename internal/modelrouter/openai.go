@@ -31,6 +31,9 @@ type OpenAIConfig struct {
 
 	// MaxTokens limits the response length.
 	MaxTokens int
+
+	// ReasoningEffort controls OpenAI reasoning effort: low, medium, or high.
+	ReasoningEffort string
 }
 
 const (
@@ -161,6 +164,9 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 	if config.MaxTokens > 0 {
 		cfg.MaxTokens = &config.MaxTokens
 	}
+	if effort := normalizeOpenAIReasoningEffort(config.ReasoningEffort); effort != "" {
+		cfg.ReasoningEffort = openai.ReasoningEffortLevel(effort)
+	}
 
 	cm, err := openai.NewChatModel(ctx, cfg)
 	if err != nil {
@@ -168,6 +174,19 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 	}
 
 	return &streamGenerateChatModel{inner: cm}, nil
+}
+
+func normalizeOpenAIReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 type streamGenerateChatModel struct {

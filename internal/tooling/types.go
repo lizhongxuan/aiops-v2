@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"time"
+
+	"aiops-v2/internal/resourceio"
 )
 
 // ToolOrigin describes where a tool came from.
@@ -144,6 +146,29 @@ type ToolGovernance struct {
 	FailurePolicy    ToolFailurePolicy `json:"failurePolicy"`
 }
 
+// ToolDiscoveryMetadata captures generic discovery and prompt-surface hints.
+// These fields intentionally describe capabilities and resource types instead
+// of product-specific names so new tools do not need core runtime changes.
+type ToolDiscoveryMetadata struct {
+	DiscoveryGroup       string   `json:"discoveryGroup,omitempty"`
+	DiscoveryTags        []string `json:"discoveryTags,omitempty"`
+	CapabilityKind       string   `json:"capabilityKind,omitempty"`
+	ResourceTypes        []string `json:"resourceTypes,omitempty"`
+	OperationKinds       []string `json:"operationKinds,omitempty"`
+	HiddenFromDiscovery  bool     `json:"hiddenFromDiscovery,omitempty"`
+	HiddenFromPrompt     bool     `json:"hiddenFromPrompt,omitempty"`
+	RequiresSelect       bool     `json:"requiresSelect,omitempty"`
+	SupersedesShellHints []string `json:"supersedesShellHints,omitempty"`
+}
+
+// ToolResourceLockKey declares the generic resource scope a tool must lock
+// before mutating or otherwise non-read-only execution.
+type ToolResourceLockKey struct {
+	ResourceType  string `json:"resourceType,omitempty"`
+	ResourceID    string `json:"resourceId,omitempty"`
+	OperationKind string `json:"operationKind,omitempty"`
+}
+
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
 	Name                   string                  `json:"name"`
@@ -172,6 +197,8 @@ type ToolMetadata struct {
 	RequiresApproval       bool                    `json:"requiresApproval,omitempty"`
 	ResultBudget           ResultBudget            `json:"resultBudget,omitempty"`
 	FailurePolicy          ToolFailurePolicy       `json:"failurePolicy,omitempty"`
+	Discovery              ToolDiscoveryMetadata   `json:"discovery,omitempty"`
+	ResourceLocks          []ToolResourceLockKey   `json:"resourceLocks,omitempty"`
 	MCPInfo                MCPInfo                 `json:"mcpInfo,omitempty"`
 	ProviderNative         *ProviderNativeToolInfo `json:"providerNative,omitempty"`
 }
@@ -246,9 +273,10 @@ type ToolDisplayPayload struct {
 type ResultReferenceKind string
 
 const (
-	ResultReferenceKindBlob ResultReferenceKind = "blob"
-	ResultReferenceKindCard ResultReferenceKind = "card"
-	ResultReferenceKindFile ResultReferenceKind = "file"
+	ResultReferenceKindBlob        ResultReferenceKind = "blob"
+	ResultReferenceKindCard        ResultReferenceKind = "card"
+	ResultReferenceKindFile        ResultReferenceKind = "file"
+	ResultReferenceKindMCPResource ResultReferenceKind = "mcp_resource"
 )
 
 // ResultReference captures a structured external reference returned by a tool.
@@ -262,6 +290,8 @@ type ResultReference struct {
 	ContentType string              `json:"contentType,omitempty"`
 	Digest      string              `json:"digest,omitempty"`
 	Bytes       int64               `json:"bytes,omitempty"`
+	Version     string              `json:"version,omitempty"`
+	Range       resourceio.Range    `json:"range,omitempty"`
 }
 
 // ResultSpill captures content that was externalized because it exceeded the inline budget.

@@ -105,6 +105,35 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
+  it("normalizes legacy stream states before reading liveness and extension maps", () => {
+    const state = createState() as Partial<AiopsTransportState>;
+    delete state.runtimeLiveness;
+    delete state.hostMissions;
+    delete state.childAgents;
+    delete state.pendingApprovals;
+    delete state.mcpSurfaces;
+    delete state.artifacts;
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state as AiopsTransportState, metadata());
+
+    expect(result.isRunning).toBe(false);
+    expect(result.state).toMatchObject({
+      runtimeLiveness: {
+        activeTurns: {},
+        activeAgents: {},
+        pendingApprovals: {},
+        pendingUserInputs: {},
+        activeCommandStreams: {},
+      },
+      hostMissions: {},
+      childAgents: {},
+      pendingApprovals: {},
+      mcpSurfaces: {},
+      artifacts: {},
+    });
+  });
+
   it("keeps assistant message id stable while final text streams in", () => {
     const state = createState();
     const converter = createAiopsTransportConverter();

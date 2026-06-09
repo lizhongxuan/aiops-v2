@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { SettingsPageFrame, StatusAlert, ToneBadge } from "@/pages/settingsComponents";
 
 type CorootConfig = {
@@ -59,6 +60,17 @@ type ArtifactItem = {
   createdAt?: string;
 };
 
+type ApiErrorPayload = {
+  error?: unknown;
+  message?: unknown;
+  detail?: unknown;
+  statusCode?: unknown;
+  project?: unknown;
+  uri?: unknown;
+  contentType?: unknown;
+  responsePreview?: unknown;
+};
+
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(new URL(path, window.location.origin).toString(), {
     credentials: "include",
@@ -66,8 +78,35 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
     headers: { "Content-Type": "application/json", ...(init.headers || {}) },
   });
   const payload = (await response.json().catch(() => ({}))) as T;
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  if (!response.ok) throw new Error(formatApiError(response.status, payload as ApiErrorPayload));
   return payload;
+}
+
+function formatApiError(status: number, payload: ApiErrorPayload) {
+  const lines: string[] = [];
+  const error = errorText(payload?.error || payload?.message);
+  const detail = errorText(payload?.detail);
+  if (error) lines.push(error);
+  if (detail && detail !== error) lines.push(detail);
+  if (!lines.length) lines.push(`请求失败，HTTP ${status}`);
+
+  const diagnostics: string[] = [];
+  const statusCode = errorText(payload?.statusCode);
+  const project = errorText(payload?.project);
+  const uri = errorText(payload?.uri);
+  const contentType = errorText(payload?.contentType);
+  const responsePreview = errorText(payload?.responsePreview);
+  if (statusCode) diagnostics.push(`HTTP ${statusCode}`);
+  if (project) diagnostics.push(`Project: ${project}`);
+  if (uri) diagnostics.push(`URL: ${uri}`);
+  if (contentType) diagnostics.push(`Content-Type: ${contentType}`);
+  if (responsePreview) diagnostics.push(`Response: ${responsePreview}`);
+  if (diagnostics.length) lines.push(diagnostics.join("\n"));
+  return lines.join("\n");
+}
+
+function errorText(value: unknown) {
+  return typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
 }
 
 function itemsFrom<T>(payload: unknown): T[] {
@@ -94,7 +133,8 @@ export function CorootOverviewPage() {
   const [evidence, setEvidence] = useState<EvidenceItem[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: "success" | "info"; text: string } | null>(null);
+  const [errorDialog, setErrorDialog] = useState<{ title: string; text: string } | null>(null);
 
   const corootMcpServers = useMemo(
     () => mcpServers.filter((server) => text(server.name, "").toLowerCase().includes("coroot")),
@@ -119,7 +159,7 @@ export function CorootOverviewPage() {
       setArtifacts(itemsFrom<ArtifactItem>(artifactPayload));
       setMessage(null);
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "加载 Coroot 信息失败" });
+      showError(error instanceof Error ? error.message : "加载 Coroot 信息失败");
     } finally {
       setLoading(false);
     }
@@ -131,7 +171,7 @@ export function CorootOverviewPage() {
       await load();
       setMessage({ type: "success", text: "连接正常" });
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "测试连接失败" });
+      showError(error instanceof Error ? error.message : "测试连接失败");
     }
   }
 
@@ -145,8 +185,13 @@ export function CorootOverviewPage() {
       setDraft(draftFromConfig(nextConfig));
       setMessage({ type: "success", text: "配置已保存" });
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "保存 Coroot 配置失败" });
+      showError(error instanceof Error ? error.message : "保存 Coroot 配置失败");
     }
+  }
+
+  function showError(text: string) {
+    setMessage(null);
+    setErrorDialog({ title: "操作失败", text });
   }
 
   useEffect(() => {
@@ -161,7 +206,20 @@ export function CorootOverviewPage() {
         <Button onClick={() => void testConnection()}><CheckCircle2 />测试连接</Button>
       }
     >
-      {message ? <StatusAlert type={message.type} title={message.type === "success" ? "操作完成" : "操作失败"} message={message.text} /> : null}
+      {message ? <StatusAlert type={message.type} title="操作完成" message={message.text} /> : null}
+      <Dialog open={Boolean(errorDialog)} onOpenChange={(open) => !open && setErrorDialog(null)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{errorDialog?.title || "操作失败"}</DialogTitle>
+            <DialogDescription className="whitespace-pre-wrap break-words text-red-600">
+              {errorDialog?.text}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setErrorDialog(null)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {config.configured === false ? (
         <Card data-testid="coroot-not-configured" className="rounded-lg border-amber-200 bg-amber-50">

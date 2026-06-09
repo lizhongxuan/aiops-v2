@@ -552,6 +552,12 @@ func mapSkillCatalogEntry(entry store.SkillCatalogEntry) SkillCatalogItem {
 		Risk:                  entry.Risk,
 		AllowedTools:          cloneAppUIStrings(entry.AllowedTools),
 		DeniedTools:           cloneAppUIStrings(entry.DeniedTools),
+		ResourceTypes:         cloneAppUIStrings(entry.ResourceTypes),
+		TaskIntents:           cloneAppUIStrings(entry.TaskIntents),
+		Paths:                 cloneAppUIStrings(entry.Paths),
+		Modes:                 cloneAppUIStrings(entry.Modes),
+		UserInvocable:         entry.UserInvocable,
+		ModelInvocable:        entry.ModelInvocable,
 	}
 }
 
@@ -580,6 +586,12 @@ func normalizeSkillCatalogItem(item SkillCatalogItem) (store.SkillCatalogEntry, 
 		Risk:                  strings.TrimSpace(item.Risk),
 		AllowedTools:          cloneAppUIStrings(item.AllowedTools),
 		DeniedTools:           cloneAppUIStrings(item.DeniedTools),
+		ResourceTypes:         cloneAppUIStrings(item.ResourceTypes),
+		TaskIntents:           cloneAppUIStrings(item.TaskIntents),
+		Paths:                 cloneAppUIStrings(item.Paths),
+		Modes:                 cloneAppUIStrings(item.Modes),
+		UserInvocable:         item.UserInvocable,
+		ModelInvocable:        item.ModelInvocable,
 	}, nil
 }
 

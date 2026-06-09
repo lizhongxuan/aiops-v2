@@ -14,6 +14,7 @@ import (
 type AssembleOptions struct {
 	ExtraTools             []Tool
 	EnabledPacks           []string
+	EnabledTools           []string
 	Profile                string
 	TenantID               string
 	UserID                 string
@@ -215,6 +216,9 @@ func isVisibleForAssembleOptions(meta ToolMetadata, opts AssembleOptions) bool {
 		if opts.IncludeDeferredCatalog {
 			return true
 		}
+		if toolEnabled(meta, opts.EnabledTools) {
+			return true
+		}
 		if meta.DeferByDefault || meta.Pack != "" {
 			return packEnabled(meta.Pack, opts.EnabledPacks)
 		}
@@ -231,6 +235,15 @@ func isVisibleForAssembleOptions(meta ToolMetadata, opts AssembleOptions) bool {
 	default:
 		return true
 	}
+}
+
+func toolEnabled(meta ToolMetadata, enabled []string) bool {
+	for _, candidate := range enabled {
+		if matchesName(meta, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func profileAllowsTool(meta ToolMetadata, profile string) bool {

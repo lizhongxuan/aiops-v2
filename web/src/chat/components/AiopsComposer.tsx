@@ -8,8 +8,9 @@ import {
   useThread,
 } from "@assistant-ui/react";
 import { ArrowUp, Check, FileText, LoaderCircle, Square, Wrench } from "lucide-react";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { listHostInventory, type HostInventoryItem } from "@/api/hostInventory";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { isAiopsTransportRunning } from "@/transport/aiopsTransportConverter";
@@ -17,9 +18,17 @@ import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands
 import type { AiopsTransportApproval, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { buildOpsManualParamFormSubmit, resolveStopDispatchTarget } from "./aiopsComposerActions";
+import { HostMentionSuggestionPopover } from "./HostMentionSuggestionPopover";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 import { buildHostMentionMetadata, parseHostMentionCandidates } from "../hostMentions";
+import {
+  findActiveHostMentionToken,
+  replaceActiveHostMention,
+  searchHostMentionSuggestions,
+  type ActiveHostMentionToken,
+  type HostMentionSuggestion,
+} from "../hostMentionSearch";
 
 type GenerationConfirmation = {
   action: string;
@@ -718,11 +727,67 @@ function ComposerBody({
   threadIsRunning: boolean;
 }) {
   const workspace = useSessionWorkspaceContext();
+  const composer = useComposerRuntime();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [hosts, setHosts] = useState<HostInventoryItem[]>([]);
+  const [hostInventoryFailed, setHostInventoryFailed] = useState(false);
+  const [activeToken, setActiveToken] = useState<ActiveHostMentionToken | null>(null);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const suggestionPopoverId = "host-mention-suggestions";
 
   useEffect(() => {
     inputRef.current?.focus();
   }, [workspace.composerFocusNonce]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listHostInventory()
+      .then((items) => {
+        if (!cancelled) {
+          setHosts(items);
+          setHostInventoryFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHostInventoryFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const suggestions = useMemo(
+    () => (activeToken && !hostInventoryFailed ? searchHostMentionSuggestions(hosts, activeToken.query, { limit: 10 }) : []),
+    [activeToken, hostInventoryFailed, hosts],
+  );
+  const suggestionOpen = Boolean(activeToken) && !isRunning && !workspace.composerDisabledReason && !hostInventoryFailed;
+
+  const refreshActiveToken = useCallback(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const cursor = input.selectionStart ?? input.value.length;
+    const nextToken = findActiveHostMentionToken(input.value, cursor);
+    setActiveToken(nextToken);
+    setHighlightedIndex(0);
+  }, []);
+
+  const applySuggestion = useCallback(
+    (suggestion: HostMentionSuggestion) => {
+      const input = inputRef.current;
+      if (!input || !activeToken) return;
+      const next = replaceActiveHostMention(input.value, activeToken, suggestion);
+      composer.setText(next.text);
+      input.value = next.text;
+      input.setSelectionRange(next.cursor, next.cursor);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      setActiveToken(null);
+      setHighlightedIndex(0);
+    },
+    [activeToken, composer],
+  );
 
   return (
     <ComposerPrimitive.Root
@@ -732,6 +797,15 @@ function ComposerBody({
           : "mx-auto flex max-w-5xl items-end gap-2"
       }
     >
+      {suggestionOpen ? (
+        <HostMentionSuggestionPopover
+          id={suggestionPopoverId}
+          suggestions={suggestions}
+          highlightedIndex={highlightedIndex}
+          onHighlight={setHighlightedIndex}
+          onSelect={applySuggestion}
+        />
+      ) : null}
       <ComposerPrimitive.Input asChild submitOnEnter>
         <Textarea
           ref={inputRef}
@@ -739,6 +813,38 @@ function ComposerBody({
           rows={1}
           placeholder="输入你的问题或任务"
           disabled={Boolean(workspace.composerDisabledReason) || isRunning}
+          aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
+          aria-expanded={suggestionOpen}
+          onInput={refreshActiveToken}
+          onClick={refreshActiveToken}
+          onKeyUp={(event) => {
+            if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
+              return;
+            }
+            refreshActiveToken();
+          }}
+          onKeyDown={(event) => {
+            if (!suggestionOpen) return;
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setActiveToken(null);
+              return;
+            }
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setHighlightedIndex((index) => (suggestions.length ? (index + 1) % suggestions.length : 0));
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setHighlightedIndex((index) => (suggestions.length ? (index - 1 + suggestions.length) % suggestions.length : 0));
+              return;
+            }
+            if ((event.key === "Enter" || event.key === "Tab") && suggestions[highlightedIndex]) {
+              event.preventDefault();
+              applySuggestion(suggestions[highlightedIndex]);
+            }
+          }}
           className={
             variant === "chat"
               ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"

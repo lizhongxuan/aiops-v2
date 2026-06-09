@@ -57,23 +57,32 @@ type ProviderConfig struct {
 	// MaxContextTokens overrides the model context window when a gateway or
 	// operator exposes a custom limit. Empty config defaults to 200K.
 	MaxContextTokens int
+
+	// ReasoningEffort controls provider-native reasoning effort where supported.
+	ReasoningEffort string
 }
+
+const GenericReasoningFallbackPolicy = "Reasoning fallback policy: decompose the goal, list assumptions, gather evidence before conclusions, cover key claims with evidence, and state the blocker when progress cannot continue. Do not expose raw reasoning."
 
 // ModelCapabilities describes the routing-visible context and generation
 // capabilities for a provider/model pair. Runtime callers use this to choose
 // context governance budgets without hard-coding provider-specific constants.
 type ModelCapabilities struct {
-	Provider              string `json:"provider"`
-	Model                 string `json:"model"`
-	MaxContextTokens      int    `json:"maxContextTokens"`
-	MaxOutputTokens       int    `json:"maxOutputTokens"`
-	ExactTokenCount       bool   `json:"exactTokenCount"`
-	CacheEdit             bool   `json:"cacheEdit"`
-	SmallContextMode      bool   `json:"smallContextMode"`
-	SupportsReasoning     bool   `json:"supportsReasoning,omitempty"`
-	SupportsToolCalls     bool   `json:"supportsToolCalls,omitempty"`
-	SupportsStreaming     bool   `json:"supportsStreaming,omitempty"`
-	SupportsNativeWebTool bool   `json:"supportsNativeWebTool,omitempty"`
+	Provider                 string `json:"provider"`
+	Model                    string `json:"model"`
+	MaxContextTokens         int    `json:"maxContextTokens"`
+	MaxOutputTokens          int    `json:"maxOutputTokens"`
+	ExactTokenCount          bool   `json:"exactTokenCount"`
+	CacheEdit                bool   `json:"cacheEdit"`
+	SmallContextMode         bool   `json:"smallContextMode"`
+	SupportsReasoning        bool   `json:"supportsReasoning,omitempty"`
+	SupportsToolCalls        bool   `json:"supportsToolCalls,omitempty"`
+	SupportsStreaming        bool   `json:"supportsStreaming,omitempty"`
+	SupportsNativeWebTool    bool   `json:"supportsNativeWebTool,omitempty"`
+	NativeReasoning          bool   `json:"nativeReasoning,omitempty"`
+	ReasoningEffortRequested string `json:"reasoningEffortRequested,omitempty"`
+	ReasoningEffortApplied   string `json:"reasoningEffortApplied,omitempty"`
+	ReasoningFallbackPolicy  string `json:"reasoningFallbackPolicy,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +266,9 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	if config.MaxContextTokens > 0 {
 		resolved.MaxContextTokens = config.MaxContextTokens
 	}
+	if strings.TrimSpace(config.ReasoningEffort) != "" {
+		resolved.ReasoningEffort = config.ReasoningEffort
+	}
 	return resolved
 }
 
@@ -329,11 +341,12 @@ func buildOpenAIProviderModel(_ context.Context, _ AgentKind, config ProviderCon
 		}
 	}
 	return NewOpenAIChatModel(context.Background(), OpenAIConfig{
-		APIKey:      apiKey,
-		BaseURL:     strings.TrimSpace(config.BaseURL),
-		Model:       resolveProviderModel("openai", config),
-		Temperature: resolveProviderTemperature(config),
-		MaxTokens:   resolveProviderMaxTokens(config),
+		APIKey:          apiKey,
+		BaseURL:         strings.TrimSpace(config.BaseURL),
+		Model:           resolveProviderModel("openai", config),
+		Temperature:     resolveProviderTemperature(config),
+		MaxTokens:       resolveProviderMaxTokens(config),
+		ReasoningEffort: strings.TrimSpace(config.ReasoningEffort),
 	})
 }
 
@@ -461,7 +474,55 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 		caps.MaxContextTokens = clampContextWindow(config.MaxContextTokens)
 	}
 	caps.SmallContextMode = caps.MaxContextTokens <= 32000
+	applyReasoningCapabilityMetadata(&caps, provider, normalizedModel, config)
 	return caps
+}
+
+func applyReasoningCapabilityMetadata(caps *ModelCapabilities, provider, normalizedModel string, config ProviderConfig) {
+	if caps == nil {
+		return
+	}
+	caps.NativeReasoning = providerModelSupportsNativeReasoningEffort(provider, normalizedModel)
+	requested := normalizeReasoningEffort(config.ReasoningEffort)
+	if requested == "" {
+		return
+	}
+	caps.ReasoningEffortRequested = requested
+	if caps.NativeReasoning {
+		caps.ReasoningEffortApplied = requested
+		return
+	}
+	caps.ReasoningFallbackPolicy = GenericReasoningFallbackPolicy
+}
+
+func providerModelSupportsNativeReasoningEffort(provider, normalizedModel string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return openAIModelSupportsReasoningEffort(normalizedModel)
+	default:
+		return false
+	}
+}
+
+func openAIModelSupportsReasoningEffort(normalizedModel string) bool {
+	normalizedModel = strings.ToLower(strings.TrimSpace(normalizedModel))
+	return strings.HasPrefix(normalizedModel, "gpt-5") ||
+		strings.HasPrefix(normalizedModel, "o1") ||
+		strings.HasPrefix(normalizedModel, "o3") ||
+		strings.HasPrefix(normalizedModel, "o4")
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func clampContextWindow(value int) int {

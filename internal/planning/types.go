@@ -21,20 +21,30 @@ const (
 )
 
 type PlanState struct {
-	Status PlanStatus `json:"status"`
-	Steps  []PlanStep `json:"steps"`
+	Status   PlanStatus    `json:"status"`
+	Steps    []PlanStep    `json:"steps"`
+	Artifact *PlanArtifact `json:"artifact,omitempty"`
 }
 
 type PlanStep struct {
-	ID      string     `json:"id,omitempty"`
-	Text    string     `json:"text"`
-	Status  StepStatus `json:"status"`
-	Summary string     `json:"summary,omitempty"`
+	ID                 string     `json:"id,omitempty"`
+	Text               string     `json:"text"`
+	Status             StepStatus `json:"status"`
+	Summary            string     `json:"summary,omitempty"`
+	Owner              string     `json:"owner,omitempty"`
+	AgentID            string     `json:"agentId,omitempty"`
+	DependsOn          []string   `json:"dependsOn,omitempty"`
+	Blocks             []string   `json:"blocks,omitempty"`
+	BlockedBy          []string   `json:"blockedBy,omitempty"`
+	EvidenceRefs       []string   `json:"evidenceRefs,omitempty"`
+	RequiredApprovals  []string   `json:"requiredApprovals,omitempty"`
+	VerificationStatus string     `json:"verificationStatus,omitempty"`
 }
 
 type UpdatePlanArgs struct {
-	Status PlanStatus `json:"status,omitempty"`
-	Steps  []PlanStep `json:"steps"`
+	Status   PlanStatus    `json:"status,omitempty"`
+	Steps    []PlanStep    `json:"steps,omitempty"`
+	Artifact *PlanArtifact `json:"artifact,omitempty"`
 }
 
 func (s PlanStatus) IsValid() bool {

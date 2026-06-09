@@ -195,6 +195,77 @@ func TestResourceServer_ApprovalAndProxyHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("coroot test connection reports upstream status and body preview", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			http.Error(w, "invalid api key for project", http.StatusUnauthorized)
+		}))
+		defer upstream.Close()
+		rs := NewResourceServer()
+		saveCorootConfigForTest(t, rs, upstream.URL+"/coroot", "bad-token", "coroot_3")
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/coroot/test-connection", nil)
+		rr := httptest.NewRecorder()
+
+		rs.handleCorootProxy(rr, req)
+
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("status=%d want=%d body=%s", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["statusCode"] != float64(http.StatusUnauthorized) {
+			t.Fatalf("body=%#v want statusCode 401", body)
+		}
+		uri, _ := body["uri"].(string)
+		if !strings.Contains(uri, "/coroot/api/project/coroot_3/overview/applications") {
+			t.Fatalf("body=%#v want probe uri", body)
+		}
+		responsePreview, _ := body["responsePreview"].(string)
+		if !strings.Contains(responsePreview, "invalid api key") {
+			t.Fatalf("body=%#v want upstream response preview", body)
+		}
+		detail, _ := body["detail"].(string)
+		if !strings.Contains(detail, "401") {
+			t.Fatalf("body=%#v want detail with HTTP status", body)
+		}
+	})
+
+	t.Run("coroot test connection reports decode failure context", func(t *testing.T) {
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>login page</html>"))
+		}))
+		defer upstream.Close()
+		rs := NewResourceServer()
+		saveCorootConfigForTest(t, rs, upstream.URL+"/coroot", "test-token", "coroot_3")
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/coroot/test-connection", nil)
+		rr := httptest.NewRecorder()
+
+		rs.handleCorootProxy(rr, req)
+
+		if rr.Code != http.StatusBadGateway {
+			t.Fatalf("status=%d want=%d body=%s", rr.Code, http.StatusBadGateway, rr.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["statusCode"] != float64(http.StatusOK) || body["contentType"] != "text/html" {
+			t.Fatalf("body=%#v want status and content type", body)
+		}
+		responsePreview, _ := body["responsePreview"].(string)
+		if !strings.Contains(responsePreview, "login page") {
+			t.Fatalf("body=%#v want response preview", body)
+		}
+		detail, _ := body["detail"].(string)
+		if !strings.Contains(detail, "non-JSON") {
+			t.Fatalf("body=%#v want decode detail", body)
+		}
+	})
+
 	t.Run("coroot proxy rejects non-whitelisted paths", func(t *testing.T) {
 		rs := NewResourceServer()
 		saveCorootConfigForTest(t, rs, "http://coroot.internal", "", "")

@@ -13,12 +13,13 @@ import (
 const schemaVersion = "aiops.agents/v1"
 
 type SpawnRequest struct {
-	AgentType    string `json:"agentType"`
-	Task         string `json:"task"`
-	EvidenceGoal string `json:"evidenceGoal,omitempty"`
-	IncidentID   string `json:"incidentId,omitempty"`
-	SessionID    string `json:"sessionId,omitempty"`
-	HostID       string `json:"hostId,omitempty"`
+	AgentType    string                   `json:"agentType"`
+	Task         string                   `json:"task"`
+	EvidenceGoal string                   `json:"evidenceGoal,omitempty"`
+	IncidentID   string                   `json:"incidentId,omitempty"`
+	SessionID    string                   `json:"sessionId,omitempty"`
+	HostID       string                   `json:"hostId,omitempty"`
+	Assignment   agentmgr.AgentAssignment `json:"assignment,omitempty"`
 }
 
 type SpawnResult struct {
@@ -59,6 +60,10 @@ func NewSpawnAgentTool(manager Manager) tooling.Tool {
 			}
 			req.AgentType = strings.TrimSpace(req.AgentType)
 			req.Task = strings.TrimSpace(req.Task)
+			req.Assignment = normalizeSpawnAssignment(req)
+			if req.Task == "" {
+				req.Task = strings.TrimSpace(req.Assignment.Objective)
+			}
 			if !isAllowedAgentType(req.AgentType) {
 				return tooling.ToolResult{}, fmt.Errorf("spawn_agent: agentType %q is not an allowed operations investigator", req.AgentType)
 			}
@@ -67,6 +72,9 @@ func NewSpawnAgentTool(manager Manager) tooling.Tool {
 			}
 			if looksLikeCodingTask(req.Task) {
 				return tooling.ToolResult{}, fmt.Errorf("spawn_agent: coding tasks are not allowed")
+			}
+			if lint := agentmgr.ValidateAgentAssignment(req.Assignment); lint.Status != agentmgr.AssignmentLintPass {
+				return tooling.ToolResult{}, assignmentLintError(lint)
 			}
 			result, err := manager.SpawnInvestigationAgent(ctx, req)
 			if err != nil {
@@ -118,15 +126,87 @@ func NewWaitAgentTool(manager Manager) tooling.Tool {
 				return tooling.ToolResult{}, err
 			}
 			normalized := make([]agentmgr.EvidenceReport, 0, len(reports))
+			notifications := make([]agentmgr.AgentNotification, 0, len(reports))
 			for _, report := range reports {
 				report = report.Normalize()
 				if err := report.Validate(); err != nil {
 					return tooling.ToolResult{}, err
 				}
 				normalized = append(normalized, report)
+				notifications = append(notifications, notificationFromEvidenceReport(report))
 			}
-			return jsonToolResult("agents", "wait_agent", envelope("wait_agent", map[string]any{"reports": normalized}))
+			return jsonToolResult("agents", "wait_agent", envelope("wait_agent", map[string]any{"reports": normalized, "notifications": notifications}))
 		},
+	}
+}
+
+func normalizeSpawnAssignment(req SpawnRequest) agentmgr.AgentAssignment {
+	if hasExplicitAssignment(req.Assignment) {
+		return req.Assignment
+	}
+	resourceRefs := make([]string, 0, 4)
+	for _, value := range []string{req.HostID, req.IncidentID, req.SessionID, req.AgentType} {
+		if strings.TrimSpace(value) != "" {
+			resourceRefs = append(resourceRefs, strings.TrimSpace(value))
+		}
+	}
+	if len(resourceRefs) == 0 {
+		resourceRefs = []string{"synthetic.unspecified_resource"}
+	}
+	knownFacts := []string{"legacy spawn_agent request supplied task and evidence goal"}
+	if strings.TrimSpace(req.EvidenceGoal) != "" {
+		knownFacts = append(knownFacts, strings.TrimSpace(req.EvidenceGoal))
+	}
+	return agentmgr.AgentAssignment{
+		Objective:      req.Task,
+		Background:     "Legacy spawn_agent input normalized into a self-contained assignment.",
+		KnownFacts:     knownFacts,
+		Scope:          agentmgr.AgentScope{ResourceRefs: resourceRefs},
+		ExpectedOutput: "Return a bounded EvidenceReport with summary, evidenceRefs, confidence, nextQuestions, and errors.",
+		EvidenceRequirement: agentmgr.EvidenceRequirement{
+			MinEvidenceRefs: 1,
+			RequiredKinds:   []string{"evidence"},
+		},
+		StopCondition: "Stop after collecting the required evidence refs or reporting a blocker.",
+	}
+}
+
+func hasExplicitAssignment(assignment agentmgr.AgentAssignment) bool {
+	return strings.TrimSpace(assignment.Objective) != "" ||
+		strings.TrimSpace(assignment.Background) != "" ||
+		len(assignment.KnownFacts) > 0 ||
+		!assignment.Scope.IsZero() ||
+		strings.TrimSpace(assignment.ExpectedOutput) != "" ||
+		!assignment.EvidenceRequirement.IsZero() ||
+		strings.TrimSpace(assignment.StopCondition) != "" ||
+		len(assignment.Constraints) > 0
+}
+
+func assignmentLintError(lint agentmgr.AssignmentLintResult) error {
+	payload := map[string]any{
+		"code":           "agent_assignment_lint_failed",
+		"missingFields":  lint.MissingFields,
+		"reasons":        lint.Reasons,
+		"requiredAction": "provide_self_contained_assignment",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("spawn_agent: agent_assignment_lint_failed")
+	}
+	return fmt.Errorf("spawn_agent: %s", string(data))
+}
+
+func notificationFromEvidenceReport(report agentmgr.EvidenceReport) agentmgr.AgentNotification {
+	status := string(agentmgr.AgentStatusCompleted)
+	if len(report.Errors) > 0 && len(report.EvidenceRefs) == 0 {
+		status = string(agentmgr.AgentStatusFailed)
+	}
+	return agentmgr.AgentNotification{
+		AgentID:    report.AgentID,
+		Status:     status,
+		Summary:    report.Summary,
+		ResultRefs: append([]string(nil), report.EvidenceRefs...),
+		Error:      strings.Join(report.Errors, "; "),
 	}
 }
 
@@ -204,9 +284,35 @@ var spawnSchema = json.RawMessage(`{
 		"evidenceGoal":{"type":"string"},
 		"incidentId":{"type":"string"},
 		"sessionId":{"type":"string"},
-		"hostId":{"type":"string"}
+		"hostId":{"type":"string"},
+		"assignment":{
+			"type":"object",
+			"properties":{
+				"objective":{"type":"string"},
+				"background":{"type":"string"},
+				"knownFacts":{"type":"array","items":{"type":"string"}},
+				"scope":{
+					"type":"object",
+					"properties":{
+						"resourceRefs":{"type":"array","items":{"type":"string"}},
+						"timeRange":{"type":"string"},
+						"exclusions":{"type":"array","items":{"type":"string"}}
+					}
+				},
+				"expectedOutput":{"type":"string"},
+				"evidenceRequirement":{
+					"type":"object",
+					"properties":{
+						"minEvidenceRefs":{"type":"integer"},
+						"requiredKinds":{"type":"array","items":{"type":"string"}}
+					}
+				},
+				"stopCondition":{"type":"string"},
+				"constraints":{"type":"array","items":{"type":"string"}}
+			}
+		}
 	},
-	"required":["agentType","task"]
+	"required":["agentType"]
 }`)
 
 var waitSchema = json.RawMessage(`{
@@ -249,7 +355,8 @@ var waitOutputSchema = json.RawMessage(`{
 						},
 						"required":["agentId","summary","evidenceRefs","confidence","nextQuestions","errors"]
 					}
-				}
+				},
+				"notifications":{"type":"array","items":{"type":"object"}}
 			}
 		}
 	},

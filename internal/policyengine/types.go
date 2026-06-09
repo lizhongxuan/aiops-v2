@@ -60,9 +60,10 @@ type PolicyInput struct {
 
 // PolicyDecision represents the outcome of a policy check.
 type PolicyDecision struct {
-	Action   PolicyAction     `json:"action"`
-	Reason   string           `json:"reason,omitempty"`
-	Approval *ApprovalRequest `json:"approval,omitempty"` // non-nil when Action == NeedApproval
+	Action        PolicyAction     `json:"action"`
+	Reason        string           `json:"reason,omitempty"`
+	Approval      *ApprovalRequest `json:"approval,omitempty"` // non-nil when Action == NeedApproval
+	SafetySignals []SafetySignal   `json:"safetySignals,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -72,12 +73,13 @@ type PolicyDecision struct {
 // ApprovalRequest holds the details of an approval that must be granted
 // before a tool call can proceed.
 type ApprovalRequest struct {
-	ID       string        `json:"id"`
-	ToolName string        `json:"toolName"`
-	Command  string        `json:"command,omitempty"`
-	HostID   string        `json:"hostId,omitempty"`
-	Reason   string        `json:"reason,omitempty"`
-	TTL      time.Duration `json:"ttl,omitempty"`
+	ID            string         `json:"id"`
+	ToolName      string         `json:"toolName"`
+	Command       string         `json:"command,omitempty"`
+	HostID        string         `json:"hostId,omitempty"`
+	Reason        string         `json:"reason,omitempty"`
+	TTL           time.Duration  `json:"ttl,omitempty"`
+	SafetySignals []SafetySignal `json:"safetySignals,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

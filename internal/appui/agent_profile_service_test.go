@@ -126,6 +126,9 @@ func TestAgentRuntimePromptSettingsFromProfileAppliesCompileContext(t *testing.T
 	if ctx.PlanningPolicy != "structured_events" {
 		t.Fatalf("PlanningPolicy = %q, want structured_events", ctx.PlanningPolicy)
 	}
+	if ctx.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %q, want medium", ctx.ReasoningEffort)
+	}
 	if ctx.EvidencePolicy != "tool_sourced" || ctx.AnswerStyle != "aiops_rca" || ctx.ToolBudget != "bounded" {
 		t.Fatalf("compile context prompt policies = %+v, want profile runtime policies", ctx)
 	}
@@ -240,6 +243,12 @@ func TestAgentProfileServiceCatalogMutations(t *testing.T) {
 		Risk:           "low",
 		AllowedTools:   []string{"read_metrics"},
 		DeniedTools:    []string{"exec_command"},
+		ResourceTypes:  []string{"log"},
+		TaskIntents:    []string{"diagnose"},
+		Paths:          []string{"services/*"},
+		Modes:          []string{"read_only"},
+		UserInvocable:  true,
+		ModelInvocable: true,
 	})
 	if err != nil {
 		t.Fatalf("SaveSkillCatalogItem() error = %v", err)
@@ -252,6 +261,12 @@ func TestAgentProfileServiceCatalogMutations(t *testing.T) {
 	}
 	if len(repo.skillCatalog) != 1 || len(repo.skillCatalog[0].AllowedTools) != 1 || len(repo.skillCatalog[0].DeniedTools) != 1 {
 		t.Fatalf("repo.skillCatalog guardrail tools = %+v", repo.skillCatalog)
+	}
+	if repo.skillCatalog[0].ResourceTypes[0] != "log" || repo.skillCatalog[0].TaskIntents[0] != "diagnose" || !repo.skillCatalog[0].ModelInvocable {
+		t.Fatalf("repo.skillCatalog discovery metadata = %+v", repo.skillCatalog[0])
+	}
+	if skillResult.Items[0].Paths[0] != "services/*" || skillResult.Items[0].Modes[0] != "read_only" || !skillResult.Items[0].UserInvocable {
+		t.Fatalf("SaveSkillCatalogItem() discovery metadata = %+v", skillResult.Items[0])
 	}
 
 	skillAfterDelete, err := svc.DeleteSkillCatalogItem(context.Background(), "ops-triage")

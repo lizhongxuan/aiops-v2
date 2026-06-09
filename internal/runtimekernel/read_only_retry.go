@@ -20,6 +20,8 @@ type ReadOnlyRetryInput struct {
 	Config                           ReadOnlyRetryConfig
 	Mutating                         bool
 	FailureKind                      string
+	FailureSignature                 string
+	FailureSignatureSeenCount        int
 	OriginalArgumentsHash            string
 	EffectiveArgumentsHash           string
 	OriginalToolSurfaceFingerprint   string
@@ -30,12 +32,13 @@ type ReadOnlyRetryInput struct {
 }
 
 type ReadOnlyRetryDecision struct {
-	Allowed       bool
-	Eligible      bool
-	Reason        string
-	Backoff       time.Duration
-	FailureKind   string
-	AttemptNumber int
+	Allowed          bool
+	Eligible         bool
+	Reason           string
+	Backoff          time.Duration
+	FailureKind      string
+	AttemptNumber    int
+	FailureSignature *FailureSignatureDecision
 }
 
 func ReadOnlyRetryConfigFromFlags(flags featureflag.Flags) ReadOnlyRetryConfig {
@@ -86,6 +89,14 @@ func DecideReadOnlyRetry(input ReadOnlyRetryInput) ReadOnlyRetryDecision {
 	if input.CompletedRetryAttemptsForTurn >= cfg.MaxPerTurn {
 		decision.Reason = "retry per-turn budget exhausted"
 		return decision
+	}
+	if strings.TrimSpace(input.FailureSignature) != "" {
+		signatureDecision := EvaluateFailureSignatureDecision(input.FailureSignature, input.FailureSignatureSeenCount)
+		decision.FailureSignature = &signatureDecision
+		if signatureDecision.Action == "switch_path" {
+			decision.Reason = "switch path required: " + signatureDecision.SwitchPathReason
+			return decision
+		}
 	}
 	decision.Eligible = true
 	decision.Backoff = readOnlyRetryBackoff(cfg, attemptNumber)
@@ -142,4 +153,27 @@ func readOnlyRetryBackoff(cfg ReadOnlyRetryConfig, attemptNumber int) time.Durat
 		return cfg.BackoffMax
 	}
 	return backoff
+}
+
+func failedToolSafeToRetry(mutating bool, failureKind string) bool {
+	if mutating {
+		return false
+	}
+	return readOnlyRetryFailureKindAllowed(failureKind)
+}
+
+func failedToolModelGuidance(mutating bool, failureKind, finalStatus string) string {
+	if strings.TrimSpace(finalStatus) == string(ToolInvocationBlocked) {
+		return "Resolve the approval, evidence, or policy requirement before retrying this tool."
+	}
+	if mutating {
+		return "Do not retry automatically. Verify side effects and request explicit approval before another attempt."
+	}
+	if readOnlyRetryFailureKindAllowed(failureKind) {
+		return "Retry only with the same arguments and same tool surface, or choose another read-only evidence source."
+	}
+	if strings.TrimSpace(failureKind) == string(toolfailure.KindInvalidArguments) {
+		return "Fix tool arguments according to the visible schema before retrying."
+	}
+	return "Do not assume the missing result. Gather evidence through another safe tool or ask for clarification."
 }

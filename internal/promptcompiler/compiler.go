@@ -59,6 +59,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 	if protocolContent := renderProtocolPromptState(protocolState); protocolContent != "" {
 		dynamicParts = append(dynamicParts, protocolContent)
 	}
+	nextProtocolState := advanceProtocolStateAfterRender(protocolState)
 	dynamicContent := joinNonEmpty(append(dynamicParts, policy.Content)...)
 
 	compiled := CompiledPrompt{
@@ -74,7 +75,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 			EvidenceReminders: append([]string(nil), ctx.EvidenceReminders...),
 			ExtraSections:     clonePromptSections(ctx.ExtraSections),
 			ToolDelta:         toolDelta,
-			ProtocolState:     protocolState,
+			ProtocolState:     nextProtocolState,
 			Policy:            policy,
 		},
 		System:    system,
@@ -83,6 +84,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 		Policy:    policy,
 	}
 	compiled.Fingerprint = buildPromptFingerprint(compiled)
+	compiled.PromptSections = BuildPromptSectionTrace(compiled)
 	return compiled, nil
 }
 

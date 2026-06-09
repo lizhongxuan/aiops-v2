@@ -276,7 +276,7 @@ func TestRunTurn_UpdatePlanToolWritesPlanTurnItem(t *testing.T) {
 					},
 				},
 			}),
-			schema.AssistantMessage("plan noted", nil),
+			schema.AssistantMessage("缺少执行结果，计划仍在进行。", nil),
 		},
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{planning.NewUpdatePlanTool()}, nil, nil)
@@ -328,7 +328,7 @@ func TestRunTurn_UpdatePlanDoesNotCreateResponsePatchItems(t *testing.T) {
 					},
 				},
 			}),
-			schema.AssistantMessage("done", nil),
+			schema.AssistantMessage("缺少执行结果，计划仍在进行。", nil),
 		},
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{planning.NewUpdatePlanTool()}, nil, nil)

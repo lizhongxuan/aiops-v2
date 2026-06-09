@@ -243,10 +243,30 @@ func detectHostOpsTransportRoute(messageText string, metadata map[string]string)
 	nextMetadata["aiops.hostops.routeKind"] = string(decision.Kind)
 	nextMetadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
 	nextMetadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
+	nextMetadata["enableToolPack"] = appendMetadataListValue(nextMetadata["enableToolPack"], hostops.ToolPackHostOps)
 	if serialized, err := json.Marshal(decision.Mentions); err == nil {
 		nextMetadata["aiops.hostops.mentions"] = string(serialized)
 	}
 	return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+}
+
+func appendMetadataListValue(current, next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return current
+	}
+	values := strings.FieldsFunc(current, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, value := range values {
+		if strings.TrimSpace(value) == next {
+			return strings.TrimSpace(current)
+		}
+	}
+	if strings.TrimSpace(current) == "" {
+		return next
+	}
+	return strings.TrimSpace(current) + "," + next
 }
 
 func addHostOpsMissionFromRoute(state AiopsTransportState, route hostOpsTransportRoute, turnID string) AiopsTransportState {

@@ -15,10 +15,15 @@ const defaultLimit = 10
 var inputSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
+		"mode": {"type": "string", "enum": ["search", "select", "describe"], "description": "Discovery mode. Defaults to search for backward compatibility."},
 		"query": {"type": "string", "description": "Natural language description of the operational tool needed"},
-		"limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum number of matches to return"}
-	},
-	"required": ["query"]
+		"limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum number of matches to return"},
+		"includeLoaded": {"type": "boolean", "description": "Whether already selected tools should be included in search output"},
+		"tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names to select or describe"},
+		"packs": {"type": "array", "items": {"type": "string"}, "description": "Tool packs to select"},
+		"reason": {"type": "string", "description": "Why selected capabilities are needed for the current task"},
+		"detail": {"type": "string", "enum": ["compact", "schema"], "description": "Describe detail level"}
+	}
 }`)
 
 var outputSchema = json.RawMessage(`{
@@ -40,20 +45,60 @@ var outputSchema = json.RawMessage(`{
 					"mock": {"type": "boolean"},
 					"riskLevel": {"type": "string"},
 					"mutating": {"type": "boolean"},
-					"requiresApproval": {"type": "boolean"}
+					"requiresApproval": {"type": "boolean"},
+					"capabilityKind": {"type": "string"},
+					"resourceTypes": {"type": "array", "items": {"type": "string"}},
+					"operationKinds": {"type": "array", "items": {"type": "string"}},
+					"requiresSelect": {"type": "boolean"},
+					"selectHint": {"type": "string"}
 				}
 			}
-		}
+		},
+		"selection": {"type": "object"},
+		"descriptions": {"type": "array"}
 	}
 }`)
 
 type searchInput struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit"`
+	Mode          string   `json:"mode"`
+	Query         string   `json:"query"`
+	Limit         int      `json:"limit"`
+	IncludeLoaded bool     `json:"includeLoaded"`
+	Tools         []string `json:"tools"`
+	Packs         []string `json:"packs"`
+	Reason        string   `json:"reason"`
+	Detail        string   `json:"detail"`
 }
 
 type searchOutput struct {
-	Matches []searchMatch `json:"matches"`
+	Mode         string            `json:"mode"`
+	Matches      []searchMatch     `json:"matches,omitempty"`
+	Selection    *selectionPayload `json:"selection,omitempty"`
+	Descriptions []describePayload `json:"descriptions,omitempty"`
+	Error        string            `json:"error,omitempty"`
+}
+
+type selectionPayload struct {
+	LoadedTools []string `json:"loadedTools,omitempty"`
+	LoadedPacks []string `json:"loadedPacks,omitempty"`
+	NotLoaded   []string `json:"notLoaded,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
+}
+
+type describePayload struct {
+	Name             string                `json:"name"`
+	Description      string                `json:"description,omitempty"`
+	Pack             string                `json:"pack,omitempty"`
+	Layer            tooling.ToolLayer     `json:"layer,omitempty"`
+	RiskLevel        tooling.ToolRiskLevel `json:"riskLevel,omitempty"`
+	Mutating         bool                  `json:"mutating,omitempty"`
+	RequiresApproval bool                  `json:"requiresApproval,omitempty"`
+	CapabilityKind   string                `json:"capabilityKind,omitempty"`
+	ResourceTypes    []string              `json:"resourceTypes,omitempty"`
+	OperationKinds   []string              `json:"operationKinds,omitempty"`
+	RequiresSelect   bool                  `json:"requiresSelect,omitempty"`
+	InputSchema      json.RawMessage       `json:"inputSchema,omitempty"`
+	OutputSchema     json.RawMessage       `json:"outputSchema,omitempty"`
 }
 
 type searchMatch struct {
@@ -69,6 +114,11 @@ type searchMatch struct {
 	RiskLevel        tooling.ToolRiskLevel `json:"riskLevel"`
 	Mutating         bool                  `json:"mutating"`
 	RequiresApproval bool                  `json:"requiresApproval"`
+	CapabilityKind   string                `json:"capabilityKind,omitempty"`
+	ResourceTypes    []string              `json:"resourceTypes,omitempty"`
+	OperationKinds   []string              `json:"operationKinds,omitempty"`
+	RequiresSelect   bool                  `json:"requiresSelect,omitempty"`
+	SelectHint       string                `json:"selectHint,omitempty"`
 }
 
 type packCandidate struct {
@@ -92,6 +142,12 @@ func NewToolSearchTool(provider tooling.ToolCatalogProvider) tooling.Tool {
 			Description: "Search available operational tools by name, description, domain, and governance metadata",
 			Origin:      tooling.ToolOriginMeta,
 			RiskLevel:   tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				HiddenFromDiscovery: true,
+				CapabilityKind:      "search",
+				ResourceTypes:       []string{"tool"},
+				OperationKinds:      []string{"search"},
+			},
 		},
 		Visibility:       tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}},
 		InputSchemaData:  inputSchema,
@@ -120,20 +176,45 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 		}
 	}
 	req.Query = strings.TrimSpace(req.Query)
-	if req.Query == "" {
-		return tooling.ToolResult{}, fmt.Errorf("tool_search: query is required")
+	req.Mode = normalizeMode(req.Mode)
+	req.Reason = strings.TrimSpace(req.Reason)
+	req.Detail = strings.TrimSpace(req.Detail)
+	switch req.Mode {
+	case "search":
+		if req.Query == "" {
+			return tooling.ToolResult{}, fmt.Errorf("tool_search: query is required")
+		}
+	case "select":
+		if len(trimmedStrings(req.Tools)) == 0 && len(trimmedStrings(req.Packs)) == 0 {
+			return tooling.ToolResult{}, fmt.Errorf("tool_search: select requires tools or packs")
+		}
+		if req.Reason == "" {
+			return tooling.ToolResult{}, fmt.Errorf("tool_search: select requires reason")
+		}
+	case "describe":
+		if len(trimmedStrings(req.Tools)) == 0 {
+			return tooling.ToolResult{}, fmt.Errorf("tool_search: describe requires tools")
+		}
 	}
 	limit := req.Limit
 	if limit <= 0 || limit > 20 {
 		limit = defaultLimit
 	}
 
+	catalog := provider.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{IncludeDeferredCatalog: true})
+	switch req.Mode {
+	case "select":
+		return emitOutput(selectTools(catalog, req))
+	case "describe":
+		return emitOutput(describeTools(catalog, req))
+	}
+
 	terms := searchTerms(req.Query)
 	scored := make([]scoredMatch, 0)
 	packs := map[string]*packCandidate{}
-	for _, candidate := range provider.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{IncludeDeferredCatalog: true}) {
+	for _, candidate := range catalog {
 		meta := candidate.Metadata()
-		if shouldOmit(meta.Name) {
+		if tooling.ToolHiddenFromDiscovery(meta) {
 			continue
 		}
 		if isDeferredPackTool(meta) {
@@ -148,6 +229,8 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 			score--
 		}
 		gov := meta.EffectiveGovernance(0)
+		discovery := meta.EffectiveDiscovery()
+		requiresSelect := tooling.ToolRequiresSelect(meta)
 		scored = append(scored, scoredMatch{
 			score: score,
 			match: searchMatch{
@@ -161,6 +244,11 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 				RiskLevel:        gov.RiskLevel,
 				Mutating:         gov.Mutating,
 				RequiresApproval: gov.RequiresApproval,
+				CapabilityKind:   discovery.CapabilityKind,
+				ResourceTypes:    discovery.ResourceTypes,
+				OperationKinds:   discovery.OperationKinds,
+				RequiresSelect:   requiresSelect,
+				SelectHint:       selectHint(requiresSelect),
 			},
 		})
 	}
@@ -172,15 +260,17 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 		scored = append(scored, scoredMatch{
 			score: pack.score,
 			match: searchMatch{
-				Kind:        "pack",
-				Name:        pack.name,
-				Description: pack.description,
-				Domain:      pack.domain,
-				Layer:       tooling.ToolLayerDeferred,
-				Pack:        pack.name,
-				Deferred:    true,
-				Tools:       pack.tools,
-				RiskLevel:   tooling.ToolRiskLow,
+				Kind:           "pack",
+				Name:           pack.name,
+				Description:    pack.description,
+				Domain:         pack.domain,
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           pack.name,
+				Deferred:       true,
+				Tools:          pack.tools,
+				RiskLevel:      tooling.ToolRiskLow,
+				RequiresSelect: true,
+				SelectHint:     selectHint(true),
 			},
 		})
 	}
@@ -195,10 +285,14 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 		scored = scored[:limit]
 	}
 
-	out := searchOutput{Matches: make([]searchMatch, 0, len(scored))}
+	out := searchOutput{Mode: "search", Matches: make([]searchMatch, 0, len(scored))}
 	for _, item := range scored {
 		out.Matches = append(out.Matches, item.match)
 	}
+	return emitOutput(out)
+}
+
+func emitOutput(out searchOutput) (tooling.ToolResult, error) {
 	content, err := json.Marshal(out)
 	if err != nil {
 		return tooling.ToolResult{}, err
@@ -211,6 +305,130 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 			Data:  content,
 		},
 	}, nil
+}
+
+func selectTools(catalog []tooling.Tool, req searchInput) searchOutput {
+	toolsByName := make(map[string]tooling.Tool)
+	packs := make(map[string][]string)
+	for _, tool := range catalog {
+		if tool == nil {
+			continue
+		}
+		meta := tool.Metadata()
+		if tooling.ToolHiddenFromDiscovery(meta) {
+			continue
+		}
+		toolsByName[meta.Name] = tool
+		for _, alias := range meta.Aliases {
+			if strings.TrimSpace(alias) != "" {
+				toolsByName[alias] = tool
+			}
+		}
+		if meta.Pack != "" {
+			packs[meta.Pack] = append(packs[meta.Pack], meta.Name)
+		}
+	}
+	selection := &selectionPayload{Reason: req.Reason}
+	for _, pack := range trimmedStrings(req.Packs) {
+		if _, ok := packs[pack]; ok {
+			selection.LoadedPacks = append(selection.LoadedPacks, pack)
+		} else {
+			selection.NotLoaded = append(selection.NotLoaded, pack)
+		}
+	}
+	for _, name := range trimmedStrings(req.Tools) {
+		tool, ok := toolsByName[name]
+		if !ok {
+			selection.NotLoaded = append(selection.NotLoaded, name)
+			continue
+		}
+		meta := tool.Metadata()
+		selection.LoadedTools = append(selection.LoadedTools, meta.Name)
+	}
+	sort.Strings(selection.LoadedPacks)
+	sort.Strings(selection.LoadedTools)
+	sort.Strings(selection.NotLoaded)
+	return searchOutput{Mode: "select", Selection: selection}
+}
+
+func describeTools(catalog []tooling.Tool, req searchInput) searchOutput {
+	want := make(map[string]bool)
+	for _, name := range trimmedStrings(req.Tools) {
+		want[name] = true
+	}
+	out := searchOutput{Mode: "describe"}
+	detail := req.Detail
+	if detail == "" {
+		detail = "compact"
+	}
+	for _, tool := range catalog {
+		if tool == nil {
+			continue
+		}
+		meta := tool.Metadata()
+		if !want[meta.Name] {
+			matchedAlias := false
+			for _, alias := range meta.Aliases {
+				if want[alias] {
+					matchedAlias = true
+					break
+				}
+			}
+			if !matchedAlias {
+				continue
+			}
+		}
+		gov := meta.EffectiveGovernance(0)
+		discovery := meta.EffectiveDiscovery()
+		desc := describePayload{
+			Name:             meta.Name,
+			Description:      meta.Description,
+			Pack:             meta.Pack,
+			Layer:            meta.Layer,
+			RiskLevel:        gov.RiskLevel,
+			Mutating:         gov.Mutating,
+			RequiresApproval: gov.RequiresApproval,
+			CapabilityKind:   discovery.CapabilityKind,
+			ResourceTypes:    discovery.ResourceTypes,
+			OperationKinds:   discovery.OperationKinds,
+			RequiresSelect:   tooling.ToolRequiresSelect(meta),
+		}
+		if detail == "schema" && !desc.RequiresSelect && !gov.RequiresApproval {
+			desc.InputSchema = tool.InputSchema()
+			desc.OutputSchema = tool.OutputSchema()
+		}
+		out.Descriptions = append(out.Descriptions, desc)
+	}
+	sort.Slice(out.Descriptions, func(i, j int) bool {
+		return out.Descriptions[i].Name < out.Descriptions[j].Name
+	})
+	return out
+}
+
+func normalizeMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "", "search":
+		return "search"
+	case "select", "describe":
+		return mode
+	default:
+		return "search"
+	}
+}
+
+func trimmedStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func searchTerms(query string) []string {
@@ -229,13 +447,7 @@ func searchTerms(query string) []string {
 }
 
 func scoreTool(meta tooling.ToolMetadata, terms []string) int {
-	haystack := strings.ToLower(strings.Join([]string{
-		meta.Name,
-		meta.Description,
-		meta.SearchHint,
-		meta.Domain,
-		strings.Join(meta.Aliases, " "),
-	}, " "))
+	haystack := tooling.ToolDiscoverySearchText(meta)
 
 	score := 0
 	for _, term := range terms {
@@ -272,20 +484,17 @@ func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolM
 		SearchHint:  meta.SearchHint,
 		Domain:      meta.Domain,
 		Aliases:     meta.Aliases,
+		Triggers:    meta.Triggers,
+		Discovery:   meta.Discovery,
 	}, terms)
 	if score > pack.score {
 		pack.score = score
 	}
 }
 
-func shouldOmit(name string) bool {
-	if name == "tool_search" || name == "update_plan" {
-		return true
+func selectHint(requiresSelect bool) string {
+	if requiresSelect {
+		return "call tool_search with mode=select before using this tool or pack"
 	}
-	for _, prefix := range []string{"k8s.", "changes.", "runbook.", "fallback.", "erp."} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
+	return ""
 }

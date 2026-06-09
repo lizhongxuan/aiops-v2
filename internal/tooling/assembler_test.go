@@ -147,6 +147,31 @@ func TestAssemblerWithNilRegistryUsesExtraToolsAndNilAssemblerIsSafe(t *testing.
 	}
 }
 
+func TestAssemblerEnablesExplicitDeferredTools(t *testing.T) {
+	registry := NewRegistry()
+	for _, tool := range []Tool{
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.search", Layer: ToolLayerCore}},
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.read", Layer: ToolLayerDeferred, DeferByDefault: true, Pack: "synthetic_pack"}},
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.other", Layer: ToolLayerDeferred, DeferByDefault: true, Pack: "other_pack"}},
+	} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+	}
+
+	normal := toolNamesForTest(registry.AssembleToolsWithOptions("host", "inspect", AssembleOptions{}))
+	if containsAssemblerTestTool(normal, "synthetic.read") {
+		t.Fatalf("normal tools = %v, should not include deferred explicit tool", normal)
+	}
+	selected := toolNamesForTest(registry.AssembleToolsWithOptions("host", "inspect", AssembleOptions{EnabledTools: []string{"synthetic.read"}}))
+	if !containsAssemblerTestTool(selected, "synthetic.read") {
+		t.Fatalf("selected tools = %v, want synthetic.read", selected)
+	}
+	if containsAssemblerTestTool(selected, "synthetic.other") {
+		t.Fatalf("selected tools = %v, should not include unrelated deferred tool", selected)
+	}
+}
+
 func TestMetadataOverrideToolDelegatesAllBehaviorWithTransformedMetadata(t *testing.T) {
 	registry := NewRegistry()
 	base := &StaticTool{
@@ -236,4 +261,13 @@ func toolNamesForTest(tools []Tool) []string {
 		out = append(out, tool.Metadata().Name)
 	}
 	return out
+}
+
+func containsAssemblerTestTool(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }

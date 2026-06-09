@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
+	"google.golang.org/grpc"
 	runnerservice "runner/server/service"
 
 	"aiops-v2/internal/agentmgr"
@@ -27,6 +28,7 @@ import (
 	"aiops-v2/internal/evidence"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/hostops"
 	agenttools "aiops-v2/internal/integrations/agents"
 	agentuitools "aiops-v2/internal/integrations/agentui"
 	evidencetools "aiops-v2/internal/integrations/evidence"
@@ -75,6 +77,10 @@ func run() error {
 	httpAddr := envOrDefault("AIOPS_HTTP_ADDR", ":8080")
 	grpcAddr := envOrDefault("AIOPS_GRPC_ADDR", ":18090")
 	webDistDir := envOrDefault("AIOPS_WEB_DIST_DIR", "web/dist")
+	secretDir := strings.TrimSpace(os.Getenv("AIOPS_SECRET_DIR"))
+	if secretDir == "" {
+		secretDir = filepath.Join(dataDir, "secrets")
+	}
 	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
 	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
 	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
@@ -163,8 +169,9 @@ func run() error {
 	mcpRegistry := mcp.NewRegistry()
 	mcpRegistry.SetGovernance(governance)
 	mcpRuntime := mcpruntime.New(mcpruntime.RuntimeOptions{
-		Registry:      mcpRegistry,
-		ClientFactory: mcpruntime.DefaultClientFactory{},
+		Registry:           mcpRegistry,
+		ClientFactory:      mcpruntime.DefaultClientFactory{},
+		GovernanceProvider: agentMCPCatalogGovernanceProvider{repo: dataStore},
 	})
 	toolAssembler := tooling.NewAssembler(toolRegistry, mcpRegistry)
 	agentFactory := agentmgr.NewAgentFactory(toolAssembler, compiler, router, policyEngine)
@@ -174,12 +181,31 @@ func run() error {
 		return fmt.Errorf("init agent registry: %w", err)
 	}
 
-	agentManager := agentmgr.NewAgentManager(agentFactory, nil, projector)
+	sessionManager := runtimekernel.NewSessionManager(dataStore)
+	contextArtifactRepo := runtimekernel.NewMemoryContextArtifactRepository()
+	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
+	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
+			log.Printf("otel shutdown: %v", err)
+		}
+	}()
+	agentRunner := newServerAgentRunner(policyEngine, permissionEngine, runtimeHookRegistry, projector, sessionManager, dataStore, dataStore, contextArtifactRepo, skillRegistry, evidenceService, runtimeObserver)
+	agentManager := agentmgr.NewAgentManager(agentFactory, agentRunner, projector)
+	hostOpsMissions := hostops.NewInMemoryMissionStore()
+	hostOpsTranscripts := hostops.NewInMemoryTranscriptStore()
+	hostOpsAgentAdapter := agentmgr.NewKernelAdapter(agentManager, agentFactory).WithHostOpsSinks(hostOpsMissions, hostOpsTranscripts)
+	hostOpsOrchestrator := hostops.NewOrchestrator(
+		hostOpsMissions,
+		hostOpsTranscripts,
+		hostOpsAgentAdapter,
+	)
 
 	// ---------------------------------------------------------------------------
 	// 7.5 Long-running recovery state
 	// ---------------------------------------------------------------------------
-	sessionManager := runtimekernel.NewSessionManager(dataStore)
 	taskManager := runtimekernel.NewTaskManager(dataStore)
 	budgetController, err := runtimekernel.NewBudgetController(32)
 	if err != nil {
@@ -224,11 +250,27 @@ func run() error {
 		return fmt.Errorf("init builtin plugins: %w", err)
 	}
 	pluginSpecs = append(pluginSpecs, builtinSpecs...)
-	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
-	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{EvidenceService: evidenceService}); err != nil {
+	grpcServer := server.NewGRPCServerWithAuthenticator(hostAgentGRPCAuthenticator{repo: dataStore})
+	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{
+		EvidenceService: evidenceService,
+		HostRepository:  dataStore,
+		HostAgentCommandRunner: hostAgentCommandRunner{
+			grpc:          grpcServer,
+			repo:          dataStore,
+			tokenResolver: appui.NewLocalHostAgentTokenStore(secretDir),
+		},
+	}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
 	}
-	if err := registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcpRegistry, evidenceService, newOpsInvestigationAgentToolManager(agentManager, agentFactory), toolAssembler); err != nil {
+	if err := registerAIOpsToolSurfaceWithOptions(
+		toolRegistry,
+		mcpRegistry,
+		evidenceService,
+		newOpsInvestigationAgentToolManager(agentManager, agentFactory),
+		toolAssembler,
+		runtimekernel.NewMCPResourceArtifactSink(contextArtifactRepo, runtimekernel.ContextArtifactSource{ToolName: "read_mcp_resource"}),
+		hostOpsOrchestrator,
+	); err != nil {
 		return fmt.Errorf("init aiops tool surface: %w", err)
 	}
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
@@ -241,14 +283,6 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	// 9. EinoKernel (RuntimeKernel)
 	// ---------------------------------------------------------------------------
-	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
-	defer func() {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if err := otelProvider.Shutdown(shutdownCtx); err != nil {
-			log.Printf("otel shutdown: %v", err)
-		}
-	}()
 	kernelCfg := runtimekernel.EinoKernelConfig{
 		ToolSource:      newRegistryAdapter(toolAssembler, commandRegistry, flags),
 		Compiler:        compiler,
@@ -261,6 +295,8 @@ func run() error {
 		Sessions:        sessionManager,
 		SessionRepo:     dataStore,
 		SpillRepo:       dataStore,
+		ArtifactRepo:    contextArtifactRepo,
+		SkillRegistry:   skillRegistry,
 		EvidenceService: evidenceService,
 		Observer:        runtimeObserver,
 	}
@@ -320,10 +356,7 @@ func run() error {
 	if runnerRuntime != nil {
 		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	}
-	secretDir := strings.TrimSpace(os.Getenv("AIOPS_SECRET_DIR"))
-	if secretDir == "" {
-		secretDir = filepath.Join(dataDir, "secrets")
-	}
+	hostAgentTokenStore := appui.NewLocalHostAgentTokenStore(secretDir)
 	serviceOptions := []appui.ServicesOption{
 		appui.WithStore(dataStore),
 		appui.WithMCPRegistry(mcpRegistry),
@@ -334,6 +367,8 @@ func run() error {
 		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
 		appui.WithLifecycleContext(ctx),
 		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
+		appui.WithHostAgentTokenStore(hostAgentTokenStore),
+		appui.WithHostOpsService(appui.NewHostOpsService(hostOpsMissions, hostOpsTranscripts, hostOpsOrchestrator)),
 	}
 	if runnerRuntime != nil {
 		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
@@ -353,11 +388,8 @@ func run() error {
 		Addr:    httpAddr,
 		Handler: httpServer.Handler(),
 	}
-
-	// ---------------------------------------------------------------------------
-	// 11. gRPC Server
-	// ---------------------------------------------------------------------------
-	grpcServer := server.NewGRPCServer()
+	grpcAPIServer := grpc.NewServer()
+	server.RegisterAgentGRPCService(grpcAPIServer, grpcServer)
 
 	// ---------------------------------------------------------------------------
 	// Start servers
@@ -372,7 +404,7 @@ func run() error {
 		}
 	}()
 
-	// gRPC server (stub listener — real implementation uses net.Listen + grpc.Server)
+	// gRPC server
 	go func() {
 		ln, err := net.Listen("tcp", grpcAddr)
 		if err != nil {
@@ -380,23 +412,8 @@ func run() error {
 			return
 		}
 		log.Printf("ai-server: gRPC listening on %s", grpcAddr)
-		// Accept connections and hand off to GRPCServer.HandleStream
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-					log.Printf("grpc accept: %v", err)
-					continue
-				}
-			}
-			// In production, this would be handled by a real gRPC server.
-			// The GRPCServer.HandleStream processes bidirectional streams.
-			_ = conn
-			_ = grpcServer
-			conn.Close()
+		if err := grpcAPIServer.Serve(ln); err != nil {
+			errCh <- fmt.Errorf("grpc server: %w", err)
 		}
 	}()
 
@@ -415,6 +432,7 @@ func run() error {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http shutdown: %v", err)
 	}
+	grpcAPIServer.GracefulStop()
 
 	if runnerRuntime != nil {
 		if err := runnerRuntime.Close(shutdownCtx); err != nil {
@@ -484,11 +502,51 @@ func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
 	return ""
 }
 
+func newServerAgentRunner(
+	policyEngine *policyengine.Engine,
+	permissionEngine *permissions.Engine,
+	hookRegistry *hooks.Registry,
+	projector runtimekernel.EventEmitter,
+	sessionManager *runtimekernel.SessionManager,
+	sessionRepo runtimekernel.SessionRepository,
+	spillRepo runtimekernel.ToolResultSpillRepository,
+	artifactRepo runtimekernel.ContextArtifactRepository,
+	skillRegistry *skills.Registry,
+	evidenceService *evidence.Service,
+	observer runtimekernel.Observer,
+) agentmgr.AgentRunner {
+	return runtimekernel.NewAgentConfigRunner(runtimekernel.AgentConfigRunnerConfig{
+		Policy:          policyEngine,
+		Permissions:     permissionEngine,
+		Hooks:           hookRegistry,
+		Projector:       projector,
+		Sessions:        sessionManager,
+		SessionRepo:     sessionRepo,
+		SpillRepo:       spillRepo,
+		ArtifactRepo:    artifactRepo,
+		SkillRegistry:   skillRegistry,
+		EvidenceService: evidenceService,
+		Observer:        observer,
+	})
+}
+
 func registerAIOpsToolSurface(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager) error {
 	return registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcpRegistry, evidenceService, investigationAgents, toolRegistry)
 }
 
-func registerAIOpsToolSurfaceWithCatalog(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager, catalogProvider tooling.ToolCatalogProvider) error {
+func registerAIOpsToolSurfaceWithCatalog(toolRegistry *tooling.Registry, mcpRegistry *mcp.Registry, evidenceService *evidence.Service, investigationAgents agenttools.Manager, catalogProvider tooling.ToolCatalogProvider, hostOpsOrchestrators ...*hostops.Orchestrator) error {
+	return registerAIOpsToolSurfaceWithOptions(toolRegistry, mcpRegistry, evidenceService, investigationAgents, catalogProvider, nil, hostOpsOrchestrators...)
+}
+
+func registerAIOpsToolSurfaceWithOptions(
+	toolRegistry *tooling.Registry,
+	mcpRegistry *mcp.Registry,
+	evidenceService *evidence.Service,
+	investigationAgents agenttools.Manager,
+	catalogProvider tooling.ToolCatalogProvider,
+	mcpResourceArtifactSink mcpresourcetools.MCPResourceArtifactSink,
+	hostOpsOrchestrators ...*hostops.Orchestrator,
+) error {
 	if toolRegistry == nil {
 		return fmt.Errorf("tool registry is required")
 	}
@@ -505,8 +563,14 @@ func registerAIOpsToolSurfaceWithCatalog(toolRegistry *tooling.Registry, mcpRegi
 		}
 	}
 	if mcpRegistry != nil {
-		if err := mcpresourcetools.RegisterBuiltins(toolRegistry, mcpRegistry); err != nil {
-			return err
+		if mcpResourceArtifactSink != nil {
+			if err := mcpresourcetools.RegisterBuiltinsWithOptions(toolRegistry, mcpRegistry, mcpresourcetools.ReadToolOptions{ArtifactSink: mcpResourceArtifactSink}); err != nil {
+				return err
+			}
+		} else {
+			if err := mcpresourcetools.RegisterBuiltins(toolRegistry, mcpRegistry); err != nil {
+				return err
+			}
 		}
 	}
 	if investigationAgents != nil {
@@ -518,6 +582,17 @@ func registerAIOpsToolSurfaceWithCatalog(toolRegistry *tooling.Registry, mcpRegi
 				return err
 			}
 		}
+	}
+	for _, orchestrator := range hostOpsOrchestrators {
+		if orchestrator == nil {
+			continue
+		}
+		for _, tool := range hostops.NewManagerTools(orchestrator) {
+			if err := toolRegistry.Register(tool); err != nil {
+				return err
+			}
+		}
+		break
 	}
 	if err := agentuitools.RegisterBuiltins(toolRegistry); err != nil {
 		return err
@@ -559,6 +634,41 @@ type opsManualWorkflowReferenceRepository interface {
 
 type opsManualRunRecordRepository interface {
 	SaveOpsManualRunRecord(record opsmanual.RunRecord) error
+}
+
+type agentMCPCatalogGovernanceRepository interface {
+	GetAgentMCPCatalog() ([]store.AgentMCPCatalogEntry, error)
+}
+
+type agentMCPCatalogGovernanceProvider struct {
+	repo agentMCPCatalogGovernanceRepository
+}
+
+func (p agentMCPCatalogGovernanceProvider) ServerGovernance(serverID string) mcp.ServerGovernance {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" || p.repo == nil {
+		return mcp.ServerGovernance{}
+	}
+	items, err := p.repo.GetAgentMCPCatalog()
+	if err != nil {
+		return mcp.ServerGovernance{}
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != serverID && strings.TrimSpace(item.Name) != serverID {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			id = serverID
+		}
+		return mcp.ServerGovernance{
+			ID:                           id,
+			Permission:                   strings.TrimSpace(item.Permission),
+			Risk:                         strings.TrimSpace(item.Risk),
+			RequiresExplicitUserApproval: item.RequiresExplicitUserApproval,
+		}
+	}
+	return mcp.ServerGovernance{}
 }
 
 type opsManualRunRecordSink struct {

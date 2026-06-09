@@ -13,6 +13,12 @@ const providers = [
   { label: "Ollama", value: "ollama" },
 ];
 
+const reasoningEffortOptions = [
+  { label: "Low", value: "low" },
+  { label: "Medium", value: "medium" },
+  { label: "High", value: "high" },
+];
+
 const modelPresets: Record<string, string[]> = {
   openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini", "o3-mini"],
   anthropic: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
@@ -31,7 +37,14 @@ export function LLMConfigPage() {
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<LlmConfigView | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
-  const [form, setForm] = useState({ provider: "openai", model: "gpt-5.4", apiKey: "", baseURL: "", maxContextTokens: String(DEFAULT_LLM_CONTEXT_TOKENS) });
+  const [form, setForm] = useState({
+    provider: "openai",
+    model: "gpt-5.4",
+    apiKey: "",
+    baseURL: "",
+    maxContextTokens: String(DEFAULT_LLM_CONTEXT_TOKENS),
+    reasoningEffort: "medium",
+  });
 
   const modelOptions = useMemo(() => (modelPresets[form.provider] || []).map((model) => ({ label: model, value: model })), [form.provider]);
   const needsApiKey = form.provider !== "ollama";
@@ -48,6 +61,7 @@ export function LLMConfigPage() {
         apiKey: "",
         baseURL: next.baseURL || "",
         maxContextTokens: String(normalizeLlmContextTokens(next.maxContextTokens)),
+        reasoningEffort: next.reasoningEffort || "medium",
       });
       setMessage(null);
     } catch (error) {
@@ -121,6 +135,7 @@ export function LLMConfigPage() {
                       apiKey: "",
                       baseURL: provider === "ollama" ? defaultBaseURL(provider) : "",
                       maxContextTokens: form.maxContextTokens,
+                      reasoningEffort: form.reasoningEffort,
                     })
                   }
                 />
@@ -141,6 +156,15 @@ export function LLMConfigPage() {
                   step={1000}
                   value={form.maxContextTokens}
                   onChange={(event) => setForm((prev) => ({ ...prev, maxContextTokens: event.target.value }))}
+                />
+              </Field>
+              <Field label="Reasoning">
+                <SelectField
+                  data-testid="llm-reasoning-effort-select"
+                  aria-label="Reasoning"
+                  value={form.reasoningEffort}
+                  options={reasoningEffortOptions}
+                  onChange={(reasoningEffort) => setForm((prev) => ({ ...prev, reasoningEffort }))}
                 />
               </Field>
               {needsApiKey ? (

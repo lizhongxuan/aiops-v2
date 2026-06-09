@@ -2,6 +2,7 @@ package promptinput
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -76,6 +77,8 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 
 	return PromptInputTrace{
 		Items:                  items,
+		PromptSections:         clonePromptSectionTrace(req.Compiled.PromptSections),
+		ChangedSections:        cloneChangedPromptSections(req.Compiled.ChangedSections),
 		OpsContextCapsuleChars: len(req.OpsContextCapsule),
 		SessionFactCount:       req.SessionFactCount,
 		LettaHintCount:         req.LettaHintCount,
@@ -83,7 +86,142 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		VisibleOpsManualTools:  visibleOpsManualTools(req.Tools),
 		DroppedContextReasons:  append([]string(nil), req.DroppedContextReasons...),
 		ContextGovernance:      cloneContextGovernanceTraceItems(req.ContextGovernance),
+		VerificationReportRef:  strings.TrimSpace(req.VerificationReportRef),
+		VerificationStatus:     strings.TrimSpace(req.VerificationStatus),
+		TaskDepth:              cloneTaskDepthTrace(req.TaskDepth),
+		EvidenceCoverage:       cloneEvidenceCoverageTrace(req.EvidenceCoverage),
+		GenericityTrace:        cloneGenericityTrace(req.GenericityTrace),
+		CompletionGate:         cloneCompletionGateTrace(req.CompletionGate),
+		SafetySignals:          cloneSafetySignalTraces(req.SafetySignals),
+		UnexpectedStateGate:    cloneUnexpectedStateGateTrace(req.UnexpectedStateGate),
+		ApprovalScope:          cloneApprovalScopeTrace(req.ApprovalScope),
+		PlanModeState:          planModeTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.PlanMode),
+		TaskTodoState:          taskTodoTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.TaskTodo),
 	}
+}
+
+func planModeTraceStateFromProtocol(state *promptcompiler.PlanModePromptState) *PlanModeTraceState {
+	if state == nil {
+		return nil
+	}
+	return &PlanModeTraceState{
+		State:            state.State,
+		PlanID:           state.PlanID,
+		ArtifactStatus:   state.ArtifactStatus,
+		ApprovalStatus:   state.ApprovalStatus,
+		ReminderLevel:    state.ReminderLevel,
+		PendingQuestions: state.PendingQuestions,
+		OpenQuestions:    state.OpenQuestions,
+		RejectionReason:  state.RejectionReason,
+	}
+}
+
+func taskTodoTraceStateFromProtocol(state *promptcompiler.TaskTodoPromptState) *TaskTodoTraceState {
+	if state == nil || len(state.Items) == 0 {
+		return nil
+	}
+	out := &TaskTodoTraceState{Items: make([]TaskTodoTraceItem, 0, len(state.Items))}
+	for _, item := range state.Items {
+		out.Items = append(out.Items, TaskTodoTraceItem{
+			ID:              item.ID,
+			Status:          item.Status,
+			Owner:           item.Owner,
+			BlockedBy:       item.BlockedBy,
+			PendingEvidence: item.PendingEvidence,
+		})
+	}
+	return out
+}
+
+func clonePromptSectionTrace(sections []promptcompiler.PromptSectionTrace) []promptcompiler.PromptSectionTrace {
+	if len(sections) == 0 {
+		return nil
+	}
+	return append([]promptcompiler.PromptSectionTrace(nil), sections...)
+}
+
+func cloneChangedPromptSections(sections []promptcompiler.ChangedPromptSection) []promptcompiler.ChangedPromptSection {
+	if len(sections) == 0 {
+		return nil
+	}
+	return append([]promptcompiler.ChangedPromptSection(nil), sections...)
+}
+
+func cloneTaskDepthTrace(trace *TaskDepthTrace) *TaskDepthTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.Reasons = append([]string(nil), trace.Reasons...)
+	return &out
+}
+
+func cloneEvidenceCoverageTrace(trace *EvidenceCoverageTrace) *EvidenceCoverageTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.RequiredDimensions = append([]string(nil), trace.RequiredDimensions...)
+	out.CoveredDimensions = append([]string(nil), trace.CoveredDimensions...)
+	out.MissingDimensions = append([]string(nil), trace.MissingDimensions...)
+	out.OpenQuestions = append([]string(nil), trace.OpenQuestions...)
+	out.Reasons = append([]string(nil), trace.Reasons...)
+	return &out
+}
+
+func cloneGenericityTrace(trace *GenericityTrace) *GenericityTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.CoreRuleDomainTerms = append([]string(nil), trace.CoreRuleDomainTerms...)
+	out.AllowedFixtureTerms = append([]string(nil), trace.AllowedFixtureTerms...)
+	out.AllowedPluginTerms = append([]string(nil), trace.AllowedPluginTerms...)
+	out.Violations = append([]string(nil), trace.Violations...)
+	return &out
+}
+
+func cloneCompletionGateTrace(gate *CompletionGateTrace) *CompletionGateTrace {
+	if gate == nil {
+		return nil
+	}
+	out := *gate
+	out.Reasons = append([]string(nil), gate.Reasons...)
+	return &out
+}
+
+func cloneSafetySignalTraces(signals []SafetySignalTrace) []SafetySignalTrace {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make([]SafetySignalTrace, 0, len(signals))
+	for _, signal := range signals {
+		signal.Reasons = append([]string(nil), signal.Reasons...)
+		out = append(out, signal)
+	}
+	return out
+}
+
+func cloneUnexpectedStateGateTrace(gate *UnexpectedStateGateTrace) *UnexpectedStateGateTrace {
+	if gate == nil {
+		return nil
+	}
+	out := *gate
+	out.Sources = append([]string(nil), gate.Sources...)
+	out.AffectedScopes = append([]string(nil), gate.AffectedScopes...)
+	out.Reasons = append([]string(nil), gate.Reasons...)
+	return &out
+}
+
+func cloneApprovalScopeTrace(scope *ApprovalScopeTrace) *ApprovalScopeTrace {
+	if scope == nil {
+		return nil
+	}
+	out := *scope
+	out.AllowedActions = append([]string(nil), scope.AllowedActions...)
+	out.ResourceScopes = append([]string(nil), scope.ResourceScopes...)
+	out.Reasons = append([]string(nil), scope.Reasons...)
+	return &out
 }
 
 func promptSource(promptLayer string) string {
@@ -158,6 +296,10 @@ func cloneContextGovernanceTraceItems(items []ContextGovernanceTraceItem) []Cont
 	out := make([]ContextGovernanceTraceItem, 0, len(items))
 	for _, item := range items {
 		item.ReferenceIDs = append([]string(nil), item.ReferenceIDs...)
+		if item.Resource != nil {
+			resource := *item.Resource
+			item.Resource = &resource
+		}
 		if len(item.Budget) > 0 {
 			budget := make(map[string]int, len(item.Budget))
 			for key, value := range item.Budget {

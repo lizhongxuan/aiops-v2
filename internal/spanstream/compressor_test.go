@@ -60,6 +60,29 @@ func (m *capturingSummaryModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
+type toolCallingSummaryModel struct{}
+
+func (m *toolCallingSummaryModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return &schema.Message{
+		Role: schema.Assistant,
+		ToolCalls: []schema.ToolCall{{
+			ID: "call-forbidden",
+			Function: schema.FunctionCall{
+				Name:      "read_file",
+				Arguments: `{"path":"/tmp/large.log"}`,
+			},
+		}},
+	}, nil
+}
+
+func (m *toolCallingSummaryModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (m *toolCallingSummaryModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
 func cloneCompressorSchemaMessages(messages []*schema.Message) []*schema.Message {
 	out := make([]*schema.Message, 0, len(messages))
 	for _, msg := range messages {
@@ -70,6 +93,20 @@ func cloneCompressorSchemaMessages(messages []*schema.Message) []*schema.Message
 		out = append(out, &cp)
 	}
 	return out
+}
+
+func TestCompressRejectsSummaryToolCalls(t *testing.T) {
+	cc := NewContextCompressor(&toolCallingSummaryModel{}, 1)
+
+	_, err := cc.Compress(context.Background(), &Span{ID: "compact", Type: SpanTypeSummary, Name: "compact"}, []Message{
+		{Role: "tool", Content: "large prior tool output"},
+	})
+	if err == nil {
+		t.Fatal("Compress should reject tool calls from the summary model")
+	}
+	if !strings.Contains(err.Error(), "summary model attempted tool call") {
+		t.Fatalf("error = %v, want summary tool call rejection", err)
+	}
 }
 
 func TestNewContextCompressor(t *testing.T) {

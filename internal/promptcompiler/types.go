@@ -3,6 +3,7 @@ package promptcompiler
 import (
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
 
@@ -61,6 +62,12 @@ type CompileContext struct {
 	// ToolBudget describes the tool result and dispatch budget profile.
 	ToolBudget string
 
+	// TaskDepth describes the current turn's complexity and completion gates.
+	TaskDepth taskdepth.Profile
+
+	// ReasoningEffort carries the configured provider reasoning effort or prompt fallback policy.
+	ReasoningEffort string
+
 	// ReasoningSummary controls whether user-visible reasoning summaries are emitted.
 	ReasoningSummary string
 
@@ -82,6 +89,9 @@ type CompileContext struct {
 
 	// SkillPromptAssets are prompt fragments contributed by skill capabilities.
 	SkillPromptAssets []string
+
+	// LoadedSkillRefs are compact markers for skill bodies loaded this session.
+	LoadedSkillRefs []LoadedSkillPromptRef
 
 	// EvidenceReminders are per-iteration reminders that should stay outside the
 	// stable prompt envelope.
@@ -110,6 +120,14 @@ type CompileContext struct {
 
 	// AgentKind identifies the type of agent being compiled for.
 	AgentKind AgentKind
+}
+
+type LoadedSkillPromptRef struct {
+	Name   string
+	Source string
+	Reason string
+	Range  string
+	Hash   string
 }
 
 // PromptSection is an additional prompt fragment injected into developer instructions.
@@ -201,7 +219,44 @@ type ProtocolPromptItem struct {
 // ProtocolPromptState groups dynamic state items that should be visible as
 // state rather than free-form appended prompt text.
 type ProtocolPromptState struct {
-	Items []ProtocolPromptItem
+	Items             []ProtocolPromptItem
+	PlanMode          *PlanModePromptState
+	TaskTodo          *TaskTodoPromptState
+	FailureSwitchPath *FailureSwitchPathPromptState
+}
+
+// PlanModePromptState is a compact prompt-facing state shape. It avoids a
+// runtimekernel dependency while preserving the fields needed for plan-mode
+// reminders and resume after compaction.
+type PlanModePromptState struct {
+	State                   string
+	PlanID                  string
+	ArtifactStatus          string
+	ApprovalStatus          string
+	ReminderLevel           string
+	FullInstructionInjected bool
+	PendingQuestions        int
+	OpenQuestions           int
+	RejectionReason         string
+}
+
+type TaskTodoPromptState struct {
+	Items []TaskTodoPromptItem
+}
+
+type TaskTodoPromptItem struct {
+	ID              string
+	Status          string
+	Owner           string
+	BlockedBy       string
+	PendingEvidence string
+}
+
+type FailureSwitchPathPromptState struct {
+	Signature        string
+	SeenCount        int
+	Action           string
+	SwitchPathReason string
 }
 
 // RuntimePolicyPrompt is Layer 4: policy constraints based on current mode.
@@ -280,6 +335,48 @@ type PromptFingerprint struct {
 	ProtocolStateHash string `json:"protocolStateHash,omitempty"`
 }
 
+// PromptSectionTrace is a redaction-safe prompt-section summary. It stores
+// only stable identifiers, hashes, and size estimates, never section text.
+type PromptSectionTrace struct {
+	ID             string `json:"id"`
+	Kind           string `json:"kind"`
+	Source         string `json:"source"`
+	Hash           string `json:"hash"`
+	Bytes          int    `json:"bytes"`
+	TokensEstimate int    `json:"tokensEstimate"`
+	Cache          string `json:"cache,omitempty"`
+}
+
+// ChangedPromptSection records why one prompt section hash changed.
+type ChangedPromptSection struct {
+	ID           string `json:"id"`
+	Reason       string `json:"reason"`
+	PreviousHash string `json:"previousHash,omitempty"`
+	CurrentHash  string `json:"currentHash,omitempty"`
+}
+
+const (
+	PromptSectionKindStable  = "stable"
+	PromptSectionKindDynamic = "dynamic"
+
+	PromptSectionCacheMiss = "miss"
+	PromptSectionCacheHit  = "hit"
+	// PromptSectionCacheInvalidated marks a known section whose hash changed
+	// since the previous model input in the same session.
+	PromptSectionCacheInvalidated = "invalidated"
+
+	PromptSectionChangeInitial               = "initial"
+	PromptSectionChangeSystemRoleChanged     = "system_role_changed"
+	PromptSectionChangeDeveloperRulesChanged = "developer_core_rules_changed"
+	PromptSectionChangeToolsIndexChanged     = "tools_index_changed"
+	PromptSectionChangeRuntimePolicyChanged  = "runtime_policy_changed"
+	PromptSectionChangeProtocolStateChanged  = "protocol_state_changed"
+	PromptSectionChangeDynamicAssetsChanged  = "context_dynamic_assets_changed"
+	PromptSectionChangeSectionAdded          = "section_added"
+	PromptSectionChangeSectionRemoved        = "section_removed"
+	PromptSectionChangeSectionContentChanged = "section_content_changed"
+)
+
 // CompiledPrompt is the promptcompiler output. It preserves the legacy
 // flattened four-layer view for compatibility and also exposes a stable /
 // dynamic split for long-running turn reuse.
@@ -304,6 +401,12 @@ type CompiledPrompt struct {
 
 	// Fingerprint identifies prompt-layer changes without exposing prompt text.
 	Fingerprint PromptFingerprint
+
+	// PromptSections summarize prompt sections without exposing raw section text.
+	PromptSections []PromptSectionTrace
+
+	// ChangedSections optionally carries a caller-computed section diff.
+	ChangedSections []ChangedPromptSection
 }
 
 // ---------------------------------------------------------------------------

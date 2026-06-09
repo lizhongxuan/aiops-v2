@@ -3,7 +3,10 @@ package appui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+
+	"aiops-v2/internal/hostops"
 )
 
 type transportCommandChatServiceStub struct {
@@ -229,6 +232,9 @@ func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
 	if chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"] != "true" {
 		t.Fatalf("serverDetectedMultiHost metadata = %q, want true", chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"])
 	}
+	if !metadataListContainsValueForTest(chat.sendCmd.Metadata["enableToolPack"], hostops.ToolPackHostOps) {
+		t.Fatalf("enableToolPack metadata = %q, want %q", chat.sendCmd.Metadata["enableToolPack"], hostops.ToolPackHostOps)
+	}
 	if chat.sendCmd.Metadata["aiops.hostops.mentions"] == "" {
 		t.Fatal("expected serialized server-side mentions metadata")
 	}
@@ -247,6 +253,18 @@ func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
 	if len(mission.MentionedHosts) != 2 {
 		t.Fatalf("mentioned hosts = %+v, want 2", mission.MentionedHosts)
 	}
+}
+
+func metadataListContainsValueForTest(raw, want string) bool {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, field := range fields {
+		if strings.TrimSpace(field) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTransportCommandsHostPlanAcceptCallsHostOpsService(t *testing.T) {

@@ -88,7 +88,7 @@ func (s *StreamingToolReader) Read(p []byte) (int, error) {
 func (s *StreamingToolReader) Content() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.buf.Bytes()
+	return append([]byte(nil), s.buf.Bytes()...)
 }
 
 // Snapshot returns a copy of the reader state, including accumulated content.
@@ -190,17 +190,17 @@ func (p *PartialContentInjector) NextChunk() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	content := p.reader.Content()
-	available := len(content)
+	snapshot := p.reader.Snapshot()
+	available := len(snapshot.Content)
 
 	if available > p.cursor {
 		chunk := make([]byte, available-p.cursor)
-		copy(chunk, content[p.cursor:available])
+		copy(chunk, snapshot.Content[p.cursor:available])
 		p.cursor = available
 		return chunk, nil
 	}
 
-	if p.reader.Done() {
+	if snapshot.Done {
 		return nil, io.EOF
 	}
 

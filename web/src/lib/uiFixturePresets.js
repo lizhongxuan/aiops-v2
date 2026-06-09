@@ -1069,6 +1069,704 @@ export function createOpsManualGenerateFromChatFixtureSessions(overrides = {}) {
   });
 }
 
+export function createToolProgressiveDiscoveryFixtureState(overrides = {}) {
+  const now = "2026-06-06T02:00:00Z";
+  const finalText = `## synthetic progressive discovery final
+
+- final evidence: synthetic.metrics.read checked
+- final evidence: synthetic.audit.read not_checked
+- 低置信说明：synthetic.audit.read 未加载后的审计补充未完成，因此只能给出低置信结论，不能把未检查证据当成已验证事实。`;
+  const state = createChatFixtureState({
+    sessionId: "tool-progressive-discovery",
+    threadId: "tool-progressive-discovery",
+    status: "idle",
+    cards: [
+      {
+        id: "user-tool-progressive-discovery",
+        type: "UserMessageCard",
+        role: "user",
+        text: "synthetic_complex_tool_discovery_request: compare a synthetic signal, select only the needed read capability, recover from an unloaded deferred tool, and report final evidence status.",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-tool-progressive-discovery",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "completed",
+        createdAt: "2026-06-06T02:00:12Z",
+        updatedAt: "2026-06-06T02:00:12Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "synthetic-workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "completed";
+  turn.startedAt = now;
+  turn.completedAt = "2026-06-06T02:00:12Z";
+  turn.updatedAt = "2026-06-06T02:00:12Z";
+  turn.process = [
+    {
+      id: "tool-progressive-search-trace",
+      kind: "plan",
+      displayKind: "tool_discovery_trace",
+      status: "completed",
+      text: "Progressive tool discovery trace",
+      steps: [
+        {
+          id: "tool-progressive-search-step",
+          text: "tool_search mode=search",
+          status: "completed",
+        },
+      ],
+      updatedAt: "2026-06-06T02:00:01Z",
+    },
+    {
+      id: "tool-progressive-search",
+      kind: "tool",
+      displayKind: "tool_search",
+      status: "completed",
+      text: "tool_search mode=search query=synthetic capability for read-only signal comparison",
+      outputPreview: "results: synthetic.metrics.read requiresSelect=true; synthetic.audit.read requiresSelect=true",
+      updatedAt: "2026-06-06T02:00:02Z",
+    },
+    {
+      id: "tool-progressive-select",
+      kind: "tool",
+      displayKind: "tool_search",
+      status: "completed",
+      text: "tool_search mode=select selected=synthetic.metrics.read",
+      outputPreview: "selected tool delta: +synthetic.metrics.read; prompt delta contains schema for selected capability only",
+      updatedAt: "2026-06-06T02:00:04Z",
+    },
+    {
+      id: "tool-progressive-selected-delta",
+      kind: "system",
+      displayKind: "tool_surface_delta",
+      status: "completed",
+      text: "selected tool delta: +synthetic.metrics.read",
+      updatedAt: "2026-06-06T02:00:05Z",
+    },
+    {
+      id: "tool-progressive-unloaded-error",
+      kind: "tool",
+      displayKind: "synthetic.audit.read",
+      status: "failed",
+      text: "tool_unloaded recoverable error: synthetic.audit.read is deferred and must be selected before use",
+      outputPreview: "recoverable=true requiredAction=call tool_search with mode=search, then mode=select",
+      updatedAt: "2026-06-06T02:00:06Z",
+    },
+    {
+      id: "tool-progressive-use-selected",
+      kind: "tool",
+      displayKind: "synthetic.metrics.read",
+      status: "completed",
+      text: "synthetic.metrics.read returned checked synthetic evidence",
+      outputPreview: "final evidence: synthetic.metrics.read checked",
+      updatedAt: "2026-06-06T02:00:08Z",
+    },
+    {
+      id: "tool-progressive-final-evidence",
+      kind: "assistant",
+      displayKind: "assistant.final",
+      status: "completed",
+      text: finalText,
+      updatedAt: "2026-06-06T02:00:12Z",
+    },
+  ];
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "synthetic-workspace",
+    hosts: [
+      {
+        id: "synthetic-workspace",
+        name: "synthetic workspace",
+        status: "online",
+        executable: false,
+        terminalCapable: false,
+      },
+    ],
+    lastActivityAt: "2026-06-06T02:00:12Z",
+    ...overrides,
+  };
+}
+
+export function createToolProgressiveDiscoveryFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "tool-progressive-discovery",
+    sessions: [
+      {
+        id: "tool-progressive-discovery",
+        kind: "workspace",
+        title: "Synthetic progressive discovery",
+        status: "completed",
+        messageCount: 2,
+        preview: "synthetic_complex_tool_discovery_request",
+        selectedHostId: "synthetic-workspace",
+        lastActivityAt: "2026-06-06T02:00:12Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createSkillsMcpProgressiveDiscoveryFixtureState(overrides = {}) {
+  const now = "2026-06-06T03:00:00Z";
+  const finalText = `## synthetic skills mcp final
+
+- final evidence: skill checked
+- mcp resource artifact: application/pdf
+- 低置信说明：未读取的 skill/MCP 资源不会被当成已验证事实。`;
+  const state = createChatFixtureState({
+    sessionId: "skills-mcp-progressive-discovery",
+    threadId: "skills-mcp-progressive-discovery",
+    status: "idle",
+    cards: [
+      {
+        id: "user-skills-mcp-progressive-discovery",
+        type: "UserMessageCard",
+        role: "user",
+        text: "synthetic_skills_mcp_progressive_request: verify skill discovery, mandatory activation, mcp instruction delta, sparse reminder, and artifact evidence.",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-skills-mcp-progressive-discovery",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "completed",
+        createdAt: "2026-06-06T03:00:16Z",
+        updatedAt: "2026-06-06T03:00:16Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "synthetic-workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "completed";
+  turn.startedAt = now;
+  turn.completedAt = "2026-06-06T03:00:16Z";
+  turn.updatedAt = "2026-06-06T03:00:16Z";
+  turn.process = [
+    { id: "skill-search", kind: "tool", displayKind: "skill_search", status: "completed", text: "skill_search mode=search query=synthetic diagnosis", outputPreview: "match: synthetic.triage requiresRead=true requiredForMatch=true", updatedAt: "2026-06-06T03:00:02Z" },
+    { id: "mandatory-retry", kind: "system", displayKind: "skill_activation_gate", status: "completed", text: "mandatory skill activation retry", outputPreview: "requiredSkills=synthetic.triage action=require_skill_read", updatedAt: "2026-06-06T03:00:04Z" },
+    { id: "skill-read", kind: "tool", displayKind: "skill_read", status: "completed", text: "skill_read skill=synthetic.triage", outputPreview: "loaded skill delta: +synthetic.triage; final evidence: skill checked", updatedAt: "2026-06-06T03:00:06Z" },
+    { id: "mcp-instruction-delta", kind: "system", displayKind: "mcp_instruction_delta", status: "completed", text: "mcp instruction delta: added synthetic-docs", outputPreview: "server=synthetic-docs action=added", updatedAt: "2026-06-06T03:00:08Z" },
+    { id: "mcp-sparse-reminder", kind: "system", displayKind: "mcp_instruction_reminder", status: "completed", text: "mcp sparse reminder", outputPreview: "server=synthetic-docs hash=sha256:synthetic summary=bounded resource reads", updatedAt: "2026-06-06T03:00:10Z" },
+    { id: "mcp-artifact", kind: "tool", displayKind: "read_mcp_resource", status: "completed", text: "mcp resource artifact: application/pdf", outputPreview: "artifactRef=store://artifacts/mcp-resource-synthetic.pdf metadataOnly=true", updatedAt: "2026-06-06T03:00:12Z" },
+    { id: "skills-mcp-final-evidence", kind: "assistant", displayKind: "assistant.final", status: "completed", text: finalText, updatedAt: "2026-06-06T03:00:16Z" },
+  ];
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "synthetic-workspace",
+    hosts: [{ id: "synthetic-workspace", name: "synthetic workspace", status: "online", executable: false, terminalCapable: false }],
+    lastActivityAt: "2026-06-06T03:00:16Z",
+    ...overrides,
+  };
+}
+
+export function createSkillsMcpProgressiveDiscoveryFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "skills-mcp-progressive-discovery",
+    sessions: [
+      {
+        id: "skills-mcp-progressive-discovery",
+        kind: "workspace",
+        title: "Synthetic Skills MCP Discovery",
+        status: "completed",
+        messageCount: 2,
+        preview: "synthetic_skills_mcp_progressive_request",
+        selectedHostId: "synthetic-workspace",
+        lastActivityAt: "2026-06-06T03:00:16Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createMultiAgentSchedulingFixtureState(overrides = {}) {
+  const now = "2026-06-06T04:00:00Z";
+  const finalText = `## synthetic multi-agent scheduling final
+
+- agent listing loaded: synthetic.explorer
+- delegation decision: spawn_new
+- assignment lint: pass
+- parallel agents requested
+- resource lock acquired
+- pending agent final gate: require_wait
+- wait_agent notifications: completed
+- continuation decision: continue_existing
+- verification agent: PASS
+- final synthesis: evidence checked`;
+  const state = createChatFixtureState({
+    sessionId: "multi-agent-scheduling",
+    threadId: "multi-agent-scheduling",
+    status: "idle",
+    cards: [
+      {
+        id: "user-multi-agent-scheduling",
+        type: "UserMessageCard",
+        role: "user",
+        text: "synthetic_multi_agent_scheduling_request: validate agent catalog, delegation, assignment lint, resource locks, wait gates, notifications, continuation, verifier, and final synthesis.",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-multi-agent-scheduling",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "completed",
+        createdAt: "2026-06-06T04:00:20Z",
+        updatedAt: "2026-06-06T04:00:20Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "synthetic-workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "completed";
+  turn.startedAt = now;
+  turn.completedAt = "2026-06-06T04:00:20Z";
+  turn.updatedAt = "2026-06-06T04:00:20Z";
+  turn.process = [
+    { id: "multi-agent-listing", kind: "tool", displayKind: "agent_catalog", status: "completed", text: "agent listing loaded: synthetic.explorer", outputPreview: "agents=synthetic.explorer,synthetic.verifier", updatedAt: "2026-06-06T04:00:02Z" },
+    { id: "multi-agent-delegation-spawn", kind: "system", displayKind: "agent_delegation_decision", status: "completed", text: "delegation decision: spawn_new", outputPreview: "target=synthetic.explorer reason=bounded_parallel_probe", updatedAt: "2026-06-06T04:00:04Z" },
+    { id: "multi-agent-assignment-lint", kind: "system", displayKind: "agent_assignment_lint", status: "completed", text: "assignment lint: pass", outputPreview: "scope=synthetic.evidence_readonly isolation=manager_summary_only", updatedAt: "2026-06-06T04:00:06Z" },
+    { id: "multi-agent-parallel-requested", kind: "system", displayKind: "agent_parallel_trace_group", status: "completed", text: "parallel agents requested", outputPreview: "agents=synthetic.explorer", updatedAt: "2026-06-06T04:00:08Z" },
+    { id: "multi-agent-resource-lock", kind: "system", displayKind: "resource_lock_trace", status: "completed", text: "resource lock acquired", outputPreview: "resource=synthetic.shared-context mode=exclusive", updatedAt: "2026-06-06T04:00:10Z" },
+    { id: "multi-agent-final-gate", kind: "system", displayKind: "agent_final_gate", status: "completed", text: "pending agent final gate: require_wait", outputPreview: "pending=synthetic.explorer action=wait_agent", updatedAt: "2026-06-06T04:00:12Z" },
+    { id: "multi-agent-wait-notifications", kind: "tool", displayKind: "wait_agent", status: "completed", text: "wait_agent notifications: completed", outputPreview: "synthetic.explorer completed with manager summary", updatedAt: "2026-06-06T04:00:14Z" },
+    { id: "multi-agent-continuation", kind: "system", displayKind: "agent_continuation_decision", status: "completed", text: "continuation decision: continue_existing", outputPreview: "agent=synthetic.explorer reason=active_context_matches", updatedAt: "2026-06-06T04:00:16Z" },
+    { id: "multi-agent-verifier", kind: "tool", displayKind: "verification_agent", status: "completed", text: "verification agent: PASS", outputPreview: "checked=synthetic.evidence_bundle result=PASS", updatedAt: "2026-06-06T04:00:18Z" },
+    { id: "multi-agent-final-synthesis", kind: "system", displayKind: "assistant.final", status: "completed", text: "final synthesis: evidence checked", outputPreview: finalText, updatedAt: "2026-06-06T04:00:20Z" },
+  ];
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "synthetic-workspace",
+    hosts: [{ id: "synthetic-workspace", name: "synthetic workspace", status: "online", executable: false, terminalCapable: false }],
+    lastActivityAt: "2026-06-06T04:00:20Z",
+    ...overrides,
+  };
+}
+
+export function createMultiAgentSchedulingFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "multi-agent-scheduling",
+    sessions: [
+      {
+        id: "multi-agent-scheduling",
+        kind: "workspace",
+        title: "Synthetic Multi-Agent Scheduling",
+        status: "completed",
+        messageCount: 2,
+        preview: "synthetic_multi_agent_scheduling_request",
+        selectedHostId: "synthetic-workspace",
+        lastActivityAt: "2026-06-06T04:00:20Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createVerificationCompletionSafetyPermissionFixtureState(overrides = {}) {
+  const now = "2026-06-07T02:20:00Z";
+  const finalText = [
+    "## synthetic verification completion safety permission final",
+    "",
+    "- verification_status=PARTIAL",
+    "- completion gate block: execution evidence missing",
+    "- blocker next action: rerun focused synthetic verification command",
+    "- destructive workaround safety signal: skip_validation high-risk blocked",
+    "- unexpected state gate: block_mutation",
+    "- approval scope summary: allowedActions=read_metrics,read_logs request_verification",
+  ].join("\n");
+  const state = createChatFixtureState({
+    sessionId: "verification-completion-safety-permission",
+    threadId: "verification-completion-safety-permission",
+    status: "idle",
+    cards: [
+      {
+        id: "user-verification-completion-safety-permission",
+        type: "UserMessageCard",
+        role: "user",
+        text: "synthetic_verification_completion_safety_permission_request: show partial verification, completion gate blocking, safety policy, unexpected state gate, and approval scope evidence.",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-verification-completion-safety-permission",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "completed",
+        createdAt: "2026-06-07T02:20:18Z",
+        updatedAt: "2026-06-07T02:20:18Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "synthetic-workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "completed";
+  turn.startedAt = now;
+  turn.completedAt = "2026-06-07T02:20:18Z";
+  turn.updatedAt = "2026-06-07T02:20:18Z";
+  turn.process = [
+    {
+      id: "verification-report-partial",
+      kind: "tool",
+      displayKind: "verification.report",
+      status: "completed",
+      text: "verification_status=PARTIAL",
+      outputPreview: "requirement=execution_required evidenceKinds=analysis blocker=tool_unavailable",
+      evidenceRefs: ["synthetic:evidence:analysis-only"],
+      updatedAt: "2026-06-07T02:20:02Z",
+    },
+    {
+      id: "completion-gate-execution-evidence",
+      kind: "system",
+      displayKind: "completion_gate",
+      status: "blocked",
+      text: "completion gate block: execution evidence missing",
+      outputPreview: "PASS is not allowed because execution_required has no execution/static_check/adversarial evidence.",
+      evidenceRefs: ["synthetic:gate:completion-block"],
+      updatedAt: "2026-06-07T02:20:04Z",
+    },
+    {
+      id: "verification-blocker-next-action",
+      kind: "system",
+      displayKind: "verification.blocker",
+      status: "blocked",
+      text: "blocker next action: rerun focused synthetic verification command",
+      outputPreview: "source=tool_unavailable nextAction=restore verifier tool and rerun focused synthetic verification command",
+      updatedAt: "2026-06-07T02:20:06Z",
+    },
+    {
+      id: "destructive-workaround-signal",
+      kind: "system",
+      displayKind: "safety_signal",
+      status: "rejected",
+      text: "destructive workaround safety signal: skip_validation high-risk blocked",
+      outputPreview: "category=skip_validation severity=high reason=attempted to bypass required verification",
+      updatedAt: "2026-06-07T02:20:08Z",
+    },
+    {
+      id: "unexpected-state-gate-blocked",
+      kind: "system",
+      displayKind: "unexpected_state_gate",
+      status: "blocked",
+      text: "unexpected state gate: block_mutation",
+      outputPreview: "toolStatus=precondition_failed action=block_mutation next=inspect_or_replan",
+      updatedAt: "2026-06-07T02:20:10Z",
+    },
+    {
+      id: "approval-scope-summary",
+      kind: "system",
+      displayKind: "approval_scope",
+      status: "completed",
+      text: "approval scope summary: allowedActions=read_metrics,read_logs request_verification",
+      outputPreview: "resourceScopes=synthetic:service:demo-api,synthetic:evidence:verification riskCeiling=low inputHash=synthetic-input-hash",
+      updatedAt: "2026-06-07T02:20:12Z",
+    },
+    {
+      id: "verification-completion-safety-final",
+      kind: "assistant",
+      displayKind: "assistant.final",
+      status: "completed",
+      text: finalText,
+      updatedAt: "2026-06-07T02:20:18Z",
+    },
+  ];
+  state.verificationReports = [
+    {
+      id: "synthetic-verification-report-1",
+      requirement: "execution_required",
+      status: "PARTIAL",
+      subject: "synthetic verification completion safety permission fixture",
+      evidence: [
+        {
+          kind: "analysis",
+          toolName: "synthetic.inspect",
+          expected: "verification report has execution evidence before PASS",
+          actual: "analysis evidence only",
+          result: "pass",
+          rawRef: "synthetic:evidence:analysis-only",
+        },
+      ],
+      blockers: [
+        {
+          reason: "focused execution verifier tool unavailable in synthetic fixture",
+          source: "tool_unavailable",
+          nextAction: "rerun focused synthetic verification command",
+        },
+      ],
+      rawRefs: ["synthetic:evidence:analysis-only", "synthetic:gate:completion-block"],
+    },
+  ];
+  state.safetySignals = [
+    {
+      category: "skip_validation",
+      severity: "high",
+      reasons: ["attempted to bypass required verification"],
+    },
+  ];
+  state.unexpectedStateDecisions = [
+    {
+      action: "block_mutation",
+      reasons: ["precondition_failed", "requires inspect or re-plan before mutation"],
+    },
+  ];
+  state.planApprovalScope = {
+    planId: "plan-synthetic-verification-1",
+    approvalId: "approval-synthetic-verification-1",
+    allowedActions: ["read_metrics", "read_logs", "request_verification"],
+    resourceScopes: ["synthetic:service:demo-api", "synthetic:evidence:verification"],
+    riskCeiling: "low",
+    expiresAt: "2026-06-07T03:20:00Z",
+    inputHash: "synthetic-input-hash",
+  };
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "synthetic-workspace",
+    hosts: [{ id: "synthetic-workspace", name: "synthetic workspace", status: "online", executable: false, terminalCapable: false }],
+    lastActivityAt: "2026-06-07T02:20:18Z",
+    ...overrides,
+  };
+}
+
+export function createVerificationCompletionSafetyPermissionFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "verification-completion-safety-permission",
+    sessions: [
+      {
+        id: "verification-completion-safety-permission",
+        kind: "workspace",
+        title: "Synthetic Verification Safety",
+        status: "completed",
+        messageCount: 2,
+        preview: "synthetic_verification_completion_safety_permission_request",
+        selectedHostId: "synthetic-workspace",
+        lastActivityAt: "2026-06-07T02:20:18Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createUxModelGeneralityFixtureState(overrides = {}) {
+  const now = "2026-06-07T03:00:00Z";
+  const finalText = [
+    "## synthetic ux model generality pending state",
+    "",
+    "- task_depth=investigation",
+    "- required_gates=plan,evidence,verification",
+    "- ux_phase=waiting_approval",
+    "- resume_action=continue_next_step",
+    "- manager_synthesis=required",
+    "- coverage_action=continue_gathering",
+    "- reasoning_fallback=prompt_policy",
+    "- genericity_violations=0",
+  ].join("\n");
+  const state = createChatFixtureState({
+    sessionId: "ux-model-generality",
+    threadId: "ux-model-generality",
+    status: "blocked",
+    cards: [
+      {
+        id: "user-ux-model-generality",
+        type: "UserMessageCard",
+        role: "user",
+        text: "synthetic_ux_model_generality_request: show abstract depth, gates, approval phase, resume policy, synthesis gate, coverage action, fallback policy, and genericity scan state.",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-ux-model-generality",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "running",
+        createdAt: "2026-06-07T03:00:18Z",
+        updatedAt: "2026-06-07T03:00:18Z",
+      },
+    ],
+    runtime: {
+      turn: { active: true, phase: "waiting_approval", hostId: "synthetic-workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    approvals: [
+      {
+        id: "approval-ux-model-generality-1",
+        status: "pending",
+        type: "plan_exit",
+        reason: "Synthetic fixture waits for approval before continuing the next abstract step.",
+        command: "approve_next_step synthetic-plan-ux-model-generality",
+        requestedAt: "2026-06-07T03:00:10Z",
+      },
+    ],
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "blocked";
+  turn.startedAt = now;
+  turn.updatedAt = "2026-06-07T03:00:18Z";
+  turn.process = [
+    {
+      id: "ux-model-generality-depth",
+      kind: "system",
+      displayKind: "task_depth_trace",
+      status: "completed",
+      text: "task_depth=investigation",
+      outputPreview: "reason=multi_step_unknowns evidence_required=true",
+      updatedAt: "2026-06-07T03:00:02Z",
+    },
+    {
+      id: "ux-model-generality-required-gates",
+      kind: "system",
+      displayKind: "required_gate_trace",
+      status: "completed",
+      text: "required_gates=plan,evidence,verification",
+      outputPreview: "gate_source=abstract_task_profile",
+      updatedAt: "2026-06-07T03:00:04Z",
+    },
+    {
+      id: "ux-model-generality-phase",
+      kind: "system",
+      displayKind: "ux_progress_trace",
+      status: "running",
+      text: "ux_phase=waiting_approval",
+      outputPreview: "pendingApproval=approval-ux-model-generality-1",
+      updatedAt: "2026-06-07T03:00:06Z",
+    },
+    {
+      id: "ux-model-generality-resume",
+      kind: "system",
+      displayKind: "resume_policy",
+      status: "completed",
+      text: "resume_action=continue_next_step",
+      outputPreview: "recapAllowed=false unless_requested_by_user=true",
+      updatedAt: "2026-06-07T03:00:08Z",
+    },
+    {
+      id: "ux-model-generality-synthesis",
+      kind: "system",
+      displayKind: "manager_synthesis_gate",
+      status: "blocked",
+      text: "manager_synthesis=required",
+      outputPreview: "workerOutputs=refs_only finalRequires=manager_answer",
+      updatedAt: "2026-06-07T03:00:10Z",
+    },
+    {
+      id: "ux-model-generality-coverage",
+      kind: "system",
+      displayKind: "evidence_coverage",
+      status: "running",
+      text: "coverage_action=continue_gathering",
+      outputPreview: "missing=verification covered=plan,evidence",
+      updatedAt: "2026-06-07T03:00:12Z",
+    },
+    {
+      id: "ux-model-generality-reasoning-fallback",
+      kind: "system",
+      displayKind: "reasoning_fallback",
+      status: "completed",
+      text: "reasoning_fallback=prompt_policy",
+      outputPreview: "providerCapability=reasoning_unsupported policy=prompt_visible_depth",
+      updatedAt: "2026-06-07T03:00:14Z",
+    },
+    {
+      id: "ux-model-generality-genericity",
+      kind: "system",
+      displayKind: "genericity_scan",
+      status: "completed",
+      text: "genericity_violations=0",
+      outputPreview: "blocked_core_rule=0 allowed_fixture_terms=synthetic",
+      updatedAt: "2026-06-07T03:00:16Z",
+    },
+  ];
+  state.genericityTrace = {
+    coreRuleDomainTerms: [],
+    allowedFixtureTerms: ["synthetic"],
+    resourceIdSource: "fixture",
+    violations: [],
+  };
+  state.managerSynthesisGate = {
+    action: "require_manager_synthesis",
+    workerOutputRefs: ["synthetic:worker-output:abstract-1"],
+    reasons: ["final_answer_must_use_manager_synthesis"],
+  };
+  state.evidenceCoverageDecision = {
+    action: "continue_gathering",
+    coverage: 0.67,
+    requiredDimensions: ["plan", "evidence", "verification"],
+    coveredDimensions: ["plan", "evidence"],
+    missingDimensions: ["verification"],
+    verificationStatus: "pending",
+  };
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "synthetic-workspace",
+    hosts: [{ id: "synthetic-workspace", name: "synthetic workspace", status: "online", executable: false, terminalCapable: false }],
+    lastActivityAt: "2026-06-07T03:00:18Z",
+    ...overrides,
+  };
+}
+
+export function createUxModelGeneralityFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "ux-model-generality",
+    sessions: [
+      {
+        id: "ux-model-generality",
+        kind: "workspace",
+        title: "Synthetic UX Model Generality",
+        status: "blocked",
+        messageCount: 2,
+        preview: "synthetic_ux_model_generality_request",
+        selectedHostId: "synthetic-workspace",
+        lastActivityAt: "2026-06-07T03:00:18Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 export function createCorootRcaReportFixtureState(overrides = {}) {
   const state = createChatFixtureState({
     cards: [
@@ -1207,6 +1905,246 @@ export function createCorootRcaReportFixtureSessions(overrides = {}) {
     ],
     ...overrides,
   });
+}
+
+export function createTaskTodoPlanModeFixtureState(overrides = {}) {
+  const now = "2026-06-07T01:30:00Z";
+  const planId = "plan-synthetic-task-todo-1";
+  const cards = overrides.cards || [
+    {
+      id: "user-task-todo-plan-mode",
+      type: "UserMessageCard",
+      role: "user",
+      text: "请用计划模式梳理一个多步骤合成排查任务，并等待我批准后再执行。",
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: "assistant-task-todo-plan-mode",
+      type: "AssistantMessageCard",
+      role: "assistant",
+      text: [
+        "Plan Mode active，计划仍处于 pending_exit_approval。",
+        "上一版计划已被拒绝：用户要求收窄验证范围后再批准。",
+        "当前仍在计划模式，等待修订后重新请求批准。",
+      ].join("\n"),
+      createdAt: "2026-06-07T01:30:03Z",
+      updatedAt: "2026-06-07T01:30:03Z",
+    },
+    {
+      id: "plan-task-todo-plan-mode",
+      type: "PlanCard",
+      title: "Task/Todo Plan Mode synthetic fixture",
+      text: "Plan Mode active / pending_exit_approval",
+      items: [
+        {
+          step: "step-collect: in_progress owner=agent:planner agentId=agent-plan-7 claimLease=claim-lease-synthetic-1",
+          status: "running",
+        },
+        {
+          step: "step-confirm: blocked blockedBy=missing_user_decision reason=等待用户确认验证窗口",
+          status: "blocked",
+        },
+        {
+          step: "approval scope: allowedActions=read_metrics,read_logs,update_plan resourceScopes=synthetic:service:demo-api,synthetic:dashboard:latency riskCeiling=low",
+          status: "pending",
+        },
+      ],
+      createdAt: "2026-06-07T01:30:04Z",
+      updatedAt: "2026-06-07T01:30:04Z",
+    },
+  ];
+  const runtime = overrides.runtime || {
+    turn: { active: true, phase: "waiting_approval", hostId: "workspace" },
+    codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+    activity: {
+      viewedFiles: [],
+      searchedWebQueries: [],
+      searchedContentQueries: [{ query: "synthetic plan mode task state" }],
+    },
+  };
+  const approvals = overrides.approvals || [
+    {
+      id: "approval-plan-exit-synthetic-1",
+      status: "pending",
+      type: "plan_exit",
+      reason: "PlanArtifact pending_exit_approval requires user approval before execution.",
+      command: "exit_plan_mode plan-synthetic-task-todo-1",
+      requestedAt: "2026-06-07T01:30:06Z",
+    },
+  ];
+  const state = createFixtureTransportState({
+    sessionId: overrides.sessionId || "task-todo-plan-mode",
+    threadId: overrides.threadId || "task-todo-plan-mode",
+    status: overrides.status || "blocked",
+    cards,
+    runtime,
+    approvals,
+    finalText:
+      overrides.finalText ||
+      [
+        "Plan Mode active: state=active planId=plan-synthetic-task-todo-1 artifactStatus=pending_exit_approval.",
+        "Task owner: step-collect owner=agent:planner agentId=agent-plan-7 lease=claim-lease-synthetic-1 expiresAt=2026-06-07T01:45:00Z.",
+        "Blocked task: step-confirm blockedBy=missing_user_decision reason=等待用户确认验证窗口。",
+        "Rejected plan event: 用户要求收窄验证范围后再批准；仍在计划模式，等待修订后重新请求批准。",
+        "Approval scope: allowedActions=read_metrics,read_logs,update_plan resourceScopes=synthetic:service:demo-api,synthetic:dashboard:latency riskCeiling=low.",
+      ].join("\n"),
+  });
+  const turnId = state.currentTurnId;
+  state.turns[turnId] = {
+    ...state.turns[turnId],
+    status: "blocked",
+    process: [
+      {
+        id: "plan-mode-state-synthetic",
+        kind: "tool",
+        displayKind: "plan_mode.state",
+        status: "running",
+        text: "Plan Mode active; artifactStatus=pending_exit_approval; approvalId=approval-plan-exit-synthetic-1",
+        updatedAt: "2026-06-07T01:30:05Z",
+      },
+      {
+        id: "task-todo-plan-synthetic",
+        kind: "plan",
+        displayKind: "plan",
+        status: "running",
+        text: "plan updated: active pending_exit_approval",
+        steps: [
+          {
+            id: "step-collect",
+            text: "step-collect in_progress owner=agent:planner agentId=agent-plan-7 claimLease=claim-lease-synthetic-1",
+            status: "in_progress",
+            summary: "读取合成指标和日志，不执行 mutation",
+          },
+          {
+            id: "step-confirm",
+            text: "step-confirm blocked blockedBy=missing_user_decision reason=等待用户确认验证窗口",
+            status: "blocked",
+          },
+          {
+            id: "step-scope",
+            text: "approval scope allowedActions=read_metrics,read_logs,update_plan resourceScopes=synthetic:service:demo-api,synthetic:dashboard:latency riskCeiling=low",
+            status: "pending",
+          },
+        ],
+        updatedAt: "2026-06-07T01:30:06Z",
+      },
+      {
+        id: "plan-rejection-synthetic",
+        kind: "tool",
+        displayKind: "plan.rejection",
+        status: "blocked",
+        text: "用户要求收窄验证范围后再批准；仍在计划模式，等待修订后重新请求批准",
+        updatedAt: "2026-06-07T01:30:07Z",
+      },
+    ],
+  };
+  state.planModeState = {
+    state: "active",
+    planId,
+    requestedBy: "user",
+    reason: "Complex synthetic task requires planning before execution.",
+    expectedPlanType: "investigation",
+    fullInstructionInjected: true,
+    reminderLevel: "sparse",
+    approvalId: "approval-plan-exit-synthetic-1",
+    pendingQuestions: ["确认是否只保留只读验证范围"],
+    lastRejectionReason: "用户要求收窄验证范围后再批准",
+    compactRecoveryVersion: 1,
+  };
+  state.planArtifact = {
+    id: planId,
+    version: 2,
+    status: "pending_exit_approval",
+    steps: [
+      {
+        id: "step-collect",
+        text: "读取合成指标和日志",
+        status: "in_progress",
+        owner: "agent:planner",
+        agentId: "agent-plan-7",
+        evidenceRefs: ["synthetic:evidence:metrics"],
+      },
+      {
+        id: "step-confirm",
+        text: "等待用户确认验证窗口",
+        status: "blocked",
+        blockedBy: ["missing_user_decision"],
+        summary: "需要用户确认只读验证窗口",
+      },
+    ],
+    rejections: [
+      {
+        id: "reject-synthetic-1",
+        reason: "用户要求收窄验证范围后再批准",
+        rejectedAt: "2026-06-07T01:28:00Z",
+      },
+    ],
+  };
+  state.planApprovalScope = {
+    planId,
+    allowedActions: ["read_metrics", "read_logs", "update_plan"],
+    resourceScopes: ["synthetic:service:demo-api", "synthetic:dashboard:latency"],
+    riskCeiling: "low",
+    expiresAt: "2026-06-07T02:00:00Z",
+    inputHash: "synthetic-input-hash",
+  };
+  state.taskClaims = [
+    {
+      taskId: "step-collect",
+      owner: "agent:planner",
+      agentId: "agent-plan-7",
+      leaseId: "claim-lease-synthetic-1",
+      expiresAt: "2026-06-07T01:45:00Z",
+    },
+  ];
+  state.artifacts = {
+    ...state.artifacts,
+    [planId]: {
+      id: planId,
+      kind: "plan_artifact",
+      title: "PlanArtifact pending_exit_approval",
+      preview: "Plan Mode active with blocked task, rejection event, approval scope and claim lease.",
+    },
+  };
+  state.runtimeLiveness = {
+    ...state.runtimeLiveness,
+    activeTurns: { [turnId]: true },
+    activeAgents: { "agent-plan-7": true },
+    pendingApprovals: { "approval-plan-exit-synthetic-1": true },
+  };
+  return {
+    ...state,
+    kind: "workspace",
+    selectedHostId: "workspace",
+    auth: { connected: true, pending: false, planType: "plus" },
+    hosts: createBaseHosts().filter((host) => host.id === "server-local"),
+    approvals,
+    cards,
+    runtime,
+    lastActivityAt: "2026-06-07T01:30:07Z",
+    config: { codexAlive: true },
+    ...overrides,
+  };
+}
+
+export function createTaskTodoPlanModeFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "task-todo-plan-mode",
+    sessions: [
+      {
+        id: "task-todo-plan-mode",
+        kind: "workspace",
+        title: "Task/Todo Plan Mode",
+        status: "blocked",
+        messageCount: 2,
+        preview: "Plan Mode active / pending_exit_approval",
+        selectedHostId: "workspace",
+        lastActivityAt: "2026-06-07T01:30:07Z",
+      },
+    ],
+    ...overrides,
+  };
 }
 
 export function createProtocolFixtureState(overrides = {}) {
@@ -1391,6 +2329,48 @@ export function resolveUiFixturePreset(key = "") {
         name: "ops-manual-generate-from-chat",
         state: createOpsManualGenerateFromChatFixtureState(),
         sessions: createOpsManualGenerateFromChatFixtureSessions(),
+      };
+    case "tool-progressive-discovery":
+    case "tool_progressive_discovery":
+      return {
+        name: "tool-progressive-discovery",
+        state: createToolProgressiveDiscoveryFixtureState(),
+        sessions: createToolProgressiveDiscoveryFixtureSessions(),
+      };
+    case "skills-mcp-progressive-discovery":
+    case "skills_mcp_progressive_discovery":
+      return {
+        name: "skills-mcp-progressive-discovery",
+        state: createSkillsMcpProgressiveDiscoveryFixtureState(),
+        sessions: createSkillsMcpProgressiveDiscoveryFixtureSessions(),
+      };
+    case "multi-agent-scheduling":
+    case "multi_agent_scheduling":
+      return {
+        name: "multi-agent-scheduling",
+        state: createMultiAgentSchedulingFixtureState(),
+        sessions: createMultiAgentSchedulingFixtureSessions(),
+      };
+    case "verification-completion-safety-permission":
+    case "verification_completion_safety_permission":
+      return {
+        name: "verification-completion-safety-permission",
+        state: createVerificationCompletionSafetyPermissionFixtureState(),
+        sessions: createVerificationCompletionSafetyPermissionFixtureSessions(),
+      };
+    case "ux-model-generality":
+    case "ux_model_generality":
+      return {
+        name: "ux-model-generality",
+        state: createUxModelGeneralityFixtureState(),
+        sessions: createUxModelGeneralityFixtureSessions(),
+      };
+    case "task-todo-plan-mode":
+    case "task_todo_plan_mode":
+      return {
+        name: "task-todo-plan-mode",
+        state: createTaskTodoPlanModeFixtureState(),
+        sessions: createTaskTodoPlanModeFixtureSessions(),
       };
     case "coroot-rca-report":
     case "rca-report":

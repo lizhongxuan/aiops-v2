@@ -32,7 +32,26 @@ func BuildAIOpsCompactPrompt(input AIOpsCompactPromptInput) string {
 - 如信息来自外部引用，请写 evidenceRefs / externalRefs，而不是展开原文。
 
 输出格式：
-<summary>
-...
-</summary>`, input.SessionID, input.TurnID)
+只输出一个 JSON 对象，必须符合 CompactSummaryV1 schemaVersion=%q：
+{
+  "schemaVersion": "compact_summary_v1",
+  "userGoal": "...",
+  "latestUserMessages": [{"turnId": "...", "quote": "..."}],
+  "activeConstraints": ["..."],
+  "currentTask": {"description": "...", "sourceTurnId": "..."},
+  "confirmedFacts": [{"statement": "...", "sourceRef": "..."}],
+  "openQuestions": ["..."],
+  "decisions": [{"decision": "...", "sourceRef": "..."}],
+  "artifacts": [{"id": "...", "sourceRef": "...", "summary": "..."}],
+  "pendingApprovals": [{"id": "...", "sourceRef": "..."}],
+  "pendingEvidence": [{"id": "...", "sourceRef": "..."}],
+  "planState": {"status": "...", "currentStep": "..."},
+  "nextStep": {"action": "...", "sourceTurnId": "...", "recentUserQuote": "..."}
+}
+
+强约束：
+- userGoal、latestUserMessages、currentTask.description、nextStep.action、nextStep.sourceTurnId、nextStep.recentUserQuote 必填。
+- confirmedFacts 中每条 fact 必须带 sourceRef。
+- nextStep.sourceTurnId 和 nextStep.recentUserQuote 必须锚定最新用户消息，防止 compact 后漂移。
+- 不要输出 <summary> 包裹、Markdown 或额外解释。`, input.SessionID, input.TurnID, CompactSummarySchemaVersionV1)
 }

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,8 +15,10 @@ import (
 
 	"aiops-v2/internal/agentmgr"
 	"aiops-v2/internal/agents"
+	"aiops-v2/internal/appui"
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/featureflag"
+	"aiops-v2/internal/hostops"
 	agenttools "aiops-v2/internal/integrations/agents"
 	"aiops-v2/internal/integrations/localtools"
 	opsmanualtools "aiops-v2/internal/integrations/opsmanuals"
@@ -23,13 +27,16 @@ import (
 	"aiops-v2/internal/observability"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/outputstyle"
+	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/plugins"
+	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
+	"runner/scheduler"
 	runnerservice "runner/server/service"
 )
 
@@ -74,6 +81,134 @@ func TestBuildRuntimeObserverEnabledReturnsOTelObserver(t *testing.T) {
 	}
 	if !provider.Enabled() {
 		t.Fatal("provider should be enabled")
+	}
+}
+
+func TestNewServerAgentRunnerUsesRuntimeKernelRunner(t *testing.T) {
+	runner := newServerAgentRunner(
+		&policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()},
+		permissions.NewEngine(nil),
+		nil,
+		nil,
+		runtimekernel.NewSessionManager(nil),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		runtimekernel.NoopObserver{},
+	)
+	if runner == nil {
+		t.Fatal("runner is nil")
+	}
+	if _, ok := runner.(*runtimekernel.AgentConfigRunner); !ok {
+		t.Fatalf("runner type = %T, want *runtimekernel.AgentConfigRunner", runner)
+	}
+}
+
+type agentMCPCatalogGovernanceRepoStub struct {
+	items []store.AgentMCPCatalogEntry
+}
+
+func (r agentMCPCatalogGovernanceRepoStub) GetAgentMCPCatalog() ([]store.AgentMCPCatalogEntry, error) {
+	return append([]store.AgentMCPCatalogEntry(nil), r.items...), nil
+}
+
+func TestAgentMCPCatalogGovernanceProviderMapsCatalogEntry(t *testing.T) {
+	provider := agentMCPCatalogGovernanceProvider{repo: agentMCPCatalogGovernanceRepoStub{items: []store.AgentMCPCatalogEntry{{
+		ID:                           "ops",
+		Permission:                   "readwrite",
+		Risk:                         "high",
+		RequiresExplicitUserApproval: true,
+	}}}}
+
+	governance := provider.ServerGovernance("ops")
+	if governance.ID != "ops" || governance.Permission != "readwrite" || governance.Risk != "high" || !governance.RequiresExplicitUserApproval {
+		t.Fatalf("ServerGovernance() = %#v", governance)
+	}
+}
+
+func TestHostAgentCommandRunnerFallsBackToHTTPRun(t *testing.T) {
+	tokenStore := appui.NewLocalHostAgentTokenStore(t.TempDir())
+	tokenRef, err := tokenStore.StoreHostAgentToken(context.Background(), "host-http", "runner-token")
+	if err != nil {
+		t.Fatalf("StoreHostAgentToken() error = %v", err)
+	}
+	repo, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer repo.Close()
+
+	var gotAuth string
+	var gotScript string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/run" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s, want POST /run", r.Method, r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		var body hostAgentRunRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body.Task.Host.Name != "host-http" || body.Task.Step.Action != "script.shell" {
+			t.Fatalf("task = %+v, want host-http script.shell", body.Task)
+		}
+		gotScript, _ = body.Task.Step.Args["script"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(hostAgentRunResponse{
+			Result: mapHostAgentRunnerResult(body.Task.ID, "success", "runner-ok\n", ""),
+			RunID:  body.Task.RunID,
+		})
+	}))
+	defer server.Close()
+
+	if err := repo.SaveHost(&store.HostRecord{
+		ID:                  "host-http",
+		Name:                "host-http",
+		Address:             "10.0.0.11",
+		AgentURL:            server.URL,
+		AgentTokenSecretRef: tokenRef,
+		Executable:          true,
+		ControlMode:         "managed",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	runner := hostAgentCommandRunner{
+		repo:          repo,
+		tokenResolver: tokenStore,
+		httpClient:    server.Client(),
+		now:           func() time.Time { return time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC) },
+	}
+	result, err := runner.RunHostAgentCommand(context.Background(), localtools.HostAgentCommandRequest{
+		HostID:         "host-http",
+		Command:        "printf",
+		Args:           []string{"runner-ok"},
+		MaxOutputBytes: 4096,
+	})
+	if err != nil {
+		t.Fatalf("RunHostAgentCommand() error = %v", err)
+	}
+	if gotAuth != "Bearer runner-token" {
+		t.Fatalf("Authorization header = %q, want bearer token", gotAuth)
+	}
+	if !strings.Contains(gotScript, "'printf' 'runner-ok'") {
+		t.Fatalf("script = %q, want quoted printf command", gotScript)
+	}
+	if result.Stdout != "runner-ok\n" || result.ExitCode != 0 {
+		t.Fatalf("result = %#v, want HTTP /run stdout", result)
+	}
+}
+
+func mapHostAgentRunnerResult(taskID, status, stdout, stderr string) scheduler.Result {
+	return scheduler.Result{
+		TaskID: taskID,
+		Status: status,
+		Output: map[string]any{
+			"stdout": stdout,
+			"stderr": stderr,
+		},
 	}
 }
 
@@ -357,6 +492,38 @@ func TestRegisterAIOpsToolSurfaceWiresToolSearchToCatalogProvider(t *testing.T) 
 	}
 	if !strings.Contains(result.Content, "provider.only_tool") {
 		t.Fatalf("tool_search result = %s, want provider.only_tool", result.Content)
+	}
+}
+
+func TestRegisterAIOpsToolSurfaceRegistersHostOpsManagerTools(t *testing.T) {
+	registry := tooling.NewRegistry()
+	orchestrator := hostops.NewOrchestrator(hostops.NewInMemoryMissionStore(), hostops.NewInMemoryTranscriptStore(), nil)
+
+	if err := registerAIOpsToolSurfaceWithCatalog(registry, nil, nil, nil, registry, orchestrator); err != nil {
+		t.Fatalf("registerAIOpsToolSurfaceWithCatalog() error = %v", err)
+	}
+
+	for _, name := range []string{
+		hostops.ToolSpawnHostAgent,
+		hostops.ToolSendHostAgentMessage,
+		hostops.ToolWaitHostAgents,
+		hostops.ToolStopHostAgent,
+	} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("registry.Get(%q) missing", name)
+		}
+		meta := tool.Metadata()
+		if meta.Domain != "hostops" {
+			t.Fatalf("%s domain = %q, want hostops", name, meta.Domain)
+		}
+	}
+
+	assembled := registry.AssembleToolsWithOptions("workspace", "execute", tooling.AssembleOptionsForTurnMetadata(map[string]string{
+		"enableToolPack": hostops.ToolPackHostOps,
+	}))
+	if !registryAdapterHasTool(assembled, hostops.ToolSpawnHostAgent) {
+		t.Fatalf("AssembleToolsWithOptions(workspace, execute, hostops pack) missing %s; got %v", hostops.ToolSpawnHostAgent, registryAdapterToolNames(assembled))
 	}
 }
 

@@ -226,6 +226,178 @@ func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testin
 	}
 }
 
+func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter).
+		WithDeferredCatalogLookup(mockDeferredCatalogLookup{
+			"synthetic.resource_reader": {
+				Name:        "synthetic.resource_reader",
+				Description: "Read bounded resources",
+				Layer:       tooling.ToolLayerDeferred,
+				Pack:        "synthetic_resources",
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "read",
+					ResourceTypes:  []string{"resource"},
+					OperationKinds: []string{"read"},
+				},
+			},
+		})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-deferred",
+		"turn-deferred",
+		ToolCall{
+			ID:        "call-deferred",
+			Name:      "synthetic.resource_reader",
+			Arguments: json.RawMessage(`{"uri":"synthetic://resource"}`),
+		},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_unloaded"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_unloaded", result.Error)
+	}
+	if !strings.Contains(result.Error, `"requiredAction":"call tool_search with mode=search, then mode=select"`) {
+		t.Fatalf("dispatch error missing recovery action: %s", result.Error)
+	}
+}
+
+func TestToolDispatcher_UnknownToolReturnsStructuredNotFound(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-unknown",
+		"turn-unknown",
+		ToolCall{ID: "call-unknown", Name: "synthetic.missing", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_not_found"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_not_found", result.Error)
+	}
+}
+
+func TestDispatchUsesSamePolicySnapshot(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "hidden result"}
+	meta := tooling.ToolMetadata{Name: "synthetic.hidden_read", RiskLevel: tooling.ToolRiskLow}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"synthetic.hidden_read": {
+			desc:     ToolDescriptor{Metadata: meta},
+			executor: executor,
+		},
+	}}, nil, emitter).WithToolSurfacePolicySnapshot(&tooling.ToolSurfacePolicySnapshot{
+		Hash: "policy-hash-1",
+		HiddenTools: []tooling.ToolHiddenReason{{
+			Name:   "synthetic.hidden_read",
+			Reason: "hidden_from_prompt",
+		}},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-policy",
+		"turn-policy",
+		ToolCall{ID: "call-hidden", Name: "synthetic.hidden_read", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_hidden_by_policy"`) {
+		t.Fatalf("dispatch error = %q, want tool_hidden_by_policy", result.Error)
+	}
+	if !strings.Contains(result.Error, `"policySnapshotHash":"policy-hash-1"`) {
+		t.Fatalf("dispatch error missing policy snapshot hash: %s", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestToolDispatcher_DedicatedToolPreferenceRejectsUnexplainedShellFallback(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "raw file"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithVisibleToolMetadata([]tooling.ToolMetadata{
+		{
+			Name: "synthetic.read_file",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"file"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-dedicated",
+		"turn-dedicated",
+		ToolCall{ID: "call-shell", Name: "exec_command", Arguments: json.RawMessage(`{"command":"cat","args":["synthetic.log"]}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"dedicated_tool_preferred"`) {
+		t.Fatalf("dispatch error = %q, want dedicated_tool_preferred", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestToolDispatcher_DedicatedToolPreferenceAllowsReasonedShellFallback(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "raw file"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithVisibleToolMetadata([]tooling.ToolMetadata{
+		{
+			Name: "synthetic.read_file",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"file"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-dedicated",
+		"turn-dedicated",
+		ToolCall{ID: "call-shell", Name: "exec_command", Arguments: json.RawMessage(`{"command":"cat","args":["synthetic.log"],"fallbackReason":"need exact byte count from shell"}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error != "" || result.Content != "raw file" {
+		t.Fatalf("dispatch result = %#v, want allowed shell fallback", result)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls)
+	}
+}
+
+type mockDeferredCatalogLookup map[string]tooling.ToolMetadata
+
+func (m mockDeferredCatalogLookup) LookupDeferredTool(name string) (tooling.ToolMetadata, bool) {
+	meta, ok := m[name]
+	return meta, ok
+}
+
 func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	largeResult := strings.Repeat("x", 20*1024)

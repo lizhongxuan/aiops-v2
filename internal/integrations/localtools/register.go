@@ -39,6 +39,29 @@ type LLMConfigRepository interface {
 	GetLLMConfig() (*store.LLMConfig, error)
 }
 
+type HostRepository interface {
+	GetHost(id string) (*store.HostRecord, error)
+}
+
+type HostAgentCommandRequest struct {
+	HostID         string
+	Command        string
+	Args           []string
+	WorkingDir     string
+	Timeout        time.Duration
+	MaxOutputBytes int
+}
+
+type HostAgentCommandResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+type HostAgentCommandRunner interface {
+	RunHostAgentCommand(ctx context.Context, req HostAgentCommandRequest) (HostAgentCommandResult, error)
+}
+
 // Options configures builtin local tools.
 type Options struct {
 	WorkingDir                    string
@@ -51,6 +74,8 @@ type Options struct {
 	Now                           func() time.Time
 	RequireApprovalForLowRiskExec bool
 	EvidenceService               *evidence.Service
+	HostRepository                HostRepository
+	HostAgentCommandRunner        HostAgentCommandRunner
 }
 
 func (o Options) normalize() Options {
@@ -88,6 +113,7 @@ func RegisterBuiltins(registry *tooling.Registry, repo LLMConfigRepository, opts
 		NewWebSearchTool(repo, opts),
 		NewBrowseURLTool(opts),
 		NewExecCommandTool(opts),
+		NewEnsurePostgreSQLInstalledTool(opts),
 		NewCurrentModelConfigTool(repo),
 	} {
 		if err := registry.Register(tool); err != nil {
@@ -118,6 +144,8 @@ func NewCurrentModelConfigTool(repo LLMConfigRepository) tooling.Tool {
 				"model": {"type": "string"},
 				"baseURL": {"type": "string"},
 				"apiKeySet": {"type": "boolean"},
+				"reasoningEffort": {"type": "string"},
+				"supportsReasoning": {"type": "boolean"},
 				"providerNativeTools": {"type": "array", "items": {"type": "string"}}
 			}
 		}`),
@@ -126,10 +154,12 @@ func NewCurrentModelConfigTool(repo LLMConfigRepository) tooling.Tool {
 		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 			cfg := currentConfig(repo)
 			payload := map[string]any{
-				"provider":  cfg.Provider,
-				"model":     cfg.Model,
-				"baseURL":   cfg.BaseURL,
-				"apiKeySet": strings.TrimSpace(cfg.APIKey) != "",
+				"provider":          cfg.Provider,
+				"model":             cfg.Model,
+				"baseURL":           cfg.BaseURL,
+				"apiKeySet":         strings.TrimSpace(cfg.APIKey) != "",
+				"reasoningEffort":   normalizeCurrentConfigReasoningEffort(cfg.ReasoningEffort),
+				"supportsReasoning": providerSupportsReasoning(cfg.Provider, cfg.Model),
 			}
 			var nativeTools []string
 			if providerSupportsNativeWebSearch(cfg.Provider, cfg.Model) {
@@ -210,6 +240,18 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			if err != nil {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
 			}
+			if selectedRemoteHostID(ctx) != "" {
+				if isForbiddenExecCommand(req.command, req.args) {
+					return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: "forbidden terminal command is blocked by policy"}
+				}
+				if !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+					return tooling.PermissionDecision{Action: tooling.PermissionActionNeedEvidence, Reason: "remote host-agent terminal command must be read-only in chat"}
+				}
+				if _, err := lookupSelectedRemoteHost(ctx, opts.HostRepository); err != nil {
+					return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
+				}
+				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+			}
 			if terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args) {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
@@ -230,6 +272,9 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 				if timeout > 60*time.Second {
 					timeout = 60 * time.Second
 				}
+			}
+			if selectedRemoteHostID(ctx) != "" {
+				return executeHostAgentCommand(ctx, opts, req, timeout)
 			}
 			runCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
@@ -279,6 +324,97 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			}, nil
 		},
 	}
+}
+
+func selectedRemoteHostID(ctx context.Context) string {
+	execCtx, ok := tooling.ToolExecutionContextFrom(ctx)
+	if !ok {
+		return ""
+	}
+	hostID := strings.TrimSpace(execCtx.HostID)
+	if hostID == "" || hostID == "server-local" {
+		return ""
+	}
+	return hostID
+}
+
+func lookupSelectedRemoteHost(ctx context.Context, repo HostRepository) (*store.HostRecord, error) {
+	hostID := selectedRemoteHostID(ctx)
+	if hostID == "" {
+		return nil, nil
+	}
+	if repo == nil {
+		return nil, fmt.Errorf("remote host repository is not configured")
+	}
+	host, err := repo.GetHost(hostID)
+	if err != nil {
+		return nil, fmt.Errorf("load selected host %s: %w", hostID, err)
+	}
+	if host == nil {
+		return nil, fmt.Errorf("selected host %s was not found", hostID)
+	}
+	if !host.Executable && strings.TrimSpace(host.ControlMode) != "managed" {
+		return nil, fmt.Errorf("selected host %s is not managed by host-agent", hostID)
+	}
+	return host, nil
+}
+
+func executeHostAgentCommand(ctx context.Context, opts Options, req commandInput, timeout time.Duration) (tooling.ToolResult, error) {
+	host, err := lookupSelectedRemoteHost(ctx, opts.HostRepository)
+	if err != nil {
+		return tooling.ToolResult{}, err
+	}
+	if opts.HostAgentCommandRunner == nil {
+		return tooling.ToolResult{}, fmt.Errorf("host-agent command runner is not configured")
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := opts.HostAgentCommandRunner.RunHostAgentCommand(runCtx, HostAgentCommandRequest{
+		HostID:         host.ID,
+		Command:        req.command,
+		Args:           append([]string(nil), req.args...),
+		WorkingDir:     req.WorkingDir,
+		Timeout:        timeout,
+		MaxOutputBytes: opts.MaxOutputBytes,
+	})
+	if runCtx.Err() != nil {
+		return tooling.ToolResult{}, runCtx.Err()
+	}
+	if err != nil {
+		return tooling.ToolResult{}, err
+	}
+	stdoutText := truncateString(result.Stdout, opts.MaxOutputBytes)
+	stderrText := truncateString(result.Stderr, opts.MaxOutputBytes/2)
+	if result.ExitCode != 0 {
+		return tooling.ToolResult{}, fmt.Errorf("host-agent command failed: exit status %d; stderr: %s", result.ExitCode, stderrText)
+	}
+	evidenceRefs, err := recordTerminalEvidence(ctx, opts.EvidenceService, req, stdoutText, stderrText, result.ExitCode)
+	if err != nil {
+		return tooling.ToolResult{}, err
+	}
+	payload := map[string]any{
+		"schemaVersion": "aiops.terminal/v1",
+		"tool":          "exec_command",
+		"status":        "ok",
+		"source":        "host.agent_grpc",
+		"hostId":        host.ID,
+		"command":       terminalCommandString(req.command, req.args),
+		"stdout":        stdoutText,
+		"stderr":        stderrText,
+		"exitCode":      result.ExitCode,
+		"evidenceRefs":  evidenceRefs,
+	}
+	content, err := json.Marshal(payload)
+	if err != nil {
+		return tooling.ToolResult{}, err
+	}
+	return tooling.ToolResult{
+		Content: string(content),
+		Display: &tooling.ToolDisplayPayload{
+			Type:  "terminal",
+			Title: req.command,
+		},
+	}, nil
 }
 
 func recordTerminalEvidence(ctx context.Context, service *evidence.Service, req commandInput, stdoutText, stderrText string, exitCode int) ([]string, error) {
@@ -361,7 +497,7 @@ func terminalCommandString(command string, args []string) string {
 }
 
 func execCommandDescription() string {
-	description := "Execute a local terminal command on the selected server-local host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + "."
+	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
 	switch runtime.GOOS {
 	case "darwin":
 		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as nproc, free -h, and /proc/*."
@@ -1168,9 +1304,10 @@ func compactWhitespace(value string) string {
 
 func currentConfig(repo LLMConfigRepository) store.LLMConfig {
 	cfg := store.LLMConfig{
-		Provider:     "openai",
-		Model:        "gpt-5.4",
-		CompactModel: "gpt-5.4-mini",
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		CompactModel:    "gpt-5.4-mini",
+		ReasoningEffort: "medium",
 	}
 	if repo == nil {
 		return cfg
@@ -1190,7 +1327,34 @@ func currentConfig(repo LLMConfigRepository) store.LLMConfig {
 	cfg.FallbackProvider = strings.TrimSpace(stored.FallbackProvider)
 	cfg.FallbackModel = strings.TrimSpace(stored.FallbackModel)
 	cfg.CompactModel = strings.TrimSpace(stored.CompactModel)
+	cfg.ReasoningEffort = normalizeCurrentConfigReasoningEffort(stored.ReasoningEffort)
 	return cfg
+}
+
+func normalizeCurrentConfigReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "high":
+		return "high"
+	case "medium":
+		return "medium"
+	default:
+		return "medium"
+	}
+}
+
+func providerSupportsReasoning(provider, model string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.ToLower(strings.TrimSpace(model))
+	switch provider {
+	case "openai":
+		return strings.HasPrefix(model, "gpt-5") || strings.Contains(model, "o")
+	case "anthropic":
+		return strings.Contains(model, "sonnet") || strings.Contains(model, "opus")
+	default:
+		return false
+	}
 }
 
 func providerSupportsNativeWebSearch(provider, model string) bool {

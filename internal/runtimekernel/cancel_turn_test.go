@@ -3,6 +3,7 @@ package runtimekernel
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptcompiler"
 )
 
 type cancelAwareBlockingModel struct {
@@ -261,6 +263,7 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 		TurnID:     session.CurrentTurn.ID,
 		ApprovalID: "approval-1",
 		Decision:   "denied",
+		Metadata:   map[string]string{"rejection.reason": "synthetic rejection reason"},
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn() error = %v", err)
@@ -291,5 +294,12 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	session = kernel.sessions.Get(session.ID)
 	if got := len(session.PendingApprovals); got != 0 {
 		t.Fatalf("pending approvals after denied decision = %d, want 0", got)
+	}
+	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" {
+		t.Fatalf("rejected approvals = %#v, want rejection reason recorded", session.RejectedApprovals)
+	}
+	protocolState := buildProtocolPromptState(session.CurrentTurn, promptcompiler.ToolPromptDelta{}, nil, nil, session.RejectedApprovals)
+	if len(protocolState.Items) != 1 || protocolState.Items[0].Status != "denied" || !strings.Contains(protocolState.Items[0].Text, "synthetic rejection reason") {
+		t.Fatalf("protocol state = %#v, want denied approval reason", protocolState)
 	}
 }

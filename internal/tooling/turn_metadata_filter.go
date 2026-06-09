@@ -13,6 +13,7 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 		opts.Profile = firstMetadataString(metadata, "profile", "toolProfile", "mcpProfile")
 	}
 	opts.EnabledPacks = appendUniqueStrings(opts.EnabledPacks, metadataListValue(metadata, "enableToolPack")...)
+	opts.EnabledTools = appendUniqueStrings(opts.EnabledTools, metadataListValue(metadata, "enableTool")...)
 	metadataFilter := turnMetadataToolFilter(metadata)
 	if metadataFilter == nil {
 		return opts

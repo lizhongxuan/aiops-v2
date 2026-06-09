@@ -161,6 +161,7 @@ func runGoldenTurn(t *testing.T, tc aiChatHarnessGoldenCase) (TurnResult, *TurnS
 		Mode:        ModeInspect,
 		TurnID:      "turn-golden-" + tc.Name,
 		Input:       tc.UserInput,
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
 	})
 	if err != nil && tc.ExpectedStatus != "error" {
 		t.Fatalf("RunTurn returned error: %v", err)

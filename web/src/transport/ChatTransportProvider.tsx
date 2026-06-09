@@ -11,9 +11,9 @@ import { useEffect, useMemo, useRef } from "react";
 
 import { createAiopsTransportConverter } from "./aiopsTransportConverter";
 import {
-  createInitialAiopsTransportState,
   markAiopsTransportCanceled,
   markAiopsTransportFailed,
+  normalizeAiopsTransportState,
 } from "./aiopsTransportRuntime";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
@@ -30,7 +30,7 @@ export function ChatTransportProvider({
   threadId = "default",
 }: ChatTransportProviderProps) {
   const initialTransportState = useMemo(
-    () => initialState ?? createInitialAiopsTransportState(threadId),
+    () => normalizeAiopsTransportState(initialState, threadId),
     [initialState, threadId],
   );
   const converter = useMemo(() => createAiopsTransportConverter(), []);

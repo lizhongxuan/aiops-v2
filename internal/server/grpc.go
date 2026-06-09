@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -49,14 +51,49 @@ const (
 	HostMsgError     = "error"
 )
 
+type HostExecRequest struct {
+	Command        string   `json:"command"`
+	Args           []string `json:"args,omitempty"`
+	WorkingDir     string   `json:"workingDir,omitempty"`
+	TimeoutMs      int      `json:"timeoutMs,omitempty"`
+	MaxOutputBytes int      `json:"maxOutputBytes,omitempty"`
+}
+
+type HostExecResponse struct {
+	Status   string `json:"status"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	ExitCode int    `json:"exitCode,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+type HostAgentGRPCAuthenticator interface {
+	AuthenticateHostAgentGRPC(ctx context.Context, hostID, token string) error
+}
+
+type HostAgentGRPCAuthenticatorFunc func(ctx context.Context, hostID, token string) error
+
+func (fn HostAgentGRPCAuthenticatorFunc) AuthenticateHostAgentGRPC(ctx context.Context, hostID, token string) error {
+	if fn == nil {
+		return nil
+	}
+	return fn(ctx, hostID, token)
+}
+
+type hostAgentGRPCRegisterPayload struct {
+	Token string `json:"token"`
+}
+
 // ---------------------------------------------------------------------------
 // GRPCServer manages Host Agent gRPC connections.
 // ---------------------------------------------------------------------------
 
 // GRPCServer manages bidirectional gRPC streams with Host Agents.
 type GRPCServer struct {
-	mu     sync.RWMutex
-	agents map[string]*hostConnection
+	mu            sync.RWMutex
+	agents        map[string]*hostConnection
+	pending       map[string]chan *HostMessage
+	authenticator HostAgentGRPCAuthenticator
 }
 
 // hostConnection tracks a single Host Agent's gRPC stream.
@@ -70,8 +107,14 @@ type hostConnection struct {
 
 // NewGRPCServer creates a new GRPCServer.
 func NewGRPCServer() *GRPCServer {
+	return NewGRPCServerWithAuthenticator(nil)
+}
+
+func NewGRPCServerWithAuthenticator(authenticator HostAgentGRPCAuthenticator) *GRPCServer {
 	return &GRPCServer{
-		agents: make(map[string]*hostConnection),
+		agents:        make(map[string]*hostConnection),
+		pending:       make(map[string]chan *HostMessage),
+		authenticator: authenticator,
 	}
 }
 
@@ -92,6 +135,18 @@ func (s *GRPCServer) HandleStream(stream HostAgentStream) error {
 	hostID := msg.ID
 	if hostID == "" {
 		return fmt.Errorf("register message missing host ID")
+	}
+	if s.authenticator != nil {
+		token := hostAgentGRPCRegisterToken(msg.Payload)
+		if err := s.authenticator.AuthenticateHostAgentGRPC(ctx, hostID, token); err != nil {
+			_ = stream.Send(&HostMessage{
+				Type:  HostMsgError,
+				ID:    hostID,
+				Error: "unauthorized",
+				Time:  time.Now().UnixMilli(),
+			})
+			return fmt.Errorf("host-agent %q grpc authentication failed: %w", hostID, err)
+		}
 	}
 
 	conn := &hostConnection{
@@ -157,6 +212,17 @@ func (s *GRPCServer) HandleStream(stream HostAgentStream) error {
 	}
 }
 
+func hostAgentGRPCRegisterToken(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var body hostAgentGRPCRegisterPayload
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Token)
+}
+
 // SendToHost sends a command message to a specific Host Agent.
 func (s *GRPCServer) SendToHost(hostID string, msg *HostMessage) error {
 	s.mu.RLock()
@@ -169,6 +235,80 @@ func (s *GRPCServer) SendToHost(hostID string, msg *HostMessage) error {
 
 	msg.Time = time.Now().UnixMilli()
 	return conn.stream.Send(msg)
+}
+
+func (s *GRPCServer) RunExec(ctx context.Context, hostID string, req HostExecRequest) (HostExecResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req.Command = strings.TrimSpace(req.Command)
+	if req.Command == "" {
+		return HostExecResponse{}, fmt.Errorf("command is required")
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return HostExecResponse{}, err
+	}
+	msgID := fmt.Sprintf("exec-%d", time.Now().UTC().UnixNano())
+	response, err := s.requestHost(ctx, strings.TrimSpace(hostID), &HostMessage{
+		Type:    HostMsgExec,
+		ID:      msgID,
+		Payload: data,
+	})
+	if err != nil {
+		return HostExecResponse{}, err
+	}
+	if response.Type == HostMsgError {
+		return HostExecResponse{}, errors.New(firstNonEmpty(response.Error, "host-agent returned error"))
+	}
+	var payload HostExecResponse
+	if len(response.Payload) > 0 {
+		if err := json.Unmarshal(response.Payload, &payload); err != nil {
+			return HostExecResponse{}, fmt.Errorf("decode host-agent exec response: %w", err)
+		}
+	}
+	if strings.TrimSpace(response.Error) != "" && strings.TrimSpace(payload.Error) == "" {
+		payload.Error = strings.TrimSpace(response.Error)
+	}
+	if strings.TrimSpace(payload.Status) == "" {
+		payload.Status = "success"
+	}
+	return payload, nil
+}
+
+func (s *GRPCServer) requestHost(ctx context.Context, hostID string, msg *HostMessage) (*HostMessage, error) {
+	if hostID == "" {
+		return nil, fmt.Errorf("host id is required")
+	}
+	if msg == nil {
+		return nil, fmt.Errorf("host message is required")
+	}
+	if strings.TrimSpace(msg.ID) == "" {
+		msg.ID = fmt.Sprintf("msg-%d", time.Now().UTC().UnixNano())
+	}
+	ch := make(chan *HostMessage, 1)
+	s.mu.Lock()
+	if _, exists := s.pending[msg.ID]; exists {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("host message id already pending: %s", msg.ID)
+	}
+	s.pending[msg.ID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pending, msg.ID)
+		s.mu.Unlock()
+	}()
+
+	if err := s.SendToHost(hostID, msg); err != nil {
+		return nil, err
+	}
+	select {
+	case response := <-ch:
+		return response, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // IsHostConnected reports whether a Host Agent is currently connected.
@@ -191,8 +331,27 @@ func (s *GRPCServer) ConnectedHosts() []string {
 }
 
 // handleHostResponse routes a response from a Host Agent to the appropriate handler.
-// In production this would use a pending-request map with channels.
-func (s *GRPCServer) handleHostResponse(_ string, _ *HostMessage) {
-	// Stub: in production, this routes responses to pending tool call waiters.
-	// The protocol format is preserved — no changes to wire format.
+func (s *GRPCServer) handleHostResponse(_ string, msg *HostMessage) {
+	if msg == nil || strings.TrimSpace(msg.ID) == "" {
+		return
+	}
+	s.mu.RLock()
+	ch := s.pending[msg.ID]
+	s.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }

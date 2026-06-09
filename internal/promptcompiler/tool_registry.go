@@ -23,7 +23,7 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 	var toolLines []string
 
 	for _, tool := range ctx.AssembledTools {
-		if tool == nil || isRemovedOpsTool(tool.Metadata().Name) {
+		if tool == nil || tooling.ToolHiddenFromPrompt(tool.Metadata()) {
 			continue
 		}
 		toolEntry := c.buildToolPromptEntry(tool)
@@ -44,16 +44,6 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		Content: content,
 		Entries: entries,
 	}, nil
-}
-
-func isRemovedOpsTool(name string) bool {
-	name = strings.TrimSpace(name)
-	for _, prefix := range []string{"k8s.", "changes.", "runbook.", "fallback.", "erp."} {
-		if strings.HasPrefix(name, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *PromptCompilerImpl) buildToolPromptDelta(ctx CompileContext) ToolPromptDelta {

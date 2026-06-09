@@ -2,6 +2,7 @@ package skills
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -29,11 +30,20 @@ type Definition struct {
 	Source      string
 	LoadedFrom  string
 	FileID      string
+	Discovery   SkillDiscoveryMetadata
+	Governance  SkillGovernanceMetadata
+	Truncated   SkillTruncationState
 }
 
 type skillRecord struct {
 	def   Definition
 	order int
+}
+
+type SkillResolutionTrace struct {
+	Winner   string   `json:"winner,omitempty"`
+	Shadowed []string `json:"shadowed,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
 }
 
 // Registry stores skill definitions as a source-aware catalog.
@@ -120,6 +130,40 @@ func (r *Registry) List() []Definition {
 	return out
 }
 
+func (r *Registry) ResolutionTrace(name string) SkillResolutionTrace {
+	name = strings.TrimSpace(name)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var matches []skillRecord
+	for _, rec := range r.items {
+		if rec.def.Name == name {
+			matches = append(matches, rec)
+		}
+	}
+	if len(matches) == 0 {
+		return SkillResolutionTrace{Reason: "not_found"}
+	}
+	best := matches[0]
+	for _, rec := range matches[1:] {
+		if compareSkillRecords(rec, best) < 0 {
+			best = rec
+		}
+	}
+	trace := SkillResolutionTrace{
+		Winner: best.def.LoadedFrom,
+		Reason: "source_precedence",
+	}
+	for _, rec := range matches {
+		if sameDefinition(rec.def, best.def) {
+			continue
+		}
+		trace.Shadowed = append(trace.Shadowed, rec.def.LoadedFrom)
+	}
+	sort.Strings(trace.Shadowed)
+	return trace
+}
+
 // Unregister removes all definitions for a skill name.
 func (r *Registry) Unregister(name string) {
 	name = strings.TrimSpace(name)
@@ -182,13 +226,40 @@ func PromptCommandForDefinition(def Definition, defaultSource string) commands.P
 		Tools:       append([]string(nil), def.Tools...),
 		Source:      source,
 		LoadedFrom:  inferCommandLoadedFrom(def.LoadedFrom, source),
-		WhenToUse:   def.Description,
+		WhenToUse:   firstNonEmpty(def.Discovery.WhenToUse, def.Description),
+		Discovery:   commandDiscoveryMetadata(def.Discovery),
+		Governance:  commandGovernanceMetadata(def.Governance),
+	}
+}
+
+func commandDiscoveryMetadata(meta SkillDiscoveryMetadata) commands.SkillDiscoveryMetadata {
+	return commands.SkillDiscoveryMetadata{
+		WhenToUse:        meta.WhenToUse,
+		Preview:          meta.Preview,
+		ResourceTypes:    append([]string(nil), meta.ResourceTypes...),
+		TaskIntents:      append([]string(nil), meta.TaskIntents...),
+		Paths:            append([]string(nil), meta.Paths...),
+		Modes:            append([]string(nil), meta.Modes...),
+		ActivationMode:   meta.ActivationMode,
+		UserInvocable:    meta.UserInvocable,
+		ModelInvocable:   meta.ModelInvocable,
+		RequiredForMatch: meta.RequiredForMatch,
+	}
+}
+
+func commandGovernanceMetadata(meta SkillGovernanceMetadata) commands.SkillGovernanceMetadata {
+	return commands.SkillGovernanceMetadata{
+		Risk:         meta.Risk,
+		AllowedTools: append([]string(nil), meta.AllowedTools...),
+		DeniedTools:  append([]string(nil), meta.DeniedTools...),
 	}
 }
 
 func normalizeDefinition(def Definition) Definition {
 	def.Name = strings.TrimSpace(def.Name)
-	def.Description = strings.TrimSpace(def.Description)
+	var descriptionTruncated bool
+	def.Description, descriptionTruncated = capStringWithState(def.Description, MaxSkillDescriptionChars)
+	def.Truncated.Description = def.Truncated.Description || descriptionTruncated
 	def.Prompt = strings.TrimSpace(def.Prompt)
 	def.Source = strings.TrimSpace(def.Source)
 	def.LoadedFrom = normalizeLoadedFrom(def.LoadedFrom)
@@ -197,6 +268,12 @@ func normalizeDefinition(def Definition) Definition {
 	for i := range def.Tools {
 		def.Tools[i] = strings.TrimSpace(def.Tools[i])
 	}
+	def.Tools = normalizeStringSlice(def.Tools)
+	var discoveryTruncation SkillTruncationState
+	def.Discovery, discoveryTruncation = normalizeSkillDiscoveryMetadata(def.Discovery)
+	def.Truncated.WhenToUse = def.Truncated.WhenToUse || discoveryTruncation.WhenToUse
+	def.Truncated.Preview = def.Truncated.Preview || discoveryTruncation.Preview
+	def.Governance = normalizeSkillGovernanceMetadata(def.Governance)
 
 	if def.LoadedFrom == "" && looksLikePath(def.Source) {
 		def.LoadedFrom = normalizeLoadedFrom(def.Source)
@@ -268,7 +345,21 @@ func sameDefinition(left, right Definition) bool {
 		left.Source != right.Source ||
 		left.LoadedFrom != right.LoadedFrom ||
 		left.FileID != right.FileID ||
-		len(left.Tools) != len(right.Tools) {
+		left.Discovery.WhenToUse != right.Discovery.WhenToUse ||
+		left.Discovery.Preview != right.Discovery.Preview ||
+		left.Discovery.ActivationMode != right.Discovery.ActivationMode ||
+		left.Discovery.UserInvocable != right.Discovery.UserInvocable ||
+		left.Discovery.ModelInvocable != right.Discovery.ModelInvocable ||
+		left.Discovery.RequiredForMatch != right.Discovery.RequiredForMatch ||
+		left.Governance.Risk != right.Governance.Risk ||
+		left.Truncated != right.Truncated ||
+		len(left.Tools) != len(right.Tools) ||
+		len(left.Discovery.ResourceTypes) != len(right.Discovery.ResourceTypes) ||
+		len(left.Discovery.TaskIntents) != len(right.Discovery.TaskIntents) ||
+		len(left.Discovery.Paths) != len(right.Discovery.Paths) ||
+		len(left.Discovery.Modes) != len(right.Discovery.Modes) ||
+		len(left.Governance.AllowedTools) != len(right.Governance.AllowedTools) ||
+		len(left.Governance.DeniedTools) != len(right.Governance.DeniedTools) {
 		return false
 	}
 	for i := range left.Tools {
@@ -276,12 +367,47 @@ func sameDefinition(left, right Definition) bool {
 			return false
 		}
 	}
+	if !sameStringSlice(left.Discovery.ResourceTypes, right.Discovery.ResourceTypes) ||
+		!sameStringSlice(left.Discovery.TaskIntents, right.Discovery.TaskIntents) ||
+		!sameStringSlice(left.Discovery.Paths, right.Discovery.Paths) ||
+		!sameStringSlice(left.Discovery.Modes, right.Discovery.Modes) ||
+		!sameStringSlice(left.Governance.AllowedTools, right.Governance.AllowedTools) ||
+		!sameStringSlice(left.Governance.DeniedTools, right.Governance.DeniedTools) {
+		return false
+	}
 	return true
 }
 
 func cloneDefinition(def Definition) Definition {
 	def.Tools = append([]string(nil), def.Tools...)
+	def.Discovery.ResourceTypes = append([]string(nil), def.Discovery.ResourceTypes...)
+	def.Discovery.TaskIntents = append([]string(nil), def.Discovery.TaskIntents...)
+	def.Discovery.Paths = append([]string(nil), def.Discovery.Paths...)
+	def.Discovery.Modes = append([]string(nil), def.Discovery.Modes...)
+	def.Governance.AllowedTools = append([]string(nil), def.Governance.AllowedTools...)
+	def.Governance.DeniedTools = append([]string(nil), def.Governance.DeniedTools...)
 	return def
+}
+
+func sameStringSlice(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func inferSkillSource(loadedFrom string) string {

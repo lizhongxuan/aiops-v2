@@ -42,6 +42,10 @@ type AgentConfig struct {
 	// Tools are the Eino-adapted tools available to this agent.
 	Tools []tool.BaseTool
 
+	// AssembledTools are the unified tool descriptors used by the shared
+	// runtime loop for prompt compilation and dispatch lookup.
+	AssembledTools []tooling.Tool
+
 	// MaxIterations is the maximum ReAct loop iterations.
 	MaxIterations int
 
@@ -50,6 +54,15 @@ type AgentConfig struct {
 
 	// MissionID is the workspace mission ID (empty for host sessions).
 	MissionID string
+
+	// SessionID is the isolated child session used by the runtime turn.
+	SessionID string
+
+	// Input is the child turn user input/task.
+	Input string
+
+	// Metadata is propagated to the runtime turn.
+	Metadata map[string]string
 }
 
 // ---------------------------------------------------------------------------
@@ -206,7 +219,13 @@ func (f *AgentFactory) CreateHostChildAgent(ctx context.Context, req hostops.Spa
 	if hostID == "" {
 		return nil, fmt.Errorf("hostID is required for host child agent")
 	}
-	return f.createHostAgent(ctx, hostID, "execute", strings.TrimSpace(req.MissionID), []string{hostChildPromptAsset(req)})
+	cfg, err := f.createHostAgent(ctx, hostID, "execute", strings.TrimSpace(req.MissionID), []string{hostChildPromptAsset(req)})
+	if err != nil {
+		return nil, err
+	}
+	cfg.SessionID = strings.TrimSpace(req.SessionID)
+	cfg.Input = strings.TrimSpace(req.Task)
+	return cfg, nil
 }
 
 func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode string, missionID string, skillAssets []string) (*AgentConfig, error) {
@@ -251,13 +270,14 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 	}
 
 	return &AgentConfig{
-		Kind:          AgentKindWorker,
-		Model:         model,
-		Instructions:  instructions,
-		Tools:         toolSet.runtime,
-		MaxIterations: maxIter,
-		HostID:        hostID,
-		MissionID:     missionID,
+		Kind:           AgentKindWorker,
+		Model:          model,
+		Instructions:   instructions,
+		Tools:          toolSet.runtime,
+		AssembledTools: toolSet.assembled,
+		MaxIterations:  maxIter,
+		HostID:         hostID,
+		MissionID:      missionID,
 	}, nil
 }
 
@@ -327,12 +347,13 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 	}
 
 	plannerCfg := AgentConfig{
-		Kind:          AgentKindPlanner,
-		Model:         plannerModel,
-		Instructions:  plannerInstructions,
-		Tools:         plannerToolSet.runtime,
-		MaxIterations: plannerMaxIter,
-		MissionID:     missionID,
+		Kind:           AgentKindPlanner,
+		Model:          plannerModel,
+		Instructions:   plannerInstructions,
+		Tools:          plannerToolSet.runtime,
+		AssembledTools: plannerToolSet.assembled,
+		MaxIterations:  plannerMaxIter,
+		MissionID:      missionID,
 	}
 
 	// --- Executor Agent (uses execute mode tools) ---
@@ -357,12 +378,13 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 	}
 
 	executorCfg := AgentConfig{
-		Kind:          AgentKindPlanner,
-		Model:         executorModel,
-		Instructions:  executorInstructions,
-		Tools:         executorToolSet.runtime,
-		MaxIterations: plannerMaxIter,
-		MissionID:     missionID,
+		Kind:           AgentKindPlanner,
+		Model:          executorModel,
+		Instructions:   executorInstructions,
+		Tools:          executorToolSet.runtime,
+		AssembledTools: executorToolSet.assembled,
+		MaxIterations:  plannerMaxIter,
+		MissionID:      missionID,
 	}
 
 	// --- Replanner Agent ---
@@ -387,12 +409,13 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 	}
 
 	replannerCfg := AgentConfig{
-		Kind:          AgentKindPlanner,
-		Model:         replannerModel,
-		Instructions:  replannerInstructions,
-		Tools:         replannerToolSet.runtime,
-		MaxIterations: plannerMaxIter,
-		MissionID:     missionID,
+		Kind:           AgentKindPlanner,
+		Model:          replannerModel,
+		Instructions:   replannerInstructions,
+		Tools:          replannerToolSet.runtime,
+		AssembledTools: replannerToolSet.assembled,
+		MaxIterations:  plannerMaxIter,
+		MissionID:      missionID,
 	}
 
 	return &WorkspaceAgentConfig{
@@ -449,11 +472,13 @@ func (f *AgentFactory) CreateWorkerAgent(ctx context.Context, hostID string, tas
 	}
 
 	return &AgentConfig{
-		Kind:          AgentKindWorker,
-		Model:         model,
-		Instructions:  instructions,
-		Tools:         toolSet.runtime,
-		MaxIterations: maxIter,
-		HostID:        hostID,
+		Kind:           AgentKindWorker,
+		Model:          model,
+		Instructions:   instructions,
+		Tools:          toolSet.runtime,
+		AssembledTools: toolSet.assembled,
+		MaxIterations:  maxIter,
+		HostID:         hostID,
+		Input:          task,
 	}, nil
 }

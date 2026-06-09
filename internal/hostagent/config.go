@@ -18,6 +18,7 @@ var defaultCapabilities = []string{"script.shell", "script.python", "terminal"}
 
 type Config struct {
 	ServerURL         string            `yaml:"server_url"`
+	GRPCURL           string            `yaml:"grpc_url"`
 	HostID            string            `yaml:"host_id"`
 	ListenAddr        string            `yaml:"listen_addr"`
 	TokenRef          string            `yaml:"token_ref"`
@@ -29,6 +30,7 @@ type Config struct {
 
 type rawConfig struct {
 	ServerURL         string            `yaml:"server_url"`
+	GRPCURL           string            `yaml:"grpc_url"`
 	HostID            string            `yaml:"host_id"`
 	ListenAddr        string            `yaml:"listen_addr"`
 	TokenRef          string            `yaml:"token_ref"`
@@ -54,6 +56,7 @@ func Load(path string) (Config, error) {
 
 	cfg := Config{
 		ServerURL:         strings.TrimRight(strings.TrimSpace(raw.ServerURL), "/"),
+		GRPCURL:           strings.TrimSpace(raw.GRPCURL),
 		HostID:            strings.TrimSpace(raw.HostID),
 		ListenAddr:        strings.TrimSpace(raw.ListenAddr),
 		TokenRef:          strings.TrimSpace(raw.TokenRef),
@@ -96,6 +99,16 @@ func (c Config) Validate() error {
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return fmt.Errorf("server_url scheme must be http or https")
+	}
+	if strings.TrimSpace(c.GRPCURL) != "" {
+		if strings.Contains(c.GRPCURL, "://") {
+			grpcParsed, err := url.Parse(c.GRPCURL)
+			if err != nil || grpcParsed.Host == "" {
+				return fmt.Errorf("grpc_url must be host:port or an absolute grpc target")
+			}
+		} else if _, _, err := net.SplitHostPort(c.GRPCURL); err != nil {
+			return fmt.Errorf("grpc_url must be host:port: %w", err)
+		}
 	}
 	if strings.TrimSpace(c.HostID) == "" {
 		return fmt.Errorf("host_id is required")

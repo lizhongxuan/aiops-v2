@@ -139,28 +139,26 @@ func TestToolPromptCommonPolicyRenderedOnceForMultipleTools(t *testing.T) {
 	}
 }
 
-func TestToolPromptSetOmitsRemovedOpsTools(t *testing.T) {
+func TestToolPromptSetOmitsHiddenFromPromptTools(t *testing.T) {
 	compiler := NewCompiler()
 	compiled, err := compiler.Compile(CompileContext{
 		AssembledTools: []Tool{
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "k8s.get_events", Description: "old k8s"}},
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "changes.recent_deployments", Description: "old changes"}},
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "runbook.match", Description: "old runbook"}},
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "fallback.plan_exec", Description: "old fallback"}},
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "erp.business_metric", Description: "old erp"}},
-			governancePromptTool{meta: tooling.ToolMetadata{Name: "coroot.service_metrics", Description: "Get service metrics"}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "synthetic.hidden_1", Description: "hidden 1", Discovery: tooling.ToolDiscoveryMetadata{HiddenFromPrompt: true}}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "synthetic.hidden_2", Description: "hidden 2", Discovery: tooling.ToolDiscoveryMetadata{HiddenFromPrompt: true}}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "synthetic.internal", Description: "internal", Layer: tooling.ToolLayerInternal}},
+			governancePromptTool{meta: tooling.ToolMetadata{Name: "synthetic.visible", Description: "Get visible evidence"}},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	for _, forbidden := range []string{"k8s.get_events", "changes.recent_deployments", "runbook.match", "fallback.plan_exec", "erp.business_metric"} {
+	for _, forbidden := range []string{"synthetic.hidden_1", "synthetic.hidden_2", "synthetic.internal"} {
 		if strings.Contains(compiled.Tools.Content, forbidden) {
 			t.Fatalf("tool prompt contains removed tool %q:\n%s", forbidden, compiled.Tools.Content)
 		}
 	}
-	if !strings.Contains(compiled.Tools.Content, "coroot.service_metrics") {
-		t.Fatalf("tool prompt should keep coroot tool:\n%s", compiled.Tools.Content)
+	if !strings.Contains(compiled.Tools.Content, "synthetic.visible") {
+		t.Fatalf("tool prompt should keep visible tool:\n%s", compiled.Tools.Content)
 	}
 }
 

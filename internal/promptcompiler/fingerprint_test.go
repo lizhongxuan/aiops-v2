@@ -1,6 +1,9 @@
 package promptcompiler
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCompileIncludesPromptFingerprint(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{
@@ -64,5 +67,35 @@ func TestPromptFingerprintChangesOnlyForChangedLayer(t *testing.T) {
 	}
 	if base.Fingerprint.StableHash != changedProtocol.Fingerprint.StableHash {
 		t.Fatal("stable hash should not change when only protocol state changes")
+	}
+}
+
+func TestProtocolStateRendersFailureSwitchPathReason(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "inspect",
+		ProtocolState: ProtocolPromptState{
+			FailureSwitchPath: &FailureSwitchPathPromptState{
+				Signature:        "failure:abc123",
+				SeenCount:        3,
+				Action:           "do_not_repeat_same_path",
+				SwitchPathReason: "same normalized failure repeated; use an independent read-only evidence source",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	content := compiled.Dynamic.Content
+	for _, want := range []string{
+		"## Failure Switch-path State",
+		"action: do_not_repeat_same_path",
+		"signature: failure:abc123",
+		"seen_count: 3",
+		"switch_path_reason: same normalized failure repeated; use an independent read-only evidence source",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("protocol content missing %q:\n%s", want, content)
+		}
 	}
 }

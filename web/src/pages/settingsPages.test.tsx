@@ -210,6 +210,7 @@ const llmPayload = {
   apiKeyMasked: "sk-***",
   baseURL: "https://api.openai.com/v1",
   maxContextTokens: 131072,
+  reasoningEffort: "high",
   bifrostActive: true,
 };
 
@@ -547,6 +548,25 @@ describe("React settings pages", () => {
     expect(
       vi.mocked(globalThis.fetch).mock.calls.some((call) => String(call[0]).includes("/install") && (call[1] as RequestInit | undefined)?.method === "POST"),
     ).toBe(false);
+    expect(container.textContent).toContain("主机 IP / 用户名");
+    expect(container.textContent).toContain("10.10.4.27 / root");
+    expect(container.textContent).toContain("安装 Agent");
+  });
+
+  it("opens host access config when saved hosts have not reported profiles yet", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/host-profiles")) return jsonResponse({ items: [] });
+      if (url.includes("/api/v1/host-leases")) return jsonResponse({ items: [] });
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/hosts");
+
+    expect(container.textContent).toContain("主机 IP / 用户名");
+    expect(container.textContent).toContain("10.10.4.27 / root");
+    expect(container.textContent).toContain("安装 Agent");
+    expect(container.textContent).not.toContain("暂无主机画像");
   });
 
   it("installs host agent from the host access list action", async () => {
@@ -667,6 +687,8 @@ describe("React settings pages", () => {
     const contextInput = container.querySelector('[data-testid="llm-context-tokens-input"]') as HTMLInputElement;
     expect(contextInput?.value).toBe("131072");
     expect(contextInput?.min).toBe("10000");
+    const reasoningSelect = container.querySelector('[data-testid="llm-reasoning-effort-select"]') as HTMLSelectElement;
+    expect(reasoningSelect?.value).toBe("high");
 
     const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
     await act(async () => {
@@ -676,7 +698,34 @@ describe("React settings pages", () => {
 
     const llmPutCall = vi.mocked(globalThis.fetch).mock.calls.find((call) => String(call[0]).endsWith("/api/v1/llm-config") && (call[1] as RequestInit | undefined)?.method === "PUT");
     expect(llmPutCall).toBeTruthy();
-    expect(requestBodyFromCall(llmPutCall as unknown[]).maxContextTokens).toBe(131072);
+    const body = requestBodyFromCall(llmPutCall as unknown[]);
+    expect(body.maxContextTokens).toBe(131072);
+    expect(body.reasoningEffort).toBe("high");
+  });
+
+  it("keeps the LLM reasoning effort when switching provider before saving", async () => {
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    const reasoningSelect = container.querySelector('[data-testid="llm-reasoning-effort-select"]') as HTMLSelectElement;
+    expect(reasoningSelect?.value).toBe("high");
+    await act(async () => {
+      providerSelect.value = "anthropic";
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(reasoningSelect.value).toBe("high");
+
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    await act(async () => {
+      saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const llmPutCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/llm-config") && (call[1] as RequestInit | undefined)?.method === "PUT");
+    expect(requestBodyFromCall(llmPutCall as unknown[]).reasoningEffort).toBe("high");
   });
 
   it("shows the default LLM context size when the API does not return one", async () => {

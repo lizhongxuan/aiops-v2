@@ -123,6 +123,29 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
+  it("preserves skill_search arguments in tool progress text", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "skill-search-render",
+              kind: "tool",
+              displayKind: "skill_search",
+              text: "skill_search mode=search query=synthetic diagnosis",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await expandProcessTranscript();
+
+    expect(container.textContent).toContain("skill_search mode=search query=synthetic diagnosis");
+    expect(container.textContent).not.toContain("网页检索");
+  });
+
   it("shows the active web search query in the running search summary", async () => {
     const process = [
       makeBlock({
@@ -1454,6 +1477,21 @@ describe("groupConsecutiveBlocks", () => {
     }
     expect(groups[1].kind).toBe("single");
     expect(groups[2].kind).toBe("single");
+  });
+
+  it("does not classify skill discovery tools as web search blocks", () => {
+    const blocks = [
+      makeBlock({ id: "skill-search", kind: "tool", displayKind: "skill_search", text: "skill_search mode=search" }),
+      makeBlock({ id: "skill-read", kind: "tool", displayKind: "skill_read", text: "skill_read skill=synthetic.triage" }),
+    ];
+
+    const groups = groupConsecutiveBlocks(blocks);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].kind).toBe("merged");
+    if (groups[0].kind === "merged") {
+      expect(groups[0].mergedKind).toBe("tool");
+    }
   });
 
   it("handles mixed reasoning and tool blocks correctly", () => {

@@ -1,0 +1,443 @@
+package runtimekernel
+
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+	"strings"
+
+	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/tooling"
+)
+
+type ModelInputToolTraceFields struct {
+	ToolSurfaceFingerprint        string
+	ToolSurfacePolicySnapshotHash string
+	LoadedToolsDelta              []string
+	LoadedPacksDelta              []string
+	SkillIndexHash                string
+	LoadedSkillsDelta             []string
+	ToolSearchEvents              []promptinput.ToolSearchTraceEvent
+	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent
+	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent
+	SkillSearchEvents             []promptinput.SkillSearchTraceEvent
+	SkillReadEvents               []promptinput.SkillReadTraceEvent
+	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent
+	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace
+	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup
+	ResourceLocks                 []promptinput.ResourceLockTrace
+	FailedToolSummaries           []promptinput.FailedToolSummary
+	SafetySignals                 []promptinput.SafetySignalTrace
+	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
+	ApprovalScope                 *promptinput.ApprovalScopeTrace
+}
+
+func buildModelInputToolTraceFields(session *SessionState, snapshot *TurnSnapshot, toolSurfaceFingerprint, policySnapshotHash string) ModelInputToolTraceFields {
+	fields := ModelInputToolTraceFields{
+		ToolSurfaceFingerprint:        strings.TrimSpace(toolSurfaceFingerprint),
+		ToolSurfacePolicySnapshotHash: strings.TrimSpace(policySnapshotHash),
+	}
+	if session != nil {
+		fields.LoadedToolsDelta = session.ToolDiscovery.EnabledTools()
+		fields.LoadedPacksDelta = session.ToolDiscovery.EnabledPacks()
+		fields.ToolSearchEvents = toolSearchTraceEventsFromDiscovery(session.ToolDiscovery)
+		fields.ToolSelectionEvents = toolSelectionTraceEventsFromDiscovery(session.ToolDiscovery)
+		fields.RejectedToolCalls = rejectedToolCallTraceEventsFromDiscovery(session.ToolDiscovery)
+		fields.SkillIndexHash = session.SkillActivation.SkillIndexHash
+		fields.LoadedSkillsDelta = session.SkillActivation.EnabledSkills()
+		fields.SkillSearchEvents = skillSearchTraceEventsFromActivation(session.SkillActivation)
+		fields.SkillReadEvents = skillReadTraceEventsFromActivation(session.SkillActivation)
+		fields.RejectedSkillActivations = rejectedSkillActivationTraceEventsFromActivation(session.SkillActivation)
+		fields.MCPInstructionDeltas = mcpInstructionDeltaTraceEvents(session.MCPInstructions)
+		fields.SafetySignals = safetySignalTracesFromPendingApprovals(sessionPendingApprovals(session))
+		fields.UnexpectedStateGate = unexpectedStateGateTraceFromSignals(collectUnexpectedStateSignalsFromSession(session))
+		fields.ApprovalScope = approvalScopeTraceFromSession(session)
+	}
+	if snapshot != nil {
+		fields.ParallelDispatchGroups = parallelDispatchTraceGroupsFromSnapshot(snapshot)
+		fields.ResourceLocks = resourceLockTracesFromSnapshot(snapshot)
+		fields.FailedToolSummaries = failedToolSummariesFromSnapshot(snapshot)
+	}
+	return fields
+}
+
+func safetySignalTracesFromPendingApprovals(approvals []PendingApproval) []promptinput.SafetySignalTrace {
+	if len(approvals) == 0 {
+		return nil
+	}
+	seen := map[string]promptinput.SafetySignalTrace{}
+	for _, approval := range approvals {
+		args, _ := json.Marshal(map[string]string{
+			"command": approval.Command,
+			"reason":  approval.Reason,
+			"risk":    approval.Risk,
+			"source":  approval.Source,
+		})
+		signals := policyengine.DetectSafetySignals(policyengine.PolicyInput{
+			ToolName:  approval.ToolName,
+			Tool:      tooling.ToolMetadata{Name: approval.ToolName, RiskLevel: tooling.ToolRiskLevel(approval.Risk)},
+			Arguments: args,
+		})
+		for _, signal := range signals {
+			key := strings.TrimSpace(string(signal.Category)) + "\x00" + strings.TrimSpace(string(signal.Severity))
+			trace := seen[key]
+			trace.Category = strings.TrimSpace(string(signal.Category))
+			trace.Severity = strings.TrimSpace(string(signal.Severity))
+			trace.Action = "require_approval"
+			trace.Reasons = appendUniqueTraceStrings(trace.Reasons, signal.Reasons...)
+			if strings.TrimSpace(approval.Reason) != "" {
+				trace.Reasons = appendUniqueTraceStrings(trace.Reasons, strings.TrimSpace(approval.Reason))
+			}
+			seen[key] = trace
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]promptinput.SafetySignalTrace, 0, len(seen))
+	for _, trace := range seen {
+		sort.Strings(trace.Reasons)
+		out = append(out, trace)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Severity == out[j].Severity {
+			return out[i].Category < out[j].Category
+		}
+		return safetyTraceSeverityRank(out[i].Severity) > safetyTraceSeverityRank(out[j].Severity)
+	})
+	return out
+}
+
+func unexpectedStateGateTraceFromSignals(signals []UnexpectedStateSignal) *promptinput.UnexpectedStateGateTrace {
+	var unresolved []UnexpectedStateSignal
+	for _, signal := range signals {
+		if signal.Resolved || !unexpectedStateStatuses[normalizeUnexpectedStateStatus(signal.Status)] {
+			continue
+		}
+		unresolved = append(unresolved, signal)
+	}
+	if len(unresolved) == 0 {
+		return nil
+	}
+	trace := &promptinput.UnexpectedStateGateTrace{
+		Action:        UnexpectedStateActionBlockMutation,
+		BlockedAction: "mutation",
+		Reasons:       []string{"unresolved_unexpected_state_blocks_mutation"},
+	}
+	for _, signal := range unresolved {
+		trace.Sources = appendUniqueTraceStrings(trace.Sources, firstNonEmpty(signal.SourceTool, signal.ToolCallID))
+		scope := firstNonEmpty(signal.ResourcePath, signal.ResourceID, signal.ResourceType)
+		trace.AffectedScopes = appendUniqueTraceStrings(trace.AffectedScopes, scope)
+		trace.Reasons = appendUniqueTraceStrings(trace.Reasons, normalizeUnexpectedStateStatus(signal.Status))
+	}
+	sort.Strings(trace.Sources)
+	sort.Strings(trace.AffectedScopes)
+	sort.Strings(trace.Reasons)
+	return trace
+}
+
+func approvalScopeTraceFromSession(session *SessionState) *promptinput.ApprovalScopeTrace {
+	if session == nil {
+		return nil
+	}
+	if len(session.PlanApprovalScopes) > 0 {
+		scope := session.PlanApprovalScopes[len(session.PlanApprovalScopes)-1]
+		trace := &promptinput.ApprovalScopeTrace{
+			GrantID:        strings.TrimSpace(scope.ApprovalID),
+			Status:         "approved",
+			AllowedActions: append([]string(nil), scope.AllowedActions...),
+			RiskCeiling:    strings.TrimSpace(scope.RiskCeiling),
+			InputHash:      strings.TrimSpace(scope.InputHash),
+			Reasons:        []string{"approved_plan_scope"},
+		}
+		if scope.ExpiresAt != nil {
+			trace.ExpiresAt = scope.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		for _, resourceScope := range scope.ResourceScopes {
+			trace.ResourceScopes = appendUniqueTraceStrings(trace.ResourceScopes, formatPlanApprovalResourceScope(resourceScope))
+		}
+		sort.Strings(trace.AllowedActions)
+		sort.Strings(trace.ResourceScopes)
+		return trace
+	}
+	approvals := sessionPendingApprovals(session)
+	if len(approvals) > 0 {
+		approval := approvals[0]
+		trace := &promptinput.ApprovalScopeTrace{
+			GrantID:        strings.TrimSpace(approval.ID),
+			Status:         "pending",
+			AllowedActions: append([]string(nil), approval.AllowedActions...),
+			ResourceScopes: append([]string(nil), approval.ResourceScopes...),
+			RiskCeiling:    firstNonEmpty(approval.RiskCeiling, approval.Risk),
+			InputHash:      strings.TrimSpace(approval.InputHash),
+			Reasons:        appendUniqueTraceStrings(nil, approval.Reason, approval.Source),
+		}
+		if len(trace.AllowedActions) == 0 && strings.TrimSpace(approval.ToolName) != "" {
+			trace.AllowedActions = []string{strings.TrimSpace(approval.ToolName)}
+		}
+		if approval.ExpiresAt != nil {
+			trace.ExpiresAt = approval.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		sort.Strings(trace.AllowedActions)
+		sort.Strings(trace.ResourceScopes)
+		return trace
+	}
+	switch session.PlanMode.State {
+	case PlanModeStateActive, PlanModeStateApproved, PlanModeStatePendingExitApproval:
+		return &promptinput.ApprovalScopeTrace{
+			Status:  string(session.PlanMode.State),
+			Reasons: []string{"plan_mode_requires_matching_approval_scope"},
+		}
+	default:
+		return nil
+	}
+}
+
+func formatPlanApprovalResourceScope(scope PlanApprovalResourceScope) string {
+	parts := []string{}
+	if strings.TrimSpace(scope.Type) != "" {
+		parts = append(parts, "type="+strings.TrimSpace(scope.Type))
+	}
+	if strings.TrimSpace(scope.ID) != "" {
+		parts = append(parts, "id="+strings.TrimSpace(scope.ID))
+	}
+	if strings.TrimSpace(scope.Path) != "" {
+		parts = append(parts, "path="+strings.TrimSpace(scope.Path))
+	}
+	if strings.TrimSpace(scope.Pattern) != "" {
+		parts = append(parts, "pattern="+strings.TrimSpace(scope.Pattern))
+	}
+	return strings.Join(parts, " ")
+}
+
+func appendUniqueTraceStrings(values []string, next ...string) []string {
+	for _, value := range next {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		exists := false
+		for _, existing := range values {
+			if existing == value {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func safetyTraceSeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func toolSearchTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.ToolSearchTraceEvent {
+	if len(discovery.LastSearchResults) == 0 {
+		return nil
+	}
+	matches := make([]string, 0, len(discovery.LastSearchResults))
+	for _, match := range discovery.LastSearchResults {
+		name := strings.TrimSpace(match.Name)
+		if name == "" {
+			continue
+		}
+		if strings.TrimSpace(match.Pack) != "" {
+			name += " pack=" + strings.TrimSpace(match.Pack)
+		}
+		matches = append(matches, name)
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	return []promptinput.ToolSearchTraceEvent{{
+		Mode:       "search",
+		MatchCount: len(matches),
+		Matches:    matches,
+		Reason:     "last_tool_search_results",
+	}}
+}
+
+func skillSearchTraceEventsFromActivation(activation SkillActivationSessionState) []promptinput.SkillSearchTraceEvent {
+	if len(activation.LastSearchResults) == 0 {
+		return nil
+	}
+	matches := make([]string, 0, len(activation.LastSearchResults))
+	for _, match := range activation.LastSearchResults {
+		if strings.TrimSpace(match.Name) != "" {
+			matches = append(matches, strings.TrimSpace(match.Name))
+		}
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	return []promptinput.SkillSearchTraceEvent{{
+		Mode:       "search",
+		MatchCount: len(matches),
+		Matches:    matches,
+		Reason:     "last_skill_search_results",
+	}}
+}
+
+func skillReadTraceEventsFromActivation(activation SkillActivationSessionState) []promptinput.SkillReadTraceEvent {
+	if len(activation.LoadedSkills) == 0 {
+		return nil
+	}
+	names := activation.EnabledSkills()
+	out := make([]promptinput.SkillReadTraceEvent, 0, len(names))
+	for _, name := range names {
+		ref := activation.LoadedSkills[name]
+		out = append(out, promptinput.SkillReadTraceEvent{
+			Skill:  strings.TrimSpace(ref.Name),
+			Source: strings.TrimSpace(ref.Source),
+			Reason: strings.TrimSpace(ref.Reason),
+			Range:  fmt.Sprintf("%d:%d", ref.Range.Offset, ref.Range.Limit),
+			Hash:   strings.TrimSpace(ref.Hash),
+		})
+	}
+	return out
+}
+
+func rejectedSkillActivationTraceEventsFromActivation(activation SkillActivationSessionState) []promptinput.RejectedSkillActivationTraceEvent {
+	if len(activation.RejectedActivations) == 0 {
+		return nil
+	}
+	out := make([]promptinput.RejectedSkillActivationTraceEvent, 0, len(activation.RejectedActivations))
+	for _, rejected := range activation.RejectedActivations {
+		out = append(out, promptinput.RejectedSkillActivationTraceEvent{
+			SkillName:      strings.TrimSpace(rejected.SkillName),
+			Reason:         strings.TrimSpace(rejected.Reason),
+			RequiredAction: strings.TrimSpace(rejected.RequiredAction),
+			TurnID:         strings.TrimSpace(rejected.TurnID),
+		})
+	}
+	return out
+}
+
+func mcpInstructionDeltaTraceEvents(state mcp.MCPInstructionSessionState) []promptinput.MCPInstructionDeltaTrace {
+	if len(state.LastDelta) == 0 {
+		return nil
+	}
+	out := make([]promptinput.MCPInstructionDeltaTrace, 0, len(state.LastDelta))
+	for _, delta := range state.LastDelta {
+		out = append(out, promptinput.MCPInstructionDeltaTrace{
+			ServerID: strings.TrimSpace(delta.ServerID),
+			Action:   strings.TrimSpace(delta.Action),
+			Hash:     strings.TrimSpace(delta.Hash),
+			Chars:    delta.Chars,
+			Summary:  strings.TrimSpace(delta.Summary),
+		})
+	}
+	return out
+}
+
+func toolSelectionTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.ToolSelectionTraceEvent {
+	tools := discovery.EnabledTools()
+	packs := discovery.EnabledPacks()
+	if len(tools) == 0 && len(packs) == 0 {
+		return nil
+	}
+	return []promptinput.ToolSelectionTraceEvent{{
+		Source:      "tool_search.select",
+		Reason:      "session_enabled_tool_surface",
+		LoadedTools: tools,
+		LoadedPacks: packs,
+	}}
+}
+
+func rejectedToolCallTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.RejectedToolCallTraceEvent {
+	if len(discovery.RejectedCalls) == 0 {
+		return nil
+	}
+	out := make([]promptinput.RejectedToolCallTraceEvent, 0, len(discovery.RejectedCalls))
+	for _, call := range discovery.RejectedCalls {
+		out = append(out, promptinput.RejectedToolCallTraceEvent{
+			ToolName:             strings.TrimSpace(call.ToolName),
+			ErrorType:            strings.TrimSpace(call.ErrorType),
+			Reason:               strings.TrimSpace(call.Reason),
+			RequiredAction:       strings.TrimSpace(call.RequiredAction),
+			SuggestedSearchQuery: strings.TrimSpace(call.SuggestedSearchQuery),
+			TurnID:               strings.TrimSpace(call.TurnID),
+			ToolCallID:           strings.TrimSpace(call.ToolCallID),
+		})
+	}
+	return out
+}
+
+func parallelDispatchTraceGroupsFromSnapshot(snapshot *TurnSnapshot) []promptinput.ParallelDispatchTraceGroup {
+	if snapshot == nil {
+		return nil
+	}
+	var out []promptinput.ParallelDispatchTraceGroup
+	for _, iter := range snapshot.Iterations {
+		out = append(out, iter.ParallelDispatchGroups...)
+	}
+	return out
+}
+
+func resourceLockTracesFromSnapshot(snapshot *TurnSnapshot) []promptinput.ResourceLockTrace {
+	if snapshot == nil {
+		return nil
+	}
+	var out []promptinput.ResourceLockTrace
+	for _, iter := range snapshot.Iterations {
+		out = append(out, iter.ResourceLocks...)
+	}
+	return out
+}
+
+func failedToolSummariesFromSnapshot(snapshot *TurnSnapshot) []promptinput.FailedToolSummary {
+	if snapshot == nil {
+		return nil
+	}
+	var out []promptinput.FailedToolSummary
+	seen := map[string]bool{}
+	for _, iter := range snapshot.Iterations {
+		for _, invocation := range iter.ToolInvocations {
+			if invocation.Status != ToolInvocationFailed && invocation.Status != ToolInvocationBlocked && strings.TrimSpace(invocation.FailureKind) == "" {
+				continue
+			}
+			key := invocation.ToolCallID + "\x00" + invocation.ToolName
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			attempts := len(invocation.Attempts)
+			if attempts == 0 {
+				attempts = 1
+			}
+			out = append(out, promptinput.FailedToolSummary{
+				Tool:          firstNonBlankRuntimeString(invocation.ToolName, invocation.ToolCallID),
+				FailureClass:  firstNonBlankRuntimeString(invocation.FailureKind, string(invocation.Status)),
+				Attempts:      attempts,
+				FinalStatus:   string(invocation.Status),
+				SafeToRetry:   failedToolSafeToRetry(invocation.Mutating, invocation.FailureKind),
+				ModelGuidance: failedToolModelGuidance(invocation.Mutating, invocation.FailureKind, string(invocation.Status)),
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Tool == out[j].Tool {
+			return out[i].FailureClass < out[j].FailureClass
+		}
+		return out[i].Tool < out[j].Tool
+	})
+	return out
+}

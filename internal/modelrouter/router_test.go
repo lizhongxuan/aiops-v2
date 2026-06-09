@@ -3,6 +3,8 @@ package modelrouter
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -167,6 +169,48 @@ func TestResolveModelCapabilitiesForLargeOpenAIModel(t *testing.T) {
 	}
 }
 
+func TestModelRouterReportsReasoningCapability(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	native := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "openai",
+		Model:           "gpt-5.4",
+		ReasoningEffort: "high",
+	})
+	if !boolCapabilityField(t, native, "NativeReasoning") {
+		t.Fatalf("openai reasoning model NativeReasoning = false, want true: %#v", native)
+	}
+	if got := stringCapabilityField(t, native, "ReasoningEffortRequested"); got != "high" {
+		t.Fatalf("openai reasoning requested effort = %q, want high", got)
+	}
+	if got := stringCapabilityField(t, native, "ReasoningEffortApplied"); got != "high" {
+		t.Fatalf("openai reasoning applied effort = %q, want high", got)
+	}
+	if got := stringCapabilityField(t, native, "ReasoningFallbackPolicy"); got != "" {
+		t.Fatalf("native reasoning route fallback policy = %q, want empty", got)
+	}
+
+	fallback := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "ollama",
+		Model:           "llama3",
+		ReasoningEffort: "high",
+	})
+	if boolCapabilityField(t, fallback, "NativeReasoning") {
+		t.Fatalf("ollama NativeReasoning = true, want false: %#v", fallback)
+	}
+	if got := stringCapabilityField(t, fallback, "ReasoningEffortRequested"); got != "high" {
+		t.Fatalf("unsupported provider requested effort = %q, want high", got)
+	}
+	if got := stringCapabilityField(t, fallback, "ReasoningEffortApplied"); got != "" {
+		t.Fatalf("unsupported provider applied effort = %q, want empty", got)
+	}
+	policy := stringCapabilityField(t, fallback, "ReasoningFallbackPolicy")
+	if strings.TrimSpace(policy) == "" {
+		t.Fatalf("unsupported provider fallback policy is empty: %#v", fallback)
+	}
+	assertGenericReasoningFallbackPolicy(t, policy)
+}
+
 func TestResolveModelCapabilitiesForSmallContextModel(t *testing.T) {
 	r := NewRouter("openai", nil, nil)
 
@@ -194,5 +238,63 @@ func TestResolveModelCapabilitiesUsesManualContextWindowOverride(t *testing.T) {
 	}
 	if !caps.SmallContextMode {
 		t.Fatalf("expected manual 10K context to enable small context mode: %#v", caps)
+	}
+}
+
+func boolCapabilityField(t *testing.T, caps ModelCapabilities, name string) bool {
+	t.Helper()
+	field := reflect.ValueOf(caps).FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ModelCapabilities missing field %s", name)
+	}
+	if field.Kind() != reflect.Bool {
+		t.Fatalf("ModelCapabilities.%s kind = %s, want bool", name, field.Kind())
+	}
+	return field.Bool()
+}
+
+func stringCapabilityField(t *testing.T, caps ModelCapabilities, name string) string {
+	t.Helper()
+	field := reflect.ValueOf(caps).FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("ModelCapabilities missing field %s", name)
+	}
+	if field.Kind() != reflect.String {
+		t.Fatalf("ModelCapabilities.%s kind = %s, want string", name, field.Kind())
+	}
+	return field.String()
+}
+
+func assertGenericReasoningFallbackPolicy(t *testing.T, policy string) {
+	t.Helper()
+	lower := strings.ToLower(policy)
+	for _, want := range []string{
+		"decompose the goal",
+		"list assumptions",
+		"gather evidence before conclusions",
+		"cover key claims with evidence",
+		"state the blocker",
+	} {
+		if !strings.Contains(lower, want) {
+			t.Fatalf("fallback policy missing %q:\n%s", want, policy)
+		}
+	}
+	for _, forbidden := range []string{
+		"aiops",
+		"rca",
+		"incident",
+		"host",
+		"service",
+		"pod",
+		"kubernetes",
+		"metric",
+		"log",
+		"alert",
+		"monitoring",
+		"coroot",
+	} {
+		if strings.Contains(lower, forbidden) {
+			t.Fatalf("fallback policy contains domain term %q:\n%s", forbidden, policy)
+		}
 	}
 }

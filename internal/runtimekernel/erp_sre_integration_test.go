@@ -90,7 +90,7 @@ func TestERPSREApprovalApprovedResumeContinuesAndDeniedCleansPending(t *testing.
 		Visibility: tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)}},
 		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 			executed++
-			return tooling.ToolResult{Content: "ok"}, nil
+			return tooling.ToolResult{Content: syntheticPassVerificationReportContent(t, "vr-synthetic-erp-approval", "synthetic approved write")}, nil
 		},
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())

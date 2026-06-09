@@ -152,8 +152,10 @@ type servicesConfig struct {
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
 	sshPasswordStore    HostSSHPasswordStore
+	hostAgentTokenStore HostAgentTokenStore
 	hostBootstrapRunner HostBootstrapRunner
 	hostAgentInstaller  HostAgentInstaller
+	hostOps             HostOpsService
 	pluginSpecs         []plugins.Spec
 }
 
@@ -298,6 +300,12 @@ func WithHostSSHPasswordStore(store HostSSHPasswordStore) ServicesOption {
 	}
 }
 
+func WithHostAgentTokenStore(store HostAgentTokenStore) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostAgentTokenStore = store
+	}
+}
+
 func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.hostBootstrapRunner = runner
@@ -307,6 +315,12 @@ func WithHostBootstrapRunner(runner HostBootstrapRunner) ServicesOption {
 func WithDirectHostAgentInstaller(installer HostAgentInstaller) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.hostAgentInstaller = installer
+	}
+}
+
+func WithHostOpsService(service HostOpsService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.hostOps = service
 	}
 }
 
@@ -364,6 +378,7 @@ type Services struct {
 	changes        ChangeContextService
 	opsManuals     OpsManualService
 	toolSpills     ToolResultSpillRepository
+	hostOps        HostOpsService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -403,7 +418,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	var hostBootstrap *HostBootstrapService
 	hostAgentInstaller := cfg.hostAgentInstaller
 	if hostAgentInstaller == nil && cfg.hosts != nil && cfg.credentialResolver != nil {
-		hostAgentInstaller = NewDirectHostAgentInstaller(cfg.hosts, cfg.credentialResolver)
+		tokenStore := cfg.hostAgentTokenStore
+		if tokenStore == nil {
+			tokenStore = NewLocalHostAgentTokenStore(defaultHostInstallSecretDir())
+		}
+		hostAgentInstaller = NewDirectHostAgentInstaller(cfg.hosts, cfg.credentialResolver, WithDirectHostAgentTokenStore(tokenStore))
 	}
 	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
 		hostBootstrap = NewHostBootstrapService(cfg.hosts, cfg.hostBootstrapRunner, WithHostAgentInstaller(hostAgentInstaller))
@@ -442,6 +461,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		changes:        NewChangeContextService(),
 		opsManuals:     opsManualService,
 		toolSpills:     cfg.toolResultSpills,
+		hostOps:        cfg.hostOps,
 	}
 }
 
@@ -480,6 +500,7 @@ func (s *Services) OpsManualService() OpsManualService         { return s.opsMan
 func (s *Services) ToolResultSpillRepository() ToolResultSpillRepository {
 	return s.toolSpills
 }
+func (s *Services) HostOpsService() HostOpsService { return s.hostOps }
 
 type ChatCommand struct {
 	SessionID       string
@@ -796,6 +817,7 @@ type LLMConfigView struct {
 	Model            string `json:"model,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
 	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
+	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	CompactModel     string `json:"compactModel,omitempty"`
@@ -810,6 +832,7 @@ type LLMConfigUpdate struct {
 	APIKey           string `json:"apiKey,omitempty"`
 	BaseURL          string `json:"baseURL,omitempty"`
 	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
+	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
 	FallbackProvider string `json:"fallbackProvider,omitempty"`
 	FallbackModel    string `json:"fallbackModel,omitempty"`
 	FallbackAPIKey   string `json:"fallbackApiKey,omitempty"`
@@ -952,6 +975,12 @@ type SkillCatalogItem struct {
 	Risk                  string   `json:"risk,omitempty"`
 	AllowedTools          []string `json:"allowedTools,omitempty"`
 	DeniedTools           []string `json:"deniedTools,omitempty"`
+	ResourceTypes         []string `json:"resourceTypes,omitempty"`
+	TaskIntents           []string `json:"taskIntents,omitempty"`
+	Paths                 []string `json:"paths,omitempty"`
+	Modes                 []string `json:"modes,omitempty"`
+	UserInvocable         bool     `json:"userInvocable,omitempty"`
+	ModelInvocable        bool     `json:"modelInvocable,omitempty"`
 }
 
 type SkillCatalogPayload struct {
@@ -1072,6 +1101,7 @@ func (s AgentRuntimePromptSettings) ApplyToCompileContext(ctx promptcompiler.Com
 	ctx.EvidencePolicy = normalized.EvidencePolicy
 	ctx.AnswerStyle = normalized.AnswerStyle
 	ctx.ToolBudget = normalized.ToolBudget
+	ctx.ReasoningEffort = normalized.ReasoningEffort
 	ctx.ReasoningSummary = normalized.ReasoningSummary
 	ctx.ReasoningSummaryDisplay = normalized.ReasoningSummaryDisplay
 	ctx.ShowRawReasoning = normalized.ShowRawReasoning

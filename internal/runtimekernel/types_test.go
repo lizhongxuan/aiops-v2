@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/resourceio"
 )
 
 func TestSessionType_IsValid(t *testing.T) {
@@ -653,6 +655,107 @@ func TestToolResult_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded.References[1].CardRef != "card-disk-usage" {
 		t.Errorf("References[1].CardRef mismatch: got %q", decoded.References[1].CardRef)
+	}
+}
+
+func TestToolResultReferenceCarriesResourceRange(t *testing.T) {
+	original := ToolResultReference{
+		Kind:        ToolResultReferenceKindBlob,
+		URI:         "resource://generic",
+		Digest:      "sha256:same",
+		Version:     "v1",
+		ContentType: "text/plain",
+		Range: resourceio.Range{
+			Offset: 10,
+			Limit:  20,
+			Query:  "needle",
+			Format: "text",
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"range":{"offset":10,"limit":20,"query":"needle","format":"text"}`) {
+		t.Fatalf("encoded reference missing range: %s", string(data))
+	}
+
+	var decoded ToolResultReference
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if decoded.Range.Offset != 10 || decoded.Range.Limit != 20 || decoded.Range.Query != "needle" || decoded.Range.Format != "text" {
+		t.Fatalf("decoded range = %#v", decoded.Range)
+	}
+	if decoded.Version != "v1" {
+		t.Fatalf("decoded version = %q, want v1", decoded.Version)
+	}
+}
+
+func TestExternalReferenceCarriesResourceRange(t *testing.T) {
+	original := ExternalReference{
+		ID:          "ref-1",
+		SessionID:   "sess-1",
+		TurnID:      "turn-1",
+		Iteration:   1,
+		Kind:        string(ToolResultReferenceKindBlob),
+		URI:         "resource://generic",
+		Digest:      "sha256:same",
+		Version:     "v1",
+		ContentType: "text/plain",
+		CreatedAt:   time.Unix(100, 0).UTC(),
+		Range: resourceio.Range{
+			Offset: 10,
+			Limit:  20,
+			Query:  "needle",
+			Format: "text",
+		},
+	}
+
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"range":{"offset":10,"limit":20,"query":"needle","format":"text"}`) {
+		t.Fatalf("encoded external reference missing range: %s", string(data))
+	}
+
+	var decoded ExternalReference
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if decoded.Range.Offset != 10 || decoded.Range.Limit != 20 || decoded.Range.Query != "needle" || decoded.Range.Format != "text" {
+		t.Fatalf("decoded range = %#v", decoded.Range)
+	}
+	if decoded.Version != "v1" {
+		t.Fatalf("decoded version = %q, want v1", decoded.Version)
+	}
+}
+
+func TestExternalReferenceRejectsNegativeResourceRange(t *testing.T) {
+	ref := ExternalReference{
+		ID:        "ref-1",
+		SessionID: "sess-1",
+		TurnID:    "turn-1",
+		Iteration: 1,
+		Kind:      string(ToolResultReferenceKindBlob),
+		URI:       "resource://generic",
+		Range:     resourceio.Range{Offset: -1, Limit: -2, Page: -3},
+	}
+	if err := ref.Validate(); err == nil {
+		t.Fatal("expected negative range to fail validation")
+	}
+}
+
+func TestToolResultReferenceRejectsNegativeResourceRange(t *testing.T) {
+	ref := ToolResultReference{
+		Kind:  ToolResultReferenceKindBlob,
+		URI:   "resource://generic",
+		Range: resourceio.Range{Offset: -1},
+	}
+	if err := ref.Validate(); err == nil {
+		t.Fatal("expected negative range to fail validation")
 	}
 }
 

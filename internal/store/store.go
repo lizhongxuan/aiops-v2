@@ -143,6 +143,7 @@ type LLMConfig struct {
 	APIKey           string `json:"apiKey"`
 	BaseURL          string `json:"baseURL"`
 	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
+	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
 	FallbackProvider string `json:"fallbackProvider"`
 	FallbackModel    string `json:"fallbackModel"`
 	FallbackAPIKey   string `json:"fallbackApiKey"`
@@ -178,32 +179,33 @@ type CorootConfig struct {
 
 // HostRecord stores one managed host entry for inventory-oriented pages.
 type HostRecord struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Kind              string            `json:"kind,omitempty"`
-	Address           string            `json:"address,omitempty"`
-	Transport         string            `json:"transport,omitempty"`
-	Status            string            `json:"status,omitempty"`
-	Executable        bool              `json:"executable,omitempty"`
-	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
-	OS                string            `json:"os,omitempty"`
-	Arch              string            `json:"arch,omitempty"`
-	AgentVersion      string            `json:"agentVersion,omitempty"`
-	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	LastError         string            `json:"lastError,omitempty"`
-	SSHUser           string            `json:"sshUser,omitempty"`
-	SSHPort           int               `json:"sshPort,omitempty"`
-	SSHCredentialRef  string            `json:"sshCredentialRef,omitempty"`
-	AgentURL          string            `json:"agentUrl,omitempty"`
-	AgentTokenRef     string            `json:"agentTokenRef,omitempty"`
-	InstallState      string            `json:"installState,omitempty"`
-	InstallRunID      string            `json:"installRunId,omitempty"`
-	InstallWorkflowID string            `json:"installWorkflowId,omitempty"`
-	InstallStep       string            `json:"installStep,omitempty"`
-	ControlMode       string            `json:"controlMode,omitempty"`
-	CreatedAt         time.Time         `json:"createdAt,omitempty"`
-	UpdatedAt         time.Time         `json:"updatedAt,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Kind                string            `json:"kind,omitempty"`
+	Address             string            `json:"address,omitempty"`
+	Transport           string            `json:"transport,omitempty"`
+	Status              string            `json:"status,omitempty"`
+	Executable          bool              `json:"executable,omitempty"`
+	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
+	OS                  string            `json:"os,omitempty"`
+	Arch                string            `json:"arch,omitempty"`
+	AgentVersion        string            `json:"agentVersion,omitempty"`
+	LastHeartbeat       string            `json:"lastHeartbeat,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
+	LastError           string            `json:"lastError,omitempty"`
+	SSHUser             string            `json:"sshUser,omitempty"`
+	SSHPort             int               `json:"sshPort,omitempty"`
+	SSHCredentialRef    string            `json:"sshCredentialRef,omitempty"`
+	AgentURL            string            `json:"agentUrl,omitempty"`
+	AgentTokenRef       string            `json:"agentTokenRef,omitempty"`
+	AgentTokenSecretRef string            `json:"agentTokenSecretRef,omitempty"`
+	InstallState        string            `json:"installState,omitempty"`
+	InstallRunID        string            `json:"installRunId,omitempty"`
+	InstallWorkflowID   string            `json:"installWorkflowId,omitempty"`
+	InstallStep         string            `json:"installStep,omitempty"`
+	ControlMode         string            `json:"controlMode,omitempty"`
+	CreatedAt           time.Time         `json:"createdAt,omitempty"`
+	UpdatedAt           time.Time         `json:"updatedAt,omitempty"`
 }
 
 // MCPServerRecord stores one MCP runtime server configuration and its latest
@@ -238,6 +240,12 @@ type SkillCatalogEntry struct {
 	Risk                  string    `json:"risk,omitempty"`
 	AllowedTools          []string  `json:"allowedTools,omitempty"`
 	DeniedTools           []string  `json:"deniedTools,omitempty"`
+	ResourceTypes         []string  `json:"resourceTypes,omitempty"`
+	TaskIntents           []string  `json:"taskIntents,omitempty"`
+	Paths                 []string  `json:"paths,omitempty"`
+	Modes                 []string  `json:"modes,omitempty"`
+	UserInvocable         bool      `json:"userInvocable,omitempty"`
+	ModelInvocable        bool      `json:"modelInvocable,omitempty"`
 	CreatedAt             time.Time `json:"createdAt,omitempty"`
 	UpdatedAt             time.Time `json:"updatedAt,omitempty"`
 }
@@ -1618,6 +1626,10 @@ func cloneSkillCatalogEntries(src []SkillCatalogEntry) []SkillCatalogEntry {
 	for i := range out {
 		out[i].AllowedTools = cloneStringSlice(out[i].AllowedTools)
 		out[i].DeniedTools = cloneStringSlice(out[i].DeniedTools)
+		out[i].ResourceTypes = cloneStringSlice(out[i].ResourceTypes)
+		out[i].TaskIntents = cloneStringSlice(out[i].TaskIntents)
+		out[i].Paths = cloneStringSlice(out[i].Paths)
+		out[i].Modes = cloneStringSlice(out[i].Modes)
 	}
 	return out
 }

@@ -8,6 +8,7 @@ import type {
   AiopsTransportAgentUiArtifact,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
+import { normalizeAiopsTransportState } from "./aiopsTransportRuntime";
 
 type ConverterResult = {
   messages: ThreadMessage[];
@@ -20,14 +21,15 @@ export function createAiopsTransportConverter() {
     state: AiopsTransportState,
     connectionMetadata: AssistantTransportConnectionMetadata,
   ): ConverterResult => {
-    const messages = orderedTurnMessages(state).concat(
+    const normalizedState = normalizeAiopsTransportState(state);
+    const messages = orderedTurnMessages(normalizedState).concat(
       optimisticPendingUserMessages(connectionMetadata),
     );
 
     return {
       messages,
-      isRunning: isAiopsTransportRunning(state) || connectionMetadata.isSending,
-      state,
+      isRunning: isAiopsTransportRunning(normalizedState) || connectionMetadata.isSending,
+      state: normalizedState,
     };
   };
 }
@@ -36,7 +38,7 @@ export function isAiopsTransportRunning(state: AiopsTransportState) {
   if (state.status === "working" || state.status === "blocked") {
     return true;
   }
-  return Object.keys(state.runtimeLiveness.activeTurns || {}).length > 0;
+  return Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
 }
 
 function orderedTurnMessages(state: AiopsTransportState) {

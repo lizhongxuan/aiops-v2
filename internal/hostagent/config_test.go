@@ -18,6 +18,7 @@ func TestHostAgentConfigLoadsYAMLAndTokenFile(t *testing.T) {
 	configPath := filepath.Join(dir, "host-agent.yaml")
 	yaml := `
 server_url: http://127.0.0.1:8080
+grpc_url: 127.0.0.1:18090
 host_id: prod-web-01
 listen_addr: :7072
 token_ref: ` + tokenPath + `
@@ -41,6 +42,9 @@ capabilities:
 
 	if cfg.ServerURL != "http://127.0.0.1:8080" {
 		t.Fatalf("ServerURL = %q", cfg.ServerURL)
+	}
+	if cfg.GRPCURL != "127.0.0.1:18090" {
+		t.Fatalf("GRPCURL = %q", cfg.GRPCURL)
 	}
 	if cfg.HostID != "prod-web-01" {
 		t.Fatalf("HostID = %q", cfg.HostID)

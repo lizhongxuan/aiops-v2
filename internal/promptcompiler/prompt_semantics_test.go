@@ -83,6 +83,30 @@ func TestSkillPromptAssetsRenderAsProgressiveDisclosureContext(t *testing.T) {
 	}
 }
 
+func TestLoadedSkillRefsRenderAsDynamicDelta(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		LoadedSkillRefs: []LoadedSkillPromptRef{{
+			Name:   "synthetic.triage",
+			Source: "skill_read",
+			Reason: "Need relevant checklist",
+			Range:  "0:128",
+			Hash:   "sha256:body",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(compiled.Dynamic.Content, "## Newly loaded skills") {
+		t.Fatalf("dynamic prompt missing loaded skill marker:\n%s", compiled.Dynamic.Content)
+	}
+	if !strings.Contains(compiled.Dynamic.Content, "synthetic.triage: loaded by skill_read; reason=Need relevant checklist") {
+		t.Fatalf("dynamic prompt missing loaded skill detail:\n%s", compiled.Dynamic.Content)
+	}
+	if strings.Contains(compiled.Dynamic.Content, "Full activated skill body") {
+		t.Fatalf("loaded skill marker leaked body:\n%s", compiled.Dynamic.Content)
+	}
+}
+
 func TestProtocolPromptStateRendersStructuredItems(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{
 		ProtocolState: ProtocolPromptState{
@@ -98,6 +122,29 @@ func TestProtocolPromptStateRendersStructuredItems(t *testing.T) {
 	for _, want := range []string{"## Protocol State", "kind=approval", "kind=todo", "approval-1", "verify trace output"} {
 		if !strings.Contains(compiled.Dynamic.Content, want) {
 			t.Fatalf("dynamic prompt missing %q:\n%s", want, compiled.Dynamic.Content)
+		}
+	}
+}
+
+func TestPromptDeveloperRulesIncludeGenericityHardcodingBoundary(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	content := compiled.Developer.Content
+	for _, want := range []string{
+		"## Genericity Boundary",
+		"Do not encode product, environment, resource, address, credential, or incident examples as core rules.",
+		"Core rules may depend only on task complexity, risk, permission state, evidence coverage, resource abstraction, state transitions, and tool metadata.",
+		"Use GenericityTrace resourceIdSource to identify whether a resource identifier came from user input, tool output, plugin metadata, fixture data, or an unknown source.",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("developer prompt missing genericity rule %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"synthetic_resource_a", "synthetic_endpoint", "blocked_core_rule:0"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("genericity boundary should not depend on fixture examples %q:\n%s", forbidden, content)
 		}
 	}
 }

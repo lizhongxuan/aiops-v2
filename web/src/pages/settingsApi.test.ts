@@ -45,6 +45,19 @@ describe("settingsApi", () => {
     );
   });
 
+  it("passes reasoning effort through when saving LLM config", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4", reasoningEffort: "high" });
+
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+      provider: "openai",
+      model: "gpt-5.4",
+      reasoningEffort: "high",
+      maxContextTokens: 200000,
+    });
+  });
+
   it("normalizes small, decimal, and empty LLM context sizes before saving", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })));
 

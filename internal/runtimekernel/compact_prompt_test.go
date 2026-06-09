@@ -11,6 +11,14 @@ func TestBuildAIOpsCompactPromptContainsRequiredSections(t *testing.T) {
 		TurnID:    "t1",
 	})
 	for _, want := range []string{
+		"CompactSummaryV1",
+		"compact_summary_v1",
+		"schemaVersion",
+		"nextStep",
+		"sourceTurnId",
+		"recentUserQuote",
+		"confirmedFacts",
+		"sourceRef",
 		"用户当前目标",
 		"当前事故",
 		"已确认事实和 evidenceRefs",

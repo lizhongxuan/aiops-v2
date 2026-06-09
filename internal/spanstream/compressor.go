@@ -125,6 +125,9 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 	if err != nil {
 		return "", err
 	}
+	if len(resp.ToolCalls) > 0 {
+		return "", fmt.Errorf("summary model attempted tool call during context compression")
+	}
 
 	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {

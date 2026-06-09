@@ -202,10 +202,12 @@ func SplitContextForCompaction(cw *ContextWindow, messages []Message) ContextCom
 func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Message, opts ContextPipelineOptions) (ContextPipelineResult, error) {
 	thresholds := contextPipelineThresholds(cw, opts.BudgetPolicy)
 	micro := MicrocompactMessages(messages, MicrocompactOptions{
-		SessionID:        opts.SessionID,
-		TurnID:           opts.TurnID,
-		Iteration:        opts.Iteration,
-		SmallContextMode: thresholds.SmallContextMode,
+		SessionID:                  opts.SessionID,
+		TurnID:                     opts.TurnID,
+		Iteration:                  opts.Iteration,
+		SmallContextMode:           thresholds.SmallContextMode,
+		PendingEvidenceToolCallIDs: pendingEvidenceToolCallIDs(opts.PendingEvidence),
+		ApprovalBlockerToolCallIDs: pendingApprovalToolCallIDs(opts.PendingApprovals),
 	})
 	governanceEvents := append([]ContextGovernanceEvent(nil), micro.Events...)
 	messages = micro.Messages
@@ -232,6 +234,20 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		plan.Compactable = append([]Message(nil), plan.Compactable[:start]...)
 		plan.TrimmedCount = len(plan.Compactable)
 	}
+	hardKeepReasons := compactHardKeepReasons(plan.Retained, opts, minRetained)
+	if len(hardKeepReasons) > 0 {
+		governanceEvents = append(governanceEvents, BuildContextGovernanceEvent(ContextGovernanceEvent{
+			ID:              fmt.Sprintf("ctxgov-%s-%d-l4-hard-keep", opts.TurnID, opts.Iteration),
+			Layer:           ContextGovernanceLayerL4,
+			Kind:            "context.compaction.hard_keep",
+			SessionID:       opts.SessionID,
+			TurnID:          opts.TurnID,
+			Iteration:       opts.Iteration,
+			Message:         "compact hard keep reasons recorded",
+			Budget:          thresholds,
+			DroppedGroupIDs: hardKeepReasons,
+		}))
+	}
 	if len(plan.Compactable) == 0 {
 		result := append([]Message(nil), plan.Retained...)
 		recomputeContextWindow(cw, result)
@@ -257,7 +273,21 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		compressed, err := compressOnce(compactCtx, opts.Compressor, plan.Compactable)
 		cancel()
 		if err == nil && strings.TrimSpace(compressed) != "" {
-			summary = compressed
+			if _, validateErr := ParseCompactSummaryV1(compressed); validateErr == nil {
+				summary = compressed
+			} else {
+				governanceEvents = append(governanceEvents, BuildContextGovernanceEvent(ContextGovernanceEvent{
+					ID:           fmt.Sprintf("ctxgov-%s-%d-l4-summary-validation-failed", opts.TurnID, opts.Iteration),
+					Layer:        ContextGovernanceLayerL4,
+					Kind:         "context.compaction.summary_validation_failed",
+					SessionID:    opts.SessionID,
+					TurnID:       opts.TurnID,
+					Iteration:    opts.Iteration,
+					Message:      "上下文压缩摘要未通过结构校验，已使用本地摘要继续",
+					Budget:       thresholds,
+					ReferenceIDs: referenceIDs(refs),
+				}))
+			}
 		} else if err != nil {
 			message := "上下文压缩失败，已使用本地摘要继续"
 			layer := ContextGovernanceLayerL4
@@ -280,16 +310,27 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		}
 	}
 	segmentID := fmt.Sprintf("cmp-%s-%d-%d", opts.TurnID, opts.Iteration, plan.TrimmedCount)
-	summaryMsg := Message{
-		ID:        segmentID + "-summary",
-		Role:      "system",
-		Content:   buildSummaryMessage(summary, refs),
-		Timestamp: time.Now(),
+	summaryCreatedAt := time.Now()
+	summaryMsg := NewCompactBoundaryMessage(CompactBoundaryInput{
+		SegmentID:          segmentID,
+		CompactedTurnStart: 0,
+		CompactedTurnEnd:   plan.TrimmedCount - 1,
+		PreservedTailCount: len(plan.Retained),
+		CreatedAt:          summaryCreatedAt,
+	})
+	summaryMsg.ID = segmentID + "-summary"
+	if len(hardKeepReasons) > 0 {
+		if summaryMsg.Metadata == nil {
+			summaryMsg.Metadata = map[string]string{}
+		}
+		summaryMsg.Metadata["hardKeepReasons"] = strings.Join(hardKeepReasons, ",")
 	}
-	summaryTokens := EstimateTokens(summaryMsg)
-	if cw != nil && cw.MaxTokens > 0 && summaryTokens > cw.MaxTokens/3 && cw.MaxTokens > 16 {
-		summaryMsg.Content = truncateForBudget(summaryMsg.Content, cw.MaxTokens/3)
+	boundaryContent := summaryMsg.Content
+	summaryBody := buildSummaryMessage(summary, refs)
+	if cw != nil && cw.MaxTokens > 0 && cw.MaxTokens > 16 {
+		summaryBody = truncateForBudget(summaryBody, cw.MaxTokens/3)
 	}
+	summaryMsg.Content = boundaryContent + "\n" + summaryBody
 
 	retained := append([]Message(nil), plan.Retained...)
 	resultMessages := append([]Message{summaryMsg}, retained...)
@@ -321,7 +362,7 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		Summary:            summary,
 		ReferenceIDs:       referenceIDs(refs),
 		ExternalReferences: refs,
-		CreatedAt:          time.Now(),
+		CreatedAt:          summaryCreatedAt,
 	}
 	governanceEvents = append(governanceEvents, BuildContextGovernanceEvent(ContextGovernanceEvent{
 		ID:           fmt.Sprintf("ctxgov-%s-%d-l4-completed", opts.TurnID, opts.Iteration),
@@ -439,6 +480,55 @@ func referenceIDs(refs []ExternalReference) []string {
 		}
 	}
 	return ids
+}
+
+func pendingEvidenceToolCallIDs(items []PendingEvidence) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ToolCallID) != "" {
+			ids = append(ids, item.ToolCallID)
+		}
+	}
+	return ids
+}
+
+func pendingApprovalToolCallIDs(items []PendingApproval) []string {
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ToolCallID) != "" {
+			ids = append(ids, item.ToolCallID)
+		}
+	}
+	return ids
+}
+
+func compactHardKeepReasons(retained []Message, opts ContextPipelineOptions, minRetained int) []string {
+	reasons := make([]string, 0, 5)
+	if retainedHasRole(retained, "user") {
+		reasons = append(reasons, "recent_user_message")
+	}
+	if len(opts.PendingApprovals) > 0 {
+		reasons = append(reasons, "pending_approval")
+	}
+	if len(opts.PendingEvidence) > 0 {
+		reasons = append(reasons, "pending_evidence")
+	}
+	if len(retained) > 0 {
+		reasons = append(reasons, "active_task")
+	}
+	if minRetained > 0 {
+		reasons = append(reasons, "compact_safety_minimum")
+	}
+	return reasons
+}
+
+func retainedHasRole(messages []Message, role string) bool {
+	for _, msg := range messages {
+		if msg.Role == role {
+			return true
+		}
+	}
+	return false
 }
 
 func heuristicCompactionSummary(messages []Message) string {

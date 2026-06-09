@@ -9,6 +9,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"aiops-v2/internal/agentruntime"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/projection"
@@ -120,9 +121,9 @@ type mockRunResult struct {
 	delay  time.Duration
 }
 
-func (m *mockRunner) Run(ctx context.Context, config *AgentConfig) (string, error) {
+func (m *mockRunner) Run(ctx context.Context, config agentruntime.Config) (string, error) {
 	m.mu.Lock()
-	r, ok := m.results[config.HostID]
+	r, ok := m.results[config.RuntimeHostID()]
 	m.mu.Unlock()
 	if !ok {
 		return "default-output", nil

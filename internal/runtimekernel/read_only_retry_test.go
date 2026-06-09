@@ -77,6 +77,44 @@ func TestReadOnlyRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestReadOnlyRetryDecisionIncludesFailureSignatureSwitchPath(t *testing.T) {
+	signature := BuildFailureSignature("read_metrics", json.RawMessage(`{"resourceType":"synthetic_resource","resourceId":"resource-a"}`), ToolResult{
+		Error: "context deadline exceeded request-id=abc after 1000ms",
+	})
+	got := DecideReadOnlyRetry(ReadOnlyRetryInput{
+		Config: ReadOnlyRetryConfig{
+			Enabled:     true,
+			MaxPerCall:  3,
+			MaxPerTurn:  6,
+			BackoffBase: 0,
+			BackoffMax:  0,
+		},
+		FailureKind:                      string(toolfailure.KindTimeout),
+		OriginalArgumentsHash:            "sha256:args",
+		EffectiveArgumentsHash:           "sha256:args",
+		OriginalToolSurfaceFingerprint:   "surface-1",
+		EffectiveToolSurfaceFingerprint:  "surface-1",
+		CompletedRetryAttemptsForCall:    2,
+		CompletedRetryAttemptsForTurn:    2,
+		ProspectiveRetryAttemptsThisCall: 3,
+		FailureSignature:                 signature,
+		FailureSignatureSeenCount:        3,
+	})
+
+	if got.Allowed {
+		t.Fatalf("decision = %#v, want retry blocked after repeated same failure signature", got)
+	}
+	if got.FailureSignature == nil {
+		t.Fatalf("decision = %#v, want failure signature decision", got)
+	}
+	if got.FailureSignature.Action != "switch_path" {
+		t.Fatalf("failure signature decision = %#v, want switch_path", got.FailureSignature)
+	}
+	if got.FailureSignature.SwitchPathReason == "" || !strings.Contains(got.Reason, "switch path") {
+		t.Fatalf("decision = %#v, want model-visible switch path reason", got)
+	}
+}
+
 func TestReadOnlyRetryFlagOffRecordsSkippedAttempt(t *testing.T) {
 	executor := readOnlySequenceToolExecutor([]tooling.ToolResult{{Error: "context deadline exceeded"}})
 	dispatcher := NewToolDispatcher(readOnlyRetryLookup(executor), nil, &testMockEventEmitter{}).

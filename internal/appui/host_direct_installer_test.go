@@ -46,11 +46,21 @@ type fakeSSHBootstrapClient struct {
 	errors    map[string]error
 	commands  []string
 	stdins    [][]byte
+	runs      []fakeSSHRun
 	closed    bool
+}
+
+type fakeSSHRun struct {
+	command string
+	stdin   []byte
 }
 
 func (f *fakeSSHBootstrapClient) Run(_ context.Context, command string, stdin []byte) (SSHBootstrapResult, error) {
 	f.commands = append(f.commands, command)
+	f.runs = append(f.runs, fakeSSHRun{
+		command: command,
+		stdin:   append([]byte(nil), stdin...),
+	})
 	if stdin != nil {
 		cp := append([]byte(nil), stdin...)
 		f.stdins = append(f.stdins, cp)
@@ -239,11 +249,13 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 		Bytes:  []byte("host-agent-binary"),
 		SHA256: "sha256-test",
 	}}
+	tokenStore := NewLocalHostAgentTokenStore(t.TempDir())
 	installer := NewDirectHostAgentInstaller(
 		repo,
 		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/ubuntu-smoke", Password: "do-not-leak"}},
 		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: client}),
 		WithHostAgentArtifactBuilder(builder),
+		WithDirectHostAgentTokenStore(tokenStore),
 	)
 
 	run, err := installer.Install(context.Background(), "ubuntu-smoke", HostInstallRequest{AgentVersion: "v0.1.0"})
@@ -263,6 +275,12 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 	if saved.Status != "online" || saved.InstallState != "installed" || saved.InstallWorkflowID != "" || saved.AgentTokenRef == "" {
 		t.Fatalf("saved host = %+v", saved)
 	}
+	if saved.AgentTokenSecretRef == "" {
+		t.Fatalf("AgentTokenSecretRef is empty")
+	}
+	if token, err := tokenStore.ResolveHostAgentToken(context.Background(), saved.AgentTokenSecretRef); err != nil || strings.TrimSpace(token) == "" {
+		t.Fatalf("ResolveHostAgentToken() token=%q err=%v, want stored token", token, err)
+	}
 	joinedCommands := strings.Join(client.commands, "\n")
 	for _, forbidden := range []string{"llm.", "prompt.", "chat.", "completion.", "do-not-leak"} {
 		if strings.Contains(strings.ToLower(joinedCommands), forbidden) {
@@ -274,6 +292,58 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 	}
 	if len(client.stdins) == 0 {
 		t.Fatal("expected installer to upload files over ssh stdin")
+	}
+}
+
+func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "ubuntu-smoke",
+		Address:          "10.0.0.11",
+		SSHUser:          "kduser",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://lab/ubuntu-smoke",
+		AgentVersion:     "v0.1.0",
+	})
+	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
+		"uname -s":                        {Stdout: "Linux\n"},
+		"uname -m":                        {Stdout: "x86_64\n"},
+		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "sudo\n"},
+		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+	}}
+	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
+		Bytes:  []byte("host-agent-binary"),
+		SHA256: "sha256-test",
+	}}
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/ubuntu-smoke", Password: "sudo-password"}},
+		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: client}),
+		WithHostAgentArtifactBuilder(builder),
+	)
+
+	if _, err := installer.Install(context.Background(), "ubuntu-smoke", HostInstallRequest{AgentVersion: "v0.1.0"}); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+
+	privilegedRuns := 0
+	for _, run := range client.runs {
+		if !strings.Contains(run.command, "systemctl") && !strings.Contains(run.command, " install ") {
+			continue
+		}
+		privilegedRuns++
+		if !strings.Contains(run.command, "sudo -S -p ''") {
+			t.Fatalf("privileged command did not use non-interactive sudo:\n%s", run.command)
+		}
+		if string(run.stdin) != "sudo-password\n" {
+			t.Fatalf("sudo stdin = %q, want password newline", string(run.stdin))
+		}
+		if strings.Contains(run.command, "sudo-password") {
+			t.Fatalf("sudo password leaked into command text:\n%s", run.command)
+		}
+	}
+	if privilegedRuns == 0 {
+		t.Fatal("no privileged installer commands were captured")
 	}
 }
 

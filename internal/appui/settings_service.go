@@ -50,6 +50,7 @@ func (s *defaultSettingsService) GetSettings(context.Context) (WebSettingsPayloa
 	if strings.TrimSpace(payload.ReasoningEffort) == "" {
 		payload.ReasoningEffort = "medium"
 	}
+	payload.ReasoningEffort = normalizeReasoningEffort(payload.ReasoningEffort)
 	return payload, nil
 }
 
@@ -66,7 +67,7 @@ func (s *defaultSettingsService) UpdateSettings(ctx context.Context, payload Web
 		next.Model = trimmed
 	}
 	if trimmed := strings.TrimSpace(payload.ReasoningEffort); trimmed != "" {
-		next.ReasoningEffort = trimmed
+		next.ReasoningEffort = normalizeReasoningEffort(trimmed)
 	}
 	if len(payload.Models) > 0 {
 		next.Models = append([]store.SettingModelOption(nil), payload.Models...)
@@ -90,6 +91,7 @@ func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, e
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
+		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 		BifrostActive:    false,
 	}
@@ -104,6 +106,7 @@ func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, e
 	view.Model = strings.TrimSpace(firstNonEmpty(cfg.Model, view.Model))
 	view.BaseURL = strings.TrimSpace(cfg.BaseURL)
 	view.MaxContextTokens = normalizeLLMContextWindow(cfg.MaxContextTokens)
+	view.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	view.FallbackProvider = strings.TrimSpace(cfg.FallbackProvider)
 	view.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
 	view.CompactModel = strings.TrimSpace(firstNonEmpty(cfg.CompactModel, view.CompactModel))
@@ -122,6 +125,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
+		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 	}
 	if current != nil {
@@ -138,6 +142,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	}
 	next.BaseURL = strings.TrimSpace(payload.BaseURL)
 	next.MaxContextTokens = normalizeLLMContextWindow(payload.MaxContextTokens)
+	next.ReasoningEffort = normalizeReasoningEffort(firstNonEmpty(payload.ReasoningEffort, next.ReasoningEffort))
 	next.FallbackProvider = strings.TrimSpace(payload.FallbackProvider)
 	next.FallbackModel = strings.TrimSpace(payload.FallbackModel)
 	if trimmed := strings.TrimSpace(payload.FallbackAPIKey); trimmed != "" {
@@ -154,13 +159,14 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	nextWebSettings := &store.WebSettings{
 		Quota:           webDefaults.Quota,
 		Model:           strings.TrimSpace(firstNonEmpty(next.Model, "gpt-5.4")),
-		ReasoningEffort: webDefaults.ReasoningEffort,
+		ReasoningEffort: next.ReasoningEffort,
 		Models:          append([]store.SettingModelOption(nil), webDefaults.Models...),
 	}
 	if webSettings != nil {
 		*nextWebSettings = *webSettings
 		nextWebSettings.Models = append([]store.SettingModelOption(nil), webSettings.Models...)
 		nextWebSettings.Model = strings.TrimSpace(firstNonEmpty(next.Model, nextWebSettings.Model, "gpt-5.4"))
+		nextWebSettings.ReasoningEffort = next.ReasoningEffort
 		if len(nextWebSettings.Models) == 0 {
 			nextWebSettings.Models = append([]store.SettingModelOption(nil), webDefaults.Models...)
 		}
@@ -184,6 +190,19 @@ func normalizeLLMContextWindow(value int) int {
 		return 10000
 	}
 	return value
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "high":
+		return "high"
+	case "medium":
+		return "medium"
+	default:
+		return "medium"
+	}
 }
 
 func (s *defaultSettingsService) syncAuthFromLLMConfig(ctx context.Context, cfg *store.LLMConfig) {
@@ -223,7 +242,7 @@ func mergeWebSettings(base WebSettingsPayload, incoming store.WebSettings) WebSe
 		base.Model = trimmed
 	}
 	if trimmed := strings.TrimSpace(incoming.ReasoningEffort); trimmed != "" {
-		base.ReasoningEffort = trimmed
+		base.ReasoningEffort = normalizeReasoningEffort(trimmed)
 	}
 	if len(incoming.Models) > 0 {
 		base.Models = append([]store.SettingModelOption(nil), incoming.Models...)

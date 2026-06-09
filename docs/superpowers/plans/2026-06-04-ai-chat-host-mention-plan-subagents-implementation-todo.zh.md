@@ -4,7 +4,7 @@
 
 **Goal:** 基于 `docs/2026-06-04-ai-chat-host-mention-plan-subagents-design.zh.md` 落地 AI 对话页 `@主机`、多主机强制计划模式、每主机独立 host-bound 子 Agent、Codex 风格输入框上方状态面板和子 Agent 独立 drawer。
 
-**Architecture:** 保持 aiops-v2 现有生产路径 `TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React`，新增 hostops 领域包承载 mention、mission、child agent、transcript 和 host binding policy。主 Agent 只做 manager 和计划编排；每个被提及主机创建一个 host-bound child agent；child agent 的主机操作必须经 host-agent runtime 或 runner hybrid dispatcher。
+**Architecture:** 保持 aiops-v2 现有生产路径 `TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React`，新增 hostops 领域包承载 mention、mission、child agent、transcript 和 host binding policy。主 Agent 只做 manager 和计划编排；每个被提及主机创建一个 host-bound child agent。host-bound child agent 和 AI Chat agent 使用同一套 LLM agent runtime，只裁剪 prompt、tools、metadata、bound host 和 policy；child agent 的主机操作必须经 host-agent runtime 或 runner hybrid dispatcher。
 
 **Tech Stack:** Go 1.24.3, React 19, Vite, Vitest, Playwright, assistant-ui, aiops-v2 `internal/appui`, `internal/server`, `internal/runtimekernel`, `internal/agentmgr`, `internal/planning`, `cmd/host-agent`, `pkg/runner/scheduler`.
 
@@ -20,12 +20,14 @@
 - [x] 多主机任务在 plan 未生成或未确认前，不执行 mutating host operation。
 - [x] 所有 high-risk host operation 保持 approval/action token 治理。
 - [x] UI 采用 Codex 风格紧凑状态面板：计划列表和子 Agent 状态行在同一个面板内，并紧贴 composer 上方。
+- [x] 不新增第二套 host-agent 专用 LLM runner；host-bound child agent 必须复用 AI Chat shared agent runtime。
 
 Result 2026-06-04:
 
-- Verified by Tasks 1-13 and final acceptance checklist.
+- Verified by Tasks 1-16 and focused Task 17 safety/tooling checks.
 - Hostops implementation stays on `TurnItem -> AiopsTransportState -> AssistantTransport data stream -> assistant-ui React`.
 - Browser-in-app and Playwright verified the Codex-style compact panel and subagent drawer.
+- `agentmgr.AgentManager` now uses `runtimekernel.AgentConfigRunner`, so host-bound child agents and normal AI Chat turns share the same model/tool loop. Host children differ only by prompt, tool subset, metadata, bound host, and policy.
 
 ## 1. 文件结构
 
@@ -74,6 +76,10 @@ Result 2026-06-04:
   - 加强 host-bound child agent 创建契约。
 - `internal/agentmgr/manager.go`
   - 补充 hostops orchestrator 所需 child agent status/transcript lifecycle hook。
+- `internal/agentmgr/kernel_adapter.go`
+  - 将 hostops child spawn/follow-up 接入 shared agent runtime。
+- `internal/runtimekernel/*`
+  - 抽取或暴露可被 `agentmgr.AgentRunner` 复用的 shared iteration loop，不新增第二套模型/tool loop。
 - `pkg/runner/scheduler/hybrid_dispatcher.go`
   - 只阅读现有远程执行契约；Task 7 通过 `ExecutionAdapter` 包装现有 dispatcher，不直接改 dispatcher。
 
@@ -2167,6 +2173,502 @@ Result 2026-06-04:
 
 - Prepared Task 13 documentation/status commit with README, test report, implementation todo status, and `.gitignore` unignore rules for the new docs.
 
+## 15.1 Task 14：补齐生产 hostops wiring 验证缺口
+
+Context 2026-06-04:
+
+- 追加测试真实 `ai-server` 启动路径时发现，前 13 个任务主要覆盖领域逻辑、transport 投影、fixture/e2e UI；生产路径还缺少 hostops manager tools 注册、`HostOpsService` 注入和 `@主机` route 对 manager mutation 工具包的显式启用。
+- 当时 `AgentManager` 在 `cmd/ai-server` 中仍以 `nil AgentRunner` 创建，且 `runtimekernel.executeAgent` 仍是占位实现；因此 Task 14 只补齐 hostops 编排入口和工具可见性。后续 Task 15/16 已补齐 shared runtime runner 和 child turn 执行，Task 17 继续跟进真实 PostgreSQL smoke。
+
+- [x] **Step 14.1：新增 HostOpsService 默认实现并注入 Services**
+
+Result 2026-06-04:
+
+- Added `internal/appui/host_ops_service.go`.
+- Added `WithHostOpsService` and `Services.HostOpsService()` in `internal/appui/contracts.go`.
+- Verified:
+  `go test -count=1 ./internal/appui -run 'TestServicesExposeConfiguredHostOpsService|TestHostOpsServiceWrapsOrchestratorAndTranscriptStore'`.
+
+- [x] **Step 14.2：在 ai-server 生产启动路径注册 hostops orchestrator 和 manager tools**
+
+Result 2026-06-04:
+
+- `cmd/ai-server/main.go` creates `hostops` mission store, transcript store, orchestrator, and `agentmgr.KernelAdapter`.
+- `registerAIOpsToolSurfaceWithCatalog` registers `hostops.NewManagerTools(orchestrator)` when orchestrator is provided.
+- Verified:
+  `go test -count=1 ./cmd/ai-server -run TestRegisterAIOpsToolSurfaceRegistersHostOpsManagerTools`.
+
+- [x] **Step 14.3：让 `@主机` route 显式启用 hostops 工具包**
+
+Result 2026-06-04:
+
+- Added `hostops.ToolPackHostOps = "hostops"`.
+- Marked hostops manager tools with `Pack: hostops`.
+- `detectHostOpsTransportRoute` now appends `enableToolPack=hostops`, so `spawn_host_agent` 等 mutation tools only appear for hostops turns.
+- Verified:
+  `go test -count=1 ./internal/appui -run TestTransportCommandsAddMessageCreatesMultiHostMissionRoute`.
+
+- [x] **Step 14.4：相关包回归验证**
+
+Result 2026-06-04:
+
+- PASS: `go test -count=1 ./internal/hostops`.
+- PASS: `go test -count=1 ./internal/appui`.
+- PASS: `go test -count=1 ./cmd/ai-server`.
+
+- [x] **Step 14.5：browser-in-app 和 Playwright fixture 复验**
+
+Result 2026-06-04:
+
+- At that point `http://127.0.0.1:18080/` returned `502 Bad Gateway`, so Task 14 used a temporary Vite dev server for fixture validation. Later Task 17 browser-in-app checks loaded `http://127.0.0.1:18080/` successfully.
+- Started temporary Vite dev server at `http://127.0.0.1:53210/`.
+- browser-in-app opened `http://127.0.0.1:53210/?fixture=host-ops-three-hosts`.
+- Verified compact hostops panel, `共 5 个任务，已经完成 0 个`, `3 个后台智能体`, first child row, drawer open, and transcript text.
+- Screenshot saved to `/tmp/aiops-hostops-fixture-after-wiring-20260604.png`.
+- PASS: `npm run test:ui -- e2e/host-ops-status-panel.spec.js --project=chromium`.
+
+- [x] **Step 14.6：补齐真实 AgentRunner/LLM child-agent 执行闭环**
+
+Result 2026-06-04:
+
+- `cmd/ai-server` now injects `runtimekernel.AgentConfigRunner` into `agentmgr.NewAgentManager(...)`.
+- `KernelAdapter.SpawnHostChild` now registers a host-bound child and starts `RunAgent` asynchronously.
+- `KernelAdapter.SendMessage` now sends drawer follow-up input into the same bound child session through `RunAgentTurn`.
+- Host child final output/status are written back to hostops mission/transcript sinks.
+- Remaining closure for Task 17 is the real host-agent PostgreSQL smoke on a live host, including approval-resume behavior when package installation is required.
+
+## 15.2 Task 15：复用 AI Chat shared runtime 作为 AgentManager runner
+
+Goal:
+
+- host-bound child agent 和 AI Chat agent 使用同一套模型/tool loop。
+- host child 不是新 runner 类型；它只是同一 runtime 的 host-bound worker 配置。
+
+**Files:**
+
+- Modify: `internal/runtimekernel/eino_kernel.go`
+- Create or Modify: `internal/runtimekernel/agent_config_runner.go`
+- Modify: `internal/agentmgr/manager.go`
+- Modify: `cmd/ai-server/main.go`
+- Test: `internal/runtimekernel/agent_config_runner_test.go`
+- Test: `internal/agentmgr/manager_test.go`
+- Test: `cmd/ai-server/main_test.go`
+
+- [x] **Step 15.1：写 runner 缺失保护测试**
+
+Add or update `internal/agentmgr/manager_test.go`:
+
+```go
+func TestRunAgentReturnsErrorWhenRunnerMissing(t *testing.T) {
+	mgr := NewAgentManager(nil, nil, nil)
+	_, err := mgr.Spawn(context.Background(), SpawnRequest{
+		ID: "agent-1", Kind: AgentKindWorker, MissionID: "mission-1", SessionID: "session-1", Task: "install pg",
+	})
+	if err != nil {
+		t.Fatalf("Spawn() error = %v", err)
+	}
+	_, err = mgr.RunAgent(context.Background(), "agent-1", &AgentConfig{Kind: AgentKindWorker})
+	if err == nil || !strings.Contains(err.Error(), "agent runner is required") {
+		t.Fatalf("RunAgent() error = %v, want missing runner error", err)
+	}
+}
+```
+
+Run:
+
+```bash
+go test -count=1 ./internal/agentmgr -run TestRunAgentReturnsErrorWhenRunnerMissing
+```
+
+Expected before implementation:
+
+- FAIL or panic because nil runner is not handled.
+
+Result 2026-06-04:
+
+- RED: `go test -count=1 ./internal/agentmgr -run TestRunAgentReturnsErrorWhenRunnerMissing` failed with nil pointer panic in `AgentManager.RunAgent`.
+- GREEN: added explicit missing runner guard; command passed.
+
+- [x] **Step 15.2：抽取 shared runtime runner 测试**
+
+Create `internal/runtimekernel/agent_config_runner_test.go`:
+
+```go
+func TestAgentConfigRunnerExecutesWithSharedIterationLoop(t *testing.T) {
+	// Use the same fake model/tool setup already used by RunTurn react-loop tests.
+	// The assertion must prove the runner executes a tool-capable AgentConfig and returns final text.
+}
+
+func TestAgentConfigRunnerAppliesHostChildToolSubset(t *testing.T) {
+	// Build a host-bound child AgentConfig and assert manager-only tools such as
+	// spawn_host_agent are absent while host-bound tools remain visible.
+}
+```
+
+Run:
+
+```bash
+go test -count=1 ./internal/runtimekernel -run 'TestAgentConfigRunner'
+```
+
+Expected before implementation:
+
+- FAIL because runner type or extracted execution function does not exist.
+
+Result 2026-06-04:
+
+- RED: `go test -count=1 ./internal/runtimekernel -run 'TestAgentConfigRunner'` failed because `NewAgentConfigRunner` / `AgentConfigRunnerConfig` did not exist.
+- GREEN: added `internal/runtimekernel/agent_config_runner_test.go`; it proves a host child config executes through the shared turn loop, can call its configured host tool, and sees manager-only tools as unavailable.
+
+- [x] **Step 15.3：实现 shared runtime `AgentRunner` adapter**
+
+Implementation rule:
+
+- Do not call model APIs directly in `agentmgr`.
+- Do not duplicate `runtimekernel.RunTurn` model/tool loop.
+- Extract the current shared iteration-loop entry into a reusable runtime service if needed, then adapt it to:
+
+```go
+type AgentConfigRunner struct {
+	// dependencies copied from EinoKernel runtime: observer, projector/session hooks,
+	// transcript sink, policy, checkpoint support, and event mapper.
+}
+
+func (r *AgentConfigRunner) Run(ctx context.Context, config *agentmgr.AgentConfig) (string, error)
+```
+
+Required behavior:
+
+- Uses `config.Model`, `config.Instructions`, `config.Tools`, and `config.MaxIterations`.
+- Emits user/assistant/tool lifecycle events compatible with `TurnItem`.
+- Supports approval-blocked and resume semantics already used by AI Chat.
+- Carries host child metadata: `AgentKindHostChild`, `MissionID`, `SessionID`, `BoundHostID`.
+
+Result 2026-06-04:
+
+- Added neutral `internal/agentruntime.Config` to avoid an `agentmgr` ↔ `runtimekernel` import cycle.
+- Added `runtimekernel.AgentConfigRunner`; it creates an isolated child `RunTurn` using the configured model, instructions, unified assembled tools, session, host, mission and input metadata.
+- Extended `agentmgr.AgentConfig` with `AssembledTools`, `SessionID`, `Input`, and `Metadata`; `AgentManager.RunAgent` materializes missing runtime fields from the spawned instance.
+
+- [x] **Step 15.4：在 ai-server 注入生产 runner**
+
+Modify `cmd/ai-server/main.go` so:
+
+```go
+agentRunner := runtimekernel.NewAgentConfigRunner(/* same runtime deps used by EinoKernel */)
+agentManager := agentmgr.NewAgentManager(agentFactory, agentRunner, projector)
+```
+
+Do not leave `NewAgentManager(agentFactory, nil, projector)` in production startup.
+
+Add `cmd/ai-server/main_test.go` assertion that production wiring creates an `AgentManager` with a non-nil runner or exposes a helper that can be tested without starting ports.
+
+Result 2026-06-04:
+
+- Replaced production `NewAgentManager(agentFactory, nil, projector)` with `newServerAgentRunner(...)`, which returns `*runtimekernel.AgentConfigRunner`.
+- Added `TestNewServerAgentRunnerUsesRuntimeKernelRunner` in `cmd/ai-server/main_test.go`.
+
+- [x] **Step 15.5：验证 Task 15**
+
+Run:
+
+```bash
+go test -count=1 ./internal/runtimekernel -run 'TestAgentConfigRunner'
+go test -count=1 ./internal/agentmgr -run 'TestRunAgentReturnsErrorWhenRunnerMissing|TestRunAgent'
+go test -count=1 ./cmd/ai-server -run 'TestRegisterAIOpsToolSurfaceRegistersHostOpsManagerTools|Test.*Agent.*Runner'
+```
+
+Expected:
+
+- All PASS.
+
+Result 2026-06-04:
+
+- PASS: `go test -count=1 ./internal/runtimekernel -run 'TestAgentConfigRunner'`
+- PASS: `go test -count=1 ./internal/agentmgr -run 'TestRunAgentReturnsErrorWhenRunnerMissing|TestRunAgent'`
+- PASS: `go test -count=1 ./cmd/ai-server -run 'TestNewServerAgentRunnerUsesRuntimeKernelRunner|TestBuildRuntimeObserverDisabledReturnsNoop|TestBuildRuntimeObserverEnabledReturnsOTelObserver'`
+
+## 15.3 Task 16：host child spawn/follow-up 进入真实 child turn
+
+Goal:
+
+- `spawn_host_agent` 后 child agent 不停留在 UI preview 状态，而是真的运行同一套 AI Chat agent runtime。
+- drawer follow-up 也不是只更新 `LastInputPreview`，而是进入该 child session 的新 turn。
+
+**Files:**
+
+- Modify: `internal/agentmgr/kernel_adapter.go`
+- Modify: `internal/hostops/orchestrator.go`
+- Modify: `internal/hostops/transcript_store.go`
+- Modify: `internal/appui/host_ops_service.go`
+- Test: `internal/agentmgr/kernel_adapter_test.go`
+- Test: `internal/hostops/orchestrator_test.go`
+- Test: `internal/appui/host_ops_service_test.go`
+
+- [x] **Step 16.1：写 spawn 后运行测试**
+
+Update `internal/agentmgr/kernel_adapter_test.go`:
+
+```go
+func TestKernelAdapterSpawnHostChildRunsBoundWorker(t *testing.T) {
+	runner := &recordingAgentRunner{output: "pg installed"}
+	manager := NewAgentManager(factory, runner, nil)
+	adapter := NewKernelAdapter(manager, factory)
+
+	child, err := adapter.SpawnHostChild(context.Background(), hostops.SpawnHostChildRequest{
+		MissionID: "mission-1", HostID: "host-a", Task: "install pg", ParentAgentID: "manager-1",
+	})
+	if err != nil {
+		t.Fatalf("SpawnHostChild() error = %v", err)
+	}
+	if child.Status != hostops.HostChildAgentStatusRunning {
+		t.Fatalf("child.Status = %q, want running", child.Status)
+	}
+	if runner.lastConfig == nil || runner.lastConfig.HostID != "host-a" {
+		t.Fatalf("runner config = %#v, want host-a bound config", runner.lastConfig)
+	}
+}
+```
+
+Expected before implementation:
+
+- FAIL because `SpawnHostChild` only registers idle worker.
+
+Result 2026-06-04:
+
+- RED: `go test -count=1 ./internal/agentmgr -run 'TestKernelAdapter.*HostChild'` failed because `SpawnHostChild()` returned `spawning` and did not invoke the runner.
+- GREEN: `TestKernelAdapterSpawnHostChildRunsBoundWorker` now proves spawn starts a bound worker turn with host/session/task config.
+
+- [x] **Step 16.2：写 follow-up 运行测试**
+
+Update `internal/agentmgr/kernel_adapter_test.go`:
+
+```go
+func TestKernelAdapterSendMessageRunsChildFollowupTurn(t *testing.T) {
+	// Spawn child, then SendMessage("check replication").
+	// Assert the same bound host is used and the runner receives the follow-up task/input.
+}
+```
+
+Expected before implementation:
+
+- FAIL because `SendMessage` only returns a status preview.
+
+Result 2026-06-04:
+
+- Added `TestKernelAdapterSendMessageRunsChildFollowupTurn`; it proves drawer follow-up enters the same child session with the same bound host and new input.
+
+- [x] **Step 16.3：实现 child async run**
+
+Implementation rule:
+
+- `SpawnHostChild` creates child `AgentConfig` via `CreateHostChildAgent`.
+- `AgentManager.Spawn` registers instance.
+- Start `RunAgent` asynchronously or through an explicit scheduler owned by hostops.
+- Store child status transitions:
+  - `spawning` immediately after spawn request.
+  - `running` once `RunAgent` starts.
+  - `completed/failed/cancelled/blocked` from `AgentResult`.
+- Do not block `spawn_host_agent` until PostgreSQL installation finishes; manager should use `wait_host_agents`.
+
+Result 2026-06-04:
+
+- `KernelAdapter.SpawnHostChild` now creates the host child config, registers the instance, returns `running`, and starts `RunAgent` asynchronously.
+- Added `AgentManager.RunAgentTurn` for follow-up turns while keeping normal `RunAgent` single-run semantics.
+- Added `TestKernelAdapterSpawnHostChildDoesNotBlockForRunner` to prove spawn returns before long-running child work finishes.
+
+- [x] **Step 16.4：实现 child transcript event sink**
+
+Map shared runtime events into `hostops.TranscriptItem`:
+
+- manager task -> `manager_message`
+- child model response -> `assistant_message`
+- host tool call -> `tool_call`
+- host tool result -> `tool_result`
+- approval request/decision -> transcript item with approval metadata
+- final report -> `report`
+
+Do not store host-agent tokens, SSH passwords, API keys, or raw environment secrets.
+
+Result 2026-06-04:
+
+- `KernelAdapter.WithHostOpsSinks` wires optional `MissionStore` and `TranscriptStore` for async child status/output updates.
+- Async child completion updates `HostChildAgent` status/output and appends final assistant/error transcript entries.
+- `cmd/ai-server` now injects the same hostops mission/transcript stores into the adapter used by the orchestrator.
+- Added `TestKernelAdapterRecordsHostChildResultToSinks`.
+
+- [x] **Step 16.5：验证 Task 16**
+
+Run:
+
+```bash
+go test -count=1 ./internal/agentmgr -run 'TestKernelAdapter.*HostChild'
+go test -count=1 ./internal/hostops -run 'TestOrchestrator'
+go test -count=1 ./internal/appui -run 'TestHostOpsService'
+```
+
+Expected:
+
+- All PASS.
+
+Result 2026-06-04:
+
+- PASS: `go test -count=1 ./internal/agentmgr -run 'TestKernelAdapter.*HostChild'`
+- PASS: `go test -count=1 ./internal/hostops -run 'TestOrchestrator'`
+- PASS: `go test -count=1 ./internal/appui -run 'TestHostOpsService'`
+- PASS: `go test -count=1 ./cmd/ai-server -run 'TestNewServerAgentRunnerUsesRuntimeKernelRunner'`
+
+## 15.4 Task 17：真实 host-agent PostgreSQL smoke 闭环
+
+Goal:
+
+- 用 browser-in-app 和 Playwright 验证“起一个子 agent 去安装一个 pg”是真的通过 child agent runtime 和 host-agent `/run` 完成。
+
+**Files:**
+
+- Modify or Create: `web/tests/e2e/host-ops-real-pg.spec.js`
+- Modify: `docs/2026-06-04-ai-chat-host-mention-plan-subagents-test-report.zh.md`
+- Modify: `docs/superpowers/plans/2026-06-04-ai-chat-host-mention-plan-subagents-implementation-todo.zh.md`
+
+- [x] **Step 17.1：准备安全 smoke 命令**
+
+Smoke request:
+
+```text
+@120.77.239.90 安装 PostgreSQL，只做单机安装和版本检查，不配置主从，不删除已有数据。
+```
+
+Safety requirements:
+
+- If PostgreSQL already exists, child agent must report version and skip destructive reinstall.
+- Installation must request approval before package install/service changes.
+- Test report must redact credentials and API keys.
+
+Result 2026-06-04:
+
+- Added `ensure_postgresql_installed` as a host-session execute tool. It checks `psql --version` first and returns `skipped_existing` when PostgreSQL is already present.
+- When PostgreSQL is missing, the tool requests explicit approval before package installation or service state changes.
+- The tool dispatches through the bound host-agent command runner and rejects use without a bound managed host.
+- Added local host-agent token secret storage so production can resolve a host-agent token without exposing the plaintext token in host records or UI summaries.
+- Added ai-server host-agent command runner fallback to host-agent HTTP `/run` when the in-process gRPC path is not connected.
+- Added env-gated Playwright real smoke `web/tests/e2e/host-ops-real-pg.spec.js`; credentials/API key must be passed via environment variables and are not written to source files.
+- Code-review follow-up: gRPC host-agent registration now requires token authentication via `server.NewGRPCServerWithAuthenticator(...)`; production verifies the register payload token against the stored host `AgentTokenRef` before accepting the executable gRPC stream.
+- Code-review follow-up: PostgreSQL install script now requires root or passwordless sudo, does not silently swallow systemd service startup failure, and verifies PostgreSQL service active/readiness when systemctl is available.
+
+- [ ] **Step 17.2：Playwright/browser-in-app 验证**
+
+Required assertions:
+
+- UI shows one host-bound child agent.
+- Drawer shows manager task.
+- Drawer shows child assistant response.
+- Drawer shows host tool call dispatched to bound host.
+- Drawer shows PostgreSQL version check result.
+- Manager final answer summarizes the single host result.
+
+Partial result 2026-06-04:
+
+- Browser-in-app loaded `http://127.0.0.1:18080/`; `omnibar-input` and `omnibar-primary-action` were visible.
+- Playwright fixture PASS: `npm run test:ui -- e2e/host-ops-status-panel.spec.js --project=chromium`.
+- Env-gated real PostgreSQL smoke default skip verified: `PLAYWRIGHT_SKIP_WEB_SERVER=1 PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm run test:ui -- e2e/host-ops-real-pg.spec.js --project=chromium` -> `1 skipped`.
+- Code-review follow-up: live smoke now also requires `AIOPS_REAL_HOST_OPS_ISOLATED=1`, refuses to reuse an existing host unless `AIOPS_REAL_HOST_OPS_REUSE_HOST=1`, deletes the newly-created test host in `finally`, and asserts child completion plus transcript `tool_call` / `tool_result` entries instead of broad text only.
+- Not yet PASS against the live test host. The remaining gap is approval-resume from a child host turn when PostgreSQL is missing; without that, a package-install approval can block the child turn and be recorded as failed instead of resuming after user approval.
+
+- [ ] **Step 17.3：验收命令**
+
+Run:
+
+```bash
+go test -count=1 ./internal/hostops ./internal/appui ./internal/server ./internal/runtimekernel ./internal/agentmgr ./cmd/ai-server
+npm run test:ui -- e2e/host-ops-real-pg.spec.js --project=chromium
+```
+
+Expected:
+
+- Go packages PASS.
+- Playwright PASS.
+- Browser-in-app can open the same running app and show the child drawer with real transcript.
+
+Partial result 2026-06-04:
+
+- PASS: `go test -count=1 ./internal/hostops ./internal/appui ./internal/server ./internal/runtimekernel ./internal/agentmgr ./internal/integrations/localtools ./cmd/ai-server ./cmd/host-agent`.
+- PASS: `go test -count=1 ./internal/integrations/localtools -run 'TestEnsurePostgreSQLInstalled|TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent'`.
+- PASS: `go test -count=1 ./internal/appui -run 'TestLocalHostAgentTokenStore|TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands'`.
+- PASS: `go test -count=1 ./cmd/ai-server -run 'TestHostAgentCommandRunnerFallsBackToHTTPRun|TestNewServerAgentRunnerUsesRuntimeKernelRunner'`.
+- PASS: `go test -count=1 ./internal/server -run 'TestGRPC|TestAgentGRPC'`.
+- PASS: `go test -count=1 ./cmd/ai-server -run 'TestHostAgentGRPCAuthenticator|TestHostAgentCommandRunnerFallsBackToHTTPRun|TestNewServerAgentRunnerUsesRuntimeKernelRunner'`.
+- PASS: `PLAYWRIGHT_SKIP_WEB_SERVER=1 PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm run test:ui -- e2e/host-ops-status-panel.spec.js --project=chromium`.
+- SKIPPED by design: `PLAYWRIGHT_SKIP_WEB_SERVER=1 PLAYWRIGHT_BASE_URL=http://127.0.0.1:18080 npm run test:ui -- e2e/host-ops-real-pg.spec.js --project=chromium` without `AIOPS_REAL_HOST_OPS_SMOKE=1` and `AIOPS_REAL_HOST_OPS_ISOLATED=1`.
+- Real live-host PostgreSQL install/version assertion remains open and must not be marked complete until the env-gated smoke is run with real credentials and the child approval-resume path is verified.
+
+## 15.5 Task 18：综合真实用户流程 Playwright 测试用例
+
+Goal:
+
+- 编写一份全面的 Playwright 用户流程用例，按真实用户路径验证 LLM 配置、主机清单、多主机 `@host` 输入、强制计划模式、每主机子 Agent 状态、子 Agent 独立 drawer transcript 和高风险审批输入区。
+- 测试源码不得保存真实 API key、SSH 密码或真实测试主机密码；需要 live host 时只能通过 env-gated smoke 使用环境变量注入。
+
+**Files:**
+
+- Create: `web/tests/e2e/host-ops-comprehensive-user-flow.spec.js`
+- Modify: `docs/2026-06-04-ai-chat-host-mention-plan-subagents-test-report.zh.md`
+- Modify: `docs/superpowers/plans/2026-06-04-ai-chat-host-mention-plan-subagents-implementation-todo.zh.md`
+
+- [x] **Step 18.1：编写综合用户流程测试**
+
+Covered user operations:
+
+- 进入 `LLM 配置` 页面，选择 OpenAI-compatible provider，填写 `https://www.aicodexcn.com/v1`、`gpt-5.4` 和占位 API key，点击保存并断言请求 payload。
+- 进入 `主机` 页面，模拟 3 台 managed host，断言 `1.1.1.1 / root`、`1.1.1.2 / root`、`1.1.1.3 / root`、`在线`、`可 SSH`。
+- 回到 AI 对话页，输入：
+
+```text
+@1.1.1.1和@1.1.1.2作为pg节点,搭建一个主从集群,@1.1.1.3作为pg_mon.
+```
+
+- 断言发送到 `/api/v1/assistant/transport` 的 command 是 `add-message`，且 message metadata 包含三个去重有序 mentions 和 `aiops.hostops.clientDetectedMultiHost=true`。
+- 断言输入框上方显示 Codex 风格紧凑状态面板：`共 5 个任务，已经完成 0 个`、`3 个后台智能体` 和三台 host 的子 Agent 行。
+- 点击 `child-1` 子 Agent 行，断言 drawer 打开，并显示 `host-child:mission-1:host-a`、`Manager 输入`、`工具调用`、`ensure_postgresql_installed`、`工具结果`、`psql (PostgreSQL) 15.7` 和 `Assistant 返回`。
+- 使用 protocol fixture 模拟高风险审批，断言 composer 上方显示 `等待审批`、命令 `systemctl reload nginx`，点击 `提交` 后显示 `已提交确认，正在继续执行`，按钮变为 `提交中` 且 disabled。
+
+Result 2026-06-04:
+
+- Added `web/tests/e2e/host-ops-comprehensive-user-flow.spec.js`.
+- The test uses fixture hosts and placeholder secrets only; real API key、SSH 密码和真实测试主机密码没有写入源码。
+
+- [x] **Step 18.2：运行 Playwright 综合用例**
+
+Run:
+
+```bash
+cd /Users/lizhongxuan/Desktop/aiops/aiops-v2/web
+npm run test:ui -- e2e/host-ops-comprehensive-user-flow.spec.js --project=chromium
+```
+
+Result 2026-06-04:
+
+- PASS: 2 tests.
+
+- [x] **Step 18.3：browser-in-app 复验计划面板和子 Agent drawer**
+
+Result 2026-06-04:
+
+- Browser-in-app loaded `http://127.0.0.1:18080/` successfully.
+- Verified title `AIOps Codex MVP`.
+- Verified `omnibar-input` and `omnibar-primary-action` exist.
+- Browser-in-app fixture loaded `http://127.0.0.1:18080/?fixture=host-ops-three-hosts`.
+- Verified compact panel text contains `计划共 5 个任务，已经完成 0 个` and `3 个后台智能体`.
+- Clicked `host-subagent-status-row-child-1`; verified `host-subagent-drawer` opened and transcript contained `检查PG版本` and `PostgreSQL 15 已检测到`.
+- Screenshot saved to `/tmp/aiops-hostops-comprehensive-browser-in-app-20260604.png`.
+
+- [x] **Step 18.4：敏感信息扫描**
+
+Run a local secret scan against the workspace using the actual live credential fragments supplied out-of-band. Do not commit the fragments or the exact scanner expression.
+
+Result 2026-06-04:
+
+- No matches.
+
 ## 16. 推荐执行方式
 
 推荐使用 subagent-driven development，每个任务一个 fresh worker：
@@ -2184,6 +2686,11 @@ Result 2026-06-04:
 11. Worker K：Task 11 projector/converter。
 12. Worker L：Task 12 integration verification。
 13. Final reviewer：Task 13 security/docs/rollout。
+14. Worker M：Task 14 production hostops wiring。
+15. Worker N：Task 15 shared AI Chat runtime runner。
+16. Worker O：Task 16 host child real run/follow-up transcript。
+17. Worker P：Task 17 real PostgreSQL smoke through host-agent。
+18. Worker Q：Task 18 comprehensive Playwright/browser-in-app user flow。
 
 每个 worker 交付后必须：
 
@@ -2198,10 +2705,14 @@ Result 2026-06-04:
 
 ```bash
 cd /Users/lizhongxuan/Desktop/aiops/aiops-v2
-go test -count=1 ./internal/hostops ./internal/appui ./internal/server ./internal/runtimekernel ./internal/planning ./internal/agentmgr ./pkg/runner/scheduler ./cmd/host-agent
+go test -count=1 ./internal/hostops ./internal/appui ./internal/server ./internal/runtimekernel ./internal/planning ./internal/agentmgr ./cmd/ai-server ./cmd/host-agent
+(cd pkg/runner && go test -count=1 ./scheduler)
 cd web
 npm run test
 npm run build
+npm run test:ui -- e2e/host-ops-comprehensive-user-flow.spec.js --project=chromium
+npm run test:ui -- e2e/host-ops-status-panel.spec.js --project=chromium
+npm run test:ui -- e2e/host-ops-real-pg.spec.js --project=chromium
 npm run test:ui:snapshots
 ```
 
@@ -2210,6 +2721,9 @@ Expected:
 - Go focused packages PASS。
 - Vitest PASS。
 - Vite build PASS。
+- Playwright comprehensive user flow PASS。
+- Playwright hostops fixture PASS。
+- Playwright real PostgreSQL smoke PASS。
 - Playwright snapshot PASS。
 
 ## 18. 需求覆盖矩阵
@@ -2224,10 +2738,15 @@ Expected:
 | manager 不直接执行 host command | Task 6, Task 7 |
 | child agent host binding 不可变 | Task 7 |
 | host-agent runtime 执行边界 | Task 7 |
+| host child agent 复用 AI Chat shared runtime | Task 15 |
+| child agent spawn 后真实运行 | Task 16 |
+| child drawer follow-up 进入真实 child turn | Task 16 |
+| 单主机 PostgreSQL 安装 smoke 闭环 | Task 17 |
 | Codex 风格紧凑状态面板 | Task 9 |
 | 子 Agent 状态行在计划面板底部 | Task 9 |
 | 点击 `打开` 进入 child drawer | Task 10 |
 | child 独立 transcript | Task 3, Task 4, Task 10 |
 | transport structured state | Task 2, Task 11 |
+| 综合真实用户流程测试 | Task 18 |
 | high-risk approval | Task 7, Task 13 |
 | 集成验证 | Task 12, Task 13 |
