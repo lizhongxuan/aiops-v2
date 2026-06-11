@@ -86,8 +86,12 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	}
 
 	next = projectHostOpsMissionFromTurn(next, turnID, projectedTurn, turn)
+	hostOpsBlocked := hostOpsProjectionBlocked(next, turnID)
 
-	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0)
+	projectedTurn.Status = mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, len(next.PendingApprovals) > 0 || hostOpsBlocked)
+	if hostOpsBlocked && projectedTurn.Status == AiopsTransportTurnStatusWorking {
+		projectedTurn.Status = AiopsTransportTurnStatusBlocked
+	}
 	if projectedTurn.Final != nil && projectedTurn.Final.Status == "" {
 		projectedTurn.Final.Status = mapTurnStatusToFinalStatus(projectedTurn.Status)
 	}
@@ -401,10 +405,16 @@ func projectTurnItem(
 		var payload struct {
 			Title string `json:"title"`
 			Steps []struct {
-				ID      string `json:"id"`
-				Text    string `json:"text"`
-				Status  string `json:"status"`
-				Summary string `json:"summary"`
+				ID               string   `json:"id"`
+				Index            int      `json:"index"`
+				Text             string   `json:"text"`
+				Title            string   `json:"title"`
+				Status           string   `json:"status"`
+				Summary          string   `json:"summary"`
+				Risk             string   `json:"risk"`
+				HostIDs          []string `json:"hostIds"`
+				ChildAgentIDs    []string `json:"childAgentIds"`
+				ApprovalRequired bool     `json:"approvalRequired"`
 			} `json:"steps"`
 		}
 		if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil {
@@ -412,12 +422,19 @@ func projectTurnItem(
 				block.Text = title
 			}
 			for _, step := range payload.Steps {
-				if text := strings.TrimSpace(step.Text); text != "" {
+				text := firstNonEmptyString(strings.TrimSpace(step.Text), strings.TrimSpace(step.Title))
+				if text != "" {
 					block.Steps = append(block.Steps, AiopsTransportPlanStep{
-						ID:      strings.TrimSpace(step.ID),
-						Text:    text,
-						Status:  strings.TrimSpace(step.Status),
-						Summary: strings.TrimSpace(step.Summary),
+						ID:               strings.TrimSpace(step.ID),
+						Index:            step.Index,
+						Text:             text,
+						Title:            strings.TrimSpace(step.Title),
+						Status:           strings.TrimSpace(step.Status),
+						Summary:          strings.TrimSpace(step.Summary),
+						Risk:             strings.TrimSpace(step.Risk),
+						HostIDs:          cleanTransportStringList(step.HostIDs),
+						ChildAgentIDs:    cleanTransportStringList(step.ChildAgentIDs),
+						ApprovalRequired: step.ApprovalRequired,
 					})
 				}
 			}
@@ -673,13 +690,50 @@ func projectHostOpsMissionFromTurn(state AiopsTransportState, turnID string, pro
 			mission.ChildAgentIDs = append(mission.ChildAgentIDs, childID)
 		}
 	}
-	if len(mission.ChildAgentIDs) > 0 && mission.Status != "completed" && mission.Status != "failed" && mission.Status != "cancelled" {
+	if hostOpsMissionBlocked(mission, state.ChildAgents) {
+		mission.Status = "waiting_approval"
+	} else if len(mission.ChildAgentIDs) > 0 && mission.Status != "completed" && mission.Status != "failed" && mission.Status != "cancelled" {
 		mission.Status = "running"
 	}
 	mission.UpdatedAt = now
 	state.HostMissions[missionID] = mission
 	state.ActiveHostMissionID = missionID
 	return state
+}
+
+func hostOpsProjectionBlocked(state AiopsTransportState, turnID string) bool {
+	for _, mission := range state.HostMissions {
+		if strings.TrimSpace(mission.TurnID) != strings.TrimSpace(turnID) {
+			continue
+		}
+		if hostOpsMissionBlocked(mission, state.ChildAgents) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostOpsMissionBlocked(mission AiopsTransportHostMission, children map[string]AiopsTransportChildAgent) bool {
+	switch strings.ToLower(strings.TrimSpace(mission.Status)) {
+	case "waiting_approval", "approval_required", "blocked":
+		return true
+	}
+	for _, step := range mission.PlanSteps {
+		if step.ApprovalRequired && strings.EqualFold(strings.TrimSpace(step.Status), "blocked") {
+			return true
+		}
+	}
+	for _, childID := range mission.ChildAgentIDs {
+		child, ok := children[childID]
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(child.Status)) {
+		case "approval_required", "blocked":
+			return true
+		}
+	}
+	return false
 }
 
 func isHostOpsTurnMetadata(metadata map[string]string) bool {
@@ -816,6 +870,7 @@ func normalizeProjectedHostChild(child AiopsTransportChildAgent, turnID string, 
 	child.HostDisplayName = firstNonEmptyString(strings.TrimSpace(child.HostDisplayName), child.HostAddress, child.HostID)
 	child.Role = strings.TrimSpace(child.Role)
 	child.Task = strings.TrimSpace(child.Task)
+	child.CurrentStepTitle = strings.TrimSpace(child.CurrentStepTitle)
 	child.Status = strings.TrimSpace(child.Status)
 	if child.Status == "" {
 		child.Status = "running"

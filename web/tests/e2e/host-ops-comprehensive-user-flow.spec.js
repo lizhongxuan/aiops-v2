@@ -54,7 +54,7 @@ test.describe("host ops comprehensive user flow", () => {
 
     await page.goto("/", { waitUntil: "networkidle" });
     await waitForFixtureStable(page);
-    const requestText = "@1.1.1.1和@1.1.1.2作为pg节点,搭建一个主从集群,@1.1.1.3作为pg_mon.";
+    const requestText = "@1.1.1.1 和 @1.1.1.2 执行通用运维变更，@1.1.1.3 执行结果验证。";
     await expect(page.getByTestId("omnibar-input")).toBeVisible();
     await page.getByTestId("omnibar-input").fill(requestText);
     await page.getByTestId("omnibar-primary-action").click();
@@ -69,8 +69,8 @@ test.describe("host ops comprehensive user flow", () => {
 
     const panel = page.getByTestId("host-ops-status-panel");
     await expect(panel).toBeVisible({ timeout: 10000 });
-    await expect(panel).toContainText("共 5 个任务，已经完成 0 个");
-    await expect(panel).toContainText("3 个后台智能体");
+    await expect(panel).toContainText("共 5 个步骤，已经完成 0 个");
+    await expect(panel).toContainText("共 3 个主机 Agent");
     await expect(panel).toContainText("@1.1.1.1(@1.1.1.1)");
     await expect(panel).toContainText("@1.1.1.2(@1.1.1.2)");
     await expect(panel).toContainText("@1.1.1.3(@1.1.1.3)");
@@ -78,13 +78,13 @@ test.describe("host ops comprehensive user flow", () => {
     await page.getByTestId("host-subagent-status-row-child-1").click();
     const drawer = page.getByTestId("host-subagent-drawer");
     await expect(drawer).toBeVisible();
-    await expect(page.getByText("子 agent 对话")).toBeVisible();
+    await expect(page.getByText("主机 Agent 详情")).toBeVisible();
     await expect(drawer).toContainText("host-child:mission-1:host-a");
     await expect(drawer).toContainText("Manager 输入");
     await expect(drawer).toContainText("工具调用");
-    await expect(drawer).toContainText("ensure_postgresql_installed");
+    await expect(drawer).toContainText("check_host_state");
     await expect(drawer).toContainText("工具结果");
-    await expect(drawer).toContainText("psql (PostgreSQL) 15.7");
+    await expect(drawer).toContainText("host_state=ok");
     await expect(drawer).toContainText("Assistant 返回");
 
     await page.getByTestId("host-subagent-drawer-close").click();
@@ -174,7 +174,7 @@ function createManagedHostRows() {
   return [
     {
       id: "host-a",
-      name: "pg-a",
+      name: "host-a",
       address: "1.1.1.1",
       sshUser: "root",
       sshPort: 22,
@@ -185,11 +185,11 @@ function createManagedHostRows() {
       executable: true,
       terminalCapable: true,
       agentUrl: "http://1.1.1.1:7072",
-      labels: { role: "pg-primary", env: "test" },
+      labels: { role: "worker-a", env: "test" },
     },
     {
       id: "host-b",
-      name: "pg-b",
+      name: "host-b",
       address: "1.1.1.2",
       sshUser: "root",
       sshPort: 22,
@@ -200,11 +200,11 @@ function createManagedHostRows() {
       executable: true,
       terminalCapable: true,
       agentUrl: "http://1.1.1.2:7072",
-      labels: { role: "pg-standby", env: "test" },
+      labels: { role: "worker-b", env: "test" },
     },
     {
       id: "host-c",
-      name: "pg-mon",
+      name: "host-c",
       address: "1.1.1.3",
       sshUser: "root",
       sshPort: 22,
@@ -215,7 +215,7 @@ function createManagedHostRows() {
       executable: true,
       terminalCapable: true,
       agentUrl: "http://1.1.1.3:7072",
-      labels: { role: "pg-mon", env: "test" },
+      labels: { role: "verifier", env: "test" },
     },
   ];
 }
@@ -231,30 +231,30 @@ function withDetailedHostOpsTranscript(fixture) {
         {
           id: "child-1-manager",
           type: "manager_message",
-          content: "在绑定主机 @1.1.1.1 上安装或检查 PostgreSQL，不要操作其他主机。",
+          content: "在绑定主机 @1.1.1.1 上检查主机状态，不要操作其他主机。",
           status: "completed",
           createdAt: "2026-06-04T10:00:03Z",
         },
         {
           id: "child-1-tool-call",
           type: "tool_call",
-          toolName: "ensure_postgresql_installed",
-          content: '{"hostId":"host-a","reason":"pg primary candidate"}',
+          toolName: "check_host_state",
+          content: '{"hostId":"host-a","reason":"host state check"}',
           status: "running",
           createdAt: "2026-06-04T10:00:04Z",
         },
         {
           id: "child-1-tool-result",
           type: "tool_result",
-          toolName: "ensure_postgresql_installed",
-          content: '{"status":"skipped_existing","hostId":"host-a","version":"psql (PostgreSQL) 15.7","source":"host.agent"}',
+          toolName: "check_host_state",
+          content: '{"status":"completed","hostId":"host-a","result":"host_state=ok","source":"host.agent"}',
           status: "completed",
           createdAt: "2026-06-04T10:00:05Z",
         },
         {
           id: "child-1-assistant",
           type: "assistant_message",
-          content: "PostgreSQL 已在绑定主机 @1.1.1.1 上检测到，版本为 psql (PostgreSQL) 15.7。",
+          content: "绑定主机 @1.1.1.1 状态正常，结果为 host_state=ok。",
           status: "completed",
           createdAt: "2026-06-04T10:00:06Z",
         },

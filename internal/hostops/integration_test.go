@@ -59,8 +59,8 @@ func createResolvedThreeHostMission(t *testing.T, store MissionStore, accepted b
 
 func threeHostAssignments() []ChildAgentAssignment {
 	return []ChildAgentAssignment{
-		{HostID: "host-a", HostAddress: "1.1.1.1", HostDisplayName: "@1.1.1.1", Role: "pg primary", Task: "准备 PostgreSQL 主库"},
-		{HostID: "host-b", HostAddress: "1.1.1.2", HostDisplayName: "@1.1.1.2", Role: "pg standby", Task: "准备 PostgreSQL 从库"},
-		{HostID: "host-c", HostAddress: "1.1.1.3", HostDisplayName: "@1.1.1.3", Role: "pg_mon", Task: "准备 PostgreSQL 监控节点"},
+		{HostID: "host-a", HostAddress: "1.1.1.1", HostDisplayName: "@1.1.1.1", Role: "host_child", Task: "执行主机 A 准备步骤"},
+		{HostID: "host-b", HostAddress: "1.1.1.2", HostDisplayName: "@1.1.1.2", Role: "host_child", Task: "执行主机 B 配置步骤"},
+		{HostID: "host-c", HostAddress: "1.1.1.3", HostDisplayName: "@1.1.1.3", Role: "host_child", Task: "执行主机 C 验证步骤"},
 	}
 }

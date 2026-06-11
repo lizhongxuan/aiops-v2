@@ -7,9 +7,9 @@ import (
 
 func TestResolveMentionsMatchesInventoryAddress(t *testing.T) {
 	resolver := NewResolver(staticHostLookup{
-		{ID: "host-a", Address: "1.1.1.1", DisplayName: "pg-a", Managed: true, Executable: true},
+		{ID: "host-a", Address: "1.1.1.1", DisplayName: "host-a", Managed: true, Executable: true},
 	})
-	mentions := ParseHostMentions("@1.1.1.1 部署pg")
+	mentions := ParseHostMentions("@1.1.1.1 执行通用运维任务")
 	resolved, errs := resolver.Resolve(context.Background(), mentions)
 	if len(errs) != 0 {
 		t.Fatalf("errs = %#v, want none", errs)
@@ -23,7 +23,7 @@ func TestResolveMentionsMatchesInventoryHostname(t *testing.T) {
 	resolver := NewResolver(staticHostLookup{
 		{ID: "host-db-1", Hostname: "db-1", Address: "10.0.0.11", DisplayName: "database one"},
 	})
-	resolved, errs := resolver.Resolve(context.Background(), ParseHostMentions("@db-1 检查pg状态"))
+	resolved, errs := resolver.Resolve(context.Background(), ParseHostMentions("@db-1 检查主机状态"))
 	if len(errs) != 0 {
 		t.Fatalf("errs = %#v, want none", errs)
 	}
@@ -34,7 +34,7 @@ func TestResolveMentionsMatchesInventoryHostname(t *testing.T) {
 
 func TestResolveMentionsLeavesUnknownIPUnresolved(t *testing.T) {
 	resolver := NewResolver(staticHostLookup{})
-	resolved, errs := resolver.Resolve(context.Background(), ParseHostMentions("@1.1.1.9 部署pg"))
+	resolved, errs := resolver.Resolve(context.Background(), ParseHostMentions("@1.1.1.9 执行通用运维任务"))
 	if len(errs) != 1 {
 		t.Fatalf("len(errs) = %d, want 1", len(errs))
 	}

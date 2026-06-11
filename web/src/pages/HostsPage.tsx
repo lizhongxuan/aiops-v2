@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { listHostLeases, listHostProfiles, listHostReportHistory } from "@/api/hostProfiles";
 import {
+  buildHostTerminalEntry,
   buildHostProfileDetail,
   buildHostExecutionRisks,
   buildHostProfileRows,
@@ -300,8 +301,10 @@ export function HostsPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {model.pageRows.map((row: any) => (
-                        <tr key={row.id}>
+                      {model.pageRows.map((row: any) => {
+                        const terminalEntry = buildHostTerminalEntry(row.raw || row);
+                        return (
+                          <tr key={row.id}>
                           <td className="py-3 pr-3">
                             <div className="font-medium text-slate-900">{row.title}</div>
                             <div className="text-xs text-slate-500">{row.subtitle}</div>
@@ -341,7 +344,12 @@ export function HostsPage() {
                                 <Download />
                                 安装 Agent
                               </Button>
-                              <Button variant="outline" onClick={() => navigate(`/terminal/${row.id}`)} disabled={!row.canOpenSsh}>
+                              <Button
+                                variant="outline"
+                                onClick={() => navigate(`/terminal/${row.id}`)}
+                                disabled={!terminalEntry.canOpenTerminal}
+                                title={terminalEntry.disabledReason || "打开独立主机终端"}
+                              >
                                 终端
                               </Button>
                               <Button variant="outline" onClick={() => openEdit(row.raw)}>
@@ -352,8 +360,9 @@ export function HostsPage() {
                               </ConfirmButton>
                             </div>
                           </td>
-                        </tr>
-                      ))}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

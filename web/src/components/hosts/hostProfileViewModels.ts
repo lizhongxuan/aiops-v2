@@ -50,6 +50,11 @@ export type HostProfileDetailView = {
   sections: HostProfileDetailSectionView[];
 };
 
+export type HostTerminalEntryView = {
+  canOpenTerminal: boolean;
+  disabledReason: string;
+};
+
 type LooseRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is LooseRecord {
@@ -130,6 +135,18 @@ function statusMeta(status: unknown) {
     return { label: "忙碌", tone: "warning" as const };
   }
   return { label: text(status, "未知状态"), tone: "neutral" as const };
+}
+
+export function buildHostTerminalEntry(host: unknown): HostTerminalEntryView {
+  const source = isRecord(host) ? host : {};
+  const status = text(pick(source, "status", "state")).toLowerCase();
+  if (status !== "online") {
+    return { canOpenTerminal: false, disabledReason: "主机离线" };
+  }
+  if (source.terminalCapable === true || source.executable === true) {
+    return { canOpenTerminal: true, disabledReason: "" };
+  }
+  return { canOpenTerminal: false, disabledReason: "主机未启用终端" };
 }
 
 function leaseStatusMeta(status: unknown) {

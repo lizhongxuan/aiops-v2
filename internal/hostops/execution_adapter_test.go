@@ -14,7 +14,7 @@ func TestExecutionAdapterDispatchesOnlyToBoundHostAgent(t *testing.T) {
 	ctx := ToolContext{AgentKind: AgentKindHostChild, BoundHostID: "host-a"}
 	_, err := adapter.RunShell(context.Background(), ctx, HostCommandRequest{
 		HostID: "host-a",
-		Script: "pg_isready",
+		Script: "uptime",
 	})
 	if err != nil {
 		t.Fatalf("RunShell() error = %v", err)
@@ -25,8 +25,8 @@ func TestExecutionAdapterDispatchesOnlyToBoundHostAgent(t *testing.T) {
 	if dispatcher.lastTask.Step.Action != "script.shell" {
 		t.Fatalf("action = %q, want script.shell", dispatcher.lastTask.Step.Action)
 	}
-	if dispatcher.lastTask.Step.Args["script"] != "pg_isready" {
-		t.Fatalf("script arg = %#v, want pg_isready", dispatcher.lastTask.Step.Args["script"])
+	if dispatcher.lastTask.Step.Args["script"] != "uptime" {
+		t.Fatalf("script arg = %#v, want uptime", dispatcher.lastTask.Step.Args["script"])
 	}
 }
 
@@ -36,7 +36,7 @@ func TestExecutionAdapterRejectsCrossHostDispatch(t *testing.T) {
 	ctx := ToolContext{AgentKind: AgentKindHostChild, BoundHostID: "host-a"}
 	_, err := adapter.RunShell(context.Background(), ctx, HostCommandRequest{
 		HostID: "host-b",
-		Script: "pg_isready",
+		Script: "uptime",
 	})
 	if !errors.Is(err, ErrCrossHostDenied) {
 		t.Fatalf("err = %v, want ErrCrossHostDenied", err)
@@ -51,7 +51,7 @@ func TestExecutionAdapterRejectsManagerDirectCommand(t *testing.T) {
 	adapter := NewExecutionAdapter(dispatcher)
 	_, err := adapter.RunShell(context.Background(), ToolContext{AgentKind: AgentKindManager}, HostCommandRequest{
 		HostID: "host-a",
-		Script: "pg_isready",
+		Script: "uptime",
 	})
 	if !errors.Is(err, ErrManagerDirectHostDenied) {
 		t.Fatalf("err = %v, want ErrManagerDirectHostDenied", err)

@@ -4,11 +4,16 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
 var ErrTranscriptNotFound = errors.New("host child transcript not found")
+
+func MissionAuditTranscriptID(missionID string) string {
+	return "mission:" + strings.TrimSpace(missionID)
+}
 
 type TranscriptStore interface {
 	Append(ctx context.Context, childAgentID string, item TranscriptItem) error

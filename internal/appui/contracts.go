@@ -109,13 +109,80 @@ type AgentEventService interface {
 }
 
 type HostOperationView struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID             string               `json:"id"`
+	ThreadID       string               `json:"threadId,omitempty"`
+	UserTurnID     string               `json:"userTurnId,omitempty"`
+	ManagerAgentID string               `json:"managerAgentId,omitempty"`
+	Status         string               `json:"status"`
+	PlanRequired   bool                 `json:"planRequired"`
+	PlanAccepted   bool                 `json:"planAccepted"`
+	MentionedHosts []HostMentionView    `json:"mentionedHosts,omitempty"`
+	Plan           *HostPlanView        `json:"plan,omitempty"`
+	ChildAgents    []HostChildAgentView `json:"childAgents,omitempty"`
+	CreatedAt      string               `json:"createdAt,omitempty"`
+	UpdatedAt      string               `json:"updatedAt,omitempty"`
+}
+
+type HostMissionCreateCommand struct {
+	ID             string                `json:"id,omitempty"`
+	ThreadID       string                `json:"threadId,omitempty"`
+	SessionID      string                `json:"sessionId,omitempty"`
+	UserTurnID     string                `json:"userTurnId,omitempty"`
+	ManagerAgentID string                `json:"managerAgentId,omitempty"`
+	Goal           string                `json:"goal"`
+	Mentions       []hostops.HostMention `json:"mentions,omitempty"`
+	HostIDs        []string              `json:"hostIds,omitempty"`
+}
+
+type HostMentionView struct {
+	Raw         string `json:"raw,omitempty"`
+	HostID      string `json:"hostId,omitempty"`
+	Address     string `json:"address,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Resolved    bool   `json:"resolved"`
+}
+
+type HostPlanView struct {
+	ID             string             `json:"id,omitempty"`
+	Version        int                `json:"version,omitempty"`
+	Status         string             `json:"status,omitempty"`
+	Steps          []HostPlanStepView `json:"steps,omitempty"`
+	CompletedCount int                `json:"completedCount"`
+	TotalCount     int                `json:"totalCount"`
+}
+
+type HostPlanStepView struct {
+	ID               string   `json:"id"`
+	Index            int      `json:"index"`
+	Title            string   `json:"title"`
+	Summary          string   `json:"summary,omitempty"`
+	Status           string   `json:"status"`
+	HostIDs          []string `json:"hostIds,omitempty"`
+	ChildAgentIDs    []string `json:"childAgentIds,omitempty"`
+	Risk             string   `json:"risk,omitempty"`
+	ApprovalRequired bool     `json:"approvalRequired"`
 }
 
 type HostChildAgentView struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID                string   `json:"id"`
+	MissionID         string   `json:"missionId,omitempty"`
+	ParentAgentID     string   `json:"parentAgentId,omitempty"`
+	SessionID         string   `json:"sessionId,omitempty"`
+	HostID            string   `json:"hostId,omitempty"`
+	HostAddress       string   `json:"hostAddress,omitempty"`
+	HostDisplayName   string   `json:"hostDisplayName,omitempty"`
+	Role              string   `json:"role,omitempty"`
+	Task              string   `json:"task,omitempty"`
+	Status            string   `json:"status"`
+	PlanStepIDs       []string `json:"planStepIds,omitempty"`
+	CurrentStepTitle  string   `json:"currentStepTitle,omitempty"`
+	LastInputPreview  string   `json:"lastInputPreview,omitempty"`
+	LastOutputPreview string   `json:"lastOutputPreview,omitempty"`
+	Error             string   `json:"error,omitempty"`
+	StartedAt         string   `json:"startedAt,omitempty"`
+	UpdatedAt         string   `json:"updatedAt,omitempty"`
+	CompletedAt       string   `json:"completedAt,omitempty"`
 }
 
 type HostChildTranscriptView struct {
@@ -124,6 +191,8 @@ type HostChildTranscriptView struct {
 }
 
 type HostOpsService interface {
+	CreateMission(ctx context.Context, command HostMissionCreateCommand) (HostOperationView, error)
+	GetMission(ctx context.Context, missionID string) (HostOperationView, error)
 	AcceptPlan(ctx context.Context, missionID, planID string) (HostOperationView, error)
 	RevisePlan(ctx context.Context, missionID, instruction string) (HostOperationView, error)
 	SendChildMessage(ctx context.Context, childAgentID, content string) (HostChildAgentView, error)
@@ -660,6 +729,11 @@ type ApprovalView struct {
 	ID             string `json:"id"`
 	SessionID      string `json:"sessionId,omitempty"`
 	TurnID         string `json:"turnId,omitempty"`
+	MissionID      string `json:"missionId,omitempty"`
+	ChildAgentID   string `json:"childAgentId,omitempty"`
+	PlanStepID     string `json:"planStepId,omitempty"`
+	GroupID        string `json:"groupId,omitempty"`
+	GroupSize      int    `json:"groupSize,omitempty"`
 	ToolName       string `json:"toolName,omitempty"`
 	Command        string `json:"command,omitempty"`
 	Reason         string `json:"reason,omitempty"`

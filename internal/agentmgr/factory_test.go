@@ -313,10 +313,13 @@ func TestCreateHostChildAgentAddsBoundPromptAsset(t *testing.T) {
 	compiler := factory.compiler.(*mockCompiler)
 
 	cfg, err := factory.CreateHostChildAgent(context.Background(), hostops.SpawnHostChildRequest{
-		MissionID:       "mission-1",
-		HostID:          "host-a",
-		HostDisplayName: "pg-primary",
-		Task:            "prepare pg primary",
+		MissionID:            "mission-1",
+		HostID:               "host-a",
+		HostDisplayName:      "host-a",
+		Task:                 "inspect assigned host readiness",
+		PlanStepID:           "step-1",
+		RiskLevel:            "read_only",
+		EvidenceRequirements: []string{"command_result"},
 	})
 	if err != nil {
 		t.Fatalf("CreateHostChildAgent() error = %v", err)
@@ -330,9 +333,11 @@ func TestCreateHostChildAgentAddsBoundPromptAsset(t *testing.T) {
 	prompt := compiler.lastCompileForEino.SkillPromptAssets[0]
 	for _, want := range []string{
 		"你是 host-bound 运维子 Agent。",
-		"你的绑定主机是 pg-primary，hostId=host-a。",
+		"你的绑定主机是 host-a，hostId=host-a。",
+		"planStepId=step-1，risk=read_only。",
 		"你只能对这个主机执行检查、配置、安装或诊断。",
 		"如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。",
+		"非白名单命令必须等待用户审批后才能执行。",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("host child prompt missing %q:\n%s", want, prompt)

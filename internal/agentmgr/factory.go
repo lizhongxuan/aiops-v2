@@ -288,11 +288,26 @@ func hostChildPromptAsset(req hostops.SpawnHostChildRequest) string {
 	if task == "" {
 		task = "按 manager 分派完成本机运维任务，并回报证据。"
 	}
+	step := strings.TrimSpace(req.PlanStepID)
+	if step == "" {
+		step = "未指定"
+	}
+	risk := strings.TrimSpace(string(req.RiskLevel))
+	if risk == "" {
+		risk = "unknown"
+	}
+	evidence := strings.Join(cleanStringList(req.EvidenceRequirements), ", ")
+	if evidence == "" {
+		evidence = "command_result"
+	}
 	return fmt.Sprintf(
-		"你是 host-bound 运维子 Agent。\n你的绑定主机是 %s，hostId=%s。\n你只能对这个主机执行检查、配置、安装或诊断。\n如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。\n当前任务：%s",
+		"你是 host-bound 运维子 Agent。\n你的绑定主机是 %s，hostId=%s。\nplanStepId=%s，risk=%s。\n你只能对这个主机执行检查、配置、安装或诊断。\n如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。\n非白名单命令必须等待用户审批后才能执行。\n当前任务：%s\n回执必须包含状态、执行命令、证据、错误、阻塞项和下一步建议。证据要求：%s",
 		display,
 		hostID,
+		step,
+		risk,
 		task,
+		evidence,
 	)
 }
 

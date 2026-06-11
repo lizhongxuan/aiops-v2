@@ -3,7 +3,7 @@ package hostops
 import "testing"
 
 func TestParseHostMentionsChineseConnector(t *testing.T) {
-	input := "@1.1.1.1和@1.1.1.2作为pg节点,搭建一个主从集群,@1.1.1.3作为pg_mon."
+	input := "@1.1.1.1和@1.1.1.2作为目标主机执行通用运维任务,@1.1.1.3作为验证节点."
 	mentions := ParseHostMentions(input)
 	if len(mentions) != 3 {
 		t.Fatalf("len(mentions) = %d, want 3: %#v", len(mentions), mentions)
@@ -14,7 +14,7 @@ func TestParseHostMentionsChineseConnector(t *testing.T) {
 }
 
 func TestParseHostMentionsDedupesNormalizedToken(t *testing.T) {
-	mentions := ParseHostMentions("@db-1 检查一下 @db-1 的pg状态")
+	mentions := ParseHostMentions("@host-1 检查一下 @host-1 的状态")
 	unique := UniqueMentionKeys(mentions)
 	if len(unique) != 1 {
 		t.Fatalf("len(unique) = %d, want 1: %#v", len(unique), unique)

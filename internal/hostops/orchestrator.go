@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/observability"
+	"aiops-v2/internal/opssemantic"
 )
 
 var (
@@ -14,25 +17,33 @@ var (
 )
 
 type ChildAgentAssignment struct {
-	HostID          string `json:"hostId"`
-	HostAddress     string `json:"hostAddress,omitempty"`
-	HostDisplayName string `json:"hostDisplayName,omitempty"`
-	Role            string `json:"role,omitempty"`
-	Task            string `json:"task"`
-	SessionID       string `json:"sessionId,omitempty"`
-	ParentAgentID   string `json:"parentAgentId,omitempty"`
+	HostID               string                   `json:"hostId"`
+	HostAddress          string                   `json:"hostAddress,omitempty"`
+	HostDisplayName      string                   `json:"hostDisplayName,omitempty"`
+	Role                 string                   `json:"role,omitempty"`
+	Task                 string                   `json:"task"`
+	SessionID            string                   `json:"sessionId,omitempty"`
+	ParentAgentID        string                   `json:"parentAgentId,omitempty"`
+	PlanStepID           string                   `json:"planStepId,omitempty"`
+	Constraints          []string                 `json:"constraints,omitempty"`
+	RiskLevel            opssemantic.OpsRiskLevel `json:"riskLevel,omitempty"`
+	EvidenceRequirements []string                 `json:"evidenceRequirements,omitempty"`
 }
 
 type SpawnHostChildRequest struct {
-	ChildAgentID    string
-	MissionID       string
-	ParentAgentID   string
-	SessionID       string
-	HostID          string
-	HostAddress     string
-	HostDisplayName string
-	Role            string
-	Task            string
+	ChildAgentID         string
+	MissionID            string
+	ParentAgentID        string
+	SessionID            string
+	HostID               string
+	HostAddress          string
+	HostDisplayName      string
+	Role                 string
+	Task                 string
+	PlanStepID           string
+	Constraints          []string
+	RiskLevel            opssemantic.OpsRiskLevel
+	EvidenceRequirements []string
 }
 
 type ChildSpawner interface {
@@ -51,6 +62,41 @@ func NewOrchestrator(store MissionStore, transcript TranscriptStore, spawner Chi
 	return &Orchestrator{store: store, transcript: transcript, spawner: spawner}
 }
 
+func (o *Orchestrator) CreatePlan(ctx context.Context, missionID string) (HostOperationMission, error) {
+	if o == nil || o.store == nil {
+		return HostOperationMission{}, ErrMissionNotFound
+	}
+	mission, err := o.store.GetMission(ctx, strings.TrimSpace(missionID))
+	if err != nil {
+		return HostOperationMission{}, err
+	}
+	plan, err := BuildPlanForMission(mission)
+	if err != nil {
+		observability.RecordOpsMetric(observability.OpsMetricPlanGeneration, false)
+		return HostOperationMission{}, err
+	}
+	mission.Plan = plan
+	mission.PlanRequired = true
+	mission.PlanAccepted = false
+	mission.Status = HostMissionStatusWaitingPlanAcceptance
+	if err := o.store.SaveMission(ctx, mission); err != nil {
+		observability.RecordOpsMetric(observability.OpsMetricPlanGeneration, false)
+		return HostOperationMission{}, err
+	}
+	observability.RecordOpsMetric(observability.OpsMetricPlanGeneration, true)
+	o.appendMissionAudit(ctx, mission.ID, TranscriptItem{
+		Type:    TranscriptItemManagerMessage,
+		Content: "host operation plan created",
+		Status:  string(mission.Status),
+		Payload: map[string]any{
+			"missionId": mission.ID,
+			"planId":    mission.Plan.ID,
+			"version":   mission.Plan.Version,
+		},
+	})
+	return o.store.GetMission(ctx, mission.ID)
+}
+
 func (o *Orchestrator) AcceptPlan(ctx context.Context, missionID, planID string) error {
 	if o == nil || o.store == nil {
 		return ErrMissionNotFound
@@ -59,12 +105,61 @@ func (o *Orchestrator) AcceptPlan(ctx context.Context, missionID, planID string)
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(planID) != "" && mission.Plan.ID != "" && strings.TrimSpace(planID) != mission.Plan.ID {
+		return ErrMissionNotFound
+	}
 	mission.PlanAccepted = true
 	mission.Status = HostMissionStatusSpawningChildren
-	if strings.TrimSpace(planID) != "" {
-		mission.UpdatedAt = time.Now().UTC()
+	if mission.Plan.ID != "" {
+		now := time.Now().UTC()
+		mission.Plan.Status = PlanStatusAccepted
+		mission.Plan.AcceptedAt = &now
 	}
-	return o.store.SaveMission(ctx, mission)
+	if err := o.store.SaveMission(ctx, mission); err != nil {
+		observability.RecordOpsMetric(observability.OpsMetricPlanAcceptance, false)
+		return err
+	}
+	observability.RecordOpsMetric(observability.OpsMetricPlanAcceptance, true)
+	o.appendMissionAudit(ctx, mission.ID, TranscriptItem{
+		Type:    TranscriptItemManagerMessage,
+		Content: "host operation plan accepted",
+		Status:  string(mission.Status),
+		Payload: map[string]any{
+			"missionId": mission.ID,
+			"planId":    mission.Plan.ID,
+			"version":   mission.Plan.Version,
+		},
+	})
+	return nil
+}
+
+func (o *Orchestrator) RevisePlan(ctx context.Context, missionID string, req PlanRevisionRequest) (HostOperationMission, error) {
+	if o == nil || o.store == nil {
+		return HostOperationMission{}, ErrMissionNotFound
+	}
+	mission, err := o.store.GetMission(ctx, strings.TrimSpace(missionID))
+	if err != nil {
+		return HostOperationMission{}, err
+	}
+	revised, err := ReviseMissionPlan(mission, req)
+	if err != nil {
+		return HostOperationMission{}, err
+	}
+	if err := o.store.SaveMission(ctx, revised); err != nil {
+		return HostOperationMission{}, err
+	}
+	o.appendMissionAudit(ctx, revised.ID, TranscriptItem{
+		Type:    TranscriptItemManagerMessage,
+		Content: "host operation plan revised",
+		Status:  string(revised.Status),
+		Payload: map[string]any{
+			"missionId": revised.ID,
+			"planId":    revised.Plan.ID,
+			"version":   revised.Plan.Version,
+			"reason":    req.Reason,
+		},
+	})
+	return o.store.GetMission(ctx, mission.ID)
 }
 
 func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assignments []ChildAgentAssignment) ([]HostChildAgent, error) {
@@ -97,6 +192,7 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 	children := make([]HostChildAgent, 0, len(assignments))
 	for _, assignment := range assignments {
 		assignment = normalizeAssignment(assignment, mission)
+		assignment = bindAssignmentPlanStep(assignment, mission)
 		key := assignmentHostKey(assignment)
 		if key == "" {
 			return nil, fmt.Errorf("child assignment hostId is required")
@@ -110,24 +206,32 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 		}
 
 		req := SpawnHostChildRequest{
-			ChildAgentID:    childAgentIDFor(mission.ID, assignment.HostID),
-			MissionID:       mission.ID,
-			ParentAgentID:   firstNonEmptyString(assignment.ParentAgentID, mission.ManagerAgentID),
-			SessionID:       firstNonEmptyString(assignment.SessionID, "host-child:"+mission.ID+":"+assignment.HostID),
-			HostID:          assignment.HostID,
-			HostAddress:     assignment.HostAddress,
-			HostDisplayName: assignment.HostDisplayName,
-			Role:            assignment.Role,
-			Task:            assignment.Task,
+			ChildAgentID:         childAgentIDFor(mission.ID, assignment.HostID),
+			MissionID:            mission.ID,
+			ParentAgentID:        firstNonEmptyString(assignment.ParentAgentID, mission.ManagerAgentID),
+			SessionID:            firstNonEmptyString(assignment.SessionID, "host-child:"+mission.ID+":"+assignment.HostID),
+			HostID:               assignment.HostID,
+			HostAddress:          assignment.HostAddress,
+			HostDisplayName:      assignment.HostDisplayName,
+			Role:                 assignment.Role,
+			Task:                 assignment.Task,
+			PlanStepID:           assignment.PlanStepID,
+			Constraints:          append([]string(nil), assignment.Constraints...),
+			RiskLevel:            assignment.RiskLevel,
+			EvidenceRequirements: append([]string(nil), assignment.EvidenceRequirements...),
 		}
 		child, err := o.spawner.SpawnHostChild(ctx, req)
 		if err != nil {
+			observability.RecordOpsMetric(observability.OpsMetricHostAgentCreation, false)
 			return nil, err
 		}
 		child = normalizeSpawnedChild(child, req)
 		if err := o.store.SaveChildAgent(ctx, child); err != nil {
+			observability.RecordOpsMetric(observability.OpsMetricHostAgentCreation, false)
 			return nil, err
 		}
+		observability.RecordOpsMetric(observability.OpsMetricHostAgentCreation, true)
+		_ = o.attachChildToPlanStep(ctx, mission.ID, assignment.PlanStepID, child.ID)
 		o.appendTranscript(ctx, child.ID, TranscriptItem{
 			Type:    TranscriptItemManagerMessage,
 			Content: assignment.Task,
@@ -136,6 +240,17 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 				"missionId": mission.ID,
 				"hostId":    assignment.HostID,
 				"role":      assignment.Role,
+			},
+		})
+		o.appendMissionAudit(ctx, mission.ID, TranscriptItem{
+			Type:    TranscriptItemManagerMessage,
+			Content: "host child agent created",
+			Status:  string(child.Status),
+			Payload: map[string]any{
+				"missionId":    mission.ID,
+				"childAgentId": child.ID,
+				"hostId":       assignment.HostID,
+				"planStepId":   assignment.PlanStepID,
 			},
 		})
 		childrenByHost[key] = child
@@ -211,6 +326,13 @@ func (o *Orchestrator) appendTranscript(ctx context.Context, childAgentID string
 	_ = o.transcript.Append(ctx, childAgentID, item)
 }
 
+func (o *Orchestrator) appendMissionAudit(ctx context.Context, missionID string, item TranscriptItem) {
+	if o == nil || o.transcript == nil || strings.TrimSpace(missionID) == "" {
+		return
+	}
+	_ = o.transcript.Append(ctx, MissionAuditTranscriptID(missionID), item)
+}
+
 func missionAllowedHostKeys(mission HostOperationMission) map[string]bool {
 	allowed := map[string]bool{}
 	for _, mention := range mission.Mentions {
@@ -273,6 +395,64 @@ func normalizeAssignment(assignment ChildAgentAssignment, mission HostOperationM
 	return assignment
 }
 
+func bindAssignmentPlanStep(assignment ChildAgentAssignment, mission HostOperationMission) ChildAgentAssignment {
+	if assignment.PlanStepID != "" {
+		return assignment
+	}
+	key := assignmentHostKey(assignment)
+	for _, step := range mission.Plan.Steps {
+		for _, hostID := range step.HostIDs {
+			if normalizedHostKey(hostID) != key {
+				continue
+			}
+			assignment.PlanStepID = step.ID
+			assignment.RiskLevel = firstNonEmptyRisk(assignment.RiskLevel, step.RiskLevel)
+			if len(assignment.EvidenceRequirements) == 0 {
+				assignment.EvidenceRequirements = append([]string(nil), step.EvidenceRequired...)
+			}
+			return assignment
+		}
+	}
+	return assignment
+}
+
+func (o *Orchestrator) attachChildToPlanStep(ctx context.Context, missionID, planStepID, childAgentID string) error {
+	if o == nil || o.store == nil || strings.TrimSpace(planStepID) == "" || strings.TrimSpace(childAgentID) == "" {
+		return nil
+	}
+	mission, err := o.store.GetMission(ctx, strings.TrimSpace(missionID))
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range mission.Plan.Steps {
+		if strings.TrimSpace(mission.Plan.Steps[i].ID) != strings.TrimSpace(planStepID) {
+			continue
+		}
+		if !stringSliceContains(mission.Plan.Steps[i].ChildAgentIDs, childAgentID) {
+			mission.Plan.Steps[i].ChildAgentIDs = append(mission.Plan.Steps[i].ChildAgentIDs, childAgentID)
+			changed = true
+		}
+		if mission.Plan.Steps[i].Status == PlanStepStatusPending {
+			mission.Plan.Steps[i].Status = PlanStepStatusRunning
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return o.store.SaveMission(ctx, mission)
+}
+
+func firstNonEmptyRisk(values ...opssemantic.OpsRiskLevel) opssemantic.OpsRiskLevel {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func normalizeSpawnedChild(child HostChildAgent, req SpawnHostChildRequest) HostChildAgent {
 	child.ID = firstNonEmptyString(child.ID, req.ChildAgentID)
 	child.MissionID = firstNonEmptyString(child.MissionID, req.MissionID)
@@ -280,8 +460,12 @@ func normalizeSpawnedChild(child HostChildAgent, req SpawnHostChildRequest) Host
 	child.SessionID = firstNonEmptyString(child.SessionID, req.SessionID)
 	child.HostID = firstNonEmptyString(child.HostID, req.HostID)
 	child.HostAddress = firstNonEmptyString(child.HostAddress, req.HostAddress)
+	child.HostDisplayName = firstNonEmptyString(child.HostDisplayName, req.HostDisplayName)
 	child.Role = firstNonEmptyString(child.Role, req.Role)
 	child.Task = firstNonEmptyString(child.Task, req.Task)
+	if req.PlanStepID != "" && !stringSliceContains(child.PlanStepIDs, req.PlanStepID) {
+		child.PlanStepIDs = append(child.PlanStepIDs, req.PlanStepID)
+	}
 	if child.Status == "" {
 		child.Status = HostChildAgentStatusSpawning
 	}
@@ -300,6 +484,7 @@ func mergeChildAgentUpdate(current HostChildAgent, update HostChildAgent) HostCh
 	update.SessionID = firstNonEmptyString(update.SessionID, current.SessionID)
 	update.HostID = firstNonEmptyString(update.HostID, current.HostID)
 	update.HostAddress = firstNonEmptyString(update.HostAddress, current.HostAddress)
+	update.HostDisplayName = firstNonEmptyString(update.HostDisplayName, current.HostDisplayName)
 	update.Role = firstNonEmptyString(update.Role, current.Role)
 	update.Task = firstNonEmptyString(update.Task, current.Task)
 	update.PlanStepIDs = append([]string(nil), current.PlanStepIDs...)

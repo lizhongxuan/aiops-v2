@@ -7,11 +7,11 @@ import (
 
 func TestTranscriptStoreAppendsOrderedItems(t *testing.T) {
 	store := NewInMemoryTranscriptStore()
-	err := store.Append(context.Background(), "agent-1", TranscriptItem{Type: TranscriptItemManagerMessage, Content: "检查PG版本"})
+	err := store.Append(context.Background(), "agent-1", TranscriptItem{Type: TranscriptItemManagerMessage, Content: "检查主机状态"})
 	if err != nil {
 		t.Fatalf("Append(manager) error = %v", err)
 	}
-	err = store.Append(context.Background(), "agent-1", TranscriptItem{Type: TranscriptItemAssistantMessage, Content: "PostgreSQL 15"})
+	err = store.Append(context.Background(), "agent-1", TranscriptItem{Type: TranscriptItemAssistantMessage, Content: "主机状态正常"})
 	if err != nil {
 		t.Fatalf("Append(assistant) error = %v", err)
 	}
@@ -29,7 +29,7 @@ func TestTranscriptStoreAppendsOrderedItems(t *testing.T) {
 
 func TestTranscriptStoreCopiesItems(t *testing.T) {
 	store := NewInMemoryTranscriptStore()
-	item := TranscriptItem{ID: "item-1", Type: TranscriptItemManagerMessage, Content: "检查PG版本"}
+	item := TranscriptItem{ID: "item-1", Type: TranscriptItemManagerMessage, Content: "检查主机状态"}
 	if err := store.Append(context.Background(), "agent-1", item); err != nil {
 		t.Fatalf("Append() error = %v", err)
 	}
@@ -38,7 +38,7 @@ func TestTranscriptStoreCopiesItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if items[0].Content != "检查PG版本" {
+	if items[0].Content != "检查主机状态" {
 		t.Fatalf("items[0].Content = %q, want original", items[0].Content)
 	}
 }

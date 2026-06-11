@@ -173,10 +173,16 @@ type AiopsExternalReference struct {
 }
 
 type AiopsTransportPlanStep struct {
-	ID      string `json:"id"`
-	Text    string `json:"text"`
-	Status  string `json:"status,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	ID               string   `json:"id"`
+	Index            int      `json:"index,omitempty"`
+	Text             string   `json:"text"`
+	Status           string   `json:"status,omitempty"`
+	Summary          string   `json:"summary,omitempty"`
+	Title            string   `json:"title,omitempty"`
+	Risk             string   `json:"risk,omitempty"`
+	HostIDs          []string `json:"hostIds,omitempty"`
+	ChildAgentIDs    []string `json:"childAgentIds,omitempty"`
+	ApprovalRequired bool     `json:"approvalRequired,omitempty"`
 }
 
 type AiopsSearchResult struct {
@@ -280,6 +286,7 @@ type AiopsTransportChildAgent struct {
 	HostDisplayName   string   `json:"hostDisplayName"`
 	Role              string   `json:"role,omitempty"`
 	Task              string   `json:"task,omitempty"`
+	CurrentStepTitle  string   `json:"currentStepTitle,omitempty"`
 	Status            string   `json:"status"`
 	PlanStepIDs       []string `json:"planStepIds,omitempty"`
 	LastInputPreview  string   `json:"lastInputPreview,omitempty"`

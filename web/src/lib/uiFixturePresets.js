@@ -309,7 +309,7 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
         id: "user-hostops-three-hosts",
         type: "UserMessageCard",
         role: "user",
-        text: "@1.1.1.1和@1.1.1.2作为pg节点,搭建一个主从集群,@1.1.1.3作为pg_mon.",
+        text: "@1.1.1.1 和 @1.1.1.2 执行通用运维变更，@1.1.1.3 执行结果验证。",
         createdAt: now,
         updatedAt: now,
       },
@@ -332,13 +332,13 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
         kind: "plan",
         displayKind: "plan",
         status: "running",
-        text: "PostgreSQL 主从集群计划",
+        text: "多主机通用运维计划",
         steps: [
           { id: "confirm", text: "确认三台主机角色和运行态入口", status: "pending" },
           { id: "precheck", text: "补充失败测试覆盖剩余条目和结果合入口", status: "pending" },
-          { id: "primary", text: "初始化 @1.1.1.1 PostgreSQL 主库", status: "pending" },
-          { id: "standby", text: "配置 @1.1.1.2 PostgreSQL 从库复制", status: "pending" },
-          { id: "monitor", text: "部署 @1.1.1.3 pg_mon 并验证", status: "pending" },
+          { id: "host-a-prepare", text: "执行 @1.1.1.1 主机准备步骤", status: "pending" },
+          { id: "host-b-configure", text: "执行 @1.1.1.2 主机配置步骤", status: "pending" },
+          { id: "host-c-verify", text: "执行 @1.1.1.3 主机验证步骤", status: "pending" },
         ],
         updatedAt: now,
       },
@@ -382,8 +382,9 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
       hostId: "host-a",
       hostAddress: "1.1.1.1",
       hostDisplayName: "@1.1.1.1",
-      role: "pg primary",
-      task: "初始化 PostgreSQL 主库",
+      role: "host_child",
+      task: "执行主机 A 准备步骤",
+      currentStepTitle: "执行主机 A 准备步骤",
       status: "running",
       startedAt: "2026-06-04T10:00:01Z",
       updatedAt: "2026-06-04T10:00:02Z",
@@ -396,8 +397,9 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
       hostId: "host-b",
       hostAddress: "1.1.1.2",
       hostDisplayName: "@1.1.1.2",
-      role: "pg standby",
-      task: "配置 PostgreSQL 从库复制",
+      role: "host_child",
+      task: "执行主机 B 配置步骤",
+      currentStepTitle: "执行主机 B 配置步骤",
       status: "running",
       startedAt: "2026-06-04T10:00:01Z",
       updatedAt: "2026-06-04T10:00:02Z",
@@ -410,8 +412,9 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
       hostId: "host-c",
       hostAddress: "1.1.1.3",
       hostDisplayName: "@1.1.1.3",
-      role: "pg_mon",
-      task: "部署 pg_mon",
+      role: "host_child",
+      task: "执行主机 C 验证步骤",
+      currentStepTitle: "执行主机 C 验证步骤",
       status: "waiting",
       startedAt: "2026-06-04T10:00:01Z",
       updatedAt: "2026-06-04T10:00:02Z",
@@ -426,8 +429,8 @@ export function createHostOpsThreeHostsFixtureState(overrides = {}) {
     "child-1": {
       childAgentId: "child-1",
       items: [
-        { id: "child-1-item-1", type: "manager_message", content: "检查PG版本", status: "completed", createdAt: "2026-06-04T10:00:03Z" },
-        { id: "child-1-item-2", type: "assistant_message", content: "PostgreSQL 15 已检测到", status: "completed", createdAt: "2026-06-04T10:00:04Z" },
+        { id: "child-1-item-1", type: "manager_message", content: "检查主机状态", status: "completed", createdAt: "2026-06-04T10:00:03Z" },
+        { id: "child-1-item-2", type: "assistant_message", content: "主机状态正常", status: "completed", createdAt: "2026-06-04T10:00:04Z" },
       ],
     },
   };
@@ -441,16 +444,46 @@ export function createHostOpsThreeHostsFixtureSessions(overrides = {}) {
       {
         id: "hostops-three-hosts",
         kind: "single_host",
-        title: "@主机 PostgreSQL 集群",
+        title: "@主机通用运维任务",
         status: "running",
         messageCount: 1,
-        preview: "@1.1.1.1 和 @1.1.1.2 作为 pg 节点",
+        preview: "@1.1.1.1 和 @1.1.1.2 作为目标主机",
         selectedHostId: "workspace",
         lastActivityAt: "2026-06-04T10:00:02Z",
       },
     ],
     ...overrides,
   };
+}
+
+export function createHostOpsCommandApprovalFixtureState(overrides = {}) {
+  const state = createHostOpsThreeHostsFixtureState();
+  state.childAgents["child-2"] = {
+    ...state.childAgents["child-2"],
+    status: "approval_required",
+    currentStepTitle: "等待命令审核",
+  };
+  state.hostMissions["mission-1"].status = "waiting_approval";
+  state.hostMissions["mission-1"].planSteps = state.hostMissions["mission-1"].planSteps.map((step) =>
+    step.id === "host-b-configure" ? { ...step, status: "blocked", approvalRequired: true, childAgentIds: ["child-2"] } : step,
+  );
+  state.hostOpsTranscripts = {
+    ...(state.hostOpsTranscripts || {}),
+    "child-2": {
+      childAgentId: "child-2",
+      items: [
+        {
+          id: "approval-child-2",
+          type: "approval",
+          approvalId: "hostcmd-approval-child-2",
+          status: "pending",
+          content: "等待执行非白名单主机命令：touch /tmp/aiops-check",
+          createdAt: "2026-06-11T10:00:00Z",
+        },
+      ],
+    },
+  };
+  return { ...state, ...overrides };
 }
 
 export function createContextCompactionFixtureState(overrides = {}) {
@@ -2269,6 +2302,13 @@ export function resolveUiFixturePreset(key = "") {
       return {
         name: "host-ops-three-hosts",
         state: createHostOpsThreeHostsFixtureState(),
+        sessions: createHostOpsThreeHostsFixtureSessions(),
+      };
+    case "host-ops-command-approval":
+    case "hostops-command-approval":
+      return {
+        name: "host-ops-command-approval",
+        state: createHostOpsCommandApprovalFixtureState(),
         sessions: createHostOpsThreeHostsFixtureSessions(),
       };
     case "protocol":

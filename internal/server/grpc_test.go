@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/agentrpc"
+	"aiops-v2/internal/terminal"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -123,6 +124,110 @@ func TestGRPCRunExecWaitsForHostAgentResult(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("RunExec() did not return host-agent response")
 	}
+}
+
+func TestGRPCTerminalBackendForwardsControlsAndOutput(t *testing.T) {
+	grpcSrv := NewGRPCServer()
+	stream := newGRPCTestStream()
+	stream.enqueue(&HostMessage{Type: HostMsgRegister, ID: "host-terminal", Time: time.Now().UnixMilli()})
+	done := make(chan error, 1)
+	go func() {
+		done <- grpcSrv.HandleStream(stream)
+	}()
+	t.Cleanup(func() {
+		stream.cancel()
+		<-done
+	})
+	waitForConnectedHost(t, grpcSrv, "host-terminal")
+
+	terminalMgr := terminal.NewManager(terminal.WithRemoteBackend(grpcSrv))
+	metaCh := make(chan terminal.SessionMetadata, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		meta, err := terminalMgr.CreateSession(context.Background(), terminal.CreateSessionRequest{
+			HostID: "host-terminal",
+			Cwd:    "/srv",
+			Shell:  "/bin/bash",
+			Cols:   120,
+			Rows:   36,
+		})
+		if err != nil {
+			errCh <- err
+			return
+		}
+		metaCh <- meta
+	}()
+
+	openMsg := waitForOutgoingTerminalAction(t, stream, "open")
+	var openPayload hostTerminalPayload
+	if err := json.Unmarshal(openMsg.Payload, &openPayload); err != nil {
+		t.Fatalf("decode open payload: %v", err)
+	}
+	if openPayload.SessionID == "" || openPayload.Cwd != "/srv" || openPayload.Shell != "/bin/bash" {
+		t.Fatalf("open payload = %+v, want session cwd and shell", openPayload)
+	}
+	ackPayload, err := json.Marshal(hostTerminalPayload{Action: "status", SessionID: openPayload.SessionID, Status: "running"})
+	if err != nil {
+		t.Fatalf("marshal terminal ack: %v", err)
+	}
+	stream.enqueue(&HostMessage{Type: HostMsgTerminal, ID: openMsg.ID, Payload: ackPayload, Time: time.Now().UnixMilli()})
+
+	var meta terminal.SessionMetadata
+	select {
+	case err := <-errCh:
+		t.Fatalf("CreateSession() error = %v", err)
+	case meta = <-metaCh:
+		if meta.SessionID != openPayload.SessionID || meta.HostID != "host-terminal" {
+			t.Fatalf("metadata = %+v, want gRPC terminal metadata", meta)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("CreateSession() did not receive terminal open ack")
+	}
+
+	session := terminalMgr.GetSession(meta.SessionID)
+	events, release := session.Subscribe()
+	defer release()
+	<-events // ready
+
+	outputPayload, err := json.Marshal(hostTerminalPayload{Action: "output", SessionID: meta.SessionID, Data: "hello from grpc\n"})
+	if err != nil {
+		t.Fatalf("marshal terminal output: %v", err)
+	}
+	stream.enqueue(&HostMessage{Type: HostMsgTerminal, ID: "terminal-output-1", Payload: outputPayload, Time: time.Now().UnixMilli()})
+	select {
+	case event := <-events:
+		if event.Type != terminal.EventTypeOutput || event.Data != "hello from grpc\n" {
+			t.Fatalf("event = %+v, want grpc output", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for grpc terminal output")
+	}
+
+	if err := session.SendInput("date\n"); err != nil {
+		t.Fatalf("SendInput() error = %v", err)
+	}
+	session.Resize(140, 50)
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	inputMsg := waitForOutgoingTerminalAction(t, stream, "input")
+	var inputPayload hostTerminalPayload
+	if err := json.Unmarshal(inputMsg.Payload, &inputPayload); err != nil {
+		t.Fatalf("decode input payload: %v", err)
+	}
+	if inputPayload.SessionID != meta.SessionID || inputPayload.Data != "date\n" {
+		t.Fatalf("input payload = %+v, want session input", inputPayload)
+	}
+	resizeMsg := waitForOutgoingTerminalAction(t, stream, "resize")
+	var resizePayload hostTerminalPayload
+	if err := json.Unmarshal(resizeMsg.Payload, &resizePayload); err != nil {
+		t.Fatalf("decode resize payload: %v", err)
+	}
+	if resizePayload.Cols != 140 || resizePayload.Rows != 50 {
+		t.Fatalf("resize payload = %+v, want 140x50", resizePayload)
+	}
+	_ = waitForOutgoingTerminalAction(t, stream, "close")
 }
 
 func TestGRPCHandleStreamRejectsInvalidRegisterToken(t *testing.T) {
@@ -297,5 +402,24 @@ func waitForOutgoingExec(t *testing.T, stream *grpcTestStream) *HostMessage {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("no outgoing exec message")
+	return nil
+}
+
+func waitForOutgoingTerminalAction(t *testing.T, stream *grpcTestStream, action string) *HostMessage {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, msg := range stream.getOutgoing() {
+			if msg.Type != HostMsgTerminal {
+				continue
+			}
+			var payload hostTerminalPayload
+			if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.Action == action {
+				return msg
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no outgoing terminal %s message", action)
 	return nil
 }

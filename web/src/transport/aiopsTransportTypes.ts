@@ -129,9 +129,15 @@ export type AiopsExternalReference = {
 
 export type AiopsTransportPlanStep = {
   id: string;
+  index?: number;
   text: string;
   status?: string;
   summary?: string;
+  title?: string;
+  risk?: string;
+  hostIds?: string[];
+  childAgentIds?: string[];
+  approvalRequired?: boolean;
 };
 
 export type AiopsSearchResult = {
@@ -262,6 +268,7 @@ export type AiopsTransportChildAgent = {
   hostDisplayName: string;
   role?: string;
   task?: string;
+  currentStepTitle?: string;
   status: HostChildAgentStatus | string;
   planStepIds?: string[];
   lastInputPreview?: string;

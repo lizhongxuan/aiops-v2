@@ -33,8 +33,8 @@ describe("HostOpsStatusPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).not.toBeNull();
-    expect(container.textContent).toContain("共 5 个任务，已经完成 0 个");
-    expect(container.textContent).toContain("3 个后台智能体");
+    expect(container.textContent).toContain("共 5 个步骤，已经完成 0 个");
+    expect(container.textContent).toContain("共 3 个主机 Agent");
     expect(container.textContent).toContain("Franklin(@1.1.1.1)");
     expect(container.textContent).toContain("打开");
 
@@ -105,10 +105,10 @@ function sampleHostOpsState(): AiopsTransportState {
         ],
         childAgentIds: ["child-1", "child-2", "child-3"],
         planSteps: [
-          { id: "step-1", title: "确认 PostgreSQL 拓扑", status: "pending" },
-          { id: "step-2", title: "初始化主库", status: "pending" },
-          { id: "step-3", title: "配置从库复制", status: "pending" },
-          { id: "step-4", title: "部署监控节点", status: "pending" },
+          { id: "step-1", title: "确认目标环境", status: "pending" },
+          { id: "step-2", title: "执行主机 A 准备步骤", status: "pending" },
+          { id: "step-3", title: "执行主机 B 配置步骤", status: "pending" },
+          { id: "step-4", title: "执行辅助节点检查", status: "pending" },
           { id: "step-5", title: "执行最终验证", status: "pending" },
         ],
       },
@@ -122,7 +122,7 @@ function sampleHostOpsState(): AiopsTransportState {
         hostAddress: "1.1.1.1",
         hostDisplayName: "Franklin",
         status: "running",
-        task: "初始化主库",
+        task: "执行主机 A 准备步骤",
       },
       "child-2": {
         id: "child-2",
@@ -132,7 +132,7 @@ function sampleHostOpsState(): AiopsTransportState {
         hostAddress: "1.1.1.2",
         hostDisplayName: "Harriet",
         status: "running",
-        task: "配置从库复制",
+        task: "执行主机 B 配置步骤",
       },
       "child-3": {
         id: "child-3",
@@ -142,7 +142,7 @@ function sampleHostOpsState(): AiopsTransportState {
         hostAddress: "1.1.1.3",
         hostDisplayName: "Grace",
         status: "waiting",
-        task: "部署监控节点",
+        task: "执行辅助节点检查",
       },
     },
   };

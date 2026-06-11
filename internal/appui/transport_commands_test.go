@@ -106,6 +106,14 @@ type transportCommandHostOpsServiceStub struct {
 	stoppedChildID string
 }
 
+func (s *transportCommandHostOpsServiceStub) CreateMission(context.Context, HostMissionCreateCommand) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) GetMission(context.Context, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
 func (s *transportCommandHostOpsServiceStub) AcceptPlan(_ context.Context, missionID, planID string) (HostOperationView, error) {
 	s.acceptedMissionID = missionID
 	s.acceptedPlanID = planID

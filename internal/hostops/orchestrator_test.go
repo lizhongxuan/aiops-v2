@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"aiops-v2/internal/opssemantic"
 )
 
 func TestOrchestratorSpawnsOneChildPerMentionedHost(t *testing.T) {
@@ -24,9 +26,9 @@ func TestOrchestratorSpawnsOneChildPerMentionedHost(t *testing.T) {
 		t.Fatalf("SaveMission() error = %v", err)
 	}
 	children, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{
-		{HostID: "host-a", Role: "pg primary candidate", Task: "prepare pg primary"},
-		{HostID: "host-b", Role: "pg standby candidate", Task: "prepare pg standby"},
-		{HostID: "host-c", Role: "pg_mon", Task: "prepare monitor"},
+		{HostID: "host-a", Role: "host_child", Task: "prepare host a"},
+		{HostID: "host-b", Role: "host_child", Task: "prepare host b"},
+		{HostID: "host-c", Role: "host_child", Task: "verify host c"},
 	})
 	if err != nil {
 		t.Fatalf("SpawnChildren() error = %v", err)
@@ -43,7 +45,7 @@ func TestOrchestratorRejectsSpawnBeforePlanAccepted(t *testing.T) {
 	store := NewInMemoryMissionStore()
 	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})
 	_ = store.SaveMission(context.Background(), HostOperationMission{ID: "mission-1", PlanRequired: true, PlanAccepted: false})
-	_, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "install pg"}})
+	_, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "run host preparation"}})
 	if !errors.Is(err, ErrPlanNotAccepted) {
 		t.Fatalf("err = %v, want ErrPlanNotAccepted", err)
 	}
@@ -57,7 +59,7 @@ func TestOrchestratorRejectsHostOutsideMissionMentions(t *testing.T) {
 		PlanAccepted: true,
 		Mentions:     []HostMention{{HostID: "host-a", Address: "1.1.1.1", Resolved: true}},
 	})
-	_, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-b", Task: "install pg"}})
+	_, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-b", Task: "run host preparation"}})
 	if !errors.Is(err, ErrHostOutsideMission) {
 		t.Fatalf("err = %v, want ErrHostOutsideMission", err)
 	}
@@ -73,11 +75,11 @@ func TestOrchestratorDuplicateHostReturnsExistingChild(t *testing.T) {
 		Mentions:     []HostMention{{HostID: "host-a", Address: "1.1.1.1", Resolved: true}},
 	})
 
-	first, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "inspect pg"}})
+	first, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "inspect host state"}})
 	if err != nil {
 		t.Fatalf("first SpawnChildren() error = %v", err)
 	}
-	second, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "inspect pg again"}})
+	second, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "inspect host state again"}})
 	if err != nil {
 		t.Fatalf("second SpawnChildren() error = %v", err)
 	}
@@ -89,12 +91,52 @@ func TestOrchestratorDuplicateHostReturnsExistingChild(t *testing.T) {
 	}
 }
 
+func TestOrchestratorBindsChildToPlanStepSubTaskFields(t *testing.T) {
+	store := NewInMemoryMissionStore()
+	spawner := &fakeChildSpawner{}
+	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), spawner)
+	_ = store.SaveMission(context.Background(), HostOperationMission{
+		ID:           "mission-1",
+		PlanAccepted: true,
+		Mentions:     []HostMention{{HostID: "host-a", Resolved: true}},
+		Plan: HostOperationPlan{ID: "plan-1", Steps: []PlanStep{{
+			ID:               "step-1",
+			Index:            1,
+			Title:            "Run assigned host operation",
+			Status:           PlanStepStatusPending,
+			HostIDs:          []string{"host-a"},
+			RiskLevel:        opssemantic.RiskMediumWrite,
+			EvidenceRequired: []string{"command_result"},
+		}}},
+	})
+
+	children, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "run assigned host operation"}})
+	if err != nil {
+		t.Fatalf("SpawnChildren() error = %v", err)
+	}
+	if len(children) != 1 || len(children[0].PlanStepIDs) != 1 || children[0].PlanStepIDs[0] != "step-1" {
+		t.Fatalf("children = %#v, want child bound to step-1", children)
+	}
+	if spawner.lastReq.PlanStepID != "step-1" || spawner.lastReq.RiskLevel != opssemantic.RiskMediumWrite || len(spawner.lastReq.EvidenceRequirements) != 1 {
+		t.Fatalf("spawn request = %#v, want subtask step/risk/evidence", spawner.lastReq)
+	}
+	mission, err := store.GetMission(context.Background(), "mission-1")
+	if err != nil {
+		t.Fatalf("GetMission() error = %v", err)
+	}
+	if len(mission.Plan.Steps) != 1 || !stringSliceContains(mission.Plan.Steps[0].ChildAgentIDs, children[0].ID) || mission.Plan.Steps[0].Status != PlanStepStatusRunning {
+		t.Fatalf("mission plan = %#v, want child agent attached to running step", mission.Plan)
+	}
+}
+
 type fakeChildSpawner struct {
 	spawnCount int
+	lastReq    SpawnHostChildRequest
 }
 
 func (s *fakeChildSpawner) SpawnHostChild(_ context.Context, req SpawnHostChildRequest) (HostChildAgent, error) {
 	s.spawnCount++
+	s.lastReq = req
 	return HostChildAgent{
 		ID:               req.ChildAgentID,
 		MissionID:        req.MissionID,
@@ -106,6 +148,7 @@ func (s *fakeChildSpawner) SpawnHostChild(_ context.Context, req SpawnHostChildR
 		Task:             req.Task,
 		Status:           HostChildAgentStatusRunning,
 		LastInputPreview: req.Task,
+		PlanStepIDs:      []string{req.PlanStepID},
 	}, nil
 }
 

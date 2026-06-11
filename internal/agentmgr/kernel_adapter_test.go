@@ -7,6 +7,7 @@ import (
 
 	"aiops-v2/internal/agentruntime"
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/opssemantic"
 )
 
 func TestKernelAdapterSpawnHostChildRegistersBoundWorker(t *testing.T) {
@@ -16,12 +17,15 @@ func TestKernelAdapterSpawnHostChildRegistersBoundWorker(t *testing.T) {
 	adapter := NewKernelAdapter(manager, factory)
 
 	child, err := adapter.SpawnHostChild(context.Background(), hostops.SpawnHostChildRequest{
-		ChildAgentID:  "child-1",
-		MissionID:     "mission-1",
-		ParentAgentID: "manager-1",
-		SessionID:     "session-child-1",
-		HostID:        "host-a",
-		Task:          "prepare pg primary",
+		ChildAgentID:         "child-1",
+		MissionID:            "mission-1",
+		ParentAgentID:        "manager-1",
+		SessionID:            "session-child-1",
+		HostID:               "host-a",
+		Task:                 "inspect assigned host readiness",
+		PlanStepID:           "step-1",
+		RiskLevel:            opssemantic.RiskReadOnly,
+		EvidenceRequirements: []string{"command_result"},
 	})
 	if err != nil {
 		t.Fatalf("SpawnHostChild() error = %v", err)
@@ -35,6 +39,12 @@ func TestKernelAdapterSpawnHostChildRegistersBoundWorker(t *testing.T) {
 	}
 	if inst.Kind != AgentKindWorker || inst.HostID != "host-a" || inst.ParentID != "manager-1" {
 		t.Fatalf("instance = %+v, want host-bound worker child", inst)
+	}
+	if inst.AssignmentSummary == "" || inst.EvidenceRequirement.MinEvidenceRefs != 1 || !containsString(inst.EvidenceRequirement.RequiredKinds, "command_result") {
+		t.Fatalf("instance assignment = %q / %#v, want HostSubTask assignment metadata", inst.AssignmentSummary, inst.EvidenceRequirement)
+	}
+	if len(child.PlanStepIDs) != 1 || child.PlanStepIDs[0] != "step-1" {
+		t.Fatalf("child plan steps = %#v, want step-1", child.PlanStepIDs)
 	}
 }
 

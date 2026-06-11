@@ -117,14 +117,26 @@ func (a *KernelAdapter) SpawnHostChild(ctx context.Context, req hostops.SpawnHos
 	if err != nil {
 		return hostops.HostChildAgent{}, err
 	}
+	subtask := hostops.HostSubTask{
+		MissionID:            req.MissionID,
+		PlanStepID:           req.PlanStepID,
+		HostAgentID:          req.ChildAgentID,
+		HostID:               req.HostID,
+		Goal:                 req.Task,
+		Constraints:          append([]string(nil), req.Constraints...),
+		RiskLevel:            req.RiskLevel,
+		EvidenceRequirements: append([]string(nil), req.EvidenceRequirements...),
+	}
+	assignment := HostSubTaskToAssignment(subtask)
 	_, err = a.manager.Spawn(ctx, SpawnRequest{
-		ID:        req.ChildAgentID,
-		Kind:      AgentKindWorker,
-		MissionID: req.MissionID,
-		ParentID:  req.ParentAgentID,
-		HostID:    req.HostID,
-		SessionID: req.SessionID,
-		Task:      req.Task,
+		ID:         req.ChildAgentID,
+		Kind:       AgentKindWorker,
+		MissionID:  req.MissionID,
+		ParentID:   req.ParentAgentID,
+		HostID:     req.HostID,
+		SessionID:  req.SessionID,
+		Task:       req.Task,
+		Assignment: assignment,
 	})
 	if err != nil {
 		return hostops.HostChildAgent{}, err
@@ -142,7 +154,7 @@ func (a *KernelAdapter) SpawnHostChild(ctx context.Context, req hostops.SpawnHos
 		LastInputPreview: req.Task,
 		StartedAt:        time.Now().UTC(),
 		UpdatedAt:        time.Now().UTC(),
-		PlanStepIDs:      nil,
+		PlanStepIDs:      hostChildPlanStepIDs(req.PlanStepID),
 	}
 	a.startHostChildRun(req.ChildAgentID, child, config, false)
 	return child, nil
@@ -337,6 +349,13 @@ func hostChildStatusFromAgentStatus(status AgentStatus) hostops.HostChildAgentSt
 	default:
 		return hostops.HostChildAgentStatusFailed
 	}
+}
+
+func hostChildPlanStepIDs(planStepID string) []string {
+	if planStepID == "" {
+		return nil
+	}
+	return []string{planStepID}
 }
 
 func isTerminalHostChildStatus(status hostops.HostChildAgentStatus) bool {

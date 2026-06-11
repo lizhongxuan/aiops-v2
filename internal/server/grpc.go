@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aiops-v2/internal/terminal"
 )
 
 // ---------------------------------------------------------------------------
@@ -67,6 +69,20 @@ type HostExecResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type hostTerminalPayload struct {
+	Action    string `json:"action"`
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd,omitempty"`
+	Shell     string `json:"shell,omitempty"`
+	Cols      int    `json:"cols,omitempty"`
+	Rows      int    `json:"rows,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Signal    string `json:"signal,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Code      int    `json:"code,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 type HostAgentGRPCAuthenticator interface {
 	AuthenticateHostAgentGRPC(ctx context.Context, hostID, token string) error
 }
@@ -93,6 +109,7 @@ type GRPCServer struct {
 	mu            sync.RWMutex
 	agents        map[string]*hostConnection
 	pending       map[string]chan *HostMessage
+	terminals     map[string]chan *HostMessage
 	authenticator HostAgentGRPCAuthenticator
 }
 
@@ -114,6 +131,7 @@ func NewGRPCServerWithAuthenticator(authenticator HostAgentGRPCAuthenticator) *G
 	return &GRPCServer{
 		agents:        make(map[string]*hostConnection),
 		pending:       make(map[string]chan *HostMessage),
+		terminals:     make(map[string]chan *HostMessage),
 		authenticator: authenticator,
 	}
 }
@@ -276,6 +294,58 @@ func (s *GRPCServer) RunExec(ctx context.Context, hostID string, req HostExecReq
 	return payload, nil
 }
 
+func (s *GRPCServer) OpenTerminal(ctx context.Context, req terminal.RemoteTerminalOpenRequest) (terminal.RemoteTerminalHandle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	hostID := strings.TrimSpace(req.HostID)
+	if hostID == "" {
+		return nil, fmt.Errorf("host id is required")
+	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		return nil, fmt.Errorf("terminal session id is required")
+	}
+	events := make(chan *HostMessage, 32)
+	s.registerTerminal(sessionID, events)
+	handle := &grpcTerminalHandle{
+		server:    s,
+		hostID:    hostID,
+		sessionID: sessionID,
+		events:    events,
+		emit:      req.Emit,
+	}
+	go handle.forwardEvents()
+
+	payload, err := json.Marshal(hostTerminalPayload{
+		Action:    "open",
+		SessionID: sessionID,
+		Cwd:       req.Cwd,
+		Shell:     req.Shell,
+		Cols:      req.Cols,
+		Rows:      req.Rows,
+	})
+	if err != nil {
+		s.unregisterTerminal(sessionID)
+		return nil, err
+	}
+	msgID := fmt.Sprintf("terminal-open-%d", time.Now().UTC().UnixNano())
+	response, err := s.requestHost(ctx, hostID, &HostMessage{
+		Type:    HostMsgTerminal,
+		ID:      msgID,
+		Payload: payload,
+	})
+	if err != nil {
+		s.unregisterTerminal(sessionID)
+		return nil, err
+	}
+	if response.Type == HostMsgError {
+		s.unregisterTerminal(sessionID)
+		return nil, errors.New(firstNonEmpty(response.Error, "host-agent returned terminal error"))
+	}
+	return handle, nil
+}
+
 func (s *GRPCServer) requestHost(ctx context.Context, hostID string, msg *HostMessage) (*HostMessage, error) {
 	if hostID == "" {
 		return nil, fmt.Errorf("host id is required")
@@ -311,6 +381,22 @@ func (s *GRPCServer) requestHost(ctx context.Context, hostID string, msg *HostMe
 	}
 }
 
+func (s *GRPCServer) registerTerminal(sessionID string, events chan *HostMessage) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.terminals[sessionID] = events
+}
+
+func (s *GRPCServer) unregisterTerminal(sessionID string) {
+	s.mu.Lock()
+	events := s.terminals[sessionID]
+	delete(s.terminals, sessionID)
+	s.mu.Unlock()
+	if events != nil {
+		close(events)
+	}
+}
+
 // IsHostConnected reports whether a Host Agent is currently connected.
 func (s *GRPCServer) IsHostConnected(hostID string) bool {
 	s.mu.RLock()
@@ -339,12 +425,121 @@ func (s *GRPCServer) handleHostResponse(_ string, msg *HostMessage) {
 	ch := s.pending[msg.ID]
 	s.mu.RUnlock()
 	if ch == nil {
+		if msg.Type == HostMsgTerminal {
+			s.routeTerminalMessage(msg)
+		}
 		return
 	}
 	select {
 	case ch <- msg:
 	default:
 	}
+}
+
+func (s *GRPCServer) routeTerminalMessage(msg *HostMessage) {
+	var payload hostTerminalPayload
+	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &payload) != nil || strings.TrimSpace(payload.SessionID) == "" {
+		return
+	}
+	s.mu.RLock()
+	ch := s.terminals[payload.SessionID]
+	s.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
+
+type grpcTerminalHandle struct {
+	server    *GRPCServer
+	hostID    string
+	sessionID string
+	events    <-chan *HostMessage
+	emit      func(terminal.Event)
+	closeOnce sync.Once
+}
+
+func (h *grpcTerminalHandle) SendInput(data string) error {
+	return h.send(hostTerminalPayload{Action: "input", SessionID: h.sessionID, Data: data})
+}
+
+func (h *grpcTerminalHandle) Resize(cols, rows int) error {
+	return h.send(hostTerminalPayload{Action: "resize", SessionID: h.sessionID, Cols: cols, Rows: rows})
+}
+
+func (h *grpcTerminalHandle) Signal(name string) error {
+	return h.send(hostTerminalPayload{Action: "signal", SessionID: h.sessionID, Signal: strings.TrimSpace(name)})
+}
+
+func (h *grpcTerminalHandle) Close() error {
+	var err error
+	h.closeOnce.Do(func() {
+		err = h.send(hostTerminalPayload{Action: "close", SessionID: h.sessionID})
+		h.server.unregisterTerminal(h.sessionID)
+	})
+	return err
+}
+
+func (h *grpcTerminalHandle) send(payload hostTerminalPayload) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return h.server.SendToHost(h.hostID, &HostMessage{
+		Type:    HostMsgTerminal,
+		ID:      fmt.Sprintf("terminal-%s-%d", payload.Action, time.Now().UTC().UnixNano()),
+		Payload: data,
+	})
+}
+
+func (h *grpcTerminalHandle) forwardEvents() {
+	for msg := range h.events {
+		event, ok := terminalEventFromHostMessage(msg)
+		if !ok {
+			continue
+		}
+		if h.emit != nil {
+			h.emit(event)
+		}
+		if event.Type == terminal.EventTypeExit || event.Type == terminal.EventTypeError {
+			h.server.unregisterTerminal(h.sessionID)
+			return
+		}
+	}
+}
+
+func terminalEventFromHostMessage(msg *HostMessage) (terminal.Event, bool) {
+	var payload hostTerminalPayload
+	if len(msg.Payload) == 0 || json.Unmarshal(msg.Payload, &payload) != nil {
+		return terminal.Event{}, false
+	}
+	event := terminal.Event{
+		SessionID: payload.SessionID,
+		UpdatedAt: time.Now().UTC(),
+	}
+	switch strings.ToLower(strings.TrimSpace(payload.Action)) {
+	case "output":
+		event.Type = terminal.EventTypeOutput
+		event.Data = payload.Data
+	case "status":
+		event.Type = terminal.EventTypeStatus
+		event.Status = terminal.SessionStatus(payload.Status)
+	case "exit":
+		event.Type = terminal.EventTypeExit
+		event.Status = terminal.SessionStatusExited
+		event.Code = payload.Code
+		event.Signal = payload.Signal
+	case "error":
+		event.Type = terminal.EventTypeError
+		event.Status = terminal.SessionStatusError
+		event.Message = firstNonEmpty(payload.Error, msg.Error, "terminal error")
+	default:
+		return terminal.Event{}, false
+	}
+	return event, true
 }
 
 func firstNonEmpty(values ...string) string {

@@ -1,6 +1,10 @@
 package hostops
 
-import "time"
+import (
+	"time"
+
+	"aiops-v2/internal/opssemantic"
+)
 
 // HostMentionSource identifies how a textual @mention was interpreted.
 type HostMentionSource string
@@ -47,23 +51,87 @@ const (
 	HostChildAgentStatusRunning          HostChildAgentStatus = "running"
 	HostChildAgentStatusWaiting          HostChildAgentStatus = "waiting"
 	HostChildAgentStatusApprovalRequired HostChildAgentStatus = "approval_required"
+	HostChildAgentStatusBlocked          HostChildAgentStatus = "blocked"
 	HostChildAgentStatusCompleted        HostChildAgentStatus = "completed"
 	HostChildAgentStatusFailed           HostChildAgentStatus = "failed"
 	HostChildAgentStatusCancelled        HostChildAgentStatus = "cancelled"
 )
 
+type PlanStatus string
+
+const (
+	PlanStatusDraft             PlanStatus = "draft"
+	PlanStatusWaitingAcceptance PlanStatus = "waiting_acceptance"
+	PlanStatusAccepted          PlanStatus = "accepted"
+	PlanStatusRunning           PlanStatus = "running"
+	PlanStatusCompleted         PlanStatus = "completed"
+	PlanStatusFailed            PlanStatus = "failed"
+	PlanStatusCancelled         PlanStatus = "cancelled"
+)
+
+type PlanStepStatus string
+
+const (
+	PlanStepStatusPending   PlanStepStatus = "pending"
+	PlanStepStatusRunning   PlanStepStatus = "running"
+	PlanStepStatusCompleted PlanStepStatus = "completed"
+	PlanStepStatusBlocked   PlanStepStatus = "blocked"
+	PlanStepStatusFailed    PlanStepStatus = "failed"
+	PlanStepStatusCancelled PlanStepStatus = "cancelled"
+)
+
+type HostOperationPlan struct {
+	ID         string         `json:"id"`
+	Version    int            `json:"version"`
+	Status     PlanStatus     `json:"status"`
+	Steps      []PlanStep     `json:"steps"`
+	Revisions  []PlanRevision `json:"revisions,omitempty"`
+	AcceptedAt *time.Time     `json:"acceptedAt,omitempty"`
+	AcceptedBy string         `json:"acceptedBy,omitempty"`
+}
+
+type PlanStep struct {
+	ID               string                    `json:"id"`
+	Index            int                       `json:"index"`
+	Title            string                    `json:"title"`
+	Summary          string                    `json:"summary,omitempty"`
+	Status           PlanStepStatus            `json:"status"`
+	HostIDs          []string                  `json:"hostIds"`
+	ChildAgentIDs    []string                  `json:"childAgentIds,omitempty"`
+	ActionType       opssemantic.OpsActionType `json:"actionType"`
+	RiskLevel        opssemantic.OpsRiskLevel  `json:"riskLevel"`
+	EvidenceRequired []string                  `json:"evidenceRequired,omitempty"`
+	ApprovalRequired bool                      `json:"approvalRequired"`
+	StartedAt        *time.Time                `json:"startedAt,omitempty"`
+	CompletedAt      *time.Time                `json:"completedAt,omitempty"`
+}
+
+type PlanRevision struct {
+	ID                 string    `json:"id"`
+	FromVersion        int       `json:"fromVersion"`
+	ToVersion          int       `json:"toVersion"`
+	Reason             string    `json:"reason"`
+	AffectedHostIDs    []string  `json:"affectedHostIds,omitempty"`
+	Changes            []string  `json:"changes"`
+	RequiresAcceptance bool      `json:"requiresAcceptance"`
+	CreatedAt          time.Time `json:"createdAt"`
+}
+
 type HostOperationMission struct {
-	ID             string            `json:"id"`
-	ThreadID       string            `json:"threadId"`
-	UserTurnID     string            `json:"userTurnId"`
-	ManagerAgentID string            `json:"managerAgentId,omitempty"`
-	Status         HostMissionStatus `json:"status"`
-	PlanRequired   bool              `json:"planRequired"`
-	PlanAccepted   bool              `json:"planAccepted"`
-	Mentions       []HostMention     `json:"mentions"`
-	ChildAgentIDs  []string          `json:"childAgentIds"`
-	CreatedAt      time.Time         `json:"createdAt"`
-	UpdatedAt      time.Time         `json:"updatedAt"`
+	ID             string                      `json:"id"`
+	SessionID      string                      `json:"sessionId,omitempty"`
+	ThreadID       string                      `json:"threadId"`
+	UserTurnID     string                      `json:"userTurnId"`
+	ManagerAgentID string                      `json:"managerAgentId,omitempty"`
+	Status         HostMissionStatus           `json:"status"`
+	SemanticTask   opssemantic.OpsSemanticTask `json:"semanticTask"`
+	Plan           HostOperationPlan           `json:"plan"`
+	PlanRequired   bool                        `json:"planRequired"`
+	PlanAccepted   bool                        `json:"planAccepted"`
+	Mentions       []HostMention               `json:"mentions"`
+	ChildAgentIDs  []string                    `json:"childAgentIds"`
+	CreatedAt      time.Time                   `json:"createdAt"`
+	UpdatedAt      time.Time                   `json:"updatedAt"`
 }
 
 type HostChildAgent struct {
@@ -73,6 +141,7 @@ type HostChildAgent struct {
 	SessionID         string               `json:"sessionId"`
 	HostID            string               `json:"hostId"`
 	HostAddress       string               `json:"hostAddress"`
+	HostDisplayName   string               `json:"hostDisplayName,omitempty"`
 	Role              string               `json:"role"`
 	Task              string               `json:"task"`
 	Status            HostChildAgentStatus `json:"status"`
@@ -83,6 +152,38 @@ type HostChildAgent struct {
 	StartedAt         time.Time            `json:"startedAt"`
 	UpdatedAt         time.Time            `json:"updatedAt"`
 	CompletedAt       *time.Time           `json:"completedAt,omitempty"`
+}
+
+type HostSubTask struct {
+	MissionID            string                   `json:"missionId"`
+	PlanStepID           string                   `json:"planStepId"`
+	HostAgentID          string                   `json:"hostAgentId"`
+	HostID               string                   `json:"hostId"`
+	Goal                 string                   `json:"goal"`
+	Constraints          []string                 `json:"constraints,omitempty"`
+	RiskLevel            opssemantic.OpsRiskLevel `json:"riskLevel"`
+	EvidenceRequirements []string                 `json:"evidenceRequirements,omitempty"`
+}
+
+type HostTaskCommandRecord struct {
+	Command  string `json:"command"`
+	Status   string `json:"status"`
+	ExitCode int    `json:"exitCode,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+}
+
+type HostTaskReport struct {
+	MissionID    string                  `json:"missionId"`
+	PlanStepID   string                  `json:"planStepId"`
+	HostAgentID  string                  `json:"hostAgentId"`
+	HostID       string                  `json:"hostId"`
+	Status       string                  `json:"status"`
+	Summary      string                  `json:"summary,omitempty"`
+	Commands     []HostTaskCommandRecord `json:"commands,omitempty"`
+	EvidenceRefs []string                `json:"evidenceRefs,omitempty"`
+	Errors       []string                `json:"errors,omitempty"`
+	Blockers     []string                `json:"blockers,omitempty"`
+	NextSteps    []string                `json:"nextSteps,omitempty"`
 }
 
 type TranscriptItemType string

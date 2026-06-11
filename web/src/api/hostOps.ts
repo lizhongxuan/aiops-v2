@@ -29,6 +29,7 @@ export type HostChildAgentTranscript = {
 
 type HostOpsHttpClient = {
   get(path: string): Promise<unknown>;
+  post?(path: string, body?: unknown): Promise<unknown>;
 };
 
 export function createHostOpsApi(client: HostOpsHttpClient = httpClient) {
@@ -42,6 +43,12 @@ export function createHostOpsApi(client: HostOpsHttpClient = httpClient) {
         `/api/v1/host-ops/child-agents/${encodeURIComponent(childAgentId)}/transcript`,
       );
       return normalizeChildAgentTranscript(payload);
+    },
+    async submitApprovalDecision(approvalId: string, decision: string): Promise<unknown> {
+      if (!client.post) {
+        throw new Error("approval decision endpoint is unavailable");
+      }
+      return client.post(`/api/v1/approvals/${encodeURIComponent(approvalId)}/decision`, { decision });
     },
   };
 }
@@ -110,3 +117,4 @@ function getFixtureChildAgentTranscript(childAgentId: string): unknown | undefin
 const hostOpsApi = createHostOpsApi();
 
 export const getChildAgentTranscript = hostOpsApi.getChildAgentTranscript;
+export const submitHostOpsApprovalDecision = hostOpsApi.submitApprovalDecision;

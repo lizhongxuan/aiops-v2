@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"aiops-v2/internal/opssemantic"
 )
 
 var (
@@ -108,6 +110,8 @@ func (s *InMemoryMissionStore) ListChildAgents(_ context.Context, missionID stri
 }
 
 func cloneMission(mission HostOperationMission) HostOperationMission {
+	mission.SemanticTask = cloneSemanticTask(mission.SemanticTask)
+	mission.Plan = clonePlan(mission.Plan)
 	mission.Mentions = append([]HostMention(nil), mission.Mentions...)
 	mission.ChildAgentIDs = append([]string(nil), mission.ChildAgentIDs...)
 	return mission
@@ -120,6 +124,46 @@ func cloneChildAgent(child HostChildAgent) HostChildAgent {
 		child.CompletedAt = &completedAt
 	}
 	return child
+}
+
+func cloneSemanticTask(task opssemantic.OpsSemanticTask) opssemantic.OpsSemanticTask {
+	task.Targets = append(task.Targets[:0:0], task.Targets...)
+	task.HostScope = append(task.HostScope[:0:0], task.HostScope...)
+	task.MissingSlots = append(task.MissingSlots[:0:0], task.MissingSlots...)
+	task.EvidenceRequirements = append(task.EvidenceRequirements[:0:0], task.EvidenceRequirements...)
+	return task
+}
+
+func clonePlan(plan HostOperationPlan) HostOperationPlan {
+	plan.Steps = append([]PlanStep(nil), plan.Steps...)
+	for i := range plan.Steps {
+		plan.Steps[i] = clonePlanStep(plan.Steps[i])
+	}
+	plan.Revisions = append([]PlanRevision(nil), plan.Revisions...)
+	for i := range plan.Revisions {
+		plan.Revisions[i].AffectedHostIDs = append([]string(nil), plan.Revisions[i].AffectedHostIDs...)
+		plan.Revisions[i].Changes = append([]string(nil), plan.Revisions[i].Changes...)
+	}
+	if plan.AcceptedAt != nil {
+		acceptedAt := *plan.AcceptedAt
+		plan.AcceptedAt = &acceptedAt
+	}
+	return plan
+}
+
+func clonePlanStep(step PlanStep) PlanStep {
+	step.HostIDs = append([]string(nil), step.HostIDs...)
+	step.ChildAgentIDs = append([]string(nil), step.ChildAgentIDs...)
+	step.EvidenceRequired = append([]string(nil), step.EvidenceRequired...)
+	if step.StartedAt != nil {
+		startedAt := *step.StartedAt
+		step.StartedAt = &startedAt
+	}
+	if step.CompletedAt != nil {
+		completedAt := *step.CompletedAt
+		step.CompletedAt = &completedAt
+	}
+	return step
 }
 
 func stringSliceContains(values []string, target string) bool {

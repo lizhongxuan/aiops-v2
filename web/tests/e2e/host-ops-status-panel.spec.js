@@ -21,15 +21,17 @@ test("shows compact host ops panel above composer and opens child drawer", async
   await openFixturePage(page, "/", fixture);
 
   await expect(page.getByTestId("host-ops-status-panel")).toBeVisible();
-  await expect(page.getByText("共 5 个任务，已经完成 0 个")).toBeVisible();
-  await expect(page.getByText("3 个后台智能体")).toBeVisible();
+  await expect(page.getByText("共 5 个步骤，已经完成 0 个")).toBeVisible();
+  await expect(page.getByText("共 3 个主机 Agent")).toBeVisible();
   await expect(page.getByText("@1.1.1.1(@1.1.1.1)")).toBeVisible();
 
   await page.getByTestId("host-subagent-status-row-child-1").click();
 
   await expect(page.getByTestId("host-subagent-drawer")).toBeVisible();
-  await expect(page.getByText("子 agent 对话")).toBeVisible();
+  await expect(page.getByText("主机 Agent 详情")).toBeVisible();
+  await expect(page.getByTestId("host-subagent-tab-conversation")).toBeVisible();
+  await expect(page.getByTestId("host-subagent-tab-commands")).toBeVisible();
   await expect(page.getByText("@1.1.1.1 @1.1.1.1")).toBeVisible();
-  await expect(page.getByText("检查PG版本")).toBeVisible();
-  await expect(page.getByText("PostgreSQL 15 已检测到")).toBeVisible();
+  await expect(page.getByText("检查主机状态")).toBeVisible();
+  await expect(page.getByText("主机状态正常")).toBeVisible();
 });

@@ -7,7 +7,7 @@ func TestDetectRouteForMultiHostForcesPlan(t *testing.T) {
 		{Raw: "@1.1.1.1", HostID: "host-a", Resolved: true},
 		{Raw: "@1.1.1.2", HostID: "host-b", Resolved: true},
 	}
-	decision := DetectRoute("搭建pg主从集群", mentions)
+	decision := DetectRoute("在多台主机上完成通用运维变更", mentions)
 	if decision.Kind != RouteKindHostOps {
 		t.Fatalf("Kind = %q, want host_ops", decision.Kind)
 	}
@@ -18,7 +18,7 @@ func TestDetectRouteForMultiHostForcesPlan(t *testing.T) {
 
 func TestDetectRouteForSingleHostDoesNotForcePlan(t *testing.T) {
 	mentions := []HostMention{{Raw: "@1.1.1.1", HostID: "host-a", Resolved: true}}
-	decision := DetectRoute("检查pg状态", mentions)
+	decision := DetectRoute("检查主机状态", mentions)
 	if decision.Kind != RouteKindHostOps {
 		t.Fatalf("Kind = %q, want host_ops", decision.Kind)
 	}
@@ -28,7 +28,7 @@ func TestDetectRouteForSingleHostDoesNotForcePlan(t *testing.T) {
 }
 
 func TestDetectRouteWithoutMentionsUsesNormalChat(t *testing.T) {
-	decision := DetectRoute("解释一下PG主从复制原理", nil)
+	decision := DetectRoute("解释一下多主机运维计划的原则", nil)
 	if decision.Kind != RouteKindNormalChat {
 		t.Fatalf("Kind = %q, want normal_chat", decision.Kind)
 	}

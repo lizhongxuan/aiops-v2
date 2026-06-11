@@ -23,19 +23,44 @@ func TestHostOpsServiceWrapsOrchestratorAndTranscriptStore(t *testing.T) {
 	orchestrator := hostops.NewOrchestrator(missions, transcripts, spawner)
 	service := NewHostOpsService(missions, transcripts, orchestrator)
 
-	mission := hostops.HostOperationMission{
-		ID:           "mission-1",
-		PlanRequired: true,
-		PlanAccepted: false,
-		Mentions: []hostops.HostMention{
-			{HostID: "host-a", Address: "10.0.0.1", Resolved: true},
-		},
+	created, err := service.CreateMission(context.Background(), HostMissionCreateCommand{
+		ID:      "mission-1",
+		Goal:    "在两台主机上执行通用运维变更并回传证据",
+		HostIDs: []string{"host-a", "host-b"},
+	})
+	if err != nil {
+		t.Fatalf("CreateMission() error = %v", err)
+	}
+	if created.ID != "mission-1" || !created.PlanRequired || created.Status != string(hostops.HostMissionStatusWaitingPlanAcceptance) {
+		t.Fatalf("CreateMission() view = %+v", created)
+	}
+	if len(created.MentionedHosts) != 2 {
+		t.Fatalf("len(created.MentionedHosts) = %d, want 2", len(created.MentionedHosts))
+	}
+	if created.Plan == nil || created.Plan.TotalCount != 2 || len(created.Plan.Steps) != 2 {
+		t.Fatalf("CreateMission() plan = %+v, want two host steps", created.Plan)
+	}
+
+	mission, err := missions.GetMission(context.Background(), "mission-1")
+	if err != nil {
+		t.Fatalf("GetMission() error = %v", err)
+	}
+	mission.Mentions = []hostops.HostMention{
+		{HostID: "host-a", Address: "10.0.0.1", Resolved: true},
+		{HostID: "host-b", Address: "10.0.0.2", Resolved: true},
 	}
 	if err := missions.SaveMission(context.Background(), mission); err != nil {
 		t.Fatalf("SaveMission() error = %v", err)
 	}
+	got, err := service.GetMission(context.Background(), "mission-1")
+	if err != nil {
+		t.Fatalf("GetMission() error = %v", err)
+	}
+	if got.ID != "mission-1" || len(got.MentionedHosts) != 2 {
+		t.Fatalf("GetMission() view = %+v", got)
+	}
 
-	view, err := service.AcceptPlan(context.Background(), "mission-1", "plan-1")
+	view, err := service.AcceptPlan(context.Background(), "mission-1", created.Plan.ID)
 	if err != nil {
 		t.Fatalf("AcceptPlan() error = %v", err)
 	}
@@ -44,7 +69,7 @@ func TestHostOpsServiceWrapsOrchestratorAndTranscriptStore(t *testing.T) {
 	}
 
 	children, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []hostops.ChildAgentAssignment{
-		{HostID: "host-a", HostAddress: "10.0.0.1", Task: "安装 PostgreSQL"},
+		{HostID: "host-a", HostAddress: "10.0.0.1", Task: "执行主机侧通用检查并回传证据"},
 	})
 	if err != nil {
 		t.Fatalf("SpawnChildren() error = %v", err)
@@ -53,7 +78,7 @@ func TestHostOpsServiceWrapsOrchestratorAndTranscriptStore(t *testing.T) {
 		t.Fatalf("len(children) = %d, want 1", len(children))
 	}
 
-	childView, err := service.SendChildMessage(context.Background(), children[0].ID, "检查 pg 是否安装")
+	childView, err := service.SendChildMessage(context.Background(), children[0].ID, "继续收集主机侧证据")
 	if err != nil {
 		t.Fatalf("SendChildMessage() error = %v", err)
 	}
@@ -96,6 +121,14 @@ func (s *hostOpsServiceTestSpawner) Stop(_ context.Context, childAgentID string)
 }
 
 type fakeHostOpsService struct{}
+
+func (s *fakeHostOpsService) CreateMission(context.Context, HostMissionCreateCommand) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *fakeHostOpsService) GetMission(context.Context, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
 
 func (s *fakeHostOpsService) AcceptPlan(context.Context, string, string) (HostOperationView, error) {
 	return HostOperationView{}, nil
