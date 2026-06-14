@@ -25,13 +25,19 @@ import (
 	evidencecore "aiops-v2/internal/evidence"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/planning"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourceio"
+	runtimestate "aiops-v2/internal/runtimekernel/state"
+	"aiops-v2/internal/runtimekernel/toolfailure"
+	"aiops-v2/internal/skills"
 	"aiops-v2/internal/spanstream"
+	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
 
@@ -55,6 +61,10 @@ type ToolAssemblySource interface {
 type metadataToolAssemblySource interface {
 	CompileContextWithMetadata(session SessionType, mode Mode, metadata map[string]string) []promptcompiler.Tool
 	AssembleToolPoolWithMetadata(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool
+}
+
+type fullToolCatalogSource interface {
+	AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
 }
 
 type toolRefreshAwareSource interface {
@@ -112,20 +122,23 @@ type AgentManagerSource interface {
 // EinoKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
 type EinoKernel struct {
-	tools           ToolAssemblySource
-	compiler        promptcompiler.Compiler
-	policy          *policyengine.Engine
-	permissions     *permissions.Engine
-	hooks           *hooks.Registry
-	projector       EventEmitter
-	modelRouter     *modelrouter.Router
-	sessions        *SessionManager
-	agentMgr        AgentManagerSource
-	spanSource      SpanStreamSource // optional: span tree integration for conversation tracking
-	observer        Observer
-	compressor      *spanstream.ContextCompressor
-	spillRepo       ToolResultSpillRepository
-	evidenceService *evidencecore.Service
+	tools            ToolAssemblySource
+	compiler         promptcompiler.Compiler
+	policy           *policyengine.Engine
+	permissions      *permissions.Engine
+	hooks            *hooks.Registry
+	projector        EventEmitter
+	modelRouter      *modelrouter.Router
+	sessions         *SessionManager
+	agentMgr         AgentManagerSource
+	spanSource       SpanStreamSource // optional: span tree integration for conversation tracking
+	observer         Observer
+	resourceLockGate ToolResourceLockGate
+	compressor       *spanstream.ContextCompressor
+	spillRepo        ToolResultSpillRepository
+	artifactRepo     ContextArtifactRepository
+	skillRegistry    *skills.Registry
+	evidenceService  *evidencecore.Service
 
 	turnCancelMu       sync.Mutex
 	inFlightTurnCancel map[string]context.CancelFunc
@@ -134,21 +147,24 @@ type EinoKernel struct {
 
 // EinoKernelConfig holds the dependencies for creating an EinoKernel.
 type EinoKernelConfig struct {
-	ToolSource      ToolAssemblySource
-	Compiler        promptcompiler.Compiler
-	Policy          *policyengine.Engine
-	Permissions     *permissions.Engine
-	Hooks           *hooks.Registry
-	Projector       EventEmitter
-	ModelRouter     *modelrouter.Router
-	AgentMgr        AgentManagerSource
-	Sessions        *SessionManager
-	SessionRepo     SessionRepository
-	SpanSource      SpanStreamSource // optional: if nil, span tracking is disabled
-	Observer        Observer
-	Compressor      *spanstream.ContextCompressor
-	SpillRepo       ToolResultSpillRepository
-	EvidenceService *evidencecore.Service
+	ToolSource       ToolAssemblySource
+	Compiler         promptcompiler.Compiler
+	Policy           *policyengine.Engine
+	Permissions      *permissions.Engine
+	Hooks            *hooks.Registry
+	Projector        EventEmitter
+	ModelRouter      *modelrouter.Router
+	AgentMgr         AgentManagerSource
+	Sessions         *SessionManager
+	SessionRepo      SessionRepository
+	SpanSource       SpanStreamSource // optional: if nil, span tracking is disabled
+	Observer         Observer
+	ResourceLockGate ToolResourceLockGate
+	Compressor       *spanstream.ContextCompressor
+	SpillRepo        ToolResultSpillRepository
+	ArtifactRepo     ContextArtifactRepository
+	SkillRegistry    *skills.Registry
+	EvidenceService  *evidencecore.Service
 }
 
 // NewEinoKernel creates a new EinoKernel with the given dependencies.
@@ -173,8 +189,11 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 		agentMgr:           cfg.AgentMgr,
 		spanSource:         cfg.SpanSource,
 		observer:           observer,
+		resourceLockGate:   cfg.ResourceLockGate,
 		compressor:         cfg.Compressor,
 		spillRepo:          cfg.SpillRepo,
+		artifactRepo:       cfg.ArtifactRepo,
+		skillRegistry:      cfg.SkillRegistry,
 		evidenceService:    cfg.EvidenceService,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
@@ -236,11 +255,48 @@ func (k *EinoKernel) requestTurnCancel(sessionID, turnID, reason string) bool {
 	return true
 }
 
+func validateTurnLifecycleTransition(snapshot *TurnSnapshot, transition runtimestate.TurnTransitionType, to TurnLifecycleState) error {
+	if snapshot == nil {
+		return fmt.Errorf("turn snapshot is required")
+	}
+	fromState, ok := turnLifecycleStateForValidator(snapshot.Lifecycle)
+	if !ok {
+		return fmt.Errorf("unsupported turn lifecycle %q", snapshot.Lifecycle)
+	}
+	toState, ok := turnLifecycleStateForValidator(to)
+	if !ok {
+		return fmt.Errorf("unsupported turn lifecycle %q", to)
+	}
+	return runtimestate.NewValidator().Validate(fromState, transition, toState)
+}
+
+func turnLifecycleStateForValidator(lifecycle TurnLifecycleState) (runtimestate.TurnLifecycle, bool) {
+	switch lifecycle {
+	case TurnLifecyclePending:
+		return runtimestate.LifecycleCreated, true
+	case TurnLifecycleRunning:
+		return runtimestate.LifecycleRunning, true
+	case TurnLifecycleSuspended, TurnLifecycleResumable:
+		return runtimestate.LifecycleBlocked, true
+	case TurnLifecycleCompleted:
+		return runtimestate.LifecycleCompleted, true
+	case TurnLifecycleFailed:
+		return runtimestate.LifecycleFailed, true
+	case TurnLifecycleCanceled:
+		return runtimestate.LifecycleCancelled, true
+	default:
+		return "", false
+	}
+}
+
 func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
 	if session == nil || snapshot == nil {
 		return false
 	}
 	if snapshot.Lifecycle == TurnLifecycleCanceled {
+		return false
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCancelled, TurnLifecycleCanceled); err != nil {
 		return false
 	}
 	now := time.Now()
@@ -497,7 +553,9 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 	if modelErr != nil {
 		snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
 		appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, -1), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
-		k.markTurnFailedFromError(session, snapshot, modelErr, "get_model_failed")
+		if transitionErr := k.markTurnFailedFromError(session, snapshot, modelErr, "get_model_failed"); transitionErr != nil {
+			return TurnResult{}, transitionErr
+		}
 		if k.spanSource != nil && turnSpanID != "" {
 			k.spanSource.FailSpan(turnSpanID, modelErr.Error())
 		}
@@ -529,7 +587,9 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 			k.spanSource.FailSpan(turnSpanID, runErr.Error())
 		}
 		if snapshot := session.CurrentTurn; snapshot != nil && snapshot.ID == turnID {
-			k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot))
+			if transitionErr := k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot)); transitionErr != nil {
+				return TurnResult{}, transitionErr
+			}
 		}
 		return TurnResult{}, fmt.Errorf("run agent: %w", runErr)
 	}
@@ -723,13 +783,58 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
+	if planApproval := pendingApprovalByID(session, snapshot, req.ApprovalID); planApproval.Source == PlanModeEntryApprovalSource || planApproval.Source == PlanExitApprovalSource {
+		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
+		now := time.Now()
+		var err error
+		status := "completed"
+		switch planApproval.Source {
+		case PlanModeEntryApprovalSource:
+			_, err = ApplyPlanModeEntryDecision(session, planApproval.ID, req.Decision, decisionReason, now)
+			if !isApprovedResumeDecision(req.Decision) {
+				status = "blocked"
+			}
+		case PlanExitApprovalSource:
+			artifact := RuntimePlanArtifact{ID: session.PlanMode.PlanID, Status: PlanArtifactPendingApproval}
+			_, _, err = ApplyPlanApprovalDecision(session, artifact, planApproval.ID, req.Decision, decisionReason, now)
+			if !isApprovedResumeDecision(req.Decision) {
+				status = "blocked"
+			}
+		}
+		if err != nil {
+			return TurnResult{}, err
+		}
+		snapshot.ResumeState = TurnResumeStateNone
+		snapshot.PendingApprovals = removePendingApproval(snapshot.PendingApprovals, planApproval.ID)
+		snapshot.UpdatedAt = now
+		if !isApprovedResumeDecision(req.Decision) {
+			recordRejectedApproval(session, planApproval, req.Decision, decisionReason, now)
+		}
+		session.PendingApprovals = removePendingApproval(session.PendingApprovals, planApproval.ID)
+		k.persistTurnSnapshot(session, snapshot)
+		k.emitApprovalDecided(session, snapshot, planApproval.ID, approvedResumeDecisionLabel(req.Decision), map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)], now)
+		return TurnResult{
+			SessionType:     session.Type,
+			Mode:            session.Mode,
+			SessionID:       session.ID,
+			TurnID:          req.TurnID,
+			ClientTurnID:    snapshot.ClientTurnID,
+			ClientMessageID: snapshot.ClientMessageID,
+			Status:          status,
+		}, nil
+	}
 	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
+		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+			return TurnResult{}, err
+		}
 		now := time.Now()
 		snapshot.Lifecycle = TurnLifecycleFailed
 		snapshot.ResumeState = TurnResumeStateNone
 		snapshot.Error = "approval denied"
 		snapshot.UpdatedAt = now
 		snapshot.CompletedAt = &now
+		approval := pendingApprovalByID(session, snapshot, req.ApprovalID)
+		recordRejectedApproval(session, approval, req.Decision, firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"]), now)
 		session.PendingApprovals = nil
 		session.PendingEvidence = nil
 		k.persistTurnSnapshot(session, snapshot)
@@ -779,7 +884,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 			Input:       resumeInput,
 			Metadata:    req.Metadata,
 		}, time.Now())
-		k.markSnapshotResuming(session, snapshot, "resume_user_input")
+		if err := k.markSnapshotResuming(session, snapshot, "resume_user_input"); err != nil {
+			return TurnResult{}, err
+		}
 	} else if toolCall, ok := pendingToolCall(snapshot); ok {
 		if isSessionApprovalResumeDecision(req.Decision) {
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
@@ -793,7 +900,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 			return *blocked, nil
 		}
 	} else {
-		k.markSnapshotResuming(session, snapshot, "resume_checkpoint")
+		if err := k.markSnapshotResuming(session, snapshot, "resume_checkpoint"); err != nil {
+			return TurnResult{}, err
+		}
 	}
 
 	resumeReq := TurnRequest{
@@ -819,7 +928,9 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 				Status:          "cancelled",
 			}, nil
 		}
-		k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot))
+		if transitionErr := k.markTurnFailedFromError(session, snapshot, runErr, inferTurnFailureCheckpointKind(snapshot)); transitionErr != nil {
+			return TurnResult{}, transitionErr
+		}
 		return TurnResult{}, fmt.Errorf("resume turn: %w", runErr)
 	}
 	if blocked != nil {
@@ -878,9 +989,11 @@ func (k *EinoKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSn
 
 func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approvalID string) PendingApproval {
 	target := strings.TrimSpace(approvalID)
-	for _, approval := range snapshot.PendingApprovals {
-		if target == "" || approval.ID == target {
-			return approval
+	if snapshot != nil {
+		for _, approval := range snapshot.PendingApprovals {
+			if target == "" || approval.ID == target {
+				return approval
+			}
 		}
 	}
 	if session != nil {
@@ -891,6 +1004,37 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 		}
 	}
 	return PendingApproval{}
+}
+
+func recordRejectedApproval(session *SessionState, approval PendingApproval, decision, reason string, at time.Time) {
+	if session == nil {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	rejected := RejectedApproval{
+		ID:         strings.TrimSpace(approval.ID),
+		ToolName:   strings.TrimSpace(approval.ToolName),
+		ToolCallID: strings.TrimSpace(approval.ToolCallID),
+		Reason:     firstNonEmpty(reason, approval.Reason, "approval denied"),
+		Decision:   strings.TrimSpace(decision),
+		Source:     strings.TrimSpace(approval.Source),
+		InputHash:  strings.TrimSpace(approval.InputHash),
+		RejectedAt: at,
+	}
+	if rejected.ID == "" && rejected.ToolName == "" && rejected.InputHash == "" {
+		return
+	}
+	key := firstNonEmpty(rejected.ID, rejected.InputHash, rejected.ToolCallID, rejected.ToolName)
+	for i := range session.RejectedApprovals {
+		existingKey := firstNonEmpty(session.RejectedApprovals[i].ID, session.RejectedApprovals[i].InputHash, session.RejectedApprovals[i].ToolCallID, session.RejectedApprovals[i].ToolName)
+		if existingKey == key {
+			session.RejectedApprovals[i] = rejected
+			return
+		}
+	}
+	session.RejectedApprovals = append(session.RejectedApprovals, rejected)
 }
 
 func isApprovedResumeDecision(decision string) bool {
@@ -1040,12 +1184,22 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
-	turnMetadata := applyIntentToolPacks(applyContinuationToolPacks(cloneTurnMetadata(req.Metadata), req.Input, session), req.Input)
+	turnMetadata := k.applyProgressiveToolPackMetadata(cloneTurnMetadata(req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	depthProfile := depthProfileFromTurnRequest(TurnRequest{
+		SessionType: req.SessionType,
+		Mode:        req.Mode,
+		Input:       req.Input,
+		Metadata:    turnMetadata,
+	})
 	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
+	compileCtx = applyDepthProfileToCompileContext(compileCtx, depthProfile, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
 	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
+	compileCtx = appendSkillActivationContext(compileCtx, session)
+	compileCtx = appendMCPInstructionContext(compileCtx, session)
 	if len(preTurnEvent.AdditionalContext) > 0 {
 		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
 	}
+	compileCtx, _ = applyToolSurfacePolicyToCompileContext(compileCtx, req.Mode, firstMetadataValue(turnMetadata, "profile", "toolProfile"), session)
 	compiled, compileErr := k.compiler.Compile(compileCtx)
 	if compileErr != nil {
 		return TurnResult{}, fmt.Errorf("compile prompt: %w", compileErr)
@@ -1053,7 +1207,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 
 	// Step 3: Assemble tools
 	recorder.Record(StepAssembleTools)
-	toolPool := k.assembleToolPool(req.SessionType, req.Mode, turnMetadata)
+	toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
 
 	// Step 4: Create agent
 	recorder.Record(StepCreateAgent)
@@ -1159,17 +1313,190 @@ func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session
 func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
 	flags := featureflag.FromEnv(os.Getenv)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
-		return applyRuntimeFeatureFlags(promptcompiler.CompileContext{
+		compileCtx := promptcompiler.CompileContext{
 			SessionType:    string(session),
 			Mode:           string(mode),
 			AssembledTools: source.CompileContextWithMetadata(session, mode, metadata),
-		}, flags)
+		}
+		compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
+		compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactToolsForMetadata(metadata)...)
+		return applyRuntimeFeatureFlags(compileCtx, flags)
 	}
 	compileCtx := k.tools.CompileContext(session, mode)
+	compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
 	if opsManualsOptedOut(metadata) {
 		compileCtx.AssembledTools = filterOpsManualTools(compileCtx.AssembledTools)
 	}
+	compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactToolsForMetadata(metadata)...)
 	return applyRuntimeFeatureFlags(compileCtx, flags)
+}
+
+func (k *EinoKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode) promptcompiler.CompileContext {
+	if len(ctx.DeferredToolCatalog) == 0 {
+		ctx.DeferredToolCatalog = k.progressiveDiscoveryCatalog(session, mode)
+	}
+	if ctx.MCPHealthSnapshot == nil {
+		ctx.MCPHealthSnapshot = mcpHealthSnapshotForPrompt()
+	}
+	return ctx
+}
+
+func mcpHealthSnapshotForPrompt() map[string]string {
+	snapshots := mcp.DefaultRegistry().ListServerHealthSnapshots()
+	if len(snapshots) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.ServerID) == "" || strings.TrimSpace(string(snapshot.Status)) == "" {
+			continue
+		}
+		out[strings.TrimSpace(snapshot.ServerID)] = strings.TrimSpace(string(snapshot.Status))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (k *EinoKernel) contextArtifactToolsForMetadata(metadata map[string]string) []promptcompiler.Tool {
+	if !contextArtifactToolsEnabled(metadata) {
+		return nil
+	}
+	return k.contextArtifactTools()
+}
+
+func contextArtifactToolsEnabled(metadata map[string]string) bool {
+	if metadataBool(metadata["contextArtifactAvailable"]) ||
+		metadataBool(metadata["hasContextArtifact"]) ||
+		metadataBool(metadata["contextArtifactEnabled"]) {
+		return true
+	}
+	if metadataListContains(metadata["enableToolPack"], "context_artifact") {
+		return true
+	}
+	return metadataListContains(metadata["enableTool"], "read_context_artifact")
+}
+
+func (k *EinoKernel) contextArtifactTools() []promptcompiler.Tool {
+	if k == nil || (k.artifactRepo == nil && k.spillRepo == nil) {
+		return nil
+	}
+	reader := NewContextArtifactReader(ContextArtifactReaderOptions{
+		Repository:      k.artifactRepo,
+		SpillRepository: k.spillRepo,
+	})
+	return []promptcompiler.Tool{&tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_context_artifact",
+			Description: "Read a bounded range, query match, or metadata view from a previously externalized context artifact or tool result spill.",
+			Origin:      tooling.ToolOriginBuiltin,
+			Layer:       tooling.ToolLayerConditional,
+			Pack:        "context_artifact",
+			RiskLevel:   tooling.ToolRiskLow,
+			Mutating:    false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:    "context_artifact",
+				ResourceTypes:     []string{"context_artifact", "tool_result_spill"},
+				OperationKinds:    []string{"read", "query", "inspect"},
+				RequiresSelect:    true,
+				PromptBudgetClass: "small",
+				SchemaBudgetClass: "compact",
+			},
+			ResultBudget: tooling.ResultBudget{
+				MaxInlineResultBytes: 4096,
+				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
+				SummarizeLargeResult: true,
+			},
+		},
+		InputSchemaData: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"},"query":{"type":"string"},"page":{"type":"integer"},"format":{"type":"string","enum":["text","json","metadata"]},"range":{"type":"object","properties":{"offset":{"type":"integer"},"limit":{"type":"integer"},"page":{"type":"integer"},"query":{"type":"string"},"format":{"type":"string"}}}},"required":["id"],"additionalProperties":false}`),
+		ReadOnlyFunc: func(json.RawMessage) bool {
+			return true
+		},
+		ConcurrencySafeFunc: func(json.RawMessage) bool {
+			return true
+		},
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req ContextArtifactReadRequest
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, fmt.Errorf("parse read_context_artifact input: %w", err)
+			}
+			result, err := reader.Read(req)
+			if err != nil {
+				return tooling.ToolResult{Error: err.Error()}, nil
+			}
+			data, err := json.Marshal(result)
+			if err != nil {
+				return tooling.ToolResult{}, fmt.Errorf("marshal context artifact read result: %w", err)
+			}
+			return tooling.ToolResult{
+				Content: string(data),
+				References: []tooling.ResultReference{{
+					Kind:        tooling.ResultReferenceKindBlob,
+					URI:         result.Artifact.URI,
+					Title:       result.Artifact.ID,
+					Summary:     result.Artifact.Summary,
+					ContentType: result.Artifact.ContentType,
+					Digest:      result.Artifact.Digest,
+					Bytes:       result.Artifact.Bytes,
+					Range:       result.Range,
+				}},
+				ResultBudget: tooling.ResultBudget{
+					MaxInlineResultBytes: 4096,
+					SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
+					SummarizeLargeResult: true,
+				},
+			}, nil
+		},
+	}}
+}
+
+func appendContextArtifactTools(tools []promptcompiler.Tool, extras ...promptcompiler.Tool) []promptcompiler.Tool {
+	if len(extras) == 0 {
+		return tools
+	}
+	seen := make(map[string]bool, len(tools)+len(extras))
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		seen[toolDef.Metadata().Name] = true
+	}
+	out := append([]promptcompiler.Tool(nil), tools...)
+	for _, toolDef := range extras {
+		if toolDef == nil {
+			continue
+		}
+		name := toolDef.Metadata().Name
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, toolDef)
+	}
+	return out
+}
+
+func applyToolSurfacePolicyToCompileContext(ctx promptcompiler.CompileContext, mode Mode, profile string, session *SessionState) (promptcompiler.CompileContext, tooling.ToolSurfacePolicySnapshot) {
+	filtered, snapshot := tooling.ApplyToolSurfacePolicy(ctx.AssembledTools, tooling.ToolSurfacePolicyOptions{
+		Mode:                string(mode),
+		Profile:             profile,
+		ActiveSkillPolicies: activeSkillToolPolicies(session),
+	})
+	ctx.AssembledTools = filtered
+	return ctx, snapshot
+}
+
+func (k *EinoKernel) applyProgressiveToolPackMetadata(metadata map[string]string, input string, sessionType SessionType, mode Mode, session *SessionState) map[string]string {
+	return applyProgressiveToolPackMetadata(metadata, input, session, k.progressiveDiscoveryCatalog(sessionType, mode))
+}
+
+func (k *EinoKernel) progressiveDiscoveryCatalog(session SessionType, mode Mode) []tooling.Tool {
+	source, ok := k.tools.(fullToolCatalogSource)
+	if !ok {
+		return nil
+	}
+	return source.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{IncludeDeferredCatalog: true})
 }
 
 func (k *EinoKernel) contextBudgetPolicyForSession(session *SessionState, agentKind modelrouter.AgentKind) ContextBudgetPolicy {
@@ -1247,7 +1574,20 @@ func (k *EinoKernel) runHostIterationLoop(
 	toolDispatches := countActualToolDispatches(snapshot)
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 	var lastReasoningPersist time.Time
-	turnMetadata := applyIntentToolPacks(applyContinuationToolPacks(cloneTurnMetadata(req.Metadata), req.Input, session), req.Input)
+	turnMetadata := k.applyProgressiveToolPackMetadata(cloneTurnMetadata(req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	depthProfile := depthProfileFromTurnRequest(TurnRequest{
+		SessionType: req.SessionType,
+		Mode:        req.Mode,
+		Input:       req.Input,
+		Metadata:    turnMetadata,
+	})
+	if snapshot.TaskDepth.Level == "" {
+		snapshot.TaskDepth = depthProfile
+	}
+	if snapshot.ResumeState != TurnResumeStateNone || (snapshot.Metadata != nil && strings.TrimSpace(snapshot.Metadata["resume.nextStepId"]) != "") {
+		resumePolicy := EvaluateResumeContinuationPolicy(snapshot, req.Input)
+		additionalContext = append(additionalContext, resumeContinuationPrompt(resumePolicy))
+	}
 	budgetPolicy := k.contextBudgetPolicyForSession(session, agentKind)
 	thresholds := budgetPolicy.Thresholds()
 
@@ -1273,7 +1613,10 @@ func (k *EinoKernel) runHostIterationLoop(
 		appendContextGovernanceEvents(&session.ContextGovernanceEvents, contextState.GovernanceEvents...)
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
+		compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
+		compileCtx = appendSkillActivationContext(compileCtx, session)
+		compileCtx = appendMCPInstructionContext(compileCtx, session)
 		compileCtx.AssembledTools = filterToolsForContextMode(compileCtx.AssembledTools, thresholds)
 		if thresholds.SmallContextMode {
 			appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, ContextGovernanceEvent{
@@ -1289,7 +1632,10 @@ func (k *EinoKernel) runHostIterationLoop(
 			appendContextGovernanceEvents(&session.ContextGovernanceEvents, snapshot.ContextGovernanceEvents...)
 		}
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
-		if shouldSwitchToSynthesisOnly(req.Mode, toolDispatches, compileCtx.AssembledTools) {
+		dispatchTools := append([]promptcompiler.Tool(nil), compileCtx.AssembledTools...)
+		var surfacePolicy tooling.ToolSurfacePolicySnapshot
+		compileCtx, surfacePolicy = applyToolSurfacePolicyToCompileContext(compileCtx, req.Mode, firstMetadataValue(turnMetadata, "profile", "toolProfile"), session)
+		if shouldSwitchToSynthesisOnly(req.Mode, snapshot.TaskDepth, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			compileCtx.AssembledTools = nil
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, synthesisOnlyPromptAsset(toolDispatches))
@@ -1302,16 +1648,43 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		compileCtx.EvidenceReminders = compileEvidenceReminders(req.Mode, session.PendingEvidence)
 		compileCtx.ToolDelta = iterationToolDelta(snapshot, compileCtx.AssembledTools)
-		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence)
+		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence, session.RejectedApprovals)
 		compiled, compileErr := k.compiler.Compile(compileCtx)
 		if compileErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("compile prompt: %w", compileErr)
 		}
+		var retentionDecisions []ContextRetentionDecision
+		compiled.PromptSections, retentionDecisions, compileErr = ApplyPromptSectionRetentionPolicy(compiled.PromptSections, DefaultContextRetentionPolicy())
+		if compileErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, fmt.Errorf("prompt section retention: %w", compileErr)
+		}
+		retentionEvents := PromptSectionRetentionGovernanceEvents(session.ID, turnID, iteration, retentionDecisions)
+		contextState.GovernanceEvents = append(contextState.GovernanceEvents, retentionEvents...)
+		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, retentionEvents...)
+		appendContextGovernanceEvents(&session.ContextGovernanceEvents, retentionEvents...)
+		if previousPromptInputTrace != nil {
+			compiled.ChangedSections = promptcompiler.ChangedPromptSections(previousPromptInputTrace.PromptSections, compiled.PromptSections)
+			compiled.PromptSections = promptcompiler.ApplyPromptSectionCache(previousPromptInputTrace.PromptSections, compiled.PromptSections)
+		} else {
+			compiled.ChangedSections = promptcompiler.ChangedPromptSections(nil, compiled.PromptSections)
+			compiled.PromptSections = promptcompiler.ApplyPromptSectionCache(nil, compiled.PromptSections)
+		}
 		stablePromptHash := promptContentHash(compiled.Stable.Content)
 		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
 		toolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		visibleToolNames := toolNames(compileCtx.AssembledTools)
+		toolSurfaceSnapshot := ToolSurfaceSnapshotRef{
+			ID:                 fmt.Sprintf("toolsurface-%s-%d", turnID, iteration),
+			Fingerprint:        toolFingerprint,
+			ToolNames:          append([]string(nil), visibleToolNames...),
+			PolicySnapshotHash: surfacePolicy.Hash,
+			PolicySnapshot:     &surfacePolicy,
+			CreatedAt:          time.Now(),
+		}
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
@@ -1329,17 +1702,56 @@ func (k *EinoKernel) runHostIterationLoop(
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)
 			promptInputDiff = &diff
 		}
+		toolTraceFields := buildModelInputToolTraceFields(session, snapshot, toolFingerprint, surfacePolicy.Hash)
+		finalEvidenceTrace := BuildFinalEvidenceState(snapshot, session)
+		planRequirementTrace := planRequirementDecisionTrace(EvaluatePlanRequirement(snapshot.TaskDepth, snapshot, false))
+		planCompletionDecision, planCompletionPresent := evaluateRuntimePlanCompletionGate(session, snapshot)
+		planCompletionTrace := planCompletionGateTrace(planCompletionDecision, planCompletionPresent)
+		verificationCompletionDecision := EvaluateVerificationCompletionGate(snapshot.TaskDepth, snapshot)
+		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
+		uxProgressTrace := BuildUXProgressTrace(snapshot)
+		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
 		tracePath, _ := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
-			SessionID:        session.ID,
-			TurnID:           turnID,
-			Iteration:        iteration,
-			Metadata:         turnMetadata,
-			Compiled:         compiled,
-			ModelInput:       modelInput,
-			VisibleTools:     toolNames(compileCtx.AssembledTools),
-			PromptInputTrace: promptBuild.Trace,
-			PromptInputDiff:  promptInputDiff,
-			DiagnosticTrace:  buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
+			SessionID:                     session.ID,
+			TurnID:                        turnID,
+			Iteration:                     iteration,
+			Metadata:                      turnMetadata,
+			Compiled:                      compiled,
+			ModelInput:                    modelInput,
+			VisibleTools:                  visibleToolNames,
+			PromptInputTrace:              promptBuild.Trace,
+			PromptInputDiff:               promptInputDiff,
+			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
+			TaskDepth:                     snapshot.TaskDepth,
+			UXProgressTrace:               &uxProgressTrace,
+			EvidenceCoverage:              &evidenceCoverageDecision,
+			PlanRequirementDecision:       planRequirementTrace,
+			PlanCompletionGate:            planCompletionTrace,
+			VerificationReportRef:         verificationCompletionDecision.ReportRef,
+			VerificationStatus:            string(verificationCompletionDecision.Status),
+			CompletionGate:                verificationCompletionTrace,
+			SafetySignals:                 toolTraceFields.SafetySignals,
+			UnexpectedStateGate:           toolTraceFields.UnexpectedStateGate,
+			ApprovalScope:                 toolTraceFields.ApprovalScope,
+			ReasoningEffort:               compileCtx.ReasoningEffort,
+			ToolSurfaceFingerprint:        toolTraceFields.ToolSurfaceFingerprint,
+			ToolSurfacePolicySnapshotHash: toolTraceFields.ToolSurfacePolicySnapshotHash,
+			LoadedToolsDelta:              toolTraceFields.LoadedToolsDelta,
+			LoadedPacksDelta:              toolTraceFields.LoadedPacksDelta,
+			SkillIndexHash:                toolTraceFields.SkillIndexHash,
+			LoadedSkillsDelta:             toolTraceFields.LoadedSkillsDelta,
+			ToolSearchEvents:              toolTraceFields.ToolSearchEvents,
+			ToolSelectionEvents:           toolTraceFields.ToolSelectionEvents,
+			RejectedToolCalls:             toolTraceFields.RejectedToolCalls,
+			SkillSearchEvents:             toolTraceFields.SkillSearchEvents,
+			SkillReadEvents:               toolTraceFields.SkillReadEvents,
+			RejectedSkillActivations:      toolTraceFields.RejectedSkillActivations,
+			MCPInstructionDeltas:          toolTraceFields.MCPInstructionDeltas,
+			ParallelDispatchGroups:        toolTraceFields.ParallelDispatchGroups,
+			TaskClaims:                    taskClaimTracesFromSnapshot(snapshot),
+			ResourceLocks:                 toolTraceFields.ResourceLocks,
+			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
+			FinalEvidenceState:            &finalEvidenceTrace,
 		})
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
@@ -1355,11 +1767,14 @@ func (k *EinoKernel) runHostIterationLoop(
 			agentstate.ItemStatusRunning,
 			"calling model",
 			map[string]any{
-				"iteration":         iteration,
-				"visibleTools":      toolNames(compileCtx.AssembledTools),
-				"traceFile":         traceFile,
-				"traceDiffFile":     traceDiffFile,
-				"promptFingerprint": promptFingerprint,
+				"iteration":                iteration,
+				"visibleTools":             visibleToolNames,
+				"traceFile":                traceFile,
+				"traceDiffFile":            traceDiffFile,
+				"promptFingerprint":        promptFingerprint,
+				"taskDepth":                snapshot.TaskDepth,
+				"uxProgressTrace":          uxProgressTrace,
+				"evidenceCoverageDecision": evidenceCoverageDecision,
 			},
 		))
 		k.persistTurnSnapshot(session, snapshot)
@@ -1373,7 +1788,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			ModelName:         modelNameForTrace(chatModel),
 			PromptStableHash:  stablePromptHash,
 			PromptFingerprint: promptFingerprint,
-			VisibleTools:      toolNames(compileCtx.AssembledTools),
+			VisibleTools:      visibleToolNames,
 			MessageCount:      len(modelInput),
 			TraceFile:         traceFile,
 			TraceDiffFile:     traceDiffFile,
@@ -1490,7 +1905,9 @@ func (k *EinoKernel) runHostIterationLoop(
 			ResumeState:             TurnResumeStateNone,
 			MessagesForModel:        append([]Message(nil), contextMessages...),
 			ToolProgress:            nil,
-			VisibleTools:            toolNames(compileCtx.AssembledTools),
+			ToolSurfaceFingerprint:  toolFingerprint,
+			ToolSurfaceSnapshot:     &toolSurfaceSnapshot,
+			VisibleTools:            visibleToolNames,
 			RefreshedTools:          refreshedTools,
 			PromptDelta:             compiled.Dynamic.Content,
 			PromptFingerprint:       promptFingerprint,
@@ -1516,6 +1933,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		snapshot.Iteration = iteration
 		snapshot.StablePromptHash = stablePromptHash
 		snapshot.StableToolFingerprint = toolFingerprint
+		snapshot.ToolSurfaceSnapshot = &toolSurfaceSnapshot
 		snapshot.UpdatedAt = time.Now()
 		snapshot.LatestCheckpoint = checkpoint
 		appendCompactedSegments(&snapshot.CompactedSegments, contextState.CompactedSegments...)
@@ -1532,6 +1950,129 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 
 		if len(assistantMsg.ToolCalls) == 0 {
+			if shouldGuardPrematureFinal(snapshot.TaskDepth, snapshot, iteration, assistantContent) {
+				markPrematureFinalGuard(snapshot)
+				additionalContext = append(additionalContext, prematureFinalGuardPrompt(snapshot.TaskDepth))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			planCompletionDecision, planCompletionPresent := evaluateRuntimePlanCompletionGate(session, snapshot)
+			if planCompletionPresent && !planCompletionGateAllowsFinal(assistantContent, planCompletionDecision) && snapshot.Metadata[planCompletionGateRetryMetadataKey] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata[planCompletionGateRetryMetadataKey] = "1"
+				additionalContext = append(additionalContext, planCompletionGateRetryPrompt(planCompletionDecision))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			verificationCompletionDecision := EvaluateVerificationCompletionGate(snapshot.TaskDepth, snapshot)
+			appendVerificationCompletionGateItem(snapshot, turnID, iteration, verificationCompletionDecision)
+			if !verificationCompletionGateAllowsFinal(assistantContent, verificationCompletionDecision) && snapshot.Metadata[verificationCompletionGateRetryMetadataKey] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata[verificationCompletionGateRetryMetadataKey] = "1"
+				additionalContext = append(additionalContext, verificationCompletionGateRetryPrompt(verificationCompletionDecision))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			managerGate := EvaluateManagerSynthesisGate(snapshot, assistantContent)
+			if managerGate.Action != "allow_final" && snapshot.Metadata["managerSynthesisRetry"] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["managerSynthesisRetry"] = "1"
+				additionalContext = append(additionalContext, managerSynthesisRetryPrompt(managerGate))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			if coverageGateMetadataPresent(snapshot) {
+				completionDecision := EvaluateCompletionReadiness(snapshot, assistantContent)
+				if completionDecision.Action == "block_success_final" && snapshot.Metadata["completionReadinessRetry"] != "1" {
+					if snapshot.Metadata == nil {
+						snapshot.Metadata = map[string]string{}
+					}
+					snapshot.Metadata["completionReadinessRetry"] = "1"
+					additionalContext = append(additionalContext, completionReadinessRetryPrompt(completionDecision))
+					snapshot.FinalOutput = ""
+					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+					}
+					k.persistTurnSnapshot(session, snapshot)
+					continue
+				}
+			}
+			mandatorySkillDecision := EvaluateMandatorySkillActivation(k.mandatorySkillDefinitionsForInput(req.Input), req.Input, assistantContent, session.SkillActivation)
+			if mandatorySkillDecision.Action == "require_skill_read" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				if snapshot.Metadata["mandatorySkillActivationRetry"] != "1" {
+					snapshot.Metadata["mandatorySkillActivationRetry"] = "1"
+					additionalContext = append(additionalContext, mandatorySkillRetryPrompt(mandatorySkillDecision))
+					snapshot.FinalOutput = ""
+					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+					}
+					k.persistTurnSnapshot(session, snapshot)
+					continue
+				}
+				session.SkillActivation.AddRejectedActivation(RejectedSkillActivation{
+					SkillName:      strings.Join(mandatorySkillDecision.RequiredSkills, ", "),
+					Reason:         strings.Join(mandatorySkillDecision.Reasons, ", "),
+					RequiredAction: "skill_read",
+					TurnID:         turnID,
+				}, time.Now())
+			}
+			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent)
+			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata[finalCompletenessRetryMetadataKey] = "1"
+				additionalContext = append(additionalContext, finalCompletenessRetryPrompt(finalCompletenessDecision))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			finalEvidence := BuildFinalEvidenceState(snapshot, session)
+			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
+			if finalEvidenceDecision.Action != FinalEvidenceActionAllow && snapshot.Metadata["finalEvidenceVerifierRetry"] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["finalEvidenceVerifierRetry"] = "1"
+				additionalContext = append(additionalContext, finalEvidenceRetryPrompt(finalEvidenceDecision))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
+			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
+				return "", nil, err
+			}
 			now := time.Now()
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
@@ -1579,18 +2120,18 @@ func (k *EinoKernel) runHostIterationLoop(
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
 		}
-
 		if intentText := toolIntentPrelude(req.Input, assistantMsg); intentText != "" {
 			k.emitRuntimeEvent(EventAssistantIntent, session.ID, turnID, map[string]any{
 				"text": intentText,
 			})
 		}
 
-		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, compileCtx.AssembledTools)
+		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "dispatch_tools", turnSpanID)
 
 		appendToolCallState := func(tc ToolCall) string {
 			toolItemID := toolCallItemID(turnID, tc)
+			queueToolInvocation(snapshot, iteration, tc, toolMetadataForToolCall(dispatchTools, tc))
 			appendAgentItem(snapshot, newAgentItem(
 				toolItemID,
 				agentstate.TurnItemTypeToolCall,
@@ -1606,11 +2147,17 @@ func (k *EinoKernel) runHostIterationLoop(
 				dispatchResult.ToolCallID = tc.ID
 			}
 			if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
-				dispatchResult.Metadata = toolMetadataForToolCall(compileCtx.AssembledTools, tc)
+				dispatchResult.Metadata = toolMetadataForToolCall(dispatchTools, tc)
 			}
+			appendResourceLockTraces(snapshot, dispatchResult.ResourceLocks)
+			appendToolAttemptStates(snapshot, tc.ID, dispatchResult.Attempts)
+			recordRejectedToolCallFromDispatch(session, turnID, tc, dispatchResult, time.Now())
 			if dispatchResult.Blocked {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusBlocked, dispatchResult.Reason)
-				k.markTurnBlocked(session, snapshot, tc, dispatchResult)
+				markToolInvocationBlocked(snapshot, tc.ID)
+				if transitionErr := k.markTurnBlocked(session, snapshot, tc, dispatchResult); transitionErr != nil {
+					return nil, transitionErr
+				}
 				return &TurnResult{
 					SessionType:     req.SessionType,
 					Mode:            req.Mode,
@@ -1626,7 +2173,10 @@ func (k *EinoKernel) runHostIterationLoop(
 				if !shouldFeedToolFailureBackToModel(dispatchResult) {
 					updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, dispatchResult.Error)
 					appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, dispatchResult.Error, map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
-					k.markTurnFailed(session, snapshot, tc, dispatchResult)
+					markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+					if transitionErr := k.markTurnFailed(session, snapshot, tc, dispatchResult); transitionErr != nil {
+						return nil, transitionErr
+					}
 					return nil, fmt.Errorf("tool %q failed: %s", tc.Name, dispatchResult.Error)
 				}
 				dispatchResult.Result = failedToolResultForModel(tc, dispatchResult)
@@ -1640,11 +2190,14 @@ func (k *EinoKernel) runHostIterationLoop(
 			if materializeErr != nil {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
+				markToolInvocationFailed(snapshot, tc.ID, "")
 				k.persistTurnSnapshot(session, snapshot)
 				return nil, fmt.Errorf("materialize tool result %q: %w", tc.Name, materializeErr)
 			}
 			turnMetadata = updateOpsManualFlowTurnMetadata(turnMetadata, recordedResult)
 			turnMetadata = updateToolSearchPackTurnMetadata(turnMetadata, tc.Name, recordedResult)
+			applyToolSearchDiscoveryState(session, tc.Name, recordedResult, turnID)
+			applySkillDiscoveryState(session, tc.Name, recordedResult, turnID)
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusCompleted, tc.Name)
 			appendAgentItem(snapshot, newAgentItem(
 				toolResultItemID(turnID, tc),
@@ -1655,6 +2208,11 @@ func (k *EinoKernel) runHostIterationLoop(
 			))
 			if planItem, ok := planItemFromToolCall(turnID, tc); ok {
 				appendAgentItem(snapshot, planItem)
+			}
+			if recordedResult.Error != "" {
+				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+			} else {
+				markToolInvocationCompleted(snapshot, tc.ID)
 			}
 			toolMsg := Message{
 				ID:         fmt.Sprintf("msg-%d", time.Now().UnixNano()),
@@ -1670,6 +2228,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				appendContextGovernanceEvents(&last.ContextGovernanceEvents, latestToolResultGovernanceEvents(session, tc.ID)...)
 				last.UpdatedAt = time.Now()
 			}
+			k.applyAggregateToolResultBudget(session, snapshot, iteration, dispatchTools)
 			snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
 			appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 			appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
@@ -1687,16 +2246,21 @@ func (k *EinoKernel) runHostIterationLoop(
 
 		for i := 0; i < len(assistantMsg.ToolCalls); {
 			tc := assistantMsg.ToolCalls[i]
-			if canDispatchToolCallInParallel(compileCtx.AssembledTools, tc) && toolDispatches < defaultMaxToolDispatchesPerTurn {
+			if canDispatchToolCallInParallel(dispatchTools, tc) && toolDispatches < defaultMaxToolDispatchesPerTurn {
 				remaining := defaultMaxToolDispatchesPerTurn - toolDispatches
 				batch := make([]ToolCall, 0, remaining)
-				for i < len(assistantMsg.ToolCalls) && len(batch) < remaining && canDispatchToolCallInParallel(compileCtx.AssembledTools, assistantMsg.ToolCalls[i]) {
+				for i < len(assistantMsg.ToolCalls) && len(batch) < remaining && canDispatchToolCallInParallel(dispatchTools, assistantMsg.ToolCalls[i]) {
 					batch = append(batch, assistantMsg.ToolCalls[i])
 					i++
 				}
 				toolItemIDs := make([]string, len(batch))
 				for j, batchCall := range batch {
 					toolItemIDs[j] = appendToolCallState(batchCall)
+				}
+				recordParallelDispatchGroup(snapshot, turnID, iteration, batch, dispatchTools)
+				k.persistTurnSnapshot(session, snapshot)
+				for _, batchCall := range batch {
+					markToolInvocationRunning(snapshot, batchCall.ID)
 				}
 				k.persistTurnSnapshot(session, snapshot)
 
@@ -1706,7 +2270,7 @@ func (k *EinoKernel) runHostIterationLoop(
 					wg.Add(1)
 					go func(index int, call ToolCall) {
 						defer wg.Done()
-						dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 						results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
 					}(j, batchCall)
 				}
@@ -1725,15 +2289,17 @@ func (k *EinoKernel) runHostIterationLoop(
 			i++
 			toolItemID := appendToolCallState(tc)
 			k.persistTurnSnapshot(session, snapshot)
+			markToolInvocationRunning(snapshot, tc.ID)
+			k.persistTurnSnapshot(session, snapshot)
 			dispatchResult := DispatchResult{
 				ToolCallID: tc.ID,
-				Metadata:   toolMetadataForToolCall(compileCtx.AssembledTools, tc),
+				Metadata:   toolMetadataForToolCall(dispatchTools, tc),
 			}
 			if countsTowardToolBudget(tc) && toolDispatches >= defaultMaxToolDispatchesPerTurn {
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			} else {
-				dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: req.HostID})
+				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
 					toolDispatches++
@@ -1756,6 +2322,9 @@ func (k *EinoKernel) runHostIterationLoop(
 	}
 
 	now := time.Now()
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+		return "", nil, err
+	}
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = "iteration limit exceeded"
@@ -1779,19 +2348,28 @@ const (
 	defaultSynthesisOnlyToolDispatches = 5
 )
 
-func shouldSwitchToSynthesisOnly(mode Mode, toolDispatches int, tools []promptcompiler.Tool) bool {
+func shouldSwitchToSynthesisOnly(mode Mode, profile taskdepth.Profile, toolDispatches int, tools []promptcompiler.Tool) bool {
 	if len(tools) == 0 {
 		return false
 	}
 	if mode == ModeExecute {
 		return toolDispatches >= defaultMaxToolDispatchesPerTurn
 	}
-	return toolDispatches >= defaultSynthesisOnlyToolDispatches
+	switch profile.Level {
+	case taskdepth.LevelInvestigation:
+		return toolDispatches >= 8
+	case taskdepth.LevelOperations, taskdepth.LevelMultiAgent:
+		return toolDispatches >= 12
+	case taskdepth.LevelMultiStep:
+		return toolDispatches >= 6
+	default:
+		return toolDispatches >= defaultSynthesisOnlyToolDispatches
+	}
 }
 
 func synthesisOnlyPromptAsset(toolDispatches int) string {
 	return fmt.Sprintf(
-		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户完整回答；如果证据不足，明确说明限制，不要等待更多工具。",
+		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户回答；如果证据不足，给出 budget-limited conclusion，明确已用证据和仍缺证据。不要把证据不足包装成高置信度根因，也不要假装调查完整。",
 		toolDispatches,
 	)
 }
@@ -2023,15 +2601,8 @@ func isToolBudgetResult(result ToolResult) bool {
 }
 
 func canDispatchToolCallInParallel(tools []promptcompiler.Tool, tc ToolCall) bool {
-	toolDef := toolForToolCall(tools, tc)
-	if toolDef == nil {
-		return false
-	}
-	governance := toolDef.Metadata().EffectiveGovernance(defaultMaxInlineResultBytes)
-	if governance.Mutating || governance.RequiresApproval {
-		return false
-	}
-	return toolDef.IsReadOnly(tc.Arguments) && !toolDef.IsDestructive(tc.Arguments) && toolDef.IsConcurrencySafe(tc.Arguments)
+	eligible, _, _ := parallelDispatchEligibility(tools, tc)
+	return eligible
 }
 
 func toolForToolCall(tools []promptcompiler.Tool, tc ToolCall) promptcompiler.Tool {
@@ -2126,9 +2697,32 @@ func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolRe
 	if errText == "" {
 		errText = "tool execution failed"
 	}
+	decision := toolfailure.NewClassifier().Classify(toolfailure.ClassificationInput{
+		Source:  result.Source,
+		Outcome: result.Outcome,
+		Error:   errText,
+	})
+	allowedNextActions := []string{}
+	if decision.RequiresUser || decision.Kind == toolfailure.KindToolNotFound {
+		allowedNextActions = append(allowedNextActions, string(toolfailure.ActionAskUser))
+	}
+	body, marshalErr := json.Marshal(map[string]any{
+		"type":               "tool_error",
+		"toolCallId":         tc.ID,
+		"toolName":           toolName,
+		"failureKind":        string(decision.Kind),
+		"retryable":          false,
+		"userActionRequired": decision.RequiresUser,
+		"message":            fmt.Sprintf("%s failed: %s", toolName, errText),
+		"allowedNextActions": allowedNextActions,
+	})
+	content := string(body)
+	if marshalErr != nil {
+		content = fmt.Sprintf(`{"type":"tool_error","toolCallId":%q,"toolName":%q,"failureKind":"%s","retryable":false,"userActionRequired":false,"message":%q,"allowedNextActions":[]}`, tc.ID, toolName, decision.Kind, fmt.Sprintf("%s failed: %s", toolName, errText))
+	}
 	return tooling.ToolResult{
 		ToolCallID: tc.ID,
-		Content:    fmt.Sprintf("%s failed: %s", toolName, errText),
+		Content:    content,
 		Error:      errText,
 		Display: &tooling.ToolDisplayPayload{
 			Type:  "tool_error",
@@ -2155,6 +2749,10 @@ func enrichCompileContext(
 	hostID = strings.TrimSpace(hostID)
 	if hostID != "" && strings.TrimSpace(compileCtx.HostContext) == "" {
 		compileCtx.HostContext = hostID
+	}
+	if hostOpsManagerRequested(metadata) {
+		compileCtx.HostOpsManager = true
+		compileCtx.HostOpsPlanRequired = hostOpsPlanRequired(metadata)
 	}
 	if sessionBinding := sessionBindingPromptSection(metadata); sessionBinding != "" {
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
@@ -2189,6 +2787,57 @@ func enrichCompileContext(
 		Content: "The AIOps UI/API for this session may be served on 127.0.0.1:8080. For service/container changes on server-local, check host ports with lsof before binding and do not bind new workloads to 127.0.0.1:8080 or host port 8080. Choose a free alternate port such as 18080 when exposing test services.",
 	})
 	return compileCtx
+}
+
+func hostOpsManagerRequested(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	if strings.TrimSpace(metadata["aiops.hostops.mentions"]) != "" {
+		return true
+	}
+	return hostOpsPlanRequired(metadata)
+}
+
+func hostOpsPlanRequired(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"aiops.hostops.planRequired",
+		"aiops.hostops.clientDetectedMultiHost",
+		"aiops.hostops.serverDetectedMultiHost",
+	} {
+		if metadataBool(metadata[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func metadataListContains(raw, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
+	values := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func updateRuntimeEnvironmentContext(session *SessionState, req TurnRequest, now time.Time) {
@@ -2242,12 +2891,36 @@ func sessionBindingPromptSection(metadata map[string]string) string {
 	add("Target host", "aiops.target.hostId")
 	add("Target label", "aiops.target.label")
 	add("Environment", "aiops.environment", "aiops.target.environment")
-	add("Coroot project", "aiops.coroot.project", "coroot.project")
+	lines = addDynamicMetadataBinding(lines, metadata, "Project", ".project")
 	if len(lines) == 0 {
 		return ""
 	}
-	lines = append(lines, "Use these session bindings when selecting read-only evidence tools. For Coroot, pass the bound project/environment when present; if it is absent, use the Coroot tool default and report unavailability from the tool result instead of asking whether Coroot exists.")
+	lines = append(lines, "Use these session bindings when selecting read-only evidence tools. Pass bound provider, project, environment, and target identifiers when a selected tool supports them; if a binding is absent, rely on the tool default and report unavailability from the tool result instead of inventing environment facts.")
 	return strings.Join(lines, "\n")
+}
+
+func addDynamicMetadataBinding(lines []string, metadata map[string]string, label, suffix string) []string {
+	suffix = strings.TrimSpace(suffix)
+	if suffix == "" {
+		return lines
+	}
+	keys := make([]string, 0, len(metadata))
+	for key := range metadata {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := metadata[key]
+		if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(key)), strings.ToLower(suffix)) {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		return append(lines, fmt.Sprintf("%s: %s", label, value))
+	}
+	return lines
 }
 
 func opsManualOptOutPromptSection(metadata map[string]string) string {
@@ -2335,18 +3008,30 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
-	k.markSnapshotResuming(session, snapshot, "resume_tool_approval")
+	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
+		return nil, err
+	}
 	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, nil, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
-	dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+	markToolInvocationRunning(snapshot, toolCall.ID)
+	k.persistTurnSnapshot(session, snapshot)
 	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
+	appendResourceLockTraces(snapshot, result.ResourceLocks)
+	appendToolAttemptStates(snapshot, toolCall.ID, result.Attempts)
 	if result.Blocked {
-		k.markTurnBlocked(session, snapshot, toolCall, result)
+		markToolInvocationBlocked(snapshot, toolCall.ID)
+		if err := k.markTurnBlocked(session, snapshot, toolCall, result); err != nil {
+			return nil, err
+		}
 		return blockedTurnResult(session, snapshot, result.Reason), nil
 	}
 	if result.Error != "" {
 		if !shouldFeedToolFailureBackToModel(result) {
-			k.markTurnFailed(session, snapshot, toolCall, result)
+			markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+			if err := k.markTurnFailed(session, snapshot, toolCall, result); err != nil {
+				return nil, err
+			}
 			return nil, fmt.Errorf("tool %q failed: %s", toolCall.Name, result.Error)
 		}
 		result.Result = failedToolResultForModel(toolCall, result)
@@ -2356,6 +3041,7 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	}
 	recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result)
 	if materializeErr != nil {
+		markToolInvocationFailed(snapshot, toolCall.ID, "")
 		return nil, fmt.Errorf("materialize resumed tool result %q: %w", toolCall.Name, materializeErr)
 	}
 	appendAgentItem(snapshot, newAgentItem(
@@ -2365,6 +3051,11 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 		truncateString(recordedResult.Content, 240),
 		map[string]string{"toolCallId": toolCall.ID, "toolName": toolCall.Name},
 	))
+	if recordedResult.Error != "" {
+		markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+	} else {
+		markToolInvocationCompleted(snapshot, toolCall.ID)
+	}
 	k.persistTurnSnapshot(session, snapshot)
 	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, compileCtx, dispatcher)
 }
@@ -2405,9 +3096,12 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 			tc.Name,
 			tc,
 		))
+		queueToolInvocation(snapshot, snapshot.Iteration, tc, toolMetadataForToolCall(compileCtx.AssembledTools, tc))
+		k.persistTurnSnapshot(session, snapshot)
+		markToolInvocationRunning(snapshot, tc.ID)
 		k.persistTurnSnapshot(session, snapshot)
 
-		dispatchCtx := tooling.ContextWithToolExecution(ctx, tooling.ToolExecutionContext{HostID: session.HostID})
+		dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 		dispatchResult := dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
 		if dispatchResult.ToolCallID == "" {
 			dispatchResult.ToolCallID = tc.ID
@@ -2415,16 +3109,24 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
 			dispatchResult.Metadata = toolMetadataForToolCall(compileCtx.AssembledTools, tc)
 		}
+		appendResourceLockTraces(snapshot, dispatchResult.ResourceLocks)
+		appendToolAttemptStates(snapshot, tc.ID, dispatchResult.Attempts)
 		if dispatchResult.Blocked {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusBlocked, dispatchResult.Reason)
-			k.markTurnBlocked(session, snapshot, tc, dispatchResult)
+			markToolInvocationBlocked(snapshot, tc.ID)
+			if err := k.markTurnBlocked(session, snapshot, tc, dispatchResult); err != nil {
+				return nil, err
+			}
 			return blockedTurnResult(session, snapshot, dispatchResult.Reason), nil
 		}
 		if dispatchResult.Error != "" {
 			if !shouldFeedToolFailureBackToModel(dispatchResult) {
 				updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, dispatchResult.Error)
 				appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, dispatchResult.Error, map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
-				k.markTurnFailed(session, snapshot, tc, dispatchResult)
+				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+				if err := k.markTurnFailed(session, snapshot, tc, dispatchResult); err != nil {
+					return nil, err
+				}
 				return nil, fmt.Errorf("tool %q failed: %s", tc.Name, dispatchResult.Error)
 			}
 			dispatchResult.Result = failedToolResultForModel(tc, dispatchResult)
@@ -2437,6 +3139,7 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		if materializeErr != nil {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
+			markToolInvocationFailed(snapshot, tc.ID, "")
 			k.persistTurnSnapshot(session, snapshot)
 			return nil, fmt.Errorf("materialize resumed tool result %q: %w", tc.Name, materializeErr)
 		}
@@ -2450,6 +3153,11 @@ func (k *EinoKernel) drainRemainingToolCallsAfterResume(
 		))
 		if planItem, ok := planItemFromToolCall(snapshot.ID, tc); ok {
 			appendAgentItem(snapshot, planItem)
+		}
+		if recordedResult.Error != "" {
+			markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+		} else {
+			markToolInvocationCompleted(snapshot, tc.ID)
 		}
 		k.persistTurnSnapshot(session, snapshot)
 	}
@@ -2530,8 +3238,7 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 }
 
 func toolDisplayDataShouldStayOutOfPreview(displayType string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(displayType))
-	return normalized == "coroot" || strings.HasPrefix(normalized, "coroot.")
+	return strings.TrimSpace(displayType) != ""
 }
 
 type terminalToolResultEnvelope struct {
@@ -2659,9 +3366,12 @@ func appendResumeInputMessage(session *SessionState, input string) {
 	recomputeContextWindow(&session.Context, session.Messages)
 }
 
-func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) {
+func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
 	if session == nil || snapshot == nil {
-		return
+		return fmt.Errorf("session and snapshot are required")
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
+		return err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
@@ -2683,6 +3393,7 @@ func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnS
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
 func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
@@ -2704,10 +3415,72 @@ func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *Tur
 	dispatcher = dispatcher.
 		WithPermissions(k.permissions).
 		WithSessionApprovalGrants(session.ApprovalGrants).
+		WithPlanApprovalContext(session.PlanMode, session.PlanApprovalScopes).
+		WithUnexpectedStateSignals(collectUnexpectedStateSignalsFromSession(session)).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
+		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
+		WithVisibleToolMetadata(toolMetadataList(tools)).
+		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(featureflag.FromEnv(os.Getenv))).
+		WithResourceLockGate(k.resourceLockGate).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
+	if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
+		dispatcher = dispatcher.WithToolSurfacePolicySnapshot(snapshot.ToolSurfaceSnapshot.PolicySnapshot)
+	}
+	if catalog := k.deferredCatalogLookup(session.Type, session.Mode); catalog != nil {
+		dispatcher = dispatcher.WithDeferredCatalogLookup(catalog)
+	}
 	return dispatcher
+}
+
+func toolMetadataList(tools []promptcompiler.Tool) []tooling.ToolMetadata {
+	out := make([]tooling.ToolMetadata, 0, len(tools))
+	for _, toolDef := range tools {
+		if toolDef != nil {
+			out = append(out, toolDef.Metadata())
+		}
+	}
+	return out
+}
+
+func (k *EinoKernel) deferredCatalogLookup(session SessionType, mode Mode) DeferredToolCatalogLookup {
+	source, ok := k.tools.(fullToolCatalogSource)
+	if !ok {
+		return nil
+	}
+	tools := source.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{IncludeDeferredCatalog: true})
+	catalog := deferredCatalogLookup{byName: make(map[string]tooling.ToolMetadata)}
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if meta.Name == "" || tooling.ToolHiddenFromDiscovery(meta) {
+			continue
+		}
+		if meta.Layer != tooling.ToolLayerDeferred && !meta.DeferByDefault && meta.Pack == "" {
+			continue
+		}
+		catalog.byName[meta.Name] = meta
+		for _, alias := range meta.Aliases {
+			if strings.TrimSpace(alias) != "" {
+				catalog.byName[alias] = meta
+			}
+		}
+	}
+	if len(catalog.byName) == 0 {
+		return nil
+	}
+	return catalog
+}
+
+type deferredCatalogLookup struct {
+	byName map[string]tooling.ToolMetadata
+}
+
+func (l deferredCatalogLookup) LookupDeferredTool(name string) (tooling.ToolMetadata, bool) {
+	meta, ok := l.byName[name]
+	return meta, ok
 }
 
 func generateModelResponse(
@@ -2763,7 +3536,7 @@ func generateModelResponse(
 			return nil, err
 		}
 		if isEmptyAssistantResponse(response) {
-			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
+			return generateFallbackResponse(ctx, chatModel, input, opts, onFinalDelta)
 		}
 		return response, nil
 	}
@@ -2776,6 +3549,63 @@ func generateModelResponse(
 		return nil, err
 	}
 	if isEmptyAssistantResponse(response) {
+		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
+			if onFinalDelta != nil && fallback.Content != "" {
+				onFinalDelta(fallback.Content)
+			}
+			return fallback, nil
+		}
+		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
+	}
+	if onFinalDelta != nil && response.Content != "" {
+		onFinalDelta(response.Content)
+	}
+	return response, nil
+}
+
+func generateFallbackResponse(
+	ctx context.Context,
+	chatModel modelrouter.ChatModel,
+	input []*schema.Message,
+	opts []einomodel.Option,
+	onFinalDelta func(string),
+) (*schema.Message, error) {
+	const fallbackAttempts = 2
+	var response *schema.Message
+
+	for attempt := 0; attempt < fallbackAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var err error
+		response, err = chatModel.Generate(ctx, input, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; generate fallback failed: %w", err)
+		}
+		if !isEmptyAssistantResponse(response) {
+			break
+		}
+		if len(opts) == 0 {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err = chatModel.Generate(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; no-tool generate fallback failed: %w", err)
+		}
+		if !isEmptyAssistantResponse(response) {
+			break
+		}
+	}
+	if isEmptyAssistantResponse(response) {
+		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
+			if onFinalDelta != nil && fallback.Content != "" {
+				onFinalDelta(fallback.Content)
+			}
+			return fallback, nil
+		}
 		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
 	}
 	if onFinalDelta != nil && response.Content != "" {
@@ -2819,6 +3649,196 @@ func isEmptyAssistantResponse(msg *schema.Message) bool {
 		len(msg.ToolCalls) == 0 &&
 		len(msg.MultiContent) == 0 &&
 		len(msg.AssistantGenMultiContent) == 0
+}
+
+func fallbackResponseFromToolEvidence(input []*schema.Message) *schema.Message {
+	userRequest := latestUserContent(input)
+	content := latestSuccessfulToolEvidenceContent(input)
+	if content == "" {
+		return nil
+	}
+	fallback := fallbackTextFromToolEvidence(userRequest, content)
+	if strings.TrimSpace(fallback) == "" {
+		return nil
+	}
+	return schema.AssistantMessage(fallback, nil)
+}
+
+func latestUserContent(input []*schema.Message) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		msg := input[i]
+		if msg == nil || msg.Role != schema.User {
+			continue
+		}
+		if text := strings.TrimSpace(msg.Content); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func latestSuccessfulToolEvidenceContent(input []*schema.Message) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		msg := input[i]
+		if msg == nil || msg.Role != schema.Tool {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || toolEvidenceLooksFailed(content) {
+			continue
+		}
+		return content
+	}
+	return ""
+}
+
+func toolEvidenceLooksFailed(content string) bool {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) == nil {
+		if errorValue, ok := obj["error"]; ok && strings.TrimSpace(fmt.Sprint(errorValue)) != "" {
+			return true
+		}
+		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(obj["status"])))
+		return status == "error" || status == "failed" || status == "failure"
+	}
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "tool not found") ||
+		strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "failed to") ||
+		strings.Contains(lower, "执行失败")
+}
+
+func fallbackTextFromToolEvidence(userRequest, content string) string {
+	if answer, ok := scalarJSONFieldAnswerFromRequest(userRequest, content); ok {
+		return answer
+	}
+	sanitized := sanitizeToolEvidenceForFallback(content)
+	if sanitized == "" {
+		return ""
+	}
+	return "已获取工具结果：\n\n" + truncateRunes(sanitized, 1200)
+}
+
+func scalarJSONFieldAnswerFromRequest(userRequest, content string) (string, bool) {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) != nil || len(obj) == 0 {
+		return "", false
+	}
+	request := normalizePromptLookupText(userRequest)
+	for key, value := range obj {
+		if isSensitiveEvidenceKey(key) || !requestMentionsJSONField(request, key) {
+			continue
+		}
+		text, ok := scalarJSONValueText(value)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		return fmt.Sprintf("%s 字段是 %s。", key, text), true
+	}
+	return "", false
+}
+
+func requestMentionsJSONField(normalizedRequest, key string) bool {
+	normalizedKey := normalizePromptLookupText(key)
+	if normalizedKey != "" && strings.Contains(normalizedRequest, normalizedKey) {
+		return true
+	}
+	switch strings.ToLower(key) {
+	case "model":
+		return strings.Contains(normalizedRequest, "模型")
+	case "provider":
+		return strings.Contains(normalizedRequest, "供应商") || strings.Contains(normalizedRequest, "提供商") || strings.Contains(normalizedRequest, "接入")
+	case "status":
+		return strings.Contains(normalizedRequest, "状态")
+	default:
+		return false
+	}
+}
+
+func scalarJSONValueText(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case float64, bool:
+		return fmt.Sprint(v), true
+	case nil:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+func sanitizeToolEvidenceForFallback(content string) string {
+	var value any
+	if json.Unmarshal([]byte(content), &value) == nil {
+		redacted := redactSensitiveEvidenceValue(value)
+		encoded, err := json.MarshalIndent(redacted, "", "  ")
+		if err == nil {
+			return string(encoded)
+		}
+	}
+	return redactSensitiveEvidenceText(content)
+}
+
+func redactSensitiveEvidenceValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			if isSensitiveEvidenceKey(key) {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = redactSensitiveEvidenceValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, child := range v {
+			out = append(out, redactSensitiveEvidenceValue(child))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func isSensitiveEvidenceKey(key string) bool {
+	normalized := normalizePromptLookupText(key)
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "authorization")
+}
+
+func normalizePromptLookupText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "", ":", "", "/", "")
+	return replacer.Replace(value)
+}
+
+func redactSensitiveEvidenceText(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isSensitiveEvidenceLine(line) {
+			lines[i] = "[REDACTED]"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isSensitiveEvidenceLine(line string) bool {
+	normalized := normalizePromptLookupText(line)
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "authorization")
 }
 
 func toolInfosFromPool(ctx context.Context, toolPool []tool.BaseTool) ([]*schema.ToolInfo, error) {
@@ -3029,6 +4049,102 @@ func (k *EinoKernel) persistToolResultSpill(session *SessionState, snapshot *Tur
 	}, nil
 }
 
+func (k *EinoKernel) applyAggregateToolResultBudget(session *SessionState, snapshot *TurnSnapshot, iteration int, assembledTools []promptcompiler.Tool) {
+	if session == nil || snapshot == nil {
+		return
+	}
+	last := latestIteration(snapshot)
+	if last == nil || len(last.ToolResults) < 2 {
+		return
+	}
+	thresholds := k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds()
+	applied := ApplyAggregateToolResultBudget(AggregateToolResultBudgetInput{
+		SessionID:   session.ID,
+		TurnID:      snapshot.ID,
+		Iteration:   iteration,
+		Results:     last.ToolResults,
+		Thresholds:  thresholds,
+		Externalize: aggregateToolResultExternalizer(k, session, snapshot, iteration, last.ToolCalls, assembledTools),
+	})
+	if !applied.Applied {
+		return
+	}
+	last.ToolResults = applied.Results
+	last.UpdatedAt = time.Now()
+	for _, result := range applied.Results {
+		appendExternalReferences(&last.ExternalReferences, result.ExternalReferences...)
+		appendExternalReferences(&snapshot.ExternalReferences, result.ExternalReferences...)
+		appendExternalReferences(&session.ExternalReferences, result.ExternalReferences...)
+	}
+	appendContextGovernanceEvents(&last.ContextGovernanceEvents, applied.Events...)
+	appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, applied.Events...)
+	appendContextGovernanceEvents(&session.ContextGovernanceEvents, applied.Events...)
+	updateSessionToolMessages(session, applied.Results)
+	if snapshot.LatestCheckpoint != nil {
+		for _, result := range applied.Results {
+			appendCheckpointExternalRefs(snapshot.LatestCheckpoint, result.ExternalReferences)
+		}
+		snapshot.LatestCheckpoint.Incremental = true
+	}
+}
+
+func aggregateToolResultExternalizer(k *EinoKernel, session *SessionState, snapshot *TurnSnapshot, iteration int, calls []ToolCall, assembledTools []promptcompiler.Tool) func(ToolResult) (ExternalReference, error) {
+	return func(result ToolResult) (ExternalReference, error) {
+		tc := toolCallByID(calls, result.ToolCallID)
+		if tc.ID == "" {
+			tc = ToolCall{ID: result.ToolCallID, Name: result.ToolCallID}
+		}
+		meta := toolMetadataForToolCall(assembledTools, tc)
+		summary := fallbackSummary(result.Summary, result.Content, defaultMaxInlineResultBytes)
+		spill := &tooling.ResultSpill{
+			ID:          spillID(snapshot.ID, iteration, "aggregate-"+result.ToolCallID, result.Content),
+			ToolCallID:  result.ToolCallID,
+			ToolName:    firstNonBlankRuntimeString(meta.Name, tc.Name),
+			SessionID:   session.ID,
+			TurnID:      snapshot.ID,
+			ContentType: detectResultContentType(result.Content),
+			Summary:     summary,
+			Content:     []byte(result.Content),
+			Bytes:       int64(len(result.Content)),
+			CreatedAt:   time.Now().UTC(),
+		}
+		return k.persistToolResultSpill(session, snapshot, iteration, tc, meta, spill)
+	}
+}
+
+func toolCallByID(calls []ToolCall, id string) ToolCall {
+	for _, call := range calls {
+		if call.ID == id {
+			return call
+		}
+	}
+	return ToolCall{}
+}
+
+func updateSessionToolMessages(session *SessionState, results []ToolResult) {
+	if session == nil || len(results) == 0 {
+		return
+	}
+	byID := make(map[string]ToolResult, len(results))
+	for _, result := range results {
+		if result.ToolCallID != "" {
+			byID[result.ToolCallID] = result
+		}
+	}
+	for i := range session.Messages {
+		if session.Messages[i].ToolResult == nil {
+			continue
+		}
+		result, ok := byID[session.Messages[i].ToolResult.ToolCallID]
+		if !ok {
+			continue
+		}
+		cp := result
+		session.Messages[i].ToolResult = &cp
+		session.Messages[i].Content = result.Content
+	}
+}
+
 func copyToolDisplay(display *tooling.ToolDisplayPayload) *ToolDisplayPayload {
 	if display == nil {
 		return nil
@@ -3150,6 +4266,8 @@ func normalizeToolResultReferences(refs []tooling.ResultReference, display *tool
 			ContentType: ref.ContentType,
 			Digest:      ref.Digest,
 			Bytes:       ref.Bytes,
+			Version:     ref.Version,
+			Range:       ref.Range,
 		})
 	}
 	if display != nil && display.CardRef != "" {
@@ -3185,21 +4303,30 @@ func appendToolResultReferences(target []ToolResultReference, refs ...ToolResult
 }
 
 func toolResultReferenceIdentity(ref ToolResultReference) string {
+	rangeKey := toolResultReferenceRangeIdentity(ref.Range)
 	switch ref.Kind {
-	case ToolResultReferenceKindBlob:
+	case ToolResultReferenceKindBlob, ToolResultReferenceKindMCPResource:
 		if ref.URI != "" {
-			return string(ref.Kind) + ":" + ref.URI
+			return string(ref.Kind) + ":" + ref.URI + rangeKey
 		}
 	case ToolResultReferenceKindCard:
 		if ref.CardRef != "" {
-			return string(ref.Kind) + ":" + ref.CardRef
+			return string(ref.Kind) + ":" + ref.CardRef + rangeKey
 		}
 	case ToolResultReferenceKindFile:
 		if ref.FilePath != "" {
-			return string(ref.Kind) + ":" + ref.FilePath
+			return string(ref.Kind) + ":" + ref.FilePath + rangeKey
 		}
 	}
 	return ""
+}
+
+func toolResultReferenceRangeIdentity(rng resourceio.Range) string {
+	if rng.Offset == 0 && rng.Limit == 0 && strings.TrimSpace(rng.Query) == "" && rng.Page == 0 && strings.TrimSpace(rng.Format) == "" {
+		return ""
+	}
+	rng = resourceio.NormalizeRangeValue(rng, resourceio.DefaultMaxReadBytes)
+	return fmt.Sprintf("|range=offset:%d,limit:%d,page:%d,query:%s,format:%s", rng.Offset, rng.Limit, rng.Page, rng.Query, rng.Format)
 }
 
 func externalReferencesFromToolResultRefs(session *SessionState, snapshot *TurnSnapshot, iteration int, refs []ToolResultReference) []ExternalReference {
@@ -3227,6 +4354,8 @@ func externalReferencesFromToolResultRefs(session *SessionState, snapshot *TurnS
 			ContentType: ref.ContentType,
 			Digest:      ref.Digest,
 			Bytes:       ref.Bytes,
+			Version:     ref.Version,
+			Range:       ref.Range,
 			CreatedAt:   createdAt,
 		})
 	}
@@ -3244,6 +4373,8 @@ func toolResultReferenceFromExternalRef(ref ExternalReference) ToolResultReferen
 		ContentType: ref.ContentType,
 		Digest:      ref.Digest,
 		Bytes:       ref.Bytes,
+		Version:     ref.Version,
+		Range:       ref.Range,
 	}
 }
 
@@ -3414,6 +4545,7 @@ func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRe
 		SessionID:       session.ID,
 		SessionType:     req.SessionType,
 		Mode:            req.Mode,
+		Metadata:        cloneTurnMetadata(req.Metadata),
 		Lifecycle:       TurnLifecycleRunning,
 		ResumeState:     TurnResumeStateNone,
 		StartedAt:       now,
@@ -3432,7 +4564,10 @@ func (k *EinoKernel) persistTurnSnapshot(session *SessionState, snapshot *TurnSn
 	k.sessions.Update(session)
 }
 
-func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) {
+func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionToolInvocationBlocked, TurnLifecycleSuspended); err != nil {
+		return err
+	}
 	now := time.Now()
 	reason := result.Reason
 	command := approvalCommandForToolCall(tc)
@@ -3493,9 +4628,16 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			ToolCallID: tc.ID,
 			Command:    command,
 			Reason:     reason,
-			Status:     "pending",
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			AllowedActions: []string{
+				strings.TrimSpace(tc.Name),
+			},
+			ResourceScopes: pendingApprovalResourceScopes(result.Metadata),
+			RiskCeiling:    firstNonEmpty(approvalPayloadField(result.Approval, "risk"), string(result.Metadata.EffectiveGovernance(0).RiskLevel)),
+			ExpiresAt:      pendingApprovalDefaultExpiry(now),
+			InputHash:      toolArgumentsHash(tc.Arguments),
+			Status:         "pending",
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
 		if result.Approval != nil {
 			approval.Risk = result.Approval.Risk
@@ -3538,11 +4680,15 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			Payload:   payload,
 		})
 	}
+	return nil
 }
 
-func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) {
+func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
 	if session == nil || snapshot == nil {
-		return
+		return fmt.Errorf("session and snapshot are required")
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
+		return err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleFailed
@@ -3570,11 +4716,15 @@ func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapsho
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
-func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) {
+func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) error {
 	if session == nil || snapshot == nil || snapshot.Lifecycle.IsTerminal() {
-		return
+		return nil
+	}
+	if transitionErr := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); transitionErr != nil {
+		return transitionErr
 	}
 	now := time.Now()
 	errText := ""
@@ -3605,6 +4755,7 @@ func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *Tu
 		last.CompletedAt = &now
 	}
 	k.persistTurnSnapshot(session, snapshot)
+	return nil
 }
 
 func inferTurnFailureCheckpointKind(snapshot *TurnSnapshot) string {
@@ -3870,7 +5021,7 @@ func newlyAvailablePacks(newToolNames []string, tools []promptcompiler.Tool) []s
 	return packs
 }
 
-func buildProtocolPromptState(snapshot *TurnSnapshot, delta promptcompiler.ToolPromptDelta, approvals []PendingApproval, evidence []PendingEvidence) promptcompiler.ProtocolPromptState {
+func buildProtocolPromptState(snapshot *TurnSnapshot, delta promptcompiler.ToolPromptDelta, approvals []PendingApproval, evidence []PendingEvidence, rejectedApprovals []RejectedApproval) promptcompiler.ProtocolPromptState {
 	var items []promptcompiler.ProtocolPromptItem
 	for _, name := range delta.NewlyAvailable {
 		items = append(items, promptcompiler.ProtocolPromptItem{
@@ -3910,6 +5061,18 @@ func buildProtocolPromptState(snapshot *TurnSnapshot, delta promptcompiler.ToolP
 			Kind:   "evidence",
 			ID:     pending.ID,
 			Status: firstNonEmpty(pending.Status, "pending"),
+			Text:   text,
+		})
+	}
+	for _, rejected := range rejectedApprovals {
+		text := strings.TrimSpace(rejected.Reason)
+		if text == "" {
+			text = fmt.Sprintf("%s approval was rejected.", rejected.ToolName)
+		}
+		items = append(items, promptcompiler.ProtocolPromptItem{
+			Kind:   "approval",
+			ID:     firstNonEmpty(rejected.ID, rejected.InputHash, rejected.ToolCallID),
+			Status: "denied",
 			Text:   text,
 		})
 	}
@@ -3958,6 +5121,37 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func pendingApprovalDefaultExpiry(now time.Time) *time.Time {
+	expires := now.Add(15 * time.Minute)
+	return &expires
+}
+
+func pendingApprovalResourceScopes(meta tooling.ToolMetadata) []string {
+	scopes := make([]string, 0, len(meta.Discovery.ResourceTypes)+len(meta.ResourceLocks))
+	for _, resourceType := range meta.Discovery.ResourceTypes {
+		if strings.TrimSpace(resourceType) != "" {
+			scopes = append(scopes, "type="+strings.TrimSpace(resourceType))
+		}
+	}
+	for _, lock := range meta.ResourceLocks {
+		parts := []string{}
+		if strings.TrimSpace(lock.ResourceType) != "" {
+			parts = append(parts, "type="+strings.TrimSpace(lock.ResourceType))
+		}
+		if strings.TrimSpace(lock.ResourceID) != "" {
+			parts = append(parts, "id="+strings.TrimSpace(lock.ResourceID))
+		}
+		if strings.TrimSpace(lock.OperationKind) != "" {
+			parts = append(parts, "op="+strings.TrimSpace(lock.OperationKind))
+		}
+		if len(parts) > 0 {
+			scopes = append(scopes, strings.Join(parts, " "))
+		}
+	}
+	sort.Strings(scopes)
+	return uniqueRuntimeStrings(scopes)
 }
 
 func approvalPayloadField(payload *tooling.PermissionApprovalPayload, field string) string {

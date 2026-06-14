@@ -3,6 +3,7 @@ package appui
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,45 @@ func TestAgentEventProjector_ReplayMatchesRealtimeApplyForStructuredTurn(t *test
 	if !reflect.DeepEqual(realtime.FinalMessages, replay.FinalMessages) {
 		t.Fatalf("FinalMessages realtime=%#v replay=%#v", realtime.FinalMessages, replay.FinalMessages)
 	}
+}
+
+func TestAgentEventProjectorDoesNotExposeFallbackRetryManualStates(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "排查 payment-api"}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseCompleted, AgentEventStatusCompleted, 2, ToolPayload{
+			ToolCallID:    "tool-completed",
+			ToolName:      "coroot.service_metrics",
+			OutputSummary: "metrics collected",
+		}),
+		testAgentEvent(AgentEventTool, AgentEventPhaseFailed, AgentEventStatusFailed, 3, ToolPayload{
+			ToolCallID:   "tool-failed",
+			ToolName:     "coroot.missing_tool",
+			InputSummary: "missing tool",
+			Error:        "tool not found",
+		}),
+		testAgentEvent(AgentEventApproval, AgentEventPhaseRequested, AgentEventStatusBlocked, 4, ApprovalPayload{
+			ApprovalID:   "approval-blocked",
+			ApprovalType: "command",
+			Command:      "kubectl rollout restart deployment/payment-api",
+			Reason:       "mutating command",
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	assertAgentEventProjectionHasStatuses(t, proj, []AgentEventStatus{
+		AgentEventStatusRunning,
+		AgentEventStatusCompleted,
+		AgentEventStatusFailed,
+		AgentEventStatusBlocked,
+	})
+	assertNoForbiddenAgentEventProjectionStates(t, proj, []string{
+		"fallback_planned",
+		"retry_scheduled",
+		"manual_reconcile",
+	})
 }
 
 func TestAgentEventProjector_ReasoningDeltaCreatesThinkingTimelineRow(t *testing.T) {
@@ -625,6 +665,84 @@ func TestAgentEventProjector_TurnCompletedMarksStreamingFinalCompleted(t *testin
 	}
 }
 
+func TestAgentEventProjector_TurnCompletedMarksRuntimeActivitiesCompleted(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventSystem, AgentEventPhaseUpdated, AgentEventStatusRunning, 2, SystemPayload{
+			ID:          "turn-1:activity:1:model",
+			DisplayKind: "runtime.activity",
+			Title:       "调用模型",
+			Summary:     "第 1 轮",
+		}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	var timelineRow *TimelineEntry
+	for i := range proj.Timeline {
+		if proj.Timeline[i].ID == "turn-1:activity:1:model" {
+			timelineRow = &proj.Timeline[i]
+			break
+		}
+	}
+	if timelineRow == nil {
+		t.Fatalf("runtime activity row missing from timeline: %+v", proj.Timeline)
+	}
+	if timelineRow.Status != AgentEventStatusCompleted || timelineRow.Phase != AgentEventPhaseCompleted {
+		t.Fatalf("timeline runtime activity status/phase = %q/%q, want completed/completed", timelineRow.Status, timelineRow.Phase)
+	}
+
+	group := proj.ProcessGroups["turn-1"]
+	if len(group) == 0 {
+		t.Fatalf("ProcessGroups[turn-1] empty")
+	}
+	if group[0].Status != AgentEventStatusCompleted || group[0].Phase != AgentEventPhaseCompleted {
+		t.Fatalf("process runtime activity status/phase = %q/%q, want completed/completed", group[0].Status, group[0].Phase)
+	}
+}
+
+func TestAgentEventProjector_AssistantFinalTextReplacesDuplicateDelta(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "OK browser smoke"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, AssistantPayload{Channel: "final", Text: "OK browser smoke"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Text != "OK browser smoke" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want single final text", final.Text)
+	}
+	if final.Status != AgentEventStatusCompleted {
+		t.Fatalf("FinalMessages[turn-1].Status = %q, want completed", final.Status)
+	}
+}
+
+func TestAgentEventProjector_AssistantFinalTextDeltaStillAppends(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Text: "OK "}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 3, AssistantPayload{Channel: "final", Text: "browser smoke"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Text != "OK browser smoke" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want appended text chunks", final.Text)
+	}
+}
+
 func TestAgentEventProjector_TurnCompletedWithDiffReviewsOtherwiseIdle(t *testing.T) {
 	projector := NewAgentEventProjector()
 
@@ -693,5 +811,49 @@ func TestAgentEventProjectorApplyDoesNotMutateInputMapFields(t *testing.T) {
 	}
 	if next.FinalMessages["turn-1"].Status != AgentEventStatusCompleted {
 		t.Fatalf("next FinalMessages status = %q, want completed", next.FinalMessages["turn-1"].Status)
+	}
+}
+
+func assertAgentEventProjectionHasStatuses(t *testing.T, proj AgentEventProjection, required []AgentEventStatus) {
+	t.Helper()
+	seen := map[AgentEventStatus]bool{}
+	for _, row := range proj.Timeline {
+		seen[row.Status] = true
+	}
+	for _, group := range proj.ProcessGroups {
+		for _, row := range group {
+			seen[row.Status] = true
+		}
+	}
+	for _, agent := range proj.Agents {
+		seen[agent.Status] = true
+	}
+	for _, approval := range proj.Approvals {
+		seen[approval.Status] = true
+	}
+	for _, artifact := range proj.Artifacts {
+		seen[artifact.Status] = true
+	}
+	for _, final := range proj.FinalMessages {
+		seen[final.Status] = true
+	}
+	for _, status := range required {
+		if !seen[status] {
+			t.Fatalf("agent event statuses = %#v, missing %q", seen, status)
+		}
+	}
+}
+
+func assertNoForbiddenAgentEventProjectionStates(t *testing.T, proj AgentEventProjection, forbidden []string) {
+	t.Helper()
+	raw, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("marshal agent event projection: %v", err)
+	}
+	body := string(raw)
+	for _, state := range forbidden {
+		if strings.Contains(body, state) {
+			t.Fatalf("agent event projection exposed forbidden state %q: %s", state, body)
+		}
 	}
 }

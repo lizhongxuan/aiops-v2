@@ -167,7 +167,7 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 		"do not expand a long next-step plan",
 		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
 		"resolve_ops_manual_params plus run_ops_manual_preflight have already passed",
-		"do not run extra host, shell, Docker, Kubernetes, or observability probes",
+		"do not run extra host, shell, container, orchestration, or observability probes",
 		"1-3 bullets total",
 		"no headings and no separate evidence section",
 		"concise conclusion with compact evidence",
@@ -202,7 +202,7 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"explicitly asks to use operations manuals",
 		"fix, recover, restart, roll back, migrate, back up, scale, or change",
 		"not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent",
-		"排查mservice异常问题",
+		"Generic investigation requests should gather evidence",
 		"high-risk actions",
 		"service restart",
 		"configuration changes",
@@ -243,11 +243,10 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"never run a Workflow from those decisions",
 		"reference_only or no_match",
 		"continue safe read-only evidence-driven investigation",
-		"Kafka",
 		"metrics/log source",
 		"host/session availability",
 		"Do not present a cross-object manual",
-		"Kubernetes Pod manual as a Kafka troubleshooting reference",
+		"unless the user explicitly asks for analogous patterns",
 		"Agent-to-UI compact form",
 		"do not duplicate the same fields as a multiline prose template",
 		"resolve_ops_manual_params returns ambiguous or need_user_input",
@@ -256,6 +255,7 @@ func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
 		"ask for user confirmation and then run it after confirmation",
 		"direct_execute",
 		"run_ops_manual_preflight",
+		"target identifiers, scope, backup or recovery paths, and evidence flags",
 		"pass the operation_frame",
 		"extracted parameters",
 		"After preflight passes",
@@ -399,6 +399,19 @@ func TestSemanticPromptExecuteModeRequiresEvidenceForLocalEvalBehavior(t *testin
 	})
 }
 
+func TestFinalEvidenceVerifierRequirementInDeveloperRules(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "inspect",
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if !strings.Contains(compiled.Stable.Developer.Content, "Failed, unloaded, hidden, or not-yet-selected tools do not count as checked evidence") {
+		t.Fatalf("developer rules missing final evidence verifier requirement:\n%s", compiled.Stable.Developer.Content)
+	}
+}
+
 func TestSemanticPromptReadOnlyInspectionDoesNotRunTests(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {
@@ -429,8 +442,8 @@ func TestSemanticPromptExplicitPlanRequestUsesPlanningTool(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"explicitly requires a structured plan",
-		"planning tool",
+		"Use the structured planning tool",
+		"multi_step, investigation, operations, and multi_agent tasks",
 		"in_progress",
 	})
 }

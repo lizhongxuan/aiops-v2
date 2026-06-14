@@ -118,6 +118,18 @@ func evidenceToolMetadata(name, description string) tooling.ToolMetadata {
 		meta.Layer = tooling.ToolLayerDeferred
 		meta.Pack = "evidence_read"
 		meta.DeferByDefault = true
+		meta.SearchHint = "read query previous evidence operational observation"
+		meta.Discovery = tooling.ToolDiscoveryMetadata{
+			DiscoveryGroup:    "evidence",
+			DiscoveryTags:     []string{"evidence", "observation", "record"},
+			CapabilityKind:    "evidence",
+			ResourceTypes:     []string{"evidence", "observation"},
+			OperationKinds:    []string{"read", "query"},
+			RequiresSelect:    true,
+			PermissionScope:   "read",
+			PromptBudgetClass: "compact",
+			SchemaBudgetClass: "on_demand",
+		}
 	}
 	return meta
 }

@@ -54,32 +54,24 @@ func TestTerminalService_EnforcesHostTerminalPermission(t *testing.T) {
 	}))
 	repo := newHostRepoStub(
 		store.HostRecord{
-			ID:               "terminal-only",
-			Status:           "online",
-			TerminalCapable:  true,
-			SSHCredentialRef: "secret://ops/terminal-only",
+			ID:              "terminal-only",
+			Status:          "online",
+			TerminalCapable: true,
 		},
 		store.HostRecord{
-			ID:               "exec-only",
-			Status:           "online",
-			Executable:       true,
-			SSHCredentialRef: "secret://ops/exec-only",
+			ID:         "exec-only",
+			Status:     "online",
+			Executable: true,
 		},
 		store.HostRecord{
-			ID:               "offline",
-			Status:           "offline",
-			TerminalCapable:  true,
-			Executable:       true,
-			SSHCredentialRef: "secret://ops/offline",
+			ID:              "offline",
+			Status:          "offline",
+			TerminalCapable: true,
+			Executable:      true,
 		},
 		store.HostRecord{
 			ID:     "readonly",
 			Status: "online",
-		},
-		store.HostRecord{
-			ID:              "missing-credential",
-			Status:          "online",
-			TerminalCapable: true,
 		},
 	)
 	svc := NewTerminalService(mgr, repo)
@@ -102,7 +94,6 @@ func TestTerminalService_EnforcesHostTerminalPermission(t *testing.T) {
 	}{
 		{hostID: "offline", want: "offline"},
 		{hostID: "readonly", want: "terminal is not enabled"},
-		{hostID: "missing-credential", want: "ssh credential ref is required"},
 		{hostID: "missing", want: "host not found"},
 	} {
 		t.Run("rejects "+tc.hostID, func(t *testing.T) {

@@ -954,6 +954,45 @@ func TestCompile_DynamicPromptDelta_CarriesToolDeltaAndEvidenceReminders(t *test
 	}
 }
 
+func TestCompileSeparatesHostTaskPromptAssetsFromSkillPromptAssets(t *testing.T) {
+	compiler := NewCompiler()
+
+	result, err := compiler.Compile(CompileContext{
+		SessionType:          "host",
+		Mode:                 "execute",
+		SkillPromptAssets:    []string{"skill body: inspect generic service state"},
+		HostTaskPromptAssets: []string{"prompt_section_id: host_agent.binding.v1\nbound_host_id: host-a"},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	if len(result.Dynamic.SkillPromptAssets) != 1 || len(result.Dynamic.HostTaskPromptAssets) != 1 {
+		t.Fatalf("dynamic assets = skills:%#v hostTasks:%#v, want separate channels", result.Dynamic.SkillPromptAssets, result.Dynamic.HostTaskPromptAssets)
+	}
+	if !strings.Contains(result.Developer.Content, "## Active Skill Context") {
+		t.Fatalf("developer prompt missing active skills context:\n%s", result.Developer.Content)
+	}
+	if !strings.Contains(result.Developer.Content, "## Active Host Task Context") {
+		t.Fatalf("developer prompt missing active host task context:\n%s", result.Developer.Content)
+	}
+	if strings.Contains(result.Dynamic.SkillPromptAssets[0], "bound_host_id") {
+		t.Fatalf("skill asset polluted by host task context: %#v", result.Dynamic.SkillPromptAssets)
+	}
+
+	byID := map[string]PromptSectionTrace{}
+	for _, section := range result.PromptSections {
+		byID[section.ID] = section
+	}
+	hostTaskSection := byID["host_task.context"]
+	if hostTaskSection.ID == "" {
+		t.Fatalf("missing host task prompt section trace: %#v", result.PromptSections)
+	}
+	if hostTaskSection.RetentionRank != RetentionRankP1 || hostTaskSection.Source != "host-task" {
+		t.Fatalf("host task section trace = %#v, want P1 host-task trace", hostTaskSection)
+	}
+}
+
 func TestCompileForEino_ContentPreserved(t *testing.T) {
 	compiler := NewCompiler()
 

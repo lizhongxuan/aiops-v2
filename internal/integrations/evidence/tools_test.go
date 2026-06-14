@@ -96,6 +96,26 @@ func TestRegisterBuiltinsAddsEvidenceTools(t *testing.T) {
 	if getMeta.Layer != tooling.ToolLayerDeferred || getMeta.Pack != "evidence_read" || !getMeta.DeferByDefault {
 		t.Fatalf("evidence.get metadata = layer:%q pack:%q defer:%v, want deferred evidence_read", getMeta.Layer, getMeta.Pack, getMeta.DeferByDefault)
 	}
+	readDiscovery := getMeta.EffectiveDiscovery()
+	if readDiscovery.DiscoveryGroup != "evidence" || readDiscovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !readDiscovery.RequiresSelect {
+		t.Fatalf("evidence.get discovery = %+v, want deferred evidence select-only discovery", readDiscovery)
+	}
+	for _, want := range []string{"evidence", "observation"} {
+		if !containsEvidenceString(readDiscovery.ResourceTypes, want) {
+			t.Fatalf("evidence.get resource types = %#v, missing %q", readDiscovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"read", "query"} {
+		if !containsEvidenceString(readDiscovery.OperationKinds, want) {
+			t.Fatalf("evidence.get operation kinds = %#v, missing %q", readDiscovery.OperationKinds, want)
+		}
+	}
+	for _, name := range []string{"evidence.record", "evidence.link_incident"} {
+		discovery := mustEvidenceTool(t, registry, name).Metadata().EffectiveDiscovery()
+		if !discovery.HiddenFromDiscovery || !discovery.HiddenFromPrompt {
+			t.Fatalf("%s discovery = %+v, want internal hidden runtime evidence writer", name, discovery)
+		}
+	}
 }
 
 func fixedClock() func() time.Time {
@@ -128,4 +148,13 @@ func evidenceToolNames(tools []tooling.Tool) []string {
 		names = append(names, tool.Metadata().Name)
 	}
 	return names
+}
+
+func containsEvidenceString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

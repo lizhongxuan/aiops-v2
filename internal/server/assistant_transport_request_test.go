@@ -98,6 +98,25 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 				"type": "aiops.mcp-pin",
 				"surfaceId": "surface-3",
 				"pinned": true
+			},
+			{
+				"type": "aiops.host-plan-accept",
+				"missionId": "mission-1",
+				"planId": "plan-1"
+			},
+			{
+				"type": "aiops.host-plan-revise",
+				"missionId": "mission-1",
+				"instruction": "先检查PG版本"
+			},
+			{
+				"type": "aiops.child-agent-message",
+				"childAgentId": "agent-1",
+				"content": "只读检查，不要修改"
+			},
+			{
+				"type": "aiops.child-agent-stop",
+				"childAgentId": "agent-1"
 			}
 		]
 	}`)
@@ -131,8 +150,8 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	if _, ok := req.Tools["web_search"]; !ok {
 		t.Fatalf("Tools = %#v, want web_search key", req.Tools)
 	}
-	if len(req.Commands) != 8 {
-		t.Fatalf("len(Commands) = %d, want 8", len(req.Commands))
+	if len(req.Commands) != 12 {
+		t.Fatalf("len(Commands) = %d, want 12", len(req.Commands))
 	}
 
 	addMessage, ok := req.Commands[0].(*assistantTransportAddMessageCommand)
@@ -224,6 +243,52 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	}
 	if mcpPin.SurfaceID != "surface-3" || !mcpPin.Pinned {
 		t.Fatalf("mcpPin = %+v, want surface-3/pinned=true", mcpPin)
+	}
+
+	hostPlanAccept, ok := req.Commands[8].(*assistantTransportHostPlanAcceptCommand)
+	if !ok {
+		t.Fatalf("command[8] type = %T, want *assistantTransportHostPlanAcceptCommand", req.Commands[8])
+	}
+	if hostPlanAccept.MissionID != "mission-1" || hostPlanAccept.PlanID != "plan-1" {
+		t.Fatalf("hostPlanAccept = %+v, want mission-1/plan-1", hostPlanAccept)
+	}
+	hostPlanAcceptTransport, err := assistantTransportCommandFromDecoded(hostPlanAccept, req, assistantTransportInitialState(req))
+	if err != nil {
+		t.Fatalf("assistantTransportCommandFromDecoded(hostPlanAccept) error = %v", err)
+	}
+	if hostPlanAcceptTransport.HostPlanAccept == nil || hostPlanAcceptTransport.HostPlanAccept.MissionID != "mission-1" || hostPlanAcceptTransport.HostPlanAccept.PlanID != "plan-1" {
+		t.Fatalf("HostPlanAccept transport command = %+v, want mission-1/plan-1", hostPlanAcceptTransport.HostPlanAccept)
+	}
+
+	hostPlanRevise, ok := req.Commands[9].(*assistantTransportHostPlanReviseCommand)
+	if !ok {
+		t.Fatalf("command[9] type = %T, want *assistantTransportHostPlanReviseCommand", req.Commands[9])
+	}
+	if hostPlanRevise.MissionID != "mission-1" || hostPlanRevise.Instruction != "先检查PG版本" {
+		t.Fatalf("hostPlanRevise = %+v, want mission-1/instruction", hostPlanRevise)
+	}
+
+	childMessage, ok := req.Commands[10].(*assistantTransportChildAgentMessageCommand)
+	if !ok {
+		t.Fatalf("command[10] type = %T, want *assistantTransportChildAgentMessageCommand", req.Commands[10])
+	}
+	if childMessage.ChildAgentID != "agent-1" || childMessage.Content != "只读检查，不要修改" {
+		t.Fatalf("childMessage = %+v, want agent-1/content", childMessage)
+	}
+	childMessageTransport, err := assistantTransportCommandFromDecoded(childMessage, req, assistantTransportInitialState(req))
+	if err != nil {
+		t.Fatalf("assistantTransportCommandFromDecoded(childMessage) error = %v", err)
+	}
+	if childMessageTransport.ChildAgentMessage == nil || childMessageTransport.ChildAgentMessage.ChildAgentID != "agent-1" || childMessageTransport.ChildAgentMessage.Content != "只读检查，不要修改" {
+		t.Fatalf("ChildAgentMessage transport command = %+v, want agent-1/content", childMessageTransport.ChildAgentMessage)
+	}
+
+	childStop, ok := req.Commands[11].(*assistantTransportChildAgentStopCommand)
+	if !ok {
+		t.Fatalf("command[11] type = %T, want *assistantTransportChildAgentStopCommand", req.Commands[11])
+	}
+	if childStop.ChildAgentID != "agent-1" {
+		t.Fatalf("childStop = %+v, want agent-1", childStop)
 	}
 }
 

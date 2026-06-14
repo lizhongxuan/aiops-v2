@@ -34,6 +34,18 @@ func TestRegisterBuiltinsAddsReadOnlyOpsGraphTools(t *testing.T) {
 		if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "opsgraph" || !meta.DeferByDefault {
 			t.Fatalf("%s metadata = layer:%q pack:%q defer:%v, want deferred opsgraph", meta.Name, meta.Layer, meta.Pack, meta.DeferByDefault)
 		}
+		discovery := meta.EffectiveDiscovery()
+		if discovery.DiscoveryGroup != "opsgraph" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+			t.Fatalf("%s discovery = %+v, want deferred opsgraph select-only discovery", meta.Name, discovery)
+		}
+		for _, want := range []string{"opsgraph", "service", "dependency"} {
+			if !containsOpsGraphString(discovery.ResourceTypes, want) {
+				t.Fatalf("%s resource types = %#v, missing %q", meta.Name, discovery.ResourceTypes, want)
+			}
+		}
+		if len(discovery.OperationKinds) == 0 {
+			t.Fatalf("%s operation kinds empty in discovery metadata", meta.Name)
+		}
 		if !tool.IsReadOnly(nil) {
 			t.Fatalf("%s should be read-only", tool.Metadata().Name)
 		}
@@ -76,4 +88,13 @@ func toolByName(t *testing.T, tools []tooling.Tool, name string) tooling.Tool {
 	}
 	t.Fatalf("missing tool %s", name)
 	return nil
+}
+
+func containsOpsGraphString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

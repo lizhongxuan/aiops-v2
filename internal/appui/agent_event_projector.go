@@ -183,6 +183,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
 		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)
+		proj = completeRuntimeActivityRowsForTerminalTurn(proj, event)
 		proj.LastTerminalFailed = false
 		if summary == "" {
 			if event.Phase == AgentEventPhaseCanceled {
@@ -197,6 +198,7 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 		proj.RuntimeLiveness.ActiveCommandStreams = map[string]bool{}
 		proj = clearPendingApprovalsForTerminalTurn(proj, event.Status, event.CreatedAt)
 		proj = completeFinalMessageForTurn(proj, event)
+		proj = completeRuntimeActivityRowsForTerminalTurn(proj, event)
 		proj.LastTerminalFailed = true
 		if summary == "" {
 			summary = "请求失败"
@@ -216,6 +218,35 @@ func applyTurnAgentEventToProjection(proj AgentEventProjection, event AgentEvent
 			UpdatedAt:  event.CreatedAt,
 			Seq:        event.Seq,
 		})
+	}
+	return proj
+}
+
+func completeRuntimeActivityRowsForTerminalTurn(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	if event.TurnID == "" {
+		return proj
+	}
+	completeRows := func(rows []TimelineEntry) []TimelineEntry {
+		next := append([]TimelineEntry(nil), rows...)
+		for i := range next {
+			if next[i].TurnID != event.TurnID || next[i].DisplayKind != "runtime.activity" {
+				continue
+			}
+			if next[i].Status != AgentEventStatusRunning && next[i].Phase != AgentEventPhaseUpdated {
+				continue
+			}
+			next[i].Phase = event.Phase
+			next[i].Status = event.Status
+			next[i].UpdatedAt = event.CreatedAt
+			if event.Seq > next[i].Seq {
+				next[i].Seq = event.Seq
+			}
+		}
+		return next
+	}
+	proj.Timeline = completeRows(proj.Timeline)
+	if rows, ok := proj.ProcessGroups[event.TurnID]; ok {
+		proj.ProcessGroups[event.TurnID] = completeRows(rows)
 	}
 	return proj
 }
@@ -677,7 +708,11 @@ func applyAssistantEventToProjection(proj AgentEventProjection, event AgentEvent
 	}
 	final := proj.FinalMessages[event.TurnID]
 	final.TurnID = event.TurnID
-	final.Text += text
+	if payload.Text != "" && payload.Delta == "" && event.Phase != AgentEventPhaseDelta {
+		final.Text = payload.Text
+	} else {
+		final.Text += text
+	}
 	final.Status = event.Status
 	final.UpdatedAt = event.CreatedAt
 	proj.FinalMessages[event.TurnID] = final

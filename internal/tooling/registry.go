@@ -12,13 +12,19 @@ import (
 
 // AssembleOptions controls per-call assembly behavior for the unified tool registry.
 type AssembleOptions struct {
-	ExtraTools             []Tool
-	EnabledPacks           []string
-	Profile                string
-	IncludeDebug           bool
-	IncludeDeferredCatalog bool
-	MetadataTransform      func(ToolMetadata) ToolMetadata
-	Filter                 func(tool Tool, ctx ToolContext, meta ToolMetadata) bool
+	ExtraTools               []Tool
+	EnabledPacks             []string
+	EnabledTools             []string
+	Profile                  string
+	TenantID                 string
+	UserID                   string
+	RuntimeCapabilities      []string
+	ContextArtifactAvailable bool
+	MCPHealthSnapshot        map[string]string
+	IncludeDebug             bool
+	IncludeDeferredCatalog   bool
+	MetadataTransform        func(ToolMetadata) ToolMetadata
+	Filter                   func(tool Tool, ctx ToolContext, meta ToolMetadata) bool
 }
 
 type registeredTool struct {
@@ -161,13 +167,14 @@ func (r *Registry) AssembleToolsWithOptions(session, mode string, opts AssembleO
 			continue
 		}
 		ctx := ToolContext{SessionType: session, Mode: mode, Metadata: meta}
-		if !t.IsEnabled(ctx) {
+		alwaysCallable := IsAlwaysModelCallableTool(meta)
+		if !alwaysCallable && !t.IsEnabled(ctx) {
 			continue
 		}
-		if !isVisibleForAssembleOptions(meta, opts) {
+		if !alwaysCallable && !isVisibleForAssembleOptions(meta, opts) {
 			continue
 		}
-		if opts.Filter != nil && !opts.Filter(t, ctx, meta) {
+		if !alwaysCallable && opts.Filter != nil && !opts.Filter(t, ctx, meta) {
 			continue
 		}
 		name := meta.Name
@@ -200,7 +207,9 @@ func isVisibleForAssembleOptions(meta ToolMetadata, opts AssembleOptions) bool {
 	}
 	layer := meta.Layer
 	if layer == "" {
-		if meta.ShouldDefer {
+		if meta.HasMCPSource() {
+			layer = ToolLayerMCP
+		} else if meta.ShouldDefer {
 			layer = ToolLayerDeferred
 		} else {
 			layer = ToolLayerCore
@@ -213,22 +222,85 @@ func isVisibleForAssembleOptions(meta ToolMetadata, opts AssembleOptions) bool {
 		if opts.IncludeDeferredCatalog {
 			return true
 		}
+		if toolEnabled(meta, opts.EnabledTools) {
+			return true
+		}
 		if meta.DeferByDefault || meta.Pack != "" {
-			return packEnabled(meta.Pack, opts.EnabledPacks)
+			return packEnabledForMeta(meta, opts.EnabledPacks)
 		}
 		return true
+	case ToolLayerProfile:
+		if toolEnabled(meta, opts.EnabledTools) {
+			return true
+		}
+		if packEnabledForMeta(meta, opts.EnabledPacks) {
+			return true
+		}
+		return opts.Profile != ""
+	case ToolLayerMCP:
+		if opts.IncludeDeferredCatalog {
+			return true
+		}
+		if toolEnabled(meta, opts.EnabledTools) {
+			return true
+		}
+		return packEnabledForMeta(meta, opts.EnabledPacks)
 	case ToolLayerInternal:
 		return false
 	case ToolLayerDebug:
 		return opts.IncludeDebug || opts.Profile == "debug"
 	case ToolLayerMutation:
 		if meta.Pack != "" {
-			return packEnabled(meta.Pack, opts.EnabledPacks)
+			return packEnabledForMeta(meta, opts.EnabledPacks)
 		}
 		return packEnabled(string(ToolLayerMutation), opts.EnabledPacks)
+	case ToolLayerConditional:
+		if runtimeCapabilityAllowsTool(meta, opts.RuntimeCapabilities) {
+			return true
+		}
+		if toolEnabled(meta, opts.EnabledTools) {
+			return true
+		}
+		return packEnabledForMeta(meta, opts.EnabledPacks)
 	default:
 		return true
 	}
+}
+
+func runtimeCapabilityAllowsTool(meta ToolMetadata, capabilities []string) bool {
+	if len(capabilities) == 0 {
+		return false
+	}
+	discovery := meta.EffectiveDiscovery()
+	candidates := []string{
+		meta.Name,
+		meta.Pack,
+		discovery.CapabilityKind,
+		string(discovery.LoadingPolicy),
+	}
+	candidates = append(candidates, discovery.ToolPackIDs...)
+	candidates = append(candidates, discovery.DiscoveryTags...)
+	for _, capability := range capabilities {
+		normalizedCapability := normalizeDiscoveryToken(capability)
+		if normalizedCapability == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if normalizeDiscoveryToken(candidate) == normalizedCapability {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toolEnabled(meta ToolMetadata, enabled []string) bool {
+	for _, candidate := range enabled {
+		if matchesName(meta, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func profileAllowsTool(meta ToolMetadata, profile string) bool {
@@ -247,8 +319,18 @@ func packEnabled(pack string, enabled []string) bool {
 	if pack == "" {
 		return false
 	}
+	normalizedPack := normalizeDiscoveryToken(pack)
 	for _, candidate := range enabled {
-		if candidate == pack {
+		if normalizeDiscoveryToken(candidate) == normalizedPack {
+			return true
+		}
+	}
+	return false
+}
+
+func packEnabledForMeta(meta ToolMetadata, enabled []string) bool {
+	for _, pack := range meta.EffectiveDiscovery().ToolPackIDs {
+		if packEnabled(pack, enabled) {
 			return true
 		}
 	}

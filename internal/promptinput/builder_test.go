@@ -123,6 +123,30 @@ func TestBuilderTraceIncludesPromptFragmentsAndProtocolState(t *testing.T) {
 	}
 }
 
+func TestBuilderIncludesDynamicPromptContentInModelMessages(t *testing.T) {
+	result, err := Builder{}.Build(BuildRequest{
+		Compiled: promptcompiler.CompiledPrompt{
+			System:    promptcompiler.SystemPrompt{Content: "system layer"},
+			Developer: promptcompiler.DeveloperInstructions{Content: "developer layer"},
+			Tools:     promptcompiler.ToolPromptSet{Content: "tool index"},
+			Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy layer"},
+			Dynamic: promptcompiler.DynamicPromptDelta{
+				Content: "dynamic retry guard\n\npolicy layer",
+				Policy:  promptcompiler.RuntimePolicyPrompt{Content: "policy layer"},
+			},
+		},
+		History: []Message{{Role: "user", Content: "continue"}},
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	joined := joinedMessageContent(result.Messages)
+	if !strings.Contains(joined, "dynamic retry guard") {
+		t.Fatalf("model messages missing dynamic prompt content:\n%s", joined)
+	}
+}
+
 func joinedMessageContent(messages []*schema.Message) string {
 	var joined strings.Builder
 	for _, msg := range messages {

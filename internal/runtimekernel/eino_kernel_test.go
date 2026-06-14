@@ -105,6 +105,49 @@ func TestReasoningDeltaUpdatesAgentItemText(t *testing.T) {
 	}
 }
 
+func TestAIChatHarnessGoldenCases(t *testing.T) {
+	cases := loadAIChatHarnessGoldenCases(t, "testdata/aichat_harness_golden")
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			result, snapshot, events := runGoldenTurn(t, tc)
+			assertGoldenTurnContract(t, tc, result, snapshot, events)
+		})
+	}
+}
+
+func TestToolInvocationRecordsValidateAttempt(t *testing.T) {
+	tc := loadGoldenCaseByName(t, "testdata/aichat_harness_golden", "invalid_arguments")
+	_, snapshot, _ := runGoldenTurn(t, tc)
+	var invocation *ToolInvocationState
+	for iterIdx := range snapshot.Iterations {
+		iter := &snapshot.Iterations[iterIdx]
+		for invocationIdx := range iter.ToolInvocations {
+			if iter.ToolInvocations[invocationIdx].ToolCallID == "call_invalid" {
+				invocation = &iter.ToolInvocations[invocationIdx]
+			}
+		}
+	}
+	if invocation == nil {
+		t.Fatal("missing invocation for call_invalid")
+	}
+	if len(invocation.Attempts) == 0 {
+		t.Fatalf("Attempts = %#v, want validate attempt", invocation.Attempts)
+	}
+	attempt := invocation.Attempts[0]
+	if attempt.Action != ToolAttemptActionValidate {
+		t.Fatalf("Action = %q, want validate", attempt.Action)
+	}
+	if attempt.Outcome != ToolAttemptOutcomeFailed {
+		t.Fatalf("Outcome = %q, want failed", attempt.Outcome)
+	}
+	if attempt.TriggerFailureKind != "invalid_arguments" {
+		t.Fatalf("TriggerFailureKind = %q, want invalid_arguments", attempt.TriggerFailureKind)
+	}
+	if attempt.OriginalArgumentsHash == "" {
+		t.Fatal("OriginalArgumentsHash is empty")
+	}
+}
+
 // TestReasoningDeltaStatusCompletedAfterModelCall verifies that after the model
 // call completes, the reasoning AgentItem status becomes ItemStatusCompleted.
 func TestReasoningDeltaStatusCompletedAfterModelCall(t *testing.T) {

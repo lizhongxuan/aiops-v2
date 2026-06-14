@@ -46,6 +46,8 @@ func TestLoadCatalogMatchStartNextActionSignsProposal(t *testing.T) {
 		InstanceID: instance.ID,
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
+		TenantID:   "tenant-a",
+		UserID:     "user-a",
 	})
 	if err != nil {
 		t.Fatalf("NextAction() error = %v", err)
@@ -58,6 +60,9 @@ func TestLoadCatalogMatchStartNextActionSignsProposal(t *testing.T) {
 	}
 	if proposal.Source != actionproposal.SourceRunbook || proposal.ActionToken == "" || proposal.ExpiresAt.IsZero() {
 		t.Fatalf("proposal missing source/token/expiresAt: %#v", proposal)
+	}
+	if proposal.TenantID != "tenant-a" || proposal.UserID != "user-a" {
+		t.Fatalf("proposal tenant/user = %q/%q, want tenant-a/user-a", proposal.TenantID, proposal.UserID)
 	}
 	var input map[string]any
 	if err := json.Unmarshal(proposal.ToolInput, &input); err != nil {
@@ -73,6 +78,8 @@ func TestLoadCatalogMatchStartNextActionSignsProposal(t *testing.T) {
 	_, err = testSigner(now).Verify(proposal.ActionToken, actionproposal.ActionTokenClaims{
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
+		TenantID:   "tenant-a",
+		UserID:     "user-a",
 		IncidentID: "inc-1",
 		ToolName:   proposal.ToolName,
 		InputHash:  inputHash,

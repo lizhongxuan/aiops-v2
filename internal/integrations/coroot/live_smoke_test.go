@@ -92,6 +92,62 @@ func TestLiveCorootMCPTools(t *testing.T) {
 	}
 }
 
+func TestLiveCorootRCAExternalDependencyDrilldown(t *testing.T) {
+	cfg, client, timeout := newLiveCorootClient(t)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout*2)
+	defer cancel()
+	tools := corootToolsWithClient(client)
+
+	project := cfg.Project
+	list := liveExecuteTool(t, ctx, tools, "coroot.list_services", map[string]any{"project": project})
+	service := chooseLiveService(list, "mservice")
+	if service == "" {
+		t.Fatalf("coroot.list_services returned no services")
+	}
+	body := liveExecuteTool(t, ctx, tools, "coroot.collect_rca_context", map[string]any{"project": project, "service": service, "timeRange": "1h", "depth": 2, "limit": 10})
+
+	var externalEdge map[string]any
+	for _, raw := range anySlice(body["edgeEvidence"]) {
+		edge, _ := raw.(map[string]any)
+		if stringField(edge, "targetKind") == "external" {
+			externalEdge = edge
+			break
+		}
+	}
+	if externalEdge == nil {
+		t.Skipf("live service %s has no external dependency edge in the current Coroot window", service)
+	}
+	endpoint := firstNonBlank(stringField(externalEdge, "targetEndpoint"), stringField(externalEdge, "targetName"))
+	if endpoint == "" {
+		t.Fatalf("external edge missing endpoint: %#v", externalEdge)
+	}
+
+	var matchedHypothesis map[string]any
+	for _, raw := range anySlice(body["hypotheses"]) {
+		hypothesis, _ := raw.(map[string]any)
+		if stringField(hypothesis, "rootCauseStatus") == "requires_external_dependency_drilldown" &&
+			strings.Contains(stringField(hypothesis, "suspectService"), stringField(externalEdge, "target")) {
+			matchedHypothesis = hypothesis
+			break
+		}
+	}
+	if matchedHypothesis == nil {
+		t.Fatalf("missing external dependency drill-down hypothesis for edge %#v; hypotheses=%#v", externalEdge, body["hypotheses"])
+	}
+	drilldowns := strings.Join(stringsFromAnySlice(anySlice(matchedHypothesis["nextDrilldowns"])), "\n")
+	for _, want := range []string{"resolve external dependency " + endpoint, "port/protocol", "caller-to-dependency network path"} {
+		if !strings.Contains(drilldowns, want) {
+			t.Fatalf("external nextDrilldowns = %q, want %q", drilldowns, want)
+		}
+	}
+	summary, _ := body["summary"].(map[string]any)
+	missingEvidence := strings.Join(stringsFromAnySlice(anySlice(summary["missingEvidence"])), "\n")
+	if !strings.Contains(missingEvidence, endpoint) || !strings.Contains(missingEvidence, "underlying cause is unresolved") {
+		t.Fatalf("missingEvidence = %q, want unresolved external dependency gap for %s", missingEvidence, endpoint)
+	}
+	t.Logf("external dependency drill-down verified: service=%s endpoint=%s edge=%s", service, endpoint, stringField(externalEdge, "target"))
+}
+
 func TestLiveCorootRCAInternalCollectors(t *testing.T) {
 	cfg, client, timeout := newLiveCorootClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout*2)
@@ -208,6 +264,12 @@ func loadLiveCorootConfig(t *testing.T) liveCorootConfig {
 	var cfg liveCorootConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("decode .data/coroot-config.json: %v", err)
+	}
+	if baseURL := strings.TrimSpace(os.Getenv("COROOT_LIVE_BASE_URL")); baseURL != "" {
+		cfg.BaseURL = baseURL
+	}
+	if project := strings.TrimSpace(os.Getenv("COROOT_LIVE_PROJECT")); project != "" {
+		cfg.Project = project
 	}
 	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.Project) == "" || strings.TrimSpace(cfg.Token) == "" {
 		t.Fatalf("Coroot live config requires baseUrl, project, and token")
@@ -370,6 +432,17 @@ func anySlice(value any) []any {
 		return items
 	}
 	return nil
+}
+
+func stringsFromAnySlice(items []any) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		value := stringFromAny(item)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func sortedMapKeys(obj map[string]any) []string {

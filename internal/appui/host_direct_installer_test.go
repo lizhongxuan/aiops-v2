@@ -3,6 +3,8 @@ package appui
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -24,13 +26,15 @@ func (f *fakeSSHCredentialResolver) ResolveSSHCredential(_ context.Context, ref 
 }
 
 type fakeSSHBootstrapDialer struct {
-	client *fakeSSHBootstrapClient
-	err    error
-	calls  int
+	client      *fakeSSHBootstrapClient
+	err         error
+	calls       int
+	credentials []ResolvedSSHCredential
 }
 
-func (f *fakeSSHBootstrapDialer) DialHost(_ context.Context, _ store.HostRecord, _ ResolvedSSHCredential) (SSHBootstrapClient, error) {
+func (f *fakeSSHBootstrapDialer) DialHost(_ context.Context, _ store.HostRecord, credential ResolvedSSHCredential) (SSHBootstrapClient, error) {
 	f.calls++
+	f.credentials = append(f.credentials, credential)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -42,11 +46,21 @@ type fakeSSHBootstrapClient struct {
 	errors    map[string]error
 	commands  []string
 	stdins    [][]byte
+	runs      []fakeSSHRun
 	closed    bool
+}
+
+type fakeSSHRun struct {
+	command string
+	stdin   []byte
 }
 
 func (f *fakeSSHBootstrapClient) Run(_ context.Context, command string, stdin []byte) (SSHBootstrapResult, error) {
 	f.commands = append(f.commands, command)
+	f.runs = append(f.runs, fakeSSHRun{
+		command: command,
+		stdin:   append([]byte(nil), stdin...),
+	})
 	if stdin != nil {
 		cp := append([]byte(nil), stdin...)
 		f.stdins = append(f.stdins, cp)
@@ -77,6 +91,30 @@ func (f *fakeHostAgentArtifactBuilder) BuildHostAgentArtifact(_ context.Context,
 		return HostAgentArtifact{}, f.err
 	}
 	return f.artifact, nil
+}
+
+func TestGoBuildHostAgentArtifactBuilderUsesPrebuiltArtifactWithoutGo(t *testing.T) {
+	repoRoot := t.TempDir()
+	artifactDir := filepath.Join(repoRoot, "artifacts", "host-agent", "v0.1.0", "linux-amd64")
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	artifactPath := filepath.Join(artifactDir, "host-agent")
+	if err := os.WriteFile(artifactPath, []byte("prebuilt-host-agent"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("PATH", "")
+
+	artifact, err := (goBuildHostAgentArtifactBuilder{RepoRoot: repoRoot}).BuildHostAgentArtifact(context.Background(), "linux", "amd64", "v0.1.0")
+	if err != nil {
+		t.Fatalf("BuildHostAgentArtifact() error = %v", err)
+	}
+	if artifact.Path != artifactPath {
+		t.Fatalf("Path = %q, want %q", artifact.Path, artifactPath)
+	}
+	if string(artifact.Bytes) != "prebuilt-host-agent" {
+		t.Fatalf("Bytes = %q, want prebuilt-host-agent", string(artifact.Bytes))
+	}
 }
 
 func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *testing.T) {
@@ -211,11 +249,13 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 		Bytes:  []byte("host-agent-binary"),
 		SHA256: "sha256-test",
 	}}
+	tokenStore := NewLocalHostAgentTokenStore(t.TempDir())
 	installer := NewDirectHostAgentInstaller(
 		repo,
 		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/ubuntu-smoke", Password: "do-not-leak"}},
 		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: client}),
 		WithHostAgentArtifactBuilder(builder),
+		WithDirectHostAgentTokenStore(tokenStore),
 	)
 
 	run, err := installer.Install(context.Background(), "ubuntu-smoke", HostInstallRequest{AgentVersion: "v0.1.0"})
@@ -235,6 +275,12 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 	if saved.Status != "online" || saved.InstallState != "installed" || saved.InstallWorkflowID != "" || saved.AgentTokenRef == "" {
 		t.Fatalf("saved host = %+v", saved)
 	}
+	if saved.AgentTokenSecretRef == "" {
+		t.Fatalf("AgentTokenSecretRef is empty")
+	}
+	if token, err := tokenStore.ResolveHostAgentToken(context.Background(), saved.AgentTokenSecretRef); err != nil || strings.TrimSpace(token) == "" {
+		t.Fatalf("ResolveHostAgentToken() token=%q err=%v, want stored token", token, err)
+	}
 	joinedCommands := strings.Join(client.commands, "\n")
 	for _, forbidden := range []string{"llm.", "prompt.", "chat.", "completion.", "do-not-leak"} {
 		if strings.Contains(strings.ToLower(joinedCommands), forbidden) {
@@ -246,6 +292,117 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 	}
 	if len(client.stdins) == 0 {
 		t.Fatal("expected installer to upload files over ssh stdin")
+	}
+}
+
+func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "ubuntu-smoke",
+		Address:          "10.0.0.11",
+		SSHUser:          "kduser",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://lab/ubuntu-smoke",
+		AgentVersion:     "v0.1.0",
+	})
+	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
+		"uname -s":                        {Stdout: "Linux\n"},
+		"uname -m":                        {Stdout: "x86_64\n"},
+		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "sudo\n"},
+		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+	}}
+	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
+		Bytes:  []byte("host-agent-binary"),
+		SHA256: "sha256-test",
+	}}
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/ubuntu-smoke", Password: "sudo-password"}},
+		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: client}),
+		WithHostAgentArtifactBuilder(builder),
+	)
+
+	if _, err := installer.Install(context.Background(), "ubuntu-smoke", HostInstallRequest{AgentVersion: "v0.1.0"}); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+
+	privilegedRuns := 0
+	for _, run := range client.runs {
+		if !strings.Contains(run.command, "systemctl") && !strings.Contains(run.command, " install ") {
+			continue
+		}
+		privilegedRuns++
+		if !strings.Contains(run.command, "sudo -S -p ''") {
+			t.Fatalf("privileged command did not use non-interactive sudo:\n%s", run.command)
+		}
+		if string(run.stdin) != "sudo-password\n" {
+			t.Fatalf("sudo stdin = %q, want password newline", string(run.stdin))
+		}
+		if strings.Contains(run.command, "sudo-password") {
+			t.Fatalf("sudo password leaked into command text:\n%s", run.command)
+		}
+	}
+	if privilegedRuns == 0 {
+		t.Fatal("no privileged installer commands were captured")
+	}
+}
+
+func TestDirectHostAgentInstallerInstallsWithDefaultSSHAuthWhenCredentialRefEmpty(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:           "ubuntu-smoke",
+		Address:      "10.0.0.11",
+		SSHUser:      "ubuntu",
+		SSHPort:      22,
+		AgentVersion: "v0.1.0",
+	})
+	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
+		"uname -s":                        {Stdout: "Linux\n"},
+		"uname -m":                        {Stdout: "x86_64\n"},
+		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "sudo\n"},
+		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+	}}
+	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
+		Bytes:  []byte("host-agent-binary"),
+		SHA256: "sha256-test",
+	}}
+	resolver := &fakeSSHCredentialResolver{err: errors.New("resolver should not be used for empty credential ref")}
+	dialer := &fakeSSHBootstrapDialer{client: client}
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		resolver,
+		WithSSHBootstrapDialer(dialer),
+		WithHostAgentArtifactBuilder(builder),
+	)
+
+	run, err := installer.Install(context.Background(), "ubuntu-smoke", HostInstallRequest{AgentVersion: "v0.1.0"})
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if run.Status != "success" {
+		t.Fatalf("run = %+v, want success", run)
+	}
+	if len(resolver.refs) != 0 {
+		t.Fatalf("resolved refs = %#v, want none", resolver.refs)
+	}
+	if len(dialer.credentials) != 1 {
+		t.Fatalf("dialer.credentials length = %d, want 1", len(dialer.credentials))
+	}
+	if dialer.credentials[0].Ref != "" || dialer.credentials[0].PrivateKeyPath != "" || dialer.credentials[0].Password != "" || dialer.credentials[0].Cleanup != nil {
+		t.Fatalf("dialer credential = %+v, want empty default auth credential", dialer.credentials[0])
+	}
+}
+
+func TestSSHAuthMethodsAllowNoExplicitCredential(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
+	t.Setenv("HOME", t.TempDir())
+
+	methods, err := sshAuthMethods(ResolvedSSHCredential{})
+	if err != nil {
+		t.Fatalf("sshAuthMethods() error = %v", err)
+	}
+	if len(methods) != 0 {
+		t.Fatalf("len(methods) = %d, want 0 without default keys or agent", len(methods))
 	}
 }
 

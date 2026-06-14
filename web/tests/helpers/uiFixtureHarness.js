@@ -134,6 +134,41 @@ export async function openBrowserFixturePage(page, routePath, fixture) {
   await page.addInitScript((payload) => {
     window.__CODEX_UI_FIXTURE__ = payload;
   }, resolved);
+  await page.route("**/api/v1/hosts", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        hosts: [
+          {
+            id: "synthetic-workspace",
+            name: "synthetic workspace",
+            status: "online",
+            executable: false,
+            terminalCapable: false,
+          },
+        ],
+      }),
+    }),
+  );
+  await page.route("**/api/v1/llm-config", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "synthetic",
+        model: "synthetic-fixture-model",
+        configured: true,
+      }),
+    }),
+  );
+  await page.route("**/api/v1/debug/model-input-traces?**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ traces: [] }),
+    }),
+  );
   const fixtureKey = resolved?.name || (typeof fixture === "string" ? fixture : "");
   const hasQuery = routePath.includes("?");
   const fixtureQuery = fixtureKey ? `${hasQuery ? "&" : "?"}fixture=${encodeURIComponent(fixtureKey)}` : "";

@@ -1,3 +1,4 @@
+import { useAssistantTransportState } from "@assistant-ui/react";
 import { useMemo, useState } from "react";
 
 import { resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
@@ -6,6 +7,8 @@ import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { AiopsComposer } from "./components/AiopsComposer";
 import { AiopsThread } from "./components/AiopsThread";
+import { HostOpsStatusPanel } from "./components/HostOpsStatusPanel";
+import { HostSubagentDrawer } from "./components/HostSubagentDrawer";
 import { SessionContextBar } from "./components/SessionContextBar";
 
 type ChatPageProps = {
@@ -44,10 +47,37 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
         >
           <div className="grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white">
             <AiopsThread />
-            <AiopsComposer variant="chat" />
+            <div className="mx-auto w-full max-w-thread px-4">
+              <HostOpsWorkspace />
+              <AiopsComposer variant="chat" />
+            </div>
           </div>
         </ChatTransportProvider>
       </SessionContextBar>
     </section>
+  );
+}
+
+function HostOpsWorkspace() {
+  const state = useAssistantTransportState() as AiopsTransportState | undefined;
+  const [activeChildAgentId, setActiveChildAgentId] = useState<string | null>(null);
+  if (!state) {
+    return null;
+  }
+  const activeChildAgent = activeChildAgentId ? (state.childAgents || {})[activeChildAgentId] : undefined;
+
+  return (
+    <>
+      <HostOpsStatusPanel state={state} onOpenChildAgent={setActiveChildAgentId} />
+      <HostSubagentDrawer
+        open={Boolean(activeChildAgent)}
+        childAgent={activeChildAgent}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActiveChildAgentId(null);
+          }
+        }}
+      />
+    </>
   );
 }

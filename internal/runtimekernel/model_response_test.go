@@ -9,6 +9,7 @@ import (
 	"aiops-v2/internal/modelrouter"
 
 	"github.com/cloudwego/eino/components/model"
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -36,6 +37,43 @@ func TestGenerateModelResponseRejectsEmptyAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestGenerateModelResponseUsesLatestToolEvidenceWhenModelStaysEmpty(t *testing.T) {
+	var deltas []string
+	msg, err := generateModelResponse(
+		context.Background(),
+		&emptyResponseModel{},
+		[]*schema.Message{
+			schema.UserMessage("Tell me current model name only. Do not reveal or mention any api key."),
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   "call-model-config",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "get_current_model_config",
+					Arguments: `{}`,
+				},
+			}}),
+			schema.ToolMessage(`{"apiKeySet":true,"baseURL":"https://example.invalid/v1","model":"glm-4.7","provider":"zhipu"}`, "call-model-config"),
+		},
+		nil,
+		func(delta string) {
+			deltas = append(deltas, delta)
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg == nil || !strings.Contains(msg.Content, "glm-4.7") {
+		t.Fatalf("fallback content = %q, want model evidence", msg.Content)
+	}
+	if strings.Contains(strings.ToLower(msg.Content), "apikey") || strings.Contains(msg.Content, "example.invalid") {
+		t.Fatalf("fallback leaked sensitive or irrelevant config details: %q", msg.Content)
+	}
+	if got := strings.Join(deltas, ""); got != msg.Content {
+		t.Fatalf("deltas = %q, want %q", got, msg.Content)
+	}
+}
+
 type streamingResponseModel struct {
 	chunks []*schema.Message
 }
@@ -57,6 +95,185 @@ func (m *streamingResponseModel) Stream(context.Context, []*schema.Message, ...m
 
 func (m *streamingResponseModel) BindTools([]*schema.ToolInfo) error {
 	return nil
+}
+
+type emptyStreamGenerateResponseModel struct {
+	generateCalls int
+}
+
+func (m *emptyStreamGenerateResponseModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	m.generateCalls++
+	return schema.AssistantMessage("fallback final", nil), nil
+}
+
+func (m *emptyStreamGenerateResponseModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(&schema.Message{Role: schema.Assistant, ReasoningContent: "thinking"}, nil)
+	}()
+	return sr, nil
+}
+
+func (m *emptyStreamGenerateResponseModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func TestGenerateModelResponseFallsBackToGenerateWhenStreamIsEmpty(t *testing.T) {
+	model := &emptyStreamGenerateResponseModel{}
+	var deltas []string
+
+	msg, err := generateModelResponse(
+		context.Background(),
+		model,
+		[]*schema.Message{schema.UserMessage("ping")},
+		nil,
+		func(delta string) {
+			deltas = append(deltas, delta)
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg.Content != "fallback final" {
+		t.Fatalf("response content = %q, want fallback final", msg.Content)
+	}
+	if model.generateCalls != 1 {
+		t.Fatalf("Generate calls = %d, want 1", model.generateCalls)
+	}
+	if got := strings.Join(deltas, "|"); got != "fallback final" {
+		t.Fatalf("stream deltas = %q, want fallback final", got)
+	}
+}
+
+type emptyToolOptionsGenerateResponseModel struct {
+	toolOptionGenerateCalls   int
+	noToolOptionGenerateCalls int
+}
+
+func (m *emptyToolOptionsGenerateResponseModel) Generate(_ context.Context, _ []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	if len(opts) > 0 {
+		m.toolOptionGenerateCalls++
+		return &schema.Message{Role: schema.Assistant}, nil
+	}
+	m.noToolOptionGenerateCalls++
+	return schema.AssistantMessage("no-tool fallback final", nil), nil
+}
+
+func (m *emptyToolOptionsGenerateResponseModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(&schema.Message{Role: schema.Assistant, ReasoningContent: "thinking"}, nil)
+	}()
+	return sr, nil
+}
+
+func (m *emptyToolOptionsGenerateResponseModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+type staticToolInfo struct{}
+
+func (staticToolInfo) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name:        "noop",
+		Desc:        "No-op test tool.",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+	}, nil
+}
+
+func TestGenerateModelResponseFallsBackWithoutToolOptionsWhenToolOptionsStayEmpty(t *testing.T) {
+	model := &emptyToolOptionsGenerateResponseModel{}
+	var deltas []string
+
+	msg, err := generateModelResponse(
+		context.Background(),
+		model,
+		[]*schema.Message{schema.UserMessage("ping")},
+		[]einotool.BaseTool{staticToolInfo{}},
+		func(delta string) {
+			deltas = append(deltas, delta)
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg.Content != "no-tool fallback final" {
+		t.Fatalf("response content = %q, want no-tool fallback final", msg.Content)
+	}
+	if model.toolOptionGenerateCalls != 1 {
+		t.Fatalf("tool-option Generate calls = %d, want 1", model.toolOptionGenerateCalls)
+	}
+	if model.noToolOptionGenerateCalls != 1 {
+		t.Fatalf("no-tool-option Generate calls = %d, want 1", model.noToolOptionGenerateCalls)
+	}
+	if got := strings.Join(deltas, "|"); got != "no-tool fallback final" {
+		t.Fatalf("stream deltas = %q, want no-tool fallback final", got)
+	}
+}
+
+type retryEmptyToolOptionsGenerateResponseModel struct {
+	toolOptionGenerateCalls   int
+	noToolOptionGenerateCalls int
+}
+
+func (m *retryEmptyToolOptionsGenerateResponseModel) Generate(_ context.Context, _ []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	if len(opts) > 0 {
+		m.toolOptionGenerateCalls++
+		return &schema.Message{Role: schema.Assistant}, nil
+	}
+	m.noToolOptionGenerateCalls++
+	if m.noToolOptionGenerateCalls == 1 {
+		return &schema.Message{Role: schema.Assistant}, nil
+	}
+	return schema.AssistantMessage("retry no-tool fallback final", nil), nil
+}
+
+func (m *retryEmptyToolOptionsGenerateResponseModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(&schema.Message{Role: schema.Assistant, ReasoningContent: "thinking"}, nil)
+	}()
+	return sr, nil
+}
+
+func (m *retryEmptyToolOptionsGenerateResponseModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func TestGenerateModelResponseRetriesEmptyNoToolFallbackOnce(t *testing.T) {
+	model := &retryEmptyToolOptionsGenerateResponseModel{}
+	var deltas []string
+
+	msg, err := generateModelResponse(
+		context.Background(),
+		model,
+		[]*schema.Message{schema.UserMessage("ping")},
+		[]einotool.BaseTool{staticToolInfo{}},
+		func(delta string) {
+			deltas = append(deltas, delta)
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg.Content != "retry no-tool fallback final" {
+		t.Fatalf("response content = %q, want retry no-tool fallback final", msg.Content)
+	}
+	if model.toolOptionGenerateCalls != 2 {
+		t.Fatalf("tool-option Generate calls = %d, want 2", model.toolOptionGenerateCalls)
+	}
+	if model.noToolOptionGenerateCalls != 2 {
+		t.Fatalf("no-tool-option Generate calls = %d, want 2", model.noToolOptionGenerateCalls)
+	}
+	if got := strings.Join(deltas, "|"); got != "retry no-tool fallback final" {
+		t.Fatalf("stream deltas = %q, want retry no-tool fallback final", got)
+	}
 }
 
 func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) {

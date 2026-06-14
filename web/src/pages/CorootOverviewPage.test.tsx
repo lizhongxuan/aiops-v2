@@ -10,6 +10,10 @@ function jsonResponse(payload: unknown) {
   return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
 
+function errorResponse(status: number, payload: unknown) {
+  return Promise.resolve(new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } }));
+}
+
 function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   const url = String(input);
   if (url.includes("/api/v1/coroot/config") && init?.method === "PUT") {
@@ -120,6 +124,39 @@ describe("CorootOverviewPage", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(container.textContent).toContain("连接正常");
+  });
+
+  it("opens a Coroot error dialog with upstream diagnostics when the connection test fails", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/v1/coroot/test-connection") && init?.method === "POST") {
+        return errorResponse(502, {
+          error: "coroot upstream returned non-success status",
+          detail: "Coroot upstream returned HTTP 401 for GET http://172.18.13.11:8000/coroot/api/project/coroot_3/overview/applications",
+          statusCode: 401,
+          project: "coroot_3",
+          uri: "http://172.18.13.11:8000/coroot/api/project/coroot_3/overview/applications",
+          responsePreview: "invalid api key for project",
+        });
+      }
+      return mockFetch(input, init);
+    });
+    await renderCorootRoute();
+
+    const button = Array.from(container.querySelectorAll("button")).find((item) => item.textContent?.includes("测试连接"));
+    expect(button).toBeTruthy();
+    await act(async () => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flush();
+
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.textContent).toContain("操作失败");
+    expect(dialog?.textContent).toContain("coroot upstream returned non-success status");
+    expect(dialog?.textContent).toContain("HTTP 401");
+    expect(dialog?.textContent).toContain("Project: coroot_3");
+    expect(dialog?.textContent).toContain("invalid api key for project");
+    expect(dialog?.textContent).not.toContain("Request failed: 502");
+    expect(container.textContent).not.toContain("coroot upstream returned non-success status");
   });
 
   it("saves Coroot connection settings from the observability page", async () => {

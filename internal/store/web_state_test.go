@@ -95,6 +95,12 @@ func TestJSONFileStore_PersistsMCPAndAgentProfileState(t *testing.T) {
 		Name:                  "Ops Triage",
 		DefaultEnabled:        true,
 		DefaultActivationMode: "default_enabled",
+		ResourceTypes:         []string{"log"},
+		TaskIntents:           []string{"diagnose"},
+		Paths:                 []string{"services/*"},
+		Modes:                 []string{"read_only"},
+		UserInvocable:         true,
+		ModelInvocable:        true,
 	}}); err != nil {
 		t.Fatalf("SaveSkillCatalog() error = %v", err)
 	}
@@ -141,6 +147,9 @@ func TestJSONFileStore_PersistsMCPAndAgentProfileState(t *testing.T) {
 	skillCatalog, err := reopened.GetSkillCatalog()
 	if err != nil {
 		t.Fatalf("GetSkillCatalog() error = %v", err)
+	}
+	if len(skillCatalog) != 1 || skillCatalog[0].ResourceTypes[0] != "log" || !skillCatalog[0].ModelInvocable {
+		t.Fatalf("skill catalog discovery metadata = %+v", skillCatalog)
 	}
 	if len(skillCatalog) != 1 || skillCatalog[0].ID != "ops-triage" {
 		t.Fatalf("skillCatalog = %+v, want persisted ops-triage item", skillCatalog)

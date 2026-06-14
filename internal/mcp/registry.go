@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/tooling"
@@ -21,12 +22,42 @@ var (
 
 // ServerConfig stores the registration-time configuration for an MCP server.
 type ServerConfig struct {
-	ID        string
-	Name      string
-	Transport string
-	Command   []string
-	Disabled  bool
-	Source    string
+	ID                   string                    `json:"id,omitempty"`
+	Name                 string                    `json:"name,omitempty"`
+	Transport            string                    `json:"transport,omitempty"`
+	Command              []string                  `json:"command,omitempty"`
+	Disabled             bool                      `json:"disabled,omitempty"`
+	Source               string                    `json:"source,omitempty"`
+	TenantScope          TenantScope               `json:"tenantScope,omitempty"`
+	UserScope            UserScope                 `json:"userScope,omitempty"`
+	Profiles             []string                  `json:"profiles,omitempty"`
+	CapabilityDomain     string                    `json:"capabilityDomain,omitempty"`
+	ResourceTypes        []string                  `json:"resourceTypes,omitempty"`
+	OperationKinds       []string                  `json:"operationKinds,omitempty"`
+	DefaultLoadingPolicy tooling.ToolLoadingPolicy `json:"defaultLoadingPolicy,omitempty"`
+	RiskLevel            tooling.ToolRiskLevel     `json:"riskLevel,omitempty"`
+	HealthCheckType      string                    `json:"healthCheckType,omitempty"`
+	OwnerSource          string                    `json:"ownerSource,omitempty"`
+	ToolPack             string                    `json:"toolPack,omitempty"`
+	RequiresHealthyMCP   bool                      `json:"requiresHealthyMcp,omitempty"`
+	PermissionScope      string                    `json:"permissionScope,omitempty"`
+	PromptBudgetClass    string                    `json:"promptBudgetClass,omitempty"`
+	SchemaBudgetClass    string                    `json:"schemaBudgetClass,omitempty"`
+	DiscoveryTags        []string                  `json:"discoveryTags,omitempty"`
+}
+
+type TenantScope struct {
+	TenantIDs []string `json:"tenantIds,omitempty"`
+}
+
+type UserScope struct {
+	UserIDs []string `json:"userIds,omitempty"`
+}
+
+type DynamicToolOptions struct {
+	TenantID string
+	UserID   string
+	Profile  string
 }
 
 type ServerState string
@@ -68,28 +99,75 @@ type ResourceContent struct {
 
 // Registry tracks MCP server configuration and dynamically connected tools.
 type Registry struct {
-	mu          sync.RWMutex
-	governance  *settings.Governance
-	serverCfgs  map[string]ServerConfig
-	serverTools map[string][]tooling.Tool
-	serverState map[string]bool
-	statuses    map[string]ServerStatus
-	resources   map[string][]Resource
-	contents    map[string]map[string]ResourceContent
+	mu           sync.RWMutex
+	governance   *settings.Governance
+	serverCfgs   map[string]ServerConfig
+	serverTools  map[string][]tooling.Tool
+	serverState  map[string]bool
+	statuses     map[string]ServerStatus
+	health       *HealthRegistry
+	resources    map[string][]Resource
+	contents     map[string]map[string]ResourceContent
+	instructions map[string]ServerInstruction
 }
 
 // NewRegistry creates an empty MCP server registry.
 func NewRegistry() *Registry {
 	r := &Registry{
-		serverCfgs:  make(map[string]ServerConfig),
-		serverTools: make(map[string][]tooling.Tool),
-		serverState: make(map[string]bool),
-		statuses:    make(map[string]ServerStatus),
-		resources:   make(map[string][]Resource),
-		contents:    make(map[string]map[string]ResourceContent),
+		serverCfgs:   make(map[string]ServerConfig),
+		serverTools:  make(map[string][]tooling.Tool),
+		serverState:  make(map[string]bool),
+		statuses:     make(map[string]ServerStatus),
+		health:       NewHealthRegistry(DefaultHealthTTL),
+		resources:    make(map[string][]Resource),
+		contents:     make(map[string]map[string]ResourceContent),
+		instructions: make(map[string]ServerInstruction),
 	}
 	setDefaultRegistry(r)
 	return r
+}
+
+func (r *Registry) SetServerInstructions(serverID, text string) {
+	serverID = strings.TrimSpace(serverID)
+	text = strings.TrimSpace(text)
+	if serverID == "" || text == "" {
+		return
+	}
+	redacted := redactInstructionText(text)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.instructions[serverID] = ServerInstruction{
+		ServerID:  serverID,
+		Text:      redacted,
+		Hash:      serverInstructionHash(serverID, redacted),
+		UpdatedAt: time.Now(),
+	}
+}
+
+func (r *Registry) ListServerInstructions() []ServerInstruction {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ServerInstruction, 0, len(r.instructions))
+	for _, instruction := range r.instructions {
+		out = append(out, instruction)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
+	return out
+}
+
+func (r *Registry) ServerInstructionDelta(state *MCPInstructionSessionState) []MCPInstructionDelta {
+	r.mu.RLock()
+	instructions := make([]ServerInstruction, 0, len(r.instructions))
+	for _, instruction := range r.instructions {
+		instructions = append(instructions, instruction)
+	}
+	disabled := make(map[string]bool, len(r.serverState))
+	for serverID, value := range r.serverState {
+		disabled[serverID] = value
+	}
+	r.mu.RUnlock()
+	sort.Slice(instructions, func(i, j int) bool { return instructions[i].ServerID < instructions[j].ServerID })
+	return buildInstructionDelta(instructions, disabled, state)
 }
 
 // DefaultRegistry returns the most recently created registry, if any.
@@ -125,6 +203,18 @@ func (r *Registry) RegisterServer(cfg ServerConfig) error {
 	cfg.Transport = strings.TrimSpace(cfg.Transport)
 	cfg.Command = append([]string(nil), cfg.Command...)
 	cfg.Source = normalizeServerSource(cfg.Source)
+	cfg.CapabilityDomain = normalizeManifestToken(cfg.CapabilityDomain)
+	cfg.ResourceTypes = normalizeManifestList(cfg.ResourceTypes)
+	cfg.OperationKinds = normalizeManifestList(cfg.OperationKinds)
+	cfg.DefaultLoadingPolicy = normalizeMCPToolLoadingPolicy(cfg.DefaultLoadingPolicy)
+	cfg.RiskLevel = normalizeMCPRisk(cfg.RiskLevel)
+	cfg.HealthCheckType = normalizeManifestToken(cfg.HealthCheckType)
+	cfg.OwnerSource = strings.TrimSpace(cfg.OwnerSource)
+	cfg.ToolPack = normalizeManifestToken(cfg.ToolPack)
+	cfg.PermissionScope = normalizeManifestToken(cfg.PermissionScope)
+	cfg.PromptBudgetClass = normalizeManifestToken(cfg.PromptBudgetClass)
+	cfg.SchemaBudgetClass = normalizeManifestToken(cfg.SchemaBudgetClass)
+	cfg.DiscoveryTags = normalizeManifestList(cfg.DiscoveryTags)
 	if err := r.validateServerConfig(cfg); err != nil {
 		return err
 	}
@@ -149,6 +239,9 @@ func (r *Registry) SetServerDisabled(serverID string, disabled bool) {
 	defer r.mu.Unlock()
 	if disabled {
 		r.serverState[serverID] = true
+		if r.health != nil {
+			r.health.Set(HealthSnapshot{ServerID: serverID, Status: HealthDisabled, LastCheckedAt: time.Now(), TTLSeconds: int(DefaultHealthTTL.Seconds())})
+		}
 		return
 	}
 	delete(r.serverState, serverID)
@@ -189,6 +282,45 @@ func (r *Registry) GetServerStatus(serverID string) (ServerStatus, bool) {
 		return ServerStatus{}, false
 	}
 	return status, true
+}
+
+func (r *Registry) SetServerHealthSnapshot(snapshot HealthSnapshot) {
+	if r == nil || r.health == nil {
+		return
+	}
+	r.health.Set(snapshot)
+}
+
+func (r *Registry) GetServerHealthSnapshot(serverID string) (HealthSnapshot, bool) {
+	if r == nil || r.health == nil {
+		return HealthSnapshot{}, false
+	}
+	return r.health.Snapshot(serverID)
+}
+
+func (r *Registry) ListServerHealthSnapshots() []HealthSnapshot {
+	if r == nil || r.health == nil {
+		return nil
+	}
+	return r.health.List()
+}
+
+func (r *Registry) RefreshServerHealth(ctx context.Context, serverID string, force bool, probe HealthProbe) HealthSnapshot {
+	if r == nil || r.health == nil {
+		return HealthSnapshot{}
+	}
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return HealthSnapshot{}
+	}
+	r.mu.RLock()
+	cfg, ok := r.serverCfgs[serverID]
+	disabled := r.serverState[serverID]
+	r.mu.RUnlock()
+	if !ok {
+		cfg = ServerConfig{ID: serverID, Name: serverID}
+	}
+	return r.health.Refresh(ctx, cfg, disabled, force, probe)
 }
 
 // GetServer returns a cloned server configuration by id.
@@ -340,12 +472,19 @@ func (r *Registry) OnServerConnected(serverID string, tools []tooling.Tool) erro
 		return fmt.Errorf("mcp: server id is required")
 	}
 
+	r.mu.RLock()
+	cfg, ok := r.serverCfgs[serverID]
+	r.mu.RUnlock()
+	if !ok {
+		cfg = ServerConfig{ID: serverID, Name: serverID}
+	}
+
 	normalized := make([]tooling.Tool, 0, len(tools))
 	for _, t := range tools {
 		if t == nil {
 			continue
 		}
-		normalized = append(normalized, normalizeServerTool(serverID, t))
+		normalized = append(normalized, normalizeServerTool(cfg, t))
 	}
 
 	r.mu.Lock()
@@ -356,6 +495,16 @@ func (r *Registry) OnServerConnected(serverID string, tools []tooling.Tool) erro
 	status.LastError = ""
 	status.RefreshToken = r.dynamicToolRefreshTokenLocked()
 	r.statuses[serverID] = status
+	if r.health != nil {
+		r.health.Set(HealthSnapshot{
+			ServerID:      serverID,
+			Status:        HealthHealthy,
+			LastCheckedAt: time.Now(),
+			LastSuccessAt: time.Now(),
+			TTLSeconds:    int(DefaultHealthTTL.Seconds()),
+			Capabilities:  []string{"tools"},
+		})
+	}
 	return nil
 }
 
@@ -371,6 +520,9 @@ func (r *Registry) OnServerDisconnected(serverID string) {
 	status.State = ServerStateDisconnected
 	status.RefreshToken = r.dynamicToolRefreshTokenLocked()
 	r.statuses[serverID] = status
+	if r.health != nil {
+		r.health.Set(HealthSnapshot{ServerID: serverID, Status: HealthUnknown, LastCheckedAt: time.Now(), TTLSeconds: int(DefaultHealthTTL.Seconds())})
+	}
 }
 
 // UnregisterServer removes a server config and any connected tools.
@@ -384,6 +536,9 @@ func (r *Registry) UnregisterServer(serverID string) {
 	delete(r.resources, serverID)
 	delete(r.contents, serverID)
 	delete(r.statuses, serverID)
+	if r.health != nil {
+		r.health.Set(HealthSnapshot{ServerID: serverID, Status: HealthUnknown, LastCheckedAt: time.Now(), TTLSeconds: int(DefaultHealthTTL.Seconds())})
+	}
 }
 
 // ListServerTools returns the connected tools for one server.
@@ -403,6 +558,11 @@ func (r *Registry) ListServerTools(serverID string) []tooling.Tool {
 
 // DynamicTools returns all connected tools across servers in stable order.
 func (r *Registry) DynamicTools() []tooling.Tool {
+	return r.DynamicToolsWithOptions(DynamicToolOptions{})
+}
+
+// DynamicToolsWithOptions returns connected tools visible to one scoped request.
+func (r *Registry) DynamicToolsWithOptions(opts DynamicToolOptions) []tooling.Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -418,12 +578,60 @@ func (r *Registry) DynamicTools() []tooling.Tool {
 		if r.serverState[serverID] {
 			continue
 		}
+		if !serverConfigVisibleToOptions(r.serverCfgs[serverID], opts) {
+			continue
+		}
 		sort.Slice(tools, func(i, j int) bool {
 			return tools[i].Metadata().Name < tools[j].Metadata().Name
 		})
 		out = append(out, tools...)
 	}
 	return out
+}
+
+func (r *Registry) DynamicToolsForScope(scope tooling.DynamicToolScope) []tooling.Tool {
+	return r.DynamicToolsWithOptions(DynamicToolOptions{
+		TenantID: scope.TenantID,
+		UserID:   scope.UserID,
+		Profile:  scope.Profile,
+	})
+}
+
+func serverConfigVisibleToOptions(cfg ServerConfig, opts DynamicToolOptions) bool {
+	opts.TenantID = strings.TrimSpace(opts.TenantID)
+	opts.UserID = strings.TrimSpace(opts.UserID)
+	opts.Profile = strings.TrimSpace(opts.Profile)
+	hasRequestScope := opts.TenantID != "" || opts.UserID != "" || opts.Profile != ""
+	hasConfigScope := len(cfg.TenantScope.TenantIDs) > 0 || len(cfg.UserScope.UserIDs) > 0 || len(cfg.Profiles) > 0
+	if !hasRequestScope {
+		return true
+	}
+	if !hasConfigScope {
+		return false
+	}
+	if len(cfg.TenantScope.TenantIDs) > 0 && !containsTrimmed(cfg.TenantScope.TenantIDs, opts.TenantID) {
+		return false
+	}
+	if len(cfg.UserScope.UserIDs) > 0 && !containsTrimmed(cfg.UserScope.UserIDs, opts.UserID) {
+		return false
+	}
+	if len(cfg.Profiles) > 0 && !containsTrimmed(cfg.Profiles, opts.Profile) {
+		return false
+	}
+	return true
+}
+
+func containsTrimmed(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 // DynamicToolRefreshToken returns a stable token that changes when the
@@ -581,7 +789,14 @@ func (t metadataOverrideTool) Execute(ctx context.Context, input json.RawMessage
 	return t.base.Execute(ctx, input)
 }
 
-func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
+func normalizeServerTool(server ServerConfig, t tooling.Tool) tooling.Tool {
+	server.ID = strings.TrimSpace(server.ID)
+	if server.ID == "" {
+		server.ID = strings.TrimSpace(server.Name)
+	}
+	if server.Name == "" {
+		server.Name = server.ID
+	}
 	meta := t.Metadata()
 	if meta.Name == "" {
 		meta.Name = strings.TrimSpace(meta.MCPInfo.ToolName)
@@ -591,20 +806,223 @@ func normalizeServerTool(serverID string, t tooling.Tool) tooling.Tool {
 	}
 	meta.Origin = tooling.ToolOriginMCP
 	meta.IsMCP = true
+	meta.Layer = tooling.ToolLayerDeferred
+	meta.DeferByDefault = true
+	if meta.Pack == "" {
+		meta.Pack = firstNonEmptyString(server.ToolPack, dynamicMCPToolPack(server.ID))
+	}
 	if meta.MCPInfo.ServerID == "" {
-		meta.MCPInfo.ServerID = serverID
+		meta.MCPInfo.ServerID = server.ID
 	}
 	if meta.MCPInfo.ServerName == "" {
-		meta.MCPInfo.ServerName = serverID
+		meta.MCPInfo.ServerName = firstNonEmptyString(server.Name, server.ID)
 	}
 	if meta.MCPInfo.ToolName == "" {
 		meta.MCPInfo.ToolName = meta.Name
 	}
+	readOnly := t.IsReadOnly(nil)
+	destructive := t.IsDestructive(nil)
+	if meta.RiskLevel == "" && readOnly && !destructive {
+		meta.RiskLevel = tooling.ToolRiskLow
+	}
+	if destructive {
+		meta.Mutating = true
+	}
+	meta = ApplyServerManifestToToolMetadata(server, meta, readOnly, destructive)
+	if meta.AlwaysLoad && !mcpAlwaysLoadAllowed(meta, readOnly, destructive) {
+		meta.AlwaysLoad = false
+	}
+	meta.Triggers = appendUniqueMCPMetadata(meta.Triggers, "MCP tool", "dynamic tool", meta.MCPInfo.ServerName, meta.MCPInfo.ToolName)
+	meta.Discovery = normalizeMCPDiscovery(server, meta.Discovery, meta, readOnly, destructive)
 	return metadataOverrideTool{base: t, meta: meta}
+}
+
+func mcpAlwaysLoadAllowed(meta tooling.ToolMetadata, readOnly, destructive bool) bool {
+	return readOnly && !destructive && !meta.Mutating && !meta.RequiresApproval && meta.RiskLevel.Normalize() == tooling.ToolRiskLow
+}
+
+func ApplyServerManifestToToolMetadata(server ServerConfig, meta tooling.ToolMetadata, readOnly, destructive bool) tooling.ToolMetadata {
+	server.ID = strings.TrimSpace(server.ID)
+	server.Name = strings.TrimSpace(server.Name)
+	if meta.MCPInfo.ServerID == "" {
+		meta.MCPInfo.ServerID = server.ID
+	}
+	if meta.MCPInfo.ServerName == "" {
+		meta.MCPInfo.ServerName = firstNonEmptyString(server.Name, server.ID)
+	}
+	if meta.MCPInfo.ToolName == "" {
+		meta.MCPInfo.ToolName = meta.Name
+	}
+	if meta.Pack == "" && strings.TrimSpace(server.ToolPack) != "" {
+		meta.Pack = normalizeManifestToken(server.ToolPack)
+	}
+	if meta.RiskLevel == "" && server.RiskLevel != "" {
+		meta.RiskLevel = normalizeMCPRisk(server.RiskLevel)
+	}
+	meta.Discovery = normalizeMCPDiscovery(server, meta.Discovery, meta, readOnly, destructive)
+	return meta
+}
+
+func normalizeMCPDiscovery(server ServerConfig, discovery tooling.ToolDiscoveryMetadata, meta tooling.ToolMetadata, readOnly, destructive bool) tooling.ToolDiscoveryMetadata {
+	if discovery.DiscoveryGroup == "" {
+		discovery.DiscoveryGroup = firstNonEmptyString(normalizeManifestToken(server.CapabilityDomain), "mcp")
+	}
+	discovery.DiscoveryTags = appendUniqueMCPMetadata(discovery.DiscoveryTags, "mcp", "dynamic", normalizeManifestToken(server.CapabilityDomain), meta.MCPInfo.ServerName, meta.MCPInfo.ToolName)
+	discovery.DiscoveryTags = appendUniqueMCPMetadata(discovery.DiscoveryTags, server.DiscoveryTags...)
+	if len(discovery.ResourceTypes) == 0 {
+		if len(server.ResourceTypes) > 0 {
+			discovery.ResourceTypes = append([]string(nil), server.ResourceTypes...)
+		} else {
+			discovery.ResourceTypes = []string{"mcp_tool"}
+		}
+	}
+	if len(discovery.OperationKinds) == 0 {
+		if len(server.OperationKinds) > 0 {
+			discovery.OperationKinds = append([]string(nil), server.OperationKinds...)
+		} else {
+			switch {
+			case destructive || meta.Mutating:
+				discovery.OperationKinds = []string{"write"}
+			case readOnly:
+				discovery.OperationKinds = []string{"read"}
+			default:
+				discovery.OperationKinds = []string{"execute"}
+			}
+		}
+	}
+	if discovery.LoadingPolicy == "" && server.DefaultLoadingPolicy != "" {
+		discovery.LoadingPolicy = normalizeMCPToolLoadingPolicy(server.DefaultLoadingPolicy)
+	}
+	if discovery.MCPServerID == "" {
+		discovery.MCPServerID = server.ID
+	}
+	if server.RequiresHealthyMCP {
+		discovery.RequiresHealthyMCP = true
+	}
+	if discovery.PermissionScope == "" {
+		discovery.PermissionScope = normalizeManifestToken(server.PermissionScope)
+	}
+	if discovery.PromptBudgetClass == "" {
+		discovery.PromptBudgetClass = normalizeManifestToken(server.PromptBudgetClass)
+	}
+	if discovery.SchemaBudgetClass == "" {
+		discovery.SchemaBudgetClass = normalizeManifestToken(server.SchemaBudgetClass)
+	}
+	discovery.RequiresSelect = true
+	return discovery
+}
+
+func dynamicMCPToolPack(serverID string) string {
+	serverID = strings.ToLower(strings.TrimSpace(serverID))
+	var b strings.Builder
+	lastUnderscore := false
+	for _, r := range serverID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastUnderscore = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastUnderscore = false
+		default:
+			if b.Len() > 0 && !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+	suffix := strings.Trim(b.String(), "_")
+	if suffix == "" {
+		suffix = "server"
+	}
+	return "mcp_dynamic_" + suffix
+}
+
+func appendUniqueMCPMetadata(values []string, extras ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(extras))
+	out := make([]string, 0, len(values)+len(extras))
+	for _, value := range append(append([]string(nil), values...), extras...) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeManifestList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeManifestToken(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizeManifestToken(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func normalizeMCPToolLoadingPolicy(policy tooling.ToolLoadingPolicy) tooling.ToolLoadingPolicy {
+	switch tooling.ToolLoadingPolicy(normalizeManifestToken(string(policy))) {
+	case tooling.ToolLoadingPolicyCore:
+		return tooling.ToolLoadingPolicyCore
+	case tooling.ToolLoadingPolicyDeferred:
+		return tooling.ToolLoadingPolicyDeferred
+	case tooling.ToolLoadingPolicyProfile:
+		return tooling.ToolLoadingPolicyProfile
+	case tooling.ToolLoadingPolicyMCP:
+		return tooling.ToolLoadingPolicyMCP
+	case tooling.ToolLoadingPolicyInternal:
+		return tooling.ToolLoadingPolicyInternal
+	case tooling.ToolLoadingPolicyConditional:
+		return tooling.ToolLoadingPolicyConditional
+	default:
+		return ""
+	}
+}
+
+func normalizeMCPRisk(risk tooling.ToolRiskLevel) tooling.ToolRiskLevel {
+	switch tooling.ToolRiskLevel(normalizeManifestToken(string(risk))) {
+	case tooling.ToolRiskLow:
+		return tooling.ToolRiskLow
+	case tooling.ToolRiskMedium:
+		return tooling.ToolRiskMedium
+	case tooling.ToolRiskHigh:
+		return tooling.ToolRiskHigh
+	case tooling.ToolRiskCritical:
+		return tooling.ToolRiskCritical
+	default:
+		return ""
+	}
 }
 
 func cloneServerConfig(cfg ServerConfig) ServerConfig {
 	cfg.Command = append([]string(nil), cfg.Command...)
+	cfg.TenantScope.TenantIDs = append([]string(nil), cfg.TenantScope.TenantIDs...)
+	cfg.UserScope.UserIDs = append([]string(nil), cfg.UserScope.UserIDs...)
+	cfg.Profiles = append([]string(nil), cfg.Profiles...)
+	cfg.ResourceTypes = append([]string(nil), cfg.ResourceTypes...)
+	cfg.OperationKinds = append([]string(nil), cfg.OperationKinds...)
+	cfg.DiscoveryTags = append([]string(nil), cfg.DiscoveryTags...)
 	return cfg
 }
 

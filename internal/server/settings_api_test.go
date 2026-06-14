@@ -26,6 +26,7 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 		APIKey:           "sk-test-12345678",
 		MaxContextTokens: 131072,
 		CompactModel:     "gpt-4o-mini",
+		ReasoningEffort:  "high",
 	}); err != nil {
 		t.Fatalf("SaveLLMConfig() error = %v", err)
 	}
@@ -79,11 +80,15 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 	if llm["maxContextTokens"] != float64(131072) {
 		t.Fatalf("llm response = %+v, want maxContextTokens 131072", llm)
 	}
+	if llm["reasoningEffort"] != "high" {
+		t.Fatalf("llm response = %+v, want reasoningEffort high", llm)
+	}
 
 	updateLLMBody, _ := json.Marshal(map[string]any{
 		"provider":         "openai",
 		"model":            "gpt-5.4",
 		"maxContextTokens": 9000,
+		"reasoningEffort":  "low",
 	})
 	updateLLMReq, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/llm-config", bytes.NewReader(updateLLMBody))
 	if err != nil {
@@ -104,5 +109,12 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 	}
 	if updateLLM["maxContextTokens"] != float64(10000) {
 		t.Fatalf("llm update response = %+v, want maxContextTokens 10000", updateLLM)
+	}
+	storedLLM, err := dataStore.GetLLMConfig()
+	if err != nil {
+		t.Fatalf("GetLLMConfig() after update error = %v", err)
+	}
+	if storedLLM.ReasoningEffort != "low" {
+		t.Fatalf("stored LLM = %+v, want reasoningEffort low", storedLLM)
 	}
 }

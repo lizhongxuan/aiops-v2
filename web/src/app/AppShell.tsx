@@ -94,7 +94,7 @@ export function AppShell() {
                         {sidebarCollapsed ? null : (
                           <span className="min-w-0">
                             <span className="block text-sm font-medium">{item.title}</span>
-                            <span className="block text-xs text-slate-500">{item.description}</span>
+                            {item.description ? <span className="block text-xs text-slate-500">{item.description}</span> : null}
                           </span>
                         )}
                       </NavLink>
@@ -124,7 +124,7 @@ export function AppShell() {
                 </Button>
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-slate-950">{title}</div>
-                  <div className="truncate text-xs text-slate-500">{description}</div>
+                  {description ? <div className="truncate text-xs text-slate-500">{description}</div> : null}
                 </div>
               </div>
               {headerActions ? <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 overflow-visible">{headerActions}</div> : null}

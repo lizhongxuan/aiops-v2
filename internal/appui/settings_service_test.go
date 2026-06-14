@@ -57,6 +57,7 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 			APIKey:           "sk-test-12345678",
 			MaxContextTokens: 131072,
 			CompactModel:     "gpt-5.4-mini",
+			ReasoningEffort:  "HIGH",
 		},
 	}
 	svc := NewSettingsService(repo)
@@ -79,6 +80,9 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	if llmView.MaxContextTokens != 131072 {
 		t.Fatalf("llmView.MaxContextTokens = %d, want 131072", llmView.MaxContextTokens)
 	}
+	if llmView.ReasoningEffort != "high" {
+		t.Fatalf("llmView.ReasoningEffort = %q, want high", llmView.ReasoningEffort)
+	}
 
 	updated, err := svc.UpdateSettings(context.Background(), WebSettingsPayload{
 		Model:           "claude-3-opus",
@@ -95,6 +99,7 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 		Provider:         "anthropic",
 		Model:            "claude-sonnet-4",
 		MaxContextTokens: 9000,
+		ReasoningEffort:  "invalid",
 	})
 	if err != nil {
 		t.Fatalf("UpdateLLMConfig() error = %v", err)
@@ -104,6 +109,9 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	}
 	if result.MaxContextTokens != 10000 || repo.llm.MaxContextTokens != 10000 {
 		t.Fatalf("result = %+v repo.llm = %+v, want min context 10000", result, repo.llm)
+	}
+	if repo.llm.ReasoningEffort != "medium" || repo.web.ReasoningEffort != "medium" {
+		t.Fatalf("repo.llm = %+v repo.web = %+v, want invalid reasoning effort normalized to medium", repo.llm, repo.web)
 	}
 }
 
@@ -125,6 +133,21 @@ func TestSettingsServiceDefaultsToGPT54WhenRepoIsEmpty(t *testing.T) {
 	if llmView.Model != "gpt-5.4" || llmView.CompactModel != "gpt-5.4-mini" || llmView.MaxContextTokens != 200000 {
 		t.Fatalf("llmView = %+v, want gpt-5.4 / gpt-5.4-mini / 200000 defaults", llmView)
 	}
+}
+
+func TestSettingsServiceDefaultModelOptionsIncludeGLM47(t *testing.T) {
+	svc := NewSettingsService(&settingsRepoStub{})
+
+	settings, err := svc.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings() error = %v", err)
+	}
+	for _, option := range settings.Models {
+		if option.ID == "glm-4.7" && option.Name == "GLM-4.7" {
+			return
+		}
+	}
+	t.Fatalf("default model options = %+v, want GLM-4.7 option", settings.Models)
 }
 
 func TestSettingsServiceSyncsLLMConfigToAuthSummary(t *testing.T) {

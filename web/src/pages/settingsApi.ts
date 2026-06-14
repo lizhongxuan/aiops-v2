@@ -53,6 +53,7 @@ export type LlmConfigView = {
   apiKeyMasked?: string;
   baseURL?: string;
   maxContextTokens?: number;
+  reasoningEffort?: string;
   bifrostActive?: boolean;
 };
 
@@ -69,6 +70,7 @@ export type LlmConfigUpdate = {
   apiKey?: string;
   baseURL?: string;
   maxContextTokens?: number | string | null;
+  reasoningEffort?: string;
 };
 
 export function normalizeLlmContextTokens(value: LlmConfigUpdate["maxContextTokens"]) {

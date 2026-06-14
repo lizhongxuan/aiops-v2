@@ -1,0 +1,29 @@
+{
+  "missionId": "mission-1",
+  "children": [
+    {
+      "id": "child-1",
+      "hostId": "host-a",
+      "hostAddress": "1.1.1.1",
+      "hostDisplayName": "@1.1.1.1",
+      "role": "pg primary",
+      "status": "running"
+    },
+    {
+      "id": "child-2",
+      "hostId": "host-b",
+      "hostAddress": "1.1.1.2",
+      "hostDisplayName": "@1.1.1.2",
+      "role": "pg standby",
+      "status": "running"
+    },
+    {
+      "id": "child-3",
+      "hostId": "host-c",
+      "hostAddress": "1.1.1.3",
+      "hostDisplayName": "@1.1.1.3",
+      "role": "pg_mon",
+      "status": "waiting"
+    }
+  ]
+}

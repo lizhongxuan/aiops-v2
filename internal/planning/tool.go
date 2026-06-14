@@ -21,9 +21,9 @@ func NewUpdatePlanTool() tooling.Tool {
 			Name:        "update_plan",
 			Aliases:     []string{"plan_update", "set_plan"},
 			Origin:      tooling.ToolOriginMeta,
-			Description: "Update the current turn's structured plan/todo state. Use for multi-step work; skip for simple answers.",
+			Description: "Use this tool proactively for complex tasks: multi-step investigation, RCA, operations, multiple user requests, or any task requiring 3+ distinct actions. Create a plan before substantial tool work. Keep exactly one step in_progress. Mark steps completed immediately after they are truly completed. Never mark completed when evidence, verification, approval, user input, or required tools are missing. Skip for trivial or single-step conversational answers.",
 		},
-		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"plan", "execute"}},
+		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "plan", "execute"}},
 		InputSchemaData: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -36,13 +36,37 @@ func NewUpdatePlanTool() tooling.Tool {
 							"id": {"type": "string"},
 							"text": {"type": "string"},
 							"status": {"type": "string", "enum": ["pending", "in_progress", "completed", "blocked", "failed", "cancelled"]},
-							"summary": {"type": "string"}
+							"summary": {"type": "string"},
+							"owner": {"type": "string"},
+							"agentId": {"type": "string"},
+							"dependsOn": {"type": "array", "items": {"type": "string"}},
+							"blocks": {"type": "array", "items": {"type": "string"}},
+							"blockedBy": {"type": "array", "items": {"type": "string"}},
+							"evidenceRefs": {"type": "array", "items": {"type": "string"}},
+							"requiredApprovals": {"type": "array", "items": {"type": "string"}},
+							"verificationStatus": {"type": "string"}
 						},
 						"required": ["text"]
 					}
+				},
+				"artifact": {
+					"type": "object",
+					"properties": {
+						"id": {"type": "string"},
+						"version": {"type": "integer"},
+						"status": {"type": "string", "enum": ["draft", "pending_approval", "approved", "rejected", "superseded"]},
+						"context": {"type": "object"},
+						"recommendedApproach": {"type": "array"},
+						"scope": {"type": "object"},
+						"reuse": {"type": "object"},
+						"verification": {"type": "object"},
+						"openQuestions": {"type": "array"},
+						"approval": {"type": "object"},
+						"rejections": {"type": "array"},
+						"steps": {"type": "array"}
+					}
 				}
-			},
-			"required": ["steps"]
+			}
 		}`),
 		OutputSchemaData: json.RawMessage(`{
 			"type": "object",
@@ -92,8 +116,12 @@ func DecodeUpdatePlan(input json.RawMessage) (PlanState, error) {
 // TurnItems.
 func CompactSummary(plan PlanState) string {
 	total := len(plan.Steps)
+	artifactSummary := ""
+	if plan.Artifact != nil {
+		artifactSummary = fmt.Sprintf(" artifact=%s status=%s open_questions=%d", plan.Artifact.ID, plan.Artifact.Status, len(plan.Artifact.OpenQuestions))
+	}
 	if total == 0 {
-		return fmt.Sprintf("plan updated: %s (0 steps)", plan.Status)
+		return fmt.Sprintf("plan updated: %s (0 steps)%s", plan.Status, artifactSummary)
 	}
 	counts := map[StepStatus]int{}
 	for _, step := range plan.Steps {
@@ -101,8 +129,8 @@ func CompactSummary(plan PlanState) string {
 	}
 	for _, status := range []StepStatus{StepStatusInProgress, StepStatusBlocked, StepStatusFailed, StepStatusCompleted, StepStatusPending, StepStatusCancelled} {
 		if counts[status] > 0 {
-			return fmt.Sprintf("plan updated: %s (%d/%d %s)", plan.Status, counts[status], total, status)
+			return fmt.Sprintf("plan updated: %s (%d/%d %s)%s", plan.Status, counts[status], total, status, artifactSummary)
 		}
 	}
-	return fmt.Sprintf("plan updated: %s (%d steps)", plan.Status, total)
+	return fmt.Sprintf("plan updated: %s (%d steps)%s", plan.Status, total, artifactSummary)
 }

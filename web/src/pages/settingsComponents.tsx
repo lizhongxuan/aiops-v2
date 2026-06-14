@@ -64,15 +64,18 @@ export function SelectField({
   onChange,
   options,
   "aria-label": ariaLabel,
+  "data-testid": dataTestId,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: Array<{ label: string; value: string }>;
   "aria-label"?: string;
+  "data-testid"?: string;
 }) {
   return (
     <select
       aria-label={ariaLabel}
+      data-testid={dataTestId}
       value={value}
       onChange={(event) => onChange(event.target.value)}
       className="h-8 w-full rounded-lg border border-input bg-white px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
@@ -92,7 +95,7 @@ export function StatusAlert({ type, title, message }: { type: "success" | "error
     <Alert variant={type === "error" ? "destructive" : "default"} className="rounded-lg bg-white">
       <Icon className="h-4 w-4" />
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
+      <AlertDescription className="whitespace-pre-wrap break-words">{message}</AlertDescription>
     </Alert>
   );
 }

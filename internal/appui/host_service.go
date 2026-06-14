@@ -2,6 +2,8 @@ package appui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -10,22 +12,41 @@ import (
 )
 
 type defaultHostService struct {
-	writer    SessionStore
-	repo      HostRepository
-	builder   *SnapshotBuilder
-	bootstrap *HostBootstrapService
+	writer           SessionStore
+	repo             HostRepository
+	builder          *SnapshotBuilder
+	bootstrap        *HostBootstrapService
+	sshPasswordStore HostSSHPasswordStore
 }
+
+type HostServiceOption func(*defaultHostService)
 
 func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotBuilder, bootstrap ...*HostBootstrapService) HostService {
 	var bootstrapSvc *HostBootstrapService
 	if len(bootstrap) > 0 {
 		bootstrapSvc = bootstrap[0]
 	}
-	return &defaultHostService{
+	return NewHostServiceWithOptions(writer, repo, builder, bootstrapSvc)
+}
+
+func NewHostServiceWithOptions(writer SessionStore, repo HostRepository, builder *SnapshotBuilder, bootstrap *HostBootstrapService, opts ...HostServiceOption) HostService {
+	service := &defaultHostService{
 		writer:    writer,
 		repo:      repo,
 		builder:   builder,
-		bootstrap: bootstrapSvc,
+		bootstrap: bootstrap,
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(service)
+		}
+	}
+	return service
+}
+
+func WithHostServiceSSHPasswordStore(store HostSSHPasswordStore) HostServiceOption {
+	return func(service *defaultHostService) {
+		service.sshPasswordStore = store
 	}
 }
 
@@ -36,27 +57,27 @@ func (s *defaultHostService) ListHosts(context.Context) ([]HostSummary, error) {
 	return s.builder.buildHostSummaries(serverLocalHostID), nil
 }
 
-func (s *defaultHostService) CreateHost(_ context.Context, payload HostUpsert) (HostMutationResponse, error) {
+func (s *defaultHostService) CreateHost(ctx context.Context, payload HostUpsert) (HostMutationResponse, error) {
 	if s.repo == nil {
 		return HostMutationResponse{}, fmt.Errorf("host repository is not configured")
 	}
+	id, err := s.resolveCreateHostID(payload)
+	if err != nil {
+		return HostMutationResponse{}, err
+	}
+	payload.ID = id
 	record, err := buildNewHostRecord(payload)
 	if err != nil {
 		return HostMutationResponse{}, err
 	}
-	if err := s.repo.SaveHost(record); err != nil {
+	if err := s.ensureHostNameUnique(record.Name, record.ID); err != nil {
 		return HostMutationResponse{}, err
 	}
-	if payload.InstallViaSSH && s.bootstrap != nil {
-		run, err := s.bootstrap.Install(context.Background(), record.ID, HostInstallRequest{
-			AgentVersion:     record.AgentVersion,
-			SSHCredentialRef: record.SSHCredentialRef,
-		})
-		if err != nil {
-			return HostMutationResponse{}, err
-		}
-		record.InstallRunID = run.RunID
-		record.InstallWorkflowID = run.WorkflowID
+	if err := s.applySSHPassword(ctx, record.ID, payload.SSHPassword, &record.SSHCredentialRef); err != nil {
+		return HostMutationResponse{}, err
+	}
+	if err := s.repo.SaveHost(record); err != nil {
+		return HostMutationResponse{}, err
 	}
 	items, _ := s.ListHosts(context.Background())
 	return HostMutationResponse{
@@ -67,7 +88,7 @@ func (s *defaultHostService) CreateHost(_ context.Context, payload HostUpsert) (
 	}, nil
 }
 
-func (s *defaultHostService) UpdateHost(_ context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error) {
+func (s *defaultHostService) UpdateHost(ctx context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error) {
 	if s.repo == nil {
 		return HostMutationResponse{}, fmt.Errorf("host repository is not configured")
 	}
@@ -83,12 +104,18 @@ func (s *defaultHostService) UpdateHost(_ context.Context, hostID string, payloa
 		return HostMutationResponse{}, err
 	}
 	updated := cloneHostRecord(*current)
-	if trimmed := strings.TrimSpace(payload.Name); trimmed != "" {
-		updated.Name = trimmed
-	}
+	updated.Name = strings.TrimSpace(payload.Name)
 	updated.Address = strings.TrimSpace(payload.Address)
 	updated.SSHUser = strings.TrimSpace(payload.SSHUser)
-	updated.SSHCredentialRef = strings.TrimSpace(payload.SSHCredentialRef)
+	if ref := strings.TrimSpace(payload.SSHCredentialRef); ref != "" {
+		updated.SSHCredentialRef = ref
+	}
+	if err := s.ensureHostNameUnique(updated.Name, updated.ID); err != nil {
+		return HostMutationResponse{}, err
+	}
+	if err := s.applySSHPassword(ctx, updated.ID, payload.SSHPassword, &updated.SSHCredentialRef); err != nil {
+		return HostMutationResponse{}, err
+	}
 	if trimmed := strings.TrimSpace(payload.AgentVersion); trimmed != "" {
 		updated.AgentVersion = trimmed
 	}
@@ -96,28 +123,8 @@ func (s *defaultHostService) UpdateHost(_ context.Context, hostID string, payloa
 		updated.SSHPort = payload.SSHPort
 	}
 	updated.Labels = cloneStringMap(payload.Labels)
-	if payload.InstallViaSSH {
-		if updated.AgentVersion == "" {
-			updated.AgentVersion = "v0.1.0"
-		}
-		updated.Transport = "ssh_bootstrap"
-		updated.Status = "installing"
-		updated.InstallState = "pending_install"
-		updated.ControlMode = "managed"
-	}
 	if err := s.repo.SaveHost(&updated); err != nil {
 		return HostMutationResponse{}, err
-	}
-	if payload.InstallViaSSH && s.bootstrap != nil {
-		run, err := s.bootstrap.Install(context.Background(), updated.ID, HostInstallRequest{
-			AgentVersion:     updated.AgentVersion,
-			SSHCredentialRef: updated.SSHCredentialRef,
-		})
-		if err != nil {
-			return HostMutationResponse{}, err
-		}
-		updated.InstallRunID = run.RunID
-		updated.InstallWorkflowID = run.WorkflowID
 	}
 	items, _ := s.ListHosts(context.Background())
 	return HostMutationResponse{
@@ -144,14 +151,14 @@ func (s *defaultHostService) InstallHost(ctx context.Context, hostID string, pay
 	if ref := strings.TrimSpace(payload.SSHCredentialRef); ref != "" {
 		updated.SSHCredentialRef = ref
 	}
+	if err := s.applySSHPassword(ctx, updated.ID, payload.SSHPassword, &updated.SSHCredentialRef); err != nil {
+		return HostMutationResponse{}, err
+	}
 	if version := strings.TrimSpace(payload.AgentVersion); version != "" {
 		updated.AgentVersion = version
 	}
 	if updated.AgentVersion == "" {
 		updated.AgentVersion = "v0.1.0"
-	}
-	if strings.TrimSpace(updated.SSHCredentialRef) == "" {
-		return HostMutationResponse{}, fmt.Errorf("ssh credential ref is required")
 	}
 	updated.Transport = "ssh_bootstrap"
 	updated.Status = "installing"
@@ -195,10 +202,6 @@ func (s *defaultHostService) TestHostSSH(ctx context.Context, hostID string, pay
 	host, err := s.repo.GetHost(targetID)
 	if err != nil {
 		return HostSSHTestResponse{}, err
-	}
-	ref := strings.TrimSpace(firstNonEmpty(payload.SSHCredentialRef, host.SSHCredentialRef))
-	if ref == "" {
-		return HostSSHTestResponse{}, fmt.Errorf("ssh credential ref is required")
 	}
 	if strings.TrimSpace(host.Address) == "" {
 		return HostSSHTestResponse{}, fmt.Errorf("host address is required")
@@ -250,6 +253,77 @@ func (s *defaultHostService) SelectHost(_ context.Context, hostID string) (State
 	return s.builder.BuildStateSnapshot(active), nil
 }
 
+func (s *defaultHostService) applySSHPassword(ctx context.Context, hostID, password string, credentialRef *string) error {
+	if strings.TrimSpace(password) == "" {
+		return nil
+	}
+	if s.sshPasswordStore == nil {
+		return fmt.Errorf("ssh password store is not configured")
+	}
+	ref, err := s.sshPasswordStore.StoreHostSSHPassword(ctx, hostID, password)
+	if err != nil {
+		return err
+	}
+	*credentialRef = ref
+	return nil
+}
+
+func (s *defaultHostService) resolveCreateHostID(payload HostUpsert) (string, error) {
+	if id := strings.TrimSpace(payload.ID); id != "" {
+		return id, nil
+	}
+	if s.repo == nil {
+		return "", fmt.Errorf("host repository is not configured")
+	}
+	items, err := s.repo.ListHosts()
+	if err != nil {
+		return "", err
+	}
+	existing := make(map[string]bool, len(items)+1)
+	existing[serverLocalHostID] = true
+	for _, item := range items {
+		if id := strings.TrimSpace(item.ID); id != "" {
+			existing[id] = true
+		}
+	}
+	base := safeSecretPathSegment(firstNonEmpty(payload.Name, payload.Address, payload.SSHUser, "host"))
+	if base == "" {
+		base = "host"
+	}
+	seed := fmt.Sprintf("%s|%s|%s|%d", strings.TrimSpace(payload.Name), strings.TrimSpace(payload.Address), strings.TrimSpace(payload.SSHUser), payload.SSHPort)
+	sum := sha256.Sum256([]byte(seed))
+	prefix := "host-" + base + "-" + hex.EncodeToString(sum[:4])
+	candidate := prefix
+	for index := 2; existing[candidate]; index++ {
+		candidate = fmt.Sprintf("%s-%d", prefix, index)
+	}
+	return candidate, nil
+}
+
+func (s *defaultHostService) ensureHostNameUnique(name, excludeID string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil
+	}
+	if s.repo == nil {
+		return fmt.Errorf("host repository is not configured")
+	}
+	items, err := s.repo.ListHosts()
+	if err != nil {
+		return err
+	}
+	excludeID = strings.TrimSpace(excludeID)
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) == excludeID {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Name), trimmed) {
+			return fmt.Errorf("host name must be unique: %s", trimmed)
+		}
+	}
+	return nil
+}
+
 func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 	id := strings.TrimSpace(payload.ID)
 	if id == "" {
@@ -260,11 +334,11 @@ func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 	}
 	record := &store.HostRecord{
 		ID:               id,
-		Name:             strings.TrimSpace(firstNonEmpty(payload.Name, id)),
+		Name:             strings.TrimSpace(payload.Name),
 		Kind:             "inventory",
 		Address:          strings.TrimSpace(payload.Address),
 		Status:           "offline",
-		Transport:        "inventory",
+		Transport:        "manual",
 		Labels:           cloneStringMap(payload.Labels),
 		SSHUser:          strings.TrimSpace(payload.SSHUser),
 		SSHPort:          payload.SSHPort,
@@ -276,16 +350,6 @@ func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 	}
 	if record.SSHPort == 0 {
 		record.SSHPort = 22
-	}
-	if payload.InstallViaSSH {
-		if record.AgentVersion == "" {
-			record.AgentVersion = "v0.1.0"
-		}
-		record.Transport = "ssh_bootstrap"
-		record.Status = "installing"
-		record.InstallState = "pending_install"
-		record.ControlMode = "managed"
-		record.LastHeartbeat = ""
 	}
 	return record, nil
 }

@@ -1,0 +1,114 @@
+[
+  {
+    "id": "UMG01_simple_no_plan",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Read the current summary for synthetic_resource_a and answer directly.",
+    "expected": {
+      "expectedTaskDepth": ["simple_read"],
+      "expectedRequiredGates": ["requiresPlan:false", "requiresEvidence:false", "requiresValidation:false"],
+      "mustNotHavePlan": true,
+      "maxToolCalls": 0
+    }
+  },
+  {
+    "id": "UMG02_complex_progress_visible",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Investigate synthetic_resource_a and synthetic_resource_b, compare evidence, and report progress while waiting on synthetic_component approval.",
+    "expected": {
+      "expectedTaskDepth": ["investigation"],
+      "expectedRequiredGates": ["requiresPlan:true", "requiresEvidence:true", "requiresValidation:true"],
+      "mustHavePlan": true,
+      "expectedApprovals": ["synthetic_component"],
+      "expectedEvidence": ["synthetic_resource_a", "synthetic_resource_b"]
+    }
+  },
+  {
+    "id": "UMG03_resume_continue_next_step",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Resume work on synthetic_artifact and continue the next pending step.",
+    "expected": {
+      "expectedResumeAction": ["continue_next_step"],
+      "expectedTaskDepth": ["multi_step"],
+      "mustNotInclude": ["recap_only"]
+    }
+  },
+  {
+    "id": "UMG04_manager_synthesis_no_worker_dump",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Combine two synthetic_component worker outputs into one final synthesis without dumping raw worker text.",
+    "expected": {
+      "expectedManagerSynthesis": ["require_manager_synthesis"],
+      "mustNotInclude": ["raw_worker_dump"]
+    }
+  },
+  {
+    "id": "UMG05_reasoning_fallback_provider",
+    "category": "ux_model_generality",
+    "priority": "P1",
+    "input": "Use prompt fallback depth policy for synthetic_endpoint when native reasoning is unavailable.",
+    "expected": {
+      "expectedTaskDepth": ["investigation"],
+      "expectedReasoningFallback": ["prompt_policy"],
+      "expectedRequiredGates": ["requiresEvidence:true", "requiresValidation:true"]
+    }
+  },
+  {
+    "id": "UMG06_coverage_blocks_success_final",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Do not final-success synthetic_resource_b until required evidence coverage is complete.",
+    "expected": {
+      "expectedCoverageAction": ["continue_gathering", "verification"],
+      "expectedTaskDepth": ["investigation"],
+      "mustMentionEvidenceLimits": true
+    }
+  },
+  {
+    "id": "UMG07_repeated_failure_switch_path",
+    "category": "ux_model_generality",
+    "priority": "P1",
+    "input": "When repeated reads of synthetic_endpoint fail with the same signature, switch path and explain the reason.",
+    "expected": {
+      "expectedFailureAction": ["switch_path"],
+      "expectedTaskDepth": ["investigation"],
+      "mustInclude": ["switch_path"]
+    }
+  },
+  {
+    "id": "UMG08_generic_resource_type_matrix",
+    "category": "ux_model_generality",
+    "priority": "P1",
+    "input": "Run the same generic evidence gate across synthetic_resource_a, synthetic_resource_b, synthetic_component, synthetic_endpoint, and synthetic_artifact.",
+    "expected": {
+      "expectedTaskDepth": ["multi_step"],
+      "expectedRequiredGates": ["requiresPlan:true", "requiresEvidence:true"],
+      "expectedResourceIdSource": ["fixture"]
+    }
+  },
+  {
+    "id": "UMG09_domain_terms_not_core_rules",
+    "category": "ux_model_generality",
+    "priority": "P0",
+    "input": "Classify genericity findings for synthetic_component metadata and fixture examples without adding core rules.",
+    "expected": {
+      "expectedGenericityFindings": ["allowed_plugin_metadata", "allowed_test_fixture", "blocked_core_rule:0"],
+      "expectedResourceIdSource": ["plugin_metadata"]
+    }
+  },
+  {
+    "id": "UMG10_parameterized_permission_blocker",
+    "category": "ux_model_generality",
+    "priority": "P1",
+    "input": "For synthetic_endpoint mutation, report a permission blocker when approval is missing and keep the final answer blocked.",
+    "expected": {
+      "expectedTaskDepth": ["operations"],
+      "expectedApprovalScope": ["pending"],
+      "expectedCoverageAction": ["blocker_final_allowed"],
+      "expectedRequiredGates": ["requiresPlan:true", "requiresEvidence:true", "requiresValidation:true"]
+    }
+  }
+]

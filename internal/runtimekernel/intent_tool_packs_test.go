@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,18 +44,42 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 		{
 			name:      "chinese rca",
 			input:     "分析 checkout 服务最近 30 分钟延迟升高的根因",
-			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context"},
-			forbidden: []string{"coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
+			forbidden: []string{"coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "named service abnormality",
 			input:     "分析 aiops-host-agent 异常情况",
-			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context"},
-			forbidden: []string{"coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
+			forbidden: []string{"coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot cpu chart",
 			input:     "查看 aiops-host-agent 的 cpu 图表",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
+			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:      "coroot chinese cpu usage",
+			input:     "看下 mservice CPU占用",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
+			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:      "coroot chinese resource usage",
+			input:     "看下 mservice 的资源占用和内存使用率",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
+			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:      "coroot chinese service resources",
+			input:     "看下 mservice 的资源",
+			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
+			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:      "coroot chinese service observation lets model decide charts",
+			input:     "看下 mservice 的情况",
 			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
 			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
@@ -109,7 +134,7 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 		{
 			name:      "diagnosis does not enable ops manuals",
 			input:     "排查mservice异常问题",
-			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context"},
+			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
 			forbidden: []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"},
 		},
 		{
@@ -122,6 +147,12 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			name:      "mcp resource",
 			input:     "读取 MCP resource ops://manuals/redis",
 			wantTools: []string{"list_mcp_resources", "read_mcp_resource"},
+			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact"},
+		},
+		{
+			name:      "runtime model config",
+			input:     "Tell me current model name only. Do not mention any api key.",
+			wantTools: []string{"get_current_model_config"},
 			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact"},
 		},
 	}
@@ -145,6 +176,7 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 				Mode:        ModeChat,
 				TurnID:      "turn-intent-" + tc.name,
 				Input:       tc.input,
+				Metadata:    map[string]string{"taskDepth": "simple_read"},
 			})
 			if err != nil {
 				t.Fatalf("RunTurn failed: %v", err)
@@ -170,7 +202,65 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 	}
 }
 
-func TestRunTurn_EnablesMCPResourcePackAfterToolSearchHit(t *testing.T) {
+func TestRunTurn_KeepsExecCommandVisibleForSelectedHostResourceInspection(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("ok", nil)}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range []tooling.Tool{
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:       "exec_command",
+				Layer:      tooling.ToolLayerCore,
+				AlwaysLoad: true,
+				RiskLevel:  tooling.ToolRiskHigh,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind:  "host_fact",
+					ResourceTypes:   []string{"host", "system"},
+					OperationKinds:  []string{"inspect", "read", "execute"},
+					PermissionScope: "argument_scoped",
+				},
+			},
+			DestructiveFunc: func(_ json.RawMessage) bool {
+				return true
+			},
+		},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "grep", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_mcp_resource", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "web_search", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskMedium}},
+	} {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register(%s) failed: %v", toolDef.Metadata().Name, err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-selected-host-resource-inspection",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-selected-host-resource-inspection",
+		Input:       "帮我看下主机的CPU情况",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 1 {
+		t.Fatalf("compiler contexts = %d, want 1", len(compiler.contexts))
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	if !containsString(names, "exec_command") {
+		t.Fatalf("tools = %v, want exec_command visible for direct selected-host resource inspection", names)
+	}
+}
+
+func TestRunTurn_EnablesMCPResourcePackAfterToolSearchSelect(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{
@@ -179,7 +269,17 @@ func TestRunTurn_EnablesMCPResourcePackAfterToolSearchHit(t *testing.T) {
 					Type: "function",
 					Function: schema.FunctionCall{
 						Name:      "tool_search",
-						Arguments: `{"query":"redis resource"}`,
+						Arguments: `{"mode":"search","query":"synthetic resource"}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-tool-select-resource",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "tool_search",
+						Arguments: `{"mode":"select","packs":["mcp_resource"],"reason":"need bounded resource evidence"}`,
 					},
 				},
 			}),
@@ -193,8 +293,15 @@ func TestRunTurn_EnablesMCPResourcePackAfterToolSearchHit(t *testing.T) {
 			ReadOnlyFunc: func(json.RawMessage) bool {
 				return true
 			},
-			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
-				return tooling.ToolResult{Content: `{"matches":[{"kind":"pack","name":"mcp_resource","tools":["list_mcp_resources","read_mcp_resource"]}]}`}, nil
+			ExecuteFunc: func(_ context.Context, raw json.RawMessage) (tooling.ToolResult, error) {
+				var req struct {
+					Mode string `json:"mode"`
+				}
+				_ = json.Unmarshal(raw, &req)
+				if req.Mode == "select" {
+					return tooling.ToolResult{Content: `{"mode":"select","selection":{"loadedPacks":["mcp_resource"],"reason":"need bounded resource evidence"}}`}, nil
+				}
+				return tooling.ToolResult{Content: `{"mode":"search","matches":[{"kind":"pack","name":"mcp_resource","pack":"mcp_resource","tools":["list_mcp_resources","read_mcp_resource"],"requiresSelect":true}]}`}, nil
 			},
 		},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
@@ -213,7 +320,7 @@ func TestRunTurn_EnablesMCPResourcePackAfterToolSearchHit(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		TurnID:      "turn-tool-search-resource",
-		Input:       "查一下 redis 相关资源",
+		Input:       "查一下 synthetic 相关资源",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
@@ -221,22 +328,129 @@ func TestRunTurn_EnablesMCPResourcePackAfterToolSearchHit(t *testing.T) {
 	if result.Status != "completed" {
 		t.Fatalf("result status = %q, want completed", result.Status)
 	}
-	if len(compiler.contexts) != 2 {
-		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	if len(compiler.contexts) != 3 {
+		t.Fatalf("compiler contexts = %d, want 3", len(compiler.contexts))
 	}
 	first := toolNames(compiler.contexts[0].AssembledTools)
 	if !containsString(first, "tool_search") || containsString(first, "list_mcp_resources") || containsString(first, "read_mcp_resource") {
 		t.Fatalf("first iteration tools = %v, want tool_search only for resource discovery", first)
 	}
 	second := toolNames(compiler.contexts[1].AssembledTools)
+	if containsString(second, "list_mcp_resources") || containsString(second, "read_mcp_resource") {
+		t.Fatalf("second iteration tools = %v, search alone should not enable resource tools", second)
+	}
+	third := toolNames(compiler.contexts[2].AssembledTools)
 	for _, want := range []string{"list_mcp_resources", "read_mcp_resource"} {
-		if !containsString(second, want) {
-			t.Fatalf("second iteration tools = %v, want %s after tool_search pack hit", second, want)
+		if !containsString(third, want) {
+			t.Fatalf("third iteration tools = %v, want %s after tool_search select", third, want)
+		}
+	}
+	if !containsString(compiler.contexts[2].ToolDelta.NewlyAvailablePacks, "mcp_resource") {
+		t.Fatalf("third iteration tool delta packs = %v, want mcp_resource", compiler.contexts[2].ToolDelta.NewlyAvailablePacks)
+	}
+}
+
+func TestIntentPackDoesNotRequireCoreNameMapping(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("ok", nil)}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range syntheticIntentPackRuntimeTestTools() {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-synthetic-intent",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-synthetic-intent",
+		Input:       "inspect synthetic metric latency evidence",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 1 {
+		t.Fatalf("compiler contexts = %d, want 1", len(compiler.contexts))
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	if !containsString(names, "synthetic.metrics.read") {
+		t.Fatalf("tools = %v, want synthetic.metrics.read from metadata trigger", names)
+	}
+	for _, forbidden := range []string{"synthetic.logs.search", "synthetic.hidden.write"} {
+		if containsString(names, forbidden) {
+			t.Fatalf("tools = %v, should not include %s", names, forbidden)
 		}
 	}
 }
 
-func TestRunTurn_EnablesOnlyTopToolSearchPackHit(t *testing.T) {
+func TestContinuationInheritsPackFromRecentToolMetadata(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("continue", nil)}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range syntheticIntentPackRuntimeTestTools() {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	now := time.Now()
+	session := kernel.sessions.GetOrCreate("sess-synthetic-continuation", SessionTypeHost, ModeChat)
+	session.TurnHistory = []TurnSnapshot{{
+		ID:          "turn-synthetic-before",
+		SessionID:   session.ID,
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		Lifecycle:   TurnLifecycleCompleted,
+		ResumeState: TurnResumeStateNone,
+		Iteration:   1,
+		StartedAt:   now.Add(-time.Minute),
+		UpdatedAt:   now.Add(-time.Minute),
+		CompletedAt: &now,
+		AgentItems: []agentstate.TurnItem{
+			newAgentItem(
+				"turn-synthetic-before-tool-call",
+				agentstate.TurnItemTypeToolCall,
+				agentstate.ItemStatusCompleted,
+				"synthetic.metrics.read",
+				map[string]string{"toolName": "synthetic.metrics.read"},
+			),
+		},
+	}}
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   session.ID,
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-synthetic-continuation",
+		Input:       "继续",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 1 {
+		t.Fatalf("compiler contexts = %d, want 1", len(compiler.contexts))
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	if !containsString(names, "synthetic.metrics.read") {
+		t.Fatalf("tools = %v, want continuation to inherit synthetic.metrics.read pack", names)
+	}
+	if containsString(names, "synthetic.logs.search") {
+		t.Fatalf("tools = %v, continuation should not broaden into logs pack", names)
+	}
+}
+
+func TestRunTurn_ToolSearchSearchDoesNotAutoEnableTopPack(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{
@@ -249,7 +463,7 @@ func TestRunTurn_EnablesOnlyTopToolSearchPackHit(t *testing.T) {
 					},
 				},
 			}),
-			schema.AssistantMessage("coroot logs available", nil),
+			schema.AssistantMessage("coroot search results only", nil),
 		},
 	}
 	registry := tooling.NewRegistry()
@@ -275,11 +489,11 @@ func TestRunTurn_EnablesOnlyTopToolSearchPackHit(t *testing.T) {
 	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
 
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-tool-search-coroot-one-pack",
+		SessionID:   "sess-tool-search-no-auto-pack",
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
-		TurnID:      "turn-tool-search-coroot-one-pack",
-		Input:       "查一下 Coroot logs 能力",
+		TurnID:      "turn-tool-search-no-auto-pack",
+		Input:       "查一下 synthetic log 能力",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
@@ -291,11 +505,10 @@ func TestRunTurn_EnablesOnlyTopToolSearchPackHit(t *testing.T) {
 		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
 	}
 	second := toolNames(compiler.contexts[1].AssembledTools)
-	if !containsString(second, "coroot.application_logs") {
-		t.Fatalf("second iteration tools = %v, want coroot.application_logs after top pack hit", second)
-	}
-	if containsString(second, "coroot.application_traces") {
-		t.Fatalf("second iteration tools = %v, should not enable non-top tool_search pack hit", second)
+	for _, forbidden := range []string{"coroot.application_logs", "coroot.application_traces"} {
+		if containsString(second, forbidden) {
+			t.Fatalf("second iteration tools = %v, search result should not enable %s without select", second, forbidden)
+		}
 	}
 }
 
@@ -403,8 +616,67 @@ func TestRunTurn_GenericContinuationDoesNotEnableCorootRCAPack(t *testing.T) {
 	}
 }
 
-func intentPackRuntimeTestTools() []tooling.Tool {
+func syntheticIntentPackRuntimeTestTools() []tooling.Tool {
 	return []tooling.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "synthetic.metrics.read",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_metrics",
+			DeferByDefault: true,
+			Triggers:       []string{"metric latency"},
+			RiskLevel:      tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"metric"},
+				OperationKinds: []string{"inspect", "read"},
+			},
+		}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "synthetic.logs.search",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_logs",
+			DeferByDefault: true,
+			Triggers:       []string{"log stream"},
+			RiskLevel:      tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "search",
+				ResourceTypes:  []string{"log"},
+				OperationKinds: []string{"search"},
+			},
+		}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "synthetic.resource.list",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_resource",
+			DeferByDefault: true,
+			Triggers:       []string{"resource inventory"},
+			RiskLevel:      tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"resource"},
+				OperationKinds: []string{"list"},
+			},
+		}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "synthetic.hidden.write",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_hidden",
+			DeferByDefault: true,
+			Mutating:       true,
+			RiskLevel:      tooling.ToolRiskHigh,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				HiddenFromDiscovery: true,
+				CapabilityKind:      "write",
+				ResourceTypes:       []string{"resource"},
+				OperationKinds:      []string{"write"},
+			},
+		}},
+	}
+}
+
+func intentPackRuntimeTestTools() []tooling.Tool {
+	tools := []tooling.Tool{
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.list_services", Layer: tooling.ToolLayerCore}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.collect_rca_context", Layer: tooling.ToolLayerDeferred, Pack: "coroot_rca", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.service_metrics", Layer: tooling.ToolLayerDeferred, Pack: "coroot_metrics", DeferByDefault: true}},
@@ -437,8 +709,63 @@ func intentPackRuntimeTestTools() []tooling.Tool {
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "opsgraph.business_impact", Layer: tooling.ToolLayerDeferred, Pack: "opsgraph", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_mcp_resource", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "get_current_model_config",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "runtime_config",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Triggers:       []string{"current model", "model name", "model config", "模型配置", "当前模型"},
+			SearchHint:     "current model provider config context size reasoning effort",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "runtime_config",
+				ResourceTypes:  []string{"model", "runtime", "configuration"},
+				OperationKinds: []string{"read", "inspect"},
+				RequiresSelect: true,
+			},
+		}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "search_ops_manuals", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "resolve_ops_manual_params", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "run_ops_manual_preflight", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},
 	}
+	return withIntentRuntimeMetadata(tools)
+}
+
+func withIntentRuntimeMetadata(tools []tooling.Tool) []tooling.Tool {
+	triggersByPack := map[string][]string{
+		"coroot_rca":           {"rca", "root cause", "根因", "异常", "warning", "告警", "延迟升高", "error rate", "排查", "诊断", "故障", "问题", "diagnose", "diagnosis", "outage", "incident analysis"},
+		"coroot_metrics":       {"metric", "metrics", "指标", "图表", "chart", "timeseries", "趋势", "时序", "slo status", "service metrics", "latency", "error rate", "延迟升高", "异常", "cpu usage", "cpu utilization", "CPU占用", "CPU 使用率", "memory usage", "memory utilization", "内存使用", "内存占用", "resource usage", "resource utilization", "资源", "资源占用", "使用率", "情况", "状态", "健康"},
+		"coroot_rca_reference": {"coroot rca report", "native rca", "rca reference", "root cause report", "coroot 根因报告"},
+		"coroot_topology":      {"topology", "service topology", "dependency graph", "dependencies", "拓扑图", "依赖图", "服务拓扑"},
+		"coroot_nodes":         {"node", "nodes", "host", "hosts", "infrastructure", "infra", "主机", "节点", "机器", "基础设施"},
+		"coroot_traces":        {"trace", "traces", "tracing", "span", "spans", "链路", "调用链", "trace id"},
+		"coroot_deployments":   {"deployment", "deployments", "deploy", "release", "rollout", "rollback", "发布", "部署", "变更"},
+		"coroot_risks":         {"risk", "risks", "风险", "隐患"},
+		"coroot_logs":          {"log", "logs", "logging", "日志", "错误日志"},
+		"coroot_profiling":     {"profile", "profiling", "flamegraph", "cpu profile", "memory profile", "pprof", "火焰图", "性能剖析"},
+		"coroot_incident":      {"incident", "incidents", "alert", "alerts", "告警", "事件", "timeline"},
+		"coroot_dashboard":     {"dashboard", "dashboards", "panel", "coroot panel", "仪表盘", "看板", "面板"},
+		"coroot_config_read":   {"integration", "integrations", "inspection", "inspections", "configuration", "config", "category", "custom application", "集成", "巡检", "配置", "应用分类", "自定义应用"},
+		"coroot_admin_read":    {"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"},
+		"opsgraph":             {"业务影响", "影响哪些业务", "业务能力", "租户", "依赖关系", "服务图谱", "runbook 关联", "business impact", "tenant", "dependency graph"},
+		"mcp_resource":         {"mcp resource", "mcp_resource", "resource uri", "mcp://"},
+		"ops_manual_flow":      {"runbook", "manual", "repair", "fix", "修复", "手册", "运维手册"},
+	}
+	for _, toolDef := range tools {
+		staticTool, ok := toolDef.(*tooling.StaticTool)
+		if !ok {
+			continue
+		}
+		triggers := triggersByPack[staticTool.Meta.Pack]
+		if len(triggers) == 0 {
+			continue
+		}
+		staticTool.Meta.Triggers = append([]string(nil), triggers...)
+		staticTool.Meta.SearchHint = strings.Join(triggers, " ")
+		staticTool.Meta.RiskLevel = tooling.ToolRiskLow
+		staticTool.Meta.Discovery.CapabilityKind = "read"
+		staticTool.Meta.Discovery.ResourceTypes = []string{"synthetic_observation"}
+		staticTool.Meta.Discovery.OperationKinds = []string{"read"}
+	}
+	return tools
 }

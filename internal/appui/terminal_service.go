@@ -39,16 +39,13 @@ func NewTerminalServiceWithCredentialResolver(manager *terminal.Manager, resolve
 	return newTerminalService(manager, resolver, hosts...)
 }
 
-func newTerminalService(manager *terminal.Manager, resolver CredentialResolver, hosts ...HostRepository) TerminalService {
+func newTerminalService(manager *terminal.Manager, _ CredentialResolver, hosts ...HostRepository) TerminalService {
 	if manager == nil {
 		manager = terminal.NewManager()
 	}
 	var hostRepo HostRepository
 	if len(hosts) > 0 {
 		hostRepo = hosts[0]
-	}
-	if hostRepo != nil && resolver != nil {
-		manager.SetCommandFactory(NewHostSSHCommandFactory(hostRepo, resolver))
 	}
 	return &defaultTerminalService{manager: manager, hosts: hostRepo}
 }
@@ -145,9 +142,6 @@ func (s *defaultTerminalService) validateTerminalHost(hostID string) (string, er
 	}
 	if !host.TerminalCapable && !host.Executable {
 		return "", fmt.Errorf("terminal is not enabled for host %s", targetID)
-	}
-	if strings.TrimSpace(host.SSHCredentialRef) == "" {
-		return "", fmt.Errorf("ssh credential ref is required for host %s", targetID)
 	}
 	return targetID, nil
 }

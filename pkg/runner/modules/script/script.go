@@ -100,6 +100,7 @@ func (m *Module) Apply(ctx context.Context, req modules.Request) (modules.Result
 			result.Output["vars"] = exports
 		}
 	}
+	modules.AttachNodeResult(result.Output, stdoutText)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, fmt.Errorf("script.%s failed: %w", m.language, ctxErr)

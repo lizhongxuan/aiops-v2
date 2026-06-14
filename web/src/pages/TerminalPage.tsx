@@ -55,7 +55,7 @@ export function TerminalPage() {
     if (terminalElementRef.current) {
       terminal.open(terminalElementRef.current);
       fitAddon.fit();
-      terminal.write("AIOps terminal initializing...\r\n");
+      terminal.write("gRPC host client terminal initializing...\r\n");
     }
     const disposable = terminal.onData((data) => {
       const socket = socketRef.current;
@@ -131,12 +131,12 @@ export function TerminalPage() {
   }
 
   return (
-    <SettingsPageFrame title={`Terminal · ${hostId || "host"}`} description="基于 xterm.js 的主机终端，沿用 terminal session + websocket 协议。">
+    <SettingsPageFrame title={`Terminal · ${hostId || "host"}`} description="gRPC 主机客户端终端，通过 terminal session + websocket 连接主机。">
       <Card className="rounded-lg bg-white">
         <CardHeader className="flex flex-row items-start justify-between gap-3">
           <div>
             <CardTitle>{hostId}</CardTitle>
-            <CardDescription>{session?.shell || "shell"} · {session?.cwd || "~"}</CardDescription>
+            <CardDescription>gRPC 主机客户端 · terminal session + websocket · {session?.shell || "shell"} · {session?.cwd || "~"}</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <ToneBadge tone={status === "ready" || status === "connected" ? "success" : status === "error" ? "danger" : "warning"}>{status}</ToneBadge>

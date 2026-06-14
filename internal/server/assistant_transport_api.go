@@ -52,6 +52,11 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 	encoder := newAssistantTransportStreamEncoder(w)
 	projector := appui.NewTransportProjector()
 	handler := appui.NewTransportCommandHandler(s.ui.ChatService(), s.ui.ApprovalService(), s.ui.ChoiceService(), s.ui.MCPService())
+	if provider, ok := s.ui.(interface {
+		HostOpsService() appui.HostOpsService
+	}); ok {
+		handler.WithHostOpsService(provider.HostOpsService())
+	}
 
 	state := assistantTransportInitialState(req)
 	prev := state
@@ -673,6 +678,37 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 			MCPPin: &appui.TransportMCPPinCommand{
 				SurfaceID: strings.TrimSpace(command.SurfaceID),
 				Pinned:    command.Pinned,
+			},
+		}, nil
+	case *assistantTransportHostPlanAcceptCommand:
+		return appui.TransportCommand{
+			Type: appui.TransportCommandTypeHostPlanAccept,
+			HostPlanAccept: &appui.TransportHostPlanAcceptCommand{
+				MissionID: strings.TrimSpace(command.MissionID),
+				PlanID:    strings.TrimSpace(command.PlanID),
+			},
+		}, nil
+	case *assistantTransportHostPlanReviseCommand:
+		return appui.TransportCommand{
+			Type: appui.TransportCommandTypeHostPlanRevise,
+			HostPlanRevise: &appui.TransportHostPlanReviseCommand{
+				MissionID:   strings.TrimSpace(command.MissionID),
+				Instruction: strings.TrimSpace(command.Instruction),
+			},
+		}, nil
+	case *assistantTransportChildAgentMessageCommand:
+		return appui.TransportCommand{
+			Type: appui.TransportCommandTypeChildAgentMessage,
+			ChildAgentMessage: &appui.TransportChildAgentMessageCommand{
+				ChildAgentID: strings.TrimSpace(command.ChildAgentID),
+				Content:      strings.TrimSpace(command.Content),
+			},
+		}, nil
+	case *assistantTransportChildAgentStopCommand:
+		return appui.TransportCommand{
+			Type: appui.TransportCommandTypeChildAgentStop,
+			ChildAgentStop: &appui.TransportChildAgentStopCommand{
+				ChildAgentID: strings.TrimSpace(command.ChildAgentID),
 			},
 		}, nil
 	default:

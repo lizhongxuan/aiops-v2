@@ -10,3 +10,10 @@ type ToolResultSpillRepository interface {
 	SaveToolResultSpill(spill *tooling.ResultSpill) error
 	DeleteToolResultSpill(id string) error
 }
+
+// ContextArtifactRepository persists generic context artifacts and their raw
+// bytes. Tool spill storage remains a separate compatibility path.
+type ContextArtifactRepository interface {
+	GetContextArtifact(id string) (ContextArtifact, []byte, error)
+	SaveContextArtifact(write ContextArtifactWrite) (ContextArtifact, error)
+}

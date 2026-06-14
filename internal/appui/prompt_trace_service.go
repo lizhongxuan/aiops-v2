@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/modeltrace"
 )
 
@@ -32,32 +33,47 @@ type PromptTraceListResponse struct {
 }
 
 type PromptTraceItem struct {
-	ID                string            `json:"id"`
-	RelativePath      string            `json:"relativePath"`
-	JSONPath          string            `json:"jsonPath"`
-	MarkdownPath      string            `json:"markdownPath,omitempty"`
-	DiffPath          string            `json:"diffPath,omitempty"`
-	Kind              string            `json:"kind,omitempty"`
-	SessionID         string            `json:"sessionId,omitempty"`
-	TurnID            string            `json:"turnId,omitempty"`
-	Iteration         int               `json:"iteration"`
-	CaseID            string            `json:"caseId,omitempty"`
-	CreatedAt         string            `json:"createdAt,omitempty"`
-	ModifiedAt        string            `json:"modifiedAt,omitempty"`
-	VisibleTools      []string          `json:"visibleTools,omitempty"`
-	MessageCount      int               `json:"messageCount,omitempty"`
-	LLMRequestCount   int               `json:"llmRequestCount,omitempty"`
-	Usage             *PromptTraceUsage `json:"usage,omitempty"`
-	AverageDurationMs int64             `json:"averageDurationMs,omitempty"`
-	UserPromptPreview string            `json:"userPromptPreview,omitempty"`
-	PromptFingerprint map[string]string `json:"promptFingerprint,omitempty"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
+	ID                string                         `json:"id"`
+	RelativePath      string                         `json:"relativePath"`
+	JSONPath          string                         `json:"jsonPath"`
+	MarkdownPath      string                         `json:"markdownPath,omitempty"`
+	DiffPath          string                         `json:"diffPath,omitempty"`
+	Kind              string                         `json:"kind,omitempty"`
+	SessionID         string                         `json:"sessionId,omitempty"`
+	TurnID            string                         `json:"turnId,omitempty"`
+	Iteration         int                            `json:"iteration"`
+	CaseID            string                         `json:"caseId,omitempty"`
+	CreatedAt         string                         `json:"createdAt,omitempty"`
+	ModifiedAt        string                         `json:"modifiedAt,omitempty"`
+	VisibleTools      []string                       `json:"visibleTools,omitempty"`
+	MessageCount      int                            `json:"messageCount,omitempty"`
+	LLMRequestCount   int                            `json:"llmRequestCount,omitempty"`
+	Usage             *PromptTraceUsage              `json:"usage,omitempty"`
+	AverageDurationMs int64                          `json:"averageDurationMs,omitempty"`
+	UserPromptPreview string                         `json:"userPromptPreview,omitempty"`
+	ToolSurface       *PromptTraceToolSurfaceSummary `json:"toolSurface,omitempty"`
+	PromptFingerprint map[string]string              `json:"promptFingerprint,omitempty"`
+	Metadata          map[string]string              `json:"metadata,omitempty"`
 }
 
 type PromptTraceUsage struct {
 	PromptTokens     int `json:"promptTokens,omitempty"`
 	CompletionTokens int `json:"completionTokens,omitempty"`
 	TotalTokens      int `json:"totalTokens,omitempty"`
+}
+
+type PromptTraceToolSurfaceSummary struct {
+	InitialToolCount     int               `json:"initialToolCount,omitempty"`
+	BaseRegistryCount    int               `json:"baseRegistryCount,omitempty"`
+	DeferredFamilyCount  int               `json:"deferredFamilyCount,omitempty"`
+	LoadedToolCount      int               `json:"loadedToolCount,omitempty"`
+	LoadedPackCount      int               `json:"loadedPackCount,omitempty"`
+	FilteredToolCount    int               `json:"filteredToolCount,omitempty"`
+	ToolSearchEventCount int               `json:"toolSearchEventCount,omitempty"`
+	SelectedToolCount    int               `json:"selectedToolCount,omitempty"`
+	RejectedToolCount    int               `json:"rejectedToolCount,omitempty"`
+	MCPHealth            map[string]string `json:"mcpHealth,omitempty"`
+	FilteredReasons      map[string]string `json:"filteredReasons,omitempty"`
 }
 
 type PromptTraceFileRequest struct {
@@ -109,6 +125,36 @@ type promptTraceLLMRequestPayload struct {
 	LatencyMSSnake  float64                 `json:"latency_ms"`
 	ElapsedMs       float64                 `json:"elapsedMs"`
 	ElapsedMSSnake  float64                 `json:"elapsed_ms"`
+}
+
+type promptTraceToolSurfacePayload struct {
+	InitialTools        []string                        `json:"initialTools"`
+	BaseRegistryCount   int                             `json:"baseRegistryCount"`
+	DeferredFamilies    []promptTraceDeferredFamily     `json:"deferredFamilies"`
+	LoadedTools         []string                        `json:"loadedTools"`
+	LoadedPacks         []string                        `json:"loadedPacks"`
+	FilteredTools       []promptTraceFilteredTool       `json:"filteredTools"`
+	MCPHealth           map[string]string               `json:"mcpHealth"`
+	ToolSearchEvents    []promptTraceToolSearchEvent    `json:"toolSearchEvents"`
+	SelectedTools       []string                        `json:"selectedTools"`
+	RejectedToolReasons []promptTraceRejectedToolReason `json:"rejectedToolReasons"`
+}
+
+type promptTraceDeferredFamily struct {
+	Pack string `json:"pack"`
+}
+
+type promptTraceFilteredTool struct {
+	ToolName string `json:"toolName"`
+	Reason   string `json:"reason"`
+}
+
+type promptTraceToolSearchEvent struct {
+	Mode string `json:"mode"`
+}
+
+type promptTraceRejectedToolReason struct {
+	ToolName string `json:"toolName"`
 }
 
 func NewPromptTraceService(rootDir string) PromptTraceService {
@@ -243,6 +289,7 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		PromptFingerprint  map[string]string              `json:"promptFingerprint"`
 		CaseID             string                         `json:"caseId"`
 		Metadata           map[string]string              `json:"metadata"`
+		ToolSurfaceTrace   promptTraceToolSurfacePayload  `json:"toolSurfaceTrace"`
 		ModelInput         []promptTraceMessage           `json:"modelInput"`
 		Usage              promptTraceUsagePayload        `json:"usage"`
 		DurationMs         float64                        `json:"durationMs"`
@@ -273,6 +320,7 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 	item.MessageCount = len(payload.ModelInput)
 	item.LLMRequestCount, item.Usage, item.AverageDurationMs = promptTraceLLMStats(payload.Usage, promptTraceFirstDuration(payload.DurationMs, payload.DurationMSSnake, payload.LatencyMs, payload.LatencyMSSnake, payload.ElapsedMs, payload.ElapsedMSSnake), payload.LLMRequests, payload.LLMRequestsSnake, payload.ModelRequests, payload.ModelRequestsSnake)
 	item.UserPromptPreview = promptTraceUserPromptPreview(payload.ModelInput)
+	item.ToolSurface = promptTraceToolSurfaceSummary(payload.ToolSurfaceTrace)
 	item.PromptFingerprint = cleanPromptTraceFingerprint(payload.PromptFingerprint)
 	item.Metadata = cleanPromptTraceFingerprint(payload.Metadata)
 
@@ -300,6 +348,7 @@ func promptTraceUserPromptPreview(messages []promptTraceMessage) string {
 }
 
 func promptTraceRedactPreview(value string) string {
+	value = diagnostics.RedactSensitiveText(value)
 	return promptTraceSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
 		key := match
 		if index := strings.IndexAny(match, ":="); index >= 0 {
@@ -307,6 +356,79 @@ func promptTraceRedactPreview(value string) string {
 		}
 		return key + "=[REDACTED]"
 	})
+}
+
+func promptTraceToolSurfaceSummary(in promptTraceToolSurfacePayload) *PromptTraceToolSurfaceSummary {
+	summary := &PromptTraceToolSurfaceSummary{
+		InitialToolCount:     len(in.InitialTools),
+		BaseRegistryCount:    in.BaseRegistryCount,
+		DeferredFamilyCount:  len(in.DeferredFamilies),
+		LoadedToolCount:      len(in.LoadedTools),
+		LoadedPackCount:      len(in.LoadedPacks),
+		FilteredToolCount:    len(in.FilteredTools),
+		ToolSearchEventCount: len(in.ToolSearchEvents),
+		SelectedToolCount:    len(in.SelectedTools),
+		RejectedToolCount:    len(in.RejectedToolReasons),
+		MCPHealth:            redactPromptTraceStringMap(in.MCPHealth),
+		FilteredReasons:      promptTraceFilteredReasons(in.FilteredTools),
+	}
+	if promptTraceToolSurfaceSummaryEmpty(summary) {
+		return nil
+	}
+	return summary
+}
+
+func promptTraceFilteredReasons(filtered []promptTraceFilteredTool) map[string]string {
+	if len(filtered) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, item := range filtered {
+		name := strings.TrimSpace(diagnostics.RedactSensitiveText(item.ToolName))
+		reason := strings.TrimSpace(diagnostics.RedactSensitiveText(item.Reason))
+		if name == "" || reason == "" {
+			continue
+		}
+		out[name] = reason
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func redactPromptTraceStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for key, value := range in {
+		key = strings.TrimSpace(diagnostics.RedactSensitiveText(key))
+		value = strings.TrimSpace(diagnostics.RedactSensitiveText(value))
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceToolSurfaceSummaryEmpty(summary *PromptTraceToolSurfaceSummary) bool {
+	return summary == nil ||
+		summary.InitialToolCount == 0 &&
+			summary.BaseRegistryCount == 0 &&
+			summary.DeferredFamilyCount == 0 &&
+			summary.LoadedToolCount == 0 &&
+			summary.LoadedPackCount == 0 &&
+			summary.FilteredToolCount == 0 &&
+			summary.ToolSearchEventCount == 0 &&
+			summary.SelectedToolCount == 0 &&
+			summary.RejectedToolCount == 0 &&
+			len(summary.MCPHealth) == 0 &&
+			len(summary.FilteredReasons) == 0
 }
 
 func promptTracePreviewText(value string, maxRunes int) string {

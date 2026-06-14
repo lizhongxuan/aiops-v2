@@ -20,6 +20,22 @@ func (p dynamicToolProviderStub) DynamicToolRefreshToken() string {
 	return p.token
 }
 
+type scopedDynamicToolProviderStub struct {
+	toolsByTenant map[string][]Tool
+}
+
+func (p scopedDynamicToolProviderStub) DynamicTools() []Tool {
+	var out []Tool
+	for _, tools := range p.toolsByTenant {
+		out = append(out, tools...)
+	}
+	return out
+}
+
+func (p scopedDynamicToolProviderStub) DynamicToolsForScope(scope DynamicToolScope) []Tool {
+	return append([]Tool(nil), p.toolsByTenant[scope.TenantID]...)
+}
+
 func TestAssemblerMergesRegistryExtraAndDynamicTools(t *testing.T) {
 	registry := NewRegistry()
 	if err := registry.Register(&mockTool{
@@ -56,6 +72,35 @@ func TestAssemblerMergesRegistryExtraAndDynamicTools(t *testing.T) {
 	pool := assembler.AssembleToolPoolWithOptions("host", "inspect", AssembleOptions{})
 	if len(pool) != 2 {
 		t.Fatalf("AssembleToolPoolWithOptions() len = %d, want registry+dynamic tools", len(pool))
+	}
+}
+
+func TestAssemblerPassesTurnMetadataScopeToDynamicProviders(t *testing.T) {
+	tenantATool := &mockTool{meta: ToolMetadata{Name: "tenant_a_tool", Description: "tenant a"}, enabled: true, readOnly: true, concurrency: true, description: "tenant a"}
+	tenantBTool := &mockTool{meta: ToolMetadata{Name: "tenant_b_tool", Description: "tenant b"}, enabled: true, readOnly: true, concurrency: true, description: "tenant b"}
+	assembler := NewAssembler(NewRegistry(), scopedDynamicToolProviderStub{
+		toolsByTenant: map[string][]Tool{
+			"tenant-a": {tenantATool},
+			"tenant-b": {tenantBTool},
+		},
+	})
+
+	tenantA := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{
+		"tenantId": "tenant-a",
+	}))
+	if strings.Join(tenantA, ",") != "tenant_a_tool" {
+		t.Fatalf("tenant-a tools = %#v, want only tenant_a_tool", tenantA)
+	}
+	tenantB := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{
+		"tenantId": "tenant-b",
+	}))
+	if strings.Join(tenantB, ",") != "tenant_b_tool" {
+		t.Fatalf("tenant-b tools = %#v, want only tenant_b_tool", tenantB)
+	}
+	fpA := assembler.StableToolFingerprint("host", "inspect", AssembleOptionsForTurnMetadata(map[string]string{"tenantId": "tenant-a"}))
+	fpB := assembler.StableToolFingerprint("host", "inspect", AssembleOptionsForTurnMetadata(map[string]string{"tenantId": "tenant-b"}))
+	if fpA == "" || fpB == "" || fpA == fpB {
+		t.Fatalf("fingerprints by tenant = %q/%q, want distinct non-empty values", fpA, fpB)
 	}
 }
 
@@ -99,6 +144,31 @@ func TestAssemblerWithNilRegistryUsesExtraToolsAndNilAssemblerIsSafe(t *testing.
 	got := assembler.AssembleToolsWithOptions("host", "chat", AssembleOptions{ExtraTools: []Tool{extra}})
 	if len(got) != 1 || got[0].Metadata().Name != "read_file" {
 		t.Fatalf("nil-registry assembler tools = %#v, want extra tool", got)
+	}
+}
+
+func TestAssemblerEnablesExplicitDeferredTools(t *testing.T) {
+	registry := NewRegistry()
+	for _, tool := range []Tool{
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.search", Layer: ToolLayerCore}},
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.read", Layer: ToolLayerDeferred, DeferByDefault: true, Pack: "synthetic_pack"}},
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.other", Layer: ToolLayerDeferred, DeferByDefault: true, Pack: "other_pack"}},
+	} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+	}
+
+	normal := toolNamesForTest(registry.AssembleToolsWithOptions("host", "inspect", AssembleOptions{}))
+	if containsAssemblerTestTool(normal, "synthetic.read") {
+		t.Fatalf("normal tools = %v, should not include deferred explicit tool", normal)
+	}
+	selected := toolNamesForTest(registry.AssembleToolsWithOptions("host", "inspect", AssembleOptions{EnabledTools: []string{"synthetic.read"}}))
+	if !containsAssemblerTestTool(selected, "synthetic.read") {
+		t.Fatalf("selected tools = %v, want synthetic.read", selected)
+	}
+	if containsAssemblerTestTool(selected, "synthetic.other") {
+		t.Fatalf("selected tools = %v, should not include unrelated deferred tool", selected)
 	}
 }
 
@@ -191,4 +261,13 @@ func toolNamesForTest(tools []Tool) []string {
 		out = append(out, tool.Metadata().Name)
 	}
 	return out
+}
+
+func containsAssemblerTestTool(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }

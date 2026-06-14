@@ -30,6 +30,10 @@ COPY proto ./proto
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/ai-server ./cmd/ai-server
 
+RUN mkdir -p /out/artifacts/host-agent/v0.1.0/linux-amd64 \
+    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -trimpath -ldflags="-s -w" -o /out/artifacts/host-agent/v0.1.0/linux-amd64/host-agent ./cmd/host-agent
+
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
@@ -43,6 +47,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=go-builder /out/ai-server /usr/local/bin/ai-server
+COPY --from=go-builder /out/artifacts /app/artifacts
 COPY --from=web-builder /src/web/dist /app/web/dist
 COPY data ./data
 COPY runbooks ./runbooks

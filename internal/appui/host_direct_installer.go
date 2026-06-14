@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"aiops-v2/internal/store"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -59,6 +61,7 @@ type DirectHostAgentInstaller struct {
 	resolver      CredentialResolver
 	dialer        SSHBootstrapDialer
 	artifactBuild HostAgentArtifactBuilder
+	tokenStore    HostAgentTokenStore
 	newRunID      func(string) string
 	newToken      func() (string, error)
 	sleep         func(context.Context, time.Duration) error
@@ -110,12 +113,15 @@ func WithHostAgentArtifactBuilder(builder HostAgentArtifactBuilder) DirectHostAg
 	}
 }
 
+func WithDirectHostAgentTokenStore(store HostAgentTokenStore) DirectHostAgentInstallerOption {
+	return func(installer *DirectHostAgentInstaller) {
+		installer.tokenStore = store
+	}
+}
+
 func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, req HostInstallRequest) (HostInstallRun, error) {
 	if i == nil || i.repo == nil {
 		return HostInstallRun{}, fmt.Errorf("host repository is not configured")
-	}
-	if i.resolver == nil {
-		return HostInstallRun{}, fmt.Errorf("credential resolver is not configured")
 	}
 	if i.dialer == nil {
 		return HostInstallRun{}, fmt.Errorf("ssh dialer is not configured")
@@ -139,7 +145,7 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	}
 
 	i.setStep(&host, &run, "connect-ssh")
-	credential, err := i.resolver.ResolveSSHCredential(ctx, host.SSHCredentialRef)
+	credential, err := i.resolveSSHCredential(ctx, host.SSHCredentialRef)
 	if err != nil {
 		return i.failInstall(&host, run, "connect-ssh", "failed", err)
 	}
@@ -173,6 +179,7 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	if sudoMode == "none" {
 		return i.failInstall(&host, run, "ssh-preflight", "failed", fmt.Errorf("ssh user must be root or have sudo available"))
 	}
+	sudoStdin := sudoPasswordStdin(sudoMode, credential)
 
 	i.setStep(&host, &run, "build-artifact")
 	artifact, err := i.artifactBuild.BuildHostAgentArtifact(ctx, platform.GOOS, platform.GOARCH, host.AgentVersion)
@@ -188,6 +195,13 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 		return i.failInstall(&host, run, "write-config", "failed", err)
 	}
 	host.AgentTokenRef = hostAgentTokenHashRef(token)
+	if i.tokenStore != nil {
+		ref, err := i.tokenStore.StoreHostAgentToken(ctx, host.ID, token)
+		if err != nil {
+			return i.failInstall(&host, run, "write-config", "failed", err)
+		}
+		host.AgentTokenSecretRef = ref
+	}
 	remoteTmp := "/tmp/aiops-host-agent-" + safeRemoteName(host.ID)
 	if err := i.runRemote(ctx, client, "upload-artifact", &host, &run, "mkdir -p "+shellQuote(remoteTmp), nil); err != nil {
 		return run, err
@@ -207,7 +221,7 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 		return run, err
 	}
 
-	if err := i.runRemote(ctx, client, "install-files", &host, &run, installFilesScript(platform, layout, remoteTmp), nil); err != nil {
+	if err := i.runRemote(ctx, client, "install-files", &host, &run, installFilesScript(platform, layout, remoteTmp), sudoStdin); err != nil {
 		return run, err
 	}
 	serviceFile, err := serviceDefinition(platform)
@@ -217,10 +231,10 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	if err := i.uploadRemote(ctx, client, "install-service", &host, &run, remoteTmp+"/"+layout.ServiceFileName, "644", serviceFile); err != nil {
 		return run, err
 	}
-	if err := i.runRemote(ctx, client, "install-service", &host, &run, installServiceScript(platform, layout, remoteTmp), nil); err != nil {
+	if err := i.runRemote(ctx, client, "install-service", &host, &run, installServiceScript(platform, layout, remoteTmp), sudoStdin); err != nil {
 		return run, err
 	}
-	if err := i.runRemote(ctx, client, "start-service", &host, &run, startServiceScript(platform), nil); err != nil {
+	if err := i.runRemote(ctx, client, "start-service", &host, &run, startServiceScript(platform), sudoStdin); err != nil {
 		return run, err
 	}
 	if err := i.verifyLocalHealth(ctx, client, &host, &run); err != nil {
@@ -249,9 +263,6 @@ func (i *DirectHostAgentInstaller) TestSSH(ctx context.Context, hostID, credenti
 	if i == nil || i.repo == nil {
 		return HostSSHTestResponse{}, fmt.Errorf("host repository is not configured")
 	}
-	if i.resolver == nil {
-		return HostSSHTestResponse{}, fmt.Errorf("credential resolver is not configured")
-	}
 	if i.dialer == nil {
 		return HostSSHTestResponse{}, fmt.Errorf("ssh dialer is not configured")
 	}
@@ -269,7 +280,7 @@ func (i *DirectHostAgentInstaller) TestSSH(ctx context.Context, hostID, credenti
 	if err := validateBootstrapHost(next); err != nil {
 		return HostSSHTestResponse{}, err
 	}
-	credential, err := i.resolver.ResolveSSHCredential(ctx, next.SSHCredentialRef)
+	credential, err := i.resolveSSHCredential(ctx, next.SSHCredentialRef)
 	if err != nil {
 		return HostSSHTestResponse{}, err
 	}
@@ -332,6 +343,17 @@ func (i *DirectHostAgentInstaller) loadInstallHost(hostID string, req HostInstal
 		next.AgentVersion = "v0.1.0"
 	}
 	return next, nil
+}
+
+func (i *DirectHostAgentInstaller) resolveSSHCredential(ctx context.Context, ref string) (ResolvedSSHCredential, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ResolvedSSHCredential{}, nil
+	}
+	if i == nil || i.resolver == nil {
+		return ResolvedSSHCredential{}, fmt.Errorf("credential resolver is not configured")
+	}
+	return i.resolver.ResolveSSHCredential(ctx, ref)
 }
 
 func (i *DirectHostAgentInstaller) setStep(host *store.HostRecord, run *HostInstallRun, step string) {
@@ -511,6 +533,17 @@ func detectSudoMode(ctx context.Context, client SSHBootstrapClient) (string, err
 	return mode, nil
 }
 
+func sudoPasswordStdin(sudoMode string, credential ResolvedSSHCredential) []byte {
+	if sudoMode != "sudo" {
+		return nil
+	}
+	password := strings.TrimSpace(credential.Password)
+	if password == "" {
+		return nil
+	}
+	return []byte(password + "\n")
+}
+
 type hostAgentRemoteLayout struct {
 	TokenPath       string
 	ConfigPath      string
@@ -525,6 +558,7 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 	}
 	cfg := struct {
 		ServerURL         string            `yaml:"server_url"`
+		GRPCURL           string            `yaml:"grpc_url,omitempty"`
 		HostID            string            `yaml:"host_id"`
 		ListenAddr        string            `yaml:"listen_addr"`
 		TokenRef          string            `yaml:"token_ref"`
@@ -533,6 +567,7 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 		Capabilities      []string          `yaml:"capabilities"`
 	}{
 		ServerURL:         firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080"),
+		GRPCURL:           firstNonEmpty(os.Getenv("AIOPS_AGENT_GRPC_URL"), derivedAgentGRPCURL(os.Getenv("AIOPS_AGENT_SERVER_URL"))),
 		HostID:            host.ID,
 		ListenAddr:        "0.0.0.0:7072",
 		TokenRef:          layout.TokenPath,
@@ -548,6 +583,18 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 		return nil, hostAgentRemoteLayout{}, fmt.Errorf("host-agent token is empty")
 	}
 	return data, layout, nil
+}
+
+func derivedAgentGRPCURL(serverURL string) string {
+	trimmed := strings.TrimSpace(serverURL)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
+	}
+	return net.JoinHostPort(parsed.Hostname(), "18090")
 }
 
 func remoteLayout(platform detectedHostPlatform) (hostAgentRemoteLayout, error) {
@@ -571,27 +618,42 @@ func remoteLayout(platform detectedHostPlatform) (hostAgentRemoteLayout, error) 
 	}
 }
 
+func sudoScriptPreamble() string {
+	return strings.Join([]string{
+		`if [ "$(id -u)" -eq 0 ]; then`,
+		`  run_sudo() { "$@"; }`,
+		`else`,
+		`  sudo_password_file="$(mktemp)"`,
+		`  trap 'rm -f "$sudo_password_file"' EXIT`,
+		`  cat > "$sudo_password_file"`,
+		`  chmod 600 "$sudo_password_file"`,
+		`  run_sudo() { sudo -S -p '' "$@" < "$sudo_password_file"; }`,
+		`  run_sudo true`,
+		`fi`,
+	}, "\n")
+}
+
 func installFilesScript(platform detectedHostPlatform, layout hostAgentRemoteLayout, remoteTmp string) string {
-	sudo := `if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi`
+	sudo := sudoScriptPreamble()
 	switch platform.Platform {
 	case "linux/ubuntu", "linux/amd64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO install -d -m 755 /opt/aiops/host-agent /etc/aiops",
-			"$SUDO install -m 755 " + shellQuote(remoteTmp+"/host-agent") + " " + shellQuote(layout.InstallRoot+"/host-agent"),
-			"$SUDO install -m 600 " + shellQuote(remoteTmp+"/host-agent.yaml") + " " + shellQuote(layout.ConfigPath),
-			"$SUDO install -m 600 " + shellQuote(remoteTmp+"/host-agent.token") + " " + shellQuote(layout.TokenPath),
+			"run_sudo install -d -m 755 /opt/aiops/host-agent /etc/aiops",
+			"run_sudo install -m 755 " + shellQuote(remoteTmp+"/host-agent") + " " + shellQuote(layout.InstallRoot+"/host-agent"),
+			"run_sudo install -m 600 " + shellQuote(remoteTmp+"/host-agent.yaml") + " " + shellQuote(layout.ConfigPath),
+			"run_sudo install -m 600 " + shellQuote(remoteTmp+"/host-agent.token") + " " + shellQuote(layout.TokenPath),
 			"rm -f " + shellQuote(remoteTmp+"/host-agent.token"),
 		}, "\n")
 	case "darwin/arm64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO install -d -m 755 /usr/local/aiops/host-agent /usr/local/etc/aiops /usr/local/var/log/aiops",
-			"$SUDO install -m 755 " + shellQuote(remoteTmp+"/host-agent") + " " + shellQuote(layout.InstallRoot+"/host-agent"),
-			"$SUDO install -m 600 " + shellQuote(remoteTmp+"/host-agent.yaml") + " " + shellQuote(layout.ConfigPath),
-			"$SUDO install -m 600 " + shellQuote(remoteTmp+"/host-agent.token") + " " + shellQuote(layout.TokenPath),
+			"run_sudo install -d -m 755 /usr/local/aiops/host-agent /usr/local/etc/aiops /usr/local/var/log/aiops",
+			"run_sudo install -m 755 " + shellQuote(remoteTmp+"/host-agent") + " " + shellQuote(layout.InstallRoot+"/host-agent"),
+			"run_sudo install -m 600 " + shellQuote(remoteTmp+"/host-agent.yaml") + " " + shellQuote(layout.ConfigPath),
+			"run_sudo install -m 600 " + shellQuote(remoteTmp+"/host-agent.token") + " " + shellQuote(layout.TokenPath),
 			"rm -f " + shellQuote(remoteTmp+"/host-agent.token"),
 		}, "\n")
 	default:
@@ -600,20 +662,20 @@ func installFilesScript(platform detectedHostPlatform, layout hostAgentRemoteLay
 }
 
 func installServiceScript(platform detectedHostPlatform, layout hostAgentRemoteLayout, remoteTmp string) string {
-	sudo := `if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi`
+	sudo := sudoScriptPreamble()
 	switch platform.Platform {
 	case "linux/ubuntu", "linux/amd64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO install -m 644 " + shellQuote(remoteTmp+"/"+layout.ServiceFileName) + " /etc/systemd/system/aiops-host-agent.service",
-			"$SUDO systemctl daemon-reload",
+			"run_sudo install -m 644 " + shellQuote(remoteTmp+"/"+layout.ServiceFileName) + " /etc/systemd/system/aiops-host-agent.service",
+			"run_sudo systemctl daemon-reload",
 		}, "\n")
 	case "darwin/arm64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO install -m 644 " + shellQuote(remoteTmp+"/"+layout.ServiceFileName) + " /Library/LaunchDaemons/com.aiops.host-agent.plist",
+			"run_sudo install -m 644 " + shellQuote(remoteTmp+"/"+layout.ServiceFileName) + " /Library/LaunchDaemons/com.aiops.host-agent.plist",
 		}, "\n")
 	default:
 		return "printf 'unsupported platform: " + shellSingleQuote(platform.Platform) + "\\n' >&2\nexit 65"
@@ -621,25 +683,25 @@ func installServiceScript(platform detectedHostPlatform, layout hostAgentRemoteL
 }
 
 func startServiceScript(platform detectedHostPlatform) string {
-	sudo := `if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi`
+	sudo := sudoScriptPreamble()
 	switch platform.Platform {
 	case "linux/ubuntu", "linux/amd64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO systemctl enable aiops-host-agent.service",
-			"$SUDO systemctl restart aiops-host-agent.service",
-			"$SUDO systemctl is-active aiops-host-agent.service",
+			"run_sudo systemctl enable aiops-host-agent.service",
+			"run_sudo systemctl restart aiops-host-agent.service",
+			"run_sudo systemctl is-active aiops-host-agent.service",
 		}, "\n")
 	case "darwin/arm64":
 		return strings.Join([]string{
 			"set -eu",
 			sudo,
-			"$SUDO launchctl bootout system /Library/LaunchDaemons/com.aiops.host-agent.plist >/dev/null 2>&1 || true",
-			"$SUDO launchctl bootstrap system /Library/LaunchDaemons/com.aiops.host-agent.plist",
-			"$SUDO launchctl enable system/com.aiops.host-agent",
-			"$SUDO launchctl kickstart -k system/com.aiops.host-agent",
-			"$SUDO launchctl print system/com.aiops.host-agent >/dev/null",
+			"run_sudo launchctl bootout system /Library/LaunchDaemons/com.aiops.host-agent.plist >/dev/null 2>&1 || true",
+			"run_sudo launchctl bootstrap system /Library/LaunchDaemons/com.aiops.host-agent.plist",
+			"run_sudo launchctl enable system/com.aiops.host-agent",
+			"run_sudo launchctl kickstart -k system/com.aiops.host-agent",
+			"run_sudo launchctl print system/com.aiops.host-agent >/dev/null",
 		}, "\n")
 	default:
 		return "printf 'unsupported platform: " + shellSingleQuote(platform.Platform) + "\\n' >&2\nexit 65"
@@ -701,17 +763,23 @@ func (b goBuildHostAgentArtifactBuilder) BuildHostAgentArtifact(ctx context.Cont
 	repoRoot := strings.TrimSpace(firstNonEmpty(b.RepoRoot, defaultHostInstallRepoRoot()))
 	artifactDir := filepath.Join(repoRoot, "artifacts", "host-agent", version, goos+"-"+goarch)
 	artifactPath := filepath.Join(artifactDir, "host-agent")
+	if data, err := os.ReadFile(artifactPath); err == nil && len(data) > 0 {
+		sum := sha256.Sum256(data)
+		return HostAgentArtifact{
+			Path:   artifactPath,
+			Bytes:  data,
+			SHA256: fmt.Sprintf("%x", sum[:]),
+		}, nil
+	}
 	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
 		return HostAgentArtifact{}, fmt.Errorf("create host-agent artifact dir: %w", err)
 	}
-	if info, err := os.Stat(artifactPath); err != nil || info == nil || info.Mode()&0o111 == 0 {
-		cmd := exec.CommandContext(ctx, "go", "build", "-o", artifactPath, "./cmd/host-agent")
-		cmd.Dir = repoRoot
-		cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
-		output, buildErr := cmd.CombinedOutput()
-		if buildErr != nil {
-			return HostAgentArtifact{}, fmt.Errorf("build host-agent artifact: %w: %s", buildErr, strings.TrimSpace(string(output)))
-		}
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", artifactPath, "./cmd/host-agent")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+	output, buildErr := cmd.CombinedOutput()
+	if buildErr != nil {
+		return HostAgentArtifact{}, fmt.Errorf("build host-agent artifact: %w: %s", buildErr, strings.TrimSpace(string(output)))
 	}
 	data, err := os.ReadFile(artifactPath)
 	if err != nil {
@@ -787,9 +855,55 @@ func sshAuthMethods(credential ResolvedSSHCredential) ([]ssh.AuthMethod, error) 
 		)
 	}
 	if len(methods) == 0 {
-		return nil, fmt.Errorf("ssh credential ref is required")
+		methods = append(methods, defaultSSHAuthMethods()...)
 	}
 	return methods, nil
+}
+
+func defaultSSHAuthMethods() []ssh.AuthMethod {
+	var methods []ssh.AuthMethod
+	if sock := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); sock != "" {
+		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+			conn, err := net.Dial("unix", sock)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = conn.Close() }()
+			signers, err := agent.NewClient(conn).Signers()
+			if err != nil {
+				return nil, err
+			}
+			if len(signers) == 0 {
+				return nil, fmt.Errorf("ssh agent has no identities")
+			}
+			return signers, nil
+		}))
+	}
+	for _, keyPath := range defaultSSHKeyPaths() {
+		data, err := os.ReadFile(keyPath)
+		if err != nil {
+			continue
+		}
+		signer, err := ssh.ParsePrivateKey(data)
+		if err != nil {
+			continue
+		}
+		methods = append(methods, ssh.PublicKeys(signer))
+	}
+	return methods
+}
+
+func defaultSSHKeyPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".ssh", "id_ed25519"),
+		filepath.Join(home, ".ssh", "id_ecdsa"),
+		filepath.Join(home, ".ssh", "id_rsa"),
+		filepath.Join(home, ".ssh", "id_dsa"),
+	}
 }
 
 type goSSHBootstrapClient struct {

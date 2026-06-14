@@ -35,6 +35,52 @@ func TestTerminalReadOnlyStillRequiresAllowlist(t *testing.T) {
 	}
 }
 
+func TestAllowedHostInspectionTerminalAllowsBoundedResourceCommands(t *testing.T) {
+	allowed := []struct {
+		command string
+		args    []string
+	}{
+		{command: "uptime"},
+		{command: "top", args: []string{"-l", "1", "-s", "0"}},
+		{command: "top", args: []string{"-b", "-n", "1"}},
+		{command: "sysctl", args: []string{"-n", "hw.ncpu"}},
+		{command: "vm_stat"},
+		{command: "df", args: []string{"-h"}},
+		{command: "free", args: []string{"-h"}},
+		{command: "lscpu"},
+		{command: "nproc"},
+		{command: "ps", args: []string{"-e"}},
+		{command: "lsof", args: []string{"-i", ":1234"}},
+		{command: "lsof", args: []string{"-n", "-P", "-iTCP:1234", "-sTCP:LISTEN"}},
+	}
+	for _, input := range allowed {
+		if !IsAllowedHostInspectionTerminal(input.command, input.args) {
+			t.Fatalf("expected host inspection allowed: %#v", input)
+		}
+	}
+}
+
+func TestAllowedHostInspectionTerminalRejectsBroadOrMutatingCommands(t *testing.T) {
+	denied := []struct {
+		command string
+		args    []string
+	}{
+		{command: "cat", args: []string{"/etc/passwd"}},
+		{command: "bash", args: []string{"-lc", "uptime && rm -rf /tmp/nope"}},
+		{command: "sysctl", args: []string{"-w", "kern.maxfiles=1024"}},
+		{command: "top", args: []string{"-pid", "1"}},
+		{command: "df", args: []string{"-x"}},
+		{command: "lsof", args: []string{"/etc/passwd"}},
+		{command: "lsof", args: []string{"-i", ":1234", "-F", "p"}},
+		{command: "lsof", args: []string{"-i", "-n"}},
+	}
+	for _, input := range denied {
+		if IsAllowedHostInspectionTerminal(input.command, input.args) {
+			t.Fatalf("expected host inspection denied: %#v", input)
+		}
+	}
+}
+
 func TestMutatingTerminalCommandRequiresHighRiskApproval(t *testing.T) {
 	if !RequiresHighRiskApproval("kubectl", []string{"rollout", "restart", "deploy/redis", "-n", "prod"}) {
 		t.Fatal("mutating kubectl command must require high-risk approval")
@@ -67,6 +113,7 @@ func TestIsReadOnlyCommandAllowsHostResourceInspection(t *testing.T) {
 	}{
 		{command: "uptime"},
 		{command: "nproc"},
+		{command: "lscpu"},
 		{command: "free", args: []string{"-h"}},
 		{command: "sysctl", args: []string{"-n", "hw.ncpu"}},
 		{command: "sysctl", args: []string{"hw.memsize"}},

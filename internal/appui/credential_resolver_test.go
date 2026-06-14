@@ -85,6 +85,70 @@ func TestLocalSecretCredentialResolverReadsPasswordWithoutTempKey(t *testing.T) 
 	}
 }
 
+func TestLocalHostSSHPasswordStoreWritesPasswordForResolver(t *testing.T) {
+	secretDir := t.TempDir()
+	store := NewLocalHostSSHPasswordStore(secretDir)
+
+	ref, err := store.StoreHostSSHPassword(context.Background(), "prod/web 01", "ssh-password-from-form")
+	if err != nil {
+		t.Fatalf("StoreHostSSHPassword() error = %v", err)
+	}
+	if !strings.HasPrefix(ref, "secret://hosts/prod_web_01-") {
+		t.Fatalf("ref = %q, want generated host password secret ref", ref)
+	}
+
+	credential, err := NewLocalSecretCredentialResolver(secretDir).ResolveSSHCredential(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveSSHCredential() error = %v", err)
+	}
+	if credential.Password != "ssh-password-from-form" {
+		t.Fatalf("Password = %q", credential.Password)
+	}
+
+	rel, err := secretRefPath(ref)
+	if err != nil {
+		t.Fatalf("secretRefPath() error = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(secretDir, rel))
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("secret file mode = %o, want 600", got)
+	}
+}
+
+func TestLocalHostAgentTokenStoreWritesAndResolvesToken(t *testing.T) {
+	secretDir := t.TempDir()
+	store := NewLocalHostAgentTokenStore(secretDir)
+
+	ref, err := store.StoreHostAgentToken(context.Background(), "prod-web-01", "agent-token-value")
+	if err != nil {
+		t.Fatalf("StoreHostAgentToken() error = %v", err)
+	}
+	if !strings.HasPrefix(ref, "secret://hosts/prod-web-01-") {
+		t.Fatalf("ref = %q, want host-scoped secret ref", ref)
+	}
+	token, err := store.ResolveHostAgentToken(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("ResolveHostAgentToken() error = %v", err)
+	}
+	if token != "agent-token-value" {
+		t.Fatalf("token = %q, want stored token", token)
+	}
+	rel, err := secretRefPath(ref)
+	if err != nil {
+		t.Fatalf("secretRefPath() error = %v", err)
+	}
+	info, err := os.Stat(filepath.Join(secretDir, rel))
+	if err != nil {
+		t.Fatalf("stat token secret: %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("secret mode = %o, want 0600", mode)
+	}
+}
+
 func TestLocalSecretCredentialResolverRedactsSecretMaterial(t *testing.T) {
 	credential := ResolvedSSHCredential{
 		Ref:            "secret://lab/root-password",

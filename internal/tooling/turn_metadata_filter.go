@@ -7,7 +7,20 @@ func AssembleOptionsForTurnMetadata(metadata map[string]string) AssembleOptions 
 }
 
 func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[string]string) AssembleOptions {
+	opts.TenantID = firstMetadataString(metadata, "tenantId", "tenantID", "tenant_id")
+	opts.UserID = firstMetadataString(metadata, "userId", "userID", "user_id")
+	if opts.Profile == "" {
+		opts.Profile = firstMetadataString(metadata, "profile", "toolProfile", "mcpProfile")
+	}
 	opts.EnabledPacks = appendUniqueStrings(opts.EnabledPacks, metadataListValue(metadata, "enableToolPack")...)
+	opts.EnabledTools = appendUniqueStrings(opts.EnabledTools, metadataListValue(metadata, "enableTool")...)
+	opts.RuntimeCapabilities = appendUniqueStrings(opts.RuntimeCapabilities, metadataListValue(metadata, "runtimeCapability")...)
+	opts.RuntimeCapabilities = appendUniqueStrings(opts.RuntimeCapabilities, metadataListValue(metadata, "runtimeCapabilities")...)
+	opts.ContextArtifactAvailable = opts.ContextArtifactAvailable ||
+		metadataBool(metadata, "contextArtifactAvailable") ||
+		metadataBool(metadata, "hasContextArtifact") ||
+		metadataBool(metadata, "contextArtifactEnabled")
+	opts.MCPHealthSnapshot = mergeMCPHealthSnapshot(opts.MCPHealthSnapshot, metadata)
 	metadataFilter := turnMetadataToolFilter(metadata)
 	if metadataFilter == nil {
 		return opts
@@ -21,6 +34,42 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 		return existingFilter(t, ctx, meta) && metadataFilter(t, ctx, meta)
 	}
 	return opts
+}
+
+func mergeMCPHealthSnapshot(existing map[string]string, metadata map[string]string) map[string]string {
+	if len(metadata) == 0 {
+		return existing
+	}
+	out := existing
+	for key, value := range metadata {
+		key = strings.TrimSpace(key)
+		const prefix = "mcpHealth."
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		serverID := strings.TrimSpace(strings.TrimPrefix(key, prefix))
+		status := strings.TrimSpace(value)
+		if serverID == "" || status == "" {
+			continue
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[serverID] = status
+	}
+	return out
+}
+
+func firstMetadataString(metadata map[string]string, keys ...string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func turnMetadataToolFilter(metadata map[string]string) func(Tool, ToolContext, ToolMetadata) bool {

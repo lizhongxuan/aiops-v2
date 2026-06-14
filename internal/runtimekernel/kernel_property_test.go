@@ -697,6 +697,78 @@ func TestApplyContextPipelineDoesNotRetryPromptTooLong(t *testing.T) {
 	}
 }
 
+func TestApplyContextPipelineEmitsBoundaryMarkerAndHardKeepReasons(t *testing.T) {
+	messages := []Message{
+		{ID: "old-user", Role: "user", Content: strings.Repeat("old user context ", 20)},
+		{ID: "old-assistant", Role: "assistant", Content: strings.Repeat("old assistant context ", 20)},
+		{ID: "old-user-2", Role: "user", Content: strings.Repeat("older user context ", 20)},
+		{ID: "old-assistant-2", Role: "assistant", Content: strings.Repeat("older assistant context ", 20)},
+		{ID: "old-tool-2", Role: "tool", ToolResult: &ToolResult{ToolCallID: "tr-older", Content: strings.Repeat("older tool result ", 20)}},
+		{ID: "old-assistant-3", Role: "assistant", Content: strings.Repeat("more old assistant context ", 20)},
+		testToolResultMessage("tr-old", "read.context", strings.Repeat("old tool result ", 20), "ref-old"),
+		{ID: "latest-user", Role: "user", Content: "Continue from this latest quoted request."},
+		{ID: "latest-assistant", Role: "assistant", Content: "I will continue from the latest request."},
+	}
+	cw := &ContextWindow{MaxTokens: 24}
+
+	result, err := ApplyContextPipeline(context.Background(), cw, messages, ContextPipelineOptions{
+		SessionID: "sess-boundary",
+		TurnID:    "turn-boundary",
+		Iteration: 1,
+		PendingApprovals: []PendingApproval{{
+			ID:         "approval-1",
+			SessionID:  "sess-boundary",
+			TurnID:     "turn-boundary",
+			Iteration:  1,
+			ToolName:   "write.action",
+			ToolCallID: "call-approval",
+		}},
+		PendingEvidence: []PendingEvidence{{
+			ID:         "evidence-1",
+			SessionID:  "sess-boundary",
+			TurnID:     "turn-boundary",
+			Iteration:  1,
+			ToolCallID: "tr-old",
+		}},
+		BudgetPolicy: DefaultContextBudgetPolicy(20000, 8000),
+	})
+	if err != nil {
+		t.Fatalf("ApplyContextPipeline returned error: %v", err)
+	}
+	if len(result.Messages) == 0 || !IsCompactBoundaryMessage(result.Messages[0]) {
+		t.Fatalf("first message = %#v, want compact boundary marker", result.Messages)
+	}
+	meta, ok := CompactBoundaryMetadataFromMessage(result.Messages[0])
+	if !ok {
+		t.Fatal("boundary metadata missing")
+	}
+	if meta.SegmentID == "" || meta.SummarySchemaVersion != CompactSummarySchemaVersionV1 || meta.PreservedTailCount == 0 {
+		t.Fatalf("boundary metadata = %#v", meta)
+	}
+
+	var keepEvent *ContextGovernanceEvent
+	for i := range result.GovernanceEvents {
+		if result.GovernanceEvents[i].Kind == "context.compaction.hard_keep" {
+			keepEvent = &result.GovernanceEvents[i]
+			break
+		}
+	}
+	if keepEvent == nil {
+		t.Fatalf("governance events = %#v, want hard keep event", result.GovernanceEvents)
+	}
+	for _, reason := range []string{
+		"recent_user_message",
+		"pending_approval",
+		"pending_evidence",
+		"active_task",
+		"compact_safety_minimum",
+	} {
+		if !containsString(keepEvent.DroppedGroupIDs, reason) {
+			t.Fatalf("hard keep reasons = %#v, missing %q", keepEvent.DroppedGroupIDs, reason)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Property 27: Workspace 请求分流
 // For any workspace session request, it should be classified into exactly one

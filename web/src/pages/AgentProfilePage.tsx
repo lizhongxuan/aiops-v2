@@ -8,6 +8,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { fetchAgentProfilePreview, type AgentProfilePreview, type CapabilitySnapshotItem } from "@/api/agentProfilePreview";
 import { ConfirmButton, EmptyState, Field, LoadingState, SelectField, SettingsPageFrame, StatGrid, StatusAlert, ToneBadge } from "@/pages/settingsComponents";
 import {
   exportAgentProfiles,
@@ -52,6 +53,7 @@ export function AgentProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [bindingSheet, setBindingSheet] = useState<"skills" | "mcps" | null>(null);
+  const [preview, setPreview] = useState<AgentProfilePreview | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -94,11 +96,21 @@ export function AgentProfilePage() {
       setMcpCatalog(nextMcps);
       setSelectedId(nextSelected.id);
       applyDraft(nextSelected, catalogs);
+      await loadProfilePreview(nextSelected.id);
       setMessage(null);
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "加载 Agent Profiles 失败" });
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadProfilePreview(profileId: string) {
+    setPreview(null);
+    try {
+      setPreview(await fetchAgentProfilePreview(profileId));
+    } catch (error) {
+      setMessage({ type: "info", text: error instanceof Error ? error.message : "Capability preview 暂不可用" });
     }
   }
 
@@ -114,6 +126,7 @@ export function AgentProfilePage() {
       });
       setSelectedId(normalized.id);
       applyDraft(normalized);
+      await loadProfilePreview(normalized.id);
       setMessage({ type: "success", text: "Agent Profile 已保存" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "保存 Agent Profile 失败" });
@@ -129,6 +142,7 @@ export function AgentProfilePage() {
       const normalized = normalizeAgentProfile(reset, { skills: skillCatalog, mcps: mcpCatalog });
       setProfiles((prev) => prev.map((item) => (item.id === normalized.id ? normalized : item)));
       applyDraft(normalized);
+      await loadProfilePreview(normalized.id);
       setMessage({ type: "success", text: "Agent Profile 已恢复默认" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "恢复默认失败" });
@@ -167,6 +181,7 @@ export function AgentProfilePage() {
     if (!next) return;
     setSelectedId(profileId);
     applyDraft(next);
+    void loadProfilePreview(profileId);
   }
 
   function addSkill(item: SkillCatalogItem) {
@@ -231,6 +246,8 @@ export function AgentProfilePage() {
                 { label: "状态", value: isDirty ? "未保存" : "已同步", tone: isDirty ? "warn" : "ok" },
               ]}
             />
+
+            <EffectiveCapabilitiesPreview preview={preview} />
 
             <Tabs defaultValue="prompt" className="grid gap-4">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -424,4 +441,81 @@ export function AgentProfilePage() {
       </SettingsPageFrame>
     </TooltipProvider>
   );
+}
+
+function EffectiveCapabilitiesPreview({ preview }: { preview: AgentProfilePreview | null }) {
+  const snapshot = preview?.capabilitySnapshot;
+  const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+  const enabled = items.filter((item) => item.enabled);
+  const disabled = items.filter((item) => !item.enabled);
+
+  return (
+    <Card className="rounded-lg bg-white">
+      <CardHeader>
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div>
+            <CardTitle>Effective Capabilities</CardTitle>
+            <CardDescription>当前 Profile 在下一 turn 生效的 Skill 与 MCP 可见性。</CardDescription>
+          </div>
+          <div className="font-mono text-xs text-slate-500">{snapshot?.fingerprint || "preview pending"}</div>
+        </div>
+      </CardHeader>
+      <CardContent className="grid gap-4 xl:grid-cols-2">
+        <CapabilityPreviewGroup title="Enabled" items={enabled} testId="effective-capabilities-enabled" />
+        <CapabilityPreviewGroup title="Disabled / Pending" items={disabled} testId="effective-capabilities-disabled" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function CapabilityPreviewGroup({ title, items, testId }: { title: string; items: CapabilitySnapshotItem[]; testId: string }) {
+  return (
+    <div data-testid={testId} className="grid content-start gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm font-medium text-slate-900">{title}</div>
+        <ToneBadge tone={title === "Enabled" ? "success" : "warning"}>{items.length}</ToneBadge>
+      </div>
+      {items.length ? (
+        items.map((item) => <CapabilityPreviewRow key={`${item.kind}:${item.id}`} item={item} />)
+      ) : (
+        <div className="rounded-lg border border-dashed border-slate-200 p-3 text-sm text-slate-500">No capabilities</div>
+      )}
+    </div>
+  );
+}
+
+function CapabilityPreviewRow({ item }: { item: CapabilitySnapshotItem }) {
+  const status = item.runtimeStatus || item.approvalStatus || (item.enabled ? "enabled" : "disabled");
+  return (
+    <div className="rounded-lg border border-slate-200 p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="break-words text-sm font-medium text-slate-950">{item.id}</div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            <ToneBadge>{item.kind}</ToneBadge>
+            <ToneBadge>{item.sourceScope || item.source || "profile"}</ToneBadge>
+            <ToneBadge tone={riskTone(item.risk)}>{item.risk || "low"}</ToneBadge>
+            <ToneBadge tone={statusTone(status)}>{status}</ToneBadge>
+          </div>
+        </div>
+        {item.policy ? <ToneBadge tone="warning">{item.policy}</ToneBadge> : null}
+      </div>
+      {item.reason ? <div className="mt-2 break-words text-xs text-slate-500">{item.reason}</div> : null}
+    </div>
+  );
+}
+
+function statusTone(status: string): "default" | "success" | "warning" | "danger" {
+  const normalized = status.toLowerCase();
+  if (normalized === "connected" || normalized === "available" || normalized === "enabled") return "success";
+  if (normalized.includes("pending")) return "warning";
+  if (normalized.includes("disabled") || normalized.includes("unavailable") || normalized.includes("denied")) return "danger";
+  return "default";
+}
+
+function riskTone(risk?: string): "default" | "success" | "warning" | "danger" {
+  if (risk === "high") return "danger";
+  if (risk === "medium") return "warning";
+  if (risk === "low") return "success";
+  return "default";
 }

@@ -3,6 +3,7 @@ package promptcompiler
 import (
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
 
@@ -46,6 +47,15 @@ type CompileContext struct {
 	// AssembledTools is the ordered set of tools assembled for this prompt.
 	AssembledTools []Tool
 
+	// DeferredToolCatalog is the full discoverable catalog used only to render
+	// compact, non-callable deferred family summaries. It must never inject
+	// deferred tool schemas into the initial model input.
+	DeferredToolCatalog []Tool
+
+	// MCPHealthSnapshot maps generic external tool source/server ids to health
+	// states used in compact deferred directory summaries.
+	MCPHealthSnapshot map[string]string
+
 	// RuntimePolicy is the active policy text for the current mode.
 	RuntimePolicy string
 
@@ -60,6 +70,12 @@ type CompileContext struct {
 
 	// ToolBudget describes the tool result and dispatch budget profile.
 	ToolBudget string
+
+	// TaskDepth describes the current turn's complexity and completion gates.
+	TaskDepth taskdepth.Profile
+
+	// ReasoningEffort carries the configured provider reasoning effort or prompt fallback policy.
+	ReasoningEffort string
 
 	// ReasoningSummary controls whether user-visible reasoning summaries are emitted.
 	ReasoningSummary string
@@ -83,9 +99,22 @@ type CompileContext struct {
 	// SkillPromptAssets are prompt fragments contributed by skill capabilities.
 	SkillPromptAssets []string
 
+	// HostTaskPromptAssets are assigned host-bound task fragments from
+	// manager-to-host agent messages. They are not skill instructions.
+	HostTaskPromptAssets []string
+
+	// LoadedSkillRefs are compact markers for skill bodies loaded this session.
+	LoadedSkillRefs []LoadedSkillPromptRef
+
 	// EvidenceReminders are per-iteration reminders that should stay outside the
 	// stable prompt envelope.
 	EvidenceReminders []string
+
+	// HostOpsManager marks the current turn as a host operation manager route.
+	HostOpsManager bool
+
+	// HostOpsPlanRequired requires a structured plan before host mutations.
+	HostOpsPlanRequired bool
 
 	// Deprecated: compatibility-only legacy field from the pre-unified prompt path.
 	// PromptCompiler ignores these assets; MCP guidance should come from assembled tools.
@@ -104,6 +133,14 @@ type CompileContext struct {
 
 	// AgentKind identifies the type of agent being compiled for.
 	AgentKind AgentKind
+}
+
+type LoadedSkillPromptRef struct {
+	Name   string
+	Source string
+	Reason string
+	Range  string
+	Hash   string
 }
 
 // PromptSection is an additional prompt fragment injected into developer instructions.
@@ -172,6 +209,27 @@ type ToolPromptSet struct {
 
 	// Entries contains per-tool prompt information.
 	Entries []ToolPromptEntry
+
+	// DeferredDirectory contains compact, non-callable summaries for deferred
+	// tool families and MCP packs. It is traceable but does not expose schemas.
+	DeferredDirectory []DeferredToolDirectoryEntry
+}
+
+// DeferredToolDirectoryEntry is a compact prompt-facing and trace-facing
+// summary of tools that can be discovered later via tool_search/select.
+type DeferredToolDirectoryEntry struct {
+	Pack              string   `json:"pack"`
+	Capability        string   `json:"capability,omitempty"`
+	Source            string   `json:"source,omitempty"`
+	MCPServerID       string   `json:"mcpServerId,omitempty"`
+	HealthStatus      string   `json:"healthStatus,omitempty"`
+	RequiresHealth    bool     `json:"requiresHealth,omitempty"`
+	RequiresApproval  bool     `json:"requiresApproval,omitempty"`
+	RequiresSelect    bool     `json:"requiresSelect,omitempty"`
+	UnavailableReason string   `json:"unavailableReason,omitempty"`
+	ToolCount         int      `json:"toolCount,omitempty"`
+	ResourceTypes     []string `json:"resourceTypes,omitempty"`
+	OperationKinds    []string `json:"operationKinds,omitempty"`
 }
 
 // ToolPromptDelta captures per-iteration changes that should not force a
@@ -195,7 +253,44 @@ type ProtocolPromptItem struct {
 // ProtocolPromptState groups dynamic state items that should be visible as
 // state rather than free-form appended prompt text.
 type ProtocolPromptState struct {
-	Items []ProtocolPromptItem
+	Items             []ProtocolPromptItem
+	PlanMode          *PlanModePromptState
+	TaskTodo          *TaskTodoPromptState
+	FailureSwitchPath *FailureSwitchPathPromptState
+}
+
+// PlanModePromptState is a compact prompt-facing state shape. It avoids a
+// runtimekernel dependency while preserving the fields needed for plan-mode
+// reminders and resume after compaction.
+type PlanModePromptState struct {
+	State                   string
+	PlanID                  string
+	ArtifactStatus          string
+	ApprovalStatus          string
+	ReminderLevel           string
+	FullInstructionInjected bool
+	PendingQuestions        int
+	OpenQuestions           int
+	RejectionReason         string
+}
+
+type TaskTodoPromptState struct {
+	Items []TaskTodoPromptItem
+}
+
+type TaskTodoPromptItem struct {
+	ID              string
+	Status          string
+	Owner           string
+	BlockedBy       string
+	PendingEvidence string
+}
+
+type FailureSwitchPathPromptState struct {
+	Signature        string
+	SeenCount        int
+	Action           string
+	SwitchPathReason string
 }
 
 // RuntimePolicyPrompt is Layer 4: policy constraints based on current mode.
@@ -240,6 +335,11 @@ type DynamicPromptDelta struct {
 	// SkillPromptAssets are prompt fragments that may change within a turn.
 	SkillPromptAssets []string
 
+	// HostTaskPromptAssets are host-bound task fragments that may change within
+	// a turn. They are separated from skill prompt assets to avoid skill-cache
+	// and skill-trace pollution.
+	HostTaskPromptAssets []string
+
 	// EvidenceReminders are runtime-generated reminders that should stay out of
 	// the stable prompt envelope.
 	EvidenceReminders []string
@@ -274,6 +374,72 @@ type PromptFingerprint struct {
 	ProtocolStateHash string `json:"protocolStateHash,omitempty"`
 }
 
+// PromptSectionTrace is a redaction-safe prompt-section summary. It stores
+// only stable identifiers, hashes, and size estimates, never section text.
+type PromptSectionTrace struct {
+	ID             string `json:"id"`
+	Kind           string `json:"kind"`
+	Source         string `json:"source"`
+	Hash           string `json:"hash"`
+	Bytes          int    `json:"bytes"`
+	TokensEstimate int    `json:"tokensEstimate"`
+	Cache          string `json:"cache,omitempty"`
+	RetentionRank  string `json:"retentionRank,omitempty"`
+	RetentionClass string `json:"retentionClass,omitempty"`
+	CompactAction  string `json:"compactAction,omitempty"`
+	CompactSchema  string `json:"compactSchema,omitempty"`
+	SourceRef      string `json:"sourceRef,omitempty"`
+	Redaction      string `json:"redaction,omitempty"`
+	Purpose        string `json:"purpose,omitempty"`
+}
+
+// ChangedPromptSection records why one prompt section hash changed.
+type ChangedPromptSection struct {
+	ID           string `json:"id"`
+	Reason       string `json:"reason"`
+	PreviousHash string `json:"previousHash,omitempty"`
+	CurrentHash  string `json:"currentHash,omitempty"`
+}
+
+const (
+	PromptSectionKindStable  = "stable"
+	PromptSectionKindDynamic = "dynamic"
+
+	PromptSectionCacheMiss = "miss"
+	PromptSectionCacheHit  = "hit"
+	// PromptSectionCacheInvalidated marks a known section whose hash changed
+	// since the previous model input in the same session.
+	PromptSectionCacheInvalidated = "invalidated"
+
+	PromptSectionChangeInitial               = "initial"
+	PromptSectionChangeSystemRoleChanged     = "system_role_changed"
+	PromptSectionChangeDeveloperRulesChanged = "developer_core_rules_changed"
+	PromptSectionChangeToolsIndexChanged     = "tools_index_changed"
+	PromptSectionChangeRuntimePolicyChanged  = "runtime_policy_changed"
+	PromptSectionChangeProtocolStateChanged  = "protocol_state_changed"
+	PromptSectionChangeDynamicAssetsChanged  = "context_dynamic_assets_changed"
+	PromptSectionChangeSectionAdded          = "section_added"
+	PromptSectionChangeSectionRemoved        = "section_removed"
+	PromptSectionChangeSectionContentChanged = "section_content_changed"
+
+	RetentionRankP0 = "P0"
+	RetentionRankP1 = "P1"
+	RetentionRankP2 = "P2"
+	RetentionRankP3 = "P3"
+	RetentionRankP4 = "P4"
+
+	RetentionClassMustKeep    = "must_keep"
+	RetentionClassSummarize   = "summarize"
+	RetentionClassExternalize = "externalize"
+	RetentionClassDropIfStale = "drop_if_stale"
+
+	CompactActionKeptOriginal = "kept_original"
+	CompactActionSummarized   = "summarized"
+	CompactActionExternalized = "externalized"
+	CompactActionDropped      = "dropped"
+	CompactActionBlocked      = "blocked"
+)
+
 // CompiledPrompt is the promptcompiler output. It preserves the legacy
 // flattened four-layer view for compatibility and also exposes a stable /
 // dynamic split for long-running turn reuse.
@@ -298,6 +464,12 @@ type CompiledPrompt struct {
 
 	// Fingerprint identifies prompt-layer changes without exposing prompt text.
 	Fingerprint PromptFingerprint
+
+	// PromptSections summarize prompt sections without exposing raw section text.
+	PromptSections []PromptSectionTrace
+
+	// ChangedSections optionally carries a caller-computed section diff.
+	ChangedSections []ChangedPromptSection
 }
 
 // ---------------------------------------------------------------------------

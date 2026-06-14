@@ -1,0 +1,215 @@
+package runtimekernel
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/tooling"
+)
+
+func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-search", `{"mode":"search","query":"synthetic metrics read"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-select", `{"mode":"select","tools":["synthetic.metrics.read"],"reason":"need checked synthetic metrics evidence"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-read",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "synthetic_metrics_read",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("final evidence: synthetic.metrics.read checked; confidence high", nil),
+	}}
+	registry := progressiveDiscoveryRegistry(t, false)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-progressive-search-select",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-progressive-search-select",
+		Input:       "synthetic_complex_tool_discovery_request",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != "completed" || !strings.Contains(result.Output, "checked") {
+		t.Fatalf("result = %#v, want checked final", result)
+	}
+	if len(compiler.contexts) < 3 {
+		t.Fatalf("compiler contexts = %d, want at least 3", len(compiler.contexts))
+	}
+	first := toolNames(compiler.contexts[0].AssembledTools)
+	if containsString(first, "synthetic.metrics.read") {
+		t.Fatalf("first tools = %v, deferred metrics read should not be visible before select", first)
+	}
+	second := toolNames(compiler.contexts[1].AssembledTools)
+	if containsString(second, "synthetic.metrics.read") {
+		t.Fatalf("second tools = %v, search alone should not load deferred tool", second)
+	}
+	third := toolNames(compiler.contexts[2].AssembledTools)
+	if !containsString(third, "synthetic.metrics.read") {
+		t.Fatalf("third tools = %v, want selected synthetic.metrics.read", third)
+	}
+	if !containsString(compiler.contexts[2].ToolDelta.NewlyAvailable, "synthetic.metrics.read") {
+		t.Fatalf("third tool delta = %#v, want selected tool delta", compiler.contexts[2].ToolDelta)
+	}
+}
+
+func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-unloaded",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "synthetic.metrics.read",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-search", `{"mode":"search","query":"synthetic metrics read"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-select", `{"mode":"select","tools":["synthetic.metrics.read"],"reason":"recover unloaded synthetic metrics read"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-read",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "synthetic_metrics_read",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("final evidence: synthetic.metrics.read checked after select; confidence high", nil),
+		schema.AssistantMessage("final evidence: synthetic.metrics.read checked after select; earlier direct call was not_checked; confidence low", nil),
+	}}
+	registry := progressiveDiscoveryRegistry(t, false)
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, newRecordingCompiler(), model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-progressive-unloaded",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-progressive-unloaded",
+		Input:       "call a deferred synthetic metrics tool directly, then recover",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	session := kernel.sessions.Get("sess-progressive-unloaded")
+	if session == nil || len(session.ToolDiscovery.RejectedCalls) == 0 {
+		t.Fatalf("missing rejected tool discovery state: %#v", session)
+	}
+	if got := session.ToolDiscovery.RejectedCalls[0].ErrorType; got != "tool_unloaded" {
+		t.Fatalf("rejected error type = %q, want tool_unloaded", got)
+	}
+	if !containsString(session.ToolDiscovery.EnabledTools(), "synthetic.metrics.read") {
+		t.Fatalf("enabled tools = %v, want synthetic.metrics.read after select", session.ToolDiscovery.EnabledTools())
+	}
+	if !strings.Contains(result.Output, "confidence low") {
+		t.Fatalf("final output = %q, want verifier-constrained low confidence", result.Output)
+	}
+	if len(model.inputs) != 6 {
+		t.Fatalf("model calls = %d, want verifier-triggered recovery iteration", len(model.inputs))
+	}
+}
+
+func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-failed",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "synthetic_metrics_read",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("已确认 synthetic.metrics.read 检查完成，结论高置信。", nil),
+		schema.AssistantMessage("synthetic.metrics.read 未成功返回证据；该项 not_checked，confidence low。", nil),
+	}}
+	registry := progressiveDiscoveryRegistry(t, true)
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, newRecordingCompiler(), model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-progressive-final-evidence",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-progressive-final-evidence",
+		Input:       "verify synthetic final evidence behavior",
+		Metadata:    map[string]string{"aiops.intentToolPack.synthetic_metrics": "1"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
+		t.Fatalf("final output = %q, want low-confidence verifier output", result.Output)
+	}
+}
+
+func progressiveDiscoveryRegistry(t *testing.T, failRead bool) *tooling.Registry {
+	t.Helper()
+	registry := tooling.NewRegistry()
+	tools := []tooling.Tool{
+		&tooling.StaticTool{
+			Meta:                tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskLow},
+			ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+			ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(_ context.Context, raw json.RawMessage) (tooling.ToolResult, error) {
+				var req struct {
+					Mode string `json:"mode"`
+				}
+				_ = json.Unmarshal(raw, &req)
+				if req.Mode == "select" {
+					return tooling.ToolResult{Content: `{"mode":"select","selection":{"loadedTools":["synthetic.metrics.read"],"reason":"selected synthetic metrics read"}}`}, nil
+				}
+				return tooling.ToolResult{Content: `{"mode":"search","matches":[{"kind":"tool","name":"synthetic.metrics.read","pack":"synthetic_metrics","tools":["synthetic.metrics.read"],"capabilityKind":"read","resourceTypes":["metric"],"operationKinds":["read"],"riskLevel":"low","requiresSelect":true}]}`}, nil
+			},
+		},
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:           "synthetic.metrics.read",
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           "synthetic_metrics",
+				DeferByDefault: true,
+				RiskLevel:      tooling.ToolRiskLow,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "read",
+					ResourceTypes:  []string{"metric"},
+					OperationKinds: []string{"read"},
+					RequiresSelect: true,
+				},
+			},
+			ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+			ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+				if failRead {
+					return tooling.ToolResult{}, errors.New("synthetic metrics read timeout")
+				}
+				return tooling.ToolResult{Content: `{"summary":"synthetic metrics checked","status":"ok"}`}, nil
+			},
+		},
+	}
+	for _, tool := range tools {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Metadata().Name, err)
+		}
+	}
+	return registry
+}
+
+func toolSearchCall(id, args string) schema.ToolCall {
+	return schema.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: schema.FunctionCall{
+			Name:      "tool_search",
+			Arguments: args,
+		},
+	}
+}

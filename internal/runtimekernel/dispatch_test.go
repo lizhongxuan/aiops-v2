@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/actionproposal"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/tooling"
@@ -226,6 +227,271 @@ func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testin
 	}
 }
 
+func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter).
+		WithDeferredCatalogLookup(mockDeferredCatalogLookup{
+			"synthetic.resource_reader": {
+				Name:        "synthetic.resource_reader",
+				Description: "Read bounded resources",
+				Layer:       tooling.ToolLayerDeferred,
+				Pack:        "synthetic_resources",
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "read",
+					ResourceTypes:  []string{"resource"},
+					OperationKinds: []string{"read"},
+				},
+			},
+		})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-deferred",
+		"turn-deferred",
+		ToolCall{
+			ID:        "call-deferred",
+			Name:      "synthetic.resource_reader",
+			Arguments: json.RawMessage(`{"uri":"synthetic://resource"}`),
+		},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_unloaded"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_unloaded", result.Error)
+	}
+	if !strings.Contains(result.Error, `"requiredAction":"call tool_search with mode=search, then mode=select"`) {
+		t.Fatalf("dispatch error missing recovery action: %s", result.Error)
+	}
+}
+
+func TestToolDispatcher_DeferredUnavailableMCPToolReturnsStructuredRejection(t *testing.T) {
+	registry := mcp.NewRegistry()
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:  "synthetic_obs",
+		Status:    mcp.HealthUnavailable,
+		LastError: "502 Bad Gateway",
+	})
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter).
+		WithDeferredCatalogLookup(mockDeferredCatalogLookup{
+			"synthetic.observability_metrics": syntheticUnavailableMCPToolMetadata(),
+		})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-deferred-mcp",
+		"turn-deferred-mcp",
+		ToolCall{
+			ID:        "call-deferred-mcp",
+			Name:      "synthetic.observability_metrics",
+			Arguments: json.RawMessage(`{"target":"synthetic-service"}`),
+		},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"mcp_unavailable"`) {
+		t.Fatalf("dispatch error = %q, want structured mcp_unavailable", result.Error)
+	}
+	if !strings.Contains(result.Error, "skipped due to mcp_unavailable") || !strings.Contains(result.Error, `"healthStatus":"unavailable"`) {
+		t.Fatalf("dispatch error missing unavailable health evidence: %s", result.Error)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s for unavailable MCP deferred tool", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_VisibleUnavailableMCPToolDoesNotExecute(t *testing.T) {
+	registry := mcp.NewRegistry()
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{ServerID: "synthetic_obs", Status: mcp.HealthUnavailable})
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	meta := syntheticUnavailableMCPToolMetadata()
+	lookup := &mockToolLookup{tools: map[string]mockToolEntry{
+		"synthetic.observability_metrics": {
+			desc:     ToolDescriptor{Metadata: meta},
+			executor: executor,
+		},
+	}}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-visible-mcp",
+		"turn-visible-mcp",
+		ToolCall{ID: "call-visible-mcp", Name: "synthetic.observability_metrics", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Source != "mcp" || result.Outcome != "tool_failed" || !strings.Contains(result.Error, `"errorType":"mcp_unavailable"`) {
+		t.Fatalf("dispatch result = %#v, want mcp unavailable tool_failed", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 for unavailable MCP", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s for unavailable visible MCP tool", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_UnknownToolReturnsStructuredNotFound(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-unknown",
+		"turn-unknown",
+		ToolCall{ID: "call-unknown", Name: "synthetic.missing", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_not_found"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_not_found", result.Error)
+	}
+}
+
+func TestDispatchUsesSamePolicySnapshot(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "hidden result"}
+	meta := tooling.ToolMetadata{Name: "synthetic.hidden_read", RiskLevel: tooling.ToolRiskLow}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"synthetic.hidden_read": {
+			desc:     ToolDescriptor{Metadata: meta},
+			executor: executor,
+		},
+	}}, nil, emitter).WithToolSurfacePolicySnapshot(&tooling.ToolSurfacePolicySnapshot{
+		Hash: "policy-hash-1",
+		HiddenTools: []tooling.ToolHiddenReason{{
+			Name:   "synthetic.hidden_read",
+			Reason: "hidden_from_prompt",
+		}},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-policy",
+		"turn-policy",
+		ToolCall{ID: "call-hidden", Name: "synthetic.hidden_read", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_hidden_by_policy"`) {
+		t.Fatalf("dispatch error = %q, want tool_hidden_by_policy", result.Error)
+	}
+	if !strings.Contains(result.Error, `"policySnapshotHash":"policy-hash-1"`) {
+		t.Fatalf("dispatch error missing policy snapshot hash: %s", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestToolDispatcher_DedicatedToolPreferenceRejectsUnexplainedShellFallback(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "raw file"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithVisibleToolMetadata([]tooling.ToolMetadata{
+		{
+			Name: "synthetic.read_file",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"file"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-dedicated",
+		"turn-dedicated",
+		ToolCall{ID: "call-shell", Name: "exec_command", Arguments: json.RawMessage(`{"command":"cat","args":["synthetic.log"]}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"dedicated_tool_preferred"`) {
+		t.Fatalf("dispatch error = %q, want dedicated_tool_preferred", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestToolDispatcher_DedicatedToolPreferenceAllowsReasonedShellFallback(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "raw file"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithVisibleToolMetadata([]tooling.ToolMetadata{
+		{
+			Name: "synthetic.read_file",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"file"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-dedicated",
+		"turn-dedicated",
+		ToolCall{ID: "call-shell", Name: "exec_command", Arguments: json.RawMessage(`{"command":"cat","args":["synthetic.log"],"fallbackReason":"need exact byte count from shell"}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error != "" || result.Content != "raw file" {
+		t.Fatalf("dispatch result = %#v, want allowed shell fallback", result)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls)
+	}
+}
+
+type mockDeferredCatalogLookup map[string]tooling.ToolMetadata
+
+func (m mockDeferredCatalogLookup) LookupDeferredTool(name string) (tooling.ToolMetadata, bool) {
+	meta, ok := m[name]
+	return meta, ok
+}
+
+func syntheticUnavailableMCPToolMetadata() tooling.ToolMetadata {
+	return tooling.ToolMetadata{
+		Name:        "synthetic.observability_metrics",
+		Description: "Read synthetic metrics from an external observability source",
+		Layer:       tooling.ToolLayerDeferred,
+		Pack:        "synthetic_observability",
+		Discovery: tooling.ToolDiscoveryMetadata{
+			CapabilityKind:     "metrics",
+			ResourceTypes:      []string{"service"},
+			OperationKinds:     []string{"read"},
+			MCPServerID:        "synthetic_obs",
+			RequiresHealthyMCP: true,
+			RequiresSelect:     true,
+			LoadingPolicy:      tooling.ToolLoadingPolicyDeferred,
+		},
+	}
+}
+
 func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	largeResult := strings.Repeat("x", 20*1024)
@@ -380,6 +646,90 @@ func TestToolDispatcher_FailurePolicyFailTurnDoesNotFeedFailureBackToModel(t *te
 	}
 	if shouldFeedToolFailureBackToModel(result) {
 		t.Fatalf("failure policy should fail the turn, got feed-back result %#v", result)
+	}
+}
+
+func TestToolDispatcher_RejectsArgumentsMissingRequiredSchemaFieldBeforeExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"read_metrics": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "read_metrics",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+					InputSchema: json.RawMessage(`{
+						"type":"object",
+						"required":["namespace"],
+						"properties":{
+							"namespace":{"type":"string"},
+							"service":{"type":"string"}
+						}
+					}`),
+				},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-schema", "turn-schema", ToolCall{
+		ID:        "call-schema",
+		Name:      "read_metrics",
+		Arguments: json.RawMessage(`{"service":"api"}`),
+	}, SessionTypeHost, ModeInspect)
+
+	if result.Outcome != "tool_failed" || result.Source != "runtime" {
+		t.Fatalf("dispatch result = %#v, want runtime tool_failed", result)
+	}
+	if !strings.Contains(result.Error, "invalid arguments") || !strings.Contains(result.Error, "namespace") {
+		t.Fatalf("dispatch error = %q, want invalid arguments mentioning namespace", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 when schema validation fails", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s before schema validation passed", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_RejectsMalformedJSONArgumentsBeforeExecution(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	lookup := &mockToolLookup{
+		tools: map[string]mockToolEntry{
+			"read_metrics": {
+				desc: ToolDescriptor{
+					Metadata: tooling.ToolMetadata{
+						Name:   "read_metrics",
+						Origin: tooling.ToolOriginBuiltin,
+					},
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+				},
+				executor: executor,
+			},
+		},
+	}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(context.Background(), "sess-schema", "turn-schema", ToolCall{
+		ID:        "call-schema",
+		Name:      "read_metrics",
+		Arguments: json.RawMessage(`{`),
+	}, SessionTypeHost, ModeInspect)
+
+	if result.Outcome != "tool_failed" || result.Source != "runtime" {
+		t.Fatalf("dispatch result = %#v, want runtime tool_failed", result)
+	}
+	if !strings.Contains(result.Error, "invalid arguments") {
+		t.Fatalf("dispatch error = %q, want invalid arguments", result.Error)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 when JSON validation fails", executor.calls)
 	}
 }
 

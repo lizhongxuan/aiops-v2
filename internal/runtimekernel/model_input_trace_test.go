@@ -15,6 +15,7 @@ import (
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
 
@@ -128,6 +129,40 @@ func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 	}
 }
 
+func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-plan-requirement",
+		TurnID:    "turn-plan-requirement",
+		Iteration: 0,
+		Compiled:  promptcompiler.CompiledPrompt{},
+		ModelInput: []*schema.Message{
+			{Role: schema.User, Content: "排查一个复杂问题"},
+		},
+		PlanRequirementDecision: &promptinput.PlanRequirementDecisionTrace{
+			Required: true,
+			Decision: "soft",
+			Reason:   "task_depth_requires_plan",
+			Signals:  []string{"plan", "evidence"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"planRequirementDecision"`, `"task_depth_requires_plan"`, `"evidence"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace missing %s:\n%s", want, string(data))
+		}
+	}
+}
+
 func TestModelInputTraceG01FirstTurnBaselineMetrics(t *testing.T) {
 	metrics := buildG01FirstTurnPromptMetrics(t)
 	if metrics.PromptCharCount == 0 {
@@ -139,12 +174,50 @@ func TestModelInputTraceG01FirstTurnBaselineMetrics(t *testing.T) {
 	if metrics.VisibleToolCount == 0 {
 		t.Fatal("visible tool count should be recorded")
 	}
-	for _, want := range []string{"exec_command", "tool_search", "search_ops_manuals"} {
+	for _, want := range []string{"exec_command", "grep", "list_mcp_resources", "read_mcp_resource", "skill_read", "skill_search", "tool_search", "web_search"} {
 		if !containsString(metrics.VisibleToolNames, want) {
 			t.Fatalf("visible tool names = %v, want %q", metrics.VisibleToolNames, want)
 		}
 	}
+	for _, forbidden := range []string{"get_current_model_config", "browse_url", "read_context_artifact", "search_ops_manuals", "coroot.service_metrics"} {
+		if containsString(metrics.VisibleToolNames, forbidden) {
+			t.Fatalf("visible tool names = %v, should not include deferred/internal tool %q", metrics.VisibleToolNames, forbidden)
+		}
+	}
 	t.Logf("G01 first-turn baseline: prompt=%d toolRegistry=%d visibleTools=%d names=%v", metrics.PromptCharCount, metrics.ToolRegistryCharCount, metrics.VisibleToolCount, metrics.VisibleToolNames)
+}
+
+func TestModelInputTraceG01FirstTurnDeferredDirectoryNoSchemas(t *testing.T) {
+	metrics := buildG01FirstTurnPromptMetrics(t)
+	content := metrics.ToolPromptContent
+	for _, want := range []string{
+		"## Deferred Tool Directory",
+		"coroot_metrics",
+		"runtime_config",
+		"select=required",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("tool prompt missing deferred directory marker %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		"coroot.service_metrics",
+		"get_current_model_config:",
+		"appId",
+		"fromTimestamp",
+		`"properties"`,
+		`"required"`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("initial prompt leaked deferred schema/tool detail %q:\n%s", forbidden, content)
+		}
+	}
+	if !deferredDirectoryContainsPack(metrics.PromptInputTrace.DeferredToolDirectory, "coroot_metrics") {
+		t.Fatalf("prompt input trace deferred directory = %#v, want coroot_metrics", metrics.PromptInputTrace.DeferredToolDirectory)
+	}
+	if len(metrics.PromptInputTrace.DeferredToolDirectory) == 0 {
+		t.Fatal("prompt input trace should record deferred tool families")
+	}
 }
 
 func TestModelInputTraceG01FirstTurnP0PromptSizeBudget(t *testing.T) {
@@ -223,6 +296,330 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	}
 	if !strings.Contains(string(diffMarkdown), "tool_result") || !strings.Contains(string(diffMarkdown), "completed") {
 		t.Fatalf("diff markdown missing semantic delta:\n%s", string(diffMarkdown))
+	}
+}
+
+func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-sections",
+		TurnID:    "turn-sections",
+		Iteration: 2,
+		Compiled: promptcompiler.CompiledPrompt{
+			PromptSections: []promptcompiler.PromptSectionTrace{{
+				ID:             "protocol.state",
+				Kind:           "dynamic",
+				Source:         "protocol-state",
+				Hash:           "sha256:abc",
+				Bytes:          32,
+				TokensEstimate: 8,
+			}},
+			ChangedSections: []promptcompiler.ChangedPromptSection{{
+				ID:          "protocol.state",
+				Reason:      promptcompiler.PromptSectionChangeProtocolStateChanged,
+				CurrentHash: "sha256:abc",
+			}},
+		},
+		ModelInput: []*schema.Message{
+			{Role: schema.System, Content: "system"},
+			{Role: schema.User, Content: "user"},
+		},
+		PromptInputTrace: promptinput.PromptInputTrace{
+			ContextUsage: promptinput.ContextUsage{
+				MaxContextTokens:     1000,
+				ReservedOutputTokens: 200,
+				EstimatedInputTokens: 20,
+				Categories: []promptinput.ContextUsageCategory{{
+					Name:           "messages",
+					Bytes:          4,
+					TokensEstimate: 1,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{`"promptSections"`, `"changedSections"`, `"protocol.state"`, `"contextUsage"`, `"messages"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("trace json missing %q:\n%s", want, jsonText)
+		}
+	}
+}
+
+func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID:                     "sess-tool-discovery",
+		TurnID:                        "turn-tool-discovery",
+		Iteration:                     1,
+		ToolSurfaceFingerprint:        "tools:abc",
+		ToolSurfacePolicySnapshotHash: "policy:def",
+		LoadedToolsDelta:              []string{"generic.metrics.read"},
+		LoadedPacksDelta:              []string{"generic_metrics"},
+		ToolSearchEvents: []promptinput.ToolSearchTraceEvent{{
+			Mode:       "search",
+			Query:      "metrics read",
+			MatchCount: 1,
+			Matches:    []string{"generic_metrics"},
+		}},
+		ToolSelectionEvents: []promptinput.ToolSelectionTraceEvent{{
+			Source:      "tool_search.select",
+			Reason:      "need read-only metrics evidence",
+			LoadedTools: []string{"generic.metrics.read"},
+			LoadedPacks: []string{"generic_metrics"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{
+		`"toolSurfaceFingerprint": "tools:abc"`,
+		`"toolSurfacePolicySnapshotHash": "policy:def"`,
+		`"loadedToolsDelta"`,
+		`"loadedPacksDelta"`,
+		`"toolSearchEvents"`,
+		`"toolSelectionEvents"`,
+		`"generic.metrics.read"`,
+	} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("trace json missing %q:\n%s", want, jsonText)
+		}
+	}
+	markdown, err := os.ReadFile(modelTraceMarkdownPath(path))
+	if err != nil {
+		t.Fatalf("read trace markdown: %v", err)
+	}
+	for _, want := range []string{"## Tool Discovery Trace", "tool_surface_fingerprint", "generic.metrics.read", "tool_search.select"} {
+		if !strings.Contains(string(markdown), want) {
+			t.Fatalf("trace markdown missing %q:\n%s", want, string(markdown))
+		}
+	}
+}
+
+func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID:         "sess-skill-discovery",
+		TurnID:            "turn-skill-discovery",
+		Iteration:         1,
+		SkillIndexHash:    "sha256:index",
+		LoadedSkillsDelta: []string{"synthetic.triage"},
+		SkillSearchEvents: []promptinput.SkillSearchTraceEvent{{
+			Mode:       "search",
+			Query:      "diagnose log",
+			MatchCount: 1,
+			Matches:    []string{"synthetic.triage"},
+		}},
+		SkillReadEvents: []promptinput.SkillReadTraceEvent{{
+			Skill:  "synthetic.triage",
+			Source: "skill_read",
+			Reason: "need bounded checklist",
+			Range:  "0:128",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{
+		`"skillIndexHash": "sha256:index"`,
+		`"loadedSkillsDelta"`,
+		`"skillSearchEvents"`,
+		`"skillReadEvents"`,
+		`"synthetic.triage"`,
+	} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("trace json missing %q:\n%s", want, jsonText)
+		}
+	}
+}
+
+func TestTraceIncludesRejectedToolCalls(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-rejected",
+		TurnID:    "turn-rejected",
+		RejectedToolCalls: []promptinput.RejectedToolCallTraceEvent{{
+			ToolName:             "generic.hidden.read",
+			ErrorType:            "tool_hidden_by_policy",
+			Reason:               "tool is hidden from current prompt surface",
+			RequiredAction:       "request permission, switch mode, or choose a safer alternative",
+			SuggestedSearchQuery: "read-only generic evidence",
+			TurnID:               "turn-rejected",
+			ToolCallID:           "call-hidden",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"rejectedToolCalls"`, `"tool_hidden_by_policy"`, `"requiredAction"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace json missing %q:\n%s", want, string(data))
+		}
+	}
+}
+
+func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-parallel",
+		TurnID:    "turn-parallel",
+		ParallelDispatchGroups: []promptinput.ParallelDispatchTraceGroup{{
+			GroupID:  "turn-parallel-iter-0-parallel-0",
+			Decision: "parallel",
+			Reasons:  []string{"read_only", "non_destructive", "concurrency_safe", "no_approval_required", "shared_resource_key"},
+			ToolCalls: []promptinput.ParallelDispatchToolCall{{
+				ToolCallID:        "call-1",
+				ToolName:          "generic.metrics.read",
+				SharedResourceKey: "host:alpha",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"parallelDispatchGroups"`, `"read_only"`, `"non_destructive"`, `"concurrency_safe"`, `"no_approval_required"`, `"shared_resource_key"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace json missing %q:\n%s", want, string(data))
+		}
+	}
+}
+
+func TestTraceIncludesAgentSchedulingState(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID:      "sess-agent-scheduling",
+		TurnID:         "turn-agent-scheduling",
+		AgentIndexHash: "agent-index-sha256:synthetic",
+		AgentDelegationDecision: &promptinput.AgentDelegationDecisionTrace{
+			Action:         "spawn_new",
+			Reason:         "independent_evidence_surface",
+			CandidateAgent: "synthetic.explorer",
+		},
+		AgentAssignmentLint: []promptinput.AgentAssignmentLintTrace{{
+			AgentID: "synthetic-worker-1",
+			Status:  "pass",
+		}},
+		AgentParallelTraceGroups: []promptinput.AgentParallelTraceGroup{{
+			MissionID:      "synthetic-mission",
+			RequestedCount: 2,
+			SpawnedInTurn:  []string{"synthetic-worker-1", "synthetic-worker-2"},
+		}},
+		ResourceLocks: []promptinput.ResourceLockTrace{{
+			AgentID: "synthetic-worker-1",
+			Action:  "acquired",
+			Key: promptinput.ResourceLockKeyTrace{
+				ResourceType:  "generic_resource",
+				ResourceID:    "synthetic-resource",
+				OperationKind: "read",
+			},
+		}},
+		AgentFinalGate: &promptinput.AgentFinalGateDecisionTrace{
+			Action:        "require_wait",
+			PendingAgents: []string{"synthetic-worker-2"},
+		},
+		AgentNotifications: []promptinput.AgentNotificationTrace{{
+			AgentID: "synthetic-worker-1",
+			Status:  "completed",
+		}},
+		VerificationAgentReport: &promptinput.VerificationAgentReportTrace{
+			Status:       "PASS",
+			Summary:      "verified bounded evidence",
+			EvidenceRefs: []string{"artifact://synthetic/verification"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"agentIndexHash"`, `"agentDelegationDecision"`, `"spawn_new"`, `"agentAssignmentLint"`, `"agentParallelTraceGroups"`, `"resourceLocks"`, `"agentFinalGate"`, `"agentNotifications"`, `"verificationAgentReport"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace json missing %q:\n%s", want, string(data))
+		}
+	}
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read trace markdown: %v", err)
+	}
+	for _, want := range []string{"### Agent Scheduling", "delegation decision: spawn_new", "resource lock acquired", "verification agent: PASS"} {
+		if !strings.Contains(string(markdown), want) {
+			t.Fatalf("trace markdown missing %q:\n%s", want, string(markdown))
+		}
+	}
+}
+
+func TestTraceIncludesFailedToolSummaries(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID: "sess-failed-summary",
+		TurnID:    "turn-failed-summary",
+		FailedToolSummaries: []promptinput.FailedToolSummary{{
+			Tool:          "generic.metrics.read",
+			FailureClass:  "timeout",
+			Attempts:      2,
+			FinalStatus:   "failed",
+			SafeToRetry:   true,
+			ModelGuidance: "Retry only with the same arguments and same tool surface, or choose another read-only evidence source.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"failedToolSummaries"`, `"failureClass": "timeout"`, `"safeToRetry": true`, `"modelGuidance"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace json missing %q:\n%s", want, string(data))
+		}
 	}
 }
 
@@ -360,6 +757,7 @@ func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 		HostID:      "server-local",
 		TurnID:      "turn-runtime-diagnostic-trace",
 		Input:       "排查 Redis 是否异常",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -416,6 +814,7 @@ func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 		HostID:      "server-local",
 		TurnID:      "turn-runtime-response-trace",
 		Input:       "排查 Redis 是否异常",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -488,6 +887,7 @@ func TestRunTurnInjectsRuntimeEnvironmentContextInDebugTrace(t *testing.T) {
 		HostID:      "host-a",
 		TurnID:      "turn-runtime-env-context",
 		Input:       "当前排查主机A上的 Docker Redis，容器 aiops-redis，镜像 redis:7-alpine，端口 36379",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -559,6 +959,49 @@ func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+
+	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+		SessionID:  "sess-depth",
+		TurnID:     "turn-depth",
+		Iteration:  0,
+		Compiled:   promptcompiler.CompiledPrompt{},
+		ModelInput: []*schema.Message{{Role: schema.User, Content: "排查异常"}},
+		TaskDepth:  taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
+		EvidenceCoverage: &EvidenceCoverageDecision{
+			Action:             "continue_gathering",
+			Coverage:           0.5,
+			RequiredDimensions: []string{"plan_context", "tool_evidence"},
+			CoveredDimensions:  []string{"plan_context"},
+			MissingDimensions:  []string{"tool_evidence"},
+			Reasons:            []string{"missing_coverage_dimension"},
+		},
+		ReasoningEffort: "high",
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace: %v", err)
+	}
+	metadata := payload["metadata"].(map[string]any)
+	if metadata["taskDepth.level"] != "investigation" || metadata["reasoningEffort.configured"] != "high" {
+		t.Fatalf("metadata = %#v, want taskDepth and reasoning", metadata)
+	}
+	trace := payload["promptInputTrace"].(map[string]any)
+	if trace["taskDepth"] == nil || trace["evidenceCoverage"] == nil {
+		t.Fatalf("promptInputTrace missing taskDepth/evidenceCoverage: %#v", trace)
+	}
+}
+
 func TestEnrichCompileContextSetsAgentKindFromSessionType(t *testing.T) {
 	hostCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeHost, "host-1", nil, fixedModelInputTraceTime())
 	if hostCtx.AgentKind != promptcompiler.AgentKindWorker {
@@ -587,62 +1030,119 @@ type firstTurnPromptMetrics struct {
 	ToolRegistryCharCount int
 	VisibleToolCount      int
 	VisibleToolNames      []string
+	ToolPromptContent     string
+	PromptInputTrace      promptinput.PromptInputTrace
 }
 
 func buildG01FirstTurnPromptMetrics(t *testing.T) firstTurnPromptMetrics {
 	t.Helper()
 
-	tools := []promptcompiler.Tool{
-		staticTraceTool("exec_command", "Execute a local terminal command on the selected host", tooling.ToolRiskHigh, true),
-		staticTraceTool("get_current_model_config", "Read currently configured LLM provider and model", tooling.ToolRiskMedium, false),
-		staticTraceTool("web_search", "Search the web for current information with source URLs", tooling.ToolRiskMedium, false),
-		staticTraceTool("browse_url", "Fetch a specific http or https URL as readable page text", tooling.ToolRiskMedium, false),
-		staticTraceTool("tool_search", "Search available operational tools by name, description, domain, and governance metadata", tooling.ToolRiskLow, false),
-		staticTraceTool("search_ops_manuals", "Search verified ops manuals for an operations request and return an auditable decision", tooling.ToolRiskLow, false),
+	registry := tooling.NewRegistry()
+	for _, tool := range []promptcompiler.Tool{
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "exec_command", Description: "Execute a local terminal command on the selected host", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskHigh, Mutating: true}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "get_current_model_config", Description: "Read currently configured LLM provider and model", Layer: tooling.ToolLayerDeferred, Pack: "runtime_config", DeferByDefault: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "web_search", Description: "Search the web for current information with source URLs", Layer: tooling.ToolLayerCore, Pack: "public_web", AlwaysLoad: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "browse_url", Description: "Fetch a specific http or https URL as readable page text", Layer: tooling.ToolLayerDeferred, Pack: "public_web", DeferByDefault: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "grep", Description: "Search local files and logs", Layer: tooling.ToolLayerCore, Pack: "filesystem_search", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "list_mcp_resources", Description: "List readable MCP resources", Layer: tooling.ToolLayerCore, Pack: "mcp_resource", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "read_mcp_resource", Description: "Read an MCP resource", Layer: tooling.ToolLayerCore, Pack: "mcp_resource", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "skill_search", Description: "Search available skills", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "skill_read", Description: "Read a selected skill body", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "read_context_artifact", Description: "Read externalized context artifacts", Layer: tooling.ToolLayerConditional, Pack: "context_artifact", RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "tool_search", Description: "Search available operational tools by name, description, domain, and governance metadata", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "search_ops_manuals", Description: "Search verified ops manuals for an operations request and return an auditable decision", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithSchema(tooling.ToolMetadata{
+			Name:           "coroot.service_metrics",
+			Description:    "Read service metric summaries from an external observability source",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "coroot_metrics",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:     "metrics",
+				ResourceTypes:      []string{"service", "resource"},
+				OperationKinds:     []string{"read", "query"},
+				RequiresHealthyMCP: true,
+				RequiresSelect:     true,
+				MCPServerID:        "coroot",
+				SchemaBudgetClass:  "on_demand",
+			},
+		}, json.RawMessage(`{"type":"object","properties":{"appId":{"type":"string"},"fromTimestamp":{"type":"integer"}},"required":["appId"]}`)),
+	} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register(%s) error = %v", tool.Metadata().Name, err)
+		}
 	}
+	tools := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{})
+	deferredCatalog := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true})
 	ctx := promptcompiler.CompileContext{
-		SessionType:    "host",
-		Mode:           "inspect",
-		AssembledTools: tools,
+		SessionType:         "host",
+		Mode:                "chat",
+		AssembledTools:      tools,
+		DeferredToolCatalog: deferredCatalog,
+		MCPHealthSnapshot:   map[string]string{"coroot": "unavailable"},
 	}
 	compiler := promptcompiler.NewCompiler()
 	compiled, err := compiler.Compile(ctx)
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	modelInput, err := compiler.CompileForEino(ctx)
+	promptBuild, err := buildPromptInput([]Message{{
+		Role:    "user",
+		Content: "G01: 排查 ERP 订单提交异常，先收集证据，不要执行变更",
+	}}, compiled)
 	if err != nil {
-		t.Fatalf("CompileForEino() error = %v", err)
+		t.Fatalf("build prompt input error = %v", err)
 	}
-	modelInput = append(modelInput, schema.UserMessage("G01: 排查 ERP 订单提交异常，先收集证据，不要执行变更"))
 
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Metadata().Name)
 	}
 	return firstTurnPromptMetrics{
-		PromptCharCount:       schemaMessageCharCount(modelInput),
+		PromptCharCount:       schemaMessageCharCount(promptBuild.Messages),
 		ToolRegistryCharCount: len(compiled.Tools.Content),
 		VisibleToolCount:      len(names),
 		VisibleToolNames:      names,
+		ToolPromptContent:     compiled.Tools.Content,
+		PromptInputTrace:      promptBuild.Trace,
 	}
 }
 
 func staticTraceTool(name, description string, risk tooling.ToolRiskLevel, mutating bool) promptcompiler.Tool {
+	return staticTraceToolWithMetadata(tooling.ToolMetadata{
+		Name:        name,
+		Description: description,
+		RiskLevel:   risk,
+		Mutating:    mutating,
+	})
+}
+
+func staticTraceToolWithMetadata(meta tooling.ToolMetadata) promptcompiler.Tool {
 	return &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Description: description,
-			RiskLevel:   risk,
-			Mutating:    mutating,
-		},
+		Meta: meta,
 		ReadOnlyFunc: func(json.RawMessage) bool {
-			return !mutating
+			return !meta.Mutating
 		},
 		DestructiveFunc: func(json.RawMessage) bool {
-			return mutating
+			return meta.Mutating
 		},
 	}
+}
+
+func staticTraceToolWithSchema(meta tooling.ToolMetadata, inputSchema json.RawMessage) promptcompiler.Tool {
+	tool := staticTraceToolWithMetadata(meta).(*tooling.StaticTool)
+	tool.InputSchemaData = inputSchema
+	return tool
+}
+
+func deferredDirectoryContainsPack(entries []promptcompiler.DeferredToolDirectoryEntry, pack string) bool {
+	for _, entry := range entries {
+		if entry.Pack == pack {
+			return true
+		}
+	}
+	return false
 }
 
 func schemaMessageCharCount(messages []*schema.Message) int {

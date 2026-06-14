@@ -8,14 +8,16 @@ import (
 	"time"
 
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/workflowgen"
 )
 
 type defaultChatService struct {
-	runtime     RuntimeGateway
-	sessions    SessionSource
-	agentEvents AgentEventService
-	turnRunner  AsyncTurnRunner
-	baseContext context.Context
+	runtime            RuntimeGateway
+	sessions           SessionSource
+	agentEvents        AgentEventService
+	turnRunner         AsyncTurnRunner
+	baseContext        context.Context
+	workflowGeneration *WorkflowGenerationChatService
 }
 
 type AsyncTurnRunner interface {
@@ -41,11 +43,16 @@ func NewChatServiceWithContext(baseContext context.Context, runtime RuntimeGatew
 		eventService = NewAgentEventService(nil)
 	}
 	baseContext = normalizeBaseContext(baseContext)
+	var workflowGeneration *WorkflowGenerationChatService
+	if sessionStore, ok := sessions.(SessionStore); ok {
+		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService)
+	}
 	return &defaultChatService{
-		runtime:     runtime,
-		sessions:    sessions,
-		agentEvents: eventService,
-		baseContext: baseContext,
+		runtime:            runtime,
+		sessions:           sessions,
+		agentEvents:        eventService,
+		baseContext:        baseContext,
+		workflowGeneration: workflowGeneration,
 		turnRunner: defaultAsyncTurnRunner{
 			runtime:     runtime,
 			agentEvents: eventService,
@@ -104,6 +111,11 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	}
 	if req.SessionID == "" {
 		req.SessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
+	}
+	if s.workflowGeneration != nil {
+		if response, handled, err := s.workflowGeneration.Handle(ctx, cmd, req); handled || err != nil {
+			return response, err
+		}
 	}
 	s.appendTurnAcceptedEvents(req)
 	s.turnRunner.Start(ctx, req)

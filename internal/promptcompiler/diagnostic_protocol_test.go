@@ -31,6 +31,14 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 		"timeout != 根因",
 		"command not allowed != 证据不存在",
 		"empty output != 一定无异常",
+		"single failed observability source",
+		"target is known",
+		"aggregate evidence",
+		"independent drill-down",
+		"external dependency edge",
+		"not a terminal root cause",
+		"resolve dependency identity",
+		"endpoint/port",
 		"结论",
 		"置信度",
 		"关键证据",
@@ -45,14 +53,16 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 
 func TestDiagnosticProtocolSectionPlacement(t *testing.T) {
 	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
+	depth := strings.Index(developer, "## Task Depth Contract")
+	planning := strings.Index(developer, "## Planning and Status Tracking")
 	evidence := strings.Index(developer, "## Evidence and Inference")
 	diagnostic := strings.Index(developer, "## Diagnostic Protocol")
 	investigation := strings.Index(developer, "## AIOps Investigation Loop")
-	if evidence == -1 || diagnostic == -1 || investigation == -1 {
+	if depth == -1 || planning == -1 || evidence == -1 || diagnostic == -1 || investigation == -1 {
 		t.Fatalf("developer instructions missing required sections:\n%s", developer)
 	}
-	if !(evidence < diagnostic && diagnostic < investigation) {
-		t.Fatalf("Diagnostic Protocol placement invalid: evidence=%d diagnostic=%d investigation=%d", evidence, diagnostic, investigation)
+	if !(depth < planning && evidence < diagnostic && diagnostic < investigation) {
+		t.Fatalf("Diagnostic Protocol placement invalid: depth=%d planning=%d evidence=%d diagnostic=%d investigation=%d", depth, planning, evidence, diagnostic, investigation)
 	}
 }
 

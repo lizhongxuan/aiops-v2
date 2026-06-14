@@ -77,6 +77,57 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).not.toContain("外部依赖异常");
   });
 
+  it("does not repeat completed final answer blocks when another renderer owns the answer document", async () => {
+    const final = "已启动 nginx 容器，映射主机端口 1234 -> 容器端口 80。";
+    const process = [
+      makeBlock({
+        id: "assistant-prelude",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.process",
+        text: "我先检查端口，然后启动容器。",
+      }),
+      makeBlock({
+        id: "cmd-docker-run",
+        kind: "command",
+        status: "completed",
+        command: "docker run -d --name nginx -p 1234:80 nginx:latest",
+        outputPreview: "container-id",
+      }),
+      makeBlock({
+        id: "assistant-final-before-gate",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.final",
+        text: final,
+      }),
+      makeBlock({
+        id: "verification-gate",
+        kind: "evidence",
+        status: "completed",
+        text: "verification completion gate: block_success_final: execution_required,missing_verification_report",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          finalText={final}
+          renderFinalText={false}
+        />,
+      );
+    });
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    expect(text).toContain("我先检查端口，然后启动容器。");
+    expect(text).toContain("已运行 docker run -d --name nginx -p 1234:80 nginx:latest");
+    expect(text).toContain("verification completion gate");
+    expect(text).not.toContain(final);
+  });
+
   it("renders final answer text one step smaller without changing tool transcript text", async () => {
     const process = [
       makeBlock({
@@ -121,6 +172,29 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("处理中");
     expect(container.textContent).toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
+  });
+
+  it("preserves skill_search arguments in tool progress text", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "skill-search-render",
+              kind: "tool",
+              displayKind: "skill_search",
+              text: "skill_search mode=search query=synthetic diagnosis",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await expandProcessTranscript();
+
+    expect(container.textContent).toContain("skill_search mode=search query=synthetic diagnosis");
+    expect(container.textContent).not.toContain("网页检索");
   });
 
   it("shows the active web search query in the running search summary", async () => {
@@ -1454,6 +1528,21 @@ describe("groupConsecutiveBlocks", () => {
     }
     expect(groups[1].kind).toBe("single");
     expect(groups[2].kind).toBe("single");
+  });
+
+  it("does not classify skill discovery tools as web search blocks", () => {
+    const blocks = [
+      makeBlock({ id: "skill-search", kind: "tool", displayKind: "skill_search", text: "skill_search mode=search" }),
+      makeBlock({ id: "skill-read", kind: "tool", displayKind: "skill_read", text: "skill_read skill=synthetic.triage" }),
+    ];
+
+    const groups = groupConsecutiveBlocks(blocks);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].kind).toBe("merged");
+    if (groups[0].kind === "merged") {
+      expect(groups[0].mergedKind).toBe("tool");
+    }
   });
 
   it("handles mixed reasoning and tool blocks correctly", () => {

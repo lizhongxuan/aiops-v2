@@ -1,0 +1,44 @@
+# 2026/06/13 10:46:16.046813 [TestProperty10_PromptToEinoFormatFidelity] [rapid] draw ctx: promptcompiler.CompileContext{SessionType:"host", Mode:"chat", AssembledTools:[]tooling.Tool{}, DeferredToolCatalog:[]tooling.Tool(nil), MCPHealthSnapshot:map[string]string(nil), RuntimePolicy:"", PlanningPolicy:"", EvidencePolicy:"", AnswerStyle:"", ToolBudget:"", TaskDepth:taskdepth.Profile{Level:"", Reasons:[]string(nil), RequiresPlan:false, RequiresEvidence:false, RequiresValidation:false, AllowsFirstTurnFinal:false}, ReasoningEffort:"", ReasoningSummary:"", ReasoningSummaryDisplay:"", ShowRawReasoning:false, DisableDiagnosticProtocol:false, HostContext:"", WorkspaceContext:"", SkillPromptAssets:[]string{"    A"}, HostTaskPromptAssets:[]string(nil), LoadedSkillRefs:[]promptcompiler.LoadedSkillPromptRef(nil), EvidenceReminders:[]string(nil), HostOpsManager:false, HostOpsPlanRequired:false, MCPPromptAssets:[]string{}, ExtraSections:[]promptcompiler.PromptSection(nil), ToolDelta:promptcompiler.ToolPromptDelta{Content:"", NewlyAvailable:[]string(nil), NewlyAvailablePacks:[]string(nil), TemporarilyUnavailable:[]string(nil), ApprovalRequired:[]string(nil)}, ProtocolState:promptcompiler.ProtocolPromptState{Items:[]promptcompiler.ProtocolPromptItem(nil), PlanMode:(*promptcompiler.PlanModePromptState)(nil), TaskTodo:(*promptcompiler.TaskTodoPromptState)(nil), FailureSwitchPath:(*promptcompiler.FailureSwitchPathPromptState)(nil)}, AgentKind:""}
+# 2026/06/13 10:46:16.047014 [TestProperty10_PromptToEinoFormatFidelity] Message[3] content mismatch with Policy layer.
+# Got:  "## Active Skill Context\nThese fragments are from activated skills only. Do not infer that other skills are loaded; use the skill catalog or tool surface before relying on additional skill instructions.\n### Activated skill asset 1\nA\n\n# Runtime Policy\nPolicy: Chat mode. Only lightweight read-only operations and web search are permitted. All mutation operations are strictly forbidden."
+# Want: "# Runtime Policy\nPolicy: Chat mode. Only lightweight read-only operations and web search are permitted. All mutation operations are strictly forbidden."
+# 
+v0.4.8#16863967614513348113
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

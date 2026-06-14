@@ -3,7 +3,10 @@ package appui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+
+	"aiops-v2/internal/hostops"
 )
 
 type transportCommandChatServiceStub struct {
@@ -90,6 +93,54 @@ type transportCommandMCPServiceStub struct {
 	refreshErr    error
 }
 
+type transportCommandHostOpsServiceStub struct {
+	acceptedMissionID string
+	acceptedPlanID    string
+
+	revisedMissionID string
+	revisionText     string
+
+	childMessageID   string
+	childMessageText string
+
+	stoppedChildID string
+}
+
+func (s *transportCommandHostOpsServiceStub) CreateMission(context.Context, HostMissionCreateCommand) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) GetMission(context.Context, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) AcceptPlan(_ context.Context, missionID, planID string) (HostOperationView, error) {
+	s.acceptedMissionID = missionID
+	s.acceptedPlanID = planID
+	return HostOperationView{ID: missionID, Status: "spawning_children"}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) RevisePlan(_ context.Context, missionID, instruction string) (HostOperationView, error) {
+	s.revisedMissionID = missionID
+	s.revisionText = instruction
+	return HostOperationView{ID: missionID, Status: "planning"}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) SendChildMessage(_ context.Context, childAgentID, content string) (HostChildAgentView, error) {
+	s.childMessageID = childAgentID
+	s.childMessageText = content
+	return HostChildAgentView{ID: childAgentID, Status: "running"}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) StopChildAgent(_ context.Context, childAgentID string) (HostChildAgentView, error) {
+	s.stoppedChildID = childAgentID
+	return HostChildAgentView{ID: childAgentID, Status: "cancelled"}, nil
+}
+
+func (s *transportCommandHostOpsServiceStub) ChildTranscript(context.Context, string) (HostChildTranscriptView, error) {
+	return HostChildTranscriptView{}, nil
+}
+
 func (s *transportCommandMCPServiceStub) List(context.Context) (MCPServersPayload, error) {
 	return MCPServersPayload{}, nil
 }
@@ -160,6 +211,115 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	}
 	if result.SessionID != "sess-1" || result.TurnID != "turn-1" {
 		t.Fatalf("result = %+v, want sess-1/turn-1", result)
+	}
+}
+
+func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@1.1.1.1和@1.1.1.2作为pg节点，搭建主从集群"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if chat.sendCmd.Metadata["aiops.hostops.routeKind"] != "host_ops" {
+		t.Fatalf("routeKind metadata = %q, want host_ops", chat.sendCmd.Metadata["aiops.hostops.routeKind"])
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.planRequired"] != "true" {
+		t.Fatalf("planRequired metadata = %q, want true", chat.sendCmd.Metadata["aiops.hostops.planRequired"])
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"] != "true" {
+		t.Fatalf("serverDetectedMultiHost metadata = %q, want true", chat.sendCmd.Metadata["aiops.hostops.serverDetectedMultiHost"])
+	}
+	if !metadataListContainsValueForTest(chat.sendCmd.Metadata["enableToolPack"], hostops.ToolPackHostOps) {
+		t.Fatalf("enableToolPack metadata = %q, want %q", chat.sendCmd.Metadata["enableToolPack"], hostops.ToolPackHostOps)
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.mentions"] == "" {
+		t.Fatal("expected serialized server-side mentions metadata")
+	}
+
+	missionID := nextState.ActiveHostMissionID
+	if missionID == "" {
+		t.Fatal("ActiveHostMissionID is empty")
+	}
+	mission := nextState.HostMissions[missionID]
+	if mission.ID != missionID || mission.TurnID != "turn-1" {
+		t.Fatalf("mission identity = %+v, want active mission for turn-1", mission)
+	}
+	if mission.Status != "waiting_plan_acceptance" || !mission.PlanRequired || mission.PlanAccepted {
+		t.Fatalf("mission status/plan = %+v, want waiting required unaccepted", mission)
+	}
+	if len(mission.MentionedHosts) != 2 {
+		t.Fatalf("mentioned hosts = %+v, want 2", mission.MentionedHosts)
+	}
+}
+
+func metadataListContainsValueForTest(raw, want string) bool {
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, field := range fields {
+		if strings.TrimSpace(field) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestTransportCommandsHostPlanAcceptCallsHostOpsService(t *testing.T) {
+	hostOps := &transportCommandHostOpsServiceStub{}
+	handler := NewTransportCommandHandler(nil, nil, nil, nil).WithHostOpsService(hostOps)
+	state := NewAiopsTransportState("sess-1", "thread-1")
+	state.HostMissions["mission-1"] = AiopsTransportHostMission{ID: "mission-1", Status: "waiting_plan_acceptance"}
+
+	nextState, result, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type:           TransportCommandTypeHostPlanAccept,
+		HostPlanAccept: &TransportHostPlanAcceptCommand{MissionID: "mission-1", PlanID: "plan-1"},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if hostOps.acceptedMissionID != "mission-1" || hostOps.acceptedPlanID != "plan-1" {
+		t.Fatalf("hostOps accept = %q/%q, want mission-1/plan-1", hostOps.acceptedMissionID, hostOps.acceptedPlanID)
+	}
+	if !nextState.HostMissions["mission-1"].PlanAccepted || nextState.HostMissions["mission-1"].Status != "spawning_children" {
+		t.Fatalf("mission state = %+v, want accepted/spawning_children", nextState.HostMissions["mission-1"])
+	}
+	if result.Status != "spawning_children" {
+		t.Fatalf("result.Status = %q, want spawning_children", result.Status)
+	}
+}
+
+func TestTransportCommandsChildAgentMessageCallsHostOpsService(t *testing.T) {
+	hostOps := &transportCommandHostOpsServiceStub{}
+	handler := NewTransportCommandHandler(nil, nil, nil, nil).WithHostOpsService(hostOps)
+	state := NewAiopsTransportState("sess-1", "thread-1")
+	state.ChildAgents["agent-1"] = AiopsTransportChildAgent{ID: "agent-1", Status: "waiting"}
+
+	nextState, result, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type:              TransportCommandTypeChildAgentMessage,
+		ChildAgentMessage: &TransportChildAgentMessageCommand{ChildAgentID: "agent-1", Content: "只读检查，不要修改"},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if hostOps.childMessageID != "agent-1" || hostOps.childMessageText != "只读检查，不要修改" {
+		t.Fatalf("child message = %q/%q, want agent-1/content", hostOps.childMessageID, hostOps.childMessageText)
+	}
+	if nextState.ChildAgents["agent-1"].Status != "running" {
+		t.Fatalf("child state = %+v, want running", nextState.ChildAgents["agent-1"])
+	}
+	if result.Status != "running" {
+		t.Fatalf("result.Status = %q, want running", result.Status)
 	}
 }
 

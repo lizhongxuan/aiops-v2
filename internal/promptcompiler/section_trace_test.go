@@ -1,0 +1,117 @@
+package promptcompiler
+
+import "testing"
+
+func TestPromptSectionsChangedOnlyProtocolState(t *testing.T) {
+	compiler := NewCompiler()
+	baseCtx := CompileContext{
+		Mode:          "inspect",
+		RuntimePolicy: "runtime policy",
+		ProtocolState: ProtocolPromptState{Items: []ProtocolPromptItem{{
+			Kind:   "plan",
+			ID:     "step-1",
+			Status: "pending",
+			Text:   "collect evidence",
+		}}},
+	}
+	first, err := compiler.Compile(baseCtx)
+	if err != nil {
+		t.Fatalf("compile first: %v", err)
+	}
+
+	secondCtx := baseCtx
+	secondCtx.ProtocolState = ProtocolPromptState{Items: []ProtocolPromptItem{{
+		Kind:   "plan",
+		ID:     "step-1",
+		Status: "completed",
+		Text:   "collect evidence",
+	}}}
+	second, err := compiler.Compile(secondCtx)
+	if err != nil {
+		t.Fatalf("compile second: %v", err)
+	}
+
+	changed := ChangedPromptSections(first.PromptSections, second.PromptSections)
+	if len(changed) != 1 {
+		t.Fatalf("changed sections = %#v, want only protocol.state", changed)
+	}
+	if changed[0].ID != "protocol.state" {
+		t.Fatalf("changed section id = %q, want protocol.state", changed[0].ID)
+	}
+	if changed[0].Reason != PromptSectionChangeProtocolStateChanged {
+		t.Fatalf("changed reason = %q, want %q", changed[0].Reason, PromptSectionChangeProtocolStateChanged)
+	}
+	for _, section := range second.PromptSections {
+		if section.ID == "" || section.Hash == "" {
+			t.Fatalf("section missing stable metadata: %#v", section)
+		}
+		if section.ID == "protocol.state" && section.TokensEstimate == 0 {
+			t.Fatalf("protocol.state should have a token estimate: %#v", section)
+		}
+	}
+}
+
+func TestPromptSectionsIncludeRequiredRedactionSafeIDs(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		Mode:              "plan",
+		RuntimePolicy:     "runtime policy with token=secret-value",
+		SkillPromptAssets: []string{"dynamic asset with password=secret"},
+		ProtocolState: ProtocolPromptState{Items: []ProtocolPromptItem{{
+			Kind:   "approval",
+			ID:     "approval-1",
+			Status: "pending",
+			Text:   "requires review",
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	byID := map[string]PromptSectionTrace{}
+	for _, section := range compiled.PromptSections {
+		byID[section.ID] = section
+		if section.Source == "" || section.Kind == "" || section.Bytes < 0 || section.TokensEstimate < 0 {
+			t.Fatalf("section has incomplete metadata: %#v", section)
+		}
+	}
+	for _, want := range []string{
+		"system.role",
+		"developer.core_rules",
+		"tools.index",
+		"runtime.policy",
+		"protocol.state",
+		"context.dynamic_assets",
+	} {
+		if _, ok := byID[want]; !ok {
+			t.Fatalf("missing prompt section %q in %#v", want, byID)
+		}
+	}
+}
+
+func TestApplyPromptSectionCacheMarksHitMissAndInvalidated(t *testing.T) {
+	previous := []PromptSectionTrace{
+		{ID: "system.role", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
+		{ID: "protocol.state", Hash: "sha256:old", Cache: PromptSectionCacheMiss},
+	}
+	current := []PromptSectionTrace{
+		{ID: "system.role", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
+		{ID: "protocol.state", Hash: "sha256:new", Cache: PromptSectionCacheMiss},
+		{ID: "context.dynamic_assets", Hash: "sha256:added", Cache: PromptSectionCacheMiss},
+	}
+
+	cached := ApplyPromptSectionCache(previous, current)
+	byID := map[string]PromptSectionTrace{}
+	for _, section := range cached {
+		byID[section.ID] = section
+	}
+
+	if byID["system.role"].Cache != PromptSectionCacheHit {
+		t.Fatalf("system.role cache = %q, want %q", byID["system.role"].Cache, PromptSectionCacheHit)
+	}
+	if byID["protocol.state"].Cache != PromptSectionCacheInvalidated {
+		t.Fatalf("protocol.state cache = %q, want %q", byID["protocol.state"].Cache, PromptSectionCacheInvalidated)
+	}
+	if byID["context.dynamic_assets"].Cache != PromptSectionCacheMiss {
+		t.Fatalf("context.dynamic_assets cache = %q, want %q", byID["context.dynamic_assets"].Cache, PromptSectionCacheMiss)
+	}
+}

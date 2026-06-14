@@ -93,18 +93,19 @@ func TestGetModel_ProviderConfigResolverOverridesDefaultRouting(t *testing.T) {
 			Model:            "gpt-5.4",
 			BaseURL:          "http://127.0.0.1:8317/v1",
 			MaxContextTokens: 64000,
+			ReasoningEffort:  "high",
 		},
 		ok: true,
 	})
 	r.SetProviderFactory("openai", func(_ context.Context, _ AgentKind, config ProviderConfig, _ auth.CredentialTruth, _ bool) (ChatModel, error) {
-		return &mockModel{name: config.Provider + "|" + config.Model + "|" + config.BaseURL}, nil
+		return &mockModel{name: config.Provider + "|" + config.Model + "|" + config.BaseURL + "|" + config.ReasoningEffort}, nil
 	})
 
-	m, err := r.GetModel(AgentKindWorker, ProviderConfig{})
+	m, err := r.GetModel(AgentKindWorker, ProviderConfig{ReasoningEffort: "low"})
 	if err != nil {
 		t.Fatalf("GetModel() error = %v", err)
 	}
-	if got := m.(*mockModel).name; got != "openai|gpt-5.4|http://127.0.0.1:8317/v1" {
+	if got := m.(*mockModel).name; got != "openai|gpt-5.4|http://127.0.0.1:8317/v1|low" {
 		t.Fatalf("model config = %q, want saved provider/model/baseURL", got)
 	}
 

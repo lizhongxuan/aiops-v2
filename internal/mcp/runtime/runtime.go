@@ -12,22 +12,25 @@ import (
 )
 
 type RuntimeOptions struct {
-	Registry      *mcp.Registry
-	ClientFactory ClientFactory
+	Registry           *mcp.Registry
+	ClientFactory      ClientFactory
+	GovernanceProvider ServerGovernanceProvider
 }
 
 type Runtime struct {
-	mu       sync.RWMutex
-	registry *mcp.Registry
-	factory  ClientFactory
-	clients  map[string]Client
+	mu                 sync.RWMutex
+	registry           *mcp.Registry
+	factory            ClientFactory
+	governanceProvider ServerGovernanceProvider
+	clients            map[string]Client
 }
 
 func New(opts RuntimeOptions) *Runtime {
 	return &Runtime{
-		registry: opts.Registry,
-		factory:  opts.ClientFactory,
-		clients:  map[string]Client{},
+		registry:           opts.Registry,
+		factory:            opts.ClientFactory,
+		governanceProvider: opts.GovernanceProvider,
+		clients:            map[string]Client{},
 	}
 }
 
@@ -201,11 +204,15 @@ func (r *Runtime) refresh(ctx context.Context, cfg mcp.ServerConfig, client Clie
 		return err
 	}
 	adapted := make([]tooling.Tool, 0, len(tools))
+	governance := mcp.ServerGovernance{}
+	if r.governanceProvider != nil {
+		governance = r.governanceProvider.ServerGovernance(cfg.ID)
+	}
 	for _, def := range tools {
 		if strings.TrimSpace(def.Name) == "" {
 			continue
 		}
-		adapted = append(adapted, makeTool(cfg, def, r.CallTool))
+		adapted = append(adapted, makeTool(cfg, governance, def, r.CallTool))
 	}
 	if err := r.registry.OnServerConnected(cfg.ID, adapted); err != nil {
 		return err

@@ -27,7 +27,7 @@ const defaultSessionWorkspaceContext: SessionWorkspaceContextValue = {
   llmLabel: "LLM 未配置",
   llmConfigured: false,
   busy: false,
-  composerDisabledReason: "请先创建会话并配置 LLM",
+  composerDisabledReason: "正在初始化会话",
   composerFocusNonce: 0,
   createSession: noop,
   clearContext: noop,

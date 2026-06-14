@@ -83,6 +83,69 @@ func TestMicrocompactProducesTraceEvent(t *testing.T) {
 	}
 }
 
+func TestMicrocompactCompactsOldLargeInlineToolResult(t *testing.T) {
+	largeInline := strings.Repeat("inline payload ", 80)
+	messages := []Message{
+		{ID: "old-large", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-old-large", Content: largeInline}},
+		{ID: "recent-small", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-recent-small", Content: "small recent result"}},
+	}
+
+	result := MicrocompactMessages(messages, MicrocompactOptions{
+		KeepRecentGroups:           1,
+		LargeInlineResultMinTokens: 20,
+		LargeInlineResultMinBytes:  80,
+		PendingEvidenceToolCallIDs: []string{"call-pending-evidence"},
+		ApprovalBlockerToolCallIDs: []string{"call-approval-blocker"},
+	})
+
+	if len(result.Messages) != len(messages) {
+		t.Fatalf("messages = %d, want %d", len(result.Messages), len(messages))
+	}
+	compacted := result.Messages[0].ToolResult
+	if compacted == nil {
+		t.Fatal("compacted tool result missing")
+	}
+	if compacted.ToolCallID != "call-old-large" {
+		t.Fatalf("toolCallId = %q", compacted.ToolCallID)
+	}
+	if !strings.Contains(compacted.Content, "Old tool result compacted") {
+		t.Fatalf("old large inline result not compacted: %q", compacted.Content)
+	}
+	if strings.Contains(compacted.Content, largeInline) {
+		t.Fatal("compacted content still contains full inline payload")
+	}
+	if result.Messages[1].ToolResult.Content != "small recent result" {
+		t.Fatalf("recent keep group changed: %q", result.Messages[1].ToolResult.Content)
+	}
+}
+
+func TestMicrocompactProtectsPendingEvidenceAndApprovalBlockers(t *testing.T) {
+	messages := []Message{
+		{ID: "pending-evidence", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-pending-evidence", Content: strings.Repeat("evidence payload ", 80)}},
+		{ID: "approval-blocker", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-approval-blocker", Content: strings.Repeat("approval payload ", 80)}},
+		{ID: "old-large", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-old-large", Content: strings.Repeat("ordinary payload ", 80)}},
+		{ID: "recent", Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-recent", Content: "recent result"}},
+	}
+
+	result := MicrocompactMessages(messages, MicrocompactOptions{
+		KeepRecentGroups:           1,
+		LargeInlineResultMinTokens: 20,
+		LargeInlineResultMinBytes:  80,
+		PendingEvidenceToolCallIDs: []string{"call-pending-evidence"},
+		ApprovalBlockerToolCallIDs: []string{"call-approval-blocker"},
+	})
+
+	if result.Messages[0].ToolResult.Content != messages[0].ToolResult.Content {
+		t.Fatal("pending evidence result was compacted")
+	}
+	if result.Messages[1].ToolResult.Content != messages[1].ToolResult.Content {
+		t.Fatal("approval blocker result was compacted")
+	}
+	if !strings.Contains(result.Messages[2].ToolResult.Content, "Old tool result compacted") {
+		t.Fatalf("ordinary old large result was not compacted: %q", result.Messages[2].ToolResult.Content)
+	}
+}
+
 func testToolResultMessage(id, toolName, content, refID string) Message {
 	return Message{
 		ID:   id,

@@ -16,6 +16,16 @@ type DynamicToolProvider interface {
 	DynamicTools() []Tool
 }
 
+type DynamicToolScope struct {
+	TenantID string
+	UserID   string
+	Profile  string
+}
+
+type ScopedDynamicToolProvider interface {
+	DynamicToolsForScope(DynamicToolScope) []Tool
+}
+
 // DynamicToolRefreshTokenProvider optionally supplies a stable token that
 // changes whenever the provider's dynamic tool surface changes.
 type DynamicToolRefreshTokenProvider interface {
@@ -55,7 +65,7 @@ func (a *Assembler) AssembleToolsWithOptions(session, mode string, opts Assemble
 	merged := opts
 	merged.ExtraTools = append([]Tool(nil), opts.ExtraTools...)
 	for _, provider := range a.providers {
-		merged.ExtraTools = append(merged.ExtraTools, provider.DynamicTools()...)
+		merged.ExtraTools = append(merged.ExtraTools, dynamicToolsForAssembleOptions(provider, opts)...)
 	}
 
 	if a.registry == nil {
@@ -98,12 +108,22 @@ func (a *Assembler) StableToolFingerprint(session, mode string, opts AssembleOpt
 	}
 
 	h := sha256.New()
+	writeFingerprintPart(h, "scope-tenant", opts.TenantID)
+	writeFingerprintPart(h, "scope-user", opts.UserID)
+	writeFingerprintPart(h, "scope-profile", opts.Profile)
+	writeFingerprintPart(h, "context-artifact-available", fmtBoolForFingerprint(opts.ContextArtifactAvailable))
+	for _, capability := range sortedFingerprintStrings(opts.RuntimeCapabilities) {
+		writeFingerprintPart(h, "runtime-capability", capability)
+	}
+	for _, serverID := range sortedFingerprintMapKeys(opts.MCPHealthSnapshot) {
+		writeFingerprintPart(h, "mcp-health", serverID+"="+opts.MCPHealthSnapshot[serverID])
+	}
 
 	for _, provider := range a.providers {
 		if tokenProvider, ok := any(provider).(DynamicToolRefreshTokenProvider); ok {
 			writeFingerprintPart(h, "provider-token", tokenProvider.DynamicToolRefreshToken())
 		} else {
-			for _, tool := range provider.DynamicTools() {
+			for _, tool := range dynamicToolsForAssembleOptions(provider, opts) {
 				writeFingerprintPart(h, "provider-tool", fingerprintTool(session, mode, tool))
 			}
 		}
@@ -114,6 +134,20 @@ func (a *Assembler) StableToolFingerprint(session, mode string, opts AssembleOpt
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func dynamicToolsForAssembleOptions(provider DynamicToolProvider, opts AssembleOptions) []Tool {
+	if provider == nil {
+		return nil
+	}
+	if scoped, ok := any(provider).(ScopedDynamicToolProvider); ok {
+		return scoped.DynamicToolsForScope(DynamicToolScope{
+			TenantID: strings.TrimSpace(opts.TenantID),
+			UserID:   strings.TrimSpace(opts.UserID),
+			Profile:  strings.TrimSpace(opts.Profile),
+		})
+	}
+	return provider.DynamicTools()
 }
 
 func fingerprintTool(session, mode string, tool Tool) string {
@@ -159,4 +193,26 @@ func writeFingerprintPart(h interface{ Write([]byte) (int, error) }, kind, value
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(value))
 	_, _ = h.Write([]byte{0})
+}
+
+func fmtBoolForFingerprint(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func sortedFingerprintStrings(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
+}
+
+func sortedFingerprintMapKeys(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

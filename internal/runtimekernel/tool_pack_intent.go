@@ -4,127 +4,38 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/agentstate"
-	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/tooling"
 )
 
-func applyIntentToolPacks(metadata map[string]string, input string) map[string]string {
-	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" {
-		return metadata
-	}
-	if containsAnyIntent(text, []string{"rca", "root cause", "根因", "异常", "warning", "告警", "延迟升高", "error rate", "排查", "诊断", "故障", "问题", "diagnose", "diagnosis", "outage", "incident analysis"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_rca")
-	}
-	if containsAnyIntent(text, []string{"图表", "chart", "charts", "指标明细", "metric detail", "metrics detail", "时序", "timeseries", "趋势", "slo 详情", "slo status", "service metrics", "latency chart", "cpu chart", "memory chart"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_metrics")
-	}
-	if containsAnyIntent(text, []string{"拓扑图", "topology", "service topology", "依赖图", "dependency graph", "dependencies", "服务拓扑"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_topology")
-	}
-	if containsAnyIntent(text, []string{"coroot rca report", "native rca", "rca reference", "root cause report", "coroot 根因报告"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_rca_reference")
-	}
-	if containsAnyIntent(text, []string{"incident", "alert", "告警", "事件", "timeline"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_incident")
-	}
-	if containsAnyIntent(text, []string{"log", "logs", "logging", "日志", "错误日志"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_logs")
-	}
-	if containsAnyIntent(text, []string{"trace", "traces", "tracing", "span", "spans", "链路", "调用链", "trace id"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_traces")
-	}
-	if containsAnyIntent(text, []string{"profile", "profiling", "flamegraph", "cpu profile", "memory profile", "pprof", "火焰图", "性能剖析"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_profiling")
-	}
-	if containsAnyIntent(text, []string{"deployment", "deployments", "deploy", "release", "rollout", "rollback", "发布", "部署", "变更"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_deployments")
-	}
-	if containsAnyIntent(text, []string{"node", "nodes", "host", "hosts", "infrastructure", "infra", "主机", "节点", "机器", "基础设施"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_nodes")
-	}
-	if containsAnyIntent(text, []string{"risk", "risks", "风险", "隐患"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_risks")
-	}
-	if containsAnyIntent(text, []string{"dashboard", "dashboards", "panel", "coroot panel", "仪表盘", "看板", "面板"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_dashboard")
-	}
-	if containsAnyIntent(text, []string{"integration", "integrations", "inspection", "inspections", "configuration", "config", "category", "custom application", "集成", "巡检", "配置", "应用分类", "自定义应用"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_config_read")
-	}
-	if containsAnyIntent(text, []string{"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"}) {
-		metadata = enableIntentToolPack(metadata, "coroot_admin_read")
-	}
-	if containsAnyIntent(text, []string{"业务影响", "影响哪些业务", "业务能力", "租户", "依赖关系", "服务图谱", "runbook 关联", "business impact", "tenant", "dependency graph"}) {
-		metadata = enableIntentToolPack(metadata, "opsgraph")
-	}
-	if opsmanual.ShouldSearchForOpsManuals(text) {
-		metadata = enableIntentToolPack(metadata, "ops_manual_flow")
-	}
-	if containsAnyIntent(text, []string{"mcp resource", "mcp_resource", "resource uri", "mcp://"}) || (strings.Contains(text, "resource") && strings.Contains(text, "://")) {
-		metadata = enableIntentToolPack(metadata, "mcp_resource")
+func applyProgressiveToolPackMetadata(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {
+	metadata = applyContinuationToolPacks(metadata, input, session, catalog)
+	metadata = applyIntentToolPacks(metadata, input, catalog)
+	return applyToolDiscoveryTurnMetadata(metadata, session)
+}
+
+func applyIntentToolPacks(metadata map[string]string, input string, catalog []tooling.Tool) map[string]string {
+	for _, match := range tooling.MatchToolPacksByMetadata(catalog, input) {
+		if !intentPackMatchEligible(match, catalog) {
+			continue
+		}
+		metadata = enableIntentToolPack(metadata, match.Pack)
 	}
 	return metadata
 }
 
-func applyContinuationToolPacks(metadata map[string]string, input string, session *SessionState) map[string]string {
+func applyContinuationToolPacks(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {
 	if !isContinuationOnlyInput(input) || session == nil {
 		return metadata
 	}
 	for _, toolName := range recentSessionToolNames(session, 4) {
-		switch {
-		case toolNameMatches(toolName, "coroot.collect_rca_context"):
-			metadata = enableIntentToolPack(metadata, "coroot_rca")
-		case toolNameMatches(toolName, "coroot.service_metrics"),
-			toolNameMatches(toolName, "coroot.slo_status"):
-			metadata = enableIntentToolPack(metadata, "coroot_metrics")
-		case toolNameMatches(toolName, "coroot.rca_report"):
-			metadata = enableIntentToolPack(metadata, "coroot_rca_reference")
-		case toolNameMatches(toolName, "coroot.service_topology"):
-			metadata = enableIntentToolPack(metadata, "coroot_topology")
-		case toolNameMatches(toolName, "coroot.nodes_overview"),
-			toolNameMatches(toolName, "coroot.get_node"):
-			metadata = enableIntentToolPack(metadata, "coroot_nodes")
-		case toolNameMatches(toolName, "coroot.traces_overview"),
-			toolNameMatches(toolName, "coroot.application_traces"):
-			metadata = enableIntentToolPack(metadata, "coroot_traces")
-		case toolNameMatches(toolName, "coroot.deployments_overview"):
-			metadata = enableIntentToolPack(metadata, "coroot_deployments")
-		case toolNameMatches(toolName, "coroot.risks_overview"):
-			metadata = enableIntentToolPack(metadata, "coroot_risks")
-		case toolNameMatches(toolName, "coroot.application_logs"):
-			metadata = enableIntentToolPack(metadata, "coroot_logs")
-		case toolNameMatches(toolName, "coroot.application_profiling"):
-			metadata = enableIntentToolPack(metadata, "coroot_profiling")
-		case toolNameMatches(toolName, "coroot.incidents"),
-			toolNameMatches(toolName, "coroot.alert_rules"),
-			toolNameMatches(toolName, "coroot.incident_timeline"):
-			metadata = enableIntentToolPack(metadata, "coroot_incident")
-		case toolNameMatches(toolName, "coroot.list_dashboards"),
-			toolNameMatches(toolName, "coroot.get_dashboard"),
-			toolNameMatches(toolName, "coroot.get_panel_data"):
-			metadata = enableIntentToolPack(metadata, "coroot_dashboard")
-		case toolNameMatches(toolName, "coroot.list_integrations"),
-			toolNameMatches(toolName, "coroot.get_integration"),
-			toolNameMatches(toolName, "coroot.list_inspections"),
-			toolNameMatches(toolName, "coroot.get_inspection_config"),
-			toolNameMatches(toolName, "coroot.get_application_categories"),
-			toolNameMatches(toolName, "coroot.get_custom_applications"):
-			metadata = enableIntentToolPack(metadata, "coroot_config_read")
-		case toolNameMatches(toolName, "coroot.health_check"),
-			toolNameMatches(toolName, "coroot.list_projects"),
-			toolNameMatches(toolName, "coroot.get_project_status"):
-			metadata = enableIntentToolPack(metadata, "coroot_admin_read")
-		case toolNameMatches(toolName, "opsgraph.business_impact"):
-			metadata = enableIntentToolPack(metadata, "opsgraph")
-		case toolNameMatches(toolName, "list_mcp_resources"),
-			toolNameMatches(toolName, "read_mcp_resource"),
-			toolNameMatches(toolName, "mcp.list_resources"),
-			toolNameMatches(toolName, "mcp.read_resource"):
-			metadata = enableIntentToolPack(metadata, "mcp_resource")
+		meta, ok := metadataForCatalogToolName(catalog, toolName)
+		if !ok || strings.TrimSpace(meta.Pack) == "" {
+			continue
 		}
+		metadata = enableIntentToolPack(metadata, meta.Pack)
 	}
 	return metadata
 }
@@ -207,29 +118,29 @@ func toolNameFromAgentItem(item agentstate.TurnItem) string {
 	return strings.TrimSpace(item.Payload.Summary)
 }
 
-func toolNameMatches(name string, internalName string) bool {
-	name = strings.TrimSpace(name)
-	internalName = strings.TrimSpace(internalName)
-	if name == "" || internalName == "" {
-		return false
-	}
-	return strings.EqualFold(name, internalName) ||
-		strings.EqualFold(name, tooling.ProviderSafeToolName(internalName))
-}
-
 func enableIntentToolPack(metadata map[string]string, pack string) map[string]string {
 	metadata = ensureTurnMetadata(metadata)
 	metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], pack)
 	return metadata
 }
 
-func containsAnyIntent(text string, candidates []string) bool {
-	for _, candidate := range candidates {
-		if strings.Contains(text, strings.ToLower(candidate)) {
-			return true
-		}
+func enableSelectedTool(metadata map[string]string, toolName string) map[string]string {
+	metadata = ensureTurnMetadata(metadata)
+	metadata["enableTool"] = appendMetadataListValue(metadata["enableTool"], toolName)
+	return metadata
+}
+
+func applyToolDiscoveryTurnMetadata(metadata map[string]string, session *SessionState) map[string]string {
+	if session == nil {
+		return metadata
 	}
-	return false
+	for _, pack := range session.ToolDiscovery.EnabledPacks() {
+		metadata = enableIntentToolPack(metadata, pack)
+	}
+	for _, toolName := range session.ToolDiscovery.EnabledTools() {
+		metadata = enableSelectedTool(metadata, toolName)
+	}
+	return metadata
 }
 
 func updateToolSearchPackTurnMetadata(metadata map[string]string, toolName string, result ToolResult) map[string]string {
@@ -241,29 +152,133 @@ func updateToolSearchPackTurnMetadata(metadata map[string]string, toolName strin
 		data = result.Display.Data
 	}
 	var payload struct {
+		Mode    string `json:"mode"`
 		Matches []struct {
 			Kind string `json:"kind"`
 			Name string `json:"name"`
 			Pack string `json:"pack"`
 		} `json:"matches"`
+		Selection struct {
+			LoadedTools []string `json:"loadedTools"`
+			LoadedPacks []string `json:"loadedPacks"`
+		} `json:"selection"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return metadata
 	}
-	for _, match := range payload.Matches {
-		if !strings.EqualFold(strings.TrimSpace(match.Kind), "pack") {
-			continue
-		}
-		pack := strings.TrimSpace(match.Pack)
-		if pack == "" {
-			pack = strings.TrimSpace(match.Name)
-		}
-		if pack != "" {
-			metadata = enableIntentToolPack(metadata, pack)
-			break
-		}
+	if !strings.EqualFold(strings.TrimSpace(payload.Mode), "select") {
+		return metadata
+	}
+	for _, pack := range payload.Selection.LoadedPacks {
+		metadata = enableIntentToolPack(metadata, pack)
+	}
+	for _, toolName := range payload.Selection.LoadedTools {
+		metadata = enableSelectedTool(metadata, toolName)
 	}
 	return metadata
+}
+
+func applyToolSearchDiscoveryState(session *SessionState, toolName string, result ToolResult, turnID string) {
+	if session == nil || (toolName != "tool_search" && (result.Display == nil || result.Display.Type != "tool_search")) {
+		return
+	}
+	data := []byte(result.Content)
+	if result.Display != nil && len(result.Display.Data) > 0 {
+		data = result.Display.Data
+	}
+	var payload struct {
+		Mode      string                    `json:"mode"`
+		Matches   []ToolSearchMatchSnapshot `json:"matches"`
+		Selection struct {
+			LoadedTools      []string          `json:"loadedTools"`
+			LoadedPacks      []string          `json:"loadedPacks"`
+			NotLoaded        []string          `json:"notLoaded"`
+			NotLoadedReasons map[string]string `json:"notLoadedReasons"`
+			Reason           string            `json:"reason"`
+		} `json:"selection"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return
+	}
+	now := time.Now()
+	switch strings.ToLower(strings.TrimSpace(payload.Mode)) {
+	case "search":
+		session.ToolDiscovery.ApplySearch(payload.Matches, now)
+	case "select":
+		delta := ToolSelectionDelta{
+			NotLoaded:        payload.Selection.NotLoaded,
+			NotLoadedReasons: payload.Selection.NotLoadedReasons,
+			Reason:           payload.Selection.Reason,
+		}
+		for _, name := range payload.Selection.LoadedTools {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				delta.LoadedTools = append(delta.LoadedTools, LoadedToolRef{Name: trimmed, Source: "tool_search.select", Reason: payload.Selection.Reason})
+			}
+		}
+		for _, name := range payload.Selection.LoadedPacks {
+			if trimmed := strings.TrimSpace(name); trimmed != "" {
+				delta.LoadedPacks = append(delta.LoadedPacks, LoadedPackRef{Name: trimmed, Source: "tool_search.select", Reason: payload.Selection.Reason})
+			}
+		}
+		session.ToolDiscovery.ApplySelection(delta, now)
+	}
+}
+
+func intentPackMatchEligible(match tooling.PackTriggerMatch, catalog []tooling.Tool) bool {
+	if strings.TrimSpace(match.Pack) == "" || len(match.ToolNames) == 0 {
+		return false
+	}
+	for _, name := range match.ToolNames {
+		toolDef, ok := catalogToolByName(catalog, name)
+		if !ok {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if tooling.ToolHiddenFromDiscovery(meta) || meta.Mutating || meta.RequiresApproval || meta.RiskLevel.Normalize() != tooling.ToolRiskLow {
+			continue
+		}
+		if meta.Pack == match.Pack {
+			return true
+		}
+	}
+	return false
+}
+
+func metadataForCatalogToolName(catalog []tooling.Tool, name string) (tooling.ToolMetadata, bool) {
+	toolDef, ok := catalogToolByName(catalog, name)
+	if !ok {
+		return tooling.ToolMetadata{}, false
+	}
+	return toolDef.Metadata(), true
+}
+
+func catalogToolByName(catalog []tooling.Tool, name string) (tooling.Tool, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, false
+	}
+	for _, toolDef := range catalog {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if catalogNameMatches(meta, name) {
+			return toolDef, true
+		}
+	}
+	return nil, false
+}
+
+func catalogNameMatches(meta tooling.ToolMetadata, name string) bool {
+	if strings.EqualFold(name, meta.Name) || strings.EqualFold(name, tooling.ProviderSafeToolName(meta.Name)) {
+		return true
+	}
+	for _, alias := range meta.Aliases {
+		if strings.EqualFold(name, alias) || strings.EqualFold(name, tooling.ProviderSafeToolName(alias)) {
+			return true
+		}
+	}
+	return false
 }
 
 func visibleToolsForContextMode(tools []string, thresholds ContextBudgetThresholds) []string {

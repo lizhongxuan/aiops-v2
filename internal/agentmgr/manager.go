@@ -3,9 +3,11 @@ package agentmgr
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
+	"aiops-v2/internal/agentruntime"
 	"aiops-v2/internal/projection"
 )
 
@@ -35,6 +37,9 @@ type SpawnRequest struct {
 
 	// Task describes what this agent should do.
 	Task string
+
+	// Assignment is the self-contained manager-to-worker assignment contract.
+	Assignment AgentAssignment
 }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +52,7 @@ type SpawnRequest struct {
 // CheckPointStore. Test implementations can simulate execution.
 type AgentRunner interface {
 	// Run executes the agent and returns the output text or an error.
-	Run(ctx context.Context, config *AgentConfig) (output string, err error)
+	Run(ctx context.Context, config agentruntime.Config) (output string, err error)
 }
 
 // ---------------------------------------------------------------------------
@@ -103,16 +108,18 @@ func (m *AgentManager) Spawn(ctx context.Context, req SpawnRequest) (*AgentInsta
 
 	now := time.Now()
 	instance := &AgentInstance{
-		ID:        req.ID,
-		Kind:      req.Kind,
-		MissionID: req.MissionID,
-		ParentID:  req.ParentID,
-		HostID:    req.HostID,
-		SessionID: req.SessionID,
-		Status:    AgentStatusIdle,
-		Task:      req.Task,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                  req.ID,
+		Kind:                req.Kind,
+		MissionID:           req.MissionID,
+		ParentID:            req.ParentID,
+		HostID:              req.HostID,
+		SessionID:           req.SessionID,
+		Status:              AgentStatusIdle,
+		Task:                req.Task,
+		AssignmentSummary:   strings.TrimSpace(req.Assignment.Summary(360)),
+		EvidenceRequirement: req.Assignment.EvidenceRequirement,
+		CreatedAt:           now,
+		UpdatedAt:           now,
 	}
 
 	m.mu.Lock()
@@ -137,13 +144,27 @@ func (m *AgentManager) Spawn(ctx context.Context, req SpawnRequest) (*AgentInsta
 // (backed by adk.Runner with EnableStreaming:true and CheckPointStore in
 // production), and records the result as completed or failed.
 func (m *AgentManager) RunAgent(ctx context.Context, agentID string, config *AgentConfig) (*AgentResult, error) {
+	return m.runAgent(ctx, agentID, config, false)
+}
+
+// RunAgentTurn executes an additional turn for an existing agent. It is used
+// by host-child follow-ups where the same child conversation receives a new
+// input after a previous turn completed.
+func (m *AgentManager) RunAgentTurn(ctx context.Context, agentID string, config *AgentConfig) (*AgentResult, error) {
+	return m.runAgent(ctx, agentID, config, true)
+}
+
+func (m *AgentManager) runAgent(ctx context.Context, agentID string, config *AgentConfig, allowRepeat bool) (*AgentResult, error) {
+	if m == nil || m.runner == nil {
+		return nil, fmt.Errorf("agent runner is required")
+	}
 	m.mu.Lock()
 	instance, exists := m.instances[agentID]
 	if !exists {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("run agent: agent %q not found", agentID)
 	}
-	if instance.Status != AgentStatusIdle {
+	if !canRunAgentStatus(instance.Status, allowRepeat) {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("run agent: agent %q is in status %q, expected idle", agentID, instance.Status)
 	}
@@ -151,9 +172,11 @@ func (m *AgentManager) RunAgent(ctx context.Context, agentID string, config *Age
 	instance.UpdatedAt = time.Now()
 	m.mu.Unlock()
 
+	runConfig := materializeRuntimeConfig(config, instance)
+
 	// Execute via AgentRunner (adk.Runner in production).
 	startTime := time.Now()
-	output, err := m.runner.Run(ctx, config)
+	output, err := m.runner.Run(ctx, runConfig)
 	duration := time.Since(startTime)
 
 	// Build result and update instance.
@@ -201,6 +224,59 @@ func (m *AgentManager) RunAgent(ctx context.Context, agentID string, config *Age
 	return result, nil
 }
 
+func canRunAgentStatus(status AgentStatus, allowRepeat bool) bool {
+	if status == AgentStatusIdle {
+		return true
+	}
+	if !allowRepeat {
+		return false
+	}
+	switch status {
+	case AgentStatusCompleted, AgentStatusWaiting:
+		return true
+	default:
+		return false
+	}
+}
+
+func materializeRuntimeConfig(config *AgentConfig, instance *AgentInstance) *AgentConfig {
+	runConfig := &AgentConfig{}
+	if config != nil {
+		*runConfig = *config
+	}
+	if instance == nil {
+		return runConfig
+	}
+	if strings.TrimSpace(runConfig.HostID) == "" {
+		runConfig.HostID = instance.HostID
+	}
+	if strings.TrimSpace(runConfig.MissionID) == "" {
+		runConfig.MissionID = instance.MissionID
+	}
+	if strings.TrimSpace(runConfig.SessionID) == "" {
+		runConfig.SessionID = instance.SessionID
+	}
+	if strings.TrimSpace(runConfig.Input) == "" {
+		runConfig.Input = instance.Task
+	}
+	if runConfig.Metadata == nil {
+		runConfig.Metadata = make(map[string]string)
+	}
+	if instance.ID != "" {
+		runConfig.Metadata["agentId"] = instance.ID
+	}
+	if instance.ParentID != "" {
+		runConfig.Metadata["parentAgentId"] = instance.ParentID
+	}
+	if strings.TrimSpace(instance.AssignmentSummary) != "" {
+		runConfig.Metadata["agentAssignmentSummary"] = instance.AssignmentSummary
+	}
+	if instance.EvidenceRequirement.MinEvidenceRefs > 0 {
+		runConfig.Metadata["agentEvidenceMinRefs"] = fmt.Sprint(instance.EvidenceRequirement.MinEvidenceRefs)
+	}
+	return runConfig
+}
+
 // ---------------------------------------------------------------------------
 // KillAgent terminates an agent instance, setting its status to killed.
 // ---------------------------------------------------------------------------
@@ -208,6 +284,11 @@ func (m *AgentManager) RunAgent(ctx context.Context, agentID string, config *Age
 // KillAgent terminates the specified agent instance. It sets the status to
 // killed regardless of current status (unless already in a terminal state).
 func (m *AgentManager) KillAgent(ctx context.Context, agentID string) error {
+	return m.KillAgentWithReason(ctx, agentID, "")
+}
+
+// KillAgentWithReason terminates the specified agent instance and records a bounded stop reason.
+func (m *AgentManager) KillAgentWithReason(ctx context.Context, agentID, reason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -221,6 +302,9 @@ func (m *AgentManager) KillAgent(ctx context.Context, agentID string) error {
 	}
 
 	instance.Status = AgentStatusKilled
+	if strings.TrimSpace(reason) != "" {
+		instance.Error = strings.TrimSpace(reason)
+	}
 	instance.UpdatedAt = time.Now()
 	return nil
 }
@@ -269,6 +353,7 @@ func (m *AgentManager) CollectResults(missionID string) []AgentResult {
 			Output:   inst.Output,
 			Error:    inst.Error,
 			Duration: inst.Duration,
+			Usage:    AgentUsage{},
 		})
 	}
 	return results

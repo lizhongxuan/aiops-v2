@@ -133,16 +133,30 @@ func TestInspectModePolicy_DeniesMutationAndUnknown(t *testing.T) {
 	}
 }
 
-func TestPlanModePolicy_AllowsReadOnlySearchAndPlanTools(t *testing.T) {
+func TestPlanModePolicy_AllowsReadOnlySearchAndPlanArtifactTools(t *testing.T) {
 	p := &PlanModePolicy{}
-	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "web_search", "create_plan", "draft_proposal", "propose_changes", "schedule_task", "preview_changes"} {
+	for _, name := range []string{"file_read", "host_list", "search_logs", "get_metrics", "web_search", "update_plan", "enter_plan_mode", "exit_plan_mode", "request_plan_approval", "claim_next_task"} {
 		assertDecision(t, "plan/"+name, p.CheckTool(toolInput(name)), PolicyActionAllow)
+	}
+}
+
+func TestPlanModeOnlyAllowsReadOnlyAndPlanArtifactTools(t *testing.T) {
+	p := &PlanModePolicy{}
+	for _, name := range []string{"draft_proposal", "propose_changes", "schedule_task", "preview_changes", "plan_database_update", "draft_config_write", "propose_restart"} {
+		input := toolInput(name)
+		input.Tool.Mutating = true
+		assertDecision(t, "plan/deny_disguised_mutation/"+name, p.CheckTool(input), PolicyActionDeny)
+	}
+	for _, name := range []string{"update_plan", "enter_plan_mode", "exit_plan_mode", "request_plan_approval", "claim_next_task"} {
+		input := toolInput(name)
+		input.Tool.Mutating = true
+		assertDecision(t, "plan/allow_exact_artifact/"+name, p.CheckTool(input), PolicyActionAllow)
 	}
 }
 
 func TestPlanModePolicy_DeniesMutationAndUnknown(t *testing.T) {
 	p := &PlanModePolicy{}
-	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec", "summarize", "workspace_dispatch", "mysterious_tool"} {
+	for _, name := range []string{"file_write", "host_delete", "service_restart", "process_kill", "command_exec", "create_plan", "draft_proposal", "propose_changes", "schedule_task", "preview_changes", "summarize", "workspace_dispatch", "mysterious_tool"} {
 		assertDecision(t, "plan/"+name, p.CheckTool(toolInput(name)), PolicyActionDeny)
 	}
 }
@@ -329,11 +343,16 @@ func TestIsPlanTool(t *testing.T) {
 		name string
 		want bool
 	}{
-		{"create_plan", true},
-		{"draft_proposal", true},
-		{"propose_changes", true},
-		{"schedule_task", true},
-		{"preview_changes", true},
+		{"update_plan", true},
+		{"enter_plan_mode", true},
+		{"exit_plan_mode", true},
+		{"request_plan_approval", true},
+		{"claim_next_task", true},
+		{"create_plan", false},
+		{"draft_proposal", false},
+		{"propose_changes", false},
+		{"schedule_task", false},
+		{"preview_changes", false},
 		{"file_read", false},
 	}
 	for _, tc := range cases {

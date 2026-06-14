@@ -2,34 +2,45 @@ package appui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/hostops"
 )
 
 type TransportCommandType string
 
 const (
-	TransportCommandTypeAddMessage       TransportCommandType = "add-message"
-	TransportCommandTypeStop             TransportCommandType = "aiops.stop"
-	TransportCommandTypeRetry            TransportCommandType = "aiops.retry"
-	TransportCommandTypeApprovalDecision TransportCommandType = "aiops.approval-decision"
-	TransportCommandTypeChoiceAnswer     TransportCommandType = "aiops.choice-answer"
-	TransportCommandTypeMCPAction        TransportCommandType = "aiops.mcp-action"
-	TransportCommandTypeMCPRefresh       TransportCommandType = "aiops.mcp-refresh"
-	TransportCommandTypeMCPPin           TransportCommandType = "aiops.mcp-pin"
+	TransportCommandTypeAddMessage        TransportCommandType = "add-message"
+	TransportCommandTypeStop              TransportCommandType = "aiops.stop"
+	TransportCommandTypeRetry             TransportCommandType = "aiops.retry"
+	TransportCommandTypeApprovalDecision  TransportCommandType = "aiops.approval-decision"
+	TransportCommandTypeChoiceAnswer      TransportCommandType = "aiops.choice-answer"
+	TransportCommandTypeMCPAction         TransportCommandType = "aiops.mcp-action"
+	TransportCommandTypeMCPRefresh        TransportCommandType = "aiops.mcp-refresh"
+	TransportCommandTypeMCPPin            TransportCommandType = "aiops.mcp-pin"
+	TransportCommandTypeHostPlanAccept    TransportCommandType = "aiops.host-plan-accept"
+	TransportCommandTypeHostPlanRevise    TransportCommandType = "aiops.host-plan-revise"
+	TransportCommandTypeChildAgentMessage TransportCommandType = "aiops.child-agent-message"
+	TransportCommandTypeChildAgentStop    TransportCommandType = "aiops.child-agent-stop"
 )
 
 type TransportCommand struct {
-	Type             TransportCommandType
-	AddMessage       *TransportAddMessageCommand
-	Stop             *TransportStopCommand
-	Retry            *TransportRetryCommand
-	ApprovalDecision *TransportApprovalDecisionCommand
-	ChoiceAnswer     *TransportChoiceAnswerCommand
-	MCPAction        *TransportMCPActionCommand
-	MCPRefresh       *TransportMCPRefreshCommand
-	MCPPin           *TransportMCPPinCommand
+	Type              TransportCommandType
+	AddMessage        *TransportAddMessageCommand
+	Stop              *TransportStopCommand
+	Retry             *TransportRetryCommand
+	ApprovalDecision  *TransportApprovalDecisionCommand
+	ChoiceAnswer      *TransportChoiceAnswerCommand
+	MCPAction         *TransportMCPActionCommand
+	MCPRefresh        *TransportMCPRefreshCommand
+	MCPPin            *TransportMCPPinCommand
+	HostPlanAccept    *TransportHostPlanAcceptCommand
+	HostPlanRevise    *TransportHostPlanReviseCommand
+	ChildAgentMessage *TransportChildAgentMessageCommand
+	ChildAgentStop    *TransportChildAgentStopCommand
 }
 
 type TransportUserMessage struct {
@@ -86,15 +97,42 @@ type TransportMCPPinCommand struct {
 	Pinned    bool
 }
 
+type TransportHostPlanAcceptCommand struct {
+	MissionID string
+	PlanID    string
+}
+
+type TransportHostPlanReviseCommand struct {
+	MissionID   string
+	Instruction string
+}
+
+type TransportChildAgentMessageCommand struct {
+	ChildAgentID string
+	Content      string
+}
+
+type TransportChildAgentStopCommand struct {
+	ChildAgentID string
+}
+
 type TransportCommandHandler struct {
 	chat      ChatService
 	approvals ApprovalService
 	choices   ChoiceService
 	mcps      MCPService
+	hostOps   HostOpsService
 }
 
 type asyncApprovalDecisionService interface {
 	DecideAsync(ctx context.Context, decision ApprovalDecision) (ActionResult, error)
+}
+
+func (h *TransportCommandHandler) WithHostOpsService(service HostOpsService) *TransportCommandHandler {
+	if h != nil {
+		h.hostOps = service
+	}
+	return h
 }
 
 type TransportCommandResult struct {
@@ -131,6 +169,14 @@ func (h *TransportCommandHandler) Apply(ctx context.Context, state AiopsTranspor
 		return h.applyMCPRefresh(ctx, next, command.MCPRefresh)
 	case TransportCommandTypeMCPPin:
 		return h.applyMCPPin(next, command.MCPPin), TransportCommandResult{}, nil
+	case TransportCommandTypeHostPlanAccept:
+		return h.applyHostPlanAccept(ctx, next, command.HostPlanAccept)
+	case TransportCommandTypeHostPlanRevise:
+		return h.applyHostPlanRevise(ctx, next, command.HostPlanRevise)
+	case TransportCommandTypeChildAgentMessage:
+		return h.applyChildAgentMessage(ctx, next, command.ChildAgentMessage)
+	case TransportCommandTypeChildAgentStop:
+		return h.applyChildAgentStop(ctx, next, command.ChildAgentStop)
 	default:
 		return next, TransportCommandResult{}, nil
 	}
@@ -141,13 +187,14 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		return state, TransportCommandResult{}, nil
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
+	route := detectHostOpsTransportRoute(messageText, command.Metadata)
 	resp, err := h.chat.SendMessage(ctx, ChatCommand{
 		SessionID:       strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
 		Content:         messageText,
 		HostID:          strings.TrimSpace(command.HostID),
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),
 		ClientTurnID:    strings.TrimSpace(command.ClientTurnID),
-		Metadata:        cloneStringMetadata(command.Metadata),
+		Metadata:        route.metadata,
 	})
 	if err != nil {
 		return state, TransportCommandResult{}, err
@@ -174,8 +221,108 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		state.Turns[turnID] = turn
 		state.RuntimeLiveness.ActiveTurns[turnID] = true
 	}
+	if route.decision.Kind == hostops.RouteKindHostOps {
+		state = addHostOpsMissionFromRoute(state, route, resp.TurnID)
+	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
+}
+
+type hostOpsTransportRoute struct {
+	decision hostops.RouteDecision
+	metadata map[string]string
+}
+
+func detectHostOpsTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
+	nextMetadata := cloneStringMetadata(metadata)
+	mentions := hostops.ParseHostMentions(messageText)
+	decision := hostops.DetectRoute(messageText, mentions)
+	if decision.Kind != hostops.RouteKindHostOps {
+		return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+	}
+	nextMetadata["aiops.hostops.routeKind"] = string(decision.Kind)
+	nextMetadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
+	nextMetadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
+	nextMetadata["enableToolPack"] = appendMetadataListValue(nextMetadata["enableToolPack"], hostops.ToolPackHostOps)
+	if serialized, err := json.Marshal(decision.Mentions); err == nil {
+		nextMetadata["aiops.hostops.mentions"] = string(serialized)
+	}
+	return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+}
+
+func appendMetadataListValue(current, next string) string {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return current
+	}
+	values := strings.FieldsFunc(current, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, value := range values {
+		if strings.TrimSpace(value) == next {
+			return strings.TrimSpace(current)
+		}
+	}
+	if strings.TrimSpace(current) == "" {
+		return next
+	}
+	return strings.TrimSpace(current) + "," + next
+}
+
+func addHostOpsMissionFromRoute(state AiopsTransportState, route hostOpsTransportRoute, turnID string) AiopsTransportState {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
+	}
+	missionID := strings.TrimSpace(route.metadata["aiops.hostops.missionId"])
+	if missionID == "" {
+		missionID = "hostops:" + turnID
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := string(hostops.HostMissionStatusPlanning)
+	if route.decision.PlanRequired {
+		status = string(hostops.HostMissionStatusWaitingPlanAcceptance)
+	}
+	mission := state.HostMissions[missionID]
+	if mission.ID == "" {
+		mission.ID = missionID
+		mission.CreatedAt = now
+	}
+	mission.TurnID = turnID
+	mission.Status = status
+	mission.PlanRequired = route.decision.PlanRequired
+	mission.PlanAccepted = false
+	mission.MentionedHosts = transportHostMentionsFromHostOps(route.decision.Mentions)
+	mission.UpdatedAt = now
+	state.HostMissions[missionID] = mission
+	state.ActiveHostMissionID = missionID
+	return state
+}
+
+func transportHostMentionsFromHostOps(mentions []hostops.HostMention) []AiopsTransportHostMention {
+	result := make([]AiopsTransportHostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		result = append(result, AiopsTransportHostMention{
+			TokenID:     mention.TokenID,
+			Raw:         mention.Raw,
+			HostID:      mention.HostID,
+			Address:     mention.Address,
+			DisplayName: mention.DisplayName,
+			Source:      string(mention.Source),
+			Resolved:    mention.Resolved,
+		})
+	}
+	return result
+}
+
+func boolMetadataString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func (h *TransportCommandHandler) applyRetry(ctx context.Context, state AiopsTransportState, command *TransportRetryCommand) (AiopsTransportState, TransportCommandResult, error) {
@@ -370,6 +517,101 @@ func (h *TransportCommandHandler) applyMCPPin(state AiopsTransportState, command
 	surface := state.McpSurfaces[surfaceID]
 	surface.Pinned = command.Pinned
 	state.McpSurfaces[surfaceID] = surface
+	return state
+}
+
+func (h *TransportCommandHandler) applyHostPlanAccept(ctx context.Context, state AiopsTransportState, command *TransportHostPlanAcceptCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.hostOps == nil || command == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	view, err := h.hostOps.AcceptPlan(ctx, strings.TrimSpace(command.MissionID), strings.TrimSpace(command.PlanID))
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state = updateHostMissionStatus(state, view.ID, view.Status, true)
+	return state, TransportCommandResult{Status: view.Status}, nil
+}
+
+func (h *TransportCommandHandler) applyHostPlanRevise(ctx context.Context, state AiopsTransportState, command *TransportHostPlanReviseCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.hostOps == nil || command == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	view, err := h.hostOps.RevisePlan(ctx, strings.TrimSpace(command.MissionID), strings.TrimSpace(command.Instruction))
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state = updateHostMissionStatus(state, view.ID, view.Status, false)
+	return state, TransportCommandResult{Status: view.Status}, nil
+}
+
+func (h *TransportCommandHandler) applyChildAgentMessage(ctx context.Context, state AiopsTransportState, command *TransportChildAgentMessageCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.hostOps == nil || command == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	view, err := h.hostOps.SendChildMessage(ctx, strings.TrimSpace(command.ChildAgentID), strings.TrimSpace(command.Content))
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state = updateChildAgentStatus(state, view.ID, view.Status)
+	return state, TransportCommandResult{Status: view.Status}, nil
+}
+
+func (h *TransportCommandHandler) applyChildAgentStop(ctx context.Context, state AiopsTransportState, command *TransportChildAgentStopCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.hostOps == nil || command == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	view, err := h.hostOps.StopChildAgent(ctx, strings.TrimSpace(command.ChildAgentID))
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state = updateChildAgentStatus(state, view.ID, view.Status)
+	return state, TransportCommandResult{Status: view.Status}, nil
+}
+
+func updateHostMissionStatus(state AiopsTransportState, missionID string, status string, accepted bool) AiopsTransportState {
+	missionID = strings.TrimSpace(missionID)
+	if missionID == "" {
+		return state
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	mission := state.HostMissions[missionID]
+	if mission.ID == "" {
+		mission.ID = missionID
+	}
+	if strings.TrimSpace(status) != "" {
+		mission.Status = strings.TrimSpace(status)
+	}
+	if accepted {
+		mission.PlanAccepted = true
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mission.UpdatedAt = now
+	state.HostMissions[missionID] = mission
+	state.UpdatedAt = now
+	return state
+}
+
+func updateChildAgentStatus(state AiopsTransportState, childAgentID string, status string) AiopsTransportState {
+	childAgentID = strings.TrimSpace(childAgentID)
+	if childAgentID == "" {
+		return state
+	}
+	if state.ChildAgents == nil {
+		state.ChildAgents = map[string]AiopsTransportChildAgent{}
+	}
+	child := state.ChildAgents[childAgentID]
+	if child.ID == "" {
+		child.ID = childAgentID
+	}
+	if strings.TrimSpace(status) != "" {
+		child.Status = strings.TrimSpace(status)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	child.UpdatedAt = now
+	state.ChildAgents[childAgentID] = child
+	state.UpdatedAt = now
 	return state
 }
 

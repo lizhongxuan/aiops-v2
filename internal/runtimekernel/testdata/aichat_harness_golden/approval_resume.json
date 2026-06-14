@@ -1,0 +1,30 @@
+{
+  "name": "approval_resume",
+  "userInput": "读取高风险密钥",
+  "availableTools": [
+    {
+      "name": "read_secret",
+      "description": "Read a protected secret.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" }
+        }
+      },
+      "riskLevel": "high",
+      "result": "secret"
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_secret",
+      "name": "read_secret",
+      "arguments": {
+        "name": "db-password"
+      }
+    }
+  ],
+  "expectedStatus": "blocked",
+  "expectedVisibleStates": ["running", "blocked"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"]
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,20 @@ func TestHostAgentHandlerRunsScriptShellAndReportsHealth(t *testing.T) {
 	}
 	if payload.Result.Output["stdout"] != "host-agent-ok" {
 		t.Fatalf("stdout = %#v, want host-agent-ok", payload.Result.Output["stdout"])
+	}
+}
+
+func TestHostAgentGRPCExecRunsLocalCommand(t *testing.T) {
+	result := runLocalExecCommand(context.Background(), agentExecRequest{
+		Command: "printf",
+		Args:    []string{"grpc-agent-ok"},
+	}, 4096)
+
+	if result.Status != "success" || result.ExitCode != 0 {
+		t.Fatalf("result = %#v, want success", result)
+	}
+	if result.Stdout != "grpc-agent-ok" {
+		t.Fatalf("stdout = %q, want grpc-agent-ok", result.Stdout)
 	}
 }
 

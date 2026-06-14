@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/agentruntime"
 )
 
 // ---------------------------------------------------------------------------
@@ -16,12 +18,12 @@ import (
 // parallelMockRunner simulates agent execution with configurable delays and
 // failure behavior for testing parallel execution.
 type parallelMockRunner struct {
-	mu       sync.Mutex
-	delay    time.Duration
-	failIDs  map[string]bool // agentIDs that should fail
-	callLog  []string        // ordered log of executed agentIDs
-	maxConc  int32           // max observed concurrency
-	curConc  int32           // current concurrency
+	mu      sync.Mutex
+	delay   time.Duration
+	failIDs map[string]bool // agentIDs that should fail
+	callLog []string        // ordered log of executed agentIDs
+	maxConc int32           // max observed concurrency
+	curConc int32           // current concurrency
 }
 
 func newParallelMockRunner(delay time.Duration) *parallelMockRunner {
@@ -31,7 +33,7 @@ func newParallelMockRunner(delay time.Duration) *parallelMockRunner {
 	}
 }
 
-func (r *parallelMockRunner) Run(ctx context.Context, config *AgentConfig) (string, error) {
+func (r *parallelMockRunner) Run(ctx context.Context, config agentruntime.Config) (string, error) {
 	cur := atomic.AddInt32(&r.curConc, 1)
 	defer atomic.AddInt32(&r.curConc, -1)
 
@@ -45,8 +47,9 @@ func (r *parallelMockRunner) Run(ctx context.Context, config *AgentConfig) (stri
 
 	// Record call.
 	r.mu.Lock()
-	r.callLog = append(r.callLog, config.HostID)
-	shouldFail := r.failIDs[config.HostID]
+	hostID := config.RuntimeHostID()
+	r.callLog = append(r.callLog, hostID)
+	shouldFail := r.failIDs[hostID]
 	r.mu.Unlock()
 
 	// Simulate work.
@@ -57,9 +60,9 @@ func (r *parallelMockRunner) Run(ctx context.Context, config *AgentConfig) (stri
 	}
 
 	if shouldFail {
-		return "", fmt.Errorf("simulated failure for host %s", config.HostID)
+		return "", fmt.Errorf("simulated failure for host %s", hostID)
 	}
-	return fmt.Sprintf("completed work on %s", config.HostID), nil
+	return fmt.Sprintf("completed work on %s", hostID), nil
 }
 
 // ---------------------------------------------------------------------------

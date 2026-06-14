@@ -68,6 +68,8 @@ func (s *Service) PlanExec(req PlanExecRequest) (PlanExecResult, error) {
 		claims := actionproposal.ActionTokenClaims{
 			SessionID:      req.SessionID,
 			TurnID:         req.TurnID,
+			TenantID:       req.TenantID,
+			UserID:         req.UserID,
 			IncidentID:     req.IncidentID,
 			ToolName:       proposed.ToolName,
 			InputHash:      inputHash,
@@ -85,6 +87,8 @@ func (s *Service) PlanExec(req PlanExecRequest) (PlanExecResult, error) {
 		action := actionproposal.ActionProposal{
 			SessionID:        req.SessionID,
 			TurnID:           req.TurnID,
+			TenantID:         req.TenantID,
+			UserID:           req.UserID,
 			IncidentID:       req.IncidentID,
 			Source:           actionproposal.SourceFallback,
 			ToolName:         proposed.ToolName,

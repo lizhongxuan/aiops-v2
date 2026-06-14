@@ -13,6 +13,8 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+const corootObservabilityReadonlyPack = "observability-readonly"
+
 type corootInput struct {
 	Project             string   `json:"project,omitempty"`
 	AppID               string   `json:"appId,omitempty"`
@@ -134,8 +136,10 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		},
 		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			payload, rawRef, err := execute(ctx, input)
+			resultErr := ""
 			if err != nil {
 				payload = corootStructuredError(name, rawRef, err)
+				resultErr = corootToolResultError(name, err)
 			}
 			modelPayload := withCorootEnvelopeFields(corootModelFacingPayload(payload))
 			modelData, marshalErr := json.Marshal(modelPayload)
@@ -149,6 +153,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 			}
 			return tooling.ToolResult{
 				Content: string(modelData),
+				Error:   resultErr,
 				Display: &tooling.ToolDisplayPayload{
 					Type:  "coroot",
 					Title: name,
@@ -159,17 +164,29 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 	}
 }
 
+func corootToolResultError(toolName string, err error) string {
+	errText := strings.TrimSpace(err.Error())
+	if errText == "" {
+		errText = "coroot tool failed"
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "coroot"
+	}
+	return toolName + " failed: " + errText
+}
+
 func corootToolPrompt(name string) string {
 	common := "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured Coroot project is used, and do not send default as a placeholder. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
 	switch name {
 	case "coroot.list_services":
 		return common + " Use coroot.list_services as the default read-only availability/service probe and service discovery probe. If the user needs Coroot details that are not visible in the current tool set, call tool_search with a narrow Coroot query such as metrics, logs, traces, topology, incidents, dashboards, project status, or configuration to reveal the relevant deferred pack."
 	case "coroot.collect_rca_context":
-		return common + " For service RCA, latency/error/SLO/resource/dependency analysis, prefer this aggregate evidence tool first because it summarizes metrics, SLOs, dependencies, recent incidents, logs, traces, profiling, deployments, and rawRefs into a model-safe evidence pack. Use narrower Coroot packs only for follow-up drill-down or when a section is missing."
+		return common + " For service RCA, latency/error/SLO/resource/dependency analysis, prefer this aggregate evidence tool first because it summarizes metrics, SLOs, dependencies, recent incidents, logs, traces, profiling, deployments, and rawRefs into a model-safe evidence pack. Use narrower Coroot packs only for follow-up drill-down or when a section is missing. If it identifies an external dependency, IP, DNS name, or ExternalService edge, that edge is not the final root cause until its identity, endpoint, owner, port/protocol, and caller-to-dependency network path are investigated."
 	case "coroot.service_metrics", "coroot.slo_status":
-		return common + " Use these tools for explicit metric, chart, timeseries, or SLO drill-down. Native chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts."
+		return common + " Use these tools whenever service/application health, status, RCA, CPU, memory, network, SLO, or resource usage evidence would benefit from metric details or visual context. Do not require the user to say chart, metrics, CPU, or Agent-to-UI before calling this tool; decide from the task whether metric charts would help the answer. For service/application CPU or resource usage, do not use exec_command, top, ps, or host shell snapshots as substitutes because those commands inspect the selected host OS, not the Coroot service/application. Native chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts."
 	case "coroot.rca_report":
-		return common + " Use this only when the user explicitly asks for Coroot's native RCA report or as reference evidence after aiops has collected its own evidence; do not treat it as the primary RCA source."
+		return common + " Use this only when the user explicitly asks for Coroot's native RCA report or as reference evidence after aiops has collected its own evidence; do not treat it as the primary RCA source. If the optional native Coroot RCA returns 404, Application not found, or AI disabled after the service was found elsewhere, this means that RCA reference is unavailable and does not prove the service is absent; continue with coroot.collect_rca_context, metrics, topology, logs, traces, and incidents before finalizing."
 	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
 		return common + " When the user asks about incidents, alerts, incident ids, or the Coroot incidents page, call coroot.incidents before finalizing. For recent/latest incident lists, do not set status, severity, or applicationCategory unless the user explicitly asks for that filter."
 	default:
@@ -183,38 +200,67 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 		Description: description,
 		Domain:      "coroot",
 		RiskLevel:   tooling.ToolRiskLow,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			DiscoveryGroup:     "observability",
+			ToolPackIDs:        []string{corootObservabilityReadonlyPack},
+			RequiresHealthyMCP: true,
+			LoadingPolicy:      tooling.ToolLoadingPolicyDeferred,
+			PermissionScope:    "read",
+			PromptBudgetClass:  "compact",
+			SchemaBudgetClass:  "on_demand",
+		},
 	}
 	switch name {
 	case "coroot.list_services":
-		meta.Layer = tooling.ToolLayerCore
+		configureCorootDeferredTool(&meta, "mcp_dynamic_coroot", []string{"observability", "services", "service health", "应用", "服务", "健康状态"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application"}, []string{"list", "read"})
 	case "coroot.health_check", "coroot.list_projects", "coroot.get_project_status":
 		configureCorootDeferredTool(&meta, "coroot_admin_read", []string{"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"})
+		setCorootDiscovery(&meta, "observability", []string{"observability_platform", "project"}, []string{"read", "list"})
 	case "coroot.collect_rca_context":
 		configureCorootDeferredTool(&meta, "coroot_rca", []string{"RCA", "root cause", "根因", "异常", "warning", "告警", "延迟升高", "error rate", "SLO", "topology", "依赖", "CPU", "memory", "内存", "net", "网络", "指标", "图表", "趋势", "时序", "metric", "metrics", "chart", "timeseries"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application", "incident", "dependency"}, []string{"read", "summarize"})
 	case "coroot.service_metrics", "coroot.slo_status":
-		configureCorootDeferredTool(&meta, "coroot_metrics", []string{"metric", "metrics", "指标", "图表", "chart", "timeseries", "趋势", "时序", "SLO", "slo status", "service metrics", "latency", "error rate", "CPU", "memory", "内存", "network", "网络"})
+		configureCorootDeferredTool(&meta, "coroot_metrics", []string{
+			"metric", "metrics", "指标", "图表", "chart", "timeseries", "趋势", "时序", "SLO", "slo status", "service metrics", "latency", "error rate",
+			"CPU", "CPU占用", "CPU 占用", "CPU 使用率", "cpu usage", "cpu utilization",
+			"memory", "内存", "内存使用", "内存占用", "内存使用率", "memory usage", "memory utilization",
+			"network", "网络", "resource usage", "resource utilization", "资源", "资源占用", "资源使用", "占用率", "使用率",
+		})
+		setCorootDiscovery(&meta, "metrics", []string{"service", "application", "slo", "resource"}, []string{"read", "query"})
 	case "coroot.rca_report":
 		configureCorootDeferredTool(&meta, "coroot_rca_reference", []string{"coroot rca", "RCA reference", "native RCA", "rca report", "root cause report", "Coroot 根因", "根因报告"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application", "incident"}, []string{"read"})
 	case "coroot.service_topology":
 		configureCorootDeferredTool(&meta, "coroot_topology", []string{"topology", "service topology", "dependency", "dependencies", "拓扑", "依赖", "依赖图", "服务拓扑"})
+		setCorootDiscovery(&meta, "topology", []string{"service", "application", "dependency"}, []string{"read"})
 	case "coroot.nodes_overview", "coroot.get_node":
 		configureCorootDeferredTool(&meta, "coroot_nodes", []string{"node", "nodes", "host", "hosts", "infrastructure", "infra", "主机", "节点", "机器", "基础设施"})
+		setCorootDiscovery(&meta, "observability", []string{"host", "node", "infrastructure"}, []string{"read", "list"})
 	case "coroot.traces_overview", "coroot.application_traces":
 		configureCorootDeferredTool(&meta, "coroot_traces", []string{"trace", "traces", "tracing", "span", "spans", "distributed tracing", "链路", "调用链", "trace id"})
+		setCorootDiscovery(&meta, "traces", []string{"service", "application", "trace"}, []string{"read", "query"})
 	case "coroot.deployments_overview":
 		configureCorootDeferredTool(&meta, "coroot_deployments", []string{"deployment", "deployments", "deploy", "release", "rollout", "rollback", "发布", "部署", "变更"})
+		setCorootDiscovery(&meta, "observability", []string{"deployment", "change", "service"}, []string{"read", "list"})
 	case "coroot.risks_overview":
 		configureCorootDeferredTool(&meta, "coroot_risks", []string{"risk", "risks", "security risk", "availability risk", "风险", "隐患"})
+		setCorootDiscovery(&meta, "observability", []string{"risk", "service", "application"}, []string{"read", "list"})
 	case "coroot.application_logs":
 		configureCorootDeferredTool(&meta, "coroot_logs", []string{"log", "logs", "logging", "error log", "日志", "错误日志"})
+		setCorootDiscovery(&meta, "logs", []string{"service", "application", "log"}, []string{"read", "query"})
 	case "coroot.application_profiling":
 		configureCorootDeferredTool(&meta, "coroot_profiling", []string{"profile", "profiling", "flamegraph", "CPU profile", "memory profile", "pprof", "火焰图", "性能剖析"})
+		setCorootDiscovery(&meta, "profiling", []string{"service", "application", "profile"}, []string{"read", "query"})
 	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
 		configureCorootDeferredTool(&meta, "coroot_incident", []string{"incident", "incidents", "alert", "alerts", "告警", "事件", "事故", "timeline", "时间线"})
+		setCorootDiscovery(&meta, "incidents", []string{"incident", "alert", "service", "application"}, []string{"read", "list"})
 	case "coroot.list_dashboards", "coroot.get_dashboard", "coroot.get_panel_data":
 		configureCorootDeferredTool(&meta, "coroot_dashboard", []string{"dashboard", "dashboards", "panel", "chart", "coroot panel", "仪表盘", "看板", "面板"})
+		setCorootDiscovery(&meta, "metrics", []string{"dashboard", "panel", "chart"}, []string{"read", "query"})
 	case "coroot.list_integrations", "coroot.get_integration", "coroot.list_inspections", "coroot.get_inspection_config", "coroot.get_application_categories", "coroot.get_custom_applications":
 		configureCorootDeferredTool(&meta, "coroot_config_read", []string{"integration", "integrations", "inspection", "inspections", "configuration", "config", "category", "custom application", "集成", "巡检", "配置", "应用分类", "自定义应用"})
+		setCorootDiscovery(&meta, "observability", []string{"configuration", "integration", "inspection"}, []string{"read", "list"})
 	}
 	return meta
 }
@@ -225,6 +271,19 @@ func configureCorootDeferredTool(meta *tooling.ToolMetadata, pack string, trigge
 	meta.DeferByDefault = true
 	meta.Triggers = append([]string(nil), triggers...)
 	meta.SearchHint = strings.Join(triggers, " ")
+	meta.Discovery.ToolPackIDs = append(meta.Discovery.ToolPackIDs, corootObservabilityReadonlyPack, pack)
+	meta.Discovery.LoadingPolicy = tooling.ToolLoadingPolicyDeferred
+	meta.Discovery.RequiresHealthyMCP = true
+	meta.Discovery.PermissionScope = "read"
+	meta.Discovery.PromptBudgetClass = "compact"
+	meta.Discovery.SchemaBudgetClass = "on_demand"
+	meta.Discovery.DiscoveryTags = append(meta.Discovery.DiscoveryTags, triggers...)
+}
+
+func setCorootDiscovery(meta *tooling.ToolMetadata, capability string, resources []string, operations []string) {
+	meta.Discovery.CapabilityKind = capability
+	meta.Discovery.ResourceTypes = append(meta.Discovery.ResourceTypes, resources...)
+	meta.Discovery.OperationKinds = append(meta.Discovery.OperationKinds, operations...)
 }
 
 func withCorootEnvelopeFields(payload any) any {
@@ -1141,9 +1200,18 @@ func executeRCAReport(client *Client) func(context.Context, json.RawMessage) (an
 				return nil, nil, fmt.Errorf("service is required when incidentId is empty")
 			}
 			var appID string
-			appID, rawRef, err = resolveApplicationID(ctx, client, project, in.Service)
+			var matched bool
+			appID, rawRef, matched, err = resolveApplicationIDWithMatch(ctx, client, project, in.Service)
 			if err == nil {
-				raw, rawRef, err = getCorootRaw(ctx, client, rcaPath(project, appID), url.Values{"withSummary": {"true"}})
+				var rcaRef *CorootRawRef
+				raw, rcaRef, err = getCorootRaw(ctx, client, rcaPath(project, appID), url.Values{"withSummary": {"true"}})
+				if err != nil {
+					if matched && isCorootApplicationNotFound(err) {
+						return unavailableNativeRCAReport(project, appID, in.IncidentID, rawRef), rawRef, nil
+					}
+					return nil, rcaRef, err
+				}
+				rawRef = rcaRef
 			}
 		}
 		if err != nil {
@@ -1399,6 +1467,14 @@ func corootStructuredError(tool string, rawRef *CorootRawRef, err error) corootE
 	}
 }
 
+func isCorootApplicationNotFound(err error) bool {
+	corootErr, ok := err.(*CorootError)
+	if !ok || corootErr.StatusCode != 404 {
+		return false
+	}
+	return strings.Contains(strings.ToLower(corootErr.Message), "application not found")
+}
+
 func applicationsPath(project string) string {
 	return "/api/project/" + url.PathEscape(project) + "/overview/applications"
 }
@@ -1512,17 +1588,22 @@ func customApplicationsPath(project string) string {
 }
 
 func resolveApplicationID(ctx context.Context, client *Client, project, service string) (string, *CorootRawRef, error) {
+	id, rawRef, _, err := resolveApplicationIDWithMatch(ctx, client, project, service)
+	return id, rawRef, err
+}
+
+func resolveApplicationIDWithMatch(ctx context.Context, client *Client, project, service string) (string, *CorootRawRef, bool, error) {
 	raw, rawRef, err := getCorootRaw(ctx, client, applicationsPath(project), nil)
 	if err != nil {
-		return "", rawRef, err
+		return "", rawRef, false, err
 	}
 	for _, app := range objectArray(raw, "applications") {
 		id := stringFromAny(app["id"])
 		if serviceMatches(id, service) {
-			return id, rawRef, nil
+			return id, rawRef, true, nil
 		}
 	}
-	return service, rawRef, nil
+	return service, rawRef, false, nil
 }
 
 func resolveCorootApplicationInput(ctx context.Context, client *Client, project string, in corootInput) (string, *CorootRawRef, error) {
@@ -1550,10 +1631,10 @@ func corootQueryParams(query string) url.Values {
 func applicationQueryParams(in corootInput) url.Values {
 	values := url.Values{}
 	if in.FromTimestamp > 0 {
-		values.Set("from", strconv.FormatInt(in.FromTimestamp, 10))
+		values.Set("from", corootUnixMillisQueryValue(in.FromTimestamp))
 	}
 	if in.ToTimestamp > 0 {
-		values.Set("to", strconv.FormatInt(in.ToTimestamp, 10))
+		values.Set("to", corootUnixMillisQueryValue(in.ToTimestamp))
 	}
 	if strings.TrimSpace(in.TraceID) != "" {
 		values.Set("trace_id", strings.TrimSpace(in.TraceID))
@@ -1978,12 +2059,12 @@ func applyRCAContextTimeWindowToInput(in *corootInput, window RCAContextTimeWind
 func rcaContextWindowQueryParams(in corootInput) url.Values {
 	values := url.Values{}
 	if in.FromTimestamp > 0 {
-		values.Set("from", strconv.FormatInt(in.FromTimestamp, 10))
+		values.Set("from", corootUnixMillisQueryValue(in.FromTimestamp))
 	} else if strings.TrimSpace(in.From) != "" {
 		values.Set("from", strings.TrimSpace(in.From))
 	}
 	if in.ToTimestamp > 0 {
-		values.Set("to", strconv.FormatInt(in.ToTimestamp, 10))
+		values.Set("to", corootUnixMillisQueryValue(in.ToTimestamp))
 	} else if strings.TrimSpace(in.To) != "" {
 		values.Set("to", strings.TrimSpace(in.To))
 	}
@@ -1991,6 +2072,13 @@ func rcaContextWindowQueryParams(in corootInput) url.Values {
 		return nil
 	}
 	return values
+}
+
+func corootUnixMillisQueryValue(timestamp int64) string {
+	if timestamp > 1_000_000_000_000 {
+		return strconv.FormatInt(timestamp, 10)
+	}
+	return strconv.FormatInt(timestamp*1000, 10)
 }
 
 func inputTimeFrom(timestamp int64, value string) (time.Time, bool) {
@@ -2289,11 +2377,15 @@ func rcaEdgeEvidenceFromTopology(appID string, nodes []TopologyNode, edges []Top
 		if score == 0 && !rcaEdgeNearTarget(appID, edge) {
 			continue
 		}
+		targetName := firstNonBlank(target.Name, serviceName(edge.Target))
+		targetKind := rcaDependencyTargetKind(edge.Target, targetName, target.Category)
 		out = append(out, RCAEdgeEvidence{
 			Source:              edge.Source,
 			Target:              edge.Target,
 			SourceName:          firstNonBlank(source.Name, serviceName(edge.Source)),
-			TargetName:          firstNonBlank(target.Name, serviceName(edge.Target)),
+			TargetName:          targetName,
+			TargetKind:          targetKind,
+			TargetEndpoint:      rcaExternalDependencyEndpoint(edge.Target, targetName, targetKind),
 			Status:              status,
 			Connectivity:        connectivity,
 			ConnectivityMessage: message,
@@ -2312,6 +2404,36 @@ func rcaEdgeEvidenceFromTopology(appID string, nodes []TopologyNode, edges []Top
 		out = out[:maxCorootModelTopologyItems]
 	}
 	return out
+}
+
+func rcaDependencyTargetKind(id, name, category string) string {
+	id = strings.TrimSpace(id)
+	name = strings.TrimSpace(name)
+	category = strings.TrimSpace(category)
+	lowerID := strings.ToLower(id)
+	haystack := strings.ToLower(strings.Join([]string{id, name, category}, " "))
+	if strings.HasPrefix(lowerID, "external:") ||
+		strings.Contains(lowerID, ":externalservice:") ||
+		strings.EqualFold(category, "external") ||
+		strings.Contains(haystack, "externalservice") {
+		return "external"
+	}
+	return ""
+}
+
+func rcaExternalDependencyEndpoint(id, name, targetKind string) string {
+	if targetKind != "external" {
+		return ""
+	}
+	lowerID := strings.ToLower(id)
+	marker := ":externalservice:"
+	if idx := strings.Index(lowerID, marker); idx >= 0 {
+		endpoint := strings.TrimSpace(id[idx+len(marker):])
+		if endpoint != "" {
+			return endpoint
+		}
+	}
+	return firstNonBlank(name, serviceName(id), id)
 }
 
 func topologyNodeByID(nodes []TopologyNode) map[string]TopologyNode {
@@ -2621,8 +2743,14 @@ func rcaHypothesesFromEvidence(
 		}
 		score := edge.Score
 		evidence := append([]string(nil), edge.Signals...)
+		rootCauseStatus := "candidate"
 		if edge.Status != "" {
 			evidence = appendCorootUniqueString(evidence, "edge status "+edge.Status, 10)
+		}
+		if edge.TargetKind == "external" {
+			rootCauseStatus = "requires_external_dependency_drilldown"
+			endpoint := firstNonBlank(edge.TargetEndpoint, edge.TargetName, serviceName(edge.Target), edge.Target)
+			evidence = appendCorootUniqueString(evidence, "external dependency "+endpoint+" has not been resolved to its owner, endpoint health, port/protocol, or network path cause", 10)
 		}
 		if hasViolatedSLO(slos) {
 			score += 15
@@ -2638,15 +2766,19 @@ func rcaHypothesesFromEvidence(
 		}
 		path := rcaHypothesisPath(graph, edge)
 		title := fmt.Sprintf("%s -> %s dependency is a likely root cause for %s symptoms", firstNonBlank(edge.SourceName, serviceName(edge.Source), edge.Source), firstNonBlank(edge.TargetName, serviceName(edge.Target), edge.Target), targetName)
+		if edge.TargetKind == "external" {
+			title = fmt.Sprintf("%s -> external dependency %s is failing and requires deeper cause analysis for %s symptoms", firstNonBlank(edge.SourceName, serviceName(edge.Source), edge.Source), firstNonBlank(edge.TargetEndpoint, edge.TargetName, serviceName(edge.Target), edge.Target), targetName)
+		}
 		hypotheses = append(hypotheses, RCAHypothesis{
 			Title:           title,
 			SuspectService:  edge.Target,
 			SuspectEdge:     edge.Source + "->" + edge.Target,
+			RootCauseStatus: rootCauseStatus,
 			Confidence:      rcaConfidence(score, true),
 			Score:           score,
 			Evidence:        evidence,
 			PropagationPath: path,
-			NextDrilldowns:  rcaNextDrilldowns(edge.Target),
+			NextDrilldowns:  rcaNextDrilldowns(edge),
 		})
 	}
 	for _, event := range deploymentEvents {
@@ -2772,7 +2904,21 @@ func rcaConfidence(score int, hasEdge bool) string {
 	}
 }
 
-func rcaNextDrilldowns(service string) []string {
+func rcaNextDrilldowns(edge RCAEdgeEvidence) []string {
+	if edge.TargetKind == "external" {
+		endpoint := firstNonBlank(edge.TargetEndpoint, edge.TargetName, serviceName(edge.Target), edge.Target)
+		source := firstNonBlank(edge.SourceName, serviceName(edge.Source), edge.Source)
+		return []string{
+			"resolve external dependency " + endpoint + " to the actual owner/service before treating it as the root cause",
+			"check whether " + endpoint + " is a Kubernetes Service or Endpoint and inspect its backing endpoints/readiness",
+			"identify the expected port/protocol for " + endpoint + " and compare it with the failed connection stats",
+			"verify caller-to-dependency network path from " + source + " to " + endpoint + " (DNS, route, NetworkPolicy/firewall, connection refused/reset/timeout)",
+			"coroot.service_topology",
+			"coroot.service_metrics",
+			"coroot.application_logs",
+			"coroot.application_traces",
+		}
+	}
 	return []string{
 		"coroot.service_topology",
 		"coroot.service_metrics",
@@ -2789,6 +2935,13 @@ func enrichRCAContextSummaryWithHypotheses(summary RCAContextSummary, hypotheses
 		}
 		if hypothesis.Title != "" {
 			summary.TopSignals = appendCorootUniqueString(summary.TopSignals, hypothesis.Title, 12)
+		}
+		if hypothesis.RootCauseStatus == "requires_external_dependency_drilldown" {
+			summary.MissingEvidence = appendCorootUniqueString(
+				summary.MissingEvidence,
+				"external dependency "+name+" identity, endpoint health, port/protocol, and underlying cause is unresolved; do not treat the dependency edge alone as the final root cause",
+				6,
+			)
 		}
 	}
 	return summary
@@ -3660,6 +3813,22 @@ func rcaFromRaw(project, service, incidentID string, raw json.RawMessage, rawRef
 		DetailedAnalysis: stringFromAny(rca["detailed_root_cause_analysis"]),
 		RelatedServices:  related,
 		RawRef:           rawRef,
+	}
+}
+
+func unavailableNativeRCAReport(project, service, incidentID string, rawRef *CorootRawRef) RCAReportResult {
+	return RCAReportResult{
+		SchemaVersion: corootSchemaVersion,
+		Tool:          "coroot.rca_report",
+		Status:        "unavailable",
+		Project:       project,
+		Service:       service,
+		IncidentID:    incidentID,
+		Summary:       "Optional native RCA from Coroot is unavailable for this application; this does not prove the service is absent.",
+		DetailedAnalysis: "The application was resolved from the Coroot overview list, but Coroot's native RCA endpoint returned 404 Application not found. " +
+			"Continue service RCA with coroot.collect_rca_context, metrics, topology, logs, traces, and incidents.",
+		RelatedServices: uniqueStrings([]string{service}),
+		RawRef:          rawRef,
 	}
 }
 

@@ -1,6 +1,7 @@
 import type { AssistantTransportCommand } from "@assistant-ui/react";
 
 import type {
+  AiopsTransportHostMission,
   AiopsTransportState,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
@@ -26,6 +27,8 @@ export function createInitialAiopsTransportState(threadId = "default"): AiopsTra
     pendingApprovals: {},
     mcpSurfaces: {},
     artifacts: {},
+    hostMissions: {},
+    childAgents: {},
     runtimeLiveness: {
       activeTurns: {},
       activeAgents: {},
@@ -35,6 +38,44 @@ export function createInitialAiopsTransportState(threadId = "default"): AiopsTra
     },
     seq: 0,
     updatedAt: new Date().toISOString(),
+  };
+}
+
+export function normalizeAiopsTransportState(
+  value: Partial<AiopsTransportState> | AiopsTransportState | null | undefined,
+  fallbackThreadId = "default",
+): AiopsTransportState {
+  const base = createInitialAiopsTransportState(fallbackThreadId);
+  if (!value || typeof value !== "object") {
+    return base;
+  }
+
+  const runtimeLiveness = value.runtimeLiveness || base.runtimeLiveness;
+  return {
+    ...base,
+    ...value,
+    schemaVersion: value.schemaVersion || base.schemaVersion,
+    sessionId: value.sessionId ?? base.sessionId,
+    threadId: value.threadId || fallbackThreadId || base.threadId,
+    status: value.status || base.status,
+    turns: value.turns || {},
+    turnOrder: Array.isArray(value.turnOrder) ? value.turnOrder : [],
+    pendingApprovals: value.pendingApprovals || {},
+    mcpSurfaces: value.mcpSurfaces || {},
+    artifacts: value.artifacts || {},
+    hostMissions: normalizeHostMissions(value.hostMissions),
+    childAgents: value.childAgents || {},
+    runtimeLiveness: {
+      ...base.runtimeLiveness,
+      ...runtimeLiveness,
+      activeTurns: runtimeLiveness.activeTurns || {},
+      activeAgents: runtimeLiveness.activeAgents || {},
+      pendingApprovals: runtimeLiveness.pendingApprovals || {},
+      pendingUserInputs: runtimeLiveness.pendingUserInputs || {},
+      activeCommandStreams: runtimeLiveness.activeCommandStreams || {},
+    },
+    seq: typeof value.seq === "number" ? value.seq : base.seq,
+    updatedAt: value.updatedAt || base.updatedAt,
   };
 }
 
@@ -115,22 +156,23 @@ function markAiopsTransportTerminalState(
   status: "failed" | "canceled",
   message?: string,
 ): AiopsTransportState {
-  const turns = { ...state.turns };
-  const current = state.currentTurnId ? turns[state.currentTurnId] : undefined;
-  if (state.currentTurnId && current) {
-    turns[state.currentTurnId] = markTurnTerminal(current, status);
+  const normalizedState = normalizeAiopsTransportState(state);
+  const turns = { ...normalizedState.turns };
+  const current = normalizedState.currentTurnId ? turns[normalizedState.currentTurnId] : undefined;
+  if (normalizedState.currentTurnId && current) {
+    turns[normalizedState.currentTurnId] = markTurnTerminal(current, status);
   }
 
   return {
-    ...state,
+    ...normalizedState,
     turns,
     status,
-    lastError: message || state.lastError,
+    lastError: message || normalizedState.lastError,
     runtimeLiveness: {
       activeTurns: {},
-      activeAgents: { ...state.runtimeLiveness.activeAgents },
-      pendingApprovals: { ...state.runtimeLiveness.pendingApprovals },
-      pendingUserInputs: { ...state.runtimeLiveness.pendingUserInputs },
+      activeAgents: { ...normalizedState.runtimeLiveness.activeAgents },
+      pendingApprovals: { ...normalizedState.runtimeLiveness.pendingApprovals },
+      pendingUserInputs: { ...normalizedState.runtimeLiveness.pendingUserInputs },
       activeCommandStreams: {},
     },
     updatedAt: new Date().toISOString(),
@@ -152,4 +194,30 @@ function markTurnTerminal(turn: AiopsTransportTurn, status: "failed" | "canceled
 
 function removeUndefined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
+}
+
+function normalizeHostMissions(value: unknown): Record<string, AiopsTransportHostMission> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, mission]) => Boolean(mission) && typeof mission === "object" && !Array.isArray(mission))
+      .map(([id, mission]) => {
+        const item = mission as AiopsTransportHostMission & {
+          mentionedHosts?: unknown;
+          childAgentIds?: unknown;
+          planSteps?: unknown;
+        };
+        return [
+          id,
+          {
+            ...item,
+            mentionedHosts: Array.isArray(item.mentionedHosts) ? item.mentionedHosts : [],
+            childAgentIds: Array.isArray(item.childAgentIds) ? item.childAgentIds : [],
+            planSteps: Array.isArray(item.planSteps) ? item.planSteps : undefined,
+          },
+        ];
+      }),
+  ) as Record<string, AiopsTransportHostMission>;
 }

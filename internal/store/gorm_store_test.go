@@ -64,7 +64,7 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AppendApprovalAudit() error = %v", err)
 	}
-	if err := first.SaveLLMConfig(&LLMConfig{Provider: "openai", Model: "gpt-5.4", APIKey: "sk-test", BaseURL: "http://127.0.0.1:8317/v1"}); err != nil {
+	if err := first.SaveLLMConfig(&LLMConfig{Provider: "openai", Model: "gpt-5.4", APIKey: "sk-test", BaseURL: "http://127.0.0.1:8317/v1", ReasoningEffort: "high"}); err != nil {
 		t.Fatalf("SaveLLMConfig() error = %v", err)
 	}
 	if err := first.SaveWebSettings(&WebSettings{Model: "gpt-5.4", Quota: "dev"}); err != nil {
@@ -114,7 +114,7 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 		t.Fatalf("ListApprovalAudits() = %#v, %v", audits, err)
 	}
 	llm, err := second.GetLLMConfig()
-	if err != nil || llm.Model != "gpt-5.4" {
+	if err != nil || llm.Model != "gpt-5.4" || llm.ReasoningEffort != "high" {
 		t.Fatalf("GetLLMConfig() = %#v, %v", llm, err)
 	}
 	settings, err := second.GetWebSettings()

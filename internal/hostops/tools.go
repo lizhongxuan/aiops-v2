@@ -1,0 +1,188 @@
+package hostops
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"aiops-v2/internal/tooling"
+)
+
+const (
+	ToolPackHostOps          = "hostops"
+	ToolSpawnHostAgent       = "spawn_host_agent"
+	ToolSendHostAgentMessage = "send_host_agent_message"
+	ToolWaitHostAgents       = "wait_host_agents"
+	ToolStopHostAgent        = "stop_host_agent"
+)
+
+func NewManagerTools(orchestrator *Orchestrator) []tooling.Tool {
+	return []tooling.Tool{
+		spawnHostAgentTool(orchestrator),
+		sendHostAgentMessageTool(orchestrator),
+		waitHostAgentsTool(orchestrator),
+		stopHostAgentTool(orchestrator),
+	}
+}
+
+type spawnHostAgentInput struct {
+	MissionID   string                 `json:"missionId"`
+	Assignments []ChildAgentAssignment `json:"assignments"`
+}
+
+type childAgentMessageInput struct {
+	ChildAgentID string `json:"childAgentId"`
+	Content      string `json:"content"`
+}
+
+type waitHostAgentsInput struct {
+	MissionID string `json:"missionId"`
+}
+
+type stopHostAgentInput struct {
+	ChildAgentID string `json:"childAgentId"`
+}
+
+func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:             ToolSpawnHostAgent,
+			Description:      "Spawn one host-bound child agent per assignment for a host operation mission.",
+			Origin:           tooling.ToolOriginBuiltin,
+			Layer:            tooling.ToolLayerMutation,
+			Pack:             ToolPackHostOps,
+			Domain:           "hostops",
+			Mutating:         true,
+			RiskLevel:        tooling.ToolRiskMedium,
+			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence:   true,
+			DedupeEligible:   true,
+			RequiresApproval: false,
+		},
+		Visibility:      managerToolVisibility(),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId","assignments"],"properties":{"missionId":{"type":"string"},"assignments":{"type":"array","items":{"type":"object","required":["hostId","task"],"properties":{"hostId":{"type":"string"},"hostAddress":{"type":"string"},"hostDisplayName":{"type":"string"},"role":{"type":"string"},"task":{"type":"string"},"sessionId":{"type":"string"},"parentAgentId":{"type":"string"}}}}}}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
+		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req spawnHostAgentInput
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			children, err := orchestrator.SpawnChildren(ctx, req.MissionID, req.Assignments)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolSpawnHostAgent, map[string]any{"children": children})
+		},
+	}
+}
+
+func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           ToolSendHostAgentMessage,
+			Description:    "Send a manager follow-up message to one host-bound child agent.",
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerMutation,
+			Pack:           ToolPackHostOps,
+			Domain:         "hostops",
+			Mutating:       true,
+			RiskLevel:      tooling.ToolRiskMedium,
+			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence: true,
+		},
+		Visibility:      managerToolVisibility(),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["childAgentId","content"],"properties":{"childAgentId":{"type":"string"},"content":{"type":"string"}}}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
+		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req childAgentMessageInput
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			child, err := orchestrator.SendMessage(ctx, req.ChildAgentID, req.Content)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolSendHostAgentMessage, map[string]any{"child": child})
+		},
+	}
+}
+
+func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           ToolWaitHostAgents,
+			Description:    "Read current child agent statuses for a host operation mission.",
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerCore,
+			Pack:           ToolPackHostOps,
+			Domain:         "hostops",
+			RiskLevel:      tooling.ToolRiskLow,
+			FailurePolicy:  tooling.ToolFailurePolicyFeedBackToModel,
+			RecordEvidence: true,
+		},
+		Visibility:      managerToolVisibility(),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId"],"properties":{"missionId":{"type":"string"}}}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req waitHostAgentsInput
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			children, err := orchestrator.WaitChildren(ctx, req.MissionID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolWaitHostAgents, map[string]any{"children": children})
+		},
+	}
+}
+
+func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           ToolStopHostAgent,
+			Description:    "Stop one host-bound child agent.",
+			Origin:         tooling.ToolOriginBuiltin,
+			Layer:          tooling.ToolLayerMutation,
+			Pack:           ToolPackHostOps,
+			Domain:         "hostops",
+			Mutating:       true,
+			RiskLevel:      tooling.ToolRiskMedium,
+			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence: true,
+		},
+		Visibility:      managerToolVisibility(),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["childAgentId"],"properties":{"childAgentId":{"type":"string"}}}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
+		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req stopHostAgentInput
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			child, err := orchestrator.Stop(ctx, req.ChildAgentID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolStopHostAgent, map[string]any{"child": child})
+		},
+	}
+}
+
+func managerToolVisibility() tooling.Visibility {
+	return tooling.Visibility{SessionTypes: []string{"workspace"}, Modes: []string{"plan", "execute"}}
+}
+
+func jsonToolResult(toolName string, payload any) (tooling.ToolResult, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return tooling.ToolResult{}, fmt.Errorf("%s result: %w", toolName, err)
+	}
+	return tooling.ToolResult{
+		Content: string(data),
+		Display: &tooling.ToolDisplayPayload{
+			Type:  "hostops." + toolName,
+			Title: toolName,
+			Data:  data,
+		},
+	}, nil
+}

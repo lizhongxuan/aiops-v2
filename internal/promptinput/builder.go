@@ -13,6 +13,7 @@ import (
 // context into provider model messages and a semantic prompt-input trace.
 func (Builder) Build(req BuildRequest) (BuildResult, error) {
 	promptMessages := promptcompiler.CompiledPromptToMessages(req.Compiled)
+	dynamicMessages := dynamicPromptMessages(req.Compiled)
 	opsContextMessages := opsContextMessages(req)
 	memoryMessages := memoryMessages(req)
 
@@ -22,15 +23,44 @@ func (Builder) Build(req BuildRequest) (BuildResult, error) {
 		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
 	}
 
-	resultMessages := make([]*schema.Message, 0, len(promptMessages)+len(opsContextMessages)+len(memoryMessages)+len(runtimeMessages))
+	resultMessages := make([]*schema.Message, 0, len(promptMessages)+len(dynamicMessages)+len(opsContextMessages)+len(memoryMessages)+len(runtimeMessages))
 	resultMessages = append(resultMessages, promptMessages...)
+	resultMessages = append(resultMessages, dynamicMessages...)
 	resultMessages = append(resultMessages, opsContextMessages...)
 	resultMessages = append(resultMessages, memoryMessages...)
 	resultMessages = append(resultMessages, runtimeMessages...)
 	return BuildResult{
 		Messages: resultMessages,
-		Trace:    buildTrace(req, promptMessages, memoryMessagesFromRequest(req), history, runtimeMessages),
+		Trace:    buildTrace(req, append(append([]*schema.Message(nil), promptMessages...), dynamicMessages...), memoryMessagesFromRequest(req), history, runtimeMessages),
 	}, nil
+}
+
+func dynamicPromptMessages(compiled promptcompiler.CompiledPrompt) []*schema.Message {
+	content := dynamicContextContent(compiled)
+	if content == "" {
+		return nil
+	}
+	msg := schema.SystemMessage(content)
+	msg.Extra = map[string]any{
+		"prompt_layer":  "dynamic_prompt",
+		"semantic_role": "runtime_context",
+	}
+	return []*schema.Message{msg}
+}
+
+func dynamicContextContent(compiled promptcompiler.CompiledPrompt) string {
+	content := strings.TrimSpace(compiled.Dynamic.Content)
+	if content == "" {
+		return ""
+	}
+	policyContent := strings.TrimSpace(compiled.Policy.Content)
+	if policyContent == "" {
+		policyContent = strings.TrimSpace(compiled.Dynamic.Policy.Content)
+	}
+	if policyContent != "" && strings.HasSuffix(content, policyContent) {
+		content = strings.TrimSpace(strings.TrimSuffix(content, policyContent))
+	}
+	return content
 }
 
 func opsContextMessages(req BuildRequest) []*schema.Message {

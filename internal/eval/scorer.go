@@ -22,13 +22,17 @@ var vaguePhrases = []string{
 var concreteTokenPattern = regexp.MustCompile("`[^`]+`|[[:alnum:]_./-]+\\.(go|js|ts|vue|json|md|yaml|yml|py)|go test|npm test|pytest")
 
 var defaultScoreWeights = map[string]float64{
-	"answer":     0.20,
-	"tools":      0.20,
-	"plan":       0.20,
-	"evidence":   0.15,
-	"safety":     0.15,
-	"efficiency": 0.10,
-	"diagnosis":  0.30,
+	"answer":              0.20,
+	"tools":               0.20,
+	"plan":                0.20,
+	"evidence":            0.15,
+	"safety":              0.15,
+	"efficiency":          0.10,
+	"diagnosis":           0.30,
+	"verification_schema": 0.20,
+	"completion_gate":     0.20,
+	"safety_permission":   0.20,
+	"trace_evidence":      0.20,
 }
 
 // ScoreCase evaluates one run output against deterministic case expectations.
@@ -40,8 +44,33 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		scoreExpectedTurnItems(output.TurnItems, c.Expected.ExpectedTurnItems),
 		scorePlanPresence(output.TurnItems, c.Expected.MustHavePlan, c.Expected.MustNotHavePlan),
 		scoreExpectedPlanStatuses(output.TurnItems, c.Expected.ExpectedPlanStatuses),
+		scoreExpectedPlanTraceField("expectedPlanModeState", output.TurnItems, "planModeState", c.Expected.ExpectedPlanModeState),
+		scoreExpectedPlanTraceField("expectedPlanRequirement", output.TurnItems, "planRequirementDecision", c.Expected.ExpectedPlanRequirement),
+		scoreExpectedPlanTraceField("expectedPlanCompletionGate", output.TurnItems, "planCompletionGate", c.Expected.ExpectedPlanCompletionGate),
+		scoreExpectedPlanTraceField("expectedTaskClaims", output.TurnItems, "taskClaims", c.Expected.ExpectedTaskClaims),
+		scoreExpectedPlanTraceField("expectedPlanApprovalScope", output.TurnItems, "planApprovalScope", c.Expected.ExpectedPlanApprovalScope),
+		scoreExpectedPlanTraceField("expectedPlanRejectionEvents", output.TurnItems, "planRejectionEvents", c.Expected.ExpectedPlanRejectionEvents),
+		scoreExpectedPlanTraceField("expectedVerificationStatus", output.TurnItems, "verificationStatus", c.Expected.ExpectedVerificationStatus),
+		scoreExpectedPlanTraceField("expectedCompletionGate", output.TurnItems, "completionGate", c.Expected.ExpectedCompletionGate),
+		scoreExpectedPlanTraceField("expectedSafetySignals", output.TurnItems, "safetySignals", c.Expected.ExpectedSafetySignals),
+		scoreExpectedPlanTraceField("expectedUnexpectedStateGate", output.TurnItems, "unexpectedStateGate", c.Expected.ExpectedUnexpectedStateGate),
+		scoreExpectedPlanTraceField("expectedApprovalScope", output.TurnItems, "approvalScope", c.Expected.ExpectedApprovalScope),
+		scoreExpectedPlanTraceField("expectedTraceEvidence", output.TurnItems, "verificationReportRef", c.Expected.ExpectedTraceEvidence),
+		scoreExpectedModelTraceField("expectedTaskDepth", output.TurnItems, "taskDepth", c.Expected.ExpectedTaskDepth),
+		scoreExpectedModelTraceField("expectedRequiredGates", output.TurnItems, "taskDepth", c.Expected.ExpectedRequiredGates),
+		scoreExpectedModelTraceField("expectedCoverageAction", output.TurnItems, "evidenceCoverage", c.Expected.ExpectedCoverageAction),
+		scoreExpectedModelTraceField("expectedReasoningFallback", output.TurnItems, "reasoningFallback", c.Expected.ExpectedReasoningFallback),
+		scoreExpectedModelTraceField("expectedResumeAction", output.TurnItems, "resumeAction", c.Expected.ExpectedResumeAction),
+		scoreExpectedModelTraceField("expectedManagerSynthesis", output.TurnItems, "managerSynthesis", c.Expected.ExpectedManagerSynthesis),
+		scoreExpectedModelTraceField("expectedFailureAction", output.TurnItems, "failureSignature", c.Expected.ExpectedFailureAction),
+		scoreExpectedModelTraceField("expectedGenericityFindings", output.TurnItems, "genericityTrace", c.Expected.ExpectedGenericityFindings),
+		scoreExpectedModelTraceField("expectedResourceIdSource", output.TurnItems, "genericityTrace", c.Expected.ExpectedResourceIDSource),
+		scoreOverPlanningPenalty(output.ToolCalls, output.TurnItems, c.Expected),
 		scoreExpectedApprovals(output.TurnItems, c.Expected.ExpectedApprovals),
 		scoreExpectedEvidence(output.TurnItems, c.Expected.ExpectedEvidence),
+		scoreMustHaveEvidence(output.TurnItems, c.Expected.MustHaveEvidence),
+		scorePrematureFinal(output.ToolCalls, output.TurnItems, c.Expected.ForbidFirstTurnNoToolFinal),
+		scoreEvidenceLimits(output.Answer, c.Expected.MustMentionEvidenceLimits),
 		scoreMaxIterations(output.TurnItems, c.Expected.MaxIterations),
 		scoreMaxToolCalls(output.ToolCalls, output.TurnItems, c.Expected.MaxToolCalls),
 		scoreMustMentionFiles(output.Answer, c.Expected.MustMentionFiles),
@@ -75,6 +104,117 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 	}
 }
 
+func scoreExpectedPlanTraceField(name string, items []agentstate.TurnItem, field string, expected []string) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: name, Passed: true, Detail: "no plan trace expectation configured"}
+	}
+	values := planTraceFieldValues(items, field)
+	var matched, missing []string
+	for _, want := range expected {
+		if containsAnyFold(values, want) {
+			matched = append(matched, want)
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	return CheckResult{
+		Name:    name,
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d expected plan trace values found", len(matched), len(expected)),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func scoreExpectedModelTraceField(name string, items []agentstate.TurnItem, field string, expected []string) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: name, Passed: true, Detail: "no model trace expectation configured"}
+	}
+	values := planTraceFieldValues(items, field)
+	var matched, missing []string
+	for _, want := range expected {
+		if containsAnyFold(values, want) || traceValuesContainSyntheticAssertion(values, want) {
+			matched = append(matched, want)
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	return CheckResult{
+		Name:    name,
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d expected model trace values found", len(matched), len(expected)),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func scoreOverPlanningPenalty(calls []ToolCall, items []agentstate.TurnItem, expected Expected) CheckResult {
+	simpleExpected := false
+	for _, value := range expected.ExpectedTaskDepth {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "trivial" || normalized == "simple_read" || normalized == "simple" {
+			simpleExpected = true
+			break
+		}
+	}
+	if !simpleExpected {
+		return CheckResult{Name: "overPlanningPenalty", Passed: true, Detail: "simple task over-planning guard not configured"}
+	}
+	var unexpected []string
+	for _, call := range calls {
+		name := strings.ToLower(strings.TrimSpace(call.Name))
+		switch name {
+		case "update_plan", "plan_approval", "dispatch_agent", "multi_agent_dispatch":
+			unexpected = append(unexpected, "tool:"+call.Name)
+		}
+	}
+	for _, item := range items {
+		if item.Type == agentstate.TurnItemTypePlan || strings.Contains(strings.ToLower(string(item.Type)), "approval") {
+			unexpected = append(unexpected, "turn_item:"+string(item.Type))
+		}
+		for _, value := range turnItemMatchValues(item) {
+			if strings.Contains(strings.ToLower(value), "multi_agent_dispatch") {
+				unexpected = append(unexpected, "trace:multi_agent_dispatch")
+				break
+			}
+		}
+	}
+	return CheckResult{
+		Name:       "overPlanningPenalty",
+		Passed:     len(unexpected) == 0,
+		Detail:     "simple/trivial tasks must not trigger plan, approval, or multi-agent orchestration",
+		Unexpected: unexpected,
+	}
+}
+
+func traceValuesContainSyntheticAssertion(values []string, want string) bool {
+	if strings.Contains(want, ":") {
+		parts := strings.SplitN(want, ":", 2)
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		return containsAnyFold(values, key) && containsAnyFold(values, value)
+	}
+	return false
+}
+
+func planTraceFieldValues(items []agentstate.TurnItem, field string) []string {
+	var values []string
+	for _, item := range items {
+		if len(item.Payload.Data) == 0 {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal(item.Payload.Data, &payload) != nil {
+			continue
+		}
+		if value, ok := payload[field]; ok {
+			values = append(values, field)
+			collectDecodedValues(value, &values)
+		}
+	}
+	return values
+}
+
 func promptFingerprintsFromTurnItems(items []agentstate.TurnItem) []map[string]string {
 	var out []map[string]string
 	for _, item := range items {
@@ -106,6 +246,55 @@ func scoreExpectedApprovals(items []agentstate.TurnItem, expected []string) Chec
 
 func scoreExpectedEvidence(items []agentstate.TurnItem, expected []string) CheckResult {
 	return scoreExpectedTurnItemSummaries("expectedEvidence", items, agentstate.TurnItemTypeEvidence, expected)
+}
+
+func scoreMustHaveEvidence(items []agentstate.TurnItem, required bool) CheckResult {
+	if !required {
+		return CheckResult{Name: "mustHaveEvidence", Passed: true, Detail: "no evidence presence expectation configured"}
+	}
+	for _, item := range items {
+		if string(item.Type) == "evidence" {
+			return CheckResult{Name: "mustHaveEvidence", Passed: true, Detail: "evidence turn item found", Matched: []string{item.ID}}
+		}
+	}
+	return CheckResult{Name: "mustHaveEvidence", Passed: false, Detail: "missing evidence turn item", Missing: []string{"evidence"}}
+}
+
+func scorePrematureFinal(calls []ToolCall, items []agentstate.TurnItem, forbidden bool) CheckResult {
+	if !forbidden {
+		return CheckResult{Name: "prematureFinal", Passed: true, Detail: "no premature final expectation configured"}
+	}
+	if len(calls) > 0 {
+		return CheckResult{Name: "prematureFinal", Passed: true, Detail: "tool call found before final evaluation"}
+	}
+	sawInvestigation := false
+	for _, item := range items {
+		switch string(item.Type) {
+		case "tool_call", "tool_result", "evidence":
+			sawInvestigation = true
+		case "final_answer":
+			if !sawInvestigation {
+				return CheckResult{Name: "prematureFinal", Passed: false, Detail: "final answer emitted before tool or evidence collection", Unexpected: []string{"final_answer"}}
+			}
+		}
+	}
+	return CheckResult{Name: "prematureFinal", Passed: true, Detail: "no first-turn no-tool final detected"}
+}
+
+func scoreEvidenceLimits(answer string, required bool) CheckResult {
+	if !required {
+		return CheckResult{Name: "evidenceLimits", Passed: true, Detail: "no evidence limitation expectation configured"}
+	}
+	limitHints := []string{
+		"证据限制", "证据有限", "局限", "限制", "不足", "缺口", "缺失", "未覆盖", "无法确认", "不能确认", "还缺",
+		"evidence limit", "evidence limitation", "limited evidence", "unknown", "not confirmed", "not enough evidence",
+	}
+	for _, hint := range limitHints {
+		if containsFold(answer, hint) {
+			return CheckResult{Name: "evidenceLimits", Passed: true, Detail: "evidence limitation mentioned", Matched: []string{hint}}
+		}
+	}
+	return CheckResult{Name: "evidenceLimits", Passed: false, Detail: "missing explicit evidence limitation", Missing: []string{"evidence limitation"}}
 }
 
 func scoreExpectedTurnItemSummaries(name string, items []agentstate.TurnItem, typ agentstate.TurnItemType, expected []string) CheckResult {
@@ -482,6 +671,9 @@ func weightedScore(checks []CheckResult, rules ScoreRules) (float64, map[string]
 		}
 		score += weights[category] * (float64(passed) / float64(len(categoryChecks)))
 	}
+	if score > 1 && score < 1.000000001 {
+		score = 1
+	}
 	return score, weights
 }
 
@@ -520,13 +712,21 @@ func checkCategory(name string) string {
 	switch name {
 	case "expectedToolCalls":
 		return "tools"
-	case "expectedTurnItems", "planPresence", "expectedPlanStatuses":
+	case "expectedTurnItems", "planPresence", "expectedPlanStatuses", "expectedPlanModeState", "expectedPlanRequirement", "expectedPlanCompletionGate", "expectedTaskClaims", "expectedPlanApprovalScope", "expectedPlanRejectionEvents", "expectedTaskDepth", "expectedRequiredGates", "expectedResumeAction", "expectedManagerSynthesis", "expectedFailureAction":
 		return "plan"
-	case "expectedEvidence":
+	case "expectedEvidence", "mustHaveEvidence", "evidenceLimits", "expectedCoverageAction":
 		return "evidence"
+	case "expectedVerificationStatus":
+		return "verification_schema"
+	case "expectedCompletionGate":
+		return "completion_gate"
+	case "expectedSafetySignals", "expectedUnexpectedStateGate", "expectedApprovalScope":
+		return "safety_permission"
+	case "expectedTraceEvidence", "expectedGenericityFindings", "expectedResourceIdSource", "expectedReasoningFallback":
+		return "trace_evidence"
 	case "mustNotInclude", "expectedApprovals":
 		return "safety"
-	case "maxIterations", "maxToolCalls":
+	case "maxIterations", "maxToolCalls", "prematureFinal", "overPlanningPenalty":
 		return "efficiency"
 	case "diagnosisRootCauseTop1", "diagnosisTop3CandidateCoverage", "diagnosisSupportingEvidence", "diagnosisRefutingEvidence", "diagnosisMissingEvidence", "diagnosisToolFailureSemantics", "diagnosisConfidenceCalibration", "diagnosisPromptContextPollution":
 		return "diagnosis"

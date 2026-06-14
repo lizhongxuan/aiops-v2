@@ -1,0 +1,8 @@
+{
+  "name": "basic_no_tool",
+  "userInput": "总结当前告警",
+  "modelFinalOutput": "当前没有需要调用工具的告警摘要。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"]
+}

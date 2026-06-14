@@ -280,35 +280,67 @@ func (rs *ResourceServer) handleCorootTestConnection(w http.ResponseWriter, r *h
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("coroot test connection error: %v", err)
-		writeResourceJSON(w, http.StatusBadGateway, map[string]string{"error": "coroot upstream error"})
+		writeCorootProbeError(w, http.StatusBadGateway, "coroot upstream error", map[string]any{
+			"detail":  fmt.Sprintf("Coroot probe request failed for GET %s: %v", corootSafeURI(target), err),
+			"project": project,
+			"uri":     corootSafeURI(target),
+		})
 		return
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCorootProbeResponseBytes))
 	if err != nil {
-		writeResourceJSON(w, http.StatusBadGateway, map[string]string{"error": "read coroot upstream response failed"})
+		writeCorootProbeError(w, http.StatusBadGateway, "read coroot upstream response failed", map[string]any{
+			"detail":      fmt.Sprintf("Read Coroot response failed for GET %s: %v", corootSafeURI(target), err),
+			"project":     project,
+			"uri":         corootSafeURI(target),
+			"statusCode":  resp.StatusCode,
+			"contentType": resp.Header.Get("Content-Type"),
+		})
 		return
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		writeResourceJSON(w, http.StatusBadGateway, map[string]any{
-			"error":      "coroot upstream returned non-success status",
-			"statusCode": resp.StatusCode,
-			"project":    project,
+		detail := fmt.Sprintf("Coroot upstream returned HTTP %d for GET %s", resp.StatusCode, corootSafeURI(target))
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			detail += ". Check the Coroot API Key and Project ID permissions."
+		}
+		writeCorootProbeError(w, http.StatusBadGateway, "coroot upstream returned non-success status", map[string]any{
+			"detail":          detail,
+			"statusCode":      resp.StatusCode,
+			"project":         project,
+			"uri":             corootSafeURI(target),
+			"contentType":     resp.Header.Get("Content-Type"),
+			"responsePreview": corootResponsePreview(body),
 		})
 		return
 	}
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		writeResourceJSON(w, http.StatusBadGateway, map[string]string{"error": "decode coroot upstream response failed"})
+		contentType := resp.Header.Get("Content-Type")
+		if strings.TrimSpace(contentType) == "" {
+			contentType = "unknown"
+		}
+		writeCorootProbeError(w, http.StatusBadGateway, "decode coroot upstream response failed", map[string]any{
+			"detail":          fmt.Sprintf("Coroot upstream returned a non-JSON response for GET %s (HTTP %d, Content-Type: %s). Check Base URL; if Coroot is served under a path prefix, include it, for example /coroot.", corootSafeURI(target), resp.StatusCode, contentType),
+			"statusCode":      resp.StatusCode,
+			"project":         project,
+			"uri":             corootSafeURI(target),
+			"contentType":     contentType,
+			"responsePreview": corootResponsePreview(body),
+		})
 		return
 	}
 	data, hasData := payload["data"]
 	if !hasData || data == nil {
-		writeResourceJSON(w, http.StatusBadGateway, map[string]any{
-			"error":   fmt.Sprintf("coroot project %q has no application data", project),
-			"project": project,
+		writeCorootProbeError(w, http.StatusBadGateway, fmt.Sprintf("coroot project %q has no application data", project), map[string]any{
+			"detail":          fmt.Sprintf("Coroot response for GET %s did not contain a non-null data field.", corootSafeURI(target)),
+			"statusCode":      resp.StatusCode,
+			"project":         project,
+			"uri":             corootSafeURI(target),
+			"contentType":     resp.Header.Get("Content-Type"),
+			"responsePreview": corootResponsePreview(body),
 		})
 		return
 	}
@@ -439,4 +471,38 @@ func corootApplicationCount(data any) int {
 		return 0
 	}
 	return len(apps)
+}
+
+func writeCorootProbeError(w http.ResponseWriter, status int, message string, fields map[string]any) {
+	payload := map[string]any{"error": message}
+	for key, value := range fields {
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				payload[key] = typed
+			}
+		default:
+			if value != nil {
+				payload[key] = value
+			}
+		}
+	}
+	writeResourceJSON(w, status, payload)
+}
+
+func corootSafeURI(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	safe := *target
+	safe.User = nil
+	return safe.String()
+}
+
+func corootResponsePreview(body []byte) string {
+	preview := strings.Join(strings.Fields(string(body)), " ")
+	if len(preview) > 500 {
+		return preview[:500] + "..."
+	}
+	return preview
 }

@@ -39,7 +39,7 @@ type ChatModel = model.ChatModel
 // ProviderConfig specifies which provider and model to use, along with
 // generation parameters.
 type ProviderConfig struct {
-	// Provider identifies the LLM provider: "openai", "anthropic", "ollama".
+	// Provider identifies the LLM provider: "openai", "zhipu", "anthropic", "ollama".
 	Provider string
 
 	// Model is the specific model name, e.g. "gpt-4o", "claude-3-5-sonnet", "llama3".
@@ -57,23 +57,32 @@ type ProviderConfig struct {
 	// MaxContextTokens overrides the model context window when a gateway or
 	// operator exposes a custom limit. Empty config defaults to 200K.
 	MaxContextTokens int
+
+	// ReasoningEffort controls provider-native reasoning effort where supported.
+	ReasoningEffort string
 }
+
+const GenericReasoningFallbackPolicy = "Reasoning fallback policy: decompose the goal, list assumptions, gather evidence before conclusions, cover key claims with evidence, and state the blocker when progress cannot continue. Do not expose raw reasoning."
 
 // ModelCapabilities describes the routing-visible context and generation
 // capabilities for a provider/model pair. Runtime callers use this to choose
 // context governance budgets without hard-coding provider-specific constants.
 type ModelCapabilities struct {
-	Provider              string `json:"provider"`
-	Model                 string `json:"model"`
-	MaxContextTokens      int    `json:"maxContextTokens"`
-	MaxOutputTokens       int    `json:"maxOutputTokens"`
-	ExactTokenCount       bool   `json:"exactTokenCount"`
-	CacheEdit             bool   `json:"cacheEdit"`
-	SmallContextMode      bool   `json:"smallContextMode"`
-	SupportsReasoning     bool   `json:"supportsReasoning,omitempty"`
-	SupportsToolCalls     bool   `json:"supportsToolCalls,omitempty"`
-	SupportsStreaming     bool   `json:"supportsStreaming,omitempty"`
-	SupportsNativeWebTool bool   `json:"supportsNativeWebTool,omitempty"`
+	Provider                 string `json:"provider"`
+	Model                    string `json:"model"`
+	MaxContextTokens         int    `json:"maxContextTokens"`
+	MaxOutputTokens          int    `json:"maxOutputTokens"`
+	ExactTokenCount          bool   `json:"exactTokenCount"`
+	CacheEdit                bool   `json:"cacheEdit"`
+	SmallContextMode         bool   `json:"smallContextMode"`
+	SupportsReasoning        bool   `json:"supportsReasoning,omitempty"`
+	SupportsToolCalls        bool   `json:"supportsToolCalls,omitempty"`
+	SupportsStreaming        bool   `json:"supportsStreaming,omitempty"`
+	SupportsNativeWebTool    bool   `json:"supportsNativeWebTool,omitempty"`
+	NativeReasoning          bool   `json:"nativeReasoning,omitempty"`
+	ReasoningEffortRequested string `json:"reasoningEffortRequested,omitempty"`
+	ReasoningEffortApplied   string `json:"reasoningEffortApplied,omitempty"`
+	ReasoningFallbackPolicy  string `json:"reasoningFallbackPolicy,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +266,9 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	if config.MaxContextTokens > 0 {
 		resolved.MaxContextTokens = config.MaxContextTokens
 	}
+	if strings.TrimSpace(config.ReasoningEffort) != "" {
+		resolved.ReasoningEffort = config.ReasoningEffort
+	}
 	return resolved
 }
 
@@ -315,25 +327,35 @@ func (r *Router) resolveProvider(agentKind AgentKind, config ProviderConfig) str
 func defaultProviderFactories() map[string]ProviderFactory {
 	return map[string]ProviderFactory{
 		"openai":    buildOpenAIProviderModel,
+		"zhipu":     buildZhipuProviderModel,
 		"anthropic": buildAnthropicProviderModel,
 	}
 }
 
 func buildOpenAIProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	return buildOpenAICompatibleProviderModel("openai", config, truth, hasTruth)
+}
+
+func buildZhipuProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	return buildOpenAICompatibleProviderModel("zhipu", config, truth, hasTruth)
+}
+
+func buildOpenAICompatibleProviderModel(provider string, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
 	apiKey := resolveProviderSecret(truth, hasTruth)
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, &ProviderNotAvailableError{
-			Provider: "openai",
-			Model:    resolveProviderModel("openai", config),
+			Provider: provider,
+			Model:    resolveProviderModel(provider, config),
 			Reason:   "no credential truth available",
 		}
 	}
 	return NewOpenAIChatModel(context.Background(), OpenAIConfig{
-		APIKey:      apiKey,
-		BaseURL:     strings.TrimSpace(config.BaseURL),
-		Model:       resolveProviderModel("openai", config),
-		Temperature: resolveProviderTemperature(config),
-		MaxTokens:   resolveProviderMaxTokens(config),
+		APIKey:          apiKey,
+		BaseURL:         strings.TrimSpace(config.BaseURL),
+		Model:           resolveProviderModel(provider, config),
+		Temperature:     resolveProviderTemperature(config),
+		MaxTokens:       resolveProviderMaxTokens(config),
+		ReasoningEffort: strings.TrimSpace(config.ReasoningEffort),
 	})
 }
 
@@ -384,6 +406,8 @@ func resolveProviderModel(provider string, config ProviderConfig) string {
 	switch provider {
 	case "openai":
 		return "gpt-4o"
+	case "zhipu":
+		return "glm-4.7"
 	case "anthropic":
 		return "claude-3-5-sonnet"
 	case "ollama":
@@ -422,12 +446,15 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 	}
 
 	switch provider {
-	case "openai":
+	case "openai", "zhipu":
 		caps.ExactTokenCount = true
 		caps.CacheEdit = true
-		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o")
+		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o") || isGLM47Model(normalizedModel)
 		caps.SupportsNativeWebTool = true
 		switch {
+		case isGLM47Model(normalizedModel):
+			caps.MaxContextTokens = 200000
+			caps.MaxOutputTokens = 128000
 		case strings.Contains(normalizedModel, "gpt-5.4"), strings.Contains(normalizedModel, "gpt-5.5"):
 			caps.MaxContextTokens = 200000
 			caps.MaxOutputTokens = 32000
@@ -461,7 +488,62 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 		caps.MaxContextTokens = clampContextWindow(config.MaxContextTokens)
 	}
 	caps.SmallContextMode = caps.MaxContextTokens <= 32000
+	applyReasoningCapabilityMetadata(&caps, provider, normalizedModel, config)
 	return caps
+}
+
+func applyReasoningCapabilityMetadata(caps *ModelCapabilities, provider, normalizedModel string, config ProviderConfig) {
+	if caps == nil {
+		return
+	}
+	caps.NativeReasoning = providerModelSupportsNativeReasoningEffort(provider, normalizedModel)
+	requested := normalizeReasoningEffort(config.ReasoningEffort)
+	if requested == "" {
+		return
+	}
+	caps.ReasoningEffortRequested = requested
+	if caps.NativeReasoning {
+		caps.ReasoningEffortApplied = requested
+		return
+	}
+	caps.ReasoningFallbackPolicy = GenericReasoningFallbackPolicy
+}
+
+func providerModelSupportsNativeReasoningEffort(provider, normalizedModel string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return openAIModelSupportsReasoningEffort(normalizedModel)
+	default:
+		return false
+	}
+}
+
+func isGLM47Model(normalizedModel string) bool {
+	normalizedModel = strings.ToLower(strings.TrimSpace(normalizedModel))
+	return normalizedModel == "glm-4.7" ||
+		strings.HasPrefix(normalizedModel, "glm-4.7-") ||
+		strings.Contains(normalizedModel, "/glm-4.7")
+}
+
+func openAIModelSupportsReasoningEffort(normalizedModel string) bool {
+	normalizedModel = strings.ToLower(strings.TrimSpace(normalizedModel))
+	return strings.HasPrefix(normalizedModel, "gpt-5") ||
+		strings.HasPrefix(normalizedModel, "o1") ||
+		strings.HasPrefix(normalizedModel, "o3") ||
+		strings.HasPrefix(normalizedModel, "o4")
+}
+
+func normalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func clampContextWindow(value int) int {

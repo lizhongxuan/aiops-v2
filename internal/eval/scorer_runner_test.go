@@ -186,6 +186,76 @@ func TestScoreCaseChecksPlanPresenceAndStatuses(t *testing.T) {
 	}
 }
 
+func TestScorerChecksPlanModeTraceExpectations(t *testing.T) {
+	modelPayload, _ := json.Marshal(map[string]any{
+		"planModeState": map[string]any{
+			"state":          "active",
+			"planId":         "plan-synthetic-1",
+			"approvalStatus": "pending_exit_approval",
+		},
+		"planRequirementDecision": map[string]any{
+			"required": true,
+			"reason":   "multi_step",
+		},
+		"planCompletionGate": map[string]any{
+			"decision": "block",
+			"reasons":  []string{"pending_evidence"},
+		},
+		"taskClaims": []map[string]any{{
+			"taskId": "step-2",
+			"owner":  "agent:planner",
+		}},
+		"planApprovalScope": map[string]any{
+			"approvedScopes": []string{"internal/promptcompiler"},
+		},
+		"planRejectionEvents": []map[string]any{{
+			"reason": "scope too broad",
+		}},
+	})
+	tc := Case{
+		ID:       "plan-trace",
+		Category: "plan mode",
+		Input:    "复杂任务需要 plan mode trace",
+		Expected: Expected{
+			ExpectedPlanModeState:       []string{"active", "pending_exit_approval"},
+			ExpectedPlanRequirement:     []string{"multi_step"},
+			ExpectedPlanCompletionGate:  []string{"block", "pending_evidence"},
+			ExpectedTaskClaims:          []string{"step-2", "agent:planner"},
+			ExpectedPlanApprovalScope:   []string{"internal/promptcompiler"},
+			ExpectedPlanRejectionEvents: []string{"scope too broad"},
+			MustInclude:                 []string{"Plan Mode"},
+			MustMentionEvidenceLimits:   false,
+			ForbidFirstTurnNoToolFinal:  false,
+			MustHavePlan:                false,
+			MustHaveEvidence:            false,
+			ExpectedPlanStatuses:        nil,
+			ExpectedApprovals:           nil,
+			ExpectedEvidence:            nil,
+			ExpectedTurnItems:           nil,
+			ExpectedToolCalls:           nil,
+			MustMentionFiles:            nil,
+			MustNotInclude:              nil,
+		},
+	}
+	output := RunOutput{
+		Answer: "Plan Mode trace 已记录；验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: modelPayload}},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("expected plan trace checks to pass, got %#v", score)
+	}
+	for _, name := range []string{"expectedPlanModeState", "expectedPlanRequirement", "expectedPlanCompletionGate", "expectedTaskClaims", "expectedPlanApprovalScope", "expectedPlanRejectionEvents"} {
+		if check := findCheck(score.Checks, name); !check.Passed {
+			t.Fatalf("check %s = %#v, want pass", name, check)
+		}
+	}
+}
+
 func TestScoreCaseFailsWhenPlanIsForbidden(t *testing.T) {
 	tc := Case{
 		ID:       "simple-no-plan",
@@ -289,6 +359,95 @@ func TestScoreCaseFailsWhenStructuredEvidenceOrApprovalIsMissing(t *testing.T) {
 		if check.Passed || len(check.Missing) == 0 {
 			t.Fatalf("check %s = %#v, want missing structured field", name, check)
 		}
+	}
+}
+
+func TestScoreCaseRequiresStructuredEvidenceWhenConfigured(t *testing.T) {
+	tc := Case{
+		ID:       "evidence-required",
+		Category: "诊断",
+		Input:    "分析目标服务在指定时间窗内的关键指标异常。",
+		Expected: Expected{
+			MustHaveEvidence: true,
+		},
+	}
+	output := RunOutput{
+		Answer: "结论基于目标服务的关键指标摘要，但当前输出没有结构化证据记录。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected missing evidence to fail, got %#v", score)
+	}
+	if check := findCheck(score.Checks, "mustHaveEvidence"); check.Passed || len(check.Missing) == 0 {
+		t.Fatalf("mustHaveEvidence check = %#v, want missing evidence", check)
+	}
+}
+
+func TestScoreCaseForbidsFirstTurnFinalWithoutToolUse(t *testing.T) {
+	tc := Case{
+		ID:       "premature-final",
+		Category: "诊断",
+		Input:    "分析复杂告警并给出证据链。",
+		Expected: Expected{
+			ForbidFirstTurnNoToolFinal: true,
+		},
+	}
+	output := RunOutput{
+		Answer: "结论直接给出目标资源异常，但没有先读取指定时间窗内的关键指标或事件记录。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected premature final to fail, got %#v", score)
+	}
+	if check := findCheck(score.Checks, "prematureFinal"); check.Passed || len(check.Unexpected) == 0 {
+		t.Fatalf("prematureFinal check = %#v, want unexpected final answer", check)
+	}
+}
+
+func TestScoreCaseRequiresEvidenceLimitsWhenConfigured(t *testing.T) {
+	evidenceData, _ := json.Marshal(map[string]any{
+		"kind":    "metric",
+		"summary": "关键指标在指定时间窗内升高",
+		"source":  "目标观测面",
+		"window":  "指定时间窗",
+	})
+	tc := Case{
+		ID:       "evidence-limits",
+		Category: "诊断",
+		Input:    "基于目标服务证据输出诊断。",
+		Expected: Expected{
+			MustMentionEvidenceLimits: true,
+		},
+	}
+	output := RunOutput{
+		Answer: "结论：目标服务的关键指标在指定时间窗内升高，目标资源需要继续排查。验证方式：go test ./internal/eval。",
+		TurnItems: []agentstate.TurnItem{
+			{ID: "item-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "metric", Summary: "关键指标在指定时间窗内升高", Data: evidenceData}},
+			{ID: "item-2", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if score.Passed {
+		t.Fatalf("expected missing evidence limits to fail, got %#v", score)
+	}
+	if check := findCheck(score.Checks, "evidenceLimits"); check.Passed || len(check.Missing) == 0 {
+		t.Fatalf("evidenceLimits check = %#v, want missing evidence limitation", check)
 	}
 }
 

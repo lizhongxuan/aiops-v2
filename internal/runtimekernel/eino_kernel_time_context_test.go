@@ -92,10 +92,10 @@ func TestEnrichCompileContextInjectsSessionBindingMetadata(t *testing.T) {
 		SessionType: string(SessionTypeHost),
 		Mode:        string(ModeChat),
 	}, SessionTypeHost, "redis-01", map[string]string{
-		"aiops.target.kind":    "host",
-		"aiops.target.hostId":  "redis-01",
-		"aiops.environment":    "prod",
-		"aiops.coroot.project": "prod-main",
+		"aiops.target.kind":      "host",
+		"aiops.target.hostId":    "redis-01",
+		"aiops.environment":      "prod",
+		"aiops.provider.project": "prod-main",
 	}, time.Date(2026, 4, 23, 21, 5, 0, 0, time.UTC))
 
 	if len(ctx.ExtraSections) != 1 {
@@ -105,7 +105,7 @@ func TestEnrichCompileContextInjectsSessionBindingMetadata(t *testing.T) {
 	if section.Title != "Session Binding" {
 		t.Fatalf("section title = %q, want Session Binding", section.Title)
 	}
-	for _, want := range []string{"Environment: prod", "Coroot project: prod-main", "pass the bound project"} {
+	for _, want := range []string{"Environment: prod", "Project: prod-main", "Pass bound provider"} {
 		if !strings.Contains(section.Content, want) {
 			t.Fatalf("Session Binding section = %q, want %q", section.Content, want)
 		}

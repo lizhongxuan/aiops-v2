@@ -8,6 +8,7 @@ import type {
   AiopsTransportAgentUiArtifact,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
+import { normalizeAiopsTransportState } from "./aiopsTransportRuntime";
 
 type ConverterResult = {
   messages: ThreadMessage[];
@@ -20,14 +21,15 @@ export function createAiopsTransportConverter() {
     state: AiopsTransportState,
     connectionMetadata: AssistantTransportConnectionMetadata,
   ): ConverterResult => {
-    const messages = orderedTurnMessages(state).concat(
+    const normalizedState = normalizeAiopsTransportState(state);
+    const messages = orderedTurnMessages(normalizedState).concat(
       optimisticPendingUserMessages(connectionMetadata),
     );
 
     return {
       messages,
-      isRunning: isAiopsTransportRunning(state) || connectionMetadata.isSending,
-      state,
+      isRunning: isAiopsTransportRunning(normalizedState) || connectionMetadata.isSending,
+      state: normalizedState,
     };
   };
 }
@@ -36,7 +38,7 @@ export function isAiopsTransportRunning(state: AiopsTransportState) {
   if (state.status === "working" || state.status === "blocked") {
     return true;
   }
-  return Object.keys(state.runtimeLiveness.activeTurns || {}).length > 0;
+  return Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
 }
 
 function orderedTurnMessages(state: AiopsTransportState) {
@@ -50,7 +52,7 @@ function orderedTurnMessages(state: AiopsTransportState) {
     if (userMessage) {
       messages.push(userMessage);
     }
-    const assistantMessage = toAssistantThreadMessage(turn, state.lastError);
+    const assistantMessage = toAssistantThreadMessage(state, turn);
     if (assistantMessage) {
       messages.push(assistantMessage);
     }
@@ -72,7 +74,7 @@ function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   };
 }
 
-function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string): ThreadMessage | null {
+function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTransportTurn): ThreadMessage | null {
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
@@ -80,8 +82,8 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
   let content: ThreadMessage["content"] = [];
   if (turn.final?.text) {
     content = [{ type: "text", text: turn.final.text }];
-  } else if (turn.status === "failed" && lastError) {
-    content = [{ type: "text", text: lastError }];
+  } else if (turn.status === "failed" && state.lastError) {
+    content = [{ type: "text", text: state.lastError }];
   }
   return {
     id: `${turn.id}:assistant`,
@@ -102,6 +104,9 @@ function toAssistantThreadMessage(turn: AiopsTransportTurn, lastError?: string):
         userText: turn.user?.text || "",
         agentUiArtifacts: visibleAgentUiArtifacts(turn),
         deferredAgentUiArtifacts: deferredAgentUiArtifacts(turn),
+        activeHostMissionId: state.activeHostMissionId,
+        hostMissions: state.hostMissions || {},
+        childAgents: state.childAgents || {},
       },
       unstable_annotations: [],
       unstable_data: [],

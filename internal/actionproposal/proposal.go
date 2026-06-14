@@ -31,6 +31,8 @@ type VerificationStep struct {
 type ActionProposal struct {
 	SessionID        string             `json:"sessionId"`
 	TurnID           string             `json:"turnId"`
+	TenantID         string             `json:"tenantId,omitempty"`
+	UserID           string             `json:"userId,omitempty"`
 	IncidentID       string             `json:"incidentId,omitempty"`
 	Source           Source             `json:"source"`
 	ToolName         string             `json:"toolName"`
@@ -52,6 +54,8 @@ type ActionProposal struct {
 type ActionTokenClaims struct {
 	SessionID        string    `json:"sessionId"`
 	TurnID           string    `json:"turnId"`
+	TenantID         string    `json:"tenantId,omitempty"`
+	UserID           string    `json:"userId,omitempty"`
 	IncidentID       string    `json:"incidentId,omitempty"`
 	ToolName         string    `json:"toolName"`
 	InputHash        string    `json:"inputHash"`

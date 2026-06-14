@@ -150,6 +150,8 @@ type RCAEdgeEvidence struct {
 	Target              string   `json:"target"`
 	SourceName          string   `json:"sourceName,omitempty"`
 	TargetName          string   `json:"targetName,omitempty"`
+	TargetKind          string   `json:"targetKind,omitempty"`
+	TargetEndpoint      string   `json:"targetEndpoint,omitempty"`
 	Status              string   `json:"status,omitempty"`
 	Connectivity        string   `json:"connectivity,omitempty"`
 	ConnectivityMessage string   `json:"connectivityMessage,omitempty"`
@@ -163,6 +165,7 @@ type RCAHypothesis struct {
 	Title           string   `json:"title"`
 	SuspectService  string   `json:"suspectService,omitempty"`
 	SuspectEdge     string   `json:"suspectEdge,omitempty"`
+	RootCauseStatus string   `json:"rootCauseStatus,omitempty"`
 	Confidence      string   `json:"confidence,omitempty"`
 	Score           int      `json:"score,omitempty"`
 	Evidence        []string `json:"evidence,omitempty"`

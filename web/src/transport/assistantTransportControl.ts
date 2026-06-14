@@ -1,7 +1,7 @@
 import type { AssistantTransportCommand } from "@assistant-ui/react";
 
 import type { AiopsTransportState } from "./aiopsTransportTypes";
-import { createInitialAiopsTransportState } from "./aiopsTransportRuntime";
+import { createInitialAiopsTransportState, normalizeAiopsTransportState } from "./aiopsTransportRuntime";
 
 export async function postAssistantTransportCommand(
   state: AiopsTransportState,
@@ -59,7 +59,7 @@ export function parseAssistantTransportResumeState(text: string): AiopsTransport
     const ops = JSON.parse(raw) as Array<{ type?: string; path?: unknown[]; value?: unknown }>;
     const fullState = ops.find((op) => op?.type === "set" && Array.isArray(op.path) && op.path.length === 0)?.value;
     if (isAiopsTransportState(fullState)) {
-      return fullState;
+      return normalizeAiopsTransportState(fullState);
     }
   }
   return null;

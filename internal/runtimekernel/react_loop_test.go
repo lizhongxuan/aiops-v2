@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/spanstream"
+	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
 
@@ -45,11 +47,17 @@ func (m *sequentialLoopModel) Generate(_ context.Context, input []*schema.Messag
 	return cloneSchemaMessage(resp), nil
 }
 
-func (m *sequentialLoopModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *sequentialLoopModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
 	if m.generateErr != nil {
 		return nil, m.generateErr
 	}
-	return nil, errors.New("stream not implemented in test model")
+	if len(m.responses) == 0 {
+		return nil, errors.New("no more responses configured")
+	}
+	resp := m.responses[0]
+	m.responses = m.responses[1:]
+	return schema.StreamReaderFromArray([]*schema.Message{cloneSchemaMessage(resp)}), nil
 }
 
 func (m *sequentialLoopModel) BindTools(tools []*schema.ToolInfo) error {
@@ -106,7 +114,7 @@ func (m *fixedSummaryModel) Generate(_ context.Context, _ []*schema.Message, _ .
 }
 
 func (m *fixedSummaryModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	return nil, errors.New("stream not implemented in test model")
+	return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: m.response}}), nil
 }
 
 func (m *fixedSummaryModel) BindTools(_ []*schema.ToolInfo) error {
@@ -250,6 +258,10 @@ func (s *assemblerBackedToolSource) AssembleToolPoolWithMetadata(session Session
 	return s.assembler.AssembleToolPoolWithMetadata(string(session), string(mode), metadata)
 }
 
+func (s *assemblerBackedToolSource) AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool {
+	return s.assembler.AssembleToolsWithOptions(session, mode, opts)
+}
+
 func (s *assemblerBackedToolSource) RefreshToken(session SessionType, mode Mode) string {
 	return s.assembler.RefreshToken(string(session), string(mode), tooling.AssembleOptions{})
 }
@@ -267,6 +279,7 @@ func (c *recordingCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 	cloned := ctx
 	cloned.AssembledTools = append([]promptcompiler.Tool(nil), ctx.AssembledTools...)
 	cloned.SkillPromptAssets = append([]string(nil), ctx.SkillPromptAssets...)
+	cloned.HostTaskPromptAssets = append([]string(nil), ctx.HostTaskPromptAssets...)
 	cloned.EvidenceReminders = append([]string(nil), ctx.EvidenceReminders...)
 	cloned.ExtraSections = append([]promptcompiler.PromptSection(nil), ctx.ExtraSections...)
 	cloned.ToolDelta = promptcompiler.ToolPromptDelta{
@@ -366,7 +379,7 @@ func TestRunTurn_InjectsPlanStateIntoNextProtocolPrompt(t *testing.T) {
 					},
 				},
 			}),
-			schema.AssistantMessage("plan noted", nil),
+			schema.AssistantMessage("缺少执行结果，计划仍在进行。", nil),
 		},
 	}
 	registry := tooling.NewRegistry()
@@ -398,6 +411,136 @@ func TestRunTurn_InjectsPlanStateIntoNextProtocolPrompt(t *testing.T) {
 	}
 	if !hasProtocolItem(second, "plan", "summarize", "pending", "Summarize findings") {
 		t.Fatalf("second protocol state = %#v, want summarize plan item", second)
+	}
+}
+
+func TestComplexTaskPrematureFinalContinuesWithGuard(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("可能是外部依赖变慢，建议检查。", nil),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-plan",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "update_plan",
+				Arguments: `{"steps":[{"text":"确认症状和时间窗","status":"in_progress"}]}`,
+			},
+		}}),
+		schema.AssistantMessage("结论（置信度：低）：还需要证据。关键证据：已建立调查计划。仍缺少的证据：指标和日志。", nil),
+	}}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(planning.NewUpdatePlanTool()); err != nil {
+		t.Fatalf("Register update_plan failed: %v", err)
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		SessionID:   "sess-depth-guard",
+		TurnID:      "turn-depth-guard",
+		Input:       "排查目标服务关键指标异常的根因",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Output == "可能是外部依赖变慢，建议检查。" {
+		t.Fatalf("premature final should not complete as output")
+	}
+	if len(model.inputs) < 2 {
+		t.Fatalf("model inputs = %d, want continuation after guard", len(model.inputs))
+	}
+	if got := schemaMessagesText(model.inputs[1]); !strings.Contains(got, "Premature final answer guard") {
+		t.Fatalf("second model input missing guard:\n%s", got)
+	}
+}
+
+func TestSimpleQuestionFinalDoesNotTriggerPrematureFinalGuard(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("AIOps 是智能运维。", nil),
+	}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		SessionID:   "sess-simple-final",
+		TurnID:      "turn-simple-final",
+		Input:       "AIOps 是什么？",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Output != "AIOps 是智能运维。" {
+		t.Fatalf("output = %q", result.Output)
+	}
+	if len(model.inputs) != 1 {
+		t.Fatalf("model inputs = %d, want one direct final", len(model.inputs))
+	}
+}
+
+func TestRunTurn_CompletesFromToolEvidenceWhenModelStaysEmpty(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-model-config",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "get_current_model_config",
+				Arguments: `{}`,
+			},
+		}}),
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+	}}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:      "get_current_model_config",
+			Layer:     tooling.ToolLayerCore,
+			RiskLevel: tooling.ToolRiskLow,
+		},
+		InputSchemaData: json.RawMessage(`{"type":"object"}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: `{"apiKeySet":true,"baseURL":"https://example.invalid/v1","model":"glm-4.7","provider":"zhipu"}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		SessionID:   "sess-empty-after-tool",
+		TurnID:      "turn-empty-after-tool",
+		Input:       "Tell me current model name only. Do not reveal or mention any api key.",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed; result=%#v", result.Status, result)
+	}
+	if !strings.Contains(result.Output, "glm-4.7") {
+		t.Fatalf("output = %q, want model evidence", result.Output)
+	}
+	if strings.Contains(strings.ToLower(result.Output), "apikey") || strings.Contains(result.Output, "example.invalid") {
+		t.Fatalf("output leaked sensitive or irrelevant config details: %q", result.Output)
+	}
+}
+
+func TestSynthesisOnlyThresholdUsesTaskDepth(t *testing.T) {
+	tools := []promptcompiler.Tool{&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_metrics"}}}
+	if shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 5, tools) {
+		t.Fatal("investigation should not switch to synthesis-only after 5 dispatches")
+	}
+	if !shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 8, tools) {
+		t.Fatal("investigation should switch at depth-aware threshold 8")
+	}
+	if !shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelSimpleRead}, 5, tools) {
+		t.Fatal("simple read should keep current low threshold")
 	}
 }
 
@@ -702,9 +845,7 @@ func TestRunTurn_RejectsRemovedOpsToolCallAsMissingToolResult(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(failureToolMessage, "runbook.match failed") || !strings.Contains(failureToolMessage, "tool not found: runbook.match") {
-		t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
-	}
+	assertStructuredToolError(t, failureToolMessage, "call-runbook", "runbook.match", "tool_not_found", "tool not found: runbook.match")
 
 	session := kernel.sessions.Get("sess-removed-tool")
 	if session == nil || session.CurrentTurn == nil {
@@ -769,9 +910,7 @@ func TestRunTurn_RejectsLegacyOpsToolPrefixesAsMissingToolResults(t *testing.T) 
 					break
 				}
 			}
-			if !strings.Contains(failureToolMessage, tc.toolName+" failed") || !strings.Contains(failureToolMessage, "tool not found: "+tc.toolName) {
-				t.Fatalf("removed tool failure message = %q, want tool-not-found feedback", failureToolMessage)
-			}
+			assertStructuredToolError(t, failureToolMessage, "call-"+tc.name, tc.toolName, "tool_not_found", "tool not found: "+tc.toolName)
 		})
 	}
 }
@@ -964,7 +1103,7 @@ func TestRunTurn_UpdatePlanDoesNotConsumeSynthesisEvidenceBudget(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", toolCalls),
-			schema.AssistantMessage("继续执行下一步，而不是提前收尾", nil),
+			schema.AssistantMessage("缺少后续执行结果，继续执行下一步。", nil),
 		},
 	}
 	toolDef := &tooling.StaticTool{
@@ -1489,7 +1628,7 @@ func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
 			schema.AssistantMessage("数据为实时快照。", nil),
 		},
 	}
-	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
 
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-streaming-final-canonical",
@@ -1519,6 +1658,51 @@ func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
 	}
 	if finalItem.Payload.Summary != want {
 		t.Fatalf("final item summary = %q, want streamed text", finalItem.Payload.Summary)
+	}
+}
+
+func TestRunTurn_RetriesTruncatedFinalAnswerBeforeCompletion(t *testing.T) {
+	incomplete := "评估结论\n\nCPU负载正常，空闲率较高（81.9"
+	complete := "评估结论\n\nCPU负载正常，空闲率较高（81.93%），当前没有发现 CPU 饱和风险。"
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage(incomplete, nil),
+		schema.AssistantMessage(complete, nil),
+	}}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-truncated-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-truncated-final",
+		Input:       "请根据已有 CPU 数据给出一句完整评估结论。",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	if result.Output != complete {
+		t.Fatalf("RunTurn output = %q, want completed retry output", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, want retry after truncated final answer", len(model.inputs))
+	}
+	retryInput := schemaMessagesText(model.inputs[1])
+	if !strings.Contains(retryInput, "Final answer completeness guard") {
+		t.Fatalf("second model input missing completeness guard:\n%s", retryInput)
+	}
+	if !strings.Contains(retryInput, incomplete) {
+		t.Fatalf("second model input missing incomplete final answer evidence:\n%s", retryInput)
+	}
+	session := kernel.sessions.Get("sess-truncated-final")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed turn")
+	}
+	if got := session.CurrentTurn.Metadata[finalCompletenessRetryMetadataKey]; got != "1" {
+		t.Fatalf("final completeness retry metadata = %q, want 1", got)
+	}
+	if session.CurrentTurn.FinalOutput != complete {
+		t.Fatalf("FinalOutput = %q, want completed retry output", session.CurrentTurn.FinalOutput)
 	}
 }
 
@@ -1742,7 +1926,7 @@ func TestResumeTurn_ClearsPendingApprovalBeforeApprovedToolCompletes(t *testing.
 			startedOnce.Do(func() { close(started) })
 			select {
 			case <-release:
-				return tooling.ToolResult{Content: "wrote:" + string(input)}, nil
+				return tooling.ToolResult{Content: syntheticPassVerificationReportContent(t, "vr-synthetic-clear-approval", "synthetic approved write")}, nil
 			case <-ctx.Done():
 				return tooling.ToolResult{}, ctx.Err()
 			}
@@ -2312,6 +2496,10 @@ func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) 
 }
 
 func TestRunTurn_ReadOnlyConcurrencySafeToolsRunInParallel(t *testing.T) {
+	traceDir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{
@@ -2377,6 +2565,31 @@ func TestRunTurn_ReadOnlyConcurrencySafeToolsRunInParallel(t *testing.T) {
 	}
 	if !overlapped.Load() {
 		t.Fatal("read-only concurrency-safe tools did not overlap")
+	}
+	session := kernel.sessions.Get("sess-parallel")
+	if session == nil || session.CurrentTurn == nil || len(session.CurrentTurn.Iterations) < 2 {
+		t.Fatalf("missing turn iterations for parallel trace: %#v", session)
+	}
+	firstIter := session.CurrentTurn.Iterations[0]
+	if len(firstIter.ParallelDispatchGroups) != 1 {
+		t.Fatalf("parallel dispatch groups = %#v, want one group", firstIter.ParallelDispatchGroups)
+	}
+	group := firstIter.ParallelDispatchGroups[0]
+	for _, want := range []string{"read_only", "non_destructive", "concurrency_safe", "no_approval_required", "shared_resource_key"} {
+		if !containsString(group.Reasons, want) {
+			t.Fatalf("parallel dispatch reasons = %v, want %q", group.Reasons, want)
+		}
+	}
+	tracePath := session.CurrentTurn.Iterations[1].ModelInputTraceFile
+	data, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("read second iteration trace: %v", err)
+	}
+	traceJSON := string(data)
+	for _, want := range []string{`"parallelDispatchGroups"`, `"decision": "parallel"`, `"read_only"`, `"shared_resource_key"`} {
+		if !strings.Contains(traceJSON, want) {
+			t.Fatalf("runtime trace missing %q:\n%s", want, traceJSON)
+		}
 	}
 }
 
@@ -2855,8 +3068,8 @@ func TestRunTurn_RefreshesToolsBetweenIterations(t *testing.T) {
 	}
 
 	secondTools := toolNames(compiler.contexts[1].AssembledTools)
-	if !containsString(secondTools, "read_remote_metrics") {
-		t.Fatalf("second iteration tools = %v, want read_remote_metrics", secondTools)
+	if containsString(secondTools, "read_remote_metrics") {
+		t.Fatalf("second iteration tools = %v, dynamic MCP tool should remain deferred until selected", secondTools)
 	}
 
 	session := kernel.sessions.Get("sess-refresh")
@@ -2866,26 +3079,47 @@ func TestRunTurn_RefreshesToolsBetweenIterations(t *testing.T) {
 	if session.CurrentTurn.StableToolFingerprint == "" {
 		t.Fatal("expected stable tool fingerprint to be recorded")
 	}
+	if session.CurrentTurn.ToolSurfaceSnapshot == nil {
+		t.Fatal("expected turn tool surface snapshot ref")
+	}
+	if session.CurrentTurn.ToolSurfaceSnapshot.Fingerprint != session.CurrentTurn.StableToolFingerprint {
+		t.Fatalf("turn tool surface snapshot fingerprint = %q, want stable fingerprint %q", session.CurrentTurn.ToolSurfaceSnapshot.Fingerprint, session.CurrentTurn.StableToolFingerprint)
+	}
+	if containsString(session.CurrentTurn.ToolSurfaceSnapshot.ToolNames, "read_remote_metrics") {
+		t.Fatalf("turn tool surface snapshot tools = %v, dynamic MCP tool should remain deferred until selected", session.CurrentTurn.ToolSurfaceSnapshot.ToolNames)
+	}
 	if session.CurrentTurn.StablePromptHash == "" {
 		t.Fatal("expected stable prompt hash to be recorded")
 	}
 	if len(session.CurrentTurn.Iterations) != 2 {
 		t.Fatalf("iterations = %d, want 2", len(session.CurrentTurn.Iterations))
 	}
-	if !containsString(session.CurrentTurn.Iterations[1].RefreshedTools, "read_remote_metrics") {
-		t.Fatalf("iteration[1] refreshed tools = %v, want read_remote_metrics", session.CurrentTurn.Iterations[1].RefreshedTools)
+	if session.CurrentTurn.Iterations[0].ToolSurfaceFingerprint == "" {
+		t.Fatal("expected iteration[0] tool surface fingerprint to be recorded")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint == "" {
+		t.Fatal("expected iteration[1] tool surface fingerprint to be recorded")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint != session.CurrentTurn.StableToolFingerprint {
+		t.Fatalf("latest iteration tool surface fingerprint = %q, want current turn stable fingerprint %q", session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint, session.CurrentTurn.StableToolFingerprint)
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot == nil {
+		t.Fatal("expected iteration[1] tool surface snapshot ref")
+	}
+	if session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot.Fingerprint != session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint {
+		t.Fatalf("iteration[1] snapshot fingerprint = %q, want %q", session.CurrentTurn.Iterations[1].ToolSurfaceSnapshot.Fingerprint, session.CurrentTurn.Iterations[1].ToolSurfaceFingerprint)
+	}
+	if containsString(session.CurrentTurn.Iterations[1].RefreshedTools, "read_remote_metrics") {
+		t.Fatalf("iteration[1] refreshed tools = %v, dynamic MCP tool should remain deferred until selected", session.CurrentTurn.Iterations[1].RefreshedTools)
 	}
 	if session.CurrentTurn.Iterations[1].PromptDelta == "" {
 		t.Fatal("expected dynamic prompt delta to be recorded")
 	}
-	if !containsString(compiler.contexts[1].ToolDelta.NewlyAvailable, "read_remote_metrics") {
-		t.Fatalf("second iteration tool delta = %v, want read_remote_metrics", compiler.contexts[1].ToolDelta.NewlyAvailable)
+	if containsString(compiler.contexts[1].ToolDelta.NewlyAvailable, "read_remote_metrics") {
+		t.Fatalf("second iteration tool delta = %v, dynamic MCP tool should remain deferred until selected", compiler.contexts[1].ToolDelta.NewlyAvailable)
 	}
 	if strings.Contains(session.CurrentTurn.Iterations[1].PromptDelta, "# Tool Index") {
 		t.Fatal("prompt delta should not re-emit the stable tool index")
-	}
-	if !strings.Contains(session.CurrentTurn.Iterations[1].PromptDelta, "Newly available tools") {
-		t.Fatal("prompt delta should carry tool availability changes")
 	}
 }
 
@@ -3144,6 +3378,8 @@ func TestRunTurn_PostToolHookHidesToolForNextIteration(t *testing.T) {
 		Meta: tooling.ToolMetadata{
 			Name:        "read_remote_metrics",
 			Description: "Read remote metrics",
+			AlwaysLoad:  true,
+			RiskLevel:   tooling.ToolRiskLow,
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
@@ -3526,6 +3762,59 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func assertStructuredToolError(t *testing.T, content, toolCallID, toolName, failureKind, messagePart string) {
+	t.Helper()
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		t.Fatalf("tool error content is not structured JSON: %v\n%s", err, content)
+	}
+	for _, field := range []string{
+		"type",
+		"toolCallId",
+		"toolName",
+		"failureKind",
+		"retryable",
+		"userActionRequired",
+		"message",
+		"allowedNextActions",
+	} {
+		if _, ok := raw[field]; !ok {
+			t.Fatalf("tool error content missing field %q: %s", field, content)
+		}
+	}
+	var body struct {
+		Type               string   `json:"type"`
+		ToolCallID         string   `json:"toolCallId"`
+		ToolName           string   `json:"toolName"`
+		FailureKind        string   `json:"failureKind"`
+		Retryable          bool     `json:"retryable"`
+		UserActionRequired bool     `json:"userActionRequired"`
+		Message            string   `json:"message"`
+		AllowedNextActions []string `json:"allowedNextActions"`
+	}
+	if err := json.Unmarshal([]byte(content), &body); err != nil {
+		t.Fatalf("tool error content is not structured JSON: %v\n%s", err, content)
+	}
+	if body.Type != "tool_error" {
+		t.Fatalf("tool error type = %q, want tool_error", body.Type)
+	}
+	if body.ToolCallID != toolCallID || body.ToolName != toolName || body.FailureKind != failureKind {
+		t.Fatalf("tool error identity = call:%q tool:%q kind:%q, want call:%q tool:%q kind:%q", body.ToolCallID, body.ToolName, body.FailureKind, toolCallID, toolName, failureKind)
+	}
+	if !strings.Contains(body.Message, messagePart) {
+		t.Fatalf("tool error message = %q, want to contain %q", body.Message, messagePart)
+	}
+	if body.Retryable {
+		t.Fatalf("tool error retryable = true, want false in phase 1")
+	}
+	if body.UserActionRequired {
+		t.Fatalf("tool error userActionRequired = true, want false for tool_not_found")
+	}
+	if !containsString(body.AllowedNextActions, "ask_user") {
+		t.Fatalf("tool error allowedNextActions = %v, want ask_user", body.AllowedNextActions)
+	}
 }
 
 func hasProtocolKind(state promptcompiler.ProtocolPromptState, kind string) bool {

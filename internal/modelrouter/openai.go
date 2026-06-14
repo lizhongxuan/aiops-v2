@@ -31,6 +31,9 @@ type OpenAIConfig struct {
 
 	// MaxTokens limits the response length.
 	MaxTokens int
+
+	// ReasoningEffort controls OpenAI reasoning effort: low, medium, or high.
+	ReasoningEffort string
 }
 
 const (
@@ -161,6 +164,9 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 	if config.MaxTokens > 0 {
 		cfg.MaxTokens = &config.MaxTokens
 	}
+	if effort := openAIReasoningEffortForModel(config.Model, config.ReasoningEffort); effort != "" {
+		cfg.ReasoningEffort = openai.ReasoningEffortLevel(effort)
+	}
 
 	cm, err := openai.NewChatModel(ctx, cfg)
 	if err != nil {
@@ -168,6 +174,26 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 	}
 
 	return &streamGenerateChatModel{inner: cm}, nil
+}
+
+func openAIReasoningEffortForModel(model, effort string) string {
+	if !openAIModelSupportsReasoningEffort(strings.ToLower(strings.TrimSpace(model))) {
+		return ""
+	}
+	return normalizeOpenAIReasoningEffort(effort)
+}
+
+func normalizeOpenAIReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 type streamGenerateChatModel struct {
@@ -178,11 +204,7 @@ func (m *streamGenerateChatModel) Generate(ctx context.Context, input []*schema.
 	if m == nil || m.inner == nil {
 		return nil, fmt.Errorf("openai: chat model is not configured")
 	}
-	stream, err := m.inner.Stream(ctx, input, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return schema.ConcatMessageStream(stream)
+	return m.inner.Generate(ctx, input, opts...)
 }
 
 func (m *streamGenerateChatModel) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {

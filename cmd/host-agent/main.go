@@ -6,15 +6,21 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"aiops-v2/internal/agentrpc"
 	"aiops-v2/internal/hostagent"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/structpb"
 	"runner/modules"
 	"runner/modules/script"
 	"runner/scheduler"
@@ -35,6 +41,30 @@ type runResponse struct {
 
 type statusRequest struct {
 	TaskID string `json:"task_id"`
+}
+
+type controlMessage struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Error   string          `json:"error,omitempty"`
+	Time    int64           `json:"time"`
+}
+
+type agentExecRequest struct {
+	Command        string   `json:"command"`
+	Args           []string `json:"args,omitempty"`
+	WorkingDir     string   `json:"workingDir,omitempty"`
+	TimeoutMs      int      `json:"timeoutMs,omitempty"`
+	MaxOutputBytes int      `json:"maxOutputBytes,omitempty"`
+}
+
+type agentExecResponse struct {
+	Status   string `json:"status"`
+	Stdout   string `json:"stdout,omitempty"`
+	Stderr   string `json:"stderr,omitempty"`
+	ExitCode int    `json:"exitCode,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 type taskEntry struct {
@@ -116,12 +146,231 @@ func main() {
 		os.Exit(1)
 	}
 	go heartbeatLoop(ctx, client, cfg)
+	if strings.TrimSpace(cfg.GRPCURL) != "" {
+		go grpcControlLoop(ctx, cfg, opts)
+	}
 
 	fmt.Fprintf(os.Stderr, "host-agent listening on %s\n", cfg.ListenAddr)
 	if err := http.ListenAndServe(cfg.ListenAddr, newAgentHandler(cfg, opts)); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func grpcControlLoop(ctx context.Context, cfg hostagent.Config, opts agentOptions) {
+	backoff := time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := runGRPCControlSession(ctx, cfg, opts); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "host-agent grpc control: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 15*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func runGRPCControlSession(ctx context.Context, cfg hostagent.Config, opts agentOptions) error {
+	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer dialCancel()
+	conn, err := grpc.DialContext(dialCtx, strings.TrimSpace(cfg.GRPCURL), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	stream, err := agentrpc.NewAgentServiceClient(conn).Connect(ctx)
+	if err != nil {
+		return err
+	}
+	sendMu := &sync.Mutex{}
+	send := func(msg controlMessage) error {
+		msg.Time = time.Now().UnixMilli()
+		envelope, err := controlMessageToStruct(msg)
+		if err != nil {
+			return err
+		}
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(envelope)
+	}
+	hostname, _ := os.Hostname()
+	registerPayload, _ := json.Marshal(map[string]any{
+		"token":         cfg.Token,
+		"hostname":      hostname,
+		"os":            runtime.GOOS,
+		"arch":          runtime.GOARCH,
+		"agentVersion":  agentVersion,
+		"labels":        cfg.Labels,
+		"capabilities":  cfg.Capabilities,
+		"listenAddress": cfg.ListenAddr,
+	})
+	if err := send(controlMessage{Type: "register", ID: cfg.HostID, Payload: registerPayload}); err != nil {
+		return err
+	}
+
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
+	go func() {
+		ticker := time.NewTicker(cfg.HeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				payload, _ := json.Marshal(map[string]any{"hostId": cfg.HostID, "timestamp": time.Now().UTC().Format(time.RFC3339)})
+				if err := send(controlMessage{Type: "heartbeat", ID: cfg.HostID, Payload: payload}); err != nil {
+					fmt.Fprintf(os.Stderr, "host-agent grpc heartbeat: %v\n", err)
+					return
+				}
+			}
+		}
+	}()
+
+	for {
+		envelope, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		msg, err := structToControlMessage(envelope)
+		if err != nil {
+			_ = send(controlMessage{Type: "error", Error: err.Error()})
+			continue
+		}
+		switch msg.Type {
+		case "ack":
+			continue
+		case "exec":
+			go handleGRPCExec(ctx, opts, msg, send)
+		default:
+			_ = send(controlMessage{Type: "error", ID: msg.ID, Error: "unknown message type: " + msg.Type})
+		}
+	}
+}
+
+func handleGRPCExec(ctx context.Context, opts agentOptions, msg controlMessage, send func(controlMessage) error) {
+	var req agentExecRequest
+	if err := json.Unmarshal(msg.Payload, &req); err != nil {
+		_ = sendExecResponse(send, msg.ID, agentExecResponse{Status: "failed", ExitCode: -1, Error: err.Error()})
+		return
+	}
+	result := runLocalExecCommand(ctx, req, opts.MaxOutputBytes)
+	_ = sendExecResponse(send, msg.ID, result)
+}
+
+func sendExecResponse(send func(controlMessage) error, id string, result agentExecResponse) error {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	return send(controlMessage{Type: "exec", ID: id, Payload: data, Error: result.Error})
+}
+
+func runLocalExecCommand(ctx context.Context, req agentExecRequest, fallbackMaxOutputBytes int) agentExecResponse {
+	command := strings.TrimSpace(req.Command)
+	if command == "" {
+		return agentExecResponse{Status: "failed", ExitCode: -1, Error: "command is required"}
+	}
+	timeout := 15 * time.Second
+	if req.TimeoutMs > 0 {
+		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
+		if timeout > 60*time.Second {
+			timeout = 60 * time.Second
+		}
+	}
+	maxOutputBytes := req.MaxOutputBytes
+	if maxOutputBytes <= 0 {
+		maxOutputBytes = fallbackMaxOutputBytes
+	}
+	if maxOutputBytes <= 0 {
+		maxOutputBytes = 65536
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(runCtx, command, req.Args...)
+	if strings.TrimSpace(req.WorkingDir) != "" {
+		cmd.Dir = strings.TrimSpace(req.WorkingDir)
+	}
+	stdout := newOutputBuffer(maxOutputBytes)
+	stderr := newOutputBuffer(maxOutputBytes / 2)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	err := cmd.Run()
+	result := agentExecResponse{
+		Status:   "success",
+		Stdout:   stdout.String(),
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if runCtx.Err() != nil {
+		result.Status = "failed"
+		result.ExitCode = -1
+		result.Error = runCtx.Err().Error()
+		return result
+	}
+	if err != nil {
+		result.Status = "failed"
+		if result.ExitCode == 0 {
+			result.ExitCode = -1
+		}
+		result.Error = err.Error()
+	}
+	return result
+}
+
+func controlMessageToStruct(msg controlMessage) (*structpb.Struct, error) {
+	values := map[string]any{
+		"type": msg.Type,
+		"id":   msg.ID,
+		"time": float64(msg.Time),
+	}
+	if len(msg.Payload) > 0 {
+		values["payload"] = string(msg.Payload)
+	}
+	if msg.Error != "" {
+		values["error"] = msg.Error
+	}
+	return structpb.NewStruct(values)
+}
+
+func structToControlMessage(value *structpb.Struct) (controlMessage, error) {
+	if value == nil {
+		return controlMessage{}, fmt.Errorf("empty control message")
+	}
+	fields := value.AsMap()
+	msg := controlMessage{
+		Type:  stringControlField(fields, "type"),
+		ID:    stringControlField(fields, "id"),
+		Error: stringControlField(fields, "error"),
+	}
+	if raw := stringControlField(fields, "payload"); raw != "" {
+		if !json.Valid([]byte(raw)) {
+			return controlMessage{}, fmt.Errorf("control message payload is not JSON")
+		}
+		msg.Payload = json.RawMessage(raw)
+	}
+	if timestamp, ok := fields["time"].(float64); ok && !math.IsNaN(timestamp) {
+		msg.Time = int64(timestamp)
+	}
+	return msg, nil
+}
+
+func stringControlField(fields map[string]any, key string) string {
+	value, _ := fields[key].(string)
+	return value
 }
 
 func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {

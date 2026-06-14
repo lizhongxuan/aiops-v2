@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/observability"
 )
 
 func TestManager_CreateListAndBridgeLifecycle(t *testing.T) {
@@ -34,6 +36,9 @@ func TestManager_CreateListAndBridgeLifecycle(t *testing.T) {
 	}
 	if meta.Status != SessionStatusRunning {
 		t.Fatalf("Status = %q, want running", meta.Status)
+	}
+	if meta.Source != "manual_terminal" {
+		t.Fatalf("Source = %q, want manual_terminal", meta.Source)
 	}
 
 	list := mgr.ListSessions()
@@ -107,4 +112,63 @@ func TestManager_CreateListAndBridgeLifecycle(t *testing.T) {
 	if got := mgr.GetSession(meta.SessionID); got == nil || got.Metadata().Status != SessionStatusExited {
 		t.Fatalf("final session status = %+v, want exited", got)
 	}
+}
+
+func TestManager_AuditsManualTerminalLifecycle(t *testing.T) {
+	observability.ResetOpsMetricsForTest()
+	mgr := NewManager(WithCommandFactory(func(req CreateSessionRequest) (*exec.Cmd, error) {
+		return exec.Command("/bin/cat"), nil
+	}))
+	meta, err := mgr.CreateSession(context.Background(), CreateSessionRequest{HostID: "host-a", Shell: "/bin/cat"})
+	if err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	session := mgr.GetSession(meta.SessionID)
+	_, release := session.Subscribe()
+	release()
+	_, release = session.Subscribe()
+	release()
+	if err := session.SendInput("audit command\n"); err != nil {
+		t.Fatalf("SendInput() error = %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	events := mgr.ListAuditEvents()
+	for _, want := range []AuditEventType{
+		AuditEventSessionCreated,
+		AuditEventSessionConnected,
+		AuditEventSessionDisconnected,
+		AuditEventSessionReconnected,
+		AuditEventSessionClosed,
+	} {
+		if !auditEventsContain(events, want) {
+			t.Fatalf("audit events = %#v, missing %q", events, want)
+		}
+	}
+	for _, event := range events {
+		if event.Source != "manual_terminal" {
+			t.Fatalf("audit event = %#v, want manual_terminal source", event)
+		}
+	}
+	snapshot := observability.OpsMetricsSnapshot()
+	if snapshot[observability.OpsMetricTerminalConnection].Success == 0 {
+		t.Fatalf("metrics = %#v, want terminal connection success", snapshot)
+	}
+	if snapshot[observability.OpsMetricManualTerminalCommand].Success == 0 {
+		t.Fatalf("metrics = %#v, want manual command success", snapshot)
+	}
+	if snapshot[observability.OpsMetricHumanHandoff].Success != 1 {
+		t.Fatalf("metrics = %#v, want exactly one human handoff for manual terminal session creation", snapshot)
+	}
+}
+
+func auditEventsContain(events []AuditEvent, eventType AuditEventType) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }

@@ -8,6 +8,10 @@ import (
 )
 
 func RegisterBuiltins(registry *tooling.Registry, resources *mcp.Registry) error {
+	return RegisterBuiltinsWithOptions(registry, resources, ReadToolOptions{})
+}
+
+func RegisterBuiltinsWithOptions(registry *tooling.Registry, resources *mcp.Registry, opts ReadToolOptions) error {
 	if registry == nil {
 		return fmt.Errorf("mcpresources: tooling registry is required")
 	}
@@ -16,7 +20,7 @@ func RegisterBuiltins(registry *tooling.Registry, resources *mcp.Registry) error
 	}
 	for _, tool := range []tooling.Tool{
 		NewListTool(resources),
-		NewReadTool(resources),
+		NewReadToolWithOptions(resources, opts),
 	} {
 		if err := registry.Register(tool); err != nil {
 			return err

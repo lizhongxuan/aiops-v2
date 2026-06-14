@@ -161,6 +161,37 @@ func TestScriptModulePythonStdoutStderrArgsEnvAndExitCode(t *testing.T) {
 	}
 }
 
+func TestScriptModuleParsesNodeResultEnvelope(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+
+	res, err := New("python").Apply(context.Background(), modules.Request{
+		Step: workflow.Step{
+			Action: "script.python",
+			Args: map[string]any{
+				"script": `import json
+print("debug before")
+print("AIOPS_NODE_RESULT_BEGIN")
+print(json.dumps({"schema_version":"aiops.node_result/v1","node_id":"extract","node_type":"script.python","status":"success","outputs":{"items":[{"title":"A"}]},"metrics":{"count":1}}))
+print("AIOPS_NODE_RESULT_END")
+`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply script: %v", err)
+	}
+	nodeResult, ok := res.Output["node_result"].(map[string]any)
+	if !ok {
+		t.Fatalf("node_result = %#v, want parsed envelope map", res.Output["node_result"])
+	}
+	outputs, ok := nodeResult["outputs"].(map[string]any)
+	if !ok || outputs["items"] == nil {
+		t.Fatalf("node_result outputs = %#v", nodeResult["outputs"])
+	}
+}
+
 func TestScriptModulePythonTimeout(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")

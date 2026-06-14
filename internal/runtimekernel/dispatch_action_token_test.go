@@ -37,16 +37,16 @@ func TestToolDispatcherExtractsActionTokenIntoExecutionContextAndStripsUnknownSc
 	result := dispatcher.Dispatch(ctx, "sess-1", "turn-1", ToolCall{
 		ID:        "call-1",
 		Name:      "exec_command",
-		Arguments: json.RawMessage(`{"command":"date","actionToken":"tok-1","incidentId":"inc-1"}`),
+		Arguments: json.RawMessage(`{"command":"date","actionToken":"tok-1","incidentId":"inc-1","tenantId":"tenant-a","userId":"user-a"}`),
 	}, SessionTypeHost, ModeExecute)
 
 	if result.Error != "" {
 		t.Fatalf("Dispatch() error = %s", result.Error)
 	}
-	if string(executor.args) != `{"command":"date","incidentId":"inc-1"}` {
+	if string(executor.args) != `{"command":"date","incidentId":"inc-1","tenantId":"tenant-a","userId":"user-a"}` {
 		t.Fatalf("executor args = %s, want actionToken stripped", executor.args)
 	}
-	if executor.ctx.SessionID != "sess-1" || executor.ctx.TurnID != "turn-1" || executor.ctx.ToolCallID != "call-1" || executor.ctx.HostID != "host-a" || executor.ctx.IncidentID != "inc-1" || executor.ctx.ActionToken != "tok-1" {
+	if executor.ctx.SessionID != "sess-1" || executor.ctx.TurnID != "turn-1" || executor.ctx.ToolCallID != "call-1" || executor.ctx.HostID != "host-a" || executor.ctx.IncidentID != "inc-1" || executor.ctx.TenantID != "tenant-a" || executor.ctx.UserID != "user-a" || executor.ctx.ActionToken != "tok-1" {
 		t.Fatalf("execution context = %#v", executor.ctx)
 	}
 }

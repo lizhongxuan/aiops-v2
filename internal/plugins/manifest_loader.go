@@ -538,6 +538,12 @@ func cloneMCPServerConfigs(items []mcp.ServerConfig) []mcp.ServerConfig {
 
 func cloneMCPServerConfig(item mcp.ServerConfig) mcp.ServerConfig {
 	item.Command = append([]string(nil), item.Command...)
+	item.TenantScope.TenantIDs = append([]string(nil), item.TenantScope.TenantIDs...)
+	item.UserScope.UserIDs = append([]string(nil), item.UserScope.UserIDs...)
+	item.Profiles = append([]string(nil), item.Profiles...)
+	item.ResourceTypes = append([]string(nil), item.ResourceTypes...)
+	item.OperationKinds = append([]string(nil), item.OperationKinds...)
+	item.DiscoveryTags = append([]string(nil), item.DiscoveryTags...)
 	return item
 }
 

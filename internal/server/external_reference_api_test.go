@@ -46,6 +46,38 @@ func TestExternalReferenceAPIReadsToolSpill(t *testing.T) {
 	}
 }
 
+func TestExternalReferenceAPIReadsRange(t *testing.T) {
+	server := newTestServerWithToolSpill(t, tooling.ResultSpill{
+		ID:          "spill-1",
+		ContentType: "text/plain",
+		Summary:     "bounded summary",
+		Content:     []byte("alpha\nbeta\ngamma"),
+		Bytes:       int64(len("alpha\nbeta\ngamma")),
+		CreatedAt:   time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/external-references/tool-spills/spill-1?offset=6&limit=4", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload externalReferenceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Content != "beta" {
+		t.Fatalf("content = %q, want beta", payload.Content)
+	}
+	if !payload.Truncated {
+		t.Fatalf("truncated = false, want true")
+	}
+	if payload.Range.Offset != 6 || payload.Range.Limit != 4 {
+		t.Fatalf("range = %#v, want offset 6 limit 4", payload.Range)
+	}
+}
+
 func TestExternalReferenceAPINotFound(t *testing.T) {
 	server := newTestServerWithToolSpill(t)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/external-references/missing", nil)

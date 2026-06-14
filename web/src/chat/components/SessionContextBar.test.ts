@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildTargetOptionsForTest, formatTargetButtonLabel, resolveComposerDisabledReason, withSessionContextTimeout } from "./SessionContextBar";
+import { buildTargetOptionsForTest, formatLlmLabel, formatTargetButtonLabel, resolveComposerDisabledReason, withSessionContextTimeout } from "./SessionContextBar";
 
 describe("SessionContextBar", () => {
   afterEach(() => {
@@ -12,6 +12,12 @@ describe("SessionContextBar", () => {
     expect(formatTargetButtonLabel("single_host")).toBe("server-local");
   });
 
+  it("shows only the model name in the composer LLM label", () => {
+    expect(formatLlmLabel({ provider: "openai", model: "glm-4.7" })).toBe("glm-4.7");
+    expect(formatLlmLabel({ provider: "openai", model: "gpt-5.4" })).toBe("gpt-5.4");
+    expect(formatLlmLabel(null)).toBe("LLM 未配置");
+  });
+
   it("disables composer while a new session is being created", () => {
     expect(
       resolveComposerDisabledReason({
@@ -20,6 +26,28 @@ describe("SessionContextBar", () => {
         llmConfigured: true,
       }),
     ).toBe("正在创建会话");
+  });
+
+  it("does not ask users to manually create a chat session", () => {
+    expect(
+      resolveComposerDisabledReason({
+        hasActiveSession: false,
+        llmConfigured: true,
+      }),
+    ).toBe("正在初始化会话");
+    expect(
+      resolveComposerDisabledReason({
+        hasActiveSession: false,
+        llmConfigured: true,
+        sessionInitError: "会话初始化失败，请刷新重试",
+      }),
+    ).toBe("会话初始化失败，请刷新重试");
+    expect(
+      resolveComposerDisabledReason({
+        hasActiveSession: false,
+        llmConfigured: false,
+      }),
+    ).toBe("请先在设置中配置 LLM");
   });
 
   it("times out session context requests so the refresh busy state can finish", async () => {

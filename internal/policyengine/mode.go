@@ -23,14 +23,14 @@ var readOnlyPatterns = []string{
 }
 
 var readOnlyExactNames = map[string]struct{}{
-	"coroot_list_services":      {},
-	"coroot_service_metrics":    {},
-	"coroot_rca_report":         {},
-	"coroot_service_topology":   {},
-	"coroot_alert_rules":        {},
-	"coroot_incidents":          {},
-	"coroot_incident_timeline":  {},
-	"coroot_slo_status":         {},
+	"coroot_list_services":     {},
+	"coroot_service_metrics":   {},
+	"coroot_rca_report":        {},
+	"coroot_service_topology":  {},
+	"coroot_alert_rules":       {},
+	"coroot_incidents":         {},
+	"coroot_incident_timeline": {},
+	"coroot_slo_status":        {},
 }
 
 // mutationPatterns identifies tools that modify state.
@@ -162,9 +162,6 @@ type ChatModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in chat mode.
 func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
-	if decision, ok := governanceBoundaryDecision(input, false, "chat"); ok {
-		return decision
-	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -184,6 +181,12 @@ func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 				Reason:   "local terminal command requires approval",
 			},
 		}
+	}
+	if decision, ok := safetyDecision(input, false, "chat"); ok {
+		return decision
+	}
+	if decision, ok := governanceBoundaryDecision(input, false, "chat"); ok {
+		return decision
 	}
 	if isMutation(toolName) {
 		if isPlanTool(toolName) {
@@ -229,9 +232,6 @@ type InspectModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in inspect mode.
 func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
-	if decision, ok := governanceBoundaryDecision(input, false, "inspect"); ok {
-		return decision
-	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -247,6 +247,12 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 			Action: PolicyActionDeny,
 			Reason: "inspect mode only allows read-only terminal commands",
 		}
+	}
+	if decision, ok := safetyDecision(input, true, "inspect"); ok {
+		return decision
+	}
+	if decision, ok := governanceBoundaryDecision(input, false, "inspect"); ok {
+		return decision
 	}
 	if isMutation(toolName) {
 		if isPlanTool(toolName) {
@@ -281,22 +287,14 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 // PlanModePolicy implements ModePolicy for plan mode.
 type PlanModePolicy struct{}
 
-// planPatterns identifies plan-related tools.
-var planPatterns = []string{
-	"plan", "draft", "propose", "schedule", "preview",
-}
-
-// isPlanTool reports whether the tool name matches plan-related patterns.
+// isPlanTool reports whether the tool name is an exact plan artifact tool.
 func isPlanTool(name string) bool {
-	return containsAny(name, planPatterns)
+	return tooling.IsPlanArtifactTool(name)
 }
 
 // CheckTool determines whether the given tool is permitted in plan mode.
 func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
-	if decision, ok := governanceBoundaryDecision(input, false, "plan"); ok {
-		return decision
-	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -315,6 +313,12 @@ func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	}
 	if isPlanTool(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}
+	}
+	if decision, ok := safetyDecision(input, false, "plan"); ok {
+		return decision
+	}
+	if decision, ok := governanceBoundaryDecision(input, false, "plan"); ok {
+		return decision
 	}
 
 	if isMutation(toolName) {
@@ -350,9 +354,6 @@ type ExecuteModePolicy struct{}
 // CheckTool determines whether the given tool is permitted in execute mode.
 func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	toolName := normalizeToolName(input)
-	if decision, ok := governanceBoundaryDecision(input, true, "execute"); ok {
-		return decision
-	}
 	if isTerminalCommandTool(toolName) {
 		req, ok := terminalCommandRequestFromArgs(input.Arguments)
 		if !ok {
@@ -372,6 +373,12 @@ func (p *ExecuteModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 				Reason:   "local terminal command requires approval",
 			},
 		}
+	}
+	if decision, ok := safetyDecision(input, true, "execute"); ok {
+		return decision
+	}
+	if decision, ok := governanceBoundaryDecision(input, true, "execute"); ok {
+		return decision
 	}
 	if isMutation(toolName) {
 		if isPlanTool(toolName) {

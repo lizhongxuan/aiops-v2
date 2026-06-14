@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHostTerminalEntry,
   buildHostProfileDetail,
   buildHostExecutionRisks,
   buildHostProfileRows,
@@ -188,5 +189,24 @@ describe("hostProfileViewModels", () => {
     expect(JSON.stringify(detail)).toContain("aiops-agent.service");
     expect(JSON.stringify(detail)).toContain("case-1");
     expect(JSON.stringify(detail)).not.toMatch(/secret-token|secret-password|PRIVATE KEY|secret-cookie|secret-auth|4111111111111111/i);
+  });
+
+  it("opens independent host terminals only for online terminal-capable or executable hosts", () => {
+    expect(buildHostTerminalEntry({ id: "host-1", status: "online", terminalCapable: true })).toMatchObject({
+      canOpenTerminal: true,
+      disabledReason: "",
+    });
+    expect(buildHostTerminalEntry({ id: "host-2", status: "online", executable: true })).toMatchObject({
+      canOpenTerminal: true,
+      disabledReason: "",
+    });
+    expect(buildHostTerminalEntry({ id: "host-3", status: "offline", terminalCapable: true })).toMatchObject({
+      canOpenTerminal: false,
+      disabledReason: "主机离线",
+    });
+    expect(buildHostTerminalEntry({ id: "host-4", status: "online" })).toMatchObject({
+      canOpenTerminal: false,
+      disabledReason: "主机未启用终端",
+    });
   });
 });

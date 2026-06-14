@@ -55,6 +55,34 @@ describe("assistantTransportControl", () => {
     expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`)).toEqual(state);
   });
 
+  it("normalizes legacy resume states with missing transport maps", () => {
+    const legacyState = createInitialAiopsTransportState("sess-legacy") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
+    legacyState.sessionId = "sess-legacy";
+    delete legacyState.hostMissions;
+    delete legacyState.childAgents;
+    delete legacyState.pendingApprovals;
+    delete legacyState.mcpSurfaces;
+    delete legacyState.artifacts;
+    delete legacyState.runtimeLiveness;
+
+    expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: legacyState }])}\n`)).toMatchObject({
+      sessionId: "sess-legacy",
+      threadId: "sess-legacy",
+      hostMissions: {},
+      childAgents: {},
+      pendingApprovals: {},
+      mcpSurfaces: {},
+      artifacts: {},
+      runtimeLiveness: {
+        activeTurns: {},
+        activeAgents: {},
+        pendingApprovals: {},
+        pendingUserInputs: {},
+        activeCommandStreams: {},
+      },
+    });
+  });
+
   it("fetches completed history through the resume endpoint", async () => {
     const state = createInitialAiopsTransportState("sess-history");
     state.sessionId = "sess-history";

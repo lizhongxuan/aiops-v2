@@ -17,6 +17,10 @@ const (
 	assistantTransportCommandMCPAction        = "aiops.mcp-action"
 	assistantTransportCommandMCPRefresh       = "aiops.mcp-refresh"
 	assistantTransportCommandMCPPin           = "aiops.mcp-pin"
+	assistantTransportCommandHostPlanAccept   = "aiops.host-plan-accept"
+	assistantTransportCommandHostPlanRevise   = "aiops.host-plan-revise"
+	assistantTransportCommandChildAgentMsg    = "aiops.child-agent-message"
+	assistantTransportCommandChildAgentStop   = "aiops.child-agent-stop"
 )
 
 type assistantTransportRequest struct {
@@ -121,6 +125,45 @@ type assistantTransportMCPPinCommand struct {
 }
 
 func (c *assistantTransportMCPPinCommand) Type() string {
+	return c.CommandType
+}
+
+type assistantTransportHostPlanAcceptCommand struct {
+	CommandType string `json:"type"`
+	MissionID   string `json:"missionId"`
+	PlanID      string `json:"planId"`
+}
+
+func (c *assistantTransportHostPlanAcceptCommand) Type() string {
+	return c.CommandType
+}
+
+type assistantTransportHostPlanReviseCommand struct {
+	CommandType string `json:"type"`
+	MissionID   string `json:"missionId"`
+	Instruction string `json:"instruction"`
+}
+
+func (c *assistantTransportHostPlanReviseCommand) Type() string {
+	return c.CommandType
+}
+
+type assistantTransportChildAgentMessageCommand struct {
+	CommandType  string `json:"type"`
+	ChildAgentID string `json:"childAgentId"`
+	Content      string `json:"content"`
+}
+
+func (c *assistantTransportChildAgentMessageCommand) Type() string {
+	return c.CommandType
+}
+
+type assistantTransportChildAgentStopCommand struct {
+	CommandType  string `json:"type"`
+	ChildAgentID string `json:"childAgentId"`
+}
+
+func (c *assistantTransportChildAgentStopCommand) Type() string {
 	return c.CommandType
 }
 
@@ -247,6 +290,30 @@ func decodeAssistantTransportCommand(raw json.RawMessage) (assistantTransportCom
 		return &command, nil
 	case assistantTransportCommandMCPPin:
 		var command assistantTransportMCPPinCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return nil, err
+		}
+		return &command, nil
+	case assistantTransportCommandHostPlanAccept:
+		var command assistantTransportHostPlanAcceptCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return nil, err
+		}
+		return &command, nil
+	case assistantTransportCommandHostPlanRevise:
+		var command assistantTransportHostPlanReviseCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return nil, err
+		}
+		return &command, nil
+	case assistantTransportCommandChildAgentMsg:
+		var command assistantTransportChildAgentMessageCommand
+		if err := json.Unmarshal(raw, &command); err != nil {
+			return nil, err
+		}
+		return &command, nil
+	case assistantTransportCommandChildAgentStop:
+		var command assistantTransportChildAgentStopCommand
 		if err := json.Unmarshal(raw, &command); err != nil {
 			return nil, err
 		}

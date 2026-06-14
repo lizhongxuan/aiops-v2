@@ -32,20 +32,20 @@ func AllCapabilityLayers() []CapabilityLayer {
 // ---------------------------------------------------------------------------
 
 var structuredReadTools = map[string]bool{
-	"host_list":       true,
-	"host_info":       true,
-	"host_status":     true,
-	"file_read":       true,
-	"file_list":       true,
-	"file_search":     true,
-	"log_tail":        true,
-	"log_search":      true,
-	"process_list":    true,
-	"disk_usage":      true,
-	"memory_usage":    true,
-	"network_status":  true,
-	"service_status":  true,
-	"container_list":  true,
+	"host_list":      true,
+	"host_info":      true,
+	"host_status":    true,
+	"file_read":      true,
+	"file_list":      true,
+	"file_search":    true,
+	"log_tail":       true,
+	"log_search":     true,
+	"process_list":   true,
+	"disk_usage":     true,
+	"memory_usage":   true,
+	"network_status": true,
+	"service_status": true,
+	"container_list": true,
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +302,21 @@ type GatewayPolicy struct {
 // the three-layer gateway classification.
 func (g *GatewayPolicy) CheckApproval(toolName, command, hostID string, now time.Time) PolicyDecision {
 	layer := ClassifyTool(toolName)
+	if signals := DetectSafetySignals(PolicyInput{ToolName: toolName, Arguments: []byte(command)}); hasHighSafetySignal(signals) {
+		reason := "high-risk safety signal requires approval"
+		return PolicyDecision{
+			Action:        PolicyActionNeedApproval,
+			Reason:        reason,
+			SafetySignals: signals,
+			Approval: &ApprovalRequest{
+				ToolName:      toolName,
+				Command:       command,
+				HostID:        hostID,
+				Reason:        reason + ": " + safetySignalSummary(signals),
+				SafetySignals: signals,
+			},
+		}
+	}
 
 	switch layer {
 	case LayerStructuredRead:

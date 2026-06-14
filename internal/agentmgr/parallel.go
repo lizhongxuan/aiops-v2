@@ -29,6 +29,9 @@ type ParallelWorkerRequest struct {
 
 	// Config is the assembled agent configuration for this worker.
 	Config *AgentConfig
+
+	// ResourceLocks declares planned generic resource scopes for this worker.
+	ResourceLocks []ResourceLockKey
 }
 
 // ParallelExecutionResult holds the aggregated results of parallel worker execution.
@@ -41,6 +44,9 @@ type ParallelExecutionResult struct {
 
 	// Failed lists agent IDs that failed.
 	Failed []string
+
+	// ResourceLocks records lock acquire decisions by AgentID.
+	ResourceLocks map[string][]ResourceLockResult
 
 	// TotalDuration is the wall-clock time for the entire parallel execution.
 	TotalDuration time.Duration
@@ -56,6 +62,7 @@ type ParallelExecutionResult struct {
 type ParallelAgent struct {
 	manager *AgentManager
 	budget  *AgentBudgetController
+	locks   *ResourceLockManager
 }
 
 // NewParallelAgent creates a ParallelAgent that uses the given AgentManager
@@ -73,6 +80,14 @@ func NewParallelAgent(manager *AgentManager, budget *AgentBudgetController) (*Pa
 	}, nil
 }
 
+func (pa *ParallelAgent) WithResourceLockManager(locks *ResourceLockManager) *ParallelAgent {
+	if pa == nil {
+		return nil
+	}
+	pa.locks = locks
+	return pa
+}
+
 // Execute runs all workers in parallel, respecting budget constraints.
 // Workers that cannot immediately acquire budget are queued and executed
 // as slots become available. The method blocks until all workers complete
@@ -86,7 +101,8 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 	}
 	if len(workers) == 0 {
 		return &ParallelExecutionResult{
-			Results: make(map[string]*AgentResult),
+			Results:       make(map[string]*AgentResult),
+			ResourceLocks: make(map[string][]ResourceLockResult),
 		}, nil
 	}
 
@@ -108,9 +124,10 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 	startTime := time.Now()
 
 	var (
-		mu      sync.Mutex
-		results = make(map[string]*AgentResult, len(workers))
-		wg      sync.WaitGroup
+		mu            sync.Mutex
+		results       = make(map[string]*AgentResult, len(workers))
+		resourceLocks = make(map[string][]ResourceLockResult, len(workers))
+		wg            sync.WaitGroup
 	)
 
 	// Channel to signal when a budget slot is released, allowing queued
@@ -164,6 +181,36 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 		}
 
 	execute:
+		releaseBudget := func() {
+			_, _ = pa.budget.Release(missionID, w.AgentID)
+			select {
+			case slotReleased <- struct{}{}:
+			default:
+			}
+		}
+
+		lockResults, releaseLocks, lockErr := pa.acquireWorkerResourceLocks(w)
+		if len(lockResults) > 0 {
+			mu.Lock()
+			resourceLocks[w.AgentID] = append(resourceLocks[w.AgentID], lockResults...)
+			mu.Unlock()
+		}
+		if lockErr != nil {
+			mu.Lock()
+			results[w.AgentID] = &AgentResult{
+				AgentID: w.AgentID,
+				HostID:  w.HostID,
+				Status:  AgentStatusFailed,
+				Error:   lockErr.Error(),
+			}
+			mu.Unlock()
+			releaseBudget()
+			return
+		}
+		if releaseLocks != nil {
+			defer releaseLocks()
+		}
+
 		// Execute the worker via AgentManager.RunAgent.
 		result, runErr := pa.manager.RunAgent(ctx, w.AgentID, w.Config)
 		if runErr != nil {
@@ -182,13 +229,7 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 			mu.Unlock()
 		}
 
-		// Release budget slot and signal queued workers.
-		_, _ = pa.budget.Release(missionID, w.AgentID)
-		// Signal that a slot was released (non-blocking).
-		select {
-		case slotReleased <- struct{}{}:
-		default:
-		}
+		releaseBudget()
 	}
 
 	// Spawn all agents first via AgentManager.Spawn, then launch goroutines.
@@ -223,6 +264,7 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 	// Build the aggregated result.
 	execResult := &ParallelExecutionResult{
 		Results:       results,
+		ResourceLocks: resourceLocks,
 		TotalDuration: time.Since(startTime),
 	}
 
@@ -235,4 +277,38 @@ func (pa *ParallelAgent) Execute(ctx context.Context, missionID string, workers 
 	}
 
 	return execResult, nil
+}
+
+func (pa *ParallelAgent) acquireWorkerResourceLocks(w ParallelWorkerRequest) ([]ResourceLockResult, func(), error) {
+	if pa == nil || pa.locks == nil || len(w.ResourceLocks) == 0 {
+		return nil, nil, nil
+	}
+	results := make([]ResourceLockResult, 0, len(w.ResourceLocks))
+	acquired := make([]ResourceLockKey, 0, len(w.ResourceLocks))
+	release := func() {
+		for i := len(acquired) - 1; i >= 0; i-- {
+			pa.locks.Release(acquired[i], w.AgentID)
+		}
+	}
+	for _, key := range w.ResourceLocks {
+		result, err := pa.locks.TryAcquire(key, w.AgentID)
+		if err != nil {
+			release()
+			return append(results, result), nil, fmt.Errorf("resource lock acquire error: %w", err)
+		}
+		results = append(results, result)
+		if !result.Acquired {
+			release()
+			reason := result.Reason
+			if reason == "" {
+				reason = "resource_lock_conflict"
+			}
+			if result.BlockingAgentID != "" {
+				return results, nil, fmt.Errorf("%s: holder=%s", reason, result.BlockingAgentID)
+			}
+			return results, nil, fmt.Errorf("%s", reason)
+		}
+		acquired = append(acquired, result.Key)
+	}
+	return results, release, nil
 }

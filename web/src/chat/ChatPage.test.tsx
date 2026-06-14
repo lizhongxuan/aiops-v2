@@ -2,9 +2,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { getChildAgentTranscript, submitHostOpsApprovalDecision } from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
+
+vi.mock("@/api/hostOps", () => ({
+  getChildAgentTranscript: vi.fn(),
+  submitHostOpsApprovalDecision: vi.fn(),
+}));
 
 describe("ChatPage", () => {
   let container: HTMLDivElement;
@@ -18,6 +24,8 @@ describe("ChatPage", () => {
       disconnect() {}
     };
     HTMLElement.prototype.scrollTo = function scrollTo() {};
+    vi.mocked(getChildAgentTranscript).mockReset();
+    vi.mocked(submitHostOpsApprovalDecision).mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -301,6 +309,81 @@ describe("ChatPage", () => {
       container.querySelector('[data-testid="codex-approval-inline"]'),
     ).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("renders the host ops status panel above the composer when a host mission is active", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const panel = container.querySelector('[data-testid="host-ops-status-panel"]');
+    const composer = container.querySelector('[data-testid="aiops-composer-shell"]');
+
+    expect(panel).not.toBeNull();
+    expect(composer).not.toBeNull();
+    expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(container.textContent).toContain("共 3 个主机 Agent");
+  });
+
+  it("opens a child agent transcript drawer from the host ops status row", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+    vi.mocked(getChildAgentTranscript).mockResolvedValue({
+      childAgentId: "child-1",
+      items: [
+        {
+          id: "item-manager",
+          type: "manager_message",
+          content: "初始化 Franklin 上的主库",
+          createdAt: "2026-06-04T01:00:00Z",
+        },
+        {
+          id: "item-assistant",
+          type: "assistant_message",
+          content: "已连接主机并准备执行 pg_isready。",
+          createdAt: "2026-06-04T01:01:00Z",
+        },
+        {
+          id: "item-tool",
+          type: "tool_call",
+          toolName: "shell",
+          content: "pg_isready -h 127.0.0.1",
+          createdAt: "2026-06-04T01:02:00Z",
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const open = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("打开"),
+    );
+
+    await act(async () => {
+      open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(getChildAgentTranscript).toHaveBeenCalledWith("child-1");
+    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Franklin");
+    expect(document.body.textContent).toContain("初始化 Franklin 上的主库");
+    const toolsTab = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim().includes("工具"),
+    );
+    await act(async () => {
+      toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("pg_isready -h 127.0.0.1");
   });
 
   it("shows immediate feedback after submitting an approval decision", async () => {
@@ -1059,7 +1142,7 @@ describe("ChatPage", () => {
       ).toBeNull();
       expect(container.querySelector("textarea")).not.toBeNull();
       expect(fetchSpy).toHaveBeenCalled();
-      const requestBody = String(fetchSpy.mock.calls.at(-1)?.[1]?.body || "");
+      const requestBody = fetchSpy.mock.calls.map((call) => String(call[1]?.body || "")).join("\n");
       expect(requestBody).toContain("已选择跳过运维手册");
       expect(requestBody).toContain("search_ops_manuals");
       expect(requestBody).toContain("skip_ops_manual");
@@ -1141,6 +1224,98 @@ function sampleState(): AiopsTransportState {
       activeCommandStreams: {},
     },
   };
+}
+
+function sampleStateWithHostOps(): AiopsTransportState {
+  return {
+    ...sampleState(),
+    activeHostMissionId: "mission-1",
+    hostMissions: {
+      "mission-1": {
+        id: "mission-1",
+        turnId: "turn-1",
+        status: "running",
+        planRequired: true,
+        planAccepted: true,
+        mentionedHosts: [
+          {
+            tokenId: "mention-1",
+            raw: "@1.1.1.1",
+            hostId: "host-1",
+            address: "1.1.1.1",
+            displayName: "Franklin",
+            source: "inventory",
+            resolved: true,
+          },
+          {
+            tokenId: "mention-2",
+            raw: "@1.1.1.2",
+            hostId: "host-2",
+            address: "1.1.1.2",
+            displayName: "Harriet",
+            source: "inventory",
+            resolved: true,
+          },
+          {
+            tokenId: "mention-3",
+            raw: "@1.1.1.3",
+            hostId: "host-3",
+            address: "1.1.1.3",
+            displayName: "Grace",
+            source: "inventory",
+            resolved: true,
+          },
+        ],
+        childAgentIds: ["child-1", "child-2", "child-3"],
+        planSteps: [
+          { id: "step-1", title: "确认 PostgreSQL 拓扑", status: "pending" },
+          { id: "step-2", title: "初始化主库", status: "pending" },
+          { id: "step-3", title: "配置从库复制", status: "pending" },
+          { id: "step-4", title: "部署监控节点", status: "pending" },
+          { id: "step-5", title: "执行最终验证", status: "pending" },
+        ],
+      },
+    } as AiopsTransportState["hostMissions"],
+    childAgents: {
+      "child-1": {
+        id: "child-1",
+        missionId: "mission-1",
+        sessionId: "session-child-1",
+        hostId: "host-1",
+        hostAddress: "1.1.1.1",
+        hostDisplayName: "Franklin",
+        status: "running",
+        task: "初始化主库",
+      },
+      "child-2": {
+        id: "child-2",
+        missionId: "mission-1",
+        sessionId: "session-child-2",
+        hostId: "host-2",
+        hostAddress: "1.1.1.2",
+        hostDisplayName: "Harriet",
+        status: "running",
+        task: "配置从库复制",
+      },
+      "child-3": {
+        id: "child-3",
+        missionId: "mission-1",
+        sessionId: "session-child-3",
+        hostId: "host-3",
+        hostAddress: "1.1.1.3",
+        hostDisplayName: "Grace",
+        status: "waiting",
+        task: "部署监控节点",
+      },
+    },
+  };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 function countText(text: string, pattern: string) {

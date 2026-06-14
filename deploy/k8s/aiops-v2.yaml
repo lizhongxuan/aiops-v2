@@ -17,6 +17,9 @@ data:
   AIOPS_LLM_PROVIDER: "openai"
   AIOPS_LLM_MODEL: "gpt-5.4"
   AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
+  AIOPS_AGENT_SERVER_URL: "http://172.18.13.11:8001"
+  AIOPS_AGENT_GRPC_URL: "172.18.13.11:8002"
+  AIOPS_API_URL: "http://172.18.13.11:8001"
   # OpenAI-compatible gateway example:
   # AIOPS_LLM_BASE_URL: "https://api.openai.com/v1"
   # Coroot is configured from the Coroot Observability page after startup.
@@ -76,11 +79,15 @@ spec:
                 name: aiops-v2-config
             - secretRef:
                 name: aiops-v2-secret
+          env:
+            - name: KUBECONFIG
+              value: /etc/kubernetes/admin.conf
           ports:
             - name: http
               containerPort: 8080
             - name: grpc
               containerPort: 18090
+              hostPort: 8002
           readinessProbe:
             httpGet:
               path: /
@@ -107,10 +114,24 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/aiops
+            - name: host-kubectl
+              mountPath: /usr/local/bin/kubectl
+              readOnly: true
+            - name: host-kubeconfig
+              mountPath: /etc/kubernetes/admin.conf
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: aiops-v2-data
+        - name: host-kubectl
+          hostPath:
+            path: /usr/local/bin/kubectl
+            type: File
+        - name: host-kubeconfig
+          hostPath:
+            path: /etc/kubernetes/admin.conf
+            type: File
 ---
 apiVersion: v1
 kind: Service

@@ -177,6 +177,49 @@ func TestPromptCommandIsSkillLikeByLoadedFrom(t *testing.T) {
 	}
 }
 
+func TestRegistry_PromptCommandPreservesSkillDiscoveryAndGovernance(t *testing.T) {
+	r := NewRegistry()
+	cmd := PromptCommand{
+		Name:        "synthetic.skill",
+		Description: "synthetic skill",
+		Source:      SourceProjectSettings,
+		LoadedFrom:  LoadedFromSkills,
+		Discovery: SkillDiscoveryMetadata{
+			WhenToUse:        "Use for synthetic checks.",
+			ResourceTypes:    []string{"log"},
+			TaskIntents:      []string{"diagnose"},
+			Paths:            []string{"services/*"},
+			Modes:            []string{"read_only"},
+			ModelInvocable:   true,
+			RequiredForMatch: true,
+		},
+		Governance: SkillGovernanceMetadata{
+			Risk:         "read",
+			AllowedTools: []string{"list_resources"},
+			DeniedTools:  []string{"write_resource"},
+		},
+	}
+
+	mustRegisterPrompt(t, r, cmd)
+	got, ok := r.GetPrompt("synthetic.skill")
+	if !ok {
+		t.Fatal("expected synthetic.skill prompt")
+	}
+	if got.Discovery.WhenToUse != cmd.Discovery.WhenToUse || got.Discovery.ResourceTypes[0] != "log" {
+		t.Fatalf("discovery metadata not preserved: %+v", got.Discovery)
+	}
+	if got.Governance.Risk != "read" || got.Governance.DeniedTools[0] != "write_resource" {
+		t.Fatalf("governance metadata not preserved: %+v", got.Governance)
+	}
+
+	got.Discovery.ResourceTypes[0] = "mutated"
+	got.Governance.DeniedTools[0] = "mutated"
+	gotAgain, _ := r.GetPrompt("synthetic.skill")
+	if gotAgain.Discovery.ResourceTypes[0] != "log" || gotAgain.Governance.DeniedTools[0] != "write_resource" {
+		t.Fatalf("metadata slices were not cloned: %+v %+v", gotAgain.Discovery, gotAgain.Governance)
+	}
+}
+
 func TestPromptCommandIsSkillLikeByDeprecatedCommandsLoadedFrom(t *testing.T) {
 	cmd := PromptCommand{
 		Name:       "legacy-skill",

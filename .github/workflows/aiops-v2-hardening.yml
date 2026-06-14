@@ -1,0 +1,50 @@
+name: aiops-v2 hardening
+
+on:
+  pull_request:
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+      - "web/**"
+      - "docs/**"
+      - "scripts/aichat-harness-hardening-gate.sh"
+      - ".github/workflows/aiops-v2-hardening.yml"
+  push:
+    branches:
+      - main
+      - content_fix_0524
+  workflow_dispatch:
+
+jobs:
+  backend-agent-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run agent harness hardening gate
+        run: scripts/aichat-harness-hardening-gate.sh
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Run web unit tests
+        working-directory: web
+        run: npm test -- --run
+      - name: Build web
+        working-directory: web
+        run: npm run build

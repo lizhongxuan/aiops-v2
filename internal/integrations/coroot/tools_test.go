@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +35,16 @@ func executeCorootToolResult(t *testing.T, tool tooling.Tool, input string) tool
 		t.Fatalf("%s returned legacy stub content: %s", tool.Metadata().Name, result.Content)
 	}
 	return result
+}
+
+func anySliceStrings(items []any) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if value, ok := item.(string); ok {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func newCorootTestTools(t *testing.T, handler http.HandlerFunc) []tooling.Tool {
@@ -392,6 +404,117 @@ func TestCorootCollectRCAContextAggregatesUsefulFactsWithoutLeakingRawAPIData(t 
 	}
 }
 
+func TestCorootTimeWindowQueryParamsUseUnixMilliseconds(t *testing.T) {
+	from := time.Date(2026, 6, 4, 7, 0, 0, 0, time.UTC)
+	to := from.Add(time.Hour)
+	in := corootInput{
+		FromTimestamp: from.Unix(),
+		ToTimestamp:   to.Unix(),
+	}
+
+	appValues := applicationQueryParams(in)
+	if got, want := appValues.Get("from"), strconv.FormatInt(from.UnixMilli(), 10); got != want {
+		t.Fatalf("applicationQueryParams from = %q, want unix milliseconds %q", got, want)
+	}
+	if got, want := appValues.Get("to"), strconv.FormatInt(to.UnixMilli(), 10); got != want {
+		t.Fatalf("applicationQueryParams to = %q, want unix milliseconds %q", got, want)
+	}
+
+	windowValues := rcaContextWindowQueryParams(in)
+	if got, want := windowValues.Get("from"), strconv.FormatInt(from.UnixMilli(), 10); got != want {
+		t.Fatalf("rcaContextWindowQueryParams from = %q, want unix milliseconds %q", got, want)
+	}
+	if got, want := windowValues.Get("to"), strconv.FormatInt(to.UnixMilli(), 10); got != want {
+		t.Fatalf("rcaContextWindowQueryParams to = %q, want unix milliseconds %q", got, want)
+	}
+}
+
+func TestCorootNativeRCAApplicationNotFoundIsUnavailableForResolvedService(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/project/prod/overview/applications":
+			_, _ = w.Write([]byte(`{"data":{"applications":[{"id":"prod:smecloud:Deployment:mservice","status":"warning"}]}}`))
+		case "/api/project/prod/app/prod:smecloud:Deployment:mservice/rca":
+			http.Error(w, "Application not found", http.StatusNotFound)
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+
+	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.rca_report"), `{"project":"prod","service":"mservice"}`)
+	if body["status"] != "unavailable" {
+		t.Fatalf("rca_report status = %#v, want unavailable for optional native RCA 404; body=%#v", body["status"], body)
+	}
+	if body["service"] != "prod:smecloud:Deployment:mservice" {
+		t.Fatalf("rca_report service = %#v, want resolved Coroot app id", body["service"])
+	}
+	if !strings.Contains(strings.ToLower(body["summary"].(string)), "native rca") {
+		t.Fatalf("rca_report summary = %#v, want native RCA availability limitation", body["summary"])
+	}
+}
+
+func TestCorootRCAReportPromptTreatsNativeRCAFailureAsOptionalEvidence(t *testing.T) {
+	prompt := corootToolPrompt("coroot.rca_report")
+	for _, want := range []string{
+		"optional native Coroot RCA",
+		"404",
+		"Application not found",
+		"AI disabled",
+		"does not prove the service is absent",
+		"continue with coroot.collect_rca_context",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("rca_report prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCorootCollectRCAPromptRequiresExternalDependencyDrilldown(t *testing.T) {
+	prompt := corootToolPrompt("coroot.collect_rca_context")
+	for _, want := range []string{
+		"external dependency",
+		"ExternalService",
+		"not the final root cause",
+		"identity",
+		"endpoint",
+		"network path",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("collect_rca_context prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCorootServiceMetricsPromptPrefersCorootChartsForServiceResourceUsage(t *testing.T) {
+	prompt := corootToolPrompt("coroot.service_metrics")
+	for _, want := range []string{
+		"service/application CPU",
+		"memory",
+		"resource usage",
+		"Do not require the user to say chart",
+		"not use exec_command",
+		"selected host OS",
+		"Agent-to-UI coroot_chart artifacts",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("service_metrics prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestCorootServiceMetricsMetadataIncludesChineseResourceTriggers(t *testing.T) {
+	meta := corootToolMetadata("coroot.service_metrics", "Get service metrics")
+	for _, want := range []string{"CPU占用", "CPU 使用率", "资源占用", "资源使用", "内存使用率", "占用率"} {
+		if !slices.Contains(meta.Triggers, want) {
+			t.Fatalf("service_metrics triggers = %#v, want %q", meta.Triggers, want)
+		}
+	}
+	if !strings.Contains(meta.SearchHint, "CPU占用") || !strings.Contains(meta.SearchHint, "资源占用") {
+		t.Fatalf("service_metrics SearchHint = %q, want Chinese resource usage hints", meta.SearchHint)
+	}
+}
+
 func TestCorootCollectRCAContextFindsDeepDependencyNetworkIssue(t *testing.T) {
 	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -478,6 +601,76 @@ func TestCorootCollectRCAContextFindsDeepDependencyNetworkIssue(t *testing.T) {
 		if !found {
 			t.Fatalf("propagation path = %#v, want %s included", pathNames, want)
 		}
+	}
+}
+
+func TestCorootCollectRCAContextMarksExternalDependencyAsUnresolvedRootCause(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/project/prod/overview/applications":
+			_, _ = w.Write([]byte(`{"data":{"applications":[
+				{"id":"prod:smecloud:Deployment:mservice","cluster":"prod-a","category":"application","status":"warning","errors":{"status":"ok","value":"0%"},"latency":{"status":"ok","value":"5ms"}}
+			]}}`))
+		case "/api/project/prod/app/prod:smecloud:Deployment:mservice":
+			_, _ = w.Write([]byte(`{"data":{
+				"app_map":{"application":{"id":"prod:smecloud:Deployment:mservice","status":"warning","errors":{"status":"ok","value":"0%"},"latency":{"status":"ok","value":"5ms"}}},
+				"reports":[{"name":"Network","status":"warning","widgets":[{"chart":{"ctx":{"from":1710000000000,"step":30000},"title":"Failed TCP connections, per second","series":[{"name":"10.43.64.6","data":[0,3],"value":""}]}}]}]
+			}}`))
+		case "/api/project/prod/overview/map":
+			_, _ = w.Write([]byte(`{"data":{"map":[
+				{"id":"prod:smecloud:Deployment:mservice","cluster":"prod-a","category":"application","status":"warning","upstreams":[{"id":"external:external:ExternalService:10.43.64.6","status":"warning","stats":["failed connections"]}]},
+				{"id":"external:external:ExternalService:10.43.64.6","cluster":"external","category":"external","status":"warning","downstreams":[{"id":"prod:smecloud:Deployment:mservice","status":"warning"}]}
+			]}}`))
+		case "/api/project/prod/incidents":
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		case "/api/project/prod/overview/logs":
+			_, _ = w.Write([]byte(`{"data":{"logs":{"entries":[]}}}`))
+		case "/api/project/prod/app/prod:smecloud:Deployment:mservice/tracing":
+			_, _ = w.Write([]byte(`{"data":{"status":"ok","services":[{"name":"mservice","linked":true}],"spans":[]}}`))
+		case "/api/project/prod/app/prod:smecloud:Deployment:mservice/profiling":
+			_, _ = w.Write([]byte(`{"data":{"status":"ok","services":[{"name":"mservice","linked":true}]}}`))
+		case "/api/project/prod/overview/deployments":
+			_, _ = w.Write([]byte(`{"data":{"deployments":[]}}`))
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+		}
+	})
+
+	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.collect_rca_context"), `{"project":"prod","service":"mservice","timeRange":"30m","depth":2}`)
+	edgeEvidence := body["edgeEvidence"].([]any)
+	if len(edgeEvidence) == 0 {
+		t.Fatalf("edgeEvidence empty: %#v", body)
+	}
+	edge := edgeEvidence[0].(map[string]any)
+	if edge["targetKind"] != "external" || edge["targetEndpoint"] != "10.43.64.6" {
+		t.Fatalf("external edge fields = %#v, want targetKind external and targetEndpoint 10.43.64.6", edge)
+	}
+
+	hypotheses := body["hypotheses"].([]any)
+	if len(hypotheses) == 0 {
+		t.Fatalf("hypotheses empty: %#v", body)
+	}
+	top := hypotheses[0].(map[string]any)
+	if top["rootCauseStatus"] != "requires_external_dependency_drilldown" {
+		t.Fatalf("top hypothesis = %#v, want unresolved external dependency status", top)
+	}
+	drilldowns := strings.Join(anySliceStrings(top["nextDrilldowns"].([]any)), "\n")
+	for _, want := range []string{
+		"resolve external dependency 10.43.64.6",
+		"Kubernetes Service or Endpoint",
+		"port/protocol",
+		"caller-to-dependency network path",
+	} {
+		if !strings.Contains(drilldowns, want) {
+			t.Fatalf("nextDrilldowns = %q, want %q", drilldowns, want)
+		}
+	}
+
+	summary := body["summary"].(map[string]any)
+	missing := strings.Join(anySliceStrings(summary["missingEvidence"].([]any)), "\n")
+	if !strings.Contains(missing, "external dependency 10.43.64.6") || !strings.Contains(missing, "underlying cause is unresolved") {
+		t.Fatalf("missingEvidence = %q, want unresolved external dependency gap", missing)
 	}
 }
 
@@ -836,7 +1029,14 @@ func TestCorootToolReturnsStructuredError(t *testing.T) {
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 	})
 
-	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.slo_status"), `{"project":"prod","service":"checkout"}`)
+	result := executeCorootToolResult(t, corootToolByName(t, tools, "coroot.slo_status"), `{"project":"prod","service":"checkout"}`)
+	if result.Error == "" {
+		t.Fatalf("ToolResult.Error is empty; structured Coroot error must be marked as a failed tool result: %s", result.Content)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+		t.Fatalf("decode coroot error content: %v\n%s", err, result.Content)
+	}
 	if body["status"] != "error" {
 		t.Fatalf("status = %#v, want error", body["status"])
 	}

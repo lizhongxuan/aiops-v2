@@ -44,6 +44,8 @@ func TestSignerRejectsTamperedExpiredAndCrossScopeTokens(t *testing.T) {
 	claims := ActionTokenClaims{
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
+		TenantID:   "tenant-a",
+		UserID:     "user-a",
 		IncidentID: "inc-1",
 		ToolName:   "exec_command",
 		InputHash:  inputHash,
@@ -65,6 +67,16 @@ func TestSignerRejectsTamperedExpiredAndCrossScopeTokens(t *testing.T) {
 	wrongSession.SessionID = "sess-2"
 	if _, err := signer.Verify(token, wrongSession); err == nil {
 		t.Fatal("Verify(cross session) error = nil")
+	}
+	wrongTenant := claims
+	wrongTenant.TenantID = "tenant-b"
+	if _, err := signer.Verify(token, wrongTenant); err == nil {
+		t.Fatal("Verify(cross tenant) error = nil")
+	}
+	wrongUser := claims
+	wrongUser.UserID = "user-b"
+	if _, err := signer.Verify(token, wrongUser); err == nil {
+		t.Fatal("Verify(cross user) error = nil")
 	}
 	wrongTool := claims
 	wrongTool.ToolName = "k8s.restart_workload"

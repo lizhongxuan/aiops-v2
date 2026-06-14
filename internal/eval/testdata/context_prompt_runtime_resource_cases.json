@@ -1,0 +1,26 @@
+[
+  {
+    "name": "artifact range read avoids full payload",
+    "signal": "large text artifact read with offset and limit returns only a bounded window plus reference metadata"
+  },
+  {
+    "name": "resource query read avoids full payload",
+    "signal": "resource URI read with query returns bounded match windows and does not inline the entire source"
+  },
+  {
+    "name": "same digest and same range returns unchanged stub",
+    "signal": "repeated read of the same resource URI, digest, format, and range produces a compact unchanged stub"
+  },
+  {
+    "name": "same resource with different range stays visible",
+    "signal": "same resource URI and digest with a different offset or limit is treated as a distinct bounded read"
+  },
+  {
+    "name": "digest change returns changed stub",
+    "signal": "same resource URI and range with a new digest produces a compact changed stub without replaying full content"
+  },
+  {
+    "name": "binary resource returns metadata only",
+    "signal": "binary payload read returns digest, byte count, content type, and reference metadata without base64 body content"
+  }
+]

@@ -85,6 +85,8 @@ func (c ActionTokenClaims) Match(expected ActionTokenClaims) error {
 	}{
 		{name: "sessionId", got: c.SessionID, want: expected.SessionID},
 		{name: "turnId", got: c.TurnID, want: expected.TurnID},
+		{name: "tenantId", got: c.TenantID, want: expected.TenantID},
+		{name: "userId", got: c.UserID, want: expected.UserID},
 		{name: "incidentId", got: c.IncidentID, want: expected.IncidentID},
 		{name: "toolName", got: c.ToolName, want: expected.ToolName},
 		{name: "inputHash", got: c.InputHash, want: expected.InputHash},

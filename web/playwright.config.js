@@ -17,6 +17,7 @@ export default defineConfig({
     "react-route-smoke.spec.js",
     "react-shell-snapshot.spec.js",
     "runner-studio.spec.js",
+    "tool-mcp-slimming.spec.js",
   ],
   timeout: 30000,
   workers: Number.isFinite(workerCount) && workerCount > 0 ? workerCount : 1,

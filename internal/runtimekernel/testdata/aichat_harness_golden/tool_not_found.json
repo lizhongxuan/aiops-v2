@@ -1,0 +1,16 @@
+{
+  "name": "tool_not_found",
+  "userInput": "调用不存在的 Coroot 工具",
+  "modelToolCalls": [
+    {
+      "id": "call_missing",
+      "name": "coroot_missing_tool",
+      "arguments": {}
+    }
+  ],
+  "modelFinalOutput": "工具不可用，无法读取该指标。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "failed", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedFailureKind": "tool_not_found"
+}

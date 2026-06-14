@@ -210,6 +210,7 @@ const llmPayload = {
   apiKeyMasked: "sk-***",
   baseURL: "https://api.openai.com/v1",
   maxContextTokens: 131072,
+  reasoningEffort: "high",
   bifrostActive: true,
 };
 
@@ -235,6 +236,18 @@ const profilesPayload = {
   ],
   skillCatalog: skillPayload.items,
   mcpCatalog: mcpPayload.items,
+};
+
+const agentProfilePreviewPayload = {
+  profileId: "main-agent",
+  capabilitySnapshot: {
+    fingerprint: "sha256:preview",
+    items: [
+      { id: "coroot", kind: "mcp_server", enabled: true, source: "profile", sourceScope: "user", reason: "enabled by profile sre", runtimeStatus: "connected", risk: "low" },
+      { id: "dangerous-shell", kind: "skill", enabled: false, source: "admin_policy", sourceScope: "managed", reason: "disabled by admin deny", risk: "high" },
+      { id: "plugin-shell", kind: "mcp_server", enabled: false, source: "plugin:ops", sourceScope: "plugin", reason: "pending explicit approval", runtimeStatus: "pending_approval", risk: "high" },
+    ],
+  },
 };
 
 function jsonResponse(payload: unknown) {
@@ -266,6 +279,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   if (url.endsWith("/api/v1/agent-mcps")) return jsonResponse(mcpPayload);
   if (url.includes("/api/v1/agent-mcps/")) return jsonResponse({ items: mcpPayload.items, item: mcpPayload.items[0] });
   if (url.endsWith("/api/v1/agent-profiles")) return jsonResponse(profilesPayload);
+  if (url.includes("/api/v1/agent-profile/preview")) return jsonResponse(agentProfilePreviewPayload);
   if (url.endsWith("/api/v1/agent-profile")) return jsonResponse(init?.method === "PUT" ? profilesPayload.items[0] : profilesPayload.items[0]);
   if (url.endsWith("/api/v1/agent-profile/reset")) return jsonResponse(profilesPayload.items[0]);
   if (url.endsWith("/api/v1/agent-profiles/export")) return jsonResponse(profilesPayload);
@@ -284,6 +298,17 @@ async function flush() {
 function requestBodyFromCall(call: unknown[]) {
   const init = call[1] as RequestInit | undefined;
   return JSON.parse(String(init?.body || "{}")) as Record<string, unknown>;
+}
+
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function inputInField(root: Element | null | undefined, labelText: string) {
+  const label = Array.from(root?.querySelectorAll("label") || []).find((item) => item.textContent?.includes(labelText));
+  return label?.querySelector("input") as HTMLInputElement | null;
 }
 
 describe("React settings pages", () => {
@@ -346,6 +371,22 @@ describe("React settings pages", () => {
 
     expect(container.textContent).toContain(expectedText);
     expect(container.textContent).not.toContain("Migration Placeholder");
+  });
+
+  it("renders Agent Profile Effective Capabilities preview with source and disabled reasons", async () => {
+    await renderPath("/settings/agent");
+
+    expect(container.textContent).toContain("Effective Capabilities");
+    expect(container.textContent).toContain("sha256:preview");
+    expect(container.textContent).toContain("coroot");
+    expect(container.textContent).toContain("connected");
+    expect(container.textContent).toContain("disabled by admin deny");
+    expect(container.textContent).toContain("pending explicit approval");
+
+    const enabledList = container.querySelector('[data-testid="effective-capabilities-enabled"]');
+    expect(enabledList?.textContent).toContain("coroot");
+    expect(enabledList?.textContent).not.toContain("dangerous-shell");
+    expect(enabledList?.textContent).not.toContain("plugin-shell");
   });
 
   it("moves settings page actions into the app shell header", async () => {
@@ -417,6 +458,139 @@ describe("React settings pages", () => {
     expect(accessTab).toBeTruthy();
   });
 
+  it("shows host access save errors inside the host dialog layer", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/hosts/") && init?.method === "PUT") {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "ssh credential ref is required" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/hosts");
+
+    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
+    expect(accessTab).toBeTruthy();
+    await act(async () => accessTab?.click());
+    await flush();
+
+    const editButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("编辑"));
+    expect(editButton).toBeTruthy();
+    await act(async () => editButton?.click());
+    await flush();
+
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.textContent).toContain("编辑主机");
+    const saveButton = Array.from(dialog?.querySelectorAll("button") || []).find((button) => button.textContent?.includes("保存"));
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton?.click());
+    await flush();
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some((call) => String(call[0]).endsWith("/api/v1/hosts/host-prod-07") && (call[1] as RequestInit | undefined)?.method === "PUT"),
+    ).toBe(true);
+
+    const dialogAfterSave = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialogAfterSave?.textContent).toContain("ssh credential ref is required");
+    expect(container.querySelector('[role="alert"]')?.textContent || "").not.toContain("ssh credential ref is required");
+  });
+
+  it("saves host access configuration without installing the agent", async () => {
+    await renderPath("/settings/hosts");
+
+    const createButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入主机"));
+    expect(createButton).toBeTruthy();
+    await act(async () => createButton?.click());
+    await flush();
+
+    const dialog = document.body.querySelector('[data-slot="dialog-content"]');
+    expect(dialog?.textContent).toContain("SSH 密码");
+    expect(dialog?.textContent).not.toContain("SSH 凭据引用");
+    expect(dialog?.textContent).not.toContain("Host ID");
+    expect(dialog?.textContent).toContain("名称（可选）");
+    expect(dialog?.textContent).not.toContain("接入方式");
+    expect(dialog?.textContent).not.toContain("SSH 安装 Agent");
+    expect(dialog?.textContent).not.toContain("Agent 主动上报");
+    expect(dialog?.textContent).not.toContain("服务本机");
+    expect(dialog?.textContent).not.toContain("Transport");
+    expect(dialog?.textContent).toContain("SSH 用户必须是 root 或具备 sudo 权限");
+
+    const addressInput = inputInField(dialog, "地址");
+    const userInput = inputInField(dialog, "SSH 用户");
+    const passwordInput = inputInField(dialog, "SSH 密码");
+    expect(passwordInput?.type).toBe("password");
+    await act(async () => {
+      setInputValue(addressInput!, "172.18.13.13");
+      setInputValue(userInput!, "kduser");
+      setInputValue(passwordInput!, "ssh-user-password");
+    });
+
+    const saveButton = Array.from(dialog?.querySelectorAll("button") || []).find((button) => button.textContent?.includes("保存"));
+    expect(saveButton).toBeTruthy();
+    await act(async () => saveButton?.click());
+    await flush();
+
+    const createCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/hosts") && (call[1] as RequestInit | undefined)?.method === "POST");
+    expect(createCall).toBeTruthy();
+    const body = requestBodyFromCall(createCall!);
+    expect(body).not.toHaveProperty("id");
+    expect(body.name).toBe("");
+    expect(body.transport).toBe("manual");
+    expect(body.installViaSsh).toBe(false);
+    expect(body.sshPassword).toBe("ssh-user-password");
+    expect(body).not.toHaveProperty("sshCredentialRef");
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some((call) => String(call[0]).includes("/install") && (call[1] as RequestInit | undefined)?.method === "POST"),
+    ).toBe(false);
+    expect(container.textContent).toContain("主机 IP / 用户名");
+    expect(container.textContent).toContain("10.10.4.27 / root");
+    expect(container.textContent).toContain("安装 Agent");
+  });
+
+  it("opens host access config when saved hosts have not reported profiles yet", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v1/host-profiles")) return jsonResponse({ items: [] });
+      if (url.includes("/api/v1/host-leases")) return jsonResponse({ items: [] });
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/hosts");
+
+    expect(container.textContent).toContain("主机 IP / 用户名");
+    expect(container.textContent).toContain("10.10.4.27 / root");
+    expect(container.textContent).toContain("安装 Agent");
+    expect(container.textContent).not.toContain("暂无主机画像");
+  });
+
+  it("installs host agent from the host access list action", async () => {
+    await renderPath("/settings/hosts");
+
+    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
+    expect(accessTab).toBeTruthy();
+    await act(async () => accessTab?.click());
+    await flush();
+
+    const installButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装 Agent"));
+    expect(installButton).toBeTruthy();
+    await act(async () => installButton?.click());
+    await flush();
+
+    const installCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/hosts/host-prod-07/install") && (call[1] as RequestInit | undefined)?.method === "POST");
+    expect(installCall).toBeTruthy();
+    const body = requestBodyFromCall(installCall!);
+    expect(body.agentVersion).toBe("1.8.4");
+    expect(body.force).toBe(false);
+  });
+
   it("renders Ops Manual tabs, candidates, and run records in Chinese", async () => {
     await renderPath("/settings/ops-manuals");
 
@@ -469,7 +643,8 @@ describe("React settings pages", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderPath("/settings/llm");
 
-    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    expect(container.textContent).not.toContain("保存并重启 Runtime");
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
     expect(saveLlm).toBeTruthy();
     await act(async () => {
       saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -479,6 +654,7 @@ describe("React settings pages", () => {
       "/api/v1/llm-config",
       expect.objectContaining({ method: "PUT" }),
     );
+    expect(container.textContent).toContain("配置已保存");
 
     await remountPath("/settings/skills");
     const deleteSkill = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("删除"));
@@ -513,8 +689,10 @@ describe("React settings pages", () => {
     const contextInput = container.querySelector('[data-testid="llm-context-tokens-input"]') as HTMLInputElement;
     expect(contextInput?.value).toBe("131072");
     expect(contextInput?.min).toBe("10000");
+    const reasoningSelect = container.querySelector('[data-testid="llm-reasoning-effort-select"]') as HTMLSelectElement;
+    expect(reasoningSelect?.value).toBe("high");
 
-    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
     await act(async () => {
       saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -522,7 +700,89 @@ describe("React settings pages", () => {
 
     const llmPutCall = vi.mocked(globalThis.fetch).mock.calls.find((call) => String(call[0]).endsWith("/api/v1/llm-config") && (call[1] as RequestInit | undefined)?.method === "PUT");
     expect(llmPutCall).toBeTruthy();
-    expect(requestBodyFromCall(llmPutCall as unknown[]).maxContextTokens).toBe(131072);
+    const body = requestBodyFromCall(llmPutCall as unknown[]);
+    expect(body.maxContextTokens).toBe(131072);
+    expect(body.reasoningEffort).toBe("high");
+  });
+
+  it("does not show explanatory helper text on the LLM config page", async () => {
+    await renderPath("/settings/llm");
+
+    expect(container.textContent).not.toContain("配置主模型接入、接口协议、模型名和 Base URL");
+    expect(container.textContent).not.toContain("模型接入与接口配置");
+    expect(container.textContent).not.toContain("未填写时默认");
+    expect(container.textContent).not.toContain("保存时最小");
+    expect(container.textContent).not.toContain("已设置时留空会保持原密钥");
+    expect(container.textContent).not.toContain("OpenAI 兼容接口可填网关地址");
+  });
+
+  it("keeps GLM models under the Zhipu provider instead of OpenAI", async () => {
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    expect(providerSelect?.value).toBe("openai");
+
+    const options = Array.from(container.querySelectorAll("#llm-model-presets option")).map((option) => option.getAttribute("value"));
+    expect(options).not.toContain("glm-4.7");
+
+    await act(async () => {
+      providerSelect.value = "zhipu";
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    const zhipuOptions = Array.from(container.querySelectorAll("#llm-model-presets option")).map((option) => option.getAttribute("value"));
+    expect(providerSelect.value).toBe("zhipu");
+    expect(zhipuOptions).toContain("glm-4.7");
+    expect((container.querySelector('input[list="llm-model-presets"]') as HTMLInputElement)?.value).toBe("glm-4.7");
+    expect(container.textContent).toContain("OpenAI 兼容接口");
+  });
+
+  it("displays legacy OpenAI-compatible GLM config as Zhipu GLM", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/llm-config") && init?.method !== "PUT") {
+        return jsonResponse({
+          ...llmPayload,
+          provider: "openai",
+          model: "glm-4.7",
+          baseURL: "https://api.z.ai/api/paas/v4",
+        });
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    expect(providerSelect?.value).toBe("zhipu");
+    expect(container.textContent).toContain("智谱 GLM");
+    expect(container.textContent).not.toContain("PROVIDERopenai");
+  });
+
+  it("keeps the LLM reasoning effort when switching provider before saving", async () => {
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    const reasoningSelect = container.querySelector('[data-testid="llm-reasoning-effort-select"]') as HTMLSelectElement;
+    expect(reasoningSelect?.value).toBe("high");
+    await act(async () => {
+      providerSelect.value = "anthropic";
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+    expect(reasoningSelect.value).toBe("high");
+
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
+    await act(async () => {
+      saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const llmPutCall = vi
+      .mocked(globalThis.fetch)
+      .mock.calls.find((call) => String(call[0]).endsWith("/api/v1/llm-config") && (call[1] as RequestInit | undefined)?.method === "PUT");
+    expect(requestBodyFromCall(llmPutCall as unknown[]).reasoningEffort).toBe("high");
   });
 
   it("shows the default LLM context size when the API does not return one", async () => {

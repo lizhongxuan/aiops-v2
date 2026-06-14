@@ -44,6 +44,14 @@ func (m mockTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult,
 	return tooling.ToolResult{Content: "ok"}, nil
 }
 
+func toolNamesForTest(tools []tooling.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Metadata().Name)
+	}
+	return names
+}
+
 func TestRegistryRegisterServerAndGet(t *testing.T) {
 	r := NewRegistry()
 
@@ -71,6 +79,159 @@ func TestRegistryRegisterServerAndGet(t *testing.T) {
 	}
 	if again.Command[0] != "coroot-mcp" {
 		t.Fatalf("GetServer() should return a cloned command slice, got %#v", again.Command)
+	}
+}
+
+func TestRegistryServerManifestAppliesToDynamicToolDiscovery(t *testing.T) {
+	r := NewRegistry()
+
+	cfg := ServerConfig{
+		ID:                   "synthetic-web",
+		Name:                 "Synthetic Web",
+		Transport:            "stdio",
+		Command:              []string{"synthetic-web-mcp"},
+		Source:               "plugin",
+		CapabilityDomain:     "public_web",
+		ResourceTypes:        []string{"public_web", "url"},
+		OperationKinds:       []string{"search", "read"},
+		DefaultLoadingPolicy: "deferred",
+		RiskLevel:            "low",
+		HealthCheckType:      "tool_ping",
+		OwnerSource:          "builtin",
+		ToolPack:             "public_web",
+		PermissionScope:      "read",
+		PromptBudgetClass:    "compact",
+		SchemaBudgetClass:    "on_demand",
+		DiscoveryTags:        []string{"current", "internet"},
+	}
+	if err := r.RegisterServer(cfg); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	got, ok := r.GetServer("synthetic-web")
+	if !ok {
+		t.Fatal("expected server config to be registered")
+	}
+	if got.CapabilityDomain != "public_web" || got.HealthCheckType != "tool_ping" || got.OwnerSource != "builtin" {
+		t.Fatalf("manifest fields were not preserved: %+v", got)
+	}
+	got.ResourceTypes[0] = "changed"
+	again, _ := r.GetServer("synthetic-web")
+	if again.ResourceTypes[0] != "public_web" {
+		t.Fatalf("GetServer() should clone manifest slices, got %+v", again.ResourceTypes)
+	}
+
+	if err := r.OnServerConnected("synthetic-web", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "web.search", Description: "Search public web"}}}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+	tools := r.ListServerTools("synthetic-web")
+	if len(tools) != 1 {
+		t.Fatalf("ListServerTools len = %d, want 1", len(tools))
+	}
+	meta := tools[0].Metadata()
+	if meta.Pack != "public_web" || meta.Layer != tooling.ToolLayerDeferred || !meta.DeferByDefault {
+		t.Fatalf("metadata loading policy = layer:%q pack:%q deferred:%v", meta.Layer, meta.Pack, meta.DeferByDefault)
+	}
+	if meta.RiskLevel != tooling.ToolRiskLow {
+		t.Fatalf("risk = %q, want low", meta.RiskLevel)
+	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.DiscoveryGroup != "public_web" {
+		t.Fatalf("discovery group = %q, want public_web", discovery.DiscoveryGroup)
+	}
+	for _, want := range []string{"public_web", "url"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("resource types = %#v, missing %q", discovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"read", "search"} {
+		if !containsString(discovery.OperationKinds, want) {
+			t.Fatalf("operation kinds = %#v, missing %q", discovery.OperationKinds, want)
+		}
+	}
+	if discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+		t.Fatalf("discovery loading/select = %q/%v", discovery.LoadingPolicy, discovery.RequiresSelect)
+	}
+	if discovery.PermissionScope != "read" || discovery.PromptBudgetClass != "compact" || discovery.SchemaBudgetClass != "on_demand" {
+		t.Fatalf("discovery budget/scope = %+v", discovery)
+	}
+}
+
+func TestRegistryTracksServerInstructions(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterServer(ServerConfig{ID: "synthetic-docs", Name: "Synthetic Docs"}); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	r.SetServerInstructions("synthetic-docs", "Use bounded resource reads only.")
+
+	instructions := r.ListServerInstructions()
+	if len(instructions) != 1 {
+		t.Fatalf("instructions = %+v", instructions)
+	}
+	if instructions[0].ServerID != "synthetic-docs" || instructions[0].Hash == "" {
+		t.Fatalf("instruction = %+v", instructions[0])
+	}
+	if strings.Contains(instructions[0].Text, "password=") {
+		t.Fatalf("instruction leaked sensitive text: %+v", instructions[0])
+	}
+}
+
+func TestRegistryReportsInstructionDelta(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterServer(ServerConfig{ID: "synthetic-docs"}); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	r.SetServerInstructions("synthetic-docs", "Initial instruction.")
+	state := MCPInstructionSessionState{}
+
+	delta := r.ServerInstructionDelta(&state)
+	if len(delta) != 1 || delta[0].Action != "added" {
+		t.Fatalf("first delta = %+v", delta)
+	}
+	state.Apply(delta)
+	r.SetServerInstructions("synthetic-docs", "Changed instruction.")
+	delta = r.ServerInstructionDelta(&state)
+	if len(delta) != 1 || delta[0].Action != "changed" {
+		t.Fatalf("changed delta = %+v", delta)
+	}
+	state.Apply(delta)
+	r.SetServerDisabled("synthetic-docs", true)
+	delta = r.ServerInstructionDelta(&state)
+	if len(delta) != 1 || delta[0].Action != "removed" {
+		t.Fatalf("removed delta = %+v", delta)
+	}
+}
+
+func TestMCPServerGovernanceMergesWithToolRisk(t *testing.T) {
+	merged := MergeMCPGovernance(
+		ServerConfig{ID: "synthetic", Name: "Synthetic"},
+		ServerGovernance{ID: "synthetic", Permission: "readwrite", Risk: "high", RequiresExplicitUserApproval: true},
+		tooling.ToolMetadata{Name: "synthetic.read", RiskLevel: tooling.ToolRiskLow},
+	)
+	if merged.RiskLevel != tooling.ToolRiskHigh {
+		t.Fatalf("RiskLevel = %q, want high", merged.RiskLevel)
+	}
+	if !merged.RequiresApproval {
+		t.Fatalf("RequiresApproval = false, want true")
+	}
+	if merged.MCPInfo.ServerID != "synthetic" || merged.MCPInfo.ServerName != "Synthetic" {
+		t.Fatalf("MCPInfo = %+v", merged.MCPInfo)
+	}
+}
+
+func TestMCPServerPermissionCannotDowngradeToolRisk(t *testing.T) {
+	merged := MergeMCPGovernance(
+		ServerConfig{ID: "synthetic", Disabled: true},
+		ServerGovernance{ID: "synthetic", Permission: "readonly", Risk: "low"},
+		tooling.ToolMetadata{Name: "synthetic.write", RiskLevel: tooling.ToolRiskCritical, Mutating: true},
+	)
+	if merged.RiskLevel != tooling.ToolRiskCritical {
+		t.Fatalf("RiskLevel = %q, want critical", merged.RiskLevel)
+	}
+	if !merged.Mutating {
+		t.Fatal("Mutating = false, want true")
+	}
+	if merged.Discovery.HiddenFromPrompt != true {
+		t.Fatalf("Discovery = %+v, want hidden disabled server", merged.Discovery)
 	}
 }
 
@@ -112,6 +273,146 @@ func TestRegistryDynamicToolsLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegistryDynamicToolsWithTenantScope(t *testing.T) {
+	r := NewRegistry()
+
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-a",
+		Transport: "stdio",
+		Command:   []string{"tenant-a"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-a"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-a error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-b",
+		Transport: "stdio",
+		Command:   []string{"tenant-b"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-b"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-b error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "unscoped",
+		Transport: "stdio",
+		Command:   []string{"unscoped"},
+	}); err != nil {
+		t.Fatalf("RegisterServer unscoped error = %v", err)
+	}
+
+	if err := r.OnServerConnected("tenant-a", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_a_tool", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-a error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-b", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_b_tool", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-b error = %v", err)
+	}
+	if err := r.OnServerConnected("unscoped", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "unscoped_tool"}}}); err != nil {
+		t.Fatalf("OnServerConnected unscoped error = %v", err)
+	}
+
+	tenantATools := r.DynamicToolsWithOptions(DynamicToolOptions{TenantID: "tenant-a"})
+	if len(tenantATools) != 1 || tenantATools[0].Metadata().Name != "tenant_a_tool" {
+		t.Fatalf("tenant-a tools = %v, want only tenant_a_tool", toolNamesForTest(tenantATools))
+	}
+	tenantBTools := r.DynamicToolsWithOptions(DynamicToolOptions{TenantID: "tenant-b"})
+	if len(tenantBTools) != 1 || tenantBTools[0].Metadata().Name != "tenant_b_tool" {
+		t.Fatalf("tenant-b tools = %v, want only tenant_b_tool", toolNamesForTest(tenantBTools))
+	}
+	if all := r.DynamicTools(); len(all) != 3 {
+		t.Fatalf("legacy DynamicTools len = %d, want unchanged all connected tools", len(all))
+	}
+}
+
+func TestAssemblerCompileContextWithMetadataScopesMCPDynamicTools(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-a",
+		Transport: "stdio",
+		Command:   []string{"tenant-a"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-a"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-a error = %v", err)
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:        "tenant-b",
+		Transport: "stdio",
+		Command:   []string{"tenant-b"},
+		TenantScope: TenantScope{
+			TenantIDs: []string{"tenant-b"},
+		},
+	}); err != nil {
+		t.Fatalf("RegisterServer tenant-b error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-a", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_a_tool", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-a error = %v", err)
+	}
+	if err := r.OnServerConnected("tenant-b", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "tenant_b_tool", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}}}); err != nil {
+		t.Fatalf("OnServerConnected tenant-b error = %v", err)
+	}
+	assembler := tooling.NewAssembler(tooling.NewRegistry(), r)
+
+	tenantATools := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{"tenantId": "tenant-a"}))
+	if strings.Join(tenantATools, ",") != "tenant_a_tool" {
+		t.Fatalf("tenant-a assembled tools = %#v, want tenant_a_tool", tenantATools)
+	}
+	tenantBTools := toolNamesForTest(assembler.CompileContextWithMetadata("host", "inspect", map[string]string{"tenantId": "tenant-b"}))
+	if strings.Join(tenantBTools, ",") != "tenant_b_tool" {
+		t.Fatalf("tenant-b assembled tools = %#v, want tenant_b_tool", tenantBTools)
+	}
+}
+
+func TestMCPAlwaysLoadCanEnterCore(t *testing.T) {
+	r := NewRegistry()
+	if err := r.OnServerConnected("docs", []tooling.Tool{
+		mockTool{meta: tooling.ToolMetadata{
+			Name:       "safe_search",
+			AlwaysLoad: true,
+			RiskLevel:  tooling.ToolRiskLow,
+		}},
+		mockTool{meta: tooling.ToolMetadata{
+			Name:       "dangerous_write",
+			AlwaysLoad: true,
+			RiskLevel:  tooling.ToolRiskHigh,
+			Mutating:   true,
+		}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+
+	tools := r.ListServerTools("docs")
+	if len(tools) != 2 {
+		t.Fatalf("ListServerTools len = %d, want 2", len(tools))
+	}
+	byName := map[string]tooling.ToolMetadata{}
+	for _, tool := range tools {
+		byName[tool.Metadata().Name] = tool.Metadata()
+	}
+	if !byName["safe_search"].AlwaysLoad {
+		t.Fatalf("safe_search metadata = %#v, want AlwaysLoad preserved for low-risk read-only MCP tool", byName["safe_search"])
+	}
+	if byName["dangerous_write"].AlwaysLoad {
+		t.Fatalf("dangerous_write metadata = %#v, want AlwaysLoad stripped for high-risk mutating MCP tool", byName["dangerous_write"])
+	}
+	if byName["dangerous_write"].Layer != tooling.ToolLayerDeferred || !byName["dangerous_write"].DeferByDefault {
+		t.Fatalf("dangerous_write metadata = %#v, want deferred after AlwaysLoad stripped", byName["dangerous_write"])
+	}
+
+	assembler := tooling.NewAssembler(tooling.NewRegistry(), r)
+	defaultNames := toolNamesForTest(assembler.AssembleToolsWithOptions("host", "inspect", tooling.AssembleOptions{}))
+	if !containsMCPRegistryTool(defaultNames, "safe_search") {
+		t.Fatalf("default assembled tools = %v, want safe AlwaysLoad MCP tool", defaultNames)
+	}
+	if containsMCPRegistryTool(defaultNames, "dangerous_write") {
+		t.Fatalf("default assembled tools = %v, should not include high-risk AlwaysLoad MCP tool", defaultNames)
+	}
+}
+
 func TestMCPRegistryListsAndReadsResources(t *testing.T) {
 	r := NewRegistry()
 	if err := r.OnServerResources("coroot", []Resource{{
@@ -144,6 +445,24 @@ func TestMCPRegistryListsAndReadsResources(t *testing.T) {
 	if !ok || content.Text == "" || content.Digest == "" {
 		t.Fatalf("ReadResource() = %#v, %v, want content with digest", content, ok)
 	}
+}
+
+func containsMCPRegistryTool(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRegistryRejectsEmptyServerID(t *testing.T) {
@@ -294,7 +613,11 @@ func TestAssemblerRefreshTokenTracksDynamicProviders(t *testing.T) {
 	}
 
 	assembled := assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{})
-	if len(assembled) != 3 {
-		t.Fatalf("assembled tool count = %d, want 3", len(assembled))
+	if len(assembled) != 1 {
+		t.Fatalf("assembled tool count = %d, want only base tool before deferred select", len(assembled))
+	}
+	deferredCatalog := assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true})
+	if len(deferredCatalog) != 3 {
+		t.Fatalf("deferred catalog tool count = %d, want base + 2 dynamic tools", len(deferredCatalog))
 	}
 }

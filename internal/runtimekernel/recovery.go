@@ -124,6 +124,7 @@ func ValidateTurnRecoveryPreconditions(snapshot *TurnSnapshot) error {
 
 // RecoverTurnFromSnapshot validates the snapshot before wrapping the turn.
 func RecoverTurnFromSnapshot(snapshot *TurnSnapshot, fn func() (TurnResult, error)) (TurnResult, error) {
+	MarkRunningMutatingInvocationsSideEffectUnknown(snapshot, time.Now())
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}

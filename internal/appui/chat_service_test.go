@@ -2,6 +2,7 @@ package appui
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -131,6 +132,130 @@ func (r *lifecycleContextRuntime) ResumeTurn(context.Context, runtimekernel.Resu
 
 func (r *lifecycleContextRuntime) CancelTurn(context.Context, runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
 	return runtimekernel.TurnResult{}, nil
+}
+
+func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	events := NewAgentEventService(nil)
+	service := NewChatService(runtime, sessions, events)
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-workflowgen",
+		Content:         "@add_workflow 每天早上8点自动抓取AI行业新闻，提取三条关键内容直接返回给我",
+		ClientMessageID: "client-msg-workflowgen",
+		ClientTurnID:    "client-turn-workflowgen",
+		HostID:          "server-local",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", result.Status)
+	}
+	select {
+	case <-runtime.started:
+		t.Fatal("runtime RunTurn was called; @add_workflow should use controlled internal workflow generation")
+	default:
+	}
+	session := sessions.Get("sess-workflowgen")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("workflow generation did not write current turn")
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
+		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "初始生成大纲") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "拆分、合并或调整节点") {
+		t.Fatalf("FinalOutput = %q, want plan to be described as adjustable generation outline", session.CurrentTurn.FinalOutput)
+	}
+	var artifactPayload string
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
+			artifactPayload = string(item.Payload.Data)
+		}
+	}
+	if artifactPayload == "" {
+		t.Fatalf("agent items = %#v, want runner_workflow_generation artifact payload", session.CurrentTurn.AgentItems)
+	}
+	if !strings.Contains(artifactPayload, `"planIsProvisional":true`) ||
+		!strings.Contains(artifactPayload, `"status":"planned"`) {
+		t.Fatalf("artifact payload = %s, want provisional plan step status", artifactPayload)
+	}
+}
+
+func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-workflowgen-confirm",
+		Content:   "@add_workflow 每天早上8点抓取AI新闻，提取三条关键内容直接返回给我",
+		HostID:    "server-local",
+	}); err != nil {
+		t.Fatalf("initial SendMessage() error = %v", err)
+	}
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-workflowgen-confirm",
+		Content:   "确认生成工作流候选：AI 新闻摘要工作流",
+		HostID:    "server-local",
+		Metadata:  map[string]string{"opsManualAction": "generate_runner_workflow_candidate"},
+	})
+	if err != nil {
+		t.Fatalf("confirmation SendMessage() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", result.Status)
+	}
+	select {
+	case <-runtime.started:
+		t.Fatal("runtime RunTurn was called; workflow draft generation should stay inside controlled service")
+	default:
+	}
+	session := sessions.Get("sess-workflowgen-confirm")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("workflow generation did not write confirmation turn")
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "静态验证通过") {
+		t.Fatalf("FinalOutput = %q, want static validation summary", session.CurrentTurn.FinalOutput)
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "Docker") {
+		t.Fatalf("FinalOutput = %q, want Docker provider boundary mentioned", session.CurrentTurn.FinalOutput)
+	}
+	var artifactPayload string
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
+			artifactPayload = string(item.Payload.Data)
+			break
+		}
+	}
+	if !strings.Contains(artifactPayload, `"scriptLanguage":"python"`) || !strings.Contains(artifactPayload, `"scriptPreview"`) {
+		t.Fatalf("artifact payload = %s, want generated node script details", artifactPayload)
+	}
+	if !strings.Contains(artifactPayload, `"validationDetails"`) || !strings.Contains(artifactPayload, `"mode":"static"`) {
+		t.Fatalf("artifact payload = %s, want validation details", artifactPayload)
+	}
+}
+
+func TestWorkflowGenerationValidationImagesUsesConfiguredImage(t *testing.T) {
+	t.Setenv("AIOPS_WORKFLOW_VALIDATION_IMAGE", "python:3.12-bookworm")
+
+	images := workflowGenerationValidationImages()
+	if len(images) != 1 || images[0] != "python:3.12-bookworm" {
+		t.Fatalf("workflowGenerationValidationImages() = %#v, want configured image", images)
+	}
+}
+
+func TestWorkflowGenerationValidationImagesUsesMetadataImage(t *testing.T) {
+	t.Setenv("AIOPS_WORKFLOW_VALIDATION_IMAGE", "python:3.12-bookworm")
+
+	images := workflowGenerationValidationImages(map[string]string{
+		"workflowValidationImage": "python:3.11-slim",
+	})
+	if len(images) != 1 || images[0] != "python:3.11-slim" {
+		t.Fatalf("workflowGenerationValidationImages(metadata) = %#v, want metadata image", images)
+	}
 }
 
 func TestChatService_SendMessageAcceptedOnlyStartsRuntimeAsync(t *testing.T) {

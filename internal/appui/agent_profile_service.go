@@ -326,17 +326,32 @@ func (s *defaultAgentProfileService) PreviewAgentProfile(_ context.Context, prof
 	if err != nil {
 		return AgentProfilePreview{}, err
 	}
+	skills, err := s.skillCatalogEntries()
+	if err != nil {
+		return AgentProfilePreview{}, err
+	}
+	mcps, err := s.mcpCatalogEntries()
+	if err != nil {
+		return AgentProfilePreview{}, err
+	}
+	capabilitySnapshot := BuildCapabilitySnapshot(CapabilitySnapshotInput{
+		Profile:      profile,
+		SkillCatalog: skills,
+		McpCatalog:   mcps,
+		Policy:       s.policy,
+	})
 	systemPrompt := nestedStringField(profile, "systemPrompt", "content")
 	return AgentProfilePreview{
-		ProfileID:         stringField(profile, "id"),
-		ProfileType:       firstNonEmpty(stringField(profile, "type"), stringField(profile, "id")),
-		SystemPrompt:      systemPrompt,
-		SystemPromptLines: countLines(systemPrompt),
-		CommandSummary:    summarizePermissions(profile["commandPermissions"], "categoryPolicies"),
-		CapabilitySummary: summarizeCapabilities(profile["capabilityPermissions"]),
-		EnabledSkills:     enabledBindings(profile["skills"]),
-		EnabledMcps:       enabledBindings(firstNonNil(profile["mcps"], profile["mcpServers"])),
-		Runtime:           cloneAnyMap(mapField(profile, "runtime")),
+		ProfileID:          stringField(profile, "id"),
+		ProfileType:        firstNonEmpty(stringField(profile, "type"), stringField(profile, "id")),
+		SystemPrompt:       systemPrompt,
+		SystemPromptLines:  countLines(systemPrompt),
+		CommandSummary:     summarizePermissions(profile["commandPermissions"], "categoryPolicies"),
+		CapabilitySummary:  summarizeCapabilities(profile["capabilityPermissions"]),
+		EnabledSkills:      enabledBindingsForSnapshot(profile["skills"], enabledCapabilityIDs(capabilitySnapshot, "skill")),
+		EnabledMcps:        enabledBindingsForSnapshot(firstNonNil(profile["mcps"], profile["mcpServers"]), enabledCapabilityIDs(capabilitySnapshot, "mcp_server")),
+		CapabilitySnapshot: capabilitySnapshot,
+		Runtime:            cloneAnyMap(mapField(profile, "runtime")),
 	}, nil
 }
 
@@ -528,10 +543,21 @@ func mapSkillCatalogEntry(entry store.SkillCatalogEntry) SkillCatalogItem {
 		Name:                  entry.Name,
 		Description:           entry.Description,
 		Source:                firstNonEmpty(entry.Source, "local"),
+		SourceScope:           firstNonEmpty(entry.SourceScope, sourceScope(entry.Source)),
 		Enabled:               entry.DefaultEnabled,
 		DefaultEnabled:        entry.DefaultEnabled,
 		ActivationMode:        mode,
 		DefaultActivationMode: mode,
+		InvocationMode:        firstNonEmpty(entry.InvocationMode, mode),
+		Risk:                  entry.Risk,
+		AllowedTools:          cloneAppUIStrings(entry.AllowedTools),
+		DeniedTools:           cloneAppUIStrings(entry.DeniedTools),
+		ResourceTypes:         cloneAppUIStrings(entry.ResourceTypes),
+		TaskIntents:           cloneAppUIStrings(entry.TaskIntents),
+		Paths:                 cloneAppUIStrings(entry.Paths),
+		Modes:                 cloneAppUIStrings(entry.Modes),
+		UserInvocable:         entry.UserInvocable,
+		ModelInvocable:        entry.ModelInvocable,
 	}
 }
 
@@ -553,8 +579,19 @@ func normalizeSkillCatalogItem(item SkillCatalogItem) (store.SkillCatalogEntry, 
 		Name:                  strings.TrimSpace(firstNonEmpty(item.Name, id)),
 		Description:           strings.TrimSpace(item.Description),
 		Source:                strings.TrimSpace(firstNonEmpty(item.Source, "local")),
+		SourceScope:           strings.TrimSpace(item.SourceScope),
 		DefaultEnabled:        item.Enabled || item.DefaultEnabled,
 		DefaultActivationMode: mode,
+		InvocationMode:        strings.TrimSpace(item.InvocationMode),
+		Risk:                  strings.TrimSpace(item.Risk),
+		AllowedTools:          cloneAppUIStrings(item.AllowedTools),
+		DeniedTools:           cloneAppUIStrings(item.DeniedTools),
+		ResourceTypes:         cloneAppUIStrings(item.ResourceTypes),
+		TaskIntents:           cloneAppUIStrings(item.TaskIntents),
+		Paths:                 cloneAppUIStrings(item.Paths),
+		Modes:                 cloneAppUIStrings(item.Modes),
+		UserInvocable:         item.UserInvocable,
+		ModelInvocable:        item.ModelInvocable,
 	}, nil
 }
 
@@ -573,9 +610,13 @@ func mapMcpCatalogEntry(entry store.AgentMCPCatalogEntry) McpCatalogItem {
 		Name:                         entry.Name,
 		Type:                         firstNonEmpty(entry.Type, "stdio"),
 		Source:                       firstNonEmpty(entry.Source, "local"),
+		SourceScope:                  firstNonEmpty(entry.SourceScope, sourceScope(entry.Source)),
 		Enabled:                      entry.DefaultEnabled,
 		DefaultEnabled:               entry.DefaultEnabled,
 		Permission:                   firstNonEmpty(entry.Permission, "readonly"),
+		ApprovalStatus:               entry.ApprovalStatus,
+		RuntimeStatus:                entry.RuntimeStatus,
+		Risk:                         entry.Risk,
 		RequiresExplicitUserApproval: entry.RequiresExplicitUserApproval,
 	}
 }
@@ -590,8 +631,12 @@ func normalizeMcpCatalogItem(item McpCatalogItem) (store.AgentMCPCatalogEntry, e
 		Name:                         strings.TrimSpace(firstNonEmpty(item.Name, id)),
 		Type:                         strings.TrimSpace(firstNonEmpty(item.Type, "stdio")),
 		Source:                       strings.TrimSpace(firstNonEmpty(item.Source, "local")),
+		SourceScope:                  strings.TrimSpace(item.SourceScope),
 		DefaultEnabled:               item.Enabled || item.DefaultEnabled,
 		Permission:                   strings.TrimSpace(firstNonEmpty(item.Permission, "readonly")),
+		ApprovalStatus:               strings.TrimSpace(item.ApprovalStatus),
+		RuntimeStatus:                strings.TrimSpace(item.RuntimeStatus),
+		Risk:                         strings.TrimSpace(item.Risk),
 		RequiresExplicitUserApproval: item.RequiresExplicitUserApproval,
 	}, nil
 }
@@ -635,12 +680,16 @@ func (s *defaultAgentProfileService) pluginMcpCatalogEntries() []store.AgentMCPC
 			}
 			_, defaultEnabled := recommended[id]
 			entries = append(entries, store.AgentMCPCatalogEntry{
-				ID:             id,
-				Name:           strings.TrimSpace(firstNonEmpty(cfg.Name, id)),
-				Type:           strings.TrimSpace(firstNonEmpty(cfg.Transport, "stdio")),
-				Source:         pluginSourceLabel(spec.Name),
-				DefaultEnabled: defaultEnabled,
-				Permission:     "readonly",
+				ID:                           id,
+				Name:                         strings.TrimSpace(firstNonEmpty(cfg.Name, id)),
+				Type:                         strings.TrimSpace(firstNonEmpty(cfg.Transport, "stdio")),
+				Source:                       pluginSourceLabel(spec.Name),
+				SourceScope:                  "plugin",
+				DefaultEnabled:               defaultEnabled,
+				Permission:                   "readonly",
+				ApprovalStatus:               "pending_approval",
+				RuntimeStatus:                "pending_approval",
+				RequiresExplicitUserApproval: true,
 			})
 		}
 	}

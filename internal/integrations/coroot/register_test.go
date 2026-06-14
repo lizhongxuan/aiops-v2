@@ -162,6 +162,42 @@ func TestBuiltinPluginSpecRegistersCorootServerAndTools(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginSpecExposesGenericObservabilityMetadata(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	registerCorootPluginForTest(t, mcpRegistry)
+
+	for _, tool := range mcpRegistry.ListServerTools("coroot") {
+		meta := tool.Metadata()
+		discovery := meta.EffectiveDiscovery()
+		if !containsCorootToolName(discovery.ToolPackIDs, "observability-readonly") {
+			t.Fatalf("%s toolPackIds = %v, want observability-readonly", meta.Name, discovery.ToolPackIDs)
+		}
+		if discovery.MCPServerID != "coroot" {
+			t.Fatalf("%s mcp server id = %q, want coroot", meta.Name, discovery.MCPServerID)
+		}
+		if !discovery.RequiresHealthyMCP {
+			t.Fatalf("%s RequiresHealthyMCP = false, want true", meta.Name)
+		}
+		if meta.Layer != tooling.ToolLayerDeferred || !meta.DeferByDefault {
+			t.Fatalf("%s layer/defer = %q/%v, want deferred true", meta.Name, meta.Layer, meta.DeferByDefault)
+		}
+	}
+
+	cases := map[string]string{
+		"coroot.list_services":    "observability",
+		"coroot.service_metrics":  "metrics",
+		"coroot.application_logs": "logs",
+		"coroot.service_topology": "topology",
+	}
+	tools := mcpRegistry.ListServerTools("coroot")
+	for name, wantCapability := range cases {
+		got := corootToolByName(t, tools, name).Metadata().EffectiveDiscovery().CapabilityKind
+		if got != wantCapability {
+			t.Fatalf("%s capability = %q, want %q", name, got, wantCapability)
+		}
+	}
+}
+
 func TestCorootInputSchemasAreProviderCompatible(t *testing.T) {
 	mcpRegistry := mcp.NewRegistry()
 	registerCorootPluginForTest(t, mcpRegistry)
@@ -187,8 +223,8 @@ func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 	tools := mcpRegistry.ListServerTools("coroot")
 
 	list := corootToolByName(t, tools, "coroot.list_services").Metadata()
-	if list.Layer != tooling.ToolLayerCore || list.Pack != "" || list.DeferByDefault {
-		t.Fatalf("coroot.list_services metadata = layer:%q pack:%q defer:%v, want core", list.Layer, list.Pack, list.DeferByDefault)
+	if list.Layer != tooling.ToolLayerDeferred || list.Pack != "mcp_dynamic_coroot" || !list.DeferByDefault {
+		t.Fatalf("coroot.list_services metadata = layer:%q pack:%q defer:%v, want deferred mcp_dynamic_coroot", list.Layer, list.Pack, list.DeferByDefault)
 	}
 
 	wantPacks := map[string][]string{
@@ -221,11 +257,15 @@ func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 
 	assembler := tooling.NewAssembler(tooling.NewRegistry(), mcpRegistry)
 	defaultNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
-	if len(defaultNames) != 1 || defaultNames[0] != "coroot.list_services" {
-		t.Fatalf("default Coroot tools = %v, want only coroot.list_services", defaultNames)
+	if len(defaultNames) != 0 {
+		t.Fatalf("default Coroot tools = %v, want dynamic MCP tools deferred by default", defaultNames)
+	}
+	dynamicNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"mcp_dynamic_coroot"}}))
+	if len(dynamicNames) != 1 || dynamicNames[0] != "coroot.list_services" {
+		t.Fatalf("mcp_dynamic_coroot tools = %v, want only coroot.list_services", dynamicNames)
 	}
 	rcaNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"coroot_rca"}}))
-	for _, want := range []string{"coroot.list_services", "coroot.collect_rca_context"} {
+	for _, want := range []string{"coroot.collect_rca_context"} {
 		if !containsCorootToolName(rcaNames, want) {
 			t.Fatalf("coroot_rca tools = %v, want %s", rcaNames, want)
 		}
@@ -242,7 +282,7 @@ func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 	}
 	for pack, names := range wantPacks {
 		packNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{pack}}))
-		for _, want := range append([]string{"coroot.list_services"}, names...) {
+		for _, want := range names {
 			if !containsCorootToolName(packNames, want) {
 				t.Fatalf("%s tools = %v, want %s", pack, packNames, want)
 			}
@@ -255,7 +295,7 @@ func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 		}
 	}
 	incidentNames := corootToolNames(assembler.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"coroot_incident"}}))
-	for _, want := range []string{"coroot.list_services", "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline"} {
+	for _, want := range []string{"coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline"} {
 		if !containsCorootToolName(incidentNames, want) {
 			t.Fatalf("coroot_incident tools = %v, want %s", incidentNames, want)
 		}

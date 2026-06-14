@@ -147,6 +147,9 @@ function runnerGenerationArtifact() {
     inlineData: {
       workflowTitle: "Redis 内存压力排障 Workflow",
       previewMode: "readonly_modal",
+      generationAvailable: true,
+      validationProvider: "docker",
+      validationScenario: "redis-memory-dry-run",
       steps: [
         { id: "precheck", title: "环境预检查", status: "passed", summary: "确认 Redis 实例、权限和指标可读。" },
         { id: "dry_run", title: "Dry Run", status: "waiting", summary: "输出命令计划，不修改目标环境。" },
@@ -802,7 +805,7 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(page.getByText(/命中\s*\d+\s*%/)).toHaveCount(0);
   });
 
-  test("workflow generation artifact shows step-by-step nodes and read-only preview modal", async ({ page }) => {
+  test("workflow generation artifact shows step-by-step nodes, read-only drawer and generate confirmation", async ({ page }) => {
     await openFixturePage(page, "/", {
       state: stateWithArtifact({
         text: "确认生成 Redis 排障工作流",
@@ -818,9 +821,17 @@ test.describe("Ops Manual workflow UX", () => {
     await expect(card).toContainText("Dry Run");
     await expect(card).toContainText("恢复验证");
 
-    await page.getByRole("button", { name: "预览 Runner 草稿" }).click();
-    await expect(page.getByRole("dialog", { name: "Runner Workflow 只读预览" })).toBeVisible();
-    await expect(page.getByRole("dialog", { name: "Runner Workflow 只读预览" })).toContainText("只读");
+    await card.getByRole("button", { name: "查看详情" }).click();
+    const drawer = page.getByRole("dialog", { name: "Runner Workflow 生成详情" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toContainText("只读");
+    await expect(drawer).toContainText("Provider：docker");
+    await expect(drawer).toContainText("redis-memory-dry-run");
+    await page.keyboard.press("Escape");
+
+    await card.getByRole("button", { name: "生成" }).click();
+    await expect(page.getByRole("dialog", { name: "Runner Workflow 生成详情" })).toBeVisible();
+    await expect(page.getByTestId("ops-manual-generation-confirmation")).toContainText("生成 Runner Workflow 草稿");
     await expect(page).toHaveURL(startURL);
   });
 

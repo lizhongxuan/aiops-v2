@@ -7,12 +7,16 @@ import (
 )
 
 type MicrocompactOptions struct {
-	SessionID        string
-	TurnID           string
-	Iteration        int
-	KeepRecentGroups int
-	SmallContextMode bool
-	CreatedAt        time.Time
+	SessionID                  string
+	TurnID                     string
+	Iteration                  int
+	KeepRecentGroups           int
+	SmallContextMode           bool
+	CreatedAt                  time.Time
+	LargeInlineResultMinTokens int
+	LargeInlineResultMinBytes  int64
+	PendingEvidenceToolCallIDs []string
+	ApprovalBlockerToolCallIDs []string
 }
 
 type MicrocompactResult struct {
@@ -37,27 +41,32 @@ func MicrocompactMessages(messages []Message, opts MicrocompactOptions) Microcom
 	}
 
 	result := append([]Message(nil), messages...)
-	var toolIndexes []int
+	var allToolIndexes []int
+	var compactIndexes []int
+	protectedToolCallIDs := microcompactProtectedToolCallIDs(opts)
 	for i, msg := range result {
 		if msg.ToolResult != nil {
 			cp := *msg.ToolResult
 			result[i].ToolResult = &cp
+			allToolIndexes = append(allToolIndexes, i)
 		}
-		if isCompactableToolResult(msg) {
-			toolIndexes = append(toolIndexes, i)
+	}
+	recentKeepIndexes := recentToolResultIndexes(allToolIndexes, keep)
+	for i, msg := range result {
+		if _, recent := recentKeepIndexes[i]; recent {
+			continue
+		}
+		if isCompactableToolResult(msg, opts, protectedToolCallIDs) {
+			compactIndexes = append(compactIndexes, i)
 		}
 	}
 
-	cutoff := len(toolIndexes) - keep
-	if cutoff <= 0 {
+	if len(compactIndexes) == 0 {
 		return MicrocompactResult{Messages: result}
 	}
 
-	events := make([]ContextGovernanceEvent, 0, cutoff)
-	for pos, idx := range toolIndexes {
-		if pos >= cutoff {
-			continue
-		}
+	events := make([]ContextGovernanceEvent, 0, len(compactIndexes))
+	for _, idx := range compactIndexes {
 		tr := result[idx].ToolResult
 		refIDs := referenceIDsFromExternalReferences(tr.ExternalReferences)
 		tr.Content = microcompactSnapshot(*tr, refIDs)
@@ -77,11 +86,17 @@ func MicrocompactMessages(messages []Message, opts MicrocompactOptions) Microcom
 	return MicrocompactResult{Messages: result, Events: events}
 }
 
-func isCompactableToolResult(msg Message) bool {
+func isCompactableToolResult(msg Message, opts MicrocompactOptions, protectedToolCallIDs map[string]struct{}) bool {
 	if msg.ToolResult == nil || msg.ToolResult.Error != "" {
 		return false
 	}
-	return msg.ToolResult.Spilled || len(msg.ToolResult.ExternalReferences) > 0
+	if _, ok := protectedToolCallIDs[msg.ToolResult.ToolCallID]; ok {
+		return false
+	}
+	if msg.ToolResult.Spilled || len(msg.ToolResult.ExternalReferences) > 0 {
+		return true
+	}
+	return isLargeInlineToolResult(*msg.ToolResult, opts)
 }
 
 func microcompactSnapshot(result ToolResult, refIDs []string) string {
@@ -103,4 +118,53 @@ func referenceIDsFromExternalReferences(refs []ExternalReference) []string {
 		}
 	}
 	return ids
+}
+
+func isLargeInlineToolResult(result ToolResult, opts MicrocompactOptions) bool {
+	if strings.TrimSpace(result.Content) == "" {
+		return false
+	}
+	minTokens := opts.LargeInlineResultMinTokens
+	if minTokens <= 0 {
+		minTokens = 1500
+	}
+	minBytes := opts.LargeInlineResultMinBytes
+	if minBytes <= 0 {
+		minBytes = 6000
+	}
+	bytes := result.InlineBytes
+	if bytes <= 0 {
+		bytes = int64(len(result.Content))
+	}
+	return len(result.Content)/4 >= minTokens || bytes >= minBytes
+}
+
+func microcompactProtectedToolCallIDs(opts MicrocompactOptions) map[string]struct{} {
+	protected := make(map[string]struct{})
+	for _, id := range opts.PendingEvidenceToolCallIDs {
+		if strings.TrimSpace(id) != "" {
+			protected[id] = struct{}{}
+		}
+	}
+	for _, id := range opts.ApprovalBlockerToolCallIDs {
+		if strings.TrimSpace(id) != "" {
+			protected[id] = struct{}{}
+		}
+	}
+	return protected
+}
+
+func recentToolResultIndexes(indexes []int, keep int) map[int]struct{} {
+	recent := make(map[int]struct{})
+	if keep <= 0 {
+		return recent
+	}
+	start := len(indexes) - keep
+	if start < 0 {
+		start = 0
+	}
+	for _, idx := range indexes[start:] {
+		recent[idx] = struct{}{}
+	}
+	return recent
 }

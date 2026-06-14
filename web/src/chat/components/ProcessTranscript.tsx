@@ -61,9 +61,15 @@ export function ProcessTranscript({
   const waiting = isProcessWaiting(visibleProcess, turnStatus);
   const explicitFinalText = finalText?.trim() || "";
   const finalAssistantIndex = terminalFinalAssistantIndex(visibleProcess, explicitFinalText);
+  const hiddenFinalAssistantIndexes = hiddenFinalAssistantBlockIndexes(
+    visibleProcess,
+    explicitFinalText,
+    renderFinalText,
+    finalAssistantIndex,
+  );
   const finalAssistantText =
     finalAssistantIndex >= 0 ? visibleProcess[finalAssistantIndex]?.text?.trim() || "" : "";
-  const processBlocks = visibleProcess.filter((_, index) => index !== finalAssistantIndex);
+  const processBlocks = visibleProcess.filter((_, index) => !hiddenFinalAssistantIndexes.has(index));
   const retainedAssistantTexts = new Set(
     processBlocks
       .filter((block) => block.kind === "assistant")
@@ -172,6 +178,27 @@ function terminalFinalAssistantIndex(blocks: AiopsProcessBlock[], finalText?: st
   return isFinalAssistantBlock(blocks[lastIndex], finalText) ? lastIndex : -1;
 }
 
+function hiddenFinalAssistantBlockIndexes(
+  blocks: AiopsProcessBlock[],
+  finalText: string,
+  renderFinalText: boolean,
+  terminalIndex: number,
+) {
+  const indexes = new Set<number>();
+  if (terminalIndex >= 0) {
+    indexes.add(terminalIndex);
+  }
+  if (renderFinalText || !finalText) {
+    return indexes;
+  }
+  blocks.forEach((block, index) => {
+    if (isCompletedDuplicateFinalBlock(block, finalText)) {
+      indexes.add(index);
+    }
+  });
+  return indexes;
+}
+
 function isFinalAssistantBlock(block: AiopsProcessBlock, finalText?: string) {
   if (block.kind !== "assistant") {
     return false;
@@ -181,6 +208,17 @@ function isFinalAssistantBlock(block: AiopsProcessBlock, finalText?: string) {
   }
   const blockText = (block.text || "").trim();
   return Boolean(blockText && finalText?.trim() && blockText === finalText.trim());
+}
+
+function isCompletedDuplicateFinalBlock(block: AiopsProcessBlock, finalText: string) {
+  if (!isFinalAssistantBlock(block, finalText)) {
+    return false;
+  }
+  const blockText = (block.text || "").trim();
+  if (!blockText || blockText !== finalText.trim()) {
+    return false;
+  }
+  return block.status === "completed" || block.status === "failed";
 }
 
 function processHeaderLabel({ running, waiting }: { running: boolean; waiting: boolean }) {
@@ -211,8 +249,10 @@ function isSearchLikeBlock(block: AiopsProcessBlock) {
   if (block.kind === "search") {
     return true;
   }
-  const display = `${block.displayKind || ""} ${block.text || ""} ${block.command || ""} ${block.inputSummary || ""}`.toLowerCase();
-  return /\b(web_search|browse_url|search|browser)\b/.test(display);
+  const candidates = [block.displayKind, block.source, block.command].map((value) => (value || "").toLowerCase().trim());
+  return candidates.some((value) =>
+    /^(web_search|web[._-]search|search_web|browse_url|browser(?:[._-]|$))/.test(value),
+  );
 }
 
 function isProcessRunning(process: AiopsProcessBlock[], turnStatus?: string) {
@@ -1154,11 +1194,20 @@ function isGenericSearchLabel(value: string) {
 }
 
 function cleanToolText(value: string) {
-  const text = cleanSearchLine(value);
+  let text = unwrapProviderPayload(value || "");
+  text = decodeHtmlish(text)
+    .replace(/provider-native\s+/gi, "")
+    .replace(/\s*;\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = text.replace(/^["'""]+|["'""]+$/g, "").trim();
   if (/^(browse_url|browser|web_search|search)$/i.test(text)) {
     return "";
   }
-  return text;
+  if (!text || isInternalSearchLine(text) || isRawPayloadLine(text)) {
+    return "";
+  }
+  return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;
 }
 
 function toolInvocationLabel(block: AiopsProcessBlock) {

@@ -13,7 +13,8 @@ export type AiopsTransportProcessKind =
   | "evidence"
   | "approval"
   | "mcp"
-  | "system";
+  | "system"
+  | "subagent";
 
 export type AiopsTransportProcessStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "rejected";
 
@@ -31,6 +32,9 @@ export type AiopsTransportState = {
   mcpSurfaces: Record<string, AiopsTransportMcpSurface>;
   artifacts: Record<string, AiopsTransportArtifact>;
   runtimeLiveness: AiopsRuntimeLiveness;
+  hostMissions: Record<string, AiopsTransportHostMission>;
+  childAgents: Record<string, AiopsTransportChildAgent>;
+  activeHostMissionId?: string;
   lastError?: string;
   seq: number;
   updatedAt: string;
@@ -125,9 +129,15 @@ export type AiopsExternalReference = {
 
 export type AiopsTransportPlanStep = {
   id: string;
+  index?: number;
   text: string;
   status?: string;
   summary?: string;
+  title?: string;
+  risk?: string;
+  hostIds?: string[];
+  childAgentIds?: string[];
+  approvalRequired?: boolean;
 };
 
 export type AiopsSearchResult = {
@@ -201,4 +211,127 @@ export type AiopsRuntimeLiveness = {
   pendingApprovals: Record<string, boolean>;
   pendingUserInputs: Record<string, boolean>;
   activeCommandStreams: Record<string, boolean>;
+};
+
+export type HostMissionStatus =
+  | "planning"
+  | "waiting_plan_acceptance"
+  | "spawning_children"
+  | "running"
+  | "waiting_approval"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type HostChildAgentStatus =
+  | "planned"
+  | "spawning"
+  | "running"
+  | "waiting"
+  | "approval_required"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AiopsTransportHostMission = {
+  id: string;
+  turnId: string;
+  status: HostMissionStatus | string;
+  planRequired: boolean;
+  planAccepted: boolean;
+  mentionedHosts: AiopsTransportHostMention[];
+  childAgentIds: string[];
+  planSteps?: AiopsTransportPlanStep[];
+  managerAgentId?: string;
+  activeChildAgentId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type AiopsTransportHostMention = {
+  tokenId: string;
+  raw: string;
+  hostId?: string;
+  address?: string;
+  displayName?: string;
+  source: "inventory" | "ip_literal" | "hostname_literal" | string;
+  resolved: boolean;
+};
+
+export type AiopsTransportChildAgent = {
+  id: string;
+  missionId: string;
+  parentAgentId?: string;
+  sessionId: string;
+  hostId: string;
+  hostAddress?: string;
+  hostDisplayName: string;
+  role?: string;
+  task?: string;
+  currentStepTitle?: string;
+  status: HostChildAgentStatus | string;
+  planStepIds?: string[];
+  lastInputPreview?: string;
+  lastOutputPreview?: string;
+  error?: string;
+  runtimeProfile?: AiopsHostAgentRuntimeProfile;
+  contextDecisions?: AiopsHostAgentTraceEntry[];
+  promptSections?: AiopsHostAgentPromptSection[];
+  toolSurfaceSnapshot?: AiopsHostAgentToolTrace[];
+  mcpInstructionDeltas?: AiopsHostAgentTraceEntry[];
+  skillActivationTrace?: AiopsHostAgentTraceEntry[];
+  approvalTrace?: AiopsHostAgentTraceEntry[];
+  evidenceTrace?: AiopsHostAgentEvidenceTrace[];
+  reportTimeline?: AiopsHostAgentTraceEntry[];
+  agentMessages?: AiopsHostAgentTraceEntry[];
+  subtaskStatus?: string;
+  queueReason?: string;
+  source?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+};
+
+export type AiopsHostAgentRuntimeProfile = {
+  id?: string;
+  name?: string;
+  capabilities?: string[];
+  [key: string]: unknown;
+};
+
+export type AiopsHostAgentTraceEntry = {
+  id?: string;
+  title?: string;
+  name?: string;
+  event?: string;
+  role?: string;
+  content?: string;
+  summary?: string;
+  status?: string;
+  source?: string;
+  sourceRef?: string;
+  redaction?: string;
+  hash?: string;
+  ref?: string;
+  [key: string]: unknown;
+};
+
+export type AiopsHostAgentPromptSection = AiopsHostAgentTraceEntry & {
+  category?: string;
+  sectionId?: string;
+  retentionRank?: string;
+  retentionClass?: string;
+  compactAction?: string;
+  compactSchema?: string;
+};
+
+export type AiopsHostAgentToolTrace = AiopsHostAgentTraceEntry & {
+  name?: string;
+  source?: "host_agent_tool" | "human_terminal" | string;
+  toolName?: string;
+};
+
+export type AiopsHostAgentEvidenceTrace = AiopsHostAgentTraceEntry & {
+  artifactRef?: string;
+  evidenceRef?: string;
 };

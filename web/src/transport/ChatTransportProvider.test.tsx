@@ -73,4 +73,41 @@ describe("ChatTransportProvider", () => {
     expect(resumeRunSpy).toHaveBeenCalledTimes(1);
     expect(resumeRunSpy).toHaveBeenCalledWith({});
   });
+
+  it("normalizes legacy initial state before creating the assistant transport runtime", async () => {
+    const legacyState = createInitialAiopsTransportState("thread-legacy") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
+    delete legacyState.hostMissions;
+    delete legacyState.childAgents;
+    delete legacyState.pendingApprovals;
+    delete legacyState.mcpSurfaces;
+    delete legacyState.artifacts;
+    delete legacyState.runtimeLiveness;
+
+    await act(async () => {
+      root.render(
+        <ChatTransportProvider initialState={legacyState as ReturnType<typeof createInitialAiopsTransportState>} threadId="thread-legacy">
+          <div>chat</div>
+        </ChatTransportProvider>,
+      );
+    });
+
+    expect(transportRuntimeSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialState: expect.objectContaining({
+          hostMissions: {},
+          childAgents: {},
+          pendingApprovals: {},
+          mcpSurfaces: {},
+          artifacts: {},
+          runtimeLiveness: {
+            activeTurns: {},
+            activeAgents: {},
+            pendingApprovals: {},
+            pendingUserInputs: {},
+            activeCommandStreams: {},
+          },
+        }),
+      }),
+    );
+  });
 });
