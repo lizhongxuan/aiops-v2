@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/opssemantic"
 )
@@ -129,6 +130,35 @@ func TestOrchestratorBindsChildToPlanStepSubTaskFields(t *testing.T) {
 	}
 }
 
+func TestOrchestratorDoesNotOverwriteCompletedChildWithSpawnReturn(t *testing.T) {
+	store := NewInMemoryMissionStore()
+	spawner := &persistingChildSpawner{store: store}
+	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), spawner)
+	_ = store.SaveMission(context.Background(), HostOperationMission{
+		ID:           "mission-1",
+		PlanAccepted: true,
+		Mentions:     []HostMention{{HostID: "host-a", Resolved: true}},
+	})
+
+	children, err := orchestrator.SpawnChildren(context.Background(), "mission-1", []ChildAgentAssignment{{HostID: "host-a", Task: "inspect host state"}})
+	if err != nil {
+		t.Fatalf("SpawnChildren() error = %v", err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("len(children) = %d, want 1", len(children))
+	}
+	if children[0].Status != HostChildAgentStatusCompleted {
+		t.Fatalf("children[0].Status = %q, want completed", children[0].Status)
+	}
+	stored, err := store.GetChildAgent(context.Background(), children[0].ID)
+	if err != nil {
+		t.Fatalf("GetChildAgent() error = %v", err)
+	}
+	if stored.Status != HostChildAgentStatusCompleted || stored.LastOutputPreview != "done" {
+		t.Fatalf("stored child = %+v, want completed result preserved", stored)
+	}
+}
+
 type fakeChildSpawner struct {
 	spawnCount int
 	lastReq    SpawnHostChildRequest
@@ -158,4 +188,42 @@ func (s *fakeChildSpawner) SendMessage(_ context.Context, childAgentID, content 
 
 func (s *fakeChildSpawner) Stop(_ context.Context, childAgentID string) (HostChildAgent, error) {
 	return HostChildAgent{ID: childAgentID, Status: HostChildAgentStatusCancelled}, nil
+}
+
+type persistingChildSpawner struct {
+	store *InMemoryMissionStore
+}
+
+func (s *persistingChildSpawner) SpawnHostChild(ctx context.Context, req SpawnHostChildRequest) (HostChildAgent, error) {
+	completedAt := time.Now().UTC()
+	_ = s.store.SaveChildAgent(ctx, HostChildAgent{
+		ID:                req.ChildAgentID,
+		MissionID:         req.MissionID,
+		ParentAgentID:     req.ParentAgentID,
+		SessionID:         req.SessionID,
+		HostID:            req.HostID,
+		Task:              req.Task,
+		Status:            HostChildAgentStatusCompleted,
+		LastInputPreview:  req.Task,
+		LastOutputPreview: "done",
+		CompletedAt:       &completedAt,
+	})
+	return HostChildAgent{
+		ID:               req.ChildAgentID,
+		MissionID:        req.MissionID,
+		ParentAgentID:    req.ParentAgentID,
+		SessionID:        req.SessionID,
+		HostID:           req.HostID,
+		Task:             req.Task,
+		Status:           HostChildAgentStatusRunning,
+		LastInputPreview: req.Task,
+	}, nil
+}
+
+func (s *persistingChildSpawner) SendMessage(context.Context, string, string) (HostChildAgent, error) {
+	return HostChildAgent{}, nil
+}
+
+func (s *persistingChildSpawner) Stop(context.Context, string) (HostChildAgent, error) {
+	return HostChildAgent{}, nil
 }

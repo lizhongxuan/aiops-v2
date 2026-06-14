@@ -49,13 +49,13 @@ func (s *localTerminalPolicyService) UpdateConfig(_ context.Context, config term
 	if err := terminalpolicy.ValidateConfig(config); err != nil {
 		return terminalpolicy.Config{}, err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := s.write(config); err != nil {
 		return terminalpolicy.Config{}, err
 	}
-	s.mu.Lock()
 	s.config = config
 	s.engine = terminalpolicy.NewEngine(config)
-	s.mu.Unlock()
 	return config, nil
 }
 

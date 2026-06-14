@@ -156,6 +156,7 @@ func (a *KernelAdapter) SpawnHostChild(ctx context.Context, req hostops.SpawnHos
 		UpdatedAt:        time.Now().UTC(),
 		PlanStepIDs:      hostChildPlanStepIDs(req.PlanStepID),
 	}
+	a.saveHostChildUpdate(ctx, child)
 	a.startHostChildRun(req.ChildAgentID, child, config, false)
 	return child, nil
 }
@@ -193,6 +194,7 @@ func (a *KernelAdapter) SendMessage(ctx context.Context, childAgentID, content s
 		StartedAt:         inst.CreatedAt,
 		UpdatedAt:         time.Now().UTC(),
 	}
+	a.saveHostChildUpdate(ctx, child)
 	a.startHostChildRun(inst.ID, child, config, true)
 	return child, nil
 }
@@ -209,7 +211,7 @@ func (a *KernelAdapter) Stop(ctx context.Context, childAgentID string) (hostops.
 		return hostops.HostChildAgent{}, fmt.Errorf("host child agent %q not found", childAgentID)
 	}
 	now := time.Now().UTC()
-	return hostops.HostChildAgent{
+	child := hostops.HostChildAgent{
 		ID:            inst.ID,
 		MissionID:     inst.MissionID,
 		ParentAgentID: inst.ParentID,
@@ -221,7 +223,9 @@ func (a *KernelAdapter) Stop(ctx context.Context, childAgentID string) (hostops.
 		StartedAt:     inst.CreatedAt,
 		UpdatedAt:     now,
 		CompletedAt:   &now,
-	}, nil
+	}
+	a.saveHostChildUpdate(ctx, child)
+	return child, nil
 }
 
 func (a *KernelAdapter) startHostChildRun(agentID string, child hostops.HostChildAgent, config *AgentConfig, followup bool) {

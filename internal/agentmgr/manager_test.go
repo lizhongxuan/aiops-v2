@@ -415,6 +415,46 @@ func TestKillAgent_DuringExecution(t *testing.T) {
 	}
 }
 
+func TestKillAgentCancelsActiveExecutionContext(t *testing.T) {
+	runner := newCancelAwareRunner()
+	mgr := newTestManager(runner)
+
+	_, err := mgr.Spawn(context.Background(), validSpawnRequest("agent-1"))
+	if err != nil {
+		t.Fatalf("spawn error: %v", err)
+	}
+
+	var result *AgentResult
+	var runErr error
+	done := make(chan struct{})
+	go func() {
+		result, runErr = mgr.RunAgent(context.Background(), "agent-1", &AgentConfig{Kind: AgentKindWorker})
+		close(done)
+	}()
+
+	runner.waitStarted(t)
+	if err := mgr.KillAgent(context.Background(), "agent-1"); err != nil {
+		runner.release()
+		t.Fatalf("KillAgent() error = %v", err)
+	}
+
+	select {
+	case <-runner.cancelled:
+	case <-time.After(time.Second):
+		runner.release()
+		<-done
+		t.Fatal("runner context was not cancelled")
+	}
+	<-done
+
+	if runErr != nil {
+		t.Fatalf("RunAgent() error = %v", runErr)
+	}
+	if result == nil || result.Status != AgentStatusKilled {
+		t.Fatalf("result = %#v, want killed", result)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CollectResults Tests
 // ---------------------------------------------------------------------------
@@ -643,4 +683,45 @@ func TestConcurrentSpawnAndKill(t *testing.T) {
 	if idle != 25 {
 		t.Errorf("expected 25 idle, got %d", idle)
 	}
+}
+
+type cancelAwareRunner struct {
+	started     chan struct{}
+	cancelled   chan struct{}
+	releaseCh   chan struct{}
+	startOnce   sync.Once
+	cancelOnce  sync.Once
+	releaseOnce sync.Once
+}
+
+func newCancelAwareRunner() *cancelAwareRunner {
+	return &cancelAwareRunner{
+		started:   make(chan struct{}),
+		cancelled: make(chan struct{}),
+		releaseCh: make(chan struct{}),
+	}
+}
+
+func (r *cancelAwareRunner) Run(ctx context.Context, _ agentruntime.Config) (string, error) {
+	r.startOnce.Do(func() { close(r.started) })
+	select {
+	case <-ctx.Done():
+		r.cancelOnce.Do(func() { close(r.cancelled) })
+		return "", ctx.Err()
+	case <-r.releaseCh:
+		return "released", nil
+	}
+}
+
+func (r *cancelAwareRunner) waitStarted(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner start")
+	}
+}
+
+func (r *cancelAwareRunner) release() {
+	r.releaseOnce.Do(func() { close(r.releaseCh) })
 }
