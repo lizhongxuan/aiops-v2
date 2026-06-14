@@ -106,12 +106,15 @@ func verificationRequirementFromTaskDepth(profile taskdepth.Profile) verificatio
 	return verification.VerificationAnalysisAllowed
 }
 
-func verificationCompletionGateAllowsFinal(answer string, decision VerificationCompletionDecision) bool {
+func verificationCompletionGateAllowsFinal(answer string, decision VerificationCompletionDecision, snapshot *TurnSnapshot) bool {
 	switch decision.Action {
 	case "", VerificationCompletionActionAllow:
 		return true
 	case VerificationCompletionActionRequireBlockerFinal, VerificationCompletionActionBlockSuccessFinal:
 		if verificationCompletionMissingReport(decision) && !finalAnswerClaimsVerificationCompletion(answer) {
+			return true
+		}
+		if verificationCompletionMissingReport(decision) && finalAnswerHasEvidenceBackedVerification(answer, snapshot) {
 			return true
 		}
 		return finalLooksLikeVerificationBlocker(answer)
@@ -153,6 +156,109 @@ func finalLooksLikeVerificationBlocker(answer string) bool {
 		}
 	}
 	return false
+}
+
+func finalAnswerHasEvidenceBackedVerification(answer string, snapshot *TurnSnapshot) bool {
+	if snapshot == nil || !finalAnswerClaimsVerificationCompletion(answer) {
+		return false
+	}
+	terms := successfulVerificationEvidenceTerms(snapshot)
+	if len(terms) == 0 {
+		return false
+	}
+	answerText := normalizeVerificationEvidenceText(answer)
+	matches := 0
+	for _, term := range terms {
+		term = normalizeVerificationEvidenceText(term)
+		if term == "" {
+			continue
+		}
+		if strings.Contains(answerText, term) {
+			matches++
+		}
+	}
+	return matches >= 2
+}
+
+func successfulVerificationEvidenceTerms(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var terms []string
+	addTerm := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := normalizeVerificationEvidenceText(value)
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		terms = append(terms, value)
+	}
+	for _, iter := range snapshot.Iterations {
+		calls := map[string]ToolCall{}
+		for _, call := range iter.ToolCalls {
+			calls[call.ID] = call
+		}
+		for _, result := range iter.ToolResults {
+			if strings.TrimSpace(result.Error) != "" {
+				continue
+			}
+			if env := terminalEnvelopeFromToolResultContent(result.Content); env != nil {
+				for _, term := range verificationEvidenceTermsFromCommand(env.Command) {
+					addTerm(term)
+				}
+			}
+			if call, ok := calls[result.ToolCallID]; ok {
+				for _, term := range verificationEvidenceTermsFromToolCall(call) {
+					addTerm(term)
+				}
+			}
+		}
+	}
+	return terms
+}
+
+func verificationEvidenceTermsFromToolCall(call ToolCall) []string {
+	var terms []string
+	command := approvalCommandForToolCall(call)
+	terms = append(terms, verificationEvidenceTermsFromCommand(command)...)
+	name := strings.TrimSpace(call.Name)
+	switch name {
+	case "", "exec_command", "tool_search", "list_mcp_resources", "read_mcp_resource", "web_search", "browse_url":
+	default:
+		terms = append(terms, name)
+	}
+	return terms
+}
+
+func verificationEvidenceTermsFromCommand(command string) []string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return nil
+	}
+	base := fields[0]
+	var terms []string
+	if len(fields) >= 2 {
+		terms = append(terms, base+" "+fields[1])
+	}
+	for _, field := range fields {
+		if strings.HasPrefix(field, "http://") || strings.HasPrefix(field, "https://") {
+			terms = append(terms, base+" "+field, field)
+			break
+		}
+	}
+	if base != "exec_command" && base != "tool_search" {
+		terms = append(terms, base)
+	}
+	return terms
+}
+
+func normalizeVerificationEvidenceText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func verificationCompletionGateTrace(decision VerificationCompletionDecision) *promptinput.CompletionGateTrace {

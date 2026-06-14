@@ -21,6 +21,16 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 		metadataBool(metadata, "hasContextArtifact") ||
 		metadataBool(metadata, "contextArtifactEnabled")
 	opts.MCPHealthSnapshot = mergeMCPHealthSnapshot(opts.MCPHealthSnapshot, metadata)
+	if metadataTransform := turnMetadataToolMetadataTransform(metadata); metadataTransform != nil {
+		if opts.MetadataTransform == nil {
+			opts.MetadataTransform = metadataTransform
+		} else {
+			existingTransform := opts.MetadataTransform
+			opts.MetadataTransform = func(meta ToolMetadata) ToolMetadata {
+				return metadataTransform(existingTransform(meta))
+			}
+		}
+	}
 	metadataFilter := turnMetadataToolFilter(metadata)
 	if metadataFilter == nil {
 		return opts
@@ -34,6 +44,75 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 		return existingFilter(t, ctx, meta) && metadataFilter(t, ctx, meta)
 	}
 	return opts
+}
+
+func turnMetadataToolMetadataTransform(metadata map[string]string) func(ToolMetadata) ToolMetadata {
+	if len(metadata) == 0 {
+		return nil
+	}
+	hostOS := normalizeHostOS(firstMetadataString(metadata, "aiops.host.os", "host.os", "hostOS"))
+	hostArch := strings.TrimSpace(firstMetadataString(metadata, "aiops.host.arch", "host.arch", "hostArch"))
+	hostID := strings.TrimSpace(firstMetadataString(metadata, "aiops.host.id", "host.id", "hostId", "aiops.target.hostId"))
+	hostTransport := strings.TrimSpace(firstMetadataString(metadata, "aiops.host.transport", "host.transport", "transport"))
+	if hostOS == "" && hostArch == "" && hostTransport == "" && !metadataBool(metadata, "aiops.host.metadataAvailable") {
+		return nil
+	}
+	return func(meta ToolMetadata) ToolMetadata {
+		if meta.Name != "exec_command" {
+			return meta
+		}
+		meta.Description = execCommandDescriptionForTargetHost(hostID, hostOS, hostArch, hostTransport)
+		return meta
+	}
+}
+
+func execCommandDescriptionForTargetHost(hostID, hostOS, hostArch, hostTransport string) string {
+	base := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; for HTTP status checks use curl -fsS -o /dev/null -w %{http_code} URL or curl -fsSI URL, and do not use -o %{http_code}. Mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval."
+	target := targetHostDescription(hostID, hostOS, hostArch, hostTransport)
+	switch hostOS {
+	case "darwin":
+		return base + target + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as lscpu, nproc, free -h, and /proc/*."
+	case "linux":
+		return base + target + " For host resource inspection on Linux, prefer uptime, nproc, free -h, df -hT -x tmpfs -x devtmpfs, and cat /proc/loadavg; avoid macOS-only commands such as sysctl -n hw.ncpu, vm_stat, and top -l."
+	case "windows":
+		return base + target + " Choose Windows-compatible commands for the selected host; prefer PowerShell when the runtime exposes a PowerShell-capable tool, and avoid Unix-only paths or /proc/*."
+	default:
+		return base + target + " Target OS is unknown; verify the selected host OS with a small read-only command such as uname before using OS-specific commands, and do not use commands for another OS unless evidence confirms compatibility."
+	}
+}
+
+func targetHostDescription(hostID, hostOS, hostArch, hostTransport string) string {
+	parts := make([]string, 0, 4)
+	if hostID != "" {
+		parts = append(parts, "host="+hostID)
+	}
+	if hostOS != "" {
+		parts = append(parts, "os="+hostOS)
+	}
+	if hostArch != "" {
+		parts = append(parts, "arch="+hostArch)
+	}
+	if hostTransport != "" {
+		parts = append(parts, "transport="+hostTransport)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " Target host metadata: " + strings.Join(parts, ", ") + "."
+}
+
+func normalizeHostOS(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "macos", "mac", "osx":
+		return "darwin"
+	case "gnu/linux":
+		return "linux"
+	case "win":
+		return "windows"
+	default:
+		return value
+	}
 }
 
 func mergeMCPHealthSnapshot(existing map[string]string, metadata map[string]string) map[string]string {

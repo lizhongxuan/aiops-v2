@@ -455,6 +455,38 @@ func TestComplexTaskPrematureFinalContinuesWithGuard(t *testing.T) {
 	}
 }
 
+func TestComplexTaskPrematureFinalHardBlocksRepeatedNoEvidenceFinal(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("Docker 已安装且运行正常。", nil),
+		schema.AssistantMessage("Docker 已安装且运行正常。", nil),
+	}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		SessionID:   "sess-depth-no-evidence-final",
+		TurnID:      "turn-depth-no-evidence-final",
+		Input:       "检查这台主机 Docker 是否已安装并可用，只做只读检查",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if !strings.Contains(result.Output, "缺少直接工具证据") {
+		t.Fatalf("result output = %q, want missing evidence blocker", result.Output)
+	}
+	if strings.Contains(result.Output, "Docker 已安装且运行正常") {
+		t.Fatalf("result output = %q, should not pass through unsupported success final", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, want one retry before hard blocker", len(model.inputs))
+	}
+	session := kernel.sessions.Get("sess-depth-no-evidence-final")
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.Metadata["taskDepth.missingEvidenceFinalBlocked"] != "true" {
+		t.Fatalf("missing hard-block metadata: %#v", session)
+	}
+}
+
 func TestSimpleQuestionFinalDoesNotTriggerPrematureFinalGuard(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("AIOps 是智能运维。", nil),
@@ -1068,6 +1100,107 @@ func TestRunTurn_SwitchesToSynthesisOnlyAfterEnoughToolEvidence(t *testing.T) {
 	}
 	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "web_search") {
 		t.Fatalf("second iteration unavailable tools = %v, want web_search", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+}
+
+func TestRunTurn_SimpleHostResourceInspectionSynthesizesAfterCoveredEvidence(t *testing.T) {
+	toolCalls := []schema.ToolCall{
+		{
+			ID:   "call-cpu-count",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"nproc"}`,
+			},
+		},
+		{
+			ID:   "call-load",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"cat /proc/loadavg"}`,
+			},
+		},
+		{
+			ID:   "call-memory",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"free -h"}`,
+			},
+		},
+		{
+			ID:   "call-disk",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"df -hT -x tmpfs -x devtmpfs"}`,
+			},
+		},
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("CPU、内存、磁盘资源已基于直接主机证据汇总。", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "exec_command",
+			Description: "Execute a terminal command on the selected host",
+			Layer:       tooling.ToolLayerCore,
+			RiskLevel:   tooling.ToolRiskHigh,
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeChat)},
+		},
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "resource evidence: " + string(input)}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-simple-host-resource-synthesis",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-simple-host-resource-synthesis",
+		Input:       "帮我看下这台远程主机的 CPU、内存、磁盘资源情况，给出关键数值和简短判断。",
+		HostID:      "remote-host",
+		Metadata: map[string]string{
+			"aiops.host.os":        "linux",
+			"aiops.host.transport": "agent_http",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if len(compiler.contexts[0].AssembledTools) == 0 {
+		t.Fatal("first iteration should expose exec_command")
+	}
+	if len(compiler.contexts[1].AssembledTools) != 0 {
+		t.Fatalf("second iteration tools = %v, want synthesis-only after covered host resource evidence", toolNames(compiler.contexts[1].AssembledTools))
+	}
+	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "exec_command") {
+		t.Fatalf("second iteration unavailable tools = %v, want exec_command", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+	if got := strings.Join(compiler.contexts[1].SkillPromptAssets, "\n"); !strings.Contains(got, "Synthesis-only phase") {
+		t.Fatalf("second iteration prompt assets missing synthesis-only phase:\n%s", got)
 	}
 }
 
@@ -1891,6 +2024,122 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if len(session.PendingApprovals) != 0 {
 		t.Fatalf("pending approvals after resume = %d, want 0", len(session.PendingApprovals))
 	}
+}
+
+func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-exec-approval",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "exec_command",
+						Arguments: `{"command":"docker","args":["--version"]}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("docker checked", nil),
+		},
+	}
+	execTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:             "exec_command",
+			Description:      "base exec description",
+			RiskLevel:        tooling.ToolRiskHigh,
+			Mutating:         true,
+			RequiresApproval: true,
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "Docker version 26.1.3"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(execTool); err != nil {
+		t.Fatalf("Register exec_command failed: %v", err)
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, compiler, model)
+
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-resume-host-meta",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-resume-host-meta",
+		HostID:      "remote-linux-01",
+		Input:       "检查 Docker",
+		Metadata: map[string]string{
+			"aiops.host.metadataAvailable": "true",
+			"aiops.host.id":                "remote-linux-01",
+			"aiops.host.os":                "linux",
+			"aiops.host.arch":              "amd64",
+			"aiops.host.transport":         "agent_http",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+	if len(compiler.contexts) == 0 {
+		t.Fatal("expected initial compiler context")
+	}
+	if desc := compilerToolDescription(compiler.contexts[0], "exec_command"); !strings.Contains(desc, "os=linux") || strings.Contains(desc, "Host OS: darwin") {
+		t.Fatalf("initial exec_command description = %q, want linux target metadata", desc)
+	}
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:  "sess-resume-host-meta",
+		TurnID:     "turn-resume-host-meta",
+		ApprovalID: "approval-test",
+		Decision:   "approved",
+		Metadata:   map[string]string{"approval.reason": "test approval"},
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn failed: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("resume status = %q, want completed", resumed.Status)
+	}
+	if len(compiler.contexts) < 2 {
+		t.Fatalf("compiler contexts = %d, want resume context", len(compiler.contexts))
+	}
+	resumeDesc := compilerToolDescription(compiler.contexts[len(compiler.contexts)-1], "exec_command")
+	if !strings.Contains(resumeDesc, "host=remote-linux-01") || !strings.Contains(resumeDesc, "os=linux") || !strings.Contains(resumeDesc, "transport=agent_http") {
+		t.Fatalf("resume exec_command description = %q, want preserved remote linux metadata", resumeDesc)
+	}
+	if strings.Contains(resumeDesc, "Host OS: darwin") || strings.Contains(resumeDesc, "For host resource inspection on macOS") {
+		t.Fatalf("resume exec_command description = %q, leaked local macOS guidance", resumeDesc)
+	}
+	session := kernel.sessions.Get("sess-resume-host-meta")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected resumed session")
+	}
+	if got := session.CurrentTurn.Metadata["approval.reason"]; got != "test approval" {
+		t.Fatalf("resume metadata override missing: approval.reason = %q", got)
+	}
+}
+
+func compilerToolDescription(ctx promptcompiler.CompileContext, name string) string {
+	for _, toolDef := range ctx.AssembledTools {
+		if toolDef == nil || toolDef.Metadata().Name != name {
+			continue
+		}
+		if desc := strings.TrimSpace(toolDef.Metadata().Description); desc != "" {
+			return desc
+		}
+		return toolDef.Description(nil, tooling.DescribeContext{
+			SessionType: ctx.SessionType,
+			Mode:        ctx.Mode,
+			Metadata:    toolDef.Metadata(),
+		})
+	}
+	return ""
 }
 
 func TestResumeTurn_ClearsPendingApprovalBeforeApprovedToolCompletes(t *testing.T) {

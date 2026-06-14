@@ -23,6 +23,20 @@ func cloneTurnMetadata(metadata map[string]string) map[string]string {
 	return cloned
 }
 
+func mergeResumeTurnMetadata(snapshotMetadata, resumeMetadata map[string]string) map[string]string {
+	merged := cloneTurnMetadata(snapshotMetadata)
+	if len(resumeMetadata) == 0 {
+		return merged
+	}
+	if merged == nil {
+		merged = map[string]string{}
+	}
+	for key, value := range resumeMetadata {
+		merged[key] = value
+	}
+	return merged
+}
+
 func updateOpsManualFlowTurnMetadata(metadata map[string]string, result ToolResult) map[string]string {
 	if result.Display == nil {
 		return metadata

@@ -91,6 +91,27 @@ func TestSessionAPI_ListCreateAndActivate(t *testing.T) {
 		t.Fatalf("host snapshot kind = %q, want single_host", hostCreated.Snapshot.Kind)
 	}
 
+	remoteBody, _ := json.Marshal(map[string]string{"kind": "single_host", "hostId": "remote-linux-01"})
+	remoteResp, err := http.Post(ts.URL+"/api/v1/sessions", "application/json", bytes.NewReader(remoteBody))
+	if err != nil {
+		t.Fatalf("POST /api/v1/sessions (remote host) error = %v", err)
+	}
+	defer remoteResp.Body.Close()
+	var remoteCreated struct {
+		ActiveSessionID string                 `json:"activeSessionId"`
+		Sessions        []appui.SessionSummary `json:"sessions"`
+		Snapshot        appui.StateSnapshot    `json:"snapshot"`
+	}
+	if err := json.NewDecoder(remoteResp.Body).Decode(&remoteCreated); err != nil {
+		t.Fatalf("decode remote host session response: %v", err)
+	}
+	if remoteCreated.Snapshot.SelectedHostID != "remote-linux-01" {
+		t.Fatalf("remote snapshot selectedHostId = %q, want remote-linux-01", remoteCreated.Snapshot.SelectedHostID)
+	}
+	if len(remoteCreated.Sessions) == 0 || remoteCreated.Sessions[0].SelectedHostID != "remote-linux-01" {
+		t.Fatalf("remote sessions = %+v, want active remote host session", remoteCreated.Sessions)
+	}
+
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/sessions/"+created.ActiveSessionID+"/activate", nil)
 	if err != nil {
 		t.Fatalf("new activate request: %v", err)

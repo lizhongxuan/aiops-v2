@@ -118,6 +118,7 @@ func TestGoBuildHostAgentArtifactBuilderUsesPrebuiltArtifactWithoutGo(t *testing
 }
 
 func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "arm-linux-smoke",
 		Address:          "120.77.239.90",
@@ -163,6 +164,42 @@ func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *tes
 	}
 	if !client.closed {
 		t.Fatal("ssh client was not closed")
+	}
+}
+
+func TestDirectHostAgentInstallerRejectsLoopbackAgentServerURLForRemoteHost(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "")
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "remote-smoke",
+		Address:          "120.77.239.90",
+		SSHUser:          "root",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://lab/remote-smoke",
+		AgentVersion:     "v0.1.0",
+	})
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/remote-smoke", Password: "do-not-leak"}},
+		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: &fakeSSHBootstrapClient{}}),
+		WithHostAgentArtifactBuilder(&fakeHostAgentArtifactBuilder{}),
+	)
+
+	run, err := installer.Install(context.Background(), "remote-smoke", HostInstallRequest{AgentVersion: "v0.1.0"})
+	if err == nil {
+		t.Fatal("Install() error = nil, want loopback agent server URL rejection")
+	}
+	if run.Status != "failed" || run.CurrentStep != "validate-agent-server-url" {
+		t.Fatalf("run = %+v, want validate-agent-server-url failure", run)
+	}
+	if !strings.Contains(err.Error(), "AIOPS_AGENT_SERVER_URL") || !strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("Install() error = %v, want actionable loopback URL guidance", err)
+	}
+	saved, err := repo.GetHost("remote-smoke")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if saved.InstallStep != "validate-agent-server-url" || !strings.Contains(saved.LastError, "AIOPS_AGENT_SERVER_URL") {
+		t.Fatalf("saved host = %+v, want actionable install failure", saved)
 	}
 }
 
@@ -230,6 +267,7 @@ func TestHostBootstrapServicePrefersDirectInstallerOverWorkflowRunner(t *testing
 }
 
 func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "ubuntu-smoke",
 		Address:          "10.0.0.11",
@@ -296,6 +334,7 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 }
 
 func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "ubuntu-smoke",
 		Address:          "10.0.0.11",
@@ -348,6 +387,7 @@ func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testi
 }
 
 func TestDirectHostAgentInstallerInstallsWithDefaultSSHAuthWhenCredentialRefEmpty(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:           "ubuntu-smoke",
 		Address:      "10.0.0.11",
@@ -407,6 +447,7 @@ func TestSSHAuthMethodsAllowNoExplicitCredential(t *testing.T) {
 }
 
 func TestDirectHostAgentInstallerInstallsGenericLinuxAMD64AgentWithSystemd(t *testing.T) {
+	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "alinux-smoke",
 		Address:          "120.77.239.90",

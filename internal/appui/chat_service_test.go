@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 )
 
 type chatRuntimeCapture struct {
@@ -690,6 +691,46 @@ func TestChatService_SendMessageDefaultsNewHostSessionToServerLocal(t *testing.T
 	}
 	if runReq.HostID != "server-local" {
 		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+}
+
+func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:          "remote-linux-01",
+		Name:        "remote-linux-01",
+		Status:      "online",
+		Transport:   "agent_http",
+		OS:          "linux",
+		Arch:        "amd64",
+		Executable:  true,
+		AgentURL:    "http://remote-linux-01:7072",
+		ControlMode: "managed",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   "sess-remote-linux",
+		Content:     "查看远程主机资源",
+		SessionType: string(runtimekernel.SessionTypeHost),
+		HostID:      "remote-linux-01",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	for key, want := range map[string]string{
+		"aiops.host.metadataAvailable": "true",
+		"aiops.host.id":                "remote-linux-01",
+		"aiops.host.os":                "linux",
+		"aiops.host.arch":              "amd64",
+		"aiops.host.transport":         "agent_http",
+		"aiops.host.status":            "online",
+	} {
+		if got := runReq.Metadata[key]; got != want {
+			t.Fatalf("RunTurn metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
+		}
 	}
 }
 

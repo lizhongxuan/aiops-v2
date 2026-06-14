@@ -55,6 +55,7 @@ type HostAgentCommandResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	Source   string
 }
 
 type HostAgentCommandRunner interface {
@@ -448,7 +449,11 @@ func executeHostAgentCommand(ctx context.Context, opts Options, req commandInput
 	if result.ExitCode != 0 && !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
 		return tooling.ToolResult{}, fmt.Errorf("host-agent command failed: exit status %d; stderr: %s", result.ExitCode, stderrText)
 	}
-	return execTerminalToolResult(ctx, opts, req, "host.agent_grpc", host.ID, stdoutText, stderrText, result.ExitCode)
+	source := strings.TrimSpace(result.Source)
+	if source == "" {
+		source = "host.agent"
+	}
+	return execTerminalToolResult(ctx, opts, req, source, host.ID, stdoutText, stderrText, result.ExitCode)
 }
 
 func canReturnNonZeroExecResult(req commandInput, exitCode int, err error) bool {
@@ -575,12 +580,12 @@ func terminalCommandString(command string, args []string) string {
 }
 
 func execCommandDescription() string {
-	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
+	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; for HTTP status checks use curl -fsS -o /dev/null -w %{http_code} URL or curl -fsSI URL, and do not use -o %{http_code}. Mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
 	switch runtime.GOOS {
 	case "darwin":
 		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as lscpu, nproc, free -h, and /proc/*."
 	case "linux":
-		return description + " For host resource inspection on Linux, prefer uptime, nproc, free -h, df -hT -x tmpfs -x devtmpfs, and cat /proc/loadavg."
+		return description + " For host resource inspection on Linux, prefer uptime, nproc, free -h, df -hT -x tmpfs -x devtmpfs, and cat /proc/loadavg. If free is unavailable, use cat /proc/meminfo without pipes and summarize MemTotal, MemFree, MemAvailable, SwapTotal, and SwapFree from the output."
 	default:
 		return description + " Choose commands compatible with this OS; avoid Linux-only commands unless Host OS is linux."
 	}

@@ -188,10 +188,14 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
 	route := detectHostOpsTransportRoute(messageText, command.Metadata)
+	hostID := strings.TrimSpace(command.HostID)
+	if hostID == "" {
+		hostID = strings.TrimSpace(route.metadata["aiops.target.hostId"])
+	}
 	resp, err := h.chat.SendMessage(ctx, ChatCommand{
 		SessionID:       strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
 		Content:         messageText,
-		HostID:          strings.TrimSpace(command.HostID),
+		HostID:          hostID,
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),
 		ClientTurnID:    strings.TrimSpace(command.ClientTurnID),
 		Metadata:        route.metadata,

@@ -554,7 +554,7 @@ func TestExecCommandToolUsesConfigurableTerminalPolicy(t *testing.T) {
 
 func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
 	runner := &fakeHostAgentCommandRunner{
-		result: HostAgentCommandResult{Stdout: "8\n", ExitCode: 0},
+		result: HostAgentCommandResult{Stdout: "8\n", ExitCode: 0, Source: "host.agent_http_exec"},
 	}
 	tool := NewExecCommandTool(Options{
 		WorkingDir: t.TempDir(),
@@ -595,8 +595,44 @@ func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
 	}
-	if payload.Source != "host.agent_grpc" || payload.Stdout != "8\n" || payload.ExitCode != 0 {
-		t.Fatalf("payload = %#v, want agent grpc terminal result", payload)
+	if payload.Source != "host.agent_http_exec" || payload.Stdout != "8\n" || payload.ExitCode != 0 {
+		t.Fatalf("payload = %#v, want host-agent terminal result with runner source", payload)
+	}
+}
+
+func TestExecCommandToolAllowsRemoteDockerReadOnlyInspection(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{Stdout: "abc123\taiops-eval-nginx-0614\tUp 1 minute\t0.0.0.0:18081->80/tcp\n", ExitCode: 0, Source: "host.agent_http_exec"},
+	}
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-docker": {
+				ID:          "host-docker",
+				Name:        "docker-host",
+				Address:     "172.18.13.20",
+				Executable:  true,
+				ControlMode: "managed",
+				Transport:   "agent_grpc",
+			},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-docker"})
+	input := json.RawMessage(`{"command":"docker","args":["ps","--filter","name=aiops-eval-nginx-0614","--format","{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"]}`)
+
+	if !tool.IsReadOnly(input) {
+		t.Fatal("docker ps inspection should be classified read-only")
+	}
+	decision := tool.CheckPermissions(ctx, input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow without approval", decision)
+	}
+	if _, err := tool.Execute(ctx, input); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 1 || runner.requests[0].Command != "docker" {
+		t.Fatalf("runner requests = %#v, want one docker request", runner.requests)
 	}
 }
 
@@ -640,7 +676,7 @@ func TestExecCommandToolReturnsReadOnlyNonZeroExitAsStructuredResult(t *testing.
 
 func TestExecCommandToolReturnsRemoteReadOnlyNonZeroExitAsStructuredResult(t *testing.T) {
 	runner := &fakeHostAgentCommandRunner{
-		result: HostAgentCommandResult{ExitCode: 1},
+		result: HostAgentCommandResult{ExitCode: 1, Source: "host.agent_http_exec"},
 	}
 	tool := NewExecCommandTool(Options{
 		WorkingDir: t.TempDir(),
@@ -670,7 +706,7 @@ func TestExecCommandToolReturnsRemoteReadOnlyNonZeroExitAsStructuredResult(t *te
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
 	}
-	if payload.Source != "host.agent_grpc" || payload.Status != "exit_nonzero" || payload.ExitCode != 1 {
+	if payload.Source != "host.agent_http_exec" || payload.Status != "exit_nonzero" || payload.ExitCode != 1 {
 		t.Fatalf("payload = %#v, want host-agent exit_nonzero result", payload)
 	}
 }

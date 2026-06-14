@@ -102,6 +102,33 @@ func TestHostAgentGRPCExecRunsLocalCommand(t *testing.T) {
 	}
 }
 
+func TestHostAgentHandlerExecRunsDirectCommand(t *testing.T) {
+	cfg := hostagent.Config{
+		ServerURL:         "http://aiops.example.test",
+		HostID:            "prod-web-01",
+		ListenAddr:        ":7072",
+		Token:             "secret-token",
+		HeartbeatInterval: time.Second,
+		Capabilities:      hostagent.DefaultCapabilities(),
+	}
+	handler := newAgentHandler(cfg, agentOptions{AsyncThreshold: time.Second, MaxOutputBytes: 4096})
+
+	resp := postJSON(t, handler, "/exec", "secret-token", agentExecRequest{
+		Command: "printf",
+		Args:    []string{"http-agent-ok"},
+	})
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST /exec status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+	}
+	var payload agentExecResponse
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Status != "success" || payload.ExitCode != 0 || payload.Stdout != "http-agent-ok" {
+		t.Fatalf("payload = %#v, want direct exec success", payload)
+	}
+}
+
 func postJSON(t *testing.T, handler http.Handler, path, token string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	data, err := json.Marshal(body)

@@ -260,6 +260,70 @@ func TestRunTurn_KeepsExecCommandVisibleForSelectedHostResourceInspection(t *tes
 	}
 }
 
+func TestRunTurn_DoesNotEnableObservationPacksForSelectedHostResourceInspection(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("ok", nil)}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range intentPackRuntimeTestTools() {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register(%s) failed: %v", toolDef.Metadata().Name, err)
+		}
+	}
+	if err := registry.Register(&tooling.StaticTool{Meta: tooling.ToolMetadata{
+		Name:           "external_observability.host_metrics",
+		Domain:         "external_observability",
+		Layer:          tooling.ToolLayerDeferred,
+		Pack:           "external_observability_metrics",
+		DeferByDefault: true,
+		Triggers:       []string{"CPU", "memory", "资源", "主机"},
+		RiskLevel:      tooling.ToolRiskLow,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			DiscoveryGroup: "observability",
+			CapabilityKind: "metrics",
+			ResourceTypes:  []string{"host", "resource"},
+			OperationKinds: []string{"read", "query"},
+		},
+	}}); err != nil {
+		t.Fatalf("Register(external_observability.host_metrics) failed: %v", err)
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-selected-host-resource-no-observation",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-selected-host-resource-no-observation",
+		Input:       "只读检查当前选中远程主机的 CPU、内存、磁盘资源情况",
+		Metadata: map[string]string{
+			"taskDepth":           "simple_read",
+			"aiops.target.hostId": "remote-linux-01",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 1 {
+		t.Fatalf("compiler contexts = %d, want 1", len(compiler.contexts))
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	for _, forbidden := range []string{
+		"coroot.collect_rca_context",
+		"coroot.service_metrics",
+		"coroot.slo_status",
+		"coroot.nodes_overview",
+		"coroot.get_node",
+		"external_observability.host_metrics",
+	} {
+		if containsString(names, forbidden) {
+			t.Fatalf("tools = %v, should not include %s for direct selected-host inspection", names, forbidden)
+		}
+	}
+}
+
 func TestRunTurn_EnablesMCPResourcePackAfterToolSearchSelect(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

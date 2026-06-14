@@ -503,6 +503,22 @@ func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/exec", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, agentExecResponse{Status: "failed", Error: "method not allowed", ExitCode: -1})
+			return
+		}
+		if !checkAuth(w, r) {
+			return
+		}
+		var req agentExecRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, agentExecResponse{Status: "failed", Error: err.Error(), ExitCode: -1})
+			return
+		}
+		writeJSON(w, http.StatusOK, runLocalExecCommand(r.Context(), req, defaultMaxOutputBytes))
+	})
+
 	mux.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, runResponse{Error: "method not allowed"})

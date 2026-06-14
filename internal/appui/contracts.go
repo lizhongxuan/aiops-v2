@@ -513,7 +513,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
 	return &Services{
-		chat:           NewChatServiceWithContext(cfg.lifecycleContext, runtime, sessions, agentEvents),
+		chat:           NewChatServiceWithContextAndHosts(cfg.lifecycleContext, runtime, sessions, cfg.hosts, agentEvents),
 		state:          NewStateService(sessions, builder),
 		sessions:       NewSessionService(sessions, sessionStore, builder),
 		sessionSource:  sessions,
@@ -1266,7 +1266,7 @@ type StateService interface {
 
 type SessionService interface {
 	ListSessions(ctx context.Context) (SessionListResponse, error)
-	CreateSession(ctx context.Context, kind string) (SessionMutationResponse, error)
+	CreateSession(ctx context.Context, kind string, hostID ...string) (SessionMutationResponse, error)
 	ActivateSession(ctx context.Context, sessionID string) (SessionMutationResponse, error)
 }
 

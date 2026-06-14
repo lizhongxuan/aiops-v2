@@ -3,6 +3,7 @@ package appui
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"aiops-v2/internal/runtimekernel"
 )
@@ -40,7 +41,7 @@ func (s *defaultSessionService) ListSessions(context.Context) (SessionListRespon
 	}, nil
 }
 
-func (s *defaultSessionService) CreateSession(_ context.Context, kind string) (SessionMutationResponse, error) {
+func (s *defaultSessionService) CreateSession(_ context.Context, kind string, hostID ...string) (SessionMutationResponse, error) {
 	if s.writer == nil {
 		return SessionMutationResponse{}, fmt.Errorf("session store is not configured")
 	}
@@ -49,8 +50,8 @@ func (s *defaultSessionService) CreateSession(_ context.Context, kind string) (S
 		return SessionMutationResponse{}, err
 	}
 	session := s.writer.GetOrCreate("", sessionType, mode)
-	if normalizedKind == "single_host" && session.HostID == "" {
-		session.HostID = "server-local"
+	if normalizedKind == "single_host" {
+		session.HostID = resolveCreateSessionHostID(hostID, session.HostID)
 	}
 	s.writer.Update(session)
 	return s.buildMutationResponse(session), nil
@@ -78,6 +79,18 @@ func (s *defaultSessionService) buildMutationResponse(active *runtimekernel.Sess
 		Sessions:        list.Sessions,
 		Snapshot:        s.builder.BuildStateSnapshot(active),
 	}
+}
+
+func resolveCreateSessionHostID(requested []string, existing string) string {
+	for _, candidate := range requested {
+		if hostID := strings.TrimSpace(candidate); hostID != "" {
+			return hostID
+		}
+	}
+	if hostID := strings.TrimSpace(existing); hostID != "" {
+		return hostID
+	}
+	return serverLocalHostID
 }
 
 func mapCreateKind(kind string) (runtimekernel.SessionType, runtimekernel.Mode, string, error) {

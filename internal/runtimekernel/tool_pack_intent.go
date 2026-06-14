@@ -12,18 +12,105 @@ import (
 
 func applyProgressiveToolPackMetadata(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {
 	metadata = applyContinuationToolPacks(metadata, input, session, catalog)
-	metadata = applyIntentToolPacks(metadata, input, catalog)
+	metadata = applyIntentToolPacks(metadata, input, session, catalog)
 	return applyToolDiscoveryTurnMetadata(metadata, session)
 }
 
-func applyIntentToolPacks(metadata map[string]string, input string, catalog []tooling.Tool) map[string]string {
+func applyIntentToolPacks(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {
+	suppressObservationPacks := isDirectHostResourceInspection(input, session)
 	for _, match := range tooling.MatchToolPacksByMetadata(catalog, input) {
 		if !intentPackMatchEligible(match, catalog) {
+			continue
+		}
+		if suppressObservationPacks && packHasExternalObservationTools(match.Pack, catalog) {
 			continue
 		}
 		metadata = enableIntentToolPack(metadata, match.Pack)
 	}
 	return metadata
+}
+
+func isDirectHostResourceInspection(input string, session *SessionState) bool {
+	if session != nil && session.Type != SessionTypeHost {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" {
+		return false
+	}
+	hostScoped := containsAnyFold(text, []string{
+		"当前主机", "选中主机", "当前选中", "这台主机", "当前远程主机", "远程主机", "本机",
+		"current host", "selected host", "this host", "remote host", "local host",
+	})
+	if !hostScoped && strings.Contains(text, "主机") {
+		hostScoped = containsAnyFold(text, []string{"cpu", "内存", "磁盘", "负载", "资源", "使用率", "状态", "情况"})
+	}
+	if !hostScoped {
+		return false
+	}
+	return containsAnyFold(text, []string{
+		"cpu", "memory", "mem", "disk", "load", "uptime", "resource", "resources",
+		"内存", "磁盘", "负载", "资源", "使用率", "空闲", "系统状态", "资源情况",
+	})
+}
+
+func packHasExternalObservationTools(pack string, catalog []tooling.Tool) bool {
+	pack = strings.TrimSpace(pack)
+	if pack == "" {
+		return false
+	}
+	for _, toolDef := range catalog {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if meta.Pack != pack {
+			continue
+		}
+		if isExternalObservationToolMetadata(meta) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExternalObservationToolMetadata(meta tooling.ToolMetadata) bool {
+	d := meta.EffectiveDiscovery()
+	switch strings.ToLower(strings.TrimSpace(meta.Domain)) {
+	case "observability", "external_observability", "monitoring":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(d.DiscoveryGroup)) {
+	case "observability", "monitoring", "metrics":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(d.CapabilityKind)) {
+	case "observability", "metrics", "logs", "traces", "topology", "incidents", "profiling":
+		return true
+	}
+	for _, packID := range d.ToolPackIDs {
+		packID = strings.ToLower(strings.TrimSpace(packID))
+		if strings.Contains(packID, "observability") || strings.Contains(packID, "monitoring") {
+			return true
+		}
+	}
+	for _, resourceType := range d.ResourceTypes {
+		if strings.EqualFold(strings.TrimSpace(resourceType), "synthetic_observation") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyFold(text string, needles []string) bool {
+	text = strings.ToLower(text)
+	for _, needle := range needles {
+		needle = strings.ToLower(strings.TrimSpace(needle))
+		if needle != "" && strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyContinuationToolPacks(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {

@@ -18,11 +18,17 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "curl" {
 		return isReadOnlyCurlArgs(args)
 	}
+	if base == "docker" {
+		return isReadOnlyDockerArgs(args)
+	}
 	if base == "ifconfig" {
 		return isReadOnlyIfconfigArgs(args)
 	}
 	if base == "sed" {
 		return isReadOnlySedArgs(args)
+	}
+	if base == "ss" {
+		return isAllowedSSArgs(args)
 	}
 	if base == "sysctl" {
 		return isReadOnlySysctlArgs(args)
@@ -43,6 +49,8 @@ func IsAllowedReadOnlyTerminal(command string, args []string) bool {
 		return isAllowedReadOnlyKubectlArgs(args)
 	case "curl":
 		return isReadOnlyCurlArgs(args)
+	case "docker":
+		return isReadOnlyDockerArgs(args)
 	case "redis-cli":
 		return isAllowedReadOnlyRedisCLIArgs(args)
 	default:
@@ -77,6 +85,8 @@ func IsAllowedHostInspectionTerminal(command string, args []string) bool {
 		})
 	case "lsof":
 		return isAllowedLsofArgs(args)
+	case "ss":
+		return isAllowedSSArgs(args)
 	case "sysctl":
 		return isReadOnlySysctlArgs(args) && allSafeTerminalTokens(args)
 	case "ifconfig":
@@ -168,6 +178,78 @@ func isAllowedTopArgs(args []string) bool {
 		}
 	}
 	return true
+}
+
+func isAllowedSSArgs(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || strings.ContainsAny(arg, "\x00\n\r`$<>;|&") {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			if !isSafeSSFlag(arg) {
+				return false
+			}
+			continue
+		}
+		switch arg {
+		case "sport", "dport":
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) != "=" {
+				return false
+			}
+			i++
+			if i >= len(args) || !isSafeSSPort(args[i]) {
+				return false
+			}
+		case "state":
+			i++
+			if i >= len(args) || !isSafeSSState(args[i]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeSSFlag(flag string) bool {
+	flag = strings.TrimSpace(flag)
+	if len(flag) < 2 || !strings.HasPrefix(flag, "-") || strings.HasPrefix(flag, "--") {
+		return false
+	}
+	for _, r := range flag[1:] {
+		if !strings.ContainsRune("tulnpaH46", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeSSPort(value string) bool {
+	value = strings.TrimPrefix(strings.TrimSpace(value), ":")
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSafeSSState(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "listening", "established", "syn-sent", "syn-recv", "time-wait", "close-wait":
+		return true
+	default:
+		return false
+	}
 }
 
 // TerminalRiskLevel returns the minimum approval risk for a terminal command.
@@ -321,6 +403,133 @@ func isAllowedReadOnlyRedisCLIArgs(args []string) bool {
 	default:
 		return false
 	}
+}
+
+func isReadOnlyDockerArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	subcommand := strings.TrimSpace(args[0])
+	switch subcommand {
+	case "ps":
+		return dockerPSArgsAreSafe(args[1:])
+	case "container":
+		if len(args) < 2 {
+			return false
+		}
+		switch strings.TrimSpace(args[1]) {
+		case "ls", "ps":
+			return dockerPSArgsAreSafe(args[2:])
+		default:
+			return false
+		}
+	case "inspect":
+		return len(args) > 1 && dockerInspectArgsAreSafe(args[1:])
+	case "version", "info":
+		return allSafeTerminalTokens(args[1:])
+	default:
+		return false
+	}
+}
+
+func dockerPSArgsAreSafe(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			return false
+		}
+		switch arg {
+		case "-a", "--all", "-q", "--quiet", "--no-trunc", "--size", "-l", "--latest":
+			continue
+		case "-f", "--filter":
+			i++
+			if i >= len(args) || !isSafeDockerFilter(args[i]) {
+				return false
+			}
+		case "--format":
+			i++
+			if i >= len(args) || !isSafeDockerFormat(args[i]) {
+				return false
+			}
+		case "-n", "--last":
+			i++
+			if i >= len(args) || !isSafeDockerNumber(args[i]) {
+				return false
+			}
+		default:
+			switch {
+			case strings.HasPrefix(arg, "--filter="):
+				if !isSafeDockerFilter(strings.TrimPrefix(arg, "--filter=")) {
+					return false
+				}
+			case strings.HasPrefix(arg, "--format="):
+				if !isSafeDockerFormat(strings.TrimPrefix(arg, "--format=")) {
+					return false
+				}
+			case strings.HasPrefix(arg, "--last="):
+				if !isSafeDockerNumber(strings.TrimPrefix(arg, "--last=")) {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func dockerInspectArgsAreSafe(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			return false
+		}
+		switch arg {
+		case "--format", "-f":
+			i++
+			if i >= len(args) || !isSafeDockerFormat(args[i]) {
+				return false
+			}
+		default:
+			if strings.HasPrefix(arg, "--format=") {
+				if !isSafeDockerFormat(strings.TrimPrefix(arg, "--format=")) {
+					return false
+				}
+				continue
+			}
+			if strings.HasPrefix(arg, "-") || !isSafeDockerIdentifier(arg) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isSafeDockerFilter(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.ContainsAny(value, "\x00\n\r`$<>;|&")
+}
+
+func isSafeDockerFormat(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.ContainsAny(value, "\x00\n\r`$<>;|&")
+}
+
+func isSafeDockerIdentifier(value string) bool {
+	return isSafeTerminalToken(value)
+}
+
+func isSafeDockerNumber(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
 }
 
 func allSafeTerminalTokens(values []string) bool {
@@ -571,6 +780,24 @@ func isReadOnlyCurlArgs(args []string) bool {
 			continue
 		}
 		if strings.HasPrefix(arg, "-") {
+			if isAllowedCurlNullOutputFlag(arg) {
+				if arg == "-o" || arg == "--output" {
+					i++
+					if i >= len(args) || strings.TrimSpace(args[i]) != "/dev/null" {
+						return false
+					}
+				}
+				continue
+			}
+			if isAllowedCurlWriteOutFlag(arg) {
+				if arg == "-w" || arg == "--write-out" {
+					i++
+					if i >= len(args) || !isSafeCurlWriteOut(args[i]) {
+						return false
+					}
+				}
+				continue
+			}
 			if isDeniedCurlFlag(arg) {
 				return false
 			}
@@ -605,12 +832,54 @@ func isReadOnlyCurlArgs(args []string) bool {
 }
 
 func isAllowedCurlBoolFlag(flag string) bool {
+	if isAllowedCurlShortBoolCombo(flag) {
+		return true
+	}
 	switch flag {
 	case "-s", "-S", "-sS", "-Ss", "-L", "-I", "-f", "--silent", "--show-error", "--location", "--head", "--get", "--compressed", "--fail", "--fail-with-body":
 		return true
 	default:
 		return false
 	}
+}
+
+func isAllowedCurlShortBoolCombo(flag string) bool {
+	flag = strings.TrimSpace(flag)
+	if len(flag) < 3 || !strings.HasPrefix(flag, "-") || strings.HasPrefix(flag, "--") {
+		return false
+	}
+	for _, r := range flag[1:] {
+		if !strings.ContainsRune("fsSLI", r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllowedCurlNullOutputFlag(flag string) bool {
+	switch flag {
+	case "-o", "--output":
+		return true
+	default:
+		return strings.TrimSpace(flag) == "--output=/dev/null"
+	}
+}
+
+func isAllowedCurlWriteOutFlag(flag string) bool {
+	switch flag {
+	case "-w", "--write-out":
+		return true
+	default:
+		if strings.HasPrefix(flag, "--write-out=") {
+			return isSafeCurlWriteOut(strings.TrimPrefix(flag, "--write-out="))
+		}
+		return false
+	}
+}
+
+func isSafeCurlWriteOut(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.ContainsAny(value, "\x00\n\r`$<>;|&")
 }
 
 func allowedCurlValueFlag(flag string) (bool, bool) {
@@ -646,7 +915,7 @@ func isDeniedCurlFlag(flag string) bool {
 		"-d": true, "--data": true, "--data-raw": true, "--data-binary": true, "--data-urlencode": true, "--json": true,
 		"-F": true, "--form": true, "--form-string": true,
 		"-T": true, "--upload-file": true,
-		"-o": true, "-O": true, "--output": true, "--remote-name": true,
+		"-O": true, "--remote-name": true,
 		"-K": true, "--config": true,
 		"-u": true, "--user": true, "--oauth2-bearer": true,
 		"-b": true, "-c": true, "--cookie": true, "--cookie-jar": true,

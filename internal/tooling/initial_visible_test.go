@@ -2,6 +2,7 @@ package tooling
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,40 @@ func TestInitialVisibleOptionsFromTurnMetadata(t *testing.T) {
 	}
 	if opts.MCPHealthSnapshot["synthetic_obs"] != "healthy" {
 		t.Fatalf("MCPHealthSnapshot = %#v, want synthetic_obs healthy", opts.MCPHealthSnapshot)
+	}
+}
+
+func TestTurnMetadataOverridesExecCommandDescriptionForSelectedHostOS(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(&StaticTool{Meta: ToolMetadata{
+		Name:        "exec_command",
+		Description: "Execute command. Host OS: darwin for server-local. For host resource inspection on macOS, prefer top -l 1 -s 0.",
+		Layer:       ToolLayerCore,
+		AlwaysLoad:  true,
+	}}); err != nil {
+		t.Fatalf("Register(exec_command) failed: %v", err)
+	}
+
+	tools := registry.AssembleToolsWithOptions("host", "chat", AssembleOptionsForTurnMetadata(map[string]string{
+		"aiops.host.metadataAvailable": "true",
+		"aiops.host.id":                "remote-linux-01",
+		"aiops.host.os":                "linux",
+		"aiops.host.arch":              "amd64",
+		"aiops.host.transport":         "agent_http",
+	}))
+	if len(tools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(tools))
+	}
+	description := tools[0].Metadata().Description
+	for _, want := range []string{"host=remote-linux-01", "os=linux", "arch=amd64", "nproc", "free -h"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("exec_command description missing %q:\n%s", want, description)
+		}
+	}
+	for _, forbidden := range []string{"Host OS: darwin for server-local", "top -l 1 -s 0"} {
+		if strings.Contains(description, forbidden) {
+			t.Fatalf("exec_command description retained stale macOS guidance %q:\n%s", forbidden, description)
+		}
 	}
 }
 
