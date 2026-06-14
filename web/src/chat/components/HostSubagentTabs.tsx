@@ -1,12 +1,23 @@
 import { cn } from "@/lib/utils";
 
-export type HostSubagentTabId = "task" | "conversation" | "commands" | "approval" | "receipts";
+export type HostSubagentTabId =
+  | "task"
+  | "conversation"
+  | "prompt"
+  | "tools"
+  | "mcp-skills"
+  | "approval"
+  | "evidence"
+  | "receipts";
 
 const tabs: Array<{ id: HostSubagentTabId; label: string }> = [
   { id: "task", label: "任务" },
   { id: "conversation", label: "对话" },
-  { id: "commands", label: "命令" },
+  { id: "prompt", label: "Prompt" },
+  { id: "tools", label: "工具" },
+  { id: "mcp-skills", label: "MCP/Skills" },
   { id: "approval", label: "审核" },
+  { id: "evidence", label: "证据" },
   { id: "receipts", label: "回执" },
 ];
 
@@ -18,7 +29,7 @@ type HostSubagentTabsProps = {
 export function HostSubagentTabs({ activeTab, onTabChange }: HostSubagentTabsProps) {
   return (
     <div className="border-b border-zinc-200 px-4 py-2">
-      <div className="flex min-w-0 gap-1" role="tablist" aria-label="主机 Agent 详情页签">
+      <div className="flex min-w-0 gap-1 overflow-x-auto" role="tablist" aria-label="主机 Agent 详情页签">
         {tabs.map((tab) => (
           <button
             key={tab.id}

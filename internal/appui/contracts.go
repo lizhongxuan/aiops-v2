@@ -225,6 +225,7 @@ type servicesConfig struct {
 	hostBootstrapRunner HostBootstrapRunner
 	hostAgentInstaller  HostAgentInstaller
 	hostOps             HostOpsService
+	terminalPolicy      TerminalPolicyService
 	pluginSpecs         []plugins.Spec
 }
 
@@ -393,6 +394,12 @@ func WithHostOpsService(service HostOpsService) ServicesOption {
 	}
 }
 
+func WithTerminalPolicyService(service TerminalPolicyService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.terminalPolicy = service
+	}
+}
+
 func WithOpsManualService(service OpsManualService) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.opsManuals = service
@@ -448,6 +455,7 @@ type Services struct {
 	opsManuals     OpsManualService
 	toolSpills     ToolResultSpillRepository
 	hostOps        HostOpsService
+	terminalPolicy TerminalPolicyService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -531,6 +539,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		opsManuals:     opsManualService,
 		toolSpills:     cfg.toolResultSpills,
 		hostOps:        cfg.hostOps,
+		terminalPolicy: cfg.terminalPolicy,
 	}
 }
 
@@ -570,6 +579,9 @@ func (s *Services) ToolResultSpillRepository() ToolResultSpillRepository {
 	return s.toolSpills
 }
 func (s *Services) HostOpsService() HostOpsService { return s.hostOps }
+func (s *Services) TerminalPolicyService() TerminalPolicyService {
+	return s.terminalPolicy
+}
 
 type ChatCommand struct {
 	SessionID       string
@@ -1017,17 +1029,18 @@ type MCPServerUpsert struct {
 }
 
 type MCPServerView struct {
-	Name          string            `json:"name"`
-	Transport     string            `json:"transport,omitempty"`
-	Command       string            `json:"command,omitempty"`
-	Args          []string          `json:"args,omitempty"`
-	URL           string            `json:"url,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
-	Disabled      bool              `json:"disabled,omitempty"`
-	Status        string            `json:"status,omitempty"`
-	Error         string            `json:"error,omitempty"`
-	ToolCount     int               `json:"toolCount,omitempty"`
-	ResourceCount int               `json:"resourceCount,omitempty"`
+	Name          string             `json:"name"`
+	Transport     string             `json:"transport,omitempty"`
+	Command       string             `json:"command,omitempty"`
+	Args          []string           `json:"args,omitempty"`
+	URL           string             `json:"url,omitempty"`
+	Env           map[string]string  `json:"env,omitempty"`
+	Disabled      bool               `json:"disabled,omitempty"`
+	Status        string             `json:"status,omitempty"`
+	Error         string             `json:"error,omitempty"`
+	ToolCount     int                `json:"toolCount,omitempty"`
+	ResourceCount int                `json:"resourceCount,omitempty"`
+	Health        mcp.HealthSnapshot `json:"health,omitempty"`
 }
 
 type MCPServersPayload struct {

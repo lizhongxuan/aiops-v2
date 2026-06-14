@@ -229,6 +229,7 @@ func defaultWebSettingsPayload() WebSettingsPayload {
 		Models: []store.SettingModelOption{
 			{ID: "gpt-5.4", Name: "GPT-5.4"},
 			{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini"},
+			{ID: "glm-4.7", Name: "GLM-4.7"},
 			{ID: "claude-sonnet-4", Name: "Claude Sonnet 4"},
 		},
 	}
@@ -266,6 +267,8 @@ func ensureSettingModelOption(models []store.SettingModelOption, model string) [
 		label = "GPT-5.4"
 	case "gpt-5.4-mini":
 		label = "GPT-5.4 Mini"
+	case "glm-4.7":
+		label = "GLM-4.7"
 	case "claude-sonnet-4":
 		label = "Claude Sonnet 4"
 	}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/mcp"
@@ -89,6 +91,14 @@ func TestMCPServersAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("OnServerConnected() error = %v", err)
 	}
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:      "generator",
+		Status:        mcp.HealthUnavailable,
+		LastCheckedAt: time.Unix(100, 0),
+		LastError:     "502 bad gateway token=secret",
+		TTLSeconds:    30,
+		Capabilities:  []string{"tools"},
+	})
 
 	srv := NewHTTPServer(appui.NewServices(mcpAPITestRuntime{}, nil, appui.WithMCPRepository(repo), appui.WithMCPRegistry(registry)))
 	ts := httptest.NewServer(srv.Handler())
@@ -106,6 +116,11 @@ func TestMCPServersAPI(t *testing.T) {
 	}
 	if len(listed.Items) != 2 {
 		t.Fatalf("items = %+v, want 2 servers", listed.Items)
+	}
+	if generator := findMCPAPIItem(listed.Items, "generator"); generator == nil || generator.Health.Status != mcp.HealthUnavailable {
+		t.Fatalf("generator health = %+v, want unavailable", generator)
+	} else if strings.Contains(generator.Health.LastError, "secret") {
+		t.Fatalf("generator health leaked secret: %+v", generator.Health)
 	}
 
 	createBody, _ := json.Marshal(appui.MCPServerUpsert{
@@ -160,6 +175,15 @@ func TestMCPServersAPI(t *testing.T) {
 	if refreshResp.StatusCode != http.StatusOK {
 		t.Fatalf("refresh status = %d, body = %s", refreshResp.StatusCode, bodyString(refreshResp))
 	}
+}
+
+func findMCPAPIItem(items []appui.MCPServerView, name string) *appui.MCPServerView {
+	for i := range items {
+		if items[i].Name == name {
+			return &items[i]
+		}
+	}
+	return nil
 }
 
 func getJSON(url string, target any) error {

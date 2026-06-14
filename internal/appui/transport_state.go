@@ -295,6 +295,87 @@ type AiopsTransportChildAgent struct {
 	StartedAt         string   `json:"startedAt,omitempty"`
 	UpdatedAt         string   `json:"updatedAt,omitempty"`
 	CompletedAt       string   `json:"completedAt,omitempty"`
+	RuntimeProfile    string   `json:"runtimeProfile,omitempty"`
+	ActiveSubtaskID   string   `json:"activeSubtaskId,omitempty"`
+	QueueReason       string   `json:"queueReason,omitempty"`
+	TraceSummary      string   `json:"traceSummary,omitempty"`
+	AgentMessageRefs  []string `json:"agentMessageRefs,omitempty"`
+
+	PromptSections       []AiopsTransportPromptSectionTrace  `json:"promptSections,omitempty"`
+	ContextDecisions     []AiopsTransportContextDecision     `json:"contextDecisions,omitempty"`
+	ToolSurface          []AiopsTransportToolSurfaceEntry    `json:"toolSurface,omitempty"`
+	McpInstructionDeltas []AiopsTransportScopedTraceEntry    `json:"mcpInstructionDeltas,omitempty"`
+	SkillActivationTrace []AiopsTransportScopedTraceEntry    `json:"skillActivationTrace,omitempty"`
+	ApprovalTrace        []AiopsTransportScopedTraceEntry    `json:"approvalTrace,omitempty"`
+	EvidenceTrace        []AiopsTransportEvidenceTrace       `json:"evidenceTrace,omitempty"`
+	ReportTimeline       []AiopsTransportHostTaskReportTrace `json:"reportTimeline,omitempty"`
+}
+
+type AiopsTransportPromptSectionTrace struct {
+	ID             string `json:"id"`
+	Kind           string `json:"kind,omitempty"`
+	Source         string `json:"source,omitempty"`
+	Hash           string `json:"hash,omitempty"`
+	TokensEstimate int    `json:"tokensEstimate,omitempty"`
+	Cache          string `json:"cache,omitempty"`
+	RetentionRank  string `json:"retentionRank,omitempty"`
+	RetentionClass string `json:"retentionClass,omitempty"`
+	CompactAction  string `json:"compactAction,omitempty"`
+	CompactSchema  string `json:"compactSchema,omitempty"`
+	SourceRef      string `json:"sourceRef,omitempty"`
+	Redaction      string `json:"redaction,omitempty"`
+	Purpose        string `json:"purpose,omitempty"`
+}
+
+type AiopsTransportContextDecision struct {
+	Kind             string `json:"kind,omitempty"`
+	Decision         string `json:"decision,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	RetentionRank    string `json:"retentionRank,omitempty"`
+	CompactAction    string `json:"compactAction,omitempty"`
+	SourceRef        string `json:"sourceRef,omitempty"`
+	ArtifactRef      string `json:"artifactRef,omitempty"`
+	ValidationStatus string `json:"validationStatus,omitempty"`
+	SafetyImpact     string `json:"safetyImpact,omitempty"`
+	BlockingReason   string `json:"blockingReason,omitempty"`
+	Redaction        string `json:"redaction,omitempty"`
+}
+
+type AiopsTransportToolSurfaceEntry struct {
+	Name    string `json:"name"`
+	Visible bool   `json:"visible"`
+	Reason  string `json:"reason,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	Risk    string `json:"risk,omitempty"`
+}
+
+type AiopsTransportScopedTraceEntry struct {
+	ID     string `json:"id"`
+	Status string `json:"status,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Scope  string `json:"scope,omitempty"`
+	Source string `json:"source,omitempty"`
+}
+
+type AiopsTransportEvidenceTrace struct {
+	ID        string `json:"id"`
+	Source    string `json:"source,omitempty"`
+	Ref       string `json:"ref,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Redaction string `json:"redaction,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+type AiopsTransportHostTaskReportTrace struct {
+	ID           string   `json:"id"`
+	Status       string   `json:"status,omitempty"`
+	HostID       string   `json:"hostId,omitempty"`
+	PlanStepID   string   `json:"planStepId,omitempty"`
+	Summary      string   `json:"summary,omitempty"`
+	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
+	Errors       []string `json:"errors,omitempty"`
+	Blockers     []string `json:"blockers,omitempty"`
+	NextSteps    []string `json:"nextSteps,omitempty"`
 }
 
 func NewAiopsTransportState(sessionID, threadID string) AiopsTransportState {

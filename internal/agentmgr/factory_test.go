@@ -209,6 +209,15 @@ func runtimeToolNames(t *testing.T, tools []tool.BaseTool) []string {
 	return names
 }
 
+func containsFactoryToolName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -327,20 +336,142 @@ func TestCreateHostChildAgentAddsBoundPromptAsset(t *testing.T) {
 	if cfg.HostID != "host-a" || cfg.MissionID != "mission-1" {
 		t.Fatalf("cfg = %+v, want host-a/mission-1", cfg)
 	}
-	if len(compiler.lastCompileForEino.SkillPromptAssets) != 1 {
-		t.Fatalf("SkillPromptAssets = %#v, want one host child prompt", compiler.lastCompileForEino.SkillPromptAssets)
+	if len(compiler.lastCompileForEino.SkillPromptAssets) != 0 {
+		t.Fatalf("SkillPromptAssets = %#v, want host child prompt separated from skill context", compiler.lastCompileForEino.SkillPromptAssets)
 	}
-	prompt := compiler.lastCompileForEino.SkillPromptAssets[0]
+	if len(compiler.lastCompileForEino.HostTaskPromptAssets) != 1 {
+		t.Fatalf("HostTaskPromptAssets = %#v, want one host child prompt asset", compiler.lastCompileForEino.HostTaskPromptAssets)
+	}
+	if len(compiler.lastCompileForEino.ExtraSections) != 0 {
+		t.Fatalf("ExtraSections = %#v, want no host task context in generic extra sections", compiler.lastCompileForEino.ExtraSections)
+	}
+	prompt := compiler.lastCompileForEino.HostTaskPromptAssets[0]
 	for _, want := range []string{
-		"你是 host-bound 运维子 Agent。",
-		"你的绑定主机是 host-a，hostId=host-a。",
-		"planStepId=step-1，risk=read_only。",
-		"你只能对这个主机执行检查、配置、安装或诊断。",
-		"如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。",
-		"非白名单命令必须等待用户审批后才能执行。",
+		"prompt_section_id: host_agent.binding.v1",
+		"prompt_section_id: host_agent.assigned_subtask.v1",
+		"prompt_section_id: host_agent.execution_protocol.v1",
+		"prompt_section_id: host_agent.report_contract.v1",
+		"prompt_section_id: host_agent.stop_block_conditions.v1",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("host child prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if cfg.Metadata["hostTaskPromptAssetSource"] == "" {
+		t.Fatalf("metadata = %#v, want hostTaskPromptAssetSource", cfg.Metadata)
+	}
+	if cfg.Metadata["runtimeBase"] != "host_agent" {
+		t.Fatalf("metadata = %#v, want host agent runtime base", cfg.Metadata)
+	}
+	if cfg.Metadata["agentRole"] != "host_child_task" {
+		t.Fatalf("metadata = %#v, want host child task role", cfg.Metadata)
+	}
+}
+
+func TestHostChildPromptAssetRendersStableSectionIDs(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:            "mission-prompt",
+		ChildAgentID:         "child-prompt",
+		HostID:               "host-a",
+		HostDisplayName:      "generic host",
+		Task:                 "inspect assigned service state",
+		PlanStepID:           "step-a",
+		RiskLevel:            "read_only",
+		EvidenceRequirements: []string{"command_result"},
+	})
+	for _, want := range []string{
+		"prompt_section_id: host_agent.binding.v1",
+		"prompt_section_id: host_agent.assigned_subtask.v1",
+		"prompt_section_id: host_agent.execution_protocol.v1",
+		"prompt_section_id: host_agent.report_contract.v1",
+		"prompt_section_id: host_agent.stop_block_conditions.v1",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing stable section id %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestHostChildPromptAssetIncludesBindingSubtaskProtocolReportAndStopSections(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:            "mission-prompt",
+		ChildAgentID:         "child-prompt",
+		HostID:               "host-a",
+		Task:                 "inspect assigned host",
+		PlanStepID:           "step-a",
+		RiskLevel:            "read_only",
+		EvidenceRequirements: []string{"artifact_ref"},
+	})
+	for _, want := range []string{
+		"bound_host_id: host-a",
+		"mission_id: mission-prompt",
+		"plan_step_id: step-a",
+		"goal: inspect assigned host",
+		"Use HostCommandTool for automated host commands.",
+		"HostTaskReport",
+		"needs_manager_coordination",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestHostChildPromptAssetRedactsSecrets(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:    "mission-prompt",
+		ChildAgentID: "child-prompt",
+		HostID:       "host-a",
+		Task:         "inspect token=plain-secret password=plain-secret",
+		Constraints:  []string{"Bearer plain-secret", "cookie: session=plain-secret"},
+		PlanStepID:   "step-a",
+		RiskLevel:    "read_only",
+	})
+	if strings.Contains(prompt, "plain-secret") || strings.Contains(prompt, "Bearer plain-secret") {
+		t.Fatalf("prompt contains unredacted secret:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[REDACTED") {
+		t.Fatalf("prompt missing redaction marker:\n%s", prompt)
+	}
+}
+
+func TestHostChildPromptAssetUsesSafeDefaultsForEmptyFields(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{HostID: "host-a"})
+	for _, want := range []string{
+		"role: host_child",
+		"goal: operate on the assigned host and report evidence to the manager",
+		"plan_step_id: unspecified",
+		"risk: unknown",
+		"evidence_requirements: command_result",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing safe default %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestHostChildPromptAssetContainsNoDomainHardcoding(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:    "mission-prompt",
+		ChildAgentID: "child-prompt",
+		HostID:       "host-a",
+		Task:         "inspect assigned generic service and process state",
+		PlanStepID:   "step-a",
+		RiskLevel:    "read_only",
+	})
+	for _, forbidden := range []string{
+		"nginx",
+		"redis",
+		"mysql",
+		"kubernetes",
+		"example.com",
+		"120.77",
+		"真实主机",
+		"固定中间件",
+		"固定网站",
+	} {
+		if strings.Contains(strings.ToLower(prompt), strings.ToLower(forbidden)) {
+			t.Fatalf("prompt contains domain hardcoding %q:\n%s", forbidden, prompt)
 		}
 	}
 }
@@ -531,6 +662,36 @@ func TestCreateWorkerAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T)
 	}
 }
 
+func TestCreateWorkerAgent_ReusesHostAgentRuntimeProfile(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	compiler := factory.compiler.(*mockCompiler)
+
+	cfg, err := factory.CreateWorkerAgent(context.Background(), "host-2", "check disk usage")
+	if err != nil {
+		t.Fatalf("CreateWorkerAgent() error = %v", err)
+	}
+
+	if compiler.lastCompileForEino.SessionType != "host" {
+		t.Fatalf("SessionType = %q, want host", compiler.lastCompileForEino.SessionType)
+	}
+	if compiler.lastCompileForEino.Mode != "execute" {
+		t.Fatalf("Mode = %q, want execute", compiler.lastCompileForEino.Mode)
+	}
+	if compiler.lastCompileForEino.HostContext != "host-2" {
+		t.Fatalf("HostContext = %q, want host-2", compiler.lastCompileForEino.HostContext)
+	}
+	if cfg.Input != "check disk usage" {
+		t.Fatalf("Input = %q, want task input", cfg.Input)
+	}
+	if cfg.Metadata["runtimeProfile"] != "host_agent_full_runtime" {
+		t.Fatalf("metadata = %#v, want host agent runtime profile", cfg.Metadata)
+	}
+	if cfg.Metadata["compatibilityEntry"] != "CreateWorkerAgent" {
+		t.Fatalf("metadata = %#v, want compatibility entry marker", cfg.Metadata)
+	}
+}
+
 func TestCreateWorkerAgent_EmptyHostID(t *testing.T) {
 	factory, _ := newTestFactory(t)
 
@@ -565,6 +726,56 @@ func TestCreateWorkerAgent_FiltersByToolAllowlist(t *testing.T) {
 	}
 	if info.Name != "exec_command" {
 		t.Fatalf("worker tool name = %q, want exec_command", info.Name)
+	}
+}
+
+func TestCreateWorkerAgent_AllowlistPreservesMandatoryInitialTools(t *testing.T) {
+	factory, registry := newTestFactory(t)
+
+	for _, name := range []string{
+		"read_file",
+		"exec_command",
+		"web_search",
+		"grep",
+		"list_mcp_resources",
+		"read_mcp_resource",
+		"skill_search",
+		"skill_read",
+	} {
+		registerFactoryTool(t, registry, &mockTool{
+			name:     name,
+			readOnly: true,
+			sessions: []string{"host", "workspace"},
+			modes:    []string{"chat", "inspect", "plan", "execute"},
+		})
+	}
+
+	factory.RegisterDefinition(&AgentDefinition{
+		Kind:          AgentKindWorker,
+		Name:          "restricted-worker",
+		MaxIterations: 10,
+		Tools:         []string{"read_file"},
+	})
+
+	cfg, err := factory.CreateWorkerAgent(context.Background(), "host-3", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	names := runtimeToolNames(t, cfg.Tools)
+	for _, want := range []string{
+		"read_file",
+		"exec_command",
+		"web_search",
+		"grep",
+		"list_mcp_resources",
+		"read_mcp_resource",
+		"skill_search",
+		"skill_read",
+	} {
+		if !containsFactoryToolName(names, want) {
+			t.Fatalf("worker tools = %v, missing %s", names, want)
+		}
 	}
 }
 
@@ -644,7 +855,7 @@ func TestAgentFactory_UsesSharedDefinitionRegistryToolAllowlist(t *testing.T) {
 				ToolName:   "service_metrics",
 			},
 		},
-		sessions: []string{"workspace"},
+		sessions: []string{"host"},
 		modes:    []string{"execute"},
 	})
 
@@ -664,15 +875,11 @@ func TestAgentFactory_UsesSharedDefinitionRegistryToolAllowlist(t *testing.T) {
 		t.Fatalf("CreateWorkerAgent() error = %v", err)
 	}
 
-	if len(cfg.Tools) != 1 {
-		t.Fatalf("worker tools len = %d, want 1", len(cfg.Tools))
-	}
-	info, err := cfg.Tools[0].Info(context.Background())
-	if err != nil {
-		t.Fatalf("tool info error = %v", err)
-	}
-	if info.Name != "service_metrics" {
-		t.Fatalf("worker tool name = %q, want service_metrics", info.Name)
+	names := runtimeToolNames(t, cfg.Tools)
+	for _, want := range []string{"service_metrics", "exec_command"} {
+		if !containsFactoryToolName(names, want) {
+			t.Fatalf("worker tools = %v, missing %s", names, want)
+		}
 	}
 }
 
@@ -696,7 +903,7 @@ func TestCreateWorkerAgent_PreservesMetadataTraitsWithoutKindMCPTool(t *testing.
 				ToolName:   "read_file",
 			},
 		},
-		sessions: []string{"workspace"},
+		sessions: []string{"host"},
 		modes:    []string{"execute"},
 	})
 
@@ -752,7 +959,7 @@ func TestCreateWorkerAgent_ToolAllowlistKeepsMetadataDrivenMCPTool(t *testing.T)
 				ToolName:   "read_file",
 			},
 		},
-		sessions: []string{"workspace"},
+		sessions: []string{"host"},
 		modes:    []string{"execute"},
 	})
 
@@ -788,7 +995,7 @@ func TestCreateWorkerAgent_PrefersBuiltinOverMetadataDrivenMCPConflict(t *testin
 		name:        "read_file",
 		description: "builtin tool",
 		readOnly:    true,
-		sessions:    []string{"workspace"},
+		sessions:    []string{"host"},
 		modes:       []string{"execute"},
 	})
 	registerFactoryTool(t, registry, &mockTool{
@@ -803,7 +1010,7 @@ func TestCreateWorkerAgent_PrefersBuiltinOverMetadataDrivenMCPConflict(t *testin
 				ToolName:   "read_file",
 			},
 		},
-		sessions: []string{"workspace"},
+		sessions: []string{"host"},
 		modes:    []string{"execute"},
 	})
 

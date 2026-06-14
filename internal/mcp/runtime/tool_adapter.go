@@ -18,7 +18,7 @@ func makeTool(server mcp.ServerConfig, governance mcp.ServerGovernance, def Tool
 		Origin:         tooling.ToolOriginMCP,
 		IsMCP:          true,
 		Layer:          tooling.ToolLayerDeferred,
-		Pack:           mcpToolPackName(server.ID),
+		Pack:           firstNonEmpty(server.ToolPack, mcpToolPackName(server.ID)),
 		DeferByDefault: true,
 		RiskLevel:      mcpToolRisk(def),
 		Mutating:       def.Destructive,
@@ -37,6 +37,7 @@ func makeTool(server mcp.ServerConfig, governance mcp.ServerGovernance, def Tool
 			Raw:        append(json.RawMessage(nil), def.Raw...),
 		},
 	}
+	meta = mcp.ApplyServerManifestToToolMetadata(server, meta, def.ReadOnly, def.Destructive)
 	meta = mcp.MergeMCPGovernance(server, governance, meta)
 	return &tooling.StaticTool{
 		Meta:             meta,

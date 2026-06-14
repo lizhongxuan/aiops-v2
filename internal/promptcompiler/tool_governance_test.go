@@ -162,6 +162,66 @@ func TestToolPromptSetOmitsHiddenFromPromptTools(t *testing.T) {
 	}
 }
 
+func TestToolPromptSetRendersCompactDeferredDirectoryWithoutSchemas(t *testing.T) {
+	compiler := NewCompiler()
+	deferred := schemaPromptTool{
+		readOnlyGovernancePromptTool: readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{
+			Name:           "coroot.service_metrics",
+			Description:    "Read service metric summaries from an external observability source",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "coroot_metrics",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:     "metrics",
+				ResourceTypes:      []string{"service", "resource"},
+				OperationKinds:     []string{"read", "query"},
+				LoadingPolicy:      tooling.ToolLoadingPolicyDeferred,
+				MCPServerID:        "coroot",
+				RequiresHealthyMCP: true,
+				RequiresSelect:     true,
+				PermissionScope:    "read",
+				SchemaBudgetClass:  "on_demand",
+			},
+		}},
+		inputSchema: json.RawMessage(`{"type":"object","properties":{"appId":{"type":"string"},"fromTimestamp":{"type":"integer"}},"required":["appId"]}`),
+	}
+	compiled, err := compiler.Compile(CompileContext{
+		AssembledTools: []Tool{
+			readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{Name: "tool_search", Description: "Search and select deferred tools", Layer: tooling.ToolLayerCore}},
+			readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{Name: "exec_command", Description: "Run bounded direct host inspection", Layer: tooling.ToolLayerCore}},
+		},
+		DeferredToolCatalog: []Tool{deferred},
+		MCPHealthSnapshot:   map[string]string{"coroot": "unavailable"},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	for _, want := range []string{
+		"## Deferred Tool Directory",
+		"coroot_metrics",
+		"capability=metrics",
+		"health=unavailable",
+		"select=required",
+		"Use tool_search/select before calling any deferred tool",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("deferred directory missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"coroot.service_metrics", "appId", "fromTimestamp", `"properties"`, `"required"`} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("deferred directory leaked schema/tool detail %q:\n%s", forbidden, content)
+		}
+	}
+	if len(compiled.Tools.DeferredDirectory) != 1 {
+		t.Fatalf("deferred directory entries = %d, want 1", len(compiled.Tools.DeferredDirectory))
+	}
+	if got := compiled.Tools.DeferredDirectory[0].Pack; got != "coroot_metrics" {
+		t.Fatalf("deferred directory pack = %q, want coroot_metrics", got)
+	}
+}
+
 type governancePromptTool struct {
 	meta tooling.ToolMetadata
 }
@@ -215,3 +275,10 @@ func (t readOnlyGovernancePromptTool) CheckPermissions(context.Context, json.Raw
 func (t readOnlyGovernancePromptTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 	return tooling.ToolResult{}, nil
 }
+
+type schemaPromptTool struct {
+	readOnlyGovernancePromptTool
+	inputSchema json.RawMessage
+}
+
+func (t schemaPromptTool) InputSchema() json.RawMessage { return t.inputSchema }

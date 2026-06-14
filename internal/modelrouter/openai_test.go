@@ -8,35 +8,43 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-type streamOnlyChatModel struct{}
+type directGenerateChatModel struct{}
 
-func (m *streamOnlyChatModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
-	return &schema.Message{Role: schema.Assistant}, nil
+func (m *directGenerateChatModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return schema.AssistantMessage("pong", nil), nil
 }
 
-func (m *streamOnlyChatModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+func (m *directGenerateChatModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	reader, writer := schema.Pipe[*schema.Message](2)
 	go func() {
 		defer writer.Close()
-		writer.Send(&schema.Message{Role: schema.Assistant, Content: "po"}, nil)
-		writer.Send(&schema.Message{Role: schema.Assistant, Content: "ng"}, nil)
+		writer.Send(&schema.Message{Role: schema.Assistant, ReasoningContent: "thinking"}, nil)
 	}()
 	return reader, nil
 }
 
-func (m *streamOnlyChatModel) BindTools([]*schema.ToolInfo) error {
+func (m *directGenerateChatModel) BindTools([]*schema.ToolInfo) error {
 	return nil
 }
 
-func TestStreamGenerateChatModelGenerateUsesStreamChunks(t *testing.T) {
-	wrapped := &streamGenerateChatModel{inner: &streamOnlyChatModel{}}
+func TestStreamGenerateChatModelGenerateUsesInnerGenerate(t *testing.T) {
+	wrapped := &streamGenerateChatModel{inner: &directGenerateChatModel{}}
 
 	msg, err := wrapped.Generate(context.Background(), []*schema.Message{schema.UserMessage("ping")})
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
 	if msg.Content != "pong" {
-		t.Fatalf("Generate() content = %q, want stream content", msg.Content)
+		t.Fatalf("Generate() content = %q, want inner generate content", msg.Content)
+	}
+}
+
+func TestOpenAIReasoningEffortOnlyAppliesToOpenAINativeReasoningModels(t *testing.T) {
+	if got := openAIReasoningEffortForModel("gpt-5.4", "high"); got != "high" {
+		t.Fatalf("gpt-5.4 effort = %q, want high", got)
+	}
+	if got := openAIReasoningEffortForModel("glm-4.7", "high"); got != "" {
+		t.Fatalf("glm-4.7 effort = %q, want empty OpenAI-native effort", got)
 	}
 }
 

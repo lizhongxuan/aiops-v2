@@ -130,9 +130,6 @@ func verificationCompletionMissingReport(decision VerificationCompletionDecision
 }
 
 func finalAnswerClaimsVerificationCompletion(answer string) bool {
-	if finalAnswerClaimsHighConfidence(answer) {
-		return true
-	}
 	text := strings.ToLower(strings.TrimSpace(answer))
 	for _, marker := range []string{
 		"已完成", "完成了", "修复完成", "已修复", "已验证", "验证通过", "全部通过", "问题已解决",

@@ -33,6 +33,12 @@ describe("HostOpsStatusPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("mx-auto");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("max-w-[46.5rem]");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("-mb-8");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("rounded-b-none");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("border-b-0");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).not.toContain("shadow-[");
     expect(container.textContent).toContain("共 5 个步骤，已经完成 0 个");
     expect(container.textContent).toContain("共 3 个主机 Agent");
     expect(container.textContent).toContain("Franklin(@1.1.1.1)");

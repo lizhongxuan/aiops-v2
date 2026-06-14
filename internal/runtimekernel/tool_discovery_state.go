@@ -53,10 +53,12 @@ type DeferredToolRejectedCall struct {
 }
 
 type ToolSelectionDelta struct {
-	LoadedTools []LoadedToolRef `json:"loadedTools,omitempty"`
-	LoadedPacks []LoadedPackRef `json:"loadedPacks,omitempty"`
-	NotLoaded   []string        `json:"notLoaded,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
+	LoadedTools      []LoadedToolRef   `json:"loadedTools,omitempty"`
+	LoadedPacks      []LoadedPackRef   `json:"loadedPacks,omitempty"`
+	NotLoaded        []string          `json:"notLoaded,omitempty"`
+	NotLoadedReasons map[string]string `json:"notLoadedReasons,omitempty"`
+	Reason           string            `json:"reason,omitempty"`
+	SelectedAt       time.Time         `json:"selectedAt,omitempty"`
 }
 
 type ToolCatalogSnapshot struct {
@@ -72,6 +74,7 @@ type ToolDiscoveryInvalidation struct {
 type ToolDiscoverySessionState struct {
 	LoadedTools         map[string]LoadedToolRef   `json:"loadedTools,omitempty"`
 	LoadedPacks         map[string]LoadedPackRef   `json:"loadedPacks,omitempty"`
+	LastSelection       *ToolSelectionDelta        `json:"lastSelection,omitempty"`
 	LastSearchResults   []ToolSearchMatchSnapshot  `json:"lastSearchResults,omitempty"`
 	RejectedCalls       []DeferredToolRejectedCall `json:"rejectedCalls,omitempty"`
 	ToolSurfaceRevision string                     `json:"toolSurfaceRevision,omitempty"`
@@ -82,6 +85,12 @@ type ToolDiscoverySessionState struct {
 func (s *ToolDiscoverySessionState) ApplySelection(delta ToolSelectionDelta, now time.Time) {
 	if s == nil {
 		return
+	}
+	applied := ToolSelectionDelta{
+		Reason:           strings.TrimSpace(delta.Reason),
+		SelectedAt:       now,
+		NotLoaded:        cloneSortedStrings(trimmedUniqueStrings(delta.NotLoaded)),
+		NotLoadedReasons: normalizeNotLoadedReasons(delta.NotLoadedReasons, delta.NotLoaded),
 	}
 	if s.LoadedTools == nil && len(delta.LoadedTools) > 0 {
 		s.LoadedTools = make(map[string]LoadedToolRef, len(delta.LoadedTools))
@@ -104,6 +113,7 @@ func (s *ToolDiscoverySessionState) ApplySelection(delta ToolSelectionDelta, now
 			ref.LoadedAt = now
 		}
 		s.LoadedTools[ref.Name] = ref
+		applied.LoadedTools = append(applied.LoadedTools, ref)
 	}
 	for _, ref := range delta.LoadedPacks {
 		ref.Name = strings.TrimSpace(ref.Name)
@@ -120,8 +130,12 @@ func (s *ToolDiscoverySessionState) ApplySelection(delta ToolSelectionDelta, now
 			ref.LoadedAt = now
 		}
 		s.LoadedPacks[ref.Name] = ref
+		applied.LoadedPacks = append(applied.LoadedPacks, ref)
 	}
-	if len(delta.LoadedTools) > 0 || len(delta.LoadedPacks) > 0 {
+	sortLoadedToolRefs(applied.LoadedTools)
+	sortLoadedPackRefs(applied.LoadedPacks)
+	if len(applied.LoadedTools) > 0 || len(applied.LoadedPacks) > 0 || len(applied.NotLoaded) > 0 {
+		s.LastSelection = &applied
 		s.UpdatedAt = now
 	}
 }
@@ -246,4 +260,62 @@ func cloneSortedStrings(values []string) []string {
 	out := append([]string(nil), values...)
 	sort.Strings(out)
 	return out
+}
+
+func trimmedUniqueStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func normalizeNotLoadedReasons(reasons map[string]string, notLoaded []string) map[string]string {
+	if len(reasons) == 0 || len(notLoaded) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(notLoaded))
+	for _, name := range trimmedUniqueStrings(notLoaded) {
+		allowed[name] = struct{}{}
+	}
+	out := make(map[string]string, len(reasons))
+	for name, reason := range reasons {
+		name = strings.TrimSpace(name)
+		reason = strings.TrimSpace(reason)
+		if name == "" || reason == "" {
+			continue
+		}
+		if _, ok := allowed[name]; !ok {
+			continue
+		}
+		out[name] = reason
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func sortLoadedToolRefs(values []LoadedToolRef) {
+	sort.Slice(values, func(i, j int) bool {
+		return values[i].Name < values[j].Name
+	})
+}
+
+func sortLoadedPackRefs(values []LoadedPackRef) {
+	sort.Slice(values, func(i, j int) bool {
+		return values[i].Name < values[j].Name
+	})
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/store"
@@ -169,9 +170,14 @@ func (s *defaultMCPService) collectItems() []MCPServerView {
 		}
 	}
 
+	registry := s.resolveRegistry()
 	items := make([]MCPServerView, 0, len(records))
 	for _, record := range records {
-		items = append(items, mapMCPServerRecord(record))
+		view := mapMCPServerRecord(record)
+		if registry != nil {
+			view.Health = healthForRegistry(registry, view.Name, view.Disabled)
+		}
+		items = append(items, view)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items
@@ -187,20 +193,23 @@ func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
+		s.setRegistryHealth(record.Name, mcp.HealthDisabled, nil, nil)
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 		return s.persist(record)
 	}
 	if err := s.register(record); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		_ = s.persist(record)
 		return err
 	}
 	s.setRegistryDisabled(record.Name, false)
 	if err := s.connectRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 		_ = s.persist(record)
@@ -208,6 +217,7 @@ func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error
 	}
 	record.Status = "connected"
 	record.Error = ""
+	s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
 	record.ToolCount = s.registryToolCount(record.Name)
 	record.ResourceCount = s.registryResourceCount(record.Name)
 	return s.persist(record)
@@ -228,16 +238,20 @@ func (s *defaultMCPService) refreshAll(ctx context.Context) error {
 			s.setRegistryDisabled(record.Name, true)
 			record.Status = "disconnected"
 			record.Error = ""
+			s.setRegistryHealth(record.Name, mcp.HealthDisabled, nil, nil)
 		} else if err := s.register(record); err != nil {
 			record.Status = "error"
-			record.Error = err.Error()
+			record.Error = redactedMCPError(err)
+			s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 			record.Status = "error"
-			record.Error = err.Error()
+			record.Error = redactedMCPError(err)
+			s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		} else {
 			s.setRegistryDisabled(record.Name, false)
 			record.Status = "connected"
 			record.Error = ""
+			s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
 		}
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
@@ -258,20 +272,24 @@ func (s *defaultMCPService) refreshOne(ctx context.Context, name string) error {
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
+		s.setRegistryHealth(record.Name, mcp.HealthDisabled, nil, nil)
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 		return s.persist(record)
 	}
 	if err := s.register(record); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 	} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 	} else {
 		s.setRegistryDisabled(record.Name, false)
 		record.Status = "connected"
 		record.Error = ""
+		s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 	}
@@ -288,6 +306,7 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 		_ = s.disconnectRuntime(ctx, record.Name)
 		record.Status = "disconnected"
 		record.Error = ""
+		s.setRegistryHealth(record.Name, mcp.HealthDisabled, nil, nil)
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 		s.setRegistryDisabled(record.Name, true)
@@ -295,14 +314,16 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 	}
 	if err := s.register(record); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		_ = s.persist(record)
 		return err
 	}
 	s.setRegistryDisabled(record.Name, false)
 	if err := s.connectRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
-		record.Error = err.Error()
+		record.Error = redactedMCPError(err)
+		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
 		_ = s.persist(record)
@@ -310,6 +331,7 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 	}
 	record.Status = "connected"
 	record.Error = ""
+	s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
 	record.ToolCount = s.registryToolCount(record.Name)
 	record.ResourceCount = s.registryResourceCount(record.Name)
 	return s.persist(record)
@@ -425,6 +447,26 @@ func (s *defaultMCPService) registryResourceCount(name string) int {
 	return 0
 }
 
+func (s *defaultMCPService) setRegistryHealth(name string, status mcp.HealthStatus, err error, capabilities []string) {
+	if registry := s.resolveRegistry(); registry != nil {
+		now := time.Now()
+		snapshot := mcp.HealthSnapshot{
+			ServerID:      strings.TrimSpace(name),
+			Status:        status,
+			LastCheckedAt: now,
+			TTLSeconds:    int(mcp.DefaultHealthTTL.Seconds()),
+			Capabilities:  append([]string(nil), capabilities...),
+		}
+		if status == mcp.HealthHealthy || status == mcp.HealthDegraded {
+			snapshot.LastSuccessAt = now
+		}
+		if err != nil {
+			snapshot.LastError = redactedMCPError(err)
+		}
+		registry.SetServerHealthSnapshot(snapshot)
+	}
+}
+
 func (s *defaultMCPService) connectRuntime(ctx context.Context, name string) error {
 	if s.runtime == nil {
 		return nil
@@ -506,7 +548,7 @@ func mapMCPServerRecord(record store.MCPServerRecord) MCPServerView {
 		Env:           cloneStringMap(record.Env),
 		Disabled:      record.Disabled,
 		Status:        firstNonEmpty(strings.TrimSpace(record.Status), statusFromRecord(record)),
-		Error:         strings.TrimSpace(record.Error),
+		Error:         mcp.RedactHealthError(record.Error),
 		ToolCount:     record.ToolCount,
 		ResourceCount: record.ResourceCount,
 	}
@@ -592,6 +634,32 @@ func statusForRegistry(registry *mcp.Registry, name, fallback string, disabled b
 		return fallback
 	}
 	return "disconnected"
+}
+
+func healthForRegistry(registry *mcp.Registry, name string, disabled bool) mcp.HealthSnapshot {
+	name = strings.TrimSpace(name)
+	if disabled {
+		return mcp.HealthSnapshot{
+			ServerID:      name,
+			Status:        mcp.HealthDisabled,
+			LastCheckedAt: time.Now(),
+			TTLSeconds:    int(mcp.DefaultHealthTTL.Seconds()),
+		}
+	}
+	if registry == nil {
+		return mcp.HealthSnapshot{ServerID: name, Status: mcp.HealthUnknown}
+	}
+	if snapshot, ok := registry.GetServerHealthSnapshot(name); ok {
+		return snapshot
+	}
+	return mcp.HealthSnapshot{ServerID: name, Status: mcp.HealthUnknown, TTLSeconds: int(mcp.DefaultHealthTTL.Seconds())}
+}
+
+func redactedMCPError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return mcp.RedactHealthError(err.Error())
 }
 
 func cloneMCPServerRecord(record store.MCPServerRecord) store.MCPServerRecord {

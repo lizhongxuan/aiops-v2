@@ -8,7 +8,8 @@ import { Field, LoadingState, SelectField, SettingsPageFrame, StatGrid, StatusAl
 import { DEFAULT_LLM_CONTEXT_TOKENS, fetchLlmConfig, type LlmConfigView, normalizeLlmContextTokens, updateLlmConfig } from "@/pages/settingsApi";
 
 const providers = [
-  { label: "OpenAI", value: "openai" },
+  { label: "OpenAI 兼容", value: "openai" },
+  { label: "智谱 GLM", value: "zhipu" },
   { label: "Anthropic", value: "anthropic" },
   { label: "Ollama", value: "ollama" },
 ];
@@ -21,15 +22,51 @@ const reasoningEffortOptions = [
 
 const modelPresets: Record<string, string[]> = {
   openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini", "o3-mini"],
+  zhipu: ["glm-4.7"],
   anthropic: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
   ollama: ["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "deepseek-coder-v2:16b"],
 };
 
 function defaultBaseURL(provider: string) {
   if (provider === "openai") return "https://api.openai.com/v1";
+  if (provider === "zhipu") return "https://api.z.ai/api/paas/v4";
   if (provider === "anthropic") return "https://api.anthropic.com";
   if (provider === "ollama") return "http://127.0.0.1:11434/v1";
   return "";
+}
+
+function providerLabel(provider: string) {
+  return providers.find((item) => item.value === provider)?.label || provider || "未选择";
+}
+
+function providerProtocolLabel(provider: string) {
+  if (provider === "openai" || provider === "zhipu") {
+    return "OpenAI 兼容接口";
+  }
+  if (provider === "anthropic") {
+    return "Anthropic API";
+  }
+  if (provider === "ollama") {
+    return "Ollama 本地接口";
+  }
+  return "自定义接口";
+}
+
+function inferProvider(config: Pick<LlmConfigView, "provider" | "model" | "baseURL"> | { provider?: string; model?: string; baseURL?: string } | null | undefined) {
+  const provider = String(config?.provider || "openai").trim() || "openai";
+  if (provider === "openai" && (isGLMModel(config?.model) || isZhipuBaseURL(config?.baseURL))) {
+    return "zhipu";
+  }
+  return provider;
+}
+
+function isGLMModel(model: unknown) {
+  return String(model || "").trim().toLowerCase().startsWith("glm-");
+}
+
+function isZhipuBaseURL(baseURL: unknown) {
+  const normalized = String(baseURL || "").trim().toLowerCase();
+  return normalized.includes("api.z.ai") || normalized.includes("open.bigmodel.cn");
 }
 
 export function LLMConfigPage() {
@@ -54,10 +91,11 @@ export function LLMConfigPage() {
     setLoading(true);
     try {
       const next = await fetchLlmConfig();
+      const provider = inferProvider(next);
       setConfig(next);
       setForm({
-        provider: next.provider || "openai",
-        model: next.model || "gpt-5.4",
+        provider,
+        model: next.model || modelPresets[provider]?.[0] || "gpt-5.4",
         apiKey: "",
         baseURL: next.baseURL || "",
         maxContextTokens: String(normalizeLlmContextTokens(next.maxContextTokens)),
@@ -79,8 +117,8 @@ export function LLMConfigPage() {
       payload.maxContextTokens = String(normalizeLlmContextTokens(payload.maxContextTokens));
       setForm((prev) => ({ ...prev, maxContextTokens: payload.maxContextTokens }));
       const result = await updateLlmConfig(payload);
-      setMessage({ type: result.ok === false ? "info" : "success", text: result.message || result.error || "配置已保存" });
       await load();
+      setMessage({ type: result.ok === false ? "info" : "success", text: result.ok === false ? result.message || result.error || "配置已保存" : "配置已保存" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "保存失败" });
     } finally {
@@ -95,22 +133,23 @@ export function LLMConfigPage() {
   return (
     <SettingsPageFrame
       title="LLM 配置"
-      description="配置主模型 Provider、模型名和兼容 OpenAI 格式的 Base URL。API Key 留空时保持现有密钥。"
+      description=""
       actions={
         <Button data-testid="llm-save-button" onClick={() => void save()} disabled={loading || saving}>
           <Save />
-          保存并重启 Runtime
+          {saving ? "保存中" : "保存配置"}
         </Button>
       }
     >
-      {message ? <StatusAlert type={message.type} title={message.type === "error" ? "操作失败" : "操作完成"} message={message.text} /> : null}
+      {message ? <StatusAlert type={message.type} title={message.type === "error" ? "保存失败" : "保存成功"} message={message.text} /> : null}
       {loading && !config ? (
         <LoadingState label="加载 LLM 配置" />
       ) : (
         <>
           <StatGrid
             items={[
-              { label: "Provider", value: config?.provider || form.provider },
+              { label: "模型接入", value: providerLabel(config ? inferProvider(config) : form.provider) },
+              { label: "接口协议", value: providerProtocolLabel(config ? inferProvider(config) : form.provider) },
               { label: "Model", value: config?.model || form.model },
               { label: "Context", value: normalizeLlmContextTokens(config?.maxContextTokens || form.maxContextTokens).toLocaleString() },
               { label: "API Key", value: config?.apiKeySet ? config.apiKeyMasked || "已设置" : "未设置", tone: config?.apiKeySet ? "ok" : "warn" },
@@ -123,7 +162,7 @@ export function LLMConfigPage() {
               <CardTitle>主 LLM 配置</CardTitle>
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
-              <Field label="Provider">
+              <Field label="模型接入">
                 <SelectField
                   aria-label="Provider"
                   value={form.provider}
@@ -133,7 +172,7 @@ export function LLMConfigPage() {
                       provider,
                       model: modelPresets[provider]?.[0] || form.model,
                       apiKey: "",
-                      baseURL: provider === "ollama" ? defaultBaseURL(provider) : "",
+                      baseURL: provider === "openai" || provider === "anthropic" ? "" : defaultBaseURL(provider),
                       maxContextTokens: form.maxContextTokens,
                       reasoningEffort: form.reasoningEffort,
                     })
@@ -148,7 +187,7 @@ export function LLMConfigPage() {
                   ))}
                 </datalist>
               </Field>
-              <Field label="上下文大小" hint="未填写时默认 200000；保存时最小为 10000。">
+              <Field label="上下文大小">
                 <Input
                   data-testid="llm-context-tokens-input"
                   type="number"
@@ -168,11 +207,11 @@ export function LLMConfigPage() {
                 />
               </Field>
               {needsApiKey ? (
-                <Field label="API Key" hint={config?.apiKeySet ? "已设置时留空会保持原密钥。" : "Provider 需要 API Key。"}>
+                <Field label="API Key">
                   <Input type="password" value={form.apiKey} onChange={(event) => setForm((prev) => ({ ...prev, apiKey: event.target.value }))} />
                 </Field>
               ) : null}
-              <Field label="Base URL" hint={`默认：${defaultBaseURL(form.provider) || "官方地址"}`}>
+              <Field label="Base URL">
                 <Input value={form.baseURL} onChange={(event) => setForm((prev) => ({ ...prev, baseURL: event.target.value }))} />
               </Field>
             </CardContent>

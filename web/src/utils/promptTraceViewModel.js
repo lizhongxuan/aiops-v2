@@ -104,6 +104,7 @@ export function parsePromptTrace(input) {
   const riskyTools = visibleTools.filter((tool) => RISKY_TOOLS.has(tool));
   const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
   const contextGovernance = buildContextGovernanceViewModel(payload);
+  const toolSurface = buildToolSurfaceViewModel(payload, visibleTools);
 
   return {
     raw: redactSensitiveValue(payload),
@@ -131,7 +132,9 @@ export function parsePromptTrace(input) {
       risky: riskyTools,
       registryText: toolRegistryText,
       registryCharCount: toolRegistryText.length,
+      surface: toolSurface,
     },
+    toolSurface,
     agentUiSources,
     agentUiArtifacts: agentUiSources.flatArtifacts,
     contextGovernance,
@@ -171,6 +174,7 @@ export function compactText(value) {
 export function redactSensitiveText(value = "") {
   let text = compactText(value);
   if (!text) return "";
+  text = text.replace(/([a-z][a-z0-9+.-]*:\/\/)([^@\s,;]*?:)([^@\s,;]+)(@)/gi, `$1$2${SENSITIVE_VALUE}$4`);
   text = text.replace(/(request\s*body\s*[:=]\s*)(\{[\s\S]*?\}|\[[\s\S]*?\]|"[^"]*"|'[^']*'|\S+)/gi, `$1${SENSITIVE_VALUE}`);
   text = text.replace(/((?:api[\s_-]*key|token|password|secret|cookie|authorization)\s*[:=]\s*)(["']?)[^\s,;}\]"']+/gi, `$1${SENSITIVE_VALUE}`);
   text = text.replace(/(["'](?:api[\s_-]*key|token|password|secret|cookie|authorization)["']\s*:\s*)(["'])(?:\\.|(?!\2).)*\2/gi, `$1$2${SENSITIVE_VALUE}$2`);
@@ -371,6 +375,150 @@ function buildContextGovernanceViewModel(payload = {}) {
     materializationEvents,
     externalReferences,
   };
+}
+
+function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
+  const top = isPlainObject(payload.toolSurfaceTrace) ? payload.toolSurfaceTrace : {};
+  const promptTrace = isPlainObject(payload.promptInputTrace) ? payload.promptInputTrace : {};
+  const loadedTools = collectStringList(top.loadedTools, payload.loadedToolsDelta, promptTrace.loadedToolsDelta);
+  const loadedPacks = collectStringList(top.loadedPacks, payload.loadedPacksDelta, promptTrace.loadedPacksDelta);
+  const selectionEvents = [
+    ...collectionToRecords(payload.toolSelectionEvents, "id"),
+    ...collectionToRecords(promptTrace.toolSelectionEvents, "id"),
+  ];
+  const selectedTools = collectStringList(
+    top.selectedTools,
+    loadedTools,
+    ...selectionEvents.map((event) => event.loadedTools),
+  );
+  const initialTools = collectStringList(top.initialTools);
+  const effectiveInitialTools = initialTools.length ? initialTools : deriveInitialTools(visibleTools, selectedTools);
+  const deferredFamilies = normalizeDeferredFamilies(firstCollection(top.deferredFamilies, promptTrace.deferredToolDirectory));
+  const filteredTools = normalizeFilteredTools(firstCollection(top.filteredTools), selectionEvents);
+  const mcpHealth = normalizeMcpHealth(top.mcpHealth, deferredFamilies);
+  const toolSearchEvents = normalizeToolSearchEvents(firstCollection(top.toolSearchEvents, payload.toolSearchEvents, promptTrace.toolSearchEvents));
+  const rejectedToolReasons = normalizeRejectedToolReasons(firstCollection(top.rejectedToolReasons, payload.rejectedToolCalls, promptTrace.rejectedToolCalls));
+
+  return {
+    summary: {
+      initialToolCount: effectiveInitialTools.length,
+      baseRegistryCount: numberOrZero(top.baseRegistryCount) || effectiveInitialTools.length,
+      deferredFamilyCount: deferredFamilies.length,
+      loadedToolCount: loadedTools.length,
+      loadedPackCount: loadedPacks.length,
+      filteredToolCount: filteredTools.length,
+      mcpHealthCount: mcpHealth.length,
+      toolSearchEventCount: toolSearchEvents.length,
+      selectedToolCount: selectedTools.length,
+      rejectedToolReasonCount: rejectedToolReasons.length,
+    },
+    initialTools: effectiveInitialTools,
+    deferredFamilies,
+    loadedTools,
+    loadedPacks,
+    filteredTools,
+    mcpHealth,
+    toolSearchEvents,
+    selectedTools,
+    rejectedToolReasons,
+  };
+}
+
+function deriveInitialTools(visibleTools = [], selectedTools = []) {
+  const selected = new Set(selectedTools.map(compactText));
+  return collectStringList(visibleTools).filter((tool) => !selected.has(tool));
+}
+
+function normalizeDeferredFamilies(value) {
+  return collectionToRecords(value, "pack").map((entry) => ({
+    pack: redactSensitiveText(firstText(entry.pack, entry.name)),
+    capability: redactSensitiveText(firstText(entry.capability, entry.capabilityKind, entry.capability_kind)),
+    source: redactSensitiveText(firstText(entry.source)),
+    mcpServerId: redactSensitiveText(firstText(entry.mcpServerId, entry.mcp_server_id, entry.mcpServerID)),
+    healthStatus: redactSensitiveText(firstText(entry.healthStatus, entry.health_status)),
+    unavailableReason: redactSensitiveText(firstText(entry.unavailableReason, entry.unavailable_reason)),
+    toolCount: numberOrZero(entry.toolCount || entry.tool_count),
+    requiresHealth: Boolean(entry.requiresHealth || entry.requires_health),
+    requiresApproval: Boolean(entry.requiresApproval || entry.requires_approval),
+    requiresSelect: Boolean(entry.requiresSelect || entry.requires_select),
+    resourceTypes: collectStringList(entry.resourceTypes, entry.resource_types),
+    operationKinds: collectStringList(entry.operationKinds, entry.operation_kinds),
+  })).filter((entry) => entry.pack || entry.capability || entry.mcpServerId);
+}
+
+function normalizeFilteredTools(directValue, selectionEvents = []) {
+  const byTool = new Map();
+  for (const entry of collectionToRecords(directValue, "toolName")) {
+    const toolName = redactSensitiveText(firstText(entry.toolName, entry.tool_name, entry.name));
+    if (!toolName) continue;
+    byTool.set(toolName, {
+      toolName,
+      reason: redactSensitiveText(firstText(entry.reason, entry.errorType, entry.error_type)),
+    });
+  }
+  for (const event of selectionEvents) {
+    const reasons = isPlainObject(event.notLoadedReasons) ? event.notLoadedReasons : {};
+    for (const name of collectStringList(event.notLoaded, event.not_loaded)) {
+      if (!name || byTool.has(name)) continue;
+      byTool.set(name, {
+        toolName: name,
+        reason: redactSensitiveText(firstText(reasons[name], event.reason)),
+      });
+    }
+  }
+  return Array.from(byTool.values());
+}
+
+function normalizeMcpHealth(value, deferredFamilies = []) {
+  const byServer = new Map();
+  if (isPlainObject(value)) {
+    for (const [serverId, status] of Object.entries(value)) {
+      const key = redactSensitiveText(serverId);
+      if (!key) continue;
+      byServer.set(key, {
+        serverId: key,
+        status: redactSensitiveText(compactText(status)),
+      });
+    }
+  }
+  for (const family of deferredFamilies) {
+    if (!family.mcpServerId || byServer.has(family.mcpServerId)) continue;
+    const status = family.healthStatus || (family.requiresHealth ? "unknown" : "");
+    if (!status) continue;
+    byServer.set(family.mcpServerId, {
+      serverId: family.mcpServerId,
+      status: redactSensitiveText(status),
+    });
+  }
+  return Array.from(byServer.values()).sort((left, right) => left.serverId.localeCompare(right.serverId));
+}
+
+function normalizeToolSearchEvents(value) {
+  return collectionToRecords(value, "id").map((event, index) => ({
+    id: redactSensitiveText(firstText(event.id, `tool-search-${index + 1}`)),
+    mode: redactSensitiveText(firstText(event.mode)),
+    query: redactSensitiveText(firstText(event.query)),
+    matchCount: numberOrZero(event.matchCount || event.match_count),
+    matches: collectStringList(event.matches),
+    reason: redactSensitiveText(firstText(event.reason)),
+  }));
+}
+
+function normalizeRejectedToolReasons(value) {
+  return collectionToRecords(value, "toolName").map((entry) => ({
+    toolName: redactSensitiveText(firstText(entry.toolName, entry.tool_name, entry.name)),
+    errorType: redactSensitiveText(firstText(entry.errorType, entry.error_type)),
+    reason: redactSensitiveText(firstText(entry.reason)),
+    requiredAction: redactSensitiveText(firstText(entry.requiredAction, entry.required_action)),
+  })).filter((entry) => entry.toolName || entry.reason || entry.errorType);
+}
+
+function firstCollection(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length > 0) return value;
+    if (isPlainObject(value) && Object.keys(value).length > 0) return value;
+  }
+  return [];
 }
 
 function normalizeContextGovernanceEvent(source, index) {

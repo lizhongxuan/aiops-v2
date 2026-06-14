@@ -39,6 +39,15 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
 		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.DiscoveryGroup != "runbook" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+		t.Fatalf("search_ops_manuals discovery = %+v, want deferred runbook select-only discovery", discovery)
+	}
+	for _, want := range []string{"manual", "runbook", "procedure"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("search_ops_manuals resource types = %#v, missing %q", discovery.ResourceTypes, want)
+		}
+	}
 	if len(meta.Description) > 600 {
 		t.Fatalf("description length = %d, want <= 600: %q", len(meta.Description), meta.Description)
 	}
@@ -118,6 +127,20 @@ func TestRegisterBuiltinsInstallsRunOpsManualPreflight(t *testing.T) {
 	}
 	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
 		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
+	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.DiscoveryGroup != "runbook" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+		t.Fatalf("run_ops_manual_preflight discovery = %+v, want deferred runbook select-only discovery", discovery)
+	}
+	for _, want := range []string{"manual", "runbook", "preflight"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("run_ops_manual_preflight resource types = %#v, missing %q", discovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"preflight", "read"} {
+		if !containsString(discovery.OperationKinds, want) {
+			t.Fatalf("run_ops_manual_preflight operation kinds = %#v, missing %q", discovery.OperationKinds, want)
+		}
 	}
 	if !tool.IsReadOnly(json.RawMessage(`{"manual_id":"manual-redis-rca","parameters":{"target_instance":"redis-01"}}`)) {
 		t.Fatal("run_ops_manual_preflight must be read-only")

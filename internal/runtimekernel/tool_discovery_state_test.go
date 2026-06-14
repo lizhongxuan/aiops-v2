@@ -33,6 +33,57 @@ func TestToolDiscoveryStateApplySelection(t *testing.T) {
 	}
 }
 
+func TestToolDiscoveryStateRecordsNotLoadedSelectionReasons(t *testing.T) {
+	now := time.Unix(120, 0)
+	var state ToolDiscoverySessionState
+	state.ApplySelection(ToolSelectionDelta{
+		LoadedTools: []LoadedToolRef{{Name: "synthetic.ready"}},
+		NotLoaded:   []string{"synthetic.unavailable"},
+		NotLoadedReasons: map[string]string{
+			"synthetic.unavailable": "mcp_unavailable",
+		},
+		Reason: "need live evidence",
+	}, now)
+
+	if state.LastSelection == nil {
+		t.Fatal("LastSelection = nil, want selection delta")
+	}
+	if got := state.LastSelection.NotLoaded; !reflect.DeepEqual(got, []string{"synthetic.unavailable"}) {
+		t.Fatalf("LastSelection.NotLoaded = %#v", got)
+	}
+	if got := state.LastSelection.NotLoadedReasons["synthetic.unavailable"]; got != "mcp_unavailable" {
+		t.Fatalf("NotLoadedReasons[synthetic.unavailable] = %q, want mcp_unavailable", got)
+	}
+
+	events := toolSelectionTraceEventsFromDiscovery(state)
+	if len(events) != 1 {
+		t.Fatalf("trace events = %d, want 1", len(events))
+	}
+	if got := events[0].NotLoaded; !reflect.DeepEqual(got, []string{"synthetic.unavailable"}) {
+		t.Fatalf("trace NotLoaded = %#v", got)
+	}
+	if got := events[0].NotLoadedReasons["synthetic.unavailable"]; got != "mcp_unavailable" {
+		t.Fatalf("trace NotLoadedReasons[synthetic.unavailable] = %q, want mcp_unavailable", got)
+	}
+}
+
+func TestApplyToolSearchDiscoveryStatePersistsNotLoadedReasons(t *testing.T) {
+	session := &SessionState{ID: "sess-tool-search-not-loaded"}
+	applyToolSearchDiscoveryState(session, "tool_search", ToolResult{
+		Content: `{"mode":"select","selection":{"loadedTools":["synthetic.ready"],"notLoaded":["synthetic.unavailable"],"notLoadedReasons":{"synthetic.unavailable":"mcp_unavailable"},"reason":"need live evidence"}}`,
+	}, "turn-1")
+
+	if got := session.ToolDiscovery.EnabledTools(); !reflect.DeepEqual(got, []string{"synthetic.ready"}) {
+		t.Fatalf("EnabledTools = %#v", got)
+	}
+	if session.ToolDiscovery.LastSelection == nil {
+		t.Fatal("LastSelection = nil, want selection delta")
+	}
+	if got := session.ToolDiscovery.LastSelection.NotLoadedReasons["synthetic.unavailable"]; got != "mcp_unavailable" {
+		t.Fatalf("LastSelection.NotLoadedReasons[synthetic.unavailable] = %q, want mcp_unavailable", got)
+	}
+}
+
 func TestToolDiscoveryStateInvalidatesOnFingerprintChange(t *testing.T) {
 	now := time.Unix(100, 0)
 	state := ToolDiscoverySessionState{}

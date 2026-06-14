@@ -13,6 +13,8 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+const corootObservabilityReadonlyPack = "observability-readonly"
+
 type corootInput struct {
 	Project             string   `json:"project,omitempty"`
 	AppID               string   `json:"appId,omitempty"`
@@ -134,8 +136,10 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 		},
 		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			payload, rawRef, err := execute(ctx, input)
+			resultErr := ""
 			if err != nil {
 				payload = corootStructuredError(name, rawRef, err)
+				resultErr = corootToolResultError(name, err)
 			}
 			modelPayload := withCorootEnvelopeFields(corootModelFacingPayload(payload))
 			modelData, marshalErr := json.Marshal(modelPayload)
@@ -149,6 +153,7 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 			}
 			return tooling.ToolResult{
 				Content: string(modelData),
+				Error:   resultErr,
 				Display: &tooling.ToolDisplayPayload{
 					Type:  "coroot",
 					Title: name,
@@ -157,6 +162,18 @@ func newCorootTool(name, description string, schema json.RawMessage, visibility 
 			}, nil
 		},
 	}
+}
+
+func corootToolResultError(toolName string, err error) string {
+	errText := strings.TrimSpace(err.Error())
+	if errText == "" {
+		errText = "coroot tool failed"
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		toolName = "coroot"
+	}
+	return toolName + " failed: " + errText
 }
 
 func corootToolPrompt(name string) string {
@@ -183,14 +200,26 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 		Description: description,
 		Domain:      "coroot",
 		RiskLevel:   tooling.ToolRiskLow,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			DiscoveryGroup:     "observability",
+			ToolPackIDs:        []string{corootObservabilityReadonlyPack},
+			RequiresHealthyMCP: true,
+			LoadingPolicy:      tooling.ToolLoadingPolicyDeferred,
+			PermissionScope:    "read",
+			PromptBudgetClass:  "compact",
+			SchemaBudgetClass:  "on_demand",
+		},
 	}
 	switch name {
 	case "coroot.list_services":
-		meta.Layer = tooling.ToolLayerCore
+		configureCorootDeferredTool(&meta, "mcp_dynamic_coroot", []string{"observability", "services", "service health", "应用", "服务", "健康状态"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application"}, []string{"list", "read"})
 	case "coroot.health_check", "coroot.list_projects", "coroot.get_project_status":
 		configureCorootDeferredTool(&meta, "coroot_admin_read", []string{"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"})
+		setCorootDiscovery(&meta, "observability", []string{"observability_platform", "project"}, []string{"read", "list"})
 	case "coroot.collect_rca_context":
 		configureCorootDeferredTool(&meta, "coroot_rca", []string{"RCA", "root cause", "根因", "异常", "warning", "告警", "延迟升高", "error rate", "SLO", "topology", "依赖", "CPU", "memory", "内存", "net", "网络", "指标", "图表", "趋势", "时序", "metric", "metrics", "chart", "timeseries"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application", "incident", "dependency"}, []string{"read", "summarize"})
 	case "coroot.service_metrics", "coroot.slo_status":
 		configureCorootDeferredTool(&meta, "coroot_metrics", []string{
 			"metric", "metrics", "指标", "图表", "chart", "timeseries", "趋势", "时序", "SLO", "slo status", "service metrics", "latency", "error rate",
@@ -198,28 +227,40 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 			"memory", "内存", "内存使用", "内存占用", "内存使用率", "memory usage", "memory utilization",
 			"network", "网络", "resource usage", "resource utilization", "资源", "资源占用", "资源使用", "占用率", "使用率",
 		})
+		setCorootDiscovery(&meta, "metrics", []string{"service", "application", "slo", "resource"}, []string{"read", "query"})
 	case "coroot.rca_report":
 		configureCorootDeferredTool(&meta, "coroot_rca_reference", []string{"coroot rca", "RCA reference", "native RCA", "rca report", "root cause report", "Coroot 根因", "根因报告"})
+		setCorootDiscovery(&meta, "observability", []string{"service", "application", "incident"}, []string{"read"})
 	case "coroot.service_topology":
 		configureCorootDeferredTool(&meta, "coroot_topology", []string{"topology", "service topology", "dependency", "dependencies", "拓扑", "依赖", "依赖图", "服务拓扑"})
+		setCorootDiscovery(&meta, "topology", []string{"service", "application", "dependency"}, []string{"read"})
 	case "coroot.nodes_overview", "coroot.get_node":
 		configureCorootDeferredTool(&meta, "coroot_nodes", []string{"node", "nodes", "host", "hosts", "infrastructure", "infra", "主机", "节点", "机器", "基础设施"})
+		setCorootDiscovery(&meta, "observability", []string{"host", "node", "infrastructure"}, []string{"read", "list"})
 	case "coroot.traces_overview", "coroot.application_traces":
 		configureCorootDeferredTool(&meta, "coroot_traces", []string{"trace", "traces", "tracing", "span", "spans", "distributed tracing", "链路", "调用链", "trace id"})
+		setCorootDiscovery(&meta, "traces", []string{"service", "application", "trace"}, []string{"read", "query"})
 	case "coroot.deployments_overview":
 		configureCorootDeferredTool(&meta, "coroot_deployments", []string{"deployment", "deployments", "deploy", "release", "rollout", "rollback", "发布", "部署", "变更"})
+		setCorootDiscovery(&meta, "observability", []string{"deployment", "change", "service"}, []string{"read", "list"})
 	case "coroot.risks_overview":
 		configureCorootDeferredTool(&meta, "coroot_risks", []string{"risk", "risks", "security risk", "availability risk", "风险", "隐患"})
+		setCorootDiscovery(&meta, "observability", []string{"risk", "service", "application"}, []string{"read", "list"})
 	case "coroot.application_logs":
 		configureCorootDeferredTool(&meta, "coroot_logs", []string{"log", "logs", "logging", "error log", "日志", "错误日志"})
+		setCorootDiscovery(&meta, "logs", []string{"service", "application", "log"}, []string{"read", "query"})
 	case "coroot.application_profiling":
 		configureCorootDeferredTool(&meta, "coroot_profiling", []string{"profile", "profiling", "flamegraph", "CPU profile", "memory profile", "pprof", "火焰图", "性能剖析"})
+		setCorootDiscovery(&meta, "profiling", []string{"service", "application", "profile"}, []string{"read", "query"})
 	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
 		configureCorootDeferredTool(&meta, "coroot_incident", []string{"incident", "incidents", "alert", "alerts", "告警", "事件", "事故", "timeline", "时间线"})
+		setCorootDiscovery(&meta, "incidents", []string{"incident", "alert", "service", "application"}, []string{"read", "list"})
 	case "coroot.list_dashboards", "coroot.get_dashboard", "coroot.get_panel_data":
 		configureCorootDeferredTool(&meta, "coroot_dashboard", []string{"dashboard", "dashboards", "panel", "chart", "coroot panel", "仪表盘", "看板", "面板"})
+		setCorootDiscovery(&meta, "metrics", []string{"dashboard", "panel", "chart"}, []string{"read", "query"})
 	case "coroot.list_integrations", "coroot.get_integration", "coroot.list_inspections", "coroot.get_inspection_config", "coroot.get_application_categories", "coroot.get_custom_applications":
 		configureCorootDeferredTool(&meta, "coroot_config_read", []string{"integration", "integrations", "inspection", "inspections", "configuration", "config", "category", "custom application", "集成", "巡检", "配置", "应用分类", "自定义应用"})
+		setCorootDiscovery(&meta, "observability", []string{"configuration", "integration", "inspection"}, []string{"read", "list"})
 	}
 	return meta
 }
@@ -230,6 +271,19 @@ func configureCorootDeferredTool(meta *tooling.ToolMetadata, pack string, trigge
 	meta.DeferByDefault = true
 	meta.Triggers = append([]string(nil), triggers...)
 	meta.SearchHint = strings.Join(triggers, " ")
+	meta.Discovery.ToolPackIDs = append(meta.Discovery.ToolPackIDs, corootObservabilityReadonlyPack, pack)
+	meta.Discovery.LoadingPolicy = tooling.ToolLoadingPolicyDeferred
+	meta.Discovery.RequiresHealthyMCP = true
+	meta.Discovery.PermissionScope = "read"
+	meta.Discovery.PromptBudgetClass = "compact"
+	meta.Discovery.SchemaBudgetClass = "on_demand"
+	meta.Discovery.DiscoveryTags = append(meta.Discovery.DiscoveryTags, triggers...)
+}
+
+func setCorootDiscovery(meta *tooling.ToolMetadata, capability string, resources []string, operations []string) {
+	meta.Discovery.CapabilityKind = capability
+	meta.Discovery.ResourceTypes = append(meta.Discovery.ResourceTypes, resources...)
+	meta.Discovery.OperationKinds = append(meta.Discovery.OperationKinds, operations...)
 }
 
 func withCorootEnvelopeFields(payload any) any {

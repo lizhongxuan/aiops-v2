@@ -1,5 +1,12 @@
 import httpClient from "./httpClient";
 import { resolveUiFixtureRuntime } from "@/lib/uiFixtureRuntime";
+import type {
+  AiopsHostAgentEvidenceTrace,
+  AiopsHostAgentPromptSection,
+  AiopsHostAgentRuntimeProfile,
+  AiopsHostAgentToolTrace,
+  AiopsHostAgentTraceEntry,
+} from "@/transport/aiopsTransportTypes";
 
 export type HostTranscriptItemType =
   | "manager_message"
@@ -25,6 +32,16 @@ export type HostOpsTranscriptItem = {
 export type HostChildAgentTranscript = {
   childAgentId: string;
   items: HostOpsTranscriptItem[];
+  runtimeProfile?: AiopsHostAgentRuntimeProfile;
+  contextDecisions?: AiopsHostAgentTraceEntry[];
+  promptSections?: AiopsHostAgentPromptSection[];
+  toolSurfaceSnapshot?: AiopsHostAgentToolTrace[];
+  mcpInstructionDeltas?: AiopsHostAgentTraceEntry[];
+  skillActivationTrace?: AiopsHostAgentTraceEntry[];
+  approvalTrace?: AiopsHostAgentTraceEntry[];
+  evidenceTrace?: AiopsHostAgentEvidenceTrace[];
+  reportTimeline?: AiopsHostAgentTraceEntry[];
+  agentMessages?: AiopsHostAgentTraceEntry[];
 };
 
 type HostOpsHttpClient = {
@@ -61,6 +78,18 @@ export function normalizeChildAgentTranscript(payload: unknown): HostChildAgentT
   return {
     childAgentId: stringValue(payload.childAgentId ?? payload.child_agent_id),
     items: Array.isArray(payload.items) ? payload.items.map(normalizeTranscriptItem) : [],
+    runtimeProfile: isRecord(payload.runtimeProfile ?? payload.runtime_profile)
+      ? (payload.runtimeProfile ?? payload.runtime_profile) as AiopsHostAgentRuntimeProfile
+      : undefined,
+    contextDecisions: traceArray(payload.contextDecisions ?? payload.context_decisions),
+    promptSections: traceArray(payload.promptSections ?? payload.prompt_sections) as AiopsHostAgentPromptSection[] | undefined,
+    toolSurfaceSnapshot: traceArray(payload.toolSurfaceSnapshot ?? payload.tool_surface_snapshot) as AiopsHostAgentToolTrace[] | undefined,
+    mcpInstructionDeltas: traceArray(payload.mcpInstructionDeltas ?? payload.mcp_instruction_deltas),
+    skillActivationTrace: traceArray(payload.skillActivationTrace ?? payload.skill_activation_trace),
+    approvalTrace: traceArray(payload.approvalTrace ?? payload.approval_trace),
+    evidenceTrace: traceArray(payload.evidenceTrace ?? payload.evidence_trace) as AiopsHostAgentEvidenceTrace[] | undefined,
+    reportTimeline: traceArray(payload.reportTimeline ?? payload.report_timeline),
+    agentMessages: traceArray(payload.agentMessages ?? payload.agent_messages),
   };
 }
 
@@ -100,6 +129,10 @@ function stringValue(value: unknown): string {
 function optionalString(value: unknown): string | undefined {
   const normalized = stringValue(value);
   return normalized ? normalized : undefined;
+}
+
+function traceArray(value: unknown): AiopsHostAgentTraceEntry[] | undefined {
+  return Array.isArray(value) ? value.map((item) => isRecord(item) ? item : { content: stringValue(item) }) : undefined;
 }
 
 function getFixtureChildAgentTranscript(childAgentId: string): unknown | undefined {

@@ -122,6 +122,8 @@ func NewSkillSearchTool(registry *skills.Registry) tooling.Tool {
 			Name:        "skill_search",
 			Description: "Search available skills by compact metadata before reading a skill body",
 			Origin:      tooling.ToolOriginMeta,
+			Layer:       tooling.ToolLayerCore,
+			AlwaysLoad:  true,
 			RiskLevel:   tooling.ToolRiskLow,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind:      "search",
@@ -149,6 +151,8 @@ func NewSkillReadTool(registry *skills.Registry) tooling.Tool {
 			Name:        "skill_read",
 			Description: "Read one selected skill body with a bounded range and a reason",
 			Origin:      tooling.ToolOriginMeta,
+			Layer:       tooling.ToolLayerCore,
+			AlwaysLoad:  true,
 			RiskLevel:   tooling.ToolRiskLow,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind:      "read",

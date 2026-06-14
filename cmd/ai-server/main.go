@@ -251,9 +251,11 @@ func run() error {
 	}
 	pluginSpecs = append(pluginSpecs, builtinSpecs...)
 	grpcServer := server.NewGRPCServerWithAuthenticator(hostAgentGRPCAuthenticator{repo: dataStore})
+	terminalPolicyService := appui.NewTerminalPolicyService(filepath.Join(dataDir, "terminal-command-policies.json"))
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{
 		EvidenceService: evidenceService,
 		HostRepository:  dataStore,
+		TerminalPolicy:  terminalPolicyService,
 		HostAgentCommandRunner: hostAgentCommandRunner{
 			grpc:          grpcServer,
 			repo:          dataStore,
@@ -369,6 +371,7 @@ func run() error {
 		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
 		appui.WithHostAgentTokenStore(hostAgentTokenStore),
 		appui.WithHostOpsService(appui.NewHostOpsService(hostOpsMissions, hostOpsTranscripts, hostOpsOrchestrator)),
+		appui.WithTerminalPolicyService(terminalPolicyService),
 	}
 	if runnerRuntime != nil {
 		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
@@ -978,6 +981,15 @@ func (a *registryAdapter) AssembleToolPoolWithMetadata(session runtimekernel.Ses
 	return tooling.AssembleEinoToolPool(a.assembledToolsWithMetadata(string(session), string(mode), metadata))
 }
 
+func (a *registryAdapter) AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool {
+	if a.tools == nil {
+		return nil
+	}
+	opts.MetadataTransform = a.withFlagMetadataTransform(opts.MetadataTransform)
+	opts.Filter = a.withFlagToolFilter(opts.Filter)
+	return a.tools.AssembleToolsWithOptions(session, mode, opts)
+}
+
 func (a *registryAdapter) RefreshToken(session runtimekernel.SessionType, mode runtimekernel.Mode) string {
 	if a.tools == nil {
 		return ""
@@ -1012,11 +1024,37 @@ func (a *registryAdapter) assembledToolsWithMetadata(session, mode string, metad
 	}
 	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{
 		MetadataTransform: a.flags.ApplyToolMetadata,
-		Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-			return a.flags.IsToolVisible(meta)
-		},
+		Filter:            a.flagsToolFilter(),
 	}, metadata)
 	return a.tools.AssembleToolsWithOptions(session, mode, opts)
+}
+
+func (a *registryAdapter) withFlagMetadataTransform(next func(tooling.ToolMetadata) tooling.ToolMetadata) func(tooling.ToolMetadata) tooling.ToolMetadata {
+	return func(meta tooling.ToolMetadata) tooling.ToolMetadata {
+		meta = a.flags.ApplyToolMetadata(meta)
+		if next != nil {
+			meta = next(meta)
+		}
+		return meta
+	}
+}
+
+func (a *registryAdapter) withFlagToolFilter(next func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool) func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
+	return func(tool tooling.Tool, ctx tooling.ToolContext, meta tooling.ToolMetadata) bool {
+		if !a.flags.IsToolVisible(meta) {
+			return false
+		}
+		if next != nil {
+			return next(tool, ctx, meta)
+		}
+		return true
+	}
+}
+
+func (a *registryAdapter) flagsToolFilter() func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
+	return func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
+		return a.flags.IsToolVisible(meta)
+	}
 }
 
 // ---------------------------------------------------------------------------

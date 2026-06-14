@@ -1252,6 +1252,109 @@ export function createToolProgressiveDiscoveryFixtureSessions(overrides = {}) {
   });
 }
 
+export function createToolMcpSlimmingFixtureState(overrides = {}) {
+  const now = "2026-06-12T10:00:00Z";
+  const finalText = [
+    "CPU 资源来自当前主机 direct host evidence：load average 1.12/1.04/0.98，CPU idle 82.4%，核心数 8。",
+    "Coroot 当前 unavailable，未执行 Coroot tool，也没有用不可用 MCP 数据支撑正常结论。",
+    "initial visible tools (4): exec_command, tool_search, update_plan, list_mcp_resources。",
+  ].join("\n");
+  const state = createChatFixtureState({
+    sessionId: "tool-mcp-slimming-chat",
+    threadId: "tool-mcp-slimming-chat",
+    status: "idle",
+    cards: [
+      {
+        id: "user-tool-mcp-cpu",
+        type: "UserMessageCard",
+        role: "user",
+        text: "查看当前主机 CPU 资源信息。",
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "assistant-tool-mcp-cpu",
+        type: "AssistantMessageCard",
+        role: "assistant",
+        text: finalText,
+        status: "completed",
+        createdAt: "2026-06-12T10:00:12Z",
+        updatedAt: "2026-06-12T10:00:12Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "server-local" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText,
+    ...overrides,
+  });
+  const turn = state.turns[state.currentTurnId];
+  turn.status = "completed";
+  turn.startedAt = now;
+  turn.completedAt = "2026-06-12T10:00:12Z";
+  turn.updatedAt = "2026-06-12T10:00:12Z";
+  turn.process = [
+    {
+      id: "initial-tool-surface",
+      kind: "system",
+      displayKind: "tool_surface",
+      status: "completed",
+      text: "initial visible tools (4): exec_command, tool_search, update_plan, list_mcp_resources",
+      updatedAt: "2026-06-12T10:00:01Z",
+    },
+    {
+      id: "direct-host-evidence",
+      kind: "tool",
+      displayKind: "exec_command",
+      status: "completed",
+      text: "exec_command uptime && top -l 1 -s 0 used direct host evidence for current host CPU resource query",
+      outputPreview: "direct host evidence: load average 1.12/1.04/0.98; CPU idle 82.4%; ncpu=8",
+      updatedAt: "2026-06-12T10:00:06Z",
+    },
+    {
+      id: "coroot-filtered",
+      kind: "system",
+      displayKind: "mcp_health_gate",
+      status: "completed",
+      text: "coroot mcp unavailable candidate filtered; reason=mcp_unavailable; no coroot tool executed",
+      outputPreview: "Coroot unavailable; fallback evidence source=exec_command",
+      updatedAt: "2026-06-12T10:00:07Z",
+    },
+    {
+      id: "historical-trend-healthy-path",
+      kind: "tool",
+      displayKind: "tool_search",
+      status: "completed",
+      text: "historical trend intent with healthy observability mcp can select coroot.metrics.query",
+      outputPreview: "selected tool delta: +coroot.metrics.query when mcpHealth=healthy",
+      updatedAt: "2026-06-12T10:00:08Z",
+    },
+  ];
+  return state;
+}
+
+export function createToolMcpSlimmingFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "tool-mcp-slimming-chat",
+    sessions: [
+      {
+        id: "tool-mcp-slimming-chat",
+        kind: "single_host",
+        title: "Tool MCP slimming",
+        status: "idle",
+        messageCount: 2,
+        preview: "查看当前主机 CPU 资源信息",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-12T10:00:12Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 export function createSkillsMcpProgressiveDiscoveryFixtureState(overrides = {}) {
   const now = "2026-06-06T03:00:00Z";
   const finalText = `## synthetic skills mcp final
@@ -2376,6 +2479,13 @@ export function resolveUiFixturePreset(key = "") {
         name: "tool-progressive-discovery",
         state: createToolProgressiveDiscoveryFixtureState(),
         sessions: createToolProgressiveDiscoveryFixtureSessions(),
+      };
+    case "tool-mcp-slimming":
+    case "tool_mcp_slimming":
+      return {
+        name: "tool-mcp-slimming",
+        state: createToolMcpSlimmingFixtureState(),
+        sessions: createToolMcpSlimmingFixtureSessions(),
       };
     case "skills-mcp-progressive-discovery":
     case "skills_mcp_progressive_discovery":

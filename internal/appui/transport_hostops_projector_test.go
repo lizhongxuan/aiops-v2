@@ -31,7 +31,7 @@ func TestTransportProjectorIncludesHostMissionAndChildAgents(t *testing.T) {
 		"inputSummary":"为每台主机启动子 Agent",
 		"outputSummary":"spawned 2 host agents",
 		"outputPreview":{"children":[
-			{"id":"child-a","missionId":"hostops:turn-hostops","sessionId":"host-child:a","hostId":"host-a","hostAddress":"1.1.1.1","hostDisplayName":"Franklin","role":"host_child","task":"执行主机 A 准备步骤","currentStepTitle":"执行主机 A 准备步骤","status":"running","startedAt":"2026-06-04T10:00:01Z","updatedAt":"2026-06-04T10:00:02Z"},
+			{"id":"child-a","missionId":"hostops:turn-hostops","sessionId":"host-child:a","hostId":"host-a","hostAddress":"1.1.1.1","hostDisplayName":"Franklin","role":"host_child","task":"执行主机 A 准备步骤","currentStepTitle":"执行主机 A 准备步骤","status":"running","startedAt":"2026-06-04T10:00:01Z","updatedAt":"2026-06-04T10:00:02Z","runtimeProfile":"host_agent_full_runtime","activeSubtaskId":"subtask-prepare-a","agentMessageRefs":["agent-message-prepare-a"],"promptSections":[{"id":"host_agent.binding.v1","source":"host-task","retentionRank":"P0","compactAction":"kept_original","redaction":"not_required"}],"contextDecisions":[{"kind":"plan_step","decision":"included","reason":"assigned_step","retentionRank":"P1"}],"toolSurface":[{"name":"host_command","visible":true,"reason":"bound_host_tool"}],"evidenceTrace":[{"id":"evidence-prepare-a","source":"host_agent_tool","ref":"artifact://evidence/prepare-a","redaction":"applied"}],"reportTimeline":[{"id":"report-prepare-a","status":"completed","hostId":"host-a","planStepId":"prepare-a","summary":"主机 A 准备步骤完成"}]},
 			{"id":"child-b","missionId":"hostops:turn-hostops","sessionId":"host-child:b","hostId":"host-b","hostAddress":"1.1.1.2","hostDisplayName":"Harriet","role":"host_child","task":"执行主机 B 配置步骤","currentStepTitle":"执行主机 B 配置步骤","status":"waiting","startedAt":"2026-06-04T10:00:01Z","updatedAt":"2026-06-04T10:00:02Z"}
 		]}
 	}`)
@@ -90,6 +90,25 @@ func TestTransportProjectorIncludesHostMissionAndChildAgents(t *testing.T) {
 	}
 	if projected.ChildAgents["child-a"].CurrentStepTitle != "执行主机 A 准备步骤" {
 		t.Fatalf("child current step = %q, want projected current step", projected.ChildAgents["child-a"].CurrentStepTitle)
+	}
+	childA := projected.ChildAgents["child-a"]
+	if childA.RuntimeProfile != "host_agent_full_runtime" || childA.ActiveSubtaskID != "subtask-prepare-a" {
+		t.Fatalf("child trace identity = profile:%q activeSubtask:%q, want full runtime profile and active subtask", childA.RuntimeProfile, childA.ActiveSubtaskID)
+	}
+	if len(childA.PromptSections) != 1 || childA.PromptSections[0].ID != "host_agent.binding.v1" || childA.PromptSections[0].RetentionRank != "P0" {
+		t.Fatalf("child prompt sections = %#v, want host binding P0 trace", childA.PromptSections)
+	}
+	if len(childA.ContextDecisions) != 1 || childA.ContextDecisions[0].Decision != "included" {
+		t.Fatalf("child context decisions = %#v, want included assigned step", childA.ContextDecisions)
+	}
+	if len(childA.ToolSurface) != 1 || !childA.ToolSurface[0].Visible || childA.ToolSurface[0].Name != "host_command" {
+		t.Fatalf("child tool surface = %#v, want visible host_command", childA.ToolSurface)
+	}
+	if len(childA.EvidenceTrace) != 1 || childA.EvidenceTrace[0].Source != "host_agent_tool" {
+		t.Fatalf("child evidence trace = %#v, want host_agent_tool evidence", childA.EvidenceTrace)
+	}
+	if len(childA.ReportTimeline) != 1 || childA.ReportTimeline[0].Status != "completed" {
+		t.Fatalf("child report timeline = %#v, want completed report", childA.ReportTimeline)
 	}
 	subagentBlock := findTransportProcessBlock(t, projected.Turns["turn-hostops"].Process, AiopsTransportProcessKindSubagent)
 	if subagentBlock.DisplayKind != "hostops.spawn_host_agent" || subagentBlock.Status != AiopsTransportProcessStatusCompleted {

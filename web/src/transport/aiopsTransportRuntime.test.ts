@@ -5,6 +5,7 @@ import {
   createInitialAiopsTransportState,
   markAiopsTransportCanceled,
   markAiopsTransportFailed,
+  normalizeAiopsTransportState,
 } from "./aiopsTransportRuntime";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
@@ -35,6 +36,28 @@ describe("aiopsTransportRuntime", () => {
     expect(state.childAgents).toEqual({});
     expect(state.activeHostMissionId).toBeUndefined();
     expect(new Date(state.updatedAt).toString()).not.toBe("Invalid Date");
+  });
+
+  it("normalizes nullable host mission arrays from runtime snapshots", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-null-host-mission"),
+      hostMissions: {
+        "mission-1": {
+          id: "mission-1",
+          turnId: "turn-1",
+          status: "running",
+          planRequired: true,
+          planAccepted: true,
+          mentionedHosts: null,
+          childAgentIds: null,
+          planSteps: null,
+        },
+      },
+    } as unknown as Partial<AiopsTransportState>);
+
+    expect(state.hostMissions["mission-1"].mentionedHosts).toEqual([]);
+    expect(state.hostMissions["mission-1"].childAgentIds).toEqual([]);
+    expect(state.hostMissions["mission-1"].planSteps).toBeUndefined();
   });
 
   it("builds custom AssistantTransport commands from the current state", () => {

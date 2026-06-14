@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/resourceio"
 	"aiops-v2/internal/tooling"
 )
@@ -216,6 +217,68 @@ func TestReadContextArtifactToolReturnsRangeReference(t *testing.T) {
 	if ref.Range.Offset != 6 || ref.Range.Limit != 4 {
 		t.Fatalf("reference range = %#v, want offset 6 limit 4", ref.Range)
 	}
+}
+
+func TestCompileContextAddsReadContextArtifactOnlyWhenContextArtifactEnabled(t *testing.T) {
+	store := NewMemoryContextArtifactRepository()
+	registry := tooling.NewRegistry()
+	if err := registry.Register(&tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "synthetic.core_read",
+			Description: "synthetic core read",
+			Layer:       tooling.ToolLayerCore,
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "ok"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register core tool failed: %v", err)
+	}
+	kernel := &EinoKernel{
+		tools:        &testMockToolAssemblySource{registry: registry},
+		artifactRepo: store,
+	}
+
+	withoutArtifactState := kernel.compileContext(SessionTypeHost, ModeChat, nil)
+	if contextArtifactTestHasTool(withoutArtifactState.AssembledTools, "read_context_artifact") {
+		t.Fatalf("read_context_artifact should not be prompt-visible without context artifact state: %v", contextArtifactTestToolNames(withoutArtifactState.AssembledTools))
+	}
+
+	withArtifactState := kernel.compileContext(SessionTypeHost, ModeChat, map[string]string{
+		"enableToolPack": "context_artifact",
+	})
+	if !contextArtifactTestHasTool(withArtifactState.AssembledTools, "read_context_artifact") {
+		t.Fatalf("read_context_artifact missing when context artifact pack is enabled: %v", contextArtifactTestToolNames(withArtifactState.AssembledTools))
+	}
+	for _, toolDef := range withArtifactState.AssembledTools {
+		if toolDef == nil || toolDef.Metadata().Name != "read_context_artifact" {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if meta.Layer != tooling.ToolLayerConditional || meta.Pack != "context_artifact" {
+			t.Fatalf("read_context_artifact metadata = %#v, want conditional context_artifact", meta)
+		}
+	}
+}
+
+func contextArtifactTestHasTool(tools []promptcompiler.Tool, name string) bool {
+	for _, toolDef := range tools {
+		if toolDef != nil && toolDef.Metadata().Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func contextArtifactTestToolNames(tools []promptcompiler.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		names = append(names, toolDef.Metadata().Name)
+	}
+	return names
 }
 
 type contextArtifactTestSpillRepo struct {

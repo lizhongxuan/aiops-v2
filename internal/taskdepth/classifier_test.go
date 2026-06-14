@@ -32,6 +32,16 @@ func TestClassifyOperationsRequiresValidation(t *testing.T) {
 	}
 }
 
+func TestClassifyReadOnlyHostInspectionInExecuteModeStaysSimpleRead(t *testing.T) {
+	profile := Classify(Options{Input: "查看主机 CPU 和内存资源", Mode: "execute"})
+	if profile.Level != LevelSimpleRead {
+		t.Fatalf("level = %s, want %s; profile=%+v", profile.Level, LevelSimpleRead, profile)
+	}
+	if profile.RequiresPlan || profile.RequiresEvidence || profile.RequiresValidation {
+		t.Fatalf("read-only host inspection should not require operations gates: %+v", profile)
+	}
+}
+
 func TestClassifyMultiHostIsMultiAgent(t *testing.T) {
 	profile := Classify(Options{Input: "同时排查多个目标主机的资源使用异常", Mode: "chat", Metadata: map[string]string{"hostMentionCount": "2"}})
 	if profile.Level != LevelMultiAgent {

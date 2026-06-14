@@ -156,7 +156,7 @@ func notCheckedItemsFromDiscovery(discovery ToolDiscoverySessionState) []NotChec
 	out := make([]NotCheckedItem, 0, len(discovery.RejectedCalls))
 	for _, call := range discovery.RejectedCalls {
 		switch strings.TrimSpace(call.ErrorType) {
-		case "tool_unloaded", "tool_hidden_by_policy", "tool_not_found", "dedicated_tool_preferred":
+		case "tool_unloaded", "tool_hidden_by_policy", "tool_not_found", "dedicated_tool_preferred", "mcp_unavailable":
 		default:
 			continue
 		}

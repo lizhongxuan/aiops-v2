@@ -80,6 +80,24 @@ describe("AiopsComposer host mention fuzzy search", () => {
     expect(input.value).toBe("@120.77.239.90 ");
   });
 
+  it("uses attached chat composer styling without extra top gutter", async () => {
+    await renderComposer(root);
+
+    const shell = container.querySelector('[data-testid="aiops-composer-shell"]') as HTMLDivElement;
+    const composerFrame = Array.from(shell.querySelectorAll("div")).find((element) =>
+      String(element.className).includes("max-w-[49.5rem]"),
+    );
+    const composerRoot = Array.from(shell.querySelectorAll("div")).find((element) =>
+      String(element.className).includes("rounded-[1.5rem]"),
+    );
+
+    expect(shell.className).toContain("pt-0");
+    expect(composerFrame?.className).toContain("max-w-[49.5rem]");
+    expect(composerRoot?.className).toContain("relative");
+    expect(composerRoot?.className).toContain("z-10");
+    expect(composerRoot?.className).toContain("rounded-[1.5rem]");
+  });
+
   it("uses keyboard navigation and keeps send behavior after insertion", async () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;

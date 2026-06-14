@@ -71,6 +71,18 @@ func newTool(name, description string, schema json.RawMessage, visibility toolin
 			DeferByDefault: true,
 			Triggers:       []string{"业务影响", "依赖关系", "服务图谱", "runbook", "impact", "dependency", "graph"},
 			RiskLevel:      tooling.ToolRiskLow,
+			SearchHint:     "topology impact dependency service graph related runbook",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				DiscoveryGroup:    "opsgraph",
+				DiscoveryTags:     []string{"topology", "impact", "dependency", "graph", "runbook"},
+				CapabilityKind:    opsGraphCapabilityKind(name),
+				ResourceTypes:     []string{"opsgraph", "service", "dependency", "business_capability", "runbook"},
+				OperationKinds:    opsGraphOperationKinds(name),
+				RequiresSelect:    true,
+				PermissionScope:   "read",
+				PromptBudgetClass: "compact",
+				SchemaBudgetClass: "on_demand",
+			},
 		},
 		Visibility:       visibility,
 		InputSchemaData:  schema,
@@ -98,6 +110,32 @@ func newTool(name, description string, schema json.RawMessage, visibility toolin
 				Display: &tooling.ToolDisplayPayload{Type: "opsgraph", Title: name, Data: data},
 			}, nil
 		},
+	}
+}
+
+func opsGraphCapabilityKind(name string) string {
+	switch name {
+	case "opsgraph.lookup":
+		return "search"
+	case "opsgraph.business_impact":
+		return "impact"
+	case "opsgraph.related_runbooks":
+		return "runbook"
+	default:
+		return "topology"
+	}
+}
+
+func opsGraphOperationKinds(name string) []string {
+	switch name {
+	case "opsgraph.lookup":
+		return []string{"search", "read"}
+	case "opsgraph.business_impact":
+		return []string{"summarize", "read"}
+	case "opsgraph.related_runbooks":
+		return []string{"query", "read"}
+	default:
+		return []string{"query", "read"}
 	}
 }
 

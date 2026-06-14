@@ -349,6 +349,23 @@ func mcpInstructionDeltaTraceEvents(state mcp.MCPInstructionSessionState) []prom
 }
 
 func toolSelectionTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.ToolSelectionTraceEvent {
+	if discovery.LastSelection != nil {
+		selection := discovery.LastSelection
+		loadedTools := loadedToolRefNames(selection.LoadedTools)
+		loadedPacks := loadedPackRefNames(selection.LoadedPacks)
+		notLoaded := cloneSortedStrings(selection.NotLoaded)
+		if len(loadedTools) == 0 && len(loadedPacks) == 0 && len(notLoaded) == 0 {
+			return nil
+		}
+		return []promptinput.ToolSelectionTraceEvent{{
+			Source:           "tool_search.select",
+			Reason:           firstNonEmptyString(selection.Reason, "session_enabled_tool_surface"),
+			LoadedTools:      loadedTools,
+			LoadedPacks:      loadedPacks,
+			NotLoaded:        notLoaded,
+			NotLoadedReasons: cloneStringMap(selection.NotLoadedReasons),
+		}}
+	}
 	tools := discovery.EnabledTools()
 	packs := discovery.EnabledPacks()
 	if len(tools) == 0 && len(packs) == 0 {
@@ -360,6 +377,62 @@ func toolSelectionTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) 
 		LoadedTools: tools,
 		LoadedPacks: packs,
 	}}
+}
+
+func loadedToolRefNames(refs []LoadedToolRef) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if name := strings.TrimSpace(ref.Name); name != "" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func loadedPackRefNames(refs []LoadedPackRef) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if name := strings.TrimSpace(ref.Name); name != "" {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key == "" || value == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func rejectedToolCallTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.RejectedToolCallTraceEvent {

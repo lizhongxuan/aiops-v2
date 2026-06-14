@@ -643,7 +643,8 @@ describe("React settings pages", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderPath("/settings/llm");
 
-    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    expect(container.textContent).not.toContain("保存并重启 Runtime");
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
     expect(saveLlm).toBeTruthy();
     await act(async () => {
       saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -653,6 +654,7 @@ describe("React settings pages", () => {
       "/api/v1/llm-config",
       expect.objectContaining({ method: "PUT" }),
     );
+    expect(container.textContent).toContain("配置已保存");
 
     await remountPath("/settings/skills");
     const deleteSkill = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("删除"));
@@ -690,7 +692,7 @@ describe("React settings pages", () => {
     const reasoningSelect = container.querySelector('[data-testid="llm-reasoning-effort-select"]') as HTMLSelectElement;
     expect(reasoningSelect?.value).toBe("high");
 
-    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
     await act(async () => {
       saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -701,6 +703,61 @@ describe("React settings pages", () => {
     const body = requestBodyFromCall(llmPutCall as unknown[]);
     expect(body.maxContextTokens).toBe(131072);
     expect(body.reasoningEffort).toBe("high");
+  });
+
+  it("does not show explanatory helper text on the LLM config page", async () => {
+    await renderPath("/settings/llm");
+
+    expect(container.textContent).not.toContain("配置主模型接入、接口协议、模型名和 Base URL");
+    expect(container.textContent).not.toContain("模型接入与接口配置");
+    expect(container.textContent).not.toContain("未填写时默认");
+    expect(container.textContent).not.toContain("保存时最小");
+    expect(container.textContent).not.toContain("已设置时留空会保持原密钥");
+    expect(container.textContent).not.toContain("OpenAI 兼容接口可填网关地址");
+  });
+
+  it("keeps GLM models under the Zhipu provider instead of OpenAI", async () => {
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    expect(providerSelect?.value).toBe("openai");
+
+    const options = Array.from(container.querySelectorAll("#llm-model-presets option")).map((option) => option.getAttribute("value"));
+    expect(options).not.toContain("glm-4.7");
+
+    await act(async () => {
+      providerSelect.value = "zhipu";
+      providerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flush();
+
+    const zhipuOptions = Array.from(container.querySelectorAll("#llm-model-presets option")).map((option) => option.getAttribute("value"));
+    expect(providerSelect.value).toBe("zhipu");
+    expect(zhipuOptions).toContain("glm-4.7");
+    expect((container.querySelector('input[list="llm-model-presets"]') as HTMLInputElement)?.value).toBe("glm-4.7");
+    expect(container.textContent).toContain("OpenAI 兼容接口");
+  });
+
+  it("displays legacy OpenAI-compatible GLM config as Zhipu GLM", async () => {
+    vi.mocked(globalThis.fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/llm-config") && init?.method !== "PUT") {
+        return jsonResponse({
+          ...llmPayload,
+          provider: "openai",
+          model: "glm-4.7",
+          baseURL: "https://api.z.ai/api/paas/v4",
+        });
+      }
+      return mockFetch(input, init);
+    });
+
+    await renderPath("/settings/llm");
+
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((select) => select.getAttribute("aria-label") === "Provider") as HTMLSelectElement;
+    expect(providerSelect?.value).toBe("zhipu");
+    expect(container.textContent).toContain("智谱 GLM");
+    expect(container.textContent).not.toContain("PROVIDERopenai");
   });
 
   it("keeps the LLM reasoning effort when switching provider before saving", async () => {
@@ -716,7 +773,7 @@ describe("React settings pages", () => {
     await flush();
     expect(reasoningSelect.value).toBe("high");
 
-    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存并重启 Runtime"));
+    const saveLlm = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("保存配置"));
     await act(async () => {
       saveLlm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });

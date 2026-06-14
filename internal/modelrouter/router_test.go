@@ -169,6 +169,58 @@ func TestResolveModelCapabilitiesForLargeOpenAIModel(t *testing.T) {
 	}
 }
 
+func TestResolveModelCapabilitiesForGLM47OpenAICompatibleModel(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "openai",
+		Model:           "glm-4.7",
+		ReasoningEffort: "high",
+	})
+
+	if caps.Provider != "openai" || caps.Model != "glm-4.7" {
+		t.Fatalf("capabilities route = %s/%s, want openai/glm-4.7", caps.Provider, caps.Model)
+	}
+	if caps.MaxContextTokens != 200000 {
+		t.Fatalf("max context = %d, want 200000", caps.MaxContextTokens)
+	}
+	if caps.MaxOutputTokens != 128000 {
+		t.Fatalf("max output = %d, want 128000", caps.MaxOutputTokens)
+	}
+	if !caps.SupportsToolCalls || !caps.SupportsStreaming || !caps.SupportsReasoning {
+		t.Fatalf("glm-4.7 capabilities missing tool/streaming/reasoning support: %#v", caps)
+	}
+	if caps.NativeReasoning {
+		t.Fatalf("glm-4.7 should not be treated as OpenAI-native reasoning_effort model: %#v", caps)
+	}
+	if caps.ReasoningEffortApplied != "" || caps.ReasoningFallbackPolicy == "" {
+		t.Fatalf("glm-4.7 reasoning metadata = %#v, want prompt fallback not native effort", caps)
+	}
+}
+
+func TestResolveModelCapabilitiesForZhipuGLM47(t *testing.T) {
+	r := NewRouter("openai", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "zhipu",
+		Model:           "glm-4.7",
+		ReasoningEffort: "high",
+	})
+
+	if caps.Provider != "zhipu" || caps.Model != "glm-4.7" {
+		t.Fatalf("capabilities route = %s/%s, want zhipu/glm-4.7", caps.Provider, caps.Model)
+	}
+	if caps.MaxContextTokens != 200000 || caps.MaxOutputTokens != 128000 {
+		t.Fatalf("glm-4.7 context/output caps = %d/%d, want 200000/128000", caps.MaxContextTokens, caps.MaxOutputTokens)
+	}
+	if !caps.SupportsToolCalls || !caps.SupportsStreaming || !caps.SupportsReasoning {
+		t.Fatalf("zhipu glm-4.7 capabilities missing tool/streaming/reasoning support: %#v", caps)
+	}
+	if caps.NativeReasoning {
+		t.Fatalf("zhipu glm-4.7 must not use OpenAI-native reasoning_effort: %#v", caps)
+	}
+}
+
 func TestModelRouterReportsReasoningCapability(t *testing.T) {
 	r := NewRouter("openai", nil, nil)
 

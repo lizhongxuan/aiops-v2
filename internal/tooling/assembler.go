@@ -111,6 +111,13 @@ func (a *Assembler) StableToolFingerprint(session, mode string, opts AssembleOpt
 	writeFingerprintPart(h, "scope-tenant", opts.TenantID)
 	writeFingerprintPart(h, "scope-user", opts.UserID)
 	writeFingerprintPart(h, "scope-profile", opts.Profile)
+	writeFingerprintPart(h, "context-artifact-available", fmtBoolForFingerprint(opts.ContextArtifactAvailable))
+	for _, capability := range sortedFingerprintStrings(opts.RuntimeCapabilities) {
+		writeFingerprintPart(h, "runtime-capability", capability)
+	}
+	for _, serverID := range sortedFingerprintMapKeys(opts.MCPHealthSnapshot) {
+		writeFingerprintPart(h, "mcp-health", serverID+"="+opts.MCPHealthSnapshot[serverID])
+	}
 
 	for _, provider := range a.providers {
 		if tokenProvider, ok := any(provider).(DynamicToolRefreshTokenProvider); ok {
@@ -186,4 +193,26 @@ func writeFingerprintPart(h interface{ Write([]byte) (int, error) }, kind, value
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(value))
 	_, _ = h.Write([]byte{0})
+}
+
+func fmtBoolForFingerprint(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func sortedFingerprintStrings(values []string) []string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return out
+}
+
+func sortedFingerprintMapKeys(values map[string]string) []string {
+	out := make([]string, 0, len(values))
+	for key := range values {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -26,8 +26,8 @@ func Classify(opts Options) Profile {
 		reasons = append(reasons, "multi-agent or multi-host wording")
 	}
 
-	if strings.EqualFold(strings.TrimSpace(opts.Mode), "execute") ||
-		containsAny(input, []string{"恢复", "修复", "重启", "回滚", "迁移", "备份", "扩容", "缩容", "删除", "变更", "执行"}) {
+	mutationIntent := containsAny(input, []string{"恢复", "修复", "重启", "回滚", "迁移", "备份", "扩容", "缩容", "删除", "变更", "执行"})
+	if mutationIntent || (strings.EqualFold(strings.TrimSpace(opts.Mode), "execute") && !isReadOnlyInspectionIntent(input)) {
 		level = maxLevel(level, LevelOperations)
 		reasons = append(reasons, "operation or mutation intent")
 	}
@@ -51,6 +51,19 @@ func Classify(opts Options) Profile {
 		reasons = append(reasons, "simple conversational request")
 	}
 	return profileFor(level, reasons)
+}
+
+func isReadOnlyInspectionIntent(input string) bool {
+	if input == "" {
+		return false
+	}
+	if containsAny(input, []string{"恢复", "修复", "重启", "回滚", "迁移", "备份", "扩容", "缩容", "删除", "变更", "执行", "restart", "rollback", "delete", "remove", "scale", "migrate", "backup", "restore", "change"}) {
+		return false
+	}
+	return containsAny(input, []string{
+		"查看", "查询", "看下", "看一下", "获取", "显示", "列出", "列表", "当前", "状态", "资源", "使用率", "指标", "信息",
+		"show", "view", "check", "inspect", "read", "get", "list", "status", "usage", "resource", "resources", "info",
+	})
 }
 
 func profileFor(level Level, reasons []string) Profile {

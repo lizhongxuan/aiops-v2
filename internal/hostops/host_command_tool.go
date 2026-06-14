@@ -49,6 +49,9 @@ type HostCommandToolResult struct {
 	PlanStepID       string
 	HostID           string
 	Command          string
+	RedactedCommand  string
+	Summary          string
+	EvidenceRef      string
 	PolicyDecision   CommandPolicyDecision
 	CommandResult    HostCommandResult
 }
@@ -85,8 +88,10 @@ func (t *HostCommandTool) Run(ctx context.Context, req HostCommandToolRequest) (
 		PlanStepID:       req.PlanStepID,
 		HostID:           req.HostID,
 		Command:          req.Command,
+		RedactedCommand:  RedactSensitiveText(req.Command),
 		PolicyDecision:   decision,
 		ApprovalRequired: decision.RequiresApproval,
+		EvidenceRef:      hostCommandEvidenceRef(req),
 	}
 	if !decision.Allowed || decision.RequiresApproval {
 		if t != nil && t.approvals != nil {
@@ -123,6 +128,7 @@ func (t *HostCommandTool) Run(ctx context.Context, req HostCommandToolRequest) (
 	result.Executed = true
 	result.ApprovalRequired = false
 	result.CommandResult = commandResult
+	result.Summary = summarizeHostCommandResult(commandResult)
 	return result, nil
 }
 
@@ -140,7 +146,8 @@ func (t *HostCommandTool) auditSecurityRefusal(ctx context.Context, req HostComm
 			"childAgentId": req.ChildAgentID,
 			"planStepId":   req.PlanStepID,
 			"hostId":       req.HostID,
-			"command":      req.Command,
+			"command":      RedactSensitiveText(req.Command),
+			"eventKind":    "host_agent.tool.called",
 		},
 	})
 }
@@ -157,6 +164,21 @@ func normalizeHostCommandToolRequest(req HostCommandToolRequest) HostCommandTool
 		req.RiskLevel = opssemantic.ClassifyRisk(req.Command)
 	}
 	return req
+}
+
+func hostCommandEvidenceRef(req HostCommandToolRequest) string {
+	return "evidence://" + req.MissionID + "/" + req.HostID + "/" + req.PlanStepID + "/" + digestText(req.ChildAgentID + ":" + req.Command)[:12]
+}
+
+func summarizeHostCommandResult(result HostCommandResult) string {
+	summary := firstNonEmptyString(result.Error, result.Stderr, result.Stdout, result.Status)
+	if summary == "" {
+		summary = "command completed"
+	}
+	if len(summary) > 240 {
+		summary = summary[:240]
+	}
+	return RedactSensitiveText(summary)
 }
 
 func validateHostCommandToolRequest(req HostCommandToolRequest) error {

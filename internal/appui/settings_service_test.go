@@ -135,6 +135,21 @@ func TestSettingsServiceDefaultsToGPT54WhenRepoIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSettingsServiceDefaultModelOptionsIncludeGLM47(t *testing.T) {
+	svc := NewSettingsService(&settingsRepoStub{})
+
+	settings, err := svc.GetSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetSettings() error = %v", err)
+	}
+	for _, option := range settings.Models {
+		if option.ID == "glm-4.7" && option.Name == "GLM-4.7" {
+			return
+		}
+	}
+	t.Fatalf("default model options = %+v, want GLM-4.7 option", settings.Models)
+}
+
 func TestSettingsServiceSyncsLLMConfigToAuthSummary(t *testing.T) {
 	ResetAuthSummaryForTest()
 	manager := auth.NewManager(nil)

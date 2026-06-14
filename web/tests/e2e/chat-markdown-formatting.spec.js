@@ -57,6 +57,30 @@ upstream backend {
 
 const DENSE_CHINESE_PARAGRAPH = "经过检查，nginx 服务当前运行正常。主要指标如下：CPU 使用率 12%，内存占用 256MB，活跃连接数 42。upstream 后端 service-a 出现间歇性超时，建议调整 proxy_read_timeout 参数。同时建议开启 access_log 的 buffer 模式以减少磁盘 IO。";
 
+const CPU_RESOURCE_WITH_FINAL_CONCLUSION = `主机CPU情况如下：
+
+**硬件配置**
+
+- CPU核心数：10核
+
+**实时状态（2026-06-13 10:07:49）**
+
+- CPU使用率：
+  - 用户空间：7.16%
+  - 系统内核：10.90%
+  - 空闲：81.93%
+- 负载平均值：3.88（1分钟）、3.09（5分钟）、2.65（15分钟）
+
+**系统运行情况**
+
+- 系统运行时间：58天19小时52分钟
+- 总进程数：698个（2个运行中，696个睡眠中）
+- 线程总数：5657个
+
+评估结论
+
+CPU负载正常，空闲率较高（81.93%），当前没有发现 CPU 饱和风险。`;
+
 const MIXED_CHINESE_MARKDOWN = `## 诊断结果
 
 nginx 中间件整体运行正常，以下是详细分析：
@@ -192,6 +216,25 @@ test.describe("Chat markdown formatting — LLM output fidelity", () => {
     const html = await mdBody.innerHTML();
     expect(html).toContain("经过检查");
     expect(html).toContain("nginx");
+  });
+
+  test("final CPU assessment stays fully visible above the composer", async ({ page }) => {
+    const cards = buildMarkdownTestCards([
+      { question: "查看主机CPU情况", answer: CPU_RESOURCE_WITH_FINAL_CONCLUSION },
+    ]);
+    await openFixturePage(page, "/", {
+      state: createChatFixtureState({ cards, runtime: idleRuntime() }),
+      sessions: createChatFixtureSessions(),
+    });
+
+    const conclusion = page.locator(".aiops-message-markdown").filter({ hasText: "CPU负载正常" });
+    await expect(conclusion).toContainText("CPU负载正常，空闲率较高（81.93%），当前没有发现 CPU 饱和风险。", { timeout: 10000 });
+
+    const conclusionBox = await conclusion.boundingBox();
+    const composerBox = await page.locator('[data-testid="aiops-composer-shell"]').boundingBox();
+    expect(conclusionBox).toBeTruthy();
+    expect(composerBox).toBeTruthy();
+    expect(conclusionBox.y + conclusionBox.height).toBeLessThanOrEqual(composerBox.y - 8);
   });
 
   test("mixed Chinese markdown preserves structure without double-processing", async ({ page }) => {

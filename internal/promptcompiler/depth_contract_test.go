@@ -54,6 +54,32 @@ func TestCompletionGateSectionContent(t *testing.T) {
 	}
 }
 
+func TestResourceInspectionAnswerMustReportConcreteValues(t *testing.T) {
+	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
+	for _, want := range []string{
+		"resource inspection",
+		"concrete requested values",
+		"not only health or normality",
+	} {
+		if !strings.Contains(developer, want) {
+			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		}
+	}
+}
+
+func TestCurrentEnvironmentFactsMustUseEnvironmentBoundTools(t *testing.T) {
+	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
+	for _, want := range []string{
+		"Current host, current environment, local runtime, selected resource",
+		"do not use web_search or browse_url",
+		"environment-bound tools",
+	} {
+		if !strings.Contains(developer, want) {
+			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		}
+	}
+}
+
 func TestReasoningEffortFallbackPolicy(t *testing.T) {
 	developer := strings.Join(developerInstructionSections(CompileContext{ReasoningEffort: "high"}), "\n\n")
 	if !strings.Contains(developer, "Reasoning depth: high") {

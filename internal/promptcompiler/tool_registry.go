@@ -30,6 +30,7 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		entries = append(entries, toolEntry)
 		toolLines = append(toolLines, c.formatToolIndexLine(tool, toolEntry))
 	}
+	deferredDirectory := buildDeferredToolDirectory(ctx)
 
 	parts := []string{"# Tool Index"}
 	if len(entries) == 0 {
@@ -38,11 +39,15 @@ func (c *PromptCompilerImpl) buildToolPromptSet(ctx CompileContext) (ToolPromptS
 		parts = append(parts, commonToolPolicyPrompt())
 		parts = append(parts, toolLines...)
 	}
+	if directoryContent := formatDeferredToolDirectory(deferredDirectory); directoryContent != "" {
+		parts = append(parts, directoryContent)
+	}
 
 	content := strings.Join(parts, "\n\n")
 	return ToolPromptSet{
-		Content: content,
-		Entries: entries,
+		Content:           content,
+		Entries:           entries,
+		DeferredDirectory: deferredDirectory,
 	}, nil
 }
 
@@ -144,7 +149,244 @@ func commonToolPolicyPrompt() string {
 		"- Empty output does not prove no abnormality.",
 		"- Mutating tools require explicit user intent, scoped target, runtime approval gate, and verification.",
 		"- Failed mutations must stop at the scoped action and must not broaden scope.",
+		"- Tool selection: for current or selected entity facts, gather direct evidence from the bound resource first.",
+		"- Tool selection: use external observability for historical, aggregate, topology, or cross-entity evidence only when the candidate is selected and available.",
+		"- Tool selection: do not call unavailable, filtered, or not-yet-selected candidates; search/select the needed pack first.",
+		"- Tool selection: external evidence source failure is unavailable evidence, not proof that the target state is normal.",
+		"- Tool selection: do not use advanced or aggregate tools to skip cheaper current direct evidence.",
 	}, "\n")
+}
+
+const maxDeferredToolDirectoryEntries = 18
+
+func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry {
+	if len(ctx.DeferredToolCatalog) == 0 {
+		return nil
+	}
+	visible := make(map[string]struct{}, len(ctx.AssembledTools))
+	for _, tool := range ctx.AssembledTools {
+		if tool == nil {
+			continue
+		}
+		if name := strings.TrimSpace(tool.Metadata().Name); name != "" {
+			visible[name] = struct{}{}
+		}
+	}
+
+	type aggregate struct {
+		entry        DeferredToolDirectoryEntry
+		capability   map[string]struct{}
+		resourceSet  map[string]struct{}
+		operationSet map[string]struct{}
+	}
+	byPack := map[string]*aggregate{}
+	for _, tool := range ctx.DeferredToolCatalog {
+		if tool == nil {
+			continue
+		}
+		meta := tool.Metadata()
+		if _, ok := visible[strings.TrimSpace(meta.Name)]; ok {
+			continue
+		}
+		if tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolHiddenFromPrompt(meta) {
+			continue
+		}
+		discovery := meta.EffectiveDiscovery()
+		if !isDeferredDirectoryCandidate(meta, discovery) {
+			continue
+		}
+		pack := deferredDirectoryPackName(meta, discovery)
+		if pack == "" {
+			continue
+		}
+		agg := byPack[pack]
+		if agg == nil {
+			agg = &aggregate{
+				entry: DeferredToolDirectoryEntry{
+					Pack:             pack,
+					Source:           string(discovery.LoadingPolicy),
+					MCPServerID:      discovery.MCPServerID,
+					HealthStatus:     deferredDirectoryHealthStatus(ctx, discovery),
+					RequiresHealth:   discovery.RequiresHealthyMCP,
+					RequiresSelect:   tooling.ToolRequiresSelect(meta),
+					RequiresApproval: meta.EffectiveGovernance(defaultToolPromptInlineBudgetBytes).RequiresApproval,
+				},
+				capability:   map[string]struct{}{},
+				resourceSet:  map[string]struct{}{},
+				operationSet: map[string]struct{}{},
+			}
+			byPack[pack] = agg
+		}
+		agg.entry.ToolCount++
+		if agg.entry.Source == "" || agg.entry.Source == string(tooling.ToolLoadingPolicyCore) {
+			agg.entry.Source = string(discovery.LoadingPolicy)
+		}
+		if discovery.MCPServerID != "" {
+			agg.entry.MCPServerID = discovery.MCPServerID
+		}
+		if discovery.RequiresHealthyMCP {
+			agg.entry.RequiresHealth = true
+			if agg.entry.HealthStatus == "" {
+				agg.entry.HealthStatus = deferredDirectoryHealthStatus(ctx, discovery)
+			}
+		}
+		if tooling.ToolRequiresSelect(meta) {
+			agg.entry.RequiresSelect = true
+		}
+		if meta.EffectiveGovernance(defaultToolPromptInlineBudgetBytes).RequiresApproval {
+			agg.entry.RequiresApproval = true
+		}
+		if discovery.CapabilityKind != "" {
+			agg.capability[discovery.CapabilityKind] = struct{}{}
+		}
+		for _, value := range discovery.ResourceTypes {
+			agg.resourceSet[value] = struct{}{}
+		}
+		for _, value := range discovery.OperationKinds {
+			agg.operationSet[value] = struct{}{}
+		}
+	}
+	if len(byPack) == 0 {
+		return nil
+	}
+	packs := make([]string, 0, len(byPack))
+	for pack := range byPack {
+		packs = append(packs, pack)
+	}
+	sort.Strings(packs)
+	out := make([]DeferredToolDirectoryEntry, 0, len(packs))
+	for _, pack := range packs {
+		agg := byPack[pack]
+		agg.entry.ResourceTypes = sortedSetValues(agg.resourceSet, 4)
+		agg.entry.OperationKinds = sortedSetValues(agg.operationSet, 4)
+		agg.entry.Capability = deferredDirectoryCapability(agg.capability, agg.entry.ResourceTypes, agg.entry.OperationKinds)
+		if agg.entry.RequiresHealth && agg.entry.HealthStatus != "" && agg.entry.HealthStatus != "healthy" {
+			agg.entry.UnavailableReason = "requires healthy external source; current health=" + agg.entry.HealthStatus
+		}
+		out = append(out, agg.entry)
+		if len(out) >= maxDeferredToolDirectoryEntries {
+			break
+		}
+	}
+	return out
+}
+
+func isDeferredDirectoryCandidate(meta tooling.ToolMetadata, discovery tooling.ToolDiscoveryMetadata) bool {
+	if tooling.ToolRequiresSelect(meta) {
+		return true
+	}
+	switch discovery.LoadingPolicy {
+	case tooling.ToolLoadingPolicyDeferred, tooling.ToolLoadingPolicyMCP, tooling.ToolLoadingPolicyConditional, tooling.ToolLoadingPolicyProfile:
+		return true
+	default:
+		return meta.DeferByDefault || meta.Pack != ""
+	}
+}
+
+func deferredDirectoryPackName(meta tooling.ToolMetadata, discovery tooling.ToolDiscoveryMetadata) string {
+	if pack := strings.TrimSpace(meta.Pack); pack != "" {
+		return pack
+	}
+	for _, pack := range discovery.ToolPackIDs {
+		if strings.TrimSpace(pack) != "" {
+			return strings.TrimSpace(pack)
+		}
+	}
+	if group := strings.TrimSpace(discovery.DiscoveryGroup); group != "" {
+		return group
+	}
+	return strings.TrimSpace(discovery.CapabilityKind)
+}
+
+func deferredDirectoryHealthStatus(ctx CompileContext, discovery tooling.ToolDiscoveryMetadata) string {
+	if !discovery.RequiresHealthyMCP {
+		return ""
+	}
+	serverID := strings.TrimSpace(discovery.MCPServerID)
+	if serverID != "" && len(ctx.MCPHealthSnapshot) > 0 {
+		if status := strings.TrimSpace(ctx.MCPHealthSnapshot[serverID]); status != "" {
+			return status
+		}
+	}
+	return "unknown"
+}
+
+func deferredDirectoryCapability(capabilities map[string]struct{}, resources, operations []string) string {
+	var parts []string
+	if values := sortedSetValues(capabilities, 3); len(values) > 0 {
+		parts = append(parts, "capability="+strings.Join(values, ","))
+	}
+	if len(resources) > 0 {
+		parts = append(parts, "resources="+strings.Join(resources, ","))
+	}
+	if len(operations) > 0 {
+		parts = append(parts, "ops="+strings.Join(operations, ","))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func sortedSetValues(values map[string]struct{}, limit int) []string {
+	if len(values) == 0 || limit == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	sort.Strings(out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func formatDeferredToolDirectory(entries []DeferredToolDirectoryEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	lines := []string{
+		"## Deferred Tool Directory",
+		"These are discoverable tool families, not currently callable schemas. Use tool_search/select before calling any deferred tool.",
+	}
+	for _, entry := range entries {
+		status := []string{}
+		if entry.Source != "" {
+			status = append(status, "source="+entry.Source)
+		}
+		if entry.RequiresSelect {
+			status = append(status, "select=required")
+		}
+		if entry.RequiresApproval {
+			status = append(status, "approval=required")
+		}
+		if entry.RequiresHealth {
+			health := entry.HealthStatus
+			if health == "" {
+				health = "unknown"
+			}
+			status = append(status, "health="+health)
+		}
+		if entry.MCPServerID != "" {
+			status = append(status, "mcp="+entry.MCPServerID)
+		}
+		if entry.ToolCount > 0 {
+			status = append(status, fmt.Sprintf("tools=%d", entry.ToolCount))
+		}
+		line := "- " + entry.Pack
+		if entry.Capability != "" {
+			line += ": " + entry.Capability
+		}
+		if len(status) > 0 {
+			line += " (" + strings.Join(status, ", ") + ")"
+		}
+		if entry.UnavailableReason != "" {
+			line += "; unavailable=" + entry.UnavailableReason
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func toolGovernanceSummary(tool Tool) string {

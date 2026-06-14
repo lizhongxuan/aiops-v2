@@ -25,6 +25,24 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
   "iteration": 0,
   "caseId": "case-1",
   "visibleTools": ["exec_command"],
+  "toolSurfaceTrace": {
+    "initialTools": ["exec_command", "tool_search"],
+    "baseRegistryCount": 2,
+    "deferredFamilies": [
+      {"pack": "external_metrics", "mcpServerId": "observability", "healthStatus": "unavailable", "toolCount": 4}
+    ],
+    "loadedTools": ["generic.metrics.read"],
+    "loadedPacks": ["generic_metrics"],
+    "filteredTools": [
+      {"toolName": "external.metrics.read", "reason": "mcp_unavailable token=service-secret"}
+    ],
+    "mcpHealth": {"observability": "unavailable: https://user:service-pass@metrics.example.internal/api"},
+    "toolSearchEvents": [{"mode": "search", "matchCount": 1}],
+    "selectedTools": ["generic.metrics.read"],
+    "rejectedToolReasons": [
+      {"toolName": "external.metrics.read", "errorType": "mcp_unavailable", "reason": "api_key=reject-secret"}
+    ]
+  },
   "promptFingerprint": {"stableHash": "stable-hash"},
   "llmRequests": [
     {"id": "llm-1", "usage": {"prompt_tokens": 21, "completion_tokens": 8, "total_tokens": 29}, "duration_ms": 456},
@@ -65,6 +83,21 @@ func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
 	}
 	if trace.Usage == nil || trace.Usage.PromptTokens != 31 || trace.Usage.CompletionTokens != 13 || trace.Usage.TotalTokens != 44 {
 		t.Fatalf("trace usage = %#v, want summed token usage", trace.Usage)
+	}
+	if trace.ToolSurface == nil {
+		t.Fatalf("trace tool surface summary missing: %#v", trace)
+	}
+	if trace.ToolSurface.InitialToolCount != 2 ||
+		trace.ToolSurface.DeferredFamilyCount != 1 ||
+		trace.ToolSurface.LoadedToolCount != 1 ||
+		trace.ToolSurface.FilteredToolCount != 1 ||
+		trace.ToolSurface.RejectedToolCount != 1 ||
+		trace.ToolSurface.MCPHealth["observability"] == "" {
+		t.Fatalf("trace tool surface summary = %#v", trace.ToolSurface)
+	}
+	if strings.Contains(trace.ToolSurface.MCPHealth["observability"], "service-pass") ||
+		strings.Contains(trace.ToolSurface.FilteredReasons["external.metrics.read"], "service-secret") {
+		t.Fatalf("trace tool surface summary leaked secret: %#v", trace.ToolSurface)
 	}
 	if !strings.Contains(trace.UserPromptPreview, "再次查看 payment 状态") {
 		t.Fatalf("user prompt preview = %q, want latest turn user message", trace.UserPromptPreview)

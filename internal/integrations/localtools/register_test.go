@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/evidence"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
 	"pgregory.net/rapid"
 )
@@ -79,16 +82,191 @@ func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 	for _, tool := range tools {
 		names[tool.Metadata().Name] = tool
 	}
-	for _, name := range []string{"web_search", "browse_url", "exec_command", "get_current_model_config"} {
+	for _, name := range []string{"exec_command", "grep", "web_search"} {
 		if _, ok := names[name]; !ok {
 			t.Fatalf("assembled tools missing %q; got %v", name, toolNames(tools))
+		}
+	}
+	for _, name := range []string{"browse_url", "get_current_model_config", "ensure_postgresql_installed"} {
+		if _, ok := names[name]; ok {
+			t.Fatalf("%s should not be in default initial chat tools; got %v", name, toolNames(tools))
 		}
 	}
 	if _, ok := names["update_plan"]; ok {
 		t.Fatalf("update_plan should be internal/meta-only in default chat tools; got %v", toolNames(tools))
 	}
-	if native := names["web_search"].Metadata().ProviderNative; native == nil || !native.Prefer || native.Type != "web_search" {
+	webSearch, ok := registry.Get("web_search")
+	if !ok {
+		t.Fatalf("web_search should remain in base registry")
+	}
+	if native := webSearch.Metadata().ProviderNative; native == nil || !native.Prefer || native.Type != "web_search" {
 		t.Fatalf("web_search provider-native metadata = %#v, want preferred web_search", native)
+	}
+	webDiscovery := webSearch.Metadata().EffectiveDiscovery()
+	if webDiscovery.DiscoveryGroup != "public_web" || webDiscovery.LoadingPolicy != tooling.ToolLoadingPolicyCore || webDiscovery.RequiresSelect {
+		t.Fatalf("web_search discovery = %+v, want core public_web initial discovery", webDiscovery)
+	}
+	for _, want := range []string{"public_web", "internet"} {
+		if !containsString(webDiscovery.ResourceTypes, want) {
+			t.Fatalf("web_search resource types = %#v, missing %q", webDiscovery.ResourceTypes, want)
+		}
+	}
+	webDescription := webSearch.Metadata().Description
+	for _, want := range []string{"public web", "not for current host", "environment-bound tools"} {
+		if !strings.Contains(webDescription, want) {
+			t.Fatalf("web_search description missing %q: %s", want, webDescription)
+		}
+	}
+	browseURL, ok := registry.Get("browse_url")
+	if !ok {
+		t.Fatal("browse_url should remain in base registry")
+	}
+	browseDiscovery := browseURL.Metadata().EffectiveDiscovery()
+	if browseDiscovery.DiscoveryGroup != "public_web" || browseDiscovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !browseDiscovery.RequiresSelect {
+		t.Fatalf("browse_url discovery = %+v, want deferred public_web select-only discovery", browseDiscovery)
+	}
+	if !containsString(browseURL.Metadata().Aliases, "web_browser") {
+		t.Fatalf("browse_url aliases = %#v, want web_browser alias", browseURL.Metadata().Aliases)
+	}
+	for _, want := range []string{"public_web", "url", "web_page"} {
+		if !containsString(browseDiscovery.ResourceTypes, want) {
+			t.Fatalf("browse_url resource types = %#v, missing %q", browseDiscovery.ResourceTypes, want)
+		}
+	}
+}
+
+func TestExecCommandToolEnabledForAnySessionMode(t *testing.T) {
+	registry := tooling.NewRegistry()
+	if err := RegisterBuiltins(registry, &fakeLLMRepo{cfg: &store.LLMConfig{Provider: "openai", Model: "gpt-5.4"}}, Options{WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("RegisterBuiltins() error = %v", err)
+	}
+	execTool, ok := registry.Get("exec_command")
+	if !ok {
+		t.Fatal("exec_command should be registered")
+	}
+
+	for _, tc := range []struct {
+		session string
+		mode    string
+	}{
+		{session: "host", mode: "chat"},
+		{session: "host", mode: "inspect"},
+		{session: "host", mode: "plan"},
+		{session: "host", mode: "execute"},
+		{session: "workspace", mode: "chat"},
+		{session: "workspace", mode: "inspect"},
+		{session: "workspace", mode: "plan"},
+		{session: "workspace", mode: "execute"},
+		{session: "case", mode: "chat"},
+		{session: "unknown", mode: "unknown"},
+	} {
+		if !execTool.IsEnabled(tooling.ToolContext{SessionType: tc.session, Mode: tc.mode, Metadata: execTool.Metadata()}) {
+			t.Fatalf("exec_command IsEnabled(%s/%s) = false, want true", tc.session, tc.mode)
+		}
+		names := toolNames(registry.AssembleToolsWithOptions(tc.session, tc.mode, tooling.AssembleOptions{
+			Filter: func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool { return false },
+		}))
+		if !containsString(names, "exec_command") {
+			t.Fatalf("assembled tools for %s/%s = %v, missing exec_command", tc.session, tc.mode, names)
+		}
+	}
+}
+
+func TestGetAllBaseToolsIsRuntimeFunctionOnly(t *testing.T) {
+	repo := &fakeLLMRepo{cfg: &store.LLMConfig{Provider: "openai", Model: "gpt-5.4"}}
+	tools := GetAllBaseTools(repo, Options{WorkingDir: t.TempDir()})
+	if len(tools) < 8 || len(tools) > 15 {
+		t.Fatalf("GetAllBaseTools len = %d, want controlled base registry size between 8 and 15", len(tools))
+	}
+	names := map[string]bool{}
+	for _, tool := range tools {
+		meta := tool.Metadata()
+		names[meta.Name] = true
+		if meta.Name == "" {
+			t.Fatalf("base tool with empty name: %#v", meta)
+		}
+		if meta.Name == "getAllBaseTools" {
+			t.Fatalf("getAllBaseTools must be a runtime function, not an LLM callable tool")
+		}
+	}
+	for _, want := range []string{"exec_command", "grep", "powershell_command", "repl"} {
+		if !names[want] {
+			t.Fatalf("GetAllBaseTools missing %q; names=%v", want, names)
+		}
+	}
+}
+
+func TestBaseToolConditionalVisibility(t *testing.T) {
+	registry := tooling.NewRegistry()
+	if err := RegisterBuiltins(registry, &fakeLLMRepo{cfg: &store.LLMConfig{Provider: "openai", Model: "gpt-5.4"}}, Options{WorkingDir: t.TempDir()}); err != nil {
+		t.Fatalf("RegisterBuiltins() error = %v", err)
+	}
+
+	defaultNames := toolNames(registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
+	if !containsString(defaultNames, "grep") {
+		t.Fatalf("default tools = %v, want grep", defaultNames)
+	}
+	for _, forbidden := range []string{"powershell_command", "repl"} {
+		if containsString(defaultNames, forbidden) {
+			t.Fatalf("default tools = %v, should not include %s", defaultNames, forbidden)
+		}
+	}
+
+	powershellNames := toolNames(registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{RuntimeCapabilities: []string{"powershell"}}))
+	if !containsString(powershellNames, "powershell_command") {
+		t.Fatalf("powershell runtime tools = %v, want powershell_command", powershellNames)
+	}
+	debugNames := toolNames(registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{Profile: "debug"}))
+	if !containsString(debugNames, "repl") {
+		t.Fatalf("debug profile tools = %v, want repl", debugNames)
+	}
+	grepTool, ok := registry.Get("grep")
+	if !ok {
+		t.Fatal("grep should remain in base registry")
+	}
+	grepDiscovery := grepTool.Metadata().EffectiveDiscovery()
+	if grepDiscovery.LoadingPolicy != tooling.ToolLoadingPolicyCore || grepDiscovery.RequiresSelect {
+		t.Fatalf("grep discovery = %+v, want core initial discovery", grepDiscovery)
+	}
+}
+
+func TestExecCommandToolMetadataMatchesHostFactBashRole(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	text := tooling.ToolDiscoverySearchText(tool.Metadata())
+	for _, want := range []string{"host_fact", "execute", "inspect"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("exec_command discovery text missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestGrepToolSearchesTextFilesReadOnly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.log"), []byte("ok\nfatal redis timeout\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	tool := NewGrepTool(Options{WorkingDir: root, MaxOutputBytes: 1024})
+	input := json.RawMessage(`{"pattern":"redis","path":"."}`)
+	if !tool.IsReadOnly(input) || tool.IsDestructive(input) {
+		t.Fatalf("grep should be read-only")
+	}
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"file":"app.log"`) || !strings.Contains(result.Content, `"line":2`) || !strings.Contains(result.Content, "redis timeout") {
+		t.Fatalf("grep result missing match: %s", result.Content)
+	}
+}
+
+func TestCurrentModelConfigToolIsOnDemandNotDefaultCore(t *testing.T) {
+	tool := NewCurrentModelConfigTool(&fakeLLMRepo{cfg: &store.LLMConfig{Provider: "openai", Model: "glm-4.7"}})
+	meta := tool.Metadata()
+	if meta.Layer == tooling.ToolLayerCore || meta.AlwaysLoad {
+		t.Fatalf("get_current_model_config metadata = layer:%q alwaysLoad:%v, want on-demand/deferred or internal", meta.Layer, meta.AlwaysLoad)
+	}
+	if meta.Layer != tooling.ToolLayerDeferred && meta.Layer != tooling.ToolLayerInternal {
+		t.Fatalf("get_current_model_config layer = %q, want deferred or internal", meta.Layer)
 	}
 }
 
@@ -104,6 +282,25 @@ func TestExecCommandToolDescriptionIncludesHostOSGuidance(t *testing.T) {
 	}
 	if runtime.GOOS == "darwin" && !strings.Contains(description, "avoid Linux-only commands") {
 		t.Fatalf("description = %q, want explicit Linux-only command avoidance on darwin", description)
+	}
+}
+
+func TestExecCommandToolDiscoveryMetadataTargetsHostInspection(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	discovery := tool.Metadata().EffectiveDiscovery()
+
+	if discovery.CapabilityKind != "host_fact" {
+		t.Fatalf("capabilityKind = %q, want host_fact", discovery.CapabilityKind)
+	}
+	for _, want := range []string{"host", "system"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("resourceTypes = %#v, want %q", discovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"inspect", "read", "execute"} {
+		if !containsString(discovery.OperationKinds, want) {
+			t.Fatalf("operationKinds = %#v, want %q", discovery.OperationKinds, want)
+		}
 	}
 }
 
@@ -149,6 +346,34 @@ func TestCurrentModelConfigToolDoesNotLeakSecrets(t *testing.T) {
 	}
 	if !strings.Contains(string(tool.OutputSchema()), `"supportsReasoning"`) {
 		t.Fatalf("output schema missing supportsReasoning: %s", tool.OutputSchema())
+	}
+}
+
+func TestCurrentModelConfigToolReportsGLM47ReasoningSupport(t *testing.T) {
+	tool := NewCurrentModelConfigTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider:        "openai",
+		Model:           "glm-4.7",
+		BaseURL:         "http://127.0.0.1:8317/v1",
+		APIKey:          "sk-secret",
+		ReasoningEffort: "high",
+	}})
+
+	result, err := tool.Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if strings.Contains(result.Content, "sk-secret") {
+		t.Fatalf("tool leaked api key in result: %s", result.Content)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not json: %v", err)
+	}
+	if payload["model"] != "glm-4.7" {
+		t.Fatalf("model = %v, want glm-4.7", payload["model"])
+	}
+	if payload["reasoningEffort"] != "high" || payload["supportsReasoning"] != true {
+		t.Fatalf("payload = %+v, want reasoningEffort high and supportsReasoning true", payload)
 	}
 }
 
@@ -281,6 +506,52 @@ func TestExecCommandToolRequiresEvidenceForNonAllowlistedReadOnlyCommand(t *test
 	}
 }
 
+func TestExecCommandToolAllowsHostResourceInspectionWithoutEvidenceGate(t *testing.T) {
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir()})
+	cases := []json.RawMessage{
+		json.RawMessage(`{"command":"uptime"}`),
+		json.RawMessage(`{"command":"top","args":["-l","1","-s","0"]}`),
+		json.RawMessage(`{"command":"sysctl","args":["-n","hw.ncpu"]}`),
+		json.RawMessage(`{"command":"df","args":["-h"]}`),
+	}
+	for _, input := range cases {
+		if !tool.IsReadOnly(input) {
+			t.Fatalf("IsReadOnly(%s) = false, want true", input)
+		}
+		if tool.IsDestructive(input) {
+			t.Fatalf("IsDestructive(%s) = true, want false", input)
+		}
+		decision := tool.CheckPermissions(context.Background(), input)
+		if decision.Action != tooling.PermissionActionAllow {
+			t.Fatalf("CheckPermissions(%s) = %#v, want allow", input, decision)
+		}
+	}
+}
+
+func TestExecCommandToolUsesConfigurableTerminalPolicy(t *testing.T) {
+	engine := terminalpolicy.NewEngine(terminalpolicy.Config{
+		SchemaVersion: "aiops.terminal_policy/v1",
+		Rules: []terminalpolicy.Rule{
+			{ID: "allow-ss-listen", Effect: terminalpolicy.RuleEffectAllow, Command: "ss", ArgsPrefix: []string{"-ltnp"}},
+			{ID: "deny-lsof-port", Effect: terminalpolicy.RuleEffectDeny, Command: "lsof", ArgsPrefix: []string{"-i", ":1234"}, Reason: "disabled by test policy"},
+		},
+	})
+	tool := NewExecCommandTool(Options{WorkingDir: t.TempDir(), TerminalPolicy: engine})
+
+	allowedInput := json.RawMessage(`{"command":"ss","args":["-ltnp"]}`)
+	if !tool.IsReadOnly(allowedInput) {
+		t.Fatal("config-allowed ss command should be classified read-only")
+	}
+	if decision := tool.CheckPermissions(context.Background(), allowedInput); decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("ss CheckPermissions() = %#v, want allow", decision)
+	}
+
+	deniedInput := json.RawMessage(`{"command":"lsof","args":["-i",":1234"]}`)
+	if decision := tool.CheckPermissions(context.Background(), deniedInput); decision.Action != tooling.PermissionActionDeny || !strings.Contains(decision.Reason, "disabled by test policy") {
+		t.Fatalf("lsof CheckPermissions() = %#v, want deny with policy reason", decision)
+	}
+}
+
 func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
 	runner := &fakeHostAgentCommandRunner{
 		result: HostAgentCommandResult{Stdout: "8\n", ExitCode: 0},
@@ -326,6 +597,81 @@ func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
 	}
 	if payload.Source != "host.agent_grpc" || payload.Stdout != "8\n" || payload.ExitCode != 0 {
 		t.Fatalf("payload = %#v, want agent grpc terminal result", payload)
+	}
+}
+
+func TestExecCommandToolReturnsReadOnlyNonZeroExitAsStructuredResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a Unix shell script fixture")
+	}
+	dir := t.TempDir()
+	fakeLsof := filepath.Join(dir, "lsof")
+	if err := os.WriteFile(fakeLsof, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write fake lsof: %v", err)
+	}
+	tool := NewExecCommandTool(Options{WorkingDir: dir})
+	input := mustMarshalRaw(t, map[string]any{
+		"command": fakeLsof,
+		"args":    []string{"-i", ":1234"},
+	})
+
+	if !tool.IsReadOnly(input) {
+		t.Fatal("lsof port inspection should be classified read-only")
+	}
+	result, err := tool.Execute(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want structured non-zero terminal result", err)
+	}
+	var payload struct {
+		Status   string `json:"status"`
+		Command  string `json:"command"`
+		ExitCode int    `json:"exitCode"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Status != "exit_nonzero" || payload.ExitCode != 1 {
+		t.Fatalf("payload = %#v, want exit_nonzero with exitCode 1", payload)
+	}
+	if !strings.Contains(payload.Command, "lsof -i :1234") {
+		t.Fatalf("command = %q, want lsof port inspection", payload.Command)
+	}
+}
+
+func TestExecCommandToolReturnsRemoteReadOnlyNonZeroExitAsStructuredResult(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{ExitCode: 1},
+	}
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-kme": {
+				ID:          "host-kme",
+				Name:        "kme",
+				Executable:  true,
+				ControlMode: "managed",
+				Transport:   "agent_grpc",
+			},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-kme"})
+	input := json.RawMessage(`{"command":"lsof","args":["-i",":1234"]}`)
+
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v, want structured non-zero terminal result", err)
+	}
+	var payload struct {
+		Source   string `json:"source"`
+		Status   string `json:"status"`
+		ExitCode int    `json:"exitCode"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Source != "host.agent_grpc" || payload.Status != "exit_nonzero" || payload.ExitCode != 1 {
+		t.Fatalf("payload = %#v, want host-agent exit_nonzero result", payload)
 	}
 }
 
@@ -1453,4 +1799,13 @@ func toolNames(tools []tooling.Tool) []string {
 		out = append(out, tool.Metadata().Name)
 	}
 	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

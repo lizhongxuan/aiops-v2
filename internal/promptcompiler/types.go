@@ -47,6 +47,15 @@ type CompileContext struct {
 	// AssembledTools is the ordered set of tools assembled for this prompt.
 	AssembledTools []Tool
 
+	// DeferredToolCatalog is the full discoverable catalog used only to render
+	// compact, non-callable deferred family summaries. It must never inject
+	// deferred tool schemas into the initial model input.
+	DeferredToolCatalog []Tool
+
+	// MCPHealthSnapshot maps generic external tool source/server ids to health
+	// states used in compact deferred directory summaries.
+	MCPHealthSnapshot map[string]string
+
 	// RuntimePolicy is the active policy text for the current mode.
 	RuntimePolicy string
 
@@ -89,6 +98,10 @@ type CompileContext struct {
 
 	// SkillPromptAssets are prompt fragments contributed by skill capabilities.
 	SkillPromptAssets []string
+
+	// HostTaskPromptAssets are assigned host-bound task fragments from
+	// manager-to-host agent messages. They are not skill instructions.
+	HostTaskPromptAssets []string
 
 	// LoadedSkillRefs are compact markers for skill bodies loaded this session.
 	LoadedSkillRefs []LoadedSkillPromptRef
@@ -196,6 +209,27 @@ type ToolPromptSet struct {
 
 	// Entries contains per-tool prompt information.
 	Entries []ToolPromptEntry
+
+	// DeferredDirectory contains compact, non-callable summaries for deferred
+	// tool families and MCP packs. It is traceable but does not expose schemas.
+	DeferredDirectory []DeferredToolDirectoryEntry
+}
+
+// DeferredToolDirectoryEntry is a compact prompt-facing and trace-facing
+// summary of tools that can be discovered later via tool_search/select.
+type DeferredToolDirectoryEntry struct {
+	Pack              string   `json:"pack"`
+	Capability        string   `json:"capability,omitempty"`
+	Source            string   `json:"source,omitempty"`
+	MCPServerID       string   `json:"mcpServerId,omitempty"`
+	HealthStatus      string   `json:"healthStatus,omitempty"`
+	RequiresHealth    bool     `json:"requiresHealth,omitempty"`
+	RequiresApproval  bool     `json:"requiresApproval,omitempty"`
+	RequiresSelect    bool     `json:"requiresSelect,omitempty"`
+	UnavailableReason string   `json:"unavailableReason,omitempty"`
+	ToolCount         int      `json:"toolCount,omitempty"`
+	ResourceTypes     []string `json:"resourceTypes,omitempty"`
+	OperationKinds    []string `json:"operationKinds,omitempty"`
 }
 
 // ToolPromptDelta captures per-iteration changes that should not force a
@@ -301,6 +335,11 @@ type DynamicPromptDelta struct {
 	// SkillPromptAssets are prompt fragments that may change within a turn.
 	SkillPromptAssets []string
 
+	// HostTaskPromptAssets are host-bound task fragments that may change within
+	// a turn. They are separated from skill prompt assets to avoid skill-cache
+	// and skill-trace pollution.
+	HostTaskPromptAssets []string
+
 	// EvidenceReminders are runtime-generated reminders that should stay out of
 	// the stable prompt envelope.
 	EvidenceReminders []string
@@ -345,6 +384,13 @@ type PromptSectionTrace struct {
 	Bytes          int    `json:"bytes"`
 	TokensEstimate int    `json:"tokensEstimate"`
 	Cache          string `json:"cache,omitempty"`
+	RetentionRank  string `json:"retentionRank,omitempty"`
+	RetentionClass string `json:"retentionClass,omitempty"`
+	CompactAction  string `json:"compactAction,omitempty"`
+	CompactSchema  string `json:"compactSchema,omitempty"`
+	SourceRef      string `json:"sourceRef,omitempty"`
+	Redaction      string `json:"redaction,omitempty"`
+	Purpose        string `json:"purpose,omitempty"`
 }
 
 // ChangedPromptSection records why one prompt section hash changed.
@@ -375,6 +421,23 @@ const (
 	PromptSectionChangeSectionAdded          = "section_added"
 	PromptSectionChangeSectionRemoved        = "section_removed"
 	PromptSectionChangeSectionContentChanged = "section_content_changed"
+
+	RetentionRankP0 = "P0"
+	RetentionRankP1 = "P1"
+	RetentionRankP2 = "P2"
+	RetentionRankP3 = "P3"
+	RetentionRankP4 = "P4"
+
+	RetentionClassMustKeep    = "must_keep"
+	RetentionClassSummarize   = "summarize"
+	RetentionClassExternalize = "externalize"
+	RetentionClassDropIfStale = "drop_if_stale"
+
+	CompactActionKeptOriginal = "kept_original"
+	CompactActionSummarized   = "summarized"
+	CompactActionExternalized = "externalized"
+	CompactActionDropped      = "dropped"
+	CompactActionBlocked      = "blocked"
 )
 
 // CompiledPrompt is the promptcompiler output. It preserves the legacy

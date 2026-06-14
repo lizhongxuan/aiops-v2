@@ -77,6 +77,57 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).not.toContain("外部依赖异常");
   });
 
+  it("does not repeat completed final answer blocks when another renderer owns the answer document", async () => {
+    const final = "已启动 nginx 容器，映射主机端口 1234 -> 容器端口 80。";
+    const process = [
+      makeBlock({
+        id: "assistant-prelude",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.process",
+        text: "我先检查端口，然后启动容器。",
+      }),
+      makeBlock({
+        id: "cmd-docker-run",
+        kind: "command",
+        status: "completed",
+        command: "docker run -d --name nginx -p 1234:80 nginx:latest",
+        outputPreview: "container-id",
+      }),
+      makeBlock({
+        id: "assistant-final-before-gate",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.final",
+        text: final,
+      }),
+      makeBlock({
+        id: "verification-gate",
+        kind: "evidence",
+        status: "completed",
+        text: "verification completion gate: block_success_final: execution_required,missing_verification_report",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="completed"
+          finalText={final}
+          renderFinalText={false}
+        />,
+      );
+    });
+    await expandProcessTranscript();
+
+    const text = container.textContent || "";
+    expect(text).toContain("我先检查端口，然后启动容器。");
+    expect(text).toContain("已运行 docker run -d --name nginx -p 1234:80 nginx:latest");
+    expect(text).toContain("verification completion gate");
+    expect(text).not.toContain(final);
+  });
+
   it("renders final answer text one step smaller without changing tool transcript text", async () => {
     const process = [
       makeBlock({

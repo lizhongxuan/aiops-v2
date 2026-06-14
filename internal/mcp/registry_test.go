@@ -82,6 +82,80 @@ func TestRegistryRegisterServerAndGet(t *testing.T) {
 	}
 }
 
+func TestRegistryServerManifestAppliesToDynamicToolDiscovery(t *testing.T) {
+	r := NewRegistry()
+
+	cfg := ServerConfig{
+		ID:                   "synthetic-web",
+		Name:                 "Synthetic Web",
+		Transport:            "stdio",
+		Command:              []string{"synthetic-web-mcp"},
+		Source:               "plugin",
+		CapabilityDomain:     "public_web",
+		ResourceTypes:        []string{"public_web", "url"},
+		OperationKinds:       []string{"search", "read"},
+		DefaultLoadingPolicy: "deferred",
+		RiskLevel:            "low",
+		HealthCheckType:      "tool_ping",
+		OwnerSource:          "builtin",
+		ToolPack:             "public_web",
+		PermissionScope:      "read",
+		PromptBudgetClass:    "compact",
+		SchemaBudgetClass:    "on_demand",
+		DiscoveryTags:        []string{"current", "internet"},
+	}
+	if err := r.RegisterServer(cfg); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	got, ok := r.GetServer("synthetic-web")
+	if !ok {
+		t.Fatal("expected server config to be registered")
+	}
+	if got.CapabilityDomain != "public_web" || got.HealthCheckType != "tool_ping" || got.OwnerSource != "builtin" {
+		t.Fatalf("manifest fields were not preserved: %+v", got)
+	}
+	got.ResourceTypes[0] = "changed"
+	again, _ := r.GetServer("synthetic-web")
+	if again.ResourceTypes[0] != "public_web" {
+		t.Fatalf("GetServer() should clone manifest slices, got %+v", again.ResourceTypes)
+	}
+
+	if err := r.OnServerConnected("synthetic-web", []tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "web.search", Description: "Search public web"}}}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+	tools := r.ListServerTools("synthetic-web")
+	if len(tools) != 1 {
+		t.Fatalf("ListServerTools len = %d, want 1", len(tools))
+	}
+	meta := tools[0].Metadata()
+	if meta.Pack != "public_web" || meta.Layer != tooling.ToolLayerDeferred || !meta.DeferByDefault {
+		t.Fatalf("metadata loading policy = layer:%q pack:%q deferred:%v", meta.Layer, meta.Pack, meta.DeferByDefault)
+	}
+	if meta.RiskLevel != tooling.ToolRiskLow {
+		t.Fatalf("risk = %q, want low", meta.RiskLevel)
+	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.DiscoveryGroup != "public_web" {
+		t.Fatalf("discovery group = %q, want public_web", discovery.DiscoveryGroup)
+	}
+	for _, want := range []string{"public_web", "url"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("resource types = %#v, missing %q", discovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"read", "search"} {
+		if !containsString(discovery.OperationKinds, want) {
+			t.Fatalf("operation kinds = %#v, missing %q", discovery.OperationKinds, want)
+		}
+	}
+	if discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+		t.Fatalf("discovery loading/select = %q/%v", discovery.LoadingPolicy, discovery.RequiresSelect)
+	}
+	if discovery.PermissionScope != "read" || discovery.PromptBudgetClass != "compact" || discovery.SchemaBudgetClass != "on_demand" {
+		t.Fatalf("discovery budget/scope = %+v", discovery)
+	}
+}
+
 func TestRegistryTracksServerInstructions(t *testing.T) {
 	r := NewRegistry()
 	if err := r.RegisterServer(ServerConfig{ID: "synthetic-docs", Name: "Synthetic Docs"}); err != nil {
@@ -376,6 +450,15 @@ func TestMCPRegistryListsAndReadsResources(t *testing.T) {
 func containsMCPRegistryTool(names []string, want string) bool {
 	for _, name := range names {
 		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

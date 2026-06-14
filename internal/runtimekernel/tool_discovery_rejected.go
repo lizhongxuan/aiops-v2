@@ -56,7 +56,7 @@ func rejectedToolCallFromDispatchError(turnID string, tc ToolCall, result Dispat
 
 func isRecoverableToolDiscoveryError(errorType string) bool {
 	switch strings.TrimSpace(errorType) {
-	case "tool_unloaded", "tool_hidden_by_policy", "tool_not_found", "dedicated_tool_preferred":
+	case "tool_unloaded", "tool_hidden_by_policy", "tool_not_found", "dedicated_tool_preferred", "mcp_unavailable":
 		return true
 	default:
 		return false

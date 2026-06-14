@@ -665,6 +665,84 @@ func TestAgentEventProjector_TurnCompletedMarksStreamingFinalCompleted(t *testin
 	}
 }
 
+func TestAgentEventProjector_TurnCompletedMarksRuntimeActivitiesCompleted(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventSystem, AgentEventPhaseUpdated, AgentEventStatusRunning, 2, SystemPayload{
+			ID:          "turn-1:activity:1:model",
+			DisplayKind: "runtime.activity",
+			Title:       "调用模型",
+			Summary:     "第 1 轮",
+		}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	var timelineRow *TimelineEntry
+	for i := range proj.Timeline {
+		if proj.Timeline[i].ID == "turn-1:activity:1:model" {
+			timelineRow = &proj.Timeline[i]
+			break
+		}
+	}
+	if timelineRow == nil {
+		t.Fatalf("runtime activity row missing from timeline: %+v", proj.Timeline)
+	}
+	if timelineRow.Status != AgentEventStatusCompleted || timelineRow.Phase != AgentEventPhaseCompleted {
+		t.Fatalf("timeline runtime activity status/phase = %q/%q, want completed/completed", timelineRow.Status, timelineRow.Phase)
+	}
+
+	group := proj.ProcessGroups["turn-1"]
+	if len(group) == 0 {
+		t.Fatalf("ProcessGroups[turn-1] empty")
+	}
+	if group[0].Status != AgentEventStatusCompleted || group[0].Phase != AgentEventPhaseCompleted {
+		t.Fatalf("process runtime activity status/phase = %q/%q, want completed/completed", group[0].Status, group[0].Phase)
+	}
+}
+
+func TestAgentEventProjector_AssistantFinalTextReplacesDuplicateDelta(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "OK browser smoke"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseCompleted, AgentEventStatusCompleted, 3, AssistantPayload{Channel: "final", Text: "OK browser smoke"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Text != "OK browser smoke" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want single final text", final.Text)
+	}
+	if final.Status != AgentEventStatusCompleted {
+		t.Fatalf("FinalMessages[turn-1].Status = %q, want completed", final.Status)
+	}
+}
+
+func TestAgentEventProjector_AssistantFinalTextDeltaStillAppends(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "hello"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Text: "OK "}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 3, AssistantPayload{Channel: "final", Text: "browser smoke"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 4, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Text != "OK browser smoke" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want appended text chunks", final.Text)
+	}
+}
+
 func TestAgentEventProjector_TurnCompletedWithDiffReviewsOtherwiseIdle(t *testing.T) {
 	projector := NewAgentEventProjector()
 

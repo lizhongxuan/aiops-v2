@@ -668,6 +668,9 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	if promptTrace.ToolSurfacePolicySnapshotHash == "" {
 		promptTrace.ToolSurfacePolicySnapshotHash = req.ToolSurfacePolicySnapshotHash
 	}
+	if len(promptTrace.DeferredToolDirectory) == 0 {
+		promptTrace.DeferredToolDirectory = cloneDeferredToolDirectoryForTrace(req.Compiled.Tools.DeferredDirectory)
+	}
 	if len(promptTrace.LoadedToolsDelta) == 0 {
 		promptTrace.LoadedToolsDelta = append([]string(nil), req.LoadedToolsDelta...)
 	}
@@ -852,6 +855,19 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		PromptInputDiff:  req.PromptInputDiff,
 		DiagnosticTrace:  req.DiagnosticTrace,
 	})
+}
+
+func cloneDeferredToolDirectoryForTrace(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]promptcompiler.DeferredToolDirectoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.ResourceTypes = append([]string(nil), entry.ResourceTypes...)
+		entry.OperationKinds = append([]string(nil), entry.OperationKinds...)
+		out = append(out, entry)
+	}
+	return out
 }
 
 func promptInputTaskDepthTrace(profile taskdepth.Profile) *promptinput.TaskDepthTrace {

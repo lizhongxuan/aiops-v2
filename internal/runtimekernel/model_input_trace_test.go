@@ -174,12 +174,50 @@ func TestModelInputTraceG01FirstTurnBaselineMetrics(t *testing.T) {
 	if metrics.VisibleToolCount == 0 {
 		t.Fatal("visible tool count should be recorded")
 	}
-	for _, want := range []string{"exec_command", "tool_search", "search_ops_manuals"} {
+	for _, want := range []string{"exec_command", "grep", "list_mcp_resources", "read_mcp_resource", "skill_read", "skill_search", "tool_search", "web_search"} {
 		if !containsString(metrics.VisibleToolNames, want) {
 			t.Fatalf("visible tool names = %v, want %q", metrics.VisibleToolNames, want)
 		}
 	}
+	for _, forbidden := range []string{"get_current_model_config", "browse_url", "read_context_artifact", "search_ops_manuals", "coroot.service_metrics"} {
+		if containsString(metrics.VisibleToolNames, forbidden) {
+			t.Fatalf("visible tool names = %v, should not include deferred/internal tool %q", metrics.VisibleToolNames, forbidden)
+		}
+	}
 	t.Logf("G01 first-turn baseline: prompt=%d toolRegistry=%d visibleTools=%d names=%v", metrics.PromptCharCount, metrics.ToolRegistryCharCount, metrics.VisibleToolCount, metrics.VisibleToolNames)
+}
+
+func TestModelInputTraceG01FirstTurnDeferredDirectoryNoSchemas(t *testing.T) {
+	metrics := buildG01FirstTurnPromptMetrics(t)
+	content := metrics.ToolPromptContent
+	for _, want := range []string{
+		"## Deferred Tool Directory",
+		"coroot_metrics",
+		"runtime_config",
+		"select=required",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("tool prompt missing deferred directory marker %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		"coroot.service_metrics",
+		"get_current_model_config:",
+		"appId",
+		"fromTimestamp",
+		`"properties"`,
+		`"required"`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("initial prompt leaked deferred schema/tool detail %q:\n%s", forbidden, content)
+		}
+	}
+	if !deferredDirectoryContainsPack(metrics.PromptInputTrace.DeferredToolDirectory, "coroot_metrics") {
+		t.Fatalf("prompt input trace deferred directory = %#v, want coroot_metrics", metrics.PromptInputTrace.DeferredToolDirectory)
+	}
+	if len(metrics.PromptInputTrace.DeferredToolDirectory) == 0 {
+		t.Fatal("prompt input trace should record deferred tool families")
+	}
 }
 
 func TestModelInputTraceG01FirstTurnP0PromptSizeBudget(t *testing.T) {
@@ -927,12 +965,12 @@ func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
 	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
-		SessionID:       "sess-depth",
-		TurnID:          "turn-depth",
-		Iteration:       0,
-		Compiled:        promptcompiler.CompiledPrompt{},
-		ModelInput:      []*schema.Message{{Role: schema.User, Content: "排查异常"}},
-		TaskDepth:       taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
+		SessionID:  "sess-depth",
+		TurnID:     "turn-depth",
+		Iteration:  0,
+		Compiled:   promptcompiler.CompiledPrompt{},
+		ModelInput: []*schema.Message{{Role: schema.User, Content: "排查异常"}},
+		TaskDepth:  taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
 		EvidenceCoverage: &EvidenceCoverageDecision{
 			Action:             "continue_gathering",
 			Coverage:           0.5,
@@ -992,62 +1030,119 @@ type firstTurnPromptMetrics struct {
 	ToolRegistryCharCount int
 	VisibleToolCount      int
 	VisibleToolNames      []string
+	ToolPromptContent     string
+	PromptInputTrace      promptinput.PromptInputTrace
 }
 
 func buildG01FirstTurnPromptMetrics(t *testing.T) firstTurnPromptMetrics {
 	t.Helper()
 
-	tools := []promptcompiler.Tool{
-		staticTraceTool("exec_command", "Execute a local terminal command on the selected host", tooling.ToolRiskHigh, true),
-		staticTraceTool("get_current_model_config", "Read currently configured LLM provider and model", tooling.ToolRiskMedium, false),
-		staticTraceTool("web_search", "Search the web for current information with source URLs", tooling.ToolRiskMedium, false),
-		staticTraceTool("browse_url", "Fetch a specific http or https URL as readable page text", tooling.ToolRiskMedium, false),
-		staticTraceTool("tool_search", "Search available operational tools by name, description, domain, and governance metadata", tooling.ToolRiskLow, false),
-		staticTraceTool("search_ops_manuals", "Search verified ops manuals for an operations request and return an auditable decision", tooling.ToolRiskLow, false),
+	registry := tooling.NewRegistry()
+	for _, tool := range []promptcompiler.Tool{
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "exec_command", Description: "Execute a local terminal command on the selected host", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskHigh, Mutating: true}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "get_current_model_config", Description: "Read currently configured LLM provider and model", Layer: tooling.ToolLayerDeferred, Pack: "runtime_config", DeferByDefault: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "web_search", Description: "Search the web for current information with source URLs", Layer: tooling.ToolLayerCore, Pack: "public_web", AlwaysLoad: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "browse_url", Description: "Fetch a specific http or https URL as readable page text", Layer: tooling.ToolLayerDeferred, Pack: "public_web", DeferByDefault: true, RiskLevel: tooling.ToolRiskMedium}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "grep", Description: "Search local files and logs", Layer: tooling.ToolLayerCore, Pack: "filesystem_search", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "list_mcp_resources", Description: "List readable MCP resources", Layer: tooling.ToolLayerCore, Pack: "mcp_resource", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "read_mcp_resource", Description: "Read an MCP resource", Layer: tooling.ToolLayerCore, Pack: "mcp_resource", AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "skill_search", Description: "Search available skills", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "skill_read", Description: "Read a selected skill body", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "read_context_artifact", Description: "Read externalized context artifacts", Layer: tooling.ToolLayerConditional, Pack: "context_artifact", RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "tool_search", Description: "Search available operational tools by name, description, domain, and governance metadata", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithMetadata(tooling.ToolMetadata{Name: "search_ops_manuals", Description: "Search verified ops manuals for an operations request and return an auditable decision", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true, RiskLevel: tooling.ToolRiskLow}),
+		staticTraceToolWithSchema(tooling.ToolMetadata{
+			Name:           "coroot.service_metrics",
+			Description:    "Read service metric summaries from an external observability source",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "coroot_metrics",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:     "metrics",
+				ResourceTypes:      []string{"service", "resource"},
+				OperationKinds:     []string{"read", "query"},
+				RequiresHealthyMCP: true,
+				RequiresSelect:     true,
+				MCPServerID:        "coroot",
+				SchemaBudgetClass:  "on_demand",
+			},
+		}, json.RawMessage(`{"type":"object","properties":{"appId":{"type":"string"},"fromTimestamp":{"type":"integer"}},"required":["appId"]}`)),
+	} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register(%s) error = %v", tool.Metadata().Name, err)
+		}
 	}
+	tools := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{})
+	deferredCatalog := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true})
 	ctx := promptcompiler.CompileContext{
-		SessionType:    "host",
-		Mode:           "inspect",
-		AssembledTools: tools,
+		SessionType:         "host",
+		Mode:                "chat",
+		AssembledTools:      tools,
+		DeferredToolCatalog: deferredCatalog,
+		MCPHealthSnapshot:   map[string]string{"coroot": "unavailable"},
 	}
 	compiler := promptcompiler.NewCompiler()
 	compiled, err := compiler.Compile(ctx)
 	if err != nil {
 		t.Fatalf("Compile() error = %v", err)
 	}
-	modelInput, err := compiler.CompileForEino(ctx)
+	promptBuild, err := buildPromptInput([]Message{{
+		Role:    "user",
+		Content: "G01: 排查 ERP 订单提交异常，先收集证据，不要执行变更",
+	}}, compiled)
 	if err != nil {
-		t.Fatalf("CompileForEino() error = %v", err)
+		t.Fatalf("build prompt input error = %v", err)
 	}
-	modelInput = append(modelInput, schema.UserMessage("G01: 排查 ERP 订单提交异常，先收集证据，不要执行变更"))
 
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
 		names = append(names, tool.Metadata().Name)
 	}
 	return firstTurnPromptMetrics{
-		PromptCharCount:       schemaMessageCharCount(modelInput),
+		PromptCharCount:       schemaMessageCharCount(promptBuild.Messages),
 		ToolRegistryCharCount: len(compiled.Tools.Content),
 		VisibleToolCount:      len(names),
 		VisibleToolNames:      names,
+		ToolPromptContent:     compiled.Tools.Content,
+		PromptInputTrace:      promptBuild.Trace,
 	}
 }
 
 func staticTraceTool(name, description string, risk tooling.ToolRiskLevel, mutating bool) promptcompiler.Tool {
+	return staticTraceToolWithMetadata(tooling.ToolMetadata{
+		Name:        name,
+		Description: description,
+		RiskLevel:   risk,
+		Mutating:    mutating,
+	})
+}
+
+func staticTraceToolWithMetadata(meta tooling.ToolMetadata) promptcompiler.Tool {
 	return &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{
-			Name:        name,
-			Description: description,
-			RiskLevel:   risk,
-			Mutating:    mutating,
-		},
+		Meta: meta,
 		ReadOnlyFunc: func(json.RawMessage) bool {
-			return !mutating
+			return !meta.Mutating
 		},
 		DestructiveFunc: func(json.RawMessage) bool {
-			return mutating
+			return meta.Mutating
 		},
 	}
+}
+
+func staticTraceToolWithSchema(meta tooling.ToolMetadata, inputSchema json.RawMessage) promptcompiler.Tool {
+	tool := staticTraceToolWithMetadata(meta).(*tooling.StaticTool)
+	tool.InputSchemaData = inputSchema
+	return tool
+}
+
+func deferredDirectoryContainsPack(entries []promptcompiler.DeferredToolDirectoryEntry, pack string) bool {
+	for _, entry := range entries {
+		if entry.Pack == pack {
+			return true
+		}
+	}
+	return false
 }
 
 func schemaMessageCharCount(messages []*schema.Message) int {

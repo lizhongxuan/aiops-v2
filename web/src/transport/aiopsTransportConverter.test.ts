@@ -379,6 +379,133 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("preserves optional host child full runtime trace fields in assistant metadata", () => {
+    const state = createState();
+    state.activeHostMissionId = "mission-generic";
+    state.hostMissions = {
+      "mission-generic": {
+        id: "mission-generic",
+        turnId: "turn-1",
+        status: "running",
+        planRequired: true,
+        planAccepted: true,
+        mentionedHosts: [
+          {
+            tokenId: "mention-generic",
+            raw: "@host-a.internal",
+            hostId: "host-generic-a",
+            address: "host-a.internal",
+            displayName: "Generic host A",
+            source: "inventory",
+            resolved: true,
+          },
+        ],
+        childAgentIds: ["child-generic-a"],
+        planSteps: [{ id: "inspect-generic-service", text: "Inspect generic service state", status: "running" }],
+      },
+    };
+    state.childAgents = {
+      "child-generic-a": {
+        id: "child-generic-a",
+        missionId: "mission-generic",
+        sessionId: "host-child:generic-a",
+        hostId: "host-generic-a",
+        hostAddress: "host-a.internal",
+        hostDisplayName: "Generic host A",
+        status: "running",
+        task: "Inspect generic service state",
+        runtimeProfile: {
+          id: "host-agent-full-runtime",
+          capabilities: ["prompt_compiler", "context_governance", "trace"],
+        },
+        contextDecisions: [
+          {
+            id: "context-decision-1",
+            sectionId: "host_agent.assigned_subtask.v1",
+            decision: "keep",
+            retentionRank: "P1",
+            compactAction: "compact",
+            sourceRef: "agent-message:generic-task",
+            redaction: "ref://context/decision",
+          },
+        ],
+        promptSections: [
+          {
+            id: "prompt-base-runtime",
+            category: "base_runtime",
+            sectionId: "base.runtime.v1",
+            retentionRank: "P0",
+            compactAction: "keep",
+            sourceRef: "ref://prompt/base-runtime",
+            redaction: "hash:prompt-base-runtime",
+          },
+          {
+            id: "prompt-host-task",
+            category: "host_task_context",
+            sectionId: "host_agent.assigned_subtask.v1",
+            retentionRank: "P1",
+            compactAction: "compact",
+            sourceRef: "agent-message:generic-task",
+            redaction: "redacted",
+          },
+        ],
+        toolSurfaceSnapshot: [
+          {
+            id: "tool-host-command",
+            name: "HostCommandTool",
+            source: "host_agent_tool",
+            status: "allowed",
+            redaction: "ref://tool/host-command",
+          },
+          {
+            id: "tool-human-terminal",
+            name: "operator-terminal",
+            source: "human_terminal",
+            status: "recorded",
+            redaction: "hash:human-terminal",
+          },
+        ],
+        mcpInstructionDeltas: [{ id: "mcp-delta", server: "generic-docs", sourceRef: "mcp://generic-docs" }],
+        skillActivationTrace: [{ id: "skill-trace", skill: "generic-log-review", status: "activated" }],
+        approvalTrace: [{ id: "approval-trace", approvalId: "approval-generic", status: "approved" }],
+        evidenceTrace: [{ id: "evidence-trace", artifactRef: "artifact://evidence/generic-service", hash: "hash:evidence" }],
+        reportTimeline: [{ id: "report-event", event: "report.sent_to_manager", status: "completed" }],
+        agentMessages: [{ id: "agent-message", role: "host_agent", content: "Stored redacted evidence refs." }],
+        subtaskStatus: "queued",
+        queueReason: "waiting for host session capacity",
+        source: "manager_plan",
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      childAgents: {
+        "child-generic-a": expect.objectContaining({
+          runtimeProfile: expect.objectContaining({ id: "host-agent-full-runtime" }),
+          promptSections: [
+            expect.objectContaining({ category: "base_runtime", redaction: "hash:prompt-base-runtime" }),
+            expect.objectContaining({ category: "host_task_context", redaction: "redacted" }),
+          ],
+          toolSurfaceSnapshot: [
+            expect.objectContaining({ source: "host_agent_tool", name: "HostCommandTool" }),
+            expect.objectContaining({ source: "human_terminal", name: "operator-terminal" }),
+          ],
+          mcpInstructionDeltas: [expect.objectContaining({ server: "generic-docs" })],
+          skillActivationTrace: [expect.objectContaining({ skill: "generic-log-review" })],
+          approvalTrace: [expect.objectContaining({ approvalId: "approval-generic" })],
+          evidenceTrace: [expect.objectContaining({ artifactRef: "artifact://evidence/generic-service" })],
+          reportTimeline: [expect.objectContaining({ event: "report.sent_to_manager" })],
+          agentMessages: [expect.objectContaining({ role: "host_agent" })],
+          subtaskStatus: "queued",
+          queueReason: "waiting for host session capacity",
+          source: "manager_plan",
+        }),
+      },
+    });
+  });
+
   it("delays disruptive artifacts until the assistant turn is terminal", () => {
     const state = createState();
     state.status = "working";

@@ -389,12 +389,12 @@ func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.
 	for _, tool := range tools {
 		names[tool.Metadata().Name] = true
 	}
-	for _, required := range []string{"tool_search"} {
+	for _, required := range []string{"list_mcp_resources", "read_mcp_resource", "tool_search"} {
 		if !names[required] {
 			t.Fatalf("assembled tools missing %q; got %v", required, registryAdapterToolNames(tools))
 		}
 	}
-	for _, deferredDefault := range []string{"list_mcp_resources", "read_mcp_resource", "opsgraph.lookup"} {
+	for _, deferredDefault := range []string{"opsgraph.lookup"} {
 		if names[deferredDefault] {
 			t.Fatalf("deferred tool %q should not be visible in default tools; got %v", deferredDefault, registryAdapterToolNames(tools))
 		}
@@ -663,6 +663,15 @@ func registryAdapterToolNames(tools []tooling.Tool) []string {
 func registryAdapterHasTool(tools []tooling.Tool, name string) bool {
 	for _, tool := range tools {
 		if tool.Metadata().Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func registryAdapterHasToolByName(names []string, name string) bool {
+	for _, candidate := range names {
+		if candidate == name {
 			return true
 		}
 	}
@@ -976,6 +985,39 @@ func TestRegistryAdapterUsesSameFlaggedAssemblyForPromptAndRuntimePools(t *testi
 	}
 	if info.Name != "read_file" {
 		t.Fatalf("tool pool Info().Name = %q, want read_file", info.Name)
+	}
+}
+
+func TestRegistryAdapterExposesDeferredCatalogForProgressiveIntent(t *testing.T) {
+	registry := tooling.NewRegistry()
+	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "read_file", sessions: []string{"host"}, modes: []string{"chat"}})
+	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{
+		sessions: []string{"host"},
+		modes:    []string{"chat"},
+		meta: tooling.ToolMetadata{
+			Name:           "get_current_model_config",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "runtime_config",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Triggers:       []string{"current model", "model name"},
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "runtime_config",
+				ResourceTypes:  []string{"model", "runtime", "configuration"},
+				OperationKinds: []string{"read", "inspect"},
+				RequiresSelect: true,
+			},
+		},
+	})
+	adapter := newRegistryAdapter(registry, nil, featureflag.Default())
+
+	defaultNames := registryAdapterToolNames(adapter.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
+	if registryAdapterHasToolByName(defaultNames, "get_current_model_config") {
+		t.Fatalf("default AssembleToolsWithOptions tools = %v, should not include deferred runtime config tool", defaultNames)
+	}
+	catalogNames := registryAdapterToolNames(adapter.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true}))
+	if !registryAdapterHasToolByName(catalogNames, "get_current_model_config") {
+		t.Fatalf("deferred catalog tools = %v, want get_current_model_config for intent matching", catalogNames)
 	}
 }
 

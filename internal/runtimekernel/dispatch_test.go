@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/actionproposal"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/tooling"
@@ -264,6 +265,81 @@ func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T
 	}
 }
 
+func TestToolDispatcher_DeferredUnavailableMCPToolReturnsStructuredRejection(t *testing.T) {
+	registry := mcp.NewRegistry()
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:  "synthetic_obs",
+		Status:    mcp.HealthUnavailable,
+		LastError: "502 Bad Gateway",
+	})
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter).
+		WithDeferredCatalogLookup(mockDeferredCatalogLookup{
+			"synthetic.observability_metrics": syntheticUnavailableMCPToolMetadata(),
+		})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-deferred-mcp",
+		"turn-deferred-mcp",
+		ToolCall{
+			ID:        "call-deferred-mcp",
+			Name:      "synthetic.observability_metrics",
+			Arguments: json.RawMessage(`{"target":"synthetic-service"}`),
+		},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"mcp_unavailable"`) {
+		t.Fatalf("dispatch error = %q, want structured mcp_unavailable", result.Error)
+	}
+	if !strings.Contains(result.Error, "skipped due to mcp_unavailable") || !strings.Contains(result.Error, `"healthStatus":"unavailable"`) {
+		t.Fatalf("dispatch error missing unavailable health evidence: %s", result.Error)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s for unavailable MCP deferred tool", EventToolStarted)
+		}
+	}
+}
+
+func TestToolDispatcher_VisibleUnavailableMCPToolDoesNotExecute(t *testing.T) {
+	registry := mcp.NewRegistry()
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{ServerID: "synthetic_obs", Status: mcp.HealthUnavailable})
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	meta := syntheticUnavailableMCPToolMetadata()
+	lookup := &mockToolLookup{tools: map[string]mockToolEntry{
+		"synthetic.observability_metrics": {
+			desc:     ToolDescriptor{Metadata: meta},
+			executor: executor,
+		},
+	}}
+	dispatcher := NewToolDispatcher(lookup, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-visible-mcp",
+		"turn-visible-mcp",
+		ToolCall{ID: "call-visible-mcp", Name: "synthetic.observability_metrics", Arguments: json.RawMessage(`{}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Source != "mcp" || result.Outcome != "tool_failed" || !strings.Contains(result.Error, `"errorType":"mcp_unavailable"`) {
+		t.Fatalf("dispatch result = %#v, want mcp unavailable tool_failed", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 for unavailable MCP", executor.calls)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted {
+			t.Fatalf("emitted %s for unavailable visible MCP tool", EventToolStarted)
+		}
+	}
+}
+
 func TestToolDispatcher_UnknownToolReturnsStructuredNotFound(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter)
@@ -396,6 +472,24 @@ type mockDeferredCatalogLookup map[string]tooling.ToolMetadata
 func (m mockDeferredCatalogLookup) LookupDeferredTool(name string) (tooling.ToolMetadata, bool) {
 	meta, ok := m[name]
 	return meta, ok
+}
+
+func syntheticUnavailableMCPToolMetadata() tooling.ToolMetadata {
+	return tooling.ToolMetadata{
+		Name:        "synthetic.observability_metrics",
+		Description: "Read synthetic metrics from an external observability source",
+		Layer:       tooling.ToolLayerDeferred,
+		Pack:        "synthetic_observability",
+		Discovery: tooling.ToolDiscoveryMetadata{
+			CapabilityKind:     "metrics",
+			ResourceTypes:      []string{"service"},
+			OperationKinds:     []string{"read"},
+			MCPServerID:        "synthetic_obs",
+			RequiresHealthyMCP: true,
+			RequiresSelect:     true,
+			LoadingPolicy:      tooling.ToolLoadingPolicyDeferred,
+		},
+	}
 }
 
 func TestToolDispatcher_CompletedPayloadFitsBudgetForLargeResult(t *testing.T) {

@@ -3,7 +3,10 @@ package appui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/store"
@@ -41,6 +44,7 @@ type mcpRuntimeStub struct {
 	connected    []string
 	refreshed    []string
 	disconnected []string
+	refreshErr   error
 }
 
 func (r *mcpRuntimeStub) Connect(_ context.Context, serverID string) error {
@@ -61,6 +65,9 @@ func (r *mcpRuntimeStub) Disconnect(_ context.Context, serverID string) error {
 
 func (r *mcpRuntimeStub) RefreshTools(ctx context.Context, serverID string) error {
 	r.refreshed = append(r.refreshed, serverID)
+	if r.refreshErr != nil {
+		return r.refreshErr
+	}
 	return r.Connect(ctx, serverID)
 }
 
@@ -213,6 +220,70 @@ func TestMCPServiceUsesRuntimeForConnectRefreshAndDisconnect(t *testing.T) {
 	}
 	if got := findMCPItem(closed.Items, "docs"); got == nil || got.ToolCount != 0 || got.Status != "disconnected" {
 		t.Fatalf("docs after close = %+v, want disconnected with no tools", got)
+	}
+}
+
+func TestMCPServiceListIncludesRedactedHealth(t *testing.T) {
+	repo := &mcpRepoStub{}
+	registry := mcp.NewRegistry()
+	if err := registry.RegisterServer(mcp.ServerConfig{ID: "synthetic_obs", Transport: "http", Command: []string{"http://synthetic.invalid"}}); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:      "synthetic_obs",
+		Status:        mcp.HealthUnavailable,
+		LastCheckedAt: time.Unix(100, 0),
+		LastError:     "502 bad gateway token=secret password=hidden",
+		TTLSeconds:    30,
+		Capabilities:  []string{"tools"},
+	})
+
+	svc := NewMCPService(repo, registry)
+	listed, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	item := findMCPItem(listed.Items, "synthetic_obs")
+	if item == nil {
+		t.Fatalf("synthetic_obs item not found: %+v", listed.Items)
+	}
+	if item.Health.Status != mcp.HealthUnavailable {
+		t.Fatalf("Health.Status = %q, want unavailable", item.Health.Status)
+	}
+	for _, forbidden := range []string{"secret", "hidden"} {
+		if strings.Contains(item.Health.LastError, forbidden) || strings.Contains(item.Error, forbidden) {
+			t.Fatalf("MCP health payload leaked %q: %+v", forbidden, item)
+		}
+	}
+}
+
+func TestMCPServiceRefreshRecordsUnavailableHealth(t *testing.T) {
+	repo := &mcpRepoStub{items: []store.MCPServerRecord{{
+		Name:      "synthetic_obs",
+		Transport: "http",
+		URL:       "http://synthetic.invalid",
+		Env:       map[string]string{},
+	}}}
+	registry := mcp.NewRegistry()
+	runtime := &mcpRuntimeStub{
+		registry:   registry,
+		refreshErr: fmt.Errorf("connect: connection refused token=secret"),
+	}
+	svc := NewMCPServiceWithRuntime(repo, registry, runtime)
+
+	refreshed, err := svc.Act(context.Background(), "synthetic_obs", "refresh")
+	if err != nil {
+		t.Fatalf("Act(refresh) error = %v, want payload with unavailable health", err)
+	}
+	item := findMCPItem(refreshed.Items, "synthetic_obs")
+	if item == nil {
+		t.Fatalf("synthetic_obs item not found: %+v", refreshed.Items)
+	}
+	if item.Health.Status != mcp.HealthUnavailable {
+		t.Fatalf("Health.Status = %q, want unavailable", item.Health.Status)
+	}
+	if strings.Contains(item.Health.LastError, "secret") || strings.Contains(item.Error, "secret") {
+		t.Fatalf("refresh payload leaked secret: %+v", item)
 	}
 }
 

@@ -190,9 +190,11 @@ func applyToolSearchDiscoveryState(session *SessionState, toolName string, resul
 		Mode      string                    `json:"mode"`
 		Matches   []ToolSearchMatchSnapshot `json:"matches"`
 		Selection struct {
-			LoadedTools []string `json:"loadedTools"`
-			LoadedPacks []string `json:"loadedPacks"`
-			Reason      string   `json:"reason"`
+			LoadedTools      []string          `json:"loadedTools"`
+			LoadedPacks      []string          `json:"loadedPacks"`
+			NotLoaded        []string          `json:"notLoaded"`
+			NotLoadedReasons map[string]string `json:"notLoadedReasons"`
+			Reason           string            `json:"reason"`
 		} `json:"selection"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -203,7 +205,11 @@ func applyToolSearchDiscoveryState(session *SessionState, toolName string, resul
 	case "search":
 		session.ToolDiscovery.ApplySearch(payload.Matches, now)
 	case "select":
-		delta := ToolSelectionDelta{Reason: payload.Selection.Reason}
+		delta := ToolSelectionDelta{
+			NotLoaded:        payload.Selection.NotLoaded,
+			NotLoadedReasons: payload.Selection.NotLoadedReasons,
+			Reason:           payload.Selection.Reason,
+		}
 		for _, name := range payload.Selection.LoadedTools {
 			if trimmed := strings.TrimSpace(name); trimmed != "" {
 				delta.LoadedTools = append(delta.LoadedTools, LoadedToolRef{Name: trimmed, Source: "tool_search.select", Reason: payload.Selection.Reason})

@@ -181,10 +181,12 @@ func developerEvidenceLines(ctx CompileContext) []string {
 		"Separate observed facts from inference; if evidence is incomplete, state the limitation briefly and omit unverifiable fields.",
 		"For quick factual lookups such as prices, market quotes, weather, exchange rates, schedules, scores, or other current snapshots, use tools silently when needed and answer with only the key values, timestamp/volatility caveat when relevant, and at most one compact source note if required.",
 		"For quick factual lookups, do not narrate tool process, normal source differences, next actions, or optional follow-up menus unless the user asks for analysis or methodology.",
-		"For current or latest factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.",
+		"For current or latest public factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.",
+		"Current host, current environment, local runtime, selected resource, session state, tool status, prompt trace, or private deployment facts are not public factual requests; do not use web_search or browse_url for them unless the user explicitly asks to search the web.",
 		"In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.",
 		"Failed, unloaded, hidden, or not-yet-selected tools do not count as checked evidence; keep final confidence no higher than the checked evidence supports.",
-		"When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.",
+		"For resource inspection requests, answer with concrete requested values such as capacity, usage, saturation, count, freshness, or unit when available; not only health or normality.",
+		"When public current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.",
 		"When the user asks to validate local agent, eval, runtime, trace, tool, or prompt behavior, gather local evidence with available read-only tools before finalizing; do not only acknowledge the rule or describe future intent.",
 		"When the user explicitly asks for read-only local inspection, do not execute build, test, server-start, package-install, or other non-read-only commands; mention those commands only as verification methods unless the user asks you to run them.",
 	}
@@ -244,6 +246,9 @@ func developerToolUseBoundaryLines(ctx CompileContext) []string {
 	lines := []string{
 		"Use tools to gather evidence before making claims that depend on local, current, or system-specific state.",
 		"Prefer the most specific available read-only tool before broader shell inspection.",
+		"For current or selected resource inspection, prefer tools bound to that resource scope before broad observability or aggregate metrics tools; use external observability only when its target binding and current availability are established by tool metadata or successful health evidence.",
+		"For current or selected host/system resource facts, prefer direct environment-bound inspection with exec_command when it is visible before tool_search, MCP resources, grep, web tools, or external observability; use those only when direct inspection is unavailable, insufficient, or explicitly requested.",
+		"For current host, selected host, private environment, local runtime, prompt trace, session state, or tool-status inspection, use environment-bound tools; do not use web_search or browse_url unless the user explicitly asks for public web information.",
 		"When using exec_command for read-only inspection, pass the executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining. Use narrower commands or native flags instead.",
 		"Do not duplicate Layer 3 tool details in prose; rely on the compact Tool Index, common tool policy, and runtime approval/evidence gates for tool-specific behavior.",
 	}
@@ -346,6 +351,9 @@ func dynamicPromptFragments(ctx CompileContext) []string {
 	if loadedSkills := loadedSkillContext(ctx.LoadedSkillRefs); loadedSkills != "" {
 		parts = append(parts, loadedSkills)
 	}
+	if hostTaskContext := activeHostTaskContext(ctx.HostTaskPromptAssets); hostTaskContext != "" {
+		parts = append(parts, hostTaskContext)
+	}
 
 	if len(ctx.EvidenceReminders) > 0 {
 		lines := make([]string, 0, len(ctx.EvidenceReminders)+1)
@@ -376,6 +384,25 @@ func dynamicPromptFragments(ctx CompileContext) []string {
 		}
 	}
 	return parts
+}
+
+func activeHostTaskContext(assets []string) string {
+	lines := []string{
+		"## Active Host Task Context",
+		"These fragments are assigned host-bound task context from manager-to-host agent messages.",
+		"They are not skill instructions. Do not infer that additional skills are loaded.",
+	}
+	for i, asset := range assets {
+		asset = strings.TrimSpace(asset)
+		if asset == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("### Host task asset %d", i+1), asset)
+	}
+	if len(lines) == 3 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
 }
 
 func loadedSkillContext(refs []LoadedSkillPromptRef) string {
@@ -455,9 +482,10 @@ func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
 	constraints = append(constraints, "If verification status is FAIL, include checked contract, known constraints, expected vs actual, and available evidence reference.")
 	constraints = append(constraints, "When the user explicitly requires a structured plan or status tracking, use the available planning tool and keep at least one current step status such as in_progress visible until the work completes.")
 	constraints = append(constraints, "For simple direct questions about whether planning is required, answer directly and avoid internal tool names unless the user asks for implementation-level detail.")
-	constraints = append(constraints, "For current or latest factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.")
+	constraints = append(constraints, "For current or latest public factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.")
+	constraints = append(constraints, "Current host, current environment, local runtime, selected resource, session state, tool status, prompt trace, or private deployment facts are not public factual requests; do not use web_search or browse_url for them unless the user explicitly asks to search the web.")
 	constraints = append(constraints, "In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.")
-	constraints = append(constraints, "When current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
+	constraints = append(constraints, "When public current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
 	constraints = append(constraints, agentProfileConstraints(ctx)...)
 
 	// Mode-specific constraints

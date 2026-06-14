@@ -250,8 +250,8 @@ func TestRegistryAssembleToolsWithOptionsAppliesFilterTransformAndExtraTools(t *
 		},
 	})
 
-	if len(assembled) != 2 {
-		t.Fatalf("AssembleToolsWithOptions() len = %d, want 2", len(assembled))
+	if len(assembled) != 1 {
+		t.Fatalf("AssembleToolsWithOptions() len = %d, want 1", len(assembled))
 	}
 	if assembled[0].Metadata().Name != "read_file" {
 		t.Fatalf("AssembleToolsWithOptions()[0].Name = %q, want read_file", assembled[0].Metadata().Name)
@@ -259,11 +259,22 @@ func TestRegistryAssembleToolsWithOptionsAppliesFilterTransformAndExtraTools(t *
 	if !assembled[0].Metadata().ShouldDefer {
 		t.Fatalf("expected transformed read_file metadata to set ShouldDefer, got %#v", assembled[0].Metadata())
 	}
-	if assembled[1].Metadata().Name != "service_metrics" {
-		t.Fatalf("AssembleToolsWithOptions()[1].Name = %q, want service_metrics", assembled[1].Metadata().Name)
+
+	withDeferredCatalog := r.AssembleToolsWithOptions("host", "chat", AssembleOptions{
+		ExtraTools:             []Tool{extra},
+		IncludeDeferredCatalog: true,
+		Filter: func(_ Tool, _ ToolContext, meta ToolMetadata) bool {
+			return meta.Name != "write_file"
+		},
+	})
+	if len(withDeferredCatalog) != 2 {
+		t.Fatalf("IncludeDeferredCatalog len = %d, want 2", len(withDeferredCatalog))
 	}
-	if !assembled[1].Metadata().HasMCPSource() {
-		t.Fatalf("expected extra dynamic tool to retain MCP traits, got %#v", assembled[1].Metadata())
+	if withDeferredCatalog[1].Metadata().Name != "service_metrics" {
+		t.Fatalf("IncludeDeferredCatalog[1].Name = %q, want service_metrics", withDeferredCatalog[1].Metadata().Name)
+	}
+	if !withDeferredCatalog[1].Metadata().HasMCPSource() {
+		t.Fatalf("expected extra dynamic tool to retain MCP traits, got %#v", withDeferredCatalog[1].Metadata())
 	}
 }
 
@@ -277,6 +288,9 @@ func TestRegistryAssembleToolsWithOptionsAppliesLayerPackAndProfileFilters(t *te
 		{Name: "debug_trace", Description: "debug", Layer: ToolLayerDebug},
 		{Name: "mutation_restart", Description: "mutation", Layer: ToolLayerMutation, Pack: "mutation", Mutating: true},
 		{Name: "profile_only", Description: "profile", Layer: ToolLayerCore, Profiles: []string{"demo"}},
+		{Name: "profile_layer", Description: "profile layer", Layer: ToolLayerProfile, Profiles: []string{"host_agent"}},
+		{Name: "mcp_observability", Description: "mcp layer", Layer: ToolLayerMCP, Pack: "observability", IsMCP: true, MCPInfo: MCPInfo{ServerID: "synthetic-observability", ToolName: "metrics"}},
+		{Name: "conditional_context", Description: "conditional layer", Layer: ToolLayerConditional, Pack: "context_artifact"},
 	} {
 		if err := r.Register(&mockTool{
 			meta:        meta,
@@ -295,7 +309,7 @@ func TestRegistryAssembleToolsWithOptionsAppliesLayerPackAndProfileFilters(t *te
 			t.Fatalf("default names = %v, want %q", defaultNames, want)
 		}
 	}
-	for _, forbidden := range []string{"deferred_manual", "internal_record", "debug_trace", "mutation_restart", "profile_only"} {
+	for _, forbidden := range []string{"deferred_manual", "internal_record", "debug_trace", "mutation_restart", "profile_only", "profile_layer", "mcp_observability", "conditional_context"} {
 		if containsToolNameForRegistryTest(defaultNames, forbidden) {
 			t.Fatalf("default names = %v, should not include %q", defaultNames, forbidden)
 		}
@@ -311,6 +325,16 @@ func TestRegistryAssembleToolsWithOptionsAppliesLayerPackAndProfileFilters(t *te
 		t.Fatalf("mutation pack names = %v, want mutation_restart", mutationNames)
 	}
 
+	mcpNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{EnabledPacks: []string{"observability"}}))
+	if !containsToolNameForRegistryTest(mcpNames, "mcp_observability") {
+		t.Fatalf("mcp pack names = %v, want mcp_observability", mcpNames)
+	}
+
+	conditionalNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{EnabledPacks: []string{"context_artifact"}}))
+	if !containsToolNameForRegistryTest(conditionalNames, "conditional_context") {
+		t.Fatalf("conditional pack names = %v, want conditional_context", conditionalNames)
+	}
+
 	debugNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{Profile: "debug"}))
 	if !containsToolNameForRegistryTest(debugNames, "debug_trace") {
 		t.Fatalf("debug profile names = %v, want debug_trace", debugNames)
@@ -319,6 +343,11 @@ func TestRegistryAssembleToolsWithOptionsAppliesLayerPackAndProfileFilters(t *te
 	demoNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{Profile: "demo"}))
 	if !containsToolNameForRegistryTest(demoNames, "profile_only") {
 		t.Fatalf("demo profile names = %v, want profile_only", demoNames)
+	}
+
+	hostAgentNames := toolNamesForTest(r.AssembleToolsWithOptions("host", "chat", AssembleOptions{Profile: "host_agent"}))
+	if !containsToolNameForRegistryTest(hostAgentNames, "profile_layer") {
+		t.Fatalf("host_agent profile names = %v, want profile_layer", hostAgentNames)
 	}
 }
 

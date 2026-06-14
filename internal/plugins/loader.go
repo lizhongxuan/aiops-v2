@@ -488,7 +488,7 @@ func cloneSpec(spec Spec) Spec {
 		servers := make([]MCPServerSpec, len(spec.MCPServers))
 		for i, server := range spec.MCPServers {
 			servers[i] = MCPServerSpec{
-				Config: server.Config,
+				Config: cloneMCPServerConfig(server.Config),
 				Tools:  append([]tooling.Tool(nil), server.Tools...),
 			}
 		}

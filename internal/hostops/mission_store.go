@@ -3,6 +3,7 @@ package hostops
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,15 +25,19 @@ type MissionStore interface {
 }
 
 type InMemoryMissionStore struct {
-	mu       sync.RWMutex
-	missions map[string]HostOperationMission
-	children map[string]HostChildAgent
+	mu                sync.RWMutex
+	missions          map[string]HostOperationMission
+	children          map[string]HostChildAgent
+	subtaskDecisions  map[string]HostSubTaskScheduleDecision
+	activeWriteByHost map[string]string
 }
 
 func NewInMemoryMissionStore() *InMemoryMissionStore {
 	return &InMemoryMissionStore{
-		missions: map[string]HostOperationMission{},
-		children: map[string]HostChildAgent{},
+		missions:          map[string]HostOperationMission{},
+		children:          map[string]HostChildAgent{},
+		subtaskDecisions:  map[string]HostSubTaskScheduleDecision{},
+		activeWriteByHost: map[string]string{},
 	}
 }
 
@@ -107,6 +112,49 @@ func (s *InMemoryMissionStore) ListChildAgents(_ context.Context, missionID stri
 		}
 	}
 	return result, nil
+}
+
+func (s *InMemoryMissionStore) SaveHostSubTaskScheduleDecision(_ context.Context, decision HostSubTaskScheduleDecision) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.subtaskDecisions == nil {
+		s.subtaskDecisions = map[string]HostSubTaskScheduleDecision{}
+	}
+	if s.activeWriteByHost == nil {
+		s.activeWriteByHost = map[string]string{}
+	}
+	s.subtaskDecisions[decision.SubTaskID] = decision
+	key := scheduleHostKey(decision.MissionID, decision.HostID)
+	if decision.Status == HostSubTaskStatusRunning {
+		s.activeWriteByHost[key] = decision.SubTaskID
+	}
+	if decision.Status == HostSubTaskStatusCancelled && decision.ActiveSubTaskID != "" && s.activeWriteByHost[key] == decision.ActiveSubTaskID {
+		delete(s.activeWriteByHost, key)
+	}
+	return nil
+}
+
+func (s *InMemoryMissionStore) ActiveHostSubTaskID(_ context.Context, missionID, hostID string) (string, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	active, ok := s.activeWriteByHost[scheduleHostKey(missionID, hostID)]
+	return active, ok, nil
+}
+
+func (s *InMemoryMissionStore) ListHostSubTaskScheduleDecisions(_ context.Context, missionID string) ([]HostSubTaskScheduleDecision, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]HostSubTaskScheduleDecision, 0)
+	for _, decision := range s.subtaskDecisions {
+		if decision.MissionID == missionID {
+			out = append(out, decision)
+		}
+	}
+	return out, nil
+}
+
+func scheduleHostKey(missionID, hostID string) string {
+	return strings.TrimSpace(missionID) + "\x00" + strings.TrimSpace(hostID)
 }
 
 func cloneMission(mission HostOperationMission) HostOperationMission {

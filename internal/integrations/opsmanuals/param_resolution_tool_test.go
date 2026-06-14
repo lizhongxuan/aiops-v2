@@ -29,6 +29,20 @@ func TestRegisterBuiltinsInstallsResolveOpsManualParams(t *testing.T) {
 	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
 		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.DiscoveryGroup != "runbook" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
+		t.Fatalf("resolve_ops_manual_params discovery = %+v, want deferred runbook select-only discovery", discovery)
+	}
+	for _, want := range []string{"manual", "runbook", "parameter"} {
+		if !containsString(discovery.ResourceTypes, want) {
+			t.Fatalf("resolve_ops_manual_params resource types = %#v, missing %q", discovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"resolve", "read"} {
+		if !containsString(discovery.OperationKinds, want) {
+			t.Fatalf("resolve_ops_manual_params operation kinds = %#v, missing %q", discovery.OperationKinds, want)
+		}
+	}
 	if len(meta.Description) > 500 {
 		t.Fatalf("description length = %d, want <= 500: %q", len(meta.Description), meta.Description)
 	}

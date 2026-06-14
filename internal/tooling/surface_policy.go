@@ -119,6 +119,13 @@ func ApplyToolSurfacePolicy(tools []Tool, opts ToolSurfacePolicyOptions) ([]Tool
 			continue
 		}
 		meta := tool.Metadata()
+		if IsAlwaysModelCallableTool(meta) {
+			const reason = "always_model_callable"
+			snapshot.VisibleTools = append(snapshot.VisibleTools, ToolVisibleReason{Name: meta.Name, Reason: reason})
+			snapshot.SurfaceDecisions = append(snapshot.SurfaceDecisions, SurfaceDecision{Name: meta.Name, Visible: true, DispatchAction: SurfaceDispatchAllow, Reason: reason})
+			filtered = append(filtered, tool)
+			continue
+		}
 		if runtimeDecision, ok := surfaceRuntimeDecisionForTool(meta, opts.RuntimeDecisions); ok && runtimeDecision.DispatchAction == SurfaceDispatchDeny {
 			reason := surfaceDecisionReason(runtimeDecision.Reason, "runtime_denied")
 			snapshot.HiddenTools = append(snapshot.HiddenTools, ToolHiddenReason{Name: meta.Name, Reason: reason})
@@ -141,7 +148,7 @@ func ApplyToolSurfacePolicy(tools []Tool, opts ToolSurfacePolicyOptions) ([]Tool
 			snapshot.SurfaceDecisions = append(snapshot.SurfaceDecisions, SurfaceDecision{Name: meta.Name, Visible: true, SummaryOnly: true, DispatchAction: SurfaceDispatchNeedApproval, Reason: reason})
 			continue
 		}
-		reason := "policy_allowed"
+		reason := toolSurfaceVisibleReason(tool, meta)
 		if runtimeDecision, ok := surfaceRuntimeDecisionForTool(meta, opts.RuntimeDecisions); ok && runtimeDecision.Reason != "" {
 			reason = runtimeDecision.Reason
 		}
@@ -308,9 +315,29 @@ func riskRank(risk ToolRiskLevel) int {
 func toolSurfaceSummaryOnlyReason(tool Tool, meta ToolMetadata) string {
 	governance := meta.EffectiveGovernance(4096)
 	if governance.RequiresApproval || tool.IsDestructive(nil) {
+		if toolSurfaceUsesArgumentScopedPermission(meta) {
+			return ""
+		}
 		return "approval_required_schema_hidden"
 	}
 	return ""
+}
+
+func toolSurfaceVisibleReason(tool Tool, meta ToolMetadata) string {
+	governance := meta.EffectiveGovernance(4096)
+	if (governance.RequiresApproval || tool.IsDestructive(nil)) && toolSurfaceUsesArgumentScopedPermission(meta) {
+		return "argument_scoped_permission"
+	}
+	return "policy_allowed"
+}
+
+func toolSurfaceUsesArgumentScopedPermission(meta ToolMetadata) bool {
+	switch meta.EffectiveDiscovery().PermissionScope {
+	case "argument_scoped", "argument", "per_call", "per_argument", "dynamic":
+		return true
+	default:
+		return false
+	}
 }
 
 func surfacePolicyProfileAllows(meta ToolMetadata, profile string) bool {

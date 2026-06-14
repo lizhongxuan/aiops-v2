@@ -12,6 +12,9 @@ func BuildPromptSectionTrace(compiled CompiledPrompt) []PromptSectionTrace {
 		promptSectionTrace("protocol.state", PromptSectionKindDynamic, "protocol-state", renderProtocolPromptState(compiled.Dynamic.ProtocolState), PromptSectionCacheMiss),
 		promptSectionTrace("context.dynamic_assets", PromptSectionKindDynamic, "dynamic-assets", dynamicAssetsFingerprintText(compiled.Dynamic), PromptSectionCacheMiss),
 	}
+	if hostTaskText := strings.Join(compiled.Dynamic.HostTaskPromptAssets, "\n"); strings.TrimSpace(hostTaskText) != "" {
+		sections = append(sections, promptSectionTrace("host_task.context", PromptSectionKindDynamic, "host-task", hostTaskText, PromptSectionCacheMiss))
+	}
 	return sections
 }
 
@@ -89,6 +92,7 @@ func ApplyPromptSectionCache(previous, current []PromptSectionTrace) []PromptSec
 
 func promptSectionTrace(id, kind, source, content, cache string) PromptSectionTrace {
 	trimmed := strings.TrimSpace(content)
+	contract := LookupPromptSectionContract(id)
 	return PromptSectionTrace{
 		ID:             id,
 		Kind:           kind,
@@ -97,12 +101,19 @@ func promptSectionTrace(id, kind, source, content, cache string) PromptSectionTr
 		Bytes:          len([]byte(trimmed)),
 		TokensEstimate: promptSectionEstimateTokens(trimmed),
 		Cache:          cache,
+		RetentionRank:  contract.RetentionRank,
+		RetentionClass: contract.RetentionClass,
+		CompactAction:  CompactActionKeptOriginal,
+		CompactSchema:  contract.CompactSchema,
+		Redaction:      contract.RedactionPolicy,
+		Purpose:        contract.Purpose,
 	}
 }
 
 func dynamicAssetsFingerprintText(dynamic DynamicPromptDelta) string {
 	var parts []string
 	parts = append(parts, dynamic.SkillPromptAssets...)
+	parts = append(parts, dynamic.HostTaskPromptAssets...)
 	parts = append(parts, dynamic.EvidenceReminders...)
 	for _, section := range dynamic.ExtraSections {
 		parts = append(parts, section.Title, section.Content)

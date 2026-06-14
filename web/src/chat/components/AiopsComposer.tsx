@@ -242,7 +242,7 @@ export function AiopsComposer({
     <div
       className={[
         variant === "chat"
-          ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6"
+          ? "shrink-0 bg-white px-4 pb-4 pt-0 md:pb-6"
           : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
         className,
       ]
@@ -250,7 +250,7 @@ export function AiopsComposer({
         .join(" ")}
       data-testid="aiops-composer-shell"
     >
-      <div className="mx-auto flex max-w-3xl flex-col gap-2">
+      <div className="mx-auto flex max-w-[49.5rem] flex-col gap-2">
         <ComposerBody
           variant={variant}
           isRunning={isRunning}
@@ -793,7 +793,7 @@ function ComposerBody({
     <ComposerPrimitive.Root
       className={
         variant === "chat"
-          ? "flex flex-col gap-2 rounded-[1.75rem] border border-slate-200 bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] transition-shadow focus-within:border-slate-300 focus-within:shadow-[0_12px_36px_rgba(15,23,42,0.14)]"
+          ? "relative z-10 flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] transition-shadow focus-within:border-slate-300 focus-within:shadow-[0_12px_36px_rgba(15,23,42,0.14)]"
           : "mx-auto flex max-w-5xl items-end gap-2"
       }
     >

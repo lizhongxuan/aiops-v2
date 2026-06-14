@@ -33,7 +33,7 @@ function HostOpsStatusPanelView({ state, onOpenChildAgent }: Required<Pick<HostO
 
   return (
     <section
-      className="mb-2 overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-sm"
+      className="mx-auto -mb-8 w-[calc(100%-2rem)] max-w-[46.5rem] overflow-hidden rounded-t-[1.15rem] rounded-b-none border border-b-0 border-slate-200 bg-white pb-8"
       data-testid="host-ops-status-panel"
     >
       <HostOpsPlanSection mission={mission} state={state} />

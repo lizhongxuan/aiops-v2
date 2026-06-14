@@ -39,7 +39,7 @@ type ChatModel = model.ChatModel
 // ProviderConfig specifies which provider and model to use, along with
 // generation parameters.
 type ProviderConfig struct {
-	// Provider identifies the LLM provider: "openai", "anthropic", "ollama".
+	// Provider identifies the LLM provider: "openai", "zhipu", "anthropic", "ollama".
 	Provider string
 
 	// Model is the specific model name, e.g. "gpt-4o", "claude-3-5-sonnet", "llama3".
@@ -327,23 +327,32 @@ func (r *Router) resolveProvider(agentKind AgentKind, config ProviderConfig) str
 func defaultProviderFactories() map[string]ProviderFactory {
 	return map[string]ProviderFactory{
 		"openai":    buildOpenAIProviderModel,
+		"zhipu":     buildZhipuProviderModel,
 		"anthropic": buildAnthropicProviderModel,
 	}
 }
 
 func buildOpenAIProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	return buildOpenAICompatibleProviderModel("openai", config, truth, hasTruth)
+}
+
+func buildZhipuProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	return buildOpenAICompatibleProviderModel("zhipu", config, truth, hasTruth)
+}
+
+func buildOpenAICompatibleProviderModel(provider string, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
 	apiKey := resolveProviderSecret(truth, hasTruth)
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, &ProviderNotAvailableError{
-			Provider: "openai",
-			Model:    resolveProviderModel("openai", config),
+			Provider: provider,
+			Model:    resolveProviderModel(provider, config),
 			Reason:   "no credential truth available",
 		}
 	}
 	return NewOpenAIChatModel(context.Background(), OpenAIConfig{
 		APIKey:          apiKey,
 		BaseURL:         strings.TrimSpace(config.BaseURL),
-		Model:           resolveProviderModel("openai", config),
+		Model:           resolveProviderModel(provider, config),
 		Temperature:     resolveProviderTemperature(config),
 		MaxTokens:       resolveProviderMaxTokens(config),
 		ReasoningEffort: strings.TrimSpace(config.ReasoningEffort),
@@ -397,6 +406,8 @@ func resolveProviderModel(provider string, config ProviderConfig) string {
 	switch provider {
 	case "openai":
 		return "gpt-4o"
+	case "zhipu":
+		return "glm-4.7"
 	case "anthropic":
 		return "claude-3-5-sonnet"
 	case "ollama":
@@ -435,12 +446,15 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 	}
 
 	switch provider {
-	case "openai":
+	case "openai", "zhipu":
 		caps.ExactTokenCount = true
 		caps.CacheEdit = true
-		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o")
+		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o") || isGLM47Model(normalizedModel)
 		caps.SupportsNativeWebTool = true
 		switch {
+		case isGLM47Model(normalizedModel):
+			caps.MaxContextTokens = 200000
+			caps.MaxOutputTokens = 128000
 		case strings.Contains(normalizedModel, "gpt-5.4"), strings.Contains(normalizedModel, "gpt-5.5"):
 			caps.MaxContextTokens = 200000
 			caps.MaxOutputTokens = 32000
@@ -502,6 +516,13 @@ func providerModelSupportsNativeReasoningEffort(provider, normalizedModel string
 	default:
 		return false
 	}
+}
+
+func isGLM47Model(normalizedModel string) bool {
+	normalizedModel = strings.ToLower(strings.TrimSpace(normalizedModel))
+	return normalizedModel == "glm-4.7" ||
+		strings.HasPrefix(normalizedModel, "glm-4.7-") ||
+		strings.Contains(normalizedModel, "/glm-4.7")
 }
 
 func openAIModelSupportsReasoningEffort(normalizedModel string) bool {

@@ -29,6 +29,9 @@ func AnalyzeContextUsage(input ContextUsageInput) ContextUsage {
 		acc.addText("skills", asset, "skill")
 		_ = i
 	}
+	for _, asset := range input.Compiled.Dynamic.HostTaskPromptAssets {
+		acc.addText("host_task", asset, "host_task")
+	}
 	for _, section := range input.Compiled.Dynamic.ExtraSections {
 		category := "messages"
 		title := strings.ToLower(section.Title)
@@ -74,7 +77,7 @@ type contextUsageAccumulator struct {
 
 func newContextUsageAccumulator() *contextUsageAccumulator {
 	acc := &contextUsageAccumulator{categories: map[string]*ContextUsageCategory{}}
-	for _, name := range []string{"system", "developer", "tools", "skills", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
+	for _, name := range []string{"system", "developer", "tools", "skills", "host_task", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
 		acc.categories[name] = &ContextUsageCategory{Name: name}
 	}
 	return acc

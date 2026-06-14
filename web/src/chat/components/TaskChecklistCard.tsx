@@ -41,7 +41,7 @@ export function TaskChecklistCard({
   const summary = summaryText(viewModel.totalCount, viewModel.completedCount);
 
   return (
-    <section className={cn("min-w-0 px-3 py-2 text-xs", className)} data-testid="task-checklist-card">
+    <section className={cn("min-w-0 px-4 py-1.5 text-[12px]", className)} data-testid="task-checklist-card">
       <button
         type="button"
         className="flex w-full min-w-0 items-center gap-2 text-left"
@@ -50,15 +50,15 @@ export function TaskChecklistCard({
         onClick={() => setCollapsed((value) => !value)}
       >
         <ChevronDownIcon
-          className={cn("size-3.5 shrink-0 text-zinc-500 transition-transform", collapsed ? "-rotate-90" : "rotate-0")}
+          className={cn("size-3 shrink-0 text-zinc-500 transition-transform", collapsed ? "-rotate-90" : "rotate-0")}
           aria-hidden="true"
         />
-        <span className="shrink-0 font-medium text-zinc-700">{title}</span>
+        <span className="shrink-0 font-semibold text-zinc-700">{title}</span>
         <span className="min-w-0 truncate text-zinc-500">{summary}</span>
       </button>
 
       {!collapsed && viewModel.items.length > 0 ? (
-        <ol className="mt-2 grid min-w-0 gap-1">
+        <ol className="mt-1 grid min-w-0 gap-0.5">
           {viewModel.items.map((item) => (
             <li key={item.id} className="min-w-0">
               <TaskChecklistItem item={item} onClick={onItemClick} />
@@ -82,7 +82,7 @@ function TaskChecklistItem({
   const content = (
     <>
       <Icon
-        className={cn("size-3.5 shrink-0", statusColor(item.normalizedStatus), item.normalizedStatus === "running" && "animate-spin")}
+        className={cn("size-3 shrink-0", statusColor(item.normalizedStatus), item.normalizedStatus === "running" && "animate-spin")}
         data-status={item.normalizedStatus}
         aria-label={statusLabel(item.normalizedStatus)}
       />
@@ -103,7 +103,7 @@ function TaskChecklistItem({
     return (
       <button
         type="button"
-        className="flex min-h-7 w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-zinc-50"
+        className="flex min-h-6 w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5 text-left hover:bg-zinc-50"
         data-testid={item.testId || `task-checklist-item-${item.id}`}
         onClick={() => onClick?.(item)}
       >
@@ -114,7 +114,7 @@ function TaskChecklistItem({
 
   return (
     <div
-      className="flex min-h-7 min-w-0 items-center gap-2 rounded-md px-1.5 py-1"
+      className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
       data-testid={item.testId || `task-checklist-item-${item.id}`}
     >
       {content}

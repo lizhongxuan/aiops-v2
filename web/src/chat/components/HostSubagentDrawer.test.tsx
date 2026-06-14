@@ -97,7 +97,7 @@ describe("HostSubagentDrawer", () => {
     expect(document.body.textContent).toContain("@1.1.1.1");
     expect(document.body.textContent).toContain("任务");
     expect(document.body.textContent).toContain("对话");
-    expect(document.body.textContent).toContain("命令");
+    expect(document.body.textContent).toContain("工具");
     expect(document.body.textContent).toContain("审核");
     expect(document.body.textContent).toContain("回执");
     expect(document.body.querySelector('[data-testid="host-subagent-tab-conversation"]')?.getAttribute("aria-selected")).toBe(
@@ -108,7 +108,7 @@ describe("HostSubagentDrawer", () => {
     expect(document.body.textContent).toContain("Assistant 返回");
     expect(document.body.textContent).not.toContain("systemctl is-active example.service");
 
-    const commandTab = document.body.querySelector('[data-testid="host-subagent-tab-commands"]') as HTMLButtonElement;
+    const commandTab = document.body.querySelector('[data-testid="host-subagent-tab-tools"]') as HTMLButtonElement;
     await act(async () => {
       commandTab.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -260,6 +260,149 @@ describe("HostSubagentDrawer", () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it("renders prompt context tool mcp skills approval evidence report tabs", async () => {
+    await act(async () => {
+      root.render(
+        <HostSubagentDrawer
+          open
+          childAgent={sampleTraceChildAgent()}
+          loadTranscript={async () => sampleTraceTranscript()}
+          onOpenChange={vi.fn()}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    expect(document.body.textContent).toContain("任务");
+    expect(document.body.textContent).toContain("对话");
+    expect(document.body.textContent).toContain("Prompt");
+    expect(document.body.textContent).toContain("工具");
+    expect(document.body.textContent).toContain("MCP/Skills");
+    expect(document.body.textContent).toContain("审核");
+    expect(document.body.textContent).toContain("证据");
+    expect(document.body.textContent).toContain("回执");
+    expect(document.body.textContent).toContain("Trace 摘要");
+    expect(document.body.textContent).not.toContain("host_agent.binding.v1");
+
+    await clickTab("prompt");
+    expect(document.body.textContent).toContain("Base runtime");
+    expect(document.body.textContent).toContain("Host overlay");
+    expect(document.body.textContent).toContain("Host task context");
+    expect(document.body.textContent).toContain("Skill context");
+    expect(document.body.textContent).toContain("MCP context");
+    expect(document.body.textContent).toContain("host_agent.binding.v1");
+
+    await clickTab("tools");
+    expect(document.body.textContent).toContain("host_agent_tool");
+    expect(document.body.textContent).toContain("human_terminal");
+    expect(document.body.textContent).toContain("HostCommandTool");
+    expect(document.body.textContent).toContain("operator-terminal");
+
+    await clickTab("mcp-skills");
+    expect(document.body.textContent).toContain("MCP instruction delta");
+    expect(document.body.textContent).toContain("generic-docs");
+    expect(document.body.textContent).toContain("Skill activation");
+    expect(document.body.textContent).toContain("generic-log-review");
+
+    await clickTab("evidence");
+    expect(document.body.textContent).toContain("artifact://evidence/service-status");
+    expect(document.body.textContent).toContain("hash:service-status");
+
+    await clickTab("receipts");
+    expect(document.body.textContent).toContain("report.created");
+    expect(document.body.textContent).toContain("report.sent_to_manager");
+  });
+
+  it("shows retention rank compact action source ref and redaction state", async () => {
+    await act(async () => {
+      root.render(
+        <HostSubagentDrawer
+          open
+          childAgent={sampleTraceChildAgent()}
+          loadTranscript={async () => sampleTraceTranscript()}
+          onOpenChange={vi.fn()}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    await clickTab("prompt");
+
+    expect(document.body.textContent).toContain("P0");
+    expect(document.body.textContent).toContain("keep");
+    expect(document.body.textContent).toContain("agent-message:generic-task");
+    expect(document.body.textContent).toContain("redacted");
+    expect(document.body.textContent).toContain("ref://prompt/base-runtime");
+    expect(document.body.textContent).toContain("hash:prompt-base");
+    expect(document.body.textContent).not.toContain("raw-sensitive-token");
+  });
+
+  it("marks human terminal command source separately from host agent tool call", async () => {
+    await act(async () => {
+      root.render(
+        <HostSubagentDrawer
+          open
+          childAgent={sampleTraceChildAgent()}
+          loadTranscript={async () => sampleTraceTranscript()}
+          onOpenChange={vi.fn()}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    await clickTab("tools");
+
+    expect(document.body.textContent).toContain("host_agent_tool");
+    expect(document.body.textContent).toContain("HostCommandTool");
+    expect(document.body.textContent).toContain("human_terminal");
+    expect(document.body.textContent).toContain("operator-terminal");
+  });
+
+  it("shows queued cancelled superseded host subtasks with reason", async () => {
+    await act(async () => {
+      root.render(
+        <HostSubagentDrawer
+          open
+          childAgent={{
+            ...sampleTraceChildAgent(),
+            subtaskStatus: "queued",
+            queueReason: "waiting for host session capacity",
+            source: "manager_plan",
+          }}
+          loadTranscript={async () => sampleTraceTranscript()}
+          onOpenChange={vi.fn()}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    expect(document.body.textContent).toContain("queued");
+    expect(document.body.textContent).toContain("waiting for host session capacity");
+    expect(document.body.textContent).toContain("manager_plan");
+
+    await act(async () => {
+      root.render(
+        <HostSubagentDrawer
+          open
+          childAgent={{
+            ...sampleTraceChildAgent(),
+            status: "cancelled",
+            subtaskStatus: "superseded",
+            queueReason: "replaced by newer host task",
+            source: "user_followup",
+          }}
+          loadTranscript={async () => sampleTraceTranscript()}
+          onOpenChange={vi.fn()}
+        />,
+      );
+    });
+    await flushMicrotasks();
+
+    expect(document.body.textContent).toContain("superseded");
+    expect(document.body.textContent).toContain("replaced by newer host task");
+    expect(document.body.textContent).toContain("user_followup");
+  });
 });
 
 function sampleChildAgent(): AiopsTransportChildAgent {
@@ -273,6 +416,167 @@ function sampleChildAgent(): AiopsTransportChildAgent {
     status: "running",
     task: "执行主机准备步骤",
   };
+}
+
+function sampleTraceChildAgent(): AiopsTransportChildAgent {
+  return {
+    id: "child-trace-1",
+    missionId: "mission-generic",
+    sessionId: "host-child:generic-1",
+    hostId: "host-generic-a",
+    hostAddress: "host-a.internal",
+    hostDisplayName: "Generic host A",
+    status: "running",
+    task: "Inspect generic service health and resource state",
+    runtimeProfile: {
+      id: "host-agent-full-runtime",
+      capabilities: ["prompt_compiler", "context_governance", "trace", "approval_gate"],
+    },
+    promptSections: [
+      {
+        id: "prompt-base",
+        title: "Base runtime",
+        category: "base_runtime",
+        sectionId: "base.runtime.v1",
+        retentionRank: "P0",
+        compactAction: "keep",
+        sourceRef: "ref://prompt/base-runtime",
+        redaction: "hash:prompt-base",
+      },
+      {
+        id: "prompt-overlay",
+        title: "Host overlay",
+        category: "host_overlay",
+        sectionId: "host_agent.binding.v1",
+        retentionRank: "P0",
+        compactAction: "keep",
+        sourceRef: "agent-message:generic-task",
+        redaction: "redacted",
+      },
+      {
+        id: "prompt-task",
+        title: "Host task context",
+        category: "host_task_context",
+        sectionId: "host_agent.assigned_subtask.v1",
+        retentionRank: "P1",
+        compactAction: "compact",
+        sourceRef: "agent-message:generic-task",
+        redaction: "ref://task/context",
+      },
+      {
+        id: "prompt-skill",
+        title: "Skill context",
+        category: "skill_context",
+        sectionId: "skill.generic_log_review.v1",
+        retentionRank: "P2",
+        compactAction: "summarize",
+        sourceRef: "skill://generic-log-review",
+        redaction: "hash:skill-context",
+      },
+      {
+        id: "prompt-mcp",
+        title: "MCP context",
+        category: "mcp_context",
+        sectionId: "mcp.generic_docs.instructions.v1",
+        retentionRank: "P2",
+        compactAction: "delta",
+        sourceRef: "mcp://generic-docs",
+        redaction: "ref://mcp/context",
+      },
+    ],
+    toolSurfaceSnapshot: [
+      {
+        id: "tool-host-command",
+        name: "HostCommandTool",
+        source: "host_agent_tool",
+        status: "allowed",
+        summary: "Read generic service and process state",
+        redaction: "ref://tool/host-command",
+      },
+      {
+        id: "tool-human-terminal",
+        name: "operator-terminal",
+        source: "human_terminal",
+        status: "recorded",
+        summary: "Manual terminal observation attached by operator",
+        redaction: "hash:human-terminal",
+      },
+    ],
+    mcpInstructionDeltas: [
+      {
+        id: "mcp-delta-1",
+        server: "generic-docs",
+        sourceRef: "mcp://generic-docs/instructions-delta",
+        redaction: "ref://mcp/delta",
+        summary: "MCP instruction delta",
+      },
+    ],
+    skillActivationTrace: [
+      {
+        id: "skill-activation-1",
+        skill: "generic-log-review",
+        status: "activated",
+        sourceRef: "skill://generic-log-review",
+        redaction: "hash:skill-activation",
+      },
+    ],
+    evidenceTrace: [
+      {
+        id: "evidence-1",
+        title: "Generic service status",
+        source: "host_agent_tool",
+        artifactRef: "artifact://evidence/service-status",
+        hash: "hash:service-status",
+        redaction: "ref://evidence/service-status",
+      },
+    ],
+    reportTimeline: [
+      { id: "report-1", event: "report.created", status: "completed", sourceRef: "ref://report/draft" },
+      { id: "report-2", event: "report.sent_to_manager", status: "completed", sourceRef: "ref://report/final" },
+    ],
+  };
+}
+
+function sampleTraceTranscript(): HostChildAgentTranscript {
+  return {
+    childAgentId: "child-trace-1",
+    items: [
+      {
+        id: "agent-message-1",
+        type: "manager_message",
+        content: "Inspect generic host resources without exposing sensitive values.",
+      },
+      {
+        id: "approval-trace-1",
+        type: "approval",
+        approvalId: "approval-generic-read",
+        content: "Approval trace: read generic file metadata",
+        status: "approved",
+        payload: { sourceRef: "ref://approval/generic-read", redaction: "hash:approval" },
+      },
+    ],
+    agentMessages: [
+      { id: "agent-message-1", role: "manager", content: "Inspect generic host resources." },
+      { id: "agent-message-2", role: "host_agent", content: "Collected redacted evidence references." },
+    ],
+    approvalTrace: [
+      {
+        id: "approval-trace-1",
+        approvalId: "approval-generic-read",
+        status: "approved",
+        sourceRef: "ref://approval/generic-read",
+        redaction: "hash:approval",
+      },
+    ],
+  };
+}
+
+async function clickTab(tab: string) {
+  const element = document.body.querySelector(`[data-testid="host-subagent-tab-${tab}"]`) as HTMLButtonElement;
+  expect(element).not.toBeNull();
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
 }
 
 function createDeferred<T>(): Deferred<T> {

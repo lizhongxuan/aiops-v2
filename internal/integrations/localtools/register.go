@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -76,6 +75,7 @@ type Options struct {
 	EvidenceService               *evidence.Service
 	HostRepository                HostRepository
 	HostAgentCommandRunner        HostAgentCommandRunner
+	TerminalPolicy                terminalpolicy.Provider
 }
 
 func (o Options) normalize() Options {
@@ -109,13 +109,7 @@ func RegisterBuiltins(registry *tooling.Registry, repo LLMConfigRepository, opts
 	if registry == nil {
 		return fmt.Errorf("localtools: registry is required")
 	}
-	for _, tool := range []tooling.Tool{
-		NewWebSearchTool(repo, opts),
-		NewBrowseURLTool(opts),
-		NewExecCommandTool(opts),
-		NewEnsurePostgreSQLInstalledTool(opts),
-		NewCurrentModelConfigTool(repo),
-	} {
+	for _, tool := range GetAllBaseTools(repo, opts) {
 		if err := registry.Register(tool); err != nil {
 			return err
 		}
@@ -123,14 +117,45 @@ func RegisterBuiltins(registry *tooling.Registry, repo LLMConfigRepository, opts
 	return nil
 }
 
+// GetAllBaseTools returns the local built-in base registry. It is a runtime
+// helper, not a model-callable tool.
+func GetAllBaseTools(repo LLMConfigRepository, opts Options) []tooling.Tool {
+	tools := []tooling.Tool{
+		NewWebSearchTool(repo, opts),
+		NewBrowseURLTool(opts),
+		NewExecCommandTool(opts),
+		NewGrepTool(opts),
+		NewPowerShellCommandTool(opts),
+		NewREPLTool(opts),
+		NewEnsurePostgreSQLInstalledTool(opts),
+		NewCurrentModelConfigTool(repo),
+	}
+	if err := tooling.ValidateBaseRegistryTools(tools); err != nil {
+		panic(err)
+	}
+	return tools
+}
+
 // NewCurrentModelConfigTool returns a safe model-settings inspection tool.
 func NewCurrentModelConfigTool(repo LLMConfigRepository) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        "get_current_model_config",
-			Aliases:     []string{"current_model_config", "get_model_config"},
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Read the currently configured LLM provider, model, base URL, and provider-native tool support without exposing secrets.",
+			Name:           "get_current_model_config",
+			Aliases:        []string{"current_model_config", "get_model_config"},
+			Origin:         tooling.ToolOriginBuiltin,
+			Description:    "Read the currently configured LLM provider, model, base URL, and provider-native tool support without exposing secrets.",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "runtime_config",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Triggers:       []string{"current model", "model name", "model config", "模型配置", "当前模型", "当前模型配置"},
+			SearchHint:     "current model provider config context size reasoning effort runtime configuration active llm",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "runtime_config",
+				ResourceTypes:  []string{"model", "runtime", "configuration"},
+				OperationKinds: []string{"read", "inspect"},
+				RequiresSelect: true,
+			},
 		},
 		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}},
 		InputSchemaData: json.RawMessage(`{
@@ -189,14 +214,23 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			Aliases:     []string{"terminal_command", "shell_command"},
 			Origin:      tooling.ToolOriginBuiltin,
 			Description: execCommandDescription(),
+			Layer:       tooling.ToolLayerCore,
+			AlwaysLoad:  true,
 			RiskLevel:   tooling.ToolRiskHigh,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:  "host_fact",
+				ResourceTypes:   []string{"host", "system", "主机", "系统"},
+				OperationKinds:  []string{"inspect", "read", "execute", "查看", "读取"},
+				DiscoveryTags:   []string{"bash", "shell", "execute", "cpu", "memory", "disk", "load", "filesystem", "network", "process", "resource", "资源", "信息", "监控", "状态"},
+				PermissionScope: "argument_scoped",
+			},
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: opts.MaxOutputBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
 				SummarizeLargeResult: true,
 			},
 		},
-		Visibility: tooling.Visibility{SessionTypes: []string{"host", "workspace"}},
+		Visibility: tooling.Visibility{},
 		InputSchemaData: json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -225,20 +259,23 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 		}`),
 		ReadOnlyFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err == nil && terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
+			return err == nil && isAllowedExecReadOnly(opts.TerminalPolicy, req.command, req.args)
 		},
 		DestructiveFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err != nil || !terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
+			return err != nil || !isAllowedExecReadOnly(opts.TerminalPolicy, req.command, req.args)
 		},
 		ConcurrencySafeFunc: func(input json.RawMessage) bool {
 			req, err := parseCommandInput(input)
-			return err == nil && terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args)
+			return err == nil && isAllowedExecReadOnly(opts.TerminalPolicy, req.command, req.args)
 		},
 		CheckPermissionsFunc: func(ctx context.Context, input json.RawMessage) tooling.PermissionDecision {
 			req, err := parseCommandInput(input)
 			if err != nil {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
+			}
+			if decision, ok := evaluateConfiguredTerminalPolicy(opts.TerminalPolicy, req.command, req.args); ok {
+				return terminalPolicyDecisionToPermission(decision, req.command, req.args)
 			}
 			if selectedRemoteHostID(ctx) != "" {
 				if isForbiddenExecCommand(req.command, req.args) {
@@ -252,7 +289,7 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 				}
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
-			if terminalpolicy.IsAllowedReadOnlyTerminal(req.command, req.args) {
+			if isAllowedExecReadOnly(opts.TerminalPolicy, req.command, req.args) {
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
 			return checkExecCommandActionToken(ctx, input, req, opts, signer)
@@ -290,39 +327,62 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			if runCtx.Err() != nil {
 				return tooling.ToolResult{}, runCtx.Err()
 			}
-			if err != nil {
-				return tooling.ToolResult{}, fmt.Errorf("command failed: %w; stderr: %s", err, truncateString(stderr.String(), opts.MaxOutputBytes/2))
+			exitCode := 0
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
 			}
 			stdoutText := truncateString(stdout.String(), opts.MaxOutputBytes)
 			stderrText := truncateString(stderr.String(), opts.MaxOutputBytes/2)
-			exitCode := cmd.ProcessState.ExitCode()
-			evidenceRefs, err := recordTerminalEvidence(ctx, opts.EvidenceService, req, stdoutText, stderrText, exitCode)
-			if err != nil {
-				return tooling.ToolResult{}, err
+			if err != nil && !canReturnNonZeroExecResult(req, exitCode, err) {
+				return tooling.ToolResult{}, fmt.Errorf("command failed: %w; stderr: %s", err, truncateString(stderr.String(), opts.MaxOutputBytes/2))
 			}
-			payload := map[string]any{
-				"schemaVersion": "aiops.terminal/v1",
-				"tool":          "exec_command",
-				"status":        "ok",
-				"source":        "terminal.break_glass",
-				"command":       terminalCommandString(req.command, req.args),
-				"stdout":        stdoutText,
-				"stderr":        stderrText,
-				"exitCode":      exitCode,
-				"evidenceRefs":  evidenceRefs,
-			}
-			content, err := json.Marshal(payload)
-			if err != nil {
-				return tooling.ToolResult{}, err
-			}
-			return tooling.ToolResult{
-				Content: string(content),
-				Display: &tooling.ToolDisplayPayload{
-					Type:  "terminal",
-					Title: req.command,
-				},
-			}, nil
+			return execTerminalToolResult(ctx, opts, req, "terminal.break_glass", "", stdoutText, stderrText, exitCode)
 		},
+	}
+}
+
+func isAllowedExecReadOnly(provider terminalpolicy.Provider, command string, args []string) bool {
+	if decision, ok := evaluateConfiguredTerminalPolicy(provider, command, args); ok {
+		return decision.Action == terminalpolicy.PolicyActionAllow
+	}
+	return terminalpolicy.IsAllowedReadOnlyTerminal(command, args) ||
+		terminalpolicy.IsAllowedHostInspectionTerminal(command, args)
+}
+
+func evaluateConfiguredTerminalPolicy(provider terminalpolicy.Provider, command string, args []string) (terminalpolicy.Decision, bool) {
+	if provider == nil {
+		return terminalpolicy.Decision{}, false
+	}
+	decision := provider.Evaluate(terminalpolicy.CommandRequest{Command: command, Args: append([]string(nil), args...)})
+	return decision, decision.Action != terminalpolicy.PolicyActionDefault
+}
+
+func terminalPolicyDecisionToPermission(decision terminalpolicy.Decision, command string, args []string) tooling.PermissionDecision {
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(decision.RuleID)
+	}
+	switch decision.Action {
+	case terminalpolicy.PolicyActionAllow:
+		return tooling.PermissionDecision{Action: tooling.PermissionActionAllow, Reason: reason}
+	case terminalpolicy.PolicyActionDeny:
+		return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: firstNonEmptyString(reason, "terminal command denied by policy")}
+	case terminalpolicy.PolicyActionNeedApproval:
+		reason = firstNonEmptyString(reason, "terminal command requires approval by policy")
+		return tooling.PermissionDecision{
+			Action: tooling.PermissionActionNeedApproval,
+			Reason: reason,
+			Approval: &tooling.PermissionApprovalPayload{
+				Command:        displayCommand(command, args),
+				Reason:         reason,
+				Risk:           "medium",
+				Source:         "terminal_policy",
+				ExpectedEffect: "execute terminal command after policy approval",
+				Rollback:       "no automatic rollback for read-only inspection commands",
+			},
+		}
+	default:
+		return tooling.PermissionDecision{Action: tooling.PermissionActionNeedEvidence, Reason: firstNonEmptyString(reason, "terminal command requires policy review")}
 	}
 }
 
@@ -385,24 +445,42 @@ func executeHostAgentCommand(ctx context.Context, opts Options, req commandInput
 	}
 	stdoutText := truncateString(result.Stdout, opts.MaxOutputBytes)
 	stderrText := truncateString(result.Stderr, opts.MaxOutputBytes/2)
-	if result.ExitCode != 0 {
+	if result.ExitCode != 0 && !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
 		return tooling.ToolResult{}, fmt.Errorf("host-agent command failed: exit status %d; stderr: %s", result.ExitCode, stderrText)
 	}
-	evidenceRefs, err := recordTerminalEvidence(ctx, opts.EvidenceService, req, stdoutText, stderrText, result.ExitCode)
+	return execTerminalToolResult(ctx, opts, req, "host.agent_grpc", host.ID, stdoutText, stderrText, result.ExitCode)
+}
+
+func canReturnNonZeroExecResult(req commandInput, exitCode int, err error) bool {
+	if err == nil || exitCode == 0 || !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+		return false
+	}
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
+}
+
+func execTerminalToolResult(ctx context.Context, opts Options, req commandInput, source, hostID, stdoutText, stderrText string, exitCode int) (tooling.ToolResult, error) {
+	evidenceRefs, err := recordTerminalEvidence(ctx, opts.EvidenceService, req, stdoutText, stderrText, exitCode)
 	if err != nil {
 		return tooling.ToolResult{}, err
+	}
+	status := "ok"
+	if exitCode != 0 {
+		status = "exit_nonzero"
 	}
 	payload := map[string]any{
 		"schemaVersion": "aiops.terminal/v1",
 		"tool":          "exec_command",
-		"status":        "ok",
-		"source":        "host.agent_grpc",
-		"hostId":        host.ID,
+		"status":        status,
+		"source":        source,
 		"command":       terminalCommandString(req.command, req.args),
 		"stdout":        stdoutText,
 		"stderr":        stderrText,
-		"exitCode":      result.ExitCode,
+		"exitCode":      exitCode,
 		"evidenceRefs":  evidenceRefs,
+	}
+	if strings.TrimSpace(hostID) != "" {
+		payload["hostId"] = strings.TrimSpace(hostID)
 	}
 	content, err := json.Marshal(payload)
 	if err != nil {
@@ -500,7 +578,7 @@ func execCommandDescription() string {
 	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
 	switch runtime.GOOS {
 	case "darwin":
-		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as nproc, free -h, and /proc/*."
+		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as lscpu, nproc, free -h, and /proc/*."
 	case "linux":
 		return description + " For host resource inspection on Linux, prefer uptime, nproc, free -h, df -hT -x tmpfs -x devtmpfs, and cat /proc/loadavg."
 	default:
@@ -514,10 +592,24 @@ func NewBrowseURLTool(opts Options) tooling.Tool {
 	opts = opts.normalize()
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        "browse_url",
-			Aliases:     []string{"web_fetch", "fetch_url", "open_url"},
-			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Fetch a specific http(s) URL and return readable page text. Use this after web_search returns URLs or when the user provides a URL. Dynamic quote pages may omit JavaScript-rendered prices from readable text; if a realtime price or market quote is missing, use web_search again with another authoritative source. Do not use exec_command/bash/python to browse web pages.",
+			Name:           "browse_url",
+			Aliases:        []string{"web_browser", "web_fetch", "fetch_url", "open_url"},
+			Origin:         tooling.ToolOriginBuiltin,
+			Description:    "Fetch a specific http(s) URL and return readable page text. Use this after web_search returns URLs or when the user provides a URL. Dynamic quote pages may omit JavaScript-rendered prices from readable text; if a realtime price or market quote is missing, use web_search again with another authoritative source. Do not use exec_command/bash/python to browse web pages.",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "public_web",
+			DeferByDefault: true,
+			SearchHint:     "fetch browse open public web url page",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				DiscoveryGroup:    "public_web",
+				CapabilityKind:    "web",
+				ResourceTypes:     []string{"url", "web_page", "public_web"},
+				OperationKinds:    []string{"read", "fetch"},
+				RequiresSelect:    true,
+				PermissionScope:   "read",
+				PromptBudgetClass: "compact",
+				SchemaBudgetClass: "on_demand",
+			},
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: opts.MaxOutputBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
@@ -586,7 +678,20 @@ func NewWebSearchTool(repo LLMConfigRepository, opts Options) tooling.Tool {
 			Name:        "web_search",
 			Aliases:     []string{"search_web"},
 			Origin:      tooling.ToolOriginBuiltin,
-			Description: "Search the web using the current model provider's native web_search tool first; fall back to public web results only when the provider returns no usable text. Use precise, self-contained queries. For current or latest information, include the current date or target date, key entities, and the data you need. Prefer authoritative sources and cite source URLs. For realtime price or market quote questions, do not stop after one unreadable or dynamic page; try another authoritative source or a more specific official/API query until you can cross-check the current numeric value, timestamp, and quote currency. Use allowed_domains or blocked_domains when you need Claude Code-style source control. Avoid vague one-word queries; if results are weak or irrelevant, refine the query with source names, official domains, or site: filters.",
+			Description: "Search the public web using the current model provider's native web_search tool first; fall back to public web results only when the provider returns no usable text. Use this for public/current internet facts, not for current host, selected resource, private environment, local runtime, prompt trace, tool status, or deployment facts; those require environment-bound tools such as exec_command or the relevant observability tool. Use precise, self-contained queries. For current or latest public information, include the current date or target date, key entities, and the data you need. Prefer authoritative sources and cite source URLs. For realtime price or market quote questions, do not stop after one unreadable or dynamic page; try another authoritative source or a more specific official/API query until you can cross-check the current numeric value, timestamp, and quote currency. Use allowed_domains or blocked_domains when you need Claude Code-style source control. Avoid vague one-word queries; if results are weak or irrelevant, refine the query with source names, official domains, or site: filters.",
+			Layer:       tooling.ToolLayerCore,
+			Pack:        "public_web",
+			AlwaysLoad:  true,
+			SearchHint:  "search public web current internet latest authoritative source",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				DiscoveryGroup:    "public_web",
+				CapabilityKind:    "web",
+				ResourceTypes:     []string{"public_web", "internet"},
+				OperationKinds:    []string{"search", "read"},
+				PermissionScope:   "read",
+				PromptBudgetClass: "compact",
+				SchemaBudgetClass: "on_demand",
+			},
 			ProviderNative: &tooling.ProviderNativeToolInfo{
 				Provider: "openai",
 				Type:     "web_search",
@@ -816,20 +921,7 @@ func displayCommand(command string, args []string) string {
 }
 
 func isForbiddenExecCommand(command string, args []string) bool {
-	base := filepath.Base(strings.TrimSpace(command))
-	if wrappedCommand, wrappedArgs, ok := unwrapShellCommand(base, args); ok {
-		return isForbiddenExecCommand(wrappedCommand, wrappedArgs)
-	}
-	switch base {
-	case "rm", "reboot", "shutdown", "halt", "poweroff", "mkfs", "dd", "chmod", "chown":
-		return true
-	}
-	for _, arg := range args {
-		if strings.ContainsAny(arg, "\x00\n\r`$<>;|") {
-			return true
-		}
-	}
-	return false
+	return terminalpolicy.IsHardDeniedCommand(command, args)
 }
 
 func unwrapShellCommand(base string, args []string) (string, []string, bool) {
@@ -1349,12 +1441,19 @@ func providerSupportsReasoning(provider, model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	switch provider {
 	case "openai":
-		return strings.HasPrefix(model, "gpt-5") || strings.Contains(model, "o")
+		return strings.HasPrefix(model, "gpt-5") || strings.Contains(model, "o") || isGLM47OpenAICompatibleModel(model)
 	case "anthropic":
 		return strings.Contains(model, "sonnet") || strings.Contains(model, "opus")
 	default:
 		return false
 	}
+}
+
+func isGLM47OpenAICompatibleModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "glm-4.7" ||
+		strings.HasPrefix(model, "glm-4.7-") ||
+		strings.Contains(model, "/glm-4.7")
 }
 
 func providerSupportsNativeWebSearch(provider, model string) bool {

@@ -53,7 +53,7 @@ func TestProperty34_WorkerAgentToolIsolation(t *testing.T) {
 				name:     name,
 				readOnly: true,
 				meta:     meta,
-				sessions: []string{"workspace"},
+				sessions: []string{"host"},
 				modes:    []string{"execute"},
 			})
 			allNames = append(allNames, name)

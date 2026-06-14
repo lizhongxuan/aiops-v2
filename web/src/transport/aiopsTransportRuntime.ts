@@ -1,6 +1,7 @@
 import type { AssistantTransportCommand } from "@assistant-ui/react";
 
 import type {
+  AiopsTransportHostMission,
   AiopsTransportState,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
@@ -62,7 +63,7 @@ export function normalizeAiopsTransportState(
     pendingApprovals: value.pendingApprovals || {},
     mcpSurfaces: value.mcpSurfaces || {},
     artifacts: value.artifacts || {},
-    hostMissions: value.hostMissions || {},
+    hostMissions: normalizeHostMissions(value.hostMissions),
     childAgents: value.childAgents || {},
     runtimeLiveness: {
       ...base.runtimeLiveness,
@@ -193,4 +194,30 @@ function markTurnTerminal(turn: AiopsTransportTurn, status: "failed" | "canceled
 
 function removeUndefined<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
+}
+
+function normalizeHostMissions(value: unknown): Record<string, AiopsTransportHostMission> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, mission]) => Boolean(mission) && typeof mission === "object" && !Array.isArray(mission))
+      .map(([id, mission]) => {
+        const item = mission as AiopsTransportHostMission & {
+          mentionedHosts?: unknown;
+          childAgentIds?: unknown;
+          planSteps?: unknown;
+        };
+        return [
+          id,
+          {
+            ...item,
+            mentionedHosts: Array.isArray(item.mentionedHosts) ? item.mentionedHosts : [],
+            childAgentIds: Array.isArray(item.childAgentIds) ? item.childAgentIds : [],
+            planSteps: Array.isArray(item.planSteps) ? item.planSteps : undefined,
+          },
+        ];
+      }),
+  ) as Record<string, AiopsTransportHostMission>;
 }

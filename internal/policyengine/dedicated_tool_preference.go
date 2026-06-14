@@ -61,6 +61,9 @@ func EvaluateDedicatedToolPreference[T any](shellToolName string, arguments json
 		if !ok {
 			continue
 		}
+		if sameToolName(discovery.name, shellToolName) {
+			continue
+		}
 		if dedicatedToolMatchesShellFallback(discovery, shellCapability) {
 			preferred = append(preferred, discovery.name)
 		}
@@ -86,6 +89,10 @@ func EvaluateDedicatedToolPreference[T any](shellToolName string, arguments json
 		Action:         DedicatedToolPreferenceAllow,
 		PreferredTools: preferred,
 	}
+}
+
+func sameToolName(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func classifyShellFallback(arguments json.RawMessage) (shellFallbackCapability, bool) {
@@ -122,7 +129,7 @@ func classifyShellFallback(arguments json.RawMessage) (shellFallbackCapability, 
 		result.add("file", "search")
 	case "ps", "pgrep", "top":
 		result.add("process", "list")
-	case "df", "du", "free", "uptime", "date", "nproc", "sw_vers":
+	case "df", "du", "free", "uptime", "date", "nproc", "lscpu", "sw_vers":
 		result.add("system", "read")
 	case "ifconfig", "ip", "netstat", "ss":
 		result.add("network", "read")

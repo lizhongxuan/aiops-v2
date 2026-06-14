@@ -30,7 +30,7 @@ test("shows compact host ops panel above composer and opens child drawer", async
   await expect(page.getByTestId("host-subagent-drawer")).toBeVisible();
   await expect(page.getByText("主机 Agent 详情")).toBeVisible();
   await expect(page.getByTestId("host-subagent-tab-conversation")).toBeVisible();
-  await expect(page.getByTestId("host-subagent-tab-commands")).toBeVisible();
+  await expect(page.getByTestId("host-subagent-tab-tools")).toBeVisible();
   await expect(page.getByText("@1.1.1.1 @1.1.1.1")).toBeVisible();
   await expect(page.getByText("检查主机状态")).toBeVisible();
   await expect(page.getByText("主机状态正常")).toBeVisible();

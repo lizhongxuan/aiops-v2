@@ -149,6 +149,12 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			wantTools: []string{"list_mcp_resources", "read_mcp_resource"},
 			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact"},
 		},
+		{
+			name:      "runtime model config",
+			input:     "Tell me current model name only. Do not mention any api key.",
+			wantTools: []string{"get_current_model_config"},
+			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact"},
+		},
 	}
 
 	for _, tc := range cases {
@@ -193,6 +199,64 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunTurn_KeepsExecCommandVisibleForSelectedHostResourceInspection(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("ok", nil)}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range []tooling.Tool{
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:       "exec_command",
+				Layer:      tooling.ToolLayerCore,
+				AlwaysLoad: true,
+				RiskLevel:  tooling.ToolRiskHigh,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind:  "host_fact",
+					ResourceTypes:   []string{"host", "system"},
+					OperationKinds:  []string{"inspect", "read", "execute"},
+					PermissionScope: "argument_scoped",
+				},
+			},
+			DestructiveFunc: func(_ json.RawMessage) bool {
+				return true
+			},
+		},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "grep", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_mcp_resource", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskLow}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "web_search", Layer: tooling.ToolLayerCore, AlwaysLoad: true, RiskLevel: tooling.ToolRiskMedium}},
+	} {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register(%s) failed: %v", toolDef.Metadata().Name, err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-selected-host-resource-inspection",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-selected-host-resource-inspection",
+		Input:       "帮我看下主机的CPU情况",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) != 1 {
+		t.Fatalf("compiler contexts = %d, want 1", len(compiler.contexts))
+	}
+	names := toolNames(compiler.contexts[0].AssembledTools)
+	if !containsString(names, "exec_command") {
+		t.Fatalf("tools = %v, want exec_command visible for direct selected-host resource inspection", names)
 	}
 }
 
@@ -645,6 +709,21 @@ func intentPackRuntimeTestTools() []tooling.Tool {
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "opsgraph.business_impact", Layer: tooling.ToolLayerDeferred, Pack: "opsgraph", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "list_mcp_resources", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_mcp_resource", Layer: tooling.ToolLayerDeferred, Pack: "mcp_resource", DeferByDefault: true}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{
+			Name:           "get_current_model_config",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "runtime_config",
+			DeferByDefault: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			Triggers:       []string{"current model", "model name", "model config", "模型配置", "当前模型"},
+			SearchHint:     "current model provider config context size reasoning effort",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "runtime_config",
+				ResourceTypes:  []string{"model", "runtime", "configuration"},
+				OperationKinds: []string{"read", "inspect"},
+				RequiresSelect: true,
+			},
+		}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "search_ops_manuals", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "resolve_ops_manual_params", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},
 		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "run_ops_manual_preflight", Layer: tooling.ToolLayerDeferred, Pack: "ops_manual_flow", DeferByDefault: true}},

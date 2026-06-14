@@ -19,7 +19,14 @@ import {
 } from "@/api/hostOps";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import type { AiopsTransportChildAgent } from "@/transport/aiopsTransportTypes";
+import type {
+  AiopsHostAgentEvidenceTrace,
+  AiopsHostAgentPromptSection,
+  AiopsHostAgentRuntimeProfile,
+  AiopsHostAgentToolTrace,
+  AiopsHostAgentTraceEntry,
+  AiopsTransportChildAgent,
+} from "@/transport/aiopsTransportTypes";
 
 import { HostSubagentTabs, type HostSubagentTabId } from "./HostSubagentTabs";
 
@@ -47,6 +54,7 @@ export function HostSubagentDrawer({
   const childAgentId = childAgent?.id ?? "";
   const [loadState, setLoadState] = useState<LoadState>({ status: "idle", transcript: null, error: "" });
   const [activeTab, setActiveTab] = useState<HostSubagentTabId>(() => defaultTabForChildAgent(childAgent));
+  const [traceExpanded, setTraceExpanded] = useState(false);
 
   useEffect(() => {
     setActiveTab(defaultTabForChildAgent(childAgent));
@@ -119,8 +127,25 @@ export function HostSubagentDrawer({
         <HostSubagentTabs activeTab={activeTab} onTabChange={setActiveTab} />
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-testid="host-subagent-drawer">
+          {activeTab !== "task" ? <CollapsedTraceSummary childAgent={childAgent} /> : null}
           {activeTab === "task" ? (
-            <ChildAgentTaskPanel childAgent={childAgent} />
+            <ChildAgentTaskPanel childAgent={childAgent} traceExpanded={traceExpanded} onTraceExpandedChange={setTraceExpanded} />
+          ) : activeTab === "prompt" ? (
+            <PromptTracePanel trace={mergeTrace(childAgent, loadState)} />
+          ) : activeTab === "tools" ? (
+            <ToolsTracePanel trace={mergeTrace(childAgent, loadState)} transcriptItems={selectTranscriptItems(loadState, activeTab)} />
+          ) : activeTab === "mcp-skills" ? (
+            <McpSkillsTracePanel trace={mergeTrace(childAgent, loadState)} />
+          ) : activeTab === "evidence" ? (
+            <EvidenceTracePanel trace={mergeTrace(childAgent, loadState)} />
+          ) : activeTab === "receipts" ? (
+            <ReceiptsPanel
+              trace={mergeTrace(childAgent, loadState)}
+              loadState={loadState}
+              items={selectTranscriptItems(loadState, activeTab)}
+              childAgentError={childAgent?.error}
+              submitApprovalDecision={submitApprovalDecision}
+            />
           ) : (
             <TranscriptBody
               loadState={loadState}
@@ -136,27 +161,263 @@ export function HostSubagentDrawer({
   );
 }
 
-function ChildAgentTaskPanel({ childAgent }: { childAgent?: AiopsTransportChildAgent }) {
+type HostAgentTraceView = {
+  runtimeProfile?: AiopsHostAgentRuntimeProfile;
+  contextDecisions?: AiopsHostAgentTraceEntry[];
+  promptSections?: AiopsHostAgentPromptSection[];
+  toolSurfaceSnapshot?: AiopsHostAgentToolTrace[];
+  mcpInstructionDeltas?: AiopsHostAgentTraceEntry[];
+  skillActivationTrace?: AiopsHostAgentTraceEntry[];
+  approvalTrace?: AiopsHostAgentTraceEntry[];
+  evidenceTrace?: AiopsHostAgentEvidenceTrace[];
+  reportTimeline?: AiopsHostAgentTraceEntry[];
+  agentMessages?: AiopsHostAgentTraceEntry[];
+};
+
+function ChildAgentTaskPanel({
+  childAgent,
+  traceExpanded,
+  onTraceExpandedChange,
+}: {
+  childAgent?: AiopsTransportChildAgent;
+  traceExpanded: boolean;
+  onTraceExpandedChange: (expanded: boolean) => void;
+}) {
   if (!childAgent) {
     return null;
   }
 
   return (
-    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
-        <span className="min-w-0 flex-1 truncate">{childAgent.hostDisplayName || childAgent.hostId}</span>
-        <span className="shrink-0 text-zinc-500">{formatStatus(childAgent.status)}</span>
+    <div className="grid gap-2 text-xs text-zinc-600">
+      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">{childAgent.hostDisplayName || childAgent.hostId}</span>
+          <span className="shrink-0 text-zinc-500">{formatStatus(childAgent.status)}</span>
+        </div>
+        <div className="mt-1 truncate text-zinc-500">
+          {childAgent.hostAddress ? `@${childAgent.hostAddress}` : childAgent.hostId}
+          {childAgent.sessionId ? ` · ${childAgent.sessionId}` : ""}
+        </div>
+        {childAgent.task ? <div className="mt-2 text-zinc-700">当前任务：{childAgent.task}</div> : null}
+        {childAgent.subtaskStatus ? <div className="mt-1">subtaskStatus：{childAgent.subtaskStatus}</div> : null}
+        {childAgent.queueReason ? <div className="mt-1">queueReason：{childAgent.queueReason}</div> : null}
+        {childAgent.source ? <div className="mt-1">source：{childAgent.source}</div> : null}
+        {childAgent.lastInputPreview ? <div className="mt-1 truncate">最近输入：{childAgent.lastInputPreview}</div> : null}
+        {childAgent.lastOutputPreview ? <div className="mt-1 truncate">最近输出：{childAgent.lastOutputPreview}</div> : null}
+        {childAgent.error ? <div className="mt-1 break-words text-red-600">错误：{childAgent.error}</div> : null}
       </div>
-      <div className="mt-1 truncate text-zinc-500">
-        {childAgent.hostAddress ? `@${childAgent.hostAddress}` : childAgent.hostId}
-        {childAgent.sessionId ? ` · ${childAgent.sessionId}` : ""}
+      <div className="rounded-md border border-zinc-200 bg-white px-3 py-2">
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-left font-medium text-zinc-800"
+          onClick={() => onTraceExpandedChange(!traceExpanded)}
+        >
+          <span>Trace 摘要</span>
+          <span className="text-zinc-500">{traceExpanded ? "收起" : "展开 trace"}</span>
+        </button>
+        {traceExpanded ? <RuntimeProfileView profile={childAgent.runtimeProfile} /> : null}
       </div>
-      {childAgent.task ? <div className="mt-2 text-zinc-700">当前任务：{childAgent.task}</div> : null}
-      {childAgent.lastInputPreview ? <div className="mt-1 truncate">最近输入：{childAgent.lastInputPreview}</div> : null}
-      {childAgent.lastOutputPreview ? <div className="mt-1 truncate">最近输出：{childAgent.lastOutputPreview}</div> : null}
-      {childAgent.error ? <div className="mt-1 break-words text-red-600">错误：{childAgent.error}</div> : null}
     </div>
+  );
+}
+
+function CollapsedTraceSummary({ childAgent }: { childAgent?: AiopsTransportChildAgent }) {
+  if (!childAgent) {
+    return null;
+  }
+  return (
+    <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="font-medium text-zinc-800">Trace 摘要</span>
+        <span className="shrink-0 text-zinc-500">默认折叠</span>
+      </div>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+        {childAgent.subtaskStatus ? <span>subtaskStatus：{childAgent.subtaskStatus}</span> : null}
+        {childAgent.queueReason ? <span>queueReason：{childAgent.queueReason}</span> : null}
+        {childAgent.source ? <span>source：{childAgent.source}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function PromptTracePanel({ trace }: { trace: HostAgentTraceView }) {
+  const sections = trace.promptSections || [];
+  return (
+    <div className="grid gap-2">
+      <RuntimeProfileView profile={trace.runtimeProfile} />
+      <TraceList
+        emptyLabel="暂无 Prompt trace"
+        entries={sections}
+        renderTitle={(entry) => promptCategoryLabel(entry.category) || entry.title || entry.sectionId || entry.id || "Prompt section"}
+        fields={["sectionId", "retentionRank", "retentionClass", "compactAction", "compactSchema", "sourceRef", "redaction", "hash", "ref"]}
+      />
+      <TraceList
+        title="Context decisions"
+        emptyLabel="暂无 context decision"
+        entries={trace.contextDecisions || []}
+        fields={["sectionId", "decision", "retentionRank", "compactAction", "sourceRef", "redaction", "hash", "ref"]}
+      />
+    </div>
+  );
+}
+
+function ToolsTracePanel({
+  trace,
+  transcriptItems,
+}: {
+  trace: HostAgentTraceView;
+  transcriptItems: HostOpsTranscriptItem[];
+}) {
+  const toolEntries = trace.toolSurfaceSnapshot || [];
+  return (
+    <div className="grid gap-2">
+      <TraceList
+        emptyLabel={transcriptItems.length ? "" : "暂无工具 trace"}
+        entries={toolEntries}
+        renderTitle={(entry) => entry.name || entry.toolName || entry.id || "Tool"}
+        fields={["source", "status", "summary", "sourceRef", "redaction", "hash", "ref"]}
+      />
+      {transcriptItems.length ? (
+        <TranscriptBody
+          loadState={{ status: "loaded", transcript: { childAgentId: "", items: transcriptItems }, error: "" }}
+          items={transcriptItems}
+          emptyLabel="暂无工具记录"
+          submitApprovalDecision={async () => undefined}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function McpSkillsTracePanel({ trace }: { trace: HostAgentTraceView }) {
+  return (
+    <div className="grid gap-2">
+      <TraceList
+        title="MCP instruction delta"
+        emptyLabel="暂无 MCP instruction delta"
+        entries={trace.mcpInstructionDeltas || []}
+        fields={["server", "status", "summary", "sourceRef", "redaction", "hash", "ref"]}
+      />
+      <TraceList
+        title="Skill activation"
+        emptyLabel="暂无 skill activation"
+        entries={trace.skillActivationTrace || []}
+        fields={["skill", "status", "summary", "sourceRef", "redaction", "hash", "ref"]}
+      />
+    </div>
+  );
+}
+
+function EvidenceTracePanel({ trace }: { trace: HostAgentTraceView }) {
+  return (
+    <TraceList
+      emptyLabel="暂无证据 trace"
+      entries={trace.evidenceTrace || []}
+      fields={["title", "source", "artifactRef", "evidenceRef", "hash", "sourceRef", "redaction", "ref"]}
+    />
+  );
+}
+
+function ReceiptsPanel({
+  trace,
+  loadState,
+  items,
+  childAgentError,
+  submitApprovalDecision,
+}: {
+  trace: HostAgentTraceView;
+  loadState: LoadState;
+  items: HostOpsTranscriptItem[];
+  childAgentError?: string;
+  submitApprovalDecision: (approvalId: string, decision: string) => Promise<unknown>;
+}) {
+  const reportTimeline = trace.reportTimeline || [];
+  if (reportTimeline.length) {
+    return (
+      <div className="grid gap-2">
+        <TraceList
+          title="Report timeline"
+          emptyLabel=""
+          entries={reportTimeline}
+          fields={["event", "status", "source", "sourceRef", "redaction", "hash", "ref"]}
+        />
+        <TranscriptBody
+          loadState={loadState}
+          items={items}
+          emptyLabel="暂无回执或错误"
+          childAgentError={childAgentError}
+          submitApprovalDecision={submitApprovalDecision}
+        />
+      </div>
+    );
+  }
+  return (
+    <TranscriptBody
+      loadState={loadState}
+      items={items}
+      emptyLabel="暂无回执或错误"
+      childAgentError={childAgentError}
+      submitApprovalDecision={submitApprovalDecision}
+    />
+  );
+}
+
+function RuntimeProfileView({ profile }: { profile?: AiopsHostAgentRuntimeProfile }) {
+  if (!profile) {
+    return null;
+  }
+  return (
+    <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+      <div className="font-medium text-zinc-800">Runtime profile</div>
+      {profile.id ? <div className="mt-1">id：{profile.id}</div> : null}
+      {Array.isArray(profile.capabilities) && profile.capabilities.length ? (
+        <div className="mt-1 break-words">capabilities：{profile.capabilities.join(", ")}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function TraceList({
+  title,
+  entries,
+  emptyLabel,
+  fields,
+  renderTitle,
+}: {
+  title?: string;
+  entries: AiopsHostAgentTraceEntry[];
+  emptyLabel: string;
+  fields: string[];
+  renderTitle?: (entry: AiopsHostAgentTraceEntry) => string;
+}) {
+  if (!entries.length) {
+    return emptyLabel ? (
+      <div className="rounded-md border border-dashed border-zinc-300 px-3 py-6 text-center text-sm text-zinc-500">
+        {emptyLabel}
+      </div>
+    ) : null;
+  }
+  return (
+    <section className="grid gap-2">
+      {title ? <div className="text-xs font-medium text-zinc-700">{title}</div> : null}
+      {entries.map((entry, index) => (
+        <article key={String(entry.id || index)} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm">
+          <div className="font-medium text-zinc-900">{renderTitle?.(entry) || entry.title || entry.event || entry.id || "Trace"}</div>
+          <div className="mt-1 grid gap-1 text-xs text-zinc-600">
+            {fields.map((field) => {
+              const value = traceFieldValue(entry, field);
+              return value ? (
+                <div key={field} className="break-words">
+                  <span className="text-zinc-400">{field}：</span>
+                  {value}
+                </div>
+              ) : null;
+            })}
+          </div>
+        </article>
+      ))}
+    </section>
   );
 }
 
@@ -371,6 +632,53 @@ function formatTimestamp(value: string) {
   return value.replace("T", " ").replace("Z", "");
 }
 
+function mergeTrace(childAgent: AiopsTransportChildAgent | undefined, loadState: LoadState): HostAgentTraceView {
+  const transcript = loadState.status === "loaded" ? loadState.transcript : undefined;
+  return {
+    runtimeProfile: childAgent?.runtimeProfile || transcript?.runtimeProfile,
+    contextDecisions: childAgent?.contextDecisions || transcript?.contextDecisions,
+    promptSections: childAgent?.promptSections || transcript?.promptSections,
+    toolSurfaceSnapshot: childAgent?.toolSurfaceSnapshot || transcript?.toolSurfaceSnapshot,
+    mcpInstructionDeltas: childAgent?.mcpInstructionDeltas || transcript?.mcpInstructionDeltas,
+    skillActivationTrace: childAgent?.skillActivationTrace || transcript?.skillActivationTrace,
+    approvalTrace: childAgent?.approvalTrace || transcript?.approvalTrace,
+    evidenceTrace: childAgent?.evidenceTrace || transcript?.evidenceTrace,
+    reportTimeline: childAgent?.reportTimeline || transcript?.reportTimeline,
+    agentMessages: childAgent?.agentMessages || transcript?.agentMessages,
+  };
+}
+
+function promptCategoryLabel(category: unknown) {
+  switch (category) {
+    case "base_runtime":
+      return "Base runtime";
+    case "host_overlay":
+      return "Host overlay";
+    case "host_task_context":
+      return "Host task context";
+    case "skill_context":
+      return "Skill context";
+    case "mcp_context":
+      return "MCP context";
+    default:
+      return typeof category === "string" ? category : "";
+  }
+}
+
+function traceFieldValue(entry: AiopsHostAgentTraceEntry, field: string) {
+  const value = entry[field];
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(", ");
+  }
+  if (typeof value === "object") {
+    return "";
+  }
+  return String(value);
+}
+
 function defaultTabForChildAgent(childAgent?: AiopsTransportChildAgent): HostSubagentTabId {
   if (childAgent?.status === "approval_required") {
     return "approval";
@@ -393,7 +701,7 @@ function itemBelongsToTab(item: HostOpsTranscriptItem, activeTab: HostSubagentTa
   switch (activeTab) {
     case "conversation":
       return item.type === "manager_message" || item.type === "user_followup" || item.type === "assistant_message";
-    case "commands":
+    case "tools":
       return item.type === "tool_call" || item.type === "tool_result";
     case "approval":
       return item.type === "approval";
@@ -407,8 +715,8 @@ function itemBelongsToTab(item: HostOpsTranscriptItem, activeTab: HostSubagentTa
 
 function emptyLabelForTab(activeTab: HostSubagentTabId) {
   switch (activeTab) {
-    case "commands":
-      return "暂无命令记录";
+    case "tools":
+      return "暂无工具记录";
     case "approval":
       return "暂无审核记录";
     case "receipts":

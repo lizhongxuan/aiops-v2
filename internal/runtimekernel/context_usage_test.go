@@ -87,6 +87,29 @@ func TestAnalyzeContextUsageDoesNotRequireRawSensitiveContributors(t *testing.T)
 	}
 }
 
+func TestContextUsageCategorizesHostTaskPromptAssetsSeparately(t *testing.T) {
+	usage := AnalyzeContextUsage(ContextUsageInput{
+		Compiled: promptcompiler.CompiledPrompt{
+			Dynamic: promptcompiler.DynamicPromptDelta{
+				SkillPromptAssets:    []string{strings.Repeat("skill capability ", 10)},
+				HostTaskPromptAssets: []string{strings.Repeat("assigned host task ", 10)},
+			},
+		},
+	})
+
+	if categoryTokens(usage, "skills") == 0 {
+		t.Fatalf("skills category should include skill assets: %#v", usage)
+	}
+	if categoryTokens(usage, "host_task") == 0 {
+		t.Fatalf("host_task category should include host task prompt assets: %#v", usage)
+	}
+	for _, contributor := range usage.TopContributors {
+		if contributor.Kind == "skills" && strings.Contains(contributor.ID, "host") {
+			t.Fatalf("host task contributor was attributed to skills: %#v", contributor)
+		}
+	}
+}
+
 func categoryTokens(usage ContextUsage, name string) int {
 	for _, category := range usage.Categories {
 		if category.Name == name {

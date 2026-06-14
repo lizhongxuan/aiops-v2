@@ -86,6 +86,7 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		VisibleOpsManualTools:  visibleOpsManualTools(req.Tools),
 		DroppedContextReasons:  append([]string(nil), req.DroppedContextReasons...),
 		ContextGovernance:      cloneContextGovernanceTraceItems(req.ContextGovernance),
+		DeferredToolDirectory:  cloneDeferredToolDirectory(req.Compiled.Tools.DeferredDirectory),
 		VerificationReportRef:  strings.TrimSpace(req.VerificationReportRef),
 		VerificationStatus:     strings.TrimSpace(req.VerificationStatus),
 		TaskDepth:              cloneTaskDepthTrace(req.TaskDepth),
@@ -98,6 +99,19 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		PlanModeState:          planModeTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.PlanMode),
 		TaskTodoState:          taskTodoTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.TaskTodo),
 	}
+}
+
+func cloneDeferredToolDirectory(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]promptcompiler.DeferredToolDirectoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.ResourceTypes = append([]string(nil), entry.ResourceTypes...)
+		entry.OperationKinds = append([]string(nil), entry.OperationKinds...)
+		out = append(out, entry)
+	}
+	return out
 }
 
 func planModeTraceStateFromProtocol(state *promptcompiler.PlanModePromptState) *PlanModeTraceState {
@@ -228,7 +242,7 @@ func promptSource(promptLayer string) string {
 	switch promptLayer {
 	case "system", "developer", "tool_index":
 		return "stable_prompt"
-	case "runtime_policy":
+	case "runtime_policy", "dynamic_prompt":
 		return "dynamic_prompt"
 	default:
 		return "prompt"

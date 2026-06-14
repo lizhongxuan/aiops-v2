@@ -70,6 +70,11 @@ export function withSessionContextTimeout<T>(
   });
 }
 
+export function formatLlmLabel(config: Pick<LlmConfigView, "model" | "provider"> | null | undefined) {
+  const model = firstText(config?.model);
+  return model || "LLM 未配置";
+}
+
 export function SessionContextBar({
   kind,
   title,
@@ -82,13 +87,14 @@ export function SessionContextBar({
   children,
 }: SessionContextBarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState(() => (skipInitialLoad ? activeThreadId : ""));
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [llm, setLlm] = useState<LlmConfigView | null>(null);
   const [target, setTarget] = useState(kind === "single_host" ? "host:server-local" : "all");
   const [busy, setBusy] = useState(false);
   const [activeAction, setActiveAction] = useState<"create" | "refresh" | null>(null);
   const [createFeedback, setCreateFeedback] = useState<"idle" | "success" | "error">("idle");
+  const [sessionInitError, setSessionInitError] = useState("");
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const createFeedbackTimer = useRef<number | null>(null);
 
@@ -110,13 +116,14 @@ export function SessionContextBar({
     }),
     [activeTarget, kind],
   );
-  const llmLabel =
-    llm?.provider || llm?.model ? `${llm?.provider || "LLM"} / ${llm?.model || "未选择模型"}` : "LLM 未配置";
+  const llmLabel = formatLlmLabel(llm);
   const llmConfigured = Boolean(llm?.provider && llm?.model);
+  const hasUsableSession = Boolean(activeSession || activeSessionId);
   const composerDisabledReason = resolveComposerDisabledReason({
     activeAction,
-    hasActiveSession: Boolean(activeSession),
-    llmConfigured,
+    hasActiveSession: hasUsableSession,
+    llmConfigured: llmConfigured || skipInitialLoad,
+    sessionInitError,
   });
 
   function setTransientCreateFeedback(state: "success" | "error") {
@@ -133,6 +140,7 @@ export function SessionContextBar({
   async function load() {
     const fixtureSessions = resolveUiFixtureSessions();
     const fixtureState = resolveUiFixtureState();
+    setSessionInitError("");
     if (fixtureSessions) {
       const nextSessions = fixtureSessions.sessions || fixtureSessions.items || [];
       const nextHosts = Array.isArray(fixtureState?.hosts) ? fixtureState.hosts : hosts;
@@ -153,6 +161,9 @@ export function SessionContextBar({
       const nextSessions =
         sessionResult.status === "fulfilled" ? sessionResult.value.sessions || sessionResult.value.items || [] : sessions;
       const nextHosts = hostResult.status === "fulfilled" ? hostResult.value.items || [] : hosts;
+      if (sessionResult.status === "rejected") {
+        setSessionInitError("会话初始化失败，请刷新重试");
+      }
 
       setSessions(nextSessions);
       setHosts(nextHosts);
@@ -166,6 +177,24 @@ export function SessionContextBar({
             : "",
           nextSessions.find((session) => normalizeKind(session.kind) === kind)?.id,
         ) || "";
+      if (!nextActive && sessionResult.status === "fulfilled") {
+        try {
+          const payload = await withSessionContextTimeout(createSession(kind), SESSION_CONTEXT_TIMEOUT_MS, "创建会话");
+          const createdSessions = payload.sessions || payload.items || [];
+          const createdActive = payload.activeSessionId || createdSessions.find((session) => normalizeKind(session.kind) === kind)?.id || "";
+          setSessions(createdSessions);
+          if (createdActive) {
+            const hostIdToBind = resolveHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
+            applySessionWithOverride(createdActive, createdSessions, true, nextHosts, hostIdToBind);
+          } else {
+            setSessionInitError("会话初始化失败，请刷新重试");
+          }
+        } catch (error) {
+          console.error(error);
+          setSessionInitError("会话初始化失败，请刷新重试");
+        }
+        return;
+      }
       const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
       applySession(nextActive, nextSessions, true, nextHosts, hydratedState);
     } finally {
@@ -292,10 +321,11 @@ export function SessionContextBar({
 
   useEffect(() => {
     if (skipInitialLoad) {
+      setActiveSessionId(activeThreadId);
       return;
     }
     void load();
-  }, [skipInitialLoad]);
+  }, [activeThreadId, skipInitialLoad]);
 
   useEffect(() => {
     return () => {
@@ -370,7 +400,7 @@ export function SessionContextBar({
           kind,
           title,
           activeSessionId,
-          activeSessionLabel: activeSession ? sessionLabel(activeSession) : "未创建",
+          activeSessionLabel: activeSession ? sessionLabel(activeSession) : activeSessionId || "未创建",
           llmLabel,
           llmConfigured,
           busy,
@@ -698,19 +728,21 @@ export function resolveComposerDisabledReason({
   activeAction,
   hasActiveSession,
   llmConfigured,
+  sessionInitError,
 }: {
   activeAction?: "create" | "refresh" | null;
   hasActiveSession: boolean;
   llmConfigured: boolean;
+  sessionInitError?: string;
 }) {
   if (activeAction === "create") {
     return "正在创建会话";
   }
-  if (!hasActiveSession) {
-    return "请先创建会话";
-  }
   if (!llmConfigured) {
     return "请先在设置中配置 LLM";
+  }
+  if (!hasActiveSession) {
+    return sessionInitError || "正在初始化会话";
   }
   return "";
 }

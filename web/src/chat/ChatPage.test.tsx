@@ -2,13 +2,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getChildAgentTranscript } from "@/api/hostOps";
+import { getChildAgentTranscript, submitHostOpsApprovalDecision } from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 vi.mock("@/api/hostOps", () => ({
   getChildAgentTranscript: vi.fn(),
+  submitHostOpsApprovalDecision: vi.fn(),
 }));
 
 describe("ChatPage", () => {
@@ -24,6 +25,7 @@ describe("ChatPage", () => {
     };
     HTMLElement.prototype.scrollTo = function scrollTo() {};
     vi.mocked(getChildAgentTranscript).mockReset();
+    vi.mocked(submitHostOpsApprovalDecision).mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -325,7 +327,7 @@ describe("ChatPage", () => {
     expect(panel).not.toBeNull();
     expect(composer).not.toBeNull();
     expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(container.textContent).toContain("3 个后台智能体");
+    expect(container.textContent).toContain("共 3 个主机 Agent");
   });
 
   it("opens a child agent transcript drawer from the host ops status row", async () => {
@@ -375,6 +377,12 @@ describe("ChatPage", () => {
     expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
     expect(document.body.textContent).toContain("Franklin");
     expect(document.body.textContent).toContain("初始化 Franklin 上的主库");
+    const toolsTab = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      button.textContent?.trim().includes("工具"),
+    );
+    await act(async () => {
+      toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(document.body.textContent).toContain("pg_isready -h 127.0.0.1");
   });
 
@@ -1134,7 +1142,7 @@ describe("ChatPage", () => {
       ).toBeNull();
       expect(container.querySelector("textarea")).not.toBeNull();
       expect(fetchSpy).toHaveBeenCalled();
-      const requestBody = String(fetchSpy.mock.calls.at(-1)?.[1]?.body || "");
+      const requestBody = fetchSpy.mock.calls.map((call) => String(call[1]?.body || "")).join("\n");
       expect(requestBody).toContain("已选择跳过运维手册");
       expect(requestBody).toContain("search_ops_manuals");
       expect(requestBody).toContain("skip_ops_manual");

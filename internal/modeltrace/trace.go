@@ -120,6 +120,7 @@ type payload struct {
 	TaskTodoState                 *promptinput.TaskTodoTraceState                 `json:"taskTodoState,omitempty"`
 	ToolSurfaceFingerprint        string                                          `json:"toolSurfaceFingerprint,omitempty"`
 	ToolSurfacePolicySnapshotHash string                                          `json:"toolSurfacePolicySnapshotHash,omitempty"`
+	ToolSurfaceTrace              *ToolSurfaceTrace                               `json:"toolSurfaceTrace,omitempty"`
 	LoadedToolsDelta              []string                                        `json:"loadedToolsDelta,omitempty"`
 	LoadedPacksDelta              []string                                        `json:"loadedPacksDelta,omitempty"`
 	SkillIndexHash                string                                          `json:"skillIndexHash,omitempty"`
@@ -159,6 +160,46 @@ type payload struct {
 	ContextGovernance             []promptinput.ContextGovernanceTraceItem        `json:"contextGovernance,omitempty"`
 	PromptInputTrace              promptinput.PromptInputTrace                    `json:"promptInputTrace,omitempty"`
 	DiagnosticTrace               *diagnostics.DiagnosticTrace                    `json:"diagnosticTrace,omitempty"`
+}
+
+type ToolSurfaceTrace struct {
+	InitialTools        []string                           `json:"initialTools,omitempty"`
+	BaseRegistryCount   int                                `json:"baseRegistryCount,omitempty"`
+	DeferredFamilies    []DeferredToolFamilyTrace          `json:"deferredFamilies,omitempty"`
+	LoadedTools         []string                           `json:"loadedTools,omitempty"`
+	LoadedPacks         []string                           `json:"loadedPacks,omitempty"`
+	FilteredTools       []FilteredToolTrace                `json:"filteredTools,omitempty"`
+	MCPHealth           map[string]string                  `json:"mcpHealth,omitempty"`
+	ToolSearchEvents    []promptinput.ToolSearchTraceEvent `json:"toolSearchEvents,omitempty"`
+	SelectedTools       []string                           `json:"selectedTools,omitempty"`
+	RejectedToolReasons []RejectedToolReasonTrace          `json:"rejectedToolReasons,omitempty"`
+}
+
+type DeferredToolFamilyTrace struct {
+	Pack              string   `json:"pack,omitempty"`
+	Capability        string   `json:"capability,omitempty"`
+	Source            string   `json:"source,omitempty"`
+	MCPServerID       string   `json:"mcpServerId,omitempty"`
+	HealthStatus      string   `json:"healthStatus,omitempty"`
+	RequiresHealth    bool     `json:"requiresHealth,omitempty"`
+	RequiresApproval  bool     `json:"requiresApproval,omitempty"`
+	RequiresSelect    bool     `json:"requiresSelect,omitempty"`
+	UnavailableReason string   `json:"unavailableReason,omitempty"`
+	ToolCount         int      `json:"toolCount,omitempty"`
+	ResourceTypes     []string `json:"resourceTypes,omitempty"`
+	OperationKinds    []string `json:"operationKinds,omitempty"`
+}
+
+type FilteredToolTrace struct {
+	ToolName string `json:"toolName,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+type RejectedToolReasonTrace struct {
+	ToolName       string `json:"toolName,omitempty"`
+	ErrorType      string `json:"errorType,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	RequiredAction string `json:"requiredAction,omitempty"`
 }
 
 type traceMessage struct {
@@ -256,6 +297,7 @@ func buildPayload(req Request) payload {
 		TaskTodoState:                 redactedPromptTrace.TaskTodoState,
 		ToolSurfaceFingerprint:        redactedPromptTrace.ToolSurfaceFingerprint,
 		ToolSurfacePolicySnapshotHash: redactedPromptTrace.ToolSurfacePolicySnapshotHash,
+		ToolSurfaceTrace:              buildToolSurfaceTrace(visibleTools, redactedPromptTrace),
 		LoadedToolsDelta:              append([]string(nil), redactedPromptTrace.LoadedToolsDelta...),
 		LoadedPacksDelta:              append([]string(nil), redactedPromptTrace.LoadedPacksDelta...),
 		SkillIndexHash:                redactedPromptTrace.SkillIndexHash,
@@ -296,6 +338,182 @@ func buildPayload(req Request) payload {
 		PromptInputTrace:              redactedPromptTrace,
 		DiagnosticTrace:               diagnosticTracePayload(req.DiagnosticTrace),
 	}
+}
+
+func buildToolSurfaceTrace(visibleTools []string, trace promptinput.PromptInputTrace) *ToolSurfaceTrace {
+	selectedTools := selectedToolsFromTrace(trace)
+	initialTools := initialToolsFromVisible(visibleTools, selectedTools)
+	surface := &ToolSurfaceTrace{
+		InitialTools:        initialTools,
+		BaseRegistryCount:   len(initialTools),
+		DeferredFamilies:    deferredToolFamiliesFromTrace(trace.DeferredToolDirectory),
+		LoadedTools:         redactStringSlice(uniqueSortedStrings(trace.LoadedToolsDelta)),
+		LoadedPacks:         redactStringSlice(uniqueSortedStrings(trace.LoadedPacksDelta)),
+		FilteredTools:       filteredToolsFromSelections(trace.ToolSelectionEvents),
+		MCPHealth:           mcpHealthFromDeferredFamilies(trace.DeferredToolDirectory),
+		ToolSearchEvents:    redactToolSearchTraceEvents(trace.ToolSearchEvents),
+		SelectedTools:       redactStringSlice(selectedTools),
+		RejectedToolReasons: rejectedToolReasonsFromTrace(trace.RejectedToolCalls),
+	}
+	if toolSurfaceTraceEmpty(surface) {
+		return nil
+	}
+	return surface
+}
+
+func selectedToolsFromTrace(trace promptinput.PromptInputTrace) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, name := range trace.LoadedToolsDelta {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, event := range trace.ToolSelectionEvents {
+		for _, name := range event.LoadedTools {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func initialToolsFromVisible(visibleTools, selectedTools []string) []string {
+	dynamic := map[string]bool{}
+	for _, name := range selectedTools {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			dynamic[trimmed] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range visibleTools {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] || dynamic[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, diagnostics.RedactSensitiveText(name))
+	}
+	return out
+}
+
+func deferredToolFamiliesFromTrace(entries []promptcompiler.DeferredToolDirectoryEntry) []DeferredToolFamilyTrace {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]DeferredToolFamilyTrace, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, DeferredToolFamilyTrace{
+			Pack:              diagnostics.RedactSensitiveText(strings.TrimSpace(entry.Pack)),
+			Capability:        diagnostics.RedactSensitiveText(strings.TrimSpace(entry.Capability)),
+			Source:            diagnostics.RedactSensitiveText(strings.TrimSpace(entry.Source)),
+			MCPServerID:       diagnostics.RedactSensitiveText(strings.TrimSpace(entry.MCPServerID)),
+			HealthStatus:      diagnostics.RedactSensitiveText(strings.TrimSpace(entry.HealthStatus)),
+			RequiresHealth:    entry.RequiresHealth,
+			RequiresApproval:  entry.RequiresApproval,
+			RequiresSelect:    entry.RequiresSelect,
+			UnavailableReason: diagnostics.RedactSensitiveText(strings.TrimSpace(entry.UnavailableReason)),
+			ToolCount:         entry.ToolCount,
+			ResourceTypes:     redactStringSlice(entry.ResourceTypes),
+			OperationKinds:    redactStringSlice(entry.OperationKinds),
+		})
+	}
+	return out
+}
+
+func filteredToolsFromSelections(events []promptinput.ToolSelectionTraceEvent) []FilteredToolTrace {
+	var out []FilteredToolTrace
+	seen := map[string]bool{}
+	for _, event := range events {
+		for _, name := range event.NotLoaded {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, FilteredToolTrace{
+				ToolName: diagnostics.RedactSensitiveText(name),
+				Reason:   diagnostics.RedactSensitiveText(strings.TrimSpace(event.NotLoadedReasons[name])),
+			})
+		}
+	}
+	return out
+}
+
+func mcpHealthFromDeferredFamilies(entries []promptcompiler.DeferredToolDirectoryEntry) map[string]string {
+	out := map[string]string{}
+	for _, entry := range entries {
+		serverID := strings.TrimSpace(entry.MCPServerID)
+		if serverID == "" {
+			continue
+		}
+		status := strings.TrimSpace(entry.HealthStatus)
+		if status == "" && entry.RequiresHealth {
+			status = "unknown"
+		}
+		if status == "" {
+			continue
+		}
+		out[diagnostics.RedactSensitiveText(serverID)] = diagnostics.RedactSensitiveText(status)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func rejectedToolReasonsFromTrace(calls []promptinput.RejectedToolCallTraceEvent) []RejectedToolReasonTrace {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]RejectedToolReasonTrace, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, RejectedToolReasonTrace{
+			ToolName:       diagnostics.RedactSensitiveText(strings.TrimSpace(call.ToolName)),
+			ErrorType:      diagnostics.RedactSensitiveText(strings.TrimSpace(call.ErrorType)),
+			Reason:         diagnostics.RedactSensitiveText(strings.TrimSpace(call.Reason)),
+			RequiredAction: diagnostics.RedactSensitiveText(strings.TrimSpace(call.RequiredAction)),
+		})
+	}
+	return out
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func toolSurfaceTraceEmpty(trace *ToolSurfaceTrace) bool {
+	return trace == nil ||
+		len(trace.InitialTools) == 0 &&
+			trace.BaseRegistryCount == 0 &&
+			len(trace.DeferredFamilies) == 0 &&
+			len(trace.LoadedTools) == 0 &&
+			len(trace.LoadedPacks) == 0 &&
+			len(trace.FilteredTools) == 0 &&
+			len(trace.MCPHealth) == 0 &&
+			len(trace.ToolSearchEvents) == 0 &&
+			len(trace.SelectedTools) == 0 &&
+			len(trace.RejectedToolReasons) == 0
 }
 
 func mergeRequestToolTraceFields(req Request) promptinput.PromptInputTrace {
@@ -604,6 +822,7 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		ContextUsage:                  redactContextUsage(trace.ContextUsage),
 		ToolSurfaceFingerprint:        diagnostics.RedactSensitiveText(trace.ToolSurfaceFingerprint),
 		ToolSurfacePolicySnapshotHash: diagnostics.RedactSensitiveText(trace.ToolSurfacePolicySnapshotHash),
+		DeferredToolDirectory:         redactDeferredToolDirectory(trace.DeferredToolDirectory),
 		LoadedToolsDelta:              redactStringSlice(trace.LoadedToolsDelta),
 		LoadedPacksDelta:              redactStringSlice(trace.LoadedPacksDelta),
 		SkillIndexHash:                diagnostics.RedactSensitiveText(trace.SkillIndexHash),
@@ -693,7 +912,27 @@ func redactToolSelectionTraceEvents(events []promptinput.ToolSelectionTraceEvent
 		event.LoadedTools = redactStringSlice(event.LoadedTools)
 		event.LoadedPacks = redactStringSlice(event.LoadedPacks)
 		event.NotLoaded = redactStringSlice(event.NotLoaded)
+		event.NotLoadedReasons = redactStringMap(event.NotLoadedReasons)
 		out = append(out, event)
+	}
+	return out
+}
+
+func redactDeferredToolDirectory(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]promptcompiler.DeferredToolDirectoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.Pack = diagnostics.RedactSensitiveText(entry.Pack)
+		entry.Capability = diagnostics.RedactSensitiveText(entry.Capability)
+		entry.Source = diagnostics.RedactSensitiveText(entry.Source)
+		entry.MCPServerID = diagnostics.RedactSensitiveText(entry.MCPServerID)
+		entry.HealthStatus = diagnostics.RedactSensitiveText(entry.HealthStatus)
+		entry.UnavailableReason = diagnostics.RedactSensitiveText(entry.UnavailableReason)
+		entry.ResourceTypes = redactStringSlice(entry.ResourceTypes)
+		entry.OperationKinds = redactStringSlice(entry.OperationKinds)
+		out = append(out, entry)
 	}
 	return out
 }
@@ -1427,6 +1666,7 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		contextUsageEmpty(trace.ContextUsage) &&
 		strings.TrimSpace(trace.ToolSurfaceFingerprint) == "" &&
 		strings.TrimSpace(trace.ToolSurfacePolicySnapshotHash) == "" &&
+		len(trace.DeferredToolDirectory) == 0 &&
 		len(trace.LoadedToolsDelta) == 0 &&
 		len(trace.LoadedPacksDelta) == 0 &&
 		strings.TrimSpace(trace.SkillIndexHash) == "" &&

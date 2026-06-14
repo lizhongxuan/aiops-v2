@@ -162,6 +162,42 @@ func TestBuiltinPluginSpecRegistersCorootServerAndTools(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginSpecExposesGenericObservabilityMetadata(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	registerCorootPluginForTest(t, mcpRegistry)
+
+	for _, tool := range mcpRegistry.ListServerTools("coroot") {
+		meta := tool.Metadata()
+		discovery := meta.EffectiveDiscovery()
+		if !containsCorootToolName(discovery.ToolPackIDs, "observability-readonly") {
+			t.Fatalf("%s toolPackIds = %v, want observability-readonly", meta.Name, discovery.ToolPackIDs)
+		}
+		if discovery.MCPServerID != "coroot" {
+			t.Fatalf("%s mcp server id = %q, want coroot", meta.Name, discovery.MCPServerID)
+		}
+		if !discovery.RequiresHealthyMCP {
+			t.Fatalf("%s RequiresHealthyMCP = false, want true", meta.Name)
+		}
+		if meta.Layer != tooling.ToolLayerDeferred || !meta.DeferByDefault {
+			t.Fatalf("%s layer/defer = %q/%v, want deferred true", meta.Name, meta.Layer, meta.DeferByDefault)
+		}
+	}
+
+	cases := map[string]string{
+		"coroot.list_services":    "observability",
+		"coroot.service_metrics":  "metrics",
+		"coroot.application_logs": "logs",
+		"coroot.service_topology": "topology",
+	}
+	tools := mcpRegistry.ListServerTools("coroot")
+	for name, wantCapability := range cases {
+		got := corootToolByName(t, tools, name).Metadata().EffectiveDiscovery().CapabilityKind
+		if got != wantCapability {
+			t.Fatalf("%s capability = %q, want %q", name, got, wantCapability)
+		}
+	}
+}
+
 func TestCorootInputSchemasAreProviderCompatible(t *testing.T) {
 	mcpRegistry := mcp.NewRegistry()
 	registerCorootPluginForTest(t, mcpRegistry)

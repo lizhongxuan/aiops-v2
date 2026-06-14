@@ -380,6 +380,88 @@ func TestModelTraceRedactsVerificationSafetyTraceFields(t *testing.T) {
 	}
 }
 
+func TestModelTraceIncludesRedactedToolSurfaceTrace(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnabledEnv, "true")
+	t.Setenv(DirEnv, dir)
+
+	path, err := Write(Request{
+		Kind:         "runtime_model_input",
+		SessionID:    "sess-tool-surface",
+		TurnID:       "turn-tool-surface",
+		VisibleTools: []string{"exec_command", "tool_search", "generic.metrics.read"},
+		PromptInputTrace: promptinput.PromptInputTrace{
+			DeferredToolDirectory: []promptcompiler.DeferredToolDirectoryEntry{{
+				Pack:              "external_metrics",
+				Capability:        "metrics",
+				Source:            "mcp",
+				MCPServerID:       "observability",
+				HealthStatus:      "unavailable",
+				RequiresHealth:    true,
+				RequiresSelect:    true,
+				UnavailableReason: "connect https://user:secret-pass@metrics.example.internal/api failed token=tool-secret",
+				ToolCount:         4,
+			}},
+			LoadedToolsDelta: []string{"generic.metrics.read"},
+			LoadedPacksDelta: []string{"generic_metrics"},
+			ToolSearchEvents: []promptinput.ToolSearchTraceEvent{{
+				Mode:       "search",
+				Query:      "metrics password=query-secret",
+				MatchCount: 1,
+				Matches:    []string{"generic.metrics.read"},
+				Reason:     "need host resource facts",
+			}},
+			ToolSelectionEvents: []promptinput.ToolSelectionTraceEvent{{
+				Source:      "tool_search.select",
+				Reason:      "selected direct read tool",
+				LoadedTools: []string{"generic.metrics.read"},
+				LoadedPacks: []string{"generic_metrics"},
+				NotLoaded:   []string{"external.metrics.read"},
+				NotLoadedReasons: map[string]string{
+					"external.metrics.read": "mcp_unavailable token=filtered-secret",
+				},
+			}},
+			RejectedToolCalls: []promptinput.RejectedToolCallTraceEvent{{
+				ToolName:       "external.metrics.read",
+				ErrorType:      "mcp_unavailable",
+				Reason:         "server unavailable api_key=rejected-secret",
+				RequiredAction: "use direct evidence",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonTrace := string(data)
+	for _, want := range []string{
+		`"toolSurfaceTrace"`,
+		`"initialTools"`,
+		`"baseRegistryCount": 2`,
+		`"deferredFamilies"`,
+		`"mcpHealth"`,
+		`"loadedTools"`,
+		`"loadedPacks"`,
+		`"filteredTools"`,
+		`"selectedTools"`,
+		`"rejectedToolReasons"`,
+		`metrics.example.internal`,
+		`[REDACTED]`,
+	} {
+		if !strings.Contains(jsonTrace, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonTrace)
+		}
+	}
+	for _, forbidden := range []string{"secret-pass", "tool-secret", "query-secret", "filtered-secret", "rejected-secret"} {
+		if strings.Contains(jsonTrace, forbidden) {
+			t.Fatalf("json trace leaked %q:\n%s", forbidden, jsonTrace)
+		}
+	}
+}
+
 func TestModelTraceRedactsGenericityTraceDepthAndCoverage(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(EnabledEnv, "true")

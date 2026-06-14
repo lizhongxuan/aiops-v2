@@ -55,6 +55,8 @@ const (
 	HostChildAgentStatusCompleted        HostChildAgentStatus = "completed"
 	HostChildAgentStatusFailed           HostChildAgentStatus = "failed"
 	HostChildAgentStatusCancelled        HostChildAgentStatus = "cancelled"
+	HostChildAgentStatusQueued           HostChildAgentStatus = "queued"
+	HostChildAgentStatusSuperseded       HostChildAgentStatus = "superseded"
 )
 
 type PlanStatus string
@@ -155,21 +157,27 @@ type HostChildAgent struct {
 }
 
 type HostSubTask struct {
-	MissionID            string                   `json:"missionId"`
-	PlanStepID           string                   `json:"planStepId"`
-	HostAgentID          string                   `json:"hostAgentId"`
-	HostID               string                   `json:"hostId"`
-	Goal                 string                   `json:"goal"`
-	Constraints          []string                 `json:"constraints,omitempty"`
-	RiskLevel            opssemantic.OpsRiskLevel `json:"riskLevel"`
-	EvidenceRequirements []string                 `json:"evidenceRequirements,omitempty"`
+	ID                    string                       `json:"id,omitempty"`
+	MissionID             string                       `json:"missionId"`
+	PlanStepID            string                       `json:"planStepId"`
+	HostAgentID           string                       `json:"hostAgentId"`
+	HostID                string                       `json:"hostId"`
+	Goal                  string                       `json:"goal"`
+	Constraints           []string                     `json:"constraints,omitempty"`
+	ActionType            opssemantic.OpsActionType    `json:"actionType,omitempty"`
+	RiskLevel             opssemantic.OpsRiskLevel     `json:"riskLevel"`
+	EvidenceRequirements  []string                     `json:"evidenceRequirements,omitempty"`
+	SchedulingDirective   HostSubTaskScheduleDirective `json:"schedulingDirective,omitempty"`
+	ManagerRevisionReason string                       `json:"managerRevisionReason,omitempty"`
 }
 
 type HostTaskCommandRecord struct {
-	Command  string `json:"command"`
-	Status   string `json:"status"`
-	ExitCode int    `json:"exitCode,omitempty"`
-	Summary  string `json:"summary,omitempty"`
+	Command         string `json:"command"`
+	RedactedCommand string `json:"redactedCommand,omitempty"`
+	Status          string `json:"status"`
+	ExitCode        int    `json:"exitCode,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	EvidenceRef     string `json:"evidenceRef,omitempty"`
 }
 
 type HostTaskReport struct {
@@ -181,9 +189,80 @@ type HostTaskReport struct {
 	Summary      string                  `json:"summary,omitempty"`
 	Commands     []HostTaskCommandRecord `json:"commands,omitempty"`
 	EvidenceRefs []string                `json:"evidenceRefs,omitempty"`
+	Evidence     []HostTaskEvidence      `json:"evidence,omitempty"`
 	Errors       []string                `json:"errors,omitempty"`
 	Blockers     []string                `json:"blockers,omitempty"`
 	NextSteps    []string                `json:"nextSteps,omitempty"`
+}
+
+type HostTaskReportStatus string
+
+const (
+	HostTaskReportStatusCompleted                HostTaskReportStatus = "completed"
+	HostTaskReportStatusFailed                   HostTaskReportStatus = "failed"
+	HostTaskReportStatusBlocked                  HostTaskReportStatus = "blocked"
+	HostTaskReportStatusNeedsManagerCoordination HostTaskReportStatus = "needs_manager_coordination"
+	HostTaskReportStatusNeedsUserApproval        HostTaskReportStatus = "needs_user_approval"
+)
+
+type EvidenceSource string
+
+const (
+	EvidenceSourceHostCommandTool EvidenceSource = "host_command_tool"
+	EvidenceSourceHumanTerminal   EvidenceSource = "human_terminal"
+	EvidenceSourceArtifact        EvidenceSource = "artifact"
+)
+
+type RedactionStatus string
+
+const (
+	RedactionStatusUnknown     RedactionStatus = ""
+	RedactionStatusApplied     RedactionStatus = "applied"
+	RedactionStatusNotRequired RedactionStatus = "not_required"
+)
+
+type HostTaskEvidence struct {
+	ID              string          `json:"id"`
+	MissionID       string          `json:"missionId,omitempty"`
+	PlanStepID      string          `json:"planStepId,omitempty"`
+	HostAgentID     string          `json:"hostAgentId,omitempty"`
+	HostID          string          `json:"hostId"`
+	Source          EvidenceSource  `json:"source"`
+	ArtifactRef     string          `json:"artifactRef,omitempty"`
+	CommandRecordID string          `json:"commandRecordId,omitempty"`
+	Summary         string          `json:"summary,omitempty"`
+	RedactionStatus RedactionStatus `json:"redactionStatus,omitempty"`
+}
+
+type HostSubTaskStatus string
+
+const (
+	HostSubTaskStatusRunning    HostSubTaskStatus = "running"
+	HostSubTaskStatusQueued     HostSubTaskStatus = "queued"
+	HostSubTaskStatusCancelled  HostSubTaskStatus = "cancelled"
+	HostSubTaskStatusSuperseded HostSubTaskStatus = "superseded"
+)
+
+type HostSubTaskScheduleDirective string
+
+const (
+	HostSubTaskScheduleDefault   HostSubTaskScheduleDirective = ""
+	HostSubTaskScheduleCancel    HostSubTaskScheduleDirective = "cancel"
+	HostSubTaskScheduleSupersede HostSubTaskScheduleDirective = "supersede"
+)
+
+type HostSubTaskScheduleDecision struct {
+	SubTaskID             string            `json:"subTaskId"`
+	MissionID             string            `json:"missionId"`
+	HostID                string            `json:"hostId"`
+	PlanStepID            string            `json:"planStepId,omitempty"`
+	Status                HostSubTaskStatus `json:"status"`
+	ActiveSubTaskID       string            `json:"activeSubTaskId,omitempty"`
+	SupersededSubTaskID   string            `json:"supersededSubTaskId,omitempty"`
+	ManagerRevisionReason string            `json:"managerRevisionReason,omitempty"`
+	ToolCallID            string            `json:"toolCallId,omitempty"`
+	EvidenceRef           string            `json:"evidenceRef,omitempty"`
+	BlockingReason        string            `json:"blockingReason,omitempty"`
 }
 
 type TranscriptItemType string

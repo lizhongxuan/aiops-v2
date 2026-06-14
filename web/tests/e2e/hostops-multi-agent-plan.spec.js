@@ -36,7 +36,7 @@ test("renders collapsible multi-agent plan and host agent list", async ({ page }
   await expect(page.getByTestId("host-subagent-drawer")).toBeVisible();
   await expect(page.getByTestId("host-subagent-tab-task")).toBeVisible();
   await expect(page.getByTestId("host-subagent-tab-conversation")).toBeVisible();
-  await expect(page.getByTestId("host-subagent-tab-commands")).toBeVisible();
+  await expect(page.getByTestId("host-subagent-tab-tools")).toBeVisible();
   await expect(page.getByTestId("host-subagent-tab-approval")).toBeVisible();
   await expect(page.getByTestId("host-subagent-tab-receipts")).toBeVisible();
 });

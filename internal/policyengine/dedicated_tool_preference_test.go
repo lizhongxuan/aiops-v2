@@ -100,3 +100,22 @@ func TestDedicatedToolPreferenceAllowsShellFallbackWithoutEquivalentVisibleTool(
 		t.Fatalf("Action = %q, want %q (decision: %#v)", decision.Action, DedicatedToolPreferenceAllow, decision)
 	}
 }
+
+func TestDedicatedToolPreferenceDoesNotPreferCurrentShellTool(t *testing.T) {
+	decision := EvaluateDedicatedToolPreference("exec_command", json.RawMessage(`{
+		"command": "customdiag"
+	}`), []syntheticVisibleToolMetadata{
+		{
+			ToolMetadata: tooling.ToolMetadata{Name: "exec_command"},
+			Discovery: syntheticDiscoveryMetadata{
+				CapabilityKind: "execute",
+				ResourceTypes:  []string{"host", "system"},
+				OperationKinds: []string{"inspect", "read", "execute"},
+			},
+		},
+	}, "")
+
+	if decision.Action != DedicatedToolPreferenceAllow {
+		t.Fatalf("Action = %q, want %q (decision: %#v)", decision.Action, DedicatedToolPreferenceAllow, decision)
+	}
+}

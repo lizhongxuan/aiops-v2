@@ -10,6 +10,7 @@ import (
 
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptinput"
@@ -270,6 +271,13 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if hidden, ok := d.hiddenByToolSurfacePolicy(tc, desc.Metadata, approved || d.hasSessionApprovalGrant(tc, desc)); ok {
 		errMsg := toolHiddenByPolicyError(tc.Name, hidden, d.surfacePolicy)
 		errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "policy", "tool_failed", desc.Metadata)
+		if d.spanSource != nil && toolSpanID != "" {
+			d.spanSource.FailSpan(toolSpanID, errMsg)
+		}
+		return errResult
+	}
+	if errMsg, blocked := toolMCPUnavailableError(tc.Name, desc.Metadata); blocked {
+		errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "mcp", "tool_failed", desc.Metadata)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, errMsg)
 		}
@@ -716,6 +724,9 @@ func (d *ToolDispatcher) executeToolWithReadOnlyRetry(ctx context.Context, tc To
 func (d *ToolDispatcher) structuredMissingToolError(name string) (string, tooling.ToolMetadata) {
 	if d != nil && d.deferredCatalog != nil {
 		if meta, ok := d.deferredCatalog.LookupDeferredTool(name); ok {
+			if errMsg, blocked := toolMCPUnavailableError(name, meta); blocked {
+				return errMsg, meta
+			}
 			payload := map[string]string{
 				"errorType":            "tool_unloaded",
 				"toolName":             name,
@@ -735,6 +746,46 @@ func (d *ToolDispatcher) structuredMissingToolError(name string) (string, toolin
 	}
 	data, _ := json.Marshal(payload)
 	return string(data), tooling.ToolMetadata{}
+}
+
+func toolMCPUnavailableError(toolName string, meta tooling.ToolMetadata) (string, bool) {
+	discovery := meta.EffectiveDiscovery()
+	if !discovery.RequiresHealthyMCP {
+		return "", false
+	}
+	serverID := strings.TrimSpace(discovery.MCPServerID)
+	if serverID == "" {
+		return "", false
+	}
+	registry := mcp.DefaultRegistry()
+	if registry == nil {
+		return "", false
+	}
+	snapshot, ok := registry.GetServerHealthSnapshot(serverID)
+	if !ok {
+		return "", false
+	}
+	status := mcp.HealthStatus(strings.TrimSpace(string(snapshot.Status)))
+	switch status {
+	case mcp.HealthUnavailable, mcp.HealthDisabled:
+	default:
+		return "", false
+	}
+	reason := fmt.Sprintf("skipped due to mcp_unavailable: server %s health=%s", serverID, status)
+	if strings.TrimSpace(snapshot.LastError) != "" {
+		reason += "; " + mcp.RedactHealthError(snapshot.LastError)
+	}
+	payload := map[string]string{
+		"errorType":            "mcp_unavailable",
+		"toolName":             strings.TrimSpace(toolName),
+		"reason":               reason,
+		"requiredAction":       "use another direct evidence source or wait until the external source is healthy",
+		"suggestedSearchQuery": suggestedToolSearchQuery(meta),
+		"mcpServerId":          serverID,
+		"healthStatus":         string(status),
+	}
+	data, _ := json.Marshal(payload)
+	return string(data), true
 }
 
 func suggestedToolSearchQuery(meta tooling.ToolMetadata) string {

@@ -443,6 +443,80 @@ describe("parsePromptTrace", () => {
     expect(vm.contextGovernance.materializationEvents).toEqual([]);
     expect(vm.contextGovernance.externalReferences).toEqual([]);
   });
+
+  it("parses tool surface trace for Prompt Trace UI and redacts sensitive reasons", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      visibleTools: ["exec_command", "tool_search", "generic.metrics.read"],
+      toolSurfaceTrace: {
+        initialTools: ["exec_command", "tool_search"],
+        baseRegistryCount: 2,
+        deferredFamilies: [
+          {
+            pack: "external_metrics",
+            capability: "metrics",
+            source: "mcp",
+            mcpServerId: "observability",
+            healthStatus: "unavailable",
+            unavailableReason: "connect https://user:surface-pass@metrics.example.internal/api failed token=surface-secret",
+            toolCount: 4,
+          },
+        ],
+        loadedTools: ["generic.metrics.read"],
+        loadedPacks: ["generic_metrics"],
+        filteredTools: [
+          { toolName: "external.metrics.read", reason: "mcp_unavailable password=filtered-secret" },
+        ],
+        mcpHealth: {
+          observability: "unavailable: https://user:health-pass@metrics.example.internal/api",
+        },
+        toolSearchEvents: [
+          { mode: "search", query: "metrics token=query-secret", matchCount: 1, matches: ["generic.metrics.read"] },
+        ],
+        selectedTools: ["generic.metrics.read"],
+        rejectedToolReasons: [
+          { toolName: "external.metrics.read", errorType: "mcp_unavailable", reason: "api_key=reject-secret" },
+        ],
+      },
+    }));
+
+    expect(vm.toolSurface.summary).toMatchObject({
+      initialToolCount: 2,
+      baseRegistryCount: 2,
+      deferredFamilyCount: 1,
+      loadedToolCount: 1,
+      loadedPackCount: 1,
+      filteredToolCount: 1,
+      mcpHealthCount: 1,
+      toolSearchEventCount: 1,
+      selectedToolCount: 1,
+      rejectedToolReasonCount: 1,
+    });
+    expect(vm.toolSurface.initialTools).toEqual(["exec_command", "tool_search"]);
+    expect(vm.toolSurface.deferredFamilies[0]).toMatchObject({
+      pack: "external_metrics",
+      mcpServerId: "observability",
+      healthStatus: "unavailable",
+      toolCount: 4,
+    });
+    expect(vm.toolSurface.mcpHealth[0]).toMatchObject({
+      serverId: "observability",
+    });
+    expect(vm.toolSurface.mcpHealth[0].status).toContain("metrics.example.internal");
+    expect(vm.toolSurface.filteredTools[0]).toMatchObject({
+      toolName: "external.metrics.read",
+    });
+    expect(vm.toolSurface.rejectedToolReasons[0]).toMatchObject({
+      toolName: "external.metrics.read",
+      errorType: "mcp_unavailable",
+    });
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("surface-pass");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("surface-secret");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("filtered-secret");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("health-pass");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("query-secret");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("reject-secret");
+    expect(JSON.stringify(vm.toolSurface)).toContain("[已脱敏]");
+  });
 });
 
 describe("shortHash", () => {

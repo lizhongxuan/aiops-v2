@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { SettingsPageFrame } from "@/pages/settingsComponents";
 
 const primaryEntries = [
-  { title: "LLM 配置", description: "Provider、API Key、模型选择", path: "/settings/llm", icon: KeyRound },
+  { title: "LLM 配置", description: "模型接入、API Key、模型选择", path: "/settings/llm", icon: KeyRound },
   { title: "Hosts", description: "主机清单、标签、会话与接入状态", path: "/settings/hosts", icon: Server },
   { title: "运维手册", description: "已验证手册、待审核候选、执行记录", path: "/settings/ops-manuals", icon: BookOpen },
   { title: "Agent Profile", description: "System prompt、权限、skills、MCP", path: "/settings/agent", icon: Bot },

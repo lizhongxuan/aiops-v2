@@ -50,11 +50,131 @@ func IsAllowedReadOnlyTerminal(command string, args []string) bool {
 	}
 }
 
+// IsAllowedHostInspectionTerminal classifies bounded host resource/status
+// inspection commands that are safe to execute without an ActionToken. This is
+// narrower than IsReadOnlyCommand and avoids broad file reads such as cat.
+func IsAllowedHostInspectionTerminal(command string, args []string) bool {
+	base := filepath.Base(strings.TrimSpace(command))
+	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
+		return IsAllowedHostInspectionTerminal(wrappedCommand, wrappedArgs)
+	}
+	switch base {
+	case "uptime", "vm_stat", "lscpu", "nproc", "hostname", "whoami", "id", "uname", "sw_vers":
+		return allSafeTerminalTokens(args)
+	case "df", "du":
+		return isAllowedHostInspectionWithFlags(args, map[string]bool{
+			"-h": true, "-H": true, "-k": true, "-m": true, "-g": true, "-T": true,
+		})
+	case "free":
+		return isAllowedHostInspectionWithFlags(args, map[string]bool{
+			"-h": true, "-m": true, "-g": true, "-b": true, "-k": true,
+		})
+	case "top":
+		return isAllowedTopArgs(args)
+	case "ps":
+		return isAllowedHostInspectionWithFlags(args, map[string]bool{
+			"-a": true, "-u": true, "-x": true, "-e": true, "-f": true, "-l": true,
+		})
+	case "lsof":
+		return isAllowedLsofArgs(args)
+	case "sysctl":
+		return isReadOnlySysctlArgs(args) && allSafeTerminalTokens(args)
+	case "ifconfig":
+		return isReadOnlyIfconfigArgs(args)
+	default:
+		return false
+	}
+}
+
+func isAllowedHostInspectionWithFlags(args []string, allowedFlags map[string]bool) bool {
+	for _, arg := range args {
+		arg = strings.TrimSpace(arg)
+		if arg == "" || !isSafeTerminalToken(arg) {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && !allowedFlags[arg] {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllowedLsofArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	seenNetworkSelector := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || !isSafeTerminalToken(arg) {
+			return false
+		}
+		switch {
+		case arg == "-n" || arg == "-P":
+			continue
+		case arg == "-i":
+			i++
+			if i >= len(args) || !isSafeLsofInternetSelector(args[i]) {
+				return false
+			}
+			seenNetworkSelector = true
+		case strings.HasPrefix(arg, "-i") && len(arg) > len("-i"):
+			if !isSafeLsofInternetSelector(strings.TrimPrefix(arg, "-i")) {
+				return false
+			}
+			seenNetworkSelector = true
+		case strings.HasPrefix(arg, "-sTCP:"):
+			if !isSafeTerminalToken(strings.TrimPrefix(arg, "-sTCP:")) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return seenNetworkSelector
+}
+
+func isSafeLsofInternetSelector(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.HasPrefix(value, "-") && strings.Contains(value, ":") && isSafeTerminalToken(value)
+}
+
+func isAllowedTopArgs(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || !isSafeTerminalToken(arg) {
+			return false
+		}
+		switch arg {
+		case "-l", "-n", "-s", "-o":
+			i++
+			if i >= len(args) || !isSafeTerminalToken(args[i]) {
+				return false
+			}
+		case "-b":
+			continue
+		case "-stats":
+			i++
+			if i >= len(args) || !isSafeTerminalToken(args[i]) {
+				return false
+			}
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // TerminalRiskLevel returns the minimum approval risk for a terminal command.
 // Mutating or non-allowlisted terminal commands are always high risk because
 // terminal access is break-glass diagnostic fallback, not a default action path.
 func TerminalRiskLevel(command string, args []string) string {
-	if IsAllowedReadOnlyTerminal(command, args) {
+	if IsAllowedReadOnlyTerminal(command, args) || IsAllowedHostInspectionTerminal(command, args) {
 		return "low"
 	}
 	return "high"
@@ -67,7 +187,7 @@ func RequiresHighRiskApproval(command string, args []string) bool {
 func IsReadOnlyCommandName(command string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
 	switch base {
-	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "nproc", "printf", "ps", "pwd", "rg", "stat", "sw_vers", "tail", "top", "uname", "uptime", "vm_stat", "wc", "which", "whoami":
+	case "cat", "date", "df", "du", "echo", "find", "free", "grep", "head", "hostname", "id", "ls", "lsof", "lscpu", "nproc", "printf", "ps", "pwd", "rg", "stat", "sw_vers", "tail", "top", "uname", "uptime", "vm_stat", "wc", "which", "whoami":
 		return true
 	default:
 		return false

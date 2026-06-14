@@ -8,7 +8,21 @@ import (
 
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/skills"
+	"aiops-v2/internal/tooling"
 )
+
+func TestSkillToolsAreInitialBaseTools(t *testing.T) {
+	reg := skills.NewRegistry()
+	for _, tool := range []tooling.Tool{NewSkillSearchTool(reg), NewSkillReadTool(reg)} {
+		meta := tool.Metadata()
+		if meta.Layer != tooling.ToolLayerCore || !meta.AlwaysLoad {
+			t.Fatalf("%s metadata = layer:%q alwaysLoad:%v, want core always-load", meta.Name, meta.Layer, meta.AlwaysLoad)
+		}
+		if meta.EffectiveDiscovery().RequiresSelect {
+			t.Fatalf("%s discovery = %+v, want initial callable tool", meta.Name, meta.EffectiveDiscovery())
+		}
+	}
+}
 
 func TestSkillSearchReturnsCompactMatches(t *testing.T) {
 	reg := skills.NewRegistry()

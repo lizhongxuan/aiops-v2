@@ -11,6 +11,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/tooling"
 )
 
@@ -85,6 +86,52 @@ func TestFinalEvidenceRecordsNotChecked(t *testing.T) {
 	decision := VerifyFinalEvidence("已检查所有可用工具，结论确定。", state)
 	if decision.Action != FinalEvidenceActionDowngrade || !strings.Contains(strings.Join(decision.Reasons, ","), "not_checked") {
 		t.Fatalf("decision = %#v, want not_checked downgrade", decision)
+	}
+}
+
+func TestFinalEvidenceTreatsMCPUnavailableAsNotChecked(t *testing.T) {
+	session := &SessionState{}
+	session.ToolDiscovery.AddRejectedCall(DeferredToolRejectedCall{
+		ToolName:       "synthetic.observability_metrics",
+		ErrorType:      "mcp_unavailable",
+		Reason:         "skipped due to mcp_unavailable: server synthetic_obs health=unavailable",
+		RequiredAction: "use another direct evidence source or wait until the external source is healthy",
+		ToolCallID:     "call-mcp-unavailable",
+	}, time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC))
+
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{{ID: "call-direct", Name: "exec_command"}},
+			ToolResults: []ToolResult{{
+				ToolCallID: "call-direct",
+				Content:    "cpu idle 80%",
+				Summary:    "direct host CPU snapshot",
+			}},
+		}},
+	}, session)
+	if len(state.NotChecked) != 1 || state.NotChecked[0].Reason != "mcp_unavailable" {
+		t.Fatalf("notChecked = %#v, want mcp_unavailable", state.NotChecked)
+	}
+	if state.Confidence != FinalEvidenceConfidenceMedium {
+		t.Fatalf("confidence = %q, want medium because direct evidence exists but external source unavailable", state.Confidence)
+	}
+	decision := VerifyFinalEvidence("CPU status normal, confirmed by all evidence.", state)
+	if decision.Action != FinalEvidenceActionDowngrade || decision.Confidence != FinalEvidenceConfidenceLow {
+		t.Fatalf("decision = %#v, want downgrade to low when unavailable evidence is ignored", decision)
+	}
+	if !containsString(decision.Reasons, "not_checked_item_requires_lower_confidence") {
+		t.Fatalf("decision reasons = %v, want not_checked reason", decision.Reasons)
+	}
+}
+
+func TestFailureClassifierRecognizesStructuredMCPUnavailable(t *testing.T) {
+	result := DispatchResult{
+		Error:   `{"errorType":"mcp_unavailable","reason":"skipped due to mcp_unavailable"}`,
+		Outcome: "tool_failed",
+		Source:  "runtime",
+	}
+	if got := failureKindForDispatchResult(result); got != string(toolfailure.KindMCPServerUnavailable) {
+		t.Fatalf("failure kind = %q, want %q", got, toolfailure.KindMCPServerUnavailable)
 	}
 }
 

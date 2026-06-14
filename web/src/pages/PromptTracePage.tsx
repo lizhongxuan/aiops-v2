@@ -424,7 +424,15 @@ function PromptTraceDetailDialog({
 
             {activeView === "layers" ? <section className="grid gap-3">{(traceViewModel?.layers || []).map((layer) => <Card key={layer.id} className="rounded-lg bg-slate-50"><CardHeader><CardTitle>{layer.title}</CardTitle><CardDescription>{layer.providerRole} / {layer.promptLayer}</CardDescription></CardHeader><CardContent><pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{layer.content}</pre></CardContent></Card>)}</section> : null}
             {activeView === "messages" ? <section className="grid gap-3">{(traceViewModel?.messages || []).map((message) => <Card key={message.id} className="rounded-lg bg-slate-50"><CardHeader><CardTitle>{message.providerRole || message.semanticRole || "message"}</CardTitle><CardDescription>{message.charCount} chars</CardDescription></CardHeader><CardContent><pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{message.content}</pre></CardContent></Card>)}</section> : null}
-            {activeView === "tools" ? <section className="grid gap-3"><div className="flex flex-wrap gap-2">{(traceViewModel?.tools.visible || selectedTraceVisibleTools || []).map((tool) => <ToneBadge key={tool}>{tool}</ToneBadge>)}</div><pre className="max-h-[520px] overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{traceViewModel?.tools.registryText || ""}</pre></section> : null}
+            {activeView === "tools" ? (
+              <section className="grid gap-3">
+                <ToolSurfacePanels toolSurface={traceViewModel?.toolSurface} />
+                <ContextPanel title="Visible Tools">
+                  <div className="flex flex-wrap gap-2">{(traceViewModel?.tools.visible || selectedTraceVisibleTools || []).map((tool) => <ToneBadge key={tool}>{tool}</ToneBadge>)}</div>
+                </ContextPanel>
+                <pre className="max-h-[520px] overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{traceViewModel?.tools.registryText || ""}</pre>
+              </section>
+            ) : null}
             {activeView === "diff" ? <pre className="max-h-[640px] overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{redactSensitiveText(diffContent) || "暂无 diff 文件"}</pre> : null}
             {activeView === "raw" ? <section className="grid gap-3"><div className="flex gap-2">{["markdown", "json"].map((key) => <button key={key} type="button" className={`rounded-lg border px-3 py-1 text-sm ${activeRaw === key ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setActiveRaw(key)}>{key}</button>)}</div><pre className="max-h-[640px] overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{redactSensitiveText(rawContent) || "Loading..."}</pre></section> : null}
           </div>
@@ -435,6 +443,106 @@ function PromptTraceDetailDialog({
 }
 
 type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
+type ToolSurfaceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["toolSurface"]>;
+
+function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel }) {
+  const summary = toolSurface?.summary;
+  return (
+    <section className="grid gap-3">
+      <section className="grid gap-3 md:grid-cols-4">
+        <ToolSurfaceMetric label="Initial Tools" value={summary?.initialToolCount ?? 0} />
+        <ToolSurfaceMetric label="Deferred Families" value={summary?.deferredFamilyCount ?? 0} />
+        <ToolSurfaceMetric label="MCP Health" value={summary?.mcpHealthCount ?? 0} />
+        <ToolSurfaceMetric label="Filtered Tools" value={summary?.filteredToolCount ?? 0} />
+      </section>
+      <section className="grid gap-3 md:grid-cols-2">
+        <ContextPanel title="Initial Tool Surface">
+          {toolSurface?.initialTools.length ? (
+            <div className="flex flex-wrap gap-2">{toolSurface.initialTools.map((tool) => <ToneBadge key={tool}>{tool}</ToneBadge>)}</div>
+          ) : <EmptyGovernanceState text="暂无 initial tools" />}
+        </ContextPanel>
+        <ContextPanel title="Loaded Tool Packs">
+          {toolSurface?.loadedTools.length || toolSurface?.loadedPacks.length ? (
+            <div className="grid gap-2">
+              <ReferenceLine label="Tools" values={toolSurface.loadedTools} />
+              <ReferenceLine label="Packs" values={toolSurface.loadedPacks} />
+            </div>
+          ) : <EmptyGovernanceState text="暂无 loaded tools" />}
+        </ContextPanel>
+        <ContextPanel title="Deferred Families">
+          {toolSurface?.deferredFamilies.length ? (
+            <div className="grid gap-2">
+              {toolSurface.deferredFamilies.map((family, index) => (
+                <div key={`${family.pack}-${family.capability}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="flex min-w-0 flex-wrap gap-2">
+                    {family.pack ? <ToneBadge>{family.pack}</ToneBadge> : null}
+                    {family.capability ? <ToneBadge>{family.capability}</ToneBadge> : null}
+                    {family.source ? <ToneBadge>{family.source}</ToneBadge> : null}
+                    {family.mcpServerId ? <ToneBadge>{family.mcpServerId}</ToneBadge> : null}
+                    {family.healthStatus ? <ToneBadge>{family.healthStatus}</ToneBadge> : null}
+                    {family.toolCount ? <ToneBadge>tools {family.toolCount}</ToneBadge> : null}
+                  </div>
+                  {family.unavailableReason ? <p className="mt-2 break-words text-slate-600">{family.unavailableReason}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 deferred families" />}
+        </ContextPanel>
+        <ContextPanel title="MCP Health">
+          {toolSurface?.mcpHealth.length ? (
+            <div className="grid gap-2">
+              {toolSurface.mcpHealth.map((item) => (
+                <div key={item.serverId} className="flex min-w-0 flex-wrap gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <ToneBadge>{item.serverId}</ToneBadge>
+                  <span className="min-w-0 flex-1 break-words text-slate-700">{item.status || "-"}</span>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 MCP health" />}
+        </ContextPanel>
+        <ContextPanel title="Filtered Tools">
+          {toolSurface?.filteredTools.length ? (
+            <div className="grid gap-2">
+              {toolSurface.filteredTools.map((item) => (
+                <div key={item.toolName} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <ToneBadge>{item.toolName}</ToneBadge>
+                  {item.reason ? <p className="mt-2 break-words text-slate-600">{item.reason}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 filtered tools" />}
+        </ContextPanel>
+        <ContextPanel title="Rejected Tool Reasons">
+          {toolSurface?.rejectedToolReasons.length ? (
+            <div className="grid gap-2">
+              {toolSurface.rejectedToolReasons.map((item, index) => (
+                <div key={`${item.toolName}-${index}`} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="flex flex-wrap gap-2">
+                    {item.toolName ? <ToneBadge>{item.toolName}</ToneBadge> : null}
+                    {item.errorType ? <ToneBadge>{item.errorType}</ToneBadge> : null}
+                    {item.requiredAction ? <ToneBadge>{item.requiredAction}</ToneBadge> : null}
+                  </div>
+                  {item.reason ? <p className="mt-2 break-words text-slate-600">{item.reason}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 rejected tools" />}
+        </ContextPanel>
+      </section>
+    </section>
+  );
+}
+
+function ToolSurfaceMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <Card className="rounded-lg bg-slate-50">
+      <CardHeader>
+        <CardDescription>{label}</CardDescription>
+        <CardTitle>{formatNumber(value)}</CardTitle>
+      </CardHeader>
+    </Card>
+  );
+}
 
 function ContextGovernancePanels({
   contextGovernance,

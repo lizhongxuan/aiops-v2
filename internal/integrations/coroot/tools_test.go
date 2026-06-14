@@ -1029,7 +1029,14 @@ func TestCorootToolReturnsStructuredError(t *testing.T) {
 		http.Error(w, "upstream unavailable", http.StatusBadGateway)
 	})
 
-	body := executeCorootTool(t, corootToolByName(t, tools, "coroot.slo_status"), `{"project":"prod","service":"checkout"}`)
+	result := executeCorootToolResult(t, corootToolByName(t, tools, "coroot.slo_status"), `{"project":"prod","service":"checkout"}`)
+	if result.Error == "" {
+		t.Fatalf("ToolResult.Error is empty; structured Coroot error must be marked as a failed tool result: %s", result.Content)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+		t.Fatalf("decode coroot error content: %v\n%s", err, result.Content)
+	}
 	if body["status"] != "error" {
 		t.Fatalf("status = %#v, want error", body["status"])
 	}

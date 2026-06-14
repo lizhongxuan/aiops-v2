@@ -31,19 +31,23 @@ type ChildAgentAssignment struct {
 }
 
 type SpawnHostChildRequest struct {
-	ChildAgentID         string
-	MissionID            string
-	ParentAgentID        string
-	SessionID            string
-	HostID               string
-	HostAddress          string
-	HostDisplayName      string
-	Role                 string
-	Task                 string
-	PlanStepID           string
-	Constraints          []string
-	RiskLevel            opssemantic.OpsRiskLevel
-	EvidenceRequirements []string
+	ChildAgentID           string
+	MissionID              string
+	ParentAgentID          string
+	SessionID              string
+	HostID                 string
+	HostAddress            string
+	HostDisplayName        string
+	Role                   string
+	Task                   string
+	PlanStepID             string
+	Constraints            []string
+	RiskLevel              opssemantic.OpsRiskLevel
+	EvidenceRequirements   []string
+	RuntimeContext         HostAgentRuntimeContext
+	ContextSummary         string
+	ContextRefs            []ContextRef
+	ContextDecisionTraceID string
 }
 
 type ChildSpawner interface {
@@ -56,10 +60,23 @@ type Orchestrator struct {
 	store      MissionStore
 	transcript TranscriptStore
 	spawner    ChildSpawner
+	messages   AgentMessageStore
+	scheduler  *HostSubTaskScheduler
 }
 
 func NewOrchestrator(store MissionStore, transcript TranscriptStore, spawner ChildSpawner) *Orchestrator {
-	return &Orchestrator{store: store, transcript: transcript, spawner: spawner}
+	o := &Orchestrator{store: store, transcript: transcript, spawner: spawner}
+	if scheduleStore, ok := store.(hostSubTaskScheduleStore); ok {
+		o.scheduler = NewHostSubTaskScheduler(scheduleStore)
+	}
+	return o
+}
+
+func (o *Orchestrator) WithAgentMessageStore(messages AgentMessageStore) *Orchestrator {
+	if o != nil {
+		o.messages = messages
+	}
+	return o
 }
 
 func (o *Orchestrator) CreatePlan(ctx context.Context, missionID string) (HostOperationMission, error) {
@@ -215,10 +232,102 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 			HostDisplayName:      assignment.HostDisplayName,
 			Role:                 assignment.Role,
 			Task:                 assignment.Task,
-			PlanStepID:           assignment.PlanStepID,
+			PlanStepID:           firstNonEmptyString(assignment.PlanStepID, "unplanned"),
 			Constraints:          append([]string(nil), assignment.Constraints...),
 			RiskLevel:            assignment.RiskLevel,
 			EvidenceRequirements: append([]string(nil), assignment.EvidenceRequirements...),
+		}
+		step := planStepByID(mission.Plan.Steps, req.PlanStepID)
+		if len(req.EvidenceRequirements) > 0 {
+			step.EvidenceRequired = append([]string(nil), req.EvidenceRequirements...)
+		}
+		if req.RiskLevel != "" {
+			step.RiskLevel = req.RiskLevel
+		}
+		runtimeCtx, decisionTrace, err := BuildHostAgentRuntimeContext(HostAgentContextBuildInput{
+			MissionID:          req.MissionID,
+			ParentAgentID:      req.ParentAgentID,
+			HostAgentID:        req.ChildAgentID,
+			SessionID:          req.SessionID,
+			HostID:             req.HostID,
+			HostAddress:        req.HostAddress,
+			HostDisplayName:    req.HostDisplayName,
+			PlanStep:           step,
+			Goal:               req.Task,
+			Constraints:        req.Constraints,
+			AllowedToolScopes:  []string{"host_command"},
+			AllowedSkillScopes: []string{"host_bound"},
+			AllowedMCPScope:    []string{"bound_host", "authorized_artifact"},
+			CompletionContract: "HostTaskReport must cite validated evidence refs from HostCommandTool or sanitized artifacts.",
+		})
+		if err != nil {
+			return nil, err
+		}
+		req.RuntimeContext = runtimeCtx
+		req.ContextSummary = runtimeCtx.Goal
+		req.ContextRefs = append([]ContextRef(nil), runtimeCtx.ContextRefs...)
+		req.ContextDecisionTraceID = decisionTrace.SourceID
+		o.appendMissionAudit(ctx, mission.ID, TranscriptItem{
+			Type:    TranscriptItemManagerMessage,
+			Content: "host agent context built",
+			Status:  "host_agent.context.built",
+			Payload: map[string]any{
+				"missionId":              mission.ID,
+				"childAgentId":           req.ChildAgentID,
+				"hostId":                 req.HostID,
+				"planStepId":             req.PlanStepID,
+				"contextDecisionTraceId": decisionTrace.SourceID,
+			},
+		})
+		if o.scheduler != nil {
+			decision, err := o.scheduler.Schedule(ctx, HostSubTask{
+				ID:                   req.ChildAgentID + ":" + req.PlanStepID,
+				MissionID:            req.MissionID,
+				PlanStepID:           req.PlanStepID,
+				HostAgentID:          req.ChildAgentID,
+				HostID:               req.HostID,
+				Goal:                 req.Task,
+				Constraints:          req.Constraints,
+				ActionType:           step.ActionType,
+				RiskLevel:            req.RiskLevel,
+				EvidenceRequirements: req.EvidenceRequirements,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if decision.Status == HostSubTaskStatusQueued || decision.Status == HostSubTaskStatusCancelled || decision.Status == HostSubTaskStatusSuperseded {
+				o.appendMissionAudit(ctx, mission.ID, TranscriptItem{
+					Type:    TranscriptItemManagerMessage,
+					Content: "host subtask scheduled",
+					Status:  "manager.host_subtask." + string(decision.Status),
+					Payload: map[string]any{
+						"missionId":       mission.ID,
+						"childAgentId":    req.ChildAgentID,
+						"hostId":          req.HostID,
+						"planStepId":      req.PlanStepID,
+						"activeSubTaskId": decision.ActiveSubTaskID,
+						"blockingReason":  decision.BlockingReason,
+					},
+				})
+				continue
+			}
+		}
+		if o.messages != nil {
+			_, _ = o.messages.Append(ctx, AgentMessage{
+				MissionID:     mission.ID,
+				FromAgentID:   firstNonEmptyString(req.ParentAgentID, "manager"),
+				ToAgentID:     req.ChildAgentID,
+				Type:          AgentMessageHostSubTaskAssigned,
+				CorrelationID: req.PlanStepID,
+				Payload: HostSubTaskAssignedPayload{
+					SubTaskID:              req.ChildAgentID + ":" + req.PlanStepID,
+					RuntimeContextRef:      decisionTrace.SourceID,
+					ContextDecisionTraceID: decisionTrace.SourceID,
+					SourcePlanStepID:       req.PlanStepID,
+					Summary:                runtimeCtx.Goal,
+				},
+				SourceRefs: []string{decisionTrace.SourceID},
+			})
 		}
 		child, err := o.spawner.SpawnHostChild(ctx, req)
 		if err != nil {
@@ -257,6 +366,16 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 		children = append(children, child)
 	}
 	return children, nil
+}
+
+func planStepByID(steps []PlanStep, stepID string) PlanStep {
+	stepID = strings.TrimSpace(stepID)
+	for _, step := range steps {
+		if strings.TrimSpace(step.ID) == stepID {
+			return step
+		}
+	}
+	return PlanStep{ID: stepID, HostIDs: nil}
 }
 
 func (o *Orchestrator) SendMessage(ctx context.Context, childAgentID, content string) (HostChildAgent, error) {

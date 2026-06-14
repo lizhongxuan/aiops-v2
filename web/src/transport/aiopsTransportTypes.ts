@@ -274,7 +274,64 @@ export type AiopsTransportChildAgent = {
   lastInputPreview?: string;
   lastOutputPreview?: string;
   error?: string;
+  runtimeProfile?: AiopsHostAgentRuntimeProfile;
+  contextDecisions?: AiopsHostAgentTraceEntry[];
+  promptSections?: AiopsHostAgentPromptSection[];
+  toolSurfaceSnapshot?: AiopsHostAgentToolTrace[];
+  mcpInstructionDeltas?: AiopsHostAgentTraceEntry[];
+  skillActivationTrace?: AiopsHostAgentTraceEntry[];
+  approvalTrace?: AiopsHostAgentTraceEntry[];
+  evidenceTrace?: AiopsHostAgentEvidenceTrace[];
+  reportTimeline?: AiopsHostAgentTraceEntry[];
+  agentMessages?: AiopsHostAgentTraceEntry[];
+  subtaskStatus?: string;
+  queueReason?: string;
+  source?: string;
   startedAt?: string;
   updatedAt?: string;
   completedAt?: string;
+};
+
+export type AiopsHostAgentRuntimeProfile = {
+  id?: string;
+  name?: string;
+  capabilities?: string[];
+  [key: string]: unknown;
+};
+
+export type AiopsHostAgentTraceEntry = {
+  id?: string;
+  title?: string;
+  name?: string;
+  event?: string;
+  role?: string;
+  content?: string;
+  summary?: string;
+  status?: string;
+  source?: string;
+  sourceRef?: string;
+  redaction?: string;
+  hash?: string;
+  ref?: string;
+  [key: string]: unknown;
+};
+
+export type AiopsHostAgentPromptSection = AiopsHostAgentTraceEntry & {
+  category?: string;
+  sectionId?: string;
+  retentionRank?: string;
+  retentionClass?: string;
+  compactAction?: string;
+  compactSchema?: string;
+};
+
+export type AiopsHostAgentToolTrace = AiopsHostAgentTraceEntry & {
+  name?: string;
+  source?: "host_agent_tool" | "human_terminal" | string;
+  toolName?: string;
+};
+
+export type AiopsHostAgentEvidenceTrace = AiopsHostAgentTraceEntry & {
+  artifactRef?: string;
+  evidenceRef?: string;
 };

@@ -1,6 +1,7 @@
 package tooling
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 )
@@ -139,6 +140,77 @@ func TestApprovalToolShownAsSummaryOnly(t *testing.T) {
 	if len(snapshot.VisibleTools) != 1 || !snapshot.VisibleTools[0].SummaryOnly || snapshot.VisibleTools[0].Reason != "approval_required_schema_hidden" {
 		t.Fatalf("visible tools = %#v, want summary-only approval tool", snapshot.VisibleTools)
 	}
+}
+
+func TestArgumentScopedApprovalToolRemainsCallable(t *testing.T) {
+	tools := []Tool{
+		&StaticTool{
+			Meta: ToolMetadata{
+				Name:      "synthetic.exec",
+				Layer:     ToolLayerCore,
+				RiskLevel: ToolRiskHigh,
+				Discovery: ToolDiscoveryMetadata{
+					PermissionScope: "argument_scoped",
+				},
+			},
+			DestructiveFunc: func(_ json.RawMessage) bool {
+				return true
+			},
+		},
+	}
+
+	filtered, snapshot := ApplyToolSurfacePolicy(tools, ToolSurfacePolicyOptions{Mode: "execute"})
+
+	if got := toolNamesForTest(filtered); !reflect.DeepEqual(got, []string{"synthetic.exec"}) {
+		t.Fatalf("filtered tools = %#v, want synthetic.exec callable for per-call permission checks", got)
+	}
+	if visibleSummaryOnlyForTest(snapshot, "synthetic.exec", "approval_required_schema_hidden") {
+		t.Fatalf("visible tools = %#v, synthetic.exec should not be summary-only", snapshot.VisibleTools)
+	}
+	assertSurfaceDecisionForTest(t, snapshot, "synthetic.exec", true, SurfaceDispatchAllow, "argument_scoped_permission")
+}
+
+func TestExecCommandAlwaysRemainsModelCallable(t *testing.T) {
+	tools := []Tool{
+		&StaticTool{
+			Meta: ToolMetadata{
+				Name:      "exec_command",
+				Layer:     ToolLayerCore,
+				RiskLevel: ToolRiskHigh,
+				Discovery: ToolDiscoveryMetadata{
+					PermissionScope: "argument_scoped",
+				},
+			},
+			DestructiveFunc: func(json.RawMessage) bool { return true },
+		},
+		&StaticTool{Meta: ToolMetadata{Name: "synthetic.read", RiskLevel: ToolRiskLow}},
+	}
+
+	filtered, snapshot := ApplyToolSurfacePolicy(tools, ToolSurfacePolicyOptions{
+		Mode:      "plan",
+		AgentRole: "verify",
+		ActiveSkillPolicies: []SkillToolPolicy{{
+			SkillName:    "locked_skill",
+			AllowedTools: []string{"synthetic.read"},
+			DeniedTools:  []string{"exec_command"},
+			RiskCeiling:  "low",
+		}},
+		RuntimeDecisions: []SurfaceRuntimeDecision{{
+			Name:           "exec_command",
+			DispatchAction: SurfaceDispatchDeny,
+			Reason:         "runtime_denied_for_test",
+		}},
+	})
+
+	if got := toolNamesForTest(filtered); !reflect.DeepEqual(got, []string{"exec_command", "synthetic.read"}) {
+		t.Fatalf("filtered tools = %#v, want exec_command callable plus synthetic.read", got)
+	}
+	if hiddenReasonForTest(snapshot, "exec_command", "runtime_denied_for_test") ||
+		hiddenReasonForTest(snapshot, "exec_command", "skill_denied_tool") ||
+		hiddenReasonForTest(snapshot, "exec_command", "agent_role_read_only") {
+		t.Fatalf("hidden tools = %#v, exec_command should not be hidden", snapshot.HiddenTools)
+	}
+	assertSurfaceDecisionForTest(t, snapshot, "exec_command", true, SurfaceDispatchAllow, "always_model_callable")
 }
 
 func TestSkillGovernanceFiltersToolSurface(t *testing.T) {

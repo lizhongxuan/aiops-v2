@@ -175,8 +175,10 @@ func buildEinoToolPool(tools []tooling.Tool) []tool.BaseTool {
 func (f *AgentFactory) assembleToolSet(session, mode string, allowedTools []string) (assembledToolSet, error) {
 	opts := tooling.AssembleOptions{}
 	if len(allowedTools) > 0 {
-		allowed := make(map[string]struct{}, len(allowedTools))
-		for _, name := range allowedTools {
+		effectiveAllowed := appendMandatoryInitialTools(allowedTools)
+		allowed := make(map[string]struct{}, len(effectiveAllowed))
+		opts.EnabledTools = append(opts.EnabledTools, effectiveAllowed...)
+		for _, name := range effectiveAllowed {
 			name = strings.TrimSpace(name)
 			if name == "" {
 				continue
@@ -203,6 +205,23 @@ func (f *AgentFactory) assembleToolSet(session, mode string, allowedTools []stri
 	}, nil
 }
 
+func appendMandatoryInitialTools(names []string) []string {
+	seen := make(map[string]struct{}, len(names)+len(tooling.MandatoryInitialToolNames()))
+	out := make([]string, 0, len(names)+len(tooling.MandatoryInitialToolNames()))
+	for _, name := range append(append([]string(nil), names...), tooling.MandatoryInitialToolNames()...) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // CreateHostAgent creates a ChatModelAgent config for a single-host session.
 // ---------------------------------------------------------------------------
@@ -211,24 +230,42 @@ func (f *AgentFactory) assembleToolSet(session, mode string, allowedTools []stri
 // It resolves the model, compiles the prompt with host context, and assembles
 // tools visible in the host session for the given mode.
 func (f *AgentFactory) CreateHostAgent(ctx context.Context, hostID string, mode string) (*AgentConfig, error) {
-	return f.createHostAgent(ctx, hostID, mode, "", nil)
+	return f.createHostAgent(ctx, hostID, mode, "", nil, nil)
 }
 
+// CreateHostChildAgent creates a host-bound child task config.
+//
+// A host child is not a separate runtime class. It reuses the full Host Agent
+// runtime and adds one manager-assigned host task prompt asset plus lifecycle
+// metadata so traces and UI can distinguish the child task instance.
 func (f *AgentFactory) CreateHostChildAgent(ctx context.Context, req hostops.SpawnHostChildRequest) (*AgentConfig, error) {
 	hostID := strings.TrimSpace(req.HostID)
 	if hostID == "" {
 		return nil, fmt.Errorf("hostID is required for host child agent")
 	}
-	cfg, err := f.createHostAgent(ctx, hostID, "execute", strings.TrimSpace(req.MissionID), []string{hostChildPromptAsset(req)})
+	source := strings.TrimSpace(req.ContextDecisionTraceID)
+	if source == "" {
+		source = strings.TrimSpace(req.ChildAgentID)
+	}
+	if source == "" {
+		source = "spawn-request"
+	}
+	cfg, err := f.createHostAgent(ctx, hostID, "execute", strings.TrimSpace(req.MissionID), nil, []string{hostChildPromptAsset(req)})
 	if err != nil {
 		return nil, err
 	}
 	cfg.SessionID = strings.TrimSpace(req.SessionID)
 	cfg.Input = strings.TrimSpace(req.Task)
+	if cfg.Metadata == nil {
+		cfg.Metadata = map[string]string{}
+	}
+	cfg.Metadata["hostTaskPromptAssetSource"] = "agent-message:" + source
+	cfg.Metadata["runtimeBase"] = "host_agent"
+	cfg.Metadata["agentRole"] = "host_child_task"
 	return cfg, nil
 }
 
-func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode string, missionID string, skillAssets []string) (*AgentConfig, error) {
+func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode string, missionID string, skillAssets []string, hostTaskAssets []string) (*AgentConfig, error) {
 	if hostID == "" {
 		return nil, fmt.Errorf("hostID is required for host agent")
 	}
@@ -252,11 +289,12 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 
 	// Compile prompt via PromptCompiler with host context.
 	compileCtx := compileContextWithAssembledTools(promptcompiler.CompileContext{
-		SessionType:       "host",
-		Mode:              mode,
-		HostContext:       hostID,
-		SkillPromptAssets: append([]string(nil), skillAssets...),
-		AgentKind:         promptcompiler.AgentKindWorker,
+		SessionType:          "host",
+		Mode:                 mode,
+		HostContext:          hostID,
+		SkillPromptAssets:    append([]string(nil), skillAssets...),
+		HostTaskPromptAssets: append([]string(nil), hostTaskAssets...),
+		AgentKind:            promptcompiler.AgentKindWorker,
 	}, toolSet.assembled)
 	instructions, err := f.compiler.CompileForEino(compileCtx)
 	if err != nil {
@@ -278,37 +316,125 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 		MaxIterations:  maxIter,
 		HostID:         hostID,
 		MissionID:      missionID,
+		Metadata:       map[string]string{"runtimeProfile": "host_agent_full_runtime"},
 	}, nil
 }
 
+type HostChildPromptContext struct {
+	MissionID            string
+	ChildAgentID         string
+	HostID               string
+	HostDisplayName      string
+	Role                 string
+	Goal                 string
+	PlanStepID           string
+	Risk                 string
+	Constraints          []string
+	EvidenceRequirements []string
+}
+
 func hostChildPromptAsset(req hostops.SpawnHostChildRequest) string {
-	hostID := strings.TrimSpace(req.HostID)
-	display := agentFirstNonEmpty(req.HostDisplayName, req.HostAddress, hostID)
-	task := strings.TrimSpace(req.Task)
-	if task == "" {
-		task = "按 manager 分派完成本机运维任务，并回报证据。"
+	return renderHostChildPrompt(normalizeHostChildPromptContext(req))
+}
+
+func normalizeHostChildPromptContext(req hostops.SpawnHostChildRequest) HostChildPromptContext {
+	ctx := HostChildPromptContext{
+		MissionID:            hostPromptClean(req.MissionID),
+		ChildAgentID:         hostPromptClean(req.ChildAgentID),
+		HostID:               hostPromptClean(req.HostID),
+		HostDisplayName:      hostPromptClean(agentFirstNonEmpty(req.HostDisplayName, req.HostAddress, req.HostID)),
+		Role:                 hostPromptClean(req.Role),
+		Goal:                 hostPromptClean(req.Task),
+		PlanStepID:           hostPromptClean(req.PlanStepID),
+		Risk:                 hostPromptClean(string(req.RiskLevel)),
+		Constraints:          hostPromptCleanList(req.Constraints),
+		EvidenceRequirements: hostPromptCleanList(req.EvidenceRequirements),
 	}
-	step := strings.TrimSpace(req.PlanStepID)
-	if step == "" {
-		step = "未指定"
+	if ctx.Role == "" {
+		ctx.Role = "host_child"
 	}
-	risk := strings.TrimSpace(string(req.RiskLevel))
-	if risk == "" {
-		risk = "unknown"
+	if ctx.Goal == "" {
+		ctx.Goal = "operate on the assigned host and report evidence to the manager"
 	}
-	evidence := strings.Join(cleanStringList(req.EvidenceRequirements), ", ")
-	if evidence == "" {
-		evidence = "command_result"
+	if ctx.PlanStepID == "" {
+		ctx.PlanStepID = "unspecified"
 	}
-	return fmt.Sprintf(
-		"你是 host-bound 运维子 Agent。\n你的绑定主机是 %s，hostId=%s。\nplanStepId=%s，risk=%s。\n你只能对这个主机执行检查、配置、安装或诊断。\n如果任务需要其他主机信息，你只能向 manager 汇报需要协调，不能直接操作其他主机。\n非白名单命令必须等待用户审批后才能执行。\n当前任务：%s\n回执必须包含状态、执行命令、证据、错误、阻塞项和下一步建议。证据要求：%s",
-		display,
-		hostID,
-		step,
-		risk,
-		task,
-		evidence,
-	)
+	if ctx.Risk == "" {
+		ctx.Risk = "unknown"
+	}
+	if len(ctx.EvidenceRequirements) == 0 {
+		ctx.EvidenceRequirements = []string{"command_result"}
+	}
+	if ctx.HostDisplayName == "" {
+		ctx.HostDisplayName = ctx.HostID
+	}
+	return ctx
+}
+
+func renderHostChildPrompt(ctx HostChildPromptContext) string {
+	sections := []string{
+		renderHostChildPromptSection("Host Agent Binding", "host_agent.binding.v1", []string{
+			"mission_id: " + ctx.MissionID,
+			"child_agent_id: " + ctx.ChildAgentID,
+			"bound_host_id: " + ctx.HostID,
+			"host_display_name: " + ctx.HostDisplayName,
+			"role: " + ctx.Role,
+		}),
+		renderHostChildPromptSection("Assigned Subtask", "host_agent.assigned_subtask.v1", []string{
+			"plan_step_id: " + ctx.PlanStepID,
+			"risk: " + ctx.Risk,
+			"goal: " + ctx.Goal,
+			"constraints: " + joinPromptList(ctx.Constraints, "none"),
+			"evidence_requirements: " + joinPromptList(ctx.EvidenceRequirements, "command_result"),
+		}),
+		renderHostChildPromptSection("Execution Protocol", "host_agent.execution_protocol.v1", []string{
+			"Use HostCommandTool for automated host commands.",
+			"Do not use human terminal output as HostTaskReport evidence.",
+			"Operate only within the bound host scope.",
+			"Ask the manager for coordination when another host or workspace-level decision is required.",
+		}),
+		renderHostChildPromptSection("Report Contract", "host_agent.report_contract.v1", []string{
+			"Return HostTaskReport with status, command summaries, evidence refs, errors, blockers, and next steps.",
+			"Allowed status values: completed, failed, blocked, needs_manager_coordination, needs_user_approval.",
+		}),
+		renderHostChildPromptSection("Stop And Block Conditions", "host_agent.stop_block_conditions.v1", []string{
+			"Stop before cross-host operations, missing approval, missing evidence boundary, or unclear destructive scope.",
+		}),
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func renderHostChildPromptSection(title, id string, lines []string) string {
+	cleaned := make([]string, 0, len(lines)+2)
+	cleaned = append(cleaned, "## "+title, "prompt_section_id: "+id)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.Join(cleaned, "\n")
+}
+
+func hostPromptClean(value string) string {
+	return hostops.RedactSensitiveText(strings.TrimSpace(value))
+}
+
+func hostPromptCleanList(values []string) []string {
+	out := cleanStringList(values)
+	for i := range out {
+		out[i] = hostPromptClean(out[i])
+	}
+	return out
+}
+
+func joinPromptList(values []string, fallback string) string {
+	values = cleanStringList(values)
+	if len(values) == 0 {
+		return fallback
+	}
+	return strings.Join(values, ", ")
 }
 
 func agentFirstNonEmpty(values ...string) string {
@@ -442,58 +568,26 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 }
 
 // ---------------------------------------------------------------------------
-// CreateWorkerAgent creates a ChatModelAgent config for a specific host worker.
+// CreateWorkerAgent creates a compatibility host worker config.
 // ---------------------------------------------------------------------------
 
-// CreateWorkerAgent creates an AgentConfig for a Worker ChatModelAgent bound
-// to a specific host. It filters tools to only those accessible via the bound
-// host's gRPC connection, and compiles a host-specific prompt with the task.
+// CreateWorkerAgent is a compatibility entry point for older worker-agent
+// callers. New code should use CreateHostAgent for interactive host sessions or
+// CreateHostChildAgent for manager-assigned host subtasks.
+//
+// Deprecated: use CreateHostAgent or CreateHostChildAgent.
 func (f *AgentFactory) CreateWorkerAgent(ctx context.Context, hostID string, task string) (*AgentConfig, error) {
 	if hostID == "" {
 		return nil, fmt.Errorf("hostID is required for worker agent")
 	}
-
-	// Resolve model (worker agents may use cheaper models).
-	model, err := f.modelRouter.GetModel(modelrouter.AgentKindWorker, modelrouter.ProviderConfig{})
+	cfg, err := f.createHostAgent(ctx, hostID, "execute", "", nil, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create worker agent: get model: %w", err)
+		return nil, fmt.Errorf("create worker agent: %w", err)
 	}
-
-	// Compile prompt with host-specific context and task instruction.
-	hostContext := fmt.Sprintf("HostID: %s\nTask: %s", hostID, task)
-	var allowedTools []string
-	if def := f.GetDefinition(AgentKindWorker); def != nil {
-		allowedTools = def.Tools
+	cfg.Input = strings.TrimSpace(task)
+	if cfg.Metadata == nil {
+		cfg.Metadata = map[string]string{}
 	}
-	toolSet, err := f.assembleToolSet("workspace", "execute", allowedTools)
-	if err != nil {
-		return nil, fmt.Errorf("create worker agent: assemble tools: %w", err)
-	}
-	compileCtx := compileContextWithAssembledTools(promptcompiler.CompileContext{
-		SessionType: "workspace",
-		Mode:        "execute",
-		HostContext: hostContext,
-		AgentKind:   promptcompiler.AgentKindWorker,
-	}, toolSet.assembled)
-	instructions, err := f.compiler.CompileForEino(compileCtx)
-	if err != nil {
-		return nil, fmt.Errorf("create worker agent: compile prompt: %w", err)
-	}
-
-	// Determine max iterations from definition.
-	maxIter := 15 // default for workers
-	if def := f.GetDefinition(AgentKindWorker); def != nil && def.MaxIterations > 0 {
-		maxIter = def.MaxIterations
-	}
-
-	return &AgentConfig{
-		Kind:           AgentKindWorker,
-		Model:          model,
-		Instructions:   instructions,
-		Tools:          toolSet.runtime,
-		AssembledTools: toolSet.assembled,
-		MaxIterations:  maxIter,
-		HostID:         hostID,
-		Input:          task,
-	}, nil
+	cfg.Metadata["compatibilityEntry"] = "CreateWorkerAgent"
+	return cfg, nil
 }

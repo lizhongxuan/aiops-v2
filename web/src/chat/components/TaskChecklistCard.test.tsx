@@ -42,6 +42,7 @@ describe("TaskChecklistCard", () => {
 
     expect(container.textContent).toContain("计划");
     expect(container.textContent).toContain("共 3 个步骤，已经完成 1 个");
+    expect(container.querySelector('[data-testid="task-checklist-card"]')?.className).toContain("text-[12px]");
     expect(container.textContent).toContain("3. 收集主机信息");
     expect(container.textContent).toContain("1. 确认变更窗口");
     expect(container.textContent).toContain("2. 等待审批");

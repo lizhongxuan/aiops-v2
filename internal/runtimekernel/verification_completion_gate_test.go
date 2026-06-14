@@ -185,6 +185,65 @@ func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
 	}
 }
 
+func TestRunTurnVerificationCompletionGateCompletesEvidenceBackedStatusAnswer(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-synthetic-check-1",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "synthetic_check",
+				Arguments: `{"scope":"cpu"}`,
+			},
+		}}),
+		schema.AssistantMessage("CPU 状态正常：CPU 使用率 10.54%，系统态 14.69%，空闲 74.76%。", nil),
+	}}
+	calls := 0
+	tool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "synthetic.check", Description: "synthetic execution evidence"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			calls++
+			return tooling.ToolResult{Content: `{"cpu":"normal","idle":"74.76%"}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-verification-completion-status-answer",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-verification-completion-status-answer",
+		Input:       "检查 CPU 状态",
+		Metadata:    map[string]string{"taskDepth": "operations"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("tool calls = %d, want 1", calls)
+	}
+	if !strings.Contains(result.Output, "CPU 状态正常") {
+		t.Fatalf("final output = %q, want evidence-backed status answer", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, want no completion-gate retry after evidence-backed status answer", len(model.inputs))
+	}
+	session := kernel.sessions.Get("sess-verification-completion-status-answer")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing session turn: %#v", session)
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("turn lifecycle = %q, want completed", session.CurrentTurn.Lifecycle)
+	}
+	if len(session.PendingApprovals) != 0 || len(session.CurrentTurn.PendingApprovals) != 0 {
+		t.Fatalf("pending approvals should be cleared after completed status answer: session=%#v turn=%#v", session.PendingApprovals, session.CurrentTurn.PendingApprovals)
+	}
+}
+
 func TestRunTurnVerificationCompletionGateAllowsPassReport(t *testing.T) {
 	traceDir := t.TempDir()
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")

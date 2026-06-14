@@ -25,6 +25,7 @@ import (
 	evidencecore "aiops-v2/internal/evidence"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
+	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/planning"
@@ -1317,15 +1318,64 @@ func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map
 			Mode:           string(mode),
 			AssembledTools: source.CompileContextWithMetadata(session, mode, metadata),
 		}
-		compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactTools()...)
+		compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
+		compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactToolsForMetadata(metadata)...)
 		return applyRuntimeFeatureFlags(compileCtx, flags)
 	}
 	compileCtx := k.tools.CompileContext(session, mode)
+	compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
 	if opsManualsOptedOut(metadata) {
 		compileCtx.AssembledTools = filterOpsManualTools(compileCtx.AssembledTools)
 	}
-	compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactTools()...)
+	compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactToolsForMetadata(metadata)...)
 	return applyRuntimeFeatureFlags(compileCtx, flags)
+}
+
+func (k *EinoKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode) promptcompiler.CompileContext {
+	if len(ctx.DeferredToolCatalog) == 0 {
+		ctx.DeferredToolCatalog = k.progressiveDiscoveryCatalog(session, mode)
+	}
+	if ctx.MCPHealthSnapshot == nil {
+		ctx.MCPHealthSnapshot = mcpHealthSnapshotForPrompt()
+	}
+	return ctx
+}
+
+func mcpHealthSnapshotForPrompt() map[string]string {
+	snapshots := mcp.DefaultRegistry().ListServerHealthSnapshots()
+	if len(snapshots) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		if strings.TrimSpace(snapshot.ServerID) == "" || strings.TrimSpace(string(snapshot.Status)) == "" {
+			continue
+		}
+		out[strings.TrimSpace(snapshot.ServerID)] = strings.TrimSpace(string(snapshot.Status))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (k *EinoKernel) contextArtifactToolsForMetadata(metadata map[string]string) []promptcompiler.Tool {
+	if !contextArtifactToolsEnabled(metadata) {
+		return nil
+	}
+	return k.contextArtifactTools()
+}
+
+func contextArtifactToolsEnabled(metadata map[string]string) bool {
+	if metadataBool(metadata["contextArtifactAvailable"]) ||
+		metadataBool(metadata["hasContextArtifact"]) ||
+		metadataBool(metadata["contextArtifactEnabled"]) {
+		return true
+	}
+	if metadataListContains(metadata["enableToolPack"], "context_artifact") {
+		return true
+	}
+	return metadataListContains(metadata["enableTool"], "read_context_artifact")
 }
 
 func (k *EinoKernel) contextArtifactTools() []promptcompiler.Tool {
@@ -1341,9 +1391,18 @@ func (k *EinoKernel) contextArtifactTools() []promptcompiler.Tool {
 			Name:        "read_context_artifact",
 			Description: "Read a bounded range, query match, or metadata view from a previously externalized context artifact or tool result spill.",
 			Origin:      tooling.ToolOriginBuiltin,
-			Layer:       tooling.ToolLayerCore,
+			Layer:       tooling.ToolLayerConditional,
+			Pack:        "context_artifact",
 			RiskLevel:   tooling.ToolRiskLow,
 			Mutating:    false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:    "context_artifact",
+				ResourceTypes:     []string{"context_artifact", "tool_result_spill"},
+				OperationKinds:    []string{"read", "query", "inspect"},
+				RequiresSelect:    true,
+				PromptBudgetClass: "small",
+				SchemaBudgetClass: "compact",
+			},
 			ResultBudget: tooling.ResultBudget{
 				MaxInlineResultBytes: 4096,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
@@ -1596,6 +1655,17 @@ func (k *EinoKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("compile prompt: %w", compileErr)
 		}
+		var retentionDecisions []ContextRetentionDecision
+		compiled.PromptSections, retentionDecisions, compileErr = ApplyPromptSectionRetentionPolicy(compiled.PromptSections, DefaultContextRetentionPolicy())
+		if compileErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, fmt.Errorf("prompt section retention: %w", compileErr)
+		}
+		retentionEvents := PromptSectionRetentionGovernanceEvents(session.ID, turnID, iteration, retentionDecisions)
+		contextState.GovernanceEvents = append(contextState.GovernanceEvents, retentionEvents...)
+		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, retentionEvents...)
+		appendContextGovernanceEvents(&session.ContextGovernanceEvents, retentionEvents...)
 		if previousPromptInputTrace != nil {
 			compiled.ChangedSections = promptcompiler.ChangedPromptSections(previousPromptInputTrace.PromptSections, compiled.PromptSections)
 			compiled.PromptSections = promptcompiler.ApplyPromptSectionCache(previousPromptInputTrace.PromptSections, compiled.PromptSections)
@@ -1971,6 +2041,20 @@ func (k *EinoKernel) runHostIterationLoop(
 					TurnID:         turnID,
 				}, time.Now())
 			}
+			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent)
+			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata[finalCompletenessRetryMetadataKey] = "1"
+				additionalContext = append(additionalContext, finalCompletenessRetryPrompt(finalCompletenessDecision))
+				snapshot.FinalOutput = ""
+				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
+					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				}
+				k.persistTurnSnapshot(session, snapshot)
+				continue
+			}
 			finalEvidence := BuildFinalEvidenceState(snapshot, session)
 			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
 			if finalEvidenceDecision.Action != FinalEvidenceActionAllow && snapshot.Metadata["finalEvidenceVerifierRetry"] != "1" {
@@ -2036,7 +2120,6 @@ func (k *EinoKernel) runHostIterationLoop(
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
 		}
-
 		if intentText := toolIntentPrelude(req.Input, assistantMsg); intentText != "" {
 			k.emitRuntimeEvent(EventAssistantIntent, session.ID, turnID, map[string]any{
 				"text": intentText,
@@ -2741,6 +2824,22 @@ func metadataBool(value string) bool {
 	}
 }
 
+func metadataListContains(raw, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
+	values := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func updateRuntimeEnvironmentContext(session *SessionState, req TurnRequest, now time.Time) {
 	if session == nil || strings.TrimSpace(req.Input) == "" {
 		return
@@ -3437,7 +3536,7 @@ func generateModelResponse(
 			return nil, err
 		}
 		if isEmptyAssistantResponse(response) {
-			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
+			return generateFallbackResponse(ctx, chatModel, input, opts, onFinalDelta)
 		}
 		return response, nil
 	}
@@ -3450,6 +3549,63 @@ func generateModelResponse(
 		return nil, err
 	}
 	if isEmptyAssistantResponse(response) {
+		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
+			if onFinalDelta != nil && fallback.Content != "" {
+				onFinalDelta(fallback.Content)
+			}
+			return fallback, nil
+		}
+		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
+	}
+	if onFinalDelta != nil && response.Content != "" {
+		onFinalDelta(response.Content)
+	}
+	return response, nil
+}
+
+func generateFallbackResponse(
+	ctx context.Context,
+	chatModel modelrouter.ChatModel,
+	input []*schema.Message,
+	opts []einomodel.Option,
+	onFinalDelta func(string),
+) (*schema.Message, error) {
+	const fallbackAttempts = 2
+	var response *schema.Message
+
+	for attempt := 0; attempt < fallbackAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		var err error
+		response, err = chatModel.Generate(ctx, input, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; generate fallback failed: %w", err)
+		}
+		if !isEmptyAssistantResponse(response) {
+			break
+		}
+		if len(opts) == 0 {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err = chatModel.Generate(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; no-tool generate fallback failed: %w", err)
+		}
+		if !isEmptyAssistantResponse(response) {
+			break
+		}
+	}
+	if isEmptyAssistantResponse(response) {
+		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
+			if onFinalDelta != nil && fallback.Content != "" {
+				onFinalDelta(fallback.Content)
+			}
+			return fallback, nil
+		}
 		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
 	}
 	if onFinalDelta != nil && response.Content != "" {
@@ -3493,6 +3649,196 @@ func isEmptyAssistantResponse(msg *schema.Message) bool {
 		len(msg.ToolCalls) == 0 &&
 		len(msg.MultiContent) == 0 &&
 		len(msg.AssistantGenMultiContent) == 0
+}
+
+func fallbackResponseFromToolEvidence(input []*schema.Message) *schema.Message {
+	userRequest := latestUserContent(input)
+	content := latestSuccessfulToolEvidenceContent(input)
+	if content == "" {
+		return nil
+	}
+	fallback := fallbackTextFromToolEvidence(userRequest, content)
+	if strings.TrimSpace(fallback) == "" {
+		return nil
+	}
+	return schema.AssistantMessage(fallback, nil)
+}
+
+func latestUserContent(input []*schema.Message) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		msg := input[i]
+		if msg == nil || msg.Role != schema.User {
+			continue
+		}
+		if text := strings.TrimSpace(msg.Content); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func latestSuccessfulToolEvidenceContent(input []*schema.Message) string {
+	for i := len(input) - 1; i >= 0; i-- {
+		msg := input[i]
+		if msg == nil || msg.Role != schema.Tool {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" || toolEvidenceLooksFailed(content) {
+			continue
+		}
+		return content
+	}
+	return ""
+}
+
+func toolEvidenceLooksFailed(content string) bool {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) == nil {
+		if errorValue, ok := obj["error"]; ok && strings.TrimSpace(fmt.Sprint(errorValue)) != "" {
+			return true
+		}
+		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(obj["status"])))
+		return status == "error" || status == "failed" || status == "failure"
+	}
+	lower := strings.ToLower(content)
+	return strings.Contains(lower, "tool not found") ||
+		strings.Contains(lower, "permission denied") ||
+		strings.Contains(lower, "failed to") ||
+		strings.Contains(lower, "执行失败")
+}
+
+func fallbackTextFromToolEvidence(userRequest, content string) string {
+	if answer, ok := scalarJSONFieldAnswerFromRequest(userRequest, content); ok {
+		return answer
+	}
+	sanitized := sanitizeToolEvidenceForFallback(content)
+	if sanitized == "" {
+		return ""
+	}
+	return "已获取工具结果：\n\n" + truncateRunes(sanitized, 1200)
+}
+
+func scalarJSONFieldAnswerFromRequest(userRequest, content string) (string, bool) {
+	var obj map[string]any
+	if json.Unmarshal([]byte(content), &obj) != nil || len(obj) == 0 {
+		return "", false
+	}
+	request := normalizePromptLookupText(userRequest)
+	for key, value := range obj {
+		if isSensitiveEvidenceKey(key) || !requestMentionsJSONField(request, key) {
+			continue
+		}
+		text, ok := scalarJSONValueText(value)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		return fmt.Sprintf("%s 字段是 %s。", key, text), true
+	}
+	return "", false
+}
+
+func requestMentionsJSONField(normalizedRequest, key string) bool {
+	normalizedKey := normalizePromptLookupText(key)
+	if normalizedKey != "" && strings.Contains(normalizedRequest, normalizedKey) {
+		return true
+	}
+	switch strings.ToLower(key) {
+	case "model":
+		return strings.Contains(normalizedRequest, "模型")
+	case "provider":
+		return strings.Contains(normalizedRequest, "供应商") || strings.Contains(normalizedRequest, "提供商") || strings.Contains(normalizedRequest, "接入")
+	case "status":
+		return strings.Contains(normalizedRequest, "状态")
+	default:
+		return false
+	}
+}
+
+func scalarJSONValueText(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case float64, bool:
+		return fmt.Sprint(v), true
+	case nil:
+		return "", false
+	default:
+		return "", false
+	}
+}
+
+func sanitizeToolEvidenceForFallback(content string) string {
+	var value any
+	if json.Unmarshal([]byte(content), &value) == nil {
+		redacted := redactSensitiveEvidenceValue(value)
+		encoded, err := json.MarshalIndent(redacted, "", "  ")
+		if err == nil {
+			return string(encoded)
+		}
+	}
+	return redactSensitiveEvidenceText(content)
+}
+
+func redactSensitiveEvidenceValue(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, child := range v {
+			if isSensitiveEvidenceKey(key) {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = redactSensitiveEvidenceValue(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(v))
+		for _, child := range v {
+			out = append(out, redactSensitiveEvidenceValue(child))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func isSensitiveEvidenceKey(key string) bool {
+	normalized := normalizePromptLookupText(key)
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "authorization")
+}
+
+func normalizePromptLookupText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "", ":", "", "/", "")
+	return replacer.Replace(value)
+}
+
+func redactSensitiveEvidenceText(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if isSensitiveEvidenceLine(line) {
+			lines[i] = "[REDACTED]"
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func isSensitiveEvidenceLine(line string) bool {
+	normalized := normalizePromptLookupText(line)
+	return strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "authorization")
 }
 
 func toolInfosFromPool(ctx context.Context, toolPool []tool.BaseTool) ([]*schema.ToolInfo, error) {

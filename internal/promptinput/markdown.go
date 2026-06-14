@@ -3,7 +3,10 @@ package promptinput
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+
+	"aiops-v2/internal/promptcompiler"
 )
 
 // RenderMarkdown renders a human-readable semantic trace for a model input.
@@ -388,7 +391,8 @@ func renderTraceMetrics(b *strings.Builder, trace PromptInputTrace) {
 }
 
 func renderToolDiscoveryMarkdown(b *strings.Builder, trace PromptInputTrace) {
-	if len(trace.ToolSearchEvents) == 0 &&
+	if len(trace.DeferredToolDirectory) == 0 &&
+		len(trace.ToolSearchEvents) == 0 &&
 		len(trace.ToolSelectionEvents) == 0 &&
 		len(trace.RejectedToolCalls) == 0 &&
 		len(trace.ParallelDispatchGroups) == 0 &&
@@ -396,11 +400,48 @@ func renderToolDiscoveryMarkdown(b *strings.Builder, trace PromptInputTrace) {
 		return
 	}
 	fmt.Fprintln(b, "## Tool Discovery Trace")
+	renderDeferredToolDirectoryMarkdown(b, trace.DeferredToolDirectory)
 	renderToolSearchEventsMarkdown(b, trace.ToolSearchEvents)
 	renderToolSelectionEventsMarkdown(b, trace.ToolSelectionEvents)
 	renderRejectedToolCallsMarkdown(b, trace.RejectedToolCalls)
 	renderParallelDispatchGroupsMarkdown(b, trace.ParallelDispatchGroups)
 	renderFailedToolSummariesMarkdown(b, trace.FailedToolSummaries)
+	fmt.Fprintln(b)
+}
+
+func renderDeferredToolDirectoryMarkdown(b *strings.Builder, entries []promptcompiler.DeferredToolDirectoryEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	fmt.Fprintln(b, "### Deferred Tool Directory")
+	fmt.Fprintln(b, "| pack | capability | source | health | approval | select | unavailable | tools |")
+	fmt.Fprintln(b, "|---|---|---|---|---|---|---|---:|")
+	for _, entry := range entries {
+		approval := "not_required"
+		if entry.RequiresApproval {
+			approval = "required"
+		}
+		selectStatus := "not_required"
+		if entry.RequiresSelect {
+			selectStatus = "required"
+		}
+		health := entry.HealthStatus
+		if entry.RequiresHealth && health == "" {
+			health = "unknown"
+		}
+		fmt.Fprintf(
+			b,
+			"| %s | %s | %s | %s | %s | %s | %s | %d |\n",
+			escapeMarkdownCell(entry.Pack),
+			escapeMarkdownCell(redactSecrets(entry.Capability)),
+			escapeMarkdownCell(entry.Source),
+			escapeMarkdownCell(health),
+			escapeMarkdownCell(approval),
+			escapeMarkdownCell(selectStatus),
+			escapeMarkdownCell(redactSecrets(entry.UnavailableReason)),
+			entry.ToolCount,
+		)
+	}
 	fmt.Fprintln(b)
 }
 
@@ -502,17 +543,18 @@ func renderToolSelectionEventsMarkdown(b *strings.Builder, events []ToolSelectio
 		return
 	}
 	fmt.Fprintln(b, "### Tool Selection Events")
-	fmt.Fprintln(b, "| source | reason | loaded tools | loaded packs | not loaded |")
-	fmt.Fprintln(b, "|---|---|---|---|---|")
+	fmt.Fprintln(b, "| source | reason | loaded tools | loaded packs | not loaded | not loaded reasons |")
+	fmt.Fprintln(b, "|---|---|---|---|---|---|")
 	for _, event := range events {
 		fmt.Fprintf(
 			b,
-			"| %s | %s | %s | %s | %s |\n",
+			"| %s | %s | %s | %s | %s | %s |\n",
 			escapeMarkdownCell(event.Source),
 			escapeMarkdownCell(redactSecrets(event.Reason)),
 			escapeMarkdownCell(strings.Join(event.LoadedTools, ", ")),
 			escapeMarkdownCell(strings.Join(event.LoadedPacks, ", ")),
 			escapeMarkdownCell(strings.Join(event.NotLoaded, ", ")),
+			escapeMarkdownCell(redactSecrets(formatKeyValueMap(event.NotLoadedReasons))),
 		)
 	}
 	fmt.Fprintln(b)
@@ -538,6 +580,28 @@ func renderRejectedToolCallsMarkdown(b *strings.Builder, calls []RejectedToolCal
 		)
 	}
 	fmt.Fprintln(b)
+}
+
+func formatKeyValueMap(values map[string]string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if strings.TrimSpace(key) != "" {
+			keys = append(keys, strings.TrimSpace(key))
+		}
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			continue
+		}
+		parts = append(parts, key+"="+value)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderParallelDispatchGroupsMarkdown(b *strings.Builder, groups []ParallelDispatchTraceGroup) {

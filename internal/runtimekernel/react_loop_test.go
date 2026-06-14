@@ -279,6 +279,7 @@ func (c *recordingCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 	cloned := ctx
 	cloned.AssembledTools = append([]promptcompiler.Tool(nil), ctx.AssembledTools...)
 	cloned.SkillPromptAssets = append([]string(nil), ctx.SkillPromptAssets...)
+	cloned.HostTaskPromptAssets = append([]string(nil), ctx.HostTaskPromptAssets...)
 	cloned.EvidenceReminders = append([]string(nil), ctx.EvidenceReminders...)
 	cloned.ExtraSections = append([]promptcompiler.PromptSection(nil), ctx.ExtraSections...)
 	cloned.ToolDelta = promptcompiler.ToolPromptDelta{
@@ -475,6 +476,58 @@ func TestSimpleQuestionFinalDoesNotTriggerPrematureFinalGuard(t *testing.T) {
 	}
 	if len(model.inputs) != 1 {
 		t.Fatalf("model inputs = %d, want one direct final", len(model.inputs))
+	}
+}
+
+func TestRunTurn_CompletesFromToolEvidenceWhenModelStaysEmpty(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-model-config",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "get_current_model_config",
+				Arguments: `{}`,
+			},
+		}}),
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+		{Role: schema.Assistant},
+	}}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:      "get_current_model_config",
+			Layer:     tooling.ToolLayerCore,
+			RiskLevel: tooling.ToolRiskLow,
+		},
+		InputSchemaData: json.RawMessage(`{"type":"object"}`),
+		ReadOnlyFunc:    func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: `{"apiKeySet":true,"baseURL":"https://example.invalid/v1","model":"glm-4.7","provider":"zhipu"}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		SessionID:   "sess-empty-after-tool",
+		TurnID:      "turn-empty-after-tool",
+		Input:       "Tell me current model name only. Do not reveal or mention any api key.",
+		Metadata:    map[string]string{"taskDepth": "simple_read"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed; result=%#v", result.Status, result)
+	}
+	if !strings.Contains(result.Output, "glm-4.7") {
+		t.Fatalf("output = %q, want model evidence", result.Output)
+	}
+	if strings.Contains(strings.ToLower(result.Output), "apikey") || strings.Contains(result.Output, "example.invalid") {
+		t.Fatalf("output leaked sensitive or irrelevant config details: %q", result.Output)
 	}
 }
 
@@ -1575,7 +1628,7 @@ func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
 			schema.AssistantMessage("数据为实时快照。", nil),
 		},
 	}
-	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
 
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-streaming-final-canonical",
@@ -1605,6 +1658,51 @@ func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
 	}
 	if finalItem.Payload.Summary != want {
 		t.Fatalf("final item summary = %q, want streamed text", finalItem.Payload.Summary)
+	}
+}
+
+func TestRunTurn_RetriesTruncatedFinalAnswerBeforeCompletion(t *testing.T) {
+	incomplete := "评估结论\n\nCPU负载正常，空闲率较高（81.9"
+	complete := "评估结论\n\nCPU负载正常，空闲率较高（81.93%），当前没有发现 CPU 饱和风险。"
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage(incomplete, nil),
+		schema.AssistantMessage(complete, nil),
+	}}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-truncated-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-truncated-final",
+		Input:       "请根据已有 CPU 数据给出一句完整评估结论。",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	if result.Output != complete {
+		t.Fatalf("RunTurn output = %q, want completed retry output", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, want retry after truncated final answer", len(model.inputs))
+	}
+	retryInput := schemaMessagesText(model.inputs[1])
+	if !strings.Contains(retryInput, "Final answer completeness guard") {
+		t.Fatalf("second model input missing completeness guard:\n%s", retryInput)
+	}
+	if !strings.Contains(retryInput, incomplete) {
+		t.Fatalf("second model input missing incomplete final answer evidence:\n%s", retryInput)
+	}
+	session := kernel.sessions.Get("sess-truncated-final")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed turn")
+	}
+	if got := session.CurrentTurn.Metadata[finalCompletenessRetryMetadataKey]; got != "1" {
+		t.Fatalf("final completeness retry metadata = %q, want 1", got)
+	}
+	if session.CurrentTurn.FinalOutput != complete {
+		t.Fatalf("FinalOutput = %q, want completed retry output", session.CurrentTurn.FinalOutput)
 	}
 }
 

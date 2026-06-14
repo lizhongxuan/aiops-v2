@@ -153,3 +153,84 @@ func TestTransportStableIDsAreRepeatable(t *testing.T) {
 		t.Fatalf("expected different block IDs for different source IDs")
 	}
 }
+
+func TestChildAgentTransportPreservesFullRuntimeTraceFields(t *testing.T) {
+	child := AiopsTransportChildAgent{
+		ID:               "child-host-a",
+		MissionID:        "mission-1",
+		SessionID:        "host-child:mission-1:host-a",
+		HostID:           "host-a",
+		HostDisplayName:  "Host A",
+		Status:           "running",
+		RuntimeProfile:   "host_agent_full_runtime",
+		ActiveSubtaskID:  "subtask-1",
+		QueueReason:      "same_host_write_task_running",
+		TraceSummary:     "base runtime with host-bound scope",
+		AgentMessageRefs: []string{"agent-message-1"},
+		PromptSections: []AiopsTransportPromptSectionTrace{{
+			ID:             "host_agent.binding.v1",
+			Kind:           "dynamic",
+			Source:         "host-task",
+			RetentionRank:  "P0",
+			RetentionClass: "must_keep",
+			CompactAction:  "kept_original",
+			SourceRef:      "agent-message-1",
+			Redaction:      "not_required",
+		}},
+		ContextDecisions: []AiopsTransportContextDecision{{
+			Kind:          "host_fact",
+			Decision:      "included",
+			Reason:        "bound_host",
+			RetentionRank: "P2",
+			SourceRef:     "artifact://host-facts/summary",
+		}},
+		ToolSurface: []AiopsTransportToolSurfaceEntry{{
+			Name:    "host_command",
+			Visible: true,
+			Reason:  "bound_host_tool",
+		}},
+		McpInstructionDeltas: []AiopsTransportScopedTraceEntry{{
+			ID:     "docs-readonly",
+			Status: "available",
+			Reason: "readonly_resource_in_scope",
+		}},
+		SkillActivationTrace: []AiopsTransportScopedTraceEntry{{
+			ID:     "generic-service-inspection",
+			Status: "recommended",
+			Reason: "manager_recommended_not_loaded",
+		}},
+		ApprovalTrace: []AiopsTransportScopedTraceEntry{{
+			ID:     "approval-1",
+			Status: "pending",
+			Reason: "non_whitelisted_command",
+		}},
+		EvidenceTrace: []AiopsTransportEvidenceTrace{{
+			ID:        "evidence-1",
+			Source:    "host_agent_tool",
+			Ref:       "artifact://evidence/1",
+			Redaction: "applied",
+			Summary:   "command result summary",
+		}},
+		ReportTimeline: []AiopsTransportHostTaskReportTrace{{
+			ID:         "report-1",
+			Status:     "blocked",
+			HostID:     "host-a",
+			PlanStepID: "step-1",
+			Summary:    "waiting for approval",
+		}},
+	}
+
+	raw, err := json.Marshal(child)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var roundTrip AiopsTransportChildAgent
+	if err := json.Unmarshal(raw, &roundTrip); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(roundTrip, child) {
+		t.Fatalf("round trip mismatch:\n got: %#v\nwant: %#v", roundTrip, child)
+	}
+}
