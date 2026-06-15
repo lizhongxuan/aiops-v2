@@ -166,8 +166,11 @@ export function fetchSessions() {
   return request<SessionListResponse>("/api/v1/sessions");
 }
 
-export function createSession(kind: SessionKind = "single_host") {
-  return request<SessionListResponse>("/api/v1/sessions", { method: "POST", body: { kind } });
+export function createSession(kind: SessionKind = "single_host", hostId?: string) {
+  return request<SessionListResponse>("/api/v1/sessions", {
+    method: "POST",
+    body: { kind, ...(hostId ? { hostId } : {}) },
+  });
 }
 
 export function activateSession(sessionId: string) {

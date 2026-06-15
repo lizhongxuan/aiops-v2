@@ -38,6 +38,7 @@ export default defineConfig({
       "tests/react-shell-snapshot.spec.js",
       "tests/runner-studio.spec.js",
       "tests/sidebar-and-layout.spec.js",
+      "tests/tool-mcp-slimming.spec.js",
     ],
   },
 });

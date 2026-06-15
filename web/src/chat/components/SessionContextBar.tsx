@@ -179,12 +179,12 @@ export function SessionContextBar({
         ) || "";
       if (!nextActive && sessionResult.status === "fulfilled") {
         try {
-          const payload = await withSessionContextTimeout(createSession(kind), SESSION_CONTEXT_TIMEOUT_MS, "创建会话");
+          const hostIdToBind = resolveHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
+          const payload = await withSessionContextTimeout(createSession(kind, hostIdToBind), SESSION_CONTEXT_TIMEOUT_MS, "创建会话");
           const createdSessions = payload.sessions || payload.items || [];
           const createdActive = payload.activeSessionId || createdSessions.find((session) => normalizeKind(session.kind) === kind)?.id || "";
           setSessions(createdSessions);
           if (createdActive) {
-            const hostIdToBind = resolveHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
             applySessionWithOverride(createdActive, createdSessions, true, nextHosts, hostIdToBind);
           } else {
             setSessionInitError("会话初始化失败，请刷新重试");
@@ -207,12 +207,12 @@ export function SessionContextBar({
     setActiveAction("create");
     setBusy(true);
     try {
-      const payload = await createSession(kind);
+      const nextHosts = hosts;
+      const hostIdToBind = resolveHostTargetId(kind, targetOptions, target, nextHosts);
+      const payload = await createSession(kind, hostIdToBind);
       const nextSessions = payload.sessions || payload.items || [];
       const nextActive = payload.activeSessionId || nextSessions[0]?.id || "";
       setSessions(nextSessions);
-      const nextHosts = hosts;
-      const hostIdToBind = resolveHostTargetId(kind, targetOptions, target, nextHosts);
       applySessionWithOverride(nextActive, nextSessions, true, nextHosts, hostIdToBind);
 
       if (hostIdToBind) {

@@ -182,6 +182,120 @@ func TestKernelAdapterRecordsHostChildResultToSinks(t *testing.T) {
 	}
 }
 
+func TestKernelAdapterPersistsSpawnedChildRunningBeforeRunnerCompletes(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	runner := newQueuedBlockingAgentRunner()
+	manager := NewAgentManager(factory, runner, nil)
+	store := hostops.NewInMemoryMissionStore()
+	adapter := NewKernelAdapter(manager, factory).WithHostOpsSinks(store, nil)
+
+	child, err := adapter.SpawnHostChild(context.Background(), hostops.SpawnHostChildRequest{
+		ChildAgentID: "child-running-1",
+		MissionID:    "mission-1",
+		SessionID:    "session-child-running-1",
+		HostID:       "host-a",
+		Task:         "install pg",
+	})
+	if err != nil {
+		t.Fatalf("SpawnHostChild() error = %v", err)
+	}
+	_ = runner.waitForConfig(t)
+	defer runner.release("done")
+
+	stored, err := store.GetChildAgent(context.Background(), child.ID)
+	if err != nil {
+		t.Fatalf("GetChildAgent() error = %v, want running child persisted", err)
+	}
+	if stored.Status != hostops.HostChildAgentStatusRunning {
+		t.Fatalf("stored.Status = %q, want running", stored.Status)
+	}
+}
+
+func TestKernelAdapterPersistsFollowupChildRunningBeforeRunnerCompletes(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	runner := newQueuedBlockingAgentRunner()
+	manager := NewAgentManager(factory, runner, nil)
+	store := hostops.NewInMemoryMissionStore()
+	adapter := NewKernelAdapter(manager, factory).WithHostOpsSinks(store, nil)
+
+	_, err := adapter.SpawnHostChild(context.Background(), hostops.SpawnHostChildRequest{
+		ChildAgentID: "child-followup-running-1",
+		MissionID:    "mission-1",
+		SessionID:    "session-child-followup-running-1",
+		HostID:       "host-a",
+		Task:         "install pg",
+	})
+	if err != nil {
+		t.Fatalf("SpawnHostChild() error = %v", err)
+	}
+	_ = runner.waitForConfig(t)
+	runner.release("initial done")
+	waitForCondition(t, func() bool {
+		child, err := store.GetChildAgent(context.Background(), "child-followup-running-1")
+		return err == nil && child.Status == hostops.HostChildAgentStatusCompleted
+	})
+
+	child, err := adapter.SendMessage(context.Background(), "child-followup-running-1", "check replication")
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	_ = runner.waitForConfig(t)
+	defer runner.release("followup done")
+
+	stored, err := store.GetChildAgent(context.Background(), child.ID)
+	if err != nil {
+		t.Fatalf("GetChildAgent() error = %v", err)
+	}
+	if stored.Status != hostops.HostChildAgentStatusRunning {
+		t.Fatalf("stored.Status = %q, want running", stored.Status)
+	}
+	if stored.LastInputPreview != "check replication" {
+		t.Fatalf("stored.LastInputPreview = %q, want follow-up input", stored.LastInputPreview)
+	}
+}
+
+func TestKernelAdapterPersistsStoppedChildCancelled(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	runner := newQueuedBlockingAgentRunner()
+	manager := NewAgentManager(factory, runner, nil)
+	store := hostops.NewInMemoryMissionStore()
+	adapter := NewKernelAdapter(manager, factory).WithHostOpsSinks(store, nil)
+
+	child, err := adapter.SpawnHostChild(context.Background(), hostops.SpawnHostChildRequest{
+		ChildAgentID: "child-stop-1",
+		MissionID:    "mission-1",
+		SessionID:    "session-child-stop-1",
+		HostID:       "host-a",
+		Task:         "install pg",
+	})
+	if err != nil {
+		t.Fatalf("SpawnHostChild() error = %v", err)
+	}
+	_ = runner.waitForConfig(t)
+	defer runner.release("done")
+
+	stopped, err := adapter.Stop(context.Background(), child.ID)
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if stopped.Status != hostops.HostChildAgentStatusCancelled {
+		t.Fatalf("stopped.Status = %q, want cancelled", stopped.Status)
+	}
+	stored, err := store.GetChildAgent(context.Background(), child.ID)
+	if err != nil {
+		t.Fatalf("GetChildAgent() error = %v", err)
+	}
+	if stored.Status != hostops.HostChildAgentStatusCancelled {
+		t.Fatalf("stored.Status = %q, want cancelled", stored.Status)
+	}
+	if stored.CompletedAt == nil {
+		t.Fatal("stored.CompletedAt = nil, want completion timestamp")
+	}
+}
+
 type recordingAgentRunner struct {
 	output  string
 	configs chan agentruntime.Config
@@ -235,6 +349,50 @@ func (r *blockingAgentRunner) waitStarted(t *testing.T) {
 
 func (r *blockingAgentRunner) release(output string) {
 	r.releaseC <- output
+}
+
+type queuedBlockingAgentRunner struct {
+	configs  chan agentruntime.Config
+	releases chan string
+}
+
+func newQueuedBlockingAgentRunner() *queuedBlockingAgentRunner {
+	return &queuedBlockingAgentRunner{
+		configs:  make(chan agentruntime.Config, 8),
+		releases: make(chan string, 8),
+	}
+}
+
+func (r *queuedBlockingAgentRunner) Run(ctx context.Context, config agentruntime.Config) (string, error) {
+	select {
+	case r.configs <- config:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	select {
+	case output := <-r.releases:
+		return output, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (r *queuedBlockingAgentRunner) waitForConfig(t *testing.T) agentruntime.Config {
+	t.Helper()
+	select {
+	case config := <-r.configs:
+		return config
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner config")
+		return nil
+	}
+}
+
+func (r *queuedBlockingAgentRunner) release(output string) {
+	select {
+	case r.releases <- output:
+	default:
+	}
 }
 
 func waitForCondition(t *testing.T, condition func() bool) {

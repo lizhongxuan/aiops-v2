@@ -335,6 +335,9 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 			return nil, err
 		}
 		child = normalizeSpawnedChild(child, req)
+		if current, getErr := o.store.GetChildAgent(ctx, child.ID); getErr == nil {
+			child = mergeSpawnedChildUpdate(current, child)
+		}
 		if err := o.store.SaveChildAgent(ctx, child); err != nil {
 			observability.RecordOpsMetric(observability.OpsMetricHostAgentCreation, false)
 			return nil, err
@@ -609,6 +612,33 @@ func mergeChildAgentUpdate(current HostChildAgent, update HostChildAgent) HostCh
 	update.PlanStepIDs = append([]string(nil), current.PlanStepIDs...)
 	update.StartedAt = firstNonZeroTime(update.StartedAt, current.StartedAt)
 	return update
+}
+
+func mergeSpawnedChildUpdate(current HostChildAgent, update HostChildAgent) HostChildAgent {
+	merged := mergeChildAgentUpdate(current, update)
+	if len(current.PlanStepIDs) == 0 {
+		merged.PlanStepIDs = append([]string(nil), update.PlanStepIDs...)
+	}
+	if isTerminalChildAgentStatus(current.Status) && !isTerminalChildAgentStatus(update.Status) {
+		merged.Status = current.Status
+		merged.LastOutputPreview = firstNonEmptyString(current.LastOutputPreview, merged.LastOutputPreview)
+		merged.Error = firstNonEmptyString(current.Error, merged.Error)
+		merged.UpdatedAt = firstNonZeroTime(current.UpdatedAt, merged.UpdatedAt)
+		if current.CompletedAt != nil {
+			completedAt := *current.CompletedAt
+			merged.CompletedAt = &completedAt
+		}
+	}
+	return merged
+}
+
+func isTerminalChildAgentStatus(status HostChildAgentStatus) bool {
+	switch status {
+	case HostChildAgentStatusCompleted, HostChildAgentStatusFailed, HostChildAgentStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 func childAgentIDFor(missionID, hostID string) string {

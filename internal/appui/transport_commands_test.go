@@ -214,6 +214,32 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	}
 }
 
+func TestTransportCommandsAddMessageUsesTargetHostMetadataWhenHostIDMissing(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	_, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "检查 CPU"},
+			Metadata: map[string]string{
+				"aiops.target.kind":   "host",
+				"aiops.target.hostId": "remote-linux-01",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if chat.sendCmd.HostID != "remote-linux-01" {
+		t.Fatalf("SendMessage hostId = %q, want remote-linux-01", chat.sendCmd.HostID)
+	}
+}
+
 func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
 	chat := &transportCommandChatServiceStub{
 		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},

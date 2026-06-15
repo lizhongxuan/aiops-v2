@@ -68,10 +68,10 @@ func TestVerificationCompletionGateValidatesPassPartialAndFail(t *testing.T) {
 	if partialDecision.Action != VerificationCompletionActionRequireBlockerFinal || partialDecision.Status != verification.StatusPartial {
 		t.Fatalf("partial decision = %#v, want require blocker/PARTIAL", partialDecision)
 	}
-	if verificationCompletionGateAllowsFinal("已完成，可以收尾。", partialDecision) {
+	if verificationCompletionGateAllowsFinal("已完成，可以收尾。", partialDecision, nil) {
 		t.Fatal("partial decision allowed success final, want blocker-only final")
 	}
-	if !verificationCompletionGateAllowsFinal("权限缺少，无法继续；需要 request synthetic approval。", partialDecision) {
+	if !verificationCompletionGateAllowsFinal("权限缺少，无法继续；需要 request synthetic approval。", partialDecision, nil) {
 		t.Fatal("partial decision rejected explicit blocker final")
 	}
 
@@ -98,7 +98,7 @@ func TestVerificationCompletionGateValidatesPassPartialAndFail(t *testing.T) {
 	if failDecision.Action != VerificationCompletionActionBlockSuccessFinal || failDecision.Status != verification.StatusFail {
 		t.Fatalf("fail decision = %#v, want block success/FAIL", failDecision)
 	}
-	if verificationCompletionGateAllowsFinal("已完成，已验证。", failDecision) {
+	if verificationCompletionGateAllowsFinal("已完成，已验证。", failDecision, nil) {
 		t.Fatal("fail decision allowed success final")
 	}
 }
@@ -182,6 +182,86 @@ func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
 		if !strings.Contains(data, want) {
 			t.Fatalf("trace missing %q:\n%s", want, data)
 		}
+	}
+}
+
+func TestRunTurnVerificationCompletionGateAllowsEvidenceBackedVerificationSummary(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{
+				ID:   "call-docker-run",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "synthetic_terminal",
+					Arguments: `{"command":"docker","args":["run","-d","--name","synthetic-nginx","-p","18081:80","nginx:latest"]}`,
+				},
+			},
+			{
+				ID:   "call-docker-ps",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "synthetic_terminal",
+					Arguments: `{"command":"docker","args":["ps","--filter","name=synthetic-nginx","--format","{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"]}`,
+				},
+			},
+			{
+				ID:   "call-curl",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "synthetic_terminal",
+					Arguments: `{"command":"curl","args":["-fsS","http://127.0.0.1:18081"]}`,
+				},
+			},
+		}),
+		schema.AssistantMessage("完成。nginx 临时测试容器已成功启动并验证通过。\n\n验证结果：\n- docker ps：容器正常运行\n- curl http://127.0.0.1:18081：连通性正常", nil),
+		schema.AssistantMessage("不应该触发第三次模型调用", nil),
+	}}
+	tool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "synthetic_terminal", Description: "synthetic terminal execution"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			var req struct {
+				Command string   `json:"command"`
+				Args    []string `json:"args"`
+			}
+			if err := json.Unmarshal(input, &req); err != nil {
+				return tooling.ToolResult{}, err
+			}
+			command := strings.TrimSpace(req.Command + " " + strings.Join(req.Args, " "))
+			payload := map[string]any{
+				"schemaVersion": "aiops.terminal/v1",
+				"tool":          "exec_command",
+				"status":        "ok",
+				"command":       command,
+				"stdout":        "synthetic success",
+				"exitCode":      0,
+			}
+			data, _ := json.Marshal(payload)
+			return tooling.ToolResult{Content: string(data)}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-verification-completion-evidence-backed-summary",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-verification-completion-evidence-backed-summary",
+		Input:       "启动一个临时 nginx 容器并验证结果",
+		Metadata:    map[string]string{"taskDepth": "operations"},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(result.Output, "验证通过") {
+		t.Fatalf("final output = %q, want evidence-backed verification summary", result.Output)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, want no completion-gate retry after evidence-backed verification summary", len(model.inputs))
 	}
 }
 

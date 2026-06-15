@@ -143,6 +143,9 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	if err := validateBootstrapHost(host); err != nil {
 		return i.failInstall(&host, run, "validate-inputs", "failed", err)
 	}
+	if err := validateInstallAgentServerURLReachable(host, resolveInstallAgentServerURL(host)); err != nil {
+		return i.failInstall(&host, run, "validate-agent-server-url", "failed", err)
+	}
 
 	i.setStep(&host, &run, "connect-ssh")
 	credential, err := i.resolveSSHCredential(ctx, host.SSHCredentialRef)
@@ -566,7 +569,7 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 		Labels            map[string]string `yaml:"labels,omitempty"`
 		Capabilities      []string          `yaml:"capabilities"`
 	}{
-		ServerURL:         firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080"),
+		ServerURL:         resolveInstallAgentServerURL(host),
 		GRPCURL:           firstNonEmpty(os.Getenv("AIOPS_AGENT_GRPC_URL"), derivedAgentGRPCURL(os.Getenv("AIOPS_AGENT_SERVER_URL"))),
 		HostID:            host.ID,
 		ListenAddr:        "0.0.0.0:7072",
@@ -583,6 +586,51 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 		return nil, hostAgentRemoteLayout{}, fmt.Errorf("host-agent token is empty")
 	}
 	return data, layout, nil
+}
+
+func resolveInstallAgentServerURL(host store.HostRecord) string {
+	return firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080")
+}
+
+func validateInstallAgentServerURLReachable(host store.HostRecord, serverURL string) error {
+	trimmed := strings.TrimSpace(serverURL)
+	if trimmed == "" {
+		return fmt.Errorf("agent server URL is empty; set AIOPS_AGENT_SERVER_URL to an address reachable from the target host")
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Hostname() == "" {
+		return fmt.Errorf("agent server URL %q is invalid; set AIOPS_AGENT_SERVER_URL to a valid http(s) address reachable from the target host", trimmed)
+	}
+	if !isLoopbackHostName(parsed.Hostname()) || isLocalInstallTarget(host.Address) {
+		return nil
+	}
+	return fmt.Errorf("agent server URL %s is loopback; remote host %s cannot reach it. Set AIOPS_AGENT_SERVER_URL to an address reachable from the target host before installing host-agent", trimmed, firstNonEmpty(host.Address, host.ID))
+}
+
+func isLocalInstallTarget(address string) bool {
+	value := strings.ToLower(strings.TrimSpace(address))
+	if value == "" {
+		return false
+	}
+	switch value {
+	case "server-local", "local", "localhost":
+		return true
+	}
+	return isLoopbackHostName(value)
+}
+
+func isLoopbackHostName(hostname string) bool {
+	value := strings.Trim(strings.ToLower(strings.TrimSpace(hostname)), "[]")
+	if value == "" {
+		return false
+	}
+	if value == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 func derivedAgentGRPCURL(serverURL string) string {
@@ -691,7 +739,11 @@ func startServiceScript(platform detectedHostPlatform) string {
 			sudo,
 			"run_sudo systemctl enable aiops-host-agent.service",
 			"run_sudo systemctl restart aiops-host-agent.service",
-			"run_sudo systemctl is-active aiops-host-agent.service",
+			"if ! run_sudo systemctl is-active aiops-host-agent.service; then",
+			"  run_sudo systemctl status aiops-host-agent.service --no-pager -l >&2 || true",
+			"  run_sudo journalctl -u aiops-host-agent.service -n 40 --no-pager >&2 || true",
+			"  exit 3",
+			"fi",
 		}, "\n")
 	case "darwin/arm64":
 		return strings.Join([]string{

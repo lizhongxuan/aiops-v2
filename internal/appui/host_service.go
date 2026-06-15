@@ -65,6 +65,9 @@ func (s *defaultHostService) CreateHost(ctx context.Context, payload HostUpsert)
 	if err != nil {
 		return HostMutationResponse{}, err
 	}
+	if existing, _ := s.repo.GetHost(id); existing != nil {
+		return HostMutationResponse{}, fmt.Errorf("host ID already exists: %s", id)
+	}
 	payload.ID = id
 	record, err := buildNewHostRecord(payload)
 	if err != nil {

@@ -86,7 +86,7 @@ describe("SessionContextBar auto-create", () => {
       await flushMicrotasks();
     });
 
-    expect(createSession).toHaveBeenCalledWith("single_host");
+    expect(createSession).toHaveBeenCalledWith("single_host", "server-local");
     expect(onThreadChange).toHaveBeenCalledWith(
       "session-auto",
       expect.objectContaining({

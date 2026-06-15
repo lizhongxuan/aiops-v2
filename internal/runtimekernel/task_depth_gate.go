@@ -141,9 +141,25 @@ func turnHasEvidence(snapshot *TurnSnapshot) bool {
 	return countActualToolDispatches(snapshot) > 0
 }
 
+func missingEvidenceFinalBlocker(profile taskdepth.Profile, snapshot *TurnSnapshot, assistantContent string) (string, bool) {
+	if strings.TrimSpace(assistantContent) == "" || finalLooksLikeBlocker(assistantContent) {
+		return "", false
+	}
+	if !profile.RequiresEvidence && !taskdepth.AtLeast(profile.Level, taskdepth.LevelInvestigation) {
+		return "", false
+	}
+	if turnHasEvidence(snapshot) {
+		return "", false
+	}
+	if snapshot == nil || strings.TrimSpace(snapshot.Metadata[prematureFinalGuardMetadataKey]) != "true" {
+		return "", false
+	}
+	return "缺少直接工具证据，不能给出已检查或已完成结论。当前这轮没有成功执行任何可验证的工具调用；请重试，或补充目标、权限、可用工具后再继续。", true
+}
+
 func finalLooksLikeBlocker(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
-	for _, marker := range []string{"缺少", "需要你", "无法继续", "权限", "blocked", "approval", "请提供"} {
+	for _, marker := range []string{"缺少", "需要你", "无法继续", "权限", "blocked", "approval", "请提供", "未执行"} {
 		if strings.Contains(text, marker) {
 			return true
 		}

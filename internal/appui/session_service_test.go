@@ -43,6 +43,26 @@ func TestSessionService_CreateSessionReturnsActiveListAndSnapshot(t *testing.T) 
 	}
 }
 
+func TestSessionService_CreateSingleHostSessionBindsRequestedHost(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	services := NewServices(runtimeStub{}, sessions)
+
+	host, err := services.SessionService().CreateSession(context.Background(), "single_host", "remote-linux-01")
+	if err != nil {
+		t.Fatalf("CreateSession(single_host, remote-linux-01) error = %v", err)
+	}
+
+	if host.Snapshot.SelectedHostID != "remote-linux-01" {
+		t.Fatalf("snapshot selectedHostId = %q, want remote-linux-01", host.Snapshot.SelectedHostID)
+	}
+	if len(host.Sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(host.Sessions))
+	}
+	if host.Sessions[0].SelectedHostID != "remote-linux-01" {
+		t.Fatalf("session selectedHostId = %q, want remote-linux-01", host.Sessions[0].SelectedHostID)
+	}
+}
+
 func TestSessionService_ActivateSessionPromotesExistingSession(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	services := NewServices(runtimeStub{}, sessions)

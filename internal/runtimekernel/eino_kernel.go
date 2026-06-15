@@ -780,6 +780,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}
+	snapshot.Metadata = mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata)
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
@@ -913,6 +914,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		ClientTurnID:    snapshot.ClientTurnID,
 		ClientMessageID: snapshot.ClientMessageID,
 		HostID:          session.HostID,
+		Metadata:        mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata),
 	}
 	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, agentKind, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
@@ -1635,7 +1637,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		dispatchTools := append([]promptcompiler.Tool(nil), compileCtx.AssembledTools...)
 		var surfacePolicy tooling.ToolSurfacePolicySnapshot
 		compileCtx, surfacePolicy = applyToolSurfacePolicyToCompileContext(compileCtx, req.Mode, firstMetadataValue(turnMetadata, "profile", "toolProfile"), session)
-		if shouldSwitchToSynthesisOnly(req.Mode, snapshot.TaskDepth, toolDispatches, compileCtx.AssembledTools) {
+		if shouldSwitchToSynthesisOnlyForTurn(req.Mode, snapshot.TaskDepth, req.Input, session, snapshot, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			compileCtx.AssembledTools = nil
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, synthesisOnlyPromptAsset(toolDispatches))
@@ -1976,7 +1978,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			}
 			verificationCompletionDecision := EvaluateVerificationCompletionGate(snapshot.TaskDepth, snapshot)
 			appendVerificationCompletionGateItem(snapshot, turnID, iteration, verificationCompletionDecision)
-			if !verificationCompletionGateAllowsFinal(assistantContent, verificationCompletionDecision) && snapshot.Metadata[verificationCompletionGateRetryMetadataKey] != "1" {
+			if !verificationCompletionGateAllowsFinal(assistantContent, verificationCompletionDecision, snapshot) && snapshot.Metadata[verificationCompletionGateRetryMetadataKey] != "1" {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
@@ -2069,6 +2071,13 @@ func (k *EinoKernel) runHostIterationLoop(
 				}
 				k.persistTurnSnapshot(session, snapshot)
 				continue
+			}
+			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); blocked {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["taskDepth.missingEvidenceFinalBlocked"] = "true"
+				assistantContent = blocker
 			}
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
@@ -2365,6 +2374,125 @@ func shouldSwitchToSynthesisOnly(mode Mode, profile taskdepth.Profile, toolDispa
 	default:
 		return toolDispatches >= defaultSynthesisOnlyToolDispatches
 	}
+}
+
+func shouldSwitchToSynthesisOnlyForTurn(mode Mode, profile taskdepth.Profile, input string, session *SessionState, snapshot *TurnSnapshot, toolDispatches int, tools []promptcompiler.Tool) bool {
+	if shouldSwitchToSynthesisOnly(mode, profile, toolDispatches, tools) {
+		return true
+	}
+	return shouldSwitchToHostResourceSynthesis(profile, input, session, snapshot, toolDispatches, tools)
+}
+
+func shouldSwitchToHostResourceSynthesis(profile taskdepth.Profile, input string, session *SessionState, snapshot *TurnSnapshot, toolDispatches int, tools []promptcompiler.Tool) bool {
+	if len(tools) == 0 || toolDispatches == 0 {
+		return false
+	}
+	switch taskdepth.NormalizeLevel(string(profile.Level)) {
+	case taskdepth.LevelTrivial, taskdepth.LevelSimpleRead:
+	default:
+		return false
+	}
+	if profile.RequiresPlan || profile.RequiresValidation {
+		return false
+	}
+	if !isDirectHostResourceInspection(input, session) {
+		return false
+	}
+	requested := requestedHostResourceDimensions(input)
+	if len(requested) == 0 {
+		return false
+	}
+	covered := coveredHostResourceDimensions(snapshot)
+	for _, dimension := range requested {
+		if !covered[dimension] {
+			return false
+		}
+	}
+	return true
+}
+
+func requestedHostResourceDimensions(input string) []string {
+	text := strings.ToLower(strings.TrimSpace(input))
+	dimensions := make([]string, 0, 3)
+	if containsAnyFold(text, []string{"cpu", "processor", "load", "uptime", "负载", "使用率"}) {
+		dimensions = append(dimensions, "cpu")
+	}
+	if containsAnyFold(text, []string{"memory", "mem", "swap", "内存"}) {
+		dimensions = append(dimensions, "memory")
+	}
+	if containsAnyFold(text, []string{"disk", "filesystem", "volume", "磁盘", "文件系统"}) {
+		dimensions = append(dimensions, "disk")
+	}
+	if len(dimensions) == 0 && containsAnyFold(text, []string{"resource", "resources", "资源", "系统状态", "状态", "情况"}) {
+		dimensions = append(dimensions, "cpu", "memory", "disk")
+	}
+	return uniqueStrings(dimensions)
+}
+
+func coveredHostResourceDimensions(snapshot *TurnSnapshot) map[string]bool {
+	covered := map[string]bool{}
+	if snapshot == nil {
+		return covered
+	}
+	for _, iteration := range snapshot.Iterations {
+		toolCalls := make(map[string]ToolCall, len(iteration.ToolCalls))
+		for _, call := range iteration.ToolCalls {
+			toolCalls[call.ID] = call
+		}
+		for _, result := range iteration.ToolResults {
+			if result.Error != "" || isToolBudgetResult(result) {
+				continue
+			}
+			call := toolCalls[result.ToolCallID]
+			if isNonBudgetToolResult(result, call.Name) {
+				continue
+			}
+			text := strings.ToLower(strings.Join([]string{
+				call.Name,
+				string(call.Arguments),
+				result.Summary,
+				result.Content,
+			}, "\n"))
+			for _, dimension := range resourceDimensionsFromEvidenceText(text) {
+				covered[dimension] = true
+			}
+		}
+	}
+	return covered
+}
+
+func resourceDimensionsFromEvidenceText(text string) []string {
+	dimensions := make([]string, 0, 3)
+	if containsAnyFold(text, []string{
+		"nproc", "/proc/loadavg", "load average", "uptime", "mpstat", "top -", "cpu", "processor", "hw.ncpu", "负载",
+	}) {
+		dimensions = append(dimensions, "cpu")
+	}
+	if containsAnyFold(text, []string{
+		"free -", "mem:", "swap:", "memory", "vm_stat", "内存",
+	}) {
+		dimensions = append(dimensions, "memory")
+	}
+	if containsAnyFold(text, []string{
+		"df -", "filesystem", "mounted on", "disk", "volume", "磁盘", "文件系统",
+	}) {
+		dimensions = append(dimensions, "disk")
+	}
+	return uniqueStrings(dimensions)
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func synthesisOnlyPromptAsset(toolDispatches int) string {
@@ -3011,7 +3139,7 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
 		return nil, err
 	}
-	compileCtx := enrichCompileContext(k.tools.CompileContext(session.Type, session.Mode), session.Type, session.HostID, nil, time.Now())
+	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, snapshot.Metadata), session.Type, session.HostID, snapshot.Metadata, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)

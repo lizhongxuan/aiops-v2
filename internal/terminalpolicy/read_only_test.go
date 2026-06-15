@@ -12,6 +12,9 @@ func TestTerminalReadOnlyStillRequiresAllowlist(t *testing.T) {
 		{command: "kubectl", args: []string{"logs", "deploy/redis", "-n", "prod", "--tail=100"}},
 		{command: "redis-cli", args: []string{"-h", "redis.prod", "INFO"}},
 		{command: "redis-cli", args: []string{"-u", "redis://redis.prod:6379", "MEMORY", "STATS"}},
+		{command: "docker", args: []string{"ps", "--filter", "name=aiops-eval-nginx-0614", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"}},
+		{command: "docker", args: []string{"container", "ls", "--filter", "publish=18081", "--format", "{{.ID}} {{.Names}} {{.Ports}}"}},
+		{command: "docker", args: []string{"inspect", "aiops-eval-nginx-0614"}},
 	}
 	denied := []struct {
 		command string
@@ -22,6 +25,9 @@ func TestTerminalReadOnlyStillRequiresAllowlist(t *testing.T) {
 		{command: "kubectl", args: []string{"logs", "-f", "deploy/redis", "-n", "prod"}},
 		{command: "kubectl", args: []string{"delete", "pod/redis-0", "-n", "prod"}},
 		{command: "redis-cli", args: []string{"FLUSHALL"}},
+		{command: "docker", args: []string{"run", "-d", "--name", "nginx", "nginx:latest"}},
+		{command: "docker", args: []string{"rm", "-f", "nginx"}},
+		{command: "docker", args: []string{"logs", "-f", "nginx"}},
 	}
 	for _, input := range allowed {
 		if !IsAllowedReadOnlyTerminal(input.command, input.args) {
@@ -52,6 +58,8 @@ func TestAllowedHostInspectionTerminalAllowsBoundedResourceCommands(t *testing.T
 		{command: "ps", args: []string{"-e"}},
 		{command: "lsof", args: []string{"-i", ":1234"}},
 		{command: "lsof", args: []string{"-n", "-P", "-iTCP:1234", "-sTCP:LISTEN"}},
+		{command: "ss", args: []string{"-tlnp", "sport", "=", "18082"}},
+		{command: "ss", args: []string{"-ltnp"}},
 	}
 	for _, input := range allowed {
 		if !IsAllowedHostInspectionTerminal(input.command, input.args) {
@@ -73,6 +81,8 @@ func TestAllowedHostInspectionTerminalRejectsBroadOrMutatingCommands(t *testing.
 		{command: "lsof", args: []string{"/etc/passwd"}},
 		{command: "lsof", args: []string{"-i", ":1234", "-F", "p"}},
 		{command: "lsof", args: []string{"-i", "-n"}},
+		{command: "ss", args: []string{"-K", "dst", "1.2.3.4"}},
+		{command: "ss", args: []string{"-tlnp", "sport", "=", "not-a-port"}},
 	}
 	for _, input := range denied {
 		if IsAllowedHostInspectionTerminal(input.command, input.args) {
@@ -103,6 +113,18 @@ func TestIsReadOnlyCommandAllowsShellWrappedCurlGet(t *testing.T) {
 	}
 	if !IsReadOnlyCommand("bash", args) {
 		t.Fatal("bash -lc safe curl GET should be classified read-only")
+	}
+}
+
+func TestIsReadOnlyCommandAllowsSafeCurlStatusCheck(t *testing.T) {
+	if !IsReadOnlyCommand("curl", []string{"-fsS", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:18081"}) {
+		t.Fatal("curl GET with /dev/null output and write-out status should be read-only")
+	}
+	if !IsReadOnlyCommand("curl", []string{"-fsSI", "http://127.0.0.1:18081"}) {
+		t.Fatal("curl HEAD status check should be read-only")
+	}
+	if IsReadOnlyCommand("curl", []string{"-s", "-o", "%{http_code}", "http://127.0.0.1:18081"}) {
+		t.Fatal("curl output to a regular file must not be classified read-only")
 	}
 }
 

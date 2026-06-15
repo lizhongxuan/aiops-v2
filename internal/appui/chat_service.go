@@ -14,6 +14,7 @@ import (
 type defaultChatService struct {
 	runtime            RuntimeGateway
 	sessions           SessionSource
+	hosts              HostRepository
 	agentEvents        AgentEventService
 	turnRunner         AsyncTurnRunner
 	baseContext        context.Context
@@ -35,6 +36,14 @@ func NewChatService(runtime RuntimeGateway, sessions SessionSource, agentEvents 
 }
 
 func NewChatServiceWithContext(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, agentEvents ...AgentEventService) ChatService {
+	return NewChatServiceWithContextAndHosts(baseContext, runtime, sessions, nil, agentEvents...)
+}
+
+func NewChatServiceWithHosts(runtime RuntimeGateway, sessions SessionSource, hosts HostRepository, agentEvents ...AgentEventService) ChatService {
+	return NewChatServiceWithContextAndHosts(context.Background(), runtime, sessions, hosts, agentEvents...)
+}
+
+func NewChatServiceWithContextAndHosts(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, hosts HostRepository, agentEvents ...AgentEventService) ChatService {
 	var eventService AgentEventService
 	if len(agentEvents) > 0 {
 		eventService = agentEvents[0]
@@ -50,6 +59,7 @@ func NewChatServiceWithContext(baseContext context.Context, runtime RuntimeGatew
 	return &defaultChatService{
 		runtime:            runtime,
 		sessions:           sessions,
+		hosts:              hosts,
 		agentEvents:        eventService,
 		baseContext:        baseContext,
 		workflowGeneration: workflowGeneration,
@@ -101,7 +111,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		ClientMessageID: strings.TrimSpace(cmd.ClientMessageID),
 		Input:           content,
 		HostID:          cmd.HostID,
-		Metadata:        cmd.Metadata,
+		Metadata:        cloneStringMetadata(cmd.Metadata),
 	}
 	if strings.TrimSpace(req.HostID) == "" && req.SessionType == runtimekernel.SessionTypeHost {
 		req.HostID = serverLocalHostID
@@ -112,6 +122,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	if req.SessionID == "" {
 		req.SessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
+	s.enrichTurnHostMetadata(&req)
 	if s.workflowGeneration != nil {
 		if response, handled, err := s.workflowGeneration.Handle(ctx, cmd, req); handled || err != nil {
 			return response, err
@@ -126,6 +137,34 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		ClientMessageID: req.ClientMessageID,
 		Status:          "accepted",
 	}, nil
+}
+
+func (s *defaultChatService) enrichTurnHostMetadata(req *runtimekernel.TurnRequest) {
+	if s == nil || s.hosts == nil || req == nil || strings.TrimSpace(req.HostID) == "" {
+		return
+	}
+	host, err := s.hosts.GetHost(strings.TrimSpace(req.HostID))
+	if err != nil || host == nil {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	setMetadataIfEmpty(req.Metadata, "aiops.host.metadataAvailable", "true")
+	setMetadataIfEmpty(req.Metadata, "aiops.host.id", host.ID)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.label", firstNonEmpty(host.Name, host.ID))
+	setMetadataIfEmpty(req.Metadata, "aiops.host.os", host.OS)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.arch", host.Arch)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.transport", host.Transport)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.status", host.Status)
+}
+
+func setMetadataIfEmpty(metadata map[string]string, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.TrimSpace(metadata[key]) != "" {
+		return
+	}
+	metadata[key] = value
 }
 
 func (s *defaultChatService) appendTurnAcceptedEvents(req runtimekernel.TurnRequest) {

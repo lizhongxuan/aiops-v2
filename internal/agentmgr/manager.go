@@ -70,16 +70,24 @@ type AgentRunner interface {
 type AgentManager struct {
 	mu        sync.RWMutex
 	instances map[string]*AgentInstance // agentID → instance
+	cancels   map[string]activeAgentRun
+	nextRunID uint64
 
 	factory   *AgentFactory
 	runner    AgentRunner
 	projector *projection.Projector
 }
 
+type activeAgentRun struct {
+	id     uint64
+	cancel context.CancelFunc
+}
+
 // NewAgentManager creates a new AgentManager with the given dependencies.
 func NewAgentManager(factory *AgentFactory, runner AgentRunner, projector *projection.Projector) *AgentManager {
 	return &AgentManager{
 		instances: make(map[string]*AgentInstance),
+		cancels:   make(map[string]activeAgentRun),
 		factory:   factory,
 		runner:    runner,
 		projector: projector,
@@ -158,25 +166,39 @@ func (m *AgentManager) runAgent(ctx context.Context, agentID string, config *Age
 	if m == nil || m.runner == nil {
 		return nil, fmt.Errorf("agent runner is required")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+
 	m.mu.Lock()
 	instance, exists := m.instances[agentID]
 	if !exists {
 		m.mu.Unlock()
+		cancel()
 		return nil, fmt.Errorf("run agent: agent %q not found", agentID)
 	}
 	if !canRunAgentStatus(instance.Status, allowRepeat) {
 		m.mu.Unlock()
+		cancel()
 		return nil, fmt.Errorf("run agent: agent %q is in status %q, expected idle", agentID, instance.Status)
 	}
 	instance.Status = AgentStatusRunning
 	instance.UpdatedAt = time.Now()
+	m.nextRunID++
+	runID := m.nextRunID
+	if m.cancels == nil {
+		m.cancels = make(map[string]activeAgentRun)
+	}
+	m.cancels[agentID] = activeAgentRun{id: runID, cancel: cancel}
 	m.mu.Unlock()
+	defer m.clearActiveRun(agentID, runID, cancel)
 
 	runConfig := materializeRuntimeConfig(config, instance)
 
 	// Execute via AgentRunner (adk.Runner in production).
 	startTime := time.Now()
-	output, err := m.runner.Run(ctx, runConfig)
+	output, err := m.runner.Run(runCtx, runConfig)
 	duration := time.Since(startTime)
 
 	// Build result and update instance.
@@ -222,6 +244,21 @@ func (m *AgentManager) runAgent(ctx context.Context, agentID string, config *Age
 	}
 
 	return result, nil
+}
+
+func (m *AgentManager) clearActiveRun(agentID string, runID uint64, cancel context.CancelFunc) {
+	if cancel != nil {
+		cancel()
+	}
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active, ok := m.cancels[agentID]
+	if ok && active.id == runID {
+		delete(m.cancels, agentID)
+	}
 }
 
 func canRunAgentStatus(status AgentStatus, allowRepeat bool) bool {
@@ -290,14 +327,15 @@ func (m *AgentManager) KillAgent(ctx context.Context, agentID string) error {
 // KillAgentWithReason terminates the specified agent instance and records a bounded stop reason.
 func (m *AgentManager) KillAgentWithReason(ctx context.Context, agentID, reason string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	instance, exists := m.instances[agentID]
 	if !exists {
+		m.mu.Unlock()
 		return fmt.Errorf("kill agent: agent %q not found", agentID)
 	}
 
 	if instance.Status.IsTerminal() {
+		m.mu.Unlock()
 		return fmt.Errorf("kill agent: agent %q is already in terminal status %q", agentID, instance.Status)
 	}
 
@@ -306,6 +344,14 @@ func (m *AgentManager) KillAgentWithReason(ctx context.Context, agentID, reason 
 		instance.Error = strings.TrimSpace(reason)
 	}
 	instance.UpdatedAt = time.Now()
+	var cancel context.CancelFunc
+	if active, ok := m.cancels[agentID]; ok {
+		cancel = active.cancel
+	}
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	return nil
 }
 

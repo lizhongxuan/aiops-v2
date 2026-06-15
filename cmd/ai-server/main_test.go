@@ -32,6 +32,7 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
+	aiserver "aiops-v2/internal/server"
 	"aiops-v2/internal/settings"
 	"aiops-v2/internal/skills"
 	"aiops-v2/internal/store"
@@ -128,7 +129,7 @@ func TestAgentMCPCatalogGovernanceProviderMapsCatalogEntry(t *testing.T) {
 	}
 }
 
-func TestHostAgentCommandRunnerFallsBackToHTTPRun(t *testing.T) {
+func TestHostAgentCommandRunnerPrefersHTTPExec(t *testing.T) {
 	tokenStore := appui.NewLocalHostAgentTokenStore(t.TempDir())
 	tokenRef, err := tokenStore.StoreHostAgentToken(context.Background(), "host-http", "runner-token")
 	if err != nil {
@@ -141,33 +142,25 @@ func TestHostAgentCommandRunnerFallsBackToHTTPRun(t *testing.T) {
 	defer repo.Close()
 
 	var gotAuth string
-	var gotScript string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/run" || r.Method != http.MethodPost {
-			t.Fatalf("request = %s %s, want POST /run", r.Method, r.URL.Path)
+	var gotExecRequest aiserver.HostExecRequest
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/exec" || r.Method != http.MethodPost {
+			t.Fatalf("request = %s %s, want POST /exec", r.Method, r.URL.Path)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		var body hostAgentRunRequest
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&gotExecRequest); err != nil {
 			t.Fatalf("decode body: %v", err)
 		}
-		if body.Task.Host.Name != "host-http" || body.Task.Step.Action != "script.shell" {
-			t.Fatalf("task = %+v, want host-http script.shell", body.Task)
-		}
-		gotScript, _ = body.Task.Step.Args["script"].(string)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(hostAgentRunResponse{
-			Result: mapHostAgentRunnerResult(body.Task.ID, "success", "runner-ok\n", ""),
-			RunID:  body.Task.RunID,
-		})
+		_ = json.NewEncoder(w).Encode(aiserver.HostExecResponse{Status: "success", Stdout: "runner-ok\n", ExitCode: 0})
 	}))
-	defer server.Close()
+	defer testServer.Close()
 
 	if err := repo.SaveHost(&store.HostRecord{
 		ID:                  "host-http",
 		Name:                "host-http",
 		Address:             "10.0.0.11",
-		AgentURL:            server.URL,
+		AgentURL:            testServer.URL,
 		AgentTokenSecretRef: tokenRef,
 		Executable:          true,
 		ControlMode:         "managed",
@@ -178,7 +171,7 @@ func TestHostAgentCommandRunnerFallsBackToHTTPRun(t *testing.T) {
 	runner := hostAgentCommandRunner{
 		repo:          repo,
 		tokenResolver: tokenStore,
-		httpClient:    server.Client(),
+		httpClient:    testServer.Client(),
 		now:           func() time.Time { return time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC) },
 	}
 	result, err := runner.RunHostAgentCommand(context.Background(), localtools.HostAgentCommandRequest{
@@ -193,10 +186,87 @@ func TestHostAgentCommandRunnerFallsBackToHTTPRun(t *testing.T) {
 	if gotAuth != "Bearer runner-token" {
 		t.Fatalf("Authorization header = %q, want bearer token", gotAuth)
 	}
+	if gotExecRequest.Command != "printf" || len(gotExecRequest.Args) != 1 || gotExecRequest.Args[0] != "runner-ok" {
+		t.Fatalf("exec request = %#v, want printf runner-ok", gotExecRequest)
+	}
+	if result.Stdout != "runner-ok\n" || result.ExitCode != 0 || result.Source != "host.agent_http_exec" {
+		t.Fatalf("result = %#v, want HTTP /exec stdout", result)
+	}
+}
+
+func TestHostAgentCommandRunnerFallsBackToHTTPRunForOldAgents(t *testing.T) {
+	tokenStore := appui.NewLocalHostAgentTokenStore(t.TempDir())
+	tokenRef, err := tokenStore.StoreHostAgentToken(context.Background(), "host-http", "runner-token")
+	if err != nil {
+		t.Fatalf("StoreHostAgentToken() error = %v", err)
+	}
+	repo, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer repo.Close()
+
+	var gotExec bool
+	var gotRun bool
+	var gotScript string
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/exec":
+			gotExec = true
+			http.NotFound(w, r)
+			return
+		case "/run":
+			gotRun = true
+			var body hostAgentRunRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			gotScript, _ = body.Task.Step.Args["script"].(string)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(hostAgentRunResponse{
+				Result: mapHostAgentRunnerResult(body.Task.ID, "success", "runner-ok\n", ""),
+				RunID:  body.Task.RunID,
+			})
+		default:
+			t.Fatalf("request = %s %s, want /exec then /run", r.Method, r.URL.Path)
+		}
+	}))
+	defer testServer.Close()
+
+	if err := repo.SaveHost(&store.HostRecord{
+		ID:                  "host-http",
+		Name:                "host-http",
+		Address:             "10.0.0.11",
+		AgentURL:            testServer.URL,
+		AgentTokenSecretRef: tokenRef,
+		Executable:          true,
+		ControlMode:         "managed",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	runner := hostAgentCommandRunner{
+		repo:          repo,
+		tokenResolver: tokenStore,
+		httpClient:    testServer.Client(),
+		now:           func() time.Time { return time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC) },
+	}
+	result, err := runner.RunHostAgentCommand(context.Background(), localtools.HostAgentCommandRequest{
+		HostID:         "host-http",
+		Command:        "printf",
+		Args:           []string{"runner-ok"},
+		MaxOutputBytes: 4096,
+	})
+	if err != nil {
+		t.Fatalf("RunHostAgentCommand() error = %v", err)
+	}
+	if !gotExec || !gotRun {
+		t.Fatalf("gotExec=%v gotRun=%v, want both", gotExec, gotRun)
+	}
 	if !strings.Contains(gotScript, "'printf' 'runner-ok'") {
 		t.Fatalf("script = %q, want quoted printf command", gotScript)
 	}
-	if result.Stdout != "runner-ok\n" || result.ExitCode != 0 {
+	if result.Stdout != "runner-ok\n" || result.ExitCode != 0 || result.Source != "host.agent_http_run" {
 		t.Fatalf("result = %#v, want HTTP /run stdout", result)
 	}
 }

@@ -30,13 +30,14 @@ func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request) 
 
 func (s *HTTPServer) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Kind string `json:"kind"`
+		Kind   string `json:"kind"`
+		HostID string `json:"hostId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
-	result, err := s.ui.SessionService().CreateSession(r.Context(), strings.TrimSpace(req.Kind))
+	result, err := s.ui.SessionService().CreateSession(r.Context(), strings.TrimSpace(req.Kind), strings.TrimSpace(req.HostID))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

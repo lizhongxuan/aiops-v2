@@ -183,6 +183,33 @@ func TestHostServiceCreateHostGeneratesInternalIDAndAllowsBlankName(t *testing.T
 	}
 }
 
+func TestHostServiceCreateHostRejectsExistingExplicitID(t *testing.T) {
+	hostRepo := newHostRepoStub(store.HostRecord{
+		ID:      "host-a",
+		Name:    "web-01",
+		Address: "10.0.0.11",
+	})
+	service := NewHostService(nil, hostRepo, NewSnapshotBuilder(hostRepo))
+
+	_, err := service.CreateHost(context.Background(), HostUpsert{
+		ID:      "host-a",
+		Name:    "web-02",
+		Address: "10.0.0.12",
+		SSHUser: "ubuntu",
+		SSHPort: 22,
+	})
+	if err == nil {
+		t.Fatal("CreateHost() error = nil, want duplicate ID rejected")
+	}
+	stored, getErr := hostRepo.GetHost("host-a")
+	if getErr != nil {
+		t.Fatalf("GetHost() error = %v", getErr)
+	}
+	if stored.Name != "web-01" || stored.Address != "10.0.0.11" {
+		t.Fatalf("stored host = %+v, want original record preserved", stored)
+	}
+}
+
 func TestHostServiceRejectsDuplicateNonBlankHostName(t *testing.T) {
 	hostRepo := newHostRepoStub(store.HostRecord{
 		ID:      "host-a",
