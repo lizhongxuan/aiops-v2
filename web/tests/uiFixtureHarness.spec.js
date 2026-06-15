@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 function createMockPage() {
   return {
     addInitScript: vi.fn().mockResolvedValue(undefined),
+    context: vi.fn(() => ({
+      addInitScript: vi.fn().mockResolvedValue(undefined),
+    })),
     goto: vi.fn().mockResolvedValue(undefined),
+    route: vi.fn().mockResolvedValue(undefined),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
   };
