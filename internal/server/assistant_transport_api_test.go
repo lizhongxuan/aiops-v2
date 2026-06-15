@@ -14,7 +14,9 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/opsmanual"
+	"aiops-v2/internal/opssemantic"
 	"aiops-v2/internal/runtimekernel"
 )
 
@@ -154,6 +156,42 @@ func (r *assistantTransportBlockingResumeRuntime) ResumeTurn(_ context.Context, 
 
 func (r *assistantTransportBlockingResumeRuntime) CancelTurn(context.Context, runtimekernel.CancelRequest) (runtimekernel.TurnResult, error) {
 	return runtimekernel.TurnResult{}, nil
+}
+
+type assistantTransportApprovalServices struct {
+	*appui.Services
+	approval appui.ApprovalService
+}
+
+func (s assistantTransportApprovalServices) ApprovalService() appui.ApprovalService {
+	return s.approval
+}
+
+type assistantTransportBlockingHostCommandExecutor struct {
+	started chan hostops.HostCommandRequest
+	done    chan assistantTransportBlockingHostCommandExecutorResult
+}
+
+type assistantTransportBlockingHostCommandExecutorResult struct {
+	result hostops.HostCommandResult
+	err    error
+}
+
+func newAssistantTransportBlockingHostCommandExecutor() *assistantTransportBlockingHostCommandExecutor {
+	return &assistantTransportBlockingHostCommandExecutor{
+		started: make(chan hostops.HostCommandRequest, 1),
+		done:    make(chan assistantTransportBlockingHostCommandExecutorResult, 1),
+	}
+}
+
+func (e *assistantTransportBlockingHostCommandExecutor) RunShell(_ context.Context, _ hostops.ToolContext, req hostops.HostCommandRequest) (hostops.HostCommandResult, error) {
+	e.started <- req
+	next := <-e.done
+	return next.result, next.err
+}
+
+func (e *assistantTransportBlockingHostCommandExecutor) release(result hostops.HostCommandResult, err error) {
+	e.done <- assistantTransportBlockingHostCommandExecutorResult{result: result, err: err}
 }
 
 func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
@@ -805,6 +843,124 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 		t.Fatal("ResumeTurn was not started asynchronously")
 	}
 	close(runtime.release)
+}
+
+func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionCompletes(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	executor := newAssistantTransportBlockingHostCommandExecutor()
+	approvals := hostops.NewInMemoryCommandApprovalStore()
+	controller := hostops.NewCommandApprovalController(hostops.CommandApprovalControllerConfig{
+		Store:    approvals,
+		Executor: executor,
+	})
+	approval, err := controller.RequestApproval(context.Background(), hostops.CommandApprovalRequest{
+		ToolContext:  hostops.ToolContext{AgentKind: hostops.AgentKindHostChild, BoundHostID: "host-a"},
+		MissionID:    "mission-1",
+		ChildAgentID: "child-a",
+		PlanStepID:   "step-1",
+		HostID:       "host-a",
+		Command:      "touch /tmp/aiops-check",
+		RiskLevel:    opssemantic.RiskLowWrite,
+	})
+	if err != nil {
+		t.Fatalf("RequestApproval() error = %v", err)
+	}
+
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	baseServices := appui.NewServices(runtime, sessions)
+	approvalService := appui.NewApprovalServiceWithHostCommandApprovals(context.Background(), runtime, sessions, appui.NewSnapshotBuilder(), controller)
+	server := NewHTTPServer(assistantTransportApprovalServices{Services: baseServices, approval: approvalService})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	now := time.Now().UTC()
+	payload := map[string]any{
+		"state": map[string]any{
+			"schemaVersion": "aiops.transport.v2",
+			"sessionId":     "sess-host-command-approval",
+			"threadId":      "sess-host-command-approval",
+			"status":        "blocked",
+			"currentTurnId": "turn-host-command-approval",
+			"turns": map[string]any{
+				"turn-host-command-approval": map[string]any{
+					"id":     "turn-host-command-approval",
+					"status": "blocked",
+					"process": []map[string]any{
+						{
+							"id":         "cmd-host-command-approval",
+							"kind":       "command",
+							"status":     "blocked",
+							"command":    "touch /tmp/aiops-check",
+							"approvalId": approval.ID,
+						},
+					},
+				},
+			},
+			"turnOrder": []string{"turn-host-command-approval"},
+			"pendingApprovals": map[string]any{
+				approval.ID: map[string]any{
+					"id":     approval.ID,
+					"turnId": "turn-host-command-approval",
+					"status": "blocked",
+				},
+			},
+			"mcpSurfaces": map[string]any{},
+			"artifacts":   map[string]any{},
+			"runtimeLiveness": map[string]any{
+				"activeTurns":          map[string]any{},
+				"activeAgents":         map[string]any{},
+				"pendingApprovals":     map[string]any{approval.ID: true},
+				"pendingUserInputs":    map[string]any{},
+				"activeCommandStreams": map[string]any{},
+			},
+			"seq":       0,
+			"updatedAt": now.Format(time.RFC3339Nano),
+		},
+		"threadId": "sess-host-command-approval",
+		"commands": []map[string]any{
+			{
+				"type":       "aiops.approval-decision",
+				"approvalId": approval.ID,
+				"decision":   "accept",
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/assistant/transport", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first stream line: %v", err)
+	}
+	if !strings.Contains(line, `"path":["pendingApprovals"],"value":{}`) {
+		t.Fatalf("first stream line = %q, want pendingApprovals cleared before host command execution completes", line)
+	}
+	if !strings.Contains(line, `"path":["status"],"value":"working"`) {
+		t.Fatalf("first stream line = %q, want transport working ack before host command execution completes", line)
+	}
+
+	select {
+	case req := <-executor.started:
+		if req.Script != "touch /tmp/aiops-check" {
+			t.Fatalf("executor request = %#v, want approved host command", req)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("host command executor was not started asynchronously")
+	}
+	executor.release(hostops.HostCommandResult{Status: "success", Stdout: "ok", ExitCode: 0}, nil)
 }
 
 func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *testing.T) {

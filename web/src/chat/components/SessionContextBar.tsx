@@ -298,7 +298,9 @@ export function SessionContextBar({
     const nextTarget = targetValueFromSession(session, sourceHosts, kind, hostIdOverride);
     setActiveSessionId(sessionId);
     setTarget(nextTarget);
-    if (force || sessionId !== activeThreadId) {
+    const shouldSwitchThread = sessionId !== activeThreadId;
+    const shouldApplyHydratedState = Boolean(hydratedInitialState);
+    if (shouldSwitchThread || shouldApplyHydratedState) {
       const initialState = hydratedInitialState || createInitialAiopsTransportState(sessionId);
       initialState.sessionId = sessionId;
       initialState.threadId = sessionId;

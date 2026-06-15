@@ -16,7 +16,8 @@ test("chat shows context compaction and externalized evidence states", async ({ 
   }
   await expect(toolRow).toBeVisible();
   await toolRow.click();
-  await expect(page.getByText("结果较大，仅显示摘要。")).toBeVisible();
+  await expect(page.getByText("Large nginx log result was externalized. Summary: 17 upstream timeout lines.")).toBeVisible();
+  await expect(page.getByText("结果较大，仅显示摘要。")).toHaveCount(0);
   await expect(page.getByText(/upstream timed out/)).toHaveCount(0);
   await expect(page.getByTestId("context-status-notice")).toHaveScreenshot("context-compaction-notice.png");
   await expect(page.getByTestId("aiops-process-transcript")).toHaveScreenshot("context-compaction-process.png");

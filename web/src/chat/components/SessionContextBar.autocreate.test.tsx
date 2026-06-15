@@ -8,6 +8,7 @@ import {
   fetchLlmConfig,
   fetchSessions,
 } from "@/pages/settingsApi";
+import { fetchAssistantTransportResumeState } from "@/transport/assistantTransportControl";
 
 import { SessionContextBar } from "./SessionContextBar";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
@@ -122,6 +123,45 @@ describe("SessionContextBar auto-create", () => {
     expect(container.textContent).toContain("active=fixture-session");
     expect(container.textContent).toContain("reason=");
     expect(container.textContent).not.toContain("请先创建会话");
+  });
+
+  it("does not remount the same active session with an empty state after loading session context", async () => {
+    vi.mocked(fetchSessions).mockResolvedValue({
+      activeSessionId: "session-existing",
+      sessions: [
+        {
+          id: "session-existing",
+          kind: "single_host",
+          title: "Existing chat",
+          selectedHostId: "server-local",
+          status: "working",
+          messageCount: 1,
+        },
+      ],
+    });
+    vi.mocked(fetchAssistantTransportResumeState).mockResolvedValue(null);
+
+    await act(async () => {
+      root.render(
+        <SessionContextBar
+          activeThreadId="session-existing"
+          description="AI Chat"
+          kind="single_host"
+          newSessionLabel="新建会话"
+          onThreadChange={onThreadChange}
+          title="单机会话"
+        >
+          <ContextProbe />
+        </SessionContextBar>,
+      );
+    });
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(onThreadChange).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("active=session-existing");
   });
 });
 

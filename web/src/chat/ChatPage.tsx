@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 
 import { resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
+import { getCachedAiopsTransportState } from "@/transport/aiopsTransportStateCache";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { AiopsComposer } from "./components/AiopsComposer";
@@ -17,11 +18,26 @@ type ChatPageProps = {
 };
 
 export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) {
-  const resolvedInitialState = useMemo(() => initialState ?? resolveUiFixtureState() ?? undefined, [initialState]);
-  const shouldSkipInitialLoad = Boolean(initialState);
-  const [activeThreadId, setActiveThreadId] = useState(resolvedInitialState?.threadId || threadId);
-  const [activeInitialState, setActiveInitialState] = useState(resolvedInitialState);
-  const [activeAutoResume, setActiveAutoResume] = useState(false);
+  const resolvedInitial = useMemo(() => {
+    if (initialState) {
+      return { source: "prop" as const, state: initialState };
+    }
+    const fixtureState = resolveUiFixtureState();
+    if (fixtureState) {
+      return { source: "fixture" as const, state: fixtureState };
+    }
+    const cachedState = getCachedAiopsTransportState("single_host");
+    if (cachedState) {
+      return { source: "cache" as const, state: cachedState };
+    }
+    return { source: "empty" as const, state: undefined };
+  }, [initialState]);
+  const shouldSkipInitialLoad = resolvedInitial.source === "prop" || resolvedInitial.source === "fixture";
+  const [activeThreadId, setActiveThreadId] = useState(resolvedInitial.state?.threadId || threadId);
+  const [activeInitialState, setActiveInitialState] = useState(resolvedInitial.state);
+  const [activeAutoResume, setActiveAutoResume] = useState(
+    resolvedInitial.source === "cache" && shouldAutoResumeCachedState(resolvedInitial.state),
+  );
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden text-zinc-950">
@@ -42,6 +58,7 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
         <ChatTransportProvider
           key={activeThreadId}
           autoResume={activeAutoResume}
+          cacheScope="single_host"
           initialState={activeInitialState}
           threadId={activeThreadId}
         >
@@ -56,6 +73,13 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
       </SessionContextBar>
     </section>
   );
+}
+
+function shouldAutoResumeCachedState(state?: AiopsTransportState) {
+  if (!state) {
+    return false;
+  }
+  return state.status === "working" || state.status === "blocked" || Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
 }
 
 function HostOpsWorkspace() {

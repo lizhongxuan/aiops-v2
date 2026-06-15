@@ -5,6 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getChildAgentTranscript, submitHostOpsApprovalDecision } from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
+import {
+  resetAiopsTransportStateCacheForTest,
+  setCachedAiopsTransportState,
+} from "@/transport/aiopsTransportStateCache";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 vi.mock("@/api/hostOps", () => ({
@@ -29,6 +33,7 @@ describe("ChatPage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    resetAiopsTransportStateCacheForTest();
   });
 
   afterEach(() => {
@@ -36,7 +41,67 @@ describe("ChatPage", () => {
       root.unmount();
     });
     window.localStorage.clear();
+    resetAiopsTransportStateCacheForTest();
     container.remove();
+  });
+
+  it("renders cached chat state immediately when returning to the chat page", async () => {
+    const cached = sampleState();
+    cached.sessionId = "cached-session";
+    cached.threadId = "cached-session";
+    setCachedAiopsTransportState("single_host", cached);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes("/api/v1/assistant/resume")) {
+        return new Response("aui-state:[]\n", {
+          status: 200,
+          headers: { "Content-Type": "text/plain" },
+        });
+      }
+      if (url.includes("/api/v1/sessions")) {
+        return new Response(
+          JSON.stringify({
+            activeSessionId: "cached-session",
+            sessions: [
+              {
+                id: "cached-session",
+                kind: "single_host",
+                selectedHostId: "server-local",
+                status: "working",
+                messageCount: 1,
+                title: "Cached chat",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      if (url.includes("/api/v1/llm-config")) {
+        return new Response(
+          JSON.stringify({ provider: "openai", model: "gpt-5", apiKeySet: true }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+      return new Response(JSON.stringify({ items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+
+    expect(container.textContent).toContain("Investigate payment-api saturation");
+    expect(container.textContent).toContain("payment-api is waiting for rollout approval.");
+    expect(container.textContent).not.toContain("Hello there");
+    fetchSpy.mockRestore();
   });
 
   it("renders assistant-ui chat state with typed process and approval blocks", async () => {

@@ -4,6 +4,7 @@ import {
   AssistantRuntimeProvider,
   useAssistantApi,
   useAssistantState,
+  useAssistantTransportState,
   useAssistantTransportRuntime,
 } from "@assistant-ui/react";
 import type { PropsWithChildren } from "react";
@@ -15,16 +16,19 @@ import {
   markAiopsTransportFailed,
   normalizeAiopsTransportState,
 } from "./aiopsTransportRuntime";
+import { setCachedAiopsTransportState, type AiopsTransportCacheScope } from "./aiopsTransportStateCache";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
 type ChatTransportProviderProps = PropsWithChildren<{
   autoResume?: boolean;
+  cacheScope?: AiopsTransportCacheScope;
   initialState?: AiopsTransportState;
   threadId?: string;
 }>;
 
 export function ChatTransportProvider({
   autoResume = false,
+  cacheScope,
   children,
   initialState,
   threadId = "default",
@@ -58,10 +62,24 @@ export function ChatTransportProvider({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <AssistantTransportReady threadId={threadId} shouldAutoResume={autoResume}>
+        <AiopsTransportCacheWriter cacheScope={cacheScope} />
         {children}
       </AssistantTransportReady>
     </AssistantRuntimeProvider>
   );
+}
+
+function AiopsTransportCacheWriter({ cacheScope }: { cacheScope?: AiopsTransportCacheScope }) {
+  const state = useAssistantTransportState() as AiopsTransportState | undefined;
+
+  useEffect(() => {
+    if (!cacheScope || !state?.sessionId) {
+      return;
+    }
+    setCachedAiopsTransportState(cacheScope, state);
+  }, [cacheScope, state]);
+
+  return null;
 }
 
 function AssistantTransportReady({

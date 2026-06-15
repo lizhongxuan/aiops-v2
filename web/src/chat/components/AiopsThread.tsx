@@ -1,5 +1,5 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
-import { ArrowDown, Bot } from "lucide-react";
+import { ArrowDown, Bot, LoaderCircle } from "lucide-react";
 
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
@@ -39,19 +39,26 @@ export function AiopsThread() {
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-6 md:px-6">
           <ThreadPrimitive.Empty>
             <div className="flex min-h-full flex-1 items-center justify-center pb-10">
-              <div className="w-full text-center">
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm">
-                  <Bot className="h-5 w-5" />
+              {workspace.busy ? (
+                <div className="flex items-center gap-2 text-sm text-slate-500" role="status">
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
+                  <span>正在恢复会话...</span>
                 </div>
-                <h1 className="mt-5 text-2xl font-semibold text-slate-950">
-                  {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : "Hello there"}
-                </h1>
-                <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
-                  {workspace.kind === "workspace"
-                    ? "主 Agent 会保留工作台会话，并通过 AssistantTransport 编排后端 host agent。"
-                    : "输入排障、巡检或变更任务，消息会进入当前主机会话。"}
-                </p>
-              </div>
+              ) : (
+                <div className="w-full text-center">
+                  <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-900 shadow-sm">
+                    <Bot className="h-5 w-5" />
+                  </div>
+                  <h1 className="mt-5 text-2xl font-semibold text-slate-950">
+                    {workspace.kind === "workspace" ? "今天要统筹什么运维任务？" : "Hello there"}
+                  </h1>
+                  <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
+                    {workspace.kind === "workspace"
+                      ? "主 Agent 会保留工作台会话，并通过 AssistantTransport 编排后端 host agent。"
+                      : "输入排障、巡检或变更任务，消息会进入当前主机会话。"}
+                  </p>
+                </div>
+              )}
             </div>
           </ThreadPrimitive.Empty>
           <div className="flex flex-1 flex-col gap-6 empty:hidden">

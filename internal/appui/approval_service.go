@@ -27,6 +27,14 @@ type HostCommandApprovalGroupGateway interface {
 	DecideGroup(ctx context.Context, groupID, decision string) (hostops.CommandApprovalGroup, []hostops.HostCommandResult, error)
 }
 
+type HostCommandApprovalAsyncGateway interface {
+	DecideAsync(ctx context.Context, approvalID, decision string) (hostops.CommandApproval, error)
+}
+
+type HostCommandApprovalGroupAsyncGateway interface {
+	DecideGroupAsync(ctx context.Context, groupID, decision string) (hostops.CommandApprovalGroup, error)
+}
+
 func NewApprovalService(runtime RuntimeGateway, sessions SessionSource, builder *SnapshotBuilder) ApprovalService {
 	return NewApprovalServiceWithContext(context.Background(), runtime, sessions, builder)
 }
@@ -97,6 +105,9 @@ func (s *defaultApprovalService) Decide(ctx context.Context, decision ApprovalDe
 func (s *defaultApprovalService) DecideAsync(_ context.Context, decision ApprovalDecision) (ActionResult, error) {
 	session, req, err := s.approvalResumeRequest(decision)
 	if err != nil {
+		if result, hostErr := s.decideHostCommandApprovalAsync(normalizeBaseContext(s.baseContext), decision); hostErr == nil {
+			return result, nil
+		}
 		if result, hostErr := s.decideHostCommandApproval(normalizeBaseContext(s.baseContext), decision); hostErr == nil {
 			return result, nil
 		}
@@ -269,6 +280,25 @@ func (s *defaultApprovalService) decideHostCommandApproval(ctx context.Context, 
 		}
 	}
 	return ActionResult{}, err
+}
+
+func (s *defaultApprovalService) decideHostCommandApprovalAsync(ctx context.Context, decision ApprovalDecision) (ActionResult, error) {
+	if s == nil || s.hostCommands == nil {
+		return ActionResult{}, fmt.Errorf("host command approval service is not configured")
+	}
+	if async, ok := s.hostCommands.(HostCommandApprovalAsyncGateway); ok {
+		approval, err := async.DecideAsync(ctx, strings.TrimSpace(decision.ID), normalizeApprovalDecision(decision.Decision))
+		if err == nil {
+			return ActionResult{Status: string(approval.Status)}, nil
+		}
+	}
+	if groupGateway, ok := s.hostCommands.(HostCommandApprovalGroupAsyncGateway); ok {
+		group, err := groupGateway.DecideGroupAsync(ctx, strings.TrimSpace(decision.ID), normalizeApprovalDecision(decision.Decision))
+		if err == nil {
+			return ActionResult{Status: string(group.Status)}, nil
+		}
+	}
+	return ActionResult{}, fmt.Errorf("host command async approval service is not configured")
 }
 
 func currentTurnID(session *runtimekernel.SessionState) string {

@@ -34,7 +34,8 @@ describe("HostOpsStatusPanel", () => {
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("mx-auto");
-    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("max-w-[46.5rem]");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("w-[calc(100%-4rem)]");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("max-w-[44.5rem]");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("-mb-8");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("rounded-b-none");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("border-b-0");
@@ -66,6 +67,21 @@ describe("HostOpsStatusPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+  });
+
+  it("does not render an empty plan-only panel", async () => {
+    const state = sampleHostOpsState();
+    const mission = state.hostMissions["mission-1"];
+    mission.planSteps = [];
+    mission.childAgentIds = [];
+    state.childAgents = {};
+
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={state} />);
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("共 0 个步骤");
   });
 });
 
