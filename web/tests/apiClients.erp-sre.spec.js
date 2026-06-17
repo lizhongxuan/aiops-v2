@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listIncidents, getIncident, createIncident, updateIncident, addIncidentEvidence, closeIncident } from "../src/api/incidents";
-import { lookupOpsGraph, getOpsGraphNeighborhood, getOpsGraphBusinessImpact } from "../src/api/opsgraph";
+import {
+  listOpsGraphs,
+  createOpsGraph,
+  getOpsGraph,
+  createOpsGraphNode,
+  createOpsGraphRelationship,
+  saveOpsGraphLayout,
+  validateOpsGraph,
+  lookupOpsGraph,
+  getOpsGraphNeighborhood,
+  getOpsGraphBusinessImpact,
+} from "../src/api/opsgraph";
 import { listRunbooks, getRunbook, matchRunbooks, listRunbookInstances } from "../src/api/runbooks";
 import { getERPHealthSummary, getERPBusinessMetrics, getERPTenantImpact } from "../src/api/erp";
 import { getRecentDeployments, getRecentConfigChanges } from "../src/api/changes";
@@ -79,6 +90,32 @@ describe("ERP SRE API clients", () => {
       ["/api/v1/erp/tenant-impact?capability=%E8%AE%A2%E5%8D%95%E6%8F%90%E4%BA%A4", "GET"],
       ["/api/v1/changes/deployments?service=order-api", "GET"],
       ["/api/v1/changes/config?service=order-api", "GET"],
+    ]);
+  });
+
+  it("uses manual opsgraph graph, node, relationship, layout, and read paths", async () => {
+    const calls = mockFetch();
+
+    await listOpsGraphs();
+    await createOpsGraph({ name: "生产环境核心链路" });
+    await getOpsGraph("graph.default");
+    await createOpsGraphNode("graph.default", { id: "service.order-api", type: "service", name: "order-api" });
+    await createOpsGraphRelationship("graph.default", { id: "e1", from: "service.order-api", type: "depends_on", to: "middleware.pg" });
+    await saveOpsGraphLayout("graph.default", { nodes: [{ id: "service.order-api", position: { x: 1, y: 2 } }], viewport: { x: 0, y: 0, zoom: 1 } });
+    await validateOpsGraph("graph.default");
+    await lookupOpsGraph({ query: "order", types: ["service"] });
+    await getOpsGraphNeighborhood("service.order-api", { depth: 2, graphId: "graph.default" });
+
+    expect(calls.map((call) => [call.url, call.init.method])).toEqual([
+      ["/api/v1/opsgraph/graphs", "GET"],
+      ["/api/v1/opsgraph/graphs", "POST"],
+      ["/api/v1/opsgraph/graphs/graph.default", "GET"],
+      ["/api/v1/opsgraph/graphs/graph.default/entities", "POST"],
+      ["/api/v1/opsgraph/graphs/graph.default/relationships", "POST"],
+      ["/api/v1/opsgraph/graphs/graph.default/layout", "POST"],
+      ["/api/v1/opsgraph/graphs/graph.default/validate", "GET"],
+      ["/api/v1/opsgraph/lookup", "POST"],
+      ["/api/v1/opsgraph/graphs/graph.default/entities/service.order-api/neighborhood?depth=2", "GET"],
     ]);
   });
 });

@@ -1,0 +1,614 @@
+{
+  "schemaVersion": "aiops.opsgraph.manual/v1",
+  "graphs": [
+    {
+      "id": "graph.default",
+      "name": "默认图谱",
+      "isDefault": true,
+      "nodes": [
+        {
+          "id": "service.new-1781601226630",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 80,
+            "y": 120
+          },
+          "createdAt": "2026-06-16T09:13:46.633123Z",
+          "updatedAt": "2026-06-16T09:13:46.633123Z"
+        }
+      ],
+      "edges": null,
+      "createdAt": "2026-06-16T08:31:10.435996Z",
+      "updatedAt": "2026-06-16T09:13:46.633123Z"
+    },
+    {
+      "id": "graph.manual-1781602845121",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781602893253",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:41:33.257655Z",
+          "updatedAt": "2026-06-16T09:41:33.257655Z"
+        },
+        {
+          "id": "middleware.新中间件.1781602894304",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:41:34.308448Z",
+          "updatedAt": "2026-06-16T09:41:34.308448Z"
+        },
+        {
+          "id": "host.新主机.1781602895319",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:41:35.322804Z",
+          "updatedAt": "2026-06-16T09:41:35.322804Z"
+        },
+        {
+          "id": "k8s.新k8s.1781602896336",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:41:36.34074Z",
+          "updatedAt": "2026-06-16T09:41:36.34074Z"
+        }
+      ],
+      "edges": [],
+      "createdAt": "2026-06-16T09:40:45.126138Z",
+      "updatedAt": "2026-06-16T09:41:36.34074Z"
+    },
+    {
+      "id": "graph.manual-1781603055737",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781603077603",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:44:37.607678Z",
+          "updatedAt": "2026-06-16T09:44:37.607678Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603078720",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 376,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:44:38.724999Z",
+          "updatedAt": "2026-06-16T09:44:38.724999Z"
+        },
+        {
+          "id": "host.新主机.1781603079838",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 656,
+            "y": 96
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:44:39.843342Z",
+          "updatedAt": "2026-06-16T09:44:39.843342Z"
+        },
+        {
+          "id": "k8s.新k8s.1781603080954",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 96,
+            "y": 296
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:44:40.958592Z",
+          "updatedAt": "2026-06-16T09:44:40.958592Z"
+        }
+      ],
+      "edges": [],
+      "createdAt": "2026-06-16T09:44:15.740941Z",
+      "updatedAt": "2026-06-16T09:44:40.958592Z"
+    },
+    {
+      "id": "graph.manual-1781603180838",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781603182588",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:46:22.592142Z",
+          "updatedAt": "2026-06-16T09:46:22.592142Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603183721",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 316,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:46:23.724392Z",
+          "updatedAt": "2026-06-16T09:46:23.724392Z"
+        },
+        {
+          "id": "host.新主机.1781603184838",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 96,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:46:24.842273Z",
+          "updatedAt": "2026-06-16T09:46:24.842273Z"
+        },
+        {
+          "id": "k8s.新k8s.1781603185953",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 316,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:46:25.957185Z",
+          "updatedAt": "2026-06-16T09:46:25.957185Z"
+        }
+      ],
+      "edges": [],
+      "createdAt": "2026-06-16T09:46:20.844692Z",
+      "updatedAt": "2026-06-16T09:46:25.957185Z"
+    },
+    {
+      "id": "graph.manual-1781603246354",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781603248087",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:47:28.090762Z",
+          "updatedAt": "2026-06-16T09:47:28.090762Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603249205",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 256,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:47:29.209653Z",
+          "updatedAt": "2026-06-16T09:47:29.209653Z"
+        },
+        {
+          "id": "host.新主机.1781603250320",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 96,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:47:30.324503Z",
+          "updatedAt": "2026-06-16T09:47:30.324503Z"
+        },
+        {
+          "id": "k8s.新k8s.1781603251438",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 256,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:47:31.442956Z",
+          "updatedAt": "2026-06-16T09:47:31.442956Z"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge.service.新服务.1781603248087.depends_on.middleware.新中间件.1781603249205",
+          "from": "service.新服务.1781603248087",
+          "type": "depends_on",
+          "to": "middleware.新中间件.1781603249205",
+          "createdAt": "2026-06-16T09:48:07.343341Z",
+          "updatedAt": "2026-06-16T09:48:07.343341Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781603249205.depends_on.host.新主机.1781603250320",
+          "from": "middleware.新中间件.1781603249205",
+          "type": "depends_on",
+          "to": "host.新主机.1781603250320",
+          "createdAt": "2026-06-16T09:48:28.541693Z",
+          "updatedAt": "2026-06-16T09:48:28.541693Z"
+        },
+        {
+          "id": "edge.service.新服务.1781603248087.depends_on.k8s.新k8s.1781603251438",
+          "from": "service.新服务.1781603248087",
+          "type": "depends_on",
+          "to": "k8s.新k8s.1781603251438",
+          "createdAt": "2026-06-16T09:48:29.993037Z",
+          "updatedAt": "2026-06-16T09:48:29.993037Z"
+        }
+      ],
+      "createdAt": "2026-06-16T09:47:26.35919Z",
+      "updatedAt": "2026-06-16T09:48:29.993037Z"
+    },
+    {
+      "id": "graph.example-1781603452150",
+      "name": "示例图谱",
+      "environment": "demo",
+      "nodes": [
+        {
+          "id": "service.checkout-1781603452150",
+          "type": "service",
+          "name": "checkout-api",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "middleware.redis-1781603452150",
+          "type": "middleware",
+          "name": "redis-cache",
+          "position": {
+            "x": 256,
+            "y": 96
+          },
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "host.worker-1781603452150",
+          "type": "host",
+          "name": "worker-01",
+          "position": {
+            "x": 96,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "k8s.prod-1781603452150",
+          "type": "k8s",
+          "name": "prod-cluster",
+          "position": {
+            "x": 256,
+            "y": 256
+          },
+          "container": true,
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge.checkout-redis-1781603452150",
+          "from": "service.checkout-1781603452150",
+          "type": "depends_on",
+          "to": "middleware.redis-1781603452150",
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "edge.checkout-k8s-1781603452150",
+          "from": "service.checkout-1781603452150",
+          "type": "runs_on",
+          "to": "k8s.prod-1781603452150",
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "edge.redis-host-1781603452150",
+          "from": "middleware.redis-1781603452150",
+          "type": "runs_on",
+          "to": "host.worker-1781603452150",
+          "createdAt": "0001-01-01T00:00:00Z",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        }
+      ],
+      "createdAt": "2026-06-16T09:50:52.153614Z",
+      "updatedAt": "2026-06-16T09:50:52.153614Z"
+    },
+    {
+      "id": "graph.manual-1781603888596",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781603962963",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 96,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:59:22.967043Z",
+          "updatedAt": "2026-06-16T09:59:22.967043Z"
+        },
+        {
+          "id": "service.新服务.1781603964979",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 256,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T09:59:24.983584Z",
+          "updatedAt": "2026-06-16T09:59:24.983584Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603967012",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 96,
+            "y": 256
+          },
+          "createdAt": "2026-06-16T09:59:27.015706Z",
+          "updatedAt": "2026-06-16T09:59:27.015706Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603969014",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 256,
+            "y": 256
+          },
+          "createdAt": "2026-06-16T09:59:29.01914Z",
+          "updatedAt": "2026-06-16T09:59:29.01914Z"
+        },
+        {
+          "id": "middleware.新中间件.1781603971029",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 96,
+            "y": 416
+          },
+          "createdAt": "2026-06-16T09:59:31.03352Z",
+          "updatedAt": "2026-06-16T09:59:31.03352Z"
+        },
+        {
+          "id": "host.新主机.1781603973063",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 256,
+            "y": 416
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:59:33.067119Z",
+          "updatedAt": "2026-06-16T09:59:33.067119Z"
+        },
+        {
+          "id": "host.新主机.1781603975064",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 96,
+            "y": 576
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:59:35.068409Z",
+          "updatedAt": "2026-06-16T09:59:35.068409Z"
+        },
+        {
+          "id": "k8s.新k8s.1781603977097",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 256,
+            "y": 576
+          },
+          "container": true,
+          "createdAt": "2026-06-16T09:59:37.101037Z",
+          "updatedAt": "2026-06-16T09:59:37.101037Z"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge.service.新服务.1781603962963.depends_on.middleware.新中间件.1781603967012",
+          "from": "service.新服务.1781603962963",
+          "type": "depends_on",
+          "to": "middleware.新中间件.1781603967012",
+          "createdAt": "2026-06-16T10:04:28.114111Z",
+          "updatedAt": "2026-06-16T10:04:28.114111Z"
+        },
+        {
+          "id": "edge.service.新服务.1781603964979.depends_on.middleware.新中间件.1781603969014",
+          "from": "service.新服务.1781603964979",
+          "type": "depends_on",
+          "to": "middleware.新中间件.1781603969014",
+          "createdAt": "2026-06-16T10:04:29.611732Z",
+          "updatedAt": "2026-06-16T10:04:29.611732Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781603967012.depends_on.host.新主机.1781603973063",
+          "from": "middleware.新中间件.1781603967012",
+          "type": "depends_on",
+          "to": "host.新主机.1781603973063",
+          "createdAt": "2026-06-16T10:04:30.359435Z",
+          "updatedAt": "2026-06-16T10:04:30.359435Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781603969014.depends_on.k8s.新k8s.1781603977097",
+          "from": "middleware.新中间件.1781603969014",
+          "type": "depends_on",
+          "to": "k8s.新k8s.1781603977097",
+          "createdAt": "2026-06-16T10:06:10.370491Z",
+          "updatedAt": "2026-06-16T10:06:10.370491Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781603971029.depends_on.host.新主机.1781603975064",
+          "from": "middleware.新中间件.1781603971029",
+          "type": "depends_on",
+          "to": "host.新主机.1781603975064",
+          "createdAt": "2026-06-16T10:06:11.321769Z",
+          "updatedAt": "2026-06-16T10:06:11.321769Z"
+        }
+      ],
+      "createdAt": "2026-06-16T09:58:08.599991Z",
+      "updatedAt": "2026-06-16T10:06:11.321769Z"
+    },
+    {
+      "id": "graph.manual-1781604795263",
+      "name": "新建图谱",
+      "nodes": [
+        {
+          "id": "service.新服务.1781604823747",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 76,
+            "y": 119
+          },
+          "createdAt": "2026-06-16T10:13:43.750466Z",
+          "updatedAt": "2026-06-16T10:13:43.750466Z"
+        },
+        {
+          "id": "service.新服务.1781604825764",
+          "type": "service",
+          "name": "新服务",
+          "position": {
+            "x": 256,
+            "y": 96
+          },
+          "createdAt": "2026-06-16T10:13:45.768285Z",
+          "updatedAt": "2026-06-16T10:13:45.768285Z"
+        },
+        {
+          "id": "middleware.新中间件.1781604827781",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 24,
+            "y": 144
+          },
+          "createdAt": "2026-06-16T10:13:47.784688Z",
+          "updatedAt": "2026-06-16T10:13:47.784688Z"
+        },
+        {
+          "id": "middleware.新中间件.1781604829796",
+          "type": "middleware",
+          "name": "新中间件",
+          "position": {
+            "x": 136,
+            "y": 144
+          },
+          "createdAt": "2026-06-16T10:13:49.800824Z",
+          "updatedAt": "2026-06-16T10:13:49.800824Z"
+        },
+        {
+          "id": "host.新主机.1781604831814",
+          "type": "host",
+          "name": "新主机",
+          "position": {
+            "x": 42,
+            "y": 344
+          },
+          "container": true,
+          "createdAt": "2026-06-16T10:13:51.81745Z",
+          "updatedAt": "2026-06-16T10:13:51.81745Z"
+        },
+        {
+          "id": "k8s.新k8s.1781604833831",
+          "type": "k8s",
+          "name": "新K8s",
+          "position": {
+            "x": 396,
+            "y": 416
+          },
+          "container": true,
+          "createdAt": "2026-06-16T10:13:53.834705Z",
+          "updatedAt": "2026-06-16T10:13:53.834705Z"
+        },
+        {
+          "id": "service.服务.1781613222434",
+          "type": "service",
+          "name": "服务",
+          "position": {
+            "x": 696,
+            "y": 447
+          },
+          "createdAt": "2026-06-16T12:33:42.439643Z",
+          "updatedAt": "2026-06-16T12:33:42.439643Z"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge.service.新服务.1781604823747.depends_on.middleware.新中间件.1781604827781",
+          "from": "service.新服务.1781604823747",
+          "type": "depends_on",
+          "to": "middleware.新中间件.1781604827781",
+          "createdAt": "2026-06-16T10:14:27.932165Z",
+          "updatedAt": "2026-06-16T10:14:27.932165Z"
+        },
+        {
+          "id": "edge.service.新服务.1781604825764.depends_on.middleware.新中间件.1781604829796",
+          "from": "service.新服务.1781604825764",
+          "type": "depends_on",
+          "to": "middleware.新中间件.1781604829796",
+          "createdAt": "2026-06-16T10:14:28.97504Z",
+          "updatedAt": "2026-06-16T10:14:28.97504Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781604827781.runs_on.host.新主机.1781604831814",
+          "from": "middleware.新中间件.1781604827781",
+          "type": "runs_on",
+          "to": "host.新主机.1781604831814",
+          "createdAt": "2026-06-16T10:14:30.026992Z",
+          "updatedAt": "2026-06-16T10:14:30.026992Z"
+        },
+        {
+          "id": "edge.middleware.新中间件.1781604829796.runs_on.k8s.新k8s.1781604833831",
+          "from": "middleware.新中间件.1781604829796",
+          "type": "runs_on",
+          "to": "k8s.新k8s.1781604833831",
+          "createdAt": "2026-06-16T10:14:31.076675Z",
+          "updatedAt": "2026-06-16T10:14:31.076675Z"
+        }
+      ],
+      "createdAt": "2026-06-16T10:13:15.267366Z",
+      "updatedAt": "2026-06-16T13:09:21.266522Z"
+    }
+  ]
+}

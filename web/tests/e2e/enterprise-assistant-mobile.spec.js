@@ -305,7 +305,15 @@ async function routeSharedApis(page) {
   );
   await page.route("**/api/v1/incidents/case-mobile-slow-button", (route) => route.fulfill({ json: incidentPayload }));
   await page.route("**/api/v1/opsgraph/entities/**/neighborhood**", (route) =>
-    route.fulfill({ json: { neighbors: [{ id: "svc-inventory", name: "Inventory", type: "service", status: "warning" }] } }),
+    route.fulfill({
+      json: {
+        entity: { id: "svc-checkout", name: "Checkout", type: "service" },
+        neighbors: [{ id: "svc-inventory", name: "Inventory", type: "service", status: "warning" }],
+        entities: [],
+        relationships: [],
+        depth: 2,
+      },
+    }),
   );
   await page.route("**/api/v1/opsgraph/entities/**/business-impact", (route) =>
     route.fulfill({ json: { capabilities: [{ name: "checkout", impact: "下单变慢" }], tenants: [] } }),

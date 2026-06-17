@@ -15,9 +15,8 @@ import { IncidentListPage } from "@/pages/IncidentListPage";
 import { IncidentWorkbenchPage } from "@/pages/IncidentWorkbenchPage";
 import { LabEnvironmentPage } from "@/pages/LabEnvironmentPage";
 import { LLMConfigPage } from "@/pages/LLMConfigPage";
-import { McpCatalogPage } from "@/pages/McpCatalogPage";
-import { McpServersPage } from "@/pages/McpServersPage";
 import { OpsGraphPage } from "@/pages/OpsGraphPage";
+import { OpsGraphListPage } from "@/pages/opsgraph/OpsGraphListPage";
 import { OpsManualsPage } from "@/pages/OpsManualsPage";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
 import { PostmortemPage } from "@/pages/PostmortemPage";
@@ -28,7 +27,6 @@ import { RunbookDetailPage } from "@/pages/RunbookDetailPage";
 import { RunnerStudioPage } from "@/pages/RunnerStudioPage";
 import { ScriptConfigPage } from "@/pages/ScriptConfigPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { SkillCatalogPage } from "@/pages/SkillCatalogPage";
 import { TerminalPage } from "@/pages/TerminalPage";
 import { UICardManagementPage } from "@/pages/UICardManagementPage";
 
@@ -39,7 +37,9 @@ function placeholderElement(title: string, description: string, routePath: strin
 const concreteRoutes: Record<string, React.ReactNode> = {
   "/protocol": <ProtocolWorkspacePage />,
   "/erp": <ERPHealthPage />,
-  "/opsgraph": <OpsGraphPage />,
+  "/opsgraph": <Navigate to="/opsgraph/graphs" replace />,
+  "/opsgraph/:graphId": <OpsGraphPage />,
+  "/opsgraph/graphs": <OpsGraphListPage />,
   "/incidents": <IncidentListPage />,
   "/incidents/:incidentId": <IncidentWorkbenchPage />,
   "/runbooks": <RunbookCatalogPage />,
@@ -54,11 +54,13 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/settings/ops-manuals": <OpsManualsPage />,
   "/settings/experience-packs": <OpsManualsPage />,
   "/settings/agent": <AgentProfilePage />,
-  "/settings/skills": <SkillCatalogPage />,
-  "/settings/mcp": <McpCatalogPage />,
-  "/mcp": <McpServersPage />,
+  "/settings/skills": <Navigate to="/capabilities" replace />,
+  "/settings/mcp": <Navigate to="/capabilities" replace />,
+  "/settings/connectors": <Navigate to="/capabilities" replace />,
+  "/mcp": <Navigate to="/capabilities" replace />,
   "/approval-management": <ApprovalManagementPage />,
-  "/capability-center": <CapabilityCenterPage />,
+  "/capabilities": <CapabilityCenterPage />,
+  "/capability-center": <Navigate to="/capabilities" replace />,
   "/agent-ui": <AgentUICenterPage />,
   "/ui-cards": <UICardManagementPage />,
   "/script-configs": <ScriptConfigPage />,

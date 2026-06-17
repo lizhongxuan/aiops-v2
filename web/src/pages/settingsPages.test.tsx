@@ -364,13 +364,25 @@ describe("React settings pages", () => {
     ["/settings/ops-manuals", "Redis 内存压力排障"],
     ["/settings/experience-packs", "旧入口已迁移到运维手册"],
     ["/settings/agent", "Agent Profile"],
-    ["/settings/skills", "Ops Triage"],
-    ["/settings/mcp", "Metrics MCP"],
+    ["/capabilities", "集中查看 Skills、MCP Servers 与 Capability Bindings。"],
   ])("renders migrated settings route %s", async (path, expectedText) => {
     await renderPath(path);
 
     expect(container.textContent).toContain(expectedText);
     expect(container.textContent).not.toContain("Migration Placeholder");
+  });
+
+  it("keeps only unified capability management on the settings landing page", async () => {
+    await renderPath("/settings");
+
+    expect(container.textContent).toContain("能力管理");
+    expect(container.querySelector('a[href="/capabilities"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Skills");
+    expect(container.textContent).not.toContain("MCP Catalog");
+    expect(container.textContent).not.toContain("Capability Center");
+    expect(container.querySelector('a[href="/settings/skills"]')).toBeNull();
+    expect(container.querySelector('a[href="/settings/mcp"]')).toBeNull();
+    expect(container.querySelector('a[href="/capability-center"]')).toBeNull();
   });
 
   it("renders Agent Profile Effective Capabilities preview with source and disabled reasons", async () => {
@@ -655,19 +667,6 @@ describe("React settings pages", () => {
       expect.objectContaining({ method: "PUT" }),
     );
     expect(container.textContent).toContain("配置已保存");
-
-    await remountPath("/settings/skills");
-    const deleteSkill = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("删除"));
-    expect(deleteSkill).toBeTruthy();
-    await act(async () => {
-      deleteSkill?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flush();
-    expect(confirmSpy).toHaveBeenCalled();
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/v1/agent-skills/ops-triage",
-      expect.objectContaining({ method: "DELETE" }),
-    );
 
     await remountPath("/settings/agent");
     const importInput = container.querySelector('input[type="file"]') as HTMLInputElement;

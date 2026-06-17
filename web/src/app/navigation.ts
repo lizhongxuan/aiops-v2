@@ -39,7 +39,7 @@ const coreItems: NavigationItem[] = [
   { path: "/protocol", title: "协作工作台", description: "复杂运维 AI Chat", icon: ScrollText },
   { path: "/incidents", title: zhNavigationTitle("/incidents"), description: "Case 队列", icon: AlertTriangle, nav: true },
   { path: "/erp", title: "ERP", description: "ERP health workbench", icon: Activity },
-  { path: "/opsgraph", title: zhNavigationTitle("/opsgraph"), description: "服务与主机关系", icon: Network, nav: true },
+  { path: "/opsgraph", title: zhNavigationTitle("/opsgraph"), description: "手工运维关系图谱", icon: Network, nav: true },
   { path: "/runbooks", title: "Runbooks", description: "Runbook catalog", icon: BookOpen },
   { path: "/runner", title: zhNavigationTitle("/runner"), description: "Workflow 编排", icon: Boxes, nav: true },
   { path: "/runner/:workflowName", title: "Runner Workflow", description: "Workflow detail", icon: Boxes },
@@ -56,7 +56,9 @@ const adminItems: NavigationItem[] = [
   { path: "/settings/agent", title: "Agent Profile", description: "Agent profile editor", icon: Bot },
   { path: "/settings/skills", title: "Skills", description: "Skill catalog", icon: Wrench },
   { path: "/settings/mcp", title: "MCP Catalog", description: "Catalog bindings", icon: Cable },
-  { path: "/mcp", title: zhNavigationTitle("/mcp"), description: "服务运行管理", icon: Cable, nav: true },
+  { path: "/settings/connectors", title: "Connectors", description: "Connector catalog", icon: Cable },
+  { path: "/mcp", title: zhNavigationTitle("/mcp"), description: "服务运行管理", icon: Cable },
+  { path: "/capabilities", title: zhNavigationTitle("/capabilities"), description: "能力统一管理", icon: LayoutGrid, nav: true },
   { path: "/approval-management", title: "确认与审批", description: "审批队列", icon: AlertTriangle },
   { path: "/capability-center", title: "Capability Center", description: "Capability registry", icon: LayoutGrid },
 ];
@@ -81,6 +83,8 @@ export const routeInventory: NavigationItem[] = [
   ...coreItems,
   ...adminItems,
   ...toolsItems,
+  { path: "/opsgraph/graphs", title: zhNavigationTitle("/opsgraph/graphs"), description: "图谱列表", icon: Network },
+  { path: "/opsgraph/:graphId", title: "OpsGraph Editor", description: "OpsGraph editor", icon: Network },
   { path: "/incidents/:incidentId", title: "Incident Detail", description: "Incident workbench", icon: AlertTriangle },
   { path: "/runbooks/:runbookId", title: "Runbook Detail", description: "Runbook detail", icon: BookOpen },
 ];

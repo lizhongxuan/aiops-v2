@@ -217,6 +217,7 @@ type servicesConfig struct {
 	incidents           incidents.Store
 	opsManuals          OpsManualService
 	opsManualRepo       opsmanual.ManualRepository
+	opsgraph            OpsGraphService
 	toolResultSpills    ToolResultSpillRepository
 	lifecycleContext    context.Context
 	credentialResolver  CredentialResolver
@@ -406,6 +407,12 @@ func WithOpsManualService(service OpsManualService) ServicesOption {
 	}
 }
 
+func WithOpsGraphService(service OpsGraphService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.opsgraph = service
+	}
+}
+
 func WithPluginSpecs(specs []plugins.Spec) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.pluginSpecs = append([]plugins.Spec(nil), specs...)
@@ -456,6 +463,7 @@ type Services struct {
 	toolSpills     ToolResultSpillRepository
 	hostOps        HostOpsService
 	terminalPolicy TerminalPolicyService
+	capabilities   CapabilityService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -533,13 +541,14 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		postmortems:    NewPostmortemService(incidentService),
 		corootWebhooks: NewCorootWebhookService(incidentService),
 		runbooks:       NewRunbookService("", nil),
-		opsgraph:       NewOpsGraphService(""),
+		opsgraph:       firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
 		erp:            NewERPContextService(),
 		changes:        NewChangeContextService(),
 		opsManuals:     opsManualService,
 		toolSpills:     cfg.toolResultSpills,
 		hostOps:        cfg.hostOps,
 		terminalPolicy: cfg.terminalPolicy,
+		capabilities:   NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
 	}
 }
 
@@ -581,6 +590,14 @@ func (s *Services) ToolResultSpillRepository() ToolResultSpillRepository {
 func (s *Services) HostOpsService() HostOpsService { return s.hostOps }
 func (s *Services) TerminalPolicyService() TerminalPolicyService {
 	return s.terminalPolicy
+}
+func (s *Services) CapabilityService() CapabilityService { return s.capabilities }
+
+func firstNonNilOpsGraphService(primary, fallback OpsGraphService) OpsGraphService {
+	if primary != nil {
+		return primary
+	}
+	return fallback
 }
 
 type ChatCommand struct {

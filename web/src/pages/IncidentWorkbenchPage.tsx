@@ -53,7 +53,7 @@ export function IncidentWorkbenchPage() {
         nextEntity ? getOpsGraphNeighborhood(nextEntity, { incidentId }) : Promise.resolve({}),
         nextEntity ? getOpsGraphBusinessImpact(nextEntity) : Promise.resolve({}),
       ]);
-      setNeighbors(neighborhood.status === "fulfilled" ? (neighborhood.value.neighbors || neighborhood.value.items || []) : []);
+      setNeighbors(neighborhood.status === "fulfilled" ? (neighborhood.value.neighbors || neighborhood.value.items || neighborhood.value.neighborhood?.neighbors || []) : []);
       setImpact(businessImpact.status === "fulfilled" ? businessImpact.value : {});
       setMessage(null);
     } catch (error) {

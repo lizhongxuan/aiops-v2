@@ -6,22 +6,31 @@ const (
 	EntityERPModule          EntityType = "erp_module"
 	EntityBusinessCapability EntityType = "business_capability"
 	EntityService            EntityType = "service"
+	EntityEndpoint           EntityType = "endpoint"
+	EntityMiddleware         EntityType = "middleware"
+	EntityMiddlewareCluster  EntityType = "middleware_cluster"
+	EntityMiddlewareInstance EntityType = "middleware_instance"
 	EntityDB                 EntityType = "db"
 	EntityMQ                 EntityType = "mq"
 	EntityRedis              EntityType = "redis"
 	EntityHost               EntityType = "host"
+	EntityK8s                EntityType = "k8s"
 	EntityPod                EntityType = "pod"
 	EntityTenant             EntityType = "tenant"
 	EntityRunbook            EntityType = "runbook"
+	EntityCase               EntityType = "case"
 )
 
 type RelationshipType string
 
 const (
 	RelOwns      RelationshipType = "owns"
+	RelContains  RelationshipType = "contains"
+	RelCalls     RelationshipType = "calls"
 	RelDependsOn RelationshipType = "depends_on"
 	RelRunsOn    RelationshipType = "runs_on"
 	RelAffects   RelationshipType = "affects"
+	RelOwnedBy   RelationshipType = "owned_by"
 	RelHandledBy RelationshipType = "handled_by"
 )
 

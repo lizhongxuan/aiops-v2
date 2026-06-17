@@ -1,4 +1,4 @@
-import { ArrowRight, BookOpen, Bot, Boxes, Cable, KeyRound, LayoutGrid, Server, Settings, Wrench } from "lucide-react";
+import { ArrowRight, BookOpen, Bot, Boxes, KeyRound, LayoutGrid, Server, Settings, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
@@ -9,13 +9,11 @@ const primaryEntries = [
   { title: "LLM 配置", description: "模型接入、API Key、模型选择", path: "/settings/llm", icon: KeyRound },
   { title: "Hosts", description: "主机清单、标签、会话与接入状态", path: "/settings/hosts", icon: Server },
   { title: "运维手册", description: "已验证手册、待审核候选、执行记录", path: "/settings/ops-manuals", icon: BookOpen },
-  { title: "Agent Profile", description: "System prompt、权限、skills、MCP", path: "/settings/agent", icon: Bot },
-  { title: "Skills", description: "Skill catalog 和默认激活策略", path: "/settings/skills", icon: Wrench },
-  { title: "MCP Catalog", description: "Agent MCP 绑定和权限策略", path: "/settings/mcp", icon: Cable },
+  { title: "Agent Profile", description: "System prompt 与权限策略", path: "/settings/agent", icon: Bot },
+  { title: "能力管理", description: "能力目录、连接配置与绑定调试统一入口", path: "/capabilities", icon: LayoutGrid },
 ];
 
 const toolEntries = [
-  { title: "Capability Center", description: "能力绑定与调试", path: "/capability-center", icon: LayoutGrid },
   { title: "UI Cards", description: "卡片协议调试", path: "/ui-cards", icon: Boxes },
   { title: "Script Configs", description: "脚本配置实验区", path: "/script-configs", icon: Settings },
   { title: "Generator", description: "草稿生成器", path: "/generator", icon: Wrench },

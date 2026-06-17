@@ -25,14 +25,14 @@ type entityInput struct {
 func tools(store *graph.Store) []tooling.Tool {
 	visibility := tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}}
 	return []tooling.Tool{
-		newTool("opsgraph.lookup", "Look up ERP modules, business capabilities, services, data stores, tenants, and runbooks by symptom or name", lookupSchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+		newTool("opsgraph.lookup", "Look up manually authored OpsGraph services, dependencies, business nodes, infrastructure, and runbooks by symptom or name", lookupSchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
 			var in lookupInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
 			}
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.lookup", "status": "ok", "matches": store.Lookup(graph.LookupRequest{Query: in.Query, Types: in.Types, Limit: in.Limit})}, nil
 		}),
-		newTool("opsgraph.neighborhood", "Return the 1-2 hop ERP operations graph neighborhood for an entity", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+		newTool("opsgraph.neighborhood", "Return the 1-2 hop manually authored OpsGraph neighborhood for an entity", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
 			var in entityInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
@@ -40,7 +40,7 @@ func tools(store *graph.Store) []tooling.Tool {
 			id := firstNonEmpty(in.EntityID, in.Query)
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.neighborhood", "status": "ok", "neighborhood": store.Neighborhood(id, in.Depth)}, nil
 		}),
-		newTool("opsgraph.business_impact", "Summarize ERP business impact for an entity using graph relationships", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+		newTool("opsgraph.business_impact", "Summarize business impact for an entity using manually authored graph relationships", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
 			var in entityInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err

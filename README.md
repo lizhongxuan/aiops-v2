@@ -67,6 +67,20 @@ AIOps 的核心资产是“运维手册 + Runner Workflow + Run Record”：
 - Prompt Trace：查看本地模型输入 trace、prompt 分层、messages、tools、diff 和 raw。
 - LLM 配置、主机与租约、MCP 服务、Coroot 观测、Agent UI、Incident 工作台、OpsGraph 等运维辅助页面。
 
+### OpsGraph 手工构建
+
+OpsGraph 是用户手工维护的最小运维上下文图谱。新环境默认没有外部数据源，也不会从 Coroot、Kubernetes、CMDB 或主机上报自动生成关系。
+
+从 0 创建一张可用图谱：
+
+1. 打开 OpsGraph，进入默认图谱。
+2. 把“服务”拖到画布，命名为 `order-api`。
+3. 把“中间件集群”拖到画布，命名为 `order-postgres`，子类型选择 `postgres`。
+4. 把“主机”或“K8s”拖到画布，作为部署位置。
+5. 把中间件实例拖入主机或 K8s 容器，形成部署关系。
+6. 从 `order-api` 拖线到 `order-postgres`，关系选择“依赖”。
+7. 保存后，Case 和 AI Chat 的 OpsGraph 只读工具会读取这份用户图谱。
+
 ### 调试、观测与 Eval
 
 - `modeltrace` 负责本地模型输入 trace 和 prompt fingerprint。

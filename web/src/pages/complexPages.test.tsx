@@ -108,7 +108,7 @@ const opsGraphNeighborhoodPayload = {
   entity: {
     id: "pg-primary",
     name: "PG 主库",
-    type: "middleware",
+    type: "middleware_cluster",
     status: "warning",
     health: "连接池耗尽",
     members: [
@@ -118,6 +118,7 @@ const opsGraphNeighborhoodPayload = {
     related_experience_packs: [{ id: "manual-pg-pool", name: "PG 连接池修复运维手册" }],
   },
   neighbors: [
+    { id: "pg-0", name: "pg-0", type: "middleware_instance", relation: "contains", status: "warning" },
     { id: "svc-checkout", name: "Checkout 服务", type: "service", relation: "writes_to", status: "warning" },
     {
       id: "host-db-01",
@@ -141,6 +142,9 @@ const opsGraphNeighborhoodPayload = {
       },
     },
   ],
+  entities: [],
+  relationships: [],
+  depth: 2,
 };
 
 const opsGraphImpactPayload = {
@@ -163,6 +167,7 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
     return jsonResponse({ items: [incidentPayload, slowButtonIncidentPayload, pgFixIncidentPayload] });
   }
   if (url.includes("/api/v1/opsgraph/lookup")) return jsonResponse(opsGraphLookupPayload);
+  if (url.includes("/api/v1/opsgraph/graphs/graph.default")) return jsonResponse({ graph: { id: "graph.default", name: "默认图谱", nodes: [], edges: [] } });
   if (url.includes("/api/v1/opsgraph/entities/") && url.includes("/business-impact")) return jsonResponse(opsGraphImpactPayload);
   if (url.includes("/api/v1/opsgraph/entities/")) return jsonResponse(opsGraphNeighborhoodPayload);
   if (url.includes("/api/v1/runbooks/match")) return jsonResponse({ items: [{ id: "match-1", title: "Checkout safe restart", score: 0.92 }] });
@@ -367,9 +372,10 @@ describe("React complex migration pages", () => {
     await render("/opsgraph");
 
     const guide = container.querySelector('[data-testid="opsgraph-empty-guide"]');
-    expect(guide?.textContent).toContain("搜索 Case、服务、主机或中间件");
-    expect(guide?.textContent).toContain("Coroot MCP");
-    expect(guide?.textContent).toContain("主机上报");
+    expect(guide?.textContent).toContain("这个图谱现在是空的");
+    expect(container.textContent).toContain("手工构建");
+    expect(container.textContent).not.toContain("Coroot MCP");
+    expect(container.textContent).not.toContain("主机上报");
   });
 
   it("renders a Case header and readable stage tabs on the workbench detail page", async () => {
@@ -394,7 +400,7 @@ describe("React complex migration pages", () => {
     expect(container.textContent).not.toContain("Capabilities");
   });
 
-  it("renders OpsGraph host profile, host lease and middleware context without a full CMDB editor", async () => {
+  it("renders OpsGraph manual authoring editor without a full CMDB editor", async () => {
     await render("/opsgraph");
 
     const shellHeader = container.querySelector('[data-testid="app-shell-header"]');
@@ -402,25 +408,10 @@ describe("React complex migration pages", () => {
     expect(shellHeader?.textContent).not.toContain("Case 工作台");
     expect(shellHeader?.textContent).not.toContain("主机与租约");
 
-    const input = container.querySelector('[data-testid="opsgraph-search-input"]') as HTMLInputElement | null;
-    const search = container.querySelector('[data-testid="opsgraph-search-button"]') as HTMLButtonElement | null;
-    expect(input?.placeholder).toContain("Case、服务、接口、主机、中间件");
-
-    await act(async () => {
-      changeInput(input!, "pg-primary");
-      search?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flush();
-
-    expect(container.textContent).toContain("PG 主库");
-    expect(container.textContent).toContain("中间件成员");
-    expect(container.textContent).toContain("pg-0");
-    expect(container.textContent).toContain("PG 连接池修复运维手册");
-    expect(container.textContent).toContain("HostProfile 摘要");
-    expect(container.textContent).toContain("db-01");
-    expect(container.textContent).toContain("lease-db-01");
-    expect(container.querySelector('a[href="/settings/hosts?host_id=host-db-01"]')?.textContent).toContain("主机与租约");
-    expect(container.querySelector('a[href="/settings/ops-manuals?entity_id=pg-primary"]')?.textContent).toContain("运维手册");
+    expect(container.textContent).toContain("这个图谱现在是空的");
+    expect(container.textContent).toContain("新建服务");
+    expect(container.textContent).toContain("中间件集群");
+    expect(container.textContent).toContain("手工构建");
     expect(container.textContent).not.toContain("CMDB 编辑");
   });
 
