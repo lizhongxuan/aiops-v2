@@ -1,6 +1,7 @@
 package runtimekernel
 
 import (
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/promptcompiler"
@@ -78,6 +79,40 @@ func TestTaskDepthGateDoesNotRequirePlanForSimpleQuestion(t *testing.T) {
 		if decision.Required || decision.ReminderLevel != "none" {
 			t.Fatalf("decision for %s = %#v, want no requirement", level, decision)
 		}
+	}
+}
+
+func TestMissingEvidenceFinalBlockerGivesActionableSuggestions(t *testing.T) {
+	text, blocked := missingEvidenceFinalBlocker(
+		taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresEvidence: true},
+		&TurnSnapshot{Metadata: map[string]string{prematureFinalGuardMetadataKey: "true"}},
+		"检查完成，目标正常。",
+	)
+	if !blocked {
+		t.Fatal("blocked = false, want missing evidence blocker")
+	}
+	for _, want := range []string{"建议", "确认目标", "选择可用工具", "只读"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("blocker text = %q, want %q", text, want)
+		}
+	}
+}
+
+func TestMissingEvidenceFinalBlockerAllowsSelectedHostInventoryAnswer(t *testing.T) {
+	text, blocked := missingEvidenceFinalBlocker(
+		taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresEvidence: true},
+		&TurnSnapshot{Metadata: map[string]string{
+			prematureFinalGuardMetadataKey: "true",
+			"aiops.host.metadataAvailable": "true",
+			"aiops.host.label":             "test-120-77-239-90",
+			"aiops.host.address":           "120.77.239.90",
+			"aiops.host.sshUser":           "root",
+			"aiops.host.sshPort":           "22",
+		}},
+		"- 主机名称：test-120-77-239-90\n- 地址：120.77.239.90\n- SSH用户：root\n- SSH端口：22",
+	)
+	if blocked {
+		t.Fatalf("blocked = true with %q, want selected host inventory answer allowed", text)
 	}
 }
 

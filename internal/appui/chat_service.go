@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -157,6 +158,11 @@ func (s *defaultChatService) enrichTurnHostMetadata(req *runtimekernel.TurnReque
 	setMetadataIfEmpty(req.Metadata, "aiops.host.arch", host.Arch)
 	setMetadataIfEmpty(req.Metadata, "aiops.host.transport", host.Transport)
 	setMetadataIfEmpty(req.Metadata, "aiops.host.status", host.Status)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.address", host.Address)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.sshUser", host.SSHUser)
+	if host.SSHPort > 0 {
+		setMetadataIfEmpty(req.Metadata, "aiops.host.sshPort", strconv.Itoa(host.SSHPort))
+	}
 }
 
 func setMetadataIfEmpty(metadata map[string]string, key, value string) {

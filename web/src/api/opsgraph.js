@@ -1,4 +1,4 @@
-import httpClient from "./httpClient";
+import httpClient, { HttpClientError } from "./httpClient";
 import { queryString } from "./query";
 
 export function listOpsGraphs() {
@@ -15,6 +15,50 @@ export function getOpsGraph(graphId) {
 
 export function updateOpsGraph(graphId, payload = {}) {
   return httpClient.put(`/api/v1/opsgraph/graphs/${encodeURIComponent(graphId)}`, payload);
+}
+
+export function exportOpsGraphYaml(graphId) {
+  return httpClient.get(`/api/v1/opsgraph/graphs/${encodeURIComponent(graphId)}/yaml`, {
+    headers: { Accept: "text/yaml" },
+  });
+}
+
+export async function importOpsGraphYaml(graphId, yamlText) {
+  const url = `/api/v1/opsgraph/graphs/${encodeURIComponent(graphId)}/yaml`;
+  const response = await fetch(url, {
+    method: "PUT",
+    credentials: "include",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "text/yaml",
+    },
+    body: yamlText,
+  });
+  const rawText = typeof response.text === "function" ? await response.text() : "";
+  let payload = {};
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch (error) {
+      if (response.ok) {
+        throw new HttpClientError("Invalid JSON response", {
+          status: response.status,
+          url,
+          code: "invalid_json",
+          cause: error,
+        });
+      }
+      payload = { error: rawText };
+    }
+  }
+  if (!response.ok) {
+    throw new HttpClientError(payload?.error || payload?.message || `Request failed with status ${response.status}`, {
+      status: response.status,
+      url,
+      payload,
+    });
+  }
+  return payload;
 }
 
 export function duplicateOpsGraph(graphId) {

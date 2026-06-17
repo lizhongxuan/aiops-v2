@@ -44,8 +44,23 @@ describe("OpsGraphNodeList", () => {
       setInputValue(input!, "主机");
     });
 
-    expect(container.textContent).toContain("worker-01");
+    expect(container.textContent).not.toContain("worker-01");
     expect(container.textContent).not.toContain("redis-cache");
+    expect(container.textContent).toContain("没有匹配的节点");
+  });
+
+  it("shows topology subtype and deployment summaries", async () => {
+    await act(async () => {
+      root.render(<OpsGraphNodeList nodes={[
+        { id: "service.order-api", type: "service", name: "order-api", properties: { k8sCluster: "prod-k8s", namespace: "erp" } },
+        { id: "middleware.pg", type: "middleware", subtype: "postgres", name: "order-postgres", properties: { ports: "5432/postgres" } },
+      ]} />);
+    });
+
+    expect(container.textContent).toContain("order-api");
+    expect(container.textContent).toContain("prod-k8s / erp");
+    expect(container.textContent).toContain("Postgres");
+    expect(container.textContent).toContain("5432/postgres");
   });
 
   it("uses a flexible scroll area for long node lists", async () => {

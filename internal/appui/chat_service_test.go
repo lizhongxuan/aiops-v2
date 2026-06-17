@@ -700,10 +700,13 @@ func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T)
 	hosts := newHostRepoStub(store.HostRecord{
 		ID:          "remote-linux-01",
 		Name:        "remote-linux-01",
+		Address:     "10.10.20.30",
 		Status:      "online",
 		Transport:   "agent_http",
 		OS:          "linux",
 		Arch:        "amd64",
+		SSHUser:     "root",
+		SSHPort:     22,
 		Executable:  true,
 		AgentURL:    "http://remote-linux-01:7072",
 		ControlMode: "managed",
@@ -727,6 +730,9 @@ func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T)
 		"aiops.host.arch":              "amd64",
 		"aiops.host.transport":         "agent_http",
 		"aiops.host.status":            "online",
+		"aiops.host.address":           "10.10.20.30",
+		"aiops.host.sshUser":           "root",
+		"aiops.host.sshPort":           "22",
 	} {
 		if got := runReq.Metadata[key]; got != want {
 			t.Fatalf("RunTurn metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)

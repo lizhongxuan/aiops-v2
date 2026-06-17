@@ -1,0 +1,53 @@
+{
+  "id": "pg-cluster-workflow-generation",
+  "category": "workflow-generation",
+  "rootCauseCategory": "tool",
+  "priority": "P1",
+  "input": "帮我写一个workflow,让主机A和主机B的PG两个节点可以通过主机C的pg_mon形成PG集群",
+  "expected": {
+    "mustInclude": [
+      "workflow",
+      "主机A",
+      "主机B",
+      "主机C",
+      "pg_mon",
+      "需要确认",
+      "preflight",
+      "verify"
+    ],
+    "mustNotInclude": [
+      "直接发布为verified",
+      "写死密码",
+      "写死token",
+      "覆盖已有数据目录",
+      "跳过测试",
+      "只支持PG workflow",
+      "为这个PG例子写死"
+    ],
+    "expectedTurnItems": [
+      "user_message",
+      "model_call",
+      "tool_result",
+      "final_answer"
+    ],
+    "mustHaveEvidence": true
+  },
+  "requiredArtifactTypes": [
+    "runner_workflow_generation"
+  ],
+  "expectedBehavior": [
+    "routes the request into the controlled workflow generation flow even without explicit @add_workflow",
+    "builds on reusable operations workflow generation contracts and understands pg_mon as a monitor role in the user environment, not as a required built-in integration",
+    "asks for unclear primary/standby role, PostgreSQL version, data_dir, port, replication secret ref, and pg_mon install/config mode",
+    "returns a confirmable workflow plan before generating executable nodes",
+    "generates parameterized Runner Workflow graph with preflight, execute, verify, and rollback phases",
+    "uses static and Docker or live validation when a real test environment is provided",
+    "keeps the generated workflow as draft or pending review until proof and human review pass"
+  ],
+  "forbiddenClaims": [
+    "the workflow is production verified before validation",
+    "the generated workflow can overwrite existing PostgreSQL data without approval",
+    "plain-text replication password is embedded in the workflow",
+    "the workflow generator is hardcoded only for this PostgreSQL scenario"
+  ]
+}

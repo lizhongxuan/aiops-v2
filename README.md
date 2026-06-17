@@ -123,6 +123,16 @@ internal/
 
 这些规则是项目级硬约束。新增功能、修 bug、改 UI 或接新集成时，先满足这里，再看后面的详细 guardrails。
 
+### 0. 通用运维能力优先规则
+
+aiops-v2 的目标是具备通用运维能力，不是为某几个样例场景写专项机器人。任何具体用户场景、验收 case 或演示任务都只能作为通用能力的验证样本，不能反向成为 core 中的硬编码策略。
+
+- 新增能力必须优先提升通用链路：资源识别、只读证据采集、Operation Frame、风险分级、方案选择、Workflow 生成/验证、审批、执行、恢复验证、Run Record 和经验沉淀。
+- 不允许为了通过某个任务，在 core prompt、runtime、router、policy、检索、workflowgen、opsmanual 或前端状态里加入只针对某个中间件、厂商、服务名、主机名、namespace、集群名、故障名或固定拓扑的特殊分支。
+- PostgreSQL、Redis、MySQL、Kafka、Kubernetes、Coroot、Prometheus 等具体产品知识不能写进 core 决策分支；需要专属 API、领域命令或展示组件时，才放进 plugin、skill、MCP adapter、capability pack、Runner action、renderer、fixture、eval case 或文档中。用户请求里的具体组件名可以作为运行时识别到的资源角色或上下文标签进入通用链路，不能因此要求 aiops-v2 为每个组件都做内置集成。
+- 例子任务验收通过的含义是“通用能力可以覆盖这个例子”，不是“为这个例子新增了一条专用捷径”。如果实现不能自然迁移到同类中间件、同类观测源、同类 workflow 生成或同类主机运维任务，不能视为达标。
+- 如确实需要 provider-specific 逻辑，必须把边界收敛在对应插件/能力包内，并说明它贡献了什么通用 contract；不能让 provider-specific 名称泄漏到 core 决策路径。
+
 ### 运行链路规则
 
 - 只有 `runtimekernel` 能驱动 turn 生命周期；不得新增第二套 turn loop、workspace runtime path、tool execution 旁路。

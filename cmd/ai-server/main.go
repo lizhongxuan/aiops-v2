@@ -553,11 +553,8 @@ func registerAIOpsToolSurfaceWithOptions(
 	if toolRegistry == nil {
 		return fmt.Errorf("tool registry is required")
 	}
-	opsGraphStore, err := opsgraphstore.LoadSeedFile(projectRelativePath("data/opsgraph/erp.seed.yaml"))
-	if err != nil {
-		opsGraphStore = opsgraphstore.NewStore(nil, nil)
-	}
-	if err := opsgraphtools.RegisterBuiltins(toolRegistry, opsGraphStore); err != nil {
+	opsGraphRepo := opsgraphstore.NewFileRepository(projectRelativePath("data/opsgraph/manual.graph.json"))
+	if err := opsgraphtools.RegisterBuiltinsWithProvider(toolRegistry, manualOpsGraphStoreProvider(opsGraphRepo)); err != nil {
 		return err
 	}
 	if evidenceService != nil {
@@ -601,6 +598,23 @@ func registerAIOpsToolSurfaceWithOptions(
 		return err
 	}
 	return toolsearch.RegisterBuiltins(toolRegistry, catalogProvider)
+}
+
+func manualOpsGraphStoreProvider(repo opsgraphstore.Repository) opsgraphtools.StoreProvider {
+	return func(ctx context.Context) (*opsgraphstore.Store, error) {
+		if repo == nil {
+			return opsgraphstore.NewStore(nil, nil), nil
+		}
+		doc, err := repo.Load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		graph, ok := doc.DefaultGraph()
+		if !ok {
+			return opsgraphstore.NewStore(nil, nil), nil
+		}
+		return opsgraphstore.CompileGraphStore(graph), nil
+	}
 }
 
 func projectRelativePath(rel string) string {

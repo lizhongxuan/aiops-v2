@@ -3,6 +3,7 @@ package opsgraph
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +63,108 @@ func TestGraphServiceRejectsDeleteReferencedNodeWithoutCascade(t *testing.T) {
 	}
 	if err := service.DeleteNode(ctx, graph.ID, "host.erp-node-a", true); err != nil {
 		t.Fatalf("DeleteNode(cascade=true) error = %v", err)
+	}
+}
+
+func TestGraphServiceSuffixesDefaultGraphNames(t *testing.T) {
+	ctx := context.Background()
+	service := NewGraphService(NewFileRepository(filepath.Join(t.TempDir(), "manual.graph.json")))
+
+	first, err := service.CreateGraph(ctx, GraphRecord{ID: "graph.manual-1", Name: "新建图谱"})
+	if err != nil {
+		t.Fatalf("CreateGraph(first) error = %v", err)
+	}
+	second, err := service.CreateGraph(ctx, GraphRecord{ID: "graph.manual-2", Name: "新建图谱"})
+	if err != nil {
+		t.Fatalf("CreateGraph(second) error = %v", err)
+	}
+	third, err := service.CreateGraph(ctx, GraphRecord{ID: "graph.manual-3", Name: "新建图谱"})
+	if err != nil {
+		t.Fatalf("CreateGraph(third) error = %v", err)
+	}
+
+	if first.Name != "新建图谱" || second.Name != "新建图谱-2" || third.Name != "新建图谱-3" {
+		t.Fatalf("graph names = %q, %q, %q; want suffixes", first.Name, second.Name, third.Name)
+	}
+}
+
+func TestGraphServiceImportsAndExportsGraphYAML(t *testing.T) {
+	ctx := context.Background()
+	service := NewGraphService(NewFileRepository(filepath.Join(t.TempDir(), "manual.graph.json")))
+	graph, err := service.CreateGraph(ctx, GraphRecord{ID: "graph.import", Name: "导入前", Nodes: []Node{}, Edges: []Edge{}})
+	if err != nil {
+		t.Fatalf("CreateGraph() error = %v", err)
+	}
+
+	imported, found, err := service.ImportGraphYAML(ctx, graph.ID, []byte(strings.TrimSpace(`
+id: ignored-from-file
+name: YAML 图谱
+environment: prod
+nodes:
+  - id: service.checkout
+    type: service
+    name: checkout-api
+    properties:
+      ports: 8080/http
+  - id: middleware.redis
+    type: middleware
+    subtype: redis
+    name: checkout-redis
+edges:
+  - id: edge.checkout-redis
+    from: service.checkout
+    type: depends_on
+    to: middleware.redis
+viewport:
+  x: 10
+  y: 20
+  zoom: 0.8
+`)))
+	if err != nil || !found {
+		t.Fatalf("ImportGraphYAML() found=%v err=%v", found, err)
+	}
+	if imported.ID != graph.ID || imported.Name != "YAML 图谱" || len(imported.Nodes) != 2 || len(imported.Edges) != 1 {
+		t.Fatalf("imported graph = %#v, want current id and YAML contents", imported)
+	}
+
+	exported, found, err := service.ExportGraphYAML(ctx, graph.ID)
+	if err != nil || !found {
+		t.Fatalf("ExportGraphYAML() found=%v err=%v", found, err)
+	}
+	exportedText := string(exported)
+	for _, want := range []string{"name: YAML 图谱", "environment: prod", "id: service.checkout", "type: depends_on"} {
+		if !strings.Contains(exportedText, want) {
+			t.Fatalf("exported yaml = %s, want %q", exportedText, want)
+		}
+	}
+	if strings.Contains(exportedText, "createdAt:") || strings.Contains(exportedText, "updatedAt:") {
+		t.Fatalf("exported yaml = %s, should omit volatile timestamps", exportedText)
+	}
+}
+
+func TestGraphServiceRejectsInvalidGraphYAML(t *testing.T) {
+	ctx := context.Background()
+	service := NewGraphService(NewFileRepository(filepath.Join(t.TempDir(), "manual.graph.json")))
+	graph, err := service.CreateGraph(ctx, GraphRecord{ID: "graph.invalid-import", Name: "导入前", Nodes: []Node{}, Edges: []Edge{}})
+	if err != nil {
+		t.Fatalf("CreateGraph() error = %v", err)
+	}
+
+	if _, _, err := service.ImportGraphYAML(ctx, graph.ID, []byte("name: broken\nedges: []\n")); err == nil {
+		t.Fatal("ImportGraphYAML(missing nodes) error = nil, want validation error")
+	}
+	if _, _, err := service.ImportGraphYAML(ctx, graph.ID, []byte(strings.TrimSpace(`
+name: broken
+nodes:
+  - id: service.a
+    type: service
+    name: a
+edges:
+  - id: edge.missing
+    from: service.a
+    type: depends_on
+    to: service.missing
+`))); err == nil {
+		t.Fatal("ImportGraphYAML(missing edge target) error = nil, want validation error")
 	}
 }

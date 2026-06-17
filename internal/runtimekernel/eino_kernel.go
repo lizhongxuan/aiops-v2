@@ -2888,6 +2888,12 @@ func enrichCompileContext(
 			Content: sessionBinding,
 		})
 	}
+	if selectedHostInventory := selectedHostInventoryPromptSection(metadata); selectedHostInventory != "" {
+		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+			Title:   "Selected Host Inventory",
+			Content: selectedHostInventory,
+		})
+	}
 	if opsManualOptOut := opsManualOptOutPromptSection(metadata); opsManualOptOut != "" {
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
 			Title:   "Ops Manual Opt-Out",
@@ -3024,6 +3030,36 @@ func sessionBindingPromptSection(metadata map[string]string) string {
 		return ""
 	}
 	lines = append(lines, "Use these session bindings when selecting read-only evidence tools. Pass bound provider, project, environment, and target identifiers when a selected tool supports them; if a binding is absent, rely on the tool default and report unavailability from the tool result instead of inventing environment facts.")
+	return strings.Join(lines, "\n")
+}
+
+func selectedHostInventoryPromptSection(metadata map[string]string) string {
+	if len(metadata) == 0 || !metadataBool(metadata["aiops.host.metadataAvailable"]) {
+		return ""
+	}
+	lines := make([]string, 0, 10)
+	add := func(label, key string) {
+		value := strings.TrimSpace(metadata[key])
+		if value == "" {
+			return
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", label, value))
+	}
+	add("Host ID", "aiops.host.id")
+	add("Display name", "aiops.host.label")
+	add("Address", "aiops.host.address")
+	add("SSH user", "aiops.host.sshUser")
+	add("SSH port", "aiops.host.sshPort")
+	add("OS", "aiops.host.os")
+	add("Arch", "aiops.host.arch")
+	add("Transport", "aiops.host.transport")
+	add("Status", "aiops.host.status")
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append([]string{
+		"The current host session is bound to this inventory record. Use these values when answering host identity, address, SSH user, and connection questions. Do not guess missing fields.",
+	}, lines...)
 	return strings.Join(lines, "\n")
 }
 

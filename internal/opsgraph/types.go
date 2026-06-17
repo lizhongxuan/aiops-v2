@@ -10,6 +10,7 @@ const (
 	EntityMiddleware         EntityType = "middleware"
 	EntityMiddlewareCluster  EntityType = "middleware_cluster"
 	EntityMiddlewareInstance EntityType = "middleware_instance"
+	EntityExternal           EntityType = "external"
 	EntityDB                 EntityType = "db"
 	EntityMQ                 EntityType = "mq"
 	EntityRedis              EntityType = "redis"
@@ -32,6 +33,9 @@ const (
 	RelAffects   RelationshipType = "affects"
 	RelOwnedBy   RelationshipType = "owned_by"
 	RelHandledBy RelationshipType = "handled_by"
+	RelPublishes RelationshipType = "publishes"
+	RelConsumes  RelationshipType = "consumes"
+	RelProxiesTo RelationshipType = "proxies_to"
 )
 
 type Entity struct {

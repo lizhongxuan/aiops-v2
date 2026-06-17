@@ -16,6 +16,7 @@ const (
 	NodeMiddleware         NodeType = "middleware"
 	NodeMiddlewareCluster  NodeType = "middleware_cluster"
 	NodeMiddlewareInstance NodeType = "middleware_instance"
+	NodeExternal           NodeType = "external"
 	NodeHost               NodeType = "host"
 	NodeK8s                NodeType = "k8s"
 	NodeCase               NodeType = "case"
@@ -36,6 +37,7 @@ type Viewport struct {
 type Node struct {
 	ID          string            `json:"id" yaml:"id"`
 	Type        NodeType          `json:"type" yaml:"type"`
+	Subtype     string            `json:"subtype,omitempty" yaml:"subtype,omitempty"`
 	Name        string            `json:"name" yaml:"name"`
 	ParentID    string            `json:"parentId,omitempty" yaml:"parentId,omitempty"`
 	Description string            `json:"description,omitempty" yaml:"description,omitempty"`
@@ -51,14 +53,15 @@ type Node struct {
 }
 
 type Edge struct {
-	ID        string           `json:"id" yaml:"id"`
-	From      string           `json:"from" yaml:"from"`
-	Type      RelationshipType `json:"type" yaml:"type"`
-	To        string           `json:"to" yaml:"to"`
-	Note      string           `json:"note,omitempty" yaml:"note,omitempty"`
-	Reason    string           `json:"reason,omitempty" yaml:"reason,omitempty"`
-	CreatedAt time.Time        `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
-	UpdatedAt time.Time        `json:"updatedAt,omitempty" yaml:"updatedAt,omitempty"`
+	ID         string            `json:"id" yaml:"id"`
+	From       string            `json:"from" yaml:"from"`
+	Type       RelationshipType  `json:"type" yaml:"type"`
+	To         string            `json:"to" yaml:"to"`
+	Note       string            `json:"note,omitempty" yaml:"note,omitempty"`
+	Reason     string            `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Properties map[string]string `json:"properties,omitempty" yaml:"properties,omitempty"`
+	CreatedAt  time.Time         `json:"createdAt,omitempty" yaml:"createdAt,omitempty"`
+	UpdatedAt  time.Time         `json:"updatedAt,omitempty" yaml:"updatedAt,omitempty"`
 }
 
 type GraphRecord struct {
@@ -167,6 +170,9 @@ func entityFromNode(node Node) Entity {
 	for key, value := range node.Properties {
 		attributes[key] = value
 	}
+	if strings.TrimSpace(node.Subtype) != "" {
+		attributes["subtype"] = strings.TrimSpace(node.Subtype)
+	}
 	if node.ParentID != "" {
 		attributes["parentId"] = node.ParentID
 	}
@@ -197,6 +203,8 @@ func entityTypeFromNodeType(typ NodeType) EntityType {
 		return EntityMiddlewareCluster
 	case NodeMiddlewareInstance:
 		return EntityMiddlewareInstance
+	case NodeExternal:
+		return EntityExternal
 	case NodeK8s:
 		return EntityK8s
 	case NodeWorkflow:

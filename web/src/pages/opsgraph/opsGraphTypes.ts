@@ -5,10 +5,21 @@ export type OpsGraphNodeType =
   | "middleware"
   | "middleware_cluster"
   | "middleware_instance"
+  | "external"
   | "host"
   | "k8s"
   | "case"
   | "workflow";
+
+export type MiddlewareSubtype =
+  | "generic"
+  | "redis"
+  | "postgres"
+  | "mysql"
+  | "zk"
+  | "rabbitmq"
+  | "nginx"
+  | string;
 
 export type OpsGraphRelationshipType =
   | "owns"
@@ -18,7 +29,10 @@ export type OpsGraphRelationshipType =
   | "runs_on"
   | "affects"
   | "owned_by"
-  | "handled_by";
+  | "handled_by"
+  | "publishes"
+  | "consumes"
+  | "proxies_to";
 
 export type OpsGraphPosition = {
   x: number;
@@ -34,6 +48,7 @@ export type OpsGraphViewport = {
 export type OpsGraphNode = {
   id: string;
   type: OpsGraphNodeType;
+  subtype?: MiddlewareSubtype;
   name: string;
   description?: string;
   parentId?: string;
@@ -53,6 +68,7 @@ export type OpsGraphRelationship = {
   to: string;
   note?: string;
   reason?: string;
+  properties?: Record<string, string>;
 };
 
 export type OpsGraphRecord = {

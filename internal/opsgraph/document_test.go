@@ -46,6 +46,70 @@ func TestGraphDocumentCompileStoreSupportsManualGraph(t *testing.T) {
 	}
 }
 
+func TestGraphDocumentCompileStorePreservesServiceTopologyFacts(t *testing.T) {
+	graph := GraphRecord{
+		ID:        "graph.default",
+		Name:      "服务拓扑",
+		IsDefault: true,
+		Nodes: []Node{
+			{
+				ID:      "service.order-api",
+				Type:    NodeService,
+				Name:    "order-api",
+				Aliases: []string{"订单服务"},
+				Properties: map[string]string{
+					"environment": "prod",
+					"k8sCluster":  "prod-k8s",
+					"namespace":   "erp",
+					"workload":    "deployment/order-api",
+					"ports":       "8080/http, 9100/metrics",
+					"owner":       "platform-sre",
+				},
+			},
+			{
+				ID:         "middleware.order-postgres",
+				Type:       NodeMiddleware,
+				Subtype:    "postgres",
+				Name:       "order-postgres",
+				Properties: map[string]string{"host": "erp-db-a", "ports": "5432/postgres", "role": "primary"},
+			},
+			{
+				ID:         "external.payments",
+				Type:       NodeExternal,
+				Name:       "payments-provider",
+				Properties: map[string]string{"domain": "pay.example.com", "ports": "443/https"},
+			},
+		},
+		Edges: []Edge{
+			{
+				ID:         "edge.order-api.depends_on.postgres",
+				From:       "service.order-api",
+				Type:       RelDependsOn,
+				To:         "middleware.order-postgres",
+				Properties: map[string]string{"protocol": "postgres", "port": "5432", "status": "ok"},
+			},
+			{
+				ID:         "edge.order-api.calls.payments",
+				From:       "service.order-api",
+				Type:       RelCalls,
+				To:         "external.payments",
+				Properties: map[string]string{"protocol": "https", "port": "443", "path": "/charge"},
+			},
+		},
+	}
+
+	store := CompileGraphStore(graph)
+	matches := store.Lookup(LookupRequest{Query: "postgres", Limit: 5})
+	if len(matches) == 0 || matches[0].Attributes["subtype"] != "postgres" {
+		t.Fatalf("Lookup(postgres) = %#v, want middleware subtype attribute", matches)
+	}
+
+	neighbors := store.Neighborhood("service.order-api", 1)
+	if len(neighbors.Relationships) != 2 {
+		t.Fatalf("Neighborhood relationships = %d, want 2", len(neighbors.Relationships))
+	}
+}
+
 func TestGraphSummaryCountsNodesEdgesAndValidationIssues(t *testing.T) {
 	doc := GraphDocument{
 		SchemaVersion: ManualGraphSchemaVersion,

@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
+
+const manualGraphDefaultName = "新建图谱"
 
 type GraphService struct {
 	repo Repository
@@ -66,6 +71,9 @@ func (s *GraphService) CreateGraph(ctx context.Context, graph GraphRecord) (Grap
 	if graph.Name == "" {
 		return GraphRecord{}, errors.New("opsgraph: graph name is required")
 	}
+	if isManualDefaultGraphName(graph.Name) && graphNameExists(doc.Graphs, graph.Name) {
+		graph.Name = uniqueDefaultGraphName(doc.Graphs, manualGraphDefaultName)
+	}
 	if graph.ID == "" {
 		graph.ID = graphIDFromName(graph.Name)
 	}
@@ -86,6 +94,57 @@ func (s *GraphService) CreateGraph(ctx context.Context, graph GraphRecord) (Grap
 	doc.SchemaVersion = ManualGraphSchemaVersion
 	doc.Graphs = append(doc.Graphs, graph)
 	return graph, s.repo.Save(ctx, doc)
+}
+
+func (s *GraphService) ExportGraphYAML(ctx context.Context, graphID string) ([]byte, bool, error) {
+	graph, found, err := s.GetGraph(ctx, graphID)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	clean := graphForYAML(graph)
+	raw, err := yaml.Marshal(clean)
+	if err != nil {
+		return nil, true, err
+	}
+	return raw, true, nil
+}
+
+func (s *GraphService) ImportGraphYAML(ctx context.Context, graphID string, raw []byte) (GraphRecord, bool, error) {
+	current, found, err := s.GetGraph(ctx, graphID)
+	if err != nil || !found {
+		return GraphRecord{}, found, err
+	}
+	var probe struct {
+		Nodes *[]Node `yaml:"nodes"`
+	}
+	if err := yaml.Unmarshal(raw, &probe); err != nil {
+		return GraphRecord{}, true, fmt.Errorf("opsgraph: invalid yaml: %w", err)
+	}
+	if probe.Nodes == nil {
+		return GraphRecord{}, true, errors.New("opsgraph: yaml must include nodes")
+	}
+	var incoming GraphRecord
+	if err := yaml.Unmarshal(raw, &incoming); err != nil {
+		return GraphRecord{}, true, fmt.Errorf("opsgraph: invalid yaml: %w", err)
+	}
+	incoming.ID = current.ID
+	if strings.TrimSpace(incoming.Name) == "" {
+		incoming.Name = current.Name
+	}
+	if incoming.Nodes == nil {
+		incoming.Nodes = []Node{}
+	}
+	if incoming.Edges == nil {
+		incoming.Edges = []Edge{}
+	}
+	if err := validateImportedGraph(incoming); err != nil {
+		return GraphRecord{}, true, err
+	}
+	updated, found, err := s.UpdateGraph(ctx, current.ID, incoming)
+	if err != nil || !found {
+		return GraphRecord{}, found, err
+	}
+	return updated, true, nil
 }
 
 func (s *GraphService) UpdateGraph(ctx context.Context, graphID string, next GraphRecord) (GraphRecord, bool, error) {
@@ -449,6 +508,29 @@ func countDefaultGraphs(graphs []GraphRecord) int {
 	return count
 }
 
+func graphNameExists(graphs []GraphRecord, name string) bool {
+	name = strings.TrimSpace(name)
+	for _, graph := range graphs {
+		if strings.TrimSpace(graph.Name) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func isManualDefaultGraphName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == manualGraphDefaultName {
+		return true
+	}
+	if !strings.HasPrefix(name, manualGraphDefaultName+"-") {
+		return false
+	}
+	suffix := strings.TrimPrefix(name, manualGraphDefaultName+"-")
+	number, err := strconv.Atoi(suffix)
+	return err == nil && number > 1 && strconv.Itoa(number) == suffix
+}
+
 func uniqueGraphID(base string, existing map[string]bool) string {
 	base = strings.TrimSpace(base)
 	if base == "" {
@@ -463,4 +545,67 @@ func uniqueGraphID(base string, existing map[string]bool) string {
 			return candidate
 		}
 	}
+}
+
+func uniqueDefaultGraphName(graphs []GraphRecord, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = manualGraphDefaultName
+	}
+	maxSuffix := 0
+	prefix := base + "-"
+	for _, graph := range graphs {
+		name := strings.TrimSpace(graph.Name)
+		if name == base {
+			if maxSuffix < 1 {
+				maxSuffix = 1
+			}
+			continue
+		}
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		suffix, err := strconv.Atoi(strings.TrimPrefix(name, prefix))
+		if err == nil && suffix > maxSuffix {
+			maxSuffix = suffix
+		}
+	}
+	if maxSuffix == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, maxSuffix+1)
+}
+
+func graphForYAML(graph GraphRecord) GraphRecord {
+	graph.CreatedAt = time.Time{}
+	graph.UpdatedAt = time.Time{}
+	if graph.Nodes == nil {
+		graph.Nodes = []Node{}
+	}
+	if graph.Edges == nil {
+		graph.Edges = []Edge{}
+	}
+	for i := range graph.Nodes {
+		graph.Nodes[i].CreatedAt = time.Time{}
+		graph.Nodes[i].UpdatedAt = time.Time{}
+	}
+	for i := range graph.Edges {
+		graph.Edges[i].CreatedAt = time.Time{}
+		graph.Edges[i].UpdatedAt = time.Time{}
+	}
+	return graph
+}
+
+func validateImportedGraph(graph GraphRecord) error {
+	issues := ValidateGraph(graph)
+	var codes []string
+	for _, issue := range issues {
+		if issue.Level == "error" {
+			codes = append(codes, issue.Code)
+		}
+	}
+	if len(codes) == 0 {
+		return nil
+	}
+	return fmt.Errorf("opsgraph: invalid yaml graph: %s", strings.Join(codes, ", "))
 }

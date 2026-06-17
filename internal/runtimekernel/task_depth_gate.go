@@ -151,10 +151,79 @@ func missingEvidenceFinalBlocker(profile taskdepth.Profile, snapshot *TurnSnapsh
 	if turnHasEvidence(snapshot) {
 		return "", false
 	}
+	if selectedHostInventoryAnswer(snapshot, assistantContent) {
+		return "", false
+	}
 	if snapshot == nil || strings.TrimSpace(snapshot.Metadata[prematureFinalGuardMetadataKey]) != "true" {
 		return "", false
 	}
-	return "缺少直接工具证据，不能给出已检查或已完成结论。当前这轮没有成功执行任何可验证的工具调用；请重试，或补充目标、权限、可用工具后再继续。", true
+	return strings.Join([]string{
+		"缺少直接工具证据，不能给出已检查或已完成结论。当前这轮没有成功执行任何可验证的工具调用。",
+		"",
+		"建议：",
+		"- 确认目标主机、服务、时间窗口或图谱节点是否已选中。",
+		"- 选择可用工具进行只读证据采集，例如主机信息、OpsGraph 关系、观测指标或日志查询。",
+		"- 如果需要检查远程主机，请先确认主机接入、SSH 连通性和权限，然后重试。",
+		"- 如果暂时没有工具权限，我只能给出下一步排查建议，不能声称已完成检查。",
+	}, "\n"), true
+}
+
+func selectedHostInventoryAnswer(snapshot *TurnSnapshot, assistantContent string) bool {
+	if snapshot == nil || !metadataBool(snapshot.Metadata["aiops.host.metadataAvailable"]) {
+		return false
+	}
+	content := strings.ToLower(strings.TrimSpace(assistantContent))
+	if content == "" || containsOperationalConclusion(content) {
+		return false
+	}
+	matches := 0
+	for _, key := range []string{
+		"aiops.host.id",
+		"aiops.host.label",
+		"aiops.host.address",
+		"aiops.host.sshUser",
+		"aiops.host.sshPort",
+	} {
+		value := strings.ToLower(strings.TrimSpace(snapshot.Metadata[key]))
+		if value != "" && strings.Contains(content, value) {
+			matches++
+		}
+	}
+	if matches < 2 {
+		return false
+	}
+	fieldLabels := 0
+	for _, marker := range []string{"主机", "地址", "ssh", "端口", "host", "address", "user", "port"} {
+		if strings.Contains(content, marker) {
+			fieldLabels++
+		}
+	}
+	return fieldLabels >= 2
+}
+
+func containsOperationalConclusion(content string) bool {
+	for _, marker := range []string{
+		"已检查",
+		"检查完成",
+		"已验证",
+		"验证完成",
+		"已执行",
+		"排查完成",
+		"修复完成",
+		"运行正常",
+		"状态正常",
+		"未发现异常",
+		"故障",
+		"异常",
+		"根因",
+		"指标",
+		"日志",
+	} {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalLooksLikeBlocker(text string) bool {

@@ -1,19 +1,22 @@
-import { Plus, Upload } from "lucide-react";
+import { Plus, Trash2, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { createOpsGraph, listOpsGraphs } from "@/api/opsgraph";
+import { createOpsGraph, deleteOpsGraph, listOpsGraphs } from "@/api/opsgraph";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { EmptyState, SettingsPageFrame, StatusAlert, ToneBadge } from "@/pages/settingsComponents";
+import { ConfirmButton, EmptyState, SettingsPageFrame, StatusAlert, ToneBadge } from "@/pages/settingsComponents";
 
 import type { OpsGraphSummary } from "./opsGraphTypes";
+
+const DEFAULT_GRAPH_NAME = "新建图谱";
 
 export function OpsGraphListPage() {
   const navigate = useNavigate();
   const [graphs, setGraphs] = useState<OpsGraphSummary[]>([]);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [deletingGraphId, setDeletingGraphId] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -37,7 +40,7 @@ export function OpsGraphListPage() {
     try {
       const payload = await createOpsGraph({
         id: `graph.manual-${Date.now()}`,
-        name: "新建图谱",
+        name: nextDefaultGraphName(graphs),
         nodes: [],
         edges: [],
       });
@@ -61,6 +64,19 @@ export function OpsGraphListPage() {
       setError(createError instanceof Error ? createError.message : "创建示例 OpsGraph 失败");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function removeGraph(graph: OpsGraphSummary) {
+    setDeletingGraphId(graph.id);
+    setError("");
+    try {
+      await deleteOpsGraph(graph.id);
+      setGraphs((current) => current.filter((item) => item.id !== graph.id));
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "删除 OpsGraph 失败");
+    } finally {
+      setDeletingGraphId("");
     }
   }
 
@@ -100,9 +116,22 @@ export function OpsGraphListPage() {
               </CardHeader>
               <CardContent className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-600">
                 <span>{graph.environment || "未设置环境"} · {graph.nodeCount || 0} 节点 · {graph.relationshipCount || 0} 关系</span>
-                <Button asChild type="button" variant="outline">
-                  <Link to={`/opsgraph/${encodeURIComponent(graph.id)}`}>打开</Link>
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button asChild type="button" variant="outline">
+                    <Link to={`/opsgraph/${encodeURIComponent(graph.id)}`}>打开</Link>
+                  </Button>
+                  <ConfirmButton
+                    type="button"
+                    variant="destructive"
+                    aria-label={`删除图谱 ${graph.name || graph.id}`}
+                    confirm={`确认删除图谱 ${graph.name || graph.id}？`}
+                    onConfirm={() => void removeGraph(graph)}
+                    disabled={deletingGraphId === graph.id}
+                  >
+                    <Trash2 />
+                    删除
+                  </ConfirmButton>
+                </div>
               </CardContent>
             </Card>
           ))}
@@ -114,6 +143,24 @@ export function OpsGraphListPage() {
   );
 }
 
+export function nextDefaultGraphName(graphs: Array<Pick<OpsGraphSummary, "name">>, base = DEFAULT_GRAPH_NAME) {
+  let maxSuffix = 0;
+  const prefix = `${base}-`;
+  for (const graph of graphs) {
+    const name = graph.name?.trim();
+    if (name === base) {
+      maxSuffix = Math.max(maxSuffix, 1);
+      continue;
+    }
+    if (!name?.startsWith(prefix)) continue;
+    const suffix = Number.parseInt(name.slice(prefix.length), 10);
+    if (Number.isInteger(suffix) && String(suffix) === name.slice(prefix.length) && suffix > maxSuffix) {
+      maxSuffix = suffix;
+    }
+  }
+  return maxSuffix === 0 ? base : `${base}-${maxSuffix + 1}`;
+}
+
 function exampleGraphPayload() {
   const suffix = Date.now();
   return {
@@ -121,15 +168,15 @@ function exampleGraphPayload() {
     name: "示例图谱",
     environment: "demo",
     nodes: [
-      { id: `service.checkout-${suffix}`, type: "service", name: "checkout-api", position: { x: 96, y: 96 } },
-      { id: `middleware.redis-${suffix}`, type: "middleware", name: "redis-cache", position: { x: 256, y: 96 } },
-      { id: `host.worker-${suffix}`, type: "host", name: "worker-01", container: true, position: { x: 96, y: 256 } },
-      { id: `k8s.prod-${suffix}`, type: "k8s", name: "prod-cluster", container: true, position: { x: 256, y: 256 } },
+      { id: `service.checkout-${suffix}`, type: "service", name: "checkout-api", position: { x: 96, y: 120 }, properties: { environment: "prod", k8sCluster: "prod-k8s", namespace: "shop", workload: "deployment/checkout-api", ports: "8080/http", owner: "platform-sre" } },
+      { id: `middleware.postgres-${suffix}`, type: "middleware", subtype: "postgres", name: "checkout-postgres", position: { x: 380, y: 120 }, properties: { host: "db-01", ports: "5432/postgres", role: "primary" } },
+      { id: `middleware.redis-${suffix}`, type: "middleware", subtype: "redis", name: "checkout-redis", position: { x: 380, y: 280 }, properties: { ports: "6379/redis" } },
+      { id: `external.payment-${suffix}`, type: "external", name: "payment-provider", position: { x: 660, y: 120 }, properties: { domain: "pay.example.com", ports: "443/https" } },
     ],
     edges: [
-      { id: `edge.checkout-redis-${suffix}`, from: `service.checkout-${suffix}`, type: "depends_on", to: `middleware.redis-${suffix}` },
-      { id: `edge.checkout-k8s-${suffix}`, from: `service.checkout-${suffix}`, type: "runs_on", to: `k8s.prod-${suffix}` },
-      { id: `edge.redis-host-${suffix}`, from: `middleware.redis-${suffix}`, type: "runs_on", to: `host.worker-${suffix}` },
+      { id: `edge.checkout-postgres-${suffix}`, from: `service.checkout-${suffix}`, type: "depends_on", to: `middleware.postgres-${suffix}`, properties: { protocol: "postgres", port: "5432" } },
+      { id: `edge.checkout-redis-${suffix}`, from: `service.checkout-${suffix}`, type: "depends_on", to: `middleware.redis-${suffix}`, properties: { protocol: "redis", port: "6379" } },
+      { id: `edge.checkout-payment-${suffix}`, from: `service.checkout-${suffix}`, type: "calls", to: `external.payment-${suffix}`, properties: { protocol: "https", port: "443" } },
     ],
   };
 }

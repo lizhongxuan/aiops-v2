@@ -26,6 +26,8 @@ type OpsGraphService interface {
 	CreateGraph(ctx context.Context, graph opsgraph.GraphRecord) (opsgraph.GraphRecord, error)
 	GetGraph(ctx context.Context, graphID string) (opsgraph.GraphRecord, bool, error)
 	UpdateGraph(ctx context.Context, graphID string, graph opsgraph.GraphRecord) (opsgraph.GraphRecord, bool, error)
+	ExportGraphYAML(ctx context.Context, graphID string) ([]byte, bool, error)
+	ImportGraphYAML(ctx context.Context, graphID string, raw []byte) (opsgraph.GraphRecord, bool, error)
 	DuplicateGraph(ctx context.Context, graphID string) (opsgraph.GraphRecord, bool, error)
 	DeleteGraph(ctx context.Context, graphID string) (bool, error)
 	CreateNode(ctx context.Context, graphID string, node opsgraph.Node) (opsgraph.Node, error)
@@ -76,6 +78,14 @@ func (s *defaultOpsGraphService) GetGraph(ctx context.Context, graphID string) (
 
 func (s *defaultOpsGraphService) UpdateGraph(ctx context.Context, graphID string, graph opsgraph.GraphRecord) (opsgraph.GraphRecord, bool, error) {
 	return s.graphs.UpdateGraph(ctx, graphID, graph)
+}
+
+func (s *defaultOpsGraphService) ExportGraphYAML(ctx context.Context, graphID string) ([]byte, bool, error) {
+	return s.graphs.ExportGraphYAML(ctx, graphID)
+}
+
+func (s *defaultOpsGraphService) ImportGraphYAML(ctx context.Context, graphID string, raw []byte) (opsgraph.GraphRecord, bool, error) {
+	return s.graphs.ImportGraphYAML(ctx, graphID, raw)
 }
 
 func (s *defaultOpsGraphService) DuplicateGraph(ctx context.Context, graphID string) (opsgraph.GraphRecord, bool, error) {

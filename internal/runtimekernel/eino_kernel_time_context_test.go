@@ -52,6 +52,46 @@ func TestEnrichCompileContextSkipsRemoteHostTimeInjection(t *testing.T) {
 	}
 }
 
+func TestEnrichCompileContextInjectsSelectedHostInventoryMetadata(t *testing.T) {
+	ctx := enrichCompileContext(promptcompiler.CompileContext{
+		SessionType: string(SessionTypeHost),
+		Mode:        string(ModeChat),
+	}, SessionTypeHost, "remote-linux-01", map[string]string{
+		"aiops.host.metadataAvailable": "true",
+		"aiops.host.id":                "remote-linux-01",
+		"aiops.host.label":             "remote-linux-01",
+		"aiops.host.address":           "10.10.20.30",
+		"aiops.host.sshUser":           "root",
+		"aiops.host.sshPort":           "22",
+		"aiops.host.transport":         "manual",
+		"aiops.host.status":            "offline",
+	}, time.Date(2026, 4, 23, 21, 5, 0, 0, time.UTC))
+
+	var section promptcompiler.PromptSection
+	for _, candidate := range ctx.ExtraSections {
+		if candidate.Title == "Selected Host Inventory" {
+			section = candidate
+			break
+		}
+	}
+	if section.Title == "" {
+		t.Fatalf("ExtraSections = %#v, want Selected Host Inventory section", ctx.ExtraSections)
+	}
+	for _, want := range []string{
+		"Host ID: remote-linux-01",
+		"Display name: remote-linux-01",
+		"Address: 10.10.20.30",
+		"SSH user: root",
+		"SSH port: 22",
+		"Transport: manual",
+		"Status: offline",
+	} {
+		if !strings.Contains(section.Content, want) {
+			t.Fatalf("Selected Host Inventory section = %q, want %q", section.Content, want)
+		}
+	}
+}
+
 func TestEnrichCompileContextInjectsOpsManualOptOutMetadata(t *testing.T) {
 	ctx := enrichCompileContext(promptcompiler.CompileContext{
 		SessionType: string(SessionTypeHost),

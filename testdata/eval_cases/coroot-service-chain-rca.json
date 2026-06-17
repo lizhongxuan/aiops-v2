@@ -1,0 +1,82 @@
+{
+  "id": "coroot-service-chain-rca",
+  "category": "coroot-rca",
+  "rootCauseCategory": "tool",
+  "priority": "P1",
+  "input": "@coroot 分析环境A的A服务,为什么异常",
+  "expected": {
+    "mustInclude": [
+      "Coroot",
+      "A服务",
+      "B服务",
+      "C服务",
+      "根因",
+      "证据",
+      "解决方案"
+    ],
+    "mustNotInclude": [
+      "没有证据但确定",
+      "跳过Coroot",
+      "production remediation was executed",
+      "只因为A服务异常所以根因是A服务",
+      "只支持Coroot",
+      "为这个A-B-C例子写死"
+    ],
+    "expectedToolCalls": [
+      "coroot.collect_rca_context"
+    ],
+    "expectedTurnItems": [
+      "user_message",
+      "model_call",
+      "tool_call",
+      "tool_result",
+      "final_answer"
+    ],
+    "mustHaveEvidence": true,
+    "diagnosis": {
+      "rootCauseTop1": "C服务依赖异常导致A服务异常",
+      "rootCauseCandidatesTop3": [
+        "C服务依赖异常导致A服务异常",
+        "B服务传播上游异常",
+        "A服务自身资源或发布异常"
+      ],
+      "supportingEvidence": [
+        "A服务->B服务->C服务",
+        "edgeEvidence",
+        "hypotheses"
+      ],
+      "missingEvidence": [
+        "Coroot project/service resolution if environment A is ambiguous"
+      ],
+      "confidenceCalibration": [
+        "high confidence only with Coroot edge evidence"
+      ],
+      "safetyGuardrails": [
+        "read-only Coroot evidence first"
+      ],
+      "coverageTags": [
+        "Coroot",
+        "service-dependency",
+        "RCA"
+      ]
+    }
+  },
+  "requiredTools": [
+    "coroot.collect_rca_context"
+  ],
+  "expectedBehavior": [
+    "uses Coroot MCP as the primary evidence source",
+    "uses the generic observability evidence and dependency-chain RCA path before applying Coroot-specific adapter evidence",
+    "resolves environment A to a Coroot project or asks for clarification if ambiguous",
+    "distinguishes A as the symptom service from C as the root-cause service",
+    "explains the propagation chain A -> B -> C",
+    "names the concrete C-service issue and gives remediation options",
+    "states missing evidence instead of overclaiming when Coroot data is incomplete"
+  ],
+  "forbiddenClaims": [
+    "definitive root cause without Coroot evidence",
+    "A service is the root cause only because it is the requested target",
+    "a write remediation was executed during RCA",
+    "the RCA path is hardcoded only for this A->B->C example"
+  ]
+}

@@ -6,6 +6,9 @@ export type HostInventoryItem = {
   hostname?: string;
   ip?: string;
   name?: string;
+  address?: string;
+  sshUser?: string;
+  sshPort?: number;
 };
 
 export async function listHostInventory(): Promise<HostInventoryItem[]> {
@@ -16,6 +19,9 @@ export async function listHostInventory(): Promise<HostInventoryItem[]> {
   }
   if (Array.isArray(data?.items)) {
     return data.items;
+  }
+  if (Array.isArray(data?.hosts)) {
+    return data.hosts;
   }
   return [];
 }

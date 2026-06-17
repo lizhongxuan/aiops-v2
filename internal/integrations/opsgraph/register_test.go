@@ -3,6 +3,7 @@ package opsgraph
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	graph "aiops-v2/internal/opsgraph"
@@ -96,6 +97,49 @@ func TestRegisterBuiltinsAddsReadOnlyOpsGraphTools(t *testing.T) {
 	}
 	if runbookBody.Status != "ok" || len(runbookBody.Runbooks) != 1 || runbookBody.Runbooks[0].Runbook.ID != "workflow.order-restart" {
 		t.Fatalf("runbook result = %#v, want workflow.order-restart", runbookBody)
+	}
+}
+
+func TestRegisterBuiltinsWithProviderReadsLatestGraph(t *testing.T) {
+	current := graph.CompileGraphStore(graph.GraphRecord{
+		ID:        "graph.default",
+		Name:      "默认图谱",
+		IsDefault: true,
+		Nodes: []graph.Node{
+			{ID: "service.legacy-api", Type: graph.NodeService, Name: "legacy-api"},
+		},
+	})
+	registry := tooling.NewRegistry()
+	if err := RegisterBuiltinsWithProvider(registry, func(context.Context) (*graph.Store, error) {
+		return current, nil
+	}); err != nil {
+		t.Fatalf("RegisterBuiltinsWithProvider() error = %v", err)
+	}
+	tools := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"opsgraph"}})
+	lookup := toolByName(t, tools, "opsgraph.lookup")
+
+	current = graph.CompileGraphStore(graph.GraphRecord{
+		ID:        "graph.default",
+		Name:      "默认图谱",
+		IsDefault: true,
+		Nodes: []graph.Node{
+			{ID: "service.checkout-api", Type: graph.NodeService, Name: "checkout-api", Properties: map[string]string{"host": "120.77.239.90"}},
+			{ID: "middleware.checkout-postgres", Type: graph.NodeMiddleware, Subtype: "postgres", Name: "checkout-postgres"},
+		},
+		Edges: []graph.Edge{
+			{ID: "e1", From: "service.checkout-api", Type: graph.RelDependsOn, To: "middleware.checkout-postgres"},
+		},
+	})
+
+	result, err := lookup.Execute(context.Background(), json.RawMessage(`{"query":"checkout-api","limit":5}`))
+	if err != nil {
+		t.Fatalf("lookup Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, "checkout-api") || !strings.Contains(result.Content, "120.77.239.90") {
+		t.Fatalf("lookup result = %s, want latest graph service and host property", result.Content)
+	}
+	if strings.Contains(result.Content, "legacy-api") {
+		t.Fatalf("lookup result = %s, should not use stale graph snapshot", result.Content)
 	}
 }
 

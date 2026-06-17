@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -168,6 +169,8 @@ func (s *HTTPServer) handleOpsGraphGraphs(w http.ResponseWriter, r *http.Request
 		s.handleOpsGraphGraphLayout(w, r, service, graphID, parts)
 	case "validate":
 		s.handleOpsGraphGraphValidate(w, r, service, graphID, parts)
+	case "yaml":
+		s.handleOpsGraphGraphYAML(w, r, service, graphID, parts)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "opsgraph endpoint not found"})
 	}
@@ -231,6 +234,46 @@ func (s *HTTPServer) handleOpsGraphGraph(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *HTTPServer) handleOpsGraphGraphYAML(w http.ResponseWriter, r *http.Request, service appui.OpsGraphService, graphID string, parts []string) {
+	if len(parts) != 2 {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		raw, found, err := service.ExportGraphYAML(r.Context(), graphID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "opsgraph graph not found"})
+			return
+		}
+		w.Header().Set("Content-Type", "text/yaml; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+graphID+`.yaml"`)
+		_, _ = w.Write(raw)
+	case http.MethodPut, http.MethodPost:
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		graph, found, err := service.ImportGraphYAML(r.Context(), graphID, raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "opsgraph graph not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"graph": graph})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

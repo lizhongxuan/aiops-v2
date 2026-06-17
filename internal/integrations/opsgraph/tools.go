@@ -22,10 +22,15 @@ type entityInput struct {
 	Depth    int    `json:"depth,omitempty"`
 }
 
-func tools(store *graph.Store) []tooling.Tool {
+func tools(provider StoreProvider) []tooling.Tool {
 	visibility := tooling.Visibility{SessionTypes: []string{"host", "workspace"}, Modes: []string{"chat", "inspect", "plan", "execute"}}
 	return []tooling.Tool{
 		newTool("opsgraph.lookup", "Look up manually authored OpsGraph services, dependencies, business nodes, infrastructure, and runbooks by symptom or name", lookupSchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+			store, err := provider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			store = nonNilStore(store)
 			var in lookupInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
@@ -33,6 +38,11 @@ func tools(store *graph.Store) []tooling.Tool {
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.lookup", "status": "ok", "matches": store.Lookup(graph.LookupRequest{Query: in.Query, Types: in.Types, Limit: in.Limit})}, nil
 		}),
 		newTool("opsgraph.neighborhood", "Return the 1-2 hop manually authored OpsGraph neighborhood for an entity", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+			store, err := provider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			store = nonNilStore(store)
 			var in entityInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
@@ -41,6 +51,11 @@ func tools(store *graph.Store) []tooling.Tool {
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.neighborhood", "status": "ok", "neighborhood": store.Neighborhood(id, in.Depth)}, nil
 		}),
 		newTool("opsgraph.business_impact", "Summarize business impact for an entity using manually authored graph relationships", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+			store, err := provider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			store = nonNilStore(store)
 			var in entityInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
@@ -49,6 +64,11 @@ func tools(store *graph.Store) []tooling.Tool {
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.business_impact", "status": "ok", "impact": store.BusinessImpact(id)}, nil
 		}),
 		newTool("opsgraph.related_runbooks", "Return candidate runbooks for an ERP graph entity with match reasons", entitySchema, visibility, func(ctx context.Context, input json.RawMessage) (any, error) {
+			store, err := provider(ctx)
+			if err != nil {
+				return nil, err
+			}
+			store = nonNilStore(store)
 			var in entityInput
 			if err := json.Unmarshal(input, &in); err != nil {
 				return nil, err
@@ -57,6 +77,13 @@ func tools(store *graph.Store) []tooling.Tool {
 			return map[string]any{"schemaVersion": schemaVersion, "tool": "opsgraph.related_runbooks", "status": "ok", "runbooks": store.RelatedRunbooks(id)}, nil
 		}),
 	}
+}
+
+func nonNilStore(store *graph.Store) *graph.Store {
+	if store != nil {
+		return store
+	}
+	return graph.NewStore(nil, nil)
 }
 
 func newTool(name, description string, schema json.RawMessage, visibility tooling.Visibility, execute func(context.Context, json.RawMessage) (any, error)) tooling.Tool {
