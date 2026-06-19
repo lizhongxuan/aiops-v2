@@ -40,7 +40,7 @@ describe("zhLabels", () => {
     expect(zhNavigationTitle("/opsgraph/graphs")).toBe("OpsGraph 列表");
     expect(zhNavigationTitle("/runner")).toBe("Runner Workflow");
     expect(zhNavigationTitle("/settings/llm")).toBe("LLM 配置");
-    expect(zhNavigationTitle("/settings/hosts")).toBe("主机与租约");
+    expect(zhNavigationTitle("/settings/hosts")).toBe("主机列表");
     expect(zhNavigationTitle("/settings/experience-packs")).toBe("运维手册");
     expect(zhNavigationTitle("/capabilities")).toBe("能力管理");
     expect(zhNavigationTitle("/coroot")).toBe("Coroot 观测");

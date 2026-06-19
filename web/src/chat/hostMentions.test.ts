@@ -13,6 +13,12 @@ describe("hostMentions", () => {
     expect(result.map((item) => item.raw)).toEqual(["@1.1.1.1", "@1.1.1.2", "@1.1.1.3"]);
   });
 
+  it("keeps a host mention boundary before a Chinese noun suffix", () => {
+    const result = parseHostMentionCandidates("这是@1.1.1.1主机,查看其内存情况");
+
+    expect(result.map((item) => item.raw)).toEqual(["@1.1.1.1"]);
+  });
+
   it("does not treat email addresses as host mentions", () => {
     expect(parseHostMentionCandidates("联系 sre@example.com")).toEqual([]);
   });
@@ -30,5 +36,9 @@ describe("hostMentions", () => {
       "aiops.hostops.mentions": JSON.stringify(mentions),
       "aiops.hostops.clientDetectedMultiHost": "true",
     });
+  });
+
+  it("does not emit host-ops metadata when no host mention is selected", () => {
+    expect(buildHostMentionMetadata([])).toEqual({});
   });
 });

@@ -120,6 +120,12 @@ export type HostRecord = {
   controlMode?: string;
   terminalCapable?: boolean;
   executable?: boolean;
+  os?: string;
+  arch?: string;
+  osRelease?: string;
+  kernelVersion?: string;
+  cpuCores?: number;
+  memoryBytes?: number;
   agentVersion?: string;
   lastHeartbeat?: string;
   labels?: Record<string, string>;

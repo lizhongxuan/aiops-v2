@@ -24,6 +24,12 @@ const hostsPayload = {
       terminalCapable: true,
       agentVersion: "1.8.4",
       lastHeartbeat: new Date().toISOString(),
+      os: "linux",
+      arch: "amd64",
+      osRelease: "Ubuntu 24.04 LTS",
+      kernelVersion: "6.8.0-31-generic",
+      cpuCores: 8,
+      memoryBytes: 34359738368,
       labels: { env: "prod", role: "web", cluster: "ops-k8s" },
     },
   ],
@@ -405,7 +411,7 @@ describe("React settings pages", () => {
     await renderPath("/settings/hosts");
 
     const hostsHeader = container.querySelector('[data-testid="app-shell-header"]');
-    expect(hostsHeader?.textContent).toContain("主机与租约");
+    expect(hostsHeader?.textContent).toContain("主机列表");
     expect(hostsHeader?.textContent).not.toContain("刷新");
     expect(hostsHeader?.textContent).toContain("接入主机");
     expect(container.querySelector("main > div header")?.textContent || "").not.toContain("HostLease 锁状态");
@@ -417,57 +423,27 @@ describe("React settings pages", () => {
     expect(container.querySelector("main > div header")?.textContent || "").not.toContain("经验包入口已迁移");
   });
 
-  it("renders HostProfile, HostLease, report history and access config tabs in Chinese", async () => {
+  it("renders only the host list with client-reported system basics", async () => {
     await renderPath("/settings/hosts");
 
-    expect(container.textContent).toContain("主机与租约");
-    expect(container.textContent).toContain("主机画像");
-    expect(container.textContent).toContain("主机租约");
-    expect(container.textContent).toContain("上报历史");
-    expect(container.textContent).toContain("接入配置");
-    expect(container.textContent).toContain("web-07");
-    expect(container.textContent).toContain("Linux");
-    expect(container.textContent).toContain("x86_64");
+    expect(container.textContent).toContain("主机列表");
+    expect(container.textContent).toContain("主机 IP / 用户名");
+    expect(container.textContent).toContain("10.10.4.27 / root");
+    expect(container.textContent).toContain("Ubuntu 24.04 LTS");
+    expect(container.textContent).toContain("6.8.0-31-generic");
+    expect(container.textContent).toContain("8 核");
+    expect(container.textContent).toContain("32 GiB");
     expect(container.textContent).toContain("env=prod");
-    expect(container.textContent).toContain("基础信息");
-    expect(container.textContent).toContain("运行环境");
-    expect(container.textContent).toContain("已安装 Agent");
-    expect(container.textContent).toContain("service runtime");
-    expect(container.textContent).toContain("最近 Case");
-    expect(container.textContent).toContain("当前 HostLease");
-    expect(container.textContent).toContain("agent-prod-07");
-    expect(container.textContent).toContain("aiops-agent.service");
-    expect(container.textContent).toContain("case-debug-1");
-    expect(container.textContent).toContain("2026-05-12T09:40:00+08:00");
+    expect(container.textContent).not.toContain("主机画像");
+    expect(container.textContent).not.toContain("主机租约");
+    expect(container.textContent).not.toContain("上报历史");
+    expect(container.textContent).not.toContain("执行风险");
+    expect(container.textContent).not.toContain("接入配置");
+    expect(container.textContent).not.toContain("当前 HostLease");
+    expect(container.textContent).not.toContain("暂无主机画像");
     expect(container.textContent).not.toMatch(
       /secret-profile-token|secret-profile-password|PRIVATE KEY|secret-cookie|secret-authorization|secret-business-payload/i,
     );
-
-    const leaseTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("主机租约"));
-    expect(leaseTab).toBeTruthy();
-    await act(async () => leaseTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await flush();
-    expect(container.textContent).toContain("lease-prod-07");
-    expect(container.textContent).toContain("case-debug-1");
-
-    const reportTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("上报历史"));
-    expect(reportTab).toBeTruthy();
-    await act(async () => reportTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await flush();
-    expect(container.textContent).toContain("report-web-07");
-
-    const profileTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("主机画像"));
-    expect(profileTab).toBeTruthy();
-    await act(async () => profileTab?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await flush();
-    expect(container.textContent).toContain("客户端离线");
-    expect(container.textContent).toContain("环境标签缺失");
-    expect(container.textContent).toContain("host-db-01");
-    expect(container.textContent).toContain("case-pg-1");
-    expect(container.textContent).toContain("2026-05-12T09:45:00+08:00");
-
-    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
-    expect(accessTab).toBeTruthy();
   });
 
   it("shows host access save errors inside the host dialog layer", async () => {
@@ -485,11 +461,6 @@ describe("React settings pages", () => {
     });
 
     await renderPath("/settings/hosts");
-
-    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
-    expect(accessTab).toBeTruthy();
-    await act(async () => accessTab?.click());
-    await flush();
 
     const editButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("编辑"));
     expect(editButton).toBeTruthy();
@@ -583,11 +554,6 @@ describe("React settings pages", () => {
 
   it("installs host agent from the host access list action", async () => {
     await renderPath("/settings/hosts");
-
-    const accessTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("接入配置"));
-    expect(accessTab).toBeTruthy();
-    await act(async () => accessTab?.click());
-    await flush();
 
     const installButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("安装 Agent"));
     expect(installButton).toBeTruthy();

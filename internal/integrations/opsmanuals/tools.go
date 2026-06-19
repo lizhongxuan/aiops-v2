@@ -26,7 +26,7 @@ func newSearchOpsManualsTool(service *core.Service, cache *turnSearchContextCach
 			DeferByDefault: true,
 			Description:    "Search verified ops manuals for an operations request and return an auditable decision: direct_execute, need_info, adapt, reference_only, or no_match. Preserve explicit user targets, negations, and clearly stated semantics in text or operation_frame.",
 			SearchHint:     "ops manual runbook repair fix operation procedure search",
-			Triggers:       []string{"ops manual", "runbook", "manual", "repair", "fix", "修复", "手册", "预案", "操作步骤"},
+			Triggers:       []string{"ops manual", "runbook", "manual", "repair", "fix", "recover", "restore", "修复", "恢复", "手册", "预案", "操作步骤"},
 			RiskLevel:      tooling.ToolRiskLow,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				DiscoveryGroup:    "runbook",

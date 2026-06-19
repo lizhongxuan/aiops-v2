@@ -277,18 +277,24 @@ type VerificationProfile struct {
 }
 
 type OperationFrame struct {
-	Intent         string             `json:"intent,omitempty"`
-	ObjectType     string             `json:"object_type,omitempty"`
-	OperationType  string             `json:"operation_type,omitempty"`
-	Target         OperationTarget    `json:"target"`
-	Operation      OperationProfile   `json:"operation"`
-	TargetScope    TargetScope        `json:"target_scope,omitempty"`
-	Environment    EnvironmentProfile `json:"environment"`
-	Evidence       EvidenceProfile    `json:"evidence"`
-	Risk           RiskProfile        `json:"risk"`
-	RequiredParams map[string]any     `json:"required_params,omitempty"`
-	RawText        string             `json:"raw_text,omitempty"`
-	Metadata       map[string]any     `json:"metadata,omitempty"`
+	Intent               string                          `json:"intent,omitempty"`
+	ObjectType           string                          `json:"object_type,omitempty"`
+	OperationType        string                          `json:"operation_type,omitempty"`
+	Target               OperationTarget                 `json:"target"`
+	Operation            OperationProfile                `json:"operation"`
+	TargetScope          TargetScope                     `json:"target_scope,omitempty"`
+	Environment          EnvironmentProfile              `json:"environment"`
+	Evidence             EvidenceProfile                 `json:"evidence"`
+	Risk                 RiskProfile                     `json:"risk"`
+	Roles                []OperationResourceRole         `json:"roles,omitempty"`
+	Relationships        []OperationResourceRelationship `json:"relationships,omitempty"`
+	ExecutionSurfaceV2   OperationExecutionSurface       `json:"execution_surface_v2,omitempty"`
+	ObservationPoints    []OperationObservationPoint     `json:"observation_points,omitempty"`
+	RiskPreference       OperationRiskPreference         `json:"risk_preference,omitempty"`
+	EvidenceRequirements []string                        `json:"evidence_requirements,omitempty"`
+	RequiredParams       map[string]any                  `json:"required_params,omitempty"`
+	RawText              string                          `json:"raw_text,omitempty"`
+	Metadata             map[string]any                  `json:"metadata,omitempty"`
 }
 
 type OperationTarget struct {

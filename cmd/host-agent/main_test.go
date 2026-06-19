@@ -129,6 +129,42 @@ func TestHostAgentHandlerExecRunsDirectCommand(t *testing.T) {
 	}
 }
 
+func TestBuildHostAgentEventPayloadIncludesSystemBasics(t *testing.T) {
+	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
+		HostID:        "prod-web-01",
+		Hostname:      "node-a",
+		ListenAddress: ":7072",
+		Capabilities:  []string{"script.shell", "terminal"},
+		Labels:        map[string]string{"role": "web"},
+		System: hostSystemInfo{
+			OS:            "linux",
+			Arch:          "amd64",
+			OSRelease:     "Ubuntu 24.04 LTS",
+			KernelVersion: "6.8.0-31-generic",
+			CPUCores:      8,
+			MemoryBytes:   34359738368,
+		},
+		Registration: true,
+	})
+
+	if payload["hostId"] != "prod-web-01" || payload["hostname"] != "node-a" || payload["listenAddress"] != ":7072" {
+		t.Fatalf("registration identity payload = %+v", payload)
+	}
+	if payload["os"] != "linux" || payload["arch"] != "amd64" || payload["osRelease"] != "Ubuntu 24.04 LTS" || payload["kernelVersion"] != "6.8.0-31-generic" {
+		t.Fatalf("system identity payload = %+v", payload)
+	}
+	if payload["cpuCores"] != 8 || payload["memoryBytes"] != uint64(34359738368) {
+		t.Fatalf("resource identity payload = %+v", payload)
+	}
+}
+
+func TestParseLinuxMeminfoBytes(t *testing.T) {
+	got := parseLinuxMeminfoBytes("MemTotal:       32768000 kB\nMemFree: 1 kB\n")
+	if got != 33554432000 {
+		t.Fatalf("parseLinuxMeminfoBytes() = %d, want 33554432000", got)
+	}
+}
+
 func postJSON(t *testing.T, handler http.Handler, path, token string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	data, err := json.Marshal(body)

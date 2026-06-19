@@ -476,3 +476,46 @@ rg -n "if .*postgres|if .*pg_mon|if .*coroot|strings\\.Contains\\(.*postgres|str
 ```
 
 PG、pg_mon、Coroot 只是第一批用来证明这条主链有效的样本。
+
+## 11. 实施结果（2026-06-17）
+
+已落地模块：
+
+- Operation Frame v2：新增资源角色、关系、执行面、观察点、风险偏好和证据需求；`pg_mon` 通过通用“组件部署在主机”语义进入 monitor/observation point，不作为内置集成。
+- 通用 repair flow：新增 `internal/opsrepair`，统一表达 preflight、execute、verify、rollback、审批和证据要求；PG 仅作为 capability pack 提供只读 probe 和验证断言。
+- 资源型 workflow generation：新增资源 plan builder 和 graph generator，生成 preflight / execute / verify / rollback 阶段，输出保持 draft / pending_review，并使用 `secret_ref` 表达敏感凭据。
+- 通用 observability evidence：新增 provider-neutral evidence contract，Coroot adapter 将依赖链、假设、缺失证据映射为统一 evidence pack。
+- RuntimeKernel / AppUI：模型输入注入 Operation Frame v2 摘要和 observability RCA contract；普通“写 workflow/工作流”请求进入受控 workflow 生成路径；多主机有状态 recover / restore 意图进入通用 repair draft，避免首轮卡在长模型链路。
+- 多主机运维 UI 与编排：输入框上方展示已选主机列表，支持选择、去重、删除和状态展示；host mission 保持一台主机一个 host-bound child agent，drawer/transcript 按 child agent 隔离。
+- Eval：扩展 scorer 字段，新增非 PG repair 变体和非 Coroot observability 变体，用来验证通用能力路径。
+
+验证记录：
+
+```bash
+go test -count=1 ./internal/opsmanual ./internal/opsrepair ./internal/workflowgen ./internal/observability ./internal/integrations/coroot ./internal/runtimekernel ./internal/eval ./cmd/agent-eval ./cmd/agent-eval-case
+go test -count=1 ./internal/hostops ./internal/appui ./internal/server
+cd web && npm run test -- --run src/chat/components/AiopsComposer.test.tsx src/chat/components/HostMentionComposer.test.tsx src/chat/components/HostOpsStatusPanel.test.tsx src/chat/components/HostSubagentDrawer.test.tsx src/transport/aiopsTransportConverter.test.ts
+cd web && npm run build
+rg -n "if .*postgres|if .*pg_mon|if .*coroot|strings\\.Contains\\(.*postgres|strings\\.Contains\\(.*pg_mon|strings\\.Contains\\(.*coroot" internal web/src
+go run ./cmd/agent-eval -agent mock -cases testdata/eval_cases -priority P1 -out .data/eval_runs/general-ops-capability-final-mock
+git diff --check
+```
+
+验证结论：
+
+- Go 定向测试、前端组件测试和前端 build 均通过。
+- Playwright CLI 和 Browser in-app 完成真实页面交互验证：composer host list、主机删除、三主机状态面板、一主机一 child agent drawer 隔离、移动端 `390x844` 视口均通过。
+- 通用性扫描命中仅保留在 capability pack、provider adapter、localtools、fixture、test 或文档边界，没有新增到 core routing / policy / workflowgen 主路径的样例专项分支。
+- mock eval runner 完整执行，输出目录为 `.data/eval_runs/general-ops-capability-final-mock`；结果为 `16/22 passed`，失败集中在 mock agent 未满足新增语义期望，不阻塞 scorer 字段和 report 结构验证。
+
+已知限制：
+
+- 真实 server eval 尚未达到“样例 case 全部通过”的验收标准。最新 targeted server eval 输出目录为 `.data/eval_runs/general-ops-capability-server-final-latest`，结果为 `4/5 passed`，平均分 `0.98`，最低分 `0.91`。`pg-cluster-recovery-chat`、`pg-cluster-workflow-generation`、`redis-stateful-repair-chat`、`generic-observability-rca` 已通过；`coroot-service-chain-rca` 仍因最终回答未稳定输出严格候选根因 wording、`edgeEvidence`/`hypotheses` 等标签而失败，但工具调用和 fixture 证据路径已可用。
+- 本次改造没有直接对提供的真实 SSH 主机执行破坏性恢复动作；高风险执行仍应在受控 lab、审批和 run record 完整链路下验证。
+
+后续任务：
+
+- 继续收敛 Coroot 服务链 RCA 的 final-answer 结构化输出，优先在 provider adapter / observability contract 边界完成，避免把 A/B/C 样例写入 core。
+- 在稳定 LLM 与受控 lab 环境下重新运行真实 server eval，至少覆盖 PG repair、PG workflow、Coroot RCA、Redis repair、generic observability RCA。
+- 为真实主机 agent 执行链补充端到端 lab fixture，验证审批、只读诊断、执行、回滚和恢复后独立验证。
+- 将 Browser/Playwright 多主机 UI 场景固化为可重复的 E2E 脚本，纳入回归。

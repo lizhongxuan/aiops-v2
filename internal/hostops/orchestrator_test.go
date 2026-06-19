@@ -42,6 +42,85 @@ func TestOrchestratorSpawnsOneChildPerMentionedHost(t *testing.T) {
 	}
 }
 
+func TestOrchestratorSpawnsOneChildAgentPerMissionHost(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryMissionStore()
+	transcripts := NewInMemoryTranscriptStore()
+	spawner := &fakeChildSpawner{}
+	orchestrator := NewOrchestrator(store, transcripts, spawner)
+	mission := HostOperationMission{
+		ID:           "mission-multi-host",
+		ThreadID:     "thread-1",
+		UserTurnID:   "turn-1",
+		Status:       HostMissionStatusSpawningChildren,
+		PlanRequired: true,
+		PlanAccepted: true,
+		Mentions: []HostMention{
+			{HostID: "host-a", DisplayName: "主机A", Resolved: true},
+			{HostID: "host-b", DisplayName: "主机B", Resolved: true},
+		},
+		Plan: HostOperationPlan{
+			ID:     "plan-1",
+			Status: PlanStatusAccepted,
+			Steps:  []PlanStep{{ID: "step-1", HostIDs: []string{"host-a", "host-b"}, ActionType: "read", RiskLevel: "low"}},
+		},
+	}
+	if err := store.SaveMission(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+	children, err := orchestrator.SpawnChildren(ctx, mission.ID, []ChildAgentAssignment{
+		{HostID: "host-a", HostDisplayName: "主机A", Task: "检查主机A", PlanStepID: "step-1"},
+		{HostID: "host-b", HostDisplayName: "主机B", Task: "检查主机B", PlanStepID: "step-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 2 {
+		t.Fatalf("children = %d, want 2: %#v", len(children), children)
+	}
+	if children[0].HostID == children[1].HostID || children[0].ID == children[1].ID {
+		t.Fatalf("child agents must be unique per host: %#v", children)
+	}
+}
+
+func TestOrchestratorDeduplicatesRepeatedHostAssignments(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryMissionStore()
+	transcripts := NewInMemoryTranscriptStore()
+	spawner := &fakeChildSpawner{}
+	orchestrator := NewOrchestrator(store, transcripts, spawner)
+	mission := HostOperationMission{
+		ID:           "mission-dedupe",
+		ThreadID:     "thread-1",
+		UserTurnID:   "turn-1",
+		Status:       HostMissionStatusSpawningChildren,
+		PlanRequired: true,
+		PlanAccepted: true,
+		Mentions:     []HostMention{{HostID: "host-a", DisplayName: "主机A", Resolved: true}},
+		Plan: HostOperationPlan{
+			ID:     "plan-1",
+			Status: PlanStatusAccepted,
+			Steps:  []PlanStep{{ID: "step-1", HostIDs: []string{"host-a"}, ActionType: "read", RiskLevel: "low"}},
+		},
+	}
+	if err := store.SaveMission(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+	children, err := orchestrator.SpawnChildren(ctx, mission.ID, []ChildAgentAssignment{
+		{HostID: "host-a", Task: "检查主机A", PlanStepID: "step-1"},
+		{HostID: "host-a", Task: "再次检查主机A", PlanStepID: "step-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("children = %d, want 1 after dedupe: %#v", len(children), children)
+	}
+	if spawner.spawnCount != 1 {
+		t.Fatalf("spawnCount = %d, want 1", spawner.spawnCount)
+	}
+}
+
 func TestOrchestratorRejectsSpawnBeforePlanAccepted(t *testing.T) {
 	store := NewInMemoryMissionStore()
 	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})

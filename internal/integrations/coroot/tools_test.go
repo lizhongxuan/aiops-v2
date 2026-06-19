@@ -479,6 +479,12 @@ func TestCorootCollectRCAPromptRequiresExternalDependencyDrilldown(t *testing.T)
 		"identity",
 		"endpoint",
 		"network path",
+		"edgeEvidence",
+		"hypotheses",
+		"X->Y->Z",
+		"Z依赖异常导致X异常",
+		"high confidence only with Coroot edge evidence",
+		"read-only Coroot evidence first",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("collect_rca_context prompt missing %q:\n%s", want, prompt)

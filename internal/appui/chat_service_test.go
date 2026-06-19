@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
@@ -182,6 +184,176 @@ func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.
 	if !strings.Contains(artifactPayload, `"planIsProvisional":true`) ||
 		!strings.Contains(artifactPayload, `"status":"planned"`) {
 		t.Fatalf("artifact payload = %s, want provisional plan step status", artifactPayload)
+	}
+}
+
+func TestChatServiceSendMessageHandlesPlainWorkflowWritingRequestWithoutRuntimeTools(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-workflowgen-plain",
+		Content:         "帮我写一个workflow,让主机A和主机B的PG两个节点可以通过主机C的pg_mon形成PG集群",
+		ClientMessageID: "client-msg-workflowgen-plain",
+		ClientTurnID:    "client-turn-workflowgen-plain",
+		HostID:          "server-local",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q, want completed", result.Status)
+	}
+	select {
+	case <-runtime.started:
+		t.Fatal("runtime RunTurn was called; plain workflow writing request should use controlled internal workflow generation")
+	default:
+	}
+	session := sessions.Get("sess-workflowgen-plain")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("workflow generation did not write current turn")
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
+		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "主机A") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "主机B") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "主机C") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "pg_mon") {
+		t.Fatalf("FinalOutput = %q, want resource roles from user request", session.CurrentTurn.FinalOutput)
+	}
+	if !strings.Contains(session.CurrentTurn.FinalOutput, "generate_resource_ops_workflow") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "pending_review") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "preflight") ||
+		!strings.Contains(session.CurrentTurn.FinalOutput, "verify") {
+		t.Fatalf("FinalOutput = %q, want resource workflow contract signals", session.CurrentTurn.FinalOutput)
+	}
+	var hasModelCall, hasEvidence bool
+	var artifactPayload string
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == "model_call" {
+			hasModelCall = true
+		}
+		if item.Type == "evidence" {
+			hasEvidence = true
+		}
+		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
+			artifactPayload = string(item.Payload.Data)
+		}
+	}
+	if !hasModelCall || !hasEvidence {
+		t.Fatalf("agent items = %#v, want model_call and evidence items", session.CurrentTurn.AgentItems)
+	}
+	for _, want := range []string{"generate_resource_ops_workflow", "pending_review", "data_node", "monitor", "draft_until_reviewed", "secret_ref_only"} {
+		if !strings.Contains(artifactPayload, want) {
+			t.Fatalf("artifact payload = %s, want %q", artifactPayload, want)
+		}
+	}
+}
+
+func TestChatServiceDispatchesGenericStatefulRepairToRuntime(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-generic-repair",
+		Content:         "主机A和主机B的Redis主从集群异常，请帮忙恢复，只需要Redis集群正常运行，sentinel部署在主机C。",
+		ClientMessageID: "client-msg-generic-repair",
+		ClientTurnID:    "client-turn-generic-repair",
+		HostID:          "server-local",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	t.Cleanup(func() { close(runtime.release) })
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted", result.Status)
+	}
+	select {
+	case req := <-runtime.started:
+		if req.Input != "主机A和主机B的Redis主从集群异常，请帮忙恢复，只需要Redis集群正常运行，sentinel部署在主机C。" {
+			t.Fatalf("RunTurn input = %q", req.Input)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called for generic stateful repair")
+	}
+}
+
+func TestChatServiceDoesNotReviseActiveWorkflowForNewStatefulRepairRequest(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+	sessionID := "sess-workflow-then-repair"
+
+	first, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       sessionID,
+		Content:         "帮我写一个workflow,让主机A和主机B的PG两个节点可以通过主机C的pg_mon形成PG集群",
+		ClientMessageID: "client-msg-workflow-first",
+		ClientTurnID:    "client-turn-workflow-first",
+		HostID:          "server-local",
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	if first.Status != "completed" {
+		t.Fatalf("first Status = %q, want completed workflow response", first.Status)
+	}
+	select {
+	case <-runtime.started:
+		t.Fatal("runtime RunTurn was called for initial workflow request")
+	default:
+	}
+
+	second, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       sessionID,
+		Content:         "主机A和主机B的PG主从集群异常,请帮忙恢复,数据可以不要,只需要PG主从集群可以正常运行,他们的pg_mon部署在主机C.",
+		ClientMessageID: "client-msg-repair-second",
+		ClientTurnID:    "client-turn-repair-second",
+		HostID:          "server-local",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	t.Cleanup(func() { close(runtime.release) })
+	if second.Status != "accepted" {
+		t.Fatalf("second Status = %q, want accepted runtime repair path", second.Status)
+	}
+	select {
+	case req := <-runtime.started:
+		if req.ClientMessageID != "client-msg-repair-second" {
+			t.Fatalf("runtime ClientMessageID = %q, want repair request", req.ClientMessageID)
+		}
+		if strings.Contains(req.Input, "写一个workflow") {
+			t.Fatalf("runtime input = %q, want new repair request", req.Input)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called for new stateful repair request")
+	}
+}
+
+func TestChatServiceDoesNotTreatWorkflowConfirmationAsNewPlainRequestWithoutActiveSession(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newCancelledChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-workflowgen-confirm-without-active",
+		Content:   "确认生成工作流候选：Redis 运维手册",
+		HostID:    "server-local",
+		Metadata:  map[string]string{"opsManualAction": "generate_runner_workflow_candidate"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted async runtime path", result.Status)
+	}
+	select {
+	case <-runtime.started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime RunTurn was not called; confirmation without active workflow session must not create a new workflow plan")
 	}
 }
 
@@ -518,6 +690,51 @@ func waitForAgentEvents(t *testing.T, events AgentEventService, sessionID string
 	return nil
 }
 
+type chatHostOpsServiceCapture struct {
+	created bool
+	command HostMissionCreateCommand
+}
+
+func (s *chatHostOpsServiceCapture) CreateMission(_ context.Context, command HostMissionCreateCommand) (HostOperationView, error) {
+	s.created = true
+	s.command = command
+	return HostOperationView{ID: command.ID, Status: "waiting_plan_acceptance", MentionedHosts: mentionViews(command.Mentions)}, nil
+}
+
+func (s *chatHostOpsServiceCapture) GetMission(context.Context, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *chatHostOpsServiceCapture) AcceptPlan(context.Context, string, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *chatHostOpsServiceCapture) RevisePlan(context.Context, string, string) (HostOperationView, error) {
+	return HostOperationView{}, nil
+}
+
+func (s *chatHostOpsServiceCapture) SendChildMessage(context.Context, string, string) (HostChildAgentView, error) {
+	return HostChildAgentView{}, nil
+}
+
+func (s *chatHostOpsServiceCapture) StopChildAgent(context.Context, string) (HostChildAgentView, error) {
+	return HostChildAgentView{}, nil
+}
+
+func (s *chatHostOpsServiceCapture) ChildTranscript(context.Context, string) (HostChildTranscriptView, error) {
+	return HostChildTranscriptView{}, nil
+}
+
+func hostMentionIDsForTest(mentions []hostops.HostMention) map[string]bool {
+	out := map[string]bool{}
+	for _, mention := range mentions {
+		if mention.HostID != "" {
+			out[mention.HostID] = true
+		}
+	}
+	return out
+}
+
 func TestChatService_SendMessageResumesPendingEvidenceTurn(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()
@@ -738,6 +955,166 @@ func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T)
 			t.Fatalf("RunTurn metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
 		}
 	}
+}
+
+func TestChatService_SendMessageRoutesMultiHostMentionToHostOpsMission(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(
+		store.HostRecord{ID: "accept-host-a", Name: "@pg-a", Address: "10.10.0.11", Status: "online", Executable: true, AgentURL: "http://pg-a:7072"},
+		store.HostRecord{ID: "accept-host-b", Name: "@pg-b", Address: "10.10.0.12", Status: "online", Executable: true, AgentURL: "http://pg-b:7072"},
+		store.HostRecord{ID: "accept-host-c", Name: "@pg-mon", Address: "10.10.0.13", Status: "online", Executable: true, AgentURL: "http://pg-mon:7072"},
+	)
+	hostOps := &chatHostOpsServiceCapture{}
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+
+	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-hostops-chat",
+		Content:   "主机A=@pg-a, 主机B=@pg-b, 主机C=@pg-mon。先做通用运维诊断。",
+		Metadata: map[string]string{
+			"aiops.hostops.clientDetectedMultiHost": "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted", result.Status)
+	}
+	if _, ok := runtime.runSnapshot(); ok {
+		t.Fatal("RunTurn was called; multi-host mention should create a host-ops mission instead of binding main runtime to server-local")
+	}
+	if !hostOps.created {
+		t.Fatal("HostOpsService.CreateMission was not called")
+	}
+	if hostOps.command.ID != "hostops:"+result.TurnID {
+		t.Fatalf("mission ID = %q, want hostops:%s", hostOps.command.ID, result.TurnID)
+	}
+	if len(hostOps.command.Mentions) != 3 {
+		t.Fatalf("len(Mentions) = %d, want 3: %#v", len(hostOps.command.Mentions), hostOps.command.Mentions)
+	}
+	for _, want := range []string{"accept-host-a", "accept-host-b", "accept-host-c"} {
+		if !hostMentionIDsForTest(hostOps.command.Mentions)[want] {
+			t.Fatalf("mentions = %#v, want resolved host %s", hostOps.command.Mentions, want)
+		}
+	}
+}
+
+func TestChatService_SendMessagePersistsHostOpsMissionTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "remote-linux-01",
+		Name:       "120.77.239.90",
+		Address:    "120.77.239.90",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://120.77.239.90:7072",
+	})
+	missions := hostops.NewInMemoryMissionStore()
+	transcripts := hostops.NewInMemoryTranscriptStore()
+	hostOps := NewHostOpsService(missions, transcripts, hostops.NewOrchestrator(missions, transcripts, &hostOpsServiceTestSpawner{}))
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+
+	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-hostops-persist",
+		Content:   "这是@120.77.239.90主机,查看其内存情况",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if _, ok := runtime.runSnapshot(); ok {
+		t.Fatal("RunTurn was called; host-ops mission should be persisted without binding main runtime to server-local")
+	}
+	session := sessions.Get(result.SessionID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("session = %+v, want persisted current host-ops turn", session)
+	}
+	if session.CurrentTurn.ID != result.TurnID {
+		t.Fatalf("CurrentTurn.ID = %q, want %q", session.CurrentTurn.ID, result.TurnID)
+	}
+	if got := session.CurrentTurn.Metadata["aiops.hostops.routeKind"]; got != string(hostops.RouteKindHostOps) {
+		t.Fatalf("routeKind metadata = %q, want host_ops; metadata=%#v", got, session.CurrentTurn.Metadata)
+	}
+	if session.CurrentTurn.Metadata["aiops.hostops.mentions"] == "" {
+		t.Fatalf("hostops mentions metadata missing: %#v", session.CurrentTurn.Metadata)
+	}
+	if len(session.Messages) == 0 || session.Messages[0].Role != "user" || session.Messages[0].Content != "这是@120.77.239.90主机,查看其内存情况" {
+		t.Fatalf("Messages = %#v, want persisted user message", session.Messages)
+	}
+	var hasUserItem bool
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == agentstate.TurnItemTypeUserMessage && strings.Contains(item.Payload.Summary, "查看其内存情况") {
+			hasUserItem = true
+		}
+	}
+	if !hasUserItem {
+		t.Fatalf("AgentItems = %#v, want user message item", session.CurrentTurn.AgentItems)
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(session.ID, session.ID), session.CurrentTurn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	mission := projected.HostMissions[session.CurrentTurn.Metadata["aiops.hostops.missionId"]]
+	if len(mission.ChildAgentIDs) != 1 {
+		t.Fatalf("projected mission = %+v, want one persisted child agent", mission)
+	}
+	child := projected.ChildAgents[mission.ChildAgentIDs[0]]
+	if child.HostID != "remote-linux-01" || !strings.Contains(child.Task, "查看其内存情况") {
+		t.Fatalf("projected child = %+v, want remote-linux-01 bound to original task", child)
+	}
+}
+
+func TestChatService_SendMessageRoutesWorkflowWritingBeforeHostOps(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(
+		store.HostRecord{ID: "accept-host-a", Name: "@pg-a", Address: "10.10.0.11", Status: "online", Executable: true, AgentURL: "http://pg-a:7072"},
+		store.HostRecord{ID: "accept-host-b", Name: "@pg-b", Address: "10.10.0.12", Status: "online", Executable: true, AgentURL: "http://pg-b:7072"},
+		store.HostRecord{ID: "accept-host-c", Name: "@pg-mon", Address: "10.10.0.13", Status: "online", Executable: true, AgentURL: "http://pg-mon:7072"},
+	)
+	hostOps := &chatHostOpsServiceCapture{}
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+
+	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-workflow-before-hostops",
+		Content:   "帮我写一个workflow，让主机A=@pg-a和主机B=@pg-b的PG两个节点可以通过主机C=@pg-mon的pg_mon形成PG集群",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("Status = %q, want completed workflow generation response", result.Status)
+	}
+	if !strings.Contains(result.Output, "Workflow") && !strings.Contains(result.Output, "workflow") {
+		t.Fatalf("Output = %q, want workflow generation response", result.Output)
+	}
+	if hostOps.created {
+		t.Fatalf("workflow writing request was routed to HostOpsService.CreateMission: %+v", hostOps.command)
+	}
+	if _, ok := runtime.runSnapshot(); ok {
+		t.Fatal("RunTurn was called; workflow writing request should be handled by workflow generation service")
+	}
+}
+
+func TestChatService_SendMessageDoesNotTreatUnresolvedToolMentionAsHostOps(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{ID: "accept-host-a", Name: "@pg-a", Address: "10.10.0.11", Status: "online"})
+	hostOps := &chatHostOpsServiceCapture{}
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+
+	_, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-chat",
+		Content:   "@coroot 分析环境A的A服务为什么异常",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if hostOps.created {
+		t.Fatalf("@coroot was routed to HostOpsService.CreateMission: %+v", hostOps.command)
+	}
+	_ = waitForRunTurn(t, runtime)
 }
 
 func TestChatService_CancelTurnAppendsCanceledAgentEvent(t *testing.T) {

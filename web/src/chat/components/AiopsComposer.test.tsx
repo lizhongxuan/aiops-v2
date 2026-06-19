@@ -126,6 +126,60 @@ describe("AiopsComposer host mention fuzzy search", () => {
     );
   });
 
+  it("does not send unresolved tool mentions as host-ops metadata", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@coroot 分析环境A的A服务为什么异常");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(command).toEqual(
+      expect.objectContaining({
+        type: "add-message",
+        message: expect.objectContaining({
+          metadata: expect.not.objectContaining({ "aiops.hostops.mentions": expect.any(String) }),
+        }),
+      }),
+    );
+  });
+
+  it("renders resolved host mentions inline inside the chat input without a separate selected-host row", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "这是@120.77.239.90主机,查看@10.0.0.8内存情况");
+
+    expect(container.querySelector('[data-testid="composer-host-list"]')).toBeNull();
+    const overlay = container.querySelector('[data-testid="composer-inline-host-overlay"]') as HTMLDivElement | null;
+    expect(overlay?.textContent).toContain("这是@120.77.239.90主机,查看@10.0.0.8内存情况");
+
+    const inlineMentions = Array.from(container.querySelectorAll('[data-testid="composer-inline-host-mention"]'));
+    expect(inlineMentions.map((element) => element.textContent)).toEqual(["@120.77.239.90", "@10.0.0.8"]);
+    expect(inlineMentions[0]?.className).toContain("bg-");
+    expect(input.value).toBe("这是@120.77.239.90主机,查看@10.0.0.8内存情况");
+
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(command).toEqual(
+      expect.objectContaining({
+        type: "add-message",
+        message: expect.objectContaining({
+          metadata: expect.objectContaining({ "aiops.hostops.clientDetectedMultiHost": "true" }),
+        }),
+      }),
+    );
+    expect(input.value).toBe("");
+    expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).toBeNull();
+  });
+
   it("does not match hostname, id, sshUser, labels, or status", async () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;

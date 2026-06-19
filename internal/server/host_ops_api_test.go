@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/runtimekernel"
@@ -55,6 +58,94 @@ func TestHostOpsTranscriptAPIReturnsTranscriptItems(t *testing.T) {
 	}
 }
 
+func TestHostOpsTranscriptAPIAddsHostAgentRuntimeConversation(t *testing.T) {
+	now := time.Date(2026, 6, 17, 19, 31, 0, 0, time.UTC)
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("host-child:hostops:turn-1:host-a", runtimekernel.SessionTypeHost, runtimekernel.ModeInspect)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-1",
+		SessionID:   session.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "model-1",
+				Type:   agentstate.TurnItemTypeModelCall,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "calling model",
+					Data:    json.RawMessage(`{"iteration":1,"traceFile":".data/model-input-traces/host-a/iteration-001.md","visibleTools":["host_command"]}`),
+				},
+				CreatedAt: now,
+			},
+			{
+				ID:     "tool-call-1",
+				Type:   agentstate.TurnItemTypeToolCall,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "host_command",
+					Data:    json.RawMessage(`{"toolName":"host_command","inputSummary":"docker stats --no-stream"}`),
+				},
+				CreatedAt: now.Add(time.Second),
+			},
+			{
+				ID:     "tool-result-1",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "runner-web 0.00%",
+					Data:    json.RawMessage(`{"toolName":"host_command","outputSummary":"runner-web 0.00%","evidenceRefs":["ev-runtime-1"]}`),
+				},
+				CreatedAt: now.Add(2 * time.Second),
+			},
+			{
+				ID:     "final-1",
+				Type:   agentstate.TurnItemTypeFinalAnswer,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "容器资源正常",
+				},
+				CreatedAt: now.Add(3 * time.Second),
+			},
+		},
+	}
+	sessions.Update(session)
+	service := &hostOpsAPITestHostOpsService{
+		transcript: appui.HostChildTranscriptView{
+			ChildAgentID: "host-child-hostops-turn-1-host-a",
+			Items: []hostops.TranscriptItem{
+				{ID: "manager-1", Type: hostops.TranscriptItemManagerMessage, Content: "检查主机 Docker 资源", CreatedAt: now},
+			},
+		},
+	}
+	srv := NewHTTPServer(hostOpsAPITestServices{
+		Services: appui.NewServices(hostOpsAPITestRuntime{}, sessions),
+		hostOps:  service,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host-ops/child-agents/host-child-hostops-turn-1-host-a/transcript", nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var payload appui.HostChildTranscriptView
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	assertTranscriptContains(t, payload.Items, "manager_message", "检查主机 Docker 资源")
+	assertTranscriptContains(t, payload.Items, "llm_request", ".data/model-input-traces/host-a/iteration-001.md")
+	assertTranscriptContains(t, payload.Items, "tool_call", "docker stats --no-stream")
+	assertTranscriptContains(t, payload.Items, "tool_result", "runner-web 0.00%")
+	assertTranscriptContains(t, payload.Items, "tool_result", "ev-runtime-1")
+	assertTranscriptContains(t, payload.Items, "llm_response", "容器资源正常")
+}
+
 func TestHostOpsMissionAPICreatesAndGetsMission(t *testing.T) {
 	service := &hostOpsAPITestHostOpsService{
 		mission: appui.HostOperationView{ID: "mission-1", Status: "waiting_plan_acceptance", PlanRequired: true},
@@ -86,6 +177,16 @@ func TestHostOpsMissionAPICreatesAndGetsMission(t *testing.T) {
 	if service.getMissionID != "mission-1" {
 		t.Fatalf("GetMission id = %q, want mission-1", service.getMissionID)
 	}
+}
+
+func assertTranscriptContains(t *testing.T, items []hostops.TranscriptItem, itemType string, wantContent string) {
+	t.Helper()
+	for _, item := range items {
+		if string(item.Type) == itemType && strings.Contains(item.Content, wantContent) {
+			return
+		}
+	}
+	t.Fatalf("transcript does not contain type %q with content %q: %+v", itemType, wantContent, items)
 }
 
 func TestHostOpsMissionAPIAcceptsAndRevisesPlan(t *testing.T) {

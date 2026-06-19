@@ -30,6 +30,20 @@
       "tool_result",
       "final_answer"
     ],
+    "expectedResourceRoles": [
+      "data_node",
+      "monitor"
+    ],
+    "expectedCapabilityPath": [
+      "generate_resource_ops_workflow"
+    ],
+    "expectedWorkflowReviewStatus": [
+      "pending_review"
+    ],
+    "expectedGenericOpsContract": [
+      "draft_until_reviewed",
+      "secret_ref_only"
+    ],
     "mustHaveEvidence": true
   },
   "requiredArtifactTypes": [

@@ -3,12 +3,14 @@ package runtimekernel
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/modeltrace"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/taskdepth"
@@ -285,6 +287,20 @@ func messagesForCurrentTurnModelInput(history []Message) []Message {
 func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
 	out := make([]promptinput.Message, 0, len(history))
 	for _, msg := range history {
+		if msg.Role == "user" {
+			if context := generalOpsOperationFrameContext(msg.Content); context != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: context,
+				})
+			}
+			if context := generalOpsObservabilityContext(msg.Content); context != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: context,
+				})
+			}
+		}
 		content := msg.Content
 		if msg.Role == "tool" {
 			content = compactChartPayloadForModel(content)
@@ -301,6 +317,236 @@ func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
 		})
 	}
 	return out
+}
+
+func generalOpsOperationFrameContext(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	frame := opsmanual.BuildOperationFrame(input, nil)
+	if len(frame.Roles) == 0 &&
+		len(frame.Relationships) == 0 &&
+		len(frame.ObservationPoints) == 0 &&
+		!frame.RiskPreference.DataLossAcceptable &&
+		len(frame.EvidenceRequirements) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Operation Frame v2\n")
+	if generalOpsLooksLikeStatefulRepair(frame) {
+		b.WriteString("- capability_path: stateful_middleware_cluster_repair\n")
+		b.WriteString("- generic_ops_contract: read_only_evidence_first,approval_before_mutation,run_record_required,verify_after_repair\n")
+		b.WriteString("- recommended_tool_flow: search_ops_manuals -> run_ops_manual_preflight -> read_only_host_or_provider_probes -> propose_repair_options -> approval_gate -> execute -> verify\n")
+		b.WriteString("- answer_requirements: 诊断,恢复方案,风险与审批,验证方式,缺失证据\n")
+	}
+	if frame.Target.Type != "" || frame.Target.Name != "" {
+		b.WriteString("- target: ")
+		b.WriteString(firstNonBlankRuntimeString(frame.Target.Type, "unknown"))
+		if frame.Target.Name != "" {
+			b.WriteString("/")
+			b.WriteString(frame.Target.Name)
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.Roles) > 0 {
+		b.WriteString("- roles:")
+		for _, role := range frame.Roles {
+			b.WriteString(" ")
+			b.WriteString(firstNonBlankRuntimeString(role.Kind, "unknown"))
+			b.WriteString(":")
+			b.WriteString(firstNonBlankRuntimeString(role.ResourceRef, role.UserLabel, role.ID, "unknown"))
+			if role.RuntimeName != "" {
+				b.WriteString("(")
+				b.WriteString(role.RuntimeName)
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.Relationships) > 0 {
+		b.WriteString("- relationships:")
+		for _, rel := range frame.Relationships {
+			b.WriteString(" ")
+			b.WriteString(rel.From)
+			b.WriteString("->")
+			b.WriteString(rel.To)
+			if rel.Type != "" {
+				b.WriteString(":")
+				b.WriteString(rel.Type)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.ObservationPoints) > 0 {
+		b.WriteString("- observation_points:")
+		for _, point := range frame.ObservationPoints {
+			b.WriteString(" ")
+			b.WriteString(firstNonBlankRuntimeString(point.Kind, "unknown"))
+			b.WriteString(":")
+			b.WriteString(firstNonBlankRuntimeString(point.ResourceRef, "unknown"))
+			if point.Role != "" {
+				b.WriteString("(")
+				b.WriteString(point.Role)
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if frame.ExecutionSurfaceV2.Kind != "" {
+		b.WriteString("- execution_surface: ")
+		b.WriteString(frame.ExecutionSurfaceV2.Kind)
+		if len(frame.ExecutionSurfaceV2.Resources) > 0 {
+			b.WriteString(" resources=")
+			b.WriteString(strings.Join(frame.ExecutionSurfaceV2.Resources, ","))
+		}
+		b.WriteString("\n")
+	}
+	if frame.RiskPreference.DataLossAcceptable || frame.RiskPreference.StillRequiresApproval {
+		b.WriteString("- risk_preference: ")
+		b.WriteString(fmt.Sprintf("data_loss_acceptable=%t still_requires_approval=%t", frame.RiskPreference.DataLossAcceptable, frame.RiskPreference.StillRequiresApproval))
+		b.WriteString("\n")
+	}
+	if len(frame.EvidenceRequirements) > 0 {
+		b.WriteString("- evidence_requirements: ")
+		b.WriteString(strings.Join(frame.EvidenceRequirements, ","))
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func generalOpsLooksLikeStatefulRepair(frame opsmanual.OperationFrame) bool {
+	if frame.Operation.Stateful || len(frame.Roles) > 0 || len(frame.ObservationPoints) > 0 {
+		switch strings.TrimSpace(frame.Operation.Action) {
+		case "rca_or_repair", "restore", "repair", "recover":
+			return true
+		}
+		if frame.Risk.DataMutation || frame.RiskPreference.DataLossAcceptable {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	observabilityDependencyChainPattern = regexp.MustCompile(`(?:调用链|依赖链|服务链)?(?:是|:|：)?\s*([A-Za-z0-9_\-一-龥]+服务(?:\s*->\s*[A-Za-z0-9_\-一-龥]+服务)+)`)
+	observabilityEnvironmentPattern     = regexp.MustCompile(`环境([^\s的，。；,;]+)`)
+	observabilityTargetServicePattern   = regexp.MustCompile(`(?:环境[^\s的，。；,;]+的|的)\s*([A-Za-z0-9_\-一-龥]+服务)`)
+	observabilityProviderMentionPattern = regexp.MustCompile(`@([A-Za-z0-9_\-]+)`)
+)
+
+func generalOpsObservabilityContext(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" || !generalOpsLooksLikeObservabilityRCA(input) {
+		return ""
+	}
+	provider := extractExplicitObservabilityProvider(input)
+	var b strings.Builder
+	b.WriteString("Observability RCA contract\n")
+	b.WriteString("- capability_path: observability_dependency_chain_rca\n")
+	b.WriteString("- generic_ops_contract: provider_neutral_observability,read_only_evidence_first\n")
+	b.WriteString("- observability_evidence: dependency_edges,hypotheses,missing_evidence\n")
+	if target := extractObservabilityTargetService(input); target != "" {
+		b.WriteString("- target_service: ")
+		b.WriteString(target)
+		b.WriteString("\n")
+	}
+	if env := extractObservabilityEnvironment(input); env != "" {
+		b.WriteString("- environment_hint: ")
+		b.WriteString(env)
+		b.WriteString("\n")
+		b.WriteString("- provider_project_rule: environment_hint is not a provider project unless session metadata or provider discovery explicitly maps it; omit provider project when ambiguous\n")
+	}
+	if chain := extractObservabilityDependencyChain(input); chain != "" {
+		b.WriteString("- dependency_chain_from_user: ")
+		b.WriteString(chain)
+		b.WriteString("\n")
+	}
+	if provider != "" && provider != "observability" {
+		providerDisplay := observabilityProviderDisplayName(provider)
+		b.WriteString("- provider_hint: explicit observability provider requested: ")
+		b.WriteString(provider)
+		b.WriteString("\n")
+		b.WriteString("- first_tool: provider aggregate RCA context tool if visible\n")
+		b.WriteString("- tool_order: collect RCA evidence first; use service discovery only when project or target resolution is ambiguous\n")
+		b.WriteString("- confidence_calibration_template: high confidence only with ")
+		b.WriteString(providerDisplay)
+		b.WriteString(" edge evidence\n")
+		b.WriteString("- safety_guardrail_template: read-only ")
+		b.WriteString(providerDisplay)
+		b.WriteString(" evidence first\n")
+	}
+	b.WriteString("- evidence_rules: use read-only provider evidence before final RCA; state missing_evidence when dependency edges, metrics, logs, traces, incidents, or deployment evidence are unavailable\n")
+	b.WriteString("- confidence_rule: high confidence only with provider dependency edge evidence and supporting status or hypothesis evidence\n")
+	b.WriteString("- output_signals: capability_path=observability_dependency_chain_rca; generic_ops_contract=provider_neutral_observability,read_only_evidence_first; observability_evidence=dependency_edges,hypotheses,missing_evidence\n")
+	b.WriteString("- chain_candidate_template: for a chain X->Y->Z, include root cause candidates exactly as Z依赖异常导致X异常, Y传播上游异常, X自身资源或发布异常 when supported or as hypotheses with evidence limits\n")
+	b.WriteString("- output_requirements: include literal machine-signal lines for capability_path, generic_ops_contract, observability_evidence, then include 依赖链,根因,证据,置信度,缺失证据,解决方案,验证方式\n")
+	return strings.TrimSpace(b.String())
+}
+
+func generalOpsLooksLikeObservabilityRCA(input string) bool {
+	lower := strings.ToLower(input)
+	if extractExplicitObservabilityProvider(input) != "" {
+		return true
+	}
+	return strings.Contains(input, "调用链") ||
+		strings.Contains(input, "依赖链") ||
+		strings.Contains(input, "服务链") ||
+		(strings.Contains(input, "服务") && strings.Contains(input, "异常")) ||
+		strings.Contains(lower, "root cause") ||
+		strings.Contains(lower, "rca")
+}
+
+func extractExplicitObservabilityProvider(input string) string {
+	match := observabilityProviderMentionPattern.FindStringSubmatch(input)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(match[1]))
+}
+
+func observabilityProviderDisplayName(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "provider"
+	}
+	return strings.ToUpper(provider[:1]) + provider[1:]
+}
+
+func extractObservabilityDependencyChain(input string) string {
+	match := observabilityDependencyChainPattern.FindStringSubmatch(input)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.ReplaceAll(strings.TrimSpace(match[1]), " ", "")
+}
+
+func extractObservabilityEnvironment(input string) string {
+	match := observabilityEnvironmentPattern.FindStringSubmatch(input)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Trim(match[1], "，。；,; "))
+}
+
+func extractObservabilityTargetService(input string) string {
+	if chain := extractObservabilityDependencyChain(input); chain != "" {
+		parts := strings.Split(chain, "->")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	matches := observabilityTargetServicePattern.FindAllStringSubmatch(input, -1)
+	for _, match := range matches {
+		if len(match) <= 1 {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.Trim(match[1], "，。；,; "))
+		if candidate != "" && candidate != "服务" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func compactChartPayloadForModel(content string) string {

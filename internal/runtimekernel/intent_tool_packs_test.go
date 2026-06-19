@@ -144,6 +144,12 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			forbidden: []string{"resolve_ops_manual_params", "run_ops_manual_preflight"},
 		},
 		{
+			name:      "restore stateful cluster intent enables ops manual search",
+			input:     "主机A和主机B的PG主从集群异常,请帮忙恢复,数据可以不要,只需要PG主从集群可以正常运行,他们的pg_mon部署在主机C.",
+			wantTools: []string{"search_ops_manuals"},
+			forbidden: []string{"resolve_ops_manual_params", "run_ops_manual_preflight"},
+		},
+		{
 			name:      "mcp resource",
 			input:     "读取 MCP resource ops://manuals/redis",
 			wantTools: []string{"list_mcp_resources", "read_mcp_resource"},
@@ -813,7 +819,7 @@ func withIntentRuntimeMetadata(tools []tooling.Tool) []tooling.Tool {
 		"coroot_admin_read":    {"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"},
 		"opsgraph":             {"业务影响", "影响哪些业务", "业务能力", "租户", "依赖关系", "服务图谱", "runbook 关联", "business impact", "tenant", "dependency graph"},
 		"mcp_resource":         {"mcp resource", "mcp_resource", "resource uri", "mcp://"},
-		"ops_manual_flow":      {"runbook", "manual", "repair", "fix", "修复", "手册", "运维手册"},
+		"ops_manual_flow":      {"runbook", "manual", "repair", "fix", "recover", "restore", "修复", "恢复", "手册", "运维手册"},
 	}
 	for _, toolDef := range tools {
 		staticTool, ok := toolDef.(*tooling.StaticTool)

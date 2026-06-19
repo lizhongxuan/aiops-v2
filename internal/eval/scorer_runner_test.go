@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/planning"
 )
 
@@ -116,6 +117,28 @@ func TestScoreCaseExpectedToolCallsAllowExtraTools(t *testing.T) {
 	}
 }
 
+func TestScoreCaseExpectedToolCallsMatchCanonicalToolAliases(t *testing.T) {
+	tc := Case{
+		ID: "canonical-tools",
+		Expected: Expected{
+			ExpectedToolCalls: []string{"coroot.collect_rca_context", "host_command"},
+		},
+	}
+	output := RunOutput{
+		Answer: "已完成，验证方式：检查 tool_calls.json。",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "coroot_collect_rca_context"},
+			{ID: "call-2", Name: "exec_command"},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+	check := findCheck(score.Checks, "expectedToolCalls")
+	if !check.Passed {
+		t.Fatalf("expectedToolCalls should match canonical aliases: %#v", check)
+	}
+}
+
 func TestScoreCaseDetectsMissingExpectedTurnItems(t *testing.T) {
 	tc := Case{
 		ID:       "turn-items",
@@ -183,6 +206,81 @@ func TestScoreCaseChecksPlanPresenceAndStatuses(t *testing.T) {
 
 	if !score.Passed {
 		t.Fatalf("expected plan checks to pass, got %#v", score)
+	}
+}
+
+func TestScorerChecksGeneralOpsContractSignals(t *testing.T) {
+	tc := Case{
+		ID: "general-ops-contract",
+		Expected: Expected{
+			ExpectedResourceRoles:         []string{"data_node:host-a", "monitor:host-c"},
+			ExpectedCapabilityPath:        []string{"stateful_middleware_cluster_repair"},
+			ExpectedWorkflowReviewStatus:  []string{"pending_review"},
+			ExpectedObservabilityEvidence: []string{"dependency_edges", "hypotheses", "missing_evidence"},
+			ExpectedGenericOpsContract:    []string{"read_only_evidence_first", "approval_before_mutation"},
+		},
+	}
+	output := RunOutput{
+		Answer: "capability=stateful_middleware_cluster_repair review_status=pending_review dependency_edges hypotheses missing_evidence data_node:host-a monitor:host-c read_only_evidence_first approval_before_mutation。验证方式：go test ./internal/eval。",
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("score should pass: %#v", score.Checks)
+	}
+	for _, name := range []string{"expectedResourceRoles", "expectedCapabilityPath", "expectedWorkflowReviewStatus", "expectedObservabilityEvidence", "expectedGenericOpsContract"} {
+		if check := findCheck(score.Checks, name); !check.Passed {
+			t.Fatalf("check %s = %#v, want pass", name, check)
+		}
+	}
+}
+
+func TestScorerChecksGeneralOpsContractSignalsFromStructuredSurfaces(t *testing.T) {
+	eventPayload, _ := json.Marshal(map[string]any{
+		"capabilityPath":        []string{"stateful_middleware_cluster_repair"},
+		"workflowReviewStatus":  "pending_review",
+		"observabilityEvidence": []string{"dependency_edges", "hypotheses"},
+	})
+	turnPayload, _ := json.Marshal(map[string]any{
+		"generalOpsContract": []string{"read_only_evidence_first", "approval_before_mutation"},
+	})
+	tc := Case{
+		ID: "general-ops-contract-structured",
+		Expected: Expected{
+			ExpectedResourceRoles:         []string{"data_node:host-a", "monitor:host-c"},
+			ExpectedCapabilityPath:        []string{"stateful_middleware_cluster_repair"},
+			ExpectedWorkflowReviewStatus:  []string{"pending_review"},
+			ExpectedObservabilityEvidence: []string{"dependency_edges", "hypotheses"},
+			ExpectedGenericOpsContract:    []string{"read_only_evidence_first", "approval_before_mutation"},
+		},
+	}
+	output := RunOutput{
+		Answer: "结构化信号由 tool call、event 和 turn item 提供；验证方式：go test ./internal/eval。",
+		ToolCalls: []ToolCall{{
+			ID:        "call-1",
+			Name:      "build_operation_frame",
+			Arguments: json.RawMessage(`{"resourceRoles":["data_node:host-a","monitor:host-c"]}`),
+		}},
+		Events: []agentui.AgentEvent{{
+			EventID: "event-1",
+			Kind:    agentui.AgentEventReasoning,
+			Phase:   agentui.AgentEventPhaseCompleted,
+			Status:  agentui.AgentEventStatusCompleted,
+			Payload: eventPayload,
+		}},
+		TurnItems: []agentstate.TurnItem{{
+			ID:      "model-1",
+			Type:    agentstate.TurnItemTypeModelCall,
+			Status:  agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Summary: "general ops contract trace", Data: turnPayload},
+		}},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("score should pass from structured surfaces: %#v", score.Checks)
 	}
 }
 

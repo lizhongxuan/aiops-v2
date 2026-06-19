@@ -85,8 +85,8 @@ describe("AppRouter", () => {
       );
     });
 
-    expect(container.textContent).toContain("主机与租约");
-    expect(container.textContent).toContain("主机画像");
+    expect(container.textContent).toContain("主机列表");
+    expect(container.textContent).toContain("暂无主机");
   });
 
   it("redirects legacy experience packs route to settings ops manuals", async () => {

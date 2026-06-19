@@ -88,14 +88,16 @@ function HostOpsWorkspace() {
   if (!state) {
     return null;
   }
-  const activeChildAgent = activeChildAgentId ? (state.childAgents || {})[activeChildAgentId] : undefined;
+  const activeChildAgent = resolveChildAgent(state, activeChildAgentId);
 
   return (
     <>
       <HostOpsStatusPanel state={state} onOpenChildAgent={setActiveChildAgentId} />
       <HostSubagentDrawer
         open={Boolean(activeChildAgent)}
+        childAgentId={activeChildAgentId || undefined}
         childAgent={activeChildAgent}
+        state={state}
         onOpenChange={(open) => {
           if (!open) {
             setActiveChildAgentId(null);
@@ -104,4 +106,12 @@ function HostOpsWorkspace() {
       />
     </>
   );
+}
+
+function resolveChildAgent(state: AiopsTransportState, childAgentId: string | null) {
+  if (!childAgentId) {
+    return undefined;
+  }
+  const childAgents = state.childAgents || {};
+  return childAgents[childAgentId] || Object.values(childAgents).find((childAgent) => childAgent?.id === childAgentId);
 }

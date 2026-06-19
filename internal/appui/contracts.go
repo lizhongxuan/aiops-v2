@@ -520,8 +520,9 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	if cfg.uiCards != nil {
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
+	hostOpsService := cfg.hostOps
 	return &Services{
-		chat:           NewChatServiceWithContextAndHosts(cfg.lifecycleContext, runtime, sessions, cfg.hosts, agentEvents),
+		chat:           NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents),
 		state:          NewStateService(sessions, builder),
 		sessions:       NewSessionService(sessions, sessionStore, builder),
 		sessionSource:  sessions,
@@ -546,7 +547,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		changes:        NewChangeContextService(),
 		opsManuals:     opsManualService,
 		toolSpills:     cfg.toolResultSpills,
-		hostOps:        cfg.hostOps,
+		hostOps:        hostOpsService,
 		terminalPolicy: cfg.terminalPolicy,
 		capabilities:   NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
 	}
@@ -726,6 +727,10 @@ type HostSummary struct {
 	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
 	OS                string            `json:"os,omitempty"`
 	Arch              string            `json:"arch,omitempty"`
+	OSRelease         string            `json:"osRelease,omitempty"`
+	KernelVersion     string            `json:"kernelVersion,omitempty"`
+	CPUCores          int               `json:"cpuCores,omitempty"`
+	MemoryBytes       uint64            `json:"memoryBytes,omitempty"`
 	AgentVersion      string            `json:"agentVersion,omitempty"`
 	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
 	Labels            map[string]string `json:"labels,omitempty"`
@@ -988,6 +993,10 @@ type HostAgentRegisterRequest struct {
 	Hostname      string            `json:"hostname,omitempty"`
 	OS            string            `json:"os"`
 	Arch          string            `json:"arch"`
+	OSRelease     string            `json:"osRelease,omitempty"`
+	KernelVersion string            `json:"kernelVersion,omitempty"`
+	CPUCores      int               `json:"cpuCores,omitempty"`
+	MemoryBytes   uint64            `json:"memoryBytes,omitempty"`
 	AgentVersion  string            `json:"agentVersion"`
 	Capabilities  []string          `json:"capabilities,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
@@ -1004,10 +1013,14 @@ type HostAgentRegisterResponse struct {
 }
 
 type HostAgentHeartbeatRequest struct {
-	HostID       string   `json:"hostId"`
-	AgentVersion string   `json:"agentVersion,omitempty"`
-	Timestamp    string   `json:"timestamp,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	HostID        string   `json:"hostId"`
+	AgentVersion  string   `json:"agentVersion,omitempty"`
+	Timestamp     string   `json:"timestamp,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	OSRelease     string   `json:"osRelease,omitempty"`
+	KernelVersion string   `json:"kernelVersion,omitempty"`
+	CPUCores      int      `json:"cpuCores,omitempty"`
+	MemoryBytes   uint64   `json:"memoryBytes,omitempty"`
 }
 
 type HostAgentHeartbeatResponse struct {

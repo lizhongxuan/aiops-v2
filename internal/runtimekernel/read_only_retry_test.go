@@ -77,6 +77,33 @@ func TestReadOnlyRetryPolicy(t *testing.T) {
 	}
 }
 
+func TestFailedToolModelGuidanceOnlyCitesCompletedToolResults(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		mutating    bool
+		failureKind string
+		finalStatus string
+	}{
+		{name: "retryable_read_timeout", failureKind: string(toolfailure.KindTimeout), finalStatus: string(ToolInvocationFailed)},
+		{name: "invalid_arguments", failureKind: string(toolfailure.KindInvalidArguments), finalStatus: string(ToolInvocationFailed)},
+		{name: "tool_business_error", failureKind: string(toolfailure.KindToolBusinessError), finalStatus: string(ToolInvocationFailed)},
+		{name: "blocked", failureKind: string(toolfailure.KindPolicyDenied), finalStatus: string(ToolInvocationBlocked)},
+		{name: "mutating", mutating: true, failureKind: string(toolfailure.KindTimeout), finalStatus: string(ToolInvocationFailed)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guidance := failedToolModelGuidance(tc.mutating, tc.failureKind, tc.finalStatus)
+			for _, want := range []string{
+				"Only cite tools or resources that appear in completed tool results",
+				"do not claim a tool, MCP resource, log, metric, topology, or config was checked",
+			} {
+				if !strings.Contains(guidance, want) {
+					t.Fatalf("guidance = %q, want %q", guidance, want)
+				}
+			}
+		})
+	}
+}
+
 func TestReadOnlyRetryDecisionIncludesFailureSignatureSwitchPath(t *testing.T) {
 	signature := BuildFailureSignature("read_metrics", json.RawMessage(`{"resourceType":"synthetic_resource","resourceId":"resource-a"}`), ToolResult{
 		Error: "context deadline exceeded request-id=abc after 1000ms",

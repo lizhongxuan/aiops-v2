@@ -1,0 +1,6 @@
+# 2026/06/18 00:13:11.370076 [TestProperty13_PlanModeDeniesDirectMutation] [rapid] draw mutationTool: "service_stop"
+# 2026/06/18 00:13:11.370087 [TestProperty13_PlanModeDeniesDirectMutation] plan mode should deny direct mutation tool "service_stop", got action=allow
+# 
+v0.4.8#7156929657139793067
+0x9867f1f40f739
+0x8

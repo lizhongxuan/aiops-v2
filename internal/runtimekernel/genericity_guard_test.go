@@ -82,3 +82,24 @@ func TestCoreRuntimeProductionFilesAvoidProviderSpecificTerms(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreProductionFilesAvoidScenarioSpecificTerms(t *testing.T) {
+	terms := []string{"pg_mon", "主机a", "主机b", "主机c", "服务a", "服务b", "服务c"}
+	paths := []string{
+		"eino_kernel.go",
+		"model_input.go",
+		"tool_pack_intent.go",
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lower := strings.ToLower(string(data))
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				t.Fatalf("%s contains scenario-specific term %q; use generic metadata/capability/resource signals", path, term)
+			}
+		}
+	}
+}

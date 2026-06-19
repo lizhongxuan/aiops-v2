@@ -71,6 +71,9 @@ function matchesQuery(row, query) {
     row.raw?.name,
     row.sourceLabel,
     row.sshLabel,
+    row.systemLabel,
+    row.kernelLabel,
+    row.resourceLabel,
     row.labelText,
     row.installRunId,
     row.installStep,
@@ -100,6 +103,37 @@ function fieldText(source, camelKey, snakeKey) {
 
 function buildInstallDetailLabel({ installStep, installRunId }) {
   return [installStep, installRunId].filter(Boolean).join(" · ");
+}
+
+function formatMemoryBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let scaled = bytes;
+  let unitIndex = 0;
+  while (scaled >= 1024 && unitIndex < units.length - 1) {
+    scaled /= 1024;
+    unitIndex += 1;
+  }
+  const display = Number.isInteger(scaled) ? String(scaled) : scaled.toFixed(1).replace(/\.0$/, "");
+  return `${display} ${units[unitIndex]}`;
+}
+
+function buildSystemLabel(host) {
+  const release = compactText(host?.osRelease || host?.os_release || host?.os);
+  const arch = compactText(host?.arch);
+  return [release, arch].filter(Boolean).join(" / ") || "未上报";
+}
+
+function buildKernelLabel(host) {
+  return compactText(host?.kernelVersion || host?.kernel_version) || "未上报";
+}
+
+function buildResourceLabel(host) {
+  const cpuCores = Number(host?.cpuCores ?? host?.cpu_cores ?? 0);
+  const cpuLabel = Number.isFinite(cpuCores) && cpuCores > 0 ? `${Math.trunc(cpuCores)} 核` : "";
+  const memoryLabel = formatMemoryBytes(host?.memoryBytes ?? host?.memory_bytes);
+  return [cpuLabel, memoryLabel].filter(Boolean).join(" / ") || "未上报";
 }
 
 function labelPairs(host) {
@@ -161,6 +195,9 @@ export function buildHostListViewModel({
         sessionCount: sessionCountByHost.get(id) || 0,
         sourceLabel,
         sshLabel,
+        systemLabel: buildSystemLabel(host),
+        kernelLabel: buildKernelLabel(host),
+        resourceLabel: buildResourceLabel(host),
         installRunId,
         installWorkflowId,
         installStep,

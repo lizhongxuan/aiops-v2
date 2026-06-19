@@ -93,3 +93,33 @@ func TestSessionService_ActivateSessionPromotesExistingSession(t *testing.T) {
 		t.Fatalf("expected activation to move away from host session %q", host.ActiveSessionID)
 	}
 }
+
+func TestSessionService_IgnoresHostChildSessionsForListAndDefaultState(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	services := NewServices(runtimeStub{}, sessions)
+
+	main := sessions.GetOrCreate("sess-main-hostops", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	main.HostID = "remote-linux-01"
+	sessions.Update(main)
+	child := sessions.GetOrCreate("host-child:hostops:turn-1:remote-linux-01", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	child.HostID = "remote-linux-01"
+	sessions.Update(child)
+
+	list, err := services.SessionService().ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if list.ActiveSessionID != "sess-main-hostops" {
+		t.Fatalf("ActiveSessionID = %q, want main user session", list.ActiveSessionID)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ID != "sess-main-hostops" {
+		t.Fatalf("Sessions = %+v, want only main user session", list.Sessions)
+	}
+	state, err := services.StateService().GetState(context.Background())
+	if err != nil {
+		t.Fatalf("GetState() error = %v", err)
+	}
+	if state.SessionID != "sess-main-hostops" {
+		t.Fatalf("state.SessionID = %q, want main user session", state.SessionID)
+	}
+}

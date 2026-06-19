@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/opssemantic"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 )
 
 type assistantTransportCaptureWriter struct {
@@ -37,10 +39,206 @@ func firstAssistantTransportStreamFrame(text string) string {
 	return text
 }
 
+func TestAssistantTransportShouldNotPollHostOpsOnlyTurn(t *testing.T) {
+	state := appui.NewAiopsTransportState("sess-hostops", "thread-hostops")
+	state.CurrentTurnID = "turn-hostops"
+	state.Status = appui.AiopsTransportStatusIdle
+	state.ActiveHostMissionID = "hostops:turn-hostops"
+	state.HostMissions["hostops:turn-hostops"] = appui.AiopsTransportHostMission{
+		ID:     "hostops:turn-hostops",
+		TurnID: "turn-hostops",
+		Status: "waiting_plan_acceptance",
+	}
+
+	if assistantTransportShouldPoll(state) {
+		t.Fatal("host-ops-only turn should not poll runtime after mission projection")
+	}
+}
+
+func TestAssistantTransportShouldPollHostOpsTurnWithActiveChildAgent(t *testing.T) {
+	state := appui.NewAiopsTransportState("sess-hostops-active-child", "thread-hostops-active-child")
+	state.CurrentTurnID = "turn-hostops-active-child"
+	state.Status = appui.AiopsTransportStatusIdle
+	state.ActiveHostMissionID = "hostops:turn-hostops-active-child"
+	state.HostMissions["hostops:turn-hostops-active-child"] = appui.AiopsTransportHostMission{
+		ID:            "hostops:turn-hostops-active-child",
+		TurnID:        "turn-hostops-active-child",
+		Status:        "running",
+		ChildAgentIDs: []string{"child-active"},
+	}
+	state.ChildAgents["child-active"] = appui.AiopsTransportChildAgent{
+		ID:        "child-active",
+		MissionID: "hostops:turn-hostops-active-child",
+		SessionID: "host-child:hostops:turn-hostops-active-child:host-a",
+		HostID:    "host-a",
+		Status:    "running",
+	}
+
+	if !assistantTransportShouldPoll(state) {
+		t.Fatal("host-ops turn with active child agent should keep polling child session state")
+	}
+}
+
+func TestAssistantTransportAPIRoutesResolvedPGRecoveryMentionsToHostOpsMission(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	missions := hostops.NewInMemoryMissionStore()
+	transcripts := hostops.NewInMemoryTranscriptStore()
+	orchestrator := hostops.NewOrchestrator(missions, transcripts, nil)
+	hosts := newAssistantTransportHostRepoStub(
+		store.HostRecord{ID: "accept-host-a", Name: "@pg-a", Address: "aiops-accept-host-a", Status: "online"},
+		store.HostRecord{ID: "accept-host-b", Name: "@pg-b", Address: "aiops-accept-host-b", Status: "online"},
+		store.HostRecord{ID: "accept-host-c", Name: "@pg-mon", Address: "aiops-accept-host-c", Status: "online"},
+	)
+	services := appui.NewServices(
+		runtime,
+		sessions,
+		appui.WithHostRepository(hosts),
+		appui.WithHostOpsService(appui.NewHostOpsService(missions, transcripts, orchestrator)),
+	)
+	server := NewHTTPServer(services)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	mentions := []map[string]any{
+		{"raw": "@pg-a", "hostId": "accept-host-a", "address": "aiops-accept-host-a", "displayName": "@pg-a", "source": "inventory", "resolved": true},
+		{"raw": "@pg-b", "hostId": "accept-host-b", "address": "aiops-accept-host-b", "displayName": "@pg-b", "source": "inventory", "resolved": true},
+		{"raw": "@pg-mon", "hostId": "accept-host-c", "address": "aiops-accept-host-c", "displayName": "@pg-mon", "source": "inventory", "resolved": true},
+	}
+	mentionsJSON, err := json.Marshal(mentions)
+	if err != nil {
+		t.Fatalf("marshal mentions: %v", err)
+	}
+	payload := map[string]any{
+		"state": map[string]any{
+			"schemaVersion":    "aiops.transport.v2",
+			"threadId":         "thread-pg-recovery",
+			"status":           "idle",
+			"turns":            map[string]any{},
+			"turnOrder":        []string{},
+			"pendingApprovals": map[string]any{},
+			"mcpSurfaces":      map[string]any{},
+			"artifacts":        map[string]any{},
+			"hostMissions":     map[string]any{},
+			"childAgents":      map[string]any{},
+			"runtimeLiveness": map[string]any{
+				"activeTurns":          map[string]any{},
+				"activeAgents":         map[string]any{},
+				"pendingApprovals":     map[string]any{},
+				"pendingUserInputs":    map[string]any{},
+				"activeCommandStreams": map[string]any{},
+			},
+		},
+		"threadId": "thread-pg-recovery",
+		"commands": []map[string]any{
+			{
+				"type": "add-message",
+				"message": map[string]any{
+					"role": "user",
+					"metadata": map[string]string{
+						"aiops.hostops.mentions":                string(mentionsJSON),
+						"aiops.hostops.clientDetectedMultiHost": "true",
+					},
+					"parts": []map[string]string{{
+						"type": "text",
+						"text": "主机A=@pg-a和主机B=@pg-b的PG主从集群异常，请帮忙恢复，数据可以不要，只需要PG主从集群可以正常运行，他们的pg_mon部署在主机C=@pg-mon。",
+					}},
+				},
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	decodedReq, err := decodeAssistantTransportRequest(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	decodedCommands, err := assistantTransportCommandsFromRequest(decodedReq)
+	if err != nil {
+		t.Fatalf("decode transport commands: %v", err)
+	}
+	if len(decodedCommands) != 1 || decodedCommands[0].AddMessage == nil {
+		t.Fatalf("decoded commands = %#v, want one add-message", decodedCommands)
+	}
+	if decodedCommands[0].AddMessage.Metadata["aiops.hostops.mentions"] == "" {
+		t.Fatalf("decoded add-message metadata = %#v, want hostops mentions", decodedCommands[0].AddMessage.Metadata)
+	}
+	directHandler := appui.NewTransportCommandHandler(services.ChatService(), services.ApprovalService(), services.ChoiceService(), services.MCPService()).WithHostOpsService(services.HostOpsService())
+	directState, _, err := directHandler.Apply(context.Background(), appui.NewAiopsTransportState("", "thread-direct-pg-recovery"), decodedCommands[0])
+	if err != nil {
+		t.Fatalf("direct handler Apply() error = %v", err)
+	}
+	if directState.ActiveHostMissionID == "" {
+		t.Fatalf("direct handler state has no host mission: %#v", directState)
+	}
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	text, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, string(text))
+	}
+	for _, want := range []string{`"path":["hostMissions"`, `"accept-host-a"`, `"accept-host-b"`, `"accept-host-c"`, `"waiting_plan_acceptance"`} {
+		if !bytes.Contains(text, []byte(want)) {
+			t.Fatalf("transport response missing %q:\n%s", want, string(text))
+		}
+	}
+	if bytes.Contains(text, []byte(`"path":["status"],"value":"working"`)) {
+		t.Fatalf("transport response should not leave host-ops-only turn working:\n%s", string(text))
+	}
+}
+
 type assistantTransportAPITestRuntime struct {
 	sessions *runtimekernel.SessionManager
 	runErr   error
 	delay    time.Duration
+}
+
+type assistantTransportHostRepoStub struct {
+	items map[string]store.HostRecord
+}
+
+func newAssistantTransportHostRepoStub(records ...store.HostRecord) *assistantTransportHostRepoStub {
+	repo := &assistantTransportHostRepoStub{items: map[string]store.HostRecord{}}
+	for _, record := range records {
+		repo.items[record.ID] = record
+	}
+	return repo
+}
+
+func (r *assistantTransportHostRepoStub) GetHost(id string) (*store.HostRecord, error) {
+	record, ok := r.items[id]
+	if !ok {
+		return nil, errors.New("host not found")
+	}
+	cp := record
+	return &cp, nil
+}
+
+func (r *assistantTransportHostRepoStub) ListHosts() ([]store.HostRecord, error) {
+	items := make([]store.HostRecord, 0, len(r.items))
+	for _, record := range r.items {
+		items = append(items, record)
+	}
+	return items, nil
+}
+
+func (r *assistantTransportHostRepoStub) SaveHost(host *store.HostRecord) error {
+	cp := *host
+	r.items[cp.ID] = cp
+	return nil
+}
+
+func (r *assistantTransportHostRepoStub) DeleteHost(id string) error {
+	delete(r.items, id)
+	return nil
 }
 
 func (r *assistantTransportAPITestRuntime) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
@@ -1118,6 +1316,199 @@ func TestAssistantTransportAPIBackendErrorMarksCurrentTurnFailed(t *testing.T) {
 	}
 	if state.Turns[state.CurrentTurnID].Status != appui.AiopsTransportTurnStatusFailed {
 		t.Fatalf("turn status = %q, want failed", state.Turns[state.CurrentTurnID].Status)
+	}
+}
+
+func TestAssistantTransportProjectionHydratesHostChildSessionCompletion(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	now := time.Now().UTC()
+	main := sessions.GetOrCreate("sess-hostops-main", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	main.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-hostops-main",
+		SessionID:   main.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Metadata: map[string]string{
+			"aiops.hostops.routeKind":       "host_ops",
+			"aiops.hostops.missionId":       "hostops:turn-hostops-main",
+			"aiops.hostops.managerAgentId": "hostops-manager:turn-hostops-main",
+			"aiops.hostops.mentions":       `[{"raw":"@host-a","hostId":"host-a","displayName":"@host-a","source":"inventory","resolved":true}]`,
+		},
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:        "user-1",
+				Type:      agentstate.TurnItemTypeUserMessage,
+				Status:    agentstate.ItemStatusCompleted,
+				Payload:   agentstate.PayloadEnvelope{Summary: "@host-a 检查内存"},
+				CreatedAt: now,
+			},
+			{
+				ID:     "spawn-1",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "hostops.spawn_host_agent",
+					Summary: "spawned child",
+					Data: json.RawMessage(`{
+						"toolName":"spawn_host_agent",
+						"displayKind":"hostops.spawn_host_agent",
+						"outputPreview":{
+							"children":[{
+								"id":"child-a",
+								"missionId":"hostops:turn-hostops-main",
+								"sessionId":"host-child:hostops:turn-hostops-main:host-a",
+								"hostId":"host-a",
+								"hostDisplayName":"@host-a",
+								"task":"@host-a 检查内存",
+								"status":"running",
+								"updatedAt":"2026-06-18T01:00:00Z"
+							}]
+						}
+					}`),
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+	sessions.Update(main)
+	child := sessions.GetOrCreate("host-child:hostops:turn-hostops-main:host-a", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	completedAt := now.Add(time.Minute)
+	child.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-child-a",
+		SessionID:   child.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   completedAt,
+		CompletedAt: &completedAt,
+		FinalOutput: "内存检查完成：可用 1.0Gi。",
+	}
+	sessions.Update(child)
+
+	projected, err := projectAssistantTransportSessionState(nil, appui.NewAiopsTransportState(main.ID, main.ID), main, appui.NewTransportProjector(), sessions)
+	if err != nil {
+		t.Fatalf("projectAssistantTransportSessionState() error = %v", err)
+	}
+	childState := projected.ChildAgents["child-a"]
+	if childState.Status != "completed" {
+		t.Fatalf("child status = %q, want completed: %+v", childState.Status, childState)
+	}
+	if childState.LastOutputPreview != "内存检查完成：可用 1.0Gi。" {
+		t.Fatalf("LastOutputPreview = %q", childState.LastOutputPreview)
+	}
+	mission := projected.HostMissions["hostops:turn-hostops-main"]
+	if mission.Status != "completed" {
+		t.Fatalf("mission status = %q, want completed: %+v", mission.Status, mission)
+	}
+}
+
+func TestAssistantTransportStreamWaitsForHostChildCompletionAfterMainTurnCompletes(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	now := time.Now().UTC()
+	main := sessions.GetOrCreate("sess-hostops-stream", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	main.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-hostops-stream",
+		SessionID:   main.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Metadata: map[string]string{
+			"aiops.hostops.routeKind":       "host_ops",
+			"aiops.hostops.missionId":       "hostops:turn-hostops-stream",
+			"aiops.hostops.managerAgentId": "hostops-manager:turn-hostops-stream",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:        "user-1",
+				Type:      agentstate.TurnItemTypeUserMessage,
+				Status:    agentstate.ItemStatusCompleted,
+				Payload:   agentstate.PayloadEnvelope{Summary: "@host-a 检查磁盘"},
+				CreatedAt: now,
+			},
+			{
+				ID:     "spawn-1",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "hostops.spawn_host_agent",
+					Summary: "spawned child",
+					Data: json.RawMessage(`{
+						"toolName":"spawn_host_agent",
+						"displayKind":"hostops.spawn_host_agent",
+						"outputPreview":{
+							"children":[{
+								"id":"child-stream-a",
+								"missionId":"hostops:turn-hostops-stream",
+								"sessionId":"host-child:hostops:turn-hostops-stream:host-a",
+								"hostId":"host-a",
+								"hostDisplayName":"@host-a",
+								"task":"@host-a 检查磁盘",
+								"status":"running",
+								"updatedAt":"2026-06-18T01:00:00Z"
+							}]
+						}
+					}`),
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+	sessions.Update(main)
+
+	child := sessions.GetOrCreate("host-child:hostops:turn-hostops-stream:host-a", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	child.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-child-stream-a",
+		SessionID:   child.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+	sessions.Update(child)
+
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	writer := &assistantTransportCaptureWriter{}
+	initial := appui.NewAiopsTransportState(main.ID, main.ID)
+	initial.Status = appui.AiopsTransportStatusWorking
+	initial.CurrentTurnID = main.CurrentTurn.ID
+
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		nextChild := sessions.Get(child.ID)
+		completedAt := now.Add(time.Minute)
+		nextChild.CurrentTurn.Lifecycle = runtimekernel.TurnLifecycleCompleted
+		nextChild.CurrentTurn.UpdatedAt = completedAt
+		nextChild.CurrentTurn.CompletedAt = &completedAt
+		nextChild.CurrentTurn.FinalOutput = "磁盘检查完成：根分区使用率 79%。"
+		sessions.Update(nextChild)
+	}()
+
+	next, err := server.streamAssistantTransportState(context.Background(), newAssistantTransportStreamEncoder(writer), sessions, appui.NewTransportProjector(), server.ui.ChatService(), initial)
+	if err != nil {
+		t.Fatalf("streamAssistantTransportState() error = %v", err)
+	}
+	childState := next.ChildAgents["child-stream-a"]
+	if childState.Status != "completed" {
+		t.Fatalf("child status = %q, want completed: %+v", childState.Status, childState)
+	}
+	if childState.LastOutputPreview != "磁盘检查完成：根分区使用率 79%。" {
+		t.Fatalf("child output = %q", childState.LastOutputPreview)
+	}
+	text := writer.String()
+	if !strings.Contains(text, "\"status\":\"completed\"") || !strings.Contains(text, "磁盘检查完成") {
+		t.Fatalf("stream text = %q, want completed child update", text)
 	}
 }
 

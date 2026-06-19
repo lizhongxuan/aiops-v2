@@ -33,6 +33,9 @@ func (MockAgent) Run(ctx context.Context, c Case) (RunOutput, error) {
 	for i, call := range toolCalls {
 		events = append(events, mockToolEvent(c, int64(i+3), call, now))
 	}
+	if hasGeneralOpsExpectedSignals(c) {
+		events = append(events, mockGeneralOpsSignalEvent(c, int64(len(events)+1), now))
+	}
 	return RunOutput{Answer: answer, Events: events, ToolCalls: toolCalls, TurnItems: turnItems}, nil
 }
 
@@ -199,6 +202,9 @@ func mockTurnItems(c Case, toolCalls []ToolCall, now time.Time) []agentstate.Tur
 	for i, evidence := range c.Expected.ExpectedEvidence {
 		items = append(items, mockEvidenceItem(c, evidence, i, now))
 	}
+	if hasGeneralOpsExpectedSignals(c) {
+		items = append(items, mockGeneralOpsSignalItem(c, now))
+	}
 	items = append(items, mockTurnItem(c.ID+"-final", agentstate.TurnItemTypeFinalAnswer, agentstate.ItemStatusCompleted, "mock final answer", now))
 	return items
 }
@@ -287,6 +293,18 @@ func mockEvidenceItem(c Case, evidence string, index int, ts time.Time) agentsta
 	}
 }
 
+func mockGeneralOpsSignalItem(c Case, ts time.Time) agentstate.TurnItem {
+	data, _ := json.Marshal(generalOpsSignalPayload(c))
+	return agentstate.TurnItem{
+		ID:        c.ID + "-general-ops-signals",
+		Type:      agentstate.TurnItemTypeModelCall,
+		Status:    agentstate.ItemStatusCompleted,
+		Payload:   agentstate.PayloadEnvelope{Kind: "general_ops_contract", Summary: "general ops contract signals", Data: data},
+		CreatedAt: ts,
+		UpdatedAt: ts,
+	}
+}
+
 func mockPlanItem(c Case, ts time.Time) agentstate.TurnItem {
 	statuses := append([]string(nil), c.Expected.ExpectedPlanStatuses...)
 	if len(statuses) == 0 {
@@ -314,6 +332,51 @@ func mockPlanItem(c Case, ts time.Time) agentstate.TurnItem {
 		CreatedAt: ts,
 		UpdatedAt: ts,
 	}
+}
+
+func mockGeneralOpsSignalEvent(c Case, seq int64, ts time.Time) agentui.AgentEvent {
+	payload, _ := json.Marshal(generalOpsSignalPayload(c))
+	return agentui.AgentEvent{
+		EventID:    fmt.Sprintf("%s-general-ops-%d", c.ID, seq),
+		Seq:        seq,
+		SessionID:  "eval-" + c.ID,
+		TurnID:     "turn-" + c.ID,
+		Kind:       agentui.AgentEventReasoning,
+		Phase:      agentui.AgentEventPhaseCompleted,
+		Status:     agentui.AgentEventStatusCompleted,
+		Visibility: agentui.AgentEventVisibilityDebug,
+		Source:     agentui.AgentEventSourceSystem,
+		CreatedAt:  ts.Format(time.RFC3339Nano),
+		Payload:    payload,
+	}
+}
+
+func hasGeneralOpsExpectedSignals(c Case) bool {
+	return len(c.Expected.ExpectedResourceRoles) > 0 ||
+		len(c.Expected.ExpectedCapabilityPath) > 0 ||
+		len(c.Expected.ExpectedWorkflowReviewStatus) > 0 ||
+		len(c.Expected.ExpectedObservabilityEvidence) > 0 ||
+		len(c.Expected.ExpectedGenericOpsContract) > 0
+}
+
+func generalOpsSignalPayload(c Case) map[string]any {
+	payload := map[string]any{}
+	if len(c.Expected.ExpectedResourceRoles) > 0 {
+		payload["resourceRoles"] = c.Expected.ExpectedResourceRoles
+	}
+	if len(c.Expected.ExpectedCapabilityPath) > 0 {
+		payload["capabilityPath"] = c.Expected.ExpectedCapabilityPath
+	}
+	if len(c.Expected.ExpectedWorkflowReviewStatus) > 0 {
+		payload["workflowReviewStatus"] = c.Expected.ExpectedWorkflowReviewStatus
+	}
+	if len(c.Expected.ExpectedObservabilityEvidence) > 0 {
+		payload["observabilityEvidence"] = c.Expected.ExpectedObservabilityEvidence
+	}
+	if len(c.Expected.ExpectedGenericOpsContract) > 0 {
+		payload["generalOpsContract"] = c.Expected.ExpectedGenericOpsContract
+	}
+	return payload
 }
 
 func mockEvent(c Case, seq int64, kind agentui.AgentEventKind, phase agentui.AgentEventPhase, status agentui.AgentEventStatus, ts time.Time, summary string) agentui.AgentEvent {

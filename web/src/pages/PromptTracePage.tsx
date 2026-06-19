@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { ArrowLeftIcon, CopyIcon, FileTextIcon } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +82,7 @@ function sessionCardTitle(group: TraceSessionGroup) {
     group.latestAt ? `最近 ${displayTime(group.latestAt)}` : "",
     `用户请求 ${group.turns.length}`,
     `LLM 请求 ${group.traces.length}`,
+    group.hostAgentCount ? `主机 Agent ${group.hostAgentCount}` : "",
     group.caseIds.length ? `Case ${group.caseIds.join("，")}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -129,23 +131,32 @@ function traceTurnStats(turn: TraceTurnGroup) {
 }
 
 export function PromptTracePage() {
+  const initialQuery = useMemo(() => readPromptTraceQuery(), []);
   const [loading, setLoading] = useState(false);
   const [traces, setTraces] = useState<TraceItem[]>([]);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [activeView, setActiveView] = useState("overview");
-  const [activeRaw, setActiveRaw] = useState("markdown");
+  const [activeView, setActiveView] = useState(initialQuery.view || "overview");
+  const [activeRaw, setActiveRaw] = useState(initialQuery.raw || "markdown");
   const [fileCache, setFileCache] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(Boolean(initialQuery.path));
+  const directPath = initialQuery.path;
 
   async function loadTraces() {
     setLoading(true);
     setError("");
     try {
       const payload = await requestJson<TraceListPayload>("/api/v1/debug/model-input-traces?limit=2000");
-      setTraces(payload.traces || []);
-      setSelectedId((current) => payload.selectedId || current || payload.traces?.[0]?.id || "");
+      const nextTraces = payload.traces || [];
+      setTraces(nextTraces);
+      setSelectedId((current) => {
+        const directTrace = directPath ? findTraceByPath(nextTraces, directPath) : null;
+        return directTrace?.id || payload.selectedId || current || nextTraces[0]?.id || "";
+      });
+      if (directPath) {
+        setDetailOpen(true);
+      }
     } catch (cause) {
       setError((cause as Error).message || "Prompt trace 加载失败");
     } finally {
@@ -165,10 +176,14 @@ export function PromptTracePage() {
 
   const sessionGroups = useMemo(() => buildTraceSessionGroups(filteredTraces), [filteredTraces]);
   const selectedTrace = filteredTraces.find((item) => item.id === selectedId) || sessionGroups[0]?.traces[0] || null;
-  const selectedSessionGroup = selectedTrace ? sessionGroups.find((group) => group.id === traceSessionKey(selectedTrace)) || null : null;
-  const selectedTurnGroup = selectedTrace && selectedSessionGroup ? selectedSessionGroup.turns.find((turn) => turn.id === traceTurnKey(selectedTrace)) || null : null;
+  const selectedSessionGroup = selectedTrace ? sessionGroups.find((group) => group.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
+  const selectedTurnGroup = selectedTrace && selectedSessionGroup ? selectedSessionGroup.turns.find((turn) => turn.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
   const rawPath = selectedTrace ? (activeRaw === "markdown" ? selectedTrace.markdownPath : selectedTrace.jsonPath) || "" : "";
-  const activePath = activeView === "raw" ? rawPath : activeView === "diff" ? selectedTrace?.diffPath || "" : selectedTrace?.jsonPath || "";
+  const activePath = activeView === "raw"
+    ? directPath || rawPath
+    : activeView === "diff"
+      ? selectedTrace?.diffPath || ""
+      : selectedTrace?.jsonPath || "";
 
   useEffect(() => {
     async function loadFile() {
@@ -184,10 +199,38 @@ export function PromptTracePage() {
   }, [activePath, fileCache]);
 
   const jsonContent = selectedTrace?.jsonPath ? fileCache[selectedTrace.jsonPath] || "" : "";
-  const rawContent = rawPath ? fileCache[rawPath] || "" : "";
+  const rawContentPath = activeView === "raw" ? activePath : rawPath;
+  const rawContent = rawContentPath ? fileCache[rawContentPath] || "" : "";
   const diffContent = selectedTrace?.diffPath ? fileCache[selectedTrace.diffPath] || "" : "";
   const traceViewModel = useMemo(() => jsonContent ? parsePromptTrace(jsonContent) : null, [jsonContent]);
   const sourceUserRequests = ((traceViewModel?.agentUiSources as AgentUiSources | undefined)?.userRequests || []);
+  const directJsonPath = isPromptMarkdownDirectView(directPath, activeView, activeRaw) ? selectedTrace?.jsonPath || "" : "";
+
+  useEffect(() => {
+    async function loadDirectJsonMetadata() {
+      if (!directJsonPath || fileCache[directJsonPath]) return;
+      try {
+        const payload = await requestJson<FilePayload>(`/api/v1/debug/model-input-traces/file?path=${encodeURIComponent(directJsonPath)}`);
+        setFileCache((current) => ({ ...current, [directJsonPath]: payload.content || "" }));
+      } catch {
+        // The Prompt MD remains useful even if optional JSON metadata is missing.
+      }
+    }
+    void loadDirectJsonMetadata();
+  }, [directJsonPath, fileCache]);
+
+  if (isPromptMarkdownDirectView(directPath, activeView, activeRaw)) {
+    return (
+      <PromptMarkdownFilePage
+        path={directPath}
+        content={rawContent}
+        loading={Boolean(activePath && !rawContent && !error)}
+        error={error}
+        selectedTrace={selectedTrace}
+        traceViewModel={traceViewModel}
+      />
+    );
+  }
 
   const views = [
     ["overview", "概览"],
@@ -234,6 +277,7 @@ export function PromptTracePage() {
                   <span className="mt-2 flex flex-wrap gap-2">
                     <ToneBadge>用户请求 {group.turns.length}</ToneBadge>
                     <ToneBadge>LLM 请求 {group.traces.length}</ToneBadge>
+                    {group.hostAgentCount ? <ToneBadge>主机 Agent {group.hostAgentCount}</ToneBadge> : null}
                   </span>
                 </button>
               )) : null}
@@ -263,6 +307,7 @@ export function PromptTracePage() {
                 >
                   <div data-testid="prompt-trace-turn-preview" className="line-clamp-2 overflow-hidden text-sm font-medium leading-5 text-slate-950" style={TWO_LINE_CLAMP_STYLE}>{preview}</div>
                   <div className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
+                    <ToneBadge>{turn.role === "host" ? "主机 Agent" : "管理 Agent"}</ToneBadge>
                     <ToneBadge><span className="block max-w-[180px] truncate">{compactTraceLabel(turn.label)}</span></ToneBadge>
                     {stats.usage.totalTokens ? <ToneBadge>Token {formatNumber(stats.usage.totalTokens)}</ToneBadge> : null}
                     {stats.averageDurationMs ? <ToneBadge>平均 {formatDurationMs(stats.averageDurationMs)}</ToneBadge> : null}
@@ -322,6 +367,172 @@ export function PromptTracePage() {
       />
     </SettingsPageFrame>
   );
+}
+
+function readPromptTraceQuery() {
+  if (typeof window === "undefined") {
+    return { path: "", view: "", raw: "" };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view") || "";
+  const raw = params.get("raw") || "";
+  return {
+    path: normalizeModelInputTracePath(params.get("path") || ""),
+    view: ["overview", "layers", "messages", "tools", "diff", "raw"].includes(view) ? view : "",
+    raw: ["markdown", "json"].includes(raw) ? raw : "",
+  };
+}
+
+function normalizeModelInputTracePath(value: string) {
+  const text = value.trim();
+  const marker = "model-input-traces/";
+  const index = text.indexOf(marker);
+  if (index >= 0) {
+    return text.slice(index + marker.length).replace(/^\/+/, "");
+  }
+  return text.replace(/^\/+/, "");
+}
+
+function findTraceByPath(traces: TraceItem[], path: string) {
+  const normalized = normalizeModelInputTracePath(path);
+  return traces.find((trace) => (
+    normalizeModelInputTracePath(trace.id || "") === normalized ||
+    normalizeModelInputTracePath(trace.relativePath || "") === normalized ||
+    normalizeModelInputTracePath(trace.jsonPath || "") === normalized ||
+    normalizeModelInputTracePath(trace.markdownPath || "") === normalized ||
+    normalizeModelInputTracePath(trace.diffPath || "") === normalized
+  )) || null;
+}
+
+function isPromptMarkdownDirectView(path: string, view: string, raw: string) {
+  return Boolean(path && (path.endsWith(".md") || (view === "raw" && raw === "markdown")));
+}
+
+function PromptMarkdownFilePage({
+  path,
+  content,
+  loading,
+  error,
+  selectedTrace,
+  traceViewModel,
+}: {
+  path: string;
+  content: string;
+  loading: boolean;
+  error: string;
+  selectedTrace: TraceItem | null;
+  traceViewModel: ReturnType<typeof parsePromptTrace> | null;
+}) {
+  const [copied, setCopied] = useState<"content" | "path" | "">("");
+  const safePath = normalizeModelInputTracePath(path);
+  const modelCallTitle = promptMarkdownModelCallTitle(selectedTrace, safePath);
+  const fileName = safePath.split("/").filter(Boolean).at(-1) || safePath || "Prompt MD";
+  const toolCount = selectedTrace?.visibleTools?.length || traceViewModel?.summary.visibleToolCount || 0;
+
+  function returnToAgent() {
+    window.history.back();
+  }
+
+  async function copyText(value: string, kind: "content" | "path") {
+    if (!value) return;
+    try {
+      await navigator.clipboard?.writeText(value);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(""), 1500);
+    } catch {
+      setCopied("");
+    }
+  }
+
+  return (
+    <SettingsPageFrame
+      title="Prompt MD"
+      description="查看主机 Agent 发给 LLM 的完整模型输入。"
+      actions={(
+        <button
+          type="button"
+          data-testid="prompt-md-header-return"
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          onClick={returnToAgent}
+        >
+          <ArrowLeftIcon className="size-4" aria-hidden="true" />
+          返回主机 Agent
+        </button>
+      )}
+    >
+      <section className="grid min-h-[calc(100vh-8rem)] grid-rows-[auto_minmax(0,1fr)] gap-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-600">
+                  <FileTextIcon className="size-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold text-slate-950">{modelCallTitle}</h2>
+                  <p className="mt-1 truncate font-mono text-xs text-slate-500" title={safePath}>{safePath}</p>
+                </div>
+              </div>
+              <div className="mt-3 flex min-w-0 flex-wrap gap-2">
+                {selectedTrace?.createdAt ? <ToneBadge>{displayTime(selectedTrace.createdAt)}</ToneBadge> : null}
+                {selectedTrace?.usage?.totalTokens ? <ToneBadge>Token {formatNumber(selectedTrace.usage.totalTokens)}</ToneBadge> : null}
+                <ToneBadge>工具 {toolCount}</ToneBadge>
+                <ToneBadge>{fileName}</ToneBadge>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => copyText(content, "content")}
+                disabled={!content}
+              >
+                <CopyIcon className="size-4" aria-hidden="true" />
+                {copied === "content" ? "已复制" : "复制内容"}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => copyText(safePath, "path")}
+              >
+                <CopyIcon className="size-4" aria-hidden="true" />
+                {copied === "path" ? "已复制" : "复制路径"}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={returnToAgent}
+              >
+                <ArrowLeftIcon className="size-4" aria-hidden="true" />
+                返回 Agent
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
+        <article className="min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <pre
+            data-testid="prompt-md-content"
+            className="h-full min-h-[520px] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-5 text-slate-900"
+          >
+            {loading ? "Loading Prompt MD..." : content || "暂无 Prompt MD 内容"}
+          </pre>
+        </article>
+      </section>
+    </SettingsPageFrame>
+  );
+}
+
+function promptMarkdownModelCallTitle(trace: TraceItem | null, path: string) {
+  if (typeof trace?.iteration === "number") {
+    return `第 ${trace.iteration} 轮调用 LLM`;
+  }
+  const match = path.match(/iteration-(\d+)/);
+  if (match) {
+    return `第 ${Number(match[1])} 轮调用 LLM`;
+  }
+  return "Prompt MD";
 }
 
 function PromptTraceDetailDialog({
@@ -660,6 +871,7 @@ function formatGovernanceValue(value: string | number) {
 type TraceTurnGroup = {
   id: string;
   label: string;
+  role: "manager" | "host";
   preview: string;
   traces: TraceItem[];
   latestAt: string;
@@ -672,23 +884,29 @@ type TraceSessionGroup = {
   traces: TraceItem[];
   turns: TraceTurnGroup[];
   caseIds: string[];
+  hostAgentCount: number;
   latestAt: string;
 };
 
 function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
+  const hostParentTurnIds = new Set(items.map(hostParentTurnId).filter(Boolean) as string[]);
   const groups = new Map<string, TraceSessionGroup>();
   for (const trace of items) {
-    const sessionId = traceSessionKey(trace);
+    const sessionId = traceSessionKey(trace, hostParentTurnIds);
     const group = groups.get(sessionId) || {
       id: sessionId,
-      label: trace.sessionId || "未知会话",
+      label: sessionLabelForTrace(trace, sessionId),
       topic: "",
       traces: [],
       turns: [],
       caseIds: [],
+      hostAgentCount: 0,
       latestAt: "",
     };
     group.traces.push(trace);
+    if (isHostAgentTrace(trace)) {
+      group.hostAgentCount = uniqueHostAgentCount(group.traces);
+    }
     if (trace.caseId && !group.caseIds.includes(trace.caseId)) {
       group.caseIds.push(trace.caseId);
     }
@@ -702,7 +920,8 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
       const turnId = traceTurnKey(trace);
       const turn = turns.get(turnId) || {
         id: turnId,
-        label: trace.turnId || "未知 Turn",
+        label: turnLabelForTrace(trace),
+        role: isHostAgentTrace(trace) ? "host" : "manager",
         preview: "",
         traces: [],
         latestAt: "",
@@ -718,19 +937,88 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
       turn.traces.sort(compareTraceRequestOrder);
     }
     group.turns = Array.from(turns.values()).sort(compareLatestDesc);
-    group.topic = group.turns.find((turn) => turn.preview)?.preview || group.label;
+    group.topic = group.turns.find((turn) => turn.role === "manager" && turn.preview)?.preview
+      || group.turns.find((turn) => turn.preview)?.preview
+      || group.label;
     group.traces.sort(compareTraceDesc);
   }
 
   return Array.from(groups.values()).sort(compareLatestDesc);
 }
 
-function traceSessionKey(trace: TraceItem) {
+function traceSessionKey(trace: TraceItem, hostParentTurnIds = new Set<string>()) {
+  const parentTurnId = hostParentTurnId(trace);
+  if (parentTurnId) {
+    return `hostops:${parentTurnId}`;
+  }
+  if (trace.turnId && hostParentTurnIds.has(trace.turnId)) {
+    return `hostops:${trace.turnId}`;
+  }
   return trace.sessionId || "unknown-session";
 }
 
 function traceTurnKey(trace: TraceItem) {
+  if (isHostAgentTrace(trace)) {
+    return `host:${hostAgentKey(trace)}:${trace.turnId || "unknown-turn"}`;
+  }
   return trace.turnId || "unknown-turn";
+}
+
+function isHostAgentTrace(trace: TraceItem) {
+  return Boolean(
+    trace.sessionId?.startsWith("host-child:") ||
+    trace.relativePath?.startsWith("host-child-") ||
+    trace.id?.startsWith("host-child-"),
+  );
+}
+
+function hostParentTurnId(trace: TraceItem) {
+  const fromSession = trace.sessionId?.match(/^host-child:hostops:(turn-[^:]+):/)?.[1];
+  if (fromSession) return fromSession;
+  const path = trace.relativePath || trace.id || "";
+  return path.match(/^host-child-hostops-(turn-[^-\/]+(?:-[^-\/]+)*)-/)?.[1] || "";
+}
+
+function hostAgentKey(trace: TraceItem) {
+  return hostAgentDisplay(trace) || trace.sessionId || trace.relativePath || trace.id || "host-agent";
+}
+
+function hostAgentDisplay(trace: TraceItem) {
+  const sessionHost = trace.sessionId?.match(/^host-child:hostops:turn-[^:]+:(.+)$/)?.[1] || "";
+  const path = trace.relativePath || trace.id || "";
+  const pathHost = path.match(/^host-child-hostops-turn-[^-\/]+(?:-[^-\/]+)*-(.+?)\//)?.[1] || "";
+  return formatHostAgentName(sessionHost || pathHost);
+}
+
+function formatHostAgentName(value: string) {
+  const text = value.trim();
+  if (!text) return "";
+  const normalized = text.startsWith("remote-") ? text.slice("remote-".length) : text;
+  const octets = normalized.match(/^(\d+)-(\d+)-(\d+)-(\d+)$/);
+  if (octets) {
+    return `@${octets.slice(1).join(".")}`;
+  }
+  return text.startsWith("@") ? text : `@${text}`;
+}
+
+function sessionLabelForTrace(trace: TraceItem, sessionId: string) {
+  const parentTurnId = hostParentTurnId(trace);
+  if (parentTurnId || sessionId.startsWith("hostops:")) {
+    return parentTurnId || sessionId.replace(/^hostops:/, "");
+  }
+  return trace.sessionId || "未知会话";
+}
+
+function turnLabelForTrace(trace: TraceItem) {
+  if (isHostAgentTrace(trace)) {
+    return hostAgentDisplay(trace) || trace.turnId || "主机 Agent";
+  }
+  return trace.turnId || "未知 Turn";
+}
+
+function uniqueHostAgentCount(traces: TraceItem[]) {
+  const keys = new Set(traces.filter(isHostAgentTrace).map(hostAgentKey));
+  return keys.size;
 }
 
 function latestTime(left = "", right = "") {

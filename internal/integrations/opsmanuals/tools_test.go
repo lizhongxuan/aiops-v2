@@ -39,6 +39,11 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
 		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
+	for _, want := range []string{"repair", "recover", "restore", "修复", "恢复"} {
+		if !containsString(meta.Triggers, want) {
+			t.Fatalf("triggers = %#v, missing %q", meta.Triggers, want)
+		}
+	}
 	discovery := meta.EffectiveDiscovery()
 	if discovery.DiscoveryGroup != "runbook" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
 		t.Fatalf("search_ops_manuals discovery = %+v, want deferred runbook select-only discovery", discovery)

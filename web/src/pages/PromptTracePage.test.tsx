@@ -2,6 +2,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppShellChromeProvider, useAppShellChrome } from "@/app/AppShellChromeContext";
+
 import { PromptTracePage } from "./PromptTracePage";
 
 const traceJson = {
@@ -147,7 +149,7 @@ function mockFetch(input: RequestInfo | URL) {
   if (url.includes("/api/v1/debug/model-input-traces/file")) {
     const path = new URL(url, "http://localhost").searchParams.get("path") || "";
     const content = activeFiles[path] || traceJson;
-    return jsonResponse({ content: JSON.stringify(content) });
+    return jsonResponse({ content: typeof content === "string" ? content : JSON.stringify(content) });
   }
   if (url.includes("/api/v1/debug/model-input-traces")) {
     return jsonResponse({
@@ -157,6 +159,11 @@ function mockFetch(input: RequestInfo | URL) {
     });
   }
   return jsonResponse({});
+}
+
+function ChromeActionsProbe() {
+  const { headerActions } = useAppShellChrome();
+  return <div data-testid="chrome-actions">{headerActions}</div>;
 }
 
 async function flush() {
@@ -204,6 +211,7 @@ describe("PromptTracePage", () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    window.history.replaceState(null, "", "/");
   });
 
   it("keeps Prompt Trace lists compact and opens LLM details in a dialog", async () => {
@@ -322,6 +330,75 @@ describe("PromptTracePage", () => {
     expect(container.innerHTML).not.toContain("page-cookie");
   });
 
+  it("opens a prompt markdown file directly as a dedicated readable page", async () => {
+    activeFiles = {
+      ".data/model-input-traces/sess-1/turn-1/iteration-001.json": traceJson,
+      "sess-1/turn-1/iteration-001.md": "# Direct Prompt MD\n\n主机 Agent 发给 LLM 的完整模型输入。",
+    };
+    window.history.replaceState(
+      null,
+      "",
+      "/debug/prompts?path=.data%2Fmodel-input-traces%2Fsess-1%2Fturn-1%2Fiteration-001.md&view=raw&raw=markdown",
+    );
+
+    await act(async () => {
+      root.render(
+        <AppShellChromeProvider>
+          <PromptTracePage />
+          <ChromeActionsProbe />
+        </AppShellChromeProvider>,
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="chrome-actions"]')?.textContent).toContain("返回主机 Agent");
+    expect(container.querySelector('[data-testid="prompt-md-header-return"]')).not.toBeNull();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain("Prompt MD");
+    expect(container.textContent).toContain("主机 Agent 发给 LLM 的完整模型输入");
+    expect(container.textContent).toContain("Direct Prompt MD");
+    expect(container.textContent).toContain("第 1 轮调用 LLM");
+    expect(container.textContent).toContain("Token 29");
+    expect(container.textContent).toContain("工具 1");
+    expect(container.textContent).toContain("复制内容");
+    expect(container.textContent).toContain("复制路径");
+    expect(container.textContent).toContain("返回 Agent");
+    expect(container.textContent).toContain("sess-1/turn-1/iteration-001.md");
+    expect(container.textContent).not.toContain("/opt/aiops-v2");
+    expect(container.textContent).not.toContain("历史会话");
+    expect(container.textContent).not.toContain("用户请求列表");
+    expect(container.textContent).not.toContain("LLM 请求列表");
+  });
+
+  it("normalizes an absolute model-input-traces path before opening prompt markdown", async () => {
+    activeFiles = {
+      ".data/model-input-traces/sess-1/turn-1/iteration-001.json": traceJson,
+      "sess-1/turn-1/iteration-001.md": "# Normalized Prompt MD\n\n来自绝对路径参数。",
+    };
+    window.history.replaceState(
+      null,
+      "",
+      "/debug/prompts?path=%2Fopt%2Faiops-v2%2Fdata%2Fmodel-input-traces%2Fsess-1%2Fturn-1%2Fiteration-001.md&view=raw&raw=markdown",
+    );
+
+    await act(async () => {
+      root.render(<PromptTracePage />);
+    });
+    await flush();
+
+    const requestedPaths = vi.mocked(globalThis.fetch).mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname === "/api/v1/debug/model-input-traces/file")
+      .map((url) => url.searchParams.get("path"));
+    expect(requestedPaths).toContain("sess-1/turn-1/iteration-001.md");
+    expect(requestedPaths).not.toContain("/opt/aiops-v2/data/model-input-traces/sess-1/turn-1/iteration-001.md");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain("Normalized Prompt MD");
+    expect(container.textContent).toContain("来自绝对路径参数");
+    expect(container.textContent).toContain("sess-1/turn-1/iteration-001.md");
+    expect(container.textContent).not.toContain("/opt/aiops-v2");
+  });
+
   it("keeps each user request preview bound to its own turn", async () => {
     activeTraceList = [
       {
@@ -372,6 +449,62 @@ describe("PromptTracePage", () => {
 
     const previewsAfter = Array.from(container.querySelectorAll('[data-testid="prompt-trace-turn-preview"]')).map((node) => node.textContent || "");
     expect(previewsAfter).toEqual(["检查 checkout p95 延迟", "修复 PG 集群主从复制延迟"]);
+  });
+
+  it("folds host agent traces under the parent manager turn instead of listing them as separate sessions", async () => {
+    activeTraceList = [
+      {
+        id: "manager-trace",
+        sessionId: "sess-main",
+        turnId: "turn-parent",
+        iteration: 0,
+        createdAt: "2026-05-12T10:00:00+08:00",
+        jsonPath: ".data/model-input-traces/sess-main/turn-parent/iteration-000.json",
+        relativePath: "sess-main/turn-parent/iteration-000.json",
+        userPromptPreview: "查看三台主机状态",
+        usage: { totalTokens: 10 },
+      },
+      {
+        id: "host-trace",
+        sessionId: "host-child:hostops:turn-parent:remote-1-1-1-1",
+        turnId: "agent-turn-a",
+        iteration: 0,
+        createdAt: "2026-05-12T10:01:00+08:00",
+        jsonPath: ".data/model-input-traces/host-child/agent-turn-a/iteration-000.json",
+        relativePath: "host-child-hostops-turn-parent-remote-1-1-1-1/agent-turn-a/iteration-000.json",
+        userPromptPreview: "@1.1.1.1 检查状态",
+        usage: { totalTokens: 20 },
+      },
+    ];
+    activeFiles = {
+      ".data/model-input-traces/sess-main/turn-parent/iteration-000.json": traceJson,
+      ".data/model-input-traces/host-child/agent-turn-a/iteration-000.json": traceJson,
+    };
+
+    await act(async () => {
+      root.render(<PromptTracePage />);
+    });
+    await flush();
+
+    const sessionCards = Array.from(container.querySelectorAll('[data-testid="prompt-trace-session-card"]'));
+    expect(sessionCards).toHaveLength(1);
+    expect(sessionCards[0]?.textContent).toContain("查看三台主机状态");
+    expect(sessionCards[0]?.textContent).toContain("主机 Agent 1");
+    expect(sessionCards[0]?.textContent).not.toContain("host-child:hostops");
+
+    const turnCards = Array.from(container.querySelectorAll('[data-testid="prompt-trace-turn-card"]')) as HTMLButtonElement[];
+    expect(turnCards).toHaveLength(2);
+    expect(turnCards[0]?.textContent).toContain("主机 Agent");
+    expect(turnCards[0]?.textContent).toContain("@1.1.1.1 检查状态");
+    expect(turnCards[1]?.textContent).toContain("管理 Agent");
+    expect(turnCards[1]?.textContent).toContain("查看三台主机状态");
+
+    await act(async () => {
+      turnCards[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="prompt-trace-llm-path"]')?.textContent).toContain("host-child-hostops-turn-parent");
   });
 
   it("sorts LLM requests by request order inside the selected turn", async () => {

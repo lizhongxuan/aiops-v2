@@ -43,6 +43,50 @@ func TestFinalEvidenceRejectsHighConfidenceAfterFailedTool(t *testing.T) {
 	}
 }
 
+func TestFinalEvidenceAllowsLowConfidenceUnknownAfterFailedTool(t *testing.T) {
+	state := FinalEvidenceState{
+		FailedTools: []FailedToolImpact{{
+			ToolCallID:   "call-coroot",
+			ToolName:     "coroot_collect_rca_context",
+			FailureClass: "not_configured",
+			Impact:       "required evidence is missing",
+		}},
+		Confidence: FinalEvidenceConfidenceLow,
+	}
+
+	answer := "根因（置信度：低）：无法确定（Coroot 未配置，缺乏依赖边、指标、日志、链路等直接证据）。"
+	decision := VerifyFinalEvidence(answer, state)
+	if decision.Action != FinalEvidenceActionAllow {
+		t.Fatalf("decision action = %q, want allow for low-confidence unknown blocker: %#v", decision.Action, decision)
+	}
+}
+
+func TestFinalEvidenceDowngradesHighConfidenceMissingEvidenceClaim(t *testing.T) {
+	state := FinalEvidenceState{
+		Checked: []CheckedEvidence{{
+			ToolCallID: "call-mcp-list",
+			ToolName:   "list_mcp_resources",
+			Summary:    "resources empty",
+		}},
+		FailedTools: []FailedToolImpact{{
+			ToolCallID:   "call-coroot",
+			ToolName:     "coroot_collect_rca_context",
+			FailureClass: "tool_business_error",
+			Impact:       "required evidence is missing",
+		}},
+		Confidence: FinalEvidenceConfidenceMedium,
+	}
+
+	answer := "根因：Coroot未配置，无法收集环境A的A服务RCA证据。\n置信度：高\n缺失证据：A服务的依赖链、指标、日志、链路追踪。"
+	decision := VerifyFinalEvidence(answer, state)
+	if decision.Action != FinalEvidenceActionDowngrade || decision.Confidence != FinalEvidenceConfidenceLow {
+		t.Fatalf("decision = %#v, want low-confidence downgrade", decision)
+	}
+	if !containsString(decision.Reasons, "missing_evidence_claim_requires_low_confidence") {
+		t.Fatalf("reasons = %v, want missing evidence reason", decision.Reasons)
+	}
+}
+
 func TestFinalEvidenceAllowsCheckedClaims(t *testing.T) {
 	state := FinalEvidenceState{
 		Checked: []CheckedEvidence{{

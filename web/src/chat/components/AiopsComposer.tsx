@@ -13,11 +13,14 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { listHostInventory, type HostInventoryItem } from "@/api/hostInventory";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { isAiopsTransportRunning } from "@/transport/aiopsTransportConverter";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 import type { AiopsTransportApproval, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 import { buildOpsManualParamFormSubmit, resolveStopDispatchTarget } from "./aiopsComposerActions";
+import type { DisplayHostMention } from "./HostMentionChip";
+import { HostMentionInlineOverlay } from "./HostMentionInlineOverlay";
 import { HostMentionSuggestionPopover } from "./HostMentionSuggestionPopover";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
@@ -728,10 +731,12 @@ function ComposerBody({
 }) {
   const workspace = useSessionWorkspaceContext();
   const composer = useComposerRuntime();
+  const composerState = useComposer((snapshot) => snapshot);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [hosts, setHosts] = useState<HostInventoryItem[]>([]);
   const [hostInventoryFailed, setHostInventoryFailed] = useState(false);
   const [activeToken, setActiveToken] = useState<ActiveHostMentionToken | null>(null);
+  const [inputText, setInputText] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const suggestionPopoverId = "host-mention-suggestions";
 
@@ -762,11 +767,16 @@ function ComposerBody({
     () => (activeToken && !hostInventoryFailed ? searchHostMentionSuggestions(hosts, activeToken.query, { limit: 10 }) : []),
     [activeToken, hostInventoryFailed, hosts],
   );
+  const currentComposerText = inputText || composerState?.text || "";
+  const inlineHostMentions = useMemo(() => displayHostMentions(currentComposerText, hosts), [currentComposerText, hosts]);
+  const selectedHostMentions = useMemo(() => uniqueDisplayHostMentions(inlineHostMentions), [inlineHostMentions]);
+  const hasInlineHostMentions = inlineHostMentions.length > 0;
   const suggestionOpen = Boolean(activeToken) && !isRunning && !workspace.composerDisabledReason && !hostInventoryFailed;
 
   const refreshActiveToken = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
+    setInputText(input.value);
     const cursor = input.selectionStart ?? input.value.length;
     const nextToken = findActiveHostMentionToken(input.value, cursor);
     setActiveToken(nextToken);
@@ -779,6 +789,7 @@ function ComposerBody({
       if (!input || !activeToken) return;
       const next = replaceActiveHostMention(input.value, activeToken, suggestion);
       composer.setText(next.text);
+      setInputText(next.text);
       input.value = next.text;
       input.setSelectionRange(next.cursor, next.cursor);
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -806,59 +817,132 @@ function ComposerBody({
           onSelect={applySuggestion}
         />
       ) : null}
-      <ComposerPrimitive.Input asChild submitOnEnter>
-        <Textarea
-          ref={inputRef}
-          data-testid="omnibar-input"
-          rows={1}
-          placeholder="输入你的问题或任务"
-          disabled={Boolean(workspace.composerDisabledReason) || isRunning}
-          aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
-          aria-expanded={suggestionOpen}
-          onInput={refreshActiveToken}
-          onClick={refreshActiveToken}
-          onKeyUp={(event) => {
-            if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
-              return;
-            }
-            refreshActiveToken();
-          }}
-          onKeyDown={(event) => {
-            if (!suggestionOpen) return;
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setActiveToken(null);
-              return;
-            }
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setHighlightedIndex((index) => (suggestions.length ? (index + 1) % suggestions.length : 0));
-              return;
-            }
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setHighlightedIndex((index) => (suggestions.length ? (index - 1 + suggestions.length) % suggestions.length : 0));
-              return;
-            }
-            if ((event.key === "Enter" || event.key === "Tab") && suggestions[highlightedIndex]) {
-              event.preventDefault();
-              applySuggestion(suggestions[highlightedIndex]);
-            }
-          }}
-          className={
-            variant === "chat"
-              ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
-              : "max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm"
-          }
-        />
-      </ComposerPrimitive.Input>
+      <div className={variant === "chat" ? "relative min-h-12" : "relative min-w-0 flex-1"}>
+        <HostMentionInlineOverlay text={currentComposerText} mentions={inlineHostMentions} variant={variant} />
+        <ComposerPrimitive.Input asChild submitOnEnter>
+          <Textarea
+            ref={inputRef}
+            data-testid="omnibar-input"
+            rows={1}
+            placeholder="输入你的问题或任务"
+            disabled={Boolean(workspace.composerDisabledReason) || isRunning}
+            aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
+            aria-expanded={suggestionOpen}
+            onInput={refreshActiveToken}
+            onClick={refreshActiveToken}
+            onKeyUp={(event) => {
+              if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
+                return;
+              }
+              refreshActiveToken();
+            }}
+            onKeyDown={(event) => {
+              if (!suggestionOpen) return;
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setActiveToken(null);
+                return;
+              }
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setHighlightedIndex((index) => (suggestions.length ? (index + 1) % suggestions.length : 0));
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setHighlightedIndex((index) => (suggestions.length ? (index - 1 + suggestions.length) % suggestions.length : 0));
+                return;
+              }
+              if ((event.key === "Enter" || event.key === "Tab") && suggestions[highlightedIndex]) {
+                event.preventDefault();
+                applySuggestion(suggestions[highlightedIndex]);
+              }
+            }}
+            className={cn(
+              variant === "chat"
+                ? "relative z-10 max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
+                : "relative z-10 max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm",
+              hasInlineHostMentions && "text-transparent caret-slate-950 selection:bg-sky-200/70",
+            )}
+          />
+        </ComposerPrimitive.Input>
+      </div>
 
       <div className={variant === "chat" ? "flex shrink-0 items-center justify-between" : "mb-1 flex shrink-0 items-center gap-2"}>
         <span className="text-xs text-slate-400 pl-1">{workspace.llmLabel}</span>
-        <TargetAwareSendButton variant={variant} isRunning={isRunning} state={state} threadIsRunning={threadIsRunning} />
+        <TargetAwareSendButton
+          variant={variant}
+          isRunning={isRunning}
+          state={state}
+          threadIsRunning={threadIsRunning}
+          hostMentions={selectedHostMentions}
+          onComposerCleared={() => {
+            setInputText("");
+            if (inputRef.current) {
+              inputRef.current.value = "";
+            }
+          }}
+        />
       </div>
     </ComposerPrimitive.Root>
   );
+}
+
+function displayHostMentions(text: string, hosts: HostInventoryItem[]): DisplayHostMention[] {
+  const mentions: DisplayHostMention[] = [];
+  for (const mention of parseHostMentionCandidates(text)) {
+    const host = findHostForMention(hosts, mention.value);
+    if (!host) {
+      continue;
+    }
+    const displayMention: DisplayHostMention = {
+      ...mention,
+      hostId: cleanHostText(host.id) || cleanHostText(host.hostId),
+      displayName: cleanHostText(host.name) || cleanHostText(host.ip) || cleanHostText((host as HostInventoryItem & { address?: string }).address) || mention.raw,
+      resolved: true,
+    };
+    mentions.push(displayMention);
+  }
+  return mentions;
+}
+
+function uniqueDisplayHostMentions(mentions: DisplayHostMention[]): DisplayHostMention[] {
+  const seen = new Set<string>();
+  const selected: DisplayHostMention[] = [];
+  for (const displayMention of mentions) {
+    const key = hostDisplayMentionKey(displayMention);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    selected.push(displayMention);
+  }
+  return selected;
+}
+
+function findHostForMention(hosts: HostInventoryItem[], value: string) {
+  const normalized = normalizeHostMentionValue(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return hosts.find((host) => {
+    const extended = host as HostInventoryItem & { address?: string; hostId?: string };
+    return [host.name, host.ip, extended.address, host.id, extended.hostId]
+      .map(normalizeHostMentionValue)
+      .some((candidate) => candidate === normalized);
+  });
+}
+
+function hostDisplayMentionKey(mention: DisplayHostMention) {
+  return normalizeHostMentionValue(mention.hostId || mention.value || mention.raw);
+}
+
+function normalizeHostMentionValue(value: unknown) {
+  return cleanHostText(value).replace(/^@+/, "").toLowerCase();
+}
+
+function cleanHostText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function TargetAwareSendButton({
@@ -866,11 +950,15 @@ function TargetAwareSendButton({
   isRunning,
   state,
   threadIsRunning,
+  hostMentions,
+  onComposerCleared,
 }: {
   variant: "default" | "chat";
   isRunning: boolean;
   state: AiopsTransportState;
   threadIsRunning: boolean;
+  hostMentions: DisplayHostMention[];
+  onComposerCleared: () => void;
 }) {
   const api = useAssistantApi();
   const composer = useComposerRuntime();
@@ -944,14 +1032,14 @@ function TargetAwareSendButton({
         const text = composer.getState().text.trim();
         if (!text) return;
         composer.setText("");
-        const mentions = parseHostMentionCandidates(text);
+        onComposerCleared();
         const command = {
           type: "add-message",
           message: {
             role: "user",
             metadata: {
               ...target.metadata,
-              ...buildHostMentionMetadata(mentions),
+              ...buildHostMentionMetadata(hostMentions),
             },
             ...(target.hostId ? { hostId: target.hostId } : {}),
             parts: [{ type: "text", text }],

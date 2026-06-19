@@ -420,17 +420,13 @@ test.describe("企业级智能运维助手移动端关键流程", () => {
     await expect(page.getByText("图表已生成")).toBeVisible();
   });
 
-  test("主机画像详情字段在移动端不重叠", async ({ page }) => {
+  test("主机列表基础字段在移动端不重叠", async ({ page }) => {
     await page.goto("/settings/hosts");
 
-    await expect(page.locator("main").getByText("主机与租约", { exact: true })).toBeVisible();
-    const detail = page.locator("aside").filter({ hasText: "基础信息" }).first();
-    await expect(detail).toContainText("运行环境");
-    await expect(detail).toContainText("已安装 Agent");
-    await expect(detail).toContainText("service runtime");
-    await expect(detail).toContainText("最近 Case");
-    await expect(detail).toContainText("当前 HostLease");
-    await expect(detail).toContainText("aiops-agent.service");
-    await expectWithinViewport(page, detail);
+    await expect(page.locator("main").getByText("主机列表", { exact: true })).toBeVisible();
+    const table = page.locator(".hosts-table-shell").first();
+    await expect(table).toContainText("主机 IP / 用户名");
+    await expect(table).toContainText("基础信息");
+    await expectWithinViewport(page, table);
   });
 });

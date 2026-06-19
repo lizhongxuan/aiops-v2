@@ -73,11 +73,17 @@ func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceV
 	answer = strings.TrimSpace(answer)
 	claimsChecked := finalAnswerClaimsChecked(answer)
 	highConfidenceClaim := finalAnswerClaimsHighConfidence(answer) || state.Confidence == FinalEvidenceConfidenceHigh
+	missingEvidenceClaim := finalAnswerClaimsMissingEvidence(answer)
 
 	if len(state.FailedTools) > 0 && highConfidenceClaim {
 		decision.Action = FinalEvidenceActionDowngrade
 		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceMedium)
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "failed_tool_requires_lower_confidence")
+	}
+	if missingEvidenceClaim && highConfidenceClaim {
+		decision.Action = FinalEvidenceActionDowngrade
+		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
+		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "missing_evidence_claim_requires_low_confidence")
 	}
 	if len(state.NotChecked) > 0 && (claimsChecked || highConfidenceClaim) {
 		decision.Action = FinalEvidenceActionDowngrade
@@ -234,10 +240,66 @@ func finalAnswerClaimsChecked(answer string) bool {
 
 func finalAnswerClaimsHighConfidence(answer string) bool {
 	text := strings.ToLower(answer)
+	for _, marker := range []string{"高置信", "confirmed", "definitely", "no issue", "normal"} {
+		if strings.Contains(text, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	compact := compactFinalEvidenceText(text)
+	for _, marker := range []string{"置信度:高", "置信度：高", "置信度高", "confidence:high", "confidence：high"} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	for _, marker := range []string{"确定", "明确", "正常"} {
+		if containsAffirmedChineseMarker(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalAnswerClaimsMissingEvidence(answer string) bool {
+	text := strings.ToLower(answer)
 	for _, marker := range []string{
-		"高置信", "确定", "明确", "confirmed", "definitely", "no issue", "normal", "正常",
+		"缺失证据", "缺乏", "无法收集", "无法获取", "无法完成", "无法确定", "未配置", "not_configured", "not configured", "missing_evidence", "missing evidence",
 	} {
 		if strings.Contains(text, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func compactFinalEvidenceText(text string) string {
+	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
+	return replacer.Replace(text)
+}
+
+func containsAffirmedChineseMarker(text, marker string) bool {
+	for offset := 0; ; {
+		index := strings.Index(text[offset:], marker)
+		if index < 0 {
+			return false
+		}
+		absolute := offset + index
+		if !hasChineseNegationPrefix(text[:absolute]) {
+			return true
+		}
+		offset = absolute + len(marker)
+	}
+}
+
+func hasChineseNegationPrefix(prefix string) bool {
+	runes := []rune(prefix)
+	if len(runes) > 6 {
+		runes = runes[len(runes)-6:]
+	}
+	tail := string(runes)
+	for _, marker := range []string{
+		"无法", "不能", "未能", "不可", "不", "并未", "没有", "缺乏",
+	} {
+		if strings.Contains(tail, marker) {
 			return true
 		}
 	}

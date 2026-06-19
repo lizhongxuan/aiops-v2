@@ -36,6 +36,17 @@
       "tool_result",
       "final_answer"
     ],
+    "expectedResourceRoles": [
+      "data_node",
+      "monitor"
+    ],
+    "expectedCapabilityPath": [
+      "stateful_middleware_cluster_repair"
+    ],
+    "expectedGenericOpsContract": [
+      "read_only_evidence_first",
+      "approval_before_mutation"
+    ],
     "mustHaveEvidence": true,
     "mustMentionEvidenceLimits": true
   },

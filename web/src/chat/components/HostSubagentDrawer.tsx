@@ -26,6 +26,7 @@ import type {
   AiopsHostAgentToolTrace,
   AiopsHostAgentTraceEntry,
   AiopsTransportChildAgent,
+  AiopsTransportState,
 } from "@/transport/aiopsTransportTypes";
 
 import { HostSubagentTabs, type HostSubagentTabId } from "./HostSubagentTabs";
@@ -38,31 +39,44 @@ type LoadState =
 
 type HostSubagentDrawerProps = {
   open: boolean;
+  childAgentId?: string;
   childAgent?: AiopsTransportChildAgent;
-  onOpenChange: (open: boolean) => void;
+  state?: DrawerTransportState;
+  onOpenChange?: (open: boolean) => void;
   loadTranscript?: (childAgentId: string) => Promise<HostChildAgentTranscript>;
   submitApprovalDecision?: (approvalId: string, decision: string) => Promise<unknown>;
 };
 
+type DrawerTransportState = AiopsTransportState & {
+  childAgentTranscripts?: Record<string, Array<Partial<HostOpsTranscriptItem>>>;
+};
+
 export function HostSubagentDrawer({
   open,
+  childAgentId: childAgentIdProp,
   childAgent,
-  onOpenChange,
+  state,
+  onOpenChange = () => undefined,
   loadTranscript = getChildAgentTranscript,
   submitApprovalDecision = submitHostOpsApprovalDecision,
 }: HostSubagentDrawerProps) {
-  const childAgentId = childAgent?.id ?? "";
+  const selectedChildAgent = childAgent || (childAgentIdProp ? state?.childAgents?.[childAgentIdProp] : undefined);
+  const childAgentId = selectedChildAgent?.id ?? childAgentIdProp ?? "";
+  const stateTranscript = useMemo(() => transcriptFromState(state, childAgentId), [childAgentId, state]);
   const [loadState, setLoadState] = useState<LoadState>({ status: "idle", transcript: null, error: "" });
-  const [activeTab, setActiveTab] = useState<HostSubagentTabId>(() => defaultTabForChildAgent(childAgent));
-  const [traceExpanded, setTraceExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState<HostSubagentTabId>(() => defaultTabForChildAgent(selectedChildAgent));
 
   useEffect(() => {
-    setActiveTab(defaultTabForChildAgent(childAgent));
-  }, [childAgentId, childAgent?.status]);
+    setActiveTab(defaultTabForChildAgent(selectedChildAgent));
+  }, [childAgentId, selectedChildAgent?.status]);
 
   useEffect(() => {
     if (!open || !childAgentId) {
       setLoadState({ status: "idle", transcript: null, error: "" });
+      return;
+    }
+    if (stateTranscript) {
+      setLoadState({ status: "loaded", transcript: stateTranscript, error: "" });
       return;
     }
 
@@ -88,16 +102,17 @@ export function HostSubagentDrawer({
     return () => {
       cancelled = true;
     };
-  }, [childAgentId, loadTranscript, open]);
+  }, [childAgentId, loadTranscript, open, stateTranscript]);
 
-  const hostLabel = useMemo(() => formatHostLabel(childAgent), [childAgent]);
+  const subtitle = useMemo(() => formatDrawerSubtitle(selectedChildAgent), [selectedChildAgent]);
 
   return (
-    <Sheet open={open && Boolean(childAgent)} onOpenChange={onOpenChange}>
-      <SheetContent
-        showCloseButton={false}
-        className="!w-[min(640px,calc(100vw-24px))] !max-w-none gap-0 overflow-hidden sm:!max-w-[640px]"
-      >
+    <Sheet open={open && Boolean(selectedChildAgent)} onOpenChange={onOpenChange}>
+        <SheetContent
+          showCloseButton={false}
+          overlayClassName="left-0 lg:left-[var(--aiops-shell-sidebar-width,18rem)]"
+          className="!top-[var(--aiops-shell-header-height,3.5rem)] !bottom-0 !h-[calc(100dvh-var(--aiops-shell-header-height,3.5rem))] !w-[min(640px,calc(100vw-24px))] !max-w-none gap-0 overflow-hidden sm:!max-w-[640px] lg:!w-[min(640px,calc(100vw-var(--aiops-shell-sidebar-width,18rem)-24px))]"
+        >
         <SheetHeader className="border-b border-zinc-200 px-4 py-3">
           <div className="flex min-w-0 items-start gap-3">
             <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-zinc-50 text-zinc-700">
@@ -105,10 +120,7 @@ export function HostSubagentDrawer({
             </div>
             <div className="min-w-0 flex-1">
               <SheetTitle className="truncate">主机 Agent 详情</SheetTitle>
-              <SheetDescription className="truncate">
-                {childAgent?.hostDisplayName || "未知主机"} {hostLabel ? `@${hostLabel}` : ""}
-                {childAgent?.task ? ` · ${childAgent.task}` : ""}
-              </SheetDescription>
+              <SheetDescription className="truncate">{subtitle}</SheetDescription>
             </div>
             <SheetClose asChild>
               <Button
@@ -127,23 +139,35 @@ export function HostSubagentDrawer({
         <HostSubagentTabs activeTab={activeTab} onTabChange={setActiveTab} />
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3" data-testid="host-subagent-drawer">
-          {activeTab !== "task" ? <CollapsedTraceSummary childAgent={childAgent} /> : null}
           {activeTab === "task" ? (
-            <ChildAgentTaskPanel childAgent={childAgent} traceExpanded={traceExpanded} onTraceExpandedChange={setTraceExpanded} />
+            <ChildAgentTaskPanel childAgent={selectedChildAgent} />
           ) : activeTab === "prompt" ? (
-            <PromptTracePanel trace={mergeTrace(childAgent, loadState)} />
+            <PromptTracePanel
+              trace={mergeTrace(selectedChildAgent, loadState)}
+              promptItems={selectPromptTraceItems(loadState)}
+            />
           ) : activeTab === "tools" ? (
-            <ToolsTracePanel trace={mergeTrace(childAgent, loadState)} transcriptItems={selectTranscriptItems(loadState, activeTab)} />
+            <ToolsTracePanel
+              trace={mergeTrace(selectedChildAgent, loadState)}
+              transcriptItems={selectTranscriptItems(loadState, activeTab)}
+              allTranscriptItems={allTranscriptItems(loadState)}
+              childAgent={selectedChildAgent}
+            />
           ) : activeTab === "mcp-skills" ? (
-            <McpSkillsTracePanel trace={mergeTrace(childAgent, loadState)} />
+            <McpSkillsTracePanel trace={mergeTrace(selectedChildAgent, loadState)} />
           ) : activeTab === "evidence" ? (
-            <EvidenceTracePanel trace={mergeTrace(childAgent, loadState)} />
+            <EvidenceTracePanel
+              trace={mergeTrace(selectedChildAgent, loadState)}
+              transcriptItems={allTranscriptItems(loadState)}
+              childAgent={selectedChildAgent}
+            />
           ) : activeTab === "receipts" ? (
             <ReceiptsPanel
-              trace={mergeTrace(childAgent, loadState)}
+              trace={mergeTrace(selectedChildAgent, loadState)}
               loadState={loadState}
               items={selectTranscriptItems(loadState, activeTab)}
-              childAgentError={childAgent?.error}
+              childAgentError={selectedChildAgent?.error}
+              childAgent={selectedChildAgent}
               submitApprovalDecision={submitApprovalDecision}
             />
           ) : (
@@ -151,7 +175,8 @@ export function HostSubagentDrawer({
               loadState={loadState}
               items={selectTranscriptItems(loadState, activeTab)}
               emptyLabel={emptyLabelForTab(activeTab)}
-              childAgentError={activeTab === "receipts" ? childAgent?.error : undefined}
+              childAgent={selectedChildAgent}
+              childAgentError={activeTab === "receipts" ? selectedChildAgent?.error : undefined}
               submitApprovalDecision={submitApprovalDecision}
             />
           )}
@@ -176,105 +201,135 @@ type HostAgentTraceView = {
 
 function ChildAgentTaskPanel({
   childAgent,
-  traceExpanded,
-  onTraceExpandedChange,
 }: {
   childAgent?: AiopsTransportChildAgent;
-  traceExpanded: boolean;
-  onTraceExpandedChange: (expanded: boolean) => void;
 }) {
   if (!childAgent) {
     return null;
   }
+  const hostName = childAgent.hostDisplayName || childAgent.hostAddress || childAgent.hostId || "未知主机";
+  const hostAddress = childAgent.hostAddress || childAgent.hostId || "";
 
   return (
     <div className="grid gap-2 text-xs text-zinc-600">
-      <div className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2">
+      <section className="min-w-0 overflow-hidden rounded-md border border-zinc-200 bg-zinc-50 px-3 py-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="size-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden="true" />
-          <span className="min-w-0 flex-1 truncate">{childAgent.hostDisplayName || childAgent.hostId}</span>
-          <span className="shrink-0 text-zinc-500">{formatStatus(childAgent.status)}</span>
+          <span className="min-w-0 flex-1 break-words text-sm font-medium text-zinc-900">{hostName}</span>
+          <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-zinc-600">{formatStatus(childAgent.status)}</span>
         </div>
-        <div className="mt-1 truncate text-zinc-500">
-          {childAgent.hostAddress ? `@${childAgent.hostAddress}` : childAgent.hostId}
-          {childAgent.sessionId ? ` · ${childAgent.sessionId}` : ""}
-        </div>
-        {childAgent.task ? <div className="mt-2 text-zinc-700">当前任务：{childAgent.task}</div> : null}
-        {childAgent.subtaskStatus ? <div className="mt-1">subtaskStatus：{childAgent.subtaskStatus}</div> : null}
-        {childAgent.queueReason ? <div className="mt-1">queueReason：{childAgent.queueReason}</div> : null}
-        {childAgent.source ? <div className="mt-1">source：{childAgent.source}</div> : null}
-        {childAgent.lastInputPreview ? <div className="mt-1 truncate">最近输入：{childAgent.lastInputPreview}</div> : null}
-        {childAgent.lastOutputPreview ? <div className="mt-1 truncate">最近输出：{childAgent.lastOutputPreview}</div> : null}
-        {childAgent.error ? <div className="mt-1 break-words text-red-600">错误：{childAgent.error}</div> : null}
-      </div>
-      <div className="rounded-md border border-zinc-200 bg-white px-3 py-2">
-        <button
-          type="button"
-          className="flex w-full items-center justify-between text-left font-medium text-zinc-800"
-          onClick={() => onTraceExpandedChange(!traceExpanded)}
-        >
-          <span>Trace 摘要</span>
-          <span className="text-zinc-500">{traceExpanded ? "收起" : "展开 trace"}</span>
-        </button>
-        {traceExpanded ? <RuntimeProfileView profile={childAgent.runtimeProfile} /> : null}
-      </div>
+        <dl className="mt-3 grid min-w-0 gap-2">
+          {hostAddress ? <OverviewRow label="主机" value={`@${stripAtPrefix(hostAddress)}`} /> : null}
+          {childAgent.task ? <OverviewRow label="当前任务" value={childAgent.task} /> : null}
+          {childAgent.subtaskStatus ? <OverviewRow label="子任务状态" value={childAgent.subtaskStatus} /> : null}
+          {childAgent.queueReason ? <OverviewRow label="排队原因" value={childAgent.queueReason} /> : null}
+          {childAgent.source ? <OverviewRow label="来源" value={childAgent.source} /> : null}
+          {childAgent.lastInputPreview ? <OverviewRow label="最近输入" value={childAgent.lastInputPreview} /> : null}
+          {childAgent.lastOutputPreview ? <OverviewRow label="最近输出" value={childAgent.lastOutputPreview} /> : null}
+          {childAgent.error ? <OverviewRow label="错误" value={childAgent.error} tone="danger" /> : null}
+        </dl>
+      </section>
     </div>
   );
 }
 
-function CollapsedTraceSummary({ childAgent }: { childAgent?: AiopsTransportChildAgent }) {
-  if (!childAgent) {
-    return null;
-  }
+function OverviewRow({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "danger" }) {
   return (
-    <div className="mb-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <span className="font-medium text-zinc-800">Trace 摘要</span>
-        <span className="shrink-0 text-zinc-500">默认折叠</span>
-      </div>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-        {childAgent.subtaskStatus ? <span>subtaskStatus：{childAgent.subtaskStatus}</span> : null}
-        {childAgent.queueReason ? <span>queueReason：{childAgent.queueReason}</span> : null}
-        {childAgent.source ? <span>source：{childAgent.source}</span> : null}
-      </div>
+    <div className="grid min-w-0 grid-cols-[4.5rem_minmax(0,1fr)] gap-2">
+      <dt className="shrink-0 text-zinc-400">{label}</dt>
+      <dd className={tone === "danger" ? "min-w-0 whitespace-pre-wrap break-words text-red-600" : "min-w-0 whitespace-pre-wrap break-words text-zinc-700"}>
+        {value}
+      </dd>
     </div>
   );
 }
 
-function PromptTracePanel({ trace }: { trace: HostAgentTraceView }) {
+function PromptTracePanel({
+  trace,
+  promptItems,
+}: {
+  trace: HostAgentTraceView;
+  promptItems: HostOpsTranscriptItem[];
+}) {
   const sections = trace.promptSections || [];
+  const contextDecisions = trace.contextDecisions || [];
+  const hasTrace = promptItems.length > 0 || sections.length > 0 || contextDecisions.length > 0;
   return (
     <div className="grid gap-2">
       <RuntimeProfileView profile={trace.runtimeProfile} />
-      <TraceList
-        emptyLabel="暂无 Prompt trace"
-        entries={sections}
-        renderTitle={(entry) => promptCategoryLabel(entry.category) || entry.title || entry.sectionId || entry.id || "Prompt section"}
-        fields={["sectionId", "retentionRank", "retentionClass", "compactAction", "compactSchema", "sourceRef", "redaction", "hash", "ref"]}
-      />
-      <TraceList
-        title="Context decisions"
-        emptyLabel="暂无 context decision"
-        entries={trace.contextDecisions || []}
-        fields={["sectionId", "decision", "retentionRank", "compactAction", "sourceRef", "redaction", "hash", "ref"]}
-      />
+      {promptItems.length ? (
+        <PromptTraceFileList items={promptItems} />
+      ) : null}
+      {sections.length ? (
+        <TraceList
+          emptyLabel=""
+          entries={sections}
+          renderTitle={(entry) => promptCategoryLabel(entry.category) || entry.title || entry.sectionId || entry.id || "Prompt section"}
+          fields={["sectionId", "retentionRank", "retentionClass", "compactAction", "compactSchema", "sourceRef", "redaction", "hash", "ref"]}
+        />
+      ) : null}
+      {contextDecisions.length ? (
+        <TraceList
+          title="Context decisions"
+          emptyLabel=""
+          entries={contextDecisions}
+          fields={["sectionId", "decision", "retentionRank", "compactAction", "sourceRef", "redaction", "hash", "ref"]}
+        />
+      ) : null}
+      {!hasTrace ? (
+        <div className="rounded-md border border-dashed border-zinc-300 px-3 py-6 text-center text-sm text-zinc-500">
+          暂无 Prompt trace
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+function PromptTraceFileList({ items }: { items: HostOpsTranscriptItem[] }) {
+  return (
+    <section className="grid gap-2" data-testid="host-subagent-prompt-files">
+      <div className="text-xs font-medium text-zinc-700">Prompt MD 文件</div>
+      {items.map((item) => {
+        const traceFile = promptTraceFileForItem(item);
+        const visibleTools = promptVisibleToolsForItem(item);
+        const round = promptModelCallTitle(item);
+        return (
+          <article key={item.id} className="rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <BotIcon className="size-3.5 shrink-0 text-zinc-500" aria-hidden="true" />
+              <span className="font-medium text-zinc-900">{round || "调用 LLM"}</span>
+              {item.status ? <span className="ml-auto shrink-0 text-xs text-zinc-500">{formatStatus(item.status)}</span> : null}
+            </div>
+            {visibleTools.length ? (
+              <div className="mt-1 break-words text-xs text-zinc-600">可用工具：{visibleTools.join(", ")}</div>
+            ) : null}
+            {traceFile ? <PromptMdLink itemId={item.id} traceFile={traceFile} /> : null}
+          </article>
+        );
+      })}
+    </section>
   );
 }
 
 function ToolsTracePanel({
   trace,
   transcriptItems,
+  allTranscriptItems,
+  childAgent,
 }: {
   trace: HostAgentTraceView;
   transcriptItems: HostOpsTranscriptItem[];
+  allTranscriptItems: HostOpsTranscriptItem[];
+  childAgent?: AiopsTransportChildAgent;
 }) {
   const toolEntries = trace.toolSurfaceSnapshot || [];
+  const derivedEntries = toolEntries.length || transcriptItems.length ? [] : deriveToolTraceFromTranscript(allTranscriptItems);
+  const displayEntries = toolEntries.length ? toolEntries : derivedEntries;
   return (
     <div className="grid gap-2">
       <TraceList
-        emptyLabel={transcriptItems.length ? "" : "暂无工具 trace"}
-        entries={toolEntries}
+        emptyLabel={transcriptItems.length || displayEntries.length ? "" : "暂无工具 trace"}
+        entries={displayEntries}
         renderTitle={(entry) => entry.name || entry.toolName || entry.id || "Tool"}
         fields={["source", "status", "summary", "sourceRef", "redaction", "hash", "ref"]}
       />
@@ -283,6 +338,7 @@ function ToolsTracePanel({
           loadState={{ status: "loaded", transcript: { childAgentId: "", items: transcriptItems }, error: "" }}
           items={transcriptItems}
           emptyLabel="暂无工具记录"
+          childAgent={childAgent}
           submitApprovalDecision={async () => undefined}
         />
       ) : null}
@@ -309,11 +365,20 @@ function McpSkillsTracePanel({ trace }: { trace: HostAgentTraceView }) {
   );
 }
 
-function EvidenceTracePanel({ trace }: { trace: HostAgentTraceView }) {
+function EvidenceTracePanel({
+  trace,
+  transcriptItems,
+  childAgent,
+}: {
+  trace: HostAgentTraceView;
+  transcriptItems: HostOpsTranscriptItem[];
+  childAgent?: AiopsTransportChildAgent;
+}) {
+  const entries = trace.evidenceTrace?.length ? trace.evidenceTrace : deriveEvidenceTraceFromTranscript(transcriptItems, childAgent);
   return (
     <TraceList
       emptyLabel="暂无证据 trace"
-      entries={trace.evidenceTrace || []}
+      entries={entries}
       fields={["title", "source", "artifactRef", "evidenceRef", "hash", "sourceRef", "redaction", "ref"]}
     />
   );
@@ -324,12 +389,14 @@ function ReceiptsPanel({
   loadState,
   items,
   childAgentError,
+  childAgent,
   submitApprovalDecision,
 }: {
   trace: HostAgentTraceView;
   loadState: LoadState;
   items: HostOpsTranscriptItem[];
   childAgentError?: string;
+  childAgent?: AiopsTransportChildAgent;
   submitApprovalDecision: (approvalId: string, decision: string) => Promise<unknown>;
 }) {
   const reportTimeline = trace.reportTimeline || [];
@@ -346,6 +413,7 @@ function ReceiptsPanel({
           loadState={loadState}
           items={items}
           emptyLabel="暂无回执或错误"
+          childAgent={childAgent}
           childAgentError={childAgentError}
           submitApprovalDecision={submitApprovalDecision}
         />
@@ -357,6 +425,7 @@ function ReceiptsPanel({
       loadState={loadState}
       items={items}
       emptyLabel="暂无回执或错误"
+      childAgent={childAgent}
       childAgentError={childAgentError}
       submitApprovalDecision={submitApprovalDecision}
     />
@@ -425,12 +494,14 @@ function TranscriptBody({
   loadState,
   items,
   emptyLabel,
+  childAgent,
   childAgentError,
   submitApprovalDecision,
 }: {
   loadState: LoadState;
   items: HostOpsTranscriptItem[];
   emptyLabel: string;
+  childAgent?: AiopsTransportChildAgent;
   childAgentError?: string;
   submitApprovalDecision: (approvalId: string, decision: string) => Promise<unknown>;
 }) {
@@ -475,7 +546,7 @@ function TranscriptBody({
         </div>
       ) : null}
       {items.map((item) => (
-        <TranscriptItemView key={item.id} item={item} submitApprovalDecision={submitApprovalDecision} />
+        <TranscriptItemView key={item.id} item={item} childAgent={childAgent} submitApprovalDecision={submitApprovalDecision} />
       ))}
     </div>
   );
@@ -483,14 +554,19 @@ function TranscriptBody({
 
 function TranscriptItemView({
   item,
+  childAgent,
   submitApprovalDecision,
 }: {
   item: HostOpsTranscriptItem;
+  childAgent?: AiopsTransportChildAgent;
   submitApprovalDecision: (approvalId: string, decision: string) => Promise<unknown>;
 }) {
-  const meta = itemMeta(item.type);
+  const meta = itemMeta(item.type, childAgent);
   const Icon = meta.icon;
   const isTool = item.type === "tool_call" || item.type === "tool_result";
+  const traceFile = promptTraceFileForItem(item);
+  const visibleTools = promptVisibleToolsForItem(item);
+  const displayContent = item.type === "llm_request" ? cleanModelCallContent(item.content || "") : item.content || "";
   const [decisionState, setDecisionState] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const [decisionError, setDecisionError] = useState("");
   const approvalID = item.type === "approval" ? item.approvalId || stringFromPayload(item.payload, "approvalId") : "";
@@ -522,7 +598,7 @@ function TranscriptItemView({
         {item.toolName ? <span className="min-w-0 truncate">· {item.toolName}</span> : null}
         {item.status ? <span className="ml-auto shrink-0">{formatStatus(item.status)}</span> : null}
       </div>
-      {item.content ? (
+      {displayContent ? (
         <div
           className={
             isTool
@@ -530,11 +606,15 @@ function TranscriptItemView({
               : "whitespace-pre-wrap break-words leading-6"
           }
         >
-          {item.content}
+          {displayContent}
         </div>
       ) : (
         <div className="text-xs text-zinc-400">无内容</div>
       )}
+      {item.type === "llm_request" && visibleTools.length ? (
+        <div className="mt-1 break-words text-xs text-zinc-600">可用工具：{visibleTools.join(", ")}</div>
+      ) : null}
+      {item.type === "llm_request" && traceFile ? <PromptMdLink itemId={item.id} traceFile={traceFile} /> : null}
       {item.createdAt ? <div className="mt-1 text-[11px] text-zinc-400">{formatTimestamp(item.createdAt)}</div> : null}
       {pendingApproval ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-2">
@@ -573,18 +653,98 @@ function stringFromPayload(payload: Record<string, unknown> | undefined, key: st
   return typeof value === "string" ? value : "";
 }
 
+function stringArrayFromPayload(payload: Record<string, unknown> | undefined, key: string): string[] {
+  const value = payload?.[key];
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return splitVisibleTools(value);
+  }
+  return [];
+}
+
+function promptTraceFileForItem(item: HostOpsTranscriptItem) {
+  if (item.type !== "llm_request") {
+    return "";
+  }
+  return stringFromPayload(item.payload, "traceFile") || traceFileFromContent(item.content || "");
+}
+
+function promptVisibleToolsForItem(item: HostOpsTranscriptItem) {
+  if (item.type !== "llm_request") {
+    return [];
+  }
+  return stringArrayFromPayload(item.payload, "visibleTools").length
+    ? stringArrayFromPayload(item.payload, "visibleTools")
+    : visibleToolsFromContent(item.content || "");
+}
+
+function promptModelCallTitle(item: HostOpsTranscriptItem) {
+  return cleanModelCallContent(item.content || "").split("\n").map((line) => line.trim()).find(Boolean) || "";
+}
+
+function traceFileFromContent(content: string) {
+  const match = content.match(/^\s*trace:\s*(.+)$/im);
+  return match?.[1]?.trim() || "";
+}
+
+function visibleToolsFromContent(content: string) {
+  const match = content.match(/^\s*visibleTools:\s*(.+)$/im);
+  return splitVisibleTools(match?.[1] || "");
+}
+
+function splitVisibleTools(value: string) {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function cleanModelCallContent(content: string) {
+  return content
+    .split("\n")
+    .filter((line) => !/^\s*(trace|visibleTools):\s*/i.test(line))
+    .join("\n")
+    .trim();
+}
+
+function PromptMdLink({ itemId, traceFile }: { itemId: string; traceFile: string }) {
+  const tracePath = normalizeModelInputTracePath(traceFile);
+  return (
+    <a
+      className="mt-2 inline-flex w-fit items-center rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+      data-testid={`host-subagent-prompt-md-link-${safeTestId(itemId)}`}
+      href={`/debug/prompts?path=${encodeURIComponent(tracePath)}&view=raw&raw=markdown`}
+    >
+      查看 Prompt MD
+    </a>
+  );
+}
+
+function normalizeModelInputTracePath(value: string) {
+  const text = value.trim();
+  const marker = "model-input-traces/";
+  const index = text.indexOf(marker);
+  if (index >= 0) {
+    return text.slice(index + marker.length).replace(/^\/+/, "");
+  }
+  return text.replace(/^\/+/, "");
+}
+
 function safeTestId(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
-function itemMeta(type: string): { label: string; icon: LucideIcon } {
+function itemMeta(type: string, childAgent?: AiopsTransportChildAgent): { label: string; icon: LucideIcon } {
   switch (type) {
     case "manager_message":
-      return { label: "Manager 输入", icon: UserIcon };
+      return { label: "管理 Agent → 主机 Agent", icon: UserIcon };
     case "user_followup":
       return { label: "用户追问", icon: UserIcon };
+    case "llm_request":
+      return { label: "主机 Agent → LLM", icon: BotIcon };
+    case "llm_response":
+      return { label: "LLM → 主机 Agent", icon: BotIcon };
     case "assistant_message":
-      return { label: "Assistant 返回", icon: BotIcon };
+      return { label: formatHostAgentReturnLabel(childAgent), icon: BotIcon };
     case "tool_call":
       return { label: "工具调用", icon: TerminalIcon };
     case "tool_result":
@@ -598,11 +758,62 @@ function itemMeta(type: string): { label: string; icon: LucideIcon } {
   }
 }
 
+function formatHostAgentReturnLabel(childAgent?: AiopsTransportChildAgent) {
+  const hostLabel = childAgent?.hostDisplayName || childAgent?.hostAddress || childAgent?.hostId || "";
+  return hostLabel ? `主机 ${stripAtPrefix(hostLabel)} 返回` : "主机 Agent 返回";
+}
+
 function formatHostLabel(childAgent?: AiopsTransportChildAgent) {
   if (!childAgent) {
     return "";
   }
   return childAgent.hostAddress || childAgent.hostId || "";
+}
+
+function formatDrawerSubtitle(childAgent?: AiopsTransportChildAgent) {
+  if (!childAgent) {
+    return "未知主机";
+  }
+  const displayName = childAgent.hostDisplayName || "未知主机";
+  const hostLabel = formatHostLabel(childAgent);
+  const hostHandle = hostLabel ? `@${stripAtPrefix(hostLabel)}` : "";
+  const hostPart = hostHandle && !sameHostHandle(displayName, hostHandle) ? `${displayName} ${hostHandle}` : displayName;
+  return childAgent.task ? `${hostPart} · ${childAgent.task}` : hostPart;
+}
+
+function sameHostHandle(left: string, right: string) {
+  return stripAtPrefix(left).toLowerCase() === stripAtPrefix(right).toLowerCase();
+}
+
+function stripAtPrefix(value: string) {
+  return value.trim().replace(/^@+/, "");
+}
+
+function transcriptFromState(state: DrawerTransportState | undefined, childAgentId: string): HostChildAgentTranscript | null {
+  if (!state || !childAgentId) {
+    return null;
+  }
+  const items = state.childAgentTranscripts?.[childAgentId];
+  if (!Array.isArray(items)) {
+    return null;
+  }
+  return {
+    childAgentId,
+    items: items.map(normalizeStateTranscriptItem),
+  };
+}
+
+function normalizeStateTranscriptItem(item: Partial<HostOpsTranscriptItem>, index: number): HostOpsTranscriptItem {
+  return {
+    id: String(item.id || `item-${index + 1}`),
+    type: item.type || "assistant_message",
+    content: item.content,
+    toolName: item.toolName,
+    approvalId: item.approvalId,
+    status: item.status,
+    payload: item.payload,
+    createdAt: item.createdAt,
+  };
 }
 
 function formatStatus(status: string) {
@@ -646,6 +857,76 @@ function mergeTrace(childAgent: AiopsTransportChildAgent | undefined, loadState:
     reportTimeline: childAgent?.reportTimeline || transcript?.reportTimeline,
     agentMessages: childAgent?.agentMessages || transcript?.agentMessages,
   };
+}
+
+function deriveToolTraceFromTranscript(items: HostOpsTranscriptItem[]): AiopsHostAgentToolTrace[] {
+  const commands: string[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    for (const command of extractCommandHints(item.content || "")) {
+      const key = command.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        commands.push(command);
+      }
+    }
+  }
+  return commands.map((command, index) => ({
+    id: `derived-tool-${index + 1}`,
+    name: "从 Agent 对话推断",
+    toolName: command,
+    source: "host_agent_tool",
+    status: "completed",
+    summary: command,
+  }));
+}
+
+function extractCommandHints(content: string): string[] {
+  const commands: string[] = [];
+  const pushCommand = (value: string) => {
+    const command = value.trim().replace(/[。.,，；;：:]+$/, "");
+    if (command.length >= 2 && command.length <= 180 && looksLikeShellCommand(command)) {
+      commands.push(command);
+    }
+  };
+
+  for (const match of content.matchAll(/`([^`\n]+)`/g)) {
+    pushCommand(match[1] || "");
+  }
+  for (const match of content.matchAll(/(?:只读执行|执行)\s*([^，。,；;\n]+?)(?:并|后|$|，|。|,|；|;)/g)) {
+    pushCommand(match[1] || "");
+  }
+  return commands;
+}
+
+function looksLikeShellCommand(command: string) {
+  return /^[a-zA-Z0-9_./-]+(?:\s+[^\n\r`$<>;&|]+)*$/.test(command);
+}
+
+function deriveEvidenceTraceFromTranscript(
+  items: HostOpsTranscriptItem[],
+  childAgent?: AiopsTransportChildAgent,
+): AiopsHostAgentEvidenceTrace[] {
+  const refs: AiopsHostAgentEvidenceTrace[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const content = item.content || "";
+    for (const match of content.matchAll(/\bev-[a-zA-Z0-9_-]+\b/g)) {
+      const evidenceRef = match[0];
+      if (seen.has(evidenceRef)) {
+        continue;
+      }
+      seen.add(evidenceRef);
+      refs.push({
+        id: `derived-evidence-${refs.length + 1}`,
+        title: itemMeta(item.type, childAgent).label,
+        source: "host_agent_report",
+        evidenceRef,
+        ref: evidenceRef,
+      });
+    }
+  }
+  return refs;
 }
 
 function promptCategoryLabel(category: unknown) {
@@ -697,10 +978,27 @@ function selectTranscriptItems(loadState: LoadState, activeTab: HostSubagentTabI
   return loadState.transcript.items.filter((item) => itemBelongsToTab(item, activeTab));
 }
 
+function selectPromptTraceItems(loadState: LoadState): HostOpsTranscriptItem[] {
+  if (loadState.status !== "loaded") {
+    return [];
+  }
+  return loadState.transcript.items.filter((item) => item.type === "llm_request" && promptTraceFileForItem(item));
+}
+
+function allTranscriptItems(loadState: LoadState): HostOpsTranscriptItem[] {
+  return loadState.status === "loaded" ? loadState.transcript.items : [];
+}
+
 function itemBelongsToTab(item: HostOpsTranscriptItem, activeTab: HostSubagentTabId) {
   switch (activeTab) {
     case "conversation":
-      return item.type === "manager_message" || item.type === "user_followup" || item.type === "assistant_message";
+      return (
+        item.type === "manager_message" ||
+        item.type === "user_followup" ||
+        item.type === "llm_request" ||
+        item.type === "llm_response" ||
+        item.type === "assistant_message"
+      );
     case "tools":
       return item.type === "tool_call" || item.type === "tool_result";
     case "approval":

@@ -201,6 +201,99 @@ func TestAssistantTransportResumeRestoresAllPersistedTurnsWithProcess(t *testing
 	}
 }
 
+func TestAssistantTransportResumeHydratesHostChildSessionCompletion(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	main := sessions.GetOrCreate("sess-resume-hostops", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	main.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-hostops-resume",
+		SessionID:   main.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:        "user-hostops",
+				Type:      agentstate.TurnItemTypeUserMessage,
+				Status:    agentstate.ItemStatusCompleted,
+				Payload:   agentstate.PayloadEnvelope{Summary: "检查@host-a内存"},
+				CreatedAt: now,
+			},
+			{
+				ID:     "tool-spawn-hostops",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "hostops.spawn_host_agent",
+					Summary: "spawned host-bound child",
+					Data: json.RawMessage(`{
+						"toolName":"spawn_host_agent",
+						"displayKind":"hostops.spawn_host_agent",
+						"outputPreview":{
+							"children":[{
+								"id":"child-host-a",
+								"missionId":"hostops:turn-hostops-resume",
+								"sessionId":"host-child:hostops:turn-hostops-resume:host-a",
+								"hostId":"host-a",
+								"hostDisplayName":"@host-a",
+								"task":"检查@host-a内存",
+								"status":"running",
+								"updatedAt":"2026-06-18T01:00:00Z"
+							}]
+						}
+					}`),
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+	sessions.Update(main)
+
+	child := sessions.GetOrCreate("host-child:hostops:turn-hostops-resume:host-a", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	completedAt := now.Add(time.Minute)
+	child.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-child-host-a",
+		SessionID:   child.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   completedAt,
+		CompletedAt: &completedAt,
+		FinalOutput: "内存检查完成：可用 1.0Gi。",
+	}
+	sessions.Update(child)
+
+	server := NewHTTPServer(appui.NewServices(&assistantTransportAPITestRuntime{sessions: sessions}, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/resume", "application/json", bytes.NewReader(assistantTransportResumePayload(t, main.ID, main.ID)))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/resume error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if !strings.Contains(text, "\"child-host-a\":{\"id\":\"child-host-a\"") {
+		t.Fatalf("response = %q, want host child agent", text)
+	}
+	if !strings.Contains(text, "\"status\":\"completed\"") {
+		t.Fatalf("response = %q, want completed host child status", text)
+	}
+	if !strings.Contains(text, "内存检查完成：可用 1.0Gi。") {
+		t.Fatalf("response = %q, want child final output preview", text)
+	}
+}
+
 func TestAssistantTransportResumeCanceledTurnReturnsCanceledState(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-canceled", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)

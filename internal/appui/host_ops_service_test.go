@@ -98,9 +98,74 @@ func TestHostOpsServiceWrapsOrchestratorAndTranscriptStore(t *testing.T) {
 	}
 }
 
-type hostOpsServiceTestSpawner struct{}
+func TestHostOpsServiceCreateMissionAutoSpawnsSingleHostWhenPlanNotRequired(t *testing.T) {
+	missions := hostops.NewInMemoryMissionStore()
+	transcripts := hostops.NewInMemoryTranscriptStore()
+	spawner := &hostOpsServiceTestSpawner{}
+	orchestrator := hostops.NewOrchestrator(missions, transcripts, spawner)
+	service := NewHostOpsService(missions, transcripts, orchestrator)
+
+	created, err := service.CreateMission(context.Background(), HostMissionCreateCommand{
+		ID:      "mission-single-host",
+		Goal:    "检查主机内存情况并回传证据",
+		HostIDs: []string{"host-a"},
+	})
+	if err != nil {
+		t.Fatalf("CreateMission() error = %v", err)
+	}
+	if created.PlanRequired {
+		t.Fatalf("PlanRequired = true, want false for single host read-only task")
+	}
+	if created.Status != string(hostops.HostMissionStatusRunning) {
+		t.Fatalf("Status = %q, want running after child agent is spawned", created.Status)
+	}
+	if len(created.ChildAgents) != 1 {
+		t.Fatalf("len(ChildAgents) = %d, want 1: %+v", len(created.ChildAgents), created.ChildAgents)
+	}
+	child := created.ChildAgents[0]
+	if child.HostID != "host-a" || child.Task != "检查主机内存情况并回传证据" {
+		t.Fatalf("child = %+v, want host-a bound to original goal", child)
+	}
+	if spawner.spawnCount != 1 {
+		t.Fatalf("spawnCount = %d, want 1", spawner.spawnCount)
+	}
+}
+
+func TestHostOpsServiceCreateMissionAutoSpawnsExplicitReadOnlyKernelInspection(t *testing.T) {
+	missions := hostops.NewInMemoryMissionStore()
+	transcripts := hostops.NewInMemoryTranscriptStore()
+	spawner := &hostOpsServiceTestSpawner{}
+	orchestrator := hostops.NewOrchestrator(missions, transcripts, spawner)
+	service := NewHostOpsService(missions, transcripts, orchestrator)
+
+	created, err := service.CreateMission(context.Background(), HostMissionCreateCommand{
+		ID:      "mission-single-host-kernel-info",
+		Goal:    "查看@120.77.239.90主机系统版本和内核信息，只读执行uname -a和hostnamectl并总结",
+		HostIDs: []string{"120.77.239.90"},
+	})
+	if err != nil {
+		t.Fatalf("CreateMission() error = %v", err)
+	}
+	if created.PlanRequired {
+		t.Fatalf("PlanRequired = true, want false for explicit read-only single-host inspection")
+	}
+	if created.Status != string(hostops.HostMissionStatusRunning) {
+		t.Fatalf("Status = %q, want running after child agent is spawned", created.Status)
+	}
+	if len(created.ChildAgents) != 1 {
+		t.Fatalf("len(ChildAgents) = %d, want 1: %+v", len(created.ChildAgents), created.ChildAgents)
+	}
+	if spawner.spawnCount != 1 {
+		t.Fatalf("spawnCount = %d, want 1", spawner.spawnCount)
+	}
+}
+
+type hostOpsServiceTestSpawner struct {
+	spawnCount int
+}
 
 func (s *hostOpsServiceTestSpawner) SpawnHostChild(_ context.Context, req hostops.SpawnHostChildRequest) (hostops.HostChildAgent, error) {
+	s.spawnCount++
 	return hostops.HostChildAgent{
 		ID:          req.ChildAgentID,
 		MissionID:   req.MissionID,

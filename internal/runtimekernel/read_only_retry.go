@@ -163,17 +163,18 @@ func failedToolSafeToRetry(mutating bool, failureKind string) bool {
 }
 
 func failedToolModelGuidance(mutating bool, failureKind, finalStatus string) string {
+	const citeOnlyObservedEvidence = " Only cite tools or resources that appear in completed tool results for this turn; do not claim a tool, MCP resource, log, metric, topology, or config was checked unless that invocation completed."
 	if strings.TrimSpace(finalStatus) == string(ToolInvocationBlocked) {
-		return "Resolve the approval, evidence, or policy requirement before retrying this tool."
+		return "Resolve the approval, evidence, or policy requirement before retrying this tool." + citeOnlyObservedEvidence
 	}
 	if mutating {
-		return "Do not retry automatically. Verify side effects and request explicit approval before another attempt."
+		return "Do not retry automatically. Verify side effects and request explicit approval before another attempt." + citeOnlyObservedEvidence
 	}
 	if readOnlyRetryFailureKindAllowed(failureKind) {
-		return "Retry only with the same arguments and same tool surface, or choose another read-only evidence source."
+		return "Retry only with the same arguments and same tool surface, or choose another read-only evidence source." + citeOnlyObservedEvidence
 	}
 	if strings.TrimSpace(failureKind) == string(toolfailure.KindInvalidArguments) {
-		return "Fix tool arguments according to the visible schema before retrying."
+		return "Fix tool arguments according to the visible schema before retrying." + citeOnlyObservedEvidence
 	}
-	return "Do not assume the missing result. Gather evidence through another safe tool or ask for clarification."
+	return "Do not assume the missing result. Gather evidence through another safe tool or ask for clarification." + citeOnlyObservedEvidence
 }

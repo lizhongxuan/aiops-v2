@@ -9,6 +9,9 @@ func ClassifyRisk(text string) OpsRiskLevel {
 	}) {
 		return RiskDestructive
 	}
+	if hasReadOnlyInspectionIntent(normalized) && !hasMutationIntent(normalized) {
+		return RiskReadOnly
+	}
 	if containsAny(normalized, []string{
 		"系统服务", "防火墙", "网络", "权限", "关键配置", "内核", "路由", "账号", "证书",
 		"system service", "firewall", "network", "permission", "privilege", "kernel", "route", "account", "certificate",
@@ -27,6 +30,22 @@ func ClassifyRisk(text string) OpsRiskLevel {
 		return RiskLowWrite
 	}
 	return RiskReadOnly
+}
+
+func hasReadOnlyInspectionIntent(text string) bool {
+	return containsAny(text, []string{
+		"查看", "检查", "查询", "诊断", "分析", "汇总", "总结", "只读", "只读执行", "回传证据",
+		"inspect", "check", "query", "diagnose", "analyze", "summarize", "read-only", "readonly",
+	})
+}
+
+func hasMutationIntent(text string) bool {
+	return containsAny(text, []string{
+		"删除", "移除", "清空", "销毁", "格式化", "覆盖",
+		"安装", "升级", "修改", "调整", "设置", "配置", "启动", "停止", "重启", "写入", "创建",
+		"touch", "mkdir", "drop", "delete", "remove", "destroy", "format", "overwrite",
+		"install", "upgrade", "modify", "change", "set", "configure", "start", "stop", "restart", "write", "create",
+	})
 }
 
 func RiskRequiresApproval(risk OpsRiskLevel) bool {

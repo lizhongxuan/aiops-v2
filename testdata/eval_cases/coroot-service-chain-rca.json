@@ -32,6 +32,18 @@
       "tool_result",
       "final_answer"
     ],
+    "expectedCapabilityPath": [
+      "observability_dependency_chain_rca"
+    ],
+    "expectedObservabilityEvidence": [
+      "dependency_edges",
+      "hypotheses",
+      "missing_evidence"
+    ],
+    "expectedGenericOpsContract": [
+      "provider_neutral_observability",
+      "read_only_evidence_first"
+    ],
     "mustHaveEvidence": true,
     "diagnosis": {
       "rootCauseTop1": "C服务依赖异常导致A服务异常",

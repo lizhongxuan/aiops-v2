@@ -189,6 +189,10 @@ type HostRecord struct {
 	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
 	OS                  string            `json:"os,omitempty"`
 	Arch                string            `json:"arch,omitempty"`
+	OSRelease           string            `json:"osRelease,omitempty"`
+	KernelVersion       string            `json:"kernelVersion,omitempty"`
+	CPUCores            int               `json:"cpuCores,omitempty"`
+	MemoryBytes         uint64            `json:"memoryBytes,omitempty"`
 	AgentVersion        string            `json:"agentVersion,omitempty"`
 	LastHeartbeat       string            `json:"lastHeartbeat,omitempty"`
 	Labels              map[string]string `json:"labels,omitempty"`

@@ -429,9 +429,7 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const open = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("打开"),
-    );
+    const open = container.querySelector('[data-testid="host-child-agent-name-child-1"]') as HTMLButtonElement | null;
 
     await act(async () => {
       open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -449,6 +447,48 @@ describe("ChatPage", () => {
       toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(document.body.textContent).toContain("pg_isready -h 127.0.0.1");
+  });
+
+  it("opens the child agent drawer when the transport map key differs from the runtime child agent id", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+    const keyedChild = state.childAgents?.["child-1"];
+    if (!keyedChild || !state.hostMissions?.["mission-1"]) {
+      throw new Error("sample host ops state is missing child agent data");
+    }
+    state.hostMissions["mission-1"].childAgentIds = ["transport-key-1"];
+    state.childAgents = {
+      "transport-key-1": {
+        ...keyedChild,
+        id: "runtime-child-1",
+      },
+    };
+    vi.mocked(getChildAgentTranscript).mockResolvedValue({
+      childAgentId: "runtime-child-1",
+      items: [
+        {
+          id: "item-manager",
+          type: "manager_message",
+          content: "检查 runtime-child-1",
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const open = container.querySelector('[data-testid="host-child-agent-name-runtime-child-1"]') as HTMLButtonElement | null;
+    await act(async () => {
+      open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(getChildAgentTranscript).toHaveBeenCalledWith("runtime-child-1");
+    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("检查 runtime-child-1");
   });
 
   it("shows immediate feedback after submitting an approval decision", async () => {

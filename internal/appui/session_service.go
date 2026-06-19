@@ -26,19 +26,45 @@ func (s *defaultSessionService) ListSessions(context.Context) (SessionListRespon
 	if s.sessions == nil {
 		return SessionListResponse{Sessions: []SessionSummary{}}, nil
 	}
-	all := s.builder.SortSessions(s.sessions.List())
+	all := s.builder.SortSessions(userVisibleSessions(s.sessions.List()))
 	items := make([]SessionSummary, 0, len(all))
 	for _, session := range all {
 		items = append(items, s.builder.BuildSessionSummary(session))
 	}
 	activeSessionID := ""
-	if latest := s.sessions.GetLatest(); latest != nil {
+	if latest := latestUserVisibleSession(s.sessions); latest != nil {
 		activeSessionID = latest.ID
 	}
 	return SessionListResponse{
 		ActiveSessionID: activeSessionID,
 		Sessions:        items,
 	}, nil
+}
+
+func latestUserVisibleSession(source SessionSource) *runtimekernel.SessionState {
+	if source == nil {
+		return nil
+	}
+	sessions := userVisibleSessions(source.List())
+	if len(sessions) == 0 {
+		return nil
+	}
+	return NewSnapshotBuilder().SortSessions(sessions)[0]
+}
+
+func userVisibleSessions(sessions []*runtimekernel.SessionState) []*runtimekernel.SessionState {
+	out := make([]*runtimekernel.SessionState, 0, len(sessions))
+	for _, session := range sessions {
+		if session == nil || isInternalHostChildSessionID(session.ID) {
+			continue
+		}
+		out = append(out, session)
+	}
+	return out
+}
+
+func isInternalHostChildSessionID(sessionID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(sessionID), "host-child:")
 }
 
 func (s *defaultSessionService) CreateSession(_ context.Context, kind string, hostID ...string) (SessionMutationResponse, error) {

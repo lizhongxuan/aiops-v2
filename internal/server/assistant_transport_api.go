@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,7 +81,7 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 		state = next
 	}
 
-	shouldPoll := strings.TrimSpace(state.SessionID) != "" && (state.CurrentTurnID != "" || state.Status == appui.AiopsTransportStatusWorking || state.Status == appui.AiopsTransportStatusBlocked)
+	shouldPoll := assistantTransportShouldPoll(state)
 	if !shouldPoll {
 		return
 	}
@@ -88,6 +89,26 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 	if _, err := s.streamAssistantTransportState(r.Context(), encoder, source, projector, s.ui.ChatService(), state); err != nil {
 		return
 	}
+}
+
+func assistantTransportShouldPoll(state appui.AiopsTransportState) bool {
+	if strings.TrimSpace(state.SessionID) == "" {
+		return false
+	}
+	if assistantTransportHasActiveHostChildAgents(state) {
+		return true
+	}
+	if state.Status == appui.AiopsTransportStatusWorking || state.Status == appui.AiopsTransportStatusBlocked {
+		return true
+	}
+	currentTurnID := strings.TrimSpace(state.CurrentTurnID)
+	if currentTurnID == "" {
+		return false
+	}
+	if mission := state.HostMissions[strings.TrimSpace(state.ActiveHostMissionID)]; strings.TrimSpace(mission.TurnID) == currentTurnID {
+		return false
+	}
+	return true
 }
 
 func (s *HTTPServer) assistantTransportSessionSource() appui.SessionSource {
@@ -772,9 +793,9 @@ func (s *HTTPServer) streamAssistantTransportState(
 			latestTurn := assistantTransportLatestSessionTurn(session)
 			waitingForAcceptedTurn := assistantTransportShouldWaitForAcceptedTurn(current, latestTurn)
 			waitingForAcceptedApproval = assistantTransportShouldWaitForAcceptedApproval(current, latestTurn)
-			fingerprint := assistantTransportTurnFingerprint(latestTurn)
+			fingerprint := assistantTransportStreamFingerprint(latestTurn, current, source)
 			if !waitingForAcceptedTurn && !waitingForAcceptedApproval && fingerprint != "" && fingerprint != lastFingerprint {
-				next, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(current), session, projector)
+				next, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(current), session, projector, source)
 				if err != nil {
 					return current, err
 				}
@@ -790,7 +811,7 @@ func (s *HTTPServer) streamAssistantTransportState(
 				lastFingerprint = fingerprint
 			}
 			if assistantTransportSessionTurnShouldCloseStream(session) {
-				if !waitingForAcceptedTurn && !waitingForAcceptedApproval && current.Status != appui.AiopsTransportStatusWorking && current.Status != appui.AiopsTransportStatusBlocked {
+				if !waitingForAcceptedTurn && !waitingForAcceptedApproval && current.Status != appui.AiopsTransportStatusWorking && current.Status != appui.AiopsTransportStatusBlocked && !assistantTransportHasActiveHostChildAgents(current) {
 					return current, nil
 				}
 				if !waitingForAcceptedTurn && !waitingForAcceptedApproval && current.Status == appui.AiopsTransportStatusBlocked {
@@ -946,6 +967,7 @@ func projectAssistantTransportSessionState(
 	state appui.AiopsTransportState,
 	session *runtimekernel.SessionState,
 	projector *appui.TransportProjector,
+	sources ...appui.SessionSource,
 ) (appui.AiopsTransportState, error) {
 	if projector == nil {
 		projector = appui.NewTransportProjector()
@@ -967,11 +989,129 @@ func projectAssistantTransportSessionState(
 			}
 			next = server.decorateAssistantTransportOpsManualFallback(projected, &turns[i])
 		}
+		if len(sources) > 0 {
+			next = hydrateAssistantTransportHostChildSessions(next, sources[0])
+		}
 		return next, nil
 	}
 	next.Status = appui.AiopsTransportStatusIdle
 	next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return next, nil
+}
+
+func hydrateAssistantTransportHostChildSessions(state appui.AiopsTransportState, source appui.SessionSource) appui.AiopsTransportState {
+	if source == nil || len(state.ChildAgents) == 0 {
+		return state
+	}
+	if state.RuntimeLiveness.ActiveAgents == nil {
+		state.RuntimeLiveness.ActiveAgents = map[string]bool{}
+	}
+	for childID, child := range state.ChildAgents {
+		sessionID := strings.TrimSpace(child.SessionID)
+		if sessionID == "" || !strings.HasPrefix(sessionID, "host-child:") {
+			continue
+		}
+		turn := assistantTransportLatestSessionTurn(source.Get(sessionID))
+		if turn == nil {
+			continue
+		}
+		child.Status = assistantTransportChildStatusFromTurn(turn, child.Status)
+		if output := strings.TrimSpace(turn.FinalOutput); output != "" {
+			child.LastOutputPreview = output
+		}
+		if errText := strings.TrimSpace(turn.Error); errText != "" {
+			child.Error = errText
+		}
+		if !turn.StartedAt.IsZero() && strings.TrimSpace(child.StartedAt) == "" {
+			child.StartedAt = turn.StartedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if !turn.UpdatedAt.IsZero() {
+			child.UpdatedAt = turn.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		}
+		if turn.CompletedAt != nil {
+			child.CompletedAt = turn.CompletedAt.UTC().Format(time.RFC3339Nano)
+		} else if turn.Lifecycle.IsTerminal() && !turn.UpdatedAt.IsZero() {
+			child.CompletedAt = turn.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		}
+		state.ChildAgents[childID] = child
+		if assistantTransportChildStatusIsActive(child.Status) {
+			state.RuntimeLiveness.ActiveAgents[childID] = true
+		} else {
+			delete(state.RuntimeLiveness.ActiveAgents, childID)
+		}
+	}
+	state = updateAssistantTransportHostMissionStatusesFromChildren(state)
+	return state
+}
+
+func assistantTransportChildStatusFromTurn(turn *runtimekernel.TurnSnapshot, fallback string) string {
+	if turn == nil {
+		return strings.TrimSpace(fallback)
+	}
+	switch turn.Lifecycle {
+	case runtimekernel.TurnLifecycleCompleted:
+		return "completed"
+	case runtimekernel.TurnLifecycleFailed:
+		return "failed"
+	case runtimekernel.TurnLifecycleCanceled:
+		return "cancelled"
+	case runtimekernel.TurnLifecycleSuspended, runtimekernel.TurnLifecycleResumable:
+		return "waiting"
+	case runtimekernel.TurnLifecycleRunning, runtimekernel.TurnLifecyclePending:
+		return "running"
+	default:
+		return strings.TrimSpace(fallback)
+	}
+}
+
+func assistantTransportChildStatusIsActive(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "cancelled", "canceled", "blocked":
+		return false
+	default:
+		return strings.TrimSpace(status) != ""
+	}
+}
+
+func updateAssistantTransportHostMissionStatusesFromChildren(state appui.AiopsTransportState) appui.AiopsTransportState {
+	for missionID, mission := range state.HostMissions {
+		if len(mission.ChildAgentIDs) == 0 {
+			continue
+		}
+		allTerminal := true
+		anyFailed := false
+		anyCancelled := false
+		anyBlocked := false
+		for _, childID := range mission.ChildAgentIDs {
+			child := state.ChildAgents[childID]
+			switch strings.ToLower(strings.TrimSpace(child.Status)) {
+			case "completed":
+			case "failed":
+				anyFailed = true
+			case "cancelled", "canceled":
+				anyCancelled = true
+			case "blocked", "approval_required":
+				allTerminal = false
+				anyBlocked = true
+			default:
+				allTerminal = false
+			}
+		}
+		switch {
+		case allTerminal && anyFailed:
+			mission.Status = "failed"
+		case allTerminal && anyCancelled:
+			mission.Status = "cancelled"
+		case allTerminal:
+			mission.Status = "completed"
+		case anyBlocked:
+			mission.Status = "waiting_approval"
+		default:
+			mission.Status = "running"
+		}
+		state.HostMissions[missionID] = mission
+	}
+	return state
 }
 
 func assistantTransportSessionTurns(session *runtimekernel.SessionState) []runtimekernel.TurnSnapshot {
@@ -1183,6 +1323,50 @@ func assistantTransportTurnFingerprint(turn *runtimekernel.TurnSnapshot) string 
 	}, "|")
 }
 
+func assistantTransportStreamFingerprint(turn *runtimekernel.TurnSnapshot, state appui.AiopsTransportState, source appui.SessionSource) string {
+	base := assistantTransportTurnFingerprint(turn)
+	children := assistantTransportHostChildSessionsFingerprint(state, source)
+	if base == "" {
+		return children
+	}
+	if children == "" {
+		return base
+	}
+	return base + "||" + children
+}
+
+func assistantTransportHostChildSessionsFingerprint(state appui.AiopsTransportState, source appui.SessionSource) string {
+	if source == nil || len(state.ChildAgents) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(state.ChildAgents))
+	for childID, child := range state.ChildAgents {
+		sessionID := strings.TrimSpace(child.SessionID)
+		if sessionID == "" || !strings.HasPrefix(sessionID, "host-child:") {
+			continue
+		}
+		parts = append(parts, strings.Join([]string{
+			strings.TrimSpace(childID),
+			sessionID,
+			assistantTransportTurnFingerprint(assistantTransportLatestSessionTurn(source.Get(sessionID))),
+		}, ":"))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
+}
+
+func assistantTransportHasActiveHostChildAgents(state appui.AiopsTransportState) bool {
+	for _, child := range state.ChildAgents {
+		if strings.TrimSpace(child.SessionID) == "" || !strings.HasPrefix(strings.TrimSpace(child.SessionID), "host-child:") {
+			continue
+		}
+		if assistantTransportChildStatusIsActive(child.Status) {
+			return true
+		}
+	}
+	return false
+}
+
 func assistantTransportLatestGovernanceFingerprint(turn *runtimekernel.TurnSnapshot) string {
 	if turn == nil || len(turn.ContextGovernanceEvents) == 0 {
 		return ""
@@ -1258,6 +1442,15 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 	}
 	if !reflect.DeepEqual(prev.Artifacts, next.Artifacts) {
 		appendSet([]any{"artifacts"}, next.Artifacts)
+	}
+	if prev.ActiveHostMissionID != next.ActiveHostMissionID {
+		appendSet([]any{"activeHostMissionId"}, next.ActiveHostMissionID)
+	}
+	if !reflect.DeepEqual(prev.HostMissions, next.HostMissions) {
+		appendSet([]any{"hostMissions"}, next.HostMissions)
+	}
+	if !reflect.DeepEqual(prev.ChildAgents, next.ChildAgents) {
+		appendSet([]any{"childAgents"}, next.ChildAgents)
 	}
 	if !reflect.DeepEqual(prev.RuntimeLiveness, next.RuntimeLiveness) {
 		appendSet([]any{"runtimeLiveness"}, next.RuntimeLiveness)
@@ -1363,12 +1556,56 @@ func assistantTransportCloneState(state appui.AiopsTransportState) appui.AiopsTr
 	for key, artifact := range state.Artifacts {
 		cloned.Artifacts[key] = artifact
 	}
+	cloned.HostMissions = make(map[string]appui.AiopsTransportHostMission, len(state.HostMissions))
+	for key, mission := range state.HostMissions {
+		cloned.HostMissions[key] = assistantTransportCloneHostMission(mission)
+	}
+	cloned.ChildAgents = make(map[string]appui.AiopsTransportChildAgent, len(state.ChildAgents))
+	for key, child := range state.ChildAgents {
+		cloned.ChildAgents[key] = assistantTransportCloneChildAgent(child)
+	}
 	cloned.RuntimeLiveness = appui.AiopsRuntimeLiveness{
 		ActiveTurns:          cloneTransportBoolMap(state.RuntimeLiveness.ActiveTurns),
 		ActiveAgents:         cloneTransportBoolMap(state.RuntimeLiveness.ActiveAgents),
 		PendingApprovals:     cloneTransportBoolMap(state.RuntimeLiveness.PendingApprovals),
 		PendingUserInputs:    cloneTransportBoolMap(state.RuntimeLiveness.PendingUserInputs),
 		ActiveCommandStreams: cloneTransportBoolMap(state.RuntimeLiveness.ActiveCommandStreams),
+	}
+	return cloned
+}
+
+func assistantTransportCloneHostMission(mission appui.AiopsTransportHostMission) appui.AiopsTransportHostMission {
+	cloned := mission
+	if len(mission.MentionedHosts) > 0 {
+		cloned.MentionedHosts = append([]appui.AiopsTransportHostMention(nil), mission.MentionedHosts...)
+	}
+	if len(mission.ChildAgentIDs) > 0 {
+		cloned.ChildAgentIDs = append([]string(nil), mission.ChildAgentIDs...)
+	}
+	if len(mission.PlanSteps) > 0 {
+		cloned.PlanSteps = make([]appui.AiopsTransportPlanStep, len(mission.PlanSteps))
+		for idx, step := range mission.PlanSteps {
+			cloned.PlanSteps[idx] = assistantTransportClonePlanStep(step)
+		}
+	}
+	return cloned
+}
+
+func assistantTransportClonePlanStep(step appui.AiopsTransportPlanStep) appui.AiopsTransportPlanStep {
+	cloned := step
+	if len(step.HostIDs) > 0 {
+		cloned.HostIDs = append([]string(nil), step.HostIDs...)
+	}
+	if len(step.ChildAgentIDs) > 0 {
+		cloned.ChildAgentIDs = append([]string(nil), step.ChildAgentIDs...)
+	}
+	return cloned
+}
+
+func assistantTransportCloneChildAgent(child appui.AiopsTransportChildAgent) appui.AiopsTransportChildAgent {
+	cloned := child
+	if len(child.PlanStepIDs) > 0 {
+		cloned.PlanStepIDs = append([]string(nil), child.PlanStepIDs...)
 	}
 	return cloned
 }

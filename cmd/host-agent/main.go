@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,26 @@ type runResponse struct {
 	Result scheduler.Result `json:"result"`
 	RunID  string           `json:"run_id,omitempty"`
 	Error  string           `json:"error,omitempty"`
+}
+
+type hostSystemInfo struct {
+	OS            string
+	Arch          string
+	OSRelease     string
+	KernelVersion string
+	CPUCores      int
+	MemoryBytes   uint64
+}
+
+type hostAgentEventPayloadInput struct {
+	HostID        string
+	Hostname      string
+	ListenAddress string
+	Capabilities  []string
+	Labels        map[string]string
+	System        hostSystemInfo
+	Registration  bool
+	Timestamp     string
 }
 
 type statusRequest struct {
@@ -204,16 +225,17 @@ func runGRPCControlSession(ctx context.Context, cfg hostagent.Config, opts agent
 		return stream.Send(envelope)
 	}
 	hostname, _ := os.Hostname()
-	registerPayload, _ := json.Marshal(map[string]any{
-		"token":         cfg.Token,
-		"hostname":      hostname,
-		"os":            runtime.GOOS,
-		"arch":          runtime.GOARCH,
-		"agentVersion":  agentVersion,
-		"labels":        cfg.Labels,
-		"capabilities":  cfg.Capabilities,
-		"listenAddress": cfg.ListenAddr,
+	registerPayloadMap := buildHostAgentEventPayload(hostAgentEventPayloadInput{
+		HostID:        cfg.HostID,
+		Hostname:      hostname,
+		ListenAddress: cfg.ListenAddr,
+		Capabilities:  cfg.Capabilities,
+		Labels:        cfg.Labels,
+		System:        collectHostSystemInfo(),
+		Registration:  true,
 	})
+	registerPayloadMap["token"] = cfg.Token
+	registerPayload, _ := json.Marshal(registerPayloadMap)
 	if err := send(controlMessage{Type: "register", ID: cfg.HostID, Payload: registerPayload}); err != nil {
 		return err
 	}
@@ -228,7 +250,12 @@ func runGRPCControlSession(ctx context.Context, cfg hostagent.Config, opts agent
 			case <-heartbeatCtx.Done():
 				return
 			case <-ticker.C:
-				payload, _ := json.Marshal(map[string]any{"hostId": cfg.HostID, "timestamp": time.Now().UTC().Format(time.RFC3339)})
+				payload, _ := json.Marshal(buildHostAgentEventPayload(hostAgentEventPayloadInput{
+					HostID:       cfg.HostID,
+					Capabilities: cfg.Capabilities,
+					System:       collectHostSystemInfo(),
+					Timestamp:    time.Now().UTC().Format(time.RFC3339),
+				}))
 				if err := send(controlMessage{Type: "heartbeat", ID: cfg.HostID, Payload: payload}); err != nil {
 					fmt.Fprintf(os.Stderr, "host-agent grpc heartbeat: %v\n", err)
 					return
@@ -745,16 +772,15 @@ func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 
 func register(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
 	hostname, _ := os.Hostname()
-	payload := map[string]any{
-		"hostId":        cfg.HostID,
-		"hostname":      hostname,
-		"os":            runtime.GOOS,
-		"arch":          runtime.GOARCH,
-		"agentVersion":  agentVersion,
-		"capabilities":  cfg.Capabilities,
-		"labels":        cfg.Labels,
-		"listenAddress": cfg.ListenAddr,
-	}
+	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
+		HostID:        cfg.HostID,
+		Hostname:      hostname,
+		ListenAddress: cfg.ListenAddr,
+		Capabilities:  cfg.Capabilities,
+		Labels:        cfg.Labels,
+		System:        collectHostSystemInfo(),
+		Registration:  true,
+	})
 	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/register", payload)
 }
 
@@ -774,13 +800,150 @@ func heartbeatLoop(ctx context.Context, client *http.Client, cfg hostagent.Confi
 }
 
 func heartbeat(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
-	payload := map[string]any{
-		"hostId":       cfg.HostID,
-		"agentVersion": agentVersion,
-		"timestamp":    time.Now().UTC().Format(time.RFC3339),
-		"capabilities": cfg.Capabilities,
-	}
+	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
+		HostID:       cfg.HostID,
+		Capabilities: cfg.Capabilities,
+		System:       collectHostSystemInfo(),
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	})
 	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/heartbeat", payload)
+}
+
+func buildHostAgentEventPayload(input hostAgentEventPayloadInput) map[string]any {
+	system := input.System
+	if system.OS == "" {
+		system.OS = runtime.GOOS
+	}
+	if system.Arch == "" {
+		system.Arch = runtime.GOARCH
+	}
+	payload := map[string]any{
+		"hostId":        input.HostID,
+		"os":            system.OS,
+		"arch":          system.Arch,
+		"agentVersion":  agentVersion,
+		"capabilities":  input.Capabilities,
+		"osRelease":     system.OSRelease,
+		"kernelVersion": system.KernelVersion,
+		"cpuCores":      system.CPUCores,
+		"memoryBytes":   system.MemoryBytes,
+	}
+	if input.Timestamp != "" {
+		payload["timestamp"] = input.Timestamp
+	}
+	if input.Registration {
+		payload["hostname"] = input.Hostname
+		payload["labels"] = input.Labels
+		payload["listenAddress"] = input.ListenAddress
+	}
+	return payload
+}
+
+func collectHostSystemInfo() hostSystemInfo {
+	return hostSystemInfo{
+		OS:            runtime.GOOS,
+		Arch:          runtime.GOARCH,
+		OSRelease:     detectOSRelease(runtime.GOOS),
+		KernelVersion: detectKernelVersion(runtime.GOOS),
+		CPUCores:      runtime.NumCPU(),
+		MemoryBytes:   detectMemoryBytes(runtime.GOOS),
+	}
+}
+
+func detectOSRelease(goos string) string {
+	switch goos {
+	case "linux":
+		data, err := os.ReadFile("/etc/os-release")
+		if err != nil {
+			return ""
+		}
+		return parseOSReleaseName(string(data))
+	case "darwin":
+		out, err := exec.Command("sw_vers", "-productVersion").Output()
+		if err != nil {
+			return ""
+		}
+		version := strings.TrimSpace(string(out))
+		if version == "" {
+			return ""
+		}
+		return "macOS " + version
+	default:
+		return ""
+	}
+}
+
+func parseOSReleaseName(data string) string {
+	values := map[string]string{}
+	for _, line := range strings.Split(data, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), `"`)
+		if key != "" && value != "" {
+			values[key] = value
+		}
+	}
+	if values["PRETTY_NAME"] != "" {
+		return values["PRETTY_NAME"]
+	}
+	if values["NAME"] != "" && values["VERSION"] != "" {
+		return values["NAME"] + " " + values["VERSION"]
+	}
+	return values["NAME"]
+}
+
+func detectKernelVersion(goos string) string {
+	switch goos {
+	case "linux", "darwin":
+		out, err := exec.Command("uname", "-r").Output()
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(string(out))
+	default:
+		return ""
+	}
+}
+
+func detectMemoryBytes(goos string) uint64 {
+	switch goos {
+	case "linux":
+		data, err := os.ReadFile("/proc/meminfo")
+		if err != nil {
+			return 0
+		}
+		return parseLinuxMeminfoBytes(string(data))
+	case "darwin":
+		out, err := exec.Command("sysctl", "-n", "hw.memsize").Output()
+		if err != nil {
+			return 0
+		}
+		value, err := strconv.ParseUint(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return value
+	default:
+		return 0
+	}
+}
+
+func parseLinuxMeminfoBytes(data string) uint64 {
+	for _, line := range strings.Split(data, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || strings.TrimSuffix(fields[0], ":") != "MemTotal" {
+			continue
+		}
+		value, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return 0
+		}
+		return value * 1024
+	}
+	return 0
 }
 
 func postAgentEvent(ctx context.Context, client *http.Client, cfg hostagent.Config, path string, payload any) error {

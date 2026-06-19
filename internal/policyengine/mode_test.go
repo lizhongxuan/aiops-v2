@@ -97,6 +97,7 @@ func TestChatModePolicy_AllowsProviderSafeCorootReadOnlyTools(t *testing.T) {
 		canonicalName string
 	}{
 		{"coroot_list_services", "coroot.list_services"},
+		{"coroot_collect_rca_context", "coroot.collect_rca_context"},
 		{"coroot_service_metrics", "coroot.service_metrics"},
 		{"coroot_rca_report", "coroot.rca_report"},
 		{"coroot_service_topology", "coroot.service_topology"},
@@ -117,6 +118,70 @@ func TestChatModePolicy_AllowsProviderSafeCorootReadOnlyTools(t *testing.T) {
 		}
 		assertDecision(t, "chat/coroot_readonly/"+tc.callName, p.CheckTool(input), PolicyActionAllow)
 	}
+}
+
+func TestModePoliciesAllowExplicitLowRiskReadMetadata(t *testing.T) {
+	cases := []struct {
+		name   string
+		policy ModePolicy
+		mode   Mode
+	}{
+		{name: "chat", policy: &ChatModePolicy{}, mode: ModeChat},
+		{name: "inspect", policy: &InspectModePolicy{}, mode: ModeInspect},
+		{name: "plan", policy: &PlanModePolicy{}, mode: ModePlan},
+	}
+	for _, tc := range cases {
+		input := PolicyInput{
+			ToolName: "observability_collect_context",
+			Tool: tooling.ToolMetadata{
+				Name:      "observability.collect_context",
+				IsMCP:     true,
+				Domain:    "observability",
+				RiskLevel: tooling.ToolRiskLow,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					PermissionScope: "read",
+					OperationKinds:  []string{"read", "summarize"},
+				},
+			},
+			Mode: tc.mode,
+		}
+		assertDecision(t, tc.name+"/metadata_readonly", tc.policy.CheckTool(input), PolicyActionAllow)
+	}
+}
+
+func TestChatModePolicyDoesNotTreatLowRiskMetadataAsReadOnlyWithoutReadScope(t *testing.T) {
+	p := &ChatModePolicy{}
+	input := PolicyInput{
+		ToolName: "observability_collect_context",
+		Tool: tooling.ToolMetadata{
+			Name:      "observability.collect_context",
+			IsMCP:     true,
+			Domain:    "observability",
+			RiskLevel: tooling.ToolRiskLow,
+		},
+		Mode: ModeChat,
+	}
+	assertDecision(t, "chat/low_risk_without_read_scope", p.CheckTool(input), PolicyActionDeny)
+}
+
+func TestChatModePolicyDoesNotAllowExplicitReadMetadataWhenMutating(t *testing.T) {
+	p := &ChatModePolicy{}
+	input := PolicyInput{
+		ToolName: "observability_collect_context",
+		Tool: tooling.ToolMetadata{
+			Name:      "observability.collect_context",
+			IsMCP:     true,
+			Domain:    "observability",
+			RiskLevel: tooling.ToolRiskLow,
+			Mutating:  true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "read",
+				OperationKinds:  []string{"read"},
+			},
+		},
+		Mode: ModeChat,
+	}
+	assertDecision(t, "chat/read_metadata_mutating", p.CheckTool(input), PolicyActionDeny)
 }
 
 func TestInspectModePolicy_AllowsReadOnlyAndWebSearch(t *testing.T) {

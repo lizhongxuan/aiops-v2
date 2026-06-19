@@ -182,7 +182,7 @@ func corootToolPrompt(name string) string {
 	case "coroot.list_services":
 		return common + " Use coroot.list_services as the default read-only availability/service probe and service discovery probe. If the user needs Coroot details that are not visible in the current tool set, call tool_search with a narrow Coroot query such as metrics, logs, traces, topology, incidents, dashboards, project status, or configuration to reveal the relevant deferred pack."
 	case "coroot.collect_rca_context":
-		return common + " For service RCA, latency/error/SLO/resource/dependency analysis, prefer this aggregate evidence tool first because it summarizes metrics, SLOs, dependencies, recent incidents, logs, traces, profiling, deployments, and rawRefs into a model-safe evidence pack. Use narrower Coroot packs only for follow-up drill-down or when a section is missing. If it identifies an external dependency, IP, DNS name, or ExternalService edge, that edge is not the final root cause until its identity, endpoint, owner, port/protocol, and caller-to-dependency network path are investigated."
+		return common + " For service RCA, latency/error/SLO/resource/dependency analysis, prefer this aggregate evidence tool first because it summarizes metrics, SLOs, dependencies, recent incidents, logs, traces, profiling, deployments, and rawRefs into a model-safe evidence pack. Use narrower Coroot packs only for follow-up drill-down or when a section is missing. If edgeEvidence, evidenceGraph, dependencies, or hypotheses are present, treat them as primary RCA evidence and do not later claim topology evidence is missing just because a narrower follow-up tool failed. For a dependency chain X->Y->Z, include the chain as X->Y->Z, include the labels edgeEvidence and hypotheses when those fields support the RCA, and calibrate candidates as: Z依赖异常导致X异常, Y传播上游异常, X自身资源或发布异常. State confidence as high confidence only with Coroot edge evidence, and state the safety guardrail read-only Coroot evidence first. If it identifies an external dependency, IP, DNS name, or ExternalService edge, that edge is not the final root cause until its identity, endpoint, owner, port/protocol, and caller-to-dependency network path are investigated."
 	case "coroot.service_metrics", "coroot.slo_status":
 		return common + " Use these tools whenever service/application health, status, RCA, CPU, memory, network, SLO, or resource usage evidence would benefit from metric details or visual context. Do not require the user to say chart, metrics, CPU, or Agent-to-UI before calling this tool; decide from the task whether metric charts would help the answer. For service/application CPU or resource usage, do not use exec_command, top, ps, or host shell snapshots as substitutes because those commands inspect the selected host OS, not the Coroot service/application. Native chartReports render as Agent-to-UI coroot_chart artifacts in chat, so when chartReports are present say the chart card is attached or visible instead of claiming the chat cannot render Coroot-style charts."
 	case "coroot.rca_report":
@@ -310,9 +310,26 @@ func corootModelFacingPayload(payload any) any {
 		return serviceMetricsModelFacingPayload(typed)
 	case ServiceTopologyResult:
 		return serviceTopologyModelFacingPayload(typed)
+	case RCAContextResult:
+		return withCorootEvidencePack(typed, typed.Project)
+	case corootErrorResult:
+		return withCorootEvidencePack(typed, "")
 	default:
 		return payload
 	}
+}
+
+func withCorootEvidencePack(payload any, project string) any {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return payload
+	}
+	out["observability_evidence"] = MapCorootEvidencePack(project, payload)
+	return out
 }
 
 func serviceMetricsModelFacingPayload(result ServiceMetricsResult) ServiceMetricsModelResult {

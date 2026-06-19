@@ -484,6 +484,39 @@ func TestSearchOpsManualsNoCandidateButMissingExecutionSurfaceAndRiskNeedsInfo(t
 	}
 }
 
+func TestSearchOpsManualsProvidesGenericStatefulClusterRepairFallback(t *testing.T) {
+	store := NewMemoryStore()
+	result, err := SearchOpsManuals(store, SearchOpsManualsRequest{
+		Text: "主机A和主机B的Redis主从集群异常，请帮忙恢复，只需要Redis集群正常运行，sentinel部署在主机C。",
+	})
+	if err != nil {
+		t.Fatalf("SearchOpsManuals() error = %v", err)
+	}
+	if result.Decision != DecisionDirectExecute || len(result.Manuals) != 1 {
+		t.Fatalf("result = %#v, want one direct generic fallback manual", result)
+	}
+	hit := result.Manuals[0]
+	if hit.Manual.ID != "manual-generic-stateful-cluster-repair" {
+		t.Fatalf("manual id = %q, want generic stateful fallback", hit.Manual.ID)
+	}
+	if hit.Manual.Operation.TargetType != "redis" || !hit.Manual.Operation.Stateful {
+		t.Fatalf("manual operation = %#v, want request target type and stateful", hit.Manual.Operation)
+	}
+	if !hit.Manual.PreflightProbe.ReadOnly || len(hit.Manual.PreflightProbe.RequiredOutputs) == 0 {
+		t.Fatalf("preflight probe = %#v, want read-only generic outputs", hit.Manual.PreflightProbe)
+	}
+}
+
+func TestBuildOperationFrameKeepsRecoveryIntentWhenTopologyMentionsDeployment(t *testing.T) {
+	frame := BuildOperationFrame("主机A和主机B的Redis主从集群异常，请帮忙恢复，只需要Redis集群正常运行，sentinel部署在主机C。", nil)
+	if frame.Operation.Action != "rca_or_repair" {
+		t.Fatalf("operation action = %q, want rca_or_repair", frame.Operation.Action)
+	}
+	if len(frame.ObservationPoints) != 1 || frame.ObservationPoints[0].Role != "sentinel" {
+		t.Fatalf("observation points = %#v, want sentinel monitor deployment preserved", frame.ObservationPoints)
+	}
+}
+
 func TestSearchOpsManualsNoMatchAccuracyForUnrelatedRequests(t *testing.T) {
 	repo := NewMemoryStore()
 	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))

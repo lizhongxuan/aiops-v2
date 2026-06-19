@@ -18,5 +18,5 @@ func (s *defaultStateService) GetState(context.Context) (StateSnapshot, error) {
 	if s.sessions == nil {
 		return s.builder.BuildStateSnapshot(nil), nil
 	}
-	return s.builder.BuildStateSnapshot(s.sessions.GetLatest()), nil
+	return s.builder.BuildStateSnapshot(latestUserVisibleSession(s.sessions)), nil
 }

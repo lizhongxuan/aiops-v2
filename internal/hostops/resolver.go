@@ -90,6 +90,9 @@ func addHostIndex(index map[string]HostRecordView, prefix, value string, host Ho
 		return
 	}
 	index[prefix+":"+value] = host
+	if trimmed := strings.TrimPrefix(value, "@"); trimmed != "" && trimmed != value {
+		index[prefix+":"+trimmed] = host
+	}
 }
 
 func mentionResolutionKeys(mention HostMention) []string {

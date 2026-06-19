@@ -36,6 +36,9 @@ export function uniqueHostMentionKeys(candidates: HostMentionCandidate[]): strin
 }
 
 export function buildHostMentionMetadata(candidates: HostMentionCandidate[]): Record<string, string> {
+  if (!candidates.length) {
+    return {};
+  }
   return {
     "aiops.hostops.mentions": JSON.stringify(candidates),
     "aiops.hostops.clientDetectedMultiHost": String(uniqueHostMentionKeys(candidates).length >= 2),
