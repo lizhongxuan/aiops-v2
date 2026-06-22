@@ -14,6 +14,7 @@ export default defineConfig({
     "context-compaction-snapshot.spec.js",
     "llm-config-context-window.spec.js",
     "ops-manual-param-resolution.spec.js",
+    "operator-runtime.spec.js",
     "react-route-smoke.spec.js",
     "react-shell-snapshot.spec.js",
     "runner-studio.spec.js",

@@ -18,6 +18,7 @@ import { LLMConfigPage } from "@/pages/LLMConfigPage";
 import { OpsGraphPage } from "@/pages/OpsGraphPage";
 import { OpsGraphListPage } from "@/pages/opsgraph/OpsGraphListPage";
 import { OpsManualsPage } from "@/pages/OpsManualsPage";
+import { OperatorRuntimePage } from "@/pages/OperatorRuntimePage";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
 import { PostmortemPage } from "@/pages/PostmortemPage";
 import { PromptTracePage } from "@/pages/PromptTracePage";
@@ -46,6 +47,7 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/runbooks/:runbookId": <RunbookDetailPage />,
   "/runner": <RunnerStudioPage />,
   "/runner/:workflowName": <RunnerStudioPage />,
+  "/operator-runtime": <OperatorRuntimePage />,
   "/terminal/:hostId": <TerminalPage />,
   "/postmortems/:postmortemId": <PostmortemPage />,
   "/settings": <SettingsPage />,

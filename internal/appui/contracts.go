@@ -227,6 +227,7 @@ type servicesConfig struct {
 	hostAgentInstaller  HostAgentInstaller
 	hostOps             HostOpsService
 	terminalPolicy      TerminalPolicyService
+	operatorRuntime     *OperatorRuntimeService
 	pluginSpecs         []plugins.Spec
 }
 
@@ -401,6 +402,12 @@ func WithTerminalPolicyService(service TerminalPolicyService) ServicesOption {
 	}
 }
 
+func WithOperatorRuntimeService(service *OperatorRuntimeService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.operatorRuntime = service
+	}
+}
+
 func WithOpsManualService(service OpsManualService) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.opsManuals = service
@@ -436,34 +443,35 @@ type HTTPServices interface {
 
 // Services is the default first-party Web application service set.
 type Services struct {
-	chat           ChatService
-	state          StateService
-	sessions       SessionService
-	sessionSource  SessionSource
-	approvals      ApprovalService
-	choices        ChoiceService
-	settings       SettingsService
-	hosts          HostService
-	hostAgents     HostAgentService
-	mcps           MCPService
-	profiles       AgentProfileService
-	auth           AuthService
-	terminal       TerminalService
-	uiCards        UICardService
-	coroot         CorootConfigRepository
-	agentEvents    AgentEventService
-	incidents      IncidentService
-	postmortems    PostmortemService
-	corootWebhooks CorootWebhookService
-	runbooks       RunbookService
-	opsgraph       OpsGraphService
-	erp            ERPContextService
-	changes        ChangeContextService
-	opsManuals     OpsManualService
-	toolSpills     ToolResultSpillRepository
-	hostOps        HostOpsService
-	terminalPolicy TerminalPolicyService
-	capabilities   CapabilityService
+	chat            ChatService
+	state           StateService
+	sessions        SessionService
+	sessionSource   SessionSource
+	approvals       ApprovalService
+	choices         ChoiceService
+	settings        SettingsService
+	hosts           HostService
+	hostAgents      HostAgentService
+	mcps            MCPService
+	profiles        AgentProfileService
+	auth            AuthService
+	terminal        TerminalService
+	uiCards         UICardService
+	coroot          CorootConfigRepository
+	agentEvents     AgentEventService
+	incidents       IncidentService
+	postmortems     PostmortemService
+	corootWebhooks  CorootWebhookService
+	runbooks        RunbookService
+	opsgraph        OpsGraphService
+	erp             ERPContextService
+	changes         ChangeContextService
+	opsManuals      OpsManualService
+	toolSpills      ToolResultSpillRepository
+	hostOps         HostOpsService
+	terminalPolicy  TerminalPolicyService
+	capabilities    CapabilityService
+	operatorRuntime *OperatorRuntimeService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -521,35 +529,40 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
 	hostOpsService := cfg.hostOps
+	operatorRuntimeService := cfg.operatorRuntime
+	if operatorRuntimeService == nil {
+		operatorRuntimeService = NewOperatorRuntimeService(nil)
+	}
 	return &Services{
-		chat:           NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents),
-		state:          NewStateService(sessions, builder),
-		sessions:       NewSessionService(sessions, sessionStore, builder),
-		sessionSource:  sessions,
-		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
-		choices:        NewChoiceService(runtime, sessions),
-		settings:       settingsService,
-		hosts:          NewHostServiceWithOptions(sessionStore, cfg.hosts, builder, hostBootstrap, WithHostServiceSSHPasswordStore(sshPasswordStore)),
-		hostAgents:     NewHostAgentService(cfg.hosts),
-		mcps:           NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
-		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
-		auth:           authService,
-		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
-		uiCards:        uiCards,
-		coroot:         cfg.coroot,
-		agentEvents:    agentEvents,
-		incidents:      incidentService,
-		postmortems:    NewPostmortemService(incidentService),
-		corootWebhooks: NewCorootWebhookService(incidentService),
-		runbooks:       NewRunbookService("", nil),
-		opsgraph:       firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
-		erp:            NewERPContextService(),
-		changes:        NewChangeContextService(),
-		opsManuals:     opsManualService,
-		toolSpills:     cfg.toolResultSpills,
-		hostOps:        hostOpsService,
-		terminalPolicy: cfg.terminalPolicy,
-		capabilities:   NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
+		chat:            NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents),
+		state:           NewStateService(sessions, builder),
+		sessions:        NewSessionService(sessions, sessionStore, builder),
+		sessionSource:   sessions,
+		approvals:       NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
+		choices:         NewChoiceService(runtime, sessions),
+		settings:        settingsService,
+		hosts:           NewHostServiceWithOptions(sessionStore, cfg.hosts, builder, hostBootstrap, WithHostServiceSSHPasswordStore(sshPasswordStore)),
+		hostAgents:      NewHostAgentService(cfg.hosts),
+		mcps:            NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
+		profiles:        NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
+		auth:            authService,
+		terminal:        NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
+		uiCards:         uiCards,
+		coroot:          cfg.coroot,
+		agentEvents:     agentEvents,
+		incidents:       incidentService,
+		postmortems:     NewPostmortemService(incidentService),
+		corootWebhooks:  NewCorootWebhookService(incidentService),
+		runbooks:        NewRunbookService("", nil),
+		opsgraph:        firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
+		erp:             NewERPContextService(),
+		changes:         NewChangeContextService(),
+		opsManuals:      opsManualService,
+		toolSpills:      cfg.toolResultSpills,
+		hostOps:         hostOpsService,
+		terminalPolicy:  cfg.terminalPolicy,
+		capabilities:    NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
+		operatorRuntime: operatorRuntimeService,
 	}
 }
 
@@ -593,6 +606,9 @@ func (s *Services) TerminalPolicyService() TerminalPolicyService {
 	return s.terminalPolicy
 }
 func (s *Services) CapabilityService() CapabilityService { return s.capabilities }
+func (s *Services) OperatorRuntimeService() *OperatorRuntimeService {
+	return s.operatorRuntime
+}
 
 func firstNonNilOpsGraphService(primary, fallback OpsGraphService) OpsGraphService {
 	if primary != nil {

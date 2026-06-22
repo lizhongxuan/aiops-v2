@@ -13,6 +13,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  ShieldCheck,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
@@ -43,6 +44,7 @@ const coreItems: NavigationItem[] = [
   { path: "/runbooks", title: "Runbooks", description: "Runbook catalog", icon: BookOpen },
   { path: "/runner", title: zhNavigationTitle("/runner"), description: "Workflow 编排", icon: Boxes, nav: true },
   { path: "/runner/:workflowName", title: "Runner Workflow", description: "Workflow detail", icon: Boxes },
+  { path: "/operator-runtime", title: "自愈 Operator", description: "PG Guard Runtime", icon: ShieldCheck, nav: true },
   { path: "/terminal/:hostId", title: "Terminal", description: "Host terminal", icon: TerminalSquare },
   { path: "/postmortems/:postmortemId", title: "Postmortem", description: "Postmortem workspace", icon: FileCog },
 ];
