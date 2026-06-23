@@ -61,6 +61,12 @@ func TestLoadCatalogMatchStartNextActionSignsProposal(t *testing.T) {
 	if proposal.Source != actionproposal.SourceRunbook || proposal.ActionToken == "" || proposal.ExpiresAt.IsZero() {
 		t.Fatalf("proposal missing source/token/expiresAt: %#v", proposal)
 	}
+	if proposal.TargetSummary != "service:order-api" || proposal.ActionSummary != "检查订单服务 SLO" {
+		t.Fatalf("proposal target/action summary = %q/%q", proposal.TargetSummary, proposal.ActionSummary)
+	}
+	if proposal.RiskSummary == "" || proposal.ExpectedEffect == "" {
+		t.Fatalf("proposal missing risk/effect summary: %#v", proposal)
+	}
 	if proposal.TenantID != "tenant-a" || proposal.UserID != "user-a" {
 		t.Fatalf("proposal tenant/user = %q/%q, want tenant-a/user-a", proposal.TenantID, proposal.UserID)
 	}
@@ -88,6 +94,13 @@ func TestLoadCatalogMatchStartNextActionSignsProposal(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Verify(action token) error = %v", err)
+	}
+	claims, err := testSigner(now).Parse(proposal.ActionToken)
+	if err != nil {
+		t.Fatalf("Parse(action token) error = %v", err)
+	}
+	if claims.TargetSummary != proposal.TargetSummary || claims.ActionSummary != proposal.ActionSummary || claims.RiskSummary != proposal.RiskSummary {
+		t.Fatalf("claims summaries = %#v, want proposal summaries", claims)
 	}
 }
 

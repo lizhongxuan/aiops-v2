@@ -8,9 +8,13 @@ import (
 type Source string
 
 const (
-	SourceRunbook    Source = "runbook"
-	SourceFallback   Source = "fallback"
-	SourceBreakGlass Source = "break_glass"
+	SourceRunbook        Source = "runbook"
+	SourceOpsManual      Source = "ops_manual"
+	SourceWorkflow       Source = "workflow"
+	SourceAIChatDirect   Source = "ai_chat_direct"
+	SourceMultiHostAgent Source = "multi_host_agent"
+	SourceFallback       Source = "fallback"
+	SourceBreakGlass     Source = "break_glass"
 )
 
 type Risk string
@@ -37,7 +41,10 @@ type ActionProposal struct {
 	Source           Source             `json:"source"`
 	ToolName         string             `json:"toolName"`
 	ToolInput        json.RawMessage    `json:"toolInput"`
+	TargetSummary    string             `json:"targetSummary,omitempty"`
+	ActionSummary    string             `json:"actionSummary,omitempty"`
 	Risk             Risk               `json:"risk"`
+	RiskSummary      string             `json:"riskSummary,omitempty"`
 	ApprovalRequired bool               `json:"approvalRequired"`
 	Reason           string             `json:"reason,omitempty"`
 	EvidenceRefs     []string           `json:"evidenceRefs,omitempty"`
@@ -60,7 +67,10 @@ type ActionTokenClaims struct {
 	ToolName         string    `json:"toolName"`
 	InputHash        string    `json:"inputHash"`
 	Source           Source    `json:"source"`
+	TargetSummary    string    `json:"targetSummary,omitempty"`
+	ActionSummary    string    `json:"actionSummary,omitempty"`
 	Risk             Risk      `json:"risk"`
+	RiskSummary      string    `json:"riskSummary,omitempty"`
 	Reason           string    `json:"reason,omitempty"`
 	RunbookID        string    `json:"runbookId,omitempty"`
 	RunbookStepID    string    `json:"runbookStepId,omitempty"`

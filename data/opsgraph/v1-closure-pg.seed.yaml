@@ -1,0 +1,61 @@
+entities:
+  - id: host.a
+    type: host
+    name: 主机A
+    aliases: ["host-a", "pg-a"]
+  - id: host.b
+    type: host
+    name: 主机B
+    aliases: ["host-b", "pg-b"]
+  - id: host.c
+    type: host
+    name: 主机C
+    aliases: ["host-c", "pg-mon"]
+  - id: cluster.pg.demo
+    type: middleware_cluster
+    name: demo-pg-cluster
+    aliases: ["PG 同步异常样例", "postgres replication"]
+  - id: pg.instance.a
+    type: middleware_instance
+    name: pg-primary-on-host-a
+    attributes:
+      role: primary
+      middleware: postgresql
+  - id: pg.instance.b
+    type: middleware_instance
+    name: pg-standby-on-host-b
+    attributes:
+      role: standby
+      middleware: postgresql
+  - id: monitor.pg_mon.c
+    type: middleware_instance
+    name: pg_mon-on-host-c
+    attributes:
+      role: monitor
+      middleware: pg_mon
+relationships:
+  - from: cluster.pg.demo
+    type: contains
+    to: pg.instance.a
+    reason: PG cluster primary member
+  - from: cluster.pg.demo
+    type: contains
+    to: pg.instance.b
+    reason: PG cluster standby member
+  - from: pg.instance.a
+    type: runs_on
+    to: host.a
+  - from: pg.instance.b
+    type: runs_on
+    to: host.b
+  - from: monitor.pg_mon.c
+    type: runs_on
+    to: host.c
+  - from: monitor.pg_mon.c
+    type: depends_on
+    to: pg.instance.a
+    reason: pg_mon observes primary replication state
+  - from: monitor.pg_mon.c
+    type: depends_on
+    to: pg.instance.b
+    reason: pg_mon observes standby replay state

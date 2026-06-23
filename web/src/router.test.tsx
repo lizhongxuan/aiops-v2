@@ -31,7 +31,6 @@ const routedPaths = [
   "/agent-ui",
   "/ui-cards",
   "/script-configs",
-  "/coroot",
   "/lab",
   "/generator",
   "/debug/prompts",

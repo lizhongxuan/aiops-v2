@@ -134,6 +134,9 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 	if risk == "" {
 		risk = rb.Risk
 	}
+	targetSummary := runbookActionTargetSummary(rendered, instance.Context)
+	actionSummary := runbookActionSummary(step)
+	riskSummary := runbookRiskSummary(risk, step.ApprovalRequired, step)
 	claims := actionproposal.ActionTokenClaims{
 		SessionID:        req.SessionID,
 		TurnID:           req.TurnID,
@@ -143,7 +146,10 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 		ToolName:         step.Tool,
 		InputHash:        inputHash,
 		Source:           actionproposal.SourceRunbook,
+		TargetSummary:    targetSummary,
+		ActionSummary:    actionSummary,
 		Risk:             risk,
+		RiskSummary:      riskSummary,
 		Reason:           firstNonEmpty(step.Title, step.ID),
 		RunbookID:        rb.ID,
 		RunbookStepID:    step.ID,
@@ -168,7 +174,10 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 		Source:           actionproposal.SourceRunbook,
 		ToolName:         step.Tool,
 		ToolInput:        input,
+		TargetSummary:    targetSummary,
+		ActionSummary:    actionSummary,
 		Risk:             risk,
+		RiskSummary:      riskSummary,
 		ApprovalRequired: step.ApprovalRequired,
 		Reason:           firstNonEmpty(step.Title, step.ID),
 		RunbookID:        rb.ID,
@@ -180,6 +189,77 @@ func (s *Service) NextAction(req NextActionRequest) (actionproposal.ActionPropos
 		ActionToken:      token,
 		ExpiresAt:        expiresAt,
 	}, true, nil
+}
+
+func runbookActionTargetSummary(rendered any, context map[string]any) string {
+	candidates := []any{rendered, context}
+	for _, candidate := range candidates {
+		values := make([]string, 0, 3)
+		if service := renderedField(candidate, "service"); service != "" {
+			values = append(values, "service:"+service)
+		}
+		if host := renderedField(candidate, "host", "hostId", "hostname"); host != "" {
+			values = append(values, "host:"+host)
+		}
+		if entity := renderedField(candidate, "entity", "entityId", "target"); entity != "" {
+			values = append(values, "entity:"+entity)
+		}
+		if len(values) > 0 {
+			return strings.Join(values, "；")
+		}
+	}
+	return ""
+}
+
+func renderedField(value any, keys ...string) string {
+	var obj map[string]any
+	switch typed := value.(type) {
+	case map[string]any:
+		obj = typed
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		_ = json.Unmarshal(data, &obj)
+	}
+	for _, key := range keys {
+		if candidate, ok := obj[key]; ok {
+			if text := strings.TrimSpace(fmt.Sprint(candidate)); text != "" && text != "<nil>" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func runbookActionSummary(step Step) string {
+	if value := strings.TrimSpace(step.Title); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(step.ID); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(step.Tool); value != "" {
+		return "执行 " + value
+	}
+	return "执行运维手册步骤"
+}
+
+func runbookRiskSummary(risk actionproposal.Risk, approvalRequired bool, step Step) string {
+	parts := []string{"风险等级：" + string(risk)}
+	if approvalRequired {
+		parts = append(parts, "需要用户审批后才可执行")
+	} else {
+		parts = append(parts, "不需要审批的只读或低风险步骤")
+	}
+	if effect := strings.TrimSpace(step.ExpectedEffect); effect != "" {
+		parts = append(parts, "预期效果："+effect)
+	}
+	if rollback := strings.TrimSpace(step.Rollback); rollback != "" {
+		parts = append(parts, "失败处理："+rollback)
+	}
+	return strings.Join(parts, "；")
 }
 
 func (s *Service) ObserveResult(req ObserveResultRequest) error {

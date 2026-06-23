@@ -67,7 +67,6 @@ const toolsItems: NavigationItem[] = [
   { path: "/agent-ui", title: zhNavigationTitle("/agent-ui"), description: "卡片产物与渲染追踪", icon: LayoutGrid, nav: true },
   { path: "/ui-cards", title: "UI Cards", description: "Card registry", icon: LayoutGrid },
   { path: "/script-configs", title: "Script Configs", description: "Script configuration", icon: FileCog },
-  { path: "/coroot", title: zhNavigationTitle("/coroot"), description: "Coroot 配置与证据", icon: Activity, nav: true },
   { path: "/lab", title: "Lab", description: "Lab environment", icon: FlaskConical },
   { path: "/generator", title: "Generator", description: "Generator workshop", icon: Wrench },
   { path: "/debug/prompts", title: zhNavigationTitle("/debug/prompts"), description: "Prompt Trace 查看器", icon: ScrollText, nav: true },

@@ -15,6 +15,9 @@ export type OpsManualParamFormSubmit = {
   metadata: Record<string, string>;
 };
 
+const EXPLICIT_COROOT_MENTION_PATTERN =
+  /(^|[^\p{L}\p{N}_])@coroot([^\p{L}\p{N}_]|$)/iu;
+
 export function resolveStopDispatchTarget(
   state: AiopsTransportState,
   threadIsRunning: boolean,
@@ -28,7 +31,9 @@ export function resolveStopDispatchTarget(
   return threadIsRunning ? "runtime" : "transport";
 }
 
-export function buildOpsManualParamFormSubmit(input: OpsManualParamFormSubmitInput): OpsManualParamFormSubmit {
+export function buildOpsManualParamFormSubmit(
+  input: OpsManualParamFormSubmitInput,
+): OpsManualParamFormSubmit {
   const params = Object.fromEntries(
     Object.entries(input.params)
       .map(([key, value]) => [key.trim(), String(value || "").trim()])
@@ -38,7 +43,9 @@ export function buildOpsManualParamFormSubmit(input: OpsManualParamFormSubmitInp
     .map(([key, value]) => `${key}=${value}`)
     .join("；");
   return {
-    text: paramText ? `已提交运维手册参数：${paramText}` : "已提交运维手册参数。",
+    text: paramText
+      ? `已提交运维手册参数：${paramText}`
+      : "已提交运维手册参数。",
     metadata: {
       opsManualAction: "submit_ops_manual_param_form",
       ...(input.artifactId ? { sourceArtifactId: input.artifactId } : {}),
@@ -46,5 +53,17 @@ export function buildOpsManualParamFormSubmit(input: OpsManualParamFormSubmitInp
       ...(input.workflowId ? { opsManualWorkflowId: input.workflowId } : {}),
       opsManualParamsJson: JSON.stringify(params),
     },
+  };
+}
+
+export function buildCorootMentionMetadata(
+  text: string,
+): Record<string, string> {
+  if (!EXPLICIT_COROOT_MENTION_PATTERN.test(text)) {
+    return {};
+  }
+  return {
+    "aiops.coroot.explicitRCA": "true",
+    "aiops.coroot.rcaDisplayAllowed": "true",
   };
 }

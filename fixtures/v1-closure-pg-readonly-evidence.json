@@ -1,0 +1,66 @@
+{
+  "scenario": "v1-closure-pg-multihost",
+  "readonly": true,
+  "evidenceRefs": [
+    {
+      "id": "evidence://opsgraph/pg-sync/relationship",
+      "source": "opsgraph",
+      "summary": "OpsGraph shows PG instances on host A and B, and pg_mon observer on host C.",
+      "covers": ["opsgraph", "host-a", "host-b", "host-c", "pg_mon"]
+    },
+    {
+      "id": "evidence://host/host-a/pg-readonly",
+      "source": "host_agent_tool",
+      "hostId": "host-a",
+      "summary": "host A reports primary role with current WAL/LSN.",
+      "covers": ["role", "wal", "lsn", "replication_state"],
+      "data": {
+        "role": "primary",
+        "currentWalLsn": "0/500",
+        "sentLsn": "0/500",
+        "replayLsn": "0/500",
+        "replicationState": "streaming"
+      }
+    },
+    {
+      "id": "evidence://host/host-b/pg-readonly",
+      "source": "host_agent_tool",
+      "hostId": "host-b",
+      "summary": "host B reports standby role with replay lag.",
+      "covers": ["role", "wal", "lsn", "replication_lag"],
+      "data": {
+        "role": "standby",
+        "receiveLsn": "0/500",
+        "replayLsn": "0/300",
+        "replicationLagBytes": 33554432,
+        "replayPaused": false
+      }
+    },
+    {
+      "id": "evidence://host/host-c/pg-mon-readonly",
+      "source": "host_agent_tool",
+      "hostId": "host-c",
+      "summary": "pg_mon on host C observes host B replay lag and stale replay timestamp.",
+      "covers": ["pg_mon", "replication_lag", "observer"],
+      "data": {
+        "component": "pg_mon",
+        "observedPrimary": "host-a",
+        "observedStandby": "host-b",
+        "lagSeconds": 420,
+        "lastReplayAgeSeconds": 390
+      }
+    },
+    {
+      "id": "evidence://network/host-a-host-b-readonly",
+      "source": "host_agent_tool",
+      "summary": "Network read-only check between host A and host B completes but shows intermittent packet loss.",
+      "covers": ["network", "host-a", "host-b"],
+      "data": {
+        "from": "host-a",
+        "to": "host-b",
+        "tcp5432Reachable": true,
+        "packetLossPercent": 2.5
+      }
+    }
+  ]
+}

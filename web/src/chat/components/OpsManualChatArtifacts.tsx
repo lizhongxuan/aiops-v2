@@ -67,14 +67,15 @@ type ParamCandidate = {
 };
 
 const OPS_MANUAL_SKIP_ACTION = "skip_ops_manual";
+const OPS_MANUAL_USE_ACTION = "use_ops_manual";
 const OPS_MANUAL_REFERENCE_ACTION = "reference_ops_manual";
 const OPS_MANUAL_PREFLIGHT_ACTION = "run_ops_manual_preflight";
 
 const STATE_LABELS: Record<string, string> = {
-  direct_execute: "可进入预检",
+  direct_execute: "可推荐使用",
   need_info: "手册缺上下文",
   adapt: "需适配",
-  direct: "可进入预检",
+  direct: "可推荐使用",
   need_more_info: "手册缺上下文",
   adapt_required: "需适配",
   reference_only: "仅参考",
@@ -96,7 +97,7 @@ const ACTIONS_BY_STATE: Record<
   string,
   Array<{ id: string; label: string; action?: string }>
 > = {
-  direct_execute: [{ id: "run-preflight", label: "运行预检" }],
+  direct_execute: [{ id: "use-manual", label: "使用该手册/Workflow" }],
   need_info: [{ id: "fill-context", label: "补充信息" }],
   adapt: [
     {
@@ -105,7 +106,7 @@ const ACTIONS_BY_STATE: Record<
       action: "generate_runner_workflow_candidate",
     },
   ],
-  direct: [{ id: "run-preflight", label: "运行预检" }],
+  direct: [{ id: "use-manual", label: "使用该手册/Workflow" }],
   need_more_info: [{ id: "fill-context", label: "补充信息" }],
   adapt_required: [
     {
@@ -271,7 +272,7 @@ export function OpsManualMatchArtifact({
 
       {state === "direct" || state === "direct_execute" ? (
         <div className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-600">
-          下一步：先运行预检，通过后确认或审批执行。
+          下一步：用户确认后按手册边界处理；高风险动作仍需审批。
         </div>
       ) : null}
 
@@ -612,14 +613,14 @@ function OpsManualProgressCard({
     : needsInput
       ? ""
       : status === "resolved"
-        ? "参数已补齐，下一步运行预检"
+        ? "参数已补齐，等待确认是否使用"
         : searchStage(decision);
   const badgeLabel = preflightResult
     ? PREFLIGHT_LABELS[preflightStatus] || "预检已完成"
     : needsInput
       ? "等待补充"
       : status === "resolved"
-        ? "可进入预检"
+        ? "可推荐使用"
         : STATE_LABELS[decision] || "运维手册";
   const badgeClass = preflightResult
     ? PREFLIGHT_TONE[preflightStatus] || PREFLIGHT_TONE.unknown
@@ -794,9 +795,9 @@ function OpsManualProgressCard({
               setPreflightRunning(true);
               dispatchComposerContextSubmit(
                 artifact.id,
-                `运行运维手册预检：${manualId || workflowId || manualTitle}`,
+                useManualText(manualTitle, operationFrame),
                 {
-                  ...preflightManualMetadata(
+                  ...useManualMetadata(
                     manualId,
                     workflowId,
                     manualTitle,
@@ -815,7 +816,7 @@ function OpsManualProgressCard({
             ) : (
               <ShieldCheck className="h-3.5 w-3.5" />
             )}
-            {preflightRunning ? "预检中" : "运行预检"}
+            {preflightRunning ? "已选择使用" : "使用该手册/Workflow"}
           </Button>
         ) : null}
         <Button
@@ -892,9 +893,10 @@ function OpsManualProgressCard({
       {preflightRunning ? (
         <div
           className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-sky-700"
-          data-testid="ops-manual-preflight-running"
+          data-testid="ops-manual-use-submitted"
         >
-          预检请求已提交，正在等待只读探针结果。
+          已选择使用该手册/Workflow，Agent
+          会按手册边界继续处理；高风险动作仍需审批。
         </div>
       ) : null}
 
@@ -1315,7 +1317,7 @@ export function OpsManualParamResolutionArtifact({
               {status === "resolved" && hasMergedPreflightResult
                 ? "预检已完成"
                 : status === "resolved"
-                  ? "可进入预检"
+                  ? "可推荐使用"
                   : "参数确认"}
             </Badge>
             {manualId ? (
@@ -1401,9 +1403,9 @@ export function OpsManualParamResolutionArtifact({
               setPreflightRunning(true);
               dispatchComposerContextSubmit(
                 artifact.id,
-                `运行运维手册预检：${manualId || workflowId || "当前手册"}`,
+                useManualText(manualId || "当前运维手册", operationFrame),
                 {
-                  ...preflightManualMetadata(
+                  ...useManualMetadata(
                     manualId,
                     workflowId,
                     manualId || "当前运维手册",
@@ -1422,7 +1424,7 @@ export function OpsManualParamResolutionArtifact({
             ) : (
               <ShieldCheck className="h-3.5 w-3.5" />
             )}
-            {preflightRunning ? "预检中" : "运行预检"}
+            {preflightRunning ? "已选择使用" : "使用该手册/Workflow"}
           </Button>
         ) : null}
         <Button
@@ -1483,9 +1485,10 @@ export function OpsManualParamResolutionArtifact({
       {preflightRunning ? (
         <div
           className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-sky-700"
-          data-testid="ops-manual-preflight-running"
+          data-testid="ops-manual-use-submitted"
         >
-          预检请求已提交，正在等待只读探针结果。
+          已选择使用该手册/Workflow，Agent
+          会按手册边界继续处理；高风险动作仍需审批。
         </div>
       ) : null}
       {skipSubmitted ? (
@@ -1586,17 +1589,32 @@ export function RunnerWorkflowGenerationArtifact({
     (step) => !isManualApprovalStep(step),
   );
   const workflowId = text(pick(data, "workflowId", "workflow_id"));
-  const draftWorkflowId = text(pick(data, "draftWorkflowId", "draft_workflow_id"));
-  const generationAvailable = Boolean(pick(data, "generationAvailable", "generation_available"));
+  const draftWorkflowId = text(
+    pick(data, "draftWorkflowId", "draft_workflow_id"),
+  );
+  const generationAvailable = Boolean(
+    pick(data, "generationAvailable", "generation_available"),
+  );
   const planIsProvisional =
     Boolean(pick(data, "planIsProvisional", "plan_is_provisional")) ||
     generationAvailable;
-  const validationProvider = text(pick(data, "validationProvider", "validation_provider"));
-  const validationScenario = text(pick(data, "validationScenario", "validation_scenario"));
-  const validationDetails = asRecord(pick(data, "validationDetails", "validation_details"));
-  const requiredSlots = arrayRecords(pick(data, "requiredSlots", "required_slots"));
-  const validationImageOptions = workflowValidationImageOptions(validationDetails);
-  const [validationImage, setValidationImage] = useState(validationImageOptions[0] || "python:3.12-slim");
+  const validationProvider = text(
+    pick(data, "validationProvider", "validation_provider"),
+  );
+  const validationScenario = text(
+    pick(data, "validationScenario", "validation_scenario"),
+  );
+  const validationDetails = asRecord(
+    pick(data, "validationDetails", "validation_details"),
+  );
+  const requiredSlots = arrayRecords(
+    pick(data, "requiredSlots", "required_slots"),
+  );
+  const validationImageOptions =
+    workflowValidationImageOptions(validationDetails);
+  const [validationImage, setValidationImage] = useState(
+    validationImageOptions[0] || "python:3.12-slim",
+  );
   useEffect(() => {
     if (!validationImageOptions.includes(validationImage)) {
       setValidationImage(validationImageOptions[0] || "python:3.12-slim");
@@ -1604,7 +1622,9 @@ export function RunnerWorkflowGenerationArtifact({
   }, [validationImage, validationImageOptions]);
   const selectedStep =
     steps.find((step) => workflowStepID(step) === selectedStepId) ||
-    steps.find((step) => Boolean(rawText(pick(step, "scriptPreview", "script_preview")))) ||
+    steps.find((step) =>
+      Boolean(rawText(pick(step, "scriptPreview", "script_preview"))),
+    ) ||
     steps[0] ||
     {};
 
@@ -1708,9 +1728,24 @@ export function RunnerWorkflowGenerationArtifact({
                     >
                       {STEP_LABELS[status] || status}
                     </Badge>
-                    {text(pick(step, "scriptLanguageLabel", "script_language_label")) ? (
-                      <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-600">
-                        {text(pick(step, "scriptLanguageLabel", "script_language_label"))}
+                    {text(
+                      pick(
+                        step,
+                        "scriptLanguageLabel",
+                        "script_language_label",
+                      ),
+                    ) ? (
+                      <Badge
+                        variant="outline"
+                        className="border-slate-200 bg-slate-50 text-slate-600"
+                      >
+                        {text(
+                          pick(
+                            step,
+                            "scriptLanguageLabel",
+                            "script_language_label",
+                          ),
+                        )}
                       </Badge>
                     ) : null}
                   </span>
@@ -1745,7 +1780,10 @@ export function RunnerWorkflowGenerationArtifact({
               ) : null}
             </section>
             {Object.keys(selectedStep).length ? (
-              <WorkflowNodeDetailPanel step={selectedStep} validationDetails={validationDetails} />
+              <WorkflowNodeDetailPanel
+                step={selectedStep}
+                validationDetails={validationDetails}
+              />
             ) : null}
             {requiredSlots.length ? (
               <section className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -1755,7 +1793,10 @@ export function RunnerWorkflowGenerationArtifact({
                 <ul className="mt-2 grid gap-1 text-sm text-amber-900">
                   {requiredSlots.map((slot, index) => (
                     <li key={text(pick(slot, "id"), String(index))}>
-                      {text(pick(slot, "question", "label"), `补充项 ${index + 1}`)}
+                      {text(
+                        pick(slot, "question", "label"),
+                        `补充项 ${index + 1}`,
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -1765,8 +1806,12 @@ export function RunnerWorkflowGenerationArtifact({
               <section className="rounded-lg border border-slate-200 bg-white p-3">
                 <div className="text-xs font-medium text-slate-500">验证</div>
                 <div className="mt-2 grid gap-1 text-sm text-slate-700">
-                  {validationProvider ? <div>Provider：{validationProvider}</div> : null}
-                  {validationScenario ? <div>场景：{validationScenario}</div> : null}
+                  {validationProvider ? (
+                    <div>Provider：{validationProvider}</div>
+                  ) : null}
+                  {validationScenario ? (
+                    <div>场景：{validationScenario}</div>
+                  ) : null}
                 </div>
               </section>
             ) : null}
@@ -1791,11 +1836,21 @@ function WorkflowNodeDetailPanel({
     scriptLabelFromAction(action),
   );
   const scriptPreview = rawText(pick(step, "scriptPreview", "script_preview"));
-  const validationStatus = text(pick(step, "validationStatus", "validation_status"));
-  const validationSummary = text(pick(step, "validationSummary", "validation_summary"));
-  const validationStdout = rawText(pick(step, "validationStdout", "validation_stdout"));
-  const validationStderr = rawText(pick(step, "validationStderr", "validation_stderr"));
-  const allowedImages = stringArray(pick(validationDetails, "allowedImages", "allowed_images"));
+  const validationStatus = text(
+    pick(step, "validationStatus", "validation_status"),
+  );
+  const validationSummary = text(
+    pick(step, "validationSummary", "validation_summary"),
+  );
+  const validationStdout = rawText(
+    pick(step, "validationStdout", "validation_stdout"),
+  );
+  const validationStderr = rawText(
+    pick(step, "validationStderr", "validation_stderr"),
+  );
+  const allowedImages = stringArray(
+    pick(validationDetails, "allowedImages", "allowed_images"),
+  );
   const selectedImage = text(
     pick(validationDetails, "selectedImage", "selected_image", "image"),
     allowedImages[0] || "",
@@ -1806,14 +1861,23 @@ function WorkflowNodeDetailPanel({
       <div className="text-xs font-medium text-slate-500">节点详情</div>
       <div className="mt-1 font-medium text-slate-950">{title}</div>
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
-        <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
+        <Badge
+          variant="outline"
+          className="border-slate-200 bg-slate-50 text-slate-700"
+        >
           {scriptLanguageLabel}
         </Badge>
-        <Badge variant="outline" className="border-slate-200 bg-slate-50 font-mono text-slate-700">
+        <Badge
+          variant="outline"
+          className="border-slate-200 bg-slate-50 font-mono text-slate-700"
+        >
           {action}
         </Badge>
         {validationStatus ? (
-          <Badge variant="outline" className={STEP_TONE[validationStatus] || STEP_TONE.waiting}>
+          <Badge
+            variant="outline"
+            className={STEP_TONE[validationStatus] || STEP_TONE.waiting}
+          >
             验证：{STEP_LABELS[validationStatus] || validationStatus}
           </Badge>
         ) : null}
@@ -1823,7 +1887,9 @@ function WorkflowNodeDetailPanel({
       ) : null}
       {scriptPreview ? (
         <div className="mt-3">
-          <div className="mb-1 text-xs font-medium text-slate-500">脚本预览</div>
+          <div className="mb-1 text-xs font-medium text-slate-500">
+            脚本预览
+          </div>
           <pre className="max-h-[520px] min-h-[240px] max-w-full overflow-auto rounded-md bg-slate-950 p-4 text-[13px] leading-6 text-slate-100 whitespace-pre-wrap break-words">
             {scriptPreview}
           </pre>
@@ -1836,7 +1902,10 @@ function WorkflowNodeDetailPanel({
       {selectedImage ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
           <span className="font-medium text-slate-500">验证镜像</span>
-          <Badge variant="outline" className="border-slate-200 bg-slate-50 font-mono text-slate-700">
+          <Badge
+            variant="outline"
+            className="border-slate-200 bg-slate-50 font-mono text-slate-700"
+          >
             {selectedImage}
           </Badge>
         </div>
@@ -1870,7 +1939,9 @@ function WorkflowNodeDetailPanel({
 }
 
 function workflowStepID(step: LooseRecord) {
-  return text(pick(step, "id", "key")).toLowerCase().replace(/_/g, "-");
+  return text(pick(step, "id", "key"))
+    .toLowerCase()
+    .replace(/_/g, "-");
 }
 
 function workflowValidationImageOptions(validationDetails: LooseRecord) {
@@ -2363,7 +2434,7 @@ function SearchManualHit({
 }) {
   const [skipSubmitted, setSkipSubmitted] = useState(false);
   const [referenceSubmitted, setReferenceSubmitted] = useState(false);
-  const [preflightRunning, setPreflightRunning] = useState(false);
+  const [useSubmitted, setUseSubmitted] = useState(false);
   const manualTitle = manualTitleFromHit(hit) || `相关手册 ${index + 1}`;
   const manualId = manualIdFromHit(hit);
   const boundWorkflowId = text(
@@ -2395,7 +2466,7 @@ function SearchManualHit({
     operationFrame,
     usableMode,
   );
-  const canRunPreflight =
+  const canUseManual =
     decision === "direct_execute" ||
     decision === "direct" ||
     usableMode === "direct_execute" ||
@@ -2442,18 +2513,18 @@ function SearchManualHit({
         ) : null}
       </dl>
       <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-200 pt-3">
-        {canRunPreflight ? (
+        {canUseManual ? (
           <Button
             type="button"
             size="sm"
             className="h-8 rounded-md"
-            disabled={preflightRunning}
+            disabled={useSubmitted}
             onClick={() => {
-              setPreflightRunning(true);
+              setUseSubmitted(true);
               dispatchComposerContextSubmit(
                 artifactId,
-                preflightManualText(manualTitle, operationFrame),
-                preflightManualMetadata(
+                useManualText(manualTitle, operationFrame),
+                useManualMetadata(
                   manualId,
                   boundWorkflowId,
                   manualTitle,
@@ -2463,12 +2534,8 @@ function SearchManualHit({
               );
             }}
           >
-            {preflightRunning ? (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <ShieldCheck className="h-3.5 w-3.5" />
-            )}
-            {preflightRunning ? "预检中" : "运行预检"}
+            <ShieldCheck className="h-3.5 w-3.5" />
+            {useSubmitted ? "已选择使用" : "使用该手册/Workflow"}
           </Button>
         ) : null}
         <Button
@@ -2519,12 +2586,13 @@ function SearchManualHit({
           {skipSubmitted ? "已切换" : "不使用"}
         </Button>
       </div>
-      {preflightRunning ? (
+      {useSubmitted ? (
         <div
-          className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-sky-700"
-          data-testid="ops-manual-preflight-running"
+          className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-emerald-700"
+          data-testid="ops-manual-use-submitted"
         >
-          预检请求已提交，正在等待只读探针结果。
+          已选择使用该手册/Workflow，Agent
+          会按手册边界继续处理；高风险动作仍需审批。
         </div>
       ) : null}
       {referenceSubmitted ? (
@@ -2561,7 +2629,7 @@ function normalizeParamResolutionStatus(value: string) {
 }
 
 function paramResolutionTitle(status: string) {
-  if (status === "resolved") return "参数已补齐，可进入预检";
+  if (status === "resolved") return "参数已补齐，可推荐使用";
   if (status === "ambiguous") return "需要确认参数";
   if (status === "need_user_input") return "需要补充参数";
   return "参数暂未补齐";
@@ -2764,7 +2832,7 @@ function crossObjectNoMatchSummary(operationFrame?: LooseRecord) {
 }
 
 function defaultSearchSummary(decision: string) {
-  if (decision === "direct_execute") return "找到可进入预检的运维手册。";
+  if (decision === "direct_execute") return "找到高置信匹配的运维手册。";
   if (decision === "need_info")
     return "缺少目标位置、实例对象或访问入口，先补齐必要上下文。";
   if (decision === "adapt") return "找到相关运维手册，但当前环境需要适配。";
@@ -2774,7 +2842,7 @@ function defaultSearchSummary(decision: string) {
 }
 
 function searchResultTitle(decision: string) {
-  if (decision === "direct_execute") return "找到可进入预检的运维手册";
+  if (decision === "direct_execute") return "找到高置信匹配的运维手册";
   if (decision === "need_info") return "运维手册待补目标信息";
   if (decision === "adapt") return "找到需要适配的运维手册";
   if (decision === "reference_only") return "找到可参考的运维手册";
@@ -2808,7 +2876,8 @@ function searchActionsForDecision(
 }
 
 function searchStage(decision: string) {
-  if (decision === "direct_execute") return "运维手册已匹配，下一步是运行预检";
+  if (decision === "direct_execute")
+    return "运维手册已高置信匹配，等待确认是否使用";
   if (decision === "adapt") return "手册可参考，但 Workflow 需要适配";
   if (decision === "reference_only") return "没有可直接运行的 Workflow";
   if (decision === "no_match") return "未找到适用手册，AI 将继续只读排查";
@@ -2817,7 +2886,7 @@ function searchStage(decision: string) {
 
 function searchNextStep(decision: string, recommendedNextAction: string) {
   if (decision === "direct_execute")
-    return "下一步：AI 会先运行只读预检；通过后确认或审批执行。";
+    return "下一步：可选择使用该手册/Workflow，也可以跳过继续 AI Chat 处理。";
   if (decision === "adapt")
     return "下一步：AI 会生成适配 Workflow 草稿，并先做只读预检。";
   if (decision === "reference_only")
@@ -2902,13 +2971,25 @@ function skipManualText(manualTitle: string, operationFrame?: LooseRecord) {
   return `已选择跳过运维手册「${manualTitle}」。本轮后续不要再调用 search_ops_manuals、resolve_ops_manual_params 或 run_ops_manual_preflight；请按普通只读排查继续。${operationText}默认使用当前选择主机；先做只读检查。`;
 }
 
-function referenceManualText(manualTitle: string, operationFrame?: LooseRecord) {
+function referenceManualText(
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+) {
   const operation = operationFrameLabel(operationFrame);
   const operationText = operation ? `当前请求：${operation}；` : "";
   return `仅参考运维手册「${manualTitle}」。请进入 manual-guided chat，按手册经验逐步做只读排查和命令审核，不要进入 Workflow 预检或自动执行工作流。${operationText}`;
 }
 
-function preflightManualText(manualTitle: string, operationFrame?: LooseRecord) {
+function useManualText(manualTitle: string, operationFrame?: LooseRecord) {
+  const operation = operationFrameLabel(operationFrame);
+  const operationText = operation ? `当前请求：${operation}；` : "";
+  return `使用运维手册/Workflow「${manualTitle}」。请先说明适用边界、已知风险和将要执行的步骤；高风险动作必须等待用户审批。${operationText}`;
+}
+
+function preflightManualText(
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+) {
   const operation = operationFrameLabel(operationFrame);
   const operationText = operation ? `当前请求：${operation}；` : "";
   return `使用运维手册「${manualTitle}」运行只读预检。${operationText}只做预检探针，通过后再等待用户确认或审批执行。`;
@@ -2927,12 +3008,16 @@ function opsManualActionMetadata(
   const targetScope = operationFrameTargetScopeValue(operationFrame);
   return {
     opsManualAction: actionName,
-    ...(manualId ? { opsManualManualId: manualId, manualId, manual_id: manualId } : {}),
+    ...(manualId
+      ? { opsManualManualId: manualId, manualId, manual_id: manualId }
+      : {}),
     ...(workflowId
       ? { opsManualWorkflowId: workflowId, workflowId, workflow_id: workflowId }
       : {}),
     ...(manualTitle ? { opsManualManualTitle: manualTitle } : {}),
-    ...(objectType ? { opsManualObjectType: objectType, object_type: objectType } : {}),
+    ...(objectType
+      ? { opsManualObjectType: objectType, object_type: objectType }
+      : {}),
     ...(action
       ? { opsManualOperationAction: action, operation_type: action, action }
       : {}),
@@ -2972,6 +3057,23 @@ function referenceManualMetadata(
 ): Record<string, string> {
   return opsManualActionMetadata(
     OPS_MANUAL_REFERENCE_ACTION,
+    manualId,
+    workflowId,
+    manualTitle,
+    operationFrame,
+    flowId,
+  );
+}
+
+function useManualMetadata(
+  manualId: string,
+  workflowId: string,
+  manualTitle: string,
+  operationFrame?: LooseRecord,
+  flowId = "",
+): Record<string, string> {
+  return opsManualActionMetadata(
+    OPS_MANUAL_USE_ACTION,
     manualId,
     workflowId,
     manualTitle,

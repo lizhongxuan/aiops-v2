@@ -128,7 +128,6 @@ export const zhNavigationTitles: LabelMap = {
   "/settings/experience_packs": "运维手册",
   "/capabilities": "能力管理",
   "/mcp": "MCP 服务",
-  "/coroot": "Coroot 观测",
   "/agent_ui": "Agent UI",
   "/debug/prompts": "Prompt Trace",
 };

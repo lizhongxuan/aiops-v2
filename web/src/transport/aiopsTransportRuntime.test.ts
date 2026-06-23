@@ -60,6 +60,28 @@ describe("aiopsTransportRuntime", () => {
     expect(state.hostMissions["mission-1"].planSteps).toBeUndefined();
   });
 
+  it("normalizes optional ops run view state", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-opsrun"),
+      opsRun: {
+        id: "opsrun-turn-1",
+        source: "chat",
+        status: "working",
+        title: "主机A跟主机B上PG不同步",
+        targetSummary: "主机A/主机B PG 与主机C pg_mon",
+        evidenceCount: 2,
+        currentStep: "正在只读采集 PG 同步证据",
+      },
+    });
+
+    expect(state.opsRun).toMatchObject({
+      id: "opsrun-turn-1",
+      source: "chat",
+      status: "working",
+      evidenceCount: 2,
+    });
+  });
+
   it("builds custom AssistantTransport commands from the current state", () => {
     const send = vi.fn();
     const state = {
@@ -78,11 +100,31 @@ describe("aiopsTransportRuntime", () => {
     actions.mcpPin("filesystem", true);
 
     expect(send.mock.calls.map(([command]) => command)).toEqual([
-      { type: "aiops.stop", sessionId: "sess-1", turnId: "turn-1", reason: "user requested stop" },
+      {
+        type: "aiops.stop",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        reason: "user requested stop",
+      },
       { type: "aiops.retry", sessionId: "sess-1", turnId: "turn-1" },
-      { type: "aiops.approval-decision", sessionId: "sess-1", turnId: "turn-1", approvalId: "approval-1", decision: "reject" },
-      { type: "aiops.choice-answer", requestId: "choice-1", answer: "continue" },
-      { type: "aiops.mcp-action", surfaceId: "filesystem", action: "open", params: { path: "/tmp" } },
+      {
+        type: "aiops.approval-decision",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        approvalId: "approval-1",
+        decision: "reject",
+      },
+      {
+        type: "aiops.choice-answer",
+        requestId: "choice-1",
+        answer: "continue",
+      },
+      {
+        type: "aiops.mcp-action",
+        surfaceId: "filesystem",
+        action: "open",
+        params: { path: "/tmp" },
+      },
       { type: "aiops.mcp-refresh", surfaceId: "filesystem" },
       { type: "aiops.mcp-pin", surfaceId: "filesystem", pinned: true },
     ]);

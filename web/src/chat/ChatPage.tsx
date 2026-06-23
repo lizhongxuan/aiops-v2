@@ -10,6 +10,7 @@ import { AiopsComposer } from "./components/AiopsComposer";
 import { AiopsThread } from "./components/AiopsThread";
 import { HostOpsStatusPanel } from "./components/HostOpsStatusPanel";
 import { HostSubagentDrawer } from "./components/HostSubagentDrawer";
+import { OpsRunSummaryCard } from "./components/OpsRunSummaryCard";
 import { SessionContextBar } from "./components/SessionContextBar";
 
 type ChatPageProps = {
@@ -17,7 +18,10 @@ type ChatPageProps = {
   threadId?: string;
 };
 
-export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) {
+export function ChatPage({
+  initialState,
+  threadId = "default",
+}: ChatPageProps) {
   const resolvedInitial = useMemo(() => {
     if (initialState) {
       return { source: "prop" as const, state: initialState };
@@ -32,11 +36,17 @@ export function ChatPage({ initialState, threadId = "default" }: ChatPageProps) 
     }
     return { source: "empty" as const, state: undefined };
   }, [initialState]);
-  const shouldSkipInitialLoad = resolvedInitial.source === "prop" || resolvedInitial.source === "fixture";
-  const [activeThreadId, setActiveThreadId] = useState(resolvedInitial.state?.threadId || threadId);
-  const [activeInitialState, setActiveInitialState] = useState(resolvedInitial.state);
+  const shouldSkipInitialLoad =
+    resolvedInitial.source === "prop" || resolvedInitial.source === "fixture";
+  const [activeThreadId, setActiveThreadId] = useState(
+    resolvedInitial.state?.threadId || threadId,
+  );
+  const [activeInitialState, setActiveInitialState] = useState(
+    resolvedInitial.state,
+  );
   const [activeAutoResume, setActiveAutoResume] = useState(
-    resolvedInitial.source === "cache" && shouldAutoResumeCachedState(resolvedInitial.state),
+    resolvedInitial.source === "cache" &&
+      shouldAutoResumeCachedState(resolvedInitial.state),
   );
 
   return (
@@ -79,12 +89,18 @@ function shouldAutoResumeCachedState(state?: AiopsTransportState) {
   if (!state) {
     return false;
   }
-  return state.status === "working" || state.status === "blocked" || Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
+  return (
+    state.status === "working" ||
+    state.status === "blocked" ||
+    Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0
+  );
 }
 
 function HostOpsWorkspace() {
   const state = useAssistantTransportState() as AiopsTransportState | undefined;
-  const [activeChildAgentId, setActiveChildAgentId] = useState<string | null>(null);
+  const [activeChildAgentId, setActiveChildAgentId] = useState<string | null>(
+    null,
+  );
   if (!state) {
     return null;
   }
@@ -92,7 +108,11 @@ function HostOpsWorkspace() {
 
   return (
     <>
-      <HostOpsStatusPanel state={state} onOpenChildAgent={setActiveChildAgentId} />
+      <OpsRunSummaryCard state={state} />
+      <HostOpsStatusPanel
+        state={state}
+        onOpenChildAgent={setActiveChildAgentId}
+      />
       <HostSubagentDrawer
         open={Boolean(activeChildAgent)}
         childAgentId={activeChildAgentId || undefined}
@@ -108,10 +128,18 @@ function HostOpsWorkspace() {
   );
 }
 
-function resolveChildAgent(state: AiopsTransportState, childAgentId: string | null) {
+function resolveChildAgent(
+  state: AiopsTransportState,
+  childAgentId: string | null,
+) {
   if (!childAgentId) {
     return undefined;
   }
   const childAgents = state.childAgents || {};
-  return childAgents[childAgentId] || Object.values(childAgents).find((childAgent) => childAgent?.id === childAgentId);
+  return (
+    childAgents[childAgentId] ||
+    Object.values(childAgents).find(
+      (childAgent) => childAgent?.id === childAgentId,
+    )
+  );
 }

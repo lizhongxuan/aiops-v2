@@ -2,7 +2,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getChildAgentTranscript, submitHostOpsApprovalDecision } from "@/api/hostOps";
+import {
+  getChildAgentTranscript,
+  submitHostOpsApprovalDecision,
+} from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import {
@@ -50,56 +53,66 @@ describe("ChatPage", () => {
     cached.sessionId = "cached-session";
     cached.threadId = "cached-session";
     setCachedAiopsTransportState("single_host", cached);
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes("/api/v1/assistant/resume")) {
-        return new Response("aui-state:[]\n", {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/api/v1/assistant/resume")) {
+          return new Response("aui-state:[]\n", {
+            status: 200,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        if (url.includes("/api/v1/sessions")) {
+          return new Response(
+            JSON.stringify({
+              activeSessionId: "cached-session",
+              sessions: [
+                {
+                  id: "cached-session",
+                  kind: "single_host",
+                  selectedHostId: "server-local",
+                  status: "working",
+                  messageCount: 1,
+                  title: "Cached chat",
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (url.includes("/api/v1/llm-config")) {
+          return new Response(
+            JSON.stringify({
+              provider: "openai",
+              model: "gpt-5",
+              apiKeySet: true,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(JSON.stringify({ items: [] }), {
           status: 200,
-          headers: { "Content-Type": "text/plain" },
+          headers: { "Content-Type": "application/json" },
         });
-      }
-      if (url.includes("/api/v1/sessions")) {
-        return new Response(
-          JSON.stringify({
-            activeSessionId: "cached-session",
-            sessions: [
-              {
-                id: "cached-session",
-                kind: "single_host",
-                selectedHostId: "server-local",
-                status: "working",
-                messageCount: 1,
-                title: "Cached chat",
-              },
-            ],
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-      if (url.includes("/api/v1/llm-config")) {
-        return new Response(
-          JSON.stringify({ provider: "openai", model: "gpt-5", apiKeySet: true }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-      return new Response(JSON.stringify({ items: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
       });
-    });
 
     await act(async () => {
       root.render(<ChatPage />);
     });
 
-    expect(container.textContent).toContain("Investigate payment-api saturation");
-    expect(container.textContent).toContain("payment-api is waiting for rollout approval.");
+    expect(container.textContent).toContain(
+      "Investigate payment-api saturation",
+    );
+    expect(container.textContent).toContain(
+      "payment-api is waiting for rollout approval.",
+    );
     expect(container.textContent).not.toContain("Hello there");
     fetchSpy.mockRestore();
   });
@@ -133,6 +146,30 @@ describe("ChatPage", () => {
       container.querySelector('[data-testid="codex-approval-command"]'),
     ).not.toBeNull();
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("renders the chat ops run summary above the composer when transport state provides one", async () => {
+    const state = sampleState();
+    state.opsRun = {
+      id: "opsrun-turn-1",
+      source: "chat",
+      status: "working",
+      title: "主机A跟主机B上PG不同步",
+      targetSummary: "主机A/主机B PG 与主机C pg_mon",
+      evidenceCount: 2,
+      currentStep: "正在只读采集 PG 同步证据",
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-run-summary-card"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("主机A跟主机B上PG不同步");
+    expect(container.textContent).toContain("主机A/主机B PG 与主机C pg_mon");
+    expect(container.textContent).toContain("2 条证据");
   });
 
   it("renders Agent-to-UI artifacts inside assistant messages", async () => {
@@ -190,7 +227,9 @@ describe("ChatPage", () => {
       "接口 P95 延迟在 14:03 后明显升高。",
     );
     expect(container.textContent).toContain("p95_latency_ms");
-    expect(container.querySelector('a[href="/incidents/case-debug-1"]')).toBeNull();
+    expect(
+      container.querySelector('a[href="/incidents/case-debug-1"]'),
+    ).toBeNull();
     expect(container.textContent).not.toContain("来源：coroot");
   });
 
@@ -229,7 +268,12 @@ describe("ChatPage", () => {
               title: "指标趋势",
               visual: {
                 kind: "timeseries",
-                series: [{ name: "failed_tcp_connections", data: [{ timestamp: 1, value: 0.33 }] }],
+                series: [
+                  {
+                    name: "failed_tcp_connections",
+                    data: [{ timestamp: 1, value: 0.33 }],
+                  },
+                ],
               },
             },
           },
@@ -242,8 +286,12 @@ describe("ChatPage", () => {
     });
 
     const text = container.textContent || "";
-    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(text.indexOf("aiops-host-agent 服务"));
-    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(text.indexOf("Coroot RCA 查询成功"));
+    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(
+      text.indexOf("aiops-host-agent 服务"),
+    );
+    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(
+      text.indexOf("Coroot RCA 查询成功"),
+    );
   });
 
   it("shows a lightweight Coroot chart notice while the assistant is still running", async () => {
@@ -293,7 +341,9 @@ describe("ChatPage", () => {
     });
 
     expect(container.textContent).toContain("我先读取 Coroot 指标并继续分析。");
-    expect(container.textContent).toContain("已生成 Coroot 图表，分析完成后展开");
+    expect(container.textContent).toContain(
+      "已生成 Coroot 图表，分析完成后展开",
+    );
     expect(container.textContent).not.toContain("aiops-host-agent 服务");
     expect(container.textContent).not.toContain("p95_latency_ms");
   });
@@ -386,12 +436,18 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const panel = container.querySelector('[data-testid="host-ops-status-panel"]');
-    const composer = container.querySelector('[data-testid="aiops-composer-shell"]');
+    const panel = container.querySelector(
+      '[data-testid="host-ops-status-panel"]',
+    );
+    const composer = container.querySelector(
+      '[data-testid="aiops-composer-shell"]',
+    );
 
     expect(panel).not.toBeNull();
     expect(composer).not.toBeNull();
-    expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(panel?.compareDocumentPosition(composer as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(container.textContent).toContain("共 3 个主机 Agent");
   });
 
@@ -429,7 +485,9 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const open = container.querySelector('[data-testid="host-child-agent-name-child-1"]') as HTMLButtonElement | null;
+    const open = container.querySelector(
+      '[data-testid="host-child-agent-name-child-1"]',
+    ) as HTMLButtonElement | null;
 
     await act(async () => {
       open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -437,11 +495,13 @@ describe("ChatPage", () => {
     await flushMicrotasks();
 
     expect(getChildAgentTranscript).toHaveBeenCalledWith("child-1");
-    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="host-subagent-drawer"]'),
+    ).not.toBeNull();
     expect(document.body.textContent).toContain("Franklin");
     expect(document.body.textContent).toContain("初始化 Franklin 上的主库");
-    const toolsTab = Array.from(document.body.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim().includes("工具"),
+    const toolsTab = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim().includes("工具"),
     );
     await act(async () => {
       toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -480,14 +540,18 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const open = container.querySelector('[data-testid="host-child-agent-name-runtime-child-1"]') as HTMLButtonElement | null;
+    const open = container.querySelector(
+      '[data-testid="host-child-agent-name-runtime-child-1"]',
+    ) as HTMLButtonElement | null;
     await act(async () => {
       open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushMicrotasks();
 
     expect(getChildAgentTranscript).toHaveBeenCalledWith("runtime-child-1");
-    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="host-subagent-drawer"]'),
+    ).not.toBeNull();
     expect(document.body.textContent).toContain("检查 runtime-child-1");
   });
 
@@ -1247,7 +1311,9 @@ describe("ChatPage", () => {
       ).toBeNull();
       expect(container.querySelector("textarea")).not.toBeNull();
       expect(fetchSpy).toHaveBeenCalled();
-      const requestBody = fetchSpy.mock.calls.map((call) => String(call[1]?.body || "")).join("\n");
+      const requestBody = fetchSpy.mock.calls
+        .map((call) => String(call[1]?.body || ""))
+        .join("\n");
       expect(requestBody).toContain("已选择跳过运维手册");
       expect(requestBody).toContain("search_ops_manuals");
       expect(requestBody).toContain("skip_ops_manual");

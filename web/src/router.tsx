@@ -7,7 +7,6 @@ import { AgentProfilePage } from "@/pages/AgentProfilePage";
 import { AgentUICenterPage } from "@/pages/AgentUICenterPage";
 import { ApprovalManagementPage } from "@/pages/ApprovalManagementPage";
 import { CapabilityCenterPage } from "@/pages/CapabilityCenterPage";
-import { CorootOverviewPage } from "@/pages/CorootOverviewPage";
 import { ERPHealthPage } from "@/pages/ERPHealthPage";
 import { GeneratorWorkshopPage } from "@/pages/GeneratorWorkshopPage";
 import { HostsPage } from "@/pages/HostsPage";
@@ -64,7 +63,6 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/agent-ui": <AgentUICenterPage />,
   "/ui-cards": <UICardManagementPage />,
   "/script-configs": <ScriptConfigPage />,
-  "/coroot": <CorootOverviewPage />,
   "/lab": <LabEnvironmentPage />,
   "/generator": <GeneratorWorkshopPage />,
   "/debug/prompts": <PromptTracePage />,

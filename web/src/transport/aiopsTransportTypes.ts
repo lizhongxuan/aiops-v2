@@ -1,6 +1,17 @@
-export type AiopsTransportStatus = "idle" | "working" | "blocked" | "failed" | "canceled";
+export type AiopsTransportStatus =
+  | "idle"
+  | "working"
+  | "blocked"
+  | "failed"
+  | "canceled";
 
-export type AiopsTransportTurnStatus = "submitted" | "working" | "blocked" | "completed" | "failed" | "canceled";
+export type AiopsTransportTurnStatus =
+  | "submitted"
+  | "working"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "canceled";
 
 export type AiopsTransportProcessKind =
   | "plan"
@@ -16,7 +27,13 @@ export type AiopsTransportProcessKind =
   | "system"
   | "subagent";
 
-export type AiopsTransportProcessStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "rejected";
+export type AiopsTransportProcessStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "rejected";
 
 export type AiopsTransportFinalStatus = "running" | "completed" | "failed";
 
@@ -26,6 +43,7 @@ export type AiopsTransportState = {
   threadId: string;
   status: AiopsTransportStatus;
   currentTurnId?: string;
+  opsRun?: AiopsTransportOpsRun;
   turns: Record<string, AiopsTransportTurn>;
   turnOrder: string[];
   pendingApprovals: Record<string, AiopsTransportApproval>;
@@ -38,6 +56,19 @@ export type AiopsTransportState = {
   lastError?: string;
   seq: number;
   updatedAt: string;
+};
+
+export type AiopsTransportOpsRun = {
+  id: string;
+  sessionId?: string;
+  turnId?: string;
+  clientTurnId?: string;
+  source: string;
+  status: string;
+  title?: string;
+  targetSummary?: string;
+  evidenceCount?: number;
+  currentStep?: string;
 };
 
 export type AiopsTransportTurn = {
@@ -85,6 +116,11 @@ export type AiopsProcessBlock = {
   results?: AiopsSearchResult[];
   approvalId?: string;
   source?: string;
+  targetSummary?: string;
+  risk?: string;
+  riskSummary?: string;
+  expectedEffect?: string;
+  rollback?: string;
   confidence?: string;
   window?: string;
   rawRef?: string;

@@ -161,6 +161,71 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsOpsRunFromTurnMetadata(t *testing.T) {
+	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-opsrun", "thread-opsrun")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-pg-status",
+		"toolName":"exec_command",
+		"displayKind":"tool",
+		"inputSummary":"read-only pg replication status",
+		"outputSummary":"LSN lag detected",
+		"evidenceRefs":["evidence:pg:lsn","evidence:pg:network"]
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:           "turn-opsrun",
+		SessionID:    "session-opsrun",
+		ClientTurnID: "client-turn-opsrun",
+		SessionType:  runtimekernel.SessionTypeHost,
+		Mode:         runtimekernel.ModeInspect,
+		Lifecycle:    runtimekernel.TurnLifecycleRunning,
+		ResumeState:  runtimekernel.TurnResumeStateNone,
+		StartedAt:    now,
+		UpdatedAt:    now.Add(time.Second),
+		Metadata: map[string]string{
+			"aiops.opsRunId":       "opsrun-turn-opsrun",
+			"aiops.chat.source":    "chat",
+			"aiops.sessionId":      "session-opsrun",
+			"aiops.turnId":         "turn-opsrun",
+			"aiops.clientTurnId":   "client-turn-opsrun",
+			"aiops.target.summary": "主机A/主机B PG 与主机C pg_mon",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "主机A跟主机B上PG不同步，pg_mon部署在主机C，请修复"}, CreatedAt: now},
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "正在只读采集 PG 同步证据"}, CreatedAt: now.Add(500 * time.Millisecond)},
+			{ID: "tool-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "LSN lag detected", Data: toolResultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	if projected.OpsRun == nil {
+		t.Fatal("OpsRun = nil, want projected ops run view")
+	}
+	if projected.OpsRun.ID != "opsrun-turn-opsrun" {
+		t.Fatalf("OpsRun.ID = %q", projected.OpsRun.ID)
+	}
+	if projected.OpsRun.Status != "working" {
+		t.Fatalf("OpsRun.Status = %q, want working", projected.OpsRun.Status)
+	}
+	if projected.OpsRun.Title != "主机A跟主机B上PG不同步，pg_mon部署在主机C，请修复" {
+		t.Fatalf("OpsRun.Title = %q", projected.OpsRun.Title)
+	}
+	if projected.OpsRun.TargetSummary != "主机A/主机B PG 与主机C pg_mon" {
+		t.Fatalf("OpsRun.TargetSummary = %q", projected.OpsRun.TargetSummary)
+	}
+	if projected.OpsRun.CurrentStep != "正在只读采集 PG 同步证据" {
+		t.Fatalf("OpsRun.CurrentStep = %q", projected.OpsRun.CurrentStep)
+	}
+	if projected.OpsRun.EvidenceCount != 2 {
+		t.Fatalf("OpsRun.EvidenceCount = %d, want 2", projected.OpsRun.EvidenceCount)
+	}
+}
+
 func TestTransportProjectorDoesNotExposeFallbackRetryManualStates(t *testing.T) {
 	now := time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -505,16 +570,22 @@ func TestTransportProjectorProjectsSnapshotPendingApprovalWithoutApprovalItem(t 
 		},
 		PendingApprovals: []runtimekernel.PendingApproval{
 			{
-				ID:         "approval-inline-1",
-				SessionID:  "session-1",
-				TurnID:     "turn-pending-approval",
-				ToolName:   "exec_command",
-				ToolCallID: "call-sw-vers",
-				Command:    "sw_vers",
-				Reason:     "需要确认后执行命令",
-				Status:     "pending",
-				CreatedAt:  now.Add(time.Second),
-				UpdatedAt:  now.Add(time.Second),
+				ID:             "approval-inline-1",
+				SessionID:      "session-1",
+				TurnID:         "turn-pending-approval",
+				ToolName:       "exec_command",
+				ToolCallID:     "call-sw-vers",
+				HostID:         "server-local",
+				Command:        "sw_vers",
+				Reason:         "需要确认后执行命令",
+				Risk:           "medium",
+				Source:         "ai_chat_direct",
+				ExpectedEffect: "读取系统版本",
+				Rollback:       "无需回滚",
+				ResourceScopes: []string{"host:server-local", "os:darwin"},
+				Status:         "pending",
+				CreatedAt:      now.Add(time.Second),
+				UpdatedAt:      now.Add(time.Second),
 			},
 		},
 	}
@@ -537,6 +608,12 @@ func TestTransportProjectorProjectsSnapshotPendingApprovalWithoutApprovalItem(t 
 	block := findTransportProcessBlock(t, projected.Turns["turn-pending-approval"].Process, AiopsTransportProcessKindApproval)
 	if block.ApprovalID != "approval-inline-1" || block.Command != "sw_vers" || block.Status != AiopsTransportProcessStatusBlocked {
 		t.Fatalf("approval block = %+v, want inline blocked approval block", block)
+	}
+	if block.TargetSummary != "host:server-local；os:darwin" || block.Risk != "medium" || block.Source != "ai_chat_direct" {
+		t.Fatalf("approval block scope/risk/source = %+v", block)
+	}
+	if block.ExpectedEffect != "读取系统版本" || block.Rollback != "无需回滚" || !strings.Contains(block.RiskSummary, "medium") {
+		t.Fatalf("approval block effect/rollback/risk summary = %+v", block)
 	}
 }
 
@@ -1196,6 +1273,9 @@ func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
 		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
 		StartedAt:   now,
 		UpdatedAt:   now,
+		Metadata: map[string]string{
+			"aiops.coroot.rcaDisplayAllowed": "true",
+		},
 		AgentItems: []agentstate.TurnItem{
 			{ID: "tool-result-rca", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "RCA report", Data: toolResultData}, CreatedAt: now},
 		},
@@ -1218,6 +1298,111 @@ func TestTransportProjectorProjectsRCAReportArtifact(t *testing.T) {
 	}
 	if artifact.Metadata["evidenceRef"] != "ev-coroot-latency" {
 		t.Fatalf("artifact metadata = %#v, want evidenceRef copied into metadata", artifact.Metadata)
+	}
+}
+
+func TestTransportProjectorProjectsUnavailableRCAReportAsSkipped(t *testing.T) {
+	now := time.Date(2026, 5, 15, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-rca-unavailable", "thread-rca-unavailable")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-artifact-unavailable",
+		"toolName":"aiops.ui_artifact_emit",
+		"displayKind":"rca_report",
+		"outputPreview":{
+			"schemaVersion":"aiops.agent_ui_artifact/v1",
+			"type":"rca_report",
+			"titleZh":"checkout 根因分析",
+			"summaryZh":"coroot_mcp_unavailable",
+			"status":"unavailable",
+			"severity":"info",
+			"source":"coroot",
+			"permissionScope":"read",
+			"inlineData":{
+				"schemaVersion":"aiops.rca_report/v1",
+				"source":"coroot",
+				"status":"unavailable",
+				"summaryZh":"Coroot MCP 当前不可用"
+			}
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-rca-unavailable",
+		SessionID:   "session-rca-unavailable",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Metadata: map[string]string{
+			"aiops.coroot.rcaDisplayAllowed": "true",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-rca-unavailable", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "RCA unavailable", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-rca-unavailable"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
+	}
+	artifact := artifacts[0]
+	if artifact.Status != "skipped" {
+		t.Fatalf("artifact status = %q, want skipped: %+v", artifact.Status, artifact)
+	}
+	if artifact.Metadata["skipReason"] == "" || artifact.InlineData["skipReason"] == "" {
+		t.Fatalf("artifact = %+v, want skip reason in metadata and inline data", artifact)
+	}
+}
+
+func TestTransportProjectorSuppressesRCAReportArtifactWithoutExplicitCorootGate(t *testing.T) {
+	now := time.Date(2026, 5, 15, 10, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-rca-suppressed", "thread-rca-suppressed")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-artifact-1",
+		"toolName":"aiops.ui_artifact_emit",
+		"displayKind":"rca_report",
+		"outputPreview":{
+			"schemaVersion":"aiops.agent_ui_artifact/v1",
+			"type":"rca_report",
+			"titleZh":"checkout 根因分析",
+			"summaryZh":"checkout 延迟升高最可能来自 catalog 依赖。",
+			"status":"ok",
+			"source":"coroot",
+			"inlineData":{
+				"schemaVersion":"aiops.rca_report/v1",
+				"source":"coroot",
+				"status":"ok",
+				"conclusion":{"summaryZh":"checkout 延迟升高最可能来自 catalog 依赖。","confidence":0.72},
+				"evidenceRefs":["ev-coroot-latency"],
+				"rawRefs":[]
+			}
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-rca-suppressed",
+		SessionID:   "session-rca-suppressed",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "tool-result-rca", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "RCA report", Data: toolResultData}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if artifacts := projected.Turns["turn-rca-suppressed"].AgentUIArtifacts; len(artifacts) != 0 {
+		t.Fatalf("AgentUIArtifacts = %#v, want no RCA artifact without explicit @Coroot gate", artifacts)
 	}
 }
 
@@ -1611,6 +1796,9 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 		StartedAt:   now,
 		UpdatedAt:   now,
 		CompletedAt: &now,
+		Metadata: map[string]string{
+			"aiops.coroot.explicitRCA": "true",
+		},
 		AgentItems: []agentstate.TurnItem{
 			{ID: "final-rca", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalPayload}, CreatedAt: now},
 		},
@@ -1633,6 +1821,42 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 	}
 	if artifact.SummaryZh != "checkout 延迟升高与 catalog 依赖相关。" {
 		t.Fatalf("summaryZh = %q, want conclusion summary", artifact.SummaryZh)
+	}
+}
+
+func TestTransportProjectorSuppressesRCAReportArtifactFromFinalPayloadWithoutExplicitCorootGate(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-final-rca-suppressed", "thread-final-rca-suppressed")
+	finalPayload := `{
+		"schemaVersion":"aiops.rca_report/v1",
+		"status":"partial",
+		"source":"coroot",
+		"conclusion":{"summaryZh":"checkout 延迟升高与 catalog 依赖相关。","confidence":0.72},
+		"evidenceRefs":["ev-coroot-latency"],
+		"rawRefs":[{"uri":"coroot://raw/latency","digest":"abc123"}]
+	}`
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-final-rca-suppressed",
+		SessionID:   "session-final-rca-suppressed",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		FinalOutput: finalPayload,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		CompletedAt: &now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-rca", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalPayload}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if artifacts := projected.Turns["turn-final-rca-suppressed"].AgentUIArtifacts; len(artifacts) != 0 {
+		t.Fatalf("AgentUIArtifacts = %#v, want no RCA artifact without explicit @Coroot gate", artifacts)
 	}
 }
 

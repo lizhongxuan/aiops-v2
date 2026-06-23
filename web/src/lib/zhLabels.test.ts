@@ -43,7 +43,7 @@ describe("zhLabels", () => {
     expect(zhNavigationTitle("/settings/hosts")).toBe("主机列表");
     expect(zhNavigationTitle("/settings/experience-packs")).toBe("运维手册");
     expect(zhNavigationTitle("/capabilities")).toBe("能力管理");
-    expect(zhNavigationTitle("/coroot")).toBe("Coroot 观测");
+    expect(zhNavigationTitle("/coroot")).toBe("未知导航（/coroot）");
     expect(zhNavigationTitle("/agent-ui")).toBe("Agent UI");
     expect(zhNavigationTitle("/debug/prompts")).toBe("Prompt Trace");
   });
@@ -63,7 +63,6 @@ describe("navigation convergence", () => {
       "/settings/ops-manuals",
       "/capabilities",
       "/agent-ui",
-      "/coroot",
       "/debug/prompts",
     ]);
   });
@@ -71,6 +70,7 @@ describe("navigation convergence", () => {
   it("keeps hidden legacy routes in routeInventory for router compatibility", () => {
     const inventoryPaths = routeInventory.map((item) => item.path);
 
+    expect(inventoryPaths).not.toContain("/coroot");
     expect(inventoryPaths).toEqual(expect.arrayContaining([
       "/protocol",
       "/erp",

@@ -119,11 +119,15 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 	}
 	if len(result.Manuals) > 0 {
 		hit := result.Manuals[0]
+		recommendedAction := hit.RecommendedAction
+		if result.Decision == core.DecisionDirectExecute {
+			recommendedAction = "confirm_use_ops_manual"
+		}
 		payload.Manuals = []searchOpsManualsModelManual{{
 			ID:                hit.Manual.ID,
 			Title:             hit.Manual.Title,
 			UsableMode:        string(hit.UsableMode),
-			RecommendedAction: hit.RecommendedAction,
+			RecommendedAction: recommendedAction,
 			BlockedReasons:    limitStrings(hit.BlockedReasons, 2),
 		}}
 	}
@@ -151,10 +155,12 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 			}
 		}
 	case core.DecisionDirectExecute:
+		payload.RecommendedNextAction = "confirm_use_ops_manual"
 		payload.Instructions = []string{
 			"Do not execute the workflow directly.",
-			"Say the manual is matched and the next step is Workflow preflight; do not say it will execute now.",
-			"Run run_ops_manual_preflight before any confirmation, approval, workflow execution, or mutation.",
+			"Say the manual/workflow is a high-confidence match and ask whether the user wants to use it.",
+			"If the user declines, continue ordinary AI Chat handling without this manual/workflow.",
+			"Do not run preflight as the first-version primary path unless the user explicitly asks for it or an existing legacy flow already returned a preflight artifact.",
 			"Keep the assistant text short and do not repeat the Agent-to-UI card details.",
 		}
 	case core.DecisionAdapt:

@@ -53,7 +53,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	resultPreviews := transportToolResultPreviews(turn)
 	resultPayloads := transportToolResultJSONPayloads(turn)
 	for _, item := range turn.AgentItems {
-		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads)
+		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads, turn.Metadata)
 	}
 	if turn.Lifecycle.IsTerminal() {
 		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, turn.Error)
@@ -80,8 +80,10 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 			mapFinalStatusToTransportProcessStatus(finalStatus),
 			turn.UpdatedAt,
 		)
-		if artifact, ok := transportRCAArtifactFromFinalPayload(turnID, projectedTurn.Final.ID, finalText); ok {
-			projectedTurn.AgentUIArtifacts = upsertTransportAgentUIArtifact(projectedTurn.AgentUIArtifacts, artifact)
+		if rcaProjectionAllowed(turn.Metadata) {
+			if artifact, ok := transportRCAArtifactFromFinalPayload(turnID, projectedTurn.Final.ID, finalText); ok {
+				projectedTurn.AgentUIArtifacts = upsertTransportAgentUIArtifact(projectedTurn.AgentUIArtifacts, artifact)
+			}
 		}
 	}
 
@@ -96,6 +98,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		projectedTurn.Final.Status = mapTurnStatusToFinalStatus(projectedTurn.Status)
 	}
 	next.Turns[turnID] = projectedTurn
+	if opsRun := projectOpsRunFromTurn(turn, projectedTurn); opsRun != nil {
+		next.OpsRun = opsRun
+	}
 
 	applyTurnLiveness(&next, turnID, projectedTurn.Status)
 	if errText := firstNonEmptyString(strings.TrimSpace(turn.Error), strings.TrimSpace(next.LastError)); errText != "" && projectedTurn.Status == AiopsTransportTurnStatusFailed {
@@ -106,6 +111,77 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	next.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), next.UpdatedAt)
 
 	return next, nil
+}
+
+func projectOpsRunFromTurn(turn *runtimekernel.TurnSnapshot, projectedTurn AiopsTransportTurn) *AiopsTransportOpsRun {
+	if turn == nil {
+		return nil
+	}
+	view := chatRunTraceViewFromMetadata(turn.Metadata, userPromptForOpsRun(projectedTurn))
+	if strings.TrimSpace(view.ID) == "" {
+		return nil
+	}
+	status := mapTurnLifecycleToTransportTurnStatus(turn.Lifecycle, turn.ResumeState, false)
+	return &AiopsTransportOpsRun{
+		ID:            view.ID,
+		SessionID:     firstNonEmptyString(view.SessionID, turn.SessionID),
+		TurnID:        firstNonEmptyString(view.TurnID, turn.ID),
+		ClientTurnID:  firstNonEmptyString(view.ClientTurnID, turn.ClientTurnID),
+		Source:        firstNonEmptyString(view.Source, opsRunSourceChat),
+		Status:        string(status),
+		Title:         view.Title,
+		TargetSummary: view.TargetSummary,
+		EvidenceCount: countProjectedEvidenceRefs(projectedTurn),
+		CurrentStep:   firstNonEmptyString(view.CurrentStep, currentStepForProjectedTurn(projectedTurn, status)),
+	}
+}
+
+func userPromptForOpsRun(turn AiopsTransportTurn) string {
+	if turn.User == nil {
+		return ""
+	}
+	return turn.User.Text
+}
+
+func countProjectedEvidenceRefs(turn AiopsTransportTurn) int {
+	seen := map[string]struct{}{}
+	for _, block := range turn.Process {
+		for _, ref := range block.EvidenceRefs {
+			ref = strings.TrimSpace(ref)
+			if ref != "" {
+				seen[ref] = struct{}{}
+			}
+		}
+	}
+	for _, artifact := range turn.AgentUIArtifacts {
+		if ref, ok := artifact.Metadata["evidenceRef"].(string); ok && strings.TrimSpace(ref) != "" {
+			seen[strings.TrimSpace(ref)] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func currentStepForProjectedTurn(turn AiopsTransportTurn, status AiopsTransportTurnStatus) string {
+	for i := len(turn.Process) - 1; i >= 0; i-- {
+		block := turn.Process[i]
+		if block.Status == AiopsTransportProcessStatusRunning || block.Status == AiopsTransportProcessStatusBlocked {
+			return block.Text
+		}
+	}
+	switch status {
+	case AiopsTransportTurnStatusSubmitted, AiopsTransportTurnStatusWorking:
+		return "处理中"
+	case AiopsTransportTurnStatusBlocked:
+		return "等待用户确认"
+	case AiopsTransportTurnStatusCompleted:
+		return "已结束"
+	case AiopsTransportTurnStatusFailed:
+		return "处理失败"
+	case AiopsTransportTurnStatusCanceled:
+		return "已停止"
+	default:
+		return ""
+	}
 }
 
 func snapshotPendingApprovalIDs(approvals []runtimekernel.PendingApproval, evidenceItems []runtimekernel.PendingEvidence) map[string]bool {
@@ -290,20 +366,28 @@ func projectSnapshotPendingApprovals(turn AiopsTransportTurn, state *AiopsTransp
 		}
 		command := strings.TrimSpace(approval.Command)
 		reason := strings.TrimSpace(approval.Reason)
+		targetSummary := approvalTargetSummary(approval)
+		risk := strings.TrimSpace(approval.Risk)
 		approvalType := "tool"
 		if command != "" || strings.EqualFold(strings.TrimSpace(approval.ToolName), "exec_command") {
 			approvalType = "command"
 		}
 		updatedAt := firstNonEmptyString(transportTimestamp(approval.UpdatedAt), transportTimestamp(approval.CreatedAt))
 		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindApproval), approvalID),
-			Kind:        AiopsTransportProcessKindApproval,
-			DisplayKind: "approval",
-			Status:      AiopsTransportProcessStatusBlocked,
-			Text:        firstNonEmptyString(reason, command, "等待审批"),
-			Command:     command,
-			ApprovalID:  approvalID,
-			UpdatedAt:   updatedAt,
+			ID:             TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindApproval), approvalID),
+			Kind:           AiopsTransportProcessKindApproval,
+			DisplayKind:    "approval",
+			Status:         AiopsTransportProcessStatusBlocked,
+			Text:           firstNonEmptyString(reason, command, "等待审批"),
+			Command:        command,
+			ApprovalID:     approvalID,
+			Source:         strings.TrimSpace(approval.Source),
+			TargetSummary:  targetSummary,
+			Risk:           risk,
+			RiskSummary:    approvalRiskSummary(risk, reason),
+			ExpectedEffect: strings.TrimSpace(approval.ExpectedEffect),
+			Rollback:       strings.TrimSpace(approval.Rollback),
+			UpdatedAt:      updatedAt,
 		}
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
 		state.PendingApprovals[approvalID] = AiopsTransportApproval{
@@ -318,6 +402,42 @@ func projectSnapshotPendingApprovals(turn AiopsTransportTurn, state *AiopsTransp
 		state.RuntimeLiveness.PendingApprovals[approvalID] = true
 	}
 	return turn
+}
+
+func approvalTargetSummary(approval runtimekernel.PendingApproval) string {
+	values := make([]string, 0, 1+len(approval.ResourceScopes))
+	if hostID := strings.TrimSpace(approval.HostID); hostID != "" {
+		values = append(values, "host:"+hostID)
+	}
+	for _, scope := range approval.ResourceScopes {
+		scope = strings.TrimSpace(scope)
+		if scope != "" {
+			values = append(values, scope)
+		}
+	}
+	cleaned := cleanTransportStringList(values)
+	seen := map[string]bool{}
+	out := make([]string, 0, len(cleaned))
+	for _, value := range cleaned {
+		if seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return strings.Join(out, "；")
+}
+
+func approvalRiskSummary(risk string, reason string) string {
+	risk = strings.TrimSpace(risk)
+	reason = strings.TrimSpace(reason)
+	if risk == "" {
+		return reason
+	}
+	if reason == "" {
+		return "风险等级：" + risk
+	}
+	return "风险等级：" + risk + "；" + reason
 }
 
 func projectSnapshotPendingEvidence(turn AiopsTransportTurn, state *AiopsTransportState, turnID string, evidenceItems []runtimekernel.PendingEvidence) AiopsTransportTurn {
@@ -382,6 +502,7 @@ func projectTurnItem(
 	item agentstate.TurnItem,
 	resultPreviews map[string]string,
 	resultPayloads map[string]json.RawMessage,
+	metadata map[string]string,
 ) AiopsTransportTurn {
 	switch item.Type {
 	case agentstate.TurnItemTypeUserMessage:
@@ -461,7 +582,7 @@ func projectTurnItem(
 			if artifact, ok := transportCorootServiceMetricsArtifactFromToolPayload(turnID, item.ID, artifactTool, transportTurnUserText(turn)); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
-			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
+			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool, rcaProjectionAllowed(metadata)); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
 			if artifact, ok := transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
@@ -753,6 +874,10 @@ func metadataBool(metadata map[string]string, key string) bool {
 	default:
 		return false
 	}
+}
+
+func rcaProjectionAllowed(metadata map[string]string) bool {
+	return metadataBool(metadata, metadataCorootRCADisplayAllowed) || metadataBool(metadata, metadataCorootExplicitRCA)
 }
 
 func decodeTransportHostMentionsMetadata(raw string) []AiopsTransportHostMention {
@@ -1282,8 +1407,11 @@ func transportOpsManualParamResolutionArtifactFromToolPayload(turnID, itemID str
 	}, true
 }
 
-func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload, allowRCA bool) (AiopsTransportAgentUIArtifact, bool) {
 	if strings.TrimSpace(tool.DisplayKind) != "rca_report" {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	if !allowRCA {
 		return AiopsTransportAgentUIArtifact{}, false
 	}
 	data := tool.OutputPreview
@@ -1307,6 +1435,28 @@ func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool 
 			metadata[key] = value
 		}
 	}
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "ok")
+	inlineData := asStringAnyMap(payload["inlineData"])
+	if rcaReportShouldSkip(status) {
+		status = "skipped"
+		if inlineData == nil {
+			inlineData = map[string]any{}
+		}
+		skipReason := firstNonEmptyString(
+			jsonStringValueFromMap(payload, "skipReason"),
+			jsonStringValueFromMap(payload, "reason"),
+			jsonStringValueFromMap(payload, "summaryZh"),
+			jsonStringValueFromMap(payload, "summary"),
+			jsonStringValueFromMap(inlineData, "skipReason"),
+			jsonStringValueFromMap(inlineData, "reason"),
+			jsonStringValueFromMap(inlineData, "summaryZh"),
+			jsonStringValueFromMap(inlineData, "summary"),
+			"coroot_mcp_unavailable",
+		)
+		inlineData["status"] = "skipped"
+		inlineData["skipReason"] = skipReason
+		metadata["skipReason"] = skipReason
+	}
 	return AiopsTransportAgentUIArtifact{
 		ID:              "agent-ui:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "artifact"),
 		Type:            "rca_report",
@@ -1314,17 +1464,26 @@ func transportGenericAgentUIArtifactFromToolPayload(turnID, itemID string, tool 
 		TitleZh:         firstNonEmptyString(jsonStringValueFromMap(payload, "titleZh"), "根因分析"),
 		Summary:         jsonStringValueFromMap(payload, "summary"),
 		SummaryZh:       jsonStringValueFromMap(payload, "summaryZh"),
-		Status:          firstNonEmptyString(jsonStringValueFromMap(payload, "status"), "ok"),
+		Status:          status,
 		Severity:        firstNonEmptyString(jsonStringValueFromMap(payload, "severity"), "info"),
 		Source:          firstNonEmptyString(jsonStringValueFromMap(payload, "source"), "aiops"),
 		PermissionScope: firstNonEmptyString(jsonStringValueFromMap(payload, "permissionScope"), "read"),
 		RedactionStatus: firstNonEmptyString(jsonStringValueFromMap(payload, "redactionStatus"), "redacted"),
-		InlineData:      asStringAnyMap(payload["inlineData"]),
+		InlineData:      inlineData,
 		Metadata:        metadata,
 		Actions:         asStringAnyMapList(payload["actions"]),
 		CreatedAt:       firstNonEmptyString(jsonStringValueFromMap(payload, "createdAt"), now),
 		UpdatedAt:       firstNonEmptyString(jsonStringValueFromMap(payload, "updatedAt"), now),
 	}, true
+}
+
+func rcaReportShouldSkip(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "skipped", "unavailable", "not_configured", "timeout", "empty_data":
+		return true
+	default:
+		return false
+	}
 }
 
 func transportRCAArtifactFromFinalPayload(turnID, itemID string, content string) (AiopsTransportAgentUIArtifact, bool) {

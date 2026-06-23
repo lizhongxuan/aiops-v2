@@ -453,6 +453,7 @@ type Services struct {
 	coroot         CorootConfigRepository
 	agentEvents    AgentEventService
 	incidents      IncidentService
+	chatArchive    ChatArchiveService
 	postmortems    PostmortemService
 	corootWebhooks CorootWebhookService
 	runbooks       RunbookService
@@ -488,6 +489,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(cfg.agentEvents)
 	incidentService := NewIncidentService(incidents.NewService(cfg.incidents, nil))
+	chatArchiveService := NewChatArchiveService(sessions, incidentService)
 	opsManualService := cfg.opsManuals
 	if opsManualService == nil {
 		repo := cfg.opsManualRepo
@@ -521,8 +523,9 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
 	hostOpsService := cfg.hostOps
+	chatService := NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents)
 	return &Services{
-		chat:           NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents),
+		chat:           chatService,
 		state:          NewStateService(sessions, builder),
 		sessions:       NewSessionService(sessions, sessionStore, builder),
 		sessionSource:  sessions,
@@ -539,8 +542,9 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		coroot:         cfg.coroot,
 		agentEvents:    agentEvents,
 		incidents:      incidentService,
+		chatArchive:    chatArchiveService,
 		postmortems:    NewPostmortemService(incidentService),
-		corootWebhooks: NewCorootWebhookService(incidentService),
+		corootWebhooks: NewCorootWebhookService(incidentService, chatService),
 		runbooks:       NewRunbookService("", nil),
 		opsgraph:       firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
 		erp:            NewERPContextService(),
@@ -578,6 +582,7 @@ func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
 func (s *Services) IncidentService() IncidentService           { return s.incidents }
+func (s *Services) ChatArchiveService() ChatArchiveService     { return s.chatArchive }
 func (s *Services) PostmortemService() PostmortemService       { return s.postmortems }
 func (s *Services) CorootWebhookService() CorootWebhookService { return s.corootWebhooks }
 func (s *Services) RunbookService() RunbookService             { return s.runbooks }
@@ -636,13 +641,14 @@ type StopCommand struct {
 }
 
 type TurnResponse struct {
-	SessionID       string `json:"sessionId"`
-	TurnID          string `json:"turnId"`
-	ClientTurnID    string `json:"clientTurnId,omitempty"`
-	ClientMessageID string `json:"clientMessageId,omitempty"`
-	Status          string `json:"status"`
-	Output          string `json:"output,omitempty"`
-	Error           string `json:"error,omitempty"`
+	SessionID       string            `json:"sessionId"`
+	TurnID          string            `json:"turnId"`
+	ClientTurnID    string            `json:"clientTurnId,omitempty"`
+	ClientMessageID string            `json:"clientMessageId,omitempty"`
+	Status          string            `json:"status"`
+	Output          string            `json:"output,omitempty"`
+	Error           string            `json:"error,omitempty"`
+	OpsRun          *ChatRunTraceView `json:"opsRun,omitempty"`
 }
 
 type TurnEventType string

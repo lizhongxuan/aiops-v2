@@ -309,9 +309,6 @@ func genericOpsRepairFinalText(frame opsmanual.OperationFrame, search opsmanual.
 	}
 	b.WriteString("\n**诊断**\n")
 	b.WriteString("- 目标：" + target)
-	if strings.EqualFold(target, "postgresql") {
-		b.WriteString(" PG主从")
-	}
 	b.WriteString(" 集群异常。\n")
 	b.WriteString("- 已识别数据节点和 monitor/observer 角色；monitor 仅作为观察点，不作为数据节点。\n")
 	b.WriteString("- 证据限制：当前只有用户输入和通用预检计划，真实主机状态、同步状态、存储空间和 observer 健康需要 host-bound agent 执行只读证据采集。\n")

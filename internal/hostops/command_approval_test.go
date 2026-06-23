@@ -76,6 +76,52 @@ func TestHostCommandToolCreatesPendingApprovalAndBlocksHostOpsState(t *testing.T
 	}
 }
 
+func TestHostCommandToolBlocksHighRiskWriteUntilApproval(t *testing.T) {
+	ctx := context.Background()
+	missions, _ := hostCommandApprovalFixture(t)
+	executor := &fakeHostCommandExecutor{}
+	approvals := NewInMemoryCommandApprovalStore()
+	controller := NewCommandApprovalController(CommandApprovalControllerConfig{
+		Store:    approvals,
+		Missions: missions,
+		Executor: executor,
+	})
+	tool := NewHostCommandToolWithApprovals(executor, NewCommandPolicy(CommandPolicyConfig{}), controller)
+
+	result, err := tool.Run(ctx, HostCommandToolRequest{
+		ToolContext:  ToolContext{AgentKind: AgentKindHostChild, BoundHostID: "host-a"},
+		MissionID:    "mission-1",
+		ChildAgentID: "child-a",
+		PlanStepID:   "step-1",
+		HostID:       "host-a",
+		Command:      "systemctl restart postgresql",
+		RiskLevel:    opssemantic.RiskHighWrite,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !result.ApprovalRequired || result.Executed || result.ApprovalID == "" {
+		t.Fatalf("result = %#v, want blocked high-risk command approval", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0 before approval", executor.calls)
+	}
+	approval, err := approvals.Get(ctx, result.ApprovalID)
+	if err != nil {
+		t.Fatalf("Get approval error = %v", err)
+	}
+	if approval.RiskLevel != opssemantic.RiskHighWrite || approval.Status != CommandApprovalStatusPending {
+		t.Fatalf("approval risk/status = %q/%q, want high_write/pending", approval.RiskLevel, approval.Status)
+	}
+	mission, err := missions.GetMission(ctx, "mission-1")
+	if err != nil {
+		t.Fatalf("GetMission error = %v", err)
+	}
+	if mission.Status != HostMissionStatusWaitingApproval || len(mission.Plan.Steps) != 1 || mission.Plan.Steps[0].Status != PlanStepStatusBlocked {
+		t.Fatalf("mission = %#v, want waiting approval with blocked plan step", mission)
+	}
+}
+
 func TestCommandApprovalDecisionDeniedBlocksChildAndWritesTranscript(t *testing.T) {
 	ctx := context.Background()
 	missions, transcripts := hostCommandApprovalFixture(t)

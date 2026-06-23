@@ -2,6 +2,7 @@ package appui
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -890,6 +891,82 @@ func TestChatService_SendMessageCarriesClientIDs(t *testing.T) {
 	}
 }
 
+func TestChatService_SendMessageInjectsOpsRunMetadata(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:    "sess-opsrun",
+		Content:      "主机A跟主机B上PG不同步，请先只读排查",
+		ClientTurnID: "client-turn-opsrun",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.opsRunId"]; got != "opsrun-"+runReq.TurnID {
+		t.Fatalf("opsRun metadata = %q, want opsrun-%s; metadata=%#v", got, runReq.TurnID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.chat.source"]; got != "chat" {
+		t.Fatalf("chat source metadata = %q, want chat; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionId"]; got != "sess-opsrun" {
+		t.Fatalf("session metadata = %q, want sess-opsrun; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.turnId"]; got != runReq.TurnID {
+		t.Fatalf("turn metadata = %q, want %q; metadata=%#v", got, runReq.TurnID, runReq.Metadata)
+	}
+	if result.OpsRun == nil || result.OpsRun.ID != "opsrun-"+runReq.TurnID {
+		t.Fatalf("TurnResponse OpsRun = %#v, want %q", result.OpsRun, "opsrun-"+runReq.TurnID)
+	}
+	if result.OpsRun.Title != "主机A跟主机B上PG不同步，请先只读排查" {
+		t.Fatalf("OpsRun title = %q", result.OpsRun.Title)
+	}
+}
+
+func TestChatService_SendMessageMarksExplicitCorootRCA(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-rca",
+		Content:   "@Coroot checkout 服务异常，请深入分析根因",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "true" {
+		t.Fatalf("explicit RCA metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.rcaDisplayAllowed"]; got != "true" {
+		t.Fatalf("RCA display metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatService_SendMessageDoesNotMarkCorootRCAWithoutMention(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-evidence",
+		Content:   "请结合 Coroot 指标证据排查 checkout 服务异常",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "" {
+		t.Fatalf("explicit RCA metadata = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.rcaDisplayAllowed"]; got != "" {
+		t.Fatalf("RCA display metadata = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
 func TestChatService_SendMessageDefaultsNewHostSessionToServerLocal(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
@@ -997,6 +1074,62 @@ func TestChatService_SendMessageRoutesMultiHostMentionToHostOpsMission(t *testin
 		if !hostMentionIDsForTest(hostOps.command.Mentions)[want] {
 			t.Fatalf("mentions = %#v, want resolved host %s", hostOps.command.Mentions, want)
 		}
+	}
+}
+
+func TestChatService_SendMessageRoutesV1ClosurePGGoldenPathToGenericHostOps(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(
+		store.HostRecord{ID: "host-a", Name: "主机A", Address: "10.10.0.11", Status: "online", Executable: true, AgentURL: "http://host-a:7072"},
+		store.HostRecord{ID: "host-b", Name: "主机B", Address: "10.10.0.12", Status: "online", Executable: true, AgentURL: "http://host-b:7072"},
+		store.HostRecord{ID: "host-c", Name: "主机C", Address: "10.10.0.13", Status: "online", Executable: true, AgentURL: "http://host-c:7072"},
+	)
+	hostOps := &chatHostOpsServiceCapture{}
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+	mentions, err := json.Marshal([]hostMentionMetadataItem{
+		{Raw: "主机A", HostID: "host-a", Address: "10.10.0.11", DisplayName: "主机A", Source: "inventory", Resolved: true, Confidence: 1},
+		{Raw: "主机B", HostID: "host-b", Address: "10.10.0.12", DisplayName: "主机B", Source: "inventory", Resolved: true, Confidence: 1},
+		{Raw: "主机C", HostID: "host-c", Address: "10.10.0.13", DisplayName: "主机C", Source: "inventory", Resolved: true, Confidence: 1},
+	})
+	if err != nil {
+		t.Fatalf("marshal host mentions: %v", err)
+	}
+
+	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-v1-closure-pg-golden-path",
+		Content:   "主机A跟主机B上PG不同步，pg_mon部署在主机C，请修复。先只读排查复制状态、延迟、WAL/LSN、角色、pg_mon观测结果和主机网络，确认风险后再进入修复流程；需要执行修复前必须让我审批。",
+		Metadata: map[string]string{
+			"aiops.hostops.clientDetectedMultiHost": "true",
+			"aiops.hostops.mentions":                string(mentions),
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted", result.Status)
+	}
+	if _, ok := runtime.runSnapshot(); ok {
+		t.Fatal("RunTurn was called; v1 closure golden path should use generic host-ops mission")
+	}
+	if !hostOps.created {
+		t.Fatal("HostOpsService.CreateMission was not called")
+	}
+	for _, want := range []string{"host-a", "host-b", "host-c"} {
+		if !hostMentionIDsForTest(hostOps.command.Mentions)[want] {
+			t.Fatalf("mentions = %#v, want resolved host %s", hostOps.command.Mentions, want)
+		}
+	}
+	session := sessions.Get(result.SessionID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("session = %+v, want persisted host-ops turn", session)
+	}
+	if got := session.CurrentTurn.Metadata["aiops.hostops.planRequired"]; got != "true" {
+		t.Fatalf("planRequired metadata = %q, want true; metadata=%#v", got, session.CurrentTurn.Metadata)
+	}
+	if session.CurrentTurn.Metadata[metadataCorootExplicitRCA] == "true" || session.CurrentTurn.Metadata[metadataCorootRCADisplayAllowed] == "true" {
+		t.Fatalf("metadata = %#v, golden path without @Coroot must not show RCA", session.CurrentTurn.Metadata)
 	}
 }
 

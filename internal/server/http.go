@@ -35,14 +35,15 @@ type ChatMessageRequest struct {
 
 // ChatMessageResponse is the JSON response for POST /api/v1/chat/message.
 type ChatMessageResponse struct {
-	Accepted        bool   `json:"accepted"`
-	SessionID       string `json:"sessionId"`
-	TurnID          string `json:"turnId"`
-	ClientTurnID    string `json:"clientTurnId,omitempty"`
-	ClientMessageID string `json:"clientMessageId,omitempty"`
-	Status          string `json:"status"`
-	Output          string `json:"output,omitempty"`
-	Error           string `json:"error,omitempty"`
+	Accepted        bool                    `json:"accepted"`
+	SessionID       string                  `json:"sessionId"`
+	TurnID          string                  `json:"turnId"`
+	ClientTurnID    string                  `json:"clientTurnId,omitempty"`
+	ClientMessageID string                  `json:"clientMessageId,omitempty"`
+	Status          string                  `json:"status"`
+	Output          string                  `json:"output,omitempty"`
+	Error           string                  `json:"error,omitempty"`
+	OpsRun          *appui.ChatRunTraceView `json:"opsRun,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +198,7 @@ func (s *HTTPServer) registerRoutes() {
 	// Core chat endpoint
 	s.mux.HandleFunc("/api/v1/chat/message", s.handleChatMessage)
 	s.mux.HandleFunc("/api/v1/chat/stop", s.handleChatStop)
+	s.mux.HandleFunc("/api/v1/chat/ops-runs/", s.handleChatOpsRuns)
 	s.mux.HandleFunc("/api/v1/assistant/transport", s.handleAssistantTransport)
 	s.mux.HandleFunc("/api/v1/assistant/resume", s.handleAssistantTransportResume)
 	s.mux.HandleFunc("/api/v1/host-ops/child-agents/", s.handleHostOpsChildAgents)
@@ -322,6 +324,7 @@ func (s *HTTPServer) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 		Status:          result.Status,
 		Output:          result.Output,
 		Error:           result.Error,
+		OpsRun:          result.OpsRun,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

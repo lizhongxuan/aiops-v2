@@ -131,16 +131,21 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	if req.SessionID == "" {
 		req.SessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
+	opsRun := ensureOpsRunMetadata(&req)
+	ensureCorootRCAMetadata(&req)
 	s.enrichTurnHostMetadata(&req)
 	if s.workflowGeneration != nil {
 		if response, handled, err := s.workflowGeneration.Handle(ctx, cmd, req); handled || err != nil {
+			response = attachOpsRunToTurnResponse(response, opsRun)
 			return response, err
 		}
 	}
 	if response, handled, err := s.handleHostOpsRoute(ctx, cmd, &req); handled || err != nil {
+		response = attachOpsRunToTurnResponse(response, opsRun)
 		return response, err
 	}
 	if response, handled, err := s.handleGenericOpsRepair(ctx, cmd, req); handled || err != nil {
+		response = attachOpsRunToTurnResponse(response, opsRun)
 		return response, err
 	}
 	s.appendTurnAcceptedEvents(req)
@@ -151,6 +156,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		ClientTurnID:    req.ClientTurnID,
 		ClientMessageID: req.ClientMessageID,
 		Status:          "accepted",
+		OpsRun:          &opsRun,
 	}, nil
 }
 
@@ -845,4 +851,12 @@ func mapTurnResponse(result runtimekernel.TurnResult) TurnResponse {
 		Output:          result.Output,
 		Error:           result.Error,
 	}
+}
+
+func attachOpsRunToTurnResponse(response TurnResponse, opsRun ChatRunTraceView) TurnResponse {
+	if response.OpsRun != nil || strings.TrimSpace(opsRun.ID) == "" {
+		return response
+	}
+	response.OpsRun = &opsRun
+	return response
 }

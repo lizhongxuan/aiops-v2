@@ -71,6 +71,7 @@ type AiopsTransportState struct {
 	ThreadID            string                               `json:"threadId"`
 	Status              AiopsTransportStatus                 `json:"status"`
 	CurrentTurnID       string                               `json:"currentTurnId,omitempty"`
+	OpsRun              *AiopsTransportOpsRun                `json:"opsRun,omitempty"`
 	Turns               map[string]AiopsTransportTurn        `json:"turns"`
 	TurnOrder           []string                             `json:"turnOrder"`
 	PendingApprovals    map[string]AiopsTransportApproval    `json:"pendingApprovals"`
@@ -83,6 +84,19 @@ type AiopsTransportState struct {
 	LastError           string                               `json:"lastError,omitempty"`
 	Seq                 int64                                `json:"seq"`
 	UpdatedAt           string                               `json:"updatedAt"`
+}
+
+type AiopsTransportOpsRun struct {
+	ID            string `json:"id"`
+	SessionID     string `json:"sessionId,omitempty"`
+	TurnID        string `json:"turnId,omitempty"`
+	ClientTurnID  string `json:"clientTurnId,omitempty"`
+	Source        string `json:"source"`
+	Status        string `json:"status"`
+	Title         string `json:"title,omitempty"`
+	TargetSummary string `json:"targetSummary,omitempty"`
+	EvidenceCount int    `json:"evidenceCount,omitempty"`
+	CurrentStep   string `json:"currentStep,omitempty"`
 }
 
 type AiopsTransportTurn struct {
@@ -130,6 +144,11 @@ type AiopsProcessBlock struct {
 	Results             []AiopsSearchResult         `json:"results,omitempty"`
 	ApprovalID          string                      `json:"approvalId,omitempty"`
 	Source              string                      `json:"source,omitempty"`
+	TargetSummary       string                      `json:"targetSummary,omitempty"`
+	Risk                string                      `json:"risk,omitempty"`
+	RiskSummary         string                      `json:"riskSummary,omitempty"`
+	ExpectedEffect      string                      `json:"expectedEffect,omitempty"`
+	Rollback            string                      `json:"rollback,omitempty"`
 	Confidence          string                      `json:"confidence,omitempty"`
 	Window              string                      `json:"window,omitempty"`
 	RawRef              string                      `json:"rawRef,omitempty"`

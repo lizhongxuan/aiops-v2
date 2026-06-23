@@ -2,7 +2,10 @@ import { useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import type { AiopsTransportHostMission, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type {
+  AiopsTransportHostMission,
+  AiopsTransportState,
+} from "@/transport/aiopsTransportTypes";
 
 type HostSubagentStatusRowProps = {
   mission: AiopsTransportHostMission;
@@ -11,13 +14,22 @@ type HostSubagentStatusRowProps = {
   onOpenChildAgent?: (childAgentId: string) => void;
 };
 
-export function HostSubagentStatusRow({ mission, state, withDivider = true, onOpenChildAgent }: HostSubagentStatusRowProps) {
+export function HostSubagentStatusRow({
+  mission,
+  state,
+  withDivider = true,
+  onOpenChildAgent,
+}: HostSubagentStatusRowProps) {
   const [collapsed, setCollapsed] = useState(false);
   const childAgentsById = state.childAgents || {};
   const childAgents = (mission.childAgentIds || [])
     .map((childAgentId) => childAgentsById[childAgentId])
     .filter(Boolean);
-  const childHostKeys = new Set(childAgents.map((childAgent) => normalizedHostKey(childAgent.hostId || childAgent.hostAddress)));
+  const childHostKeys = new Set(
+    childAgents.map((childAgent) =>
+      normalizedHostKey(childAgent.hostId || childAgent.hostAddress),
+    ),
+  );
   const pendingHosts = uniqueMissionMentions(mission).filter((mention) => {
     const key = hostMentionKey(mention);
     return key && !childHostKeys.has(key);
@@ -30,7 +42,10 @@ export function HostSubagentStatusRow({ mission, state, withDivider = true, onOp
 
   return (
     <div className={withDivider ? "border-t border-zinc-200" : ""}>
-      <section className="min-w-0 px-4 py-1.5 text-[12px]" data-testid="host-subagent-list-card">
+      <section
+        className="min-w-0 px-4 py-1.5 text-[12px]"
+        data-testid="host-subagent-list-card"
+      >
         <button
           type="button"
           className="flex w-full min-w-0 items-center gap-2 text-left"
@@ -39,71 +54,97 @@ export function HostSubagentStatusRow({ mission, state, withDivider = true, onOp
           onClick={() => setCollapsed((value) => !value)}
         >
           <ChevronDownIcon
-            className={cn("size-3 shrink-0 text-zinc-500 transition-transform", collapsed ? "-rotate-90" : "rotate-0")}
+            className={cn(
+              "size-3 shrink-0 text-zinc-500 transition-transform",
+              collapsed ? "-rotate-90" : "rotate-0",
+            )}
             aria-hidden="true"
           />
-          <span className="shrink-0 font-semibold text-zinc-700">主机 Agent</span>
-          <span className="min-w-0 truncate text-zinc-500">共 {totalCount} 个主机 Agent</span>
+          <span className="shrink-0 font-semibold text-zinc-700">
+            <span data-testid="task-checklist-toggle">主机 Agent</span>
+          </span>
+          <span className="min-w-0 truncate text-zinc-500">
+            共 {totalCount} 个主机 Agent
+          </span>
         </button>
-        {!collapsed ? <ol className="mt-1 grid min-w-0 gap-0.5">
-          {childAgents.map((childAgent, index) => (
-            <li
-              key={childAgent.id}
-              className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
-              data-testid={`host-child-agent-${childAgent.id}`}
-            >
-              <span className="w-4 shrink-0 text-right text-[11px] text-zinc-400">
-                {index + 1}.
-              </span>
-              <button
-                type="button"
-                className={cn(
-                  "max-w-[9rem] shrink-0 truncate rounded px-1.5 py-0.5 text-left font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400",
-                  hostNameTone(index),
-                )}
-                title={formatVerboseHostLabel(childAgent)}
-                aria-label={`${formatCompactHostLabel(childAgent)} 主机详情`}
-                data-testid={`host-child-agent-name-${childAgent.id}`}
-                onClick={() => onOpenChildAgent?.(childAgent.id)}
+        {!collapsed ? (
+          <ol className="mt-1 grid min-w-0 gap-0.5">
+            {childAgents.map((childAgent, index) => (
+              <li
+                key={childAgent.id}
+                className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
+                data-testid={`host-child-agent-${childAgent.id}`}
               >
-                {formatCompactHostLabel(childAgent)}
-              </button>
-              <span className="min-w-0 flex-1 truncate text-zinc-500">
-                {childAgent.currentStepTitle || childAgent.task || "未分配当前步骤"}
-              </span>
-              <span
-                className={cn("shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] ring-1", statusTone(childAgent.status))}
-                data-testid={`host-child-agent-status-${childAgent.id}`}
+                <span className="w-4 shrink-0 text-right text-[11px] text-zinc-400">
+                  {index + 1}.
+                </span>
+                <button
+                  type="button"
+                  className={cn(
+                    "max-w-[9rem] shrink-0 truncate rounded px-1.5 py-0.5 text-left font-semibold hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-400",
+                    hostNameTone(index),
+                  )}
+                  title={formatVerboseHostLabel(childAgent)}
+                  aria-label={`${formatCompactHostLabel(childAgent)} 主机详情`}
+                  data-testid={`host-child-agent-name-${childAgent.id}`}
+                  onClick={() => onOpenChildAgent?.(childAgent.id)}
+                >
+                  <span
+                    data-testid={`host-subagent-status-row-${childAgent.id}`}
+                  >
+                    {formatCompactHostLabel(childAgent)}
+                  </span>
+                </button>
+                <span className="min-w-0 flex-1 truncate text-zinc-500">
+                  {childAgent.currentStepTitle ||
+                    childAgent.task ||
+                    "未分配当前步骤"}
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] ring-1",
+                    statusTone(childAgent.status),
+                  )}
+                  data-testid={`host-child-agent-status-${childAgent.id}`}
+                >
+                  {childAgent.status}
+                </span>
+              </li>
+            ))}
+            {pendingHosts.map((mention, index) => (
+              <li
+                key={hostMentionKey(mention)}
+                className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
+                data-testid={`host-child-agent-pending-${safeTestId(hostMentionKey(mention))}`}
               >
-                {childAgent.status}
-              </span>
-            </li>
-          ))}
-          {pendingHosts.map((mention, index) => (
-            <li
-              key={hostMentionKey(mention)}
-              className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
-              data-testid={`host-child-agent-pending-${safeTestId(hostMentionKey(mention))}`}
-            >
-              <span className="w-4 shrink-0 text-right text-[11px] text-zinc-400">
-                {childAgents.length + index + 1}.
-              </span>
-              <span
-                className={cn("max-w-[9rem] shrink-0 truncate rounded px-1.5 py-0.5 font-semibold", hostNameTone(childAgents.length + index))}
-                title={formatMentionLabel(mention)}
-              >
-                {formatMentionHandle(mention)}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-zinc-500">等待分配子 Agent</span>
-              <span
-                className={cn("shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] ring-1", statusTone("planned"))}
-                data-testid={`host-child-agent-status-pending-${safeTestId(hostMentionKey(mention))}`}
-              >
-                planned
-              </span>
-            </li>
-          ))}
-        </ol> : null}
+                <span className="w-4 shrink-0 text-right text-[11px] text-zinc-400">
+                  {childAgents.length + index + 1}.
+                </span>
+                <span
+                  className={cn(
+                    "max-w-[9rem] shrink-0 truncate rounded px-1.5 py-0.5 font-semibold",
+                    hostNameTone(childAgents.length + index),
+                  )}
+                  title={formatMentionLabel(mention)}
+                >
+                  {formatMentionHandle(mention)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-zinc-500">
+                  等待分配子 Agent
+                </span>
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] ring-1",
+                    statusTone("planned"),
+                  )}
+                  data-testid={`host-child-agent-status-pending-${safeTestId(hostMentionKey(mention))}`}
+                >
+                  planned
+                </span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
       </section>
     </div>
   );
@@ -127,7 +168,9 @@ type ChildAgentRow = {
   status: string;
 };
 
-function uniqueMissionMentions(mission: AiopsTransportHostMission): MissionMention[] {
+function uniqueMissionMentions(
+  mission: AiopsTransportHostMission,
+): MissionMention[] {
   const mentions = selectMissionMentions(mission);
   const seen = new Set<string>();
   const unique: MissionMention[] = [];
@@ -145,16 +188,25 @@ function uniqueMissionMentions(mission: AiopsTransportHostMission): MissionMenti
   return unique;
 }
 
-function selectMissionMentions(mission: AiopsTransportHostMission): MissionMention[] {
+function selectMissionMentions(
+  mission: AiopsTransportHostMission,
+): MissionMention[] {
   const missionWithMentions = mission as AiopsTransportHostMission & {
     mentions?: unknown;
   };
-  const source = Array.isArray(mission.mentionedHosts) ? mission.mentionedHosts : missionWithMentions.mentions;
-  return Array.isArray(source) ? source.map((item) => (item && typeof item === "object" ? item as MissionMention : {})) : [];
+  const source = Array.isArray(mission.mentionedHosts)
+    ? mission.mentionedHosts
+    : missionWithMentions.mentions;
+  return Array.isArray(source)
+    ? source.map((item) =>
+        item && typeof item === "object" ? (item as MissionMention) : {},
+      )
+    : [];
 }
 
 function formatVerboseHostLabel(childAgent: ChildAgentRow) {
-  const hostName = childAgent.hostDisplayName || childAgent.hostId || "未知主机";
+  const hostName =
+    childAgent.hostDisplayName || childAgent.hostId || "未知主机";
   const address = childAgent.hostAddress || childAgent.hostId;
   return address ? `${hostName}(@${address})` : hostName;
 }
@@ -167,7 +219,13 @@ function formatCompactHostLabel(childAgent: ChildAgentRow) {
 }
 
 function formatMentionLabel(mention: MissionMention) {
-  return mention.displayName || mention.hostId || mention.address || mention.raw || "未知主机";
+  return (
+    mention.displayName ||
+    mention.hostId ||
+    mention.address ||
+    mention.raw ||
+    "未知主机"
+  );
 }
 
 function formatMentionHandle(mention: MissionMention) {
@@ -221,11 +279,15 @@ function statusTone(status: string) {
 }
 
 function hostMentionKey(mention: MissionMention) {
-  return normalizedHostKey(mention.hostId || mention.address || mention.displayName || mention.raw);
+  return normalizedHostKey(
+    mention.hostId || mention.address || mention.displayName || mention.raw,
+  );
 }
 
 function normalizedHostKey(value?: string) {
-  return String(value || "").trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function safeTestId(value: string) {

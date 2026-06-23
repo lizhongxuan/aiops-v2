@@ -9,14 +9,24 @@ import type {
 export type AiopsTransportCommandActions = {
   stop: (reason?: string) => void;
   retry: (turnId?: string) => void;
-  approvalDecision: (approvalId: string, decision: "accept" | "reject" | string) => void;
+  approvalDecision: (
+    approvalId: string,
+    decision: "accept" | "reject" | string,
+  ) => void;
   choiceAnswer: (requestId: string, answer: string) => void;
-  mcpAction: (surfaceId: string, action: string, params?: Record<string, unknown>, target?: string) => void;
+  mcpAction: (
+    surfaceId: string,
+    action: string,
+    params?: Record<string, unknown>,
+    target?: string,
+  ) => void;
   mcpRefresh: (surfaceId: string) => void;
   mcpPin: (surfaceId: string, pinned: boolean) => void;
 };
 
-export function createInitialAiopsTransportState(threadId = "default"): AiopsTransportState {
+export function createInitialAiopsTransportState(
+  threadId = "default",
+): AiopsTransportState {
   return {
     schemaVersion: "aiops.transport.v2",
     sessionId: "",
@@ -58,6 +68,7 @@ export function normalizeAiopsTransportState(
     sessionId: value.sessionId ?? base.sessionId,
     threadId: value.threadId || fallbackThreadId || base.threadId,
     status: value.status || base.status,
+    opsRun: normalizeOpsRun(value.opsRun),
     turns: value.turns || {},
     turnOrder: Array.isArray(value.turnOrder) ? value.turnOrder : [],
     pendingApprovals: value.pendingApprovals || {},
@@ -88,28 +99,34 @@ export function createAiopsTransportCommandActions(
 
   return {
     stop(reason) {
-      sendCommand(removeUndefined({
-        type: "aiops.stop",
-        sessionId,
-        turnId: currentTurnId,
-        reason,
-      }));
+      sendCommand(
+        removeUndefined({
+          type: "aiops.stop",
+          sessionId,
+          turnId: currentTurnId,
+          reason,
+        }),
+      );
     },
     retry(turnId = currentTurnId) {
-      sendCommand(removeUndefined({
-        type: "aiops.retry",
-        sessionId,
-        turnId,
-      }));
+      sendCommand(
+        removeUndefined({
+          type: "aiops.retry",
+          sessionId,
+          turnId,
+        }),
+      );
     },
     approvalDecision(approvalId, decision) {
-      sendCommand(removeUndefined({
-        type: "aiops.approval-decision",
-        sessionId,
-        turnId: currentTurnId,
-        approvalId,
-        decision,
-      }));
+      sendCommand(
+        removeUndefined({
+          type: "aiops.approval-decision",
+          sessionId,
+          turnId: currentTurnId,
+          approvalId,
+          decision,
+        }),
+      );
     },
     choiceAnswer(requestId, answer) {
       sendCommand({
@@ -119,13 +136,15 @@ export function createAiopsTransportCommandActions(
       });
     },
     mcpAction(surfaceId, action, params, target) {
-      sendCommand(removeUndefined({
-        type: "aiops.mcp-action",
-        surfaceId,
-        action,
-        target,
-        params,
-      }));
+      sendCommand(
+        removeUndefined({
+          type: "aiops.mcp-action",
+          surfaceId,
+          action,
+          target,
+          params,
+        }),
+      );
     },
     mcpRefresh(surfaceId) {
       sendCommand({
@@ -143,11 +162,17 @@ export function createAiopsTransportCommandActions(
   };
 }
 
-export function markAiopsTransportFailed(state: AiopsTransportState, message: string): AiopsTransportState {
+export function markAiopsTransportFailed(
+  state: AiopsTransportState,
+  message: string,
+): AiopsTransportState {
   return markAiopsTransportTerminalState(state, "failed", message);
 }
 
-export function markAiopsTransportCanceled(state: AiopsTransportState, message?: string): AiopsTransportState {
+export function markAiopsTransportCanceled(
+  state: AiopsTransportState,
+  message?: string,
+): AiopsTransportState {
   return markAiopsTransportTerminalState(state, "canceled", message);
 }
 
@@ -158,7 +183,9 @@ function markAiopsTransportTerminalState(
 ): AiopsTransportState {
   const normalizedState = normalizeAiopsTransportState(state);
   const turns = { ...normalizedState.turns };
-  const current = normalizedState.currentTurnId ? turns[normalizedState.currentTurnId] : undefined;
+  const current = normalizedState.currentTurnId
+    ? turns[normalizedState.currentTurnId]
+    : undefined;
   if (normalizedState.currentTurnId && current) {
     turns[normalizedState.currentTurnId] = markTurnTerminal(current, status);
   }
@@ -172,14 +199,19 @@ function markAiopsTransportTerminalState(
       activeTurns: {},
       activeAgents: { ...normalizedState.runtimeLiveness.activeAgents },
       pendingApprovals: { ...normalizedState.runtimeLiveness.pendingApprovals },
-      pendingUserInputs: { ...normalizedState.runtimeLiveness.pendingUserInputs },
+      pendingUserInputs: {
+        ...normalizedState.runtimeLiveness.pendingUserInputs,
+      },
       activeCommandStreams: {},
     },
     updatedAt: new Date().toISOString(),
   };
 }
 
-function markTurnTerminal(turn: AiopsTransportTurn, status: "failed" | "canceled"): AiopsTransportTurn {
+function markTurnTerminal(
+  turn: AiopsTransportTurn,
+  status: "failed" | "canceled",
+): AiopsTransportTurn {
   return {
     ...turn,
     status,
@@ -193,16 +225,36 @@ function markTurnTerminal(turn: AiopsTransportTurn, status: "failed" | "canceled
 }
 
 function removeUndefined<T extends Record<string, unknown>>(value: T): T {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T;
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => item !== undefined),
+  ) as T;
 }
 
-function normalizeHostMissions(value: unknown): Record<string, AiopsTransportHostMission> {
+function normalizeOpsRun(value: unknown): AiopsTransportState["opsRun"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const run = value as AiopsTransportState["opsRun"];
+  if (!run?.id) {
+    return undefined;
+  }
+  return run;
+}
+
+function normalizeHostMissions(
+  value: unknown,
+): Record<string, AiopsTransportHostMission> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
   }
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([, mission]) => Boolean(mission) && typeof mission === "object" && !Array.isArray(mission))
+      .filter(
+        ([, mission]) =>
+          Boolean(mission) &&
+          typeof mission === "object" &&
+          !Array.isArray(mission),
+      )
       .map(([id, mission]) => {
         const item = mission as AiopsTransportHostMission & {
           mentionedHosts?: unknown;
@@ -213,9 +265,15 @@ function normalizeHostMissions(value: unknown): Record<string, AiopsTransportHos
           id,
           {
             ...item,
-            mentionedHosts: Array.isArray(item.mentionedHosts) ? item.mentionedHosts : [],
-            childAgentIds: Array.isArray(item.childAgentIds) ? item.childAgentIds : [],
-            planSteps: Array.isArray(item.planSteps) ? item.planSteps : undefined,
+            mentionedHosts: Array.isArray(item.mentionedHosts)
+              ? item.mentionedHosts
+              : [],
+            childAgentIds: Array.isArray(item.childAgentIds)
+              ? item.childAgentIds
+              : [],
+            planSteps: Array.isArray(item.planSteps)
+              ? item.planSteps
+              : undefined,
           },
         ];
       }),

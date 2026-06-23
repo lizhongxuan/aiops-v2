@@ -11,6 +11,9 @@ type ProposedAction struct {
 	ToolName       string                            `json:"toolName"`
 	ToolInput      json.RawMessage                   `json:"toolInput"`
 	Risk           actionproposal.Risk               `json:"risk,omitempty"`
+	TargetSummary  string                            `json:"targetSummary,omitempty"`
+	ActionSummary  string                            `json:"actionSummary,omitempty"`
+	RiskSummary    string                            `json:"riskSummary,omitempty"`
 	Reason         string                            `json:"reason,omitempty"`
 	ExpectedEffect string                            `json:"expectedEffect,omitempty"`
 	Rollback       string                            `json:"rollback,omitempty"`
