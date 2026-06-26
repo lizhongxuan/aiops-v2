@@ -2603,7 +2603,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			})
 		}
 
-		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools)
+		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface)
 		k.emitIterationStage(session.ID, turnID, iteration, "dispatch_tools", turnSpanID)
 
 		appendToolCallState := func(tc ToolCall) string {
@@ -4292,7 +4292,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	}
 	snapshot.Metadata = applyDefaultRuntimePromptProfile(snapshot.Metadata, session.Type, session.HostID)
 	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, snapshot.Metadata), session.Type, session.HostID, snapshot.Metadata, time.Now())
-	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
+	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, runtimeToolRouterSnapshotFromTurnSnapshot(snapshot))
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
@@ -4733,7 +4733,7 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 	return nil
 }
 
-func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
+func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot) *ToolDispatcher {
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
 		if toolDef == nil {
@@ -4757,6 +4757,7 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
 		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
+		WithRuntimeToolRouterSnapshot(runtimeToolSurface).
 		WithVisibleToolMetadata(toolMetadataList(tools)).
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(featureflag.FromEnv(os.Getenv))).
 		WithResourceLockGate(k.resourceLockGate).

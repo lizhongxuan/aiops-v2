@@ -103,14 +103,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 }
 
 func runtimeToolRouterSnapshotFromCompile(tools []promptcompiler.Tool, visibleToolNames []string, fingerprint string, policy tooling.ToolSurfacePolicySnapshot) RuntimeToolRouterSnapshot {
-	return RuntimeToolRouterSnapshot{
-		RegisteredTools:   toolNames(tools),
-		ModelVisibleTools: uniqueSortedTraceStrings(visibleToolNames),
-		DispatchableTools: uniqueSortedTraceStrings(visibleToolNames),
-		HiddenReasons:     hiddenReasonsFromToolSurfacePolicy(policy),
-		PolicyHash:        strings.TrimSpace(policy.Hash),
-		Fingerprint:       strings.TrimSpace(fingerprint),
-	}
+	return RuntimeToolRouterSnapshotFromPolicy(toolNames(tools), policy, visibleToolNames, nil, fingerprint)
 }
 
 func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) []modelrouter.ProviderToolSpec {

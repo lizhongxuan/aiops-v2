@@ -479,6 +479,42 @@ func TestDispatchUsesSamePolicySnapshot(t *testing.T) {
 	}
 }
 
+func TestDispatcherRejectsToolNotInRuntimeStepDispatchableTools(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithRuntimeToolRouterSnapshot(RuntimeToolRouterSnapshot{
+		RegisteredTools:   []string{"exec_command"},
+		ModelVisibleTools: []string{"exec_command"},
+		DispatchableTools: []string{},
+		HiddenReasons: map[string][]string{
+			"exec_command": {"profile_denied"},
+		},
+		PolicyHash:  "policy-1",
+		Fingerprint: "surface-1",
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"session-1",
+		"turn-1",
+		ToolCall{ID: "call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"date"}`)},
+		SessionTypeHost,
+		ModeChat,
+	)
+
+	if !result.Blocked || !strings.Contains(result.Content, "tool_unavailable") {
+		t.Fatalf("result = %#v, want blocked unavailable", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
 func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	executor := &mockToolExecutor{result: "should-not-run"}

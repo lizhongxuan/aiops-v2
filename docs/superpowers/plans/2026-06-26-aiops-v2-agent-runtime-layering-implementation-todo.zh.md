@@ -1773,7 +1773,7 @@ git commit -m "refactor(runtime): rename eino kernel to runtime kernel"
 - Test: `internal/tooling/surface_dispatch_consistency_test.go`
 - Test: `internal/runtimekernel/dispatch_test.go`
 
-- [ ] **Step 1: Write failing visible/dispatchable consistency test**
+- [x] **Step 1: Write failing visible/dispatchable consistency test**
 
 Add to `internal/runtimekernel/dispatch_test.go`:
 
@@ -1805,7 +1805,7 @@ func TestDispatcherRejectsToolNotInRuntimeStepDispatchableTools(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1815,7 +1815,7 @@ go test ./internal/runtimekernel -run TestDispatcherRejectsToolNotInRuntimeStepD
 
 Expected: FAIL with undefined `WithRuntimeToolRouterSnapshot`.
 
-- [ ] **Step 3: Add dispatcher snapshot field and method**
+- [x] **Step 3: Add dispatcher snapshot field and method**
 
 Modify `internal/runtimekernel/dispatch.go`:
 
@@ -1834,7 +1834,7 @@ func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRoute
 }
 ```
 
-- [ ] **Step 4: Enforce dispatchable membership**
+- [x] **Step 4: Enforce dispatchable membership**
 
 In `dispatch`, before executing a tool:
 
@@ -1849,7 +1849,7 @@ if d.runtimeToolSurface != nil && !runtimeToolSurfaceContains(d.runtimeToolSurfa
 }
 ```
 
-- [ ] **Step 5: Build RuntimeToolRouterSnapshot from tooling output**
+- [x] **Step 5: Build RuntimeToolRouterSnapshot from tooling output**
 
 Add conversion in `internal/runtimekernel/tool_router_snapshot.go`:
 
@@ -1866,7 +1866,7 @@ func RuntimeToolRouterSnapshotFromPolicy(registered []string, policy tooling.Too
 }
 ```
 
-- [ ] **Step 6: Run tool tests**
+- [x] **Step 6: Run tool tests**
 
 Run:
 

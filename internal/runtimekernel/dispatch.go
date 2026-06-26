@@ -65,27 +65,28 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup           ToolLookup
-	policy           *policyengine.Engine
-	permissions      *permissions.Engine
-	hooks            *hooks.Registry
-	projector        EventEmitter
-	spanSource       SpanStreamSource // optional: span tracking for tool calls
-	observer         Observer
-	progressSink     ToolProgressSink
-	approvalGrants   []SessionApprovalGrant
-	planMode         PlanModeState
-	planScopes       []PlanApprovalScope
-	unexpectedStates []UnexpectedStateSignal
-	resourceLockGate ToolResourceLockGate
-	toolSurfaceFP    string
-	permissionHash   string
-	surfacePolicy    *tooling.ToolSurfacePolicySnapshot
-	deferredCatalog  DeferredToolCatalogLookup
-	visibleTools     []tooling.ToolMetadata
-	retryConfig      ReadOnlyRetryConfig
-	retryMu          sync.Mutex
-	retriesThisTurn  int
+	lookup             ToolLookup
+	policy             *policyengine.Engine
+	permissions        *permissions.Engine
+	hooks              *hooks.Registry
+	projector          EventEmitter
+	spanSource         SpanStreamSource // optional: span tracking for tool calls
+	observer           Observer
+	progressSink       ToolProgressSink
+	approvalGrants     []SessionApprovalGrant
+	planMode           PlanModeState
+	planScopes         []PlanApprovalScope
+	unexpectedStates   []UnexpectedStateSignal
+	resourceLockGate   ToolResourceLockGate
+	toolSurfaceFP      string
+	permissionHash     string
+	surfacePolicy      *tooling.ToolSurfacePolicySnapshot
+	runtimeToolSurface *RuntimeToolRouterSnapshot
+	deferredCatalog    DeferredToolCatalogLookup
+	visibleTools       []tooling.ToolMetadata
+	retryConfig        ReadOnlyRetryConfig
+	retryMu            sync.Mutex
+	retriesThisTurn    int
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -172,6 +173,22 @@ func (d *ToolDispatcher) WithToolSurfacePolicySnapshot(snapshot *tooling.ToolSur
 	cp.HiddenTools = append([]tooling.ToolHiddenReason(nil), snapshot.HiddenTools...)
 	cp.VisibleTools = append([]tooling.ToolVisibleReason(nil), snapshot.VisibleTools...)
 	d.surfacePolicy = &cp
+	return d
+}
+
+func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRouterSnapshot) *ToolDispatcher {
+	cp := RuntimeToolRouterSnapshot{
+		RegisteredTools:   append([]string(nil), snapshot.RegisteredTools...),
+		ModelVisibleTools: append([]string(nil), snapshot.ModelVisibleTools...),
+		DispatchableTools: append([]string(nil), snapshot.DispatchableTools...),
+		HiddenReasons:     copyRuntimeToolHiddenReasons(snapshot.HiddenReasons),
+		PolicyHash:        strings.TrimSpace(snapshot.PolicyHash),
+		Fingerprint:       strings.TrimSpace(snapshot.Fingerprint),
+	}
+	d.runtimeToolSurface = &cp
+	if cp.Fingerprint != "" {
+		d.toolSurfaceFP = cp.Fingerprint
+	}
 	return d
 }
 
@@ -308,6 +325,12 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			d.spanSource.FailSpan(toolSpanID, errMsg)
 		}
 		return errResult
+	}
+	if hidden, ok := d.hiddenByRuntimeToolSurface(tc, desc.Metadata); ok {
+		result := d.hiddenToolUnavailableResult(tc, hidden, d.runtimeToolSurfacePolicySnapshot(), desc.Metadata)
+		result.Blocked = true
+		result.Reason = firstNonEmpty(hidden.Reason, "tool_not_dispatchable")
+		return result
 	}
 	if hidden, ok := d.hiddenByToolSurfacePolicy(tc, desc.Metadata, approved || d.hasSessionApprovalGrant(tc, desc)); ok {
 		return d.hiddenToolUnavailableResult(tc, hidden, d.surfacePolicy, desc.Metadata)
@@ -894,6 +917,100 @@ func (d *ToolDispatcher) hiddenByToolSurfacePolicy(tc ToolCall, meta tooling.Too
 		return tooling.ToolHiddenReason{}, false
 	}
 	return tooling.ToolHiddenBySurfacePolicy(*d.surfacePolicy, meta, tc.Name)
+}
+
+func (d *ToolDispatcher) hiddenByRuntimeToolSurface(tc ToolCall, meta tooling.ToolMetadata) (tooling.ToolHiddenReason, bool) {
+	if d == nil || d.runtimeToolSurface == nil || !runtimeToolSurfaceDispatchGuardEnabled(*d.runtimeToolSurface) {
+		return tooling.ToolHiddenReason{}, false
+	}
+	if runtimeToolSurfaceContains(d.runtimeToolSurface.DispatchableTools, meta, tc.Name) {
+		return tooling.ToolHiddenReason{}, false
+	}
+	reason := "tool_not_dispatchable"
+	for _, candidate := range runtimeToolSurfaceNameCandidates(meta, tc.Name) {
+		if reasons := d.runtimeToolSurface.HiddenReasons[candidate]; len(reasons) > 0 && strings.TrimSpace(reasons[0]) != "" {
+			reason = strings.TrimSpace(reasons[0])
+			break
+		}
+	}
+	return tooling.ToolHiddenReason{Name: firstNonEmpty(tc.Name, meta.Name), Reason: reason}, true
+}
+
+func (d *ToolDispatcher) runtimeToolSurfacePolicySnapshot() *tooling.ToolSurfacePolicySnapshot {
+	if d == nil || d.runtimeToolSurface == nil || strings.TrimSpace(d.runtimeToolSurface.PolicyHash) == "" {
+		return nil
+	}
+	return &tooling.ToolSurfacePolicySnapshot{Hash: strings.TrimSpace(d.runtimeToolSurface.PolicyHash)}
+}
+
+func runtimeToolSurfaceDispatchGuardEnabled(surface RuntimeToolRouterSnapshot) bool {
+	return len(surface.ModelVisibleTools) > 0 || len(surface.DispatchableTools) > 0 || len(surface.HiddenReasons) > 0
+}
+
+func runtimeToolSurfaceContains(names []string, meta tooling.ToolMetadata, called string) bool {
+	candidates := runtimeToolSurfaceNameCandidates(meta, called)
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if strings.EqualFold(name, candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func runtimeToolSurfaceNameCandidates(meta tooling.ToolMetadata, called string) []string {
+	values := []string{called, meta.Name, tooling.ProviderSafeToolName(called), tooling.ProviderSafeToolName(meta.Name)}
+	values = append(values, meta.Aliases...)
+	for _, alias := range meta.Aliases {
+		values = append(values, tooling.ProviderSafeToolName(alias))
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func copyRuntimeToolHiddenReasons(in map[string][]string) map[string][]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(in))
+	for name, reasons := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		copied := make([]string, 0, len(reasons))
+		for _, reason := range reasons {
+			reason = strings.TrimSpace(reason)
+			if reason != "" {
+				copied = append(copied, reason)
+			}
+		}
+		if len(copied) > 0 {
+			out[name] = copied
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func toolHiddenByPolicyError(toolName string, hidden tooling.ToolHiddenReason, snapshot *tooling.ToolSurfacePolicySnapshot) string {
