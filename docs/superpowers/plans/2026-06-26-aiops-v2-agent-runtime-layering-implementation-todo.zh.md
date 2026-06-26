@@ -2246,7 +2246,7 @@ git commit -m "feat(ui): read prompt trace v2 only"
 - Create: `scripts/verify-agent-runtime-single-path.sh`
 - Modify: `package.json` or `Makefile` if this repo already centralizes checks there
 
-- [ ] **Step 1: Create static guard script**
+- [x] **Step 1: Create static guard script**
 
 Create `scripts/verify-agent-runtime-single-path.sh`:
 
@@ -2280,7 +2280,7 @@ fi
 echo "PASS: single runtime path guards"
 ```
 
-- [ ] **Step 2: Make script executable**
+- [x] **Step 2: Make script executable**
 
 Run:
 
@@ -2290,7 +2290,7 @@ chmod +x scripts/verify-agent-runtime-single-path.sh
 
 Expected: command exits 0.
 
-- [ ] **Step 3: Run static guard**
+- [x] **Step 3: Run static guard**
 
 Run:
 
