@@ -58,6 +58,28 @@ describe("hostMentionSearch", () => {
     });
   });
 
+  it("offers @local first for an empty mention query", () => {
+    const result = searchHostMentionSuggestions(
+      [{ id: "host-a", name: "pg-primary", ip: "120.77.239.90" } as any],
+      "",
+    );
+
+    expect(result[0]).toMatchObject({
+      key: "local",
+      mention: "@local",
+      label: "local",
+      hostId: "server-local",
+      address: "server-local",
+    });
+  });
+
+  it("matches @local when the user types a local prefix", () => {
+    expect(searchHostMentionSuggestions([], "loc")[0]).toMatchObject({
+      mention: "@local",
+      hostId: "server-local",
+    });
+  });
+
   it("does not search hostname, id, sshUser, labels, or status", () => {
     const result = searchHostMentionSuggestions(
       [

@@ -43,7 +43,9 @@ describe("OpsRunSummaryCard", () => {
       source: "chat",
       status: "working",
       title: "主机A跟主机B上PG不同步",
+      routeMode: "multi_host_ops",
       targetSummary: "主机A/主机B PG 与主机C pg_mon",
+      toolSurfaceSummary: "无直接主机执行 / HostOps",
       evidenceCount: 3,
       currentStep: "正在只读采集 PG 同步证据",
     };
@@ -61,7 +63,75 @@ describe("OpsRunSummaryCard", () => {
     expect(container.textContent).toContain("正在只读采集 PG 同步证据");
     expect(container.textContent).toContain("3 条证据");
     expect(container.textContent).toContain("主机A/主机B PG 与主机C pg_mon");
+    expect(container.textContent).toContain("多主机");
+    expect(container.textContent).toContain("无直接主机执行 / HostOps");
     expect(container.textContent).not.toContain("生成 Case");
+  });
+
+  it("prefers agent run read model details when available", async () => {
+    const state = createInitialAiopsTransportState("thread-agent-run");
+    state.opsRun = {
+      id: "opsrun-agent-run",
+      source: "chat",
+      status: "working",
+      title: "旧标题",
+      routeMode: "advisory",
+      targetSummary: "legacy-target",
+      evidenceCount: 0,
+      currentStep: "旧步骤",
+      agentRun: {
+        id: "opsrun-agent-run",
+        userGoal: "修复 checkout 服务异常",
+        status: "running",
+        routeMode: "multi_host_ops",
+        targetSummary: "service:checkout",
+        currentStep: "正在读取 Coroot 指标",
+        currentStepId: "step-coroot",
+        evidenceCount: 4,
+        steps: [
+          {
+            id: "step-coroot",
+            kind: "tool_call",
+            status: "completed",
+            title: "读取 Coroot 指标",
+            toolName: "coroot.service_metrics",
+          },
+        ],
+      },
+    };
+
+    await act(async () => {
+      root.render(<OpsRunSummaryCard state={state} />);
+    });
+
+    expect(container.textContent).toContain("修复 checkout 服务异常");
+    expect(container.textContent).toContain("正在读取 Coroot 指标");
+    expect(container.textContent).toContain("service:checkout");
+    expect(container.textContent).toContain("4 条证据");
+    expect(container.textContent).toContain("最近：读取 Coroot 指标 · 已完成");
+    expect(container.textContent).not.toContain("旧标题");
+    expect(container.textContent).not.toContain("legacy-target");
+  });
+
+  it("does not render terminal runs without evidence or post-run actions", async () => {
+    const state = createInitialAiopsTransportState("thread-terminal-no-evidence");
+    state.opsRun = {
+      id: "opsrun-terminal-no-evidence",
+      source: "chat",
+      status: "canceled",
+      title: "检查 systemd 服务为什么失败",
+      evidenceCount: 0,
+      currentStep: "Post request context canceled",
+    };
+
+    await act(async () => {
+      root.render(<OpsRunSummaryCard state={state} />);
+    });
+
+    expect(
+      container.querySelector('[data-testid="ops-run-summary-card"]'),
+    ).toBeNull();
+    expect(container.textContent).toBe("");
   });
 
   it("does not render without an ops run", async () => {
@@ -92,6 +162,7 @@ describe("OpsRunSummaryCard", () => {
       status: "completed",
       title: "PG 不同步修复",
       currentStep: "已整理诊断和执行记录",
+      postRunSuggestions: [{ type: "case", label: "生成 Case" }],
     };
 
     await act(async () => {
@@ -128,6 +199,10 @@ describe("OpsRunSummaryCard", () => {
       source: "chat",
       status: "completed",
       title: "运维处理",
+      postRunSuggestions: [
+        { type: "run_record", label: "生成 Run Record" },
+        { type: "experience_candidate", label: "生成经验候选" },
+      ],
     };
 
     await act(async () => {
@@ -166,6 +241,29 @@ describe("OpsRunSummaryCard", () => {
       },
     );
     expect(container.textContent).toContain("已生成 1 条经验候选");
+  });
+
+  it("deduplicates Run Record and processing record actions because they create the same saved record", async () => {
+    const state = createInitialAiopsTransportState("thread-record-dedupe");
+    state.opsRun = {
+      id: "opsrun-record-dedupe",
+      source: "chat",
+      status: "completed",
+      title: "只读巡检",
+      postRunSuggestions: [
+        { type: "run_record", label: "生成 Run Record" },
+        { type: "processing_record", label: "生成处理记录" },
+        { type: "case", label: "生成 Case" },
+      ],
+    };
+
+    await act(async () => {
+      root.render(<OpsRunSummaryCard state={state} />);
+    });
+
+    expect(buttonByText("生成处理记录")).toBeTruthy();
+    expect(buttonByText("生成 Run Record")).toBeFalsy();
+    expect(buttonByText("生成 Case")).toBeTruthy();
   });
 
   function buttonByText(text: string) {

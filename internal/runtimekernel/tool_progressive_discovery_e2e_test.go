@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,6 +65,56 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 	}
 }
 
+func TestProgressiveDiscoverySelectablePackRecordsLoadedPacksDeltaInToolSurfaceSnapshot(t *testing.T) {
+	traceDir := t.TempDir()
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
+	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-search", `{"mode":"search","query":"coroot postgres rca"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-select", `{"mode":"select","packs":["coroot_postgres"],"reason":"need coroot postgres rca evidence"}`)}),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-rca",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "coroot_postgres_rca",
+				Arguments: `{}`,
+			},
+		}}),
+		schema.AssistantMessage("final evidence: coroot postgres rca checked", nil),
+	}}
+	registry := progressiveDiscoveryPackRegistry(t)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-progressive-pack-select",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-progressive-pack-select",
+		Input:       "use tool_search to find the needed evidence tool",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) < 3 {
+		t.Fatalf("compiler contexts = %d, want at least 3", len(compiler.contexts))
+	}
+	if !containsString(compiler.contexts[2].ToolDelta.NewlyAvailablePacks, "coroot_postgres") {
+		t.Fatalf("third tool delta packs = %v, want coroot_postgres", compiler.contexts[2].ToolDelta.NewlyAvailablePacks)
+	}
+	session := kernel.sessions.Get("sess-progressive-pack-select")
+	if session == nil || len(session.ToolDiscovery.LastSearchResults) == 0 || session.ToolDiscovery.LastSearchResults[0].SelectablePack == nil {
+		t.Fatalf("last search results = %#v, want selectable pack hint", session)
+	}
+	if !traceDirContainsLoadedPackDelta(t, traceDir, "turn-progressive-pack-select", "coroot_postgres") {
+		t.Fatalf("trace dir %s missing toolSurfaceSnapshot.loadedPacksDelta coroot_postgres", traceDir)
+	}
+}
+
 func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{
@@ -112,12 +164,102 @@ func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 	if !containsString(session.ToolDiscovery.EnabledTools(), "synthetic.metrics.read") {
 		t.Fatalf("enabled tools = %v, want synthetic.metrics.read after select", session.ToolDiscovery.EnabledTools())
 	}
-	if !strings.Contains(result.Output, "confidence low") {
-		t.Fatalf("final output = %q, want verifier-constrained low confidence", result.Output)
+	for _, want := range []string{"证据", "受限"} {
+		if !strings.Contains(result.Output, want) {
+			t.Fatalf("final output = %q, want verifier-constrained evidence boundary containing %q", result.Output, want)
+		}
 	}
-	if len(model.inputs) != 6 {
-		t.Fatalf("model calls = %d, want verifier-triggered recovery iteration", len(model.inputs))
+	if strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
+		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
 	}
+	if len(model.inputs) != 5 {
+		t.Fatalf("model calls = %d, want no verifier-triggered recovery iteration", len(model.inputs))
+	}
+}
+
+func progressiveDiscoveryPackRegistry(t *testing.T) *tooling.Registry {
+	t.Helper()
+	registry := tooling.NewRegistry()
+	tools := []tooling.Tool{
+		&tooling.StaticTool{
+			Meta:                tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore, RiskLevel: tooling.ToolRiskLow},
+			ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+			ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(_ context.Context, raw json.RawMessage) (tooling.ToolResult, error) {
+				var req struct {
+					Mode string `json:"mode"`
+				}
+				_ = json.Unmarshal(raw, &req)
+				if req.Mode == "select" {
+					return tooling.ToolResult{Content: `{"mode":"select","selection":{"loadedPacks":["coroot_postgres"],"reason":"need coroot postgres rca evidence"}}`}, nil
+				}
+				return tooling.ToolResult{Content: `{"mode":"search","ranker":"bm25","request":{"mode":"search","query":"coroot postgres rca","ranker":"bm25"},"matches":[{"kind":"pack","name":"coroot_postgres","pack":"coroot_postgres","tools":["coroot.postgres.rca"],"capabilityKind":"rca","resourceTypes":["postgres","service"],"operationKinds":["read"],"riskLevel":"low","requiresSelect":true,"loadableToolSpec":{"name":"coroot.postgres.rca","pack":"coroot_postgres","requiresSelect":true},"selectablePack":{"pack":"coroot_postgres","tools":["coroot.postgres.rca"],"requiresSelect":true}}]}`}, nil
+			},
+		},
+		&tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:           "coroot.postgres.rca",
+				Layer:          tooling.ToolLayerDeferred,
+				Pack:           "coroot_postgres",
+				DeferByDefault: true,
+				RiskLevel:      tooling.ToolRiskLow,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "rca",
+					ResourceTypes:  []string{"postgres", "service"},
+					OperationKinds: []string{"read"},
+					RequiresSelect: true,
+				},
+			},
+			ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+			ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+				return tooling.ToolResult{Content: `{"summary":"coroot postgres rca checked","status":"ok"}`}, nil
+			},
+		},
+	}
+	for _, tool := range tools {
+		if err := registry.Register(tool); err != nil {
+			t.Fatalf("Register(%s): %v", tool.Metadata().Name, err)
+		}
+	}
+	return registry
+}
+
+func traceDirContainsLoadedPackDelta(t *testing.T, dir, turnID, pack string) bool {
+	t.Helper()
+	found := false
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if found || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var payload struct {
+			TurnID              string `json:"turnId"`
+			ToolSurfaceSnapshot *struct {
+				LoadedPacksDelta []string `json:"loadedPacksDelta"`
+			} `json:"toolSurfaceSnapshot"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		if payload.TurnID != turnID || payload.ToolSurfaceSnapshot == nil {
+			return nil
+		}
+		if containsString(payload.ToolSurfaceSnapshot.LoadedPacksDelta, pack) {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk trace dir %s: %v", dir, err)
+	}
+	return found
 }
 
 func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
@@ -147,8 +289,13 @@ func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if !strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
-		t.Fatalf("final output = %q, want low-confidence verifier output", result.Output)
+	for _, want := range []string{"还不能给最终结论", "synthetic_metrics_read 未成功返回证据"} {
+		if !strings.Contains(result.Output, want) {
+			t.Fatalf("final output = %q, want deterministic evidence boundary containing %q", result.Output, want)
+		}
+	}
+	if strings.Contains(result.Output, "confidence") || strings.Contains(result.Output, "置信度") || strings.Contains(result.Output, "高置信") {
+		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
 	}
 }
 

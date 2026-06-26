@@ -33,6 +33,30 @@ describe("uiFixture runtime", () => {
     expect(JSON.stringify(fixture?.state)).toContain("not_checked");
   });
 
+  it("resolves the agent run read model browser fixture", () => {
+    const fixture = resolveUiFixturePreset("agent-run-read-model");
+
+    expect(fixture?.name).toBe("agent-run-read-model");
+    expect(fixture?.state?.opsRun?.agentRun?.steps?.[0]).toMatchObject({
+      kind: "tool_search",
+      title: "搜索可用工具",
+    });
+    expect(JSON.stringify(fixture?.state)).toContain("读取 Coroot 指标");
+  });
+
+  it("resolves second closure checkpoint browser fixtures", () => {
+    const approval = resolveUiFixturePreset("second-closure-approval-checkpoints");
+    const errorRecovery = resolveUiFixturePreset("second-closure-error-recovery-checkpoint");
+
+    expect(approval?.name).toBe("second-closure-approval-checkpoints");
+    expect(JSON.stringify(approval?.state)).toContain("checkpoint before approval");
+    expect(JSON.stringify(approval?.state)).toContain("checkpoint after approval request");
+    expect(JSON.stringify(approval?.state)).toContain("approval-second-closure-reload");
+    expect(errorRecovery?.name).toBe("second-closure-error-recovery-checkpoint");
+    expect(JSON.stringify(errorRecovery?.state)).toContain("redis.info failed");
+    expect(JSON.stringify(errorRecovery?.state)).toContain("error recovery checkpoint");
+  });
+
   it("resolves the skills and mcp progressive discovery browser fixture", () => {
     const fixture = resolveUiFixturePreset("skills-mcp-progressive-discovery");
 

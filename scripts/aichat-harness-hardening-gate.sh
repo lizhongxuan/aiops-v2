@@ -13,7 +13,11 @@ go test ./internal/actionproposal -count=1
 go test ./internal/mcp/... -count=1
 go test ./internal/appui -run 'TestCapabilitySnapshot|TestAgentProfile.*Preview|TestTransportProjector|TestAgentEventProjector' -count=1
 go test ./internal/featureflag -count=1
+scripts/check-aiops-single-assistant-message.sh
 if [[ -d cmd/aiops-active-turn-migrate ]]; then
 	go test ./cmd/aiops-active-turn-migrate -count=1
+fi
+if [[ -d cmd/aiops-migrate-assistant-message ]]; then
+	go test ./cmd/aiops-migrate-assistant-message -count=1
 fi
 go test ./...

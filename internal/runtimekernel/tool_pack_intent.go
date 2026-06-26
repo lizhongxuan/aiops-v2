@@ -22,6 +22,12 @@ func applyIntentToolPacks(metadata map[string]string, input string, session *Ses
 		if !intentPackMatchEligible(match, catalog) {
 			continue
 		}
+		if !metadataAllowsToolPack(metadata, match.Pack) {
+			continue
+		}
+		if !tooling.IntentToolPackCanAutoEnable(metadata, match.Pack) {
+			continue
+		}
 		if suppressObservationPacks && packHasExternalObservationTools(match.Pack, catalog) {
 			continue
 		}
@@ -122,9 +128,33 @@ func applyContinuationToolPacks(metadata map[string]string, input string, sessio
 		if !ok || strings.TrimSpace(meta.Pack) == "" {
 			continue
 		}
+		if !metadataAllowsToolPack(metadata, meta.Pack) {
+			continue
+		}
 		metadata = enableIntentToolPack(metadata, meta.Pack)
 	}
 	return metadata
+}
+
+func metadataAllowsToolPack(metadata map[string]string, pack string) bool {
+	gateKey := toolPackAllowedMetadataKey(pack)
+	if gateKey == "" {
+		return true
+	}
+	value, ok := metadata[gateKey]
+	if !ok {
+		return true
+	}
+	return metadataBool(value)
+}
+
+func toolPackAllowedMetadataKey(pack string) string {
+	pack = strings.ToLower(strings.TrimSpace(pack))
+	if pack == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_", "\\", "_", ":", "_", ".", "_")
+	return "aiops.toolPack." + replacer.Replace(pack) + ".allowed"
 }
 
 func isContinuationOnlyInput(input string) bool {
@@ -274,8 +304,11 @@ func applyToolSearchDiscoveryState(session *SessionState, toolName string, resul
 		data = result.Display.Data
 	}
 	var payload struct {
-		Mode      string                    `json:"mode"`
-		Matches   []ToolSearchMatchSnapshot `json:"matches"`
+		Mode      string                          `json:"mode"`
+		Ranker    string                          `json:"ranker"`
+		Request   tooling.ToolSearchRequest       `json:"request"`
+		Matches   []ToolSearchMatchSnapshot       `json:"matches"`
+		Rejected  []tooling.RejectedToolCandidate `json:"rejected"`
 		Selection struct {
 			LoadedTools      []string          `json:"loadedTools"`
 			LoadedPacks      []string          `json:"loadedPacks"`
@@ -290,7 +323,19 @@ func applyToolSearchDiscoveryState(session *SessionState, toolName string, resul
 	now := time.Now()
 	switch strings.ToLower(strings.TrimSpace(payload.Mode)) {
 	case "search":
-		session.ToolDiscovery.ApplySearch(payload.Matches, now)
+		if strings.TrimSpace(payload.Request.Query) != "" || strings.TrimSpace(payload.Ranker) != "" || len(payload.Rejected) > 0 {
+			request := tooling.NormalizeToolSearchRequest(payload.Request)
+			if request.Ranker == "" {
+				request.Ranker = strings.TrimSpace(payload.Ranker)
+			}
+			session.ToolDiscovery.ApplySearchV3(request, ToolSearchResponseSnapshot{
+				Ranker:        firstNonEmptyString(strings.TrimSpace(payload.Ranker), request.Ranker),
+				MatchCount:    len(payload.Matches),
+				RejectedCount: len(payload.Rejected),
+			}, payload.Matches, payload.Rejected, now)
+		} else {
+			session.ToolDiscovery.ApplySearch(payload.Matches, now)
+		}
 	case "select":
 		delta := ToolSelectionDelta{
 			NotLoaded:        payload.Selection.NotLoaded,

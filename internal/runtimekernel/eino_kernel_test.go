@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,6 +64,30 @@ func (m *reasoningStreamModel) Stream(_ context.Context, _ []*schema.Message, _ 
 
 func (m *reasoningStreamModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
+}
+
+func TestToolEvidenceSummaryForFinalPromptIncludesWebSourceMarkdown(t *testing.T) {
+	summary := toolEvidenceSummaryForFinalPrompt(ToolResult{
+		ToolCallID: "call-web",
+		Content: strings.Join([]string{
+			`Public web search results for "postgres timeline". Use these results as evidence and cite URLs:`,
+			"1. PostgreSQL official docs: continuous archiving and point-in-time recovery",
+			"   URL: https://www.postgresql.org/docs/current/continuous-archiving.html",
+			"   Snippet: Official PostgreSQL recovery guidance.",
+			"2. PostgreSQL official docs: recovery_target_timeline setting",
+			"   URL: https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+		}, "\n"),
+	})
+
+	for _, want := range []string{
+		"网页来源:",
+		"[参考: PostgreSQL official docs: continuous archiving and point-in-time recovery](https://www.postgresql.org/docs/current/continuous-archiving.html)",
+		"[参考: PostgreSQL official docs: recovery_target_timeline setting](https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE)",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("summary missing %q:\n%s", want, summary)
+		}
+	}
 }
 
 // TestReasoningDeltaUpdatesAgentItemText verifies that reasoning delta events

@@ -1,0 +1,33 @@
+{
+  "id": "sess-1782204407624403000",
+  "type": "host",
+  "mode": "execute",
+  "hostId": "server-local",
+  "messages": null,
+  "context": {
+    "maxTokens": 200000,
+    "usedTokens": 0,
+    "messages": 0
+  },
+  "activity": {
+    "searchCount": 0,
+    "browseCount": 0,
+    "commandCount": 0,
+    "fileReadCount": 0,
+    "fileWriteCount": 0
+  },
+  "planMode": {},
+  "observationState": {},
+  "environmentContext": {
+    "updatedAt": "0001-01-01T00:00:00Z"
+  },
+  "toolDiscovery": {
+    "updatedAt": "0001-01-01T00:00:00Z"
+  },
+  "skillActivation": {
+    "updatedAt": "0001-01-01T00:00:00Z"
+  },
+  "mcpInstructions": {},
+  "createdAt": "2026-06-23T16:46:47.624405+08:00",
+  "updatedAt": "2026-06-23T16:46:47.625459+08:00"
+}

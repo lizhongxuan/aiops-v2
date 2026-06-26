@@ -69,11 +69,16 @@ func (a SurfaceDispatchAction) IsValid() bool {
 }
 
 type SurfaceDecision struct {
-	Name           string                `json:"name"`
-	Visible        bool                  `json:"visible"`
-	SummaryOnly    bool                  `json:"summaryOnly,omitempty"`
-	DispatchAction SurfaceDispatchAction `json:"dispatchAction"`
-	Reason         string                `json:"reason,omitempty"`
+	Name            string                `json:"name"`
+	Visible         bool                  `json:"visible"`
+	SummaryOnly     bool                  `json:"summaryOnly,omitempty"`
+	DispatchAction  SurfaceDispatchAction `json:"dispatchAction"`
+	Reason          string                `json:"reason,omitempty"`
+	AllowToolSearch bool                  `json:"allowToolSearch,omitempty"`
+	AllowOpsManual  bool                  `json:"allowOpsManual,omitempty"`
+	AllowPublicWeb  bool                  `json:"allowPublicWeb,omitempty"`
+	AllowHostExec   bool                  `json:"allowHostExec,omitempty"`
+	Reasons         []string              `json:"reasons,omitempty"`
 }
 
 type SurfaceRuntimeDecision struct {
@@ -119,13 +124,6 @@ func ApplyToolSurfacePolicy(tools []Tool, opts ToolSurfacePolicyOptions) ([]Tool
 			continue
 		}
 		meta := tool.Metadata()
-		if IsAlwaysModelCallableTool(meta) {
-			const reason = "always_model_callable"
-			snapshot.VisibleTools = append(snapshot.VisibleTools, ToolVisibleReason{Name: meta.Name, Reason: reason})
-			snapshot.SurfaceDecisions = append(snapshot.SurfaceDecisions, SurfaceDecision{Name: meta.Name, Visible: true, DispatchAction: SurfaceDispatchAllow, Reason: reason})
-			filtered = append(filtered, tool)
-			continue
-		}
 		if runtimeDecision, ok := surfaceRuntimeDecisionForTool(meta, opts.RuntimeDecisions); ok && runtimeDecision.DispatchAction == SurfaceDispatchDeny {
 			reason := surfaceDecisionReason(runtimeDecision.Reason, "runtime_denied")
 			snapshot.HiddenTools = append(snapshot.HiddenTools, ToolHiddenReason{Name: meta.Name, Reason: reason})

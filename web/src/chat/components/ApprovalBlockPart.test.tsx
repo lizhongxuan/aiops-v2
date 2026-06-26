@@ -48,6 +48,7 @@ describe("ApprovalBlockPart", () => {
             riskSummary: "风险等级：high；会重启数据库服务",
             expectedEffect: "重启 PostgreSQL 服务",
             rollback: "如失败则恢复原服务状态并停止后续动作",
+            validation: "确认服务 active 并检查 5432 端口",
           }}
         />,
       );
@@ -59,6 +60,7 @@ describe("ApprovalBlockPart", () => {
     expect(container.textContent).toContain("AI Chat");
     expect(container.textContent).toContain("重启 PostgreSQL 服务");
     expect(container.textContent).toContain("恢复原服务状态");
+    expect(container.textContent).toContain("确认服务 active 并检查 5432 端口");
 
     const approveButton = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Approve"),

@@ -17,6 +17,10 @@ export type OpsManualParamFormSubmit = {
 
 const EXPLICIT_COROOT_MENTION_PATTERN =
   /(^|[^\p{L}\p{N}_])@coroot([^\p{L}\p{N}_]|$)/iu;
+const EXPLICIT_OPS_GRAPH_MENTION_PATTERN =
+  /(^|[^\p{L}\p{N}_])@ops_graph([^\p{L}\p{N}_]|$)/iu;
+const EXPLICIT_OPS_MANUAL_MENTION_PATTERN =
+  /(^|[^\p{L}\p{N}_])@(ops_manuals|ops_manus)([^\p{L}\p{N}_]|$)/iu;
 
 export function resolveStopDispatchTarget(
   state: AiopsTransportState,
@@ -66,4 +70,28 @@ export function buildCorootMentionMetadata(
     "aiops.coroot.explicitRCA": "true",
     "aiops.coroot.rcaDisplayAllowed": "true",
   };
+}
+
+export function buildAiopsSpecialMentionMetadata(
+  text: string,
+): Record<string, string> {
+  const metadata: Record<string, string> = { ...buildCorootMentionMetadata(text) };
+  const enabledPacks: string[] = [];
+  const enabledTools: string[] = [];
+  if (EXPLICIT_OPS_GRAPH_MENTION_PATTERN.test(text)) {
+    enabledPacks.push("opsgraph");
+    metadata["aiops.opsGraph.explicitMention"] = "true";
+  }
+  if (EXPLICIT_OPS_MANUAL_MENTION_PATTERN.test(text)) {
+    enabledPacks.push("ops_manual_flow");
+    enabledTools.push("search_ops_manuals");
+    metadata["aiops.opsManuals.explicitMention"] = "true";
+  }
+  if (enabledPacks.length) {
+    metadata.enableToolPack = enabledPacks.join(",");
+  }
+  if (enabledTools.length) {
+    metadata.enableTool = enabledTools.join(",");
+  }
+  return metadata;
 }

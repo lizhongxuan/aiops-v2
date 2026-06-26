@@ -11,19 +11,32 @@ func (m ToolMetadata) EffectiveDiscovery() ToolDiscoveryMetadata {
 	d.DiscoveryGroup = strings.TrimSpace(d.DiscoveryGroup)
 	d.CapabilityKind = normalizeDiscoveryToken(d.CapabilityKind)
 	d.DiscoveryTags = normalizeDiscoveryList(d.DiscoveryTags)
+	d.Capabilities = normalizeDiscoveryList(d.Capabilities)
 	d.ResourceTypes = normalizeDiscoveryList(d.ResourceTypes)
+	d.TargetKinds = normalizeDiscoveryList(d.TargetKinds)
 	d.OperationKinds = normalizeDiscoveryList(d.OperationKinds)
+	if d.RiskLevel != "" {
+		d.RiskLevel = d.RiskLevel.Normalize()
+	} else if m.RiskLevel != "" {
+		d.RiskLevel = m.RiskLevel.Normalize()
+	}
 	d.LoadingPolicy = m.effectiveLoadingPolicy(d.LoadingPolicy)
 	d.AgentProfiles = mergeDiscoveryLists(d.AgentProfiles, m.Profiles)
 	d.ToolPackIDs = mergeDiscoveryLists(d.ToolPackIDs, singletonIfNotEmpty(m.Pack))
 	d.MCPServerID = normalizeDiscoveryToken(firstNonEmpty(d.MCPServerID, m.MCPInfo.ServerID, m.MCPInfo.ServerName))
+	d.EvidenceKind = normalizeDiscoveryToken(d.EvidenceKind)
 	d.PermissionScope = normalizeDiscoveryToken(d.PermissionScope)
 	d.PromptBudgetClass = normalizeDiscoveryToken(d.PromptBudgetClass)
 	d.SchemaBudgetClass = normalizeDiscoveryToken(d.SchemaBudgetClass)
 	d.SupersedesShellHints = normalizeDiscoveryList(d.SupersedesShellHints)
+	d.TargetKinds = mergeDiscoveryLists(d.TargetKinds, d.ResourceTypes)
+	d.ResourceTypes = mergeDiscoveryLists(d.ResourceTypes, d.TargetKinds)
 
 	if m.HasMCPSource() && !m.AlwaysLoad {
 		d.RequiresHealthyMCP = true
+	}
+	if d.CapabilityKind == "" {
+		d.CapabilityKind = discoveryCapabilityFromCapabilities(d.Capabilities)
 	}
 	if d.CapabilityKind == "" {
 		switch {
@@ -50,6 +63,7 @@ func (m ToolMetadata) EffectiveDiscovery() ToolDiscoveryMetadata {
 	if d.CapabilityKind == "" {
 		d.CapabilityKind = "read"
 	}
+	d.Capabilities = mergeDiscoveryLists(d.Capabilities, singletonIfNotEmpty(d.CapabilityKind))
 	if m.Layer == ToolLayerInternal {
 		d.HiddenFromDiscovery = true
 		d.HiddenFromPrompt = true
@@ -106,19 +120,40 @@ func ToolDiscoverySearchText(meta ToolMetadata) string {
 		meta.SearchHint,
 		d.DiscoveryGroup,
 		d.CapabilityKind,
+		strings.Join(d.Capabilities, " "),
 		strings.Join(d.DiscoveryTags, " "),
 		strings.Join(d.ResourceTypes, " "),
+		strings.Join(d.TargetKinds, " "),
 		strings.Join(d.OperationKinds, " "),
+		string(d.RiskLevel),
 		string(d.LoadingPolicy),
 		strings.Join(d.AgentProfiles, " "),
 		strings.Join(d.ToolPackIDs, " "),
 		d.MCPServerID,
+		d.EvidenceKind,
 		d.PermissionScope,
 		d.PromptBudgetClass,
 		d.SchemaBudgetClass,
 		strings.Join(meta.Triggers, " "),
 	}
+	if d.RequiresExplicitTarget {
+		parts = append(parts, "requires_explicit_target")
+	}
 	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func discoveryCapabilityFromCapabilities(capabilities []string) string {
+	for _, preferred := range []string{"execute", "write", "read", "inspect", "search"} {
+		for _, capability := range capabilities {
+			if capability == preferred {
+				return capability
+			}
+		}
+	}
+	if len(capabilities) == 0 {
+		return ""
+	}
+	return capabilities[0]
 }
 
 func (m ToolMetadata) effectiveLoadingPolicy(explicit ToolLoadingPolicy) ToolLoadingPolicy {

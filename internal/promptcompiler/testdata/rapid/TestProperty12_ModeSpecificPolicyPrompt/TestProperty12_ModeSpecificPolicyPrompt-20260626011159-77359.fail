@@ -1,0 +1,17 @@
+# 2026/06/26 01:11:59.216210 [TestProperty12_ModeSpecificPolicyPrompt] [rapid] draw sessionType: "host"
+# 2026/06/26 01:11:59.216213 [TestProperty12_ModeSpecificPolicyPrompt] [rapid] draw mode: "chat"
+# 2026/06/26 01:11:59.216213 [TestProperty12_ModeSpecificPolicyPrompt] [rapid] draw agentKind: ""
+# 2026/06/26 01:11:59.216304 [TestProperty12_ModeSpecificPolicyPrompt] Policy for mode "chat" must contain keyword "read-only", content: # Runtime State
+# - mode: chat
+# - profile: default
+# - mutation: disabled
+# - host_scope: none
+# - answer_style: default
+# 
+v0.4.8#17058421105672495135
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

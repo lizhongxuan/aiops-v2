@@ -10,7 +10,6 @@ import { AiopsComposer } from "./components/AiopsComposer";
 import { AiopsThread } from "./components/AiopsThread";
 import { HostOpsStatusPanel } from "./components/HostOpsStatusPanel";
 import { HostSubagentDrawer } from "./components/HostSubagentDrawer";
-import { OpsRunSummaryCard } from "./components/OpsRunSummaryCard";
 import { SessionContextBar } from "./components/SessionContextBar";
 
 type ChatPageProps = {
@@ -108,7 +107,6 @@ function HostOpsWorkspace() {
 
   return (
     <>
-      <OpsRunSummaryCard state={state} />
       <HostOpsStatusPanel
         state={state}
         onOpenChildAgent={setActiveChildAgentId}

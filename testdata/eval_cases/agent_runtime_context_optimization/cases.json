@@ -1,0 +1,279 @@
+[
+  {
+    "name": "advisor_simple_no_host_no_ops_tools",
+    "input": "解释 PostgreSQL checkpoint 抖动常见原因，不连接任何主机。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["exec_command", "opsgraph.lookup", "coroot.list_services", "search_ops_manuals"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "public_fact_with_inline_sources",
+    "input": "查一个公开事实并在最终答案里给出处链接。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["web_search", "browse_url", "tool_search"],
+      "hiddenTools": ["exec_command", "coroot.list_services", "search_ops_manuals"],
+      "toolPacks": ["public_web"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "evidence_rca_logs_no_host_exec",
+    "input": "基于我贴出的日志做 RCA，不执行主机命令。",
+    "expected": {
+      "profile": "evidence_rca",
+      "promptSections": ["base.contract", "runtime.state", "profile.evidence_rca", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["exec_command", "opsgraph.lookup", "coroot.list_services"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "assistant_message(final_answer)"],
+      "progressMaxChars": 90,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "host_simple_exec_no_child_agent",
+    "input": "@120.77.239.90 执行 uptime。",
+    "expected": {
+      "profile": "host_worker",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_worker", "tool.surface", "dynamic.context"],
+      "visibleTools": ["exec_command", "tool_search"],
+      "hiddenTools": ["hostops.spawn_child_agent"],
+      "toolPacks": ["host_exec"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "host_complex_task_uses_plan_then_child_agent",
+    "input": "@120.77.239.90 排查 Redis 延迟并形成可执行计划。",
+    "expected": {
+      "profile": "host_manager",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_manager", "tool.surface", "dynamic.context"],
+      "visibleTools": ["update_plan", "hostops.spawn_child_agent", "hostops.wait_child_agents", "tool_search"],
+      "hiddenTools": ["exec_command"],
+      "toolPacks": ["host_agent"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "plan", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 100,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "multi_host_manager_no_direct_exec",
+    "input": "@host-a @host-b 对比两台主机的服务状态，由 manager 汇总。",
+    "expected": {
+      "profile": "host_manager",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_manager", "tool.surface", "dynamic.context"],
+      "visibleTools": ["update_plan", "hostops.spawn_child_agent", "hostops.wait_child_agents", "tool_search"],
+      "hiddenTools": ["exec_command", "hostops.direct_write"],
+      "toolPacks": ["host_agent"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 100,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "approval_denied_same_turn_continuation",
+    "input": "@host 拒绝变更审批后继续做只读分析。",
+    "expected": {
+      "profile": "host_worker",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_worker", "tool.surface", "dynamic.context"],
+      "visibleTools": ["exec_command", "tool_search"],
+      "hiddenTools": ["approval_fallback_new_turn"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "approval_requested", "approval_decided", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 100,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "ops_graph_requires_mention",
+    "input": "不用 @ops_graph 时不要暴露 OpsGraph 工具。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["opsgraph.lookup", "opsgraph.neighborhood"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "coroot_requires_mention",
+    "input": "不用 @coroot 时不要暴露 Coroot 工具。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "ops_manus_requires_mention",
+    "input": "不用 @ops_manus 时不要暴露运维手册检索工具。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "tool_failure_not_health_proof",
+    "input": "@host 工具失败时不要把失败当成服务健康。",
+    "expected": {
+      "profile": "host_worker",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_worker", "tool.surface", "dynamic.context"],
+      "visibleTools": ["exec_command", "tool_search"],
+      "hiddenTools": ["success_without_evidence"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 90,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "long_history_compaction_refs",
+    "input": "长历史压缩后继续保留当前任务、证据引用和可追溯 source ref。",
+    "expected": {
+      "profile": "host_worker",
+      "promptSections": ["base.contract", "runtime.state", "profile.host_worker", "tool.surface", "dynamic.context", "history.compacted"],
+      "visibleTools": ["exec_command", "tool_search"],
+      "hiddenTools": ["raw_history_replay"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "context_compacted", "assistant_message(final_answer)"],
+      "progressMaxChars": 100,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "progress_short_final_long",
+    "input": "过程区只显示短进展，完整 RCA 进入 assistant_message(final_answer)。",
+    "expected": {
+      "profile": "evidence_rca",
+      "promptSections": ["base.contract", "runtime.state", "profile.evidence_rca", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["assistant_message_commentary_long_rca"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "progressMaxChars": 80,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "web_search_command_folding",
+    "input": "连续网页搜索和命令可以折叠，但 MCP 和审批不能混在一起。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["web_search", "browse_url", "exec_command", "read_mcp_resource"],
+      "hiddenTools": ["mcp_fold_group", "approval_fold_group"],
+      "toolPacks": ["public_web", "host_exec"],
+      "timeline": ["assistant_message(commentary)", "tool_call", "tool_result", "tool_call", "tool_result", "assistant_message(final_answer)"],
+      "foldGroups": ["web_lookup", "command"],
+      "progressMaxChars": 90,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true
+    }
+  },
+  {
+    "name": "model_timeout_recoverable",
+    "input": "模型超时后保留 checkpoint，同一 turn 可恢复继续。",
+    "expected": {
+      "profile": "advisor",
+      "promptSections": ["base.contract", "runtime.state", "profile.advisor", "tool.surface", "dynamic.context"],
+      "visibleTools": ["tool_search"],
+      "hiddenTools": ["hard_failed_timeout"],
+      "timeline": ["route_selected", "tool_surface_snapshot", "assistant_message(commentary)", "model_timeout", "assistant_message(final_answer)"],
+      "progressMaxChars": 90,
+      "singleRuntimePath": true,
+      "noOldFallbackPath": true,
+      "promptBudgetWithinProfileLimit": true,
+      "onlyMentionedToolPacksVisible": true,
+      "finalAnswerQualityPreserved": true,
+      "progressDoesNotContainLongFinal": true,
+      "modelTimeoutRecoverable": true
+    }
+  }
+]

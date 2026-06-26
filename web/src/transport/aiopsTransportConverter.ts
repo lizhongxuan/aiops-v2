@@ -35,7 +35,7 @@ export function createAiopsTransportConverter() {
 }
 
 export function isAiopsTransportRunning(state: AiopsTransportState) {
-  if (state.status === "working" || state.status === "blocked") {
+  if (state.status === "working") {
     return true;
   }
   return Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
@@ -78,12 +78,22 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
-  // For failed turns without final text, show the error as content
   let content: ThreadMessage["content"] = [];
-  if (turn.final?.text) {
-    content = [{ type: "text", text: turn.final.text }];
-  } else if (turn.status === "failed" && state.lastError) {
-    content = [{ type: "text", text: state.lastError }];
+  const finalText = turn.final?.text?.trim() || "";
+  const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
+  if (finalText && !finalIsRawRuntimeFailure) {
+    content = [{ type: "text", text: finalText }];
+  } else if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
+    const preservedProgress = turn.status === "canceled"
+      ? latestAssistantProcessText(turn.process || [])
+      : latestSubstantialAssistantProcessText(turn.process || []);
+    if (preservedProgress) {
+      content = [{ type: "text", text: preservedProgress }];
+    } else if (finalText) {
+      content = [{ type: "text", text: finalText }];
+    } else if (turn.status === "failed" && state.lastError) {
+      content = [{ type: "text", text: state.lastError }];
+    }
   }
   return {
     id: `${turn.id}:assistant`,
@@ -98,7 +108,9 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
         turnStartedAt: turn.startedAt,
         turnCompletedAt: turn.completedAt,
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
+        finalDurationMs: turn.final?.durationMs,
         process: turn.process || [],
+        agentRun: agentRunForTurn(state, turn),
         contextGovernance: turn.contextGovernance || [],
         intent: turn.intent || null,
         userText: turn.user?.text || "",
@@ -116,6 +128,61 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
       },
     },
   };
+}
+
+function latestAssistantProcessText(process: AiopsTransportTurn["process"]) {
+  for (let i = process.length - 1; i >= 0; i -= 1) {
+    const block = process[i];
+    if (block?.kind !== "assistant") {
+      continue;
+    }
+    const text = block.text?.trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function latestSubstantialAssistantProcessText(process: AiopsTransportTurn["process"]) {
+  const text = latestAssistantProcessText(process);
+  return isSubstantialAssistantProcessText(text) ? text : "";
+}
+
+function isSubstantialAssistantProcessText(text: string) {
+  const normalized = text.trim();
+  if (normalized.length >= 360) {
+    return true;
+  }
+  const paragraphs = normalized.split(/\n\s*\n/).filter(Boolean).length;
+  return normalized.length >= 180 && paragraphs >= 2;
+}
+
+function isRawRuntimeFailureText(text: string) {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("failed to receive stream chunk") ||
+    normalized.includes("context deadline exceeded") ||
+    normalized.includes("stream chunk") ||
+    normalized.includes("upstream request timeout")
+  );
+}
+
+function agentRunForTurn(state: AiopsTransportState, turn: AiopsTransportTurn) {
+  const run = state.opsRun?.agentRun;
+  if (!run?.id) {
+    return undefined;
+  }
+  if (run.activeTurnId && run.activeTurnId !== turn.id) {
+    return undefined;
+  }
+  if (state.opsRun?.turnId && state.opsRun.turnId !== turn.id) {
+    return undefined;
+  }
+  return run;
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {

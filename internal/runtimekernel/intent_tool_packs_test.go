@@ -38,114 +38,120 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 	cases := []struct {
 		name      string
 		input     string
+		metadata  map[string]string
 		wantTools []string
 		forbidden []string
 	}{
 		{
 			name:      "chinese rca",
 			input:     "分析 checkout 服务最近 30 分钟延迟升高的根因",
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+		},
+		{
+			name:  "explicit coroot rca",
+			input: "@Coroot 分析 checkout 服务最近 30 分钟延迟升高的根因",
+			metadata: map[string]string{
+				"aiops.coroot.explicitRCA":                    "true",
+				"aiops.tool.corootRCAAllowed":                 "true",
+				"aiops.toolPack.coroot_rca.allowed":           "true",
+				"aiops.toolPack.coroot_rca_reference.allowed": "true",
+			},
 			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
 			forbidden: []string{"coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "named service abnormality",
 			input:     "分析 aiops-host-agent 异常情况",
-			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
-			forbidden: []string{"coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.rca_report", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot cpu chart",
 			input:     "查看 aiops-host-agent 的 cpu 图表",
-			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
-			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot chinese cpu usage",
 			input:     "看下 mservice CPU占用",
-			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
-			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot chinese resource usage",
 			input:     "看下 mservice 的资源占用和内存使用率",
-			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
-			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot chinese service resources",
 			input:     "看下 mservice 的资源",
-			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
-			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot chinese service observation lets model decide charts",
 			input:     "看下 mservice 的情况",
-			wantTools: []string{"coroot.list_services", "coroot.service_metrics"},
-			forbidden: []string{"coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "coroot.application_logs", "coroot.application_traces", "coroot.service_topology", "coroot.alert_rules", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot topology",
 			input:     "查看 checkout 的服务拓扑和依赖图",
-			wantTools: []string{"coroot.list_services", "coroot.service_topology"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_logs", "coroot.application_traces", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.service_topology", "coroot.service_metrics", "coroot.application_logs", "coroot.application_traces", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot logs",
 			input:     "查看 checkout 最近的错误日志",
-			wantTools: []string{"coroot.list_services", "coroot.application_logs"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_traces", "coroot.application_profiling", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.application_logs", "coroot.service_metrics", "coroot.application_traces", "coroot.application_profiling", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot traces",
 			input:     "查看 checkout 的 trace 调用链",
-			wantTools: []string{"coroot.list_services", "coroot.traces_overview", "coroot.application_traces"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_logs", "coroot.application_profiling", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.traces_overview", "coroot.application_traces", "coroot.service_metrics", "coroot.application_logs", "coroot.application_profiling", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot dashboard panel",
 			input:     "读取 Coroot dashboard panel 数据",
-			wantTools: []string{"coroot.list_services", "coroot.list_dashboards", "coroot.get_dashboard", "coroot.get_panel_data"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_logs", "coroot.list_integrations", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.list_dashboards", "coroot.get_dashboard", "coroot.get_panel_data", "coroot.service_metrics", "coroot.application_logs", "coroot.list_integrations", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot config",
 			input:     "看下 Coroot integrations 和 inspection 配置",
-			wantTools: []string{"coroot.list_services", "coroot.list_integrations", "coroot.get_integration", "coroot.list_inspections", "coroot.get_inspection_config"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_logs", "coroot.health_check", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.list_integrations", "coroot.get_integration", "coroot.list_inspections", "coroot.get_inspection_config", "coroot.service_metrics", "coroot.application_logs", "coroot.health_check", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot project status",
 			input:     "检查 Coroot project status 和 agent status",
-			wantTools: []string{"coroot.list_services", "coroot.health_check", "coroot.list_projects", "coroot.get_project_status"},
-			forbidden: []string{"coroot.service_metrics", "coroot.application_logs", "coroot.list_integrations", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.health_check", "coroot.list_projects", "coroot.get_project_status", "coroot.service_metrics", "coroot.application_logs", "coroot.list_integrations", "list_mcp_resources"},
 		},
 		{
 			name:      "coroot incidents",
 			input:     "看下 Coroot incidents 最近有哪些事件",
-			wantTools: []string{"coroot.list_services", "coroot.incidents"},
-			forbidden: []string{"coroot.service_metrics", "opsgraph.business_impact", "list_mcp_resources"},
+			forbidden: []string{"coroot.list_services", "coroot.incidents", "coroot.service_metrics", "opsgraph.business_impact", "list_mcp_resources"},
 		},
 		{
 			name:      "business impact",
 			input:     "order-api 故障会影响哪些业务能力和租户？",
-			wantTools: []string{"opsgraph.business_impact"},
-			forbidden: []string{"coroot.service_metrics", "list_mcp_resources"},
+			forbidden: []string{"opsgraph.business_impact", "coroot.service_metrics", "list_mcp_resources"},
 		},
 		{
 			name:      "diagnosis does not enable ops manuals",
 			input:     "排查mservice异常问题",
-			wantTools: []string{"coroot.list_services", "coroot.collect_rca_context", "coroot.service_metrics"},
+			forbidden: []string{"coroot.list_services", "coroot.service_metrics", "coroot.collect_rca_context", "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"},
+		},
+		{
+			name:      "repair intent does not auto enable ops manual search",
+			input:     "帮我修复 Redis 内存上涨问题，先找能用的运维手册",
 			forbidden: []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"},
 		},
 		{
-			name:      "repair intent enables ops manual search",
-			input:     "帮我修复 Redis 内存上涨问题，先找能用的运维手册",
-			wantTools: []string{"search_ops_manuals"},
-			forbidden: []string{"resolve_ops_manual_params", "run_ops_manual_preflight"},
+			name:      "restore stateful cluster intent does not auto enable ops manual search",
+			input:     "主机A和主机B的PG主从集群异常,请帮忙恢复,数据可以不要,只需要PG主从集群可以正常运行,他们的pg_mon部署在主机C.",
+			forbidden: []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"},
 		},
 		{
-			name:      "restore stateful cluster intent enables ops manual search",
-			input:     "主机A和主机B的PG主从集群异常,请帮忙恢复,数据可以不要,只需要PG主从集群可以正常运行,他们的pg_mon部署在主机C.",
+			name:  "explicit ops manual trigger enables ops manual search",
+			input: "@ops_manuals 帮我修复 Redis 内存上涨问题",
+			metadata: map[string]string{
+				"enableToolPack":                   "ops_manual_flow",
+				"enableTool":                       "search_ops_manuals",
+				"aiops.opsManuals.explicitMention": "true",
+			},
 			wantTools: []string{"search_ops_manuals"},
 			forbidden: []string{"resolve_ops_manual_params", "run_ops_manual_preflight"},
 		},
@@ -176,13 +182,21 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 			compiler := newRecordingCompiler()
 			kernel, _ := newKernelForLoopTests(t, source, compiler, model)
 
+			metadata := map[string]string{
+				"taskDepth":                                   "simple_read",
+				"aiops.toolPack.coroot_rca.allowed":           "false",
+				"aiops.toolPack.coroot_rca_reference.allowed": "false",
+			}
+			for key, value := range tc.metadata {
+				metadata[key] = value
+			}
 			result, err := kernel.RunTurn(context.Background(), TurnRequest{
 				SessionID:   "sess-intent-" + tc.name,
 				SessionType: SessionTypeHost,
 				Mode:        ModeChat,
 				TurnID:      "turn-intent-" + tc.name,
 				Input:       tc.input,
-				Metadata:    map[string]string{"taskDepth": "simple_read"},
+				Metadata:    metadata,
 			})
 			if err != nil {
 				t.Fatalf("RunTurn failed: %v", err)
@@ -682,6 +696,55 @@ func TestRunTurn_GenericContinuationDoesNotEnableCorootRCAPack(t *testing.T) {
 	for _, forbidden := range []string{"coroot.service_metrics", "coroot.rca_report", "coroot.service_topology", "search_ops_manuals"} {
 		if containsString(names, forbidden) {
 			t.Fatalf("tools = %v, generic continuation should not include %s", names, forbidden)
+		}
+	}
+}
+
+func TestRunTurn_GenericPGQuestionDoesNotEnableCorootRCAWithoutExplicitMetadata(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("根因（置信度：低）：需要更多 PostgreSQL 证据。缺失证据：pg_controldata 输出、postgresql.auto.conf、pg_autoctl show state。", nil),
+		schema.AssistantMessage("最终结论：没有 @Coroot 时只做文本证据分析。", nil),
+	}}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range intentPackRuntimeTestTools() {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register tool failed: %v", err)
+		}
+	}
+	source := &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, source, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-pg-no-coroot-rca",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		TurnID:      "turn-pg-no-coroot-rca",
+		Input:       "pgBackRest 恢复后从节点 pg_autoctl create postgres 加入集群 timeline 比主节点高，分析根因和异常原因。",
+		Metadata: map[string]string{
+			"aiops.coroot.explicitRCA":                    "false",
+			"aiops.tool.corootRCAAllowed":                 "false",
+			"aiops.route.mode":                            "evidence_rca",
+			"aiops.tool.execCommandAllowed":               "false",
+			"aiops.toolPack.coroot_rca.allowed":           "false",
+			"aiops.toolPack.coroot_rca_reference.allowed": "false",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) == 0 {
+		t.Fatalf("compiler contexts = 0, want at least 1")
+	}
+	for idx, ctx := range compiler.contexts {
+		names := toolNames(ctx.AssembledTools)
+		for _, forbidden := range []string{"coroot.collect_rca_context", "coroot.rca_report"} {
+			if containsString(names, forbidden) {
+				t.Fatalf("context %d tools = %v, generic PG question should not include %s without explicit @Coroot metadata", idx, names, forbidden)
+			}
 		}
 	}
 }

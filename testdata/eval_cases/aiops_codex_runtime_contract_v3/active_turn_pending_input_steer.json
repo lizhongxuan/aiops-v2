@@ -1,0 +1,34 @@
+{
+  "name": "active_turn_pending_input_steer",
+  "input": "当前 turn 正在运行时，用户追加“顺便检查磁盘 inode”，应进入 pending input/steer，而不是新建第二个 regular turn。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "second_regular_turn"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "pending_input_accepted"
+    ],
+    "evidenceRefs": [
+      "evidence:active-turn-state"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "assistant_message(commentary)",
+      "pending_input_accepted",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "steer_accepted",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

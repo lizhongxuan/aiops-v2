@@ -20,6 +20,17 @@ const traceJson = {
     developerHash: "developer-hash",
     toolRegistryHash: "tools-hash",
   },
+  metadata: {
+    "aiops.target.refs": "host:10.0.0.1,service:checkout",
+    "aiops.env.readOnlyReason": "target_conflict_requires_clarification token=page-env-reason-secret",
+    "aiops.env.compactContext": [
+      "EnvironmentFactsContext:",
+      "ConfirmedFacts:",
+      "- host_identity=10.0.0.1 source=user_explicit",
+      "ConflictFacts:",
+      "- target_conflict service:checkout -> host:10.0.0.2 password=page-env-compact-secret",
+    ].join("\n"),
+  },
   modelInput: [
     {
       index: 0,
@@ -81,6 +92,11 @@ const traceJson = {
       error: "",
       usage: { prompt_tokens: 21, completion_tokens: 8, total_tokens: 29 },
       duration_ms: 456,
+      first_delta_ms: 31000,
+      stream_ms: 65000,
+      delta_count: 1201,
+      output_chars: 7001,
+      finishReason: "stop",
       tool_messages: [{ content: "tool response request body={\"token\":\"page-body-token\"}" }],
     },
   ],
@@ -103,6 +119,66 @@ const traceJson = {
       },
     },
   ],
+  toolSurfaceTrace: {
+    initialTools: ["tool_search", "local.service_logs"],
+    loadedTools: ["local.service_logs"],
+    toolSearchEvents: [
+      {
+        mode: "search",
+        query: "service metrics token=page-search-secret",
+        ranker: "bm25",
+        matchCount: 1,
+        rejectedCount: 3,
+        matches: ["local.service_logs"],
+        targetCompatibility: "matched",
+        riskDecision: "allowed",
+        matchReasons: ["bm25", "target_compatible", "risk_allowed", "environment_fact_match"],
+        request: {
+          intent: "rca",
+          targetRefs: ["service:checkout"],
+          requiredCaps: ["read"],
+          forbiddenCaps: ["execute"],
+          riskLevel: "low",
+          environmentFacts: ["checkout service p95 token=page-env-secret"],
+          mcpHealth: {
+            observability: "unavailable",
+          },
+        },
+        rejectedReasons: [
+          {
+            toolName: "observability.service_metrics",
+            reason: "mcp_unavailable password=page-search-reject",
+            mcpServerId: "observability",
+            healthStatus: "unavailable",
+          },
+          {
+            toolName: "host.logs",
+            reason: "target_incompatible",
+          },
+          {
+            toolName: "service.restart",
+            reason: "risk_exceeds_request",
+          },
+        ],
+      },
+    ],
+  },
+  webLearnEvidence: [
+    {
+      id: "wl-systemd-1",
+      kind: "external_knowledge",
+      query: "systemd service restart failed token=page-weblearn-query",
+      sourceTitle: "systemd.service official manual",
+      sourceURL: "https://www.freedesktop.org/software/systemd/man/systemd.service.html?token=page-url-token",
+      sourceKind: "official_docs",
+      product: "systemd",
+      version: "255",
+      applicability: "matches service unit behavior",
+      confidence: "high",
+      relevantExcerpt: "Restart policy is evaluated after service process exits password=page-weblearn-pass",
+      retrievedAt: "2026-06-23T09:00:00Z",
+    },
+  ],
   contextGovernance: [
     {
       id: "cg-budget-1",
@@ -121,6 +197,11 @@ const traceJson = {
       layer: "L5",
       kind: "tool_result.materialized",
       message: "materialized large tool result",
+      toolCallId: "tool-call-coroot",
+      toolName: "coroot.query_latency",
+      materializationTier: "large",
+      originalBytes: 49152,
+      inlineBytes: 512,
       referenceIds: ["tool-ref-1"],
     },
   ],
@@ -293,24 +374,58 @@ describe("PromptTracePage", () => {
     });
     await flush();
 
-    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("LLM 请求详情");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("模型请求详情");
     expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("Agent-to-UI 来源");
     expect(document.body.querySelector('[role="dialog"]')?.textContent).not.toContain("当前链路");
     expect(Array.from(document.body.querySelectorAll('[role="dialog"] button')).map((button) => button.textContent)).not.toContain("来源");
-    expect(document.body.textContent).toContain("Messages");
-    expect(document.body.textContent).toContain("Tools");
-    expect(document.body.textContent).toContain("Prompt chars");
-    expect(document.body.textContent).toContain("Total tokens");
-    expect(document.body.textContent).toContain("Avg response");
-    expect(document.body.textContent).toContain("LLM 返回内容");
+    expect(document.body.textContent).toContain("消息数");
+    expect(document.body.textContent).toContain("工具数");
+    expect(document.body.textContent).toContain("输入字符");
+    expect(document.body.textContent).toContain("工具表字符");
+    expect(document.body.textContent).toContain("总词元");
+    expect(document.body.textContent).toContain("平均响应");
+    expect(document.body.textContent).toContain("首词元");
+    expect(document.body.textContent).toContain("流式耗时");
+    expect(document.body.textContent).toContain("流式片段");
+    expect(document.body.textContent).toContain("输出字符");
+    expect(document.body.textContent).toContain("结束原因");
+    expect(document.body.textContent).not.toContain("Messages");
+    expect(document.body.textContent).not.toContain("Tool Result Materialization");
+    expect(document.body.textContent).not.toContain("tool_result.materialized");
+    expect(document.body.textContent).toContain("模型返回内容");
+    expect(document.body.textContent).toContain("首 token 慢");
+    expect(document.body.textContent).toContain("输出过长");
+    expect(document.body.textContent).toContain("流式碎片过多");
     expect(document.body.textContent).toContain("图表已生成");
-    expect(document.body.textContent).toContain("prompt 21 / completion 8 / total 29");
+    expect(document.body.textContent).toContain("输入 21 / 输出 8 / 总计 29");
     expect(document.body.textContent).toContain("456 ms");
-    expect(document.body.textContent).toContain("Context Budget");
-    expect(document.body.textContent).toContain("Compaction Events");
-    expect(document.body.textContent).toContain("Tool Result Materialization");
-    expect(document.body.textContent).toContain("External References");
-    expect(document.body.textContent).toContain("Auto Compact");
+    expect(document.body.textContent).toContain("31,000 ms");
+    expect(document.body.textContent).toContain("65,000 ms");
+    expect(document.body.textContent).toContain("1,201");
+    expect(document.body.textContent).toContain("7,001");
+    expect(document.body.textContent).toContain("正常结束");
+    expect(document.body.textContent).toContain("上下文预算");
+    expect(document.body.textContent).toContain("历史上下文压缩");
+    expect(document.body.textContent).toContain("工具结果整理");
+    expect(document.body.textContent).toContain("coroot.query_latency");
+    expect(document.body.textContent).toContain("结果级别：大结果");
+    expect(document.body.textContent).toContain("原始大小：48 KB");
+    expect(document.body.textContent).toContain("放入提示词：512 B");
+    expect(document.body.textContent).toContain("外部引用");
+    expect(document.body.textContent).toContain("环境上下文");
+    expect(document.body.textContent).toContain("host:10.0.0.1");
+    expect(document.body.textContent).toContain("service:checkout");
+    expect(document.body.textContent).toContain("target_conflict_requires_clarification");
+    expect(document.body.textContent).toContain("ConflictFacts");
+    expect(document.body.textContent).not.toContain("page-env-reason-secret");
+    expect(document.body.textContent).not.toContain("page-env-compact-secret");
+    expect(document.body.textContent).toContain("外部知识证据");
+    expect(document.body.textContent).toContain("外部知识");
+    expect(document.body.textContent).toContain("官方文档");
+    expect(document.body.textContent).toContain("systemd.service official manual");
+    expect(document.body.textContent).not.toContain("page-weblearn-query");
+    expect(document.body.textContent).not.toContain("page-weblearn-pass");
+    expect(document.body.textContent).toContain("自动压缩阈值");
     expect(document.body.textContent).toContain("167,000");
     expect(document.body.textContent).not.toContain("retry 1/3");
     expect(document.body.textContent).toContain("segment-1");
@@ -319,7 +434,30 @@ describe("PromptTracePage", () => {
     expect(document.body.textContent).not.toContain("工具调用 coroot.query_latency");
     expect(document.body.textContent).not.toContain("EvidenceRef ev-coroot-latency");
     expect(document.body.textContent).toContain("已脱敏");
-    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent === "Raw")).toBe(true);
+    expect(Array.from(document.body.querySelectorAll("button")).some((button) => button.textContent === "原始")).toBe(true);
+    const toolsTab = Array.from(document.body.querySelectorAll("button")).find((button) => button.textContent === "工具") as HTMLButtonElement | undefined;
+    await act(async () => {
+      toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const toolsDialogText = document.body.querySelector('[role="dialog"]')?.textContent || "";
+    expect(toolsDialogText).toContain("Tool Search Events");
+    expect(toolsDialogText).toContain("bm25");
+    expect(toolsDialogText).toContain("rca");
+    expect(toolsDialogText).toContain("service:checkout");
+    expect(toolsDialogText).toContain("low");
+    expect(toolsDialogText).toContain("target_compatible");
+    expect(toolsDialogText).toContain("risk_allowed");
+    expect(toolsDialogText).toContain("Environment");
+    expect(toolsDialogText).toContain("local.service_logs");
+    expect(toolsDialogText).toContain("observability.service_metrics");
+    expect(toolsDialogText).toContain("mcp_unavailable");
+    expect(toolsDialogText).toContain("target_incompatible");
+    expect(toolsDialogText).toContain("risk_exceeds_request");
+    expect(toolsDialogText).not.toContain("page-search-secret");
+    expect(toolsDialogText).not.toContain("page-search-reject");
+    expect(toolsDialogText).not.toContain("page-env-secret");
     expect(Array.from(container.querySelectorAll("textarea,input,[contenteditable='true']"))).toHaveLength(1);
     expect(container.innerHTML).not.toContain("sk-page-request");
     expect(container.innerHTML).not.toContain("page-request-secret");
@@ -549,7 +687,7 @@ describe("PromptTracePage", () => {
     ]);
   });
 
-  it("shows context governance empty states without blanking the detail dialog", async () => {
+  it("hides empty context governance panels without blanking the detail dialog", async () => {
     activeFiles = {
       ".data/model-input-traces/sess-1/turn-1/iteration-001.json": {
         ...traceJson,
@@ -569,11 +707,11 @@ describe("PromptTracePage", () => {
     await flush();
 
     const dialogText = document.body.querySelector('[role="dialog"]')?.textContent || "";
-    expect(dialogText).toContain("LLM 请求详情");
-    expect(dialogText).toContain("Context Budget");
-    expect(dialogText).toContain("Compaction Events");
-    expect(dialogText).toContain("Tool Result Materialization");
-    expect(dialogText).toContain("External References");
-    expect(dialogText.match(/暂无上下文治理事件/g)).toHaveLength(4);
+    expect(dialogText).toContain("模型请求详情");
+    expect(dialogText).not.toContain("上下文预算");
+    expect(dialogText).not.toContain("历史上下文压缩");
+    expect(dialogText).not.toContain("工具结果整理");
+    expect(dialogText).not.toContain("外部引用");
+    expect(dialogText).not.toContain("暂无上下文治理事件");
   });
 });

@@ -723,34 +723,37 @@ type AuthSummary struct {
 }
 
 type HostSummary struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Status            string            `json:"status"`
-	Kind              string            `json:"kind,omitempty"`
-	Address           string            `json:"address,omitempty"`
-	Transport         string            `json:"transport,omitempty"`
-	Executable        bool              `json:"executable,omitempty"`
-	TerminalCapable   bool              `json:"terminalCapable,omitempty"`
-	OS                string            `json:"os,omitempty"`
-	Arch              string            `json:"arch,omitempty"`
-	OSRelease         string            `json:"osRelease,omitempty"`
-	KernelVersion     string            `json:"kernelVersion,omitempty"`
-	CPUCores          int               `json:"cpuCores,omitempty"`
-	MemoryBytes       uint64            `json:"memoryBytes,omitempty"`
-	AgentVersion      string            `json:"agentVersion,omitempty"`
-	LastHeartbeat     string            `json:"lastHeartbeat,omitempty"`
-	Labels            map[string]string `json:"labels,omitempty"`
-	LastError         string            `json:"lastError,omitempty"`
-	SSHUser           string            `json:"sshUser,omitempty"`
-	SSHPort           int               `json:"sshPort,omitempty"`
-	SSHCredentialRef  string            `json:"sshCredentialRef,omitempty"`
-	AgentURL          string            `json:"agentUrl,omitempty"`
-	AgentTokenRef     string            `json:"agentTokenRef,omitempty"`
-	InstallState      string            `json:"installState,omitempty"`
-	InstallRunID      string            `json:"installRunId,omitempty"`
-	InstallWorkflowID string            `json:"installWorkflowId,omitempty"`
-	InstallStep       string            `json:"installStep,omitempty"`
-	ControlMode       string            `json:"controlMode,omitempty"`
+	ID                  string            `json:"id"`
+	Name                string            `json:"name"`
+	Status              string            `json:"status"`
+	AgentStatus         string            `json:"agentStatus,omitempty"`
+	SSHStatus           string            `json:"sshStatus,omitempty"`
+	RuntimeReachability string            `json:"runtimeReachability,omitempty"`
+	Kind                string            `json:"kind,omitempty"`
+	Address             string            `json:"address,omitempty"`
+	Transport           string            `json:"transport,omitempty"`
+	Executable          bool              `json:"executable,omitempty"`
+	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
+	OS                  string            `json:"os,omitempty"`
+	Arch                string            `json:"arch,omitempty"`
+	OSRelease           string            `json:"osRelease,omitempty"`
+	KernelVersion       string            `json:"kernelVersion,omitempty"`
+	CPUCores            int               `json:"cpuCores,omitempty"`
+	MemoryBytes         uint64            `json:"memoryBytes,omitempty"`
+	AgentVersion        string            `json:"agentVersion,omitempty"`
+	LastHeartbeat       string            `json:"lastHeartbeat,omitempty"`
+	Labels              map[string]string `json:"labels,omitempty"`
+	LastError           string            `json:"lastError,omitempty"`
+	SSHUser             string            `json:"sshUser,omitempty"`
+	SSHPort             int               `json:"sshPort,omitempty"`
+	SSHCredentialRef    string            `json:"sshCredentialRef,omitempty"`
+	AgentURL            string            `json:"agentUrl,omitempty"`
+	AgentTokenRef       string            `json:"agentTokenRef,omitempty"`
+	InstallState        string            `json:"installState,omitempty"`
+	InstallRunID        string            `json:"installRunId,omitempty"`
+	InstallWorkflowID   string            `json:"installWorkflowId,omitempty"`
+	InstallStep         string            `json:"installStep,omitempty"`
+	ControlMode         string            `json:"controlMode,omitempty"`
 }
 
 type CardView struct {
@@ -783,6 +786,7 @@ type ApprovalView struct {
 	RunbookStep    string `json:"runbookStep,omitempty"`
 	ExpectedEffect string `json:"expectedEffect,omitempty"`
 	Rollback       string `json:"rollback,omitempty"`
+	Validation     string `json:"validation,omitempty"`
 	HostID         string `json:"hostId,omitempty"`
 	Status         string `json:"status"`
 	CreatedAt      string `json:"createdAt,omitempty"`
@@ -927,30 +931,40 @@ type WebSettingsPayload struct {
 }
 
 type LLMConfigView struct {
-	Provider         string `json:"provider,omitempty"`
-	Model            string `json:"model,omitempty"`
-	BaseURL          string `json:"baseURL,omitempty"`
-	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
-	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
-	FallbackProvider string `json:"fallbackProvider,omitempty"`
-	FallbackModel    string `json:"fallbackModel,omitempty"`
-	CompactModel     string `json:"compactModel,omitempty"`
-	BifrostActive    bool   `json:"bifrostActive"`
-	APIKeySet        bool   `json:"apiKeySet"`
-	APIKeyMasked     string `json:"apiKeyMasked,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	BaseURL          string   `json:"baseURL,omitempty"`
+	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	ThinkingType     string   `json:"thinkingType,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
+	ToolStream       bool     `json:"toolStream,omitempty"`
+	FallbackProvider string   `json:"fallbackProvider,omitempty"`
+	FallbackModel    string   `json:"fallbackModel,omitempty"`
+	CompactModel     string   `json:"compactModel,omitempty"`
+	BifrostActive    bool     `json:"bifrostActive"`
+	APIKeySet        bool     `json:"apiKeySet"`
+	APIKeyMasked     string   `json:"apiKeyMasked,omitempty"`
 }
 
 type LLMConfigUpdate struct {
-	Provider         string `json:"provider,omitempty"`
-	Model            string `json:"model,omitempty"`
-	APIKey           string `json:"apiKey,omitempty"`
-	BaseURL          string `json:"baseURL,omitempty"`
-	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
-	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
-	FallbackProvider string `json:"fallbackProvider,omitempty"`
-	FallbackModel    string `json:"fallbackModel,omitempty"`
-	FallbackAPIKey   string `json:"fallbackApiKey,omitempty"`
-	CompactModel     string `json:"compactModel,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	APIKey           string   `json:"apiKey,omitempty"`
+	BaseURL          string   `json:"baseURL,omitempty"`
+	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	ThinkingType     string   `json:"thinkingType,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
+	ToolStream       bool     `json:"toolStream,omitempty"`
+	FallbackProvider string   `json:"fallbackProvider,omitempty"`
+	FallbackModel    string   `json:"fallbackModel,omitempty"`
+	FallbackAPIKey   string   `json:"fallbackApiKey,omitempty"`
+	CompactModel     string   `json:"compactModel,omitempty"`
 }
 
 type LLMConfigUpdateResult struct {
@@ -958,6 +972,7 @@ type LLMConfigUpdateResult struct {
 	Message          string `json:"message,omitempty"`
 	Error            string `json:"error,omitempty"`
 	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int    `json:"maxOutputTokens,omitempty"`
 }
 
 type HostUpsert struct {
@@ -1082,6 +1097,21 @@ type MCPServerView struct {
 type MCPServersPayload struct {
 	ConfigPath string          `json:"configPath,omitempty"`
 	Items      []MCPServerView `json:"items"`
+}
+
+type MCPHealthPayload struct {
+	Items []MCPHealthView `json:"items"`
+}
+
+type MCPHealthView struct {
+	ServerID           string `json:"serverId"`
+	DisplayName        string `json:"displayName,omitempty"`
+	Status             string `json:"status"`
+	LastCheckedAt      string `json:"lastCheckedAt,omitempty"`
+	LastError          string `json:"lastError,omitempty"`
+	AvailableToolCount int    `json:"availableToolCount,omitempty"`
+	DisabledReason     string `json:"disabledReason,omitempty"`
+	RetryAfterSeconds  int    `json:"retryAfterSeconds,omitempty"`
 }
 
 type SkillCatalogItem struct {
@@ -1339,6 +1369,8 @@ type HostAgentService interface {
 
 type MCPService interface {
 	List(ctx context.Context) (MCPServersPayload, error)
+	Health(ctx context.Context) (MCPHealthPayload, error)
+	HealthOne(ctx context.Context, serverID string) (MCPHealthView, error)
 	Create(ctx context.Context, payload MCPServerUpsert) (MCPServersPayload, error)
 	Update(ctx context.Context, name string, payload MCPServerUpsert) (MCPServersPayload, error)
 	Delete(ctx context.Context, name string) (MCPServersPayload, error)

@@ -1,11 +1,10 @@
 import MarkdownIt from "markdown-it";
-import type { MouseEvent } from "react";
 
 type MessageMarkdownProps = {
   text: string;
 };
 
-const TOOL_TRIGGER_NAMES = new Set(["add_workflow"]);
+const TOOL_TRIGGER_NAMES = new Set(["add_workflow", "coroot", "ops_graph", "ops_manus", "ops_manuals"]);
 
 const markdown = new MarkdownIt({
   breaks: true,
@@ -53,8 +52,8 @@ markdown.renderer.rules.link_open = (tokens, index, options, _env, self) => {
   const token = tokens[index];
   const href = token.attrGet("href") || "";
   if (href) {
-    token.attrSet("data-copy-url", href);
-    token.attrSet("title", `点击复制：${href}`);
+    token.attrSet("target", "_blank");
+    token.attrSet("rel", "noopener noreferrer");
   }
   return self.renderToken(tokens, index, options);
 };
@@ -66,8 +65,7 @@ export function MessageMarkdown({ text }: MessageMarkdownProps) {
   }
   return (
     <div
-      className="aiops-message-markdown space-y-1.5 overflow-x-auto break-words [&_a]:cursor-copy [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-0.5 [&_li>p]:m-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol_ul]:mt-0.5 [&_ol_ul]:pl-5 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_table]:my-2 [&_table]:w-full [&_table]:min-w-[560px] [&_table]:border-collapse [&_table]:text-sm [&_tbody_tr:nth-child(even)]:bg-slate-50/70 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:text-slate-700 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-700 [&_ul]:list-disc [&_ul]:pl-5 [&_ul_ul]:mt-0.5 [&_ul_ul]:pl-5"
-      onClick={copyLinkInsteadOfNavigating}
+      className="aiops-message-markdown space-y-1.5 overflow-x-auto break-words [&_a]:font-medium [&_a]:text-blue-600 [&_a]:no-underline hover:[&_a]:text-blue-700 [&_blockquote]:border-l-2 [&_blockquote]:border-slate-300 [&_blockquote]:pl-3 [&_blockquote]:text-slate-700 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_em]:italic [&_li]:my-0.5 [&_li>p]:m-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol_ul]:mt-0.5 [&_ol_ul]:pl-5 [&_p]:whitespace-pre-wrap [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-slate-950 [&_pre]:p-3 [&_pre]:text-slate-50 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_strong]:font-semibold [&_table]:my-2 [&_table]:w-full [&_table]:min-w-[560px] [&_table]:border-collapse [&_table]:text-sm [&_tbody_tr:nth-child(even)]:bg-slate-50/70 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_td]:text-slate-700 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_th]:text-slate-700 [&_ul]:list-disc [&_ul]:pl-5 [&_ul_ul]:mt-0.5 [&_ul_ul]:pl-5"
       dangerouslySetInnerHTML={{ __html: markdown.render(trimmed) }}
     />
   );
@@ -181,46 +179,6 @@ function normalizeLooseNestedListLabels(value: string) {
     output.push(line);
   }
   return output.join("\n");
-}
-
-function copyLinkInsteadOfNavigating(event: MouseEvent<HTMLDivElement>) {
-  const target = event.target instanceof Element
-    ? event.target.closest("a[data-copy-url]")
-    : null;
-  if (!target) {
-    return;
-  }
-  event.preventDefault();
-  const url = target.getAttribute("data-copy-url") || target.getAttribute("href") || "";
-  if (url) {
-    copyTextBySelection(url);
-    void navigator.clipboard?.writeText(url).catch(() => undefined);
-  }
-}
-
-function copyTextBySelection(value: string) {
-  let handled = false;
-  const handleCopy = (event: ClipboardEvent) => {
-    event.clipboardData?.setData("text/plain", value);
-    event.preventDefault();
-    handled = true;
-  };
-  document.addEventListener("copy", handleCopy, { once: true });
-  document.execCommand?.("copy");
-  document.removeEventListener("copy", handleCopy);
-  if (handled) {
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = value;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-  textarea.select();
-  document.execCommand?.("copy");
-  textarea.remove();
 }
 
 function normalizeReadableTimestamps(value: string) {

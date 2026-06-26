@@ -33,20 +33,20 @@ func TestPromptSectionsChangedOnlyProtocolState(t *testing.T) {
 
 	changed := ChangedPromptSections(first.PromptSections, second.PromptSections)
 	if len(changed) != 1 {
-		t.Fatalf("changed sections = %#v, want only protocol.state", changed)
+		t.Fatalf("changed sections = %#v, want only dynamic.context", changed)
 	}
-	if changed[0].ID != "protocol.state" {
-		t.Fatalf("changed section id = %q, want protocol.state", changed[0].ID)
+	if changed[0].ID != "dynamic.context" {
+		t.Fatalf("changed section id = %q, want dynamic.context", changed[0].ID)
 	}
-	if changed[0].Reason != PromptSectionChangeProtocolStateChanged {
-		t.Fatalf("changed reason = %q, want %q", changed[0].Reason, PromptSectionChangeProtocolStateChanged)
+	if changed[0].Reason != PromptSectionChangeDynamicAssetsChanged {
+		t.Fatalf("changed reason = %q, want %q", changed[0].Reason, PromptSectionChangeDynamicAssetsChanged)
 	}
 	for _, section := range second.PromptSections {
 		if section.ID == "" || section.Hash == "" {
 			t.Fatalf("section missing stable metadata: %#v", section)
 		}
-		if section.ID == "protocol.state" && section.TokensEstimate == 0 {
-			t.Fatalf("protocol.state should have a token estimate: %#v", section)
+		if section.ID == "dynamic.context" && section.TokensEstimate == 0 {
+			t.Fatalf("dynamic.context should have a token estimate: %#v", section)
 		}
 	}
 }
@@ -54,6 +54,7 @@ func TestPromptSectionsChangedOnlyProtocolState(t *testing.T) {
 func TestPromptSectionsIncludeRequiredRedactionSafeIDs(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{
 		Mode:              "plan",
+		Profile:           PromptProfileEvidenceRCA,
 		RuntimePolicy:     "runtime policy with token=secret-value",
 		SkillPromptAssets: []string{"dynamic asset with password=secret"},
 		ProtocolState: ProtocolPromptState{Items: []ProtocolPromptItem{{
@@ -75,6 +76,17 @@ func TestPromptSectionsIncludeRequiredRedactionSafeIDs(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"base.contract",
+		"runtime.state",
+		"profile.evidence_rca",
+		"tool.surface",
+		"dynamic.context",
+	} {
+		if _, ok := byID[want]; !ok {
+			t.Fatalf("missing prompt section %q in %#v", want, byID)
+		}
+	}
+	for _, forbidden := range []string{
 		"system.role",
 		"developer.core_rules",
 		"tools.index",
@@ -82,21 +94,21 @@ func TestPromptSectionsIncludeRequiredRedactionSafeIDs(t *testing.T) {
 		"protocol.state",
 		"context.dynamic_assets",
 	} {
-		if _, ok := byID[want]; !ok {
-			t.Fatalf("missing prompt section %q in %#v", want, byID)
+		if _, ok := byID[forbidden]; ok {
+			t.Fatalf("legacy prompt section %q should not be traced: %#v", forbidden, byID)
 		}
 	}
 }
 
 func TestApplyPromptSectionCacheMarksHitMissAndInvalidated(t *testing.T) {
 	previous := []PromptSectionTrace{
-		{ID: "system.role", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
-		{ID: "protocol.state", Hash: "sha256:old", Cache: PromptSectionCacheMiss},
+		{ID: "base.contract", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
+		{ID: "dynamic.context", Hash: "sha256:old", Cache: PromptSectionCacheMiss},
 	}
 	current := []PromptSectionTrace{
-		{ID: "system.role", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
-		{ID: "protocol.state", Hash: "sha256:new", Cache: PromptSectionCacheMiss},
-		{ID: "context.dynamic_assets", Hash: "sha256:added", Cache: PromptSectionCacheMiss},
+		{ID: "base.contract", Hash: "sha256:stable", Cache: PromptSectionCacheMiss},
+		{ID: "dynamic.context", Hash: "sha256:new", Cache: PromptSectionCacheMiss},
+		{ID: "profile.advisor", Hash: "sha256:added", Cache: PromptSectionCacheMiss},
 	}
 
 	cached := ApplyPromptSectionCache(previous, current)
@@ -105,13 +117,13 @@ func TestApplyPromptSectionCacheMarksHitMissAndInvalidated(t *testing.T) {
 		byID[section.ID] = section
 	}
 
-	if byID["system.role"].Cache != PromptSectionCacheHit {
-		t.Fatalf("system.role cache = %q, want %q", byID["system.role"].Cache, PromptSectionCacheHit)
+	if byID["base.contract"].Cache != PromptSectionCacheHit {
+		t.Fatalf("base.contract cache = %q, want %q", byID["base.contract"].Cache, PromptSectionCacheHit)
 	}
-	if byID["protocol.state"].Cache != PromptSectionCacheInvalidated {
-		t.Fatalf("protocol.state cache = %q, want %q", byID["protocol.state"].Cache, PromptSectionCacheInvalidated)
+	if byID["dynamic.context"].Cache != PromptSectionCacheInvalidated {
+		t.Fatalf("dynamic.context cache = %q, want %q", byID["dynamic.context"].Cache, PromptSectionCacheInvalidated)
 	}
-	if byID["context.dynamic_assets"].Cache != PromptSectionCacheMiss {
-		t.Fatalf("context.dynamic_assets cache = %q, want %q", byID["context.dynamic_assets"].Cache, PromptSectionCacheMiss)
+	if byID["profile.advisor"].Cache != PromptSectionCacheMiss {
+		t.Fatalf("profile.advisor cache = %q, want %q", byID["profile.advisor"].Cache, PromptSectionCacheMiss)
 	}
 }

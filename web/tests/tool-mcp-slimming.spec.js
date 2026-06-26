@@ -4,6 +4,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { createChatFixtureSessions, createChatFixtureState, installUiFixture, waitForFixtureStable } from "./helpers/uiFixtureHarness";
+import { expectStableLocatorScreenshot } from "./helpers/visualSnapshot";
 
 const screenshotDir = path.resolve(process.cwd(), "..", "output", "playwright", "tool-mcp-slimming");
 
@@ -129,6 +130,17 @@ function toolSurfaceTraceFixture() {
     prompt: {
       tools: "exec_command\ntool_search\nupdate_plan\nlist_mcp_resources",
     },
+    metadata: {
+      "aiops.target.refs": "host:server-local,service:checkout",
+      "aiops.env.readOnlyReason": "target_conflict_requires_clarification",
+      "aiops.env.compactContext": [
+        "EnvironmentFactsContext:",
+        "TargetRefs:",
+        "- host id=host:server-local address=server-local source=user_explicit confidence=confirmed",
+        "ConflictFacts:",
+        "- topology service:checkout reason=target_conflict",
+      ].join("\n"),
+    },
     modelInput: [
       { index: 0, providerRole: "system", semanticRole: "system", promptLayer: "system", content: "system prompt" },
       { index: 1, providerRole: "system", semanticRole: "developer", promptLayer: "developer", content: "tool slimming policy" },
@@ -220,11 +232,29 @@ test.describe("Claude Code style tool MCP slimming", () => {
         }),
       }),
     );
+    await page.route("**/api/v2/runtime/mcp-health", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [
+            {
+              serverId: "coroot",
+              displayName: "coroot",
+              status: "unhealthy",
+              lastError: "502 bad gateway",
+              availableToolCount: 0,
+              disabledReason: "mcp_unavailable",
+            },
+          ],
+        }),
+      }),
+    );
     await page.goto("/mcp", { waitUntil: "networkidle" });
     await waitForFixtureStable(page);
 
     await expect(page.getByText("coroot", { exact: true })).toBeVisible();
-    await expect(page.getByText("502 bad gateway")).toBeVisible();
+    await expect(page.getByText("502 bad gateway").first()).toBeVisible();
     await expect(page.getByText("0 / 0")).toBeVisible();
     await page.screenshot({ path: path.join(screenshotDir, "mcp-unavailable-health.png"), fullPage: true });
   });
@@ -275,6 +305,14 @@ test.describe("Claude Code style tool MCP slimming", () => {
     await waitForFixtureStable(page);
 
     await page.getByTestId("prompt-trace-llm-card").click();
+    await expect(page.getByRole("heading", { name: "Environment Context" })).toBeVisible();
+    await expect(page.getByText("host:server-local").first()).toBeVisible();
+    await expect(page.getByText("target_conflict_requires_clarification").first()).toBeVisible();
+    const environmentContextPanel = page
+      .getByRole("heading", { name: "Environment Context" })
+      .locator("xpath=ancestor::section[1]");
+    await expectStableLocatorScreenshot(environmentContextPanel, "prompt-trace-environment-context.png");
+
     await page.getByRole("button", { name: "工具" }).click();
     await expect(page.getByText("Initial Tool Surface")).toBeVisible();
     await expect(page.getByText("exec_command").first()).toBeVisible();

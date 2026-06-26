@@ -72,6 +72,140 @@ func (m *sequentialLoopModel) BindTools(tools []*schema.ToolInfo) error {
 	return nil
 }
 
+func TestRunTurnWritesSingleAssistantMessageForNoToolFinal(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("这是最终回答。", nil),
+		},
+	}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-single-assistant-message-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-single-assistant-message-final",
+		Input:       "直接回答",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	session := kernel.sessions.Get("sess-single-assistant-message-final")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
+	}
+	assertNoLegacyAssistantItems(t, session.CurrentTurn.AgentItems)
+	finals := assistantMessagesByPhase(t, session.CurrentTurn.AgentItems, string(AssistantMessagePhaseFinalAnswer))
+	if len(finals) != 1 {
+		t.Fatalf("final assistant messages = %#v, want one", finals)
+	}
+	if got := strings.TrimSpace(finals[0].Payload.Summary); got != "这是最终回答。" {
+		t.Fatalf("final text = %q", got)
+	}
+}
+
+func TestRunTurnCompletesCommentaryMessageBeforeToolCall(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("我先查公开来源。", []schema.ToolCall{{
+				ID:   "call-web",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "web_search",
+					Arguments: `{"query":"postgres timeline"}`,
+				},
+			}}),
+			schema.AssistantMessage("基于搜索结果，这是最终回答。", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Description: "Search public web pages",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "search result"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-single-assistant-message-tool",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-single-assistant-message-tool",
+		Input:       "分析 timeline",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	session := kernel.sessions.Get("sess-single-assistant-message-tool")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
+	}
+	items := session.CurrentTurn.AgentItems
+	assertNoLegacyAssistantItems(t, items)
+	commentary := assistantMessagesByPhase(t, items, string(AssistantMessagePhaseCommentary))
+	finals := assistantMessagesByPhase(t, items, string(AssistantMessagePhaseFinalAnswer))
+	if len(commentary) != 1 || len(finals) != 1 {
+		t.Fatalf("commentary=%#v finals=%#v, want one each", commentary, finals)
+	}
+	if got := strings.TrimSpace(commentary[0].Payload.Summary); got != "我先查公开来源。" {
+		t.Fatalf("commentary text = %q", got)
+	}
+	if got := strings.TrimSpace(finals[0].Payload.Summary); got != "基于搜索结果，这是最终回答。" {
+		t.Fatalf("final text = %q", got)
+	}
+}
+
+type timeoutThenSuccessModel struct {
+	inputs   [][]*schema.Message
+	attempts int
+	sawTool  bool
+}
+
+func (m *timeoutThenSuccessModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
+	if m.attempts == 2 {
+		return nil, context.DeadlineExceeded
+	}
+	return schema.AssistantMessage("recovered after timeout", nil), nil
+}
+
+func (m *timeoutThenSuccessModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
+	m.attempts++
+	switch m.attempts {
+	case 1:
+		return schema.StreamReaderFromArray([]*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-timeout-evidence",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"timeout recovery evidence"}`,
+			},
+		}})}), nil
+	case 2:
+		return nil, context.DeadlineExceeded
+	}
+	for _, msg := range input {
+		if msg != nil && msg.Role == schema.Tool && strings.Contains(msg.Content, "prior evidence survives timeout") {
+			m.sawTool = true
+		}
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{schema.AssistantMessage("recovered after timeout", nil)}), nil
+}
+
+func (m *timeoutThenSuccessModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
 func cloneSchemaMessages(messages []*schema.Message) []*schema.Message {
 	out := make([]*schema.Message, 0, len(messages))
 	for _, msg := range messages {
@@ -152,6 +286,33 @@ func (m *streamingFinalLoopModel) BindTools(tools []*schema.ToolInfo) error {
 		names = append(names, info.Name)
 	}
 	m.boundTools = append(m.boundTools, names)
+	return nil
+}
+
+type partialStreamErrorLoopModel struct {
+	chunks []*schema.Message
+	err    error
+	inputs [][]*schema.Message
+}
+
+func (m *partialStreamErrorLoopModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate fallback should not be called after stream error")
+}
+
+func (m *partialStreamErrorLoopModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, cloneSchemaMessages(input))
+	sr, sw := schema.Pipe[*schema.Message](len(m.chunks) + 1)
+	go func() {
+		defer sw.Close()
+		for _, chunk := range m.chunks {
+			sw.Send(cloneSchemaMessage(chunk), nil)
+		}
+		sw.Send(nil, m.err)
+	}()
+	return sr, nil
+}
+
+func (m *partialStreamErrorLoopModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
@@ -565,14 +726,31 @@ func TestRunTurn_CompletesFromToolEvidenceWhenModelStaysEmpty(t *testing.T) {
 
 func TestSynthesisOnlyThresholdUsesTaskDepth(t *testing.T) {
 	tools := []promptcompiler.Tool{&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_metrics"}}}
-	if shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 5, tools) {
-		t.Fatal("investigation should not switch to synthesis-only after 5 dispatches")
+	if shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 4, tools) {
+		t.Fatal("investigation should not switch to synthesis-only before 5 dispatches")
 	}
-	if !shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 8, tools) {
-		t.Fatal("investigation should switch at depth-aware threshold 8")
+	if !shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelInvestigation}, 5, tools) {
+		t.Fatal("investigation should switch at depth-aware threshold 5")
 	}
 	if !shouldSwitchToSynthesisOnly(ModeChat, taskdepth.Profile{Level: taskdepth.LevelSimpleRead}, 5, tools) {
 		t.Fatal("simple read should keep current low threshold")
+	}
+}
+
+func TestPublicWebToolNamesAlsoHideDiscoverySearch(t *testing.T) {
+	tools := []promptcompiler.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "tool_search", Layer: tooling.ToolLayerCore}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "web_search", Pack: "public_web"}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "browse_url", Pack: "public_web"}},
+	}
+	names := publicWebToolNames(tools)
+	for _, want := range []string{"web_search", "browse_url"} {
+		if !containsString(names, want) {
+			t.Fatalf("publicWebToolNames() = %v, want %s", names, want)
+		}
+	}
+	if containsString(names, "tool_search") {
+		t.Fatalf("publicWebToolNames() = %v, must not include tool_search for direct public web retrieval", names)
 	}
 }
 
@@ -1032,6 +1210,251 @@ func TestRunTurn_FeedsToolBudgetBackToModelInsteadOfDispatchingForever(t *testin
 	}
 }
 
+func TestRunTurn_CapsPublicWebRetrievalsBeforeGlobalToolBudget(t *testing.T) {
+	toolCalls := make([]schema.ToolCall, 0, defaultMaxPublicWebDispatchesPerTurn+3)
+	for i := 0; i < defaultMaxPublicWebDispatchesPerTurn+3; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-public-web-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"public docs"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("基于已检索的公开资料收敛回答", nil),
+		},
+	}
+
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Aliases:     []string{"search_web"},
+			Description: "Search public web pages",
+			Pack:        "public_web",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "search result"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-public-web-budget",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-public-web-budget",
+		Input:       "research public docs",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should continue after public web budget is reached, got error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if executed != defaultMaxPublicWebDispatchesPerTurn {
+		t.Fatalf("executed public web calls = %d, want budget %d", executed, defaultMaxPublicWebDispatchesPerTurn)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+	foundBudgetToolMessage := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && strings.Contains(msg.Content, "Public web retrieval budget reached") {
+			foundBudgetToolMessage = true
+			break
+		}
+	}
+	if !foundBudgetToolMessage {
+		t.Fatalf("second model input did not include public web budget result: %#v", model.inputs[1])
+	}
+
+	session := kernel.sessions.Get("sess-public-web-budget")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected session current turn")
+	}
+	if !containsString(session.CurrentTurn.HiddenTools, "web_search") {
+		t.Fatalf("hidden tools = %v, want web_search hidden after public web budget", session.CurrentTurn.HiddenTools)
+	}
+	firstIter := session.CurrentTurn.Iterations[0]
+	if got := len(firstIter.ToolResults); got != defaultMaxPublicWebDispatchesPerTurn+3 {
+		t.Fatalf("first iteration tool results = %d, want one result per requested tool call", got)
+	}
+	lastResult := firstIter.ToolResults[len(firstIter.ToolResults)-1]
+	if lastResult.Display == nil || lastResult.Display.Type != "tool_budget" {
+		t.Fatalf("last result display = %#v, want tool_budget", lastResult.Display)
+	}
+}
+
+func TestRunTurn_CapsPublicWebQueriesAndResultLimit(t *testing.T) {
+	toolCalls := []schema.ToolCall{
+		{
+			ID:   "call-public-web-a",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"queries":["official docs restore","official docs timeline","official docs standby"],"max_results":20}`,
+			},
+		},
+		{
+			ID:   "call-public-web-b",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"queries":["extra synonym one","extra synonym two"],"max_results":20}`,
+			},
+		},
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", toolCalls),
+			schema.AssistantMessage("基于已检索的公开资料收敛回答", nil),
+		},
+	}
+
+	executed := 0
+	var executedArgs []map[string]any
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Aliases:     []string{"search_web"},
+			Description: "Search public web pages",
+			Pack:        "public_web",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(_ context.Context, args json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			var payload map[string]any
+			if err := json.Unmarshal(args, &payload); err != nil {
+				t.Fatalf("tool args should stay JSON: %v", err)
+			}
+			executedArgs = append(executedArgs, payload)
+			return tooling.ToolResult{Content: "search result"}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-public-web-query-budget",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-public-web-query-budget",
+		Input:       "research public docs",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn should continue after public web query budget is reached, got error: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if executed != 2 {
+		t.Fatalf("executed public web calls = %d, want 2 after per-call query clamp", executed)
+	}
+	if len(executedArgs) != 2 || int(executedArgs[0]["max_results"].(float64)) != DefaultPublicWebBudget().MaxResults {
+		t.Fatalf("executed args = %#v, want max_results clamped to %d", executedArgs, DefaultPublicWebBudget().MaxResults)
+	}
+	for index, args := range executedArgs {
+		queries, ok := args["queries"].([]any)
+		if !ok {
+			t.Fatalf("executed args[%d] queries = %#v, want JSON array", index, args["queries"])
+		}
+		if len(queries) > DefaultPublicWebBudget().MaxQueriesPerCall {
+			t.Fatalf("executed args[%d] queries = %#v, want at most %d", index, queries, DefaultPublicWebBudget().MaxQueriesPerCall)
+		}
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model Generate calls = %d, want 2", len(model.inputs))
+	}
+}
+
+func TestRunTurn_SwitchesToSynthesisOnlyAfterPublicWebEvidence(t *testing.T) {
+	toolCalls := make([]schema.ToolCall, 0, defaultPublicWebSynthesisDispatches)
+	for i := 0; i < defaultPublicWebSynthesisDispatches; i++ {
+		toolCalls = append(toolCalls, schema.ToolCall{
+			ID:   "call-public-doc-" + string(rune('a'+i)),
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "web_search",
+				Arguments: `{"query":"official public docs"}`,
+			},
+		})
+	}
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("我先核对公开文档来源。", toolCalls),
+			schema.AssistantMessage("基于已检索的官方来源给出最终 RCA。", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Description: "Search public web pages",
+			Pack:        "public_web",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "official source result"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	assembler := tooling.NewAssembler(registry, nil)
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: assembler}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-public-web-synthesis-only",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-public-web-synthesis-only",
+		Input:       "用公开文档辅助分析运维问题",
+		HostID:      "server-local",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed", result.Status)
+	}
+	if result.Output != "基于已检索的官方来源给出最终 RCA。" {
+		t.Fatalf("result output = %q", result.Output)
+	}
+	if len(compiler.contexts) != 2 {
+		t.Fatalf("compiler contexts = %d, want 2", len(compiler.contexts))
+	}
+	if len(compiler.contexts[0].AssembledTools) == 0 {
+		t.Fatal("first iteration should expose public web tools")
+	}
+	if len(compiler.contexts[1].AssembledTools) != 0 {
+		t.Fatalf("second iteration tools = %v, want synthesis-only after public web evidence", toolNames(compiler.contexts[1].AssembledTools))
+	}
+	if !containsString(compiler.contexts[1].ToolDelta.TemporarilyUnavailable, "web_search") {
+		t.Fatalf("second iteration unavailable tools = %v, want web_search", compiler.contexts[1].ToolDelta.TemporarilyUnavailable)
+	}
+	if got := strings.Join(compiler.contexts[1].SkillPromptAssets, "\n"); !strings.Contains(got, "Public-web synthesis-only phase") {
+		t.Fatalf("second iteration prompt assets missing public-web synthesis guidance:\n%s", got)
+	}
+}
+
 func TestRunTurn_SwitchesToSynthesisOnlyAfterEnoughToolEvidence(t *testing.T) {
 	toolCalls := make([]schema.ToolCall, 0, defaultSynthesisOnlyToolDispatches)
 	for i := 0; i < defaultSynthesisOnlyToolDispatches; i++ {
@@ -1150,10 +1573,13 @@ func TestRunTurn_SimpleHostResourceInspectionSynthesizesAfterCoveredEvidence(t *
 			Description: "Execute a terminal command on the selected host",
 			Layer:       tooling.ToolLayerCore,
 			RiskLevel:   tooling.ToolRiskHigh,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "argument_scoped",
+			},
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
-			Modes:        []string{string(ModeChat)},
+			Modes:        []string{string(ModeInspect)},
 		},
 		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
 		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
@@ -1721,10 +2147,16 @@ func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
 		switch event.Type {
 		case EventAssistantFinalDelta:
 			var payload struct {
-				Text string `json:"text"`
+				Text        string `json:"text"`
+				Phase       string `json:"phase"`
+				StreamState string `json:"streamState"`
+				Iteration   int    `json:"iteration"`
 			}
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				t.Fatalf("unmarshal assistant final delta payload: %v", err)
+			}
+			if payload.Phase != "final_answer" || payload.StreamState != "streaming" || payload.Iteration != 0 {
+				t.Fatalf("assistant final delta payload = %+v, want streaming assistant_message metadata", payload)
 			}
 			deltas = append(deltas, payload.Text)
 			if finalAt == -1 {
@@ -1785,9 +2217,9 @@ func TestRunTurn_CompletesWithStreamedFinalText(t *testing.T) {
 	if session.CurrentTurn.FinalOutput != want {
 		t.Fatalf("FinalOutput = %q, want streamed text", session.CurrentTurn.FinalOutput)
 	}
-	finalItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeFinalAnswer)
+	finalItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
 	if finalItem.ID == "" {
-		t.Fatalf("agent items = %+v, want final answer item", session.CurrentTurn.AgentItems)
+		t.Fatalf("agent items = %+v, want assistant_message final item", session.CurrentTurn.AgentItems)
 	}
 	if finalItem.Payload.Summary != want {
 		t.Fatalf("final item summary = %q, want streamed text", finalItem.Payload.Summary)
@@ -1837,9 +2269,84 @@ func TestRunTurn_RetriesTruncatedFinalAnswerBeforeCompletion(t *testing.T) {
 	if session.CurrentTurn.FinalOutput != complete {
 		t.Fatalf("FinalOutput = %q, want completed retry output", session.CurrentTurn.FinalOutput)
 	}
+	var finalItems []agentstate.TurnItem
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == agentstate.TurnItemTypeAssistantMessage && assistantMessagePhaseForTest(item) == "final_answer" && item.Status == agentstate.ItemStatusCompleted {
+			finalItems = append(finalItems, item)
+		}
+	}
+	if len(finalItems) != 1 {
+		t.Fatalf("assistant final items = %#v, want only completed retry output", finalItems)
+	}
+	if finalItems[0].Status != agentstate.ItemStatusCompleted || finalItems[0].Payload.Summary != complete {
+		t.Fatalf("assistant final item = %#v, want completed retry output", finalItems[0])
+	}
 }
 
-func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
+func TestRunTurn_FailsLengthStoppedFinalAfterRetry(t *testing.T) {
+	first := schema.AssistantMessage("完整说明：第一部分已经展开，第二部分需要继续补充", nil)
+	first.ResponseMeta = &schema.ResponseMeta{FinishReason: "length"}
+	second := schema.AssistantMessage("完整说明：第一部分已经展开，第二部分继续补充，但结尾仍然", nil)
+	second.ResponseMeta = &schema.ResponseMeta{FinishReason: "length"}
+	model := &sequentialLoopModel{responses: []*schema.Message{first, second}}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-length-stopped-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-length-stopped-final",
+		Input:       "请写一段完整说明。",
+	})
+	if err == nil {
+		t.Fatal("expected RunTurn to fail when the final answer repeatedly stops for length")
+	}
+
+	session := kernel.sessions.Get("sess-length-stopped-final")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing failed turn")
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleFailed {
+		t.Fatalf("turn lifecycle = %q, want failed", session.CurrentTurn.Lifecycle)
+	}
+	if session.CurrentTurn.FinalOutput != "" {
+		t.Fatalf("FinalOutput = %q, want empty incomplete final", session.CurrentTurn.FinalOutput)
+	}
+	if session.CurrentTurn.LatestCheckpoint == nil || session.CurrentTurn.LatestCheckpoint.Kind != "assistant_message_incomplete" {
+		t.Fatalf("checkpoint = %#v, metadata=%#v modelCalls=%d, want assistant_message_incomplete", session.CurrentTurn.LatestCheckpoint, session.CurrentTurn.Metadata, len(model.inputs))
+	}
+	finalItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+	if finalItem.ID == "" {
+		t.Fatalf("agent items = %#v, want assistant_message item", session.CurrentTurn.AgentItems)
+	}
+	if finalItem.Status == agentstate.ItemStatusCompleted {
+		t.Fatalf("final item status = %q, want not completed", finalItem.Status)
+	}
+	if got := session.CurrentTurn.Metadata[finalCompletenessRetryMetadataKey]; got != "1" {
+		t.Fatalf("final completeness retry metadata = %q, want 1", got)
+	}
+
+	model.responses = append(model.responses, schema.AssistantMessage("接上文：第二部分完整补充完毕，并给出收束结论。", nil))
+	resumed, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-length-stopped-final",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-length-stopped-final-continue",
+		Input:       "接着说",
+	})
+	if err != nil {
+		t.Fatalf("continuation RunTurn failed: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("continuation status = %q, want completed", resumed.Status)
+	}
+	continuationInput := schemaMessagesText(model.inputs[len(model.inputs)-1])
+	if !strings.Contains(continuationInput, second.Content) {
+		t.Fatalf("continuation input missing previous incomplete assistant content:\n%s", continuationInput)
+	}
+}
+
+func TestRunTurn_StreamsAssistantTextAsAnswerBeforeFinalCommit(t *testing.T) {
 	model := &gatedStreamingFinalLoopModel{
 		firstSent: make(chan struct{}),
 		release:   make(chan struct{}),
@@ -1868,7 +2375,8 @@ func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		session = kernel.sessions.Get("sess-streaming-snapshot")
-		if session != nil && session.CurrentTurn != nil && session.CurrentTurn.FinalOutput == "第一段" {
+		if session != nil && session.CurrentTurn != nil &&
+			hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage, agentstate.ItemStatusRunning) {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -1876,13 +2384,32 @@ func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("missing current turn after first streaming chunk")
 	}
-	if got := session.CurrentTurn.FinalOutput; got != "第一段" {
+	if got := session.CurrentTurn.FinalOutput; got != "" {
 		close(model.release)
-		t.Fatalf("CurrentTurn.FinalOutput = %q, want first streamed chunk before completion", got)
+		t.Fatalf("CurrentTurn.FinalOutput = %q, want empty until final commit", got)
 	}
-	if len(session.CurrentTurn.AgentItems) == 0 || !hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeFinalAnswer, agentstate.ItemStatusRunning) {
+	answerItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+	if answerItem.ID == "" || answerItem.Payload.Summary != "第一段" {
 		close(model.release)
-		t.Fatalf("expected running final answer agent item after first chunk, got %+v", session.CurrentTurn.AgentItems)
+		t.Fatalf("expected running assistant_message after first chunk, got %+v", session.CurrentTurn.AgentItems)
+	}
+	var answerData struct {
+		Phase       string `json:"phase"`
+		StreamState string `json:"streamState"`
+		DisplayKind string `json:"displayKind"`
+		Iteration   int    `json:"iteration"`
+	}
+	if err := json.Unmarshal(answerItem.Payload.Data, &answerData); err != nil {
+		close(model.release)
+		t.Fatalf("decode answer data: %v; raw=%s", err, string(answerItem.Payload.Data))
+	}
+	if answerData.Phase != "final_answer" || answerData.StreamState != "streaming" || answerData.DisplayKind != "assistant.message" || answerData.Iteration != 0 {
+		close(model.release)
+		t.Fatalf("answer data = %+v, want running assistant_message", answerData)
+	}
+	if invalid := firstInvalidTurnItem(session.CurrentTurn.AgentItems); invalid.ID != "" {
+		close(model.release)
+		t.Fatalf("agent items must use current valid item types: %+v", session.CurrentTurn.AgentItems)
 	}
 
 	close(model.release)
@@ -1894,6 +2421,125 @@ func TestRunTurn_PersistsStreamingFinalSnapshotBeforeCompletion(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for streaming run to complete")
 	}
+	session = kernel.sessions.Get("sess-streaming-snapshot")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed current turn")
+	}
+	if got := session.CurrentTurn.FinalOutput; got != "第一段第二段" {
+		t.Fatalf("CurrentTurn.FinalOutput = %q, want committed final output", got)
+	}
+	finalItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+	if finalItem.ID == "" || finalItem.Status != agentstate.ItemStatusCompleted || finalItem.Payload.Summary != "第一段第二段" {
+		t.Fatalf("final item = %+v, want completed assistant_message final", finalItem)
+	}
+}
+
+func TestRunTurn_StreamingModelErrorPreservesIncompleteAssistantMessage(t *testing.T) {
+	streamErr := context.DeadlineExceeded
+	model := &partialStreamErrorLoopModel{
+		chunks: []*schema.Message{
+			schema.AssistantMessage("根因：已经生成的分析草稿必须保留。", nil),
+		},
+		err: streamErr,
+	}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-stream-error-draft",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-stream-error-draft",
+		Input:       "分析流式错误时的回答保留",
+	})
+	if err == nil {
+		t.Fatal("RunTurn error = nil, want stream error")
+	}
+
+	session := kernel.sessions.Get("sess-stream-error-draft")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing failed turn")
+	}
+	if session.CurrentTurn.FinalOutput != "" {
+		t.Fatalf("FinalOutput = %q, want empty on stream error", session.CurrentTurn.FinalOutput)
+	}
+	answerItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+	if answerItem.ID == "" {
+		t.Fatalf("agent items = %#v, want assistant_message draft preserved", session.CurrentTurn.AgentItems)
+	}
+	if answerItem.Status != agentstate.ItemStatusFailed {
+		t.Fatalf("assistant answer status = %q, want failed", answerItem.Status)
+	}
+	if answerItem.Payload.Summary != "根因：已经生成的分析草稿必须保留。" {
+		t.Fatalf("assistant answer summary = %q", answerItem.Payload.Summary)
+	}
+	var answerData struct {
+		Phase       string `json:"phase"`
+		StreamState string `json:"streamState"`
+		DisplayKind string `json:"displayKind"`
+	}
+	if err := json.Unmarshal(answerItem.Payload.Data, &answerData); err != nil {
+		t.Fatalf("decode answer data: %v; raw=%s", err, string(answerItem.Payload.Data))
+	}
+	if answerData.Phase != "final_answer" || answerData.StreamState != "incomplete" || answerData.DisplayKind != "assistant.message" {
+		t.Fatalf("answer data = %+v, want incomplete assistant_message", answerData)
+	}
+	errorItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeError)
+	if errorItem.ID == "" || errorItem.Status != agentstate.ItemStatusFailed {
+		t.Fatalf("agent items = %#v, want failed error item", session.CurrentTurn.AgentItems)
+	}
+}
+
+func TestRunTurn_PreservesRetriedAssistantTextAsAnswerDraft(t *testing.T) {
+	incomplete := "结论：数据库连接失败，下一步需要补充"
+	complete := "结论：数据库连接失败。下一步先检查 Service Endpoints、NetworkPolicy 和凭证挂载。"
+	first := schema.AssistantMessage(incomplete, nil)
+	first.ResponseMeta = &schema.ResponseMeta{FinishReason: "length"}
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		first,
+		schema.AssistantMessage(complete, nil),
+	}}
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, newRecordingCompiler(), model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-retry-progress",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-retry-progress",
+		Input:       "分析 CrashLoopBackOff",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+
+	session := kernel.sessions.Get("sess-retry-progress")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed turn")
+	}
+	if got := session.CurrentTurn.FinalOutput; got != complete {
+		t.Fatalf("FinalOutput = %q, want completed retry output", got)
+	}
+	if answerIndex := findAgentItemBySummary(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage, incomplete); answerIndex < 0 {
+		t.Fatalf("agent items = %#v, want retried assistant text preserved as incomplete assistant_message", session.CurrentTurn.AgentItems)
+	} else {
+		var draftData struct {
+			Phase               string `json:"phase"`
+			StreamState         string `json:"streamState"`
+			BoundaryAction      string `json:"boundaryAction"`
+			ReplacedByMessageID string `json:"replacedByMessageId"`
+			DisplayKind         string `json:"displayKind"`
+		}
+		item := session.CurrentTurn.AgentItems[answerIndex]
+		if item.Status != agentstate.ItemStatusFailed {
+			t.Fatalf("retried assistant item status = %q, want failed", item.Status)
+		}
+		if err := json.Unmarshal(item.Payload.Data, &draftData); err != nil {
+			t.Fatalf("decode retried assistant_message data: %v; raw=%s", err, string(item.Payload.Data))
+		}
+		if draftData.Phase != "final_answer" || draftData.StreamState != "incomplete" || draftData.BoundaryAction != "retry_once" || draftData.ReplacedByMessageID == "" || draftData.DisplayKind != "assistant.message" {
+			t.Fatalf("retried assistant_message data = %+v, want incomplete retry_once draft", draftData)
+		}
+	}
+	assertNoLegacyAssistantItems(t, session.CurrentTurn.AgentItems)
 }
 
 func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
@@ -1958,6 +2604,16 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 	if len(session.PendingApprovals) != 1 {
 		t.Fatalf("pending approvals = %d, want 1", len(session.PendingApprovals))
+	}
+	pendingApproval := session.PendingApprovals[0]
+	if pendingApproval.ArgumentsHash == "" || pendingApproval.InputHash != pendingApproval.ArgumentsHash {
+		t.Fatalf("pending approval hashes = input:%q args:%q, want populated matching hashes", pendingApproval.InputHash, pendingApproval.ArgumentsHash)
+	}
+	if pendingApproval.ToolSurfaceFingerprint == "" || pendingApproval.PermissionSnapshotHash == "" {
+		t.Fatalf("pending approval fingerprints = surface:%q permission:%q, want populated", pendingApproval.ToolSurfaceFingerprint, pendingApproval.PermissionSnapshotHash)
+	}
+	if pendingApproval.IterationID == "" || len(pendingApproval.ApprovalOptions) == 0 {
+		t.Fatalf("pending approval ledger fields = %#v, want iteration id and approval options", pendingApproval)
 	}
 	emitter, ok := kernel.projector.(*testMockEventEmitter)
 	if !ok {
@@ -2026,6 +2682,75 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 }
 
+func TestResumeTurnApprovalFingerprintDriftRequiresReapproval(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   "call-drift",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "write_file",
+					Arguments: `{"path":"/tmp/demo","content":"hi"}`,
+				},
+			}}),
+		},
+	}
+	var executed int
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "write_file", Description: "Write a file"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "should-not-run"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-drift",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-drift",
+		Input:       "write the file",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
+	}
+	session := kernel.sessions.Get("sess-drift")
+	if session == nil || len(session.PendingApprovals) != 1 || session.CurrentTurn == nil {
+		t.Fatalf("session pending approval missing: %#v", session)
+	}
+	approvalID := session.PendingApprovals[0].ID
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:   "sess-drift",
+		TurnID:      "turn-drift",
+		ApprovalID:  approvalID,
+		Decision:    "approved",
+		ResumeState: TurnResumeStatePendingApproval,
+		Metadata: map[string]string{
+			"permissionSnapshotHash": "sha256:changed-permission",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn drift error = %v", err)
+	}
+	if executed != 0 {
+		t.Fatalf("tool executed %d time(s), want no execution after fingerprint drift", executed)
+	}
+	if resumed.Status != "blocked" || !strings.Contains(resumed.Error, "aiops.approval_drift/v1") {
+		t.Fatalf("resume result = %#v, want approval drift blocker", resumed)
+	}
+	session = kernel.sessions.Get("sess-drift")
+	if session == nil || len(session.PendingApprovals) != 1 || !strings.Contains(session.PendingApprovals[0].Reason, "approval_drift") {
+		t.Fatalf("pending approvals after drift = %#v, want re-approval request", session.PendingApprovals)
+	}
+}
+
 func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -2049,6 +2774,18 @@ func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 			RiskLevel:        tooling.ToolRiskHigh,
 			Mutating:         true,
 			RequiresApproval: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "argument_scoped",
+			},
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "host_command",
+				ResourceID:    "remote-linux-01",
+				OperationKind: "write",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{"docker --version"},
+			},
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
@@ -2516,6 +3253,97 @@ func TestResumeTurn_WithResumeMetadataContinuesSharedLoop(t *testing.T) {
 	}
 }
 
+func TestRunTurn_ModelTimeoutBecomesRecoverableAndResumeContinues(t *testing.T) {
+	model := &timeoutThenSuccessModel{}
+	evidenceTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "web_search",
+			Description: "Collect timeout recovery evidence",
+			RiskLevel:   tooling.ToolRiskLow,
+			AlwaysLoad:  true,
+			Layer:       tooling.ToolLayerCore,
+			Pack:        "public_web",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "prior evidence survives timeout"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	if err := registry.Register(evidenceTool); err != nil {
+		t.Fatalf("Register web_search failed: %v", err)
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry, nil)}, compiler, model)
+
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-model-timeout",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-model-timeout",
+		Input:       "analyze current incident",
+		Metadata: map[string]string{
+			"aiops.intent.kind":          "research",
+			"aiops.intent.dataScopes":    "public_web",
+			"aiops.route.allowsWebLearn": "true",
+			"enableToolPack":             "public_web",
+			"enableTool":                 "web_search",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn timeout should be recoverable, got error: %v", err)
+	}
+	if blocked.Status != "blocked" {
+		t.Fatalf("RunTurn status = %q, want blocked recoverable turn", blocked.Status)
+	}
+	if len(compiler.contexts) == 0 || !containsString(toolNames(compiler.contexts[0].AssembledTools), "web_search") {
+		t.Fatalf("first tool surface = %v, want web_search", toolNames(compiler.contexts[0].AssembledTools))
+	}
+	session := kernel.sessions.Get("sess-model-timeout")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected persisted turn snapshot")
+	}
+	snapshot := session.CurrentTurn
+	if snapshot.Lifecycle != TurnLifecycleResumable {
+		t.Fatalf("snapshot lifecycle = %q, want resumable", snapshot.Lifecycle)
+	}
+	if snapshot.ResumeState != TurnResumeStateResumable {
+		t.Fatalf("snapshot resume state = %q, want resumable", snapshot.ResumeState)
+	}
+	if snapshot.LatestCheckpoint == nil || snapshot.LatestCheckpoint.Kind != "model_timeout" {
+		t.Fatalf("checkpoint = %#v, want model_timeout", snapshot.LatestCheckpoint)
+	}
+	if len(snapshot.Iterations) == 0 || len(snapshot.Iterations[len(snapshot.Iterations)-1].ToolResults) == 0 {
+		t.Fatalf("expected tool evidence before timeout, iterations = %#v", snapshot.Iterations)
+	}
+	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
+		t.Fatalf("timeout snapshot should be recoverable: %v", err)
+	}
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:    session.ID,
+		TurnID:       snapshot.ID,
+		CheckpointID: snapshot.LatestCheckpoint.ID,
+		ResumeState:  TurnResumeStateResumable,
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn after timeout failed: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("ResumeTurn status = %q, want completed", resumed.Status)
+	}
+	if model.attempts < 2 {
+		t.Fatalf("model attempts = %d, want resume to re-enter model loop", model.attempts)
+	}
+	if !model.sawTool {
+		t.Fatalf("resume model input did not preserve prior tool evidence; last input:\n%s", schemaMessagesText(model.inputs[len(model.inputs)-1]))
+	}
+}
+
 func TestRunTurn_LargeToolResultIsSummarizedAndSpilled(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
@@ -2870,14 +3698,40 @@ func TestRunTurn_MutatingToolsSerializeEvenWhenPolicyAllowsExecution(t *testing.
 		}
 	}
 	toolA := &tooling.StaticTool{
-		Meta:                tooling.ToolMetadata{Name: "mutate_a", Description: "mutate A", Mutating: true},
+		Meta: tooling.ToolMetadata{
+			Name:        "mutate_a",
+			Description: "mutate A",
+			Mutating:    true,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "synthetic_resource",
+				ResourceID:    "a",
+				OperationKind: "write",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{"check-a"},
+			},
+		},
 		Visibility:          tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)}},
 		DestructiveFunc:     func(json.RawMessage) bool { return true },
 		ConcurrencySafeFunc: func(json.RawMessage) bool { return false },
 		ExecuteFunc:         mutate("A"),
 	}
 	toolB := &tooling.StaticTool{
-		Meta:                tooling.ToolMetadata{Name: "mutate_b", Description: "mutate B", Mutating: true},
+		Meta: tooling.ToolMetadata{
+			Name:        "mutate_b",
+			Description: "mutate B",
+			Mutating:    true,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "synthetic_resource",
+				ResourceID:    "b",
+				OperationKind: "write",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{"check-b"},
+			},
+		},
 		Visibility:          tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)}},
 		DestructiveFunc:     func(json.RawMessage) bool { return true },
 		ConcurrencySafeFunc: func(json.RawMessage) bool { return false },
@@ -3440,7 +4294,12 @@ func TestRunTurn_ProgressivelyEnablesOpsManualFlowTools(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		TurnID:      "turn-ops-manual-flow",
-		Input:       "检查 Redis 状态，不要重启",
+		Input:       "@ops_manuals 检查 Redis 状态，不要重启",
+		Metadata: map[string]string{
+			"enableToolPack":                   "ops_manual_flow",
+			"enableTool":                       "search_ops_manuals",
+			"aiops.opsManuals.explicitMention": "true",
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
@@ -3705,6 +4564,135 @@ func TestRunTurn_PostToolHookHidesToolForNextIteration(t *testing.T) {
 	}
 	if containsString(session.CurrentTurn.Iterations[1].VisibleTools, "read_remote_metrics") {
 		t.Fatalf("visible tools = %v, should hide read_remote_metrics", session.CurrentTurn.Iterations[1].VisibleTools)
+	}
+}
+
+func TestRunTurnMetadataToolSurfaceHidesExecCommand(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("只基于已有信息分析，不执行命令。", nil),
+			schema.AssistantMessage("结论保持受限：不执行命令。", nil),
+		},
+	}
+	execTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:       "exec_command",
+			Layer:      tooling.ToolLayerCore,
+			AlwaysLoad: true,
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "should not execute"}, nil
+		},
+	}
+	webTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:       "web_search",
+			Layer:      tooling.ToolLayerCore,
+			Pack:       "public_web",
+			AlwaysLoad: true,
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "search"}, nil
+		},
+	}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range []tooling.Tool{execTool, webTool} {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register(%s) error = %v", toolDef.Metadata().Name, err)
+		}
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{
+		assembler: tooling.NewAssembler(registry),
+	}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-metadata-no-exec",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		TurnID:      "turn-metadata-no-exec",
+		Input:       "PG timeline 为什么更高？只分析，不执行命令。",
+		Metadata: map[string]string{
+			"aiops.route.mode":              "chat_advisory",
+			"aiops.tool.execCommandAllowed": "false",
+			"enableToolPack":                "public_web",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+	if len(compiler.contexts) == 0 {
+		t.Fatal("compiler contexts = 0, want at least 1")
+	}
+	if names := toolNames(compiler.contexts[0].AssembledTools); containsString(names, "exec_command") {
+		t.Fatalf("compiled tools = %v, want exec_command hidden", names)
+	} else if !containsString(names, "web_search") {
+		t.Fatalf("compiled tools = %v, want web_search visible", names)
+	}
+	session := kernel.sessions.Get("sess-metadata-no-exec")
+	if session == nil || session.CurrentTurn == nil || len(session.CurrentTurn.Iterations) == 0 {
+		t.Fatal("expected persisted turn iteration")
+	}
+	if containsString(session.CurrentTurn.Iterations[0].VisibleTools, "exec_command") {
+		t.Fatalf("iteration visible tools = %v, want exec_command hidden", session.CurrentTurn.Iterations[0].VisibleTools)
+	}
+}
+
+func TestRunTurnUserEvidenceRCAHidesWebSearchAndDoesNotRequireTargetBinding(t *testing.T) {
+	answer := "结论（置信度：中）：基于用户提供日志，最可能是应用启动时数据库连接失败。缺失证据：namespace、Pod 名称、数据库端点和最近事件。"
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage(answer, nil),
+			schema.AssistantMessage(answer, nil),
+			schema.AssistantMessage(answer, nil),
+		},
+	}
+	registry := tooling.NewRegistry()
+	for _, toolDef := range []tooling.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "exec_command", Layer: tooling.ToolLayerCore, AlwaysLoad: true}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "web_search", Layer: tooling.ToolLayerCore, Pack: "public_web", AlwaysLoad: true}},
+	} {
+		if err := registry.Register(toolDef); err != nil {
+			t.Fatalf("Register(%s) error = %v", toolDef.Metadata().Name, err)
+		}
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{
+		assembler: tooling.NewAssembler(registry),
+	}, compiler, model)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-user-evidence-rca-no-web",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		TurnID:      "turn-user-evidence-rca-no-web",
+		Input: "线上 Kubernetes Pod 一直 CrashLoopBackOff。\n" +
+			"kubectl describe 里看到 Last State: Terminated, Exit Code: 1，Back-off restarting failed container。\n" +
+			"应用日志最后一行是 failed to connect database。请分析",
+		Metadata: map[string]string{
+			"aiops.route.mode":              "evidence_rca",
+			"aiops.target.binding":          "none",
+			"aiops.tool.execCommandAllowed": "false",
+			"aiops.userEvidence.present":    "true",
+			"aiops.userEvidence.kinds":      "log",
+			"taskDepth.analysisOnly":        "true",
+			"taskDepth.executionProhibited": "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if strings.Contains(result.Output, "@host") || strings.Contains(result.Output, "@IP") || strings.Contains(result.Output, "绑定") {
+		t.Fatalf("final output = %q, should not require target binding for analysis-only user evidence", result.Output)
+	}
+	if len(compiler.contexts) == 0 {
+		t.Fatal("compiler contexts = 0, want at least 1")
+	}
+	if names := toolNames(compiler.contexts[0].AssembledTools); containsString(names, "web_search") || containsString(names, "exec_command") {
+		t.Fatalf("compiled tools = %v, want no ambient web_search or exec_command", names)
 	}
 }
 
@@ -4109,4 +5097,52 @@ func containsExternalFilePath(refs []ExternalReference, filePath string) bool {
 		}
 	}
 	return false
+}
+
+func assertNoLegacyAssistantItems(t *testing.T, items []agentstate.TurnItem) {
+	t.Helper()
+	if invalid := firstInvalidTurnItem(items); invalid.ID != "" {
+		t.Fatalf("invalid or legacy turn item found: %#v", invalid)
+	}
+}
+
+func firstInvalidTurnItem(items []agentstate.TurnItem) agentstate.TurnItem {
+	for _, item := range items {
+		if !item.Type.IsValid() {
+			return item
+		}
+	}
+	return agentstate.TurnItem{}
+}
+
+func assistantMessagesByPhase(t *testing.T, items []agentstate.TurnItem, phase string) []agentstate.TurnItem {
+	t.Helper()
+	var out []agentstate.TurnItem
+	for _, item := range items {
+		if item.Type != agentstate.TurnItemTypeAssistantMessage {
+			continue
+		}
+		var payload struct {
+			Phase string `json:"phase"`
+		}
+		if len(item.Payload.Data) > 0 {
+			if err := json.Unmarshal(item.Payload.Data, &payload); err != nil {
+				t.Fatalf("unmarshal assistant_message payload: %v", err)
+			}
+		}
+		if strings.TrimSpace(payload.Phase) == phase {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func assistantMessagePhaseForTest(item agentstate.TurnItem) string {
+	var payload struct {
+		Phase string `json:"phase"`
+	}
+	if len(item.Payload.Data) > 0 {
+		_ = json.Unmarshal(item.Payload.Data, &payload)
+	}
+	return strings.TrimSpace(payload.Phase)
 }

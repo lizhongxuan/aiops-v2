@@ -21,41 +21,49 @@ const (
 // ContextGovernanceEvent is a redaction-safe state event. It carries IDs,
 // counts, thresholds, and user-facing status text, but not raw tool content.
 type ContextGovernanceEvent struct {
-	ID              string                     `json:"id"`
-	Layer           ContextGovernanceLayer     `json:"layer"`
-	Kind            string                     `json:"kind"`
-	SessionID       string                     `json:"sessionId,omitempty"`
-	TurnID          string                     `json:"turnId,omitempty"`
-	Iteration       int                        `json:"iteration,omitempty"`
-	ToolCallID      string                     `json:"toolCallId,omitempty"`
-	ToolName        string                     `json:"toolName,omitempty"`
-	Message         string                     `json:"message,omitempty"`
-	Budget          ContextBudgetThresholds    `json:"budget,omitempty"`
-	ReferenceIDs    []string                   `json:"referenceIds,omitempty"`
-	Resource        *ContextGovernanceResource `json:"resource,omitempty"`
-	CompactedIDs    []string                   `json:"compactedIds,omitempty"`
-	DroppedGroupIDs []string                   `json:"droppedGroupIds,omitempty"`
-	RetryAttempt    int                        `json:"retryAttempt,omitempty"`
-	RetryMax        int                        `json:"retryMax,omitempty"`
-	Timeout         bool                       `json:"timeout,omitempty"`
-	CreatedAt       time.Time                  `json:"createdAt,omitempty"`
+	ID                  string                     `json:"id"`
+	Layer               ContextGovernanceLayer     `json:"layer"`
+	Kind                string                     `json:"kind"`
+	SessionID           string                     `json:"sessionId,omitempty"`
+	TurnID              string                     `json:"turnId,omitempty"`
+	Iteration           int                        `json:"iteration,omitempty"`
+	ToolCallID          string                     `json:"toolCallId,omitempty"`
+	ToolName            string                     `json:"toolName,omitempty"`
+	MaterializationTier string                     `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                      `json:"originalBytes,omitempty"`
+	InlineBytes         int64                      `json:"inlineBytes,omitempty"`
+	Message             string                     `json:"message,omitempty"`
+	Budget              ContextBudgetThresholds    `json:"budget,omitempty"`
+	ReferenceIDs        []string                   `json:"referenceIds,omitempty"`
+	Resource            *ContextGovernanceResource `json:"resource,omitempty"`
+	CompactedIDs        []string                   `json:"compactedIds,omitempty"`
+	DroppedGroupIDs     []string                   `json:"droppedGroupIds,omitempty"`
+	RetryAttempt        int                        `json:"retryAttempt,omitempty"`
+	RetryMax            int                        `json:"retryMax,omitempty"`
+	Timeout             bool                       `json:"timeout,omitempty"`
+	CreatedAt           time.Time                  `json:"createdAt,omitempty"`
 }
 
 // ContextGovernanceTraceItem is the minimal payload intended for prompt trace.
 type ContextGovernanceTraceItem struct {
-	ID              string                     `json:"id,omitempty"`
-	Layer           ContextGovernanceLayer     `json:"layer"`
-	Kind            string                     `json:"kind"`
-	Message         string                     `json:"message,omitempty"`
-	Budget          ContextBudgetThresholds    `json:"budget,omitempty"`
-	ReferenceIDs    []string                   `json:"referenceIds,omitempty"`
-	Resource        *ContextGovernanceResource `json:"resource,omitempty"`
-	CompactedIDs    []string                   `json:"compactedIds,omitempty"`
-	DroppedGroupIDs []string                   `json:"droppedGroupIds,omitempty"`
-	RetryAttempt    int                        `json:"retryAttempt,omitempty"`
-	RetryMax        int                        `json:"retryMax,omitempty"`
-	Timeout         bool                       `json:"timeout,omitempty"`
-	CreatedAt       time.Time                  `json:"createdAt,omitempty"`
+	ID                  string                     `json:"id,omitempty"`
+	Layer               ContextGovernanceLayer     `json:"layer"`
+	Kind                string                     `json:"kind"`
+	Message             string                     `json:"message,omitempty"`
+	ToolCallID          string                     `json:"toolCallId,omitempty"`
+	ToolName            string                     `json:"toolName,omitempty"`
+	MaterializationTier string                     `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                      `json:"originalBytes,omitempty"`
+	InlineBytes         int64                      `json:"inlineBytes,omitempty"`
+	Budget              ContextBudgetThresholds    `json:"budget,omitempty"`
+	ReferenceIDs        []string                   `json:"referenceIds,omitempty"`
+	Resource            *ContextGovernanceResource `json:"resource,omitempty"`
+	CompactedIDs        []string                   `json:"compactedIds,omitempty"`
+	DroppedGroupIDs     []string                   `json:"droppedGroupIds,omitempty"`
+	RetryAttempt        int                        `json:"retryAttempt,omitempty"`
+	RetryMax            int                        `json:"retryMax,omitempty"`
+	Timeout             bool                       `json:"timeout,omitempty"`
+	CreatedAt           time.Time                  `json:"createdAt,omitempty"`
 }
 
 type ContextGovernanceResource struct {
@@ -69,19 +77,24 @@ type ContextGovernanceResource struct {
 // TracePayload returns the redaction-safe trace representation of the event.
 func (e ContextGovernanceEvent) TracePayload() ContextGovernanceTraceItem {
 	return ContextGovernanceTraceItem{
-		ID:              e.ID,
-		Layer:           e.Layer,
-		Kind:            e.Kind,
-		Message:         e.Message,
-		Budget:          e.Budget,
-		ReferenceIDs:    append([]string(nil), e.ReferenceIDs...),
-		Resource:        cloneContextGovernanceResource(e.Resource),
-		CompactedIDs:    append([]string(nil), e.CompactedIDs...),
-		DroppedGroupIDs: append([]string(nil), e.DroppedGroupIDs...),
-		RetryAttempt:    e.RetryAttempt,
-		RetryMax:        e.RetryMax,
-		Timeout:         e.Timeout,
-		CreatedAt:       e.CreatedAt,
+		ID:                  e.ID,
+		Layer:               e.Layer,
+		Kind:                e.Kind,
+		Message:             e.Message,
+		ToolCallID:          e.ToolCallID,
+		ToolName:            e.ToolName,
+		MaterializationTier: e.MaterializationTier,
+		OriginalBytes:       e.OriginalBytes,
+		InlineBytes:         e.InlineBytes,
+		Budget:              e.Budget,
+		ReferenceIDs:        append([]string(nil), e.ReferenceIDs...),
+		Resource:            cloneContextGovernanceResource(e.Resource),
+		CompactedIDs:        append([]string(nil), e.CompactedIDs...),
+		DroppedGroupIDs:     append([]string(nil), e.DroppedGroupIDs...),
+		RetryAttempt:        e.RetryAttempt,
+		RetryMax:            e.RetryMax,
+		Timeout:             e.Timeout,
+		CreatedAt:           e.CreatedAt,
 	}
 }
 

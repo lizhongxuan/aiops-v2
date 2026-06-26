@@ -64,6 +64,32 @@ func TestBuildOperationFrameUsesAssignedHostOwnedObserverComponentAsMonitor(t *t
 	}
 }
 
+func TestBuildOperationFrameDoesNotPromoteReferenceHostsToExecutionResources(t *testing.T) {
+	frame := BuildOperationFrame(`请分析主机A当前的恢复问题，不要执行变更。
+
+参考资料：
+| hostname | role |
+| --- | --- |
+| host82 | old standby |
+
+示例日志：
+`+"```text\nnode_16 failed to join cluster\n```\n", nil)
+
+	if got := roleByResource(frame, "主机A"); got.Kind != ResourceRoleDataNode || got.SourceKind != ResourceSourceUserRequest || got.Confidence != ResourceConfidenceHigh {
+		t.Fatalf("主机A role = %#v, want high-confidence user_request data_node; frame=%#v", got, frame)
+	}
+	for _, forbidden := range []string{"hostname", "host82", "node_16"} {
+		if role := roleByResource(frame, forbidden); role.ResourceRef != "" {
+			t.Fatalf("reference resource %q was promoted into roles: %#v frame=%#v", forbidden, role, frame)
+		}
+		for _, resource := range frame.ExecutionSurfaceV2.Resources {
+			if resource == forbidden {
+				t.Fatalf("reference resource %q was promoted into execution resources: %#v", forbidden, frame.ExecutionSurfaceV2.Resources)
+			}
+		}
+	}
+}
+
 func roleKindByResource(frame OperationFrame, resource string) string {
 	for _, role := range frame.Roles {
 		if role.ResourceRef == resource || role.UserLabel == resource {
@@ -76,6 +102,15 @@ func roleKindByResource(frame OperationFrame, resource string) string {
 func roleByRuntimeName(frame OperationFrame, runtimeName string) OperationResourceRole {
 	for _, role := range frame.Roles {
 		if role.RuntimeName == runtimeName {
+			return role
+		}
+	}
+	return OperationResourceRole{}
+}
+
+func roleByResource(frame OperationFrame, resource string) OperationResourceRole {
+	for _, role := range frame.Roles {
+		if role.ResourceRef == resource || role.UserLabel == resource {
 			return role
 		}
 	}

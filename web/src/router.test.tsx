@@ -26,6 +26,7 @@ const routedPaths = [
   "/settings/ops-manuals",
   "/settings/experience-packs",
   "/settings/agent",
+  "/mcp",
   "/capabilities",
   "/approval-management",
   "/agent-ui",
@@ -101,7 +102,7 @@ describe("AppRouter", () => {
     expect(container.textContent).toContain("旧入口已迁移到运维手册");
   });
 
-  it.each(["/settings/skills", "/settings/mcp", "/settings/connectors", "/capability-center", "/mcp"])(
+  it.each(["/settings/skills", "/settings/mcp", "/settings/connectors", "/capability-center"])(
     "redirects legacy capability route %s to unified capabilities",
     async (path) => {
       await act(async () => {

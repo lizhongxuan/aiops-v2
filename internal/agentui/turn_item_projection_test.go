@@ -20,9 +20,9 @@ func TestProjectTurnItemsToAgentEventsIsStable(t *testing.T) {
 		},
 		{
 			ID:        "final-1",
-			Type:      agentstate.TurnItemTypeFinalAnswer,
+			Type:      agentstate.TurnItemTypeAssistantMessage,
 			Status:    agentstate.ItemStatusCompleted,
-			Payload:   agentstate.PayloadEnvelope{Summary: "done"},
+			Payload:   agentstate.PayloadEnvelope{Summary: "done", Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)},
 			CreatedAt: createdAt,
 		},
 	}
@@ -75,8 +75,8 @@ func TestProjectTurnItemsToAgentEventsPreservesModelCallDebugData(t *testing.T) 
 
 func TestProjectTurnItemsToAgentEventsKeepsAssistantFinalItemsDistinct(t *testing.T) {
 	items := []agentstate.TurnItem{
-		{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "first"}},
-		{ID: "final-2", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "second"}},
+		{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "first", Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
+		{ID: "final-2", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "second", Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
 	}
 
 	events := ProjectTurnItemsToAgentEvents("session-1", "turn-1", items, 0)
@@ -271,5 +271,44 @@ func TestProjectTurnItemsToAgentEventsProjectsEvidenceFields(t *testing.T) {
 	}
 	if payload.RawRef == "" || len(payload.Data) == 0 {
 		t.Fatalf("evidence trace data missing: %#v", payload)
+	}
+}
+
+func TestProjectTurnItemsToAgentEventsSkipsUserProvidedEvidence(t *testing.T) {
+	data := json.RawMessage(`{
+		"source":"user",
+		"ref":"user-evidence:turn-1",
+		"kinds":"command_output,log",
+		"signals":"archive_recovery_active,archive_recovery_completed"
+	}`)
+	items := []agentstate.TurnItem{
+		{
+			ID:     "user-evidence",
+			Type:   agentstate.TurnItemTypeEvidence,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "user_provided",
+				Summary: "user-provided evidence; kinds=command_output,log; signals=archive_recovery_active,archive_recovery_completed",
+				Data:    data,
+			},
+		},
+		{
+			ID:     "tool-evidence",
+			Type:   agentstate.TurnItemTypeEvidence,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "metric",
+				Summary: "replication lag increased",
+			},
+		},
+	}
+
+	events := ProjectTurnItemsToAgentEvents("session-1", "turn-1", items, 0)
+
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want only non-user evidence: %#v", len(events), events)
+	}
+	if events[0].EventID == "turn-item:turn-1:user-evidence" || events[0].Kind != AgentEventEvidence {
+		t.Fatalf("events = %#v, want only tool evidence event", events)
 	}
 }

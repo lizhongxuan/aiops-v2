@@ -109,6 +109,118 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
+  it("uses the backend error when a failed turn only has a short assistant prelude", () => {
+    const state = createState();
+    state.status = "failed";
+    state.lastError = "error, status code: 500, status: 500 Internal Server Error, message: Network error";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      completedAt: "2026-05-06T00:02:05Z",
+      final: undefined,
+      process: [
+        {
+          id: "assistant-progress-1",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([
+      {
+        type: "text",
+        text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
+      },
+    ]);
+    expect(result.messages[1]?.content).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。" }),
+      ]),
+    );
+  });
+
+  it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
+    const state = createState();
+    const preservedAnswer = [
+      "Now I have enough context from the PostgreSQL PITR documentation and pg_auto_failover operations guide.",
+      "",
+      "根因：pgBackRest 恢复主机A后 promote 产生了新的 timeline 分支；当从节点恢复时又跟随了归档中更高的历史 timeline，导致主从 timeline 分叉不兼容。",
+      "",
+      "下一步：先核对主机 A 和主机 B 的 pg_controldata timeline，再检查恢复残留配置和归档 timeline history。",
+    ].join("\n");
+    state.status = "failed";
+    state.lastError = "failed to receive stream chunk: context deadline exceeded";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      completedAt: "2026-05-06T00:05:25Z",
+      final: {
+        id: "final-stream-error",
+        status: "failed",
+        text: "failed to receive stream chunk: context deadline exceeded",
+      },
+      process: [
+        {
+          id: "assistant-analysis",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: preservedAnswer,
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([{ type: "text", text: preservedAnswer }]);
+    expect(result.messages[1]?.content).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
+      ]),
+    );
+  });
+
+  it("keeps streamed assistant progress visible when a turn is canceled after partial output", () => {
+    const state = createState();
+    state.status = "canceled";
+    state.lastError = "user stop";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "canceled",
+      completedAt: "2026-05-06T00:02:05Z",
+      final: undefined,
+      process: [
+        {
+          id: "assistant-progress-canceled",
+          kind: "assistant",
+          status: "rejected",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "incomplete",
+          text: "已经输出的部分分析应该保留，不能因为取消而消失。",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([
+      { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
+    ]);
+  });
+
   it("normalizes legacy stream states before reading liveness and extension maps", () => {
     const state = createState() as Partial<AiopsTransportState>;
     delete state.runtimeLiveness;
@@ -947,7 +1059,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("treats working and blocked transport states as running", () => {
+  it("keeps approval-blocked transport interactive instead of treating it as running", () => {
     const state = createState();
 
     expect(isAiopsTransportRunning(state)).toBe(false);
@@ -958,6 +1070,17 @@ describe("aiopsTransportConverter", () => {
         status: "blocked",
         runtimeLiveness: {
           ...state.runtimeLiveness,
+          pendingApprovals: { "approval-1": true },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isAiopsTransportRunning({
+        ...state,
+        status: "blocked",
+        runtimeLiveness: {
+          ...state.runtimeLiveness,
+          activeTurns: { "turn-1": true },
           pendingApprovals: { "approval-1": true },
         },
       }),

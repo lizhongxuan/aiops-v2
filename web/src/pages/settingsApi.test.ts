@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { updateLlmConfig } from "@/pages/settingsApi";
+import { normalizeLlmContextTokens, normalizeLlmMaxOutputTokens, normalizeOptionalFloat, updateLlmConfig } from "@/pages/settingsApi";
 
 describe("settingsApi", () => {
   afterEach(() => {
@@ -40,7 +40,7 @@ describe("settingsApi", () => {
       "/api/v1/llm-config",
       expect.objectContaining({
         method: "PUT",
-        body: JSON.stringify({ provider: "openai", model: "gpt-5.4", maxContextTokens: 200000 }),
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.4", maxContextTokens: 200000, maxOutputTokens: 20000 }),
       }),
     );
   });
@@ -55,6 +55,7 @@ describe("settingsApi", () => {
       model: "gpt-5.4",
       reasoningEffort: "high",
       maxContextTokens: 200000,
+      maxOutputTokens: 20000,
     });
   });
 
@@ -67,5 +68,45 @@ describe("settingsApi", () => {
 
     const bodies = fetchSpy.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)));
     expect(bodies.map((body) => body.maxContextTokens)).toEqual([10000, 12000, 200000]);
+  });
+
+  it("normalizes max output tokens with an optional model cap", () => {
+    expect(normalizeLlmContextTokens(undefined)).toBe(200000);
+    expect(normalizeLlmMaxOutputTokens(undefined, 128000)).toBe(20000);
+    expect(normalizeLlmMaxOutputTokens(200000, 128000)).toBe(128000);
+    expect(normalizeLlmMaxOutputTokens("42.9", 128000)).toBe(42);
+  });
+
+  it("normalizes optional float fields before saving LLM config", async () => {
+    expect(normalizeOptionalFloat("")).toBeUndefined();
+    expect(normalizeOptionalFloat("0.95")).toBe(0.95);
+    expect(normalizeOptionalFloat("bad")).toBeUndefined();
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await updateLlmConfig({
+      provider: "zhipu",
+      model: "glm-5.2",
+      apiKey: "",
+      maxOutputTokens: "200000",
+      temperature: "1",
+      topP: "0.95",
+      thinkingType: "enabled",
+      reasoningEffort: "xhigh",
+      toolStream: true,
+    });
+
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+      provider: "zhipu",
+      model: "glm-5.2",
+      maxContextTokens: 200000,
+      maxOutputTokens: 200000,
+      temperature: 1,
+      topP: 0.95,
+      thinkingType: "enabled",
+      reasoningEffort: "xhigh",
+      toolStream: true,
+    });
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).not.toHaveProperty("apiKey");
   });
 });

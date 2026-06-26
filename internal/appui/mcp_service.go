@@ -44,6 +44,31 @@ func (s *defaultMCPService) List(context.Context) (MCPServersPayload, error) {
 	return s.buildPayload(), nil
 }
 
+func (s *defaultMCPService) Health(context.Context) (MCPHealthPayload, error) {
+	items := s.collectItems()
+	displayNames := s.registryDisplayNames()
+	out := make([]MCPHealthView, 0, len(items))
+	for _, item := range items {
+		out = append(out, mcpHealthViewFromServer(item, displayNames))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
+	return MCPHealthPayload{Items: out}, nil
+}
+
+func (s *defaultMCPService) HealthOne(_ context.Context, serverID string) (MCPHealthView, error) {
+	serverID = strings.TrimSpace(serverID)
+	if serverID == "" {
+		return MCPHealthView{}, fmt.Errorf("mcp server id is required")
+	}
+	displayNames := s.registryDisplayNames()
+	for _, item := range s.collectItems() {
+		if strings.TrimSpace(item.Name) == serverID {
+			return mcpHealthViewFromServer(item, displayNames), nil
+		}
+	}
+	return MCPHealthView{}, fmt.Errorf("mcp server %q not found", serverID)
+}
+
 func (s *defaultMCPService) Create(ctx context.Context, payload MCPServerUpsert) (MCPServersPayload, error) {
 	record, err := normalizeMCPServerRecord("", payload)
 	if err != nil {
@@ -495,6 +520,22 @@ func (s *defaultMCPService) resolveRegistry() *mcp.Registry {
 	return mcp.DefaultRegistry()
 }
 
+func (s *defaultMCPService) registryDisplayNames() map[string]string {
+	registry := s.resolveRegistry()
+	if registry == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, cfg := range registry.ListServers() {
+		id := strings.TrimSpace(firstNonEmpty(cfg.ID, cfg.Name))
+		displayName := strings.TrimSpace(firstNonEmpty(cfg.Name, cfg.ID))
+		if id != "" && displayName != "" {
+			out[id] = displayName
+		}
+	}
+	return out
+}
+
 func normalizeMCPServerRecord(fallbackName string, payload MCPServerUpsert) (store.MCPServerRecord, error) {
 	name := strings.TrimSpace(firstNonEmpty(payload.Name, fallbackName))
 	if name == "" {
@@ -653,6 +694,42 @@ func healthForRegistry(registry *mcp.Registry, name string, disabled bool) mcp.H
 		return snapshot
 	}
 	return mcp.HealthSnapshot{ServerID: name, Status: mcp.HealthUnknown, TTLSeconds: int(mcp.DefaultHealthTTL.Seconds())}
+}
+
+func mcpHealthViewFromServer(server MCPServerView, displayNames map[string]string) MCPHealthView {
+	health := server.Health
+	serverID := firstNonEmpty(strings.TrimSpace(health.ServerID), strings.TrimSpace(server.Name))
+	view := MCPHealthView{
+		ServerID:           serverID,
+		DisplayName:        firstNonEmpty(strings.TrimSpace(displayNames[serverID]), strings.TrimSpace(server.Name)),
+		Status:             runtimeHealthStatus(health.Status, server.Disabled),
+		LastCheckedAt:      isoStamp(health.LastCheckedAt),
+		LastError:          mcp.RedactHealthError(firstNonEmpty(health.LastError, server.Error)),
+		AvailableToolCount: server.ToolCount,
+		RetryAfterSeconds:  health.TTLSeconds,
+	}
+	if server.Disabled || health.Status == mcp.HealthDisabled {
+		view.DisabledReason = "server_disabled"
+	}
+	return view
+}
+
+func runtimeHealthStatus(status mcp.HealthStatus, disabled bool) string {
+	if disabled {
+		return "unhealthy"
+	}
+	switch status {
+	case mcp.HealthHealthy:
+		return "healthy"
+	case mcp.HealthDegraded:
+		return "degraded"
+	case mcp.HealthUnavailable, mcp.HealthDisabled:
+		return "unhealthy"
+	case mcp.HealthUnknown, "":
+		return "unknown"
+	default:
+		return "unknown"
+	}
 }
 
 func redactedMCPError(err error) string {

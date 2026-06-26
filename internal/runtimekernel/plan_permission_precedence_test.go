@@ -27,6 +27,14 @@ func TestToolDispatcherPlanActiveBlocksApprovedMutation(t *testing.T) {
 				Discovery: tooling.ToolDiscoveryMetadata{
 					ResourceTypes: []string{"synthetic_resource"},
 				},
+				ResourceLocks: []tooling.ToolResourceLockKey{{
+					ResourceType:  "synthetic_resource",
+					ResourceID:    "synthetic-resource",
+					OperationKind: "write",
+				}},
+				Idempotency: tooling.ToolIdempotencyMetadata{
+					Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
+				},
 			}},
 			executor: executor,
 		},
@@ -65,6 +73,14 @@ func TestToolDispatcherApprovedCallMustMatchPlanScope(t *testing.T) {
 				RiskLevel: tooling.ToolRiskMedium,
 				Discovery: tooling.ToolDiscoveryMetadata{
 					ResourceTypes: []string{"synthetic_resource"},
+				},
+				ResourceLocks: []tooling.ToolResourceLockKey{{
+					ResourceType:  "synthetic_resource",
+					ResourceID:    "synthetic-resource",
+					OperationKind: "write",
+				}},
+				Idempotency: tooling.ToolIdempotencyMetadata{
+					Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
 				},
 			}},
 			executor: executor,
@@ -112,6 +128,14 @@ func TestToolDispatcherApprovedPlanScopeAllowsMatchingMutation(t *testing.T) {
 				RiskLevel: tooling.ToolRiskMedium,
 				Discovery: tooling.ToolDiscoveryMetadata{
 					ResourceTypes: []string{"synthetic_resource"},
+				},
+				ResourceLocks: []tooling.ToolResourceLockKey{{
+					ResourceType:  "synthetic_resource",
+					ResourceID:    "synthetic-resource",
+					OperationKind: "write",
+				}},
+				Idempotency: tooling.ToolIdempotencyMetadata{
+					Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
 				},
 			}},
 			executor: executor,

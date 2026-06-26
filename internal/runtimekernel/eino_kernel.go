@@ -11,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -307,6 +309,7 @@ func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnaps
 	snapshot.CompletedAt = &now
 	snapshot.PendingApprovals = nil
 	snapshot.PendingEvidence = nil
+	cancelActiveAgentItems(snapshot)
 	if snapshot.LatestCheckpoint != nil {
 		snapshot.LatestCheckpoint.Lifecycle = TurnLifecycleCanceled
 		snapshot.LatestCheckpoint.ResumeState = TurnResumeStateNone
@@ -318,8 +321,10 @@ func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnaps
 		last.UpdatedAt = now
 		last.CompletedAt = &now
 	}
+	appendAbortedToolResultsForCancel(session, snapshot, reason, now)
 	session.PendingApprovals = nil
 	session.PendingEvidence = nil
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		k.projector.Emit(LifecycleEvent{
@@ -330,6 +335,64 @@ func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnaps
 		})
 	}
 	return true
+}
+
+func appendAbortedToolResultsForCancel(session *SessionState, snapshot *TurnSnapshot, reason string, now time.Time) {
+	if session == nil || snapshot == nil {
+		return
+	}
+	iter := latestIteration(snapshot)
+	if iter == nil {
+		return
+	}
+	normalizedReason := strings.TrimSpace(reason)
+	if normalizedReason == "" {
+		normalizedReason = "user_cancelled"
+	}
+	for idx := range iter.ToolInvocations {
+		inv := &iter.ToolInvocations[idx]
+		if inv.Status != ToolInvocationRunning && inv.Status != ToolInvocationQueued {
+			continue
+		}
+		toolCallID := strings.TrimSpace(inv.ToolCallID)
+		if toolCallID == "" || toolResultExists(iter.ToolResults, toolCallID) {
+			continue
+		}
+		payload, _ := json.Marshal(map[string]any{
+			"schemaVersion":        "aiops.tool_aborted/v1",
+			"reason":               normalizedReason,
+			"partialExecutionRisk": true,
+		})
+		result := ToolResult{
+			ToolCallID: toolCallID,
+			Content:    string(payload),
+			Summary:    "tool aborted",
+		}
+		iter.ToolResults = append(iter.ToolResults, result)
+		inv.Status = ToolInvocationFailed
+		inv.FailureKind = normalizedReason
+		inv.UpdatedAt = now
+		inv.CompletedAt = &now
+		session.Messages = append(session.Messages, Message{
+			ID:         fmt.Sprintf("msg-%d", now.UnixNano()+int64(idx)),
+			Role:       "tool",
+			Content:    result.Content,
+			ToolResult: &result,
+			Timestamp:  now,
+			Metadata: map[string]string{
+				"abort.reason": normalizedReason,
+			},
+		})
+	}
+}
+
+func toolResultExists(results []ToolResult, toolCallID string) bool {
+	for _, result := range results {
+		if strings.TrimSpace(result.ToolCallID) == toolCallID {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +515,19 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 
 	// Step 1: Get/create session
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	if activeTurn, ok := runningRegularTurnForPendingInput(session, turnID); ok {
+		pending := appendPendingInputToActiveTurn(session, activeTurn, req)
+		k.persistTurnSnapshot(session, activeTurn)
+		return TurnResult{
+			SessionType:     req.SessionType,
+			Mode:            req.Mode,
+			SessionID:       session.ID,
+			TurnID:          activeTurn.ID,
+			ClientTurnID:    pending.ClientTurnID,
+			ClientMessageID: pending.ClientMessageID,
+			Status:          "pending_input",
+		}, nil
+	}
 	if hostID := strings.TrimSpace(req.HostID); hostID != "" {
 		session.HostID = hostID
 		req.HostID = hostID
@@ -524,8 +600,14 @@ func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnR
 			agentstate.TurnItemTypeUserMessage,
 			agentstate.ItemStatusCompleted,
 			truncateString(req.Input, 240),
-			map[string]string{"messageId": msg.ID},
+			map[string]string{
+				"messageId": msg.ID,
+				"prompt":    req.Input,
+			},
 		))
+		if evidenceItem, ok := userEvidenceAgentItemFromMetadata(turnID, req.Metadata); ok {
+			appendAgentItem(snapshot, evidenceItem)
+		}
 		k.persistTurnSnapshot(session, snapshot)
 	}
 	recomputeContextWindow(&session.Context, session.Messages)
@@ -825,31 +907,46 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 		}, nil
 	}
 	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
-		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
-			return TurnResult{}, err
-		}
 		now := time.Now()
-		snapshot.Lifecycle = TurnLifecycleFailed
-		snapshot.ResumeState = TurnResumeStateNone
-		snapshot.Error = "approval denied"
-		snapshot.UpdatedAt = now
-		snapshot.CompletedAt = &now
 		approval := pendingApprovalByID(session, snapshot, req.ApprovalID)
-		recordRejectedApproval(session, approval, req.Decision, firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"]), now)
-		session.PendingApprovals = nil
-		session.PendingEvidence = nil
-		k.persistTurnSnapshot(session, snapshot)
+		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
+		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
 		k.emitApprovalDecided(session, snapshot, req.ApprovalID, req.Decision, "denied", now)
-		return TurnResult{
-			SessionType:     session.Type,
-			Mode:            session.Mode,
-			SessionID:       session.ID,
-			TurnID:          req.TurnID,
-			ClientTurnID:    snapshot.ClientTurnID,
-			ClientMessageID: snapshot.ClientMessageID,
-			Status:          "blocked",
-			Error:           "approval denied",
-		}, nil
+		return k.completeDeniedApprovalTurn(session, snapshot, approval, decisionReason, now)
+	}
+	if approval := pendingApprovalByID(session, snapshot, req.ApprovalID); isApprovedResumeDecision(req.Decision) {
+		if driftPayload, drifted := approvalFingerprintDriftPayload(approval, snapshot, req); drifted {
+			now := time.Now()
+			approval.Reason = driftPayload
+			approval.Status = "pending"
+			approval.UpdatedAt = now
+			snapshot.Lifecycle = TurnLifecycleSuspended
+			snapshot.ResumeState = TurnResumeStatePendingApproval
+			snapshot.Error = driftPayload
+			snapshot.UpdatedAt = now
+			snapshot.PendingApprovals = upsertPendingApproval(snapshot.PendingApprovals, approval)
+			session.PendingApprovals = upsertPendingApproval(session.PendingApprovals, approval)
+			k.persistTurnSnapshot(session, snapshot)
+			if k.projector != nil {
+				k.projector.Emit(LifecycleEvent{
+					Type:      EventApprovalNeeded,
+					SessionID: session.ID,
+					TurnID:    snapshot.ID,
+					Timestamp: now,
+					Payload:   []byte(driftPayload),
+				})
+			}
+			return TurnResult{
+				SessionType:     session.Type,
+				Mode:            session.Mode,
+				SessionID:       session.ID,
+				TurnID:          req.TurnID,
+				ClientTurnID:    snapshot.ClientTurnID,
+				ClientMessageID: snapshot.ClientMessageID,
+				Status:          "blocked",
+				Error:           driftPayload,
+			}, nil
+		}
 	}
 
 	agentKind := modelrouter.AgentKindWorker
@@ -1008,6 +1105,46 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 	return PendingApproval{}
 }
 
+func approvalFingerprintDriftPayload(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) (string, bool) {
+	if strings.TrimSpace(approval.ID) == "" {
+		return "", false
+	}
+	if reason := approvalFingerprintDriftReason(approval, snapshot, req); reason != "" {
+		payload, _ := json.Marshal(map[string]string{
+			"schemaVersion": "aiops.approval_drift/v1",
+			"approvalId":    approval.ID,
+			"decision":      "requires_reapproval",
+			"reason":        reason,
+		})
+		return string(payload), true
+	}
+	return "", false
+}
+
+func approvalFingerprintDriftReason(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) string {
+	currentSurface := firstNonEmpty(
+		req.Metadata["toolSurfaceFingerprint"],
+		req.Metadata["aiops.toolSurfaceFingerprint"],
+	)
+	if currentSurface == "" && snapshot != nil {
+		currentSurface = snapshot.StableToolFingerprint
+	}
+	if approval.ToolSurfaceFingerprint != "" && currentSurface != "" && approval.ToolSurfaceFingerprint != currentSurface {
+		return "tool surface fingerprint changed"
+	}
+	currentPermission := firstNonEmpty(
+		req.Metadata["permissionSnapshotHash"],
+		req.Metadata["aiops.permissionSnapshotHash"],
+	)
+	if currentPermission == "" {
+		currentPermission = approval.PermissionSnapshotHash
+	}
+	if approval.PermissionSnapshotHash != "" && currentPermission != "" && approval.PermissionSnapshotHash != currentPermission {
+		return "permission snapshot changed"
+	}
+	return ""
+}
+
 func recordRejectedApproval(session *SessionState, approval PendingApproval, decision, reason string, at time.Time) {
 	if session == nil {
 		return
@@ -1037,6 +1174,93 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 		}
 	}
 	session.RejectedApprovals = append(session.RejectedApprovals, rejected)
+}
+
+func (k *EinoKernel) completeDeniedApprovalTurn(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
+	if session == nil || snapshot == nil {
+		return TurnResult{}, fmt.Errorf("session and snapshot are required")
+	}
+	if snapshot.Lifecycle == TurnLifecycleSuspended {
+		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
+			return TurnResult{}, err
+		}
+		snapshot.Lifecycle = TurnLifecycleRunning
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
+		return TurnResult{}, err
+	}
+	finalText := deniedApprovalFinalText(approval, reason)
+	message := Message{
+		ID:        fmt.Sprintf("msg-%d", at.UnixNano()),
+		Role:      "assistant",
+		Content:   finalText,
+		Timestamp: at,
+	}
+	session.Messages = append(session.Messages, message)
+	snapshot.Lifecycle = TurnLifecycleCompleted
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = ""
+	snapshot.PendingApprovals = nil
+	snapshot.PendingEvidence = nil
+	snapshot.UpdatedAt = at
+	snapshot.CompletedAt = &at
+	session.PendingApprovals = nil
+	session.PendingEvidence = nil
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "approval_denied", TurnLifecycleCompleted, TurnResumeStateNone)
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
+	if last := latestIteration(snapshot); last != nil {
+		last.Lifecycle = TurnLifecycleCompleted
+		last.ResumeState = TurnResumeStateNone
+		last.Checkpoint = checkpoint
+		last.UpdatedAt = at
+		last.CompletedAt = &at
+	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
+	completeAssistantMessageItem(snapshot, itemID, finalText, assistantMessageData{
+		MessageID:        message.ID,
+		Iteration:        snapshot.Iteration,
+		Phase:            AssistantMessagePhaseFinalAnswer,
+		StreamState:      AssistantMessageStreamStateComplete,
+		EvidenceBoundary: "blocked",
+		BoundaryAction:   FinalMessageBoundaryBlock,
+		TextHash:         debugTextHash(finalText),
+	})
+	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerEinoKernel)
+	syncActiveTurnState(session, snapshot)
+	k.persistTurnSnapshot(session, snapshot)
+	return TurnResult{
+		SessionType:     session.Type,
+		Mode:            session.Mode,
+		SessionID:       session.ID,
+		TurnID:          snapshot.ID,
+		ClientTurnID:    snapshot.ClientTurnID,
+		ClientMessageID: snapshot.ClientMessageID,
+		Status:          "completed",
+		Output:          finalText,
+	}, nil
+}
+
+func deniedApprovalFinalText(approval PendingApproval, reason string) string {
+	payload := map[string]any{
+		"status":     "approval_denied",
+		"approvalId": strings.TrimSpace(approval.ID),
+		"tool":       firstNonEmpty(approval.ToolName, approval.Command),
+		"scope":      firstNonEmpty(approval.HostID, strings.Join(approval.TargetRefs, ","), approval.RequestedScope),
+		"reason":     firstNonEmpty(strings.TrimSpace(reason), approval.Reason, "approval denied"),
+		"allowedNextSteps": []string{
+			"continue_with_existing_evidence",
+			"ask_for_read_only_alternative",
+			"provide_limited_hypothesis",
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return `{"status":"approval_denied","reason":"approval denied","allowedNextSteps":["continue_with_existing_evidence","ask_for_read_only_alternative","provide_limited_hypothesis"]}`
+	}
+	return string(data)
 }
 
 func isApprovedResumeDecision(decision string) bool {
@@ -1108,10 +1332,20 @@ func (k *EinoKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResul
 	if session == nil {
 		return TurnResult{}, fmt.Errorf("session %q not found", req.SessionID)
 	}
-	k.requestTurnCancel(req.SessionID, req.TurnID, req.Reason)
+	inFlight := k.requestTurnCancel(req.SessionID, req.TurnID, req.Reason)
 
 	var clientTurnID, clientMessageID string
-	if snapshot := session.CurrentTurn; snapshot != nil && snapshot.ID == req.TurnID {
+	if !inFlight {
+		snapshot := session.CurrentTurn
+		if snapshot == nil || snapshot.ID != req.TurnID {
+			return TurnResult{
+				SessionType: session.Type,
+				Mode:        session.Mode,
+				SessionID:   session.ID,
+				TurnID:      req.TurnID,
+				Status:      "cancelled",
+			}, nil
+		}
 		clientTurnID = snapshot.ClientTurnID
 		clientMessageID = snapshot.ClientMessageID
 		k.markTurnCanceled(session, snapshot, req.Reason)
@@ -1187,6 +1421,8 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	// Step 2: Compile prompt
 	recorder.Record(StepCompilePrompt)
 	turnMetadata := k.applyProgressiveToolPackMetadata(cloneTurnMetadata(req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, req.HostID)
+	req.Metadata = turnMetadata
 	depthProfile := depthProfileFromTurnRequest(TurnRequest{
 		SessionType: req.SessionType,
 		Mode:        req.Mode,
@@ -1195,6 +1431,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	})
 	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
 	compileCtx = applyDepthProfileToCompileContext(compileCtx, depthProfile, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
+	compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
 	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 	compileCtx = appendSkillActivationContext(compileCtx, session)
 	compileCtx = appendMCPInstructionContext(compileCtx, session)
@@ -1314,18 +1551,20 @@ func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session
 
 func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
 	flags := featureflag.FromEnv(os.Getenv)
+	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
 		compileCtx := promptcompiler.CompileContext{
 			SessionType:    string(session),
 			Mode:           string(mode),
-			AssembledTools: source.CompileContextWithMetadata(session, mode, metadata),
+			AssembledTools: source.CompileContextWithMetadata(session, assemblyMode, metadata),
 		}
-		compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
+		compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, assemblyMode, metadata)
 		compileCtx.AssembledTools = appendContextArtifactTools(compileCtx.AssembledTools, k.contextArtifactToolsForMetadata(metadata)...)
 		return applyRuntimeFeatureFlags(compileCtx, flags)
 	}
-	compileCtx := k.tools.CompileContext(session, mode)
-	compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, mode)
+	compileCtx := k.tools.CompileContext(session, assemblyMode)
+	compileCtx.Mode = string(mode)
+	compileCtx = k.attachDeferredToolDirectoryContext(compileCtx, session, assemblyMode, metadata)
 	if opsManualsOptedOut(metadata) {
 		compileCtx.AssembledTools = filterOpsManualTools(compileCtx.AssembledTools)
 	}
@@ -1333,10 +1572,11 @@ func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map
 	return applyRuntimeFeatureFlags(compileCtx, flags)
 }
 
-func (k *EinoKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode) promptcompiler.CompileContext {
+func (k *EinoKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
 	if len(ctx.DeferredToolCatalog) == 0 {
 		ctx.DeferredToolCatalog = k.progressiveDiscoveryCatalog(session, mode)
 	}
+	ctx.DeferredToolCatalog = tooling.FilterToolsByPackMetadata(ctx.DeferredToolCatalog, metadata)
 	if ctx.MCPHealthSnapshot == nil {
 		ctx.MCPHealthSnapshot = mcpHealthSnapshotForPrompt()
 	}
@@ -1480,13 +1720,31 @@ func appendContextArtifactTools(tools []promptcompiler.Tool, extras ...promptcom
 }
 
 func applyToolSurfacePolicyToCompileContext(ctx promptcompiler.CompileContext, mode Mode, profile string, session *SessionState) (promptcompiler.CompileContext, tooling.ToolSurfacePolicySnapshot) {
+	ctx.Profile = strings.TrimSpace(profile)
 	filtered, snapshot := tooling.ApplyToolSurfacePolicy(ctx.AssembledTools, tooling.ToolSurfacePolicyOptions{
 		Mode:                string(mode),
-		Profile:             profile,
+		Profile:             ctx.Profile,
 		ActiveSkillPolicies: activeSkillToolPolicies(session),
 	})
 	ctx.AssembledTools = filtered
 	return ctx, snapshot
+}
+
+func applyDefaultRuntimePromptProfile(metadata map[string]string, sessionType SessionType, hostID string) map[string]string {
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	if firstMetadataValue(metadata, "profile", "toolProfile") != "" {
+		return metadata
+	}
+	if sessionType == SessionTypeHost {
+		metadata["profile"] = RuntimePromptProfileHostWorker
+		metadata["toolProfile"] = RuntimePromptProfileHostWorker
+		if strings.TrimSpace(hostID) != "" && strings.TrimSpace(metadata["aiops.host.id"]) == "" {
+			metadata["aiops.host.id"] = strings.TrimSpace(hostID)
+		}
+	}
+	return metadata
 }
 
 func (k *EinoKernel) applyProgressiveToolPackMetadata(metadata map[string]string, input string, sessionType SessionType, mode Mode, session *SessionState) map[string]string {
@@ -1551,13 +1809,25 @@ func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featurefl
 }
 
 func (k *EinoKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
+	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
-		return source.AssembleToolPoolWithMetadata(session, mode, metadata)
+		return source.AssembleToolPoolWithMetadata(session, assemblyMode, metadata)
 	}
 	if !opsManualsOptedOut(metadata) {
-		return k.tools.AssembleToolPool(session, mode)
+		return k.tools.AssembleToolPool(session, assemblyMode)
 	}
-	return tooling.AssembleEinoToolPool(filterOpsManualTools(k.tools.CompileContext(session, mode).AssembledTools))
+	return tooling.AssembleEinoToolPool(filterOpsManualTools(k.tools.CompileContext(session, assemblyMode).AssembledTools))
+}
+
+func effectiveToolAssemblyMode(session SessionType, mode Mode, metadata map[string]string) Mode {
+	if session != SessionTypeHost || mode != ModeChat {
+		return mode
+	}
+	profile := strings.TrimSpace(firstMetadataValue(metadata, "profile", "toolProfile", "agentProfile"))
+	if profile == RuntimePromptProfileHostWorker {
+		return ModeInspect
+	}
+	return mode
 }
 
 func (k *EinoKernel) runHostIterationLoop(
@@ -1574,9 +1844,15 @@ func (k *EinoKernel) runHostIterationLoop(
 	snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
 	const maxIterations = 16
 	toolDispatches := countActualToolDispatches(snapshot)
+	publicWebDispatches := 0
+	publicWebQueries := 0
+	publicWebDispatchesInitialized := false
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 	var lastReasoningPersist time.Time
-	turnMetadata := k.applyProgressiveToolPackMetadata(cloneTurnMetadata(req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	turnMetadata := k.applyProgressiveToolPackMetadata(mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, session.HostID)
+	req.Metadata = turnMetadata
+	snapshot.Metadata = turnMetadata
 	depthProfile := depthProfileFromTurnRequest(TurnRequest{
 		SessionType: req.SessionType,
 		Mode:        req.Mode,
@@ -1596,13 +1872,17 @@ func (k *EinoKernel) runHostIterationLoop(
 	for iteration := len(snapshot.Iterations); iteration < maxIterations; iteration++ {
 		k.emitIterationStage(session.ID, turnID, iteration, "context_pipeline", turnSpanID)
 		contextState, contextErr := ApplyContextPipeline(ctx, &session.Context, session.Messages, ContextPipelineOptions{
-			SessionID:        session.ID,
-			TurnID:           turnID,
-			Iteration:        iteration,
-			Compressor:       k.compressor,
-			PendingApprovals: session.PendingApprovals,
-			PendingEvidence:  session.PendingEvidence,
-			BudgetPolicy:     budgetPolicy,
+			SessionID:         session.ID,
+			TurnID:            turnID,
+			Iteration:         iteration,
+			Compressor:        k.compressor,
+			Profile:           firstMetadataValue(turnMetadata, "profile", "toolProfile"),
+			TargetRefs:        compactionTargetRefs(snapshot),
+			PendingApprovals:  session.PendingApprovals,
+			PendingEvidence:   session.PendingEvidence,
+			RejectedApprovals: session.RejectedApprovals,
+			ToolPacksLoaded:   session.ToolDiscovery.EnabledPacks(),
+			BudgetPolicy:      budgetPolicy,
 		})
 		if contextErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, contextErr.Error(), nil))
@@ -1613,9 +1893,13 @@ func (k *EinoKernel) runHostIterationLoop(
 		contextState.GovernanceEvents = append(contextState.GovernanceEvents, observationEvents...)
 		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, contextState.GovernanceEvents...)
 		appendContextGovernanceEvents(&session.ContextGovernanceEvents, contextState.GovernanceEvents...)
+		if len(contextState.CompactedSegments) > 0 {
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteContextCompaction, OwnerContextPipeline)
+		}
 		k.emitIterationStage(session.ID, turnID, iteration, "compile_prompt", turnSpanID)
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
 		compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
+		compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 		compileCtx = appendSkillActivationContext(compileCtx, session)
 		compileCtx = appendMCPInstructionContext(compileCtx, session)
@@ -1635,22 +1919,33 @@ func (k *EinoKernel) runHostIterationLoop(
 		}
 		compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
 		dispatchTools := append([]promptcompiler.Tool(nil), compileCtx.AssembledTools...)
+		if !publicWebDispatchesInitialized {
+			publicWebDispatches = countPublicWebDispatches(snapshot, dispatchTools)
+			publicWebQueries = countPublicWebQueries(snapshot, dispatchTools)
+			publicWebDispatchesInitialized = true
+		}
 		var surfacePolicy tooling.ToolSurfacePolicySnapshot
 		compileCtx, surfacePolicy = applyToolSurfacePolicyToCompileContext(compileCtx, req.Mode, firstMetadataValue(turnMetadata, "profile", "toolProfile"), session)
 		if shouldSwitchToSynthesisOnlyForTurn(req.Mode, snapshot.TaskDepth, req.Input, session, snapshot, toolDispatches, compileCtx.AssembledTools) {
 			applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			compileCtx.AssembledTools = nil
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, synthesisOnlyPromptAsset(toolDispatches))
+		} else if shouldSwitchToPublicWebSynthesisOnly(publicWebDispatches, compileCtx.AssembledTools) {
+			applyHiddenTools(snapshot, publicWebToolNames(compileCtx.AssembledTools))
+			compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
+			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, publicWebSynthesisOnlyPromptAsset(publicWebDispatches))
 		}
 		if len(additionalContext) > 0 {
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, additionalContext...)
 		}
-		if evidencePrompt := evidenceAwareFinalAnswerPromptAsset(snapshot); evidencePrompt != "" {
+		if evidencePrompt := evidenceAwareFinalAnswerPromptAsset(snapshot, 8); evidencePrompt != "" {
 			compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, evidencePrompt)
 		}
 		compileCtx.EvidenceReminders = compileEvidenceReminders(req.Mode, session.PendingEvidence)
 		compileCtx.ToolDelta = iterationToolDelta(snapshot, compileCtx.AssembledTools)
 		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence, session.RejectedApprovals)
+		compileCtx.VisibleToolFingerprint = assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		compileCtx = applyRuntimeStateMetadata(compileCtx, turnMetadata, session, snapshot)
 		compiled, compileErr := k.compiler.Compile(compileCtx)
 		if compileErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
@@ -1675,9 +1970,9 @@ func (k *EinoKernel) runHostIterationLoop(
 			compiled.ChangedSections = promptcompiler.ChangedPromptSections(nil, compiled.PromptSections)
 			compiled.PromptSections = promptcompiler.ApplyPromptSectionCache(nil, compiled.PromptSections)
 		}
-		stablePromptHash := promptContentHash(compiled.Stable.Content)
+		stablePromptHash := promptContentHash(promptcompiler.CompiledPromptStableText(compiled))
 		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
-		toolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		toolFingerprint := compileCtx.VisibleToolFingerprint
 		visibleToolNames := toolNames(compileCtx.AssembledTools)
 		toolSurfaceSnapshot := ToolSurfaceSnapshotRef{
 			ID:                 fmt.Sprintf("toolsurface-%s-%d", turnID, iteration),
@@ -1687,6 +1982,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			PolicySnapshot:     &surfacePolicy,
 			CreatedAt:          time.Now(),
 		}
+		snapshot.ToolSurfaceSnapshot = &toolSurfaceSnapshot
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
@@ -1736,8 +2032,11 @@ func (k *EinoKernel) runHostIterationLoop(
 			UnexpectedStateGate:           toolTraceFields.UnexpectedStateGate,
 			ApprovalScope:                 toolTraceFields.ApprovalScope,
 			ReasoningEffort:               compileCtx.ReasoningEffort,
+			AnswerStyle:                   compileCtx.AnswerStyle,
 			ToolSurfaceFingerprint:        toolTraceFields.ToolSurfaceFingerprint,
 			ToolSurfacePolicySnapshotHash: toolTraceFields.ToolSurfacePolicySnapshotHash,
+			ToolSurfaceSnapshot:           toolTraceFields.ToolSurfaceSnapshot,
+			PublicWebBudget:               toolTraceFields.PublicWebBudget,
 			LoadedToolsDelta:              toolTraceFields.LoadedToolsDelta,
 			LoadedPacksDelta:              toolTraceFields.LoadedPacksDelta,
 			SkillIndexHash:                toolTraceFields.SkillIndexHash,
@@ -1752,6 +2051,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			ParallelDispatchGroups:        toolTraceFields.ParallelDispatchGroups,
 			TaskClaims:                    taskClaimTracesFromSnapshot(snapshot),
 			ResourceLocks:                 toolTraceFields.ResourceLocks,
+			OwnerWriteTraces:              toolTraceFields.OwnerWriteTraces,
 			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
 			FinalEvidenceState:            &finalEvidenceTrace,
 		})
@@ -1798,31 +2098,47 @@ func (k *EinoKernel) runHostIterationLoop(
 		if modelSpanCtx != nil {
 			modelCtx = modelSpanCtx
 		}
-		finalItemID := fmt.Sprintf("%s-final-answer-%d", turnID, iteration)
+		assistantMessageID := assistantMessageItemID(turnID, iteration)
 		iterationAssistantOutput := ""
 		modelCallStartedAt := time.Now()
+		streamStats := ModelStreamStats{}
+		var firstDeltaAt time.Time
+		var lastDeltaAt time.Time
 		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
 			if delta != "" {
+				now := time.Now()
+				if firstDeltaAt.IsZero() {
+					firstDeltaAt = now
+					streamStats.FirstDeltaMs = durationMilliseconds(now.Sub(modelCallStartedAt))
+				}
+				lastDeltaAt = now
+				streamStats.DeltaCount++
+				streamStats.OutputChars += utf8.RuneCountInString(delta)
 				iterationAssistantOutput += delta
-				snapshot.FinalOutput += delta
 				if strings.TrimSpace(iterationAssistantOutput) != "" {
-					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, iterationAssistantOutput)
-					} else {
-						appendAgentItem(snapshot, newAgentItem(
-							finalItemID,
-							agentstate.TurnItemTypeFinalAnswer,
-							agentstate.ItemStatusRunning,
-							iterationAssistantOutput,
-							nil,
-						))
-					}
+					upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusRunning, iterationAssistantOutput, assistantMessageData{
+						Iteration:   iteration,
+						Phase:       AssistantMessagePhaseFinalAnswer,
+						StreamState: AssistantMessageStreamStateStreaming,
+						TextHash:    debugTextHash(iterationAssistantOutput),
+					})
+				}
+				if streamStats.DeltaCount == 1 || streamStats.DeltaCount%500 == 0 {
+					fields := debugTextFacts(iterationAssistantOutput)
+					fields["assistantMessageID"] = assistantMessageID
+					fields["deltaCount"] = streamStats.DeltaCount
+					fields["phase"] = string(AssistantMessagePhaseFinalAnswer)
+					fields["streamState"] = string(AssistantMessageStreamStateStreaming)
+					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_streaming", snapshot, fields)
 				}
 				snapshot.UpdatedAt = time.Now()
 				k.persistTurnSnapshot(session, snapshot)
 			}
 			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
-				"text": delta,
+				"text":        delta,
+				"phase":       string(AssistantMessagePhaseFinalAnswer),
+				"streamState": string(AssistantMessageStreamStateStreaming),
+				"iteration":   iteration,
 			})
 		}, func(event modelrouter.ReasoningStreamEvent) {
 			if event.Raw || event.PartAdded || strings.TrimSpace(event.Delta) == "" {
@@ -1860,15 +2176,68 @@ func (k *EinoKernel) runHostIterationLoop(
 				"foldable":     true,
 			})
 		})
+		modelCallDuration := time.Since(modelCallStartedAt)
+		if !firstDeltaAt.IsZero() {
+			streamEnd := time.Now()
+			if streamEnd.Before(lastDeltaAt) {
+				streamEnd = lastDeltaAt
+			}
+			streamStats.StreamMs = durationMilliseconds(streamEnd.Sub(firstDeltaAt))
+		}
+		{
+			fields := debugTextFacts(iterationAssistantOutput)
+			fields["assistantMessageID"] = assistantMessageID
+			fields["finishReason"] = modelResponseFinishReason(response)
+			fields["durationMs"] = modelCallDuration.Milliseconds()
+			fields["firstDeltaMs"] = streamStats.FirstDeltaMs
+			fields["streamMs"] = streamStats.StreamMs
+			fields["deltaCount"] = streamStats.DeltaCount
+			debugFinalStateLog(session.ID, turnID, iteration, "model_response_complete", snapshot, fields)
+		}
 		if genErr != nil {
-			appendModelTraceResponse(tracePath, modelItemID, nil, time.Since(modelCallStartedAt), genErr)
+			appendModelTraceResponse(tracePath, modelItemID, nil, modelCallDuration, genErr, streamStats)
+			hasAssistantMessageDraft := strings.TrimSpace(iterationAssistantOutput) != ""
+			if errors.Is(genErr, context.Canceled) || snapshot.Lifecycle == TurnLifecycleCanceled {
+				finishObservedSpan(modelSpan, "cancelled", genErr.Error(), map[string]any{"error": genErr.Error()})
+				updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCancelled, "模型调用已取消")
+				if snapshot.Lifecycle != TurnLifecycleCanceled {
+					k.markTurnCanceled(session, snapshot, "user stop")
+				} else {
+					snapshot.UpdatedAt = time.Now()
+					k.persistTurnSnapshot(session, snapshot)
+				}
+				return "", nil, genErr
+			}
+			if isRecoverableModelTimeout(genErr) && !hasAssistantMessageDraft {
+				finishObservedSpan(modelSpan, "blocked", genErr.Error(), map[string]any{"error": genErr.Error(), "recoverable": true})
+				updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, genErr.Error())
+				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, genErr.Error(), map[string]any{
+					"recoverable": true,
+					"checkpoint":  "model_timeout",
+				}))
+				blockedResult, transitionErr := k.markTurnResumableFromModelTimeout(session, snapshot, iteration, genErr)
+				if transitionErr != nil {
+					return "", nil, transitionErr
+				}
+				return "", &blockedResult, nil
+			}
 			finishObservedSpan(modelSpan, "failed", genErr.Error(), map[string]any{"error": genErr.Error()})
 			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, genErr.Error())
+			if hasAssistantMessageDraft {
+				failAssistantMessageItem(snapshot, assistantMessageID, firstNonEmptyString(iterationAssistantOutput, genErr.Error()), assistantMessageData{
+					Iteration:        iteration,
+					Phase:            AssistantMessagePhaseFinalAnswer,
+					StreamState:      AssistantMessageStreamStateIncomplete,
+					EvidenceBoundary: "blocked",
+					BoundaryAction:   FinalMessageBoundaryBlock,
+					Duration:         modelCallDuration,
+				})
+			}
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, genErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, genErr
 		}
-		appendModelTraceResponse(tracePath, modelItemID, response, time.Since(modelCallStartedAt), nil)
+		appendModelTraceResponse(tracePath, modelItemID, response, modelCallDuration, nil, streamStats)
 		toolCallCount := 0
 		if response != nil {
 			toolCallCount = len(response.ToolCalls)
@@ -1911,7 +2280,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			ToolSurfaceSnapshot:     &toolSurfaceSnapshot,
 			VisibleTools:            visibleToolNames,
 			RefreshedTools:          refreshedTools,
-			PromptDelta:             compiled.Dynamic.Content,
+			PromptDelta:             promptcompiler.CompiledPromptDynamicText(compiled),
 			PromptFingerprint:       promptFingerprint,
 			ModelInputTraceFile:     tracePath,
 			TokenBudget:             session.Context.MaxTokens,
@@ -1931,7 +2300,12 @@ func (k *EinoKernel) runHostIterationLoop(
 			assistantMsg.Timestamp = time.Now()
 		}
 		iterState.ToolCalls = append(iterState.ToolCalls, assistantMsg.ToolCalls...)
-		session.Messages = append(session.Messages, assistantMsg)
+		appendProviderNativeWebSearchTurnItems(snapshot, &iterState, turnID, modelrouter.ProviderNativeWebSearchEventsFromExtra(response.Extra))
+		assistantMessageCommitted := false
+		if len(assistantMsg.ToolCalls) > 0 {
+			session.Messages = append(session.Messages, assistantMsg)
+			assistantMessageCommitted = true
+		}
 		snapshot.Iteration = iteration
 		snapshot.StablePromptHash = stablePromptHash
 		snapshot.StableToolFingerprint = toolFingerprint
@@ -1955,10 +2329,7 @@ func (k *EinoKernel) runHostIterationLoop(
 			if shouldGuardPrematureFinal(snapshot.TaskDepth, snapshot, iteration, assistantContent) {
 				markPrematureFinalGuard(snapshot)
 				additionalContext = append(additionalContext, prematureFinalGuardPrompt(snapshot.TaskDepth))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-				}
+				markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
 			}
@@ -1969,10 +2340,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				}
 				snapshot.Metadata[planCompletionGateRetryMetadataKey] = "1"
 				additionalContext = append(additionalContext, planCompletionGateRetryPrompt(planCompletionDecision))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-				}
+				markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
 			}
@@ -1984,10 +2352,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				}
 				snapshot.Metadata[verificationCompletionGateRetryMetadataKey] = "1"
 				additionalContext = append(additionalContext, verificationCompletionGateRetryPrompt(verificationCompletionDecision))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-				}
+				markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
 			}
@@ -1998,10 +2363,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				}
 				snapshot.Metadata["managerSynthesisRetry"] = "1"
 				additionalContext = append(additionalContext, managerSynthesisRetryPrompt(managerGate))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-				}
+				markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
 			}
@@ -2013,10 +2375,14 @@ func (k *EinoKernel) runHostIterationLoop(
 					}
 					snapshot.Metadata["completionReadinessRetry"] = "1"
 					additionalContext = append(additionalContext, completionReadinessRetryPrompt(completionDecision))
-					snapshot.FinalOutput = ""
-					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-					}
+					markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
+					fields := debugTextFacts(assistantContent)
+					fields["assistantMessageID"] = assistantMessageID
+					fields["retryReason"] = "completion_readiness"
+					fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
+					fields["decisionAction"] = completionDecision.Action
+					fields["decisionReasons"] = completionDecision.Reasons
+					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 					k.persistTurnSnapshot(session, snapshot)
 					continue
 				}
@@ -2029,10 +2395,14 @@ func (k *EinoKernel) runHostIterationLoop(
 				if snapshot.Metadata["mandatorySkillActivationRetry"] != "1" {
 					snapshot.Metadata["mandatorySkillActivationRetry"] = "1"
 					additionalContext = append(additionalContext, mandatorySkillRetryPrompt(mandatorySkillDecision))
-					snapshot.FinalOutput = ""
-					if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-						updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-					}
+					markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
+					fields := debugTextFacts(assistantContent)
+					fields["assistantMessageID"] = assistantMessageID
+					fields["retryReason"] = "mandatory_skill_activation"
+					fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
+					fields["decisionAction"] = mandatorySkillDecision.Action
+					fields["decisionReasons"] = mandatorySkillDecision.Reasons
+					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 					k.persistTurnSnapshot(session, snapshot)
 					continue
 				}
@@ -2043,60 +2413,140 @@ func (k *EinoKernel) runHostIterationLoop(
 					TurnID:         turnID,
 				}, time.Now())
 			}
-			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent)
+			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent, modelResponseFinishReason(response))
 			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
 				snapshot.Metadata[finalCompletenessRetryMetadataKey] = "1"
 				additionalContext = append(additionalContext, finalCompletenessRetryPrompt(finalCompletenessDecision))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
-				}
+				markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "limited", FinalMessageBoundaryRetryOnce)
+				fields := debugTextFacts(assistantContent)
+				fields["assistantMessageID"] = assistantMessageID
+				fields["retryReason"] = "final_completeness"
+				fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
+				fields["decisionAction"] = finalCompletenessDecision.Action
+				fields["decisionReasons"] = finalCompletenessDecision.Reasons
+				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
+			}
+			if finalCompletenessDecision.Action == "retry_complete_final" {
+				incompleteErr := finalCompletenessFailureError(finalCompletenessDecision)
+				snapshot.FinalOutput = ""
+				failAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
+					MessageID:        assistantMsg.ID,
+					Iteration:        iteration,
+					Phase:            AssistantMessagePhaseFinalAnswer,
+					StreamState:      AssistantMessageStreamStateIncomplete,
+					EvidenceBoundary: "blocked",
+					BoundaryAction:   FinalMessageBoundaryBlock,
+					TextHash:         debugTextHash(assistantContent),
+					Duration:         modelCallDuration,
+				})
+				if !assistantMessageCommitted {
+					assistantMsg.Content = assistantContent
+					session.Messages = append(session.Messages, assistantMsg)
+					assistantMessageCommitted = true
+				}
+				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, incompleteErr.Error(), nil))
+				if transitionErr := k.markTurnFailedFromError(session, snapshot, incompleteErr, "assistant_message_incomplete"); transitionErr != nil {
+					return "", nil, transitionErr
+				}
+				return "", nil, incompleteErr
 			}
 			finalEvidence := BuildFinalEvidenceState(snapshot, session)
 			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
-			if finalEvidenceDecision.Action != FinalEvidenceActionAllow && snapshot.Metadata["finalEvidenceVerifierRetry"] != "1" {
+			boundaryDecision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
+				Text:                assistantContent,
+				FinishReason:        modelResponseFinishReason(response),
+				PendingToolIntent:   finalMessageHasProcessIntent(assistantContent),
+				FinalEvidenceAction: finalEvidenceDecision.Action,
+				RequiresEvidence:    len(finalEvidence.FailedTools) > 0 || len(finalEvidence.NotChecked) > 0,
+			})
+			finalEvidenceBlocked := false
+			if boundaryDecision.Action == FinalMessageBoundaryBlock {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
-				snapshot.Metadata["finalEvidenceVerifierRetry"] = "1"
-				additionalContext = append(additionalContext, finalEvidenceRetryPrompt(finalEvidenceDecision))
-				snapshot.FinalOutput = ""
-				if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-					updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusRunning, assistantContent)
+				snapshot.Metadata["finalEvidenceBlocked"] = "true"
+				if len(finalEvidenceDecision.Reasons) > 0 {
+					snapshot.Metadata["finalEvidenceBlockReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
 				}
-				k.persistTurnSnapshot(session, snapshot)
-				continue
+				fields := debugTextFacts(assistantContent)
+				fields["replaceReason"] = "final_message_boundary_block"
+				fields["decisionAction"] = string(finalEvidenceDecision.Action)
+				fields["decisionReasons"] = finalEvidenceDecision.Reasons
+				fields["boundaryAction"] = string(boundaryDecision.Action)
+				fields["boundaryReasons"] = boundaryDecision.Reasons
+				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				if finalMessageHasProcessIntent(assistantContent) {
+					assistantContent = incompleteFinalFromEvidenceDecision(finalEvidenceDecision)
+				} else {
+					assistantContent = finalEvidenceBlockedFallback(finalEvidenceDecision)
+				}
+				finalEvidenceBlocked = true
+			} else if boundaryDecision.Action == FinalMessageBoundaryConstrain {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["finalEvidenceConstrained"] = "true"
+				if len(finalEvidenceDecision.Reasons) > 0 {
+					snapshot.Metadata["finalEvidenceConstrainReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
+				}
+				fields := debugTextFacts(assistantContent)
+				fields["replaceReason"] = "final_message_boundary_constrain"
+				fields["decisionAction"] = string(finalEvidenceDecision.Action)
+				fields["decisionReasons"] = finalEvidenceDecision.Reasons
+				fields["boundaryAction"] = string(boundaryDecision.Action)
+				fields["boundaryReasons"] = boundaryDecision.Reasons
+				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				assistantContent = constrainFinalMessageForEvidenceBoundary(assistantContent, finalEvidenceDecision)
 			}
-			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); blocked {
+			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); !finalEvidenceBlocked && blocked {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
 				snapshot.Metadata["taskDepth.missingEvidenceFinalBlocked"] = "true"
+				fields := debugTextFacts(assistantContent)
+				fields["replaceReason"] = "missing_evidence_final_blocker"
+				fields["blockerHash"] = debugTextHash(blocker)
+				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				assistantContent = blocker
+				boundaryDecision.Action = FinalMessageBoundaryBlock
+				boundaryDecision.EvidenceBoundary = "blocked"
+			}
+			if boundaryDecision.Action == "" {
+				boundaryDecision.Action = FinalMessageBoundaryAllow
+			}
+			if strings.TrimSpace(boundaryDecision.EvidenceBoundary) == "" {
+				boundaryDecision.EvidenceBoundary = "sufficient"
 			}
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
 			}
 			now := time.Now()
+			if !assistantMessageCommitted {
+				assistantMsg.Content = assistantContent
+				session.Messages = append(session.Messages, assistantMsg)
+				assistantMessageCommitted = true
+			}
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
-			snapshot.FinalOutput = assistantContent
-			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
-			} else {
-				appendAgentItem(snapshot, newAgentItem(
-					finalItemID,
-					agentstate.TurnItemTypeFinalAnswer,
-					agentstate.ItemStatusCompleted,
-					assistantContent,
-					map[string]string{"messageId": assistantMsg.ID},
-				))
-			}
+			completeAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
+				MessageID:        assistantMsg.ID,
+				Iteration:        iteration,
+				Phase:            AssistantMessagePhaseFinalAnswer,
+				StreamState:      AssistantMessageStreamStateComplete,
+				EvidenceBoundary: boundaryDecision.EvidenceBoundary,
+				BoundaryAction:   boundaryDecision.Action,
+				EvidenceRefs:     assistantMessageEvidenceRefsFromSnapshot(snapshot),
+				TextHash:         debugTextHash(assistantContent),
+				Duration:         modelCallDuration,
+			})
+			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerEinoKernel)
 			snapshot.UpdatedAt = now
 			snapshot.CompletedAt = &now
 			if last := latestIteration(snapshot); last != nil {
@@ -2107,24 +2557,48 @@ func (k *EinoKernel) runHostIterationLoop(
 			}
 			session.PendingApprovals = nil
 			session.PendingEvidence = nil
+			{
+				fields := debugAssistantMessageFacts(snapshot, assistantMessageID, assistantContent, map[string]any{
+					"finalContract":       "final",
+					"finalEvidenceAction": string(finalEvidenceDecision.Action),
+					"commitAllowed":       true,
+				})
+				fields["assistantMessageID"] = assistantMessageID
+				fields["finalStatus"] = string(agentstate.ItemStatusCompleted)
+				fields["durationMs"] = modelCallDuration.Milliseconds()
+				debugFinalStateLog(session.ID, turnID, iteration, "final_committed", snapshot, fields)
+			}
 			k.persistTurnSnapshot(session, snapshot)
 			return assistantContent, nil, nil
 		}
 
 		if assistantContent != "" {
-			if hasAgentItemID(snapshot.AgentItems, finalItemID) {
-				updateAgentItem(snapshot, finalItemID, agentstate.ItemStatusCompleted, assistantContent)
+			progressAllowed := isAssistantProgressContentAllowed(assistantContent)
+			if progressAllowed {
+				completeAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
+					MessageID:   assistantMsg.ID,
+					Iteration:   iteration,
+					Phase:       AssistantMessagePhaseCommentary,
+					StreamState: AssistantMessageStreamStateComplete,
+					TextHash:    debugTextHash(assistantContent),
+					Duration:    modelCallDuration,
+				})
 			} else {
-				appendAgentItem(snapshot, newAgentItem(
-					finalItemID,
-					agentstate.TurnItemTypeFinalAnswer,
-					agentstate.ItemStatusCompleted,
-					assistantContent,
-					map[string]string{"messageId": assistantMsg.ID},
-				))
+				removeAgentItem(snapshot, assistantMessageID)
 			}
-		}
-		if snapshot.FinalOutput != "" {
+			fields := debugTextFacts(assistantContent)
+			fields["assistantMessageID"] = assistantMessageID
+			if progressAllowed {
+				fields["phase"] = string(AssistantMessagePhaseCommentary)
+			} else {
+				fields["phase"] = "suppressed"
+				fields["commentaryWasLongOrFinalLike"] = true
+			}
+			fields["hasToolCalls"] = len(assistantMsg.ToolCalls) > 0
+			fields["toolCallCount"] = len(assistantMsg.ToolCalls)
+			debugFinalStateLog(session.ID, turnID, iteration, "assistant_content_before_tools_classified", snapshot, fields)
+			k.persistTurnSnapshot(session, snapshot)
+		} else if snapshot.FinalOutput != "" {
 			snapshot.FinalOutput = ""
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
@@ -2237,6 +2711,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				appendContextGovernanceEvents(&last.ContextGovernanceEvents, latestToolResultGovernanceEvents(session, tc.ID)...)
 				last.UpdatedAt = time.Now()
 			}
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
 			k.applyAggregateToolResultBudget(session, snapshot, iteration, dispatchTools)
 			snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
 			appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
@@ -2258,44 +2733,63 @@ func (k *EinoKernel) runHostIterationLoop(
 			if canDispatchToolCallInParallel(dispatchTools, tc) && toolDispatches < defaultMaxToolDispatchesPerTurn {
 				remaining := defaultMaxToolDispatchesPerTurn - toolDispatches
 				batch := make([]ToolCall, 0, remaining)
+				pendingPublicWebDispatches := 0
+				pendingPublicWebQueries := 0
 				for i < len(assistantMsg.ToolCalls) && len(batch) < remaining && canDispatchToolCallInParallel(dispatchTools, assistantMsg.ToolCalls[i]) {
-					batch = append(batch, assistantMsg.ToolCalls[i])
+					nextCall := assistantMsg.ToolCalls[i]
+					if publicWebBudgetReached(dispatchTools, nextCall, publicWebDispatches+pendingPublicWebDispatches, publicWebQueries+pendingPublicWebQueries, DefaultPublicWebBudget()) {
+						break
+					}
+					nextCall = limitPublicWebToolCall(dispatchTools, nextCall, DefaultPublicWebBudget())
+					batch = append(batch, nextCall)
+					if isPublicWebToolCall(dispatchTools, nextCall) {
+						pendingPublicWebDispatches++
+						pendingPublicWebQueries += publicWebQueryCountForToolCall(nextCall)
+					}
 					i++
 				}
-				toolItemIDs := make([]string, len(batch))
-				for j, batchCall := range batch {
-					toolItemIDs[j] = appendToolCallState(batchCall)
-				}
-				recordParallelDispatchGroup(snapshot, turnID, iteration, batch, dispatchTools)
-				k.persistTurnSnapshot(session, snapshot)
-				for _, batchCall := range batch {
-					markToolInvocationRunning(snapshot, batchCall.ID)
-				}
-				k.persistTurnSnapshot(session, snapshot)
-
-				results := make([]DispatchResult, len(batch))
-				var wg sync.WaitGroup
-				for j, batchCall := range batch {
-					wg.Add(1)
-					go func(index int, call ToolCall) {
-						defer wg.Done()
-						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
-						results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
-					}(j, batchCall)
-				}
-				wg.Wait()
-				toolDispatches += countToolCallsTowardBudget(batch)
-
-				for j, batchCall := range batch {
-					blocked, err := processDispatchResult(batchCall, toolItemIDs[j], results[j])
-					if blocked != nil || err != nil {
-						return "", blocked, err
+				if len(batch) == 0 {
+					// Fall through to the sequential path so this call gets a
+					// structured budget result instead of silently disappearing.
+				} else {
+					toolItemIDs := make([]string, len(batch))
+					for j, batchCall := range batch {
+						toolItemIDs[j] = appendToolCallState(batchCall)
 					}
+					recordParallelDispatchGroup(snapshot, turnID, iteration, batch, dispatchTools)
+					k.persistTurnSnapshot(session, snapshot)
+					for _, batchCall := range batch {
+						markToolInvocationRunning(snapshot, batchCall.ID)
+					}
+					k.persistTurnSnapshot(session, snapshot)
+
+					results := make([]DispatchResult, len(batch))
+					var wg sync.WaitGroup
+					for j, batchCall := range batch {
+						wg.Add(1)
+						go func(index int, call ToolCall) {
+							defer wg.Done()
+							dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+							results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
+						}(j, batchCall)
+					}
+					wg.Wait()
+					toolDispatches += countToolCallsTowardBudget(batch)
+					publicWebDispatches += countPublicWebToolCalls(dispatchTools, batch)
+					publicWebQueries += countPublicWebQueriesForToolCalls(dispatchTools, batch)
+
+					for j, batchCall := range batch {
+						blocked, err := processDispatchResult(batchCall, toolItemIDs[j], results[j])
+						if blocked != nil || err != nil {
+							return "", blocked, err
+						}
+					}
+					continue
 				}
-				continue
 			}
 
 			i++
+			tc = limitPublicWebToolCall(dispatchTools, tc, DefaultPublicWebBudget())
 			toolItemID := appendToolCallState(tc)
 			k.persistTurnSnapshot(session, snapshot)
 			markToolInvocationRunning(snapshot, tc.ID)
@@ -2304,7 +2798,10 @@ func (k *EinoKernel) runHostIterationLoop(
 				ToolCallID: tc.ID,
 				Metadata:   toolMetadataForToolCall(dispatchTools, tc),
 			}
-			if countsTowardToolBudget(tc) && toolDispatches >= defaultMaxToolDispatchesPerTurn {
+			if countsTowardToolBudget(tc) && publicWebBudgetReached(dispatchTools, tc, publicWebDispatches, publicWebQueries, DefaultPublicWebBudget()) {
+				dispatchResult.Result = publicWebBudgetReachedResultForModel(tc, publicWebDispatches, publicWebQueries, DefaultPublicWebBudget())
+				applyHiddenTools(snapshot, publicWebToolNames(compileCtx.AssembledTools))
+			} else if countsTowardToolBudget(tc) && toolDispatches >= defaultMaxToolDispatchesPerTurn {
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
 			} else {
@@ -2312,6 +2809,10 @@ func (k *EinoKernel) runHostIterationLoop(
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
 					toolDispatches++
+				}
+				if isPublicWebToolCall(dispatchTools, tc) {
+					publicWebDispatches++
+					publicWebQueries += publicWebQueryCountForToolCall(tc)
 				}
 			}
 			blocked, err := processDispatchResult(tc, toolItemID, dispatchResult)
@@ -2347,15 +2848,39 @@ func (k *EinoKernel) runHostIterationLoop(
 		last.Checkpoint = checkpoint
 		last.UpdatedAt = now
 	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
 	appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, maxIterations), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "iteration limit exceeded", nil))
 	k.persistTurnSnapshot(session, snapshot)
 	return "", nil, fmt.Errorf("iteration limit exceeded")
 }
 
 const (
-	defaultMaxToolDispatchesPerTurn    = 12
-	defaultSynthesisOnlyToolDispatches = 5
+	defaultMaxToolDispatchesPerTurn      = 12
+	defaultMaxPublicWebDispatchesPerTurn = 3
+	defaultPublicWebSynthesisDispatches  = 2
+	defaultSynthesisOnlyToolDispatches   = 5
 )
+
+type PublicWebBudget struct {
+	MaxSearchCalls        int
+	MaxQueries            int
+	MaxResults            int
+	MaxCallsPerTurn       int
+	MaxQueriesPerCall     int
+	MaxResultsPerDomain   int
+	ExplicitUserRequested bool
+}
+
+func DefaultPublicWebBudget() PublicWebBudget {
+	return PublicWebBudget{
+		MaxSearchCalls:      3,
+		MaxQueries:          6,
+		MaxResults:          8,
+		MaxCallsPerTurn:     3,
+		MaxQueriesPerCall:   2,
+		MaxResultsPerDomain: 2,
+	}
+}
 
 func shouldSwitchToSynthesisOnly(mode Mode, profile taskdepth.Profile, toolDispatches int, tools []promptcompiler.Tool) bool {
 	if len(tools) == 0 {
@@ -2366,7 +2891,7 @@ func shouldSwitchToSynthesisOnly(mode Mode, profile taskdepth.Profile, toolDispa
 	}
 	switch profile.Level {
 	case taskdepth.LevelInvestigation:
-		return toolDispatches >= 8
+		return toolDispatches >= 5
 	case taskdepth.LevelOperations, taskdepth.LevelMultiAgent:
 		return toolDispatches >= 12
 	case taskdepth.LevelMultiStep:
@@ -2381,6 +2906,21 @@ func shouldSwitchToSynthesisOnlyForTurn(mode Mode, profile taskdepth.Profile, in
 		return true
 	}
 	return shouldSwitchToHostResourceSynthesis(profile, input, session, snapshot, toolDispatches, tools)
+}
+
+func shouldSwitchToPublicWebSynthesisOnly(publicWebDispatches int, tools []promptcompiler.Tool) bool {
+	if publicWebDispatches < defaultPublicWebSynthesisDispatches {
+		return false
+	}
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		if strings.TrimSpace(toolDef.Metadata().Pack) == "public_web" {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldSwitchToHostResourceSynthesis(profile taskdepth.Profile, input string, session *SessionState, snapshot *TurnSnapshot, toolDispatches int, tools []promptcompiler.Tool) bool {
@@ -2497,19 +3037,27 @@ func uniqueStrings(values []string) []string {
 
 func synthesisOnlyPromptAsset(toolDispatches int) string {
 	return fmt.Sprintf(
-		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户回答；如果证据不足，给出 budget-limited conclusion，明确已用证据和仍缺证据。不要把证据不足包装成高置信度根因，也不要假装调查完整。",
+		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户回答；如果证据不足，给出 budget-limited conclusion，明确已用证据和仍缺证据。不要把证据不足包装成已验证根因，也不要假装调查完整。",
 		toolDispatches,
 	)
 }
 
-func evidenceAwareFinalAnswerPromptAsset(snapshot *TurnSnapshot) string {
-	summaries := collectedToolEvidenceSummaries(snapshot, 8)
+func publicWebSynthesisOnlyPromptAsset(publicWebDispatches int) string {
+	return fmt.Sprintf(
+		"## Public-web synthesis-only phase\n已完成 %d 次公开网页/文档检索。停止继续调用 web_search 或 browse_url，基于已收集的权威来源直接给用户最终回答；只引用真正支撑结论的链接，不要继续扩展同义查询。如果证据不足，给出受限结论并列出仍缺的只读证据。",
+		publicWebDispatches,
+	)
+}
+
+func evidenceAwareFinalAnswerPromptAsset(snapshot *TurnSnapshot, limit int) string {
+	summaries := collectedToolEvidenceSummaries(snapshot, limit)
 	if len(summaries) == 0 {
 		return ""
 	}
 	lines := []string{
 		"## Evidence-aware final answer",
 		"Use the collected tool evidence summaries below when preparing the final answer. Do not invent evidence; if evidence is incomplete, state the limitation briefly.",
+		"When using web_search or browse_url evidence, cite the specific supporting source inline as `[参考: source title](URL)` immediately after the claim. Do not cite raw search queries as evidence.",
 		"",
 		"Collected evidence summaries:",
 	}
@@ -2538,10 +3086,7 @@ func collectedToolEvidenceSummaries(snapshot *TurnSnapshot, limit int) []string 
 			if len(out) >= limit {
 				return out
 			}
-			text := strings.TrimSpace(result.Summary)
-			if text == "" {
-				text = firstNonEmptyLine(result.Content)
-			}
+			text := toolEvidenceSummaryForFinalPrompt(result)
 			if text == "" {
 				continue
 			}
@@ -2559,6 +3104,169 @@ func collectedToolEvidenceSummaries(snapshot *TurnSnapshot, limit int) []string 
 		}
 	}
 	return out
+}
+
+func toolEvidenceSummaryForFinalPrompt(result ToolResult) string {
+	if refs := toolReferenceSummaryForFinalPrompt(result); refs != "" {
+		return refs
+	}
+	if webSources := webSourcesSummaryForFinalPrompt(result.Content); webSources != "" {
+		return webSources
+	}
+	text := strings.TrimSpace(result.Summary)
+	if text == "" {
+		text = firstNonEmptyLine(result.Content)
+	}
+	return text
+}
+
+func toolReferenceSummaryForFinalPrompt(result ToolResult) string {
+	if len(result.References) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(result.References))
+	for _, ref := range result.References {
+		uri := strings.TrimSpace(ref.URI)
+		if uri == "" {
+			continue
+		}
+		title := strings.TrimSpace(ref.Title)
+		if title == "" {
+			title = uri
+		}
+		parts = append(parts, fmt.Sprintf("[参考: %s](%s)", title, uri))
+		if len(parts) >= 4 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "网页来源: " + strings.Join(parts, "; ")
+}
+
+type finalPromptWebSource struct {
+	Title string
+	URL   string
+}
+
+func webSourcesSummaryForFinalPrompt(content string) string {
+	sources := extractWebSourcesForFinalPrompt(content)
+	if len(sources) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(sources))
+	for _, source := range sources {
+		title := strings.TrimSpace(source.Title)
+		if title == "" {
+			title = source.URL
+		}
+		parts = append(parts, fmt.Sprintf("[参考: %s](%s)", title, source.URL))
+		if len(parts) >= 4 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "网页来源: " + strings.Join(parts, "; ")
+}
+
+func extractWebSourcesForFinalPrompt(content string) []finalPromptWebSource {
+	lines := strings.Split(content, "\n")
+	var out []finalPromptWebSource
+	seen := map[string]bool{}
+	pendingTitle := ""
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if title := numberedSearchTitle(line); title != "" {
+			pendingTitle = title
+			continue
+		}
+		if strings.HasPrefix(line, "- ") {
+			title, sourceURL := splitTitleAndURL(strings.TrimSpace(strings.TrimPrefix(line, "- ")))
+			if sourceURL != "" {
+				out = appendUniqueFinalPromptWebSource(out, seen, title, sourceURL)
+				continue
+			}
+		}
+		if sourceURL := urlFromSearchLine(line); sourceURL != "" {
+			out = appendUniqueFinalPromptWebSource(out, seen, pendingTitle, sourceURL)
+			pendingTitle = ""
+		}
+	}
+	return out
+}
+
+func appendUniqueFinalPromptWebSource(out []finalPromptWebSource, seen map[string]bool, title, sourceURL string) []finalPromptWebSource {
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" || seen[sourceURL] {
+		return out
+	}
+	seen[sourceURL] = true
+	out = append(out, finalPromptWebSource{Title: strings.TrimSpace(title), URL: sourceURL})
+	return out
+}
+
+func numberedSearchTitle(line string) string {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(line[i:])
+	if !strings.HasPrefix(rest, ".") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(rest, "."))
+}
+
+func splitTitleAndURL(line string) (string, string) {
+	sourceURL := extractFirstHTTPURL(line)
+	if sourceURL == "" {
+		return "", ""
+	}
+	title := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(strings.Split(line, sourceURL)[0]), ":"))
+	return title, sourceURL
+}
+
+func urlFromSearchLine(line string) string {
+	if idx := strings.Index(strings.ToLower(line), "url:"); idx >= 0 {
+		return extractFirstHTTPURL(strings.TrimSpace(line[idx+len("url:"):]))
+	}
+	return extractFirstHTTPURL(line)
+}
+
+func extractFirstHTTPURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	start := -1
+	for _, prefix := range []string{"https://", "http://"} {
+		if idx := strings.Index(strings.ToLower(value), prefix); idx >= 0 && (start == -1 || idx < start) {
+			start = idx
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(value)
+	for i, r := range value[start:] {
+		if i == 0 {
+			continue
+		}
+		if r == ' ' || r == '\t' || r == '\n' || r == '"' || r == '\'' || r == '<' || r == '>' || r == ')' || r == ']' || r == '}' {
+			end = start + i
+			break
+		}
+	}
+	return strings.TrimRight(value[start:end], ".,;:")
 }
 
 func toolIntentPrelude(userInput string, assistantMsg Message) string {
@@ -2713,6 +3421,268 @@ func countToolCallsTowardBudget(calls []ToolCall) int {
 	return count
 }
 
+func countPublicWebDispatches(snapshot *TurnSnapshot, tools []promptcompiler.Tool) int {
+	if snapshot == nil {
+		return 0
+	}
+	count := 0
+	for _, iteration := range snapshot.Iterations {
+		toolCallsByID := make(map[string]ToolCall, len(iteration.ToolCalls))
+		for _, call := range iteration.ToolCalls {
+			toolCallsByID[call.ID] = call
+		}
+		for _, result := range iteration.ToolResults {
+			call := toolCallsByID[result.ToolCallID]
+			if !isPublicWebToolCall(tools, call) || isToolBudgetResult(result) || isNonBudgetToolResult(result, call.Name) {
+				continue
+			}
+			count++
+		}
+	}
+	return count
+}
+
+func countPublicWebToolCalls(tools []promptcompiler.Tool, calls []ToolCall) int {
+	count := 0
+	for _, call := range calls {
+		if isPublicWebToolCall(tools, call) {
+			count++
+		}
+	}
+	return count
+}
+
+func countPublicWebQueries(snapshot *TurnSnapshot, tools []promptcompiler.Tool) int {
+	if snapshot == nil {
+		return 0
+	}
+	count := 0
+	for _, iteration := range snapshot.Iterations {
+		toolCallsByID := make(map[string]ToolCall, len(iteration.ToolCalls))
+		for _, call := range iteration.ToolCalls {
+			toolCallsByID[call.ID] = call
+		}
+		for _, result := range iteration.ToolResults {
+			call := toolCallsByID[result.ToolCallID]
+			if !isPublicWebToolCall(tools, call) || isToolBudgetResult(result) || isNonBudgetToolResult(result, call.Name) {
+				continue
+			}
+			count += publicWebQueryCountForToolCall(call)
+		}
+	}
+	return count
+}
+
+func countPublicWebQueriesForToolCalls(tools []promptcompiler.Tool, calls []ToolCall) int {
+	count := 0
+	for _, call := range calls {
+		if isPublicWebToolCall(tools, call) {
+			count += publicWebQueryCountForToolCall(call)
+		}
+	}
+	return count
+}
+
+func publicWebBudgetReached(tools []promptcompiler.Tool, call ToolCall, currentCalls, currentQueries int, budget PublicWebBudget) bool {
+	if !isPublicWebToolCall(tools, call) {
+		return false
+	}
+	budget = normalizePublicWebBudget(budget)
+	if currentCalls >= budget.MaxSearchCalls {
+		return true
+	}
+	return currentQueries+publicWebQueryCountForToolCall(call) > budget.MaxQueries
+}
+
+func isPublicWebToolCall(tools []promptcompiler.Tool, call ToolCall) bool {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return false
+	}
+	if toolDef := toolForToolCall(tools, call); toolDef != nil {
+		return strings.TrimSpace(toolDef.Metadata().Pack) == "public_web"
+	}
+	switch tooling.ProviderSafeToolName(name) {
+	case "web_search", "browse_url":
+		return true
+	default:
+		return false
+	}
+}
+
+func publicWebToolNames(tools []promptcompiler.Tool) []string {
+	names := make([]string, 0, 2)
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if strings.TrimSpace(meta.Pack) == "public_web" {
+			names = append(names, meta.Name)
+		}
+	}
+	if len(names) == 0 {
+		names = append(names, "web_search", "browse_url")
+	}
+	return uniqueStrings(names)
+}
+
+func limitPublicWebToolCall(tools []promptcompiler.Tool, call ToolCall, budget PublicWebBudget) ToolCall {
+	if !isPublicWebToolCall(tools, call) || len(call.Arguments) == 0 {
+		return call
+	}
+	budget = normalizePublicWebBudget(budget)
+	var payload map[string]any
+	if err := json.Unmarshal(call.Arguments, &payload); err != nil {
+		return call
+	}
+	changed := false
+	resultKeys := []string{"max_results", "maxResults", "num_results", "numResults", "limit", "count"}
+	foundResultLimit := false
+	for _, key := range resultKeys {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		foundResultLimit = true
+		if numeric, ok := numericJSONValue(value); ok && numeric > budget.MaxResults {
+			payload[key] = budget.MaxResults
+			changed = true
+		}
+	}
+	if !foundResultLimit {
+		payload["max_results"] = budget.MaxResults
+		changed = true
+	}
+	for _, key := range []string{"queries", "search_query", "searchQuery", "q", "keywords"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		trimmed, didTrim := trimPublicWebQueryList(value, budget.MaxQueriesPerCall)
+		if didTrim {
+			payload[key] = trimmed
+			changed = true
+		}
+	}
+	if !changed {
+		return call
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return call
+	}
+	call.Arguments = data
+	return call
+}
+
+func trimPublicWebQueryList(value any, limit int) (any, bool) {
+	if limit <= 0 {
+		return value, false
+	}
+	switch typed := value.(type) {
+	case []any:
+		if len(typed) <= limit {
+			return value, false
+		}
+		return typed[:limit], true
+	case []string:
+		if len(typed) <= limit {
+			return value, false
+		}
+		return typed[:limit], true
+	default:
+		return value, false
+	}
+}
+
+func publicWebQueryCountForToolCall(call ToolCall) int {
+	if len(call.Arguments) == 0 {
+		return 1
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(call.Arguments, &payload); err != nil {
+		return 1
+	}
+	for _, key := range []string{"queries", "query", "search_query", "searchQuery", "q", "keywords"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case []any:
+			count := 0
+			for _, item := range typed {
+				if strings.TrimSpace(fmt.Sprint(item)) != "" {
+					count++
+				}
+			}
+			if count > 0 {
+				return count
+			}
+		case []string:
+			count := 0
+			for _, item := range typed {
+				if strings.TrimSpace(item) != "" {
+					count++
+				}
+			}
+			if count > 0 {
+				return count
+			}
+		default:
+			if strings.TrimSpace(fmt.Sprint(typed)) != "" {
+				return 1
+			}
+		}
+	}
+	return 1
+}
+
+func numericJSONValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	case float64:
+		return int(typed), true
+	case json.Number:
+		n, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+func normalizePublicWebBudget(budget PublicWebBudget) PublicWebBudget {
+	if budget.MaxCallsPerTurn > 0 && budget.MaxSearchCalls <= 0 {
+		budget.MaxSearchCalls = budget.MaxCallsPerTurn
+	}
+	if budget.MaxSearchCalls <= 0 {
+		budget.MaxSearchCalls = 3
+	}
+	if budget.MaxCallsPerTurn <= 0 {
+		budget.MaxCallsPerTurn = budget.MaxSearchCalls
+	}
+	if budget.MaxQueries <= 0 {
+		budget.MaxQueries = 6
+	}
+	if budget.MaxResults <= 0 {
+		budget.MaxResults = 8
+	}
+	if budget.MaxQueriesPerCall <= 0 {
+		budget.MaxQueriesPerCall = 2
+	}
+	if budget.MaxResultsPerDomain <= 0 {
+		budget.MaxResultsPerDomain = 2
+	}
+	return budget
+}
+
 func countsTowardToolBudget(call ToolCall) bool {
 	return !isUpdatePlanToolName(call.Name)
 }
@@ -2799,6 +3769,29 @@ func toolBudgetReachedResultForModel(tc ToolCall, executed int) tooling.ToolResu
 	}
 }
 
+func publicWebBudgetReachedResultForModel(tc ToolCall, executedCalls, executedQueries int, budget PublicWebBudget) tooling.ToolResult {
+	toolName := strings.TrimSpace(tc.Name)
+	if toolName == "" {
+		toolName = "public_web"
+	}
+	budget = normalizePublicWebBudget(budget)
+	return tooling.ToolResult{
+		ToolCallID: tc.ID,
+		Content: fmt.Sprintf(
+			"Public web retrieval budget reached after %d public web tool calls and %d queries. Turn budget is max_search_calls=%d, max_queries=%d, max_results=%d. Do not call more public web tools in this turn. Answer now using the collected source evidence; if evidence is incomplete, state the limitation briefly and list the most useful remaining query or source.",
+			executedCalls,
+			executedQueries,
+			budget.MaxSearchCalls,
+			budget.MaxQueries,
+			budget.MaxResults,
+		),
+		Display: &tooling.ToolDisplayPayload{
+			Type:  "tool_budget",
+			Title: toolName,
+		},
+	}
+}
+
 func shouldFeedToolFailureBackToModel(result DispatchResult) bool {
 	if result.Blocked || strings.TrimSpace(result.Error) == "" {
 		return false
@@ -2834,7 +3827,7 @@ func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolRe
 	if decision.RequiresUser || decision.Kind == toolfailure.KindToolNotFound {
 		allowedNextActions = append(allowedNextActions, string(toolfailure.ActionAskUser))
 	}
-	body, marshalErr := json.Marshal(map[string]any{
+	bodyMap := map[string]any{
 		"type":               "tool_error",
 		"toolCallId":         tc.ID,
 		"toolName":           toolName,
@@ -2843,7 +3836,14 @@ func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolRe
 		"userActionRequired": decision.RequiresUser,
 		"message":            fmt.Sprintf("%s failed: %s", toolName, errText),
 		"allowedNextActions": allowedNextActions,
-	})
+	}
+	if decision.Kind == toolfailure.KindSideEffectUnknown {
+		bodyMap["postCheckRequired"] = true
+		if refs := normalizedPostCheckRefs(result.Metadata); len(refs) > 0 {
+			bodyMap["postCheckRefs"] = refs
+		}
+	}
+	body, marshalErr := json.Marshal(bodyMap)
 	content := string(body)
 	if marshalErr != nil {
 		content = fmt.Sprintf(`{"type":"tool_error","toolCallId":%q,"toolName":%q,"failureKind":"%s","retryable":false,"userActionRequired":false,"message":%q,"allowedNextActions":[]}`, tc.ID, toolName, decision.Kind, fmt.Sprintf("%s failed: %s", toolName, errText))
@@ -2904,6 +3904,12 @@ func enrichCompileContext(
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
 			Title:   "Ops Manual Reference",
 			Content: opsManualReference,
+		})
+	}
+	if webLearn := webLearnPromptSection(metadata); webLearn != "" {
+		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
+			Title:   "WebLearn Source Policy",
+			Content: webLearn,
 		})
 	}
 	if sessionType != SessionTypeHost || hostID != "server-local" {
@@ -3054,11 +4060,14 @@ func selectedHostInventoryPromptSection(metadata map[string]string) string {
 	add("Arch", "aiops.host.arch")
 	add("Transport", "aiops.host.transport")
 	add("Status", "aiops.host.status")
+	add("Agent status", "aiops.host.agentStatus")
+	add("SSH status", "aiops.host.sshStatus")
+	add("Runtime reachability", "aiops.host.runtimeReachability")
 	if len(lines) == 0 {
 		return ""
 	}
 	lines = append([]string{
-		"The current host session is bound to this inventory record. Use these values when answering host identity, address, SSH user, and connection questions. Do not guess missing fields.",
+		"The current host session is bound to this inventory record. Use these values when answering host identity, address, SSH user, and connection questions. Do not guess missing fields. Treat Status as the host-agent heartbeat status; use SSH status and runtime reachability to decide whether read-only SSH evidence may still be available.",
 	}, lines...)
 	return strings.Join(lines, "\n")
 }
@@ -3128,6 +4137,118 @@ func opsManualReferencePromptSection(metadata map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+func webLearnPromptSection(metadata map[string]string) string {
+	if len(metadata) == 0 || !metadataBool(metadata["aiops.weblearn.enabled"]) {
+		return ""
+	}
+	lines := []string{
+		"When unfamiliar middleware, tool versions, operating-system command semantics, networking behavior, or environment-specific differences matter, use web_search/browse_url before giving operational conclusions.",
+		"Prefer official documentation, vendor docs, project docs, source repositories, and version-specific documentation first; cite the source URL and explain the applicable version or environment when relying on WebLearn.",
+		"Do not use exec_command, bash, shell, or Python as a substitute for WebLearn. Host commands require an explicit @host/@local target and are not available for advisory/evidence-only turns.",
+	}
+	if strings.EqualFold(strings.TrimSpace(metadata["aiops.weblearn.sourcePolicy"]), "official_first") {
+		lines = append(lines, "Source policy: official_first / 官方来源优先。")
+	}
+	if evidence := webLearnEvidencePromptSection(metadata["aiops.weblearn.evidence"]); evidence != "" {
+		lines = append(lines, "", "WebLearn Evidence", evidence)
+	}
+	return strings.Join(lines, "\n")
+}
+
+type runtimeWebLearnEvidence struct {
+	Kind            string `json:"kind"`
+	Query           string `json:"query"`
+	SourceURL       string `json:"sourceUrl"`
+	SourceTitle     string `json:"sourceTitle"`
+	SourceKind      string `json:"sourceKind"`
+	Product         string `json:"product"`
+	Version         string `json:"version"`
+	RelevantExcerpt string `json:"relevantExcerpt"`
+	Applicability   string `json:"applicability"`
+	Confidence      string `json:"confidence"`
+}
+
+func webLearnEvidencePromptSection(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var items []runtimeWebLearnEvidence
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return ""
+	}
+	lines := make([]string, 0, len(items)*4)
+	for _, item := range items {
+		item = normalizeRuntimeWebLearnEvidence(item)
+		if !runtimeWebLearnEvidenceInjectable(item) {
+			continue
+		}
+		title := firstNonEmpty(item.SourceTitle, item.SourceURL)
+		head := "- " + title
+		var attrs []string
+		if item.Product != "" {
+			attrs = append(attrs, item.Product)
+		}
+		if item.Version != "" {
+			attrs = append(attrs, "version "+item.Version)
+		}
+		if item.SourceKind != "" {
+			attrs = append(attrs, item.SourceKind)
+		}
+		if item.Confidence != "" {
+			attrs = append(attrs, item.Confidence+" confidence")
+		}
+		if len(attrs) > 0 {
+			head += " (" + strings.Join(attrs, ", ") + ")"
+		}
+		lines = append(lines, head)
+		if item.SourceURL != "" {
+			lines = append(lines, "  URL: "+item.SourceURL)
+		}
+		if item.Applicability != "" {
+			lines = append(lines, "  Applicability: "+item.Applicability)
+		}
+		if item.RelevantExcerpt != "" {
+			lines = append(lines, "  Summary: "+truncateForBudget(item.RelevantExcerpt, 420))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeRuntimeWebLearnEvidence(item runtimeWebLearnEvidence) runtimeWebLearnEvidence {
+	item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+	item.Query = strings.TrimSpace(item.Query)
+	item.SourceURL = strings.TrimSpace(item.SourceURL)
+	item.SourceTitle = strings.TrimSpace(item.SourceTitle)
+	item.SourceKind = strings.ToLower(strings.TrimSpace(item.SourceKind))
+	item.Product = strings.TrimSpace(item.Product)
+	item.Version = strings.TrimSpace(item.Version)
+	item.RelevantExcerpt = strings.TrimSpace(item.RelevantExcerpt)
+	item.Applicability = strings.TrimSpace(item.Applicability)
+	item.Confidence = strings.ToLower(strings.TrimSpace(item.Confidence))
+	return item
+}
+
+func runtimeWebLearnEvidenceInjectable(item runtimeWebLearnEvidence) bool {
+	if item.Kind != "external_knowledge" {
+		return false
+	}
+	switch item.Confidence {
+	case "high", "medium":
+	default:
+		return false
+	}
+	switch item.SourceKind {
+	case "official_docs", "vendor_docs", "project_docs", "source_repo", "release_notes", "manual", "man_page":
+	default:
+		return false
+	}
+	return item.SourceURL != "" && (item.RelevantExcerpt != "" || item.Applicability != "")
+}
+
 func opsManualsOptedOut(metadata map[string]string) bool {
 	if len(metadata) == 0 {
 		return false
@@ -3175,6 +4296,7 @@ func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *Session
 	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
 		return nil, err
 	}
+	snapshot.Metadata = applyDefaultRuntimePromptProfile(snapshot.Metadata, session.Type, session.HostID)
 	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, snapshot.Metadata), session.Type, session.HostID, snapshot.Metadata, time.Now())
 	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools)
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
@@ -3401,6 +4523,38 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	return payload
 }
 
+func finalCompletenessFailureError(decision FinalCompletenessDecision) error {
+	reasons := strings.Join(compactStringList(decision.Reasons), ", ")
+	if reasons == "" {
+		reasons = "possible_incomplete_assistant_message"
+	}
+	return fmt.Errorf("assistant message incomplete: %s", reasons)
+}
+
+func modelResponseFinishReason(response *schema.Message) string {
+	if response == nil || response.ResponseMeta == nil {
+		return ""
+	}
+	return strings.TrimSpace(response.ResponseMeta.FinishReason)
+}
+
+func compactStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func toolDisplayDataShouldStayOutOfPreview(displayType string) bool {
 	return strings.TrimSpace(displayType) != ""
 }
@@ -3456,6 +4610,29 @@ func evidenceRefsFromToolResultContent(content string) []string {
 	return cleanEvidenceRefs(refs)
 }
 
+func assistantMessageEvidenceRefsFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var refs []string
+	for _, item := range snapshot.AgentItems {
+		switch item.Type {
+		case agentstate.TurnItemTypeEvidence:
+			if id := strings.TrimSpace(item.ID); id != "" {
+				refs = append(refs, id)
+			}
+		case agentstate.TurnItemTypeToolResult:
+			var payload struct {
+				EvidenceRefs []string `json:"evidenceRefs"`
+			}
+			if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil {
+				refs = append(refs, payload.EvidenceRefs...)
+			}
+		}
+	}
+	return cleanEvidenceRefs(refs)
+}
+
 func cleanEvidenceRefs(values []string) []string {
 	seen := map[string]bool{}
 	out := make([]string, 0, len(values))
@@ -3500,6 +4677,8 @@ func (k *EinoKernel) recordResumedToolResult(session *SessionState, snapshot *Tu
 		appendExternalReferences(&last.ExternalReferences, recordedResult.ExternalReferences...)
 		last.UpdatedAt = now
 	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
 	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
 	appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 	appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
@@ -3654,12 +4833,21 @@ func generateModelResponse(
 	toolPool []tool.BaseTool,
 	onFinalDelta func(string),
 	onReasoning func(modelrouter.ReasoningStreamEvent),
+	extraOptions ...einomodel.Option,
 ) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	timeout := modelResponseTimeout()
+	modelCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ctx = modelCtx
+
 	toolInfos, err := toolInfosFromPool(ctx, toolPool)
 	if err != nil {
 		return nil, fmt.Errorf("tool info: %w", err)
 	}
-	opts := modelOptionsForTools(toolInfos)
+	opts := modelOptionsForTools(toolInfos, extraOptions...)
 
 	stream, streamErr := chatModel.Stream(ctx, input, opts...)
 	if streamErr == nil && stream != nil {
@@ -3674,7 +4862,7 @@ func generateModelResponse(
 				// Fast exit on context cancellation — propagate immediately so
 				// the caller (runHostIterationLoop) can mark the turn cancelled.
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return nil, err
+					return nil, readableModelResponseTimeoutError(err, timeout)
 				}
 				return nil, err
 			}
@@ -3699,6 +4887,7 @@ func generateModelResponse(
 		if err != nil {
 			return nil, err
 		}
+		attachConcatenatedResponseMeta(response, chunks)
 		if isEmptyAssistantResponse(response) {
 			return generateFallbackResponse(ctx, chatModel, input, opts, onFinalDelta)
 		}
@@ -3708,9 +4897,9 @@ func generateModelResponse(
 	response, err := chatModel.Generate(ctx, input, opts...)
 	if err != nil {
 		if streamErr != nil {
-			return nil, streamErr
+			return nil, readableModelResponseTimeoutError(streamErr, timeout)
 		}
-		return nil, err
+		return nil, readableModelResponseTimeoutError(err, timeout)
 	}
 	if isEmptyAssistantResponse(response) {
 		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
@@ -3725,6 +4914,63 @@ func generateModelResponse(
 		onFinalDelta(response.Content)
 	}
 	return response, nil
+}
+
+const defaultModelResponseTimeout = 5 * time.Minute
+
+func modelResponseTimeout() time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT_MS")); raw != "" {
+		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+			return time.Duration(ms) * time.Millisecond
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT")); raw != "" {
+		if duration, err := time.ParseDuration(raw); err == nil && duration > 0 {
+			return duration
+		}
+	}
+	return defaultModelResponseTimeout
+}
+
+func readableModelResponseTimeoutError(err error, timeout time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return err
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("模型响应超时：%s 内未收到模型完整响应或下一个流式片段: %w", timeout, err)
+	}
+	return err
+}
+
+func attachConcatenatedResponseMeta(response *schema.Message, chunks []*schema.Message) {
+	if response == nil {
+		return
+	}
+	var latest *schema.ResponseMeta
+	for i := len(chunks) - 1; i >= 0; i-- {
+		if chunks[i] == nil || chunks[i].ResponseMeta == nil {
+			continue
+		}
+		latest = chunks[i].ResponseMeta
+		break
+	}
+	if latest == nil {
+		return
+	}
+	if response.ResponseMeta == nil {
+		cp := *latest
+		response.ResponseMeta = &cp
+		return
+	}
+	if strings.TrimSpace(response.ResponseMeta.FinishReason) == "" && strings.TrimSpace(latest.FinishReason) != "" {
+		response.ResponseMeta.FinishReason = latest.FinishReason
+	}
+	if response.ResponseMeta.Usage == nil && latest.Usage != nil {
+		response.ResponseMeta.Usage = latest.Usage
+	}
 }
 
 func generateFallbackResponse(
@@ -3778,14 +5024,16 @@ func generateFallbackResponse(
 	return response, nil
 }
 
-func modelOptionsForTools(toolInfos []*schema.ToolInfo) []einomodel.Option {
+func modelOptionsForTools(toolInfos []*schema.ToolInfo, extraOptions ...einomodel.Option) []einomodel.Option {
+	opts := make([]einomodel.Option, 0, len(extraOptions)+2)
 	if len(toolInfos) == 0 {
-		return nil
+		return append(opts, extraOptions...)
 	}
-	return []einomodel.Option{
+	opts = append(opts,
 		einomodel.WithTools(toolInfos),
 		einomodel.WithToolChoice(schema.ToolChoiceAllowed),
-	}
+	)
+	return append(opts, extraOptions...)
 }
 
 func reasoningSummaryKey(event modelrouter.ReasoningStreamEvent) string {
@@ -4575,16 +5823,19 @@ func finalizeToolResultMaterialization(session *SessionState, snapshot *TurnSnap
 		return
 	}
 	event := BuildContextGovernanceEvent(ContextGovernanceEvent{
-		ID:           fmt.Sprintf("ctxgov-%s-%d-%s-l1", snapshot.ID, iteration, tc.ID),
-		Layer:        ContextGovernanceLayerL1,
-		Kind:         "tool_result.materialized",
-		SessionID:    session.ID,
-		TurnID:       snapshot.ID,
-		Iteration:    iteration,
-		ToolCallID:   tc.ID,
-		ToolName:     firstNonBlankRuntimeString(tc.Name, result.ToolCallID),
-		Message:      "工具结果已按上下文预算整理",
-		ReferenceIDs: referenceIDsFromExternalReferences(result.ExternalReferences),
+		ID:                  fmt.Sprintf("ctxgov-%s-%d-%s-l1", snapshot.ID, iteration, tc.ID),
+		Layer:               ContextGovernanceLayerL1,
+		Kind:                "tool_result.materialized",
+		SessionID:           session.ID,
+		TurnID:              snapshot.ID,
+		Iteration:           iteration,
+		ToolCallID:          tc.ID,
+		ToolName:            firstNonBlankRuntimeString(tc.Name, result.ToolCallID),
+		MaterializationTier: string(tier),
+		OriginalBytes:       result.OriginalBytes,
+		InlineBytes:         result.InlineBytes,
+		Message:             "工具结果已按上下文预算整理",
+		ReferenceIDs:        referenceIDsFromExternalReferences(result.ExternalReferences),
 	})
 	appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, event)
 	appendContextGovernanceEvents(&session.ContextGovernanceEvents, event)
@@ -4699,6 +5950,7 @@ func appendCheckpointExternalRefs(checkpoint *CheckpointMetadata, refs []Externa
 
 func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRequest, turnID string) *TurnSnapshot {
 	if session.CurrentTurn != nil && session.CurrentTurn.ID == turnID {
+		syncActiveTurnState(session, session.CurrentTurn)
 		return session.CurrentTurn
 	}
 	now := time.Now()
@@ -4716,6 +5968,7 @@ func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRe
 		UpdatedAt:       now,
 	}
 	session.CurrentTurn = snapshot
+	syncActiveTurnState(session, snapshot)
 	return snapshot
 }
 
@@ -4724,8 +5977,55 @@ func (k *EinoKernel) persistTurnSnapshot(session *SessionState, snapshot *TurnSn
 		return
 	}
 	session.CurrentTurn = snapshot
+	syncActiveTurnState(session, snapshot)
 	upsertTurnHistory(&session.TurnHistory, *snapshot)
 	k.sessions.Update(session)
+}
+
+func runningRegularTurnForPendingInput(session *SessionState, requestedTurnID string) (*TurnSnapshot, bool) {
+	if session == nil || session.CurrentTurn == nil {
+		return nil, false
+	}
+	current := session.CurrentTurn
+	if strings.TrimSpace(current.ID) == "" || strings.TrimSpace(current.ID) == strings.TrimSpace(requestedTurnID) {
+		return nil, false
+	}
+	if current.Lifecycle != TurnLifecycleRunning || current.ResumeState != TurnResumeStateNone {
+		return nil, false
+	}
+	return current, true
+}
+
+func appendPendingInputToActiveTurn(session *SessionState, turn *TurnSnapshot, req TurnRequest) PendingTurnInput {
+	now := time.Now()
+	id := strings.TrimSpace(req.ClientMessageID)
+	if id == "" {
+		id = fmt.Sprintf("pending-input-%d", now.UnixNano())
+	}
+	pending := PendingTurnInput{
+		ID:              id,
+		ClientTurnID:    strings.TrimSpace(req.ClientTurnID),
+		ClientMessageID: strings.TrimSpace(req.ClientMessageID),
+		Content:         strings.TrimSpace(req.Input),
+		CreatedAt:       now,
+	}
+	turn.PendingInputs = append(turn.PendingInputs, pending)
+	turn.UpdatedAt = now
+	if session != nil {
+		session.UpdatedAt = now
+	}
+	return pending
+}
+
+func syncActiveTurnState(session *SessionState, snapshot *TurnSnapshot) {
+	if session == nil || snapshot == nil {
+		return
+	}
+	session.ActiveTurn = ActiveTurnState{
+		TurnID: strings.TrimSpace(snapshot.ID),
+		Kind:   "regular",
+		Status: string(snapshot.Lifecycle),
+	}
 }
 
 func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
@@ -4783,25 +6083,39 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 		session.PendingEvidence = []PendingEvidence{evidence}
 		session.PendingApprovals = nil
 	} else {
+		resourceScopes := pendingApprovalResourceScopes(result.Metadata)
+		argumentsHash := firstNonEmpty(result.DecisionTrace.ArgumentsHash, toolArgumentsHash(tc.Arguments))
+		iterationID := ""
+		if last := latestIteration(snapshot); last != nil {
+			iterationID = last.ID
+		}
 		approval := PendingApproval{
-			ID:         fmt.Sprintf("approval-%d", now.UnixNano()),
-			SessionID:  session.ID,
-			TurnID:     snapshot.ID,
-			Iteration:  snapshot.Iteration,
-			ToolName:   tc.Name,
-			ToolCallID: tc.ID,
-			Command:    command,
-			Reason:     reason,
+			ID:            fmt.Sprintf("approval-%d", now.UnixNano()),
+			SessionID:     session.ID,
+			TurnID:        snapshot.ID,
+			Iteration:     snapshot.Iteration,
+			IterationID:   iterationID,
+			ToolName:      tc.Name,
+			ToolCallID:    tc.ID,
+			TargetRefs:    append([]string(nil), resourceScopes...),
+			HostID:        session.HostID,
+			Command:       command,
+			ArgumentsHash: argumentsHash,
+			Reason:        reason,
 			AllowedActions: []string{
 				strings.TrimSpace(tc.Name),
 			},
-			ResourceScopes: pendingApprovalResourceScopes(result.Metadata),
-			RiskCeiling:    firstNonEmpty(approvalPayloadField(result.Approval, "risk"), string(result.Metadata.EffectiveGovernance(0).RiskLevel)),
-			ExpiresAt:      pendingApprovalDefaultExpiry(now),
-			InputHash:      toolArgumentsHash(tc.Arguments),
-			Status:         "pending",
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			ResourceScopes:         resourceScopes,
+			RiskCeiling:            firstNonEmpty(approvalPayloadField(result.Approval, "risk"), string(result.Metadata.EffectiveGovernance(0).RiskLevel)),
+			RequestedScope:         strings.Join(resourceScopes, ","),
+			ApprovalOptions:        []string{"approved", "denied"},
+			ToolSurfaceFingerprint: result.DecisionTrace.ToolSurfaceFingerprint,
+			PermissionSnapshotHash: result.DecisionTrace.PermissionSnapshotHash,
+			ExpiresAt:              pendingApprovalDefaultExpiry(now),
+			InputHash:              argumentsHash,
+			Status:                 "pending",
+			CreatedAt:              now,
+			UpdatedAt:              now,
 		}
 		if result.Approval != nil {
 			approval.Risk = result.Approval.Risk
@@ -4810,13 +6124,16 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			approval.RunbookStep = result.Approval.RunbookStep
 			approval.ExpectedEffect = result.Approval.ExpectedEffect
 			approval.Rollback = result.Approval.Rollback
+			approval.Validation = result.Approval.Validation
 		}
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
 		session.PendingApprovals = []PendingApproval{approval}
 		session.PendingEvidence = nil
+		appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteApprovalLedger, OwnerPendingApproval)
 	}
 
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		payload, _ := json.Marshal(map[string]any{
@@ -4830,6 +6147,7 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 			"runbookStep":    approvalPayloadField(result.Approval, "runbookStep"),
 			"expectedEffect": approvalPayloadField(result.Approval, "expectedEffect"),
 			"rollback":       approvalPayloadField(result.Approval, "rollback"),
+			"validation":     approvalPayloadField(result.Approval, "validation"),
 			"status":         "pending",
 		})
 		eventType := EventApprovalNeeded
@@ -4879,6 +6197,7 @@ func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapsho
 		last.Checkpoint = checkpoint
 		last.UpdatedAt = now
 	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	return nil
 }
@@ -4918,8 +6237,58 @@ func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *Tu
 		last.UpdatedAt = now
 		last.CompletedAt = &now
 	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	return nil
+}
+
+func isRecoverableModelTimeout(err error) bool {
+	return err != nil && errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
+}
+
+func (k *EinoKernel) markTurnResumableFromModelTimeout(session *SessionState, snapshot *TurnSnapshot, iteration int, err error) (TurnResult, error) {
+	if session == nil || snapshot == nil {
+		return TurnResult{}, fmt.Errorf("session and snapshot are required")
+	}
+	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionToolInvocationBlocked, TurnLifecycleResumable); err != nil {
+		return TurnResult{}, err
+	}
+	now := time.Now()
+	errText := "model response timeout"
+	if err != nil {
+		errText = err.Error()
+	}
+	snapshot.Lifecycle = TurnLifecycleResumable
+	snapshot.ResumeState = TurnResumeStateResumable
+	snapshot.Error = errText
+	if snapshot.Metadata == nil {
+		snapshot.Metadata = map[string]string{}
+	}
+	snapshot.Metadata["recovery.reason"] = "model_timeout"
+	snapshot.Metadata["recovery.recoverable"] = "true"
+	snapshot.UpdatedAt = now
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "model_timeout", TurnLifecycleResumable, TurnResumeStateResumable)
+	checkpoint.Incremental = false
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
+	if last := latestIteration(snapshot); last != nil {
+		last.Lifecycle = TurnLifecycleResumable
+		last.ResumeState = TurnResumeStateResumable
+		last.Checkpoint = checkpoint
+		last.UpdatedAt = now
+	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	k.persistTurnSnapshot(session, snapshot)
+	return TurnResult{
+		SessionType:     snapshot.SessionType,
+		Mode:            snapshot.Mode,
+		SessionID:       session.ID,
+		TurnID:          snapshot.ID,
+		ClientTurnID:    snapshot.ClientTurnID,
+		ClientMessageID: snapshot.ClientMessageID,
+		Status:          "blocked",
+		Error:           errText,
+	}, nil
 }
 
 func inferTurnFailureCheckpointKind(snapshot *TurnSnapshot) string {
@@ -5335,6 +6704,8 @@ func approvalPayloadField(payload *tooling.PermissionApprovalPayload, field stri
 		return payload.ExpectedEffect
 	case "rollback":
 		return payload.Rollback
+	case "validation":
+		return payload.Validation
 	default:
 		return ""
 	}

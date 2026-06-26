@@ -25,12 +25,18 @@ func AnalyzeContextUsage(input ContextUsageInput) ContextUsage {
 	acc.addText("system", input.Compiled.Stable.System.Content, "compiled.system")
 	acc.addText("developer", input.Compiled.Stable.Developer.Content, "compiled.developer")
 	acc.addText("tools", input.Compiled.Stable.Tools.Content, "compiled.tools")
-	for i, asset := range input.Compiled.Dynamic.SkillPromptAssets {
-		acc.addText("skills", asset, "skill")
-		_ = i
-	}
-	for _, asset := range input.Compiled.Dynamic.HostTaskPromptAssets {
-		acc.addText("host_task", asset, "host_task")
+	if len(input.Compiled.Dynamic.Sources) > 0 {
+		for _, source := range input.Compiled.Dynamic.Sources {
+			acc.addText(contextUsageCategoryForDynamicSource(source.ID), source.Content, source.ID)
+		}
+	} else {
+		for i, asset := range input.Compiled.Dynamic.SkillPromptAssets {
+			acc.addText("skills", asset, "skill")
+			_ = i
+		}
+		for _, asset := range input.Compiled.Dynamic.HostTaskPromptAssets {
+			acc.addText("host_task", asset, "host_task")
+		}
 	}
 	for _, section := range input.Compiled.Dynamic.ExtraSections {
 		category := "messages"
@@ -77,10 +83,29 @@ type contextUsageAccumulator struct {
 
 func newContextUsageAccumulator() *contextUsageAccumulator {
 	acc := &contextUsageAccumulator{categories: map[string]*ContextUsageCategory{}}
-	for _, name := range []string{"system", "developer", "tools", "skills", "host_task", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
+	for _, name := range []string{"system", "developer", "tools", "skills", "host_task", "dynamic_evidence", "dynamic_protocol", "memory", "history_compacted", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
 		acc.categories[name] = &ContextUsageCategory{Name: name}
 	}
 	return acc
+}
+
+func contextUsageCategoryForDynamicSource(sourceID string) string {
+	switch strings.TrimSpace(sourceID) {
+	case promptcompiler.DynamicContextSourceSkill:
+		return "skills"
+	case promptcompiler.DynamicContextSourceHostTask:
+		return "host_task"
+	case promptcompiler.DynamicContextSourceEvidence:
+		return "dynamic_evidence"
+	case promptcompiler.DynamicContextSourceProtocol:
+		return "dynamic_protocol"
+	case promptcompiler.DynamicContextSourceMemory:
+		return "memory"
+	case promptcompiler.DynamicContextSourceHistoryCompacted:
+		return "history_compacted"
+	default:
+		return "messages"
+	}
 }
 
 func (a *contextUsageAccumulator) addText(category, content, id string) {

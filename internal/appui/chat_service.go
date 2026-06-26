@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
-	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/workflowgen"
@@ -97,7 +97,9 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		return mapTurnResponse(result), nil
 	}
 	sessionID := strings.TrimSpace(cmd.SessionID)
+	var commandSession *runtimekernel.SessionState
 	if session := s.resolveCommandSession(sessionID); session != nil {
+		commandSession = session
 		if sessionID == "" {
 			sessionID = session.ID
 		}
@@ -106,9 +108,6 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		}
 		if strings.TrimSpace(cmd.Mode) == "" {
 			cmd.Mode = string(session.Mode)
-		}
-		if strings.TrimSpace(cmd.HostID) == "" {
-			cmd.HostID = strings.TrimSpace(session.HostID)
 		}
 	}
 	req := runtimekernel.TurnRequest{
@@ -122,9 +121,24 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		HostID:          cmd.HostID,
 		Metadata:        cloneStringMetadata(cmd.Metadata),
 	}
-	if strings.TrimSpace(req.HostID) == "" && req.SessionType == runtimekernel.SessionTypeHost {
-		req.HostID = serverLocalHostID
-	}
+	requestedSessionType := req.SessionType
+	requestedMode := req.Mode
+	evidence := ExtractUserEvidence(content)
+	mentions := s.hostOpsMentionsForCommand(ctx, cmd, content)
+	route := BuildChatRuntimeRoute(content, mentions, evidence)
+	envelope := BuildEvidenceEnvelope(content, nil, nil)
+	intentFrame := BuildIntentFrame(content, envelope, nil)
+	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, route)
+	activeRoute, routingMode := selectActiveChatRuntimeRoute(route, intentRoute, intentFrame)
+	applyChatRuntimeRouteMetadata(&req, activeRoute)
+	applyIntentFrameRouteMetadata(&req, route, intentRoute, intentFrame)
+	req.Metadata["aiops.route.activeSource"] = routingMode
+	applyChatRuntimeToolSurfaceMetadata(&req, activeRoute)
+	applyUserEvidenceMetadata(&req, evidence)
+	applyFollowupPromptProfileMetadata(&req, commandSession, content, evidence)
+	applyChatRuntimeRouteHostBinding(&req, activeRoute, mentions)
+	applyExplicitSelectedHostContext(&req, activeRoute, cmd.HostID, requestedSessionType, requestedMode)
+	s.applyHostOpsTurnMetadata(ctx, cmd, &req)
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}
@@ -140,11 +154,13 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 			return response, err
 		}
 	}
-	if response, handled, err := s.handleHostOpsRoute(ctx, cmd, &req); handled || err != nil {
+	if response, handled, err := s.handleGenericOpsRepair(ctx, cmd, req); handled || err != nil {
 		response = attachOpsRunToTurnResponse(response, opsRun)
 		return response, err
 	}
-	if response, handled, err := s.handleGenericOpsRepair(ctx, cmd, req); handled || err != nil {
+	if chatSessionHasRunningRegularTurn(commandSession) {
+		result, err := s.runtime.RunTurn(ctx, req)
+		response := mapTurnResponse(result)
 		response = attachOpsRunToTurnResponse(response, opsRun)
 		return response, err
 	}
@@ -160,14 +176,24 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	}, nil
 }
 
-func (s *defaultChatService) handleHostOpsRoute(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest) (TurnResponse, bool, error) {
-	if s == nil || s.hostOps == nil || req == nil {
-		return TurnResponse{}, false, nil
+func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool {
+	return session != nil &&
+		session.CurrentTurn != nil &&
+		session.CurrentTurn.Lifecycle == runtimekernel.TurnLifecycleRunning &&
+		session.CurrentTurn.ResumeState == runtimekernel.TurnResumeStateNone
+}
+
+func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest) {
+	if s == nil || req == nil {
+		return
+	}
+	if routeMode := strings.TrimSpace(req.Metadata["aiops.route.mode"]); routeMode != "" && routeMode != string(ChatRouteMultiHostOps) {
+		return
 	}
 	mentions := s.hostOpsMentionsForCommand(ctx, cmd, req.Input)
 	decision := hostops.DetectRoute(req.Input, mentions)
 	if decision.Kind != hostops.RouteKindHostOps {
-		return TurnResponse{}, false, nil
+		return
 	}
 	if req.Metadata == nil {
 		req.Metadata = map[string]string{}
@@ -178,201 +204,10 @@ func (s *defaultChatService) handleHostOpsRoute(ctx context.Context, cmd ChatCom
 	req.Metadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
 	req.Metadata["aiops.hostops.missionId"] = missionID
 	req.Metadata["aiops.hostops.managerAgentId"] = firstNonEmptyString(strings.TrimSpace(req.Metadata["aiops.hostops.managerAgentId"]), "hostops-manager:"+req.TurnID)
-	req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], hostops.ToolPackHostOps)
+	applyHostOpsManagerRuntimeMetadata(req.Metadata)
 	if serialized, err := json.Marshal(decision.Mentions); err == nil {
 		req.Metadata["aiops.hostops.mentions"] = string(serialized)
 	}
-	view, err := s.hostOps.CreateMission(ctx, HostMissionCreateCommand{
-		ID:             missionID,
-		ThreadID:       firstNonEmptyString(strings.TrimSpace(cmd.SessionID), strings.TrimSpace(req.SessionID)),
-		SessionID:      strings.TrimSpace(req.SessionID),
-		UserTurnID:     strings.TrimSpace(req.TurnID),
-		ManagerAgentID: strings.TrimSpace(req.Metadata["aiops.hostops.managerAgentId"]),
-		Goal:           req.Input,
-		Mentions:       decision.Mentions,
-	})
-	if err != nil {
-		return TurnResponse{}, true, err
-	}
-	s.writeHostOpsMissionTurn(*req, view)
-	return TurnResponse{
-		SessionID:       req.SessionID,
-		TurnID:          req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		Status:          "accepted",
-	}, true, nil
-}
-
-func (s *defaultChatService) writeHostOpsMissionTurn(req runtimekernel.TurnRequest, view HostOperationView) {
-	store, ok := s.sessions.(SessionStore)
-	if !ok {
-		return
-	}
-	now := time.Now().UTC()
-	completedAt := now
-	summary := hostOpsMissionSummary(view)
-	turn := runtimekernel.TurnSnapshot{
-		ID:              req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       req.SessionID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Metadata:        cloneStringMetadata(req.Metadata),
-		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
-		ResumeState:     runtimekernel.TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
-		CompletedAt:     &completedAt,
-		AgentItems:      hostOpsMissionTurnItems(req, view, summary, now),
-		FinalOutput:     summary,
-	}
-	writeHostOpsMissionSessionTurn(store, req, summary, turn, now)
-}
-
-func hostOpsMissionTurnItems(req runtimekernel.TurnRequest, view HostOperationView, summary string, now time.Time) []agentstate.TurnItem {
-	items := []agentstate.TurnItem{
-		{
-			ID:     req.TurnID + "-user",
-			Type:   agentstate.TurnItemTypeUserMessage,
-			Status: agentstate.ItemStatusCompleted,
-			Payload: agentstate.PayloadEnvelope{
-				Kind:    "turn",
-				Summary: req.Input,
-				Data:    mustJSON(map[string]any{"prompt": req.Input, "summary": req.Input}),
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-	}
-	if view.Plan != nil && len(view.Plan.Steps) > 0 {
-		items = append(items, hostOpsMissionPlanItem(req, view, now))
-	}
-	if len(view.ChildAgents) > 0 {
-		items = append(items, hostOpsMissionChildrenToolItem(req, view, now))
-	}
-	items = append(items, agentstate.TurnItem{
-		ID:     req.TurnID + "-final",
-		Type:   agentstate.TurnItemTypeFinalAnswer,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "final",
-			Summary: summary,
-			Data:    mustJSON(map[string]any{"summary": summary}),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	})
-	return items
-}
-
-func hostOpsMissionPlanItem(req runtimekernel.TurnRequest, view HostOperationView, now time.Time) agentstate.TurnItem {
-	steps := make([]map[string]any, 0, len(view.Plan.Steps))
-	for _, step := range view.Plan.Steps {
-		steps = append(steps, map[string]any{
-			"id":               step.ID,
-			"index":            step.Index,
-			"title":            step.Title,
-			"summary":          step.Summary,
-			"status":           step.Status,
-			"hostIds":          step.HostIDs,
-			"childAgentIds":    step.ChildAgentIDs,
-			"risk":             step.Risk,
-			"approvalRequired": step.ApprovalRequired,
-		})
-	}
-	return agentstate.TurnItem{
-		ID:     req.TurnID + "-hostops-plan",
-		Type:   agentstate.TurnItemTypePlan,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "hostops.plan",
-			Summary: "主机运维计划",
-			Data: mustJSON(map[string]any{
-				"title": "主机运维计划",
-				"steps": steps,
-			}),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-}
-
-func hostOpsMissionChildrenToolItem(req runtimekernel.TurnRequest, view HostOperationView, now time.Time) agentstate.TurnItem {
-	children := make([]AiopsTransportChildAgent, 0, len(view.ChildAgents))
-	for _, childView := range view.ChildAgents {
-		if child := transportChildAgentFromView(childView); child.ID != "" {
-			children = append(children, child)
-		}
-	}
-	toolCallID := req.TurnID + "-spawn-host-agent"
-	outputPreview := mustJSON(map[string]any{"children": children})
-	payload := transportToolPayload{
-		ID:            toolCallID,
-		ToolCallID:    toolCallID,
-		ToolName:      hostops.ToolSpawnHostAgent,
-		Name:          hostops.ToolSpawnHostAgent,
-		DisplayKind:   "hostops.spawn_host_agent",
-		InputSummary:  "启动 host-bound 主机 Agent",
-		OutputSummary: hostOpsMissionSummary(view),
-		OutputPreview: outputPreview,
-	}
-	return agentstate.TurnItem{
-		ID:     toolCallID,
-		Type:   agentstate.TurnItemTypeToolResult,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "hostops.spawn_host_agent",
-			Summary: payload.OutputSummary,
-			Data:    mustJSON(payload),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-}
-
-func writeHostOpsMissionSessionTurn(store SessionStore, req runtimekernel.TurnRequest, assistantText string, turn runtimekernel.TurnSnapshot, now time.Time) {
-	session := store.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
-	if session.HostID == "" {
-		session.HostID = req.HostID
-	}
-	if session.CurrentTurn != nil {
-		session.TurnHistory = append(session.TurnHistory, *session.CurrentTurn)
-	}
-	session.Messages = append(session.Messages,
-		runtimekernel.Message{
-			ID:              firstNonEmptyString(req.ClientMessageID, req.TurnID+":user"),
-			ClientMessageID: req.ClientMessageID,
-			ClientTurnID:    req.ClientTurnID,
-			Role:            "user",
-			Content:         req.Input,
-			Timestamp:       now,
-			Metadata:        cloneStringMetadata(req.Metadata),
-		},
-		runtimekernel.Message{
-			ID:           req.TurnID + ":assistant",
-			ClientTurnID: req.ClientTurnID,
-			Role:         "assistant",
-			Content:      assistantText,
-			Timestamp:    now,
-			Metadata:     cloneStringMetadata(req.Metadata),
-		},
-	)
-	session.CurrentTurn = &turn
-	session.PendingApprovals = nil
-	session.PendingEvidence = nil
-	store.Update(session)
-}
-
-func hostOpsMissionSummary(view HostOperationView) string {
-	if len(view.ChildAgents) > 0 {
-		return fmt.Sprintf("已创建主机运维任务，并启动 %d 个 host-bound 主机 Agent。", len(view.ChildAgents))
-	}
-	if view.PlanRequired && !view.PlanAccepted {
-		return "已创建多主机运维计划，等待确认后启动 host-bound 主机 Agent。"
-	}
-	return "已创建主机运维任务，等待主机 Agent 调度。"
 }
 
 func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd ChatCommand, content string) []hostops.HostMention {
@@ -393,6 +228,13 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 func filterHostOpsRouteMentions(mentions []hostops.HostMention) []hostops.HostMention {
 	out := make([]hostops.HostMention, 0, len(mentions))
 	for _, mention := range mentions {
+		if mention.Source == hostops.HostMentionSourceLocalAlias {
+			mention.HostID = firstNonEmptyString(strings.TrimSpace(mention.HostID), serverLocalHostID)
+			mention.DisplayName = firstNonEmptyString(strings.TrimSpace(mention.DisplayName), "local")
+			mention.Resolved = true
+			out = append(out, mention)
+			continue
+		}
 		if strings.TrimSpace(mention.HostID) != "" || mention.Resolved {
 			out = append(out, mention)
 			continue
@@ -522,6 +364,9 @@ func (s *defaultChatService) enrichTurnHostMetadata(req *runtimekernel.TurnReque
 	setMetadataIfEmpty(req.Metadata, "aiops.host.arch", host.Arch)
 	setMetadataIfEmpty(req.Metadata, "aiops.host.transport", host.Transport)
 	setMetadataIfEmpty(req.Metadata, "aiops.host.status", host.Status)
+	setMetadataIfEmpty(req.Metadata, "aiops.host.agentStatus", hostAgentStatus(*host))
+	setMetadataIfEmpty(req.Metadata, "aiops.host.sshStatus", hostSSHStatus(*host))
+	setMetadataIfEmpty(req.Metadata, "aiops.host.runtimeReachability", hostRuntimeReachability(*host))
 	setMetadataIfEmpty(req.Metadata, "aiops.host.address", host.Address)
 	setMetadataIfEmpty(req.Metadata, "aiops.host.sshUser", host.SSHUser)
 	if host.SSHPort > 0 {
@@ -535,6 +380,56 @@ func setMetadataIfEmpty(metadata map[string]string, key, value string) {
 		return
 	}
 	metadata[key] = value
+}
+
+func applyFollowupPromptProfileMetadata(req *runtimekernel.TurnRequest, session *runtimekernel.SessionState, input string, evidence UserEvidenceExtraction) {
+	if req == nil || session == nil || !shortFollowupInput(input) || evidence.HasEvidence || !sessionHasExistingEvidenceContext(session) {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	setMetadataIfEmpty(req.Metadata, metadataTurnFollowup, "true")
+	setMetadataIfEmpty(req.Metadata, metadataTurnHasExistingEvidence, "true")
+	setMetadataIfEmpty(req.Metadata, metadataTurnNoNewEvidence, "true")
+	setMetadataIfEmpty(req.Metadata, "reasoningEffort", "low")
+	setMetadataIfEmpty(req.Metadata, "answerStyle", "concise")
+}
+
+func shortFollowupInput(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return false
+	}
+	if utf8.RuneCountInString(trimmed) > 80 {
+		return false
+	}
+	return len(strings.Fields(trimmed)) <= 20
+}
+
+func sessionHasExistingEvidenceContext(session *runtimekernel.SessionState) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		switch strings.TrimSpace(msg.Role) {
+		case "assistant", "tool", "system":
+			if strings.TrimSpace(msg.Content) != "" || msg.ToolResult != nil || len(msg.ToolCalls) > 0 {
+				return true
+			}
+		}
+	}
+	if session.CurrentTurn != nil {
+		if strings.TrimSpace(session.CurrentTurn.FinalOutput) != "" || len(session.CurrentTurn.AgentItems) > 0 || len(session.CurrentTurn.ExternalReferences) > 0 {
+			return true
+		}
+	}
+	for _, turn := range session.TurnHistory {
+		if strings.TrimSpace(turn.FinalOutput) != "" || len(turn.AgentItems) > 0 || len(turn.ExternalReferences) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *defaultChatService) appendTurnAcceptedEvents(req runtimekernel.TurnRequest) {
@@ -589,6 +484,9 @@ func (r defaultAsyncTurnRunner) run(req runtimekernel.TurnRequest) {
 		return
 	}
 	if strings.EqualFold(result.Status, "cancelled") || strings.EqualFold(result.Status, string(AgentEventStatusCanceled)) {
+		return
+	}
+	if strings.EqualFold(result.Status, "pending_input") {
 		return
 	}
 	if strings.EqualFold(result.Status, "blocked") || strings.EqualFold(result.Status, string(AgentEventStatusBlocked)) {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"aiops-v2/internal/agents"
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/commands"
-	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hostops"
 	agenttools "aiops-v2/internal/integrations/agents"
 	"aiops-v2/internal/integrations/localtools"
@@ -47,6 +47,40 @@ type fakeLLMConfigRepo struct {
 
 func (r fakeLLMConfigRepo) GetLLMConfig() (*store.LLMConfig, error) {
 	return r.cfg, nil
+}
+
+type failingHostCommandRunner struct {
+	err error
+}
+
+func (r failingHostCommandRunner) RunHostAgentCommand(context.Context, localtools.HostAgentCommandRequest) (localtools.HostAgentCommandResult, error) {
+	return localtools.HostAgentCommandResult{}, r.err
+}
+
+type fakeSSHCredentialResolver struct {
+	credential appui.ResolvedSSHCredential
+	err        error
+}
+
+func (r fakeSSHCredentialResolver) ResolveSSHCredential(context.Context, string) (appui.ResolvedSSHCredential, error) {
+	if r.err != nil {
+		return appui.ResolvedSSHCredential{}, r.err
+	}
+	return r.credential, nil
+}
+
+type fakeSSHCommandExecutor struct {
+	requests []localtools.HostAgentCommandRequest
+	result   localtools.HostAgentCommandResult
+	err      error
+}
+
+func (e *fakeSSHCommandExecutor) RunSSHCommand(_ context.Context, _ store.HostRecord, _ appui.ResolvedSSHCredential, req localtools.HostAgentCommandRequest) (localtools.HostAgentCommandResult, error) {
+	e.requests = append(e.requests, req)
+	if e.err != nil {
+		return localtools.HostAgentCommandResult{}, e.err
+	}
+	return e.result, nil
 }
 
 type registryAdapterMockTool struct {
@@ -86,6 +120,7 @@ func TestBuildRuntimeObserverEnabledReturnsOTelObserver(t *testing.T) {
 }
 
 func TestNewServerAgentRunnerUsesRuntimeKernelRunner(t *testing.T) {
+	lockGate := agentmgr.NewToolResourceLockGate(agentmgr.NewResourceLockManager())
 	runner := newServerAgentRunner(
 		&policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()},
 		permissions.NewEngine(nil),
@@ -97,6 +132,7 @@ func TestNewServerAgentRunnerUsesRuntimeKernelRunner(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		lockGate,
 		runtimekernel.NoopObserver{},
 	)
 	if runner == nil {
@@ -104,6 +140,10 @@ func TestNewServerAgentRunnerUsesRuntimeKernelRunner(t *testing.T) {
 	}
 	if _, ok := runner.(*runtimekernel.AgentConfigRunner); !ok {
 		t.Fatalf("runner type = %T, want *runtimekernel.AgentConfigRunner", runner)
+	}
+	cfg := reflect.ValueOf(runner).Elem().FieldByName("cfg")
+	if cfg.FieldByName("ResourceLockGate").IsNil() {
+		t.Fatal("ResourceLockGate is nil, want shared runtime resource lock gate")
 	}
 }
 
@@ -268,6 +308,90 @@ func TestHostAgentCommandRunnerFallsBackToHTTPRunForOldAgents(t *testing.T) {
 	}
 	if result.Stdout != "runner-ok\n" || result.ExitCode != 0 || result.Source != "host.agent_http_run" {
 		t.Fatalf("result = %#v, want HTTP /run stdout", result)
+	}
+}
+
+func TestFallbackHostCommandRunnerUsesSSHForReadOnlyInventoryHost(t *testing.T) {
+	repo, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer repo.Close()
+	if err := repo.SaveHost(&store.HostRecord{
+		ID:               "host-ssh",
+		Name:             "host-ssh",
+		Address:          "10.0.0.12",
+		SSHUser:          "root",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://hosts/host-ssh/ssh-password",
+		Transport:        "manual",
+		ControlMode:      "inventory",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+	executor := &fakeSSHCommandExecutor{
+		result: localtools.HostAgentCommandResult{Stdout: "Linux host\n", ExitCode: 0, Source: "host.ssh"},
+	}
+	runner := fallbackHostCommandRunner{
+		primary: failingHostCommandRunner{err: fmt.Errorf("host %q does not have an agent URL", "host-ssh")},
+		fallback: hostSSHCommandRunner{
+			repo:               repo,
+			credentialResolver: fakeSSHCredentialResolver{credential: appui.ResolvedSSHCredential{Password: "redacted-test-password"}},
+			executor:           executor,
+		},
+	}
+
+	result, err := runner.RunHostAgentCommand(context.Background(), localtools.HostAgentCommandRequest{
+		HostID:  "host-ssh",
+		Command: "uname",
+		Args:    []string{"-a"},
+	})
+	if err != nil {
+		t.Fatalf("RunHostAgentCommand() error = %v", err)
+	}
+	if result.Source != "host.ssh" || result.Stdout != "Linux host\n" {
+		t.Fatalf("result = %#v, want SSH fallback output", result)
+	}
+	if len(executor.requests) != 1 || executor.requests[0].Command != "uname" {
+		t.Fatalf("executor requests = %#v, want uname request", executor.requests)
+	}
+}
+
+func TestFallbackHostCommandRunnerDoesNotUseSSHForMutatingCommand(t *testing.T) {
+	repo, err := store.NewJSONFileStore(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer repo.Close()
+	if err := repo.SaveHost(&store.HostRecord{
+		ID:               "host-ssh",
+		Name:             "host-ssh",
+		Address:          "10.0.0.12",
+		SSHUser:          "root",
+		SSHCredentialRef: "secret://hosts/host-ssh/ssh-password",
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+	executor := &fakeSSHCommandExecutor{result: localtools.HostAgentCommandResult{Source: "host.ssh"}}
+	runner := fallbackHostCommandRunner{
+		primary: failingHostCommandRunner{err: fmt.Errorf("host %q does not have an agent URL", "host-ssh")},
+		fallback: hostSSHCommandRunner{
+			repo:               repo,
+			credentialResolver: fakeSSHCredentialResolver{credential: appui.ResolvedSSHCredential{Password: "redacted-test-password"}},
+			executor:           executor,
+		},
+	}
+
+	_, err = runner.RunHostAgentCommand(context.Background(), localtools.HostAgentCommandRequest{
+		HostID:  "host-ssh",
+		Command: "systemctl",
+		Args:    []string{"restart", "postgresql"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ssh fallback requires a read-only command") {
+		t.Fatalf("RunHostAgentCommand() error = %v, want read-only SSH fallback rejection", err)
+	}
+	if len(executor.requests) != 0 {
+		t.Fatalf("executor requests = %#v, want no SSH execution for mutating command", executor.requests)
 	}
 }
 
@@ -446,6 +570,42 @@ func TestStoreLLMResolverDefaultsManualContextWindow(t *testing.T) {
 	}
 }
 
+func TestStoreLLMResolverPassesProviderSpecificGenerationConfig(t *testing.T) {
+	temperature := 1.0
+	topP := 0.95
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider:         "deepseek",
+			Model:            "deepseek-v4-pro",
+			BaseURL:          "https://api.deepseek.com",
+			MaxContextTokens: 1000000,
+			MaxOutputTokens:  20000,
+			Temperature:      &temperature,
+			TopP:             &topP,
+			ReasoningEffort:  "max",
+			ThinkingType:     "enabled",
+			ToolStream:       true,
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.Provider != "deepseek" || cfg.Model != "deepseek-v4-pro" || cfg.BaseURL != "https://api.deepseek.com" {
+		t.Fatalf("provider config route = %+v, want saved deepseek route", cfg)
+	}
+	if cfg.MaxContextTokens != 1000000 || cfg.MaxTokens != 20000 {
+		t.Fatalf("provider config context/output = %d/%d, want 1000000/20000", cfg.MaxContextTokens, cfg.MaxTokens)
+	}
+	if cfg.Temperature != 1 || cfg.TopP != 0.95 {
+		t.Fatalf("provider config temperature/topP = %v/%v, want 1/0.95", cfg.Temperature, cfg.TopP)
+	}
+	if cfg.ReasoningEffort != "max" || cfg.ThinkingType != "enabled" || !cfg.ToolStream {
+		t.Fatalf("provider config reasoning/thinking/toolStream = %q/%q/%v, want max/enabled/true", cfg.ReasoningEffort, cfg.ThinkingType, cfg.ToolStream)
+	}
+}
+
 func TestRegisterAIOpsToolSurfaceExposesOpsToolsAndOmitsRemovedTools(t *testing.T) {
 	toolRegistry := tooling.NewRegistry()
 	mcpRegistry := mcp.NewRegistry()
@@ -539,20 +699,34 @@ func TestProductionToolPromptRegistryStaysBelowP0Budget(t *testing.T) {
 
 func TestRegisterAIOpsToolSurfaceWiresToolSearchToCatalogProvider(t *testing.T) {
 	toolRegistry := tooling.NewRegistry()
-	providerRegistry := tooling.NewRegistry()
-	if err := providerRegistry.Register(&tooling.StaticTool{
-		Meta: tooling.ToolMetadata{Name: "provider.only_tool", Description: "Provider only tool"},
-	}); err != nil {
-		t.Fatalf("provider Register() error = %v", err)
+	mcpRegistry := mcp.NewRegistry()
+	if err := mcpRegistry.OnServerConnected("dynamic-observability", []tooling.Tool{&tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "observability.service_metrics",
+			Description: "Read service metrics from dynamic MCP",
+			Domain:      "observability",
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool {
+			return true
+		},
+	}}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
 	}
-	if err := registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcp.NewRegistry(), nil, nil, providerRegistry); err != nil {
+	catalogProvider := tooling.NewAssembler(toolRegistry, mcpRegistry)
+	if err := registerAIOpsToolSurfaceWithCatalog(toolRegistry, mcpRegistry, nil, nil, catalogProvider); err != nil {
 		t.Fatalf("registerAIOpsToolSurfaceWithCatalog() error = %v", err)
 	}
 	tool, ok := toolRegistry.Get("tool_search")
 	if !ok {
 		t.Fatal("tool_search should be registered")
 	}
-	input, err := json.Marshal(map[string]any{"query": "provider only", "limit": 10})
+
+	initialNames := registryAdapterToolNames(catalogProvider.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
+	if registryAdapterHasToolByName(initialNames, "observability.service_metrics") {
+		t.Fatalf("initial tool surface = %v, dynamic MCP tool should be deferred until tool_search select", initialNames)
+	}
+
+	input, err := json.Marshal(map[string]any{"query": "dynamic service metrics", "limit": 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,8 +734,26 @@ func TestRegisterAIOpsToolSurfaceWiresToolSearchToCatalogProvider(t *testing.T) 
 	if err != nil {
 		t.Fatalf("tool_search Execute() error = %v", err)
 	}
-	if !strings.Contains(result.Content, "provider.only_tool") {
-		t.Fatalf("tool_search result = %s, want provider.only_tool", result.Content)
+	for _, want := range []string{`"ranker":"bm25"`, `"kind":"pack"`, `"observability.service_metrics"`, `"source":"mcp"`, `"requiresSelect":true`} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("tool_search result missing %s: %s", want, result.Content)
+		}
+	}
+
+	selectInput, err := json.Marshal(map[string]any{
+		"mode":   "select",
+		"tools":  []string{"observability.service_metrics"},
+		"reason": "need dynamic MCP metrics evidence",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectResult, err := tool.Execute(context.Background(), selectInput)
+	if err != nil {
+		t.Fatalf("tool_search select Execute() error = %v", err)
+	}
+	if !strings.Contains(selectResult.Content, `"loadedTools":["observability.service_metrics"]`) {
+		t.Fatalf("tool_search select result = %s, want dynamic MCP tool loaded", selectResult.Content)
 	}
 }
 
@@ -591,6 +783,7 @@ func TestRegisterAIOpsToolSurfaceRegistersHostOpsManagerTools(t *testing.T) {
 
 	assembled := registry.AssembleToolsWithOptions("workspace", "execute", tooling.AssembleOptionsForTurnMetadata(map[string]string{
 		"enableToolPack": hostops.ToolPackHostOps,
+		"profile":        "host_manager",
 	}))
 	if !registryAdapterHasTool(assembled, hostops.ToolSpawnHostAgent) {
 		t.Fatalf("AssembleToolsWithOptions(workspace, execute, hostops pack) missing %s; got %v", hostops.ToolSpawnHostAgent, registryAdapterToolNames(assembled))
@@ -767,7 +960,7 @@ func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistryOverCommandSurface(t
 		t.Fatalf("register prompt command: %v", err)
 	}
 
-	adapter := newRegistryAdapter(registry, commandRegistry, featureflag.Default())
+	adapter := newRegistryAdapter(registry, commandRegistry)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
 
 	if len(ctx.SkillPromptAssets) != 1 {
@@ -790,7 +983,7 @@ func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistryOverCommandSurface(t
 }
 
 func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistry(t *testing.T) {
-	adapter := newRegistryAdapter(tooling.NewRegistry(), nil, featureflag.Default())
+	adapter := newRegistryAdapter(tooling.NewRegistry(), nil)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
 
 	if len(ctx.SkillPromptAssets) != 0 {
@@ -804,7 +997,7 @@ func TestRegistryAdapterSkillPromptAssetsPreferSkillRegistry(t *testing.T) {
 }
 
 func TestRegistryAdapterSkillPromptAssetsDoNotFallbackWithoutCommandSurface(t *testing.T) {
-	adapter := newRegistryAdapter(tooling.NewRegistry(), nil, featureflag.Default())
+	adapter := newRegistryAdapter(tooling.NewRegistry(), nil)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
 
 	if len(ctx.SkillPromptAssets) != 0 {
@@ -825,7 +1018,7 @@ func TestRegistryAdapterSkillPromptCommandsUseOnlyCommandSurface(t *testing.T) {
 	})
 
 	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
-	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry, featureflag.Default())
+	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry)
 	cmds := adapter.skillPromptCommands()
 
 	if len(cmds) != 1 {
@@ -855,7 +1048,7 @@ func TestRegistryAdapterSkillPromptCommandsProjectSkillRegistrySources(t *testin
 	})
 
 	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
-	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry, featureflag.Default())
+	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry)
 	cmds := adapter.skillPromptCommands()
 
 	if len(cmds) != 3 {
@@ -894,7 +1087,7 @@ Use filesystem skill prompt asset.
 	}
 
 	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
-	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry, featureflag.Default())
+	adapter := newRegistryAdapter(tooling.NewRegistry(), commandRegistry)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
 
 	if len(ctx.SkillPromptAssets) != 1 {
@@ -1023,38 +1216,28 @@ Use filesystem skill.`)
 	}
 }
 
-func TestRegistryAdapterUsesSameFlaggedAssemblyForPromptAndRuntimePools(t *testing.T) {
+func TestRegistryAdapterUsesSameMetadataAssemblyForPromptAndRuntimePools(t *testing.T) {
 	registry := tooling.NewRegistry()
-	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "read_file", sessions: []string{"host"}, modes: []string{"chat"}})
-	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "write_file", sessions: []string{"host"}, modes: []string{"chat"}})
+	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "host_read", sessions: []string{"host"}, modes: []string{"chat"}})
+	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "exec_command", sessions: []string{"host"}, modes: []string{"chat"}})
+	adapter := newRegistryAdapter(registry, nil)
+	metadata := map[string]string{"aiops.tool.execCommandAllowed": "false"}
 
-	flags := featureflag.Flags{
-		DisabledTools: []string{"write_file"},
-		DeferredTools: []string{"read_file"},
-	}
-	adapter := newRegistryAdapter(registry, nil, flags)
-
-	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
-	if len(ctx.AssembledTools) != 1 {
-		t.Fatalf("CompileContext AssembledTools len = %d, want 1", len(ctx.AssembledTools))
-	}
-	if ctx.AssembledTools[0].Metadata().Name != "read_file" {
-		t.Fatalf("CompileContext AssembledTools[0].Name = %q, want read_file", ctx.AssembledTools[0].Metadata().Name)
-	}
-	if !ctx.AssembledTools[0].Metadata().ShouldDefer {
-		t.Fatalf("expected deferred metadata in CompileContext, got %#v", ctx.AssembledTools[0].Metadata())
+	tools := adapter.CompileContextWithMetadata(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"), metadata)
+	if got := registryAdapterToolNames(tools); fmt.Sprintf("%v", got) != "[host_read]" {
+		t.Fatalf("CompileContextWithMetadata tools = %v, want [host_read]", got)
 	}
 
-	pool := adapter.AssembleToolPool(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
+	pool := adapter.AssembleToolPoolWithMetadata(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"), metadata)
 	if len(pool) != 1 {
-		t.Fatalf("AssembleToolPool() len = %d, want 1", len(pool))
+		t.Fatalf("AssembleToolPoolWithMetadata() len = %d, want 1", len(pool))
 	}
 	info, err := pool[0].Info(context.Background())
 	if err != nil {
 		t.Fatalf("Info() error = %v", err)
 	}
-	if info.Name != "read_file" {
-		t.Fatalf("tool pool Info().Name = %q, want read_file", info.Name)
+	if info.Name != "host_read" {
+		t.Fatalf("tool pool Info().Name = %q, want host_read", info.Name)
 	}
 }
 
@@ -1079,7 +1262,7 @@ func TestRegistryAdapterExposesDeferredCatalogForProgressiveIntent(t *testing.T)
 			},
 		},
 	})
-	adapter := newRegistryAdapter(registry, nil, featureflag.Default())
+	adapter := newRegistryAdapter(registry, nil)
 
 	defaultNames := registryAdapterToolNames(adapter.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
 	if registryAdapterHasToolByName(defaultNames, "get_current_model_config") {
@@ -1096,7 +1279,7 @@ func TestRegistryAdapterFiltersOpsManualToolsWhenUserOptedOut(t *testing.T) {
 	for _, name := range []string{"search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight", "host_read"} {
 		registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: name, sessions: []string{"host"}, modes: []string{"chat"}})
 	}
-	adapter := newRegistryAdapter(registry, nil, featureflag.Default())
+	adapter := newRegistryAdapter(registry, nil)
 	metadata := map[string]string{
 		"opsManualAction":  "skip_ops_manual",
 		"opsManualSkipped": "true",
@@ -1125,10 +1308,7 @@ func TestRegistryAdapterToolPromptSetMatchesRuntimeToolPool(t *testing.T) {
 	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "read_file", sessions: []string{"host"}, modes: []string{"chat"}})
 	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "write_file", sessions: []string{"host"}, modes: []string{"chat"}})
 
-	flags := featureflag.Flags{
-		DisabledTools: []string{"write_file"},
-	}
-	adapter := newRegistryAdapter(registry, nil, flags)
+	adapter := newRegistryAdapter(registry, nil)
 	compiler := promptcompiler.NewCompiler()
 
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
@@ -1137,30 +1317,32 @@ func TestRegistryAdapterToolPromptSetMatchesRuntimeToolPool(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
-	if len(compiled.Tools.Entries) != 1 {
-		t.Fatalf("compiled tool entries len = %d, want 1", len(compiled.Tools.Entries))
+	if len(compiled.Tools.Entries) != 2 {
+		t.Fatalf("compiled tool entries len = %d, want 2", len(compiled.Tools.Entries))
 	}
 	if !strings.Contains(compiled.Tools.Content, "read_file") {
 		t.Fatalf("tool prompt content = %q, want read_file entry", compiled.Tools.Content)
 	}
-	if strings.Contains(compiled.Tools.Content, "write_file") {
-		t.Fatalf("tool prompt content should not include filtered tool: %q", compiled.Tools.Content)
+	if !strings.Contains(compiled.Tools.Content, "write_file") {
+		t.Fatalf("tool prompt content = %q, want write_file entry", compiled.Tools.Content)
 	}
 
 	pool := adapter.AssembleToolPool(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
-	if len(pool) != 1 {
-		t.Fatalf("AssembleToolPool() len = %d, want 1", len(pool))
+	if len(pool) != 2 {
+		t.Fatalf("AssembleToolPool() len = %d, want 2", len(pool))
 	}
-	info, err := pool[0].Info(context.Background())
-	if err != nil {
-		t.Fatalf("Info() error = %v", err)
-	}
-	if !strings.Contains(compiled.Tools.Content, info.Name) {
-		t.Fatalf("tool prompt content %q should include runtime tool %q", compiled.Tools.Content, info.Name)
+	for i, tool := range pool {
+		info, err := tool.Info(context.Background())
+		if err != nil {
+			t.Fatalf("pool[%d].Info() error = %v", i, err)
+		}
+		if !strings.Contains(compiled.Tools.Content, info.Name) {
+			t.Fatalf("tool prompt content %q should include runtime tool %q", compiled.Tools.Content, info.Name)
+		}
 	}
 }
 
-func TestRegistryAdapterCompileContextDoesNotLeakLegacyMCPPromptAssetsForFilteredTools(t *testing.T) {
+func TestRegistryAdapterCompileContextDoesNotLeakMCPPromptAssetsForUnselectedTools(t *testing.T) {
 	registry := tooling.NewRegistry()
 	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{
 		name:     "coroot.query",
@@ -1176,9 +1358,7 @@ func TestRegistryAdapterCompileContextDoesNotLeakLegacyMCPPromptAssetsForFiltere
 		},
 	})
 
-	adapter := newRegistryAdapter(registry, nil, featureflag.Flags{
-		DisabledTools: []string{"coroot.query"},
-	})
+	adapter := newRegistryAdapter(registry, nil)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("inspect"))
 
 	if len(ctx.AssembledTools) != 0 {
@@ -1212,7 +1392,7 @@ func TestRegistryAdapterDefaultFlagsMatchUnflaggedRegistryAssembly(t *testing.T)
 	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "read_file", sessions: []string{"host"}, modes: []string{"chat"}})
 	registerRegistryAdapterMockTool(t, registry, &registryAdapterMockTool{name: "exec_command", sessions: []string{"host"}, modes: []string{"chat"}})
 
-	adapter := newRegistryAdapter(registry, nil, featureflag.Default())
+	adapter := newRegistryAdapter(registry, nil)
 	ctx := adapter.CompileContext(runtimekernel.SessionType("host"), runtimekernel.Mode("chat"))
 	wantTools := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{})
 

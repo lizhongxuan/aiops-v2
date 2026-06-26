@@ -1,9 +1,10 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
 import { ArrowDown, Bot, LoaderCircle } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
-import type { AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type { AgentRunView, AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { AnswerDocumentRenderer } from "./AnswerDocumentRenderer";
@@ -16,6 +17,7 @@ import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
+  agentRun?: AgentRunView;
   contextGovernance?: AiopsContextGovernanceEvent[];
   agentUiArtifacts?: unknown[];
   deferredAgentUiArtifacts?: unknown[];
@@ -25,6 +27,7 @@ type AssistantMessageMeta = {
   turnStartedAt?: string;
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
+  finalDurationMs?: number;
 };
 
 export function AiopsThread() {
@@ -32,10 +35,46 @@ export function AiopsThread() {
   const surfaces = Object.values(state.mcpSurfaces || {});
   const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
+  const scrollSignature = useMemo(() => aiopsThreadScrollSignature(state), [state]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || !stickToBottomRef.current) {
+      return undefined;
+    }
+    let cancelled = false;
+    const scroll = () => {
+      if (cancelled) {
+        return;
+      }
+      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+    };
+    scroll();
+    const firstFrame = window.requestAnimationFrame(scroll);
+    const secondFrame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(scroll);
+    });
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [scrollSignature]);
 
   return (
     <ThreadPrimitive.Root className="relative h-full min-h-0 bg-white">
-      <ThreadPrimitive.Viewport autoScroll scrollToBottomOnInitialize className="h-full overflow-y-auto scroll-smooth">
+      <ThreadPrimitive.Viewport
+        ref={viewportRef}
+        autoScroll
+        scrollToBottomOnInitialize
+        className="h-full overflow-y-auto scroll-smooth"
+        onScroll={() => {
+          const viewport = viewportRef.current;
+          stickToBottomRef.current = !viewport || isNearThreadBottom(viewport);
+        }}
+      >
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 py-6 md:px-6">
           <ThreadPrimitive.Empty>
             <div className="flex min-h-full flex-1 items-center justify-center pb-10">
@@ -55,7 +94,7 @@ export function AiopsThread() {
                   <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
                     {workspace.kind === "workspace"
                       ? "主 Agent 会保留工作台会话，并通过 AssistantTransport 编排后端 host agent。"
-                      : "输入排障、巡检或变更任务，消息会进入当前主机会话。"}
+                      : "输入排障、巡检或变更任务，消息会进入 AI Chat 会话。"}
                   </p>
                 </div>
               )}
@@ -87,14 +126,44 @@ export function AiopsThread() {
   );
 }
 
+export type ThreadScrollMetrics = Pick<HTMLElement, "scrollTop" | "clientHeight" | "scrollHeight">;
+
+export function isNearThreadBottom(metrics: ThreadScrollMetrics, thresholdPx = 96) {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= thresholdPx;
+}
+
+function aiopsThreadScrollSignature(state: AiopsTransportState) {
+  const currentTurn = state.currentTurnId ? state.turns[state.currentTurnId] : undefined;
+  const currentFinal = currentTurn?.final?.text || "";
+  const currentProcess = currentTurn?.process || [];
+  const lastProcess = currentProcess[currentProcess.length - 1];
+  return [
+    state.seq,
+    state.currentTurnId || "",
+    currentTurn?.status || "",
+    currentFinal.length,
+    currentProcess.length,
+    lastProcess?.id || "",
+    lastProcess?.status || "",
+    lastProcess?.text?.length || 0,
+    lastProcess?.outputPreview?.length || 0,
+  ].join(":");
+}
+
 function UserMessage() {
   const message = useMessage();
   return (
     <MessagePrimitive.Root className="flex justify-end px-1">
-      <div className="max-w-[78%] rounded-[1.35rem] bg-[#f4f4f4] px-4 py-2.5 text-[16px] leading-8 text-slate-950">
-        <MessageMarkdown text={messageText(message.content)} />
-      </div>
+      <UserMessageBubble text={messageText(message.content)} />
     </MessagePrimitive.Root>
+  );
+}
+
+export function UserMessageBubble({ text }: { text: string }) {
+  return (
+    <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[1.2rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-7 text-slate-950">
+      {text}
+    </div>
   );
 }
 
@@ -103,6 +172,7 @@ function AssistantMessage() {
   const commands = useAiopsTransportCommands();
   const meta = (message.metadata?.unstable_state || {}) as AssistantMessageMeta;
   const process = (meta.process || []).filter(shouldRenderProcessBlock);
+  const agentSteps = meta.agentRun?.steps || [];
   const contextStatusEvent = latestContextStatusEvent(meta.contextGovernance || []);
   const artifacts = (meta.agentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
   const corootArtifacts = artifacts.filter(isCorootChartArtifact);
@@ -114,13 +184,15 @@ function AssistantMessage() {
     <MessagePrimitive.Root className="flex justify-start px-1">
       <div className="w-full space-y-3">
         <ContextStatusNotice event={contextStatusEvent} />
-        {process.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
+        {process.length > 0 || agentSteps.length > 0 || isPendingAssistantTurn(meta.turnStatus) ? (
           <ProcessTranscript
             process={process}
+            agentSteps={agentSteps}
             turnStatus={meta.turnStatus}
             turnStartedAt={meta.turnStartedAt}
             turnCompletedAt={meta.turnCompletedAt}
             turnUpdatedAt={meta.turnUpdatedAt}
+            finalDurationMs={meta.finalDurationMs}
             finalText={finalText}
             renderFinalText={false}
             onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)}

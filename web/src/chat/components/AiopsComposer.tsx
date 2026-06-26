@@ -36,18 +36,18 @@ import type {
 } from "@/transport/aiopsTransportTypes";
 
 import {
-  buildCorootMentionMetadata,
+  buildAiopsSpecialMentionMetadata,
   buildOpsManualParamFormSubmit,
   resolveStopDispatchTarget,
 } from "./aiopsComposerActions";
 import type { DisplayHostMention } from "./HostMentionChip";
-import { HostMentionInlineOverlay } from "./HostMentionInlineOverlay";
 import { HostMentionSuggestionPopover } from "./HostMentionSuggestionPopover";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 import {
   buildHostMentionMetadata,
   parseHostMentionCandidates,
+  parseSpecialAiMentionCandidates,
 } from "../hostMentions";
 import {
   findActiveHostMentionToken,
@@ -56,6 +56,7 @@ import {
   type ActiveHostMentionToken,
   type HostMentionSuggestion,
 } from "../hostMentionSearch";
+import { HostMentionInlineOverlay } from "./HostMentionInlineOverlay";
 
 type GenerationConfirmation = {
   action: string;
@@ -108,6 +109,7 @@ type ContextFormRequest = {
 
 const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX =
   "aiops:composer-context-request:dismissed:v2:";
+const APPROVAL_DECISION_TIMEOUT_MS = 10_000;
 
 export function AiopsComposer({
   className = "",
@@ -875,8 +877,13 @@ function confirmationCopy(action: string, sourceTitle: string) {
 function selectComposerApproval(
   state: AiopsTransportState,
 ): AiopsTransportApproval | undefined {
+  const livePendingApprovals = state.runtimeLiveness?.pendingApprovals;
   const approvals = Object.values(state.pendingApprovals || {}).filter(
     (approval) => {
+      const approvalId = approval.id?.trim();
+      if (livePendingApprovals && approvalId && !livePendingApprovals[approvalId]) {
+        return false;
+      }
       const status = approval.status?.trim();
       return !status || status === "pending" || status === "blocked";
     },
@@ -918,6 +925,7 @@ function ComposerBody({
   );
   const [inputText, setInputText] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const suppressedSubmittedTextRef = useRef("");
   const suggestionPopoverId = "host-mention-suggestions";
 
   useEffect(() => {
@@ -950,25 +958,40 @@ function ComposerBody({
         : [],
     [activeToken, hostInventoryFailed, hosts],
   );
-  const currentComposerText = inputText || composerState?.text || "";
+  const composerSnapshotText = composerState?.text || "";
+  const suppressedSubmittedText = suppressedSubmittedTextRef.current;
+  const currentComposerText =
+    inputText ||
+    (suppressedSubmittedText && composerSnapshotText === suppressedSubmittedText
+      ? ""
+      : composerSnapshotText);
   const inlineHostMentions = useMemo(
     () => displayHostMentions(currentComposerText, hosts),
     [currentComposerText, hosts],
+  );
+  const inlineSpecialMentions = useMemo(
+    () => parseSpecialAiMentionCandidates(currentComposerText),
+    [currentComposerText],
+  );
+  const inlineMentions = useMemo(
+    () => mergeInlineMentions(inlineHostMentions, inlineSpecialMentions),
+    [inlineHostMentions, inlineSpecialMentions],
   );
   const selectedHostMentions = useMemo(
     () => uniqueDisplayHostMentions(inlineHostMentions),
     [inlineHostMentions],
   );
-  const hasInlineHostMentions = inlineHostMentions.length > 0;
   const suggestionOpen =
     Boolean(activeToken) &&
     !isRunning &&
     !workspace.composerDisabledReason &&
     !hostInventoryFailed;
+  const hasInlineMentions = inlineMentions.length > 0;
 
   const refreshActiveToken = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
+    suppressedSubmittedTextRef.current = "";
     setInputText(input.value);
     const cursor = input.selectionStart ?? input.value.length;
     const nextToken = findActiveHostMentionToken(input.value, cursor);
@@ -996,6 +1019,47 @@ function ComposerBody({
     },
     [activeToken, composer],
   );
+  useEffect(() => {
+    if (
+      !suppressedSubmittedTextRef.current ||
+      inputText ||
+      composerSnapshotText !== suppressedSubmittedTextRef.current
+    ) {
+      return;
+    }
+    composer.setText("");
+    if (inputRef.current?.value === suppressedSubmittedTextRef.current) {
+      inputRef.current.value = "";
+    }
+  }, [composer, composerSnapshotText, inputText]);
+
+  const clearComposerInput = useCallback((submittedText = "") => {
+    suppressedSubmittedTextRef.current = submittedText;
+    const clear = () => {
+      composer.setText("");
+      setInputText("");
+      setActiveToken(null);
+      setHighlightedIndex(0);
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
+    };
+    clear();
+    window.requestAnimationFrame(clear);
+    window.setTimeout(clear, 0);
+  }, [composer]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+    const submittedText =
+      inputRef.current?.value || inputText || composerSnapshotText;
+    if (!submittedText) {
+      return;
+    }
+    clearComposerInput(submittedText);
+  }, [clearComposerInput, composerSnapshotText, inputText, isRunning]);
 
   return (
     <ComposerPrimitive.Root
@@ -1021,7 +1085,7 @@ function ComposerBody({
       >
         <HostMentionInlineOverlay
           text={currentComposerText}
-          mentions={inlineHostMentions}
+          mentions={inlineMentions}
           variant={variant}
         />
         <ComposerPrimitive.Input asChild submitOnEnter>
@@ -1030,6 +1094,7 @@ function ComposerBody({
             data-testid="omnibar-input"
             rows={1}
             placeholder="输入你的问题或任务"
+            spellCheck={false}
             disabled={Boolean(workspace.composerDisabledReason) || isRunning}
             aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
             aria-expanded={suggestionOpen}
@@ -1080,7 +1145,7 @@ function ComposerBody({
               variant === "chat"
                 ? "relative z-10 max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
                 : "relative z-10 max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm",
-              hasInlineHostMentions &&
+              hasInlineMentions &&
                 "text-transparent caret-slate-950 selection:bg-sky-200/70",
             )}
           />
@@ -1103,12 +1168,7 @@ function ComposerBody({
           state={state}
           threadIsRunning={threadIsRunning}
           hostMentions={selectedHostMentions}
-          onComposerCleared={() => {
-            setInputText("");
-            if (inputRef.current) {
-              inputRef.current.value = "";
-            }
-          }}
+          onComposerCleared={clearComposerInput}
         />
       </div>
     </ComposerPrimitive.Root>
@@ -1121,6 +1181,16 @@ function displayHostMentions(
 ): DisplayHostMention[] {
   const mentions: DisplayHostMention[] = [];
   for (const mention of parseHostMentionCandidates(text)) {
+    if (mention.source === "local_alias") {
+      mentions.push({
+        ...mention,
+        value: "server-local",
+        hostId: "server-local",
+        displayName: "local",
+        resolved: true,
+      });
+      continue;
+    }
     const host = findHostForMention(hosts, mention.value);
     if (!host) {
       continue;
@@ -1140,6 +1210,13 @@ function displayHostMentions(
     mentions.push(displayMention);
   }
   return mentions;
+}
+
+function mergeInlineMentions(
+  hostMentions: DisplayHostMention[],
+  specialMentions: ReturnType<typeof parseSpecialAiMentionCandidates>,
+) {
+  return [...hostMentions, ...specialMentions].sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
 function uniqueDisplayHostMentions(
@@ -1201,14 +1278,13 @@ function TargetAwareSendButton({
   state: AiopsTransportState;
   threadIsRunning: boolean;
   hostMentions: DisplayHostMention[];
-  onComposerCleared: () => void;
+  onComposerCleared: (submittedText: string) => void;
 }) {
   const api = useAssistantApi();
   const composer = useComposerRuntime();
   const composerState = useComposer((snapshot) => snapshot);
   const sendCommand = useAssistantTransportSendCommand();
   const commands = useAiopsTransportCommands();
-  const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
   const [stopping, setStopping] = useState(false);
   const [forceStopVisible, setForceStopVisible] = useState(false);
@@ -1287,17 +1363,16 @@ function TargetAwareSendButton({
         const text = composer.getState().text.trim();
         if (!text) return;
         composer.setText("");
-        onComposerCleared();
+        onComposerCleared(text);
         const command = {
           type: "add-message",
           message: {
             role: "user",
             metadata: {
-              ...target.metadata,
               ...buildHostMentionMetadata(hostMentions),
-              ...buildCorootMentionMetadata(text),
+              ...buildAiopsSpecialMentionMetadata(text),
             },
-            ...(target.hostId ? { hostId: target.hostId } : {}),
+            ...hostIdMessageField(hostMentions),
             parts: [{ type: "text", text }],
           },
         } as Parameters<typeof sendCommand>[0];
@@ -1317,6 +1392,13 @@ function TargetAwareSendButton({
   );
 }
 
+function hostIdMessageField(hostMentions: DisplayHostMention[]) {
+  const hostIds = Array.from(
+    new Set(hostMentions.map((mention) => cleanHostText(mention.hostId)).filter(Boolean)),
+  );
+  return hostIds.length === 1 ? { hostId: hostIds[0] } : {};
+}
+
 function BlockedApprovalComposer({
   approval,
 }: {
@@ -1330,13 +1412,16 @@ function BlockedApprovalComposer({
     "accept" | "accept_session" | "reject" | null
   >(null);
   const [submitError, setSubmitError] = useState("");
+  const timeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const commandText = approval.command || approval.reason || approval.id;
   const isSubmitting = Boolean(submittingDecision) && !submitError;
 
   useEffect(() => {
+    clearApprovalDecisionTimeout(timeoutRef);
     setDecision("accept");
     setSubmittingDecision(null);
     setSubmitError("");
+    return () => clearApprovalDecisionTimeout(timeoutRef);
   }, [approval.id]);
 
   function submitDecision(
@@ -1347,9 +1432,17 @@ function BlockedApprovalComposer({
     }
     setSubmittingDecision(nextDecision);
     setSubmitError("");
+    clearApprovalDecisionTimeout(timeoutRef);
     try {
       commands.approvalDecision(approval.id, nextDecision);
+      timeoutRef.current = window.setTimeout(() => {
+        setSubmittingDecision(null);
+        setSubmitError(
+          `审批请求超时：后端 ${APPROVAL_DECISION_TIMEOUT_MS / 1000} 秒内未返回继续执行状态，请刷新状态或重试。`,
+        );
+      }, APPROVAL_DECISION_TIMEOUT_MS);
     } catch (error) {
+      clearApprovalDecisionTimeout(timeoutRef);
       setSubmittingDecision(null);
       setSubmitError(
         error instanceof Error ? error.message : "提交审批失败，请重试",
@@ -1365,7 +1458,9 @@ function BlockedApprovalComposer({
       <div className="mx-auto max-w-3xl rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.10)]">
         <div className="space-y-3">
           <div>
-            <div className="text-xs font-medium text-slate-400">等待审批</div>
+            <div className="text-xs font-medium text-slate-400">
+              {approvalInlineTitle(approval)}
+            </div>
             <div className="mt-1 text-[15px] font-semibold leading-6 text-slate-950">
               要执行这个命令，需要你确认吗？
             </div>
@@ -1376,6 +1471,21 @@ function BlockedApprovalComposer({
           >
             {commandText}
           </div>
+          {approvalInlineDetails(approval).length ? (
+            <dl
+              className="grid gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700 sm:grid-cols-[4.5rem_1fr]"
+              data-testid="codex-approval-details"
+            >
+              {approvalInlineDetails(approval).map((detail) => (
+                <div key={detail.label} className="contents">
+                  <dt className="font-medium text-slate-500">{detail.label}</dt>
+                  <dd className="min-w-0 break-words text-slate-800">
+                    {detail.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
           <div className="space-y-1" role="radiogroup" aria-label="审批选项">
             <ApprovalChoice
               selected={decision === "accept"}
@@ -1439,6 +1549,62 @@ function BlockedApprovalComposer({
       </div>
     </div>
   );
+}
+
+function approvalInlineDetails(approval: AiopsTransportApproval) {
+  return [
+    { label: "目标", value: approval.targetSummary },
+    { label: "风险", value: approval.risk },
+    { label: "来源", value: approvalInlineSourceLabel(approval.source) },
+    { label: "影响", value: approval.expectedEffect },
+    { label: "回滚", value: approval.rollback },
+    { label: "验收", value: approval.validation },
+  ].filter((item): item is { label: string; value: string } =>
+    Boolean(item.value),
+  );
+}
+
+function approvalInlineTitle(approval: AiopsTransportApproval) {
+  const target = approvalInlinePrimaryTarget(approval.targetSummary);
+  return target ? `${target} 等待审批` : "等待审批";
+}
+
+function approvalInlinePrimaryTarget(targetSummary?: string) {
+  const value = targetSummary?.trim();
+  if (!value) return "";
+  const first = value
+    .split(/[；;,，]/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  if (!first) return "";
+  if (first.startsWith("host:")) return first.slice("host:".length).trim();
+  return first;
+}
+
+function approvalInlineSourceLabel(source?: string) {
+  switch (source) {
+    case "ai_chat_direct":
+      return "AI Chat";
+    case "ops_manual":
+      return "运维手册";
+    case "workflow":
+      return "Workflow";
+    case "runbook":
+      return "Runbook";
+    case "terminal_policy":
+      return "终端策略";
+    default:
+      return source;
+  }
+}
+
+function clearApprovalDecisionTimeout(
+  timeoutRef: { current: ReturnType<typeof window.setTimeout> | null },
+) {
+  if (timeoutRef.current) {
+    window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+  }
 }
 
 function ApprovalChoice({

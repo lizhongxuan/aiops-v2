@@ -51,6 +51,35 @@ describe("HostMentionSuggestionPopover", () => {
     expect(onSelect).toHaveBeenCalledWith(sampleSuggestions()[0]);
   });
 
+  it("renders the local alias suggestion with its target hint", async () => {
+    await act(async () => {
+      root.render(
+        <HostMentionSuggestionPopover
+          id="host-mention-suggestions"
+          suggestions={[
+            {
+              key: "local",
+              mention: "@local",
+              label: "local",
+              description: "本机 server-local",
+              hostId: "server-local",
+              address: "127.0.0.1",
+              status: "local",
+              score: 1000,
+            },
+          ]}
+          highlightedIndex={0}
+          onHighlight={vi.fn()}
+          onSelect={vi.fn()}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("@local");
+    expect(container.textContent).toContain("本机 server-local");
+    expect(container.querySelector('[role="option"]')?.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("renders an empty state without suggestion items", async () => {
     await act(async () => {
       root.render(

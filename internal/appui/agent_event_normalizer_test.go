@@ -66,6 +66,38 @@ func TestNormalizeRuntimeLifecycleEvent(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuntimeLifecycleEventKeepsAssistantFinalDeltaSingleChannel(t *testing.T) {
+	payload, _ := json.Marshal(map[string]any{
+		"text":        "最终回答流式片段",
+		"phase":       "final_answer",
+		"streamState": "streaming",
+		"iteration":   0,
+	})
+	events, err := NormalizeRuntimeLifecycleEvent(runtimekernel.LifecycleEvent{
+		Type:      runtimekernel.EventAssistantFinalDelta,
+		SessionID: "session-1",
+		TurnID:    "turn-1",
+		Timestamp: time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC),
+		Payload:   payload,
+	})
+	if err != nil {
+		t.Fatalf("NormalizeRuntimeLifecycleEvent() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(events[0].Payload, &normalized); err != nil {
+		t.Fatalf("decode normalized payload: %v", err)
+	}
+	if normalized["channel"] != "final" {
+		t.Fatalf("payload.channel = %v, want final", normalized["channel"])
+	}
+	if normalized["phase"] != "final_answer" || normalized["streamState"] != "streaming" {
+		t.Fatalf("payload = %#v, want assistant message phase metadata preserved", normalized)
+	}
+}
+
 func TestNormalizeToolInvocation(t *testing.T) {
 	tests := []struct {
 		status projection.ToolInvocationStatus

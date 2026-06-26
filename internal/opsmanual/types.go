@@ -364,19 +364,45 @@ type SearchOpsManualsResult struct {
 }
 
 type SearchManualHit struct {
-	Manual            OpsManual        `json:"manual"`
-	BoundWorkflowID   string           `json:"bound_workflow_id,omitempty"`
-	MatchLevel        string           `json:"match_level"`
-	UsableMode        DecisionState    `json:"usable_mode"`
-	ScoreBreakdown    ScoreBreakdown   `json:"score_breakdown,omitempty"`
-	PreflightStatus   PreflightStatus  `json:"preflight_status,omitempty"`
-	MatchedFields     []string         `json:"matched_fields,omitempty"`
-	MissingFields     []string         `json:"missing_fields,omitempty"`
-	EnvironmentDiffs  []string         `json:"environment_diffs,omitempty"`
-	BlockedReasons    []string         `json:"blocked_reasons,omitempty"`
-	RecommendedAction string           `json:"recommended_action,omitempty"`
-	RunRecordSummary  RunRecordSummary `json:"run_record_summary,omitempty"`
-	HintSources       []string         `json:"hint_sources,omitempty"`
+	Manual                OpsManual                     `json:"manual"`
+	BoundWorkflowID       string                        `json:"bound_workflow_id,omitempty"`
+	MatchLevel            string                        `json:"match_level"`
+	UsableMode            DecisionState                 `json:"usable_mode"`
+	ScoreBreakdown        ScoreBreakdown                `json:"score_breakdown,omitempty"`
+	PreflightStatus       PreflightStatus               `json:"preflight_status,omitempty"`
+	Confidence            string                        `json:"confidence,omitempty"`
+	TraceOnly             bool                          `json:"trace_only,omitempty"`
+	MatchReasons          []string                      `json:"match_reasons,omitempty"`
+	ApplicabilityBoundary []string                      `json:"applicability_boundary,omitempty"`
+	NotApplicableWhen     []string                      `json:"not_applicable_when,omitempty"`
+	MatchedFields         []string                      `json:"matched_fields,omitempty"`
+	MissingFields         []string                      `json:"missing_fields,omitempty"`
+	EnvironmentDiffs      []string                      `json:"environment_diffs,omitempty"`
+	BlockedReasons        []string                      `json:"blocked_reasons,omitempty"`
+	RecommendedAction     string                        `json:"recommended_action,omitempty"`
+	RunRecordSummary      RunRecordSummary              `json:"run_record_summary,omitempty"`
+	HistoryStats          RecommendationHistoryStats    `json:"history_stats,omitempty"`
+	Workflow              WorkflowRecommendationSummary `json:"workflow,omitempty"`
+	HintSources           []string                      `json:"hint_sources,omitempty"`
+}
+
+type RecommendationHistoryStats struct {
+	UsedCount    int    `json:"used_count,omitempty"`
+	SkippedCount int    `json:"skipped_count,omitempty"`
+	SuccessCount int    `json:"success_count,omitempty"`
+	FailureCount int    `json:"failure_count,omitempty"`
+	SuccessRate  int    `json:"success_rate,omitempty"`
+	RecentResult string `json:"recent_result,omitempty"`
+	LatestStatus string `json:"latest_status,omitempty"`
+	LastRunAt    string `json:"last_run_at,omitempty"`
+}
+
+type WorkflowRecommendationSummary struct {
+	ID               string   `json:"id,omitempty"`
+	RiskLevel        string   `json:"risk_level,omitempty"`
+	RequiredTarget   string   `json:"required_target,omitempty"`
+	RequiresApproval bool     `json:"requires_approval,omitempty"`
+	RequiredParams   []string `json:"required_params,omitempty"`
 }
 
 type ManualCandidate struct {
@@ -419,6 +445,8 @@ type RunRecord struct {
 }
 
 type RunRecordSummary struct {
+	UsedCount           int    `json:"used_count,omitempty"`
+	SkippedCount        int    `json:"skipped_count,omitempty"`
 	SuccessCount        int    `json:"success_count,omitempty"`
 	FailureCount        int    `json:"failure_count,omitempty"`
 	RecentResult        string `json:"recent_result,omitempty"`

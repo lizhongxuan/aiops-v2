@@ -496,21 +496,21 @@
         {
           "id": "service.新服务.1781604823747",
           "type": "service",
-          "name": "新服务",
+          "name": "mcservice",
           "position": {
-            "x": 76,
-            "y": 119
+            "x": 96,
+            "y": 436
           },
           "createdAt": "2026-06-16T10:13:43.750466Z",
-          "updatedAt": "2026-06-16T10:13:43.750466Z"
+          "updatedAt": "2026-06-23T03:31:49.775479Z"
         },
         {
           "id": "service.新服务.1781604825764",
           "type": "service",
           "name": "新服务",
           "position": {
-            "x": 256,
-            "y": 96
+            "x": 96,
+            "y": 266
           },
           "createdAt": "2026-06-16T10:13:45.768285Z",
           "updatedAt": "2026-06-16T10:13:45.768285Z"
@@ -520,8 +520,8 @@
           "type": "middleware",
           "name": "新中间件",
           "position": {
-            "x": 24,
-            "y": 144
+            "x": 96,
+            "y": 606
           },
           "createdAt": "2026-06-16T10:13:47.784688Z",
           "updatedAt": "2026-06-16T10:13:47.784688Z"
@@ -531,8 +531,8 @@
           "type": "middleware",
           "name": "新中间件",
           "position": {
-            "x": 136,
-            "y": 144
+            "x": 416,
+            "y": 266
           },
           "createdAt": "2026-06-16T10:13:49.800824Z",
           "updatedAt": "2026-06-16T10:13:49.800824Z"
@@ -566,21 +566,37 @@
           "type": "service",
           "name": "服务",
           "position": {
-            "x": 696,
-            "y": 447
+            "x": 96,
+            "y": 96
           },
           "createdAt": "2026-06-16T12:33:42.439643Z",
           "updatedAt": "2026-06-16T12:33:42.439643Z"
+        },
+        {
+          "id": "middleware.mysql.新mysql.1782185484443",
+          "type": "middleware",
+          "subtype": "mysql",
+          "name": "新MySQL",
+          "properties": {
+            "ports": "3306/mysql",
+            "role": "primary"
+          },
+          "position": {
+            "x": 416,
+            "y": 96
+          },
+          "createdAt": "2026-06-23T03:31:24.444929Z",
+          "updatedAt": "2026-06-23T03:31:24.444929Z"
         }
       ],
       "edges": [
         {
           "id": "edge.service.新服务.1781604823747.depends_on.middleware.新中间件.1781604827781",
-          "from": "service.新服务.1781604823747",
+          "from": "service.服务.1781613222434",
           "type": "depends_on",
-          "to": "middleware.新中间件.1781604827781",
+          "to": "middleware.mysql.新mysql.1782185484443",
           "createdAt": "2026-06-16T10:14:27.932165Z",
-          "updatedAt": "2026-06-16T10:14:27.932165Z"
+          "updatedAt": "2026-06-23T03:32:12.29268Z"
         },
         {
           "id": "edge.service.新服务.1781604825764.depends_on.middleware.新中间件.1781604829796",
@@ -608,7 +624,7 @@
         }
       ],
       "createdAt": "2026-06-16T10:13:15.267366Z",
-      "updatedAt": "2026-06-16T13:09:21.266522Z"
+      "updatedAt": "2026-06-23T03:32:15.192937Z"
     }
   ]
 }

@@ -4,6 +4,8 @@ type JsonMap = Record<string, unknown>;
 type RequestOptions = Omit<RequestInit, "body"> & { body?: unknown };
 export const DEFAULT_LLM_CONTEXT_TOKENS = 200000;
 export const MIN_LLM_CONTEXT_TOKENS = 10000;
+export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 20000;
+export const MIN_LLM_MAX_OUTPUT_TOKENS = 1;
 
 function parseResponseBody(text: string, contentType: string) {
   const trimmed = text.trim();
@@ -53,7 +55,12 @@ export type LlmConfigView = {
   apiKeyMasked?: string;
   baseURL?: string;
   maxContextTokens?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  topP?: number;
+  thinkingType?: string;
   reasoningEffort?: string;
+  toolStream?: boolean;
   bifrostActive?: boolean;
 };
 
@@ -62,6 +69,7 @@ export type LlmConfigUpdateResult = {
   message?: string;
   error?: string;
   maxContextTokens?: number;
+  maxOutputTokens?: number;
 };
 
 export type LlmConfigUpdate = {
@@ -70,7 +78,12 @@ export type LlmConfigUpdate = {
   apiKey?: string;
   baseURL?: string;
   maxContextTokens?: number | string | null;
+  maxOutputTokens?: number | string | null;
+  temperature?: number | string | null;
+  topP?: number | string | null;
+  thinkingType?: string;
   reasoningEffort?: string;
+  toolStream?: boolean;
 };
 
 export function normalizeLlmContextTokens(value: LlmConfigUpdate["maxContextTokens"]) {
@@ -79,6 +92,20 @@ export function normalizeLlmContextTokens(value: LlmConfigUpdate["maxContextToke
   if (!Number.isFinite(numeric)) return DEFAULT_LLM_CONTEXT_TOKENS;
   if (numeric <= 0) return DEFAULT_LLM_CONTEXT_TOKENS;
   return Math.max(MIN_LLM_CONTEXT_TOKENS, Math.trunc(numeric));
+}
+
+export function normalizeLlmMaxOutputTokens(value: unknown, cap = Number.MAX_SAFE_INTEGER) {
+  const normalizedCap = Number.isFinite(Number(cap)) && Number(cap) > 0 ? Math.trunc(Number(cap)) : Number.MAX_SAFE_INTEGER;
+  if (value === undefined || value === null || value === "") return Math.min(DEFAULT_LLM_MAX_OUTPUT_TOKENS, normalizedCap);
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return Math.min(DEFAULT_LLM_MAX_OUTPUT_TOKENS, normalizedCap);
+  return Math.min(Math.max(MIN_LLM_MAX_OUTPUT_TOKENS, Math.trunc(numeric)), normalizedCap);
+}
+
+export function normalizeOptionalFloat(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
 }
 
 export type SessionKind = "single_host" | "workspace";
@@ -112,6 +139,9 @@ export type HostRecord = {
   agentUrl?: string;
   agentTokenRef?: string;
   status?: string;
+  agentStatus?: string;
+  sshStatus?: string;
+  runtimeReachability?: string;
   installState?: string;
   installRunId?: string;
   installWorkflowId?: string;
@@ -220,9 +250,21 @@ export function fetchLlmConfig() {
 }
 
 export function updateLlmConfig(payload: LlmConfigUpdate) {
+  const body: Record<string, unknown> = {
+    ...payload,
+    maxContextTokens: normalizeLlmContextTokens(payload.maxContextTokens),
+    maxOutputTokens: normalizeLlmMaxOutputTokens(payload.maxOutputTokens),
+  };
+  if (typeof body.apiKey === "string" && body.apiKey.trim() === "") delete body.apiKey;
+  const temperature = normalizeOptionalFloat(payload.temperature);
+  const topP = normalizeOptionalFloat(payload.topP);
+  if (temperature === undefined) delete body.temperature;
+  else body.temperature = temperature;
+  if (topP === undefined) delete body.topP;
+  else body.topP = topP;
   return request<LlmConfigUpdateResult>("/api/v1/llm-config", {
     method: "PUT",
-    body: { ...payload, maxContextTokens: normalizeLlmContextTokens(payload.maxContextTokens) },
+    body,
   });
 }
 

@@ -59,7 +59,7 @@ func TestAssistantTransportResumeRunningTurnStreamsCurrentAndFutureState(t *test
 		UpdatedAt:   now,
 		AgentItems: []agentstate.TurnItem{
 			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "investigate payment-api"}, CreatedAt: now},
-			{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "partial"}, CreatedAt: now},
+			assistantMessageFinalItemForServerTest("final-1", agentstate.ItemStatusRunning, "partial", now),
 		},
 	}
 	sessions.Update(session)
@@ -378,7 +378,7 @@ func assistantTransportCompletedResumeTurn(sessionID, turnID, userText, processT
 		AgentItems: []agentstate.TurnItem{
 			{ID: turnID + "-user", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: userText}, CreatedAt: startedAt},
 			{ID: turnID + "-reasoning", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: processText}, CreatedAt: startedAt.Add(500 * time.Millisecond)},
-			{ID: turnID + "-final", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalText}, CreatedAt: completedAt},
+			assistantMessageFinalItemForServerTest(turnID+"-final", agentstate.ItemStatusCompleted, finalText, completedAt),
 		},
 	}
 }

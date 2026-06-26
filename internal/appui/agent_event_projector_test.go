@@ -665,6 +665,53 @@ func TestAgentEventProjector_TurnCompletedMarksStreamingFinalCompleted(t *testin
 	}
 }
 
+func TestAgentEventProjectorReplacesFinalOnNewRuntimeIteration(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Prompt: "risk review"}),
+		testAgentEvent(AgentEventSystem, AgentEventPhaseUpdated, AgentEventStatusRunning, 2, SystemPayload{
+			ID:          "turn-1:activity:0:context_pipeline",
+			DisplayKind: "runtime.activity",
+			Stage:       "context_pipeline",
+			Iteration:   0,
+		}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 3, AssistantPayload{Channel: "final", Delta: "old high confidence"}),
+		testAgentEvent(AgentEventSystem, AgentEventPhaseUpdated, AgentEventStatusRunning, 4, SystemPayload{
+			ID:          "turn-1:activity:1:context_pipeline",
+			DisplayKind: "runtime.activity",
+			Stage:       "context_pipeline",
+			Iteration:   1,
+		}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 5, AssistantPayload{Channel: "final", Delta: "new low confidence"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseCompleted, AgentEventStatusCompleted, 6, TurnPayload{Summary: "done"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+
+	final := proj.FinalMessages["turn-1"]
+	if final.Text != "new low confidence" {
+		t.Fatalf("FinalMessages[turn-1].Text = %q, want replacement final", final.Text)
+	}
+	if final.Status != AgentEventStatusCompleted {
+		t.Fatalf("FinalMessages[turn-1].Status = %q, want completed", final.Status)
+	}
+	var archived *TimelineEntry
+	for i := range proj.ProcessGroups["turn-1"] {
+		row := &proj.ProcessGroups["turn-1"][i]
+		if row.DisplayKind == "assistant.process" && row.Summary == "old high confidence" {
+			archived = row
+			break
+		}
+	}
+	if archived == nil {
+		t.Fatalf("ProcessGroups[turn-1] = %+v, want archived assistant draft", proj.ProcessGroups["turn-1"])
+	}
+	if archived.Status != AgentEventStatusCompleted {
+		t.Fatalf("archived assistant status = %q, want completed", archived.Status)
+	}
+}
+
 func TestAgentEventProjector_TurnCompletedMarksRuntimeActivitiesCompleted(t *testing.T) {
 	projector := NewAgentEventProjector()
 	proj, err := projector.Replay("session-1", []AgentEvent{
@@ -811,6 +858,21 @@ func TestAgentEventProjectorApplyDoesNotMutateInputMapFields(t *testing.T) {
 	}
 	if next.FinalMessages["turn-1"].Status != AgentEventStatusCompleted {
 		t.Fatalf("next FinalMessages status = %q, want completed", next.FinalMessages["turn-1"].Status)
+	}
+}
+
+func TestAgentEventProjectorDropsPartialFinalWhenTurnFails(t *testing.T) {
+	projector := NewAgentEventProjector()
+	proj, err := projector.Replay("session-1", []AgentEvent{
+		testAgentEvent(AgentEventTurn, AgentEventPhaseStarted, AgentEventStatusRunning, 1, TurnPayload{Title: "risk review"}),
+		testAgentEvent(AgentEventAssistant, AgentEventPhaseDelta, AgentEventStatusRunning, 2, AssistantPayload{Channel: "final", Delta: "partial unsafe answer"}),
+		testAgentEvent(AgentEventTurn, AgentEventPhaseFailed, AgentEventStatusFailed, 3, TurnPayload{Summary: "failed to receive stream chunk: unexpected EOF"}),
+	})
+	if err != nil {
+		t.Fatalf("Replay error = %v", err)
+	}
+	if _, ok := proj.FinalMessages["turn-1"]; ok {
+		t.Fatalf("FinalMessages retained partial failed answer: %+v", proj.FinalMessages["turn-1"])
 	}
 }
 

@@ -39,7 +39,7 @@ type ChatModel = model.ChatModel
 // ProviderConfig specifies which provider and model to use, along with
 // generation parameters.
 type ProviderConfig struct {
-	// Provider identifies the LLM provider: "openai", "zhipu", "anthropic", "ollama".
+	// Provider identifies the LLM provider: "openai", "deepseek", "zhipu", "anthropic", "ollama".
 	Provider string
 
 	// Model is the specific model name, e.g. "gpt-4o", "claude-3-5-sonnet", "llama3".
@@ -51,6 +51,9 @@ type ProviderConfig struct {
 	// Temperature controls randomness in generation (0.0 – 1.0+).
 	Temperature float64
 
+	// TopP controls nucleus sampling.
+	TopP float64
+
 	// MaxTokens limits the maximum number of tokens in the response.
 	MaxTokens int
 
@@ -60,6 +63,15 @@ type ProviderConfig struct {
 
 	// ReasoningEffort controls provider-native reasoning effort where supported.
 	ReasoningEffort string
+
+	// ThinkingType controls OpenAI-compatible provider-specific thinking mode.
+	ThinkingType string
+
+	// ToolStream enables provider-specific streaming details for tool calls.
+	ToolStream bool
+
+	// ExtraFields carries provider-specific OpenAI-compatible request fields.
+	ExtraFields map[string]any
 }
 
 const GenericReasoningFallbackPolicy = "Reasoning fallback policy: decompose the goal, list assumptions, gather evidence before conclusions, cover key claims with evidence, and state the blocker when progress cannot continue. Do not expose raw reasoning."
@@ -260,6 +272,9 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	if config.Temperature > 0 {
 		resolved.Temperature = config.Temperature
 	}
+	if config.TopP > 0 {
+		resolved.TopP = config.TopP
+	}
 	if config.MaxTokens > 0 {
 		resolved.MaxTokens = config.MaxTokens
 	}
@@ -268,6 +283,15 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	}
 	if strings.TrimSpace(config.ReasoningEffort) != "" {
 		resolved.ReasoningEffort = config.ReasoningEffort
+	}
+	if strings.TrimSpace(config.ThinkingType) != "" {
+		resolved.ThinkingType = config.ThinkingType
+	}
+	if config.ToolStream {
+		resolved.ToolStream = true
+	}
+	if len(config.ExtraFields) > 0 {
+		resolved.ExtraFields = cloneExtraFields(config.ExtraFields)
 	}
 	return resolved
 }
@@ -327,6 +351,7 @@ func (r *Router) resolveProvider(agentKind AgentKind, config ProviderConfig) str
 func defaultProviderFactories() map[string]ProviderFactory {
 	return map[string]ProviderFactory{
 		"openai":    buildOpenAIProviderModel,
+		"deepseek":  buildDeepSeekProviderModel,
 		"zhipu":     buildZhipuProviderModel,
 		"anthropic": buildAnthropicProviderModel,
 	}
@@ -334,6 +359,10 @@ func defaultProviderFactories() map[string]ProviderFactory {
 
 func buildOpenAIProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
 	return buildOpenAICompatibleProviderModel("openai", config, truth, hasTruth)
+}
+
+func buildDeepSeekProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
+	return buildOpenAICompatibleProviderModel("deepseek", config, truth, hasTruth)
 }
 
 func buildZhipuProviderModel(_ context.Context, _ AgentKind, config ProviderConfig, truth auth.CredentialTruth, hasTruth bool) (ChatModel, error) {
@@ -349,13 +378,18 @@ func buildOpenAICompatibleProviderModel(provider string, config ProviderConfig, 
 			Reason:   "no credential truth available",
 		}
 	}
+	extraFields := openAICompatibleExtraFields(provider, config)
+	extraFields = mergeExtraFields(config.ExtraFields, extraFields)
 	return NewOpenAIChatModel(context.Background(), OpenAIConfig{
+		Provider:        provider,
 		APIKey:          apiKey,
 		BaseURL:         strings.TrimSpace(config.BaseURL),
 		Model:           resolveProviderModel(provider, config),
 		Temperature:     resolveProviderTemperature(config),
+		TopP:            config.TopP,
 		MaxTokens:       resolveProviderMaxTokens(config),
 		ReasoningEffort: strings.TrimSpace(config.ReasoningEffort),
+		ExtraFields:     extraFields,
 	})
 }
 
@@ -406,8 +440,10 @@ func resolveProviderModel(provider string, config ProviderConfig) string {
 	switch provider {
 	case "openai":
 		return "gpt-4o"
+	case "deepseek":
+		return "deepseek-v4-pro"
 	case "zhipu":
-		return "glm-4.7"
+		return "glm-5.2"
 	case "anthropic":
 		return "claude-3-5-sonnet"
 	case "ollama":
@@ -446,7 +482,7 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 	}
 
 	switch provider {
-	case "openai", "zhipu":
+	case "openai":
 		caps.ExactTokenCount = true
 		caps.CacheEdit = true
 		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o") || isGLM47Model(normalizedModel)
@@ -465,6 +501,28 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 			caps.MaxContextTokens = 128000
 			caps.MaxOutputTokens = 16000
 		}
+	case "deepseek", "zhipu":
+		if preset, ok := ModelPresetByID(provider, model); ok {
+			caps.MaxContextTokens = preset.MaxContextTokens
+			caps.MaxOutputTokens = preset.MaxOutputTokens
+			caps.SupportsToolCalls = preset.SupportsTools
+			caps.SupportsStreaming = preset.SupportsStreaming
+			caps.SupportsReasoning = preset.SupportsThinking
+		} else if provider == "deepseek" {
+			caps.MaxContextTokens = 1000000
+			caps.MaxOutputTokens = 384000
+			caps.SupportsReasoning = true
+		} else {
+			caps.MaxContextTokens = 200000
+			caps.MaxOutputTokens = 128000
+			caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "glm-4.5") ||
+				strings.HasPrefix(normalizedModel, "glm-4.6") ||
+				strings.HasPrefix(normalizedModel, "glm-4.7") ||
+				strings.HasPrefix(normalizedModel, "glm-5")
+		}
+		caps.ExactTokenCount = false
+		caps.CacheEdit = false
+		caps.SupportsNativeWebTool = provider == "zhipu"
 	case "anthropic":
 		caps.MaxContextTokens = 200000
 		caps.MaxOutputTokens = 8192
@@ -497,7 +555,7 @@ func applyReasoningCapabilityMetadata(caps *ModelCapabilities, provider, normali
 		return
 	}
 	caps.NativeReasoning = providerModelSupportsNativeReasoningEffort(provider, normalizedModel)
-	requested := normalizeReasoningEffort(config.ReasoningEffort)
+	requested := normalizeCapabilityReasoningEffort(provider, normalizedModel, config.ReasoningEffort)
 	if requested == "" {
 		return
 	}
@@ -509,13 +567,52 @@ func applyReasoningCapabilityMetadata(caps *ModelCapabilities, provider, normali
 	caps.ReasoningFallbackPolicy = GenericReasoningFallbackPolicy
 }
 
+func normalizeCapabilityReasoningEffort(provider, normalizedModel, effort string) string {
+	if strings.TrimSpace(effort) == "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case ProviderDeepSeek, ProviderZhipu:
+		return NormalizeReasoningEffortForProvider(provider, normalizedModel, effort)
+	default:
+		return normalizeReasoningEffort(effort)
+	}
+}
+
 func providerModelSupportsNativeReasoningEffort(provider, normalizedModel string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai":
 		return openAIModelSupportsReasoningEffort(normalizedModel)
+	case "deepseek", "zhipu":
+		return true
 	default:
 		return false
 	}
+}
+
+func cloneExtraFields(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
+func mergeExtraFields(base map[string]any, overrides map[string]any) map[string]any {
+	out := cloneExtraFields(base)
+	if len(overrides) == 0 {
+		return out
+	}
+	if out == nil {
+		out = make(map[string]any, len(overrides))
+	}
+	for key, value := range overrides {
+		out[key] = value
+	}
+	return out
 }
 
 func isGLM47Model(normalizedModel string) bool {

@@ -9,6 +9,7 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/planning"
+	"aiops-v2/internal/runtimekernel"
 )
 
 var verificationHints = []string{
@@ -76,6 +77,7 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		scoreMustHaveEvidence(output.TurnItems, c.Expected.MustHaveEvidence),
 		scorePrematureFinal(output.ToolCalls, output.TurnItems, c.Expected.ForbidFirstTurnNoToolFinal),
 		scoreEvidenceLimits(output.Answer, c.Expected.MustMentionEvidenceLimits),
+		scoreRiskyOperationalAdvice(output.Answer),
 		scoreMaxIterations(output.TurnItems, c.Expected.MaxIterations),
 		scoreMaxToolCalls(output.ToolCalls, output.TurnItems, c.Expected.MaxToolCalls),
 		scoreMustMentionFiles(output.Answer, c.Expected.MustMentionFiles),
@@ -106,6 +108,19 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		TotalChecks:        len(checks),
 		Checks:             checks,
 		PromptFingerprints: promptFingerprintsFromTurnItems(output.TurnItems),
+	}
+}
+
+func scoreRiskyOperationalAdvice(answer string) CheckResult {
+	result := runtimekernel.EvaluateRiskyOperationalAdvice(answer)
+	if !result.RequiresEvidenceGate {
+		return CheckResult{Name: "riskyOperationalAdvice", Passed: true, Detail: "no unsafe destructive data/archive advice detected"}
+	}
+	return CheckResult{
+		Name:       "riskyOperationalAdvice",
+		Passed:     false,
+		Detail:     result.Reason,
+		Unexpected: []string{result.Category},
 	}
 }
 
@@ -337,12 +352,15 @@ func scorePrematureFinal(calls []ToolCall, items []agentstate.TurnItem, forbidde
 	}
 	sawInvestigation := false
 	for _, item := range items {
-		switch string(item.Type) {
-		case "tool_call", "tool_result", "evidence":
+		switch item.Type {
+		case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypeEvidence:
 			sawInvestigation = true
-		case "final_answer":
+		case agentstate.TurnItemTypeAssistantMessage:
+			if !turnItemIsAssistantFinalMessage(item) {
+				continue
+			}
 			if !sawInvestigation {
-				return CheckResult{Name: "prematureFinal", Passed: false, Detail: "final answer emitted before tool or evidence collection", Unexpected: []string{"final_answer"}}
+				return CheckResult{Name: "prematureFinal", Passed: false, Detail: "final assistant message emitted before tool or evidence collection", Unexpected: []string{"assistant_message(final_answer)"}}
 			}
 		}
 	}
@@ -471,7 +489,7 @@ func scoreMaxToolCalls(calls []ToolCall, items []agentstate.TurnItem, max int) C
 func scoreExpectedTurnItems(items []agentstate.TurnItem, expected []string) CheckResult {
 	types := make([]string, 0, len(items))
 	for _, item := range items {
-		types = append(types, string(item.Type))
+		types = append(types, turnItemExpectationNames(item)...)
 	}
 	var matched, missing []string
 	for _, typ := range expected {
@@ -488,6 +506,35 @@ func scoreExpectedTurnItems(items []agentstate.TurnItem, expected []string) Chec
 		Matched: matched,
 		Missing: missing,
 	}
+}
+
+func turnItemExpectationNames(item agentstate.TurnItem) []string {
+	base := string(item.Type)
+	if item.Type != agentstate.TurnItemTypeAssistantMessage {
+		return []string{base}
+	}
+	phase := assistantMessagePhaseForEval(item)
+	if phase == "" {
+		return []string{base}
+	}
+	return []string{base, fmt.Sprintf("assistant_message(%s)", phase)}
+}
+
+func turnItemIsAssistantFinalMessage(item agentstate.TurnItem) bool {
+	return item.Type == agentstate.TurnItemTypeAssistantMessage && assistantMessagePhaseForEval(item) == "final_answer"
+}
+
+func assistantMessagePhaseForEval(item agentstate.TurnItem) string {
+	if len(item.Payload.Data) == 0 {
+		return ""
+	}
+	var data struct {
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal(item.Payload.Data, &data); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(data.Phase)
 }
 
 func scorePlanPresence(items []agentstate.TurnItem, mustHave, mustNotHave bool) CheckResult {

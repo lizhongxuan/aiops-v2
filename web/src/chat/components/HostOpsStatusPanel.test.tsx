@@ -164,6 +164,77 @@ describe("HostOpsStatusPanel", () => {
     expect(container.querySelector('[data-testid="host-child-agent-child-host-b"]')?.textContent).toContain("waiting");
   });
 
+  it("does not render planned mission host placeholders before a child agent exists", async () => {
+    const openChildAgent = vi.fn();
+    await act(async () => {
+      root.render(
+        <HostOpsStatusPanel
+          state={{
+            ...createInitialAiopsTransportState("thread-hostops-pending-host"),
+            hostMissions: {
+              "mission-1": {
+                id: "mission-1",
+                status: "running",
+                mentions: [
+                  {
+                    hostId: "server-local",
+                    displayName: "server-local",
+                    resolved: true,
+                  },
+                ],
+                childAgentIds: [],
+              },
+            },
+            activeHostMissionId: "mission-1",
+            childAgents: {},
+          } as AiopsTransportState}
+          onOpenChildAgent={openChildAgent}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("尚未创建子 Agent");
+    expect(container.textContent).not.toContain("planned");
+    expect(openChildAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not render planned placeholders for a single host-bound chat without child agents", async () => {
+    await act(async () => {
+      root.render(
+        <HostOpsStatusPanel
+          state={{
+            ...createInitialAiopsTransportState("thread-host-bound-chat"),
+            hostMissions: {
+              "hostops:turn-host-bound": {
+                id: "hostops:turn-host-bound",
+                turnId: "turn-host-bound",
+                status: "planning",
+                routeMode: "host_bound_ops",
+                planRequired: false,
+                mentionedHosts: [
+                  {
+                    raw: "@remote-120-77-239-90",
+                    hostId: "remote-120-77-239-90",
+                    displayName: "remote-120-77-239-90",
+                    resolved: true,
+                  },
+                ],
+                childAgentIds: [],
+              },
+            },
+            activeHostMissionId: "hostops:turn-host-bound",
+            childAgents: {},
+          } as AiopsTransportState}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("尚未创建子 Agent");
+    expect(container.textContent).not.toContain("planned");
+  });
+
   it("ignores legacy transport states without host operation maps", async () => {
     const legacyState = createInitialAiopsTransportState("legacy-thread") as Partial<AiopsTransportState>;
     delete legacyState.hostMissions;

@@ -117,6 +117,11 @@ function formatDurationMs(value = 0) {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
+function formatTraceMs(value = 0) {
+  const ms = Number(value) || 0;
+  return ms > 0 ? `${formatNumber(ms)} ms` : "-";
+}
+
 function traceTurnStats(turn: TraceTurnGroup) {
   const usage = turn.traces.reduce<TraceUsage>((sum, trace) => ({
     promptTokens: (sum.promptTokens || 0) + (trace.usage?.promptTokens || 0),
@@ -234,11 +239,11 @@ export function PromptTracePage() {
 
   const views = [
     ["overview", "概览"],
-    ["layers", "Prompt 层"],
+    ["layers", "提示层"],
     ["messages", "消息"],
     ["tools", "工具"],
-    ["diff", "Diff"],
-    ["raw", "Raw"],
+    ["diff", "差异"],
+    ["raw", "原始"],
   ];
 
   return (
@@ -569,19 +574,21 @@ function PromptTraceDetailDialog({
   const llmRequests = (traceViewModel?.agentUiSources?.userRequests || []).flatMap((request) => request.llmRequests || []);
   const contextGovernance = traceViewModel?.contextGovernance;
   const contextGovernanceEmptyText = contextGovernance?.emptyText || "暂无上下文治理事件";
+  const primaryMetrics = llmRequests[0]?.detail?.metrics || {};
+  const primaryFinishReason = llmRequests[0]?.detail?.finishReason || "";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showCloseButton={false} className="max-h-[88vh] overflow-hidden sm:max-w-5xl">
         <DialogHeader>
           <div className="flex flex-wrap items-start justify-between gap-3 pr-2">
             <div className="min-w-0">
-              <DialogTitle>LLM 请求详情</DialogTitle>
+              <DialogTitle>模型请求详情</DialogTitle>
               <DialogDescription className="mt-2 grid gap-2">
                 <span className="truncate" title={selectedTrace?.relativePath || activePath || ""}>{selectedTrace?.relativePath || activePath || "未选择 Prompt Trace"}</span>
                 <span className="flex flex-wrap gap-2">
-                  {selectedTrace?.promptFingerprint?.stableHash ? <ToneBadge>stable {shortHash(selectedTrace.promptFingerprint.stableHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.developerHash ? <ToneBadge>developer {shortHash(selectedTrace.promptFingerprint.developerHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.toolRegistryHash ? <ToneBadge>tools {shortHash(selectedTrace.promptFingerprint.toolRegistryHash)}</ToneBadge> : null}
+                  {selectedTrace?.promptFingerprint?.stableHash ? <ToneBadge>稳定哈希 {shortHash(selectedTrace.promptFingerprint.stableHash)}</ToneBadge> : null}
+                  {selectedTrace?.promptFingerprint?.developerHash ? <ToneBadge>开发者规则 {shortHash(selectedTrace.promptFingerprint.developerHash)}</ToneBadge> : null}
+                  {selectedTrace?.promptFingerprint?.toolRegistryHash ? <ToneBadge>工具表 {shortHash(selectedTrace.promptFingerprint.toolRegistryHash)}</ToneBadge> : null}
                 </span>
               </DialogDescription>
             </div>
@@ -601,22 +608,34 @@ function PromptTraceDetailDialog({
 
           <div className="mt-4 grid gap-4">
             {activeView === "overview" ? (
-              <section className="grid gap-3 md:grid-cols-5">
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Messages</CardDescription><CardTitle>{traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Tools</CardDescription><CardTitle>{traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Prompt chars</CardDescription><CardTitle>{traceViewModel?.summary.promptCharCount ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Total tokens</CardDescription><CardTitle>{selectedTrace?.usage?.totalTokens ? formatNumber(selectedTrace.usage.totalTokens) : "-"}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Avg response</CardDescription><CardTitle>{selectedTrace?.averageDurationMs ? formatDurationMs(selectedTrace.averageDurationMs) : "-"}</CardTitle></CardHeader></Card>
+              <section className="grid gap-3 md:grid-cols-6">
+                <CompactMetricCard label="消息数" value={traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0} />
+                <CompactMetricCard label="工具数" value={traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0} />
+                <CompactMetricCard label="输入字符" value={formatNumber(traceViewModel?.summary.promptCharCount ?? 0)} />
+                <CompactMetricCard label="工具表字符" value={formatNumber(traceViewModel?.summary.toolRegistryCharCount ?? 0)} />
+                <CompactMetricCard label="总词元" value={selectedTrace?.usage?.totalTokens ? formatNumber(selectedTrace.usage.totalTokens) : "-"} />
+                <CompactMetricCard label="平均响应" value={selectedTrace?.averageDurationMs ? formatDurationMs(selectedTrace.averageDurationMs) : "-"} />
+                <CompactMetricCard label="首词元" value={formatTraceMs(primaryMetrics.firstDeltaMs)} />
+                <CompactMetricCard label="流式耗时" value={formatTraceMs(primaryMetrics.streamMs)} />
+                <CompactMetricCard label="流式片段" value={primaryMetrics.deltaCount ? formatNumber(primaryMetrics.deltaCount) : "-"} />
+                <CompactMetricCard label="输出字符" value={primaryMetrics.outputChars ? formatNumber(primaryMetrics.outputChars) : "-"} />
+                <CompactMetricCard label="结束原因" value={finishReasonLabel(primaryFinishReason)} />
                 {llmRequests.length ? (
-                  <section className="md:col-span-5 rounded-lg border border-slate-200 bg-white p-4">
-                    <h3 className="font-medium text-slate-950">LLM 返回内容</h3>
+                  <section className="md:col-span-6 rounded-lg border border-slate-200 bg-white p-4">
+                    <h3 className="font-medium text-slate-950">模型返回内容</h3>
                     <div className="mt-3 grid gap-3">
                       {llmRequests.map((request) => (
                         <div key={request.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
                           <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
                             <ToneBadge>{request.id}</ToneBadge>
-                            <ToneBadge>{request.detail?.tokens || "暂无 token 信息"}</ToneBadge>
+                            <ToneBadge>{usageLabel(request.detail?.tokens)}</ToneBadge>
                             <ToneBadge>{request.detail?.duration || "暂无耗时"}</ToneBadge>
+                            {request.detail?.finishReason ? <ToneBadge>{finishReasonLabel(request.detail.finishReason)}</ToneBadge> : null}
+                            {request.detail?.metrics?.firstDeltaMs ? <ToneBadge>首词元 {formatTraceMs(request.detail.metrics.firstDeltaMs)}</ToneBadge> : null}
+                            {request.detail?.metrics?.streamMs ? <ToneBadge>流式耗时 {formatTraceMs(request.detail.metrics.streamMs)}</ToneBadge> : null}
+                            {request.detail?.metrics?.deltaCount ? <ToneBadge>流式片段 {formatNumber(request.detail.metrics.deltaCount)}</ToneBadge> : null}
+                            {request.detail?.metrics?.outputChars ? <ToneBadge>输出字符 {formatNumber(request.detail.metrics.outputChars)}</ToneBadge> : null}
+                            {(request.detail?.slowCauses || []).map((cause) => <ToneBadge key={cause.id}>{cause.label}</ToneBadge>)}
                           </div>
                           <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-white">{request.detail?.output || "暂无输出"}</pre>
                           {request.detail?.error && request.detail.error !== "暂无错误" ? <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-red-950 p-3 text-xs text-white">{request.detail.error}</pre> : null}
@@ -629,7 +648,6 @@ function PromptTraceDetailDialog({
                   contextGovernance={contextGovernance}
                   emptyText={contextGovernanceEmptyText}
                 />
-                <pre className="md:col-span-5 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{JSON.stringify({ summary: traceViewModel?.summary, warnings: traceViewModel?.warnings }, null, 2)}</pre>
               </section>
             ) : null}
 
@@ -655,6 +673,38 @@ function PromptTraceDetailDialog({
 
 type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
 type ToolSurfaceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["toolSurface"]>;
+
+function CompactMetricCard({ label, value }: { label: string; value: ReactNode }) {
+  const title = `${label}: ${String(value ?? "")}`;
+  return (
+    <div
+      className="flex h-14 min-h-14 max-h-14 flex-col justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+      title={title}
+    >
+      <div className="truncate text-xs leading-5 text-slate-500">{label}</div>
+      <div className="truncate text-sm font-semibold leading-5 text-slate-950">{value}</div>
+    </div>
+  );
+}
+
+function usageLabel(value?: string) {
+  const text = value === "暂无 token 信息" || !value ? "暂无词元信息" : value;
+  const match = text.match(/^prompt\s+(.+?)\s*\/\s*completion\s+(.+?)\s*\/\s*total\s+(.+)$/i);
+  if (!match) return text;
+  return `输入 ${match[1]} / 输出 ${match[2]} / 总计 ${match[3]}`;
+}
+
+function finishReasonLabel(value?: string) {
+  const text = (value || "").trim();
+  if (!text) return "-";
+  const labels: Record<string, string> = {
+    stop: "正常结束",
+    length: "达到长度上限",
+    tool_calls: "等待工具调用",
+    content_filter: "内容过滤",
+  };
+  return labels[text] || text;
+}
 
 function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel }) {
   const summary = toolSurface?.summary;
@@ -711,6 +761,60 @@ function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel
             </div>
           ) : <EmptyGovernanceState text="暂无 MCP health" />}
         </ContextPanel>
+        <ContextPanel title="Tool Search Events">
+          {toolSurface?.toolSearchEvents.length ? (
+            <div className="grid gap-2">
+              {toolSurface.toolSearchEvents.map((event) => (
+                <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="flex min-w-0 flex-wrap gap-2">
+                    {event.mode ? <ToneBadge>{event.mode}</ToneBadge> : null}
+                    {event.ranker ? <ToneBadge>{event.ranker}</ToneBadge> : null}
+                    {event.intent ? <ToneBadge>{event.intent}</ToneBadge> : null}
+                    {event.targetCompatibility ? <ToneBadge>{event.targetCompatibility}</ToneBadge> : null}
+                    {event.riskDecision ? <ToneBadge>{event.riskDecision}</ToneBadge> : null}
+                    {event.riskLevel ? <ToneBadge>risk {event.riskLevel}</ToneBadge> : null}
+                    {event.matchCount ? <ToneBadge>matches {formatNumber(event.matchCount)}</ToneBadge> : null}
+                    {event.rejectedCount ? <ToneBadge>rejected {formatNumber(event.rejectedCount)}</ToneBadge> : null}
+                  </div>
+                  {event.query ? <p className="mt-2 break-words text-slate-700">{event.query}</p> : null}
+                  <div className="mt-2 grid gap-2">
+                    <ReferenceLine label="Targets" values={event.targetRefs} />
+                    <ReferenceLine label="Required Caps" values={event.requiredCaps} />
+                    <ReferenceLine label="Forbidden Caps" values={event.forbiddenCaps} />
+                    <ReferenceLine label="Match Reasons" values={event.matchReasons} />
+                    <ReferenceLine label="Environment" values={event.environmentFacts} />
+                    <ReferenceLine label="Matches" values={event.matches} />
+                    {event.mcpHealth.length ? (
+                      <div className="grid gap-1">
+                        {event.mcpHealth.map((item) => (
+                          <div key={`${event.id}-${item.serverId}`} className="flex min-w-0 flex-wrap gap-2">
+                            <ToneBadge>{item.serverId}</ToneBadge>
+                            <span className="min-w-0 flex-1 break-words text-slate-600">{item.status || "-"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {event.rejectedReasons.length ? (
+                      <div className="grid gap-1">
+                        {event.rejectedReasons.map((reason, index) => (
+                          <div key={`${event.id}-${reason.toolName}-${index}`} className="rounded-md border border-slate-100 bg-white p-2">
+                            <div className="flex flex-wrap gap-2">
+                              {reason.toolName ? <ToneBadge>{reason.toolName}</ToneBadge> : null}
+                              {reason.reason ? <ToneBadge>{reason.reason}</ToneBadge> : null}
+                              {reason.mcpServerId ? <ToneBadge>{reason.mcpServerId}</ToneBadge> : null}
+                              {reason.healthStatus ? <ToneBadge>{reason.healthStatus}</ToneBadge> : null}
+                            </div>
+                            {reason.filteredReason ? <p className="mt-1 break-words text-slate-600">{reason.filteredReason}</p> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 tool search events" />}
+        </ContextPanel>
         <ContextPanel title="Filtered Tools">
           {toolSurface?.filteredTools.length ? (
             <div className="grid gap-2">
@@ -757,23 +861,38 @@ function ToolSurfaceMetric({ label, value }: { label: string; value: number }) {
 
 function ContextGovernancePanels({
   contextGovernance,
-  emptyText,
+  emptyText: _emptyText,
 }: {
   contextGovernance?: ContextGovernanceViewModel;
   emptyText: string;
 }) {
+  const hasBudget = Boolean(contextGovernance?.budgetEvents.length);
+  const hasCompaction = Boolean(contextGovernance?.compactionEvents.length);
+  const hasMaterialization = Boolean(contextGovernance?.materializationEvents.length);
+  const hasExternalReferences = Boolean(contextGovernance?.externalReferences.length);
+  const hasEnvironmentContext = Boolean(contextGovernance?.environmentContext);
+  const hasExternalKnowledge = Boolean(contextGovernance?.externalKnowledgeEvidence.length);
+
+  const materializationEvents = contextGovernance?.materializationEvents || [];
+  const detailedMaterializationEvents = materializationEvents.filter(hasMaterializationDetail);
+  const genericMaterializationCount = materializationEvents.length - detailedMaterializationEvents.length;
+
+  if (!hasBudget && !hasCompaction && !hasMaterialization && !hasExternalReferences && !hasEnvironmentContext && !hasExternalKnowledge) {
+    return null;
+  }
+
   return (
-    <section className="md:col-span-5 grid gap-3 md:grid-cols-2">
-      <ContextPanel title="Context Budget">
-        {contextGovernance?.budgetEvents.length ? (
+    <section className="md:col-span-6 grid gap-3 md:grid-cols-2">
+      {hasBudget ? (
+        <ContextPanel title="上下文预算">
           <div className="grid gap-3">
-            {contextGovernance.budgetEvents.map((event) => (
+            {contextGovernance?.budgetEvents.map((event) => (
               <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
                 <EventHeader event={event} />
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
                   {event.budgetItems.map((item) => (
                     <div key={item.key} className="rounded-md border border-slate-200 bg-white p-2">
-                      <div className="truncate text-slate-500" title={item.key}>{item.label}</div>
+                      <div className="truncate text-slate-500" title={item.key}>{governanceBudgetLabel(item.label)}</div>
                       <div className="mt-1 font-mono font-medium text-slate-950">{formatGovernanceValue(item.value)}</div>
                     </div>
                   ))}
@@ -781,49 +900,89 @@ function ContextGovernancePanels({
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="Compaction Events">
-        {contextGovernance?.compactionEvents.length ? (
+      {hasCompaction ? (
+        <ContextPanel title="历史上下文压缩">
           <div className="grid gap-3">
-            {contextGovernance.compactionEvents.map((event) => (
+            {contextGovernance?.compactionEvents.map((event) => (
               <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
                 <EventHeader event={event} />
-                {event.compactedIds.length ? <ReferenceLine label="Compacted" values={event.compactedIds} /> : null}
-                {event.droppedGroupIds.length ? <ReferenceLine label="Dropped" values={event.droppedGroupIds} /> : null}
+                {event.compactedIds.length ? <ReferenceLine label="已压缩" values={event.compactedIds} /> : null}
+                {event.droppedGroupIds.length ? <ReferenceLine label="已移除" values={event.droppedGroupIds} /> : null}
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="Tool Result Materialization">
-        {contextGovernance?.materializationEvents.length ? (
+      {hasMaterialization ? (
+        <ContextPanel title="工具结果整理">
+          <p className="mb-3 text-sm text-slate-600">
+            工具返回内容较长时，系统会按上下文预算整理为摘要或引用，避免把原始大文本全部塞进提示词。
+          </p>
           <div className="grid gap-3">
-            {contextGovernance.materializationEvents.map((event) => (
-              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
-                <EventHeader event={event} />
-                {event.referenceIds.length ? <ReferenceLine label="Refs" values={event.referenceIds} /> : null}
-              </div>
+            {genericMaterializationCount > 0 ? <GenericMaterializationSummary count={genericMaterializationCount} /> : null}
+            {detailedMaterializationEvents.map((event, index) => (
+              <MaterializationEventCard key={event.id} event={event} index={index} />
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="External References">
-        {contextGovernance?.externalReferences.length ? (
+      {hasExternalReferences ? (
+        <ContextPanel title="外部引用">
           <div className="grid gap-2">
-            {contextGovernance.externalReferences.map((reference) => (
+            {contextGovernance?.externalReferences.map((reference) => (
               <div key={reference.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
-                <ToneBadge>{reference.layer || "context"}</ToneBadge>
+                <ToneBadge>{reference.layer || "上下文"}</ToneBadge>
                 <span className="min-w-0 flex-1 truncate font-mono text-slate-950" title={reference.referenceId}>{reference.referenceId}</span>
-                <span className="truncate text-slate-500" title={reference.kind}>{reference.kind}</span>
+                <span className="truncate text-slate-500" title={reference.kind}>{governanceKindLabel(reference.kind)}</span>
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
+
+      {hasEnvironmentContext ? (
+        <ContextPanel title="环境上下文">
+          <div className="grid gap-2 text-xs">
+            <div className="flex min-w-0 flex-wrap gap-2">
+              {contextGovernance?.environmentContext?.hasConflict ? <ToneBadge>目标冲突</ToneBadge> : null}
+              {contextGovernance?.environmentContext?.readOnlyReason ? <ToneBadge>{contextGovernance.environmentContext.readOnlyReason}</ToneBadge> : null}
+            </div>
+            <ReferenceLine label="目标" values={contextGovernance?.environmentContext?.targetRefs || []} />
+            {contextGovernance?.environmentContext?.compactContext ? (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-white">{contextGovernance.environmentContext.compactContext}</pre>
+            ) : null}
+          </div>
+        </ContextPanel>
+      ) : null}
+
+      {hasExternalKnowledge ? (
+        <ContextPanel title="外部知识证据">
+          <div className="grid gap-2">
+            {contextGovernance?.externalKnowledgeEvidence.map((item) => (
+              <div key={item.id} className="grid gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                <div className="flex min-w-0 flex-wrap gap-2">
+                  {item.kind ? <ToneBadge>{knowledgeLabel(item.kind)}</ToneBadge> : null}
+                  {item.sourceKind ? <ToneBadge>{knowledgeLabel(item.sourceKind)}</ToneBadge> : null}
+                  {item.product ? <ToneBadge>{item.product}</ToneBadge> : null}
+                  {item.version ? <ToneBadge>{item.version}</ToneBadge> : null}
+                  {item.confidence ? <ToneBadge>{knowledgeLabel(item.confidence)}</ToneBadge> : null}
+                </div>
+                {item.query ? <p className="break-words text-slate-700">{item.query}</p> : null}
+                {item.sourceTitle || item.sourceURL ? (
+                  <p className="break-words font-mono text-slate-600">{item.sourceTitle || item.sourceURL}</p>
+                ) : null}
+                {item.applicability ? <p className="break-words text-slate-600">{item.applicability}</p> : null}
+                {item.relevantExcerpt ? <p className="break-words text-slate-700">{item.relevantExcerpt}</p> : null}
+              </div>
+            ))}
+          </div>
+        </ContextPanel>
+      ) : null}
     </section>
   );
 }
@@ -841,14 +1000,151 @@ function EventHeader({ event }: { event: ContextGovernanceViewModel["events"][nu
   return (
     <div className="grid gap-2">
       <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
-        {event.layer ? <ToneBadge>{event.layer}</ToneBadge> : null}
-        {event.kind ? <ToneBadge>{event.kind}</ToneBadge> : null}
-        {event.retryLabel ? <ToneBadge>retry {event.retryLabel}</ToneBadge> : null}
-        {event.timeout ? <ToneBadge>timeout</ToneBadge> : null}
+        <ToneBadge>{governanceKindLabel(event.kind)}</ToneBadge>
+        {event.retryLabel ? <ToneBadge>重试 {event.retryLabel}</ToneBadge> : null}
+        {event.timeout ? <ToneBadge>已超时</ToneBadge> : null}
       </div>
-      {event.message ? <p className="text-sm text-slate-700">{event.message}</p> : null}
+      <p className="text-sm text-slate-700">{governanceMessage(event)}</p>
     </div>
   );
+}
+
+function MaterializationEventCard({
+  event,
+  index,
+}: {
+  event: ContextGovernanceViewModel["events"][number];
+  index: number;
+}) {
+  const toolLabel = event.toolName || event.toolCallId || `第 ${index + 1} 次整理`;
+  const tier = materializationTierLabel(event.materializationTier);
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+        <ToneBadge>{toolLabel}</ToneBadge>
+        {tier ? <ToneBadge>{tier}</ToneBadge> : null}
+        {event.referenceIds.length ? <ToneBadge>{`引用 ${event.referenceIds.length} 个`}</ToneBadge> : null}
+      </div>
+      <div className="mt-2 grid gap-1 text-sm text-slate-700">
+        {event.toolName ? <p>工具：{event.toolName}</p> : null}
+        {event.toolCallId ? <p>调用 ID：{event.toolCallId}</p> : null}
+        {tier ? <p>结果级别：{tier}</p> : null}
+        {event.originalBytes ? <p>原始大小：{formatBytes(event.originalBytes)}</p> : null}
+        {event.inlineBytes ? <p>放入提示词：{formatBytes(event.inlineBytes)}</p> : null}
+        <p>{materializationDetailMessage(event)}</p>
+      </div>
+      {event.referenceIds.length ? <ReferenceLine label="引用" values={event.referenceIds} /> : null}
+    </div>
+  );
+}
+
+function GenericMaterializationSummary({ count }: { count: number }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <ToneBadge>{`${count} 次整理`}</ToneBadge>
+        <ToneBadge>旧格式记录</ToneBadge>
+      </div>
+      <p className="mt-2">
+        这些记录只说明工具结果经过上下文预算处理；当前 trace 未记录工具名、级别和大小，所以合并展示，避免重复刷屏。
+      </p>
+    </div>
+  );
+}
+
+function hasMaterializationDetail(event: ContextGovernanceViewModel["events"][number]) {
+  return Boolean(
+    event.toolCallId ||
+      event.toolName ||
+      event.materializationTier ||
+      event.originalBytes ||
+      event.inlineBytes ||
+      event.referenceIds.length,
+  );
+}
+
+function materializationTierLabel(tier = "") {
+  const labels: Record<string, string> = {
+    small: "小结果",
+    medium: "中等结果",
+    large: "大结果",
+  };
+  return labels[tier] || tier;
+}
+
+function materializationDetailMessage(event: ContextGovernanceViewModel["events"][number]) {
+  const tier = (event.materializationTier || "").toLowerCase();
+  if (tier === "small") {
+    return "结果较小，内容直接放入提示词。";
+  }
+  if (tier === "medium") {
+    return "结果中等，提示词内保留摘要、预览和外部引用。";
+  }
+  if (tier === "large") {
+    return "结果较大，提示词内只保留摘要和外部引用，完整内容保存在引用中。";
+  }
+  return governanceMessage(event);
+}
+
+function formatBytes(value = 0) {
+  const bytes = Number(value) || 0;
+  if (bytes <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB"];
+  let amount = bytes;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = amount >= 10 || Number.isInteger(amount) ? Math.round(amount).toString() : amount.toFixed(1);
+  return `${formatted} ${units[unitIndex]}`;
+}
+
+function governanceKindLabel(kind = "") {
+  const normalized = kind.toLowerCase();
+  if (/material|spill|externalize|tool[._-]?result/.test(normalized)) return "工具结果整理";
+  if (normalized.includes("compact")) return "历史上下文压缩";
+  if (normalized.includes("budget")) return "上下文预算";
+  if (normalized.includes("reference")) return "外部引用";
+  return "上下文治理";
+}
+
+function governanceMessage(event: ContextGovernanceViewModel["events"][number]) {
+  const kind = event.kind.toLowerCase();
+  if (/material|spill|externalize|tool[._-]?result/.test(kind)) {
+    return "工具输出已按上下文预算整理，只把后续回答需要的摘要或引用放入 Prompt。";
+  }
+  if (kind.includes("compact") || event.compactedIds.length || event.droppedGroupIds.length) {
+    return "历史对话内容较长，已压缩为摘要继续参与后续请求。";
+  }
+  if (event.budgetItems.length) {
+    return "本次请求记录了上下文窗口、压缩阈值等预算参数。";
+  }
+  return event.message || "已记录一条上下文治理事件。";
+}
+
+function governanceBudgetLabel(label = "") {
+  const labels: Record<string, string> = {
+    "Max Context": "最大上下文",
+    "Reserved Output": "预留输出",
+    "Effective Window": "可用窗口",
+    Warning: "预警阈值",
+    "Auto Compact": "自动压缩阈值",
+    "Blocking Limit": "阻断上限",
+    "Small Context": "小上下文模式",
+  };
+  return labels[label] || label;
+}
+
+function knowledgeLabel(value = "") {
+  const labels: Record<string, string> = {
+    external_knowledge: "外部知识",
+    official_docs: "官方文档",
+    high: "高可信度",
+    medium: "中可信度",
+    low: "低可信度",
+  };
+  return labels[value] || value;
 }
 
 function ReferenceLine({ label, values }: { label: string; values: string[] }) {

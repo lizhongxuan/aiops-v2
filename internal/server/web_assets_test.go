@@ -54,7 +54,7 @@ func TestWebAssetsHandlerDoesNotSwallowAPIOrWebsocketPaths(t *testing.T) {
 	server := httptest.NewServer(NewHTTPServer(appui.NewServices(webAssetsTestKernel{}, nil), WithWebAssets(handler)).Handler())
 	defer server.Close()
 
-	assertBodyContains(t, server.URL+"/api/v1/state", http.StatusOK, "\"selectedHostId\":\"server-local\"")
+	assertBodyContains(t, server.URL+"/api/v1/state", http.StatusOK, "\"selectedHostId\":\"\"")
 	assertBodyExcludes(t, server.URL+"/api/v1/unknown", http.StatusNotFound, "<div id=\"app\">web root</div>")
 	assertBodyExcludes(t, server.URL+"/ws", http.StatusBadRequest, "<div id=\"app\">web root</div>")
 	assertBodyExcludes(t, server.URL+"/api/v1/terminal/ws", http.StatusBadRequest, "<div id=\"app\">web root</div>")

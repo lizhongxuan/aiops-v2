@@ -214,6 +214,37 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 		Tools:  promptcompiler.ToolPromptSet{Content: toolContent},
 		Policy: promptcompiler.RuntimePolicyPrompt{Content: ctx.RuntimePolicy, Mode: ctx.Mode},
 	}
+	compiled.Envelope = promptcompiler.PromptEnvelope{Sections: []promptcompiler.PromptCompiledSection{
+		{
+			ID:        "base.contract",
+			Layer:     promptcompiler.PromptSectionKindStable,
+			Role:      "system",
+			Content:   systemContent,
+			Stability: promptcompiler.PromptSectionKindStable,
+			Source:    "child_agent",
+			Required:  true,
+		},
+		{
+			ID:        "tool.surface",
+			Layer:     promptcompiler.PromptSectionKindStable,
+			Role:      "system",
+			Content:   toolContent,
+			Stability: promptcompiler.PromptSectionKindStable,
+			Source:    "tools",
+			Required:  true,
+		},
+		{
+			ID:        "runtime.state",
+			Layer:     promptcompiler.PromptSectionKindDynamic,
+			Role:      "system",
+			Content:   ctx.RuntimePolicy,
+			Stability: promptcompiler.PromptSectionKindDynamic,
+			Source:    "runtime",
+			Required:  true,
+		},
+	}}
+	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
+	compiled.PromptSections = promptcompiler.BuildPromptSectionTrace(compiled)
 	return compiled, nil
 }
 

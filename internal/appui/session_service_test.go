@@ -32,8 +32,8 @@ func TestSessionService_CreateSessionReturnsActiveListAndSnapshot(t *testing.T) 
 	if host.Snapshot.Kind != "single_host" {
 		t.Fatalf("host snapshot kind = %q, want single_host", host.Snapshot.Kind)
 	}
-	if host.Snapshot.SelectedHostID != "server-local" {
-		t.Fatalf("host snapshot selectedHostId = %q, want server-local", host.Snapshot.SelectedHostID)
+	if host.Snapshot.SelectedHostID != "" {
+		t.Fatalf("host snapshot selectedHostId = %q, want empty until explicit host selection", host.Snapshot.SelectedHostID)
 	}
 	if host.Snapshot.CurrentMode != "execute" || host.Snapshot.CurrentLane != "execute" {
 		t.Fatalf("host snapshot mode/lane = %q/%q, want execute/execute", host.Snapshot.CurrentMode, host.Snapshot.CurrentLane)
@@ -91,6 +91,14 @@ func TestSessionService_ActivateSessionPromotesExistingSession(t *testing.T) {
 	}
 	if host.ActiveSessionID == activated.ActiveSessionID {
 		t.Fatalf("expected activation to move away from host session %q", host.ActiveSessionID)
+	}
+
+	activatedHost, err := services.SessionService().ActivateSession(context.Background(), host.ActiveSessionID)
+	if err != nil {
+		t.Fatalf("ActivateSession(host) error = %v", err)
+	}
+	if activatedHost.Snapshot.SelectedHostID != "" {
+		t.Fatalf("activated host selectedHostId = %q, want empty until explicit host selection", activatedHost.Snapshot.SelectedHostID)
 	}
 }
 

@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +76,10 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 			{ID: "cmd-1", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "rollback command", Data: commandData}, CreatedAt: now.Add(3 * time.Second)},
 			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "payment-api 5xx increased", Data: evidenceData}, CreatedAt: now.Add(4 * time.Second)},
 			{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{Summary: "需要审批", Data: approvalData}, CreatedAt: now.Add(5 * time.Second)},
-			{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "等待审批完成后执行回滚"}, CreatedAt: now.Add(6 * time.Second)},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "等待审批完成后执行回滚",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(6 * time.Second)},
 		},
 	}
 
@@ -104,8 +108,8 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if transportTurn.Final == nil || transportTurn.Final.Text != "等待审批完成后执行回滚" {
 		t.Fatalf("turn.Final = %+v, want final text", transportTurn.Final)
 	}
-	if len(transportTurn.Process) != 7 {
-		t.Fatalf("len(turn.Process) = %d, want 7", len(transportTurn.Process))
+	if len(transportTurn.Process) != 6 {
+		t.Fatalf("len(turn.Process) = %d, want 6", len(transportTurn.Process))
 	}
 
 	reasoningBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindReasoning)
@@ -125,10 +129,16 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if len(searchBlock.Results) != 2 || searchBlock.Results[0].Title != "Error budget burn" {
 		t.Fatalf("search results = %#v, want decoded results", searchBlock.Results)
 	}
+	if searchBlock.FoldGroupKind != "web_lookup" || searchBlock.FoldGroupID == "" {
+		t.Fatalf("search fold group = %q/%q, want web_lookup metadata", searchBlock.FoldGroupKind, searchBlock.FoldGroupID)
+	}
 
 	commandBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindCommand)
 	if commandBlock.Command != "kubectl rollout undo deployment/payment-api -n prod" {
 		t.Fatalf("command block command = %q, want real command", commandBlock.Command)
+	}
+	if commandBlock.FoldGroupKind != "command" || commandBlock.FoldGroupID == "" {
+		t.Fatalf("command fold group = %q/%q, want command metadata", commandBlock.FoldGroupKind, commandBlock.FoldGroupID)
 	}
 	if commandBlock.Command == "exec_command" {
 		t.Fatal("command block should not expose tool name as user-visible command")
@@ -152,12 +162,260 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if approvalBlock.ApprovalID != "approval-1" || approvalBlock.Status != AiopsTransportProcessStatusBlocked {
 		t.Fatalf("approval block = %+v, want blocked approval", approvalBlock)
 	}
-	assistantBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindAssistant)
-	if assistantBlock.Text != "等待审批完成后执行回滚" || assistantBlock.DisplayKind != "assistant.final" {
-		t.Fatalf("assistant final block = %+v, want inline final answer block", assistantBlock)
+	for _, block := range transportTurn.Process {
+		if block.Kind == AiopsTransportProcessKindAssistant {
+			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
+		}
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
+	}
+}
+
+func TestTransportProjectorProjectsAssistantMessageByPhase(t *testing.T) {
+	now := time.Date(2026, 6, 26, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	commentaryData := json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete","iteration":0}`)
+	finalData := json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete","iteration":1,"durationMs":1234}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-assistant-message-phase",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(2 * time.Second),
+		CompletedAt: ptrTime(now.Add(2 * time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "assistant-commentary", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "我先查公开来源。", Data: commentaryData}, CreatedAt: now},
+			{ID: "assistant-final", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "这是最终回答。", Data: finalData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedTurn := projected.Turns[turn.ID]
+	if projectedTurn.Final == nil || projectedTurn.Final.Text != "这是最终回答。" || projectedTurn.Final.DurationMs != 1234 {
+		t.Fatalf("final=%#v, want assistant_message final", projectedTurn.Final)
+	}
+	if len(projectedTurn.Process) != 1 {
+		t.Fatalf("process=%#v, want commentary only", projectedTurn.Process)
+	}
+	block := projectedTurn.Process[0]
+	if block.Text != "我先查公开来源。" || block.DisplayKind != "assistant.message" || block.Phase != "commentary" {
+		t.Fatalf("commentary block=%#v, want assistant_message commentary", block)
+	}
+}
+
+func TestTransportProjectorAddsFoldGroupOnlyForWebLookupAndCommands(t *testing.T) {
+	now := time.Date(2026, 6, 26, 11, 0, 0, 0, time.UTC)
+	toolPayload := func(callID, toolName, displayKind, input string) json.RawMessage {
+		return json.RawMessage(`{
+			"toolCallId":` + strconv.Quote(callID) + `,
+			"toolName":` + strconv.Quote(toolName) + `,
+			"displayKind":` + strconv.Quote(displayKind) + `,
+			"inputSummary":` + strconv.Quote(input) + `,
+			"outputSummary":"ok"
+		}`)
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-fold-metadata",
+		SessionID: "session-fold-metadata",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "browse", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "open docs", Data: toolPayload("browse", "browse_url", "browse_url", "https://example.com/docs")}, CreatedAt: now},
+			{ID: "find", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "find text", Data: toolPayload("find", "browser.find", "browser.find", "pattern=timeout")}, CreatedAt: now.Add(100 * time.Millisecond)},
+			{ID: "mcp", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "read mcp", Data: toolPayload("mcp", "read_mcp_resource", "read_mcp_resource", "ops://manual")}, CreatedAt: now.Add(200 * time.Millisecond)},
+			{ID: "skill", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "skill search", Data: toolPayload("skill", "skill_search", "skill_search", "diagnose")}, CreatedAt: now.Add(300 * time.Millisecond)},
+			{ID: "cmd", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "run command", Data: toolPayload("cmd", "exec_command", "command", "uptime")}, CreatedAt: now.Add(400 * time.Millisecond)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-fold-metadata", "thread-fold-metadata"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	byCallID := map[string]AiopsProcessBlock{}
+	for _, block := range projected.Turns["turn-fold-metadata"].Process {
+		byCallID[block.ToolCallID] = block
+	}
+	for _, callID := range []string{"browse", "find"} {
+		if byCallID[callID].Kind != AiopsTransportProcessKindSearch || byCallID[callID].FoldGroupKind != "web_lookup" || byCallID[callID].FoldGroupID == "" {
+			t.Fatalf("block %q = %#v, want web_lookup search fold metadata", callID, byCallID[callID])
+		}
+	}
+	for _, callID := range []string{"mcp", "skill"} {
+		if byCallID[callID].FoldGroupKind != "" || byCallID[callID].FoldGroupID != "" {
+			t.Fatalf("block %q = %#v, should not have fold metadata", callID, byCallID[callID])
+		}
+	}
+	if byCallID["cmd"].FoldGroupKind != "command" || byCallID["cmd"].FoldGroupID == "" {
+		t.Fatalf("command block = %#v, want command fold metadata", byCallID["cmd"])
+	}
+}
+
+func TestDecodeTransportSearchResultsFromContentText(t *testing.T) {
+	raw := json.RawMessage(`{
+		"content":"Public web search results for \"postgres standby join\". Use these results as evidence and cite URLs:\n1. PostgreSQL official docs: continuous archiving and point-in-time recovery\n   URL: https://www.postgresql.org/docs/current/continuous-archiving.html\n   Snippet: Official PostgreSQL recovery guidance, including timeline behavior during archive recovery.\n2. pg_auto_failover official docs: operations\n   URL: https://pg-auto-failover.readthedocs.io/en/main/operations.html\n   Snippet: Official pg_auto_failover operations guidance for monitor and failover workflows.\n",
+		"query":"postgres standby join",
+		"source":"public_web_search"
+	}`)
+
+	results := decodeTransportSearchResults(raw)
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2: %#v", len(results), results)
+	}
+	if results[0].Title != "PostgreSQL official docs: continuous archiving and point-in-time recovery" {
+		t.Fatalf("results[0].Title = %q", results[0].Title)
+	}
+	if results[0].URL != "https://www.postgresql.org/docs/current/continuous-archiving.html" {
+		t.Fatalf("results[0].URL = %q", results[0].URL)
+	}
+	if !strings.Contains(results[0].Snippet, "timeline behavior") {
+		t.Fatalf("results[0].Snippet = %q, want timeline text", results[0].Snippet)
+	}
+	if results[1].URL != "https://pg-auto-failover.readthedocs.io/en/main/operations.html" {
+		t.Fatalf("results[1].URL = %q", results[1].URL)
+	}
+}
+
+func TestDecodeTransportSearchResultsDedupeByURLDomainAndLimit(t *testing.T) {
+	raw := json.RawMessage(`{
+		"results":[
+			{"title":"pg_auto_failover operations","url":"https://pg-auto-failover.readthedocs.io/en/main/operations.html","snippet":"first"},
+			{"title":"pg_auto_failover operations","url":"https://pg-auto-failover.readthedocs.io/en/main/operations.html#monitor","snippet":"duplicate same page"},
+			{"title":"pg_auto_failover operations","url":"https://pg-auto-failover.readthedocs.io/en/main/ref/pg_autoctl_create_postgres.html","snippet":"same title same domain"},
+			{"title":"pg_auto_failover state machine","url":"https://pg-auto-failover.readthedocs.io/en/main/failover-state-machine.html","snippet":"second same domain"},
+			{"title":"pg_auto_failover FAQ","url":"https://pg-auto-failover.readthedocs.io/en/main/faq.html","snippet":"third same domain hidden"},
+			{"title":"pgBackRest restore","url":"https://pgbackrest.org/user-guide.html#restore","snippet":"restore"},
+			{"title":"pgBackRest command restore","url":"https://pgbackrest.org/command.html#command-restore","snippet":"command"},
+			{"title":"PostgreSQL PITR","url":"https://www.postgresql.org/docs/current/continuous-archiving.html","snippet":"pitr"},
+			{"title":"PostgreSQL recovery target timeline","url":"https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE","snippet":"timeline"}
+		]
+	}`)
+
+	results := decodeTransportSearchResults(raw)
+	if len(results) != 5 {
+		t.Fatalf("len(results) = %d, want 5 capped results: %#v", len(results), results)
+	}
+	var pgAutoCount int
+	for _, result := range results {
+		if strings.Contains(result.URL, "pg-auto-failover.readthedocs.io") {
+			pgAutoCount++
+		}
+		if result.Snippet == "duplicate same page" || result.Snippet == "same title same domain" || result.Snippet == "third same domain hidden" {
+			t.Fatalf("unexpected duplicate/noisy result kept: %#v", result)
+		}
+	}
+	if pgAutoCount != 2 {
+		t.Fatalf("pg_auto_failover result count = %d, want 2 per domain cap: %#v", pgAutoCount, results)
+	}
+	if results[0].Title != "pg_auto_failover operations" || results[4].Title != "PostgreSQL PITR" {
+		t.Fatalf("results order = %#v, want first useful sources preserved and capped", results)
+	}
+}
+
+func TestTransportProjectorHidesUserProvidedEvidenceFromProcessTimeline(t *testing.T) {
+	now := time.Date(2026, 6, 25, 9, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-user-evidence", "thread-user-evidence")
+	userEvidenceData := json.RawMessage(`{
+		"source":"user",
+		"ref":"user-evidence:turn-user-evidence",
+		"kinds":"command_output,log",
+		"signals":"archive_recovery_active,archive_recovery_completed"
+	}`)
+	toolEvidenceData := json.RawMessage(`{
+		"id":"metric-1",
+		"kind":"metric",
+		"summary":"replication lag increased",
+		"source":"prometheus"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-user-evidence",
+		SessionID:   "session-user-evidence",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "分析 pgBackRest 恢复后的 timeline 问题"}, CreatedAt: now},
+			{ID: "user-evidence", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "user_provided", Summary: "user-provided evidence; kinds=command_output,log; signals=archive_recovery_active,archive_recovery_completed", Data: userEvidenceData}, CreatedAt: now.Add(100 * time.Millisecond)},
+			{ID: "tool-evidence", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "metric", Summary: "replication lag increased", Data: toolEvidenceData}, CreatedAt: now.Add(200 * time.Millisecond)},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "需要先核对恢复后的 timeline 历史和备份链。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(300 * time.Millisecond)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	transportTurn := projected.Turns["turn-user-evidence"]
+	for _, block := range transportTurn.Process {
+		if block.Text == "user-provided evidence; kinds=command_output,log; signals=archive_recovery_active,archive_recovery_completed" {
+			t.Fatalf("user-provided evidence leaked into process block: %#v", block)
+		}
+		if block.Kind == AiopsTransportProcessKindEvidence && block.Source == "user" {
+			t.Fatalf("user-provided evidence projected as visible evidence block: %#v", block)
+		}
+	}
+	if evidenceBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindEvidence); evidenceBlock.Source != "prometheus" {
+		t.Fatalf("tool evidence block = %#v, want real tool/source evidence preserved", evidenceBlock)
+	}
+	for _, item := range transportTurn.Timeline {
+		if item.PayloadKind == "user_provided" || item.Text == "user-provided evidence; kinds=command_output,log; signals=archive_recovery_active,archive_recovery_completed" {
+			t.Fatalf("user-provided evidence leaked into timeline: %#v", item)
+		}
+	}
+}
+
+func TestTransportProjectorPrefersFullUserMessageTextOverSummary(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-full-user", "thread-full-user")
+	fullText := "请分析这个生产故障：请求只是让 AI 先根据已有日志和依赖信息判断原因，不是要求直接执行命令。这个输入较长，展示时必须完整保留，不应该落成摘要里的省略号。"
+	userData := json.RawMessage(`{"messageId":"msg-1","prompt":` + strconv.Quote(fullText) + `}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-full-user",
+		SessionID: "session-full-user",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "user-1",
+				Type:   agentstate.TurnItemTypeUserMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "请分析这个生产故障：请求只是让 AI 先根据已有日志和依赖信息判断原因...",
+					Data:    userData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	got := projected.Turns["turn-full-user"].User
+	if got == nil {
+		t.Fatal("turn.User = nil, want projected user message")
+	}
+	if got.Text != fullText {
+		t.Fatalf("turn.User.Text = %q, want full text %q", got.Text, fullText)
+	}
+	if strings.Contains(got.Text, "...") {
+		t.Fatalf("turn.User.Text should not use summary preview: %q", got.Text)
 	}
 }
 
@@ -184,12 +442,15 @@ func TestTransportProjectorProjectsOpsRunFromTurnMetadata(t *testing.T) {
 		StartedAt:    now,
 		UpdatedAt:    now.Add(time.Second),
 		Metadata: map[string]string{
-			"aiops.opsRunId":       "opsrun-turn-opsrun",
-			"aiops.chat.source":    "chat",
-			"aiops.sessionId":      "session-opsrun",
-			"aiops.turnId":         "turn-opsrun",
-			"aiops.clientTurnId":   "client-turn-opsrun",
-			"aiops.target.summary": "主机A/主机B PG 与主机C pg_mon",
+			"aiops.opsRunId":                "opsrun-turn-opsrun",
+			"aiops.chat.source":             "chat",
+			"aiops.sessionId":               "session-opsrun",
+			"aiops.turnId":                  "turn-opsrun",
+			"aiops.clientTurnId":            "client-turn-opsrun",
+			"aiops.route.mode":              "multi_host_ops",
+			"aiops.target.summary":          "主机A/主机B PG 与主机C pg_mon",
+			"aiops.tool.execCommandAllowed": "false",
+			"enableToolPack":                "host_ops,public_web",
 		},
 		AgentItems: []agentstate.TurnItem{
 			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "主机A跟主机B上PG不同步，pg_mon部署在主机C，请修复"}, CreatedAt: now},
@@ -218,11 +479,456 @@ func TestTransportProjectorProjectsOpsRunFromTurnMetadata(t *testing.T) {
 	if projected.OpsRun.TargetSummary != "主机A/主机B PG 与主机C pg_mon" {
 		t.Fatalf("OpsRun.TargetSummary = %q", projected.OpsRun.TargetSummary)
 	}
+	if projected.OpsRun.RouteMode != "multi_host_ops" {
+		t.Fatalf("OpsRun.RouteMode = %q", projected.OpsRun.RouteMode)
+	}
+	if projected.OpsRun.ToolSurfaceSummary != "无主机执行 / WebLearn / HostOps" {
+		t.Fatalf("OpsRun.ToolSurfaceSummary = %q", projected.OpsRun.ToolSurfaceSummary)
+	}
 	if projected.OpsRun.CurrentStep != "正在只读采集 PG 同步证据" {
 		t.Fatalf("OpsRun.CurrentStep = %q", projected.OpsRun.CurrentStep)
 	}
 	if projected.OpsRun.EvidenceCount != 2 {
 		t.Fatalf("OpsRun.EvidenceCount = %d, want 2", projected.OpsRun.EvidenceCount)
+	}
+	if len(projected.OpsRun.PostRunSuggestions) != 0 {
+		t.Fatalf("OpsRun.PostRunSuggestions = %#v, want none while run is still working", projected.OpsRun.PostRunSuggestions)
+	}
+}
+
+func TestTransportProjectorDoesNotExposeRouteSummaryBeforeModelFinal(t *testing.T) {
+	now := time.Date(2026, 6, 23, 16, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-route-summary", "thread-route-summary")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-route-summary",
+		SessionID:   "session-route-summary",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Metadata: map[string]string{
+			"aiops.route.mode":                      string(ChatRouteEvidenceRCA),
+			"aiops.tool.execCommandAllowed":         "false",
+			"aiops.tool.corootRCAAllowed":           "false",
+			"aiops.weblearn.enabled":                "true",
+			"aiops.weblearn.sourcePolicy":           "official_first",
+			"aiops.weblearn.requiredWhenUnfamiliar": "true",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "分析 PG timeline 问题"}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	text := transportProjectionText(projected)
+	for _, forbidden := range []string{
+		"已识别为证据分析",
+		"不会执行主机命令",
+		"优先检索官方资料",
+		"已进入咨询分析",
+		"遇到不熟悉的中间件",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("progress text leaked route summary %q:\n%s", forbidden, text)
+		}
+	}
+	if strings.Contains(text, "Coroot") || strings.Contains(text, "@Coroot") {
+		t.Fatalf("progress text should not expose Coroot routing policy:\n%s", text)
+	}
+}
+
+func TestTransportProjectorHidesRuntimeInternalGateText(t *testing.T) {
+	now := time.Date(2026, 6, 23, 16, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-gate", "thread-gate")
+	gate := "verification completion gate: block_success_final: execution_required,missing_verification_report"
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-gate",
+		SessionID:   "session-gate",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "启动容器"}, CreatedAt: now},
+			{ID: "gate-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: gate}, CreatedAt: now.Add(time.Second)},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: gate,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	text := transportProjectionText(projected)
+	for _, forbidden := range []string{"verification completion gate", "block_success_final", "missing_verification_report"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("projection leaked internal gate text %q:\n%s", forbidden, text)
+		}
+	}
+	if projected.Turns["turn-gate"].Final != nil {
+		t.Fatalf("Final = %+v, want internal gate final hidden", projected.Turns["turn-gate"].Final)
+	}
+}
+
+func TestTransportProjectorHidesRiskyFinalDraft(t *testing.T) {
+	now := time.Date(2026, 6, 23, 16, 45, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-risky-draft", "thread-risky-draft")
+	risky := "可以直接执行 rm -rf $PG_DATA/recovery/repos/archive/paf/15-1/* 清理 archive 后继续。"
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-risky-draft",
+		SessionID: "session-risky-draft",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(2 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-risky", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: risky, Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(time.Second)},
+			{ID: "reasoning-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "正在修正最终回答"}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	text := transportProjectionText(projected)
+	if strings.Contains(text, "rm -rf $PG_DATA") || strings.Contains(text, "archive/paf") {
+		t.Fatalf("projected text leaked risky draft: %q", text)
+	}
+	if projected.Turns["turn-risky-draft"].Final != nil {
+		t.Fatalf("Final = %+v, want risky final draft hidden", projected.Turns["turn-risky-draft"].Final)
+	}
+}
+
+func TestTransportProjectorRedactsRiskyOperationsWithoutDroppingFinalAnalysis(t *testing.T) {
+	now := time.Date(2026, 6, 24, 9, 45, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-risky-analysis", "thread-risky-analysis")
+	final := strings.Join([]string{
+		"# PG timeline 分析",
+		"",
+		"结论：主机A和主机B已经走到不同 timeline 分支。",
+		"",
+		"## 修复方向",
+		"可以执行 rm -rf $PG_DATA/recovery/repos/archive/paf/15-1/* 清理 archive。",
+		"下一步先收集 pgbackrest info 和恢复日志。",
+	}, "\n")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-risky-analysis",
+		SessionID: "session-risky-analysis",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(2 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: final,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedFinal := projected.Turns["turn-risky-analysis"].Final
+	if projectedFinal == nil {
+		t.Fatal("Final = nil, want RCA analysis with risky operation redacted")
+	}
+	if !strings.Contains(projectedFinal.Text, "不同 timeline 分支") || !strings.Contains(projectedFinal.Text, "下一步先收集") {
+		t.Fatalf("Final.Text = %q, want safe analysis preserved", projectedFinal.Text)
+	}
+	for _, forbidden := range []string{"rm -rf", "archive/paf"} {
+		if strings.Contains(projectedFinal.Text, forbidden) {
+			t.Fatalf("Final.Text leaked risky operation %q: %q", forbidden, projectedFinal.Text)
+		}
+	}
+	if strings.Contains(projectedFinal.Text, "高风险操作已隐藏") || strings.Contains(projectedFinal.Text, "涉及清空数据目录或归档清理") {
+		t.Fatalf("Final.Text = %q, want risky operation removed without appended notice", projectedFinal.Text)
+	}
+}
+
+func TestTransportProjectorPreservesGatedRCAFinalWithRiskKeywords(t *testing.T) {
+	now := time.Date(2026, 6, 25, 23, 45, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-gated-rca", "thread-gated-rca")
+	final := strings.Join([]string{
+		"结论（置信度：低）：从节点 timeline 高于主节点，表明从节点经历了额外的 promote 或沿用了不同的 timeline 分支，但当前无任何主机直接证据，所有原因均为假设。最可能的三条机制路径是：①主机 B 的 $PGDATA 未清空，残留旧 timeline history 文件，pg_autoctl create postgres 跳过了 pg_basebackup 而沿用旧数据；②pgbackrest 存档中存在比主节点当前 timeline 更高的 WAL 分支，从节点 restore_command 或 recovery_target_timeline='latest' 使其 replay 到更高端；③从节点重复执行 pg_autoctl create postgres 时被 monitor 短暂分配为 single/wait_primary 状态而自动 promote。",
+		"",
+		"关键证据边界：以上均为推断，未验证。缺失的只读证据包括：主节点和从节点的 pg_control_checkpoint() 输出；从节点 $PGDATA/pg_wal/ 下的 .history 文件内容；从节点 postgresql.auto.conf 中的 restore_command、recovery_target_timeline、primary_conninfo 设置；pgbackrest 存档中各 timeline 的 WAL 列表；pg_auto_failover monitor 上 pg_autoctl show state 的完整输出。",
+		"",
+		"下一步只读检查（在不做任何变更的前提下）：1) 在主机 A 和 B 上分别执行 SELECT timeline_id, redo_wal FROM pg_control_checkpoint(); 2) 在主机 B 上检查 $PGDATA/pg_wal/*.history 和 postgresql.auto.conf；3) 在主机 C 上执行 pg_autoctl show state；4) 用 pgbackrest info 查看存档中存在的 timeline 数量及分支。确认根因后，若需修复从节点，必须选定变更窗口、确认主节点为权威数据源、备份从节点现有数据目录后，再考虑通过 pg_basebackup 从主节点重建从节点；切勿在未验证数据权威性的情况下直接 promote 或切换 timeline。",
+	}, "\n")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-gated-rca",
+		SessionID: "session-gated-rca",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(2 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: final,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedFinal := projected.Turns["turn-gated-rca"].Final
+	if projectedFinal == nil {
+		t.Fatal("Final = nil, want gated RCA answer preserved")
+	}
+	for _, want := range []string{
+		"结论（置信度：低）",
+		"$PGDATA 未清空",
+		"关键证据边界",
+		"下一步只读检查",
+		"变更窗口",
+		"切勿",
+	} {
+		if !strings.Contains(projectedFinal.Text, want) {
+			t.Fatalf("Final.Text missing %q:\n%s", want, projectedFinal.Text)
+		}
+	}
+}
+
+func TestTransportProjectorPreservesResidualPGDataCauseLine(t *testing.T) {
+	now := time.Date(2026, 6, 26, 0, 25, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-residual-pgdata", "thread-residual-pgdata")
+	final := strings.Join([]string{
+		"可能导致 B timeline 更高的具体原因：",
+		"1. **B 的 `$PGDATA` 未完全清空**：步骤 4.2 要求清空，但若残留旧 `.history` 文件或 WAL 段，PostgreSQL 启动时可能识别到更高 timeline 起点并沿其分支。",
+		"2. **pg_autoctl 将 B 初始化为独立主库而非 standby**：若 monitor 中有旧节点残留，可能触发 promote 产生新 timeline。",
+		"",
+		"下一步（只读检查，确认根因后再考虑修复）：检查 B 的 pg_controldata 和 .history 文件。",
+	}, "\n")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-residual-pgdata",
+		SessionID: "session-residual-pgdata",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: final,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedFinal := projected.Turns["turn-residual-pgdata"].Final
+	if projectedFinal == nil {
+		t.Fatal("Final = nil, want RCA final preserved")
+	}
+	for _, want := range []string{"1. **B 的 `$PGDATA` 未完全清空**", "2. **pg_autoctl 将 B 初始化为独立主库"} {
+		if !strings.Contains(projectedFinal.Text, want) {
+			t.Fatalf("Final.Text missing %q:\n%s", want, projectedFinal.Text)
+		}
+	}
+}
+
+func TestTransportProjectorClearsStaleHostOpsMissionForHostBoundChat(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-host-bound", "thread-host-bound")
+	state.ActiveHostMissionID = "hostops:turn-host-bound"
+	state.HostMissions["hostops:turn-host-bound"] = AiopsTransportHostMission{
+		ID:           "hostops:turn-host-bound",
+		TurnID:       "turn-host-bound",
+		Status:       "planning",
+		PlanRequired: false,
+		MentionedHosts: []AiopsTransportHostMention{
+			{Raw: "@remote-120-77-239-90", HostID: "remote-120-77-239-90", Resolved: true},
+		},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-host-bound",
+		SessionID: "session-host-bound",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		Metadata: map[string]string{
+			"aiops.route.mode":           string(ChatRouteHostBoundOps),
+			"aiops.target.binding":       "host",
+			"aiops.target.hostId":        "remote-120-77-239-90",
+			"aiops.hostops.routeKind":    "host_ops",
+			"aiops.hostops.planRequired": "false",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "只读采集完成。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.ActiveHostMissionID != "" {
+		t.Fatalf("ActiveHostMissionID = %q, want stale mission cleared", projected.ActiveHostMissionID)
+	}
+	if _, ok := projected.HostMissions["hostops:turn-host-bound"]; ok {
+		t.Fatalf("HostMissions still contains stale mission: %#v", projected.HostMissions)
+	}
+}
+
+func TestTransportProjectorAddsPostRunSuggestionsOnlyForUsefulTerminalOpsRun(t *testing.T) {
+	now := time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-post-run", "thread-post-run")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-post-run",
+		SessionID:   "session-post-run",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Minute),
+		Metadata: map[string]string{
+			"aiops.opsRunId":    "opsrun-post-run",
+			"aiops.chat.source": "chat",
+		},
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "修复 redis 主从复制异常"}, CreatedAt: now},
+			{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "redis replica_link_status=down"}, CreatedAt: now.Add(time.Second)},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "已恢复复制，建议沉淀处理记录。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.OpsRun == nil {
+		t.Fatal("OpsRun = nil, want projected ops run")
+	}
+	if !transportOpsRunHasPostRunSuggestion(projected.OpsRun.PostRunSuggestions, PostRunSuggestionRunRecord) ||
+		!transportOpsRunHasPostRunSuggestion(projected.OpsRun.PostRunSuggestions, PostRunSuggestionExperienceCandidate) ||
+		!transportOpsRunHasPostRunSuggestion(projected.OpsRun.PostRunSuggestions, PostRunSuggestionCase) {
+		t.Fatalf("PostRunSuggestions = %#v, want reusable post-run actions", projected.OpsRun.PostRunSuggestions)
+	}
+}
+
+func TestTransportProjectorKeepsCheckpointInAgentRunWithoutChatProcessLabel(t *testing.T) {
+	now := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-checkpoint", "thread-checkpoint")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-checkpoint",
+		SessionID:   "session-checkpoint",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		Metadata: map[string]string{
+			"aiops.opsRunId":       "opsrun-checkpoint",
+			"aiops.sessionId":      "session-checkpoint",
+			"aiops.turnId":         "turn-checkpoint",
+			"aiops.target.summary": "service:checkout",
+		},
+		LatestCheckpoint: &runtimekernel.CheckpointMetadata{
+			ID:                 "checkpoint-approval-1",
+			SessionID:          "session-checkpoint",
+			TurnID:             "turn-checkpoint",
+			Iteration:          1,
+			Sequence:           2,
+			Kind:               "approval_needed",
+			Lifecycle:          runtimekernel.TurnLifecycleSuspended,
+			ResumeState:        runtimekernel.TurnResumeStatePendingApproval,
+			ToolSurfaceSummary: "HostOps / Coroot RCA",
+			TargetRefs:         []string{"service:checkout"},
+			EvidenceRefs:       []string{"evidence-1"},
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedTurn := projected.Turns["turn-checkpoint"]
+	for _, block := range projectedTurn.Process {
+		if block.Kind == AiopsTransportProcessKindSystem && strings.Contains(block.DisplayKind, "checkpoint") {
+			t.Fatalf("checkpoint leaked as chat process block: %#v", block)
+		}
+	}
+	if projected.OpsRun == nil || projected.OpsRun.AgentRun == nil {
+		t.Fatalf("projected OpsRun/AgentRun missing: %#v", projected.OpsRun)
+	}
+	var checkpointStep *AgentStepView
+	for i := range projected.OpsRun.AgentRun.Steps {
+		if projected.OpsRun.AgentRun.Steps[i].CheckpointID == "checkpoint-approval-1" {
+			checkpointStep = &projected.OpsRun.AgentRun.Steps[i]
+			break
+		}
+	}
+	if checkpointStep == nil ||
+		checkpointStep.Kind != AgentStepKindCheckpoint ||
+		checkpointStep.Status != AgentStepStatusWaitingApproval ||
+		checkpointStep.CheckpointID != "checkpoint-approval-1" {
+		t.Fatalf("checkpoint agent step = %#v", checkpointStep)
+	}
+}
+
+func TestTransportProjectorHidesNonActionableCheckpointProcessBlocks(t *testing.T) {
+	now := time.Date(2026, 6, 23, 14, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-checkpoint-hidden", "thread-checkpoint-hidden")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-checkpoint-hidden",
+		SessionID: "session-checkpoint-hidden",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		LatestCheckpoint: &runtimekernel.CheckpointMetadata{
+			ID:        "checkpoint-final",
+			Kind:      runtimekernel.CheckpointKindFinalResponse,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		Iterations: []runtimekernel.IterationState{{
+			Checkpoint: &runtimekernel.CheckpointMetadata{
+				ID:        "checkpoint-after-tool",
+				Kind:      runtimekernel.CheckpointKindAfterToolCall,
+				CreatedAt: now.Add(500 * time.Millisecond),
+				UpdatedAt: now.Add(500 * time.Millisecond),
+			},
+		}},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	text := transportProjectionText(projected)
+	for _, forbidden := range []string{"checkpoint", "工具调用后", "最终响应"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("projection leaked non-actionable checkpoint text %q:\n%s", forbidden, text)
+		}
 	}
 }
 
@@ -582,6 +1288,7 @@ func TestTransportProjectorProjectsSnapshotPendingApprovalWithoutApprovalItem(t 
 				Source:         "ai_chat_direct",
 				ExpectedEffect: "读取系统版本",
 				Rollback:       "无需回滚",
+				Validation:     "确认 sw_vers 返回 ProductVersion",
 				ResourceScopes: []string{"host:server-local", "os:darwin"},
 				Status:         "pending",
 				CreatedAt:      now.Add(time.Second),
@@ -605,6 +1312,9 @@ func TestTransportProjectorProjectsSnapshotPendingApprovalWithoutApprovalItem(t 
 	if approval.Type != "command" || approval.Command != "sw_vers" || approval.Reason != "需要确认后执行命令" {
 		t.Fatalf("approval = %+v, want command and reason from snapshot", approval)
 	}
+	if approval.Validation != "确认 sw_vers 返回 ProductVersion" {
+		t.Fatalf("approval validation = %q, want validation from snapshot", approval.Validation)
+	}
 	block := findTransportProcessBlock(t, projected.Turns["turn-pending-approval"].Process, AiopsTransportProcessKindApproval)
 	if block.ApprovalID != "approval-inline-1" || block.Command != "sw_vers" || block.Status != AiopsTransportProcessStatusBlocked {
 		t.Fatalf("approval block = %+v, want inline blocked approval block", block)
@@ -612,7 +1322,7 @@ func TestTransportProjectorProjectsSnapshotPendingApprovalWithoutApprovalItem(t 
 	if block.TargetSummary != "host:server-local；os:darwin" || block.Risk != "medium" || block.Source != "ai_chat_direct" {
 		t.Fatalf("approval block scope/risk/source = %+v", block)
 	}
-	if block.ExpectedEffect != "读取系统版本" || block.Rollback != "无需回滚" || !strings.Contains(block.RiskSummary, "medium") {
+	if block.ExpectedEffect != "读取系统版本" || block.Rollback != "无需回滚" || block.Validation != "确认 sw_vers 返回 ProductVersion" || !strings.Contains(block.RiskSummary, "medium") {
 		t.Fatalf("approval block effect/rollback/risk summary = %+v", block)
 	}
 }
@@ -693,7 +1403,12 @@ func TestTransportProjectorPrunesStalePendingApprovalsForTurn(t *testing.T) {
 		StartedAt:   now,
 		UpdatedAt:   now.Add(time.Second),
 		CompletedAt: ptrTransportProjectorTime(now.Add(time.Second)),
-		FinalOutput: "approval no longer pending",
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "approval no longer pending",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+		},
 	}
 
 	projected, err := projector.ProjectTurnSnapshot(state, turn)
@@ -831,7 +1546,7 @@ func TestTransportProjectorProjectsCanceledTurnState(t *testing.T) {
 	}
 }
 
-func TestTransportProjectorUsesFinalOutputWhenFinalItemIsMissing(t *testing.T) {
+func TestTransportProjectorUsesAssistantMessageFinalWhenSnapshotFinalOutputIsMissing(t *testing.T) {
 	now := time.Date(2026, 5, 7, 11, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-1", "thread-1")
@@ -842,9 +1557,12 @@ func TestTransportProjectorUsesFinalOutputWhenFinalItemIsMissing(t *testing.T) {
 		StartedAt:   now,
 		UpdatedAt:   now.Add(2 * time.Second),
 		CompletedAt: ptrTransportProjectorTime(now.Add(2 * time.Second)),
-		FinalOutput: "这是来自 runtime snapshot 的最终回答",
 		AgentItems: []agentstate.TurnItem{
 			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "ping"}, CreatedAt: now},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "这是来自 assistant_message 的最终回答",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
 		},
 	}
 
@@ -857,18 +1575,50 @@ func TestTransportProjectorUsesFinalOutputWhenFinalItemIsMissing(t *testing.T) {
 	if projected.Status != AiopsTransportStatusIdle || transportTurn.Status != AiopsTransportTurnStatusCompleted {
 		t.Fatalf("projected status = %q turn=%q, want idle/completed", projected.Status, transportTurn.Status)
 	}
-	if transportTurn.Final == nil || transportTurn.Final.Text != "这是来自 runtime snapshot 的最终回答" {
-		t.Fatalf("turn.Final = %+v, want FinalOutput fallback", transportTurn.Final)
+	if transportTurn.Final == nil || transportTurn.Final.Text != "这是来自 assistant_message 的最终回答" {
+		t.Fatalf("turn.Final = %+v, want assistant_message final", transportTurn.Final)
 	}
 	if projected.RuntimeLiveness.ActiveTurns["turn-final-output"] {
 		t.Fatalf("ActiveTurns = %#v, want terminal turn inactive", projected.RuntimeLiveness.ActiveTurns)
 	}
 }
 
-func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *testing.T) {
-	now := time.Date(2026, 5, 7, 15, 0, 0, 0, time.UTC)
+func TestTransportProjectorProjectsFinalGenerationDuration(t *testing.T) {
+	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-1", "thread-1")
+	finalData := json.RawMessage(`{"messageId":"msg-final","displayKind":"assistant.message","phase":"final_answer","streamState":"complete","durationMs":456}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-final-duration",
+		SessionID:   "session-1",
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(2 * time.Second),
+		CompletedAt: ptrTransportProjectorTime(now.Add(2 * time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "这是最终回答", Data: finalData}, CreatedAt: now, UpdatedAt: now.Add(456 * time.Millisecond)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	transportTurn := projected.Turns["turn-final-duration"]
+	if transportTurn.Final == nil || transportTurn.Final.DurationMs != 456 {
+		t.Fatalf("turn.Final = %+v, want durationMs=456", transportTurn.Final)
+	}
+	for _, block := range transportTurn.Process {
+		if block.Kind == AiopsTransportProcessKindAssistant {
+			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
+		}
+	}
+}
+
+func TestTransportProjectorProjectsStreamingAssistantMessageFinal(t *testing.T) {
+	now := time.Date(2026, 5, 7, 15, 0, 0, 0, time.UTC)
+	finalText := "第一段第二段完整流式输出"
 	turn := &runtimekernel.TurnSnapshot{
 		ID:          "turn-streaming-final",
 		SessionID:   "session-1",
@@ -877,9 +1627,52 @@ func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *tes
 		Lifecycle:   runtimekernel.TurnLifecycleRunning,
 		StartedAt:   now,
 		UpdatedAt:   now.Add(time.Second),
-		FinalOutput: "第一段第二段完整流式输出",
 		AgentItems: []agentstate.TurnItem{
-			{ID: "final-running", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "第一段"}, CreatedAt: now},
+			{ID: "final-running", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{
+				Summary: finalText,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"streaming","durationMs":456}`),
+			}, CreatedAt: now},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-1", "thread-1"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	transportTurn := projected.Turns["turn-streaming-final"]
+	final := transportTurn.Final
+	if final == nil || final.Text != finalText || final.DurationMs != 456 {
+		t.Fatalf("turn.Final = %+v, want streaming assistant_message final", final)
+	}
+	if final.Status != AiopsTransportFinalStatusRunning {
+		t.Fatalf("final status = %q, want running", final.Status)
+	}
+	for _, block := range transportTurn.Process {
+		if block.Kind == AiopsTransportProcessKindAssistant {
+			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
+		}
+	}
+}
+
+func TestTransportProjectorProjectsIncompleteAssistantMessageFinalAndStreamError(t *testing.T) {
+	now := time.Date(2026, 6, 25, 16, 12, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-incomplete-answer", "thread-incomplete-answer")
+	answer := "根因：已经生成的分析草稿必须保留。"
+	rawError := "failed to receive stream chunk: context deadline exceeded"
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-incomplete-answer",
+		SessionID: "session-incomplete-answer",
+		Lifecycle: runtimekernel.TurnLifecycleFailed,
+		StartedAt: now,
+		UpdatedAt: now.Add(2 * time.Second),
+		Error:     rawError,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "answer-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusFailed, Payload: agentstate.PayloadEnvelope{
+				Summary: answer,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"incomplete","evidenceBoundary":"limited","iteration":0}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "error-1", Type: agentstate.TurnItemTypeError, Status: agentstate.ItemStatusFailed, Payload: agentstate.PayloadEnvelope{Summary: rawError}, CreatedAt: now.Add(2 * time.Second)},
 		},
 	}
 
@@ -887,16 +1680,16 @@ func TestTransportProjectorUsesStreamingFinalOutputOverRunningItemSummary(t *tes
 	if err != nil {
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
-	final := projected.Turns["turn-streaming-final"].Final
-	if final == nil || final.Text != "第一段第二段完整流式输出" {
-		t.Fatalf("turn.Final = %+v, want full streaming FinalOutput", final)
+	transportTurn := projected.Turns["turn-incomplete-answer"]
+	if transportTurn.Final == nil || transportTurn.Final.Text != answer || transportTurn.Final.Status != AiopsTransportFinalStatusFailed {
+		t.Fatalf("turn.Final = %+v, want failed incomplete assistant_message final", transportTurn.Final)
 	}
-	if final.Status != AiopsTransportFinalStatusRunning {
-		t.Fatalf("final status = %q, want running", final.Status)
+	errorBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindSystem)
+	if errorBlock.DisplayKind != "runtime.error" || errorBlock.Text != "模型流中断，已保留已生成内容" || errorBlock.Status != AiopsTransportProcessStatusFailed {
+		t.Fatalf("error block = %#v, want friendly runtime error status block", errorBlock)
 	}
-	assistantBlock := findTransportProcessBlock(t, projected.Turns["turn-streaming-final"].Process, AiopsTransportProcessKindAssistant)
-	if assistantBlock.Text != "第一段第二段完整流式输出" {
-		t.Fatalf("assistant final block text = %q, want full streaming FinalOutput", assistantBlock.Text)
+	if strings.Contains(transportProjectionText(projected), rawError) {
+		t.Fatalf("projection leaked raw stream error:\n%s", transportProjectionText(projected))
 	}
 }
 
@@ -931,7 +1724,10 @@ func TestTransportProjectorReordersProcessFromLatestAgentItems(t *testing.T) {
 	secondSnapshot := *firstSnapshot
 	secondSnapshot.UpdatedAt = now.Add(2 * time.Second)
 	secondSnapshot.AgentItems = []agentstate.TurnItem{
-		{ID: "final-prelude", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "我将先用实时网页搜索获取当前BTC价格、24小时涨跌与主要来源报价，并据此给你一个简明行情摘要。"}, CreatedAt: now.Add(500 * time.Millisecond)},
+		{ID: "assistant-commentary-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+			Summary: "我将先用实时网页搜索获取当前BTC价格、24小时涨跌与主要来源报价，并据此给你一个简明行情摘要。",
+			Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+		}, CreatedAt: now.Add(500 * time.Millisecond)},
 		{ID: "search-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "BTC current price USD 24h change", Data: searchData}, CreatedAt: now.Add(time.Second)},
 	}
 	projected, err = projector.ProjectTurnSnapshot(projected, &secondSnapshot)
@@ -946,8 +1742,119 @@ func TestTransportProjectorReordersProcessFromLatestAgentItems(t *testing.T) {
 	if process[0].Kind != AiopsTransportProcessKindAssistant || process[0].Text == "" {
 		t.Fatalf("process[0] = %+v, want assistant prelude", process[0])
 	}
+	if process[0].DisplayKind != "assistant.message" || process[0].Phase != "commentary" {
+		t.Fatalf("process[0] = %+v, want assistant_message commentary", process[0])
+	}
 	if process[1].Kind != AiopsTransportProcessKindSearch {
 		t.Fatalf("process[1] = %+v, want search after assistant", process[1])
+	}
+
+	thirdSnapshot := secondSnapshot
+	thirdSnapshot.Lifecycle = runtimekernel.TurnLifecycleCompleted
+	thirdSnapshot.UpdatedAt = now.Add(3 * time.Second)
+	thirdSnapshot.AgentItems = append(thirdSnapshot.AgentItems, agentstate.TurnItem{
+		ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+			Summary: "最终行情摘要。",
+			Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+		}, CreatedAt: now.Add(3 * time.Second),
+	})
+	projected, err = projector.ProjectTurnSnapshot(projected, &thirdSnapshot)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot(third) error = %v", err)
+	}
+	process = projected.Turns["turn-process-order"].Process
+	if len(process) != 2 {
+		t.Fatalf("len(process) = %d, want assistant commentary and search: %#v", len(process), process)
+	}
+	if process[0].DisplayKind != "assistant.message" || process[0].Phase != "commentary" || !strings.Contains(process[0].Text, "实时网页搜索") {
+		t.Fatalf("process[0] = %+v, want retained assistant commentary after final output", process[0])
+	}
+	if final := projected.Turns["turn-process-order"].Final; final == nil || final.Text != "最终行情摘要。" {
+		t.Fatalf("Final = %+v, want final answer", final)
+	}
+}
+
+func TestTransportProjectorShowsRunningModelCallPlaceholder(t *testing.T) {
+	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-model-waiting",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "calling model"}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-model-waiting"].Process
+	if len(process) != 1 {
+		t.Fatalf("process = %#v, want one model waiting block", process)
+	}
+	if process[0].Text != "正在等待模型返回" {
+		t.Fatalf("model call text = %q, want user-visible waiting text", process[0].Text)
+	}
+}
+
+func TestTransportProjectorHidesCompletedModelCallPlaceholder(t *testing.T) {
+	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-model-completed",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "model response received"}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if process := projected.Turns["turn-model-completed"].Process; len(process) != 0 {
+		t.Fatalf("process = %#v, want completed model placeholder hidden", process)
+	}
+}
+
+func TestTransportProjectorRewritesCanceledModelWaitText(t *testing.T) {
+	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-model-canceled",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleCanceled,
+		Error:     "user stop",
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "calling model"}, CreatedAt: now},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-model-canceled"].Process
+	if len(process) != 1 {
+		t.Fatalf("process = %#v, want one canceled model block", process)
+	}
+	if process[0].Text != "模型调用已取消" {
+		t.Fatalf("model call text = %q, want cancellation text", process[0].Text)
+	}
+	if process[0].Status != AiopsTransportProcessStatusRejected {
+		t.Fatalf("model call status = %q, want rejected", process[0].Status)
 	}
 }
 
@@ -1792,7 +2699,6 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 		SessionType: runtimekernel.SessionTypeHost,
 		Mode:        runtimekernel.ModeInspect,
 		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
-		FinalOutput: finalPayload,
 		StartedAt:   now,
 		UpdatedAt:   now,
 		CompletedAt: &now,
@@ -1800,7 +2706,10 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 			"aiops.coroot.explicitRCA": "true",
 		},
 		AgentItems: []agentstate.TurnItem{
-			{ID: "final-rca", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalPayload}, CreatedAt: now},
+			{ID: "final-rca", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: finalPayload,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now},
 		},
 	}
 
@@ -1842,12 +2751,14 @@ func TestTransportProjectorSuppressesRCAReportArtifactFromFinalPayloadWithoutExp
 		SessionType: runtimekernel.SessionTypeHost,
 		Mode:        runtimekernel.ModeInspect,
 		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
-		FinalOutput: finalPayload,
 		StartedAt:   now,
 		UpdatedAt:   now,
 		CompletedAt: &now,
 		AgentItems: []agentstate.TurnItem{
-			{ID: "final-rca", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: finalPayload}, CreatedAt: now},
+			{ID: "final-rca", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: finalPayload,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now},
 		},
 	}
 
@@ -2061,6 +2972,26 @@ func assertNoForbiddenTransportProjectionStates(t *testing.T, projected AiopsTra
 			t.Fatalf("transport projection exposed forbidden state %q: %s", state, body)
 		}
 	}
+}
+
+func transportProjectionText(projected AiopsTransportState) string {
+	var parts []string
+	for _, turnID := range projected.TurnOrder {
+		turn := projected.Turns[turnID]
+		if turn.User != nil {
+			parts = append(parts, turn.User.Text)
+		}
+		for _, block := range turn.Process {
+			parts = append(parts, block.Text, block.Command, block.InputSummary, block.OutputPreview)
+			for _, step := range block.Steps {
+				parts = append(parts, step.Text, step.Title, step.Summary)
+			}
+		}
+		if turn.Final != nil {
+			parts = append(parts, turn.Final.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func ptrTransportProjectorTime(value time.Time) *time.Time {
@@ -2292,4 +3223,13 @@ func TestStripHTMLTags(t *testing.T) {
 			}
 		})
 	}
+}
+
+func transportOpsRunHasPostRunSuggestion(items []PostRunSuggestion, typ PostRunSuggestionType) bool {
+	for _, item := range items {
+		if item.Type == typ {
+			return true
+		}
+	}
+	return false
 }

@@ -49,6 +49,17 @@ export type McpServerRecord = {
   resourceCount?: number;
 };
 
+export type McpHealthRecord = {
+  serverId: string;
+  displayName?: string;
+  status: string;
+  lastCheckedAt?: string;
+  lastError?: string;
+  availableToolCount?: number;
+  disabledReason?: string;
+  retryAfterSeconds?: number;
+};
+
 export type ApprovalAuditRecord = {
   id: string;
   createdAt?: string;
@@ -90,7 +101,6 @@ export type IncidentRecord = {
   evidenceRefs?: string[];
   evidence?: JsonMap[];
   hypotheses?: JsonMap[];
-  evidence?: JsonMap[];
   postmortem?: JsonMap;
   pendingApprovals?: ApprovalAuditRecord[];
 };
@@ -147,6 +157,17 @@ export function refreshMcpServers() {
   return request<{ items?: McpServerRecord[] }>("/api/v1/mcp/servers/refresh", {
     method: "POST",
   });
+}
+
+export function fetchMcpRuntimeHealth() {
+  return request<{ items?: McpHealthRecord[] }>("/api/v2/runtime/mcp-health");
+}
+
+export function refreshMcpRuntimeHealth(serverId: string) {
+  return request<McpHealthRecord>(
+    `/api/v2/runtime/mcp-health/${encodeURIComponent(serverId)}/refresh`,
+    { method: "POST" },
+  );
 }
 
 export function fetchApprovalAudits(params: Record<string, string> = {}) {

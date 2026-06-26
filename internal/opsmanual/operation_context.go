@@ -21,6 +21,15 @@ const (
 	ObservationAccessHostAgent       = "host_agent"
 	ObservationAccessHTTP            = "http"
 	ObservationAccessUnknown         = "unknown"
+
+	ResourceSourceUserRequest      = "user_request"
+	ResourceSourceSelectedResource = "selected_resource"
+	ResourceSourceReferenceExample = "reference_example"
+	ResourceSourceToolOutput       = "tool_output"
+
+	ResourceConfidenceHigh   = "high"
+	ResourceConfidenceMedium = "medium"
+	ResourceConfidenceLow    = "low"
 )
 
 type OperationResourceRole struct {
@@ -30,6 +39,8 @@ type OperationResourceRole struct {
 	UserLabel    string `json:"user_label,omitempty"`
 	RuntimeName  string `json:"runtime_name,omitempty"`
 	InferredFrom string `json:"inferred_from,omitempty"`
+	SourceKind   string `json:"source_kind,omitempty"`
+	Confidence   string `json:"confidence,omitempty"`
 }
 
 type OperationResourceRelationship struct {

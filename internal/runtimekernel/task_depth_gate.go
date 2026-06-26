@@ -1,10 +1,12 @@
 package runtimekernel
 
 import (
+	"encoding/json"
 	"strings"
 
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/taskdepth"
 )
 
@@ -18,6 +20,13 @@ type PlanRequirementDecision struct {
 }
 
 func depthProfileFromTurnRequest(req TurnRequest) taskdepth.Profile {
+	if frame, ok := intentFrameFromTurnMetadata(req.Metadata); ok {
+		return taskdepth.ClassifyFromIntentFrame(frame, taskdepth.Options{
+			Input:    req.Input,
+			Mode:     string(req.Mode),
+			Metadata: req.Metadata,
+		})
+	}
 	return taskdepth.Classify(taskdepth.Options{
 		Input:    req.Input,
 		Mode:     string(req.Mode),
@@ -25,10 +34,135 @@ func depthProfileFromTurnRequest(req TurnRequest) taskdepth.Profile {
 	})
 }
 
+func intentFrameFromTurnMetadata(metadata map[string]string) (runtimecontract.IntentFrame, bool) {
+	if len(metadata) == 0 {
+		return runtimecontract.IntentFrame{}, false
+	}
+	if raw := strings.TrimSpace(metadata[runtimecontract.MetadataIntentFrame]); raw != "" {
+		var frame runtimecontract.IntentFrame
+		if err := json.Unmarshal([]byte(raw), &frame); err == nil {
+			return runtimecontract.NormalizeIntentFrame(frame), true
+		}
+	}
+	frame := runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKind(strings.TrimSpace(metadata[runtimecontract.MetadataIntentKind])),
+		DataScopes: metadataDataScopes(metadata[runtimecontract.MetadataIntentDataScopes]),
+		RiskBudget: metadataActionRisks(metadata[runtimecontract.MetadataIntentRiskBudget]),
+		Confidence: strings.TrimSpace(metadata[runtimecontract.MetadataIntentConfidence]),
+	}
+	if frame.Kind == "" && len(frame.DataScopes) == 0 && len(frame.RiskBudget) == 0 {
+		return runtimecontract.IntentFrame{}, false
+	}
+	return runtimecontract.NormalizeIntentFrame(frame), true
+}
+
+func metadataDataScopes(raw string) []runtimecontract.DataScope {
+	fields := splitRuntimeMetadataList(raw)
+	out := make([]runtimecontract.DataScope, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, runtimecontract.DataScope(field))
+	}
+	return out
+}
+
+func metadataActionRisks(raw string) []runtimecontract.ActionRisk {
+	fields := splitRuntimeMetadataList(raw)
+	out := make([]runtimecontract.ActionRisk, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, runtimecontract.ActionRisk(field))
+	}
+	return out
+}
+
+func splitRuntimeMetadataList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	})
+	values := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if value := strings.TrimSpace(field); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
 func applyDepthProfileToCompileContext(ctx promptcompiler.CompileContext, profile taskdepth.Profile, reasoningEffort string) promptcompiler.CompileContext {
 	ctx.TaskDepth = profile
 	ctx.ReasoningEffort = strings.TrimSpace(reasoningEffort)
 	return ctx
+}
+
+func applyTurnPromptProfileMetadata(ctx promptcompiler.CompileContext, metadata map[string]string) promptcompiler.CompileContext {
+	if effort := firstMetadataValue(metadata, "reasoningEffort", "reasoning_effort"); effort != "" {
+		ctx.ReasoningEffort = effort
+	}
+	if style := firstMetadataValue(metadata, "answerStyle", "answer_style"); style != "" {
+		ctx.AnswerStyle = style
+	}
+	return ctx
+}
+
+func applyRuntimeStateMetadata(ctx promptcompiler.CompileContext, metadata map[string]string, session *SessionState, snapshot *TurnSnapshot) promptcompiler.CompileContext {
+	ctx.WebState = runtimeStateMentionState(metadata,
+		"aiops.weblearn.enabled",
+	)
+	if metadataListContains(metadata["enableToolPack"], "public_web") {
+		ctx.WebState = "requested"
+	}
+	ctx.OpsGraphState = runtimeStateMentionState(metadata,
+		"aiops.opsGraph.explicitMention",
+		"aiops.ops_graph.explicitMention",
+	)
+	ctx.CorootState = runtimeStateMentionState(metadata,
+		"aiops.coroot.explicitMention",
+		"aiops.coroot.explicitRCA",
+		"aiops.tool.corootRCAAllowed",
+	)
+	ctx.OpsManusState = runtimeStateMentionState(metadata,
+		"aiops.opsManuals.explicitMention",
+	)
+	if session != nil {
+		ctx.PendingApprovals = len(session.PendingApprovals)
+		ctx.PendingEvidence = len(session.PendingEvidence)
+	}
+	if constraints := runtimeStateUserConstraints(metadata); len(constraints) > 0 {
+		ctx.UserConstraints = constraints
+	}
+	if snapshot != nil && snapshot.ResumeState != "" && snapshot.ResumeState != TurnResumeStateNone {
+		ctx.TimeoutRecoveryState = string(snapshot.ResumeState)
+	}
+	return ctx
+}
+
+func runtimeStateMentionState(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if metadataBool(metadata[key]) {
+			return "requested"
+		}
+	}
+	return "not_requested"
+}
+
+func runtimeStateUserConstraints(metadata map[string]string) []string {
+	raw := firstMetadataValue(metadata, "userConstraints", "user_constraints", "aiops.userConstraints")
+	if raw == "" {
+		return nil
+	}
+	values := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t'
+	})
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func shouldGuardPrematureFinal(profile taskdepth.Profile, snapshot *TurnSnapshot, iteration int, assistantContent string) bool {
@@ -53,6 +187,9 @@ func shouldGuardPrematureFinal(profile taskdepth.Profile, snapshot *TurnSnapshot
 }
 
 func EvaluatePlanRequirement(profile taskdepth.Profile, snapshot *TurnSnapshot, finalAttempt bool) PlanRequirementDecision {
+	if profile.AnalysisOnly {
+		return PlanRequirementDecision{ReminderLevel: "none"}
+	}
 	if !profile.RequiresPlan && !taskdepth.AtLeast(profile.Level, taskdepth.LevelMultiStep) {
 		return PlanRequirementDecision{ReminderLevel: "none"}
 	}
@@ -138,11 +275,17 @@ func turnHasPlan(snapshot *TurnSnapshot) bool {
 }
 
 func turnHasEvidence(snapshot *TurnSnapshot) bool {
+	if snapshotHasUserProvidedEvidence(snapshot) {
+		return true
+	}
 	return countActualToolDispatches(snapshot) > 0
 }
 
 func missingEvidenceFinalBlocker(profile taskdepth.Profile, snapshot *TurnSnapshot, assistantContent string) (string, bool) {
 	if strings.TrimSpace(assistantContent) == "" || finalLooksLikeBlocker(assistantContent) {
+		return "", false
+	}
+	if profile.AnalysisOnly {
 		return "", false
 	}
 	if !profile.RequiresEvidence && !taskdepth.AtLeast(profile.Level, taskdepth.LevelInvestigation) {
@@ -228,6 +371,9 @@ func containsOperationalConclusion(content string) bool {
 
 func finalLooksLikeBlocker(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
+	if safeTerminal := EvaluateSafeTerminalFinal(text); len(safeTerminal.TerminalStates) > 0 {
+		return safeTerminal.Valid
+	}
 	for _, marker := range []string{"缺少", "需要你", "无法继续", "权限", "blocked", "approval", "请提供", "未执行"} {
 		if strings.Contains(text, marker) {
 			return true

@@ -17,7 +17,6 @@ import (
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/opsmanual"
-	"aiops-v2/internal/opssemantic"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
@@ -39,7 +38,7 @@ func firstAssistantTransportStreamFrame(text string) string {
 	return text
 }
 
-func TestAssistantTransportShouldNotPollHostOpsOnlyTurn(t *testing.T) {
+func TestAssistantTransportShouldPollHostOpsOnlyTurn(t *testing.T) {
 	state := appui.NewAiopsTransportState("sess-hostops", "thread-hostops")
 	state.CurrentTurnID = "turn-hostops"
 	state.Status = appui.AiopsTransportStatusIdle
@@ -50,8 +49,8 @@ func TestAssistantTransportShouldNotPollHostOpsOnlyTurn(t *testing.T) {
 		Status: "waiting_plan_acceptance",
 	}
 
-	if assistantTransportShouldPoll(state) {
-		t.Fatal("host-ops-only turn should not poll runtime after mission projection")
+	if !assistantTransportShouldPoll(state) {
+		t.Fatal("host-ops turn should keep polling runtime after mission projection")
 	}
 }
 
@@ -190,8 +189,11 @@ func TestAssistantTransportAPIRoutesResolvedPGRecoveryMentionsToHostOpsMission(t
 			t.Fatalf("transport response missing %q:\n%s", want, string(text))
 		}
 	}
-	if bytes.Contains(text, []byte(`"path":["status"],"value":"working"`)) {
-		t.Fatalf("transport response should not leave host-ops-only turn working:\n%s", string(text))
+	if !bytes.Contains(text, []byte(`"path":["status"],"value":"working"`)) {
+		t.Fatalf("transport response should show runtime-owned host-ops turn working before projection:\n%s", string(text))
+	}
+	if !bytes.Contains(text, []byte(`"path":["status"],"value":"idle"`)) {
+		t.Fatalf("transport response should poll runtime projection back to idle after completion:\n%s", string(text))
 	}
 }
 
@@ -199,6 +201,22 @@ type assistantTransportAPITestRuntime struct {
 	sessions *runtimekernel.SessionManager
 	runErr   error
 	delay    time.Duration
+	runReq   runtimekernel.TurnRequest
+	runCh    chan runtimekernel.TurnRequest
+}
+
+func waitForAssistantTransportRunTurn(t *testing.T, runtime *assistantTransportAPITestRuntime) runtimekernel.TurnRequest {
+	t.Helper()
+	if runtime.runCh == nil {
+		t.Fatal("runtime.runCh is nil")
+	}
+	select {
+	case req := <-runtime.runCh:
+		return req
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called")
+		return runtimekernel.TurnRequest{}
+	}
 }
 
 type assistantTransportHostRepoStub struct {
@@ -242,6 +260,13 @@ func (r *assistantTransportHostRepoStub) DeleteHost(id string) error {
 }
 
 func (r *assistantTransportAPITestRuntime) RunTurn(_ context.Context, req runtimekernel.TurnRequest) (runtimekernel.TurnResult, error) {
+	r.runReq = req
+	if r.runCh != nil {
+		select {
+		case r.runCh <- req:
+		default:
+		}
+	}
 	session := r.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
 	now := time.Now().UTC()
 	session.CurrentTurn = &runtimekernel.TurnSnapshot{
@@ -258,7 +283,7 @@ func (r *assistantTransportAPITestRuntime) RunTurn(_ context.Context, req runtim
 		AgentItems: []agentstate.TurnItem{
 			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: req.Input}, CreatedAt: now},
 			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "analyzing service state"}, CreatedAt: now},
-			{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "partial"}, CreatedAt: now},
+			assistantMessageFinalItemForServerTest("final-1", agentstate.ItemStatusRunning, "partial", now),
 		},
 	}
 	r.sessions.Update(session)
@@ -451,6 +476,177 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
+	}
+}
+
+func TestAssistantTransportAPIStopReturnsReprojectedCanceledProcess(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-stop-reproject", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-stop-reproject",
+		SessionID:   session.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-stop", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "分析 Kubernetes CrashLoopBackOff"}, CreatedAt: now},
+			{ID: "model-stop", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Summary: "calling model"}, CreatedAt: now},
+		},
+	}
+	sessions.Update(session)
+
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := map[string]any{
+		"state": map[string]any{
+			"schemaVersion": "aiops.transport.v2",
+			"sessionId":     session.ID,
+			"threadId":      session.ID,
+			"status":        "working",
+			"currentTurnId": "turn-stop-reproject",
+			"turns": map[string]any{
+				"turn-stop-reproject": map[string]any{
+					"id":     "turn-stop-reproject",
+					"status": "working",
+					"process": []map[string]any{
+						{
+							"id":     "block:turn-stop-reproject:reasoning:model-stop",
+							"kind":   "reasoning",
+							"status": "running",
+							"text":   "正在等待模型返回",
+						},
+					},
+				},
+			},
+			"turnOrder":        []string{"turn-stop-reproject"},
+			"pendingApprovals": map[string]any{},
+			"mcpSurfaces":      map[string]any{},
+			"artifacts":        map[string]any{},
+			"hostMissions":     map[string]any{},
+			"childAgents":      map[string]any{},
+			"runtimeLiveness": map[string]any{
+				"activeTurns":          map[string]any{"turn-stop-reproject": true},
+				"activeAgents":         map[string]any{},
+				"pendingApprovals":     map[string]any{},
+				"pendingUserInputs":    map[string]any{},
+				"activeCommandStreams": map[string]any{},
+			},
+			"seq":       0,
+			"updatedAt": now.Format(time.RFC3339Nano),
+		},
+		"threadId": session.ID,
+		"commands": []map[string]any{
+			{
+				"type":      "aiops.stop",
+				"sessionId": session.ID,
+				"turnId":    "turn-stop-reproject",
+				"reason":    "user requested stop",
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, text)
+	}
+	if !strings.Contains(text, "模型调用已取消") {
+		t.Fatalf("response = %q, want canceled model process projection", text)
+	}
+	if strings.Contains(text, "正在等待模型返回") {
+		t.Fatalf("response = %q, should not re-emit stale waiting process after stop", text)
+	}
+}
+
+func TestAssistantTransportAPIPlainPGQuestionDoesNotBindServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-v2-pg-advisory", "pgBackRest 恢复后，pg_auto_failover 从节点 timeline 比主库高，这是为什么？")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body = %s", resp.StatusCode, string(raw))
+	}
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty for advisory", runReq.HostID)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace", runReq.SessionType)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(appui.ChatRouteAdvisory) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "none" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestAssistantTransportAPILocalMentionBindsServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-v2-local-mention", "@local 帮我只读检查 PostgreSQL 状态")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body = %s", resp.StatusCode, string(raw))
+	}
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(appui.ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "host" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "true" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
 	}
 }
 
@@ -707,7 +903,7 @@ func TestAssistantTransportAddsTerminalOpsManualSearchFallbackWhenModelSkipsTool
 			FinalOutput: "请补充目标实例和现象。",
 			AgentItems: []agentstate.TurnItem{
 				{ID: "user-redis", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "修复 Redis"}, CreatedAt: now},
-				{ID: "final-redis", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "请补充目标实例和现象。"}, CreatedAt: completedAt},
+				assistantMessageFinalItemForServerTest("final-redis", agentstate.ItemStatusCompleted, "请补充目标实例和现象。", completedAt),
 			},
 		},
 	}
@@ -1045,29 +1241,40 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 
 func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionCompletes(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	executor := newAssistantTransportBlockingHostCommandExecutor()
-	approvals := hostops.NewInMemoryCommandApprovalStore()
-	controller := hostops.NewCommandApprovalController(hostops.CommandApprovalControllerConfig{
-		Store:    approvals,
-		Executor: executor,
-	})
-	approval, err := controller.RequestApproval(context.Background(), hostops.CommandApprovalRequest{
-		ToolContext:  hostops.ToolContext{AgentKind: hostops.AgentKindHostChild, BoundHostID: "host-a"},
-		MissionID:    "mission-1",
-		ChildAgentID: "child-a",
-		PlanStepID:   "step-1",
-		HostID:       "host-a",
-		Command:      "touch /tmp/aiops-check",
-		RiskLevel:    opssemantic.RiskLowWrite,
-	})
-	if err != nil {
-		t.Fatalf("RequestApproval() error = %v", err)
-	}
+	approvalID := "approval-host-command-runtime"
 
-	runtime := &assistantTransportAPITestRuntime{sessions: sessions}
+	session := sessions.GetOrCreate("sess-host-command-approval", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-host-command-approval",
+		SessionID:   "sess-host-command-approval",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		StartedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+		PendingApprovals: []runtimekernel.PendingApproval{{
+			ID:        approvalID,
+			SessionID: "sess-host-command-approval",
+			TurnID:    "turn-host-command-approval",
+			ToolName:  "host_command",
+			Command:   "touch /tmp/aiops-check",
+			Source:    "host_command_policy",
+			Status:    "pending",
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		}},
+	}
+	session.PendingApprovals = append([]runtimekernel.PendingApproval(nil), session.CurrentTurn.PendingApprovals...)
+	sessions.Update(session)
+
+	runtime := &assistantTransportBlockingResumeRuntime{
+		sessions: sessions,
+		started:  make(chan runtimekernel.ResumeRequest, 1),
+		release:  make(chan struct{}),
+	}
 	baseServices := appui.NewServices(runtime, sessions)
-	approvalService := appui.NewApprovalServiceWithHostCommandApprovals(context.Background(), runtime, sessions, appui.NewSnapshotBuilder(), controller)
-	server := NewHTTPServer(assistantTransportApprovalServices{Services: baseServices, approval: approvalService})
+	server := NewHTTPServer(baseServices)
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -1089,15 +1296,15 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 							"kind":       "command",
 							"status":     "blocked",
 							"command":    "touch /tmp/aiops-check",
-							"approvalId": approval.ID,
+							"approvalId": approvalID,
 						},
 					},
 				},
 			},
 			"turnOrder": []string{"turn-host-command-approval"},
 			"pendingApprovals": map[string]any{
-				approval.ID: map[string]any{
-					"id":     approval.ID,
+				approvalID: map[string]any{
+					"id":     approvalID,
 					"turnId": "turn-host-command-approval",
 					"status": "blocked",
 				},
@@ -1107,7 +1314,7 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 			"runtimeLiveness": map[string]any{
 				"activeTurns":          map[string]any{},
 				"activeAgents":         map[string]any{},
-				"pendingApprovals":     map[string]any{approval.ID: true},
+				"pendingApprovals":     map[string]any{approvalID: true},
 				"pendingUserInputs":    map[string]any{},
 				"activeCommandStreams": map[string]any{},
 			},
@@ -1118,7 +1325,7 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 		"commands": []map[string]any{
 			{
 				"type":       "aiops.approval-decision",
-				"approvalId": approval.ID,
+				"approvalId": approvalID,
 				"decision":   "accept",
 			},
 		},
@@ -1151,14 +1358,14 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 	}
 
 	select {
-	case req := <-executor.started:
-		if req.Script != "touch /tmp/aiops-check" {
-			t.Fatalf("executor request = %#v, want approved host command", req)
+	case req := <-runtime.started:
+		if req.ApprovalID != approvalID || req.Decision != "approved" {
+			t.Fatalf("ResumeTurn request = %+v, want approved %s", req, approvalID)
 		}
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("host command executor was not started asynchronously")
+		t.Fatal("ResumeTurn was not started asynchronously")
 	}
-	executor.release(hostops.HostCommandResult{Status: "success", Stdout: "ok", ExitCode: 0}, nil)
+	close(runtime.release)
 }
 
 func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *testing.T) {
@@ -1333,8 +1540,8 @@ func TestAssistantTransportProjectionHydratesHostChildSessionCompletion(t *testi
 		StartedAt:   now,
 		UpdatedAt:   now,
 		Metadata: map[string]string{
-			"aiops.hostops.routeKind":       "host_ops",
-			"aiops.hostops.missionId":       "hostops:turn-hostops-main",
+			"aiops.hostops.routeKind":      "host_ops",
+			"aiops.hostops.missionId":      "hostops:turn-hostops-main",
 			"aiops.hostops.managerAgentId": "hostops-manager:turn-hostops-main",
 			"aiops.hostops.mentions":       `[{"raw":"@host-a","hostId":"host-a","displayName":"@host-a","source":"inventory","resolved":true}]`,
 		},
@@ -1422,8 +1629,8 @@ func TestAssistantTransportStreamWaitsForHostChildCompletionAfterMainTurnComplet
 		StartedAt:   now,
 		UpdatedAt:   now,
 		Metadata: map[string]string{
-			"aiops.hostops.routeKind":       "host_ops",
-			"aiops.hostops.missionId":       "hostops:turn-hostops-stream",
+			"aiops.hostops.routeKind":      "host_ops",
+			"aiops.hostops.missionId":      "hostops:turn-hostops-stream",
 			"aiops.hostops.managerAgentId": "hostops-manager:turn-hostops-stream",
 		},
 		AgentItems: []agentstate.TurnItem{
@@ -1512,7 +1719,7 @@ func TestAssistantTransportStreamWaitsForHostChildCompletionAfterMainTurnComplet
 	}
 }
 
-func TestAssistantTransportStreamCancelsActiveRunWhenClientContextCancels(t *testing.T) {
+func TestTransportDisconnectCancelsActiveRunWhenClientContextCancels(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-disconnect", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
 	now := time.Now().UTC()
@@ -1575,6 +1782,7 @@ func TestAssistantTransportStreamProjectsTerminalTurnFromHistory(t *testing.T) {
 			FinalOutput: "历史 turn 的最终回答",
 			AgentItems: []agentstate.TurnItem{
 				{ID: "user-history", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "hello"}, CreatedAt: now},
+				assistantMessageFinalItemForServerTest("final-history", agentstate.ItemStatusCompleted, "历史 turn 的最终回答", completedAt),
 			},
 		},
 	}
@@ -1695,6 +1903,9 @@ func TestAssistantTransportStreamWaitsForAcceptedTurnBeforeProjectingPreviousTer
 		updated.CurrentTurn.UpdatedAt = completedAt
 		updated.CurrentTurn.CompletedAt = &completedAt
 		updated.CurrentTurn.FinalOutput = "第二次请求已完成"
+		updated.CurrentTurn.AgentItems = append(updated.CurrentTurn.AgentItems,
+			assistantMessageFinalItemForServerTest("turn-new-final", agentstate.ItemStatusCompleted, "第二次请求已完成", completedAt),
+		)
 		sessions.Update(updated)
 	}()
 
@@ -1966,5 +2177,29 @@ func assistantTransportRedisManual() opsmanual.OpsManual {
 		Validation:       []string{"memory recovered"},
 		CannotUseWhen:    []string{"目标实例未知"},
 		DocumentMarkdown: "Redis memory pressure manual.",
+	}
+}
+
+func assistantMessageFinalItemForServerTest(id string, status agentstate.ItemStatus, summary string, at time.Time) agentstate.TurnItem {
+	streamState := "complete"
+	if status == agentstate.ItemStatusRunning {
+		streamState = "streaming"
+	}
+	data, _ := json.Marshal(map[string]string{
+		"displayKind": "assistant.message",
+		"phase":       "final_answer",
+		"streamState": streamState,
+	})
+	return agentstate.TurnItem{
+		ID:     id,
+		Type:   agentstate.TurnItemTypeAssistantMessage,
+		Status: status,
+		Payload: agentstate.PayloadEnvelope{
+			Kind:    "assistant_message",
+			Summary: summary,
+			Data:    data,
+		},
+		CreatedAt: at,
+		UpdatedAt: at,
 	}
 }

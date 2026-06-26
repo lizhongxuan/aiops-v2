@@ -448,6 +448,168 @@
       "operator": "sre",
       "started_at": "2026-05-15T01:00:00Z",
       "completed_at": "2026-05-15T01:08:00Z"
+    },
+    {
+      "id": "run-record-redis-rca-ssh-success",
+      "manual_id": "manual-redis-rca-ssh",
+      "workflow_id": "workflow-redis-rca-ssh",
+      "workflow_version": "v2",
+      "operation_frame": {
+        "intent": "rca_or_repair",
+        "object_type": "redis",
+        "operation_type": "rca_or_repair",
+        "target": {
+          "type": "redis",
+          "name": "redis-local-01"
+        },
+        "operation": {
+          "target_type": "redis",
+          "action": "rca_or_repair",
+          "risk_level": "medium",
+          "stateful": true
+        },
+        "environment": {
+          "env": "prod",
+          "platform": "vm",
+          "execution_surface": "ssh"
+        },
+        "evidence": {
+          "provided": ["symptom", "metrics"]
+        },
+        "risk": {
+          "level": "medium",
+          "reason": "stateful middleware operation",
+          "production_impact": "possible"
+        },
+        "raw_text": "redis-local-01 prod vm ssh Redis used_memory_rss rising symptom metrics medium readonly no restart no write"
+      },
+      "environment_snapshot": {
+        "env": "prod",
+        "platform": "vm",
+        "execution_surface": "ssh"
+      },
+      "redacted_parameters": {
+        "target_instance": "redis-local-01"
+      },
+      "dry_run_status": "passed",
+      "execution_status": "passed",
+      "validation_status": "passed",
+      "operator": "sre",
+      "started_at": "2026-05-15T02:00:00Z",
+      "completed_at": "2026-05-15T02:06:00Z"
+    },
+    {
+      "id": "run-record-mysql-backup-ssh-success",
+      "manual_id": "manual-mysql-backup-ssh",
+      "workflow_id": "workflow-mysql-backup-ssh",
+      "workflow_version": "v1",
+      "operation_frame": {
+        "intent": "backup",
+        "object_type": "mysql",
+        "operation_type": "backup",
+        "target": {
+          "type": "mysql",
+          "name": "mysql-01"
+        },
+        "operation": {
+          "target_type": "mysql",
+          "action": "backup",
+          "risk_level": "medium",
+          "stateful": true
+        },
+        "environment": {
+          "env": "test",
+          "os": "ubuntu",
+          "platform": "vm",
+          "execution_surface": "ssh",
+          "package_manager": "apt"
+        },
+        "evidence": {
+          "provided": ["ssh_access", "connection_test"]
+        },
+        "risk": {
+          "level": "medium",
+          "reason": "stateful middleware operation"
+        },
+        "required_params": {
+          "backup_path": "/data/backups"
+        },
+        "raw_text": "在 Ubuntu 主机 mysql-01 上通过 ssh 对 MySQL 做备份，备份到 /data/backups，已确认 ssh_access 和 connection_test 正常"
+      },
+      "environment_snapshot": {
+        "env": "test",
+        "os": "ubuntu",
+        "platform": "vm",
+        "execution_surface": "ssh",
+        "package_manager": "apt"
+      },
+      "redacted_parameters": {
+        "target_instance": "mysql-01",
+        "backup_path": "/data/backups"
+      },
+      "dry_run_status": "passed",
+      "execution_status": "passed",
+      "validation_status": "passed",
+      "operator": "sre",
+      "started_at": "2026-05-15T03:00:00Z",
+      "completed_at": "2026-05-15T03:07:00Z"
+    },
+    {
+      "id": "run-record-k8s-pod-crashloop-rca-success",
+      "manual_id": "manual-k8s-pod-crashloop-rca",
+      "workflow_id": "workflow-k8s-pod-crashloop-rca",
+      "workflow_version": "v1",
+      "operation_frame": {
+        "intent": "rca_or_repair",
+        "object_type": "kubernetes_pod",
+        "operation_type": "rca_or_repair",
+        "target": {
+          "type": "kubernetes_pod",
+          "name": "payment-api-7c9f"
+        },
+        "operation": {
+          "target_type": "kubernetes_pod",
+          "action": "rca_or_repair",
+          "risk_level": "medium",
+          "stateful": false
+        },
+        "target_scope": {
+          "namespace": "payments"
+        },
+        "environment": {
+          "env": "prod",
+          "platform": "kubernetes",
+          "execution_surface": "kubectl"
+        },
+        "evidence": {
+          "provided": ["kubectl_access", "rbac_read_ok", "pod_restart"]
+        },
+        "risk": {
+          "level": "medium",
+          "reason": "operations troubleshooting",
+          "production_impact": "possible"
+        },
+        "required_params": {
+          "namespace": "payments",
+          "pod_name": "payment-api-7c9f"
+        },
+        "raw_text": "prod kubernetes kubectl namespace payments pod payment-api-7c9f CrashLoopBackOff previous state events rbac_read_ok readonly"
+      },
+      "environment_snapshot": {
+        "env": "prod",
+        "platform": "kubernetes",
+        "execution_surface": "kubectl"
+      },
+      "redacted_parameters": {
+        "namespace": "payments",
+        "pod_name": "payment-api-7c9f"
+      },
+      "dry_run_status": "passed",
+      "execution_status": "passed",
+      "validation_status": "passed",
+      "operator": "sre",
+      "started_at": "2026-05-15T04:00:00Z",
+      "completed_at": "2026-05-15T04:05:00Z"
     }
   ]
 }

@@ -63,6 +63,21 @@ func newCorootTestTools(t *testing.T, handler http.HandlerFunc) []tooling.Tool {
 	return corootToolsWithClient(client)
 }
 
+func TestDomainRulesCorootToolMetadataIncludesRCAGuidance(t *testing.T) {
+	tool := corootToolByName(t, corootToolsWithClient(nil), "coroot.collect_rca_context")
+	prompt := tool.Prompt(tooling.PromptContext{})
+	for _, want := range []string{
+		"primary RCA evidence",
+		"Coroot edge evidence",
+		"missing",
+		"safety guardrail read-only Coroot evidence first",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("coroot RCA prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestCorootToolsReturnFixedSchemasFromUpstream(t *testing.T) {
 	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -1049,6 +1064,45 @@ func TestCorootToolReturnsStructuredError(t *testing.T) {
 	errPayload := body["error"].(map[string]any)
 	if errPayload["kind"] != "upstream_server_error" {
 		t.Fatalf("error kind = %#v, want upstream_server_error", errPayload["kind"])
+	}
+	if body["skipReason"] != "coroot_mcp_unavailable" {
+		t.Fatalf("skipReason = %#v, want coroot_mcp_unavailable", body["skipReason"])
+	}
+}
+
+func TestCorootSkipReasonClassifiesRecoverableRCAInputs(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload CorootErrorPayload
+		want    string
+	}{
+		{
+			name:    "empty data",
+			payload: CorootErrorPayload{Kind: "empty_response", Message: "no data"},
+			want:    "empty_data",
+		},
+		{
+			name:    "time window mismatch",
+			payload: CorootErrorPayload{Kind: "upstream_client_error", StatusCode: 400, Message: "invalid time window: from must be before to"},
+			want:    "time_window_not_matched",
+		},
+		{
+			name:    "target not matched",
+			payload: CorootErrorPayload{Kind: "upstream_client_error", StatusCode: 404, Message: "application not found"},
+			want:    "target_not_matched",
+		},
+		{
+			name:    "mcp unavailable",
+			payload: CorootErrorPayload{Kind: "timeout", Message: "deadline exceeded"},
+			want:    "coroot_mcp_unavailable",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := corootSkipReasonForError(tt.payload); got != tt.want {
+				t.Fatalf("corootSkipReasonForError() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

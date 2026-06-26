@@ -34,7 +34,7 @@ func NewSnapshotBuilderWithSettings(hosts HostRepository, settings SettingsRepos
 func (b *SnapshotBuilder) BuildStateSnapshot(session *runtimekernel.SessionState) StateSnapshot {
 	snapshot := defaultStateSnapshot()
 	b.applyLLMConfig(&snapshot)
-	selectedHostID := serverLocalHostID
+	selectedHostID := ""
 	if session != nil {
 		snapshot.SessionID = session.ID
 		snapshot.Kind = mapSessionKind(session.Type)
@@ -188,7 +188,7 @@ func (b *SnapshotBuilder) BuildSessionSummary(session *runtimekernel.SessionStat
 	if session == nil {
 		return SessionSummary{
 			Kind:           "single_host",
-			SelectedHostID: "server-local",
+			SelectedHostID: "",
 			Title:          "新建会话",
 			Preview:        "暂无消息",
 			Status:         "empty",
@@ -237,7 +237,7 @@ func (b *SnapshotBuilder) SortSessions(sessions []*runtimekernel.SessionState) [
 func defaultStateSnapshot() StateSnapshot {
 	return StateSnapshot{
 		Kind:                "single_host",
-		SelectedHostID:      serverLocalHostID,
+		SelectedHostID:      "",
 		Auth:                AuthSummary{Connected: false},
 		Hosts:               []HostSummary{defaultServerLocalHost()},
 		Cards:               []CardView{},
@@ -259,7 +259,7 @@ func defaultStateSnapshot() StateSnapshot {
 			Turn: RuntimeTurnSnapshot{
 				Active: false,
 				Phase:  "idle",
-				HostID: serverLocalHostID,
+				HostID: "",
 			},
 			Codex: map[string]any{
 				"status":       "connected",
@@ -331,6 +331,7 @@ func buildApprovals(pending []runtimekernel.PendingApproval) []ApprovalView {
 			RunbookStep:    strings.TrimSpace(approval.RunbookStep),
 			ExpectedEffect: strings.TrimSpace(approval.ExpectedEffect),
 			Rollback:       strings.TrimSpace(approval.Rollback),
+			Validation:     strings.TrimSpace(approval.Validation),
 			HostID:         approval.HostID,
 			Status:         "pending",
 			CreatedAt:      isoStamp(approval.CreatedAt),
@@ -476,28 +477,34 @@ func (b *SnapshotBuilder) buildHostSummaries(selectedHostID string) []HostSummar
 
 func defaultServerLocalHost() HostSummary {
 	return HostSummary{
-		ID:              serverLocalHostID,
-		Name:            serverLocalHostID,
-		Status:          "online",
-		Kind:            "local",
-		Address:         serverLocalHostID,
-		Transport:       "local",
-		Executable:      true,
-		TerminalCapable: true,
-		ControlMode:     "local",
+		ID:                  serverLocalHostID,
+		Name:                serverLocalHostID,
+		Status:              "online",
+		AgentStatus:         "online",
+		SSHStatus:           "not_configured",
+		RuntimeReachability: "agent_online",
+		Kind:                "local",
+		Address:             serverLocalHostID,
+		Transport:           "local",
+		Executable:          true,
+		TerminalCapable:     true,
+		ControlMode:         "local",
 	}
 }
 
 func fallbackSelectedHost(hostID string) HostSummary {
 	record := store.HostRecord{
-		ID:            hostID,
-		Name:          hostID,
-		Status:        "offline",
-		Address:       hostID,
-		Transport:     "inventory",
-		InstallState:  "inventory",
-		ControlMode:   "inventory",
-		LastHeartbeat: "offline",
+		ID:                  hostID,
+		Name:                hostID,
+		Status:              "offline",
+		AgentStatus:         "offline",
+		SSHStatus:           "unknown",
+		RuntimeReachability: "inventory_only",
+		Address:             hostID,
+		Transport:           "inventory",
+		InstallState:        "inventory",
+		ControlMode:         "inventory",
+		LastHeartbeat:       "offline",
 	}
 	return mapHostRecord(record)
 }
@@ -526,10 +533,11 @@ func mapTurnPhase(turn *runtimekernel.TurnSnapshot) string {
 }
 
 func deriveCurrentMode(session *runtimekernel.SessionState) string {
-	if session == nil {
+	mode := projectionMode(session)
+	if mode == "" {
 		return ""
 	}
-	switch session.Mode {
+	switch mode {
 	case runtimekernel.ModeExecute:
 		return "execute"
 	default:
@@ -560,10 +568,11 @@ func deriveCurrentStage(turn *runtimekernel.TurnSnapshot) string {
 }
 
 func deriveCurrentLane(session *runtimekernel.SessionState) string {
-	if session == nil {
+	mode := projectionMode(session)
+	if mode == "" {
 		return ""
 	}
-	switch session.Mode {
+	switch mode {
 	case runtimekernel.ModeExecute:
 		return "execute"
 	case runtimekernel.ModePlan:
@@ -579,8 +588,9 @@ func buildTurnPolicy(session *runtimekernel.SessionState, lane string) TurnPolic
 	if session == nil || session.CurrentTurn == nil {
 		return defaultStateSnapshot().TurnPolicy
 	}
+	mode := projectionMode(session)
 	return TurnPolicyView{
-		IntentClass:           deriveIntentClass(session.Mode),
+		IntentClass:           deriveIntentClass(mode),
 		Lane:                  lane,
 		NeedsApproval:         len(session.PendingApprovals) > 0,
 		RequiresExternalFacts: strings.TrimSpace(session.CurrentTurn.GovernanceSnapshot) != "",
@@ -597,7 +607,7 @@ func buildPromptEnvelope(session *runtimekernel.SessionState, lane string) Promp
 	}
 	turn := session.CurrentTurn
 	envelope.CurrentLane = lane
-	envelope.IntentClass = deriveIntentClass(session.Mode)
+	envelope.IntentClass = deriveIntentClass(projectionMode(session))
 	envelope.UpdatedAt = isoStamp(turn.UpdatedAt)
 	envelope.RuntimePolicy = PromptEnvelopeSectionView{
 		Name:    "Runtime Policy",
@@ -618,6 +628,16 @@ func buildPromptEnvelope(session *runtimekernel.SessionState, lane string) Promp
 	}
 	envelope.HiddenTools = buildPromptEnvelopeTools(turn.HiddenTools)
 	return envelope
+}
+
+func projectionMode(session *runtimekernel.SessionState) runtimekernel.Mode {
+	if session == nil {
+		return ""
+	}
+	if session.CurrentTurn != nil && session.CurrentTurn.Mode.IsValid() {
+		return session.CurrentTurn.Mode
+	}
+	return session.Mode
 }
 
 func buildPromptEnvelopeTools(names []string) []PromptEnvelopeToolView {

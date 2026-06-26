@@ -167,14 +167,6 @@ function finalMarkdownState(status) {
             outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
             updatedAt: "2026-05-08T02:00:05.000Z",
           },
-          {
-            id: `assistant-markdown-final-${status}`,
-            kind: "assistant",
-            displayKind: "assistant.final",
-            status: running ? "running" : "completed",
-            text: markdownFinalText,
-            updatedAt: "2026-05-08T02:00:12.000Z",
-          },
         ],
         final: {
           id: `final-markdown-${status}`,
@@ -758,10 +750,11 @@ test("process transcript keeps narration and expanded search details aligned", a
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
   await page.getByTestId("aiops-process-header").click();
   await page.getByTestId("aiops-search-toggle").click();
+  await page.getByTestId("aiops-search-detail-row-toggle").first().click();
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页检索 2 项");
+  await expect(transcript).toContainText("网页检索 2 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
@@ -861,12 +854,12 @@ test("chat shows context compaction and externalized evidence states", async ({ 
   await expect(page.getByTestId("aiops-process-transcript")).toHaveScreenshot("context-compaction-process.png");
 });
 
-test("ops manual direct hit shows distinct skip reference and preflight actions", async ({ page }) => {
+test("ops manual direct hit shows distinct use reference and skip actions", async ({ page }) => {
   await routeShellApis(page, opsManualDirectActionsState());
 
   await page.goto("/");
   const card = page.getByTestId("ops-manual-search-result-card");
-  await expect(card).toContainText("运行预检");
+  await expect(card).toContainText("使用该手册/Workflow");
   await expect(card).toContainText("仅参考手册");
   await expect(card).toContainText("不使用");
   await expect(card).toHaveScreenshot("ops-manual-direct-three-actions.png");

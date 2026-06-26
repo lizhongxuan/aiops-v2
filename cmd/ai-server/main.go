@@ -26,7 +26,6 @@ import (
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/evidence"
-	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/hostops"
 	agenttools "aiops-v2/internal/integrations/agents"
@@ -117,13 +116,9 @@ func run() error {
 		return fmt.Errorf("init skill registry: %w", err)
 	}
 	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
-	flags := featureflag.FromEnv(os.Getenv)
 	permissionEngine := permissions.NewEngine(nil)
 	pluginHookRegistry := hooks.NewRegistry()
-	var runtimeHookRegistry *hooks.Registry
-	if flags.HooksV2 {
-		runtimeHookRegistry = pluginHookRegistry
-	}
+	runtimeHookRegistry := pluginHookRegistry
 	governance := settings.NewGovernance()
 	commandRegistry.SetGovernance(governance)
 
@@ -184,6 +179,7 @@ func run() error {
 	sessionManager := runtimekernel.NewSessionManager(dataStore)
 	contextArtifactRepo := runtimekernel.NewMemoryContextArtifactRepository()
 	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
+	resourceLockGate := agentmgr.NewToolResourceLockGate(agentmgr.NewResourceLockManager())
 	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -192,7 +188,7 @@ func run() error {
 			log.Printf("otel shutdown: %v", err)
 		}
 	}()
-	agentRunner := newServerAgentRunner(policyEngine, permissionEngine, runtimeHookRegistry, projector, sessionManager, dataStore, dataStore, contextArtifactRepo, skillRegistry, evidenceService, runtimeObserver)
+	agentRunner := newServerAgentRunner(policyEngine, permissionEngine, runtimeHookRegistry, projector, sessionManager, dataStore, dataStore, contextArtifactRepo, skillRegistry, evidenceService, resourceLockGate, runtimeObserver)
 	agentManager := agentmgr.NewAgentManager(agentFactory, agentRunner, projector)
 	hostOpsMissions := hostops.NewInMemoryMissionStore()
 	hostOpsTranscripts := hostops.NewInMemoryTranscriptStore()
@@ -252,14 +248,21 @@ func run() error {
 	pluginSpecs = append(pluginSpecs, builtinSpecs...)
 	grpcServer := server.NewGRPCServerWithAuthenticator(hostAgentGRPCAuthenticator{repo: dataStore})
 	terminalPolicyService := appui.NewTerminalPolicyService(filepath.Join(dataDir, "terminal-command-policies.json"))
+	credentialResolver := appui.NewLocalSecretCredentialResolver(secretDir)
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{
 		EvidenceService: evidenceService,
 		HostRepository:  dataStore,
 		TerminalPolicy:  terminalPolicyService,
-		HostAgentCommandRunner: hostAgentCommandRunner{
-			grpc:          grpcServer,
-			repo:          dataStore,
-			tokenResolver: appui.NewLocalHostAgentTokenStore(secretDir),
+		HostAgentCommandRunner: fallbackHostCommandRunner{
+			primary: hostAgentCommandRunner{
+				grpc:          grpcServer,
+				repo:          dataStore,
+				tokenResolver: appui.NewLocalHostAgentTokenStore(secretDir),
+			},
+			fallback: hostSSHCommandRunner{
+				repo:               dataStore,
+				credentialResolver: credentialResolver,
+			},
 		},
 	}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
@@ -286,21 +289,22 @@ func run() error {
 	// 9. EinoKernel (RuntimeKernel)
 	// ---------------------------------------------------------------------------
 	kernelCfg := runtimekernel.EinoKernelConfig{
-		ToolSource:      newRegistryAdapter(toolAssembler, commandRegistry, flags),
-		Compiler:        compiler,
-		Policy:          policyEngine,
-		Permissions:     permissionEngine,
-		Hooks:           runtimeHookRegistry,
-		Projector:       projector,
-		ModelRouter:     router,
-		AgentMgr:        newAgentManagerAdapter(agentManager, agentFactory),
-		Sessions:        sessionManager,
-		SessionRepo:     dataStore,
-		SpillRepo:       dataStore,
-		ArtifactRepo:    contextArtifactRepo,
-		SkillRegistry:   skillRegistry,
-		EvidenceService: evidenceService,
-		Observer:        runtimeObserver,
+		ToolSource:       newRegistryAdapter(toolAssembler, commandRegistry),
+		Compiler:         compiler,
+		Policy:           policyEngine,
+		Permissions:      permissionEngine,
+		Hooks:            runtimeHookRegistry,
+		Projector:        projector,
+		ModelRouter:      router,
+		AgentMgr:         newAgentManagerAdapter(agentManager, agentFactory),
+		Sessions:         sessionManager,
+		SessionRepo:      dataStore,
+		SpillRepo:        dataStore,
+		ArtifactRepo:     contextArtifactRepo,
+		SkillRegistry:    skillRegistry,
+		EvidenceService:  evidenceService,
+		ResourceLockGate: resourceLockGate,
+		Observer:         runtimeObserver,
 	}
 	kernel := runtimekernel.NewEinoKernel(kernelCfg)
 
@@ -368,7 +372,7 @@ func run() error {
 		appui.WithTerminalManager(terminalManager),
 		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
 		appui.WithLifecycleContext(ctx),
-		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
+		appui.WithCredentialResolver(credentialResolver),
 		appui.WithHostAgentTokenStore(hostAgentTokenStore),
 		appui.WithHostOpsService(appui.NewHostOpsService(hostOpsMissions, hostOpsTranscripts, hostOpsOrchestrator)),
 		appui.WithTerminalPolicyService(terminalPolicyService),
@@ -516,20 +520,22 @@ func newServerAgentRunner(
 	artifactRepo runtimekernel.ContextArtifactRepository,
 	skillRegistry *skills.Registry,
 	evidenceService *evidence.Service,
+	resourceLockGate runtimekernel.ToolResourceLockGate,
 	observer runtimekernel.Observer,
 ) agentmgr.AgentRunner {
 	return runtimekernel.NewAgentConfigRunner(runtimekernel.AgentConfigRunnerConfig{
-		Policy:          policyEngine,
-		Permissions:     permissionEngine,
-		Hooks:           hookRegistry,
-		Projector:       projector,
-		Sessions:        sessionManager,
-		SessionRepo:     sessionRepo,
-		SpillRepo:       spillRepo,
-		ArtifactRepo:    artifactRepo,
-		SkillRegistry:   skillRegistry,
-		EvidenceService: evidenceService,
-		Observer:        observer,
+		Policy:           policyEngine,
+		Permissions:      permissionEngine,
+		Hooks:            hookRegistry,
+		Projector:        projector,
+		Sessions:         sessionManager,
+		SessionRepo:      sessionRepo,
+		SpillRepo:        spillRepo,
+		ArtifactRepo:     artifactRepo,
+		SkillRegistry:    skillRegistry,
+		EvidenceService:  evidenceService,
+		ResourceLockGate: resourceLockGate,
+		Observer:         observer,
 	})
 }
 
@@ -927,7 +933,13 @@ func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelro
 		Provider:         provider,
 		Model:            model,
 		BaseURL:          strings.TrimSpace(cfg.BaseURL),
+		Temperature:      derefFloat64(cfg.Temperature),
+		TopP:             derefFloat64(cfg.TopP),
+		MaxTokens:        cfg.MaxOutputTokens,
 		MaxContextTokens: normalizeLLMContextWindow(cfg.MaxContextTokens),
+		ReasoningEffort:  strings.TrimSpace(cfg.ReasoningEffort),
+		ThinkingType:     strings.TrimSpace(cfg.ThinkingType),
+		ToolStream:       cfg.ToolStream,
 	}, true
 }
 
@@ -952,6 +964,13 @@ func normalizeLLMContextWindow(value int) int {
 	return value
 }
 
+func derefFloat64(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 // ---------------------------------------------------------------------------
 // RegistryAdapter adapts the unified tool assembler to runtimekernel.ToolAssemblySource.
 // ---------------------------------------------------------------------------
@@ -961,16 +980,14 @@ type registryAdapter struct {
 		AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
 	}
 	commandRegistry *commands.CommandRegistry
-	flags           featureflag.Flags
 }
 
 func newRegistryAdapter(tools interface {
 	AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
-}, commandRegistry *commands.CommandRegistry, flags featureflag.Flags) *registryAdapter {
+}, commandRegistry *commands.CommandRegistry) *registryAdapter {
 	return &registryAdapter{
 		tools:           tools,
 		commandRegistry: commandRegistry,
-		flags:           flags.Clone(),
 	}
 }
 
@@ -999,8 +1016,6 @@ func (a *registryAdapter) AssembleToolsWithOptions(session, mode string, opts to
 	if a.tools == nil {
 		return nil
 	}
-	opts.MetadataTransform = a.withFlagMetadataTransform(opts.MetadataTransform)
-	opts.Filter = a.withFlagToolFilter(opts.Filter)
 	return a.tools.AssembleToolsWithOptions(session, mode, opts)
 }
 
@@ -1011,12 +1026,7 @@ func (a *registryAdapter) RefreshToken(session runtimekernel.SessionType, mode r
 	if refresher, ok := a.tools.(interface {
 		RefreshToken(session, mode string, opts tooling.AssembleOptions) string
 	}); ok {
-		return refresher.RefreshToken(string(session), string(mode), tooling.AssembleOptions{
-			MetadataTransform: a.flags.ApplyToolMetadata,
-			Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-				return a.flags.IsToolVisible(meta)
-			},
-		})
+		return refresher.RefreshToken(string(session), string(mode), tooling.AssembleOptions{})
 	}
 	return ""
 }
@@ -1036,39 +1046,8 @@ func (a *registryAdapter) assembledToolsWithMetadata(session, mode string, metad
 	if a.tools == nil {
 		return nil
 	}
-	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{
-		MetadataTransform: a.flags.ApplyToolMetadata,
-		Filter:            a.flagsToolFilter(),
-	}, metadata)
+	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{}, metadata)
 	return a.tools.AssembleToolsWithOptions(session, mode, opts)
-}
-
-func (a *registryAdapter) withFlagMetadataTransform(next func(tooling.ToolMetadata) tooling.ToolMetadata) func(tooling.ToolMetadata) tooling.ToolMetadata {
-	return func(meta tooling.ToolMetadata) tooling.ToolMetadata {
-		meta = a.flags.ApplyToolMetadata(meta)
-		if next != nil {
-			meta = next(meta)
-		}
-		return meta
-	}
-}
-
-func (a *registryAdapter) withFlagToolFilter(next func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool) func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
-	return func(tool tooling.Tool, ctx tooling.ToolContext, meta tooling.ToolMetadata) bool {
-		if !a.flags.IsToolVisible(meta) {
-			return false
-		}
-		if next != nil {
-			return next(tool, ctx, meta)
-		}
-		return true
-	}
-}
-
-func (a *registryAdapter) flagsToolFilter() func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
-	return func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-		return a.flags.IsToolVisible(meta)
-	}
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,10 @@
 package opsmanual
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestTaxonomyNormalizesObjectAliases(t *testing.T) {
 	cases := map[string]string{
@@ -32,8 +36,8 @@ func TestTaxonomyNormalizesOperationAliases(t *testing.T) {
 		"部署 PostgreSQL 主从":                       "deploy",
 		"migration schema":                       "migration",
 		"status check redis":                     "status_check",
-		"检查 Redis 状态":                          "status_check",
-		"看一下 pg 运行状态":                         "status_check",
+		"检查 Redis 状态":                            "status_check",
+		"看一下 pg 运行状态":                            "status_check",
 	}
 	for text, want := range cases {
 		if got := detectOperationType(text); got != want {
@@ -58,6 +62,38 @@ func TestTaxonomyDetectsNegativeRestartIntent(t *testing.T) {
 	for _, text := range []string{"只读排查 Redis，不重启", "readonly no restart", "do not restart service"} {
 		if hasPositiveRestartIntent(normalizeText(text)) {
 			t.Fatalf("hasPositiveRestartIntent(%q) = true, want false", text)
+		}
+	}
+}
+
+func TestTaxonomyReturnsCapabilityMetadata(t *testing.T) {
+	metadata := BuildTaxonomyMetadata("只读排查 PostgreSQL timeline not a child standby recovery，包含 pg_isready 和 restore_command", nil)
+
+	if len(metadata.CapabilityCandidates) == 0 {
+		t.Fatalf("CapabilityCandidates = %#v, want candidates", metadata.CapabilityCandidates)
+	}
+	candidate := metadata.CapabilityCandidates[0]
+	if candidate.ResourceKind != "postgresql" {
+		t.Fatalf("ResourceKind = %q, want postgresql: %#v", candidate.ResourceKind, metadata)
+	}
+	if candidate.Capability != "rca_or_repair" {
+		t.Fatalf("Capability = %q, want rca_or_repair: %#v", candidate.Capability, metadata)
+	}
+	if !containsString(candidate.EvidenceKinds, "pg_isready") && !containsString(candidate.EvidenceKinds, "readonly") {
+		t.Fatalf("EvidenceKinds = %#v, want evidence metadata candidate", candidate.EvidenceKinds)
+	}
+}
+
+func TestTaxonomyMetadataDoesNotReturnRuntimeRoute(t *testing.T) {
+	metadata := BuildTaxonomyMetadata("在生产 Redis 上排查 timeout latency，不要重启", nil)
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	serialized := strings.ToLower(string(data))
+	for _, forbidden := range []string{"runtime_route", "runtimeroute", "route_mode", "aiops.route", "host_bound_ops", "evidence_rca"} {
+		if strings.Contains(serialized, forbidden) {
+			t.Fatalf("taxonomy metadata leaked runtime route marker %q: %s", forbidden, string(data))
 		}
 	}
 }

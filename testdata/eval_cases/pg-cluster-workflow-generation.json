@@ -28,7 +28,7 @@
       "user_message",
       "model_call",
       "tool_result",
-      "final_answer"
+      "assistant_message(final_answer)"
     ],
     "expectedResourceRoles": [
       "data_node",

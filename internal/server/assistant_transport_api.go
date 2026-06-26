@@ -74,7 +74,17 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 			return
 		}
 		next = s.decorateAssistantTransportAgentUIArtifacts(next, command)
+		next, applyErr = s.reprojectAssistantTransportCommandState(next, command, source, projector)
+		if applyErr != nil {
+			next.Status = appui.AiopsTransportStatusFailed
+			next.LastError = strings.TrimSpace(applyErr.Error())
+			next.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
 		if err := encoder.WriteStateOps(assistantTransportDiffStateOps(prev, next)); err != nil {
+			return
+		}
+		if applyErr != nil {
+			_ = encoder.WriteError(next.LastError)
 			return
 		}
 		prev = next
@@ -103,9 +113,6 @@ func assistantTransportShouldPoll(state appui.AiopsTransportState) bool {
 	}
 	currentTurnID := strings.TrimSpace(state.CurrentTurnID)
 	if currentTurnID == "" {
-		return false
-	}
-	if mission := state.HostMissions[strings.TrimSpace(state.ActiveHostMissionID)]; strings.TrimSpace(mission.TurnID) == currentTurnID {
 		return false
 	}
 	return true
@@ -157,6 +164,31 @@ func (s *HTTPServer) decorateAssistantTransportAgentUIArtifacts(state appui.Aiop
 	state.Turns[turnID] = turn
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state
+}
+
+func (s *HTTPServer) reprojectAssistantTransportCommandState(
+	state appui.AiopsTransportState,
+	command appui.TransportCommand,
+	source appui.SessionSource,
+	projector *appui.TransportProjector,
+) (appui.AiopsTransportState, error) {
+	switch command.Type {
+	case appui.TransportCommandTypeStop:
+	default:
+		return state, nil
+	}
+	if source == nil {
+		return state, nil
+	}
+	sessionID := strings.TrimSpace(state.SessionID)
+	if sessionID == "" {
+		return state, nil
+	}
+	session := source.Get(sessionID)
+	if session == nil {
+		return state, nil
+	}
+	return projectAssistantTransportSessionState(s, assistantTransportCloneState(state), session, projector, source)
 }
 
 func (s *HTTPServer) recordAssistantTransportOpsManualSuppression(sessionID string, command *appui.TransportAddMessageCommand) {

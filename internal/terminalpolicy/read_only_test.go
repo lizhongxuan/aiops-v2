@@ -58,6 +58,10 @@ func TestAllowedHostInspectionTerminalAllowsBoundedResourceCommands(t *testing.T
 		{command: "who"},
 		{command: "hostnamectl"},
 		{command: "hostnamectl", args: []string{"status"}},
+		{command: "systemctl", args: []string{"status", "nginx"}},
+		{command: "systemctl", args: []string{"is-active", "--quiet", "nginx"}},
+		{command: "systemctl", args: []string{"show", "nginx", "--property=ActiveState,SubState"}},
+		{command: "nginx", args: []string{"-v"}},
 		{command: "ps", args: []string{"-e"}},
 		{command: "ps", args: []string{"-eo", "comm,pid"}},
 		{command: "ps", args: []string{"-o", "pid,comm,pcpu,pmem"}},
@@ -84,6 +88,8 @@ func TestAllowedHostInspectionTerminalRejectsBroadOrMutatingCommands(t *testing.
 	}{
 		{command: "cat", args: []string{"/etc/passwd"}},
 		{command: "bash", args: []string{"-lc", "uptime && rm -rf /tmp/nope"}},
+		{command: "reboot", args: []string{"version"}},
+		{command: "rm", args: []string{"--version"}},
 		{command: "sysctl", args: []string{"-w", "kern.maxfiles=1024"}},
 		{command: "top", args: []string{"-pid", "1"}},
 		{command: "ps", args: []string{"--forest"}},
@@ -94,6 +100,8 @@ func TestAllowedHostInspectionTerminalRejectsBroadOrMutatingCommands(t *testing.
 		{command: "du", args: []string{"-h", "--max-depth=all", "/opt"}},
 		{command: "docker", args: []string{"stats"}},
 		{command: "hostnamectl", args: []string{"set-hostname", "changed"}},
+		{command: "systemctl", args: []string{"restart", "nginx"}},
+		{command: "systemctl", args: []string{"status", "nginx", "postgresql"}},
 		{command: "lsof", args: []string{"/etc/passwd"}},
 		{command: "lsof", args: []string{"-i", ":1234", "-F", "p"}},
 		{command: "lsof", args: []string{"-i", "-n"}},
@@ -158,6 +166,8 @@ func TestIsReadOnlyCommandAllowsHostResourceInspection(t *testing.T) {
 		{command: "sysctl", args: []string{"hw.memsize"}},
 		{command: "vm_stat"},
 		{command: "which", args: []string{"go"}},
+		{command: "systemctl", args: []string{"status", "nginx"}},
+		{command: "nginx", args: []string{"-v"}},
 	}
 	for _, tc := range cases {
 		if !IsReadOnlyCommand(tc.command, tc.args) {

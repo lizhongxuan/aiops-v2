@@ -43,6 +43,7 @@ describe("ChatPage", () => {
     act(() => {
       root.unmount();
     });
+    vi.useRealTimers();
     window.localStorage.clear();
     resetAiopsTransportStateCacheForTest();
     container.remove();
@@ -131,8 +132,9 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain(
       "payment-api is waiting for rollout approval.",
     );
-    expect(container.textContent).toContain("等待审批");
-    expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
+	    expect(container.textContent).toContain("等待审批");
+	    expect(container.textContent).toContain("host-a 等待审批");
+	    expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
     expect(container.textContent).toContain("1. 是");
     expect(container.textContent).toContain(
       "2. 是，且对于以后类似命令不再询问",
@@ -142,13 +144,65 @@ describe("ChatPage", () => {
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
     ).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="codex-approval-command"]'),
-    ).not.toBeNull();
-    expect(container.querySelector("textarea")).toBeNull();
+	    expect(
+	      container.querySelector('[data-testid="codex-approval-command"]'),
+	    ).not.toBeNull();
+	    expect(
+	      container.querySelector('[data-testid="codex-approval-details"]')?.textContent,
+	    ).toContain("host:host-a");
+	    expect(container.querySelector("textarea")).toBeNull();
+	  });
+
+  it("shows rejected approvals as audit trail without a global error", async () => {
+    const state = sampleState();
+    state.status = "idle";
+    state.turns["turn-1"].status = "completed";
+    state.turns["turn-1"].process = [
+      {
+        id: "approval-rejected",
+        kind: "approval",
+        status: "rejected",
+        text: "approval denied",
+        command: "kubectl rollout restart deploy/payment-api",
+        risk: "high",
+        source: "ai_chat_direct",
+        targetSummary: "host:host-a；service:payment-api",
+        expectedEffect: "重启 payment-api deployment",
+        rollback: "如验收失败则回滚到上一版本",
+        validation: "检查 rollout 状态、端口和错误日志",
+        approvalId: "approval-1",
+      },
+    ];
+    state.turns["turn-1"].final = {
+      id: "final-1",
+      text: "已根据现有证据继续只读分析。",
+      status: "completed",
+    };
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const header = container.querySelector(
+      '[data-testid="aiops-process-header"]',
+    );
+    await act(async () => {
+      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain(
+      "已拒绝，将基于已有证据继续分析",
+    );
+    expect(container.textContent).toContain(
+      "kubectl rollout restart deploy/payment-api",
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("已根据现有证据继续只读分析。");
   });
 
-  it("renders the chat ops run summary above the composer when transport state provides one", async () => {
+  it("does not render the chat ops run summary card above the composer", async () => {
     const state = sampleState();
     state.opsRun = {
       id: "opsrun-turn-1",
@@ -166,10 +220,10 @@ describe("ChatPage", () => {
 
     expect(
       container.querySelector('[data-testid="ops-run-summary-card"]'),
-    ).not.toBeNull();
-    expect(container.textContent).toContain("主机A跟主机B上PG不同步");
-    expect(container.textContent).toContain("主机A/主机B PG 与主机C pg_mon");
-    expect(container.textContent).toContain("2 条证据");
+    ).toBeNull();
+    expect(container.textContent).not.toContain("主机A跟主机B上PG不同步");
+    expect(container.textContent).not.toContain("主机A/主机B PG 与主机C pg_mon");
+    expect(container.textContent).not.toContain("2 条证据");
   });
 
   it("renders Agent-to-UI artifacts inside assistant messages", async () => {
@@ -423,7 +477,26 @@ describe("ChatPage", () => {
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
     ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="codex-approval-details"]')
+        ?.textContent,
+    ).toContain("检查 rollout 状态、端口和错误日志");
+    expect(container.textContent).toContain("host:host-a；service:payment-api");
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("does not render approval options when runtime liveness has no pending approval", async () => {
+    const state = sampleState();
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(
+      container.querySelector('[data-testid="codex-approval-inline"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("要执行这个命令，需要你确认吗？");
   });
 
   it("renders the host ops status panel above the composer when a host mission is active", async () => {
@@ -571,6 +644,33 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("已提交确认，正在继续执行");
     expect(submit?.textContent).toContain("提交中");
     expect(submit?.disabled).toBe(true);
+  });
+
+  it("times out a submitted approval decision when backend state does not settle", async () => {
+    await act(async () => {
+      root.render(<ChatPage initialState={sampleState()} />);
+    });
+    vi.useFakeTimers();
+
+    const submit = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("提交"),
+    ) as HTMLButtonElement | undefined;
+
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("已提交确认，正在继续执行");
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    const submitAfterTimeout = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("提交"),
+    ) as HTMLButtonElement | undefined;
+    expect(container.textContent).toContain("审批请求超时");
+    expect(submitAfterTimeout?.disabled).toBe(false);
   });
 
   it("replaces the textarea with an ops manual generation confirmation panel", async () => {
@@ -1385,6 +1485,12 @@ function sampleState(): AiopsTransportState {
         type: "command",
         status: "blocked",
         command: "kubectl rollout restart deploy/payment-api",
+        risk: "high",
+        source: "ai_chat_direct",
+        targetSummary: "host:host-a；service:payment-api",
+        expectedEffect: "重启 payment-api deployment",
+        rollback: "如验收失败则回滚到上一版本",
+        validation: "检查 rollout 状态、端口和错误日志",
       },
     },
     runtimeLiveness: {

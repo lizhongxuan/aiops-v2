@@ -23,6 +23,7 @@ func RenderMarkdown(trace PromptInputTrace) string {
 	renderToolDiscoveryMarkdown(&b, trace)
 	renderSkillDiscoveryMarkdown(&b, trace)
 	renderAgentSchedulingMarkdown(&b, trace)
+	renderOwnerWriteTraceMarkdown(&b, trace.OwnerWriteTraces)
 	if len(trace.Items) == 0 {
 		fmt.Fprintln(&b, "_No prompt input trace items._")
 		return b.String()
@@ -409,6 +410,28 @@ func renderToolDiscoveryMarkdown(b *strings.Builder, trace PromptInputTrace) {
 	fmt.Fprintln(b)
 }
 
+func renderOwnerWriteTraceMarkdown(b *strings.Builder, traces []OwnerWriteTrace) {
+	if len(traces) == 0 {
+		return
+	}
+	fmt.Fprintln(b, "## Owner Write Trace")
+	fmt.Fprintln(b, "| responsibility | owner | writer | outcome | session | turn |")
+	fmt.Fprintln(b, "|---|---|---|---|---|---|")
+	for _, trace := range traces {
+		fmt.Fprintf(
+			b,
+			"| %s | %s | %s | %s | %s | %s |\n",
+			escapeMarkdownCell(trace.Responsibility),
+			escapeMarkdownCell(trace.Owner),
+			escapeMarkdownCell(trace.Writer),
+			escapeMarkdownCell(trace.Outcome),
+			escapeMarkdownCell(trace.SessionID),
+			escapeMarkdownCell(trace.TurnID),
+		)
+	}
+	fmt.Fprintln(b)
+}
+
 func renderDeferredToolDirectoryMarkdown(b *strings.Builder, entries []promptcompiler.DeferredToolDirectoryEntry) {
 	if len(entries) == 0 {
 		return
@@ -523,19 +546,48 @@ func renderToolSearchEventsMarkdown(b *strings.Builder, events []ToolSearchTrace
 		return
 	}
 	fmt.Fprintln(b, "### Tool Search Events")
-	fmt.Fprintln(b, "| mode | query | matches | reason |")
-	fmt.Fprintln(b, "|---|---|---|---|")
+	fmt.Fprintln(b, "| mode | query | ranker | matches | rejected | reason |")
+	fmt.Fprintln(b, "|---|---|---|---|---|---|")
 	for _, event := range events {
 		fmt.Fprintf(
 			b,
-			"| %s | %s | %s | %s |\n",
+			"| %s | %s | %s | %s | %s | %s |\n",
 			escapeMarkdownCell(event.Mode),
 			escapeMarkdownCell(redactSecrets(event.Query)),
+			escapeMarkdownCell(redactSecrets(event.Ranker)),
 			escapeMarkdownCell(strings.Join(event.Matches, ", ")),
+			escapeMarkdownCell(redactSecrets(formatToolSearchRejectedReasons(event.RejectedReasons))),
 			escapeMarkdownCell(redactSecrets(event.Reason)),
 		)
 	}
 	fmt.Fprintln(b)
+}
+
+func formatToolSearchRejectedReasons(reasons []ToolSearchRejectedReason) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		name := strings.TrimSpace(reason.ToolName)
+		value := strings.TrimSpace(reason.Reason)
+		if value == "" {
+			value = strings.TrimSpace(reason.FilteredReason)
+		}
+		if name == "" && value == "" {
+			continue
+		}
+		if name == "" {
+			parts = append(parts, value)
+			continue
+		}
+		if value == "" {
+			parts = append(parts, name)
+			continue
+		}
+		parts = append(parts, name+"="+value)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func renderToolSelectionEventsMarkdown(b *strings.Builder, events []ToolSelectionTraceEvent) {

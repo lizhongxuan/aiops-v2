@@ -135,6 +135,127 @@ func TestSettingsServiceDefaultsToGPT54WhenRepoIsEmpty(t *testing.T) {
 	}
 }
 
+func TestSettingsServiceNormalizesDeepSeekLLMConfig(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+
+	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
+		Provider:        "deepseek",
+		ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("UpdateLLMConfig() = %+v, want ok", result)
+	}
+	if repo.llm.Provider != "deepseek" || repo.llm.Model != "deepseek-v4-pro" {
+		t.Fatalf("saved provider/model = %s/%s, want deepseek/deepseek-v4-pro", repo.llm.Provider, repo.llm.Model)
+	}
+	if repo.llm.BaseURL != "https://api.deepseek.com" {
+		t.Fatalf("saved baseURL = %q, want DeepSeek official URL", repo.llm.BaseURL)
+	}
+	if repo.llm.MaxContextTokens != 1000000 || repo.llm.MaxOutputTokens != 20000 {
+		t.Fatalf("saved context/output = %d/%d, want 1000000/20000", repo.llm.MaxContextTokens, repo.llm.MaxOutputTokens)
+	}
+	if repo.llm.ThinkingType != "enabled" || repo.llm.ReasoningEffort != "high" {
+		t.Fatalf("saved thinking/reasoning = %q/%q, want enabled/high", repo.llm.ThinkingType, repo.llm.ReasoningEffort)
+	}
+}
+
+func TestSettingsServiceNormalizesZhipuLLMConfig(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+
+	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
+		Provider:        "zhipu",
+		ReasoningEffort: "xhigh",
+		ThinkingType:    "disabled",
+		ToolStream:      true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("UpdateLLMConfig() = %+v, want ok", result)
+	}
+	if repo.llm.Provider != "zhipu" || repo.llm.Model != "glm-5.2" {
+		t.Fatalf("saved provider/model = %s/%s, want zhipu/glm-5.2", repo.llm.Provider, repo.llm.Model)
+	}
+	if repo.llm.BaseURL != "https://open.bigmodel.cn/api/paas/v4/" {
+		t.Fatalf("saved baseURL = %q, want Zhipu official URL", repo.llm.BaseURL)
+	}
+	if repo.llm.MaxContextTokens != 1000000 || repo.llm.MaxOutputTokens != 20000 {
+		t.Fatalf("saved context/output = %d/%d, want 1000000/20000", repo.llm.MaxContextTokens, repo.llm.MaxOutputTokens)
+	}
+	if repo.llm.ThinkingType != "disabled" || repo.llm.ReasoningEffort != "xhigh" || !repo.llm.ToolStream {
+		t.Fatalf("saved thinking/reasoning/toolStream = %q/%q/%v, want disabled/xhigh/true", repo.llm.ThinkingType, repo.llm.ReasoningEffort, repo.llm.ToolStream)
+	}
+
+	result, err = svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
+		Provider:   "zhipu",
+		Model:      "glm-5.2",
+		ToolStream: false,
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig() disabling tool stream error = %v", err)
+	}
+	if !result.OK || repo.llm.ToolStream {
+		t.Fatalf("saved toolStream after disabling = %+v/%v, want false", result, repo.llm.ToolStream)
+	}
+}
+
+func TestSettingsServiceAllowsCustomModelMaxOutputOverride(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+
+	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
+		Provider:        "deepseek",
+		Model:           "custom-deepseek-compatible",
+		MaxOutputTokens: 64000,
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("UpdateLLMConfig() = %+v, want ok", result)
+	}
+	if repo.llm.MaxOutputTokens != 64000 {
+		t.Fatalf("custom model max output = %d, want 64000", repo.llm.MaxOutputTokens)
+	}
+}
+
+func TestSettingsServicePreservesOpenAIConfigWithoutProviderSpecificDefaults(t *testing.T) {
+	repo := &settingsRepoStub{
+		llm: &store.LLMConfig{
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			APIKey:           "sk-test-12345678",
+			BaseURL:          "https://api.openai.com/v1",
+			MaxContextTokens: 200000,
+			ReasoningEffort:  "high",
+		},
+	}
+	svc := NewSettingsService(repo)
+
+	result, err := svc.UpdateLLMConfig(context.Background(), LLMConfigUpdate{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("UpdateLLMConfig() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("UpdateLLMConfig() = %+v, want ok", result)
+	}
+	if repo.llm.APIKey != "sk-test-12345678" {
+		t.Fatalf("saved api key = %q, want existing key preserved", repo.llm.APIKey)
+	}
+	if repo.llm.ThinkingType != "" || repo.llm.ToolStream {
+		t.Fatalf("openai saved provider-specific fields thinking=%q toolStream=%v, want empty/false", repo.llm.ThinkingType, repo.llm.ToolStream)
+	}
+}
+
 func TestSettingsServiceDefaultModelOptionsIncludeGLM47(t *testing.T) {
 	svc := NewSettingsService(&settingsRepoStub{})
 

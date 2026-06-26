@@ -36,7 +36,8 @@ const (
 // CompileContext is the structured input to the PromptCompiler.
 // ---------------------------------------------------------------------------
 
-// CompileContext carries all inputs needed to compile a four-layer prompt.
+// CompileContext carries all inputs needed to compile the section-first model
+// prompt and its compatibility views.
 type CompileContext struct {
 	// SessionType identifies the session domain (host/workspace).
 	SessionType SessionType
@@ -59,6 +60,9 @@ type CompileContext struct {
 	// RuntimePolicy is the active policy text for the current mode.
 	RuntimePolicy string
 
+	// Profile is the runtime-selected prompt/tool profile for this turn.
+	Profile string
+
 	// PlanningPolicy controls whether structured plan events are preferred.
 	PlanningPolicy string
 
@@ -70,6 +74,18 @@ type CompileContext struct {
 
 	// ToolBudget describes the tool result and dispatch budget profile.
 	ToolBudget string
+
+	// RuntimeState carries compact per-turn state that should be visible to the
+	// model without expanding into policy prose.
+	WebState               string
+	OpsGraphState          string
+	CorootState            string
+	OpsManusState          string
+	PendingApprovals       int
+	PendingEvidence        int
+	VisibleToolFingerprint string
+	UserConstraints        []string
+	TimeoutRecoveryState   string
 
 	// TaskDepth describes the current turn's complexity and completion gates.
 	TaskDepth taskdepth.Profile
@@ -149,6 +165,44 @@ type PromptSection struct {
 	Content string
 }
 
+// DynamicContextSource is a bounded prompt-facing dynamic context block.
+// Content is already budgeted; overflow raw text is represented by summary and
+// source/evidence refs instead of being inlined into the model prompt.
+type DynamicContextSource struct {
+	ID                   string `json:"id"`
+	Title                string `json:"title,omitempty"`
+	Content              string `json:"content,omitempty"`
+	TokenBudget          int    `json:"tokenBudget,omitempty"`
+	TokensEstimate       int    `json:"tokensEstimate,omitempty"`
+	Overflowed           bool   `json:"overflowed,omitempty"`
+	Summary              string `json:"summary,omitempty"`
+	SourceRef            string `json:"sourceRef,omitempty"`
+	EvidenceRef          string `json:"evidenceRef,omitempty"`
+	RawAvailableViaTrace bool   `json:"rawAvailableViaTrace,omitempty"`
+}
+
+// PromptCompiledSection is the section-first model input unit produced by the
+// compiler. Compatibility four-layer fields are derived from these sections
+// during migration, but callers should prefer this ordered envelope for model
+// input assembly.
+type PromptCompiledSection struct {
+	ID        string
+	Layer     string
+	Role      string
+	Content   string
+	Stability string
+	MaxTokens int
+	Source    string
+	Required  bool
+}
+
+// PromptEnvelope is the ordered prompt product consumed by model input
+// builders. It keeps behavior sections explicit so runtime state, profile, tool
+// surface, and dynamic context are not reconstructed by separate paths.
+type PromptEnvelope struct {
+	Sections []PromptCompiledSection
+}
+
 // ---------------------------------------------------------------------------
 // Four-layer Prompt structures
 // ---------------------------------------------------------------------------
@@ -184,6 +238,10 @@ type ToolPromptEntry struct {
 
 	// UsagePolicy describes when the model should choose this tool.
 	UsagePolicy string
+
+	// Guidance carries tool-specific prompt guidance rendered only when the
+	// tool is visible in the current prompt.
+	Guidance string
 
 	// Example gives one compact usage example.
 	Example string
@@ -332,6 +390,9 @@ type DynamicPromptDelta struct {
 	// Content is the concatenated dynamic prompt text.
 	Content string
 
+	// Sources are the bounded source-id blocks used to render Content.
+	Sources []DynamicContextSource
+
 	// SkillPromptAssets are prompt fragments that may change within a turn.
 	SkillPromptAssets []string
 
@@ -440,26 +501,30 @@ const (
 	CompactActionBlocked      = "blocked"
 )
 
-// CompiledPrompt is the promptcompiler output. It preserves the legacy
-// flattened four-layer view for compatibility and also exposes a stable /
-// dynamic split for long-running turn reuse.
+// CompiledPrompt is the promptcompiler output. Envelope is the section-first
+// prompt product used by model input assembly; stable/dynamic and four-layer
+// fields are derived compatibility views for tests, trace labels, and thin
+// adapters that still need typed access while the public API is retired.
 type CompiledPrompt struct {
-	// Stable contains the layers that are expected to stay stable within a turn.
+	// Envelope is the section-first prompt product consumed by model input assembly.
+	Envelope PromptEnvelope
+
+	// Stable is a derived compatibility view of stable envelope sections.
 	Stable StablePromptEnvelope
 
-	// Dynamic contains the layers that may change per turn.
+	// Dynamic is a derived compatibility view of dynamic envelope sections.
 	Dynamic DynamicPromptDelta
 
-	// System is Layer 1: environment and role.
+	// System is a derived compatibility view of base/profile content.
 	System SystemPrompt
 
-	// Developer is Layer 2: runtime constraints.
+	// Developer is a derived compatibility view of profile content.
 	Developer DeveloperInstructions
 
-	// Tools is Layer 3: capability descriptions.
+	// Tools is a derived compatibility view of tool.surface.
 	Tools ToolPromptSet
 
-	// Policy is Layer 4: mode-specific policy constraints.
+	// Policy is a derived compatibility view of runtime.state.
 	Policy RuntimePolicyPrompt
 
 	// Fingerprint identifies prompt-layer changes without exposing prompt text.
@@ -477,9 +542,9 @@ type CompiledPrompt struct {
 // ---------------------------------------------------------------------------
 
 // Compiler is the unique prompt truth source. It compiles structured inputs
-// into a four-layer CompiledPrompt and can convert to Eino message format.
+// into a section-first CompiledPrompt and can convert it to Eino message format.
 type Compiler interface {
-	// Compile compiles the four-layer prompt from the given context.
+	// Compile compiles the section-first prompt from the given context.
 	Compile(ctx CompileContext) (CompiledPrompt, error)
 
 	// CompileForEino compiles and converts to Eino *schema.Message format,

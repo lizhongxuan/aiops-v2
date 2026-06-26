@@ -14,6 +14,7 @@ import { IncidentListPage } from "@/pages/IncidentListPage";
 import { IncidentWorkbenchPage } from "@/pages/IncidentWorkbenchPage";
 import { LabEnvironmentPage } from "@/pages/LabEnvironmentPage";
 import { LLMConfigPage } from "@/pages/LLMConfigPage";
+import { McpServersPage } from "@/pages/McpServersPage";
 import { OpsGraphPage } from "@/pages/OpsGraphPage";
 import { OpsGraphListPage } from "@/pages/opsgraph/OpsGraphListPage";
 import { OpsManualsPage } from "@/pages/OpsManualsPage";
@@ -56,7 +57,7 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/settings/skills": <Navigate to="/capabilities" replace />,
   "/settings/mcp": <Navigate to="/capabilities" replace />,
   "/settings/connectors": <Navigate to="/capabilities" replace />,
-  "/mcp": <Navigate to="/capabilities" replace />,
+  "/mcp": <McpServersPage />,
   "/approval-management": <ApprovalManagementPage />,
   "/capabilities": <CapabilityCenterPage />,
   "/capability-center": <Navigate to="/capabilities" replace />,

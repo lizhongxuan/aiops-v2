@@ -30,6 +30,23 @@ func TestVerificationCompletionGateRequiresExecutionReportForComplexTask(t *test
 	}
 }
 
+func TestVerificationCompletionGateAllowsAnalysisOnlyFinalWithoutExecutionReport(t *testing.T) {
+	decision := EvaluateVerificationCompletionGate(taskdepth.Profile{
+		Level:               taskdepth.LevelInvestigation,
+		RequiresPlan:        true,
+		RequiresEvidence:    true,
+		AnalysisOnly:        true,
+		ExecutionProhibited: true,
+	}, &TurnSnapshot{})
+
+	if decision.Action != VerificationCompletionActionAllow {
+		t.Fatalf("action = %q, want allow for analysis-only no-exec task: %#v", decision.Action, decision)
+	}
+	if decision.Requirement != verification.VerificationAnalysisAllowed {
+		t.Fatalf("requirement = %q, want analysis_allowed: %#v", decision.Requirement, decision)
+	}
+}
+
 func TestVerificationCompletionGateValidatesPassPartialAndFail(t *testing.T) {
 	pass := verificationReportSnapshot(t, verification.VerificationReport{
 		ID:          "vr-pass",
@@ -185,6 +202,74 @@ func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
 	}
 }
 
+func TestRunTurnVerificationCompletionGateRetriesProseApprovalForScopedMutation(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-synthetic-status",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"systemctl","args":["status","synthetic-service"]}`,
+			},
+		}}),
+		schema.AssistantMessage("变更前状态正常。请确认是否批准执行这个重启操作？批准后我将继续执行。", nil),
+		schema.AssistantMessage("tool_unavailable: runtime approval gate was required but no mutating tool call was issued; next action is to invoke the scoped mutating tool so the runtime can request approval.", nil),
+	}}
+	tool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "exec_command", Description: "synthetic host command"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc:        func(json.RawMessage) bool { return true },
+		ConcurrencySafeFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: `{"schemaVersion":"aiops.terminal/v1","status":"ok","command":"systemctl status synthetic-service","stdout":"active (running)","exitCode":0}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-prose-approval-mutation",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-prose-approval-mutation",
+		Input:       "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
+		Metadata: map[string]string{
+			"taskDepth":                       "operations",
+			"aiops.intent.kind":               "change",
+			"aiops.intent.riskBudget":         "host_exec,write",
+			"aiops.route.mode":                "host_bound_ops",
+			"aiops.route.allowsExecCommand":   "true",
+			"aiops.route.requiresHostBinding": "true",
+			"aiops.tool.execCommandAllowed":   "true",
+			"aiops.tool.hostMutationAllowed":  "true",
+			"aiops.target.binding":            "host",
+			"aiops.target.hostId":             "host-a",
+			"aiops.target.refs":               "host:host-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Output != "tool_unavailable: runtime approval gate was required but no mutating tool call was issued; next action is to invoke the scoped mutating tool so the runtime can request approval." {
+		t.Fatalf("final output = %q, want gate retry output", result.Output)
+	}
+	if len(model.inputs) != 3 {
+		t.Fatalf("model calls = %d, want completion-gate retry after prose approval", len(model.inputs))
+	}
+	session := kernel.sessions.Get("sess-prose-approval-mutation")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing session turn: %#v", session)
+	}
+	decision := EvaluateVerificationCompletionGate(session.CurrentTurn.TaskDepth, session.CurrentTurn)
+	if !containsString(decision.Reasons, "missing_runtime_approval_gate") {
+		t.Fatalf("completion gate reasons = %v, want missing_runtime_approval_gate", decision.Reasons)
+	}
+	if prompt := verificationCompletionGateRetryPrompt(decision); !strings.Contains(prompt, "Do not ask for approval in prose") {
+		t.Fatalf("retry prompt missing runtime approval instruction:\n%s", prompt)
+	}
+}
+
 func TestRunTurnVerificationCompletionGateAllowsEvidenceBackedVerificationSummary(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{
@@ -262,6 +347,35 @@ func TestRunTurnVerificationCompletionGateAllowsEvidenceBackedVerificationSummar
 	}
 	if len(model.inputs) != 2 {
 		t.Fatalf("model calls = %d, want no completion-gate retry after evidence-backed verification summary", len(model.inputs))
+	}
+}
+
+func TestRunTurnAnalysisOnlyOpsQuestionDoesNotRetryForMissingExecutionReport(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("结论（置信度：低）：这是原理分析，未连接环境也未执行命令。可能原因是恢复后的节点历史状态与目标主节点不一致。\n\n证据清单：需要后续采集两端状态、恢复参数和加入流程日志确认。", nil),
+		schema.AssistantMessage("不应该触发第二次模型调用", nil),
+	}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-analysis-only-no-exec",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		TurnID:      "turn-analysis-only-no-exec",
+		Input:       "我做了几次备份并恢复了一个节点，现在从节点加入后同步异常，为什么会这样？先只做原理分析和证据清单，不要连接或执行任何主机命令。",
+		Metadata: map[string]string{
+			"aiops.route.mode":                   "chat_advisory",
+			"aiops.tool.execCommandAllowed":      "false",
+			"aiops.route.userProhibitedHostExec": "true",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(result.Output, "原理分析") {
+		t.Fatalf("final output = %q, want first model answer", result.Output)
+	}
+	if len(model.inputs) != 1 {
+		t.Fatalf("model calls = %d, want no completion-gate retry", len(model.inputs))
 	}
 }
 

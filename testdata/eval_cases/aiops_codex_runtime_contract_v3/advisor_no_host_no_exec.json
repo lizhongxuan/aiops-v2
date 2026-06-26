@@ -1,0 +1,33 @@
+{
+  "name": "advisor_no_host_no_exec",
+  "input": "解释一下 PostgreSQL checkpoint 抖动常见原因，不连接任何主机。",
+  "expected": {
+    "profile": "advisor",
+    "hiddenTools": [
+      "exec_command",
+      "hostops.direct_write"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "advisor",
+    "visibleTools": [
+      "tool_search"
+    ],
+    "toolCalls": [
+      "no_tool_call_required"
+    ],
+    "evidenceRefs": [
+      "evidence:advisor-domain-knowledge"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "analysis_only",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

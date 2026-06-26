@@ -71,6 +71,19 @@ func (f *fakeHostSSHPasswordStore) StoreHostSSHPassword(_ context.Context, hostI
 	return "secret://hosts/" + hostID + "/ssh-password", nil
 }
 
+type fakeHostSSHInstaller struct {
+	credentialRef string
+}
+
+func (f *fakeHostSSHInstaller) Install(_ context.Context, hostID string, req HostInstallRequest) (HostInstallRun, error) {
+	return HostInstallRun{HostID: hostID, Status: "ok", AgentVersion: req.AgentVersion}, nil
+}
+
+func (f *fakeHostSSHInstaller) TestSSH(_ context.Context, _ string, credentialRef string) (HostSSHTestResponse, error) {
+	f.credentialRef = credentialRef
+	return HostSSHTestResponse{Status: "ok", Message: "tested"}, nil
+}
+
 func TestHostServiceCrudAndSelect(t *testing.T) {
 	hostRepo := newHostRepoStub(store.HostRecord{
 		ID:              "host-a",
@@ -314,7 +327,7 @@ func TestHostServiceCreateHostDoesNotStartSSHInstall(t *testing.T) {
 	if installer.called {
 		t.Fatal("installer was called during CreateHost, want save-only behavior")
 	}
-	if created.Host.Status != "offline" || created.Host.InstallState != "inventory" {
+	if created.Host.Status != "offline" || created.Host.AgentStatus != "offline" || created.Host.SSHStatus != "unknown" || created.Host.RuntimeReachability != "ssh_unverified" || created.Host.InstallState != "inventory" {
 		t.Fatalf("created host = %+v, want inventory state", created.Host)
 	}
 }
@@ -362,5 +375,40 @@ func TestHostServiceSSHTestAllowsMissingSSHCredentialRefWithoutBootstrap(t *test
 	}
 	if resp.Status != "ok" {
 		t.Fatalf("response = %+v, want ok", resp)
+	}
+}
+
+func TestHostServiceSSHTestStoresPasswordBeforeBootstrap(t *testing.T) {
+	hostRepo := newHostRepoStub(store.HostRecord{
+		ID:      "prod-web-01",
+		Name:    "prod-web-01",
+		Address: "10.0.0.11",
+		SSHUser: "ubuntu",
+		SSHPort: 22,
+	})
+	passwords := &fakeHostSSHPasswordStore{ref: "secret://hosts/prod-web-01/ssh-password"}
+	installer := &fakeHostSSHInstaller{}
+	bootstrap := NewHostBootstrapService(hostRepo, nil, WithHostAgentInstaller(installer))
+	service := NewHostServiceWithOptions(nil, hostRepo, NewSnapshotBuilder(hostRepo), bootstrap, WithHostServiceSSHPasswordStore(passwords))
+
+	resp, err := service.TestHostSSH(context.Background(), "prod-web-01", HostSSHTestRequest{SSHPassword: "password-from-form"})
+	if err != nil {
+		t.Fatalf("TestHostSSH() error = %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("response = %+v, want ok", resp)
+	}
+	if passwords.hostID != "prod-web-01" || passwords.password != "password-from-form" {
+		t.Fatalf("stored password host/password = %q/%q", passwords.hostID, passwords.password)
+	}
+	if installer.credentialRef != "secret://hosts/prod-web-01/ssh-password" {
+		t.Fatalf("bootstrap credentialRef = %q, want stored secret ref", installer.credentialRef)
+	}
+	stored, err := hostRepo.GetHost("prod-web-01")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if stored.SSHStatus != "ok" || stored.RuntimeReachability != "ssh_available" || stored.SSHCredentialRef != "secret://hosts/prod-web-01/ssh-password" {
+		t.Fatalf("stored host ssh status = %+v, want ok ssh_available and credential ref persisted", stored)
 	}
 }

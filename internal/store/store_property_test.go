@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -100,14 +101,25 @@ func genCheckpointMetadata(t *rapid.T, sessionID, turnID string, iteration int) 
 func genPendingApproval(t *rapid.T, sessionID, turnID string, iteration int) runtimekernel.PendingApproval {
 	now := time.Now().Truncate(time.Second)
 	return runtimekernel.PendingApproval{
-		ID:        rapid.StringMatching(`approval-[a-z0-9]{6,12}`).Draw(t, "approvalId"),
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Iteration: iteration,
-		ToolName:  rapid.StringMatching(`[a-z_]{3,12}`).Draw(t, "approvalTool"),
-		Status:    "pending",
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                     rapid.StringMatching(`approval-[a-z0-9]{6,12}`).Draw(t, "approvalId"),
+		SessionID:              sessionID,
+		TurnID:                 turnID,
+		Iteration:              iteration,
+		IterationID:            fmt.Sprintf("%s-iteration-%d", turnID, iteration),
+		ToolName:               rapid.StringMatching(`[a-z_]{3,12}`).Draw(t, "approvalTool"),
+		ToolCallID:             fmt.Sprintf("tool-call-%d", iteration),
+		TargetRefs:             []string{"host:host-a"},
+		Command:                "synthetic command",
+		ArgumentsHash:          "sha256:args",
+		Reason:                 "synthetic approval",
+		RequestedScope:         "host:host-a",
+		PreChangeEvidenceRefs:  []string{"evidence://before"},
+		ApprovalOptions:        []string{"approved", "denied"},
+		ToolSurfaceFingerprint: "surface-1",
+		PermissionSnapshotHash: "permission-1",
+		Status:                 "pending",
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 }
 

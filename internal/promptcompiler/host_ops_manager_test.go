@@ -6,28 +6,35 @@ import (
 )
 
 func TestHostOpsManagerPromptIncludesMandatoryRoutingRules(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{
+	compiled, err := NewCompiler().Compile(CompileContext{
 		AgentKind:           AgentKindPlanner,
 		HostOpsManager:      true,
 		HostOpsPlanRequired: true,
-	}), "\n\n")
+		Profile:             PromptProfileHostManager,
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	profile := compiledPromptSectionForTest(t, compiled, "profile.host_manager").Content
 
 	for _, want := range []string{
-		"## Host Operations Manager",
-		"当用户消息包含多个 @主机 时，你必须先制定结构化计划。",
-		"你不能直接在任何被 @ 的主机上执行命令。",
-		"你必须为每个被 @ 的唯一主机启动一个独立 host-bound 子 Agent。",
-		"在计划被用户接受之前，只允许做只读预检查和计划细化，不允许执行变更。",
+		"Create a compact plan for complex host work before delegation.",
+		"Do not run host commands directly.",
+		"Delegate clear sub-tasks to host-bound child agents",
 	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		if !strings.Contains(profile, want) {
+			t.Fatalf("host manager profile missing %q:\n%s", want, profile)
 		}
 	}
 }
 
 func TestHostOpsManagerPromptOmittedForNormalChat(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	if strings.Contains(developer, "## Host Operations Manager") {
-		t.Fatalf("normal chat should not include host ops manager section:\n%s", developer)
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	if strings.Contains(modelInput, "## Host Operations Manager") {
+		t.Fatalf("normal chat should not include host ops manager section:\n%s", modelInput)
 	}
 }

@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { buildTargetOptionsForTest, formatLlmLabel, formatTargetButtonLabel, resolveComposerDisabledReason, withSessionContextTimeout } from "./SessionContextBar";
+import {
+  buildTargetOptionsForTest,
+  formatLlmLabel,
+  formatTargetButtonLabel,
+  resolveComposerDisabledReason,
+  resolveHostTargetIdForTest,
+  withSessionContextTimeout,
+} from "./SessionContextBar";
 
 describe("SessionContextBar", () => {
   afterEach(() => {
@@ -9,7 +16,7 @@ describe("SessionContextBar", () => {
 
   it("does not duplicate the host prefix in the single-host selector", () => {
     expect(formatTargetButtonLabel("single_host", "server-local")).toBe("server-local");
-    expect(formatTargetButtonLabel("single_host")).toBe("server-local");
+    expect(formatTargetButtonLabel("single_host")).toBe("未选择执行目标");
   });
 
   it("shows only the model name in the composer LLM label", () => {
@@ -81,6 +88,20 @@ describe("SessionContextBar", () => {
     expect(redis?.metadata["aiops.target.environment"]).toBe("prod");
     expect(redis?.metadata["aiops.coroot.project"]).toBe("prod-main");
     expect(redis?.metadata["aiops.target.cluster"]).toBe("prod-a");
+  });
+
+  it("does not bind an implicit local host for unselected single-host chat", () => {
+    const options = buildTargetOptionsForTest([], "single_host");
+
+    expect(resolveHostTargetIdForTest("single_host", options, "none", [])).toBeUndefined();
+    expect(resolveHostTargetIdForTest("single_host", options, "host:missing", [])).toBeUndefined();
+  });
+
+  it("binds a single-host chat only when the host target is explicit", () => {
+    const hosts = [{ id: "redis-01", name: "redis-01", address: "10.0.0.11", labels: {} }];
+    const options = buildTargetOptionsForTest(hosts, "single_host");
+
+    expect(resolveHostTargetIdForTest("single_host", options, "host:redis-01", hosts)).toBe("redis-01");
   });
 
   it("binds environment label groups to Coroot project for workspace chat", () => {

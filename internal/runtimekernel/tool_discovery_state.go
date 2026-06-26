@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/tooling"
 )
 
 const maxToolDiscoveryHistory = 20
@@ -27,18 +29,26 @@ type LoadedPackRef struct {
 }
 
 type ToolSearchMatchSnapshot struct {
-	Kind             string    `json:"kind,omitempty"`
-	Name             string    `json:"name"`
-	Pack             string    `json:"pack,omitempty"`
-	Tools            []string  `json:"tools,omitempty"`
-	CapabilityKind   string    `json:"capabilityKind,omitempty"`
-	ResourceTypes    []string  `json:"resourceTypes,omitempty"`
-	OperationKinds   []string  `json:"operationKinds,omitempty"`
-	RiskLevel        string    `json:"riskLevel,omitempty"`
-	Mutating         bool      `json:"mutating,omitempty"`
-	RequiresApproval bool      `json:"requiresApproval,omitempty"`
-	RequiresSelect   bool      `json:"requiresSelect,omitempty"`
-	SeenAt           time.Time `json:"seenAt,omitempty"`
+	Kind             string                      `json:"kind,omitempty"`
+	Name             string                      `json:"name"`
+	Pack             string                      `json:"pack,omitempty"`
+	Tools            []string                    `json:"tools,omitempty"`
+	Score            float64                     `json:"score,omitempty"`
+	CapabilityKind   string                      `json:"capabilityKind,omitempty"`
+	ResourceTypes    []string                    `json:"resourceTypes,omitempty"`
+	OperationKinds   []string                    `json:"operationKinds,omitempty"`
+	RiskLevel        string                      `json:"riskLevel,omitempty"`
+	Mutating         bool                        `json:"mutating,omitempty"`
+	RequiresApproval bool                        `json:"requiresApproval,omitempty"`
+	RequiresSelect   bool                        `json:"requiresSelect,omitempty"`
+	Status           string                      `json:"status,omitempty"`
+	Source           string                      `json:"source,omitempty"`
+	MCPServerID      string                      `json:"mcpServerId,omitempty"`
+	HealthStatus     string                      `json:"healthStatus,omitempty"`
+	FilteredReason   string                      `json:"filteredReason,omitempty"`
+	LoadableToolSpec *tooling.LoadableToolSpec   `json:"loadableToolSpec,omitempty"`
+	SelectablePack   *tooling.SelectableToolPack `json:"selectablePack,omitempty"`
+	SeenAt           time.Time                   `json:"seenAt,omitempty"`
 }
 
 type DeferredToolRejectedCall struct {
@@ -71,15 +81,25 @@ type ToolDiscoveryInvalidation struct {
 	InvalidatedPacks []string `json:"invalidatedPacks,omitempty"`
 }
 
+type ToolSearchResponseSnapshot struct {
+	Ranker        string    `json:"ranker,omitempty"`
+	MatchCount    int       `json:"matchCount,omitempty"`
+	RejectedCount int       `json:"rejectedCount,omitempty"`
+	SeenAt        time.Time `json:"seenAt,omitempty"`
+}
+
 type ToolDiscoverySessionState struct {
-	LoadedTools         map[string]LoadedToolRef   `json:"loadedTools,omitempty"`
-	LoadedPacks         map[string]LoadedPackRef   `json:"loadedPacks,omitempty"`
-	LastSelection       *ToolSelectionDelta        `json:"lastSelection,omitempty"`
-	LastSearchResults   []ToolSearchMatchSnapshot  `json:"lastSearchResults,omitempty"`
-	RejectedCalls       []DeferredToolRejectedCall `json:"rejectedCalls,omitempty"`
-	ToolSurfaceRevision string                     `json:"toolSurfaceRevision,omitempty"`
-	PolicySnapshotHash  string                     `json:"policySnapshotHash,omitempty"`
-	UpdatedAt           time.Time                  `json:"updatedAt,omitempty"`
+	LoadedTools               map[string]LoadedToolRef        `json:"loadedTools,omitempty"`
+	LoadedPacks               map[string]LoadedPackRef        `json:"loadedPacks,omitempty"`
+	LastSelection             *ToolSelectionDelta             `json:"lastSelection,omitempty"`
+	LastSearchRequest         *tooling.ToolSearchRequest      `json:"lastSearchRequest,omitempty"`
+	LastSearchResponse        *ToolSearchResponseSnapshot     `json:"lastSearchResponse,omitempty"`
+	LastSearchResults         []ToolSearchMatchSnapshot       `json:"lastSearchResults,omitempty"`
+	LastRejectedSearchResults []tooling.RejectedToolCandidate `json:"lastRejectedSearchResults,omitempty"`
+	RejectedCalls             []DeferredToolRejectedCall      `json:"rejectedCalls,omitempty"`
+	ToolSurfaceRevision       string                          `json:"toolSurfaceRevision,omitempty"`
+	PolicySnapshotHash        string                          `json:"policySnapshotHash,omitempty"`
+	UpdatedAt                 time.Time                       `json:"updatedAt,omitempty"`
 }
 
 func (s *ToolDiscoverySessionState) ApplySelection(delta ToolSelectionDelta, now time.Time) {
@@ -156,12 +176,62 @@ func (s *ToolDiscoverySessionState) ApplySearch(matches []ToolSearchMatchSnapsho
 		match.Tools = cloneSortedStrings(match.Tools)
 		match.ResourceTypes = cloneSortedStrings(match.ResourceTypes)
 		match.OperationKinds = cloneSortedStrings(match.OperationKinds)
+		match.LoadableToolSpec = cloneLoadableToolSpec(match.LoadableToolSpec)
+		match.SelectablePack = cloneSelectableToolPack(match.SelectablePack)
 		cloned = append(cloned, match)
 	}
 	if len(cloned) > maxToolDiscoveryHistory {
 		cloned = cloned[:maxToolDiscoveryHistory]
 	}
 	s.LastSearchResults = cloned
+	s.UpdatedAt = now
+}
+
+func cloneLoadableToolSpec(spec *tooling.LoadableToolSpec) *tooling.LoadableToolSpec {
+	if spec == nil {
+		return nil
+	}
+	out := *spec
+	out.ResourceTypes = cloneSortedStrings(spec.ResourceTypes)
+	out.OperationKinds = cloneSortedStrings(spec.OperationKinds)
+	return &out
+}
+
+func cloneSelectableToolPack(pack *tooling.SelectableToolPack) *tooling.SelectableToolPack {
+	if pack == nil {
+		return nil
+	}
+	out := *pack
+	out.Tools = cloneSortedStrings(pack.Tools)
+	return &out
+}
+
+func (s *ToolDiscoverySessionState) ApplySearchV3(request tooling.ToolSearchRequest, response ToolSearchResponseSnapshot, matches []ToolSearchMatchSnapshot, rejected []tooling.RejectedToolCandidate, now time.Time) {
+	if s == nil {
+		return
+	}
+	s.ApplySearch(matches, now)
+	normalizedRequest := tooling.NormalizeToolSearchRequest(request)
+	if normalizedRequest.Query != "" || normalizedRequest.Ranker != "" || len(normalizedRequest.MCPHealth) > 0 {
+		s.LastSearchRequest = &normalizedRequest
+	}
+	response.Ranker = strings.TrimSpace(response.Ranker)
+	if response.SeenAt.IsZero() {
+		response.SeenAt = now
+	}
+	if response.MatchCount == 0 {
+		response.MatchCount = len(matches)
+	}
+	if response.RejectedCount == 0 {
+		response.RejectedCount = len(rejected)
+	}
+	if response.Ranker != "" || response.MatchCount > 0 || response.RejectedCount > 0 {
+		s.LastSearchResponse = &response
+	}
+	s.LastRejectedSearchResults = normalizeRejectedToolCandidates(rejected)
+	if len(s.LastRejectedSearchResults) > maxToolDiscoveryHistory {
+		s.LastRejectedSearchResults = s.LastRejectedSearchResults[:maxToolDiscoveryHistory]
+	}
 	s.UpdatedAt = now
 }
 
@@ -251,6 +321,27 @@ func (s ToolDiscoverySessionState) Validate() error {
 		}
 	}
 	return nil
+}
+
+func normalizeRejectedToolCandidates(values []tooling.RejectedToolCandidate) []tooling.RejectedToolCandidate {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]tooling.RejectedToolCandidate, 0, len(values))
+	for _, value := range values {
+		value.Name = strings.TrimSpace(value.Name)
+		value.Reason = strings.TrimSpace(value.Reason)
+		if value.Name == "" || value.Reason == "" {
+			continue
+		}
+		value.Status = strings.TrimSpace(value.Status)
+		value.Source = strings.TrimSpace(value.Source)
+		value.MCPServerID = strings.TrimSpace(value.MCPServerID)
+		value.HealthStatus = strings.TrimSpace(value.HealthStatus)
+		value.FilteredReason = strings.TrimSpace(value.FilteredReason)
+		out = append(out, value)
+	}
+	return out
 }
 
 func cloneSortedStrings(values []string) []string {

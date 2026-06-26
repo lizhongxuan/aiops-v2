@@ -53,12 +53,13 @@ export function searchHostMentionSuggestions(
 ): HostMentionSuggestion[] {
   const limit = Math.max(1, options.limit ?? DEFAULT_LIMIT);
   const normalizedQuery = normalizeQuery(query);
-  return hosts
+  const localSuggestion = buildLocalSuggestion(normalizedQuery);
+  const hostSuggestions = hosts
     .map((host, index) => buildSuggestion(host, normalizedQuery, index))
     .filter((item): item is HostMentionSuggestion & { index: number } => Boolean(item))
     .sort((a, b) => b.score - a.score || statusRank(b.status) - statusRank(a.status) || a.label.localeCompare(b.label) || a.index - b.index)
-    .slice(0, limit)
     .map(({ index: _index, ...item }) => item);
+  return [...(localSuggestion ? [localSuggestion] : []), ...hostSuggestions].slice(0, limit);
 }
 
 export function replaceActiveHostMention(
@@ -72,6 +73,23 @@ export function replaceActiveHostMention(
 }
 
 const DEFAULT_LIMIT = 10;
+
+function buildLocalSuggestion(query: string): HostMentionSuggestion | null {
+  const score = query ? scoreText("local", query) : 1000;
+  if (query && score <= 0) {
+    return null;
+  }
+  return {
+    key: "local",
+    mention: "@local",
+    label: "local",
+    description: "server-local · local",
+    hostId: "server-local",
+    address: "server-local",
+    status: "online",
+    score: score + 1000,
+  };
+}
 
 function buildSuggestion(host: HostInventoryItem, query: string, index: number): (HostMentionSuggestion & { index: number }) | null {
   const extendedHost = host as HostInventoryItem & { address?: string; status?: string };

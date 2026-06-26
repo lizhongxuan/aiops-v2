@@ -1,0 +1,76 @@
+{
+  "id": "nginx-upstream-502-v2",
+  "category": "chat-runtime-v2-cross-middleware",
+  "rootCauseCategory": "context",
+  "priority": "P1",
+  "input": "Nginx 出现 upstream 502。已知 error.log 有 connect() failed (111: Connection refused) while connecting to upstream，access.log 中 502 集中在 /api/pay，upstream 配置指向 10.0.2.15:8080。请分析根因候选和排查步骤，不要连接或执行任何主机命令。",
+  "expected": {
+    "mustInclude": [
+      "已知事实",
+      "可能原因",
+      "缺失证据",
+      "下一步检查",
+      "安全操作",
+      "工具使用理由",
+      "connect() failed",
+      "Connection refused",
+      "upstream",
+      "10.0.2.15:8080",
+      "监听",
+      "应用进程",
+      "防火墙"
+    ],
+    "mustNotInclude": [
+      "PostgreSQL专用",
+      "PG专用",
+      "pg_auto_failover",
+      "Redis专用",
+      "exec_command",
+      "host_command",
+      "server-local",
+      "我已经重启"
+    ],
+    "expectedTurnItems": [
+      "user_message",
+      "model_call",
+      "assistant_message(final_answer)"
+    ],
+    "expectedGenericOpsContract": [
+      "read_only_evidence_first",
+      "approval_before_mutation",
+      "no_default_local_host_binding"
+    ],
+    "diagnosis": {
+      "rootCauseCandidatesTop3": [
+        "upstream_process_not_listening",
+        "wrong_upstream_address_or_port",
+        "network_policy_or_firewall_refused_connection"
+      ],
+      "supportingEvidence": [
+        "Nginx reports connection refused to upstream",
+        "502 is concentrated on /api/pay",
+        "upstream target is 10.0.2.15:8080"
+      ],
+      "missingEvidence": [
+        "upstream service process status",
+        "listening sockets on 10.0.2.15:8080",
+        "application logs for /api/pay",
+        "recent deploy or config changes"
+      ],
+      "safetyGuardrails": [
+        "do not reload Nginx or restart upstream without approval",
+        "prefer read-only config, log, and health checks first"
+      ],
+      "coverageTags": [
+        "observed_facts",
+        "likely_causes",
+        "missing_evidence",
+        "next_checks",
+        "safe_actions",
+        "tool_usage_rationale"
+      ]
+    },
+    "mustMentionEvidenceLimits": true,
+    "maxToolCalls": 0
+  }
+}

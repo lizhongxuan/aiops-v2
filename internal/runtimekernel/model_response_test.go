@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/modelrouter"
 
@@ -339,6 +340,53 @@ func TestGenerateModelResponseOmitsToolOptionsWhenNoTools(t *testing.T) {
 	}
 }
 
+type optionCaptureModel struct {
+	maxTokens int
+}
+
+func (m *optionCaptureModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate should not be called when streaming is available")
+}
+
+func (m *optionCaptureModel) Stream(_ context.Context, _ []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	common := model.GetCommonOptions(&model.Options{}, opts...)
+	if common != nil && common.MaxTokens != nil {
+		m.maxTokens = *common.MaxTokens
+	}
+	sr, sw := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer sw.Close()
+		sw.Send(schema.AssistantMessage("bounded final", nil), nil)
+	}()
+	return sr, nil
+}
+
+func (m *optionCaptureModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func TestGenerateModelResponsePassesExtraOptionsWithoutTools(t *testing.T) {
+	capture := &optionCaptureModel{}
+	msg, err := generateModelResponse(
+		context.Background(),
+		capture,
+		[]*schema.Message{schema.UserMessage("ping")},
+		nil,
+		nil,
+		nil,
+		model.WithMaxTokens(321),
+	)
+	if err != nil {
+		t.Fatalf("generateModelResponse returned error: %v", err)
+	}
+	if msg.Content != "bounded final" {
+		t.Fatalf("response content = %q, want bounded final", msg.Content)
+	}
+	if capture.maxTokens != 321 {
+		t.Fatalf("captured maxTokens = %d, want 321", capture.maxTokens)
+	}
+}
+
 func TestGenerateModelResponseEmitsOnlyReasoningSummaryEvents(t *testing.T) {
 	model := &streamingResponseModel{
 		chunks: []*schema.Message{
@@ -429,5 +477,45 @@ func TestGenerateModelResponseReturnsContextCanceledImmediately(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestGenerateModelResponseTimesOutWhenProviderDoesNotReturn(t *testing.T) {
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
+
+	started := time.Now()
+	_, err := generateModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("timeout took %s, want prompt request-level timeout", elapsed)
+	}
+}
+
+func TestModelResponseTimeoutDefaultAllowsLongOperationalAnalysis(t *testing.T) {
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "")
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT", "")
+
+	if got := modelResponseTimeout(); got < 5*time.Minute {
+		t.Fatalf("default model response timeout = %s, want at least 5m for long operational analysis", got)
+	}
+}
+
+func TestGenerateModelResponseWrapsProviderDeadlineWithReadableTimeout(t *testing.T) {
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
+
+	_, err := generateModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
+	if !strings.Contains(err.Error(), "模型响应超时") || !strings.Contains(err.Error(), "25ms") {
+		t.Fatalf("error = %q, want readable model timeout with duration", err.Error())
 	}
 }

@@ -20,11 +20,18 @@ export function AnswerDocumentRenderer({ finalText, artifacts, deferredArtifacts
   }
 
   return (
-    <div className="max-w-none space-y-3 py-1 text-[15px] leading-7 text-slate-950" data-testid="aiops-answer-document">
+    <div
+      className="max-w-none space-y-3 py-1 text-[15px] leading-7 text-slate-950"
+      data-testid="aiops-answer-document"
+    >
+      <div data-testid="aiops-final-text">
       {nodes.map((node) => {
         if (node.type === "section") {
           return (
-            <div key={node.section.id} data-testid={`aiops-answer-section-${node.section.kind}`}>
+            <div
+              key={node.section.id}
+              data-testid={`aiops-answer-section-${node.section.kind}`}
+            >
               {node.section.title ? <div className="font-semibold text-slate-950">{node.section.title}：</div> : null}
               <MessageMarkdown text={node.section.markdown} />
             </div>
@@ -32,6 +39,7 @@ export function AnswerDocumentRenderer({ finalText, artifacts, deferredArtifacts
         }
         return <ArtifactSlotView key={node.slot.id} slot={node.slot} />;
       })}
+      </div>
     </div>
   );
 }

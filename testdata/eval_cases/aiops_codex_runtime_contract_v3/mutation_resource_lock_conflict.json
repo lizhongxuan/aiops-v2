@@ -1,0 +1,35 @@
+{
+  "name": "mutation_resource_lock_conflict",
+  "input": "两个变更同时写同一个 systemd service 时，resource lock 必须拒绝第二个 mutation 并回灌模型。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "unlocked_parallel_mutation"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "resource_lock.conflict"
+    ],
+    "evidenceRefs": [
+      "lock:systemd-service"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "resource_lock",
+      "tool_result",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "resource_lock_blocker",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

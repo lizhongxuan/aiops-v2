@@ -218,6 +218,17 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			Layer:       tooling.ToolLayerCore,
 			AlwaysLoad:  true,
 			RiskLevel:   tooling.ToolRiskHigh,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "host",
+				ResourceID:    "selected_host",
+				OperationKind: "terminal_command",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{
+					"run an explicit read-only verification command for the changed service, process, file, package, or endpoint",
+				},
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind:  "host_fact",
 				ResourceTypes:   []string{"host", "system", "主机", "系统"},
@@ -282,11 +293,17 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 				if isForbiddenExecCommand(req.command, req.args) {
 					return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: "forbidden terminal command is blocked by policy"}
 				}
-				if !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
-					return tooling.PermissionDecision{Action: tooling.PermissionActionNeedEvidence, Reason: "remote host-agent terminal command must be read-only in chat"}
-				}
-				if _, err := lookupSelectedRemoteHost(ctx, opts.HostRepository); err != nil {
+				host, err := lookupSelectedRemoteHost(ctx, opts.HostRepository)
+				if err != nil {
 					return tooling.PermissionDecision{Action: tooling.PermissionActionDeny, Reason: err.Error()}
+				}
+				if !terminalpolicy.IsReadOnlyCommand(req.command, req.args) {
+					approval := buildRemoteExecApprovalPayload(req, host)
+					return tooling.PermissionDecision{
+						Action:   tooling.PermissionActionNeedApproval,
+						Reason:   approval.Reason,
+						Approval: approval,
+					}
 				}
 				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
 			}
@@ -339,6 +356,27 @@ func NewExecCommandTool(opts Options) tooling.Tool {
 			}
 			return execTerminalToolResult(ctx, opts, req, "terminal.break_glass", "", stdoutText, stderrText, exitCode)
 		},
+	}
+}
+
+func buildRemoteExecApprovalPayload(req commandInput, host *store.HostRecord) *tooling.PermissionApprovalPayload {
+	hostID := "selected host"
+	if host != nil && strings.TrimSpace(host.ID) != "" {
+		hostID = strings.TrimSpace(host.ID)
+	}
+	commandText := displayCommand(req.command, req.args)
+	risk := terminalpolicy.TerminalRiskLevel(req.command, req.args)
+	if risk == "" || risk == "low" {
+		risk = "high"
+	}
+	return &tooling.PermissionApprovalPayload{
+		Command:        commandText,
+		Reason:         fmt.Sprintf("mutating terminal command on %s requires approval", hostID),
+		Risk:           risk,
+		Source:         "ai_chat_direct",
+		ExpectedEffect: fmt.Sprintf("Execute the requested change on %s: %s.", hostID, commandText),
+		Rollback:       "If verification fails, stop further mutation and use a scoped rollback or recovery command appropriate to the changed service or configuration after fresh approval.",
+		Validation:     "Run a read-only post-check for the affected service, process, port, log, or endpoint; report failure or unknown state instead of claiming completion.",
 	}
 }
 
@@ -414,10 +452,19 @@ func lookupSelectedRemoteHost(ctx context.Context, repo HostRepository) (*store.
 	if host == nil {
 		return nil, fmt.Errorf("selected host %s was not found", hostID)
 	}
-	if !host.Executable && strings.TrimSpace(host.ControlMode) != "managed" {
-		return nil, fmt.Errorf("selected host %s is not managed by host-agent", hostID)
+	if !host.Executable && strings.TrimSpace(host.ControlMode) != "managed" && !hostHasSSHCommandAccess(host) {
+		return nil, fmt.Errorf("selected host %s is not managed by host-agent and has no SSH command credential", hostID)
 	}
 	return host, nil
+}
+
+func hostHasSSHCommandAccess(host *store.HostRecord) bool {
+	if host == nil {
+		return false
+	}
+	return strings.TrimSpace(host.Address) != "" &&
+		strings.TrimSpace(host.SSHUser) != "" &&
+		strings.TrimSpace(host.SSHCredentialRef) != ""
 }
 
 func executeHostAgentCommand(ctx context.Context, opts Options, req commandInput, timeout time.Duration) (tooling.ToolResult, error) {
@@ -580,7 +627,7 @@ func terminalCommandString(command string, args []string) string {
 }
 
 func execCommandDescription() string {
-	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC and the agent executes them on that host. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; for HTTP status checks use curl -fsS -o /dev/null -w %{http_code} URL or curl -fsSI URL, and do not use -o %{http_code}. Mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
+	description := "Execute a terminal command on the selected host. For server-local this runs locally in the ai-server environment; for managed remote hosts this sends read-only commands to the selected host-agent over gRPC/HTTP, and for inventory hosts with stored SSH credentials the runtime may use a read-only SSH fallback through the same exec_command tool. Prefer explicit command + args. For read-only inspection, do not wrap commands in sh/bash/zsh -c and do not use pipes, redirection, or command chaining; use narrower commands or native flags instead. Read-only inspection commands, including safe curl GET/HEAD requests, are allowed in chat; for HTTP status checks use curl -fsS -o /dev/null -w %{http_code} URL or curl -fsSI URL, and do not use -o %{http_code}. Mutation commands must go through the runtime approval gate, so call the scoped command instead of asking for prose approval. Host OS: " + runtime.GOOS + " for server-local."
 	switch runtime.GOOS {
 	case "darwin":
 		return description + " For host resource inspection on macOS, prefer uptime, sysctl -n hw.ncpu, vm_stat, df -h, and top -l 1 -s 0; avoid Linux-only commands such as lscpu, nproc, free -h, and /proc/*."
@@ -607,6 +654,7 @@ func NewBrowseURLTool(opts Options) tooling.Tool {
 			SearchHint:     "fetch browse open public web url page",
 			Discovery: tooling.ToolDiscoveryMetadata{
 				DiscoveryGroup:    "public_web",
+				DiscoveryTags:     []string{"official_docs", "version_match", "applicability", "external_knowledge"},
 				CapabilityKind:    "web",
 				ResourceTypes:     []string{"url", "web_page", "public_web"},
 				OperationKinds:    []string{"read", "fetch"},
@@ -690,6 +738,7 @@ func NewWebSearchTool(repo LLMConfigRepository, opts Options) tooling.Tool {
 			SearchHint:  "search public web current internet latest authoritative source",
 			Discovery: tooling.ToolDiscoveryMetadata{
 				DiscoveryGroup:    "public_web",
+				DiscoveryTags:     []string{"official_docs", "version_match", "applicability", "external_knowledge"},
 				CapabilityKind:    "web",
 				ResourceTypes:     []string{"public_web", "internet"},
 				OperationKinds:    []string{"search", "read"},
@@ -742,30 +791,37 @@ func NewWebSearchTool(repo LLMConfigRepository, opts Options) tooling.Tool {
 			if strings.TrimSpace(cfg.APIKey) == "" {
 				return tooling.ToolResult{}, fmt.Errorf("web_search: current model provider has no API key configured")
 			}
-			if !providerSupportsNativeWebSearch(cfg.Provider, cfg.Model) {
-				return tooling.ToolResult{}, fmt.Errorf("web_search: provider %q model %q has no known native web_search support", cfg.Provider, cfg.Model)
-			}
 			client := opts.HTTPClient
 			if client == nil {
 				client = &http.Client{Timeout: opts.WebTimeout}
 			}
-			content, source, err := runProviderNativeWebSearch(ctx, client, cfg, req, opts)
+			if providerSupportsNativeWebSearch(cfg.Provider, cfg.Model) {
+				content, source, err := runProviderNativeWebSearch(ctx, client, cfg, req, opts)
+				if err == nil {
+					return webSearchToolResult(req, content, source, opts), nil
+				}
+			}
+			content, source, err := runPublicWebSearch(ctx, client, req, opts)
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			payload := map[string]string{
-				"query":   req.Query,
-				"source":  source,
-				"content": truncateString(content, opts.MaxOutputBytes),
-			}
-			data, _ := json.Marshal(payload)
-			return tooling.ToolResult{
-				Content: string(data),
-				Display: &tooling.ToolDisplayPayload{
-					Type:  "web_search",
-					Title: req.Query,
-				},
-			}, nil
+			return webSearchToolResult(req, content, source, opts), nil
+		},
+	}
+}
+
+func webSearchToolResult(req webSearchInput, content, source string, opts Options) tooling.ToolResult {
+	payload := map[string]string{
+		"query":   req.Query,
+		"source":  source,
+		"content": truncateString(content, opts.MaxOutputBytes),
+	}
+	data, _ := json.Marshal(payload)
+	return tooling.ToolResult{
+		Content: string(data),
+		Display: &tooling.ToolDisplayPayload{
+			Type:  "web_search",
+			Title: req.Query,
 		},
 	}
 }
@@ -1488,8 +1544,11 @@ func runProviderNativeWebSearch(ctx context.Context, client *http.Client, cfg st
 		return chatContent, "provider_native:chat_completions:web_search_options", nil
 	}
 	if errors.Is(responsesErr, errProviderWebSearchNoText) {
-		if publicContent, publicErr := runPublicWebSearch(ctx, client, req, opts); publicErr == nil && strings.TrimSpace(publicContent) != "" {
-			return publicContent, "provider_native:responses:web_search+public_web_search:bing_fallback", nil
+		if publicContent, publicSource, publicErr := runPublicWebSearch(ctx, client, req, opts); publicErr == nil && strings.TrimSpace(publicContent) != "" {
+			if publicSource == "public_web_search" {
+				publicSource = "public_web_search:bing_fallback"
+			}
+			return publicContent, "provider_native:responses:web_search+" + publicSource, nil
 		}
 		return providerNativeWebSearchNoSummary(req.Query), "provider_native:responses:web_search", nil
 	}
@@ -1541,14 +1600,14 @@ type publicSearchResult struct {
 	Snippet string
 }
 
-func runPublicWebSearch(ctx context.Context, client *http.Client, req webSearchInput, opts Options) (string, error) {
+func runPublicWebSearch(ctx context.Context, client *http.Client, req webSearchInput, opts Options) (string, string, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(opts.PublicSearchBaseURL), "/")
 	if baseURL == "" {
 		baseURL = "https://www.bing.com"
 	}
 	searchURL, err := url.Parse(baseURL + "/search")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	query := searchURL.Query()
 	query.Set("q", publicSearchQuery(req))
@@ -1559,40 +1618,144 @@ func runPublicWebSearch(ctx context.Context, client *http.Client, req webSearchI
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL.String(), nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	httpReq.Header.Set("User-Agent", "aiops-v2-web-search/1.0")
 	httpReq.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.7")
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, int64(publicSearchFetchLimit(opts))+1))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("public web search failed: status %d: %s", resp.StatusCode, truncateString(string(body), 1000))
+		return "", "", fmt.Errorf("public web search failed: status %d: %s", resp.StatusCode, truncateString(string(body), 1000))
 	}
 	results := parseBingSearchResults(string(body), 12)
 	results = filterPublicSearchResultsByDomain(results, req.AllowedDomains, req.BlockedDomains)
 	results = filterPublicSearchResultsByRelevance(results, req.Query)
 	if len(results) == 0 {
-		return "", errors.New("public web search returned no relevant results")
+		if officialResults := officialDomainFallbackResults(req); len(officialResults) > 0 {
+			return formatOfficialDomainFallback(req, officialResults), "public_web_search:official_domain_fallback", nil
+		}
+		return "", "", errors.New("public web search returned no relevant results")
 	}
 	if len(results) > 5 {
 		results = results[:5]
 	}
+	return formatPublicSearchResults(req.Query, results), "public_web_search", nil
+}
+
+func formatPublicSearchResults(query string, results []publicSearchResult) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Public web search results for %q. Use these results as evidence and cite URLs:\n", req.Query)
+	fmt.Fprintf(&b, "Public web search results for %q. Use these results as evidence and cite URLs:\n", query)
+	appendPublicSearchResults(&b, results)
+	return b.String()
+}
+
+func formatOfficialDomainFallback(req webSearchInput, results []publicSearchResult) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Official-domain fallback results for %q. Public search returned no relevant result, so these known official docs are provided as starting points. Use browse_url on the selected official URL before giving version-sensitive operational guidance, and cite URLs:\n", req.Query)
+	appendPublicSearchResults(&b, results)
+	return b.String()
+}
+
+func appendPublicSearchResults(b *strings.Builder, results []publicSearchResult) {
 	for i, result := range results {
-		fmt.Fprintf(&b, "%d. %s\n", i+1, result.Title)
+		fmt.Fprintf(b, "%d. %s\n", i+1, result.Title)
 		if result.URL != "" {
-			fmt.Fprintf(&b, "   URL: %s\n", result.URL)
+			fmt.Fprintf(b, "   URL: %s\n", result.URL)
 		}
 		if result.Snippet != "" {
-			fmt.Fprintf(&b, "   Snippet: %s\n", result.Snippet)
+			fmt.Fprintf(b, "   Snippet: %s\n", result.Snippet)
 		}
 	}
-	return b.String(), nil
+}
+
+func officialDomainFallbackResults(req webSearchInput) []publicSearchResult {
+	query := strings.ToLower(compactWhitespace(req.Query))
+	if query == "" {
+		return nil
+	}
+	results := make([]publicSearchResult, 0, 6)
+	if officialFallbackMentionsAny(query, "postgresql", "postgres", "recovery_target_timeline", "wal archive", "timeline history") {
+		results = append(results,
+			publicSearchResult{
+				Title:   "PostgreSQL official docs: continuous archiving and point-in-time recovery",
+				URL:     "https://www.postgresql.org/docs/current/continuous-archiving.html",
+				Snippet: "Official PostgreSQL recovery guidance, including timeline behavior during archive recovery.",
+			},
+			publicSearchResult{
+				Title:   "PostgreSQL official docs: recovery_target_timeline setting",
+				URL:     "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+				Snippet: "Official setting reference for selecting latest, current, or a specific recovery target timeline. Verify promotion state before recommending cleanup of temporary recovery settings.",
+			},
+		)
+	}
+	if officialFallbackMentionsAny(query, "pgbackrest", "pg backrest") {
+		results = append(results,
+			publicSearchResult{
+				Title:   "pgBackRest official user guide: restore",
+				URL:     "https://pgbackrest.org/user-guide.html#restore",
+				Snippet: "Official pgBackRest restore workflow guidance for PostgreSQL backups.",
+			},
+			publicSearchResult{
+				Title:   "pgBackRest official command reference: restore",
+				URL:     "https://pgbackrest.org/command.html#command-restore",
+				Snippet: "Official pgBackRest restore command reference and options.",
+			},
+		)
+	}
+	if officialFallbackMentionsAny(query, "pg_auto_failover", "pg auto failover", "pg-auto-failover", "auto failover") {
+		results = append(results,
+			publicSearchResult{
+				Title:   "pg_auto_failover official docs: operations",
+				URL:     "https://pg-auto-failover.readthedocs.io/en/main/operations.html",
+				Snippet: "Official pg_auto_failover operations guidance for monitor and failover workflows.",
+			},
+			publicSearchResult{
+				Title:   "pg_auto_failover official docs: failover state machine",
+				URL:     "https://pg-auto-failover.readthedocs.io/en/main/failover-state-machine.html",
+				Snippet: "Official pg_auto_failover state-machine reference for interpreting node states.",
+			},
+		)
+	}
+	results = dedupePublicSearchResults(results)
+	results = filterPublicSearchResultsByDomain(results, req.AllowedDomains, req.BlockedDomains)
+	if len(results) > 5 {
+		results = results[:5]
+	}
+	return results
+}
+
+func officialFallbackMentionsAny(query string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(query, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
+}
+
+func dedupePublicSearchResults(results []publicSearchResult) []publicSearchResult {
+	seen := map[string]struct{}{}
+	out := make([]publicSearchResult, 0, len(results))
+	for _, result := range results {
+		key := strings.TrimSpace(result.URL)
+		if key == "" {
+			key = strings.TrimSpace(result.Title)
+		}
+		key = strings.ToLower(key)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, result)
+	}
+	return out
 }
 
 func filterPublicSearchResultsByRelevance(results []publicSearchResult, query string) []publicSearchResult {

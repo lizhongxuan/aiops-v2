@@ -13,6 +13,7 @@ const (
 	HostMentionSourceInventory       HostMentionSource = "inventory"
 	HostMentionSourceIPLiteral       HostMentionSource = "ip_literal"
 	HostMentionSourceHostnameLiteral HostMentionSource = "hostname_literal"
+	HostMentionSourceLocalAlias      HostMentionSource = "local_alias"
 )
 
 // HostMention is the server-side representation of one @host token.
@@ -201,6 +202,10 @@ const (
 	HostTaskReportStatusCompleted                HostTaskReportStatus = "completed"
 	HostTaskReportStatusFailed                   HostTaskReportStatus = "failed"
 	HostTaskReportStatusBlocked                  HostTaskReportStatus = "blocked"
+	HostTaskReportStatusBlockedApproval          HostTaskReportStatus = "blocked_approval"
+	HostTaskReportStatusBlockedEvidence          HostTaskReportStatus = "blocked_evidence"
+	HostTaskReportStatusCancelled                HostTaskReportStatus = "cancelled"
+	HostTaskReportStatusTimeout                  HostTaskReportStatus = "timeout"
 	HostTaskReportStatusNeedsManagerCoordination HostTaskReportStatus = "needs_manager_coordination"
 	HostTaskReportStatusNeedsUserApproval        HostTaskReportStatus = "needs_user_approval"
 )
@@ -237,10 +242,15 @@ type HostTaskEvidence struct {
 type HostSubTaskStatus string
 
 const (
-	HostSubTaskStatusRunning    HostSubTaskStatus = "running"
-	HostSubTaskStatusQueued     HostSubTaskStatus = "queued"
-	HostSubTaskStatusCancelled  HostSubTaskStatus = "cancelled"
-	HostSubTaskStatusSuperseded HostSubTaskStatus = "superseded"
+	HostSubTaskStatusRunning         HostSubTaskStatus = "running"
+	HostSubTaskStatusQueued          HostSubTaskStatus = "queued"
+	HostSubTaskStatusCompleted       HostSubTaskStatus = "completed"
+	HostSubTaskStatusBlockedApproval HostSubTaskStatus = "blocked_approval"
+	HostSubTaskStatusBlockedEvidence HostSubTaskStatus = "blocked_evidence"
+	HostSubTaskStatusFailed          HostSubTaskStatus = "failed"
+	HostSubTaskStatusCancelled       HostSubTaskStatus = "cancelled"
+	HostSubTaskStatusTimeout         HostSubTaskStatus = "timeout"
+	HostSubTaskStatusSuperseded      HostSubTaskStatus = "superseded"
 )
 
 type HostSubTaskScheduleDirective string

@@ -42,6 +42,26 @@ func updateAgentItem(snapshot *TurnSnapshot, itemID string, status agentstate.It
 	snapshot.UpdatedAt = time.Now()
 }
 
+func updateAgentItemData(snapshot *TurnSnapshot, itemID string, data any) {
+	if snapshot == nil || strings.TrimSpace(itemID) == "" || data == nil {
+		return
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	state := agentStateFromSnapshot(snapshot)
+	next, err := agentstate.UpdateItem(state, itemID, func(item agentstate.TurnItem) (agentstate.TurnItem, error) {
+		item.Payload.Data = raw
+		return item, nil
+	})
+	if err != nil {
+		return
+	}
+	snapshot.AgentItems = next.Items
+	snapshot.UpdatedAt = time.Now()
+}
+
 func removeAgentItem(snapshot *TurnSnapshot, itemID string) {
 	if snapshot == nil || strings.TrimSpace(itemID) == "" {
 		return
@@ -56,6 +76,92 @@ func removeAgentItem(snapshot *TurnSnapshot, itemID string) {
 	snapshot.UpdatedAt = time.Now()
 }
 
+func upsertAssistantMessageItem(snapshot *TurnSnapshot, itemID string, status agentstate.ItemStatus, text string, data assistantMessageData) {
+	if snapshot == nil || strings.TrimSpace(itemID) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	data.TextHash = firstNonEmptyString(data.TextHash, debugTextHash(text))
+	payload := assistantMessageAgentItemData(data)
+	if hasAgentItemID(snapshot.AgentItems, itemID) {
+		updateAgentItem(snapshot, itemID, status, text)
+		updateAgentItemData(snapshot, itemID, payload)
+		return
+	}
+	appendAgentItem(snapshot, newAgentItem(
+		itemID,
+		agentstate.TurnItemTypeAssistantMessage,
+		status,
+		text,
+		payload,
+	))
+}
+
+func completeAssistantMessageItem(snapshot *TurnSnapshot, itemID string, text string, data assistantMessageData) {
+	data.StreamState = AssistantMessageStreamStateComplete
+	upsertAssistantMessageItem(snapshot, itemID, agentstate.ItemStatusCompleted, text, data)
+}
+
+func failAssistantMessageItem(snapshot *TurnSnapshot, itemID string, errorText string, data assistantMessageData) {
+	data.StreamState = AssistantMessageStreamStateIncomplete
+	upsertAssistantMessageItem(snapshot, itemID, agentstate.ItemStatusFailed, errorText, data)
+}
+
+func markAssistantMessageReplacedForRetry(snapshot *TurnSnapshot, itemID string, text string, messageID string, iteration int, generationDuration time.Duration, evidenceBoundary string, action FinalMessageBoundaryAction) {
+	if snapshot == nil || strings.TrimSpace(itemID) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	nextMessageID := assistantMessageItemID(snapshot.ID, iteration+1)
+	failAssistantMessageItem(snapshot, itemID, text, assistantMessageData{
+		MessageID:           messageID,
+		Iteration:           iteration,
+		Phase:               AssistantMessagePhaseFinalAnswer,
+		StreamState:         AssistantMessageStreamStateIncomplete,
+		EvidenceBoundary:    evidenceBoundary,
+		BoundaryAction:      action,
+		ReplacedByMessageID: nextMessageID,
+		TextHash:            debugTextHash(text),
+		Duration:            generationDuration,
+	})
+}
+
+func latestAssistantFinalMessageItem(snapshot *TurnSnapshot) (agentstate.TurnItem, bool) {
+	if snapshot == nil {
+		return agentstate.TurnItem{}, false
+	}
+	for i := len(snapshot.AgentItems) - 1; i >= 0; i-- {
+		item := snapshot.AgentItems[i]
+		if item.Type != agentstate.TurnItemTypeAssistantMessage || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		payload := agentItemPayloadMap(item)
+		if strings.TrimSpace(anyString(payload["phase"])) == string(AssistantMessagePhaseFinalAnswer) {
+			return item, true
+		}
+	}
+	return agentstate.TurnItem{}, false
+}
+
+func FinalTextFromAssistantMessage(snapshot *TurnSnapshot) string {
+	item, ok := latestAssistantFinalMessageItem(snapshot)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(item.Payload.Summary)
+}
+
+func cancelActiveAgentItems(snapshot *TurnSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	for i := range snapshot.AgentItems {
+		switch snapshot.AgentItems[i].Status {
+		case agentstate.ItemStatusPending, agentstate.ItemStatusRunning, agentstate.ItemStatusBlocked:
+			snapshot.AgentItems[i].Status = agentstate.ItemStatusCancelled
+			snapshot.AgentItems[i].UpdatedAt = time.Now()
+		}
+	}
+}
+
 func hasAgentItemID(items []agentstate.TurnItem, itemID string) bool {
 	for _, item := range items {
 		if item.ID == itemID {
@@ -63,6 +169,30 @@ func hasAgentItemID(items []agentstate.TurnItem, itemID string) bool {
 		}
 	}
 	return false
+}
+
+func findAgentItemByID(items []agentstate.TurnItem, itemID string) (agentstate.TurnItem, bool) {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return agentstate.TurnItem{}, false
+	}
+	for _, item := range items {
+		if item.ID == itemID {
+			return item, true
+		}
+	}
+	return agentstate.TurnItem{}, false
+}
+
+func agentItemPayloadMap(item agentstate.TurnItem) map[string]any {
+	payload := map[string]any{}
+	if len(item.Payload.Data) == 0 {
+		return payload
+	}
+	if err := json.Unmarshal(item.Payload.Data, &payload); err != nil {
+		return map[string]any{}
+	}
+	return payload
 }
 
 func agentStateFromSnapshot(snapshot *TurnSnapshot) agentstate.AgentState {
@@ -106,6 +236,10 @@ func newAgentItem(id string, typ agentstate.TurnItemType, status agentstate.Item
 
 func modelCallItemID(turnID string, iteration int) string {
 	return fmt.Sprintf("%s-model-%d", strings.TrimSpace(turnID), iteration)
+}
+
+func assistantMessageItemID(turnID string, iteration int) string {
+	return fmt.Sprintf("%s-assistant-message-%d", strings.TrimSpace(turnID), iteration)
 }
 
 func toolCallItemID(turnID string, tc ToolCall) string {
@@ -153,6 +287,67 @@ func planItemID(turnID string, tc ToolCall) string {
 		suffix = "update_plan"
 	}
 	return fmt.Sprintf("%s-plan-%s", strings.TrimSpace(turnID), suffix)
+}
+
+func userEvidenceAgentItemFromMetadata(turnID string, metadata map[string]string) (agentstate.TurnItem, bool) {
+	if !metadataBool(metadata["aiops.userEvidence.present"]) {
+		return agentstate.TurnItem{}, false
+	}
+	kinds := strings.TrimSpace(metadata["aiops.userEvidence.kinds"])
+	signals := strings.TrimSpace(metadata["aiops.userEvidence.signals"])
+	excerpt := strings.TrimSpace(metadata["aiops.userEvidence.rawExcerpt"])
+	if kinds == "" && signals == "" && excerpt == "" {
+		return agentstate.TurnItem{}, false
+	}
+	ref := fmt.Sprintf("user-evidence:%s", strings.TrimSpace(turnID))
+	data := map[string]string{
+		"source": "user",
+		"ref":    ref,
+	}
+	parts := []string{"user-provided evidence"}
+	if kinds != "" {
+		data["kinds"] = kinds
+		parts = append(parts, "kinds="+kinds)
+	}
+	if signals != "" {
+		data["signals"] = signals
+		parts = append(parts, "signals="+signals)
+	}
+	if excerpt != "" {
+		data["excerpt"] = excerpt
+	}
+	item := newAgentItem(
+		fmt.Sprintf("%s-user-evidence", strings.TrimSpace(turnID)),
+		agentstate.TurnItemTypeEvidence,
+		agentstate.ItemStatusCompleted,
+		strings.Join(parts, "; "),
+		data,
+	)
+	item.Payload.Kind = "user_provided"
+	return item, true
+}
+
+func completedEvidenceItemIDs(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	out := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, item := range snapshot.AgentItems {
+		if item.Type != agentstate.TurnItemTypeEvidence || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
 }
 
 func isUpdatePlanToolName(name string) bool {

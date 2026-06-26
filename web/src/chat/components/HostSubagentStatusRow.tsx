@@ -25,16 +25,7 @@ export function HostSubagentStatusRow({
   const childAgents = (mission.childAgentIds || [])
     .map((childAgentId) => childAgentsById[childAgentId])
     .filter(Boolean);
-  const childHostKeys = new Set(
-    childAgents.map((childAgent) =>
-      normalizedHostKey(childAgent.hostId || childAgent.hostAddress),
-    ),
-  );
-  const pendingHosts = uniqueMissionMentions(mission).filter((mention) => {
-    const key = hostMentionKey(mention);
-    return key && !childHostKeys.has(key);
-  });
-  const totalCount = childAgents.length + pendingHosts.length;
+  const totalCount = childAgents.length;
 
   if (totalCount === 0) {
     return null;
@@ -111,52 +102,12 @@ export function HostSubagentStatusRow({
                 </span>
               </li>
             ))}
-            {pendingHosts.map((mention, index) => (
-              <li
-                key={hostMentionKey(mention)}
-                className="flex min-h-6 min-w-0 items-center gap-2 rounded-md px-1.5 py-0.5"
-                data-testid={`host-child-agent-pending-${safeTestId(hostMentionKey(mention))}`}
-              >
-                <span className="w-4 shrink-0 text-right text-[11px] text-zinc-400">
-                  {childAgents.length + index + 1}.
-                </span>
-                <span
-                  className={cn(
-                    "max-w-[9rem] shrink-0 truncate rounded px-1.5 py-0.5 font-semibold",
-                    hostNameTone(childAgents.length + index),
-                  )}
-                  title={formatMentionLabel(mention)}
-                >
-                  {formatMentionHandle(mention)}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-zinc-500">
-                  等待分配子 Agent
-                </span>
-                <span
-                  className={cn(
-                    "shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] ring-1",
-                    statusTone("planned"),
-                  )}
-                  data-testid={`host-child-agent-status-pending-${safeTestId(hostMentionKey(mention))}`}
-                >
-                  planned
-                </span>
-              </li>
-            ))}
           </ol>
         ) : null}
       </section>
     </div>
   );
 }
-
-type MissionMention = {
-  hostId?: string;
-  address?: string;
-  displayName?: string;
-  raw?: string;
-  resolved?: boolean;
-};
 
 type ChildAgentRow = {
   id: string;
@@ -167,42 +118,6 @@ type ChildAgentRow = {
   task?: string;
   status: string;
 };
-
-function uniqueMissionMentions(
-  mission: AiopsTransportHostMission,
-): MissionMention[] {
-  const mentions = selectMissionMentions(mission);
-  const seen = new Set<string>();
-  const unique: MissionMention[] = [];
-  for (const mention of mentions) {
-    if (mention.resolved === false) {
-      continue;
-    }
-    const key = hostMentionKey(mention);
-    if (!key || seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    unique.push(mention);
-  }
-  return unique;
-}
-
-function selectMissionMentions(
-  mission: AiopsTransportHostMission,
-): MissionMention[] {
-  const missionWithMentions = mission as AiopsTransportHostMission & {
-    mentions?: unknown;
-  };
-  const source = Array.isArray(mission.mentionedHosts)
-    ? mission.mentionedHosts
-    : missionWithMentions.mentions;
-  return Array.isArray(source)
-    ? source.map((item) =>
-        item && typeof item === "object" ? (item as MissionMention) : {},
-      )
-    : [];
-}
 
 function formatVerboseHostLabel(childAgent: ChildAgentRow) {
   const hostName =
@@ -216,21 +131,6 @@ function formatCompactHostLabel(childAgent: ChildAgentRow) {
     return atHandle(childAgent.hostAddress);
   }
   return childAgent.hostDisplayName || childAgent.hostId || "未知主机";
-}
-
-function formatMentionLabel(mention: MissionMention) {
-  return (
-    mention.displayName ||
-    mention.hostId ||
-    mention.address ||
-    mention.raw ||
-    "未知主机"
-  );
-}
-
-function formatMentionHandle(mention: MissionMention) {
-  const value = mention.address || mention.hostId || mention.raw;
-  return value ? atHandle(value) : mention.displayName || "未知主机";
 }
 
 function atHandle(value: string) {
@@ -276,20 +176,4 @@ function statusTone(status: string) {
     default:
       return "bg-cyan-50 text-cyan-700 ring-cyan-200";
   }
-}
-
-function hostMentionKey(mention: MissionMention) {
-  return normalizedHostKey(
-    mention.hostId || mention.address || mention.displayName || mention.raw,
-  );
-}
-
-function normalizedHostKey(value?: string) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
-
-function safeTestId(value: string) {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }

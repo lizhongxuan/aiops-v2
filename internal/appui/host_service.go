@@ -212,15 +212,28 @@ func (s *defaultHostService) TestHostSSH(ctx context.Context, hostID string, pay
 	if strings.TrimSpace(host.SSHUser) == "" {
 		return HostSSHTestResponse{}, fmt.Errorf("ssh user is required")
 	}
-	if s.bootstrap != nil {
-		return s.bootstrap.TestSSH(ctx, targetID, payload)
+	nextReq := payload
+	if err := s.applySSHPassword(ctx, host.ID, payload.SSHPassword, &nextReq.SSHCredentialRef); err != nil {
+		return HostSSHTestResponse{}, err
 	}
-	return HostSSHTestResponse{
-		Status:  "ok",
-		OS:      host.OS,
-		Arch:    host.Arch,
-		Message: "SSH preflight input accepted",
-	}, nil
+	nextReq.SSHPassword = ""
+	var resp HostSSHTestResponse
+	if s.bootstrap != nil {
+		resp, err = s.bootstrap.TestSSH(ctx, targetID, nextReq)
+	} else {
+		resp = HostSSHTestResponse{
+			Status:  "ok",
+			OS:      host.OS,
+			Arch:    host.Arch,
+			Message: "SSH preflight input accepted",
+		}
+	}
+	if err != nil {
+		s.saveHostSSHTestState(host, nextReq.SSHCredentialRef, "failed", err.Error())
+		return HostSSHTestResponse{}, err
+	}
+	s.saveHostSSHTestState(host, nextReq.SSHCredentialRef, firstNonEmpty(resp.Status, "ok"), "")
+	return resp, nil
 }
 
 func (s *defaultHostService) DeleteHost(_ context.Context, hostID string) error {
@@ -269,6 +282,25 @@ func (s *defaultHostService) applySSHPassword(ctx context.Context, hostID, passw
 	}
 	*credentialRef = ref
 	return nil
+}
+
+func (s *defaultHostService) saveHostSSHTestState(host *store.HostRecord, credentialRef, status, lastError string) {
+	if s == nil || s.repo == nil || host == nil {
+		return
+	}
+	next := cloneHostRecord(*host)
+	if ref := strings.TrimSpace(credentialRef); ref != "" {
+		next.SSHCredentialRef = ref
+	}
+	next.AgentStatus = hostAgentStatus(next)
+	next.SSHStatus = normalizeHostSSHStatus(status)
+	next.RuntimeReachability = deriveHostRuntimeReachability(next.AgentStatus, next.SSHStatus, next)
+	if next.SSHStatus == "ok" {
+		next.LastError = ""
+	} else if trimmed := strings.TrimSpace(lastError); trimmed != "" {
+		next.LastError = trimmed
+	}
+	_ = s.repo.SaveHost(&next)
 }
 
 func (s *defaultHostService) resolveCreateHostID(payload HostUpsert) (string, error) {
@@ -341,6 +373,8 @@ func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 		Kind:             "inventory",
 		Address:          strings.TrimSpace(payload.Address),
 		Status:           "offline",
+		AgentStatus:      "offline",
+		SSHStatus:        "unknown",
 		Transport:        "manual",
 		Labels:           cloneStringMap(payload.Labels),
 		SSHUser:          strings.TrimSpace(payload.SSHUser),
@@ -354,40 +388,103 @@ func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 	if record.SSHPort == 0 {
 		record.SSHPort = 22
 	}
+	record.RuntimeReachability = deriveHostRuntimeReachability(record.AgentStatus, record.SSHStatus, *record)
 	return record, nil
 }
 
 func mapHostRecord(record store.HostRecord) HostSummary {
+	agentStatus := hostAgentStatus(record)
+	sshStatus := hostSSHStatus(record)
+	runtimeReachability := hostRuntimeReachability(record)
 	return HostSummary{
-		ID:                record.ID,
-		Name:              firstNonEmpty(record.Name, record.ID),
-		Status:            firstNonEmpty(record.Status, "offline"),
-		Kind:              record.Kind,
-		Address:           record.Address,
-		Transport:         record.Transport,
-		Executable:        record.Executable,
-		TerminalCapable:   record.TerminalCapable,
-		OS:                record.OS,
-		Arch:              record.Arch,
-		OSRelease:         record.OSRelease,
-		KernelVersion:     record.KernelVersion,
-		CPUCores:          record.CPUCores,
-		MemoryBytes:       record.MemoryBytes,
-		AgentVersion:      record.AgentVersion,
-		LastHeartbeat:     record.LastHeartbeat,
-		Labels:            cloneStringMap(record.Labels),
-		LastError:         record.LastError,
-		SSHUser:           record.SSHUser,
-		SSHPort:           record.SSHPort,
-		SSHCredentialRef:  record.SSHCredentialRef,
-		AgentURL:          record.AgentURL,
-		AgentTokenRef:     record.AgentTokenRef,
-		InstallState:      record.InstallState,
-		InstallRunID:      record.InstallRunID,
-		InstallWorkflowID: record.InstallWorkflowID,
-		InstallStep:       record.InstallStep,
-		ControlMode:       record.ControlMode,
+		ID:                  record.ID,
+		Name:                firstNonEmpty(record.Name, record.ID),
+		Status:              firstNonEmpty(record.Status, agentStatus, "offline"),
+		AgentStatus:         agentStatus,
+		SSHStatus:           sshStatus,
+		RuntimeReachability: runtimeReachability,
+		Kind:                record.Kind,
+		Address:             record.Address,
+		Transport:           record.Transport,
+		Executable:          record.Executable,
+		TerminalCapable:     record.TerminalCapable,
+		OS:                  record.OS,
+		Arch:                record.Arch,
+		OSRelease:           record.OSRelease,
+		KernelVersion:       record.KernelVersion,
+		CPUCores:            record.CPUCores,
+		MemoryBytes:         record.MemoryBytes,
+		AgentVersion:        record.AgentVersion,
+		LastHeartbeat:       record.LastHeartbeat,
+		Labels:              cloneStringMap(record.Labels),
+		LastError:           record.LastError,
+		SSHUser:             record.SSHUser,
+		SSHPort:             record.SSHPort,
+		SSHCredentialRef:    record.SSHCredentialRef,
+		AgentURL:            record.AgentURL,
+		AgentTokenRef:       record.AgentTokenRef,
+		InstallState:        record.InstallState,
+		InstallRunID:        record.InstallRunID,
+		InstallWorkflowID:   record.InstallWorkflowID,
+		InstallStep:         record.InstallStep,
+		ControlMode:         record.ControlMode,
 	}
+}
+
+func hostAgentStatus(record store.HostRecord) string {
+	return firstNonEmpty(record.AgentStatus, record.Status, "offline")
+}
+
+func hostSSHStatus(record store.HostRecord) string {
+	if status := normalizeHostSSHStatus(record.SSHStatus); status != "" {
+		return status
+	}
+	if strings.TrimSpace(record.Address) == "" || strings.TrimSpace(record.SSHUser) == "" {
+		return "not_configured"
+	}
+	return "unknown"
+}
+
+func hostRuntimeReachability(record store.HostRecord) string {
+	return firstNonEmpty(record.RuntimeReachability, deriveHostRuntimeReachability(hostAgentStatus(record), hostSSHStatus(record), record))
+}
+
+func normalizeHostSSHStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "ok", "ready", "available", "connected", "success":
+		return "ok"
+	case "failed", "error", "unavailable", "denied", "timeout":
+		return "failed"
+	case "not_configured":
+		return "not_configured"
+	case "unknown", "pending", "untested":
+		return "unknown"
+	case "":
+		return ""
+	default:
+		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func deriveHostRuntimeReachability(agentStatus, sshStatus string, record store.HostRecord) string {
+	switch strings.ToLower(strings.TrimSpace(agentStatus)) {
+	case "online", "ready", "healthy":
+		return "agent_online"
+	case "installing", "pending_install":
+		return "installing"
+	}
+	switch strings.ToLower(strings.TrimSpace(sshStatus)) {
+	case "ok":
+		return "ssh_available"
+	case "failed":
+		return "ssh_failed"
+	case "not_configured":
+		return "inventory_only"
+	}
+	if strings.TrimSpace(record.Address) != "" && strings.TrimSpace(record.SSHUser) != "" {
+		return "ssh_unverified"
+	}
+	return "inventory_only"
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

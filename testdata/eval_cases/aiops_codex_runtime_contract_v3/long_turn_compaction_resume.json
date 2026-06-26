@@ -1,0 +1,38 @@
+{
+  "name": "long_turn_compaction_resume",
+  "input": "长轮次排查 Redis 延迟，工具输出很多，需要压缩后继续保留目标、证据引用和待办状态。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "raw_large_tool_output_replay"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.redis_latency",
+      "context_compaction"
+    ],
+    "evidenceRefs": [
+      "evidence:redis-latency-summary",
+      "compact:handoff-summary"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "tool_call",
+      "tool_result",
+      "context_compacted",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "handoff_summary_preserved",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

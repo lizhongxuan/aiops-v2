@@ -46,16 +46,7 @@ describe("MessageMarkdown", () => {
     expect(container.querySelector("strong")?.textContent).toBe("safe");
   });
 
-  it("shows long URLs in full while keeping copy-on-click", async () => {
-    const writes: string[] = [];
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: async (value: string) => {
-          writes.push(value);
-        },
-      },
-    });
+  it("shows long URLs in full and keeps links navigable in a new tab", async () => {
     const url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true";
 
     await act(async () => {
@@ -64,13 +55,13 @@ describe("MessageMarkdown", () => {
 
     const link = container.querySelector("a");
     expect(link?.textContent).toBe(url);
+    expect(link?.getAttribute("href")).toBe(url);
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toContain("noopener");
     expect(container.textContent).toContain("include_market_cap=true");
 
-    await act(async () => {
-      link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
-
-    expect(writes).toEqual([url]);
+    const navigates = link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(navigates).toBe(true);
   });
 
   it("keeps a source label and its full URL in one paragraph", async () => {
@@ -99,12 +90,15 @@ describe("MessageMarkdown", () => {
 
   it("renders tool trigger mentions as blue icon badges without changing ordinary email text", async () => {
     await act(async () => {
-      root.render(<MessageMarkdown text="@add_workflow 每天下午6点自动抓取数据库和中间件故障案例新闻，联系 ops@example.com" />);
+      root.render(<MessageMarkdown text="@add_workflow @coroot @ops_graph @ops_manus 每天下午6点自动抓取数据库和中间件故障案例新闻，联系 ops@example.com" />);
     });
 
     const trigger = container.querySelector('[data-tool-trigger="add_workflow"]');
     expect(trigger).toBeTruthy();
     expect(trigger?.textContent).toBe("@add_workflow");
+    expect(container.querySelector('[data-tool-trigger="coroot"]')?.textContent).toBe("@coroot");
+    expect(container.querySelector('[data-tool-trigger="ops_graph"]')?.textContent).toBe("@ops_graph");
+    expect(container.querySelector('[data-tool-trigger="ops_manus"]')?.textContent).toBe("@ops_manus");
     expect(trigger?.className).toContain("text-blue-700");
     expect(trigger?.querySelector("[data-tool-trigger-icon]")?.textContent).toBe("@");
     expect(container.textContent).toContain("ops@example.com");
@@ -178,16 +172,8 @@ describe("MessageMarkdown", () => {
     expect(container.querySelectorAll("ul li")).toHaveLength(2);
   });
 
-  it("falls back to selection copy when clipboard api rejects", async () => {
+  it("does not intercept link clicks for copy fallbacks", async () => {
     const execCalls: string[] = [];
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText: async () => {
-          throw new Error("denied");
-        },
-      },
-    });
     Object.defineProperty(document, "execCommand", {
       configurable: true,
       value: (command: string) => {
@@ -200,11 +186,10 @@ describe("MessageMarkdown", () => {
       root.render(<MessageMarkdown text="https://api.coingecko.com/api/v3/simple/price?ids=bitcoin" />);
     });
 
-    await act(async () => {
-      container.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-    });
+    const navigates = container.querySelector("a")?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 
-    expect(execCalls).toContain("copy");
+    expect(navigates).toBe(true);
+    expect(execCalls).toEqual([]);
   });
 
   it("renders unix timestamp fields as readable local time", async () => {

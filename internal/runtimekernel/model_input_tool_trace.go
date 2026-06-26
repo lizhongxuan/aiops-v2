@@ -15,6 +15,8 @@ import (
 type ModelInputToolTraceFields struct {
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
+	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
+	PublicWebBudget               *promptinput.PublicWebBudgetTrace
 	LoadedToolsDelta              []string
 	LoadedPacksDelta              []string
 	SkillIndexHash                string
@@ -28,6 +30,7 @@ type ModelInputToolTraceFields struct {
 	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace
 	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup
 	ResourceLocks                 []promptinput.ResourceLockTrace
+	OwnerWriteTraces              []OwnerWriteTrace
 	FailedToolSummaries           []promptinput.FailedToolSummary
 	SafetySignals                 []promptinput.SafetySignalTrace
 	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
@@ -38,6 +41,7 @@ func buildModelInputToolTraceFields(session *SessionState, snapshot *TurnSnapsho
 	fields := ModelInputToolTraceFields{
 		ToolSurfaceFingerprint:        strings.TrimSpace(toolSurfaceFingerprint),
 		ToolSurfacePolicySnapshotHash: strings.TrimSpace(policySnapshotHash),
+		PublicWebBudget:               promptInputPublicWebBudgetTrace(DefaultPublicWebBudget()),
 	}
 	if session != nil {
 		fields.LoadedToolsDelta = session.ToolDiscovery.EnabledTools()
@@ -54,13 +58,109 @@ func buildModelInputToolTraceFields(session *SessionState, snapshot *TurnSnapsho
 		fields.SafetySignals = safetySignalTracesFromPendingApprovals(sessionPendingApprovals(session))
 		fields.UnexpectedStateGate = unexpectedStateGateTraceFromSignals(collectUnexpectedStateSignalsFromSession(session))
 		fields.ApprovalScope = approvalScopeTraceFromSession(session)
+		fields.OwnerWriteTraces = append(fields.OwnerWriteTraces, session.OwnerWriteTraces...)
 	}
 	if snapshot != nil {
+		if snapshot.ToolSurfaceSnapshot != nil {
+			fields.ToolSurfaceSnapshot = promptToolSurfaceSnapshotFromRuntime(snapshot.ToolSurfaceSnapshot, fields.LoadedPacksDelta)
+		}
 		fields.ParallelDispatchGroups = parallelDispatchTraceGroupsFromSnapshot(snapshot)
 		fields.ResourceLocks = resourceLockTracesFromSnapshot(snapshot)
 		fields.FailedToolSummaries = failedToolSummariesFromSnapshot(snapshot)
+		fields.OwnerWriteTraces = append(fields.OwnerWriteTraces, snapshot.OwnerWriteTraces...)
 	}
 	return fields
+}
+
+func promptInputPublicWebBudgetTrace(budget PublicWebBudget) *promptinput.PublicWebBudgetTrace {
+	budget = normalizePublicWebBudget(budget)
+	return &promptinput.PublicWebBudgetTrace{
+		MaxSearchCalls:        budget.MaxSearchCalls,
+		MaxQueries:            budget.MaxQueries,
+		MaxResults:            budget.MaxResults,
+		MaxCallsPerTurn:       budget.MaxCallsPerTurn,
+		MaxQueriesPerCall:     budget.MaxQueriesPerCall,
+		MaxResultsPerDomain:   budget.MaxResultsPerDomain,
+		ExplicitUserRequested: budget.ExplicitUserRequested,
+	}
+}
+
+func promptToolSurfaceSnapshotFromRuntime(ref *ToolSurfaceSnapshotRef, loadedPacksDelta []string) *promptinput.ToolSurfaceSnapshot {
+	if ref == nil {
+		return nil
+	}
+	out := &promptinput.ToolSurfaceSnapshot{
+		Fingerprint:      strings.TrimSpace(ref.Fingerprint),
+		VisibleTools:     uniqueSortedTraceStrings(ref.ToolNames),
+		LoadedPacksDelta: uniqueSortedTraceStrings(loadedPacksDelta),
+		PolicyHash:       firstNonEmpty(ref.PolicySnapshotHash, policyHashFromToolSurfacePolicy(ref.PolicySnapshot)),
+	}
+	if ref.PolicySnapshot != nil {
+		out.HiddenReasons = hiddenReasonsFromToolSurfacePolicy(*ref.PolicySnapshot)
+		for name := range out.HiddenReasons {
+			out.HiddenTools = append(out.HiddenTools, name)
+		}
+		sort.Strings(out.HiddenTools)
+	}
+	if toolSurfaceSnapshotEmpty(out) {
+		return nil
+	}
+	return out
+}
+
+func hiddenReasonsFromToolSurfacePolicy(snapshot tooling.ToolSurfacePolicySnapshot) map[string][]string {
+	reasons := map[string][]string{}
+	for _, hidden := range snapshot.HiddenTools {
+		name := strings.TrimSpace(hidden.Name)
+		reason := strings.TrimSpace(hidden.Reason)
+		if name == "" || reason == "" {
+			continue
+		}
+		reasons[name] = appendUniqueTraceStrings(reasons[name], reason)
+	}
+	for name := range reasons {
+		sort.Strings(reasons[name])
+	}
+	if len(reasons) == 0 {
+		return nil
+	}
+	return reasons
+}
+
+func policyHashFromToolSurfacePolicy(snapshot *tooling.ToolSurfacePolicySnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.Hash)
+}
+
+func uniqueSortedTraceStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func toolSurfaceSnapshotEmpty(snapshot *promptinput.ToolSurfaceSnapshot) bool {
+	return snapshot == nil ||
+		strings.TrimSpace(snapshot.Fingerprint) == "" &&
+			len(snapshot.VisibleTools) == 0 &&
+			len(snapshot.DeferredTools) == 0 &&
+			len(snapshot.HiddenTools) == 0 &&
+			len(snapshot.HiddenReasons) == 0 &&
+			len(snapshot.LoadedPacksDelta) == 0 &&
+			strings.TrimSpace(snapshot.PolicyHash) == ""
 }
 
 func safetySignalTracesFromPendingApprovals(approvals []PendingApproval) []promptinput.SafetySignalTrace {
@@ -248,7 +348,7 @@ func safetyTraceSeverityRank(severity string) int {
 }
 
 func toolSearchTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []promptinput.ToolSearchTraceEvent {
-	if len(discovery.LastSearchResults) == 0 {
+	if len(discovery.LastSearchResults) == 0 && discovery.LastSearchRequest == nil && discovery.LastSearchResponse == nil && len(discovery.LastRejectedSearchResults) == 0 {
 		return nil
 	}
 	matches := make([]string, 0, len(discovery.LastSearchResults))
@@ -262,16 +362,67 @@ func toolSearchTraceEventsFromDiscovery(discovery ToolDiscoverySessionState) []p
 		}
 		matches = append(matches, name)
 	}
-	if len(matches) == 0 {
+	sort.Strings(matches)
+	rejectedReasons := toolSearchRejectedReasonsFromDiscovery(discovery.LastRejectedSearchResults)
+	query := ""
+	ranker := ""
+	if discovery.LastSearchRequest != nil {
+		query = strings.TrimSpace(discovery.LastSearchRequest.Query)
+		ranker = strings.TrimSpace(discovery.LastSearchRequest.Ranker)
+	}
+	matchCount := len(matches)
+	rejectedCount := len(rejectedReasons)
+	if discovery.LastSearchResponse != nil {
+		ranker = firstNonEmptyString(discovery.LastSearchResponse.Ranker, ranker)
+		if discovery.LastSearchResponse.MatchCount > 0 {
+			matchCount = discovery.LastSearchResponse.MatchCount
+		}
+		if discovery.LastSearchResponse.RejectedCount > 0 {
+			rejectedCount = discovery.LastSearchResponse.RejectedCount
+		}
+	}
+	if query == "" && ranker == "" && matchCount == 0 && rejectedCount == 0 {
 		return nil
 	}
-	sort.Strings(matches)
 	return []promptinput.ToolSearchTraceEvent{{
-		Mode:       "search",
-		MatchCount: len(matches),
-		Matches:    matches,
-		Reason:     "last_tool_search_results",
+		Mode:            "search",
+		Query:           query,
+		Ranker:          ranker,
+		MatchCount:      matchCount,
+		RejectedCount:   rejectedCount,
+		Matches:         matches,
+		RejectedReasons: rejectedReasons,
+		Reason:          "last_tool_search_results",
 	}}
+}
+
+func toolSearchRejectedReasonsFromDiscovery(rejected []tooling.RejectedToolCandidate) []promptinput.ToolSearchRejectedReason {
+	if len(rejected) == 0 {
+		return nil
+	}
+	out := make([]promptinput.ToolSearchRejectedReason, 0, len(rejected))
+	for _, item := range rejected {
+		reason := promptinput.ToolSearchRejectedReason{
+			ToolName:       strings.TrimSpace(item.Name),
+			Reason:         strings.TrimSpace(item.Reason),
+			Status:         strings.TrimSpace(item.Status),
+			Source:         strings.TrimSpace(item.Source),
+			MCPServerID:    strings.TrimSpace(item.MCPServerID),
+			HealthStatus:   strings.TrimSpace(item.HealthStatus),
+			FilteredReason: strings.TrimSpace(item.FilteredReason),
+		}
+		if reason.ToolName == "" && reason.Reason == "" && reason.FilteredReason == "" {
+			continue
+		}
+		out = append(out, reason)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ToolName != out[j].ToolName {
+			return out[i].ToolName < out[j].ToolName
+		}
+		return out[i].Reason < out[j].Reason
+	})
+	return out
 }
 
 func skillSearchTraceEventsFromActivation(activation SkillActivationSessionState) []promptinput.SkillSearchTraceEvent {

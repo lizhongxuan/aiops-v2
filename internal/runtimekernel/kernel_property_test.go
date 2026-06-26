@@ -769,6 +769,79 @@ func TestApplyContextPipelineEmitsBoundaryMarkerAndHardKeepReasons(t *testing.T)
 	}
 }
 
+func TestApplyContextPipelineCompactionEvidenceHandoffSummary(t *testing.T) {
+	fullStdout := "STDOUT:" + strings.Repeat("raw-output-line ", 80)
+	fullManual := "MANUAL_CONTENT:" + strings.Repeat("manual-step ", 80)
+	fullArtifactPayload := "ARTIFACT_PAYLOAD:" + strings.Repeat("payload-field ", 80)
+	messages := []Message{
+		{ID: "goal", Role: "user", Content: "Investigate checkout latency and keep the current target."},
+		{ID: "decision", Role: "assistant", Content: "Decision: use read-only evidence before any mutation."},
+		testToolResultMessage("tool-stdout", "exec_command", fullStdout, "evidence-stdout"),
+		{ID: "inference", Role: "assistant", Content: "Inference (confidence: medium): upstream database latency may be involved."},
+		testToolResultMessage("tool-manual", "search_ops_manuals", fullManual, "manual-ref"),
+		testToolResultMessage("tool-artifact", "artifact.read", fullArtifactPayload, "artifact-ref"),
+		{ID: "tail-user", Role: "user", Content: "Continue with only verified evidence."},
+		{ID: "tail-assistant", Role: "assistant", Content: "I will continue with verified evidence only."},
+	}
+	cw := &ContextWindow{MaxTokens: 28}
+	result, err := ApplyContextPipeline(context.Background(), cw, messages, ContextPipelineOptions{
+		SessionID: "sess-handoff",
+		TurnID:    "turn-handoff",
+		Iteration: 2,
+		Profile:   "evidence_rca",
+		TargetRefs: []string{
+			"service:checkout",
+			"host:db-a",
+		},
+		PendingApprovals: []PendingApproval{{
+			ID:         "approval-restart",
+			ToolName:   "exec_command",
+			ToolCallID: "call-restart",
+			TargetRefs: []string{"host:db-a"},
+		}},
+		PendingEvidence: []PendingEvidence{{
+			ID:         "evidence-db",
+			ToolCallID: "tool-stdout",
+		}},
+		RejectedApprovals: []RejectedApproval{{
+			ID:       "rejected-restart",
+			ToolName: "exec_command",
+			Decision: "denied",
+		}},
+		ToolPacksLoaded: []string{"coroot_metrics", "ops_manual_flow"},
+		BudgetPolicy:    DefaultContextBudgetPolicy(20000, 8000),
+	})
+	if err != nil {
+		t.Fatalf("ApplyContextPipeline returned error: %v", err)
+	}
+	if len(result.CompactedSegments) != 1 {
+		t.Fatalf("compacted segments = %d, want 1", len(result.CompactedSegments))
+	}
+	summary, err := ParseCompactSummaryV1(result.CompactedSegments[0].Summary)
+	if err != nil {
+		t.Fatalf("ParseCompactSummaryV1() error = %v\nsummary=%s", err, result.CompactedSegments[0].Summary)
+	}
+	if summary.UserGoal == "" ||
+		summary.CurrentProfile != "evidence_rca" ||
+		!containsString(summary.TargetRefs, "service:checkout") ||
+		len(summary.Decisions) == 0 ||
+		len(summary.ConfirmedFacts) == 0 ||
+		len(summary.Inferences) == 0 ||
+		len(summary.PendingApprovals) != 1 ||
+		len(summary.PendingEvidence) != 1 ||
+		len(summary.RejectedApprovals) != 1 ||
+		!containsString(summary.ToolPacksLoaded, "coroot_metrics") ||
+		summary.NextStep.Action == "" {
+		t.Fatalf("handoff summary incomplete: %#v", summary)
+	}
+	raw := result.CompactedSegments[0].Summary
+	for _, forbidden := range []string{fullStdout, fullManual, fullArtifactPayload} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("handoff summary leaked full raw payload %q in %s", forbidden[:16], raw)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Property 27: Workspace 请求分流
 // For any workspace session request, it should be classified into exactly one

@@ -216,8 +216,75 @@ func TestResolveModelCapabilitiesForZhipuGLM47(t *testing.T) {
 	if !caps.SupportsToolCalls || !caps.SupportsStreaming || !caps.SupportsReasoning {
 		t.Fatalf("zhipu glm-4.7 capabilities missing tool/streaming/reasoning support: %#v", caps)
 	}
-	if caps.NativeReasoning {
-		t.Fatalf("zhipu glm-4.7 must not use OpenAI-native reasoning_effort: %#v", caps)
+	if !caps.NativeReasoning || caps.ReasoningEffortApplied != "high" {
+		t.Fatalf("zhipu glm-4.7 must use provider-native reasoning_effort: %#v", caps)
+	}
+}
+
+func TestResolveProviderModelDefaultsForDeepSeekAndZhipu(t *testing.T) {
+	if got := resolveProviderModel("deepseek", ProviderConfig{}); got != "deepseek-v4-pro" {
+		t.Fatalf("deepseek default model = %q, want deepseek-v4-pro", got)
+	}
+	if got := resolveProviderModel("zhipu", ProviderConfig{}); got != "glm-5.2" {
+		t.Fatalf("zhipu default model = %q, want glm-5.2", got)
+	}
+}
+
+func TestResolveModelCapabilitiesForDeepSeekV4(t *testing.T) {
+	r := NewRouter("deepseek", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "deepseek",
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "max",
+	})
+
+	if caps.Provider != "deepseek" || caps.Model != "deepseek-v4-pro" {
+		t.Fatalf("capabilities route = %s/%s, want deepseek/deepseek-v4-pro", caps.Provider, caps.Model)
+	}
+	if caps.MaxContextTokens != 1000000 || caps.MaxOutputTokens != 384000 {
+		t.Fatalf("deepseek context/output caps = %d/%d, want 1000000/384000", caps.MaxContextTokens, caps.MaxOutputTokens)
+	}
+	if caps.ExactTokenCount || caps.CacheEdit {
+		t.Fatalf("deepseek must not claim OpenAI tokenizer/cache edit support: %#v", caps)
+	}
+	if !caps.SupportsToolCalls || !caps.SupportsStreaming || !caps.SupportsReasoning {
+		t.Fatalf("deepseek capabilities missing tool/streaming/reasoning support: %#v", caps)
+	}
+	if !caps.NativeReasoning || caps.ReasoningEffortApplied != "max" {
+		t.Fatalf("deepseek native reasoning metadata = %#v, want applied max", caps)
+	}
+	if caps.SupportsNativeWebTool {
+		t.Fatalf("deepseek should keep custom web_search tool path, got native web capability: %#v", caps)
+	}
+}
+
+func TestResolveModelCapabilitiesForZhipuGLM52(t *testing.T) {
+	r := NewRouter("zhipu", nil, nil)
+
+	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider:        "zhipu",
+		Model:           "glm-5.2",
+		ReasoningEffort: "max",
+	})
+
+	if caps.Provider != "zhipu" || caps.Model != "glm-5.2" {
+		t.Fatalf("capabilities route = %s/%s, want zhipu/glm-5.2", caps.Provider, caps.Model)
+	}
+	if caps.MaxContextTokens != 1000000 || caps.MaxOutputTokens != 128000 {
+		t.Fatalf("glm-5.2 context/output caps = %d/%d, want 1000000/128000", caps.MaxContextTokens, caps.MaxOutputTokens)
+	}
+	if caps.ExactTokenCount || caps.CacheEdit {
+		t.Fatalf("zhipu must not claim OpenAI tokenizer/cache edit support: %#v", caps)
+	}
+	if !caps.SupportsToolCalls || !caps.SupportsStreaming || !caps.SupportsReasoning {
+		t.Fatalf("zhipu glm-5.2 capabilities missing tool/streaming/reasoning support: %#v", caps)
+	}
+	if !caps.NativeReasoning || caps.ReasoningEffortApplied != "max" {
+		t.Fatalf("zhipu native reasoning metadata = %#v, want applied max", caps)
+	}
+	if !caps.SupportsNativeWebTool {
+		t.Fatalf("zhipu should use provider-native web_search tool: %#v", caps)
 	}
 }
 

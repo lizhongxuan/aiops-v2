@@ -111,6 +111,11 @@ func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 			t.Fatalf("web_search resource types = %#v, missing %q", webDiscovery.ResourceTypes, want)
 		}
 	}
+	for _, want := range []string{"official_docs", "version_match", "applicability", "external_knowledge"} {
+		if !containsString(webDiscovery.DiscoveryTags, want) {
+			t.Fatalf("web_search discovery tags = %#v, missing %q", webDiscovery.DiscoveryTags, want)
+		}
+	}
 	webDescription := webSearch.Metadata().Description
 	for _, want := range []string{"public web", "not for current host", "environment-bound tools"} {
 		if !strings.Contains(webDescription, want) {
@@ -131,6 +136,11 @@ func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 	for _, want := range []string{"public_web", "url", "web_page"} {
 		if !containsString(browseDiscovery.ResourceTypes, want) {
 			t.Fatalf("browse_url resource types = %#v, missing %q", browseDiscovery.ResourceTypes, want)
+		}
+	}
+	for _, want := range []string{"official_docs", "version_match", "applicability", "external_knowledge"} {
+		if !containsString(browseDiscovery.DiscoveryTags, want) {
+			t.Fatalf("browse_url discovery tags = %#v, missing %q", browseDiscovery.DiscoveryTags, want)
 		}
 	}
 }
@@ -163,11 +173,15 @@ func TestExecCommandToolEnabledForAnySessionMode(t *testing.T) {
 		if !execTool.IsEnabled(tooling.ToolContext{SessionType: tc.session, Mode: tc.mode, Metadata: execTool.Metadata()}) {
 			t.Fatalf("exec_command IsEnabled(%s/%s) = false, want true", tc.session, tc.mode)
 		}
-		names := toolNames(registry.AssembleToolsWithOptions(tc.session, tc.mode, tooling.AssembleOptions{
-			Filter: func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool { return false },
-		}))
+		names := toolNames(registry.AssembleTools(tc.session, tc.mode))
 		if !containsString(names, "exec_command") {
 			t.Fatalf("assembled tools for %s/%s = %v, missing exec_command", tc.session, tc.mode, names)
+		}
+		filteredNames := toolNames(registry.CompileContextWithMetadata(tc.session, tc.mode, map[string]string{
+			"aiops.tool.execCommandAllowed": "false",
+		}))
+		if containsString(filteredNames, "exec_command") {
+			t.Fatalf("V2 filtered tools for %s/%s = %v, want exec_command hidden", tc.session, tc.mode, filteredNames)
 		}
 	}
 }
@@ -236,6 +250,26 @@ func TestExecCommandToolMetadataMatchesHostFactBashRole(t *testing.T) {
 	for _, want := range []string{"host_fact", "execute", "inspect"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("exec_command discovery text missing %q: %s", want, text)
+		}
+	}
+}
+
+func TestLocalMutationToolsDeclareRuntimeSafetyMetadata(t *testing.T) {
+	for _, tool := range []tooling.Tool{
+		NewExecCommandTool(Options{WorkingDir: t.TempDir()}),
+		NewPowerShellCommandTool(Options{WorkingDir: t.TempDir()}),
+		NewREPLTool(Options{WorkingDir: t.TempDir()}),
+		NewEnsurePostgreSQLInstalledTool(Options{}),
+	} {
+		meta := tool.Metadata()
+		if len(meta.ResourceLocks) == 0 {
+			t.Fatalf("%s resourceLocks = nil, want mutation safety resource lock scope", meta.Name)
+		}
+		if meta.Idempotency.Strategy != tooling.ToolIdempotencyStrategyArgumentsHash {
+			t.Fatalf("%s idempotency = %#v, want arguments_hash strategy", meta.Name, meta.Idempotency)
+		}
+		if len(meta.Idempotency.PostCheckRefs) == 0 {
+			t.Fatalf("%s postCheckRefs = nil, want mutation verification refs", meta.Name)
 		}
 	}
 }
@@ -528,6 +562,66 @@ func TestExecCommandToolAllowsHostResourceInspectionWithoutEvidenceGate(t *testi
 	}
 }
 
+func TestExecCommandToolAllowsRemoteReadOnlyServiceStatusWithoutEvidenceGate(t *testing.T) {
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-a": {ID: "host-a", Executable: true, ControlMode: "managed"},
+		}},
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-a"})
+
+	for _, input := range []json.RawMessage{
+		json.RawMessage(`{"command":"systemctl","args":["status","nginx"]}`),
+		json.RawMessage(`{"command":"nginx","args":["-v"]}`),
+	} {
+		if !tool.IsReadOnly(input) {
+			t.Fatalf("IsReadOnly(%s) = false, want true", input)
+		}
+		decision := tool.CheckPermissions(ctx, input)
+		if decision.Action != tooling.PermissionActionAllow {
+			t.Fatalf("CheckPermissions(%s) = %#v, want allow", input, decision)
+		}
+	}
+}
+
+func TestExecCommandToolRemoteMutationNeedsApprovalWithStructuredPayload(t *testing.T) {
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-a": {ID: "host-a", Executable: true, ControlMode: "managed"},
+		}},
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-a"})
+	input := json.RawMessage(`{"command":"systemctl","args":["restart","nginx"]}`)
+
+	decision := tool.CheckPermissions(ctx, input)
+	if decision.Action != tooling.PermissionActionNeedApproval {
+		t.Fatalf("CheckPermissions() = %#v, want need approval", decision)
+	}
+	if decision.Approval == nil {
+		t.Fatal("approval payload = nil")
+	}
+	if decision.Approval.Command != "systemctl restart nginx" {
+		t.Fatalf("approval command = %q, want restart command", decision.Approval.Command)
+	}
+	for name, value := range map[string]string{
+		"reason":          decision.Approval.Reason,
+		"risk":            decision.Approval.Risk,
+		"source":          decision.Approval.Source,
+		"expected_effect": decision.Approval.ExpectedEffect,
+		"rollback":        decision.Approval.Rollback,
+		"validation":      decision.Approval.Validation,
+	} {
+		if strings.TrimSpace(value) == "" {
+			t.Fatalf("approval payload missing %s: %#v", name, decision.Approval)
+		}
+	}
+	if !strings.Contains(decision.Approval.ExpectedEffect, "host-a") {
+		t.Fatalf("expected effect = %q, want target host", decision.Approval.ExpectedEffect)
+	}
+}
+
 func TestExecCommandToolUsesConfigurableTerminalPolicy(t *testing.T) {
 	engine := terminalpolicy.NewEngine(terminalpolicy.Config{
 		SchemaVersion: "aiops.terminal_policy/v1",
@@ -597,6 +691,75 @@ func TestExecCommandToolRunsReadOnlyCommandViaSelectedHostAgent(t *testing.T) {
 	}
 	if payload.Source != "host.agent_http_exec" || payload.Stdout != "8\n" || payload.ExitCode != 0 {
 		t.Fatalf("payload = %#v, want host-agent terminal result with runner source", payload)
+	}
+}
+
+func TestExecCommandToolAllowsReadOnlyCommandViaSSHInventoryHost(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{
+		result: HostAgentCommandResult{Stdout: "Linux host 6.1\n", ExitCode: 0, Source: "host.ssh"},
+	}
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-ssh": {
+				ID:               "host-ssh",
+				Name:             "ssh-host",
+				Address:          "10.0.0.12",
+				SSHUser:          "root",
+				SSHPort:          22,
+				SSHCredentialRef: "secret://hosts/host-ssh/ssh-password",
+				ControlMode:      "inventory",
+				Transport:        "manual",
+			},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-ssh"})
+	input := json.RawMessage(`{"command":"uname","args":["-a"]}`)
+
+	decision := tool.CheckPermissions(ctx, input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow for SSH inventory host", decision)
+	}
+	result, err := tool.Execute(ctx, input)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(runner.requests))
+	}
+	var payload struct {
+		Source string `json:"source"`
+		HostID string `json:"hostId"`
+		Stdout string `json:"stdout"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, result.Content)
+	}
+	if payload.Source != "host.ssh" || payload.HostID != "host-ssh" || payload.Stdout != "Linux host 6.1\n" {
+		t.Fatalf("payload = %#v, want SSH terminal result", payload)
+	}
+}
+
+func TestExecCommandToolDeniesInventoryHostWithoutSSHCredential(t *testing.T) {
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-inventory": {
+				ID:          "host-inventory",
+				Name:        "inventory-host",
+				Address:     "10.0.0.13",
+				SSHUser:     "root",
+				ControlMode: "inventory",
+				Transport:   "manual",
+			},
+		}},
+		HostAgentCommandRunner: &fakeHostAgentCommandRunner{},
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-inventory"})
+	decision := tool.CheckPermissions(ctx, json.RawMessage(`{"command":"uptime"}`))
+	if decision.Action != tooling.PermissionActionDeny || !strings.Contains(decision.Reason, "no SSH command credential") {
+		t.Fatalf("CheckPermissions() = %#v, want deny without SSH credential", decision)
 	}
 }
 
@@ -1475,6 +1638,96 @@ func TestWebSearchToolFallsBackToPublicSearchWhenNativeSearchHasNoText(t *testin
 	}
 	if strings.Contains(result.Content, "provider returned no textual summary") {
 		t.Fatalf("result content = %q, should not return provider no-summary placeholder when public fallback succeeds", result.Content)
+	}
+}
+
+func TestWebSearchToolFallsBackToPublicSearchForZhipuProvider(t *testing.T) {
+	var gotPath string
+	var gotSearchQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		gotSearchQuery = r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><ol id="b_results">
+			<li class="b_algo">
+				<h2><a href="https://www.postgresql.org/docs/current/continuous-archiving.html">PostgreSQL continuous archiving timeline docs</a></h2>
+				<div class="b_caption"><p>PostgreSQL docs explain WAL archiving and recovery timeline behavior.</p></div>
+			</li>
+		</ol></body></html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider: "zhipu",
+		Model:    "glm-5.1",
+		BaseURL:  "https://api.z.ai/api/paas/v4",
+		APIKey:   "test-key",
+	}}, Options{HTTPClient: server.Client(), PublicSearchBaseURL: server.URL, MaxOutputBytes: 4000})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"query":"PostgreSQL timeline official docs",
+		"allowed_domains":["postgresql.org"]
+	}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if gotPath != "/search" {
+		t.Fatalf("request path = %q, want public search path", gotPath)
+	}
+	if !strings.Contains(gotSearchQuery, "site:postgresql.org") {
+		t.Fatalf("search query = %q, want allowed domain refinement", gotSearchQuery)
+	}
+	if !strings.Contains(result.Content, `"source":"public_web_search"`) {
+		t.Fatalf("result content = %q, want public fallback source", result.Content)
+	}
+	if strings.Contains(result.Content, "no known native web_search support") {
+		t.Fatalf("result content = %q, should not leak unsupported provider error", result.Content)
+	}
+}
+
+func TestWebSearchToolFallsBackToOfficialDomainsForPostgresOperations(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><ol id="b_results"></ol></body></html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider: "zhipu",
+		Model:    "glm-5.1",
+		BaseURL:  "https://api.z.ai/api/paas/v4",
+		APIKey:   "test-key",
+	}}, Options{HTTPClient: server.Client(), PublicSearchBaseURL: server.URL, MaxOutputBytes: 4000})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"query":"pgBackRest restore recovery_target_timeline pg_auto_failover PostgreSQL official docs"
+	}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if gotPath != "/search" {
+		t.Fatalf("request path = %q, want public search path", gotPath)
+	}
+	for _, want := range []string{
+		`"source":"public_web_search:official_domain_fallback"`,
+		"https://www.postgresql.org/docs/current/continuous-archiving.html",
+		"https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+		"https://pgbackrest.org/user-guide.html#restore",
+		"https://pg-auto-failover.readthedocs.io/en/main/operations.html",
+		"temporary recovery settings",
+		"Use browse_url",
+	} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("result content = %q, missing %q", result.Content, want)
+		}
 	}
 }
 

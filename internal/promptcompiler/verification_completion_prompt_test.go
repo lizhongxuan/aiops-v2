@@ -6,19 +6,22 @@ import (
 )
 
 func TestCompletionGatePromptConstrainsPartialAndFailStatuses(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	for _, want := range []string{
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	for _, forbidden := range []string{
 		"verification status is PARTIAL",
 		"partially verified or blocked",
-		"blocker source",
-		"verification status is FAIL",
+		"state the blocker",
+		"verification status is PARTIAL or FAIL",
 		"checked contract",
-		"known constraints",
 		"expected vs actual",
-		"contract_unavailable blocker",
+		"available evidence reference",
 	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("completion gate missing %q:\n%s", want, developer)
+		if strings.Contains(modelInput, forbidden) {
+			t.Fatalf("model input leaked old completion gate phrase %q:\n%s", forbidden, modelInput)
 		}
 	}
 }

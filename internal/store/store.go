@@ -138,16 +138,21 @@ type UICard struct {
 
 // LLMConfig represents the LLM provider configuration persisted in llm-config.json.
 type LLMConfig struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	APIKey           string `json:"apiKey"`
-	BaseURL          string `json:"baseURL"`
-	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
-	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
-	FallbackProvider string `json:"fallbackProvider"`
-	FallbackModel    string `json:"fallbackModel"`
-	FallbackAPIKey   string `json:"fallbackApiKey"`
-	CompactModel     string `json:"compactModel"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	APIKey           string   `json:"apiKey"`
+	BaseURL          string   `json:"baseURL"`
+	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	ThinkingType     string   `json:"thinkingType,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
+	ToolStream       bool     `json:"toolStream,omitempty"`
+	FallbackProvider string   `json:"fallbackProvider"`
+	FallbackModel    string   `json:"fallbackModel"`
+	FallbackAPIKey   string   `json:"fallbackApiKey"`
+	CompactModel     string   `json:"compactModel"`
 }
 
 // SettingModelOption represents one selectable model option for the web UI.
@@ -185,6 +190,9 @@ type HostRecord struct {
 	Address             string            `json:"address,omitempty"`
 	Transport           string            `json:"transport,omitempty"`
 	Status              string            `json:"status,omitempty"`
+	AgentStatus         string            `json:"agentStatus,omitempty"`
+	SSHStatus           string            `json:"sshStatus,omitempty"`
+	RuntimeReachability string            `json:"runtimeReachability,omitempty"`
 	Executable          bool              `json:"executable,omitempty"`
 	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
 	OS                  string            `json:"os,omitempty"`

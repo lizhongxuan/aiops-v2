@@ -22,15 +22,26 @@ const (
 type TurnItemType string
 
 const (
-	TurnItemTypeUserMessage TurnItemType = "user_message"
-	TurnItemTypeModelCall   TurnItemType = "model_call"
-	TurnItemTypeToolCall    TurnItemType = "tool_call"
-	TurnItemTypeToolResult  TurnItemType = "tool_result"
-	TurnItemTypePlan        TurnItemType = "plan"
-	TurnItemTypeApproval    TurnItemType = "approval"
-	TurnItemTypeEvidence    TurnItemType = "evidence"
-	TurnItemTypeFinalAnswer TurnItemType = "final_answer"
-	TurnItemTypeError       TurnItemType = "error"
+	TurnItemTypeUserMessage          TurnItemType = "user_message"
+	TurnItemTypeModelCall            TurnItemType = "model_call"
+	TurnItemTypeRouteSelected        TurnItemType = "route_selected"
+	TurnItemTypeToolSurfaceSnapshot  TurnItemType = "tool_surface_snapshot"
+	TurnItemTypeAssistantMessage     TurnItemType = "assistant_message"
+	TurnItemTypeToolCall             TurnItemType = "tool_call"
+	TurnItemTypeToolResult           TurnItemType = "tool_result"
+	TurnItemTypePlan                 TurnItemType = "plan"
+	TurnItemTypeApproval             TurnItemType = "approval"
+	TurnItemTypeApprovalRequested    TurnItemType = "approval_requested"
+	TurnItemTypeApprovalDecided      TurnItemType = "approval_decided"
+	TurnItemTypeEvidence             TurnItemType = "evidence"
+	TurnItemTypeChildAgentStarted    TurnItemType = "child_agent_started"
+	TurnItemTypeChildAgentResult     TurnItemType = "child_agent_result"
+	TurnItemTypeContextCompacted     TurnItemType = "context_compacted"
+	TurnItemTypePendingInputAccepted TurnItemType = "pending_input_accepted"
+	TurnItemTypeTurnCancelled        TurnItemType = "turn_cancelled"
+	TurnItemTypePermissionSnapshot   TurnItemType = "permission_snapshot"
+	TurnItemTypeResourceLock         TurnItemType = "resource_lock"
+	TurnItemTypeError                TurnItemType = "error"
 )
 
 // ItemStatus is the canonical lifecycle status for a TurnItem.
@@ -114,7 +125,13 @@ func (p AgentPhase) IsValid() bool {
 
 func (t TurnItemType) IsValid() bool {
 	switch t {
-	case TurnItemTypeUserMessage, TurnItemTypeModelCall, TurnItemTypeToolCall, TurnItemTypeToolResult, TurnItemTypePlan, TurnItemTypeApproval, TurnItemTypeEvidence, TurnItemTypeFinalAnswer, TurnItemTypeError:
+	case TurnItemTypeUserMessage, TurnItemTypeModelCall,
+		TurnItemTypeRouteSelected, TurnItemTypeToolSurfaceSnapshot, TurnItemTypeAssistantMessage,
+		TurnItemTypeToolCall, TurnItemTypeToolResult, TurnItemTypePlan,
+		TurnItemTypeApproval, TurnItemTypeApprovalRequested, TurnItemTypeApprovalDecided,
+		TurnItemTypeEvidence, TurnItemTypeChildAgentStarted, TurnItemTypeChildAgentResult,
+		TurnItemTypeContextCompacted, TurnItemTypePendingInputAccepted, TurnItemTypeTurnCancelled,
+		TurnItemTypePermissionSnapshot, TurnItemTypeResourceLock, TurnItemTypeError:
 		return true
 	default:
 		return false

@@ -295,10 +295,20 @@ func readOnlyRetryLookup(executor ToolExecutor) *mockToolLookup {
 			"read_metrics": {
 				desc: ToolDescriptor{
 					Metadata: tooling.ToolMetadata{
-						Name:      "read_metrics",
-						Origin:    tooling.ToolOriginBuiltin,
-						Mutating:  false,
-						RiskLevel: tooling.ToolRiskLow,
+						Name:             "read_metrics",
+						Origin:           tooling.ToolOriginBuiltin,
+						Mutating:         false,
+						RiskLevel:        tooling.ToolRiskLow,
+						RequiresApproval: true,
+						ResourceLocks: []tooling.ToolResourceLockKey{{
+							ResourceType:  "synthetic_resource",
+							ResourceID:    "resource-a",
+							OperationKind: "mutation",
+						}},
+						Idempotency: tooling.ToolIdempotencyMetadata{
+							Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+							PostCheckRefs: []string{"read_metrics synthetic_resource resource-a"},
+						},
 					},
 					InputSchema: json.RawMessage(`{"type":"object"}`),
 				},

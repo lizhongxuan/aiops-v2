@@ -44,11 +44,14 @@ func TestPromptFingerprintChangesOnlyForChangedLayer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile changed system failed: %v", err)
 	}
-	if base.Fingerprint.SystemHash == changedSystem.Fingerprint.SystemHash {
-		t.Fatal("system hash should change when host context changes")
+	if base.Fingerprint.SystemHash != changedSystem.Fingerprint.SystemHash {
+		t.Fatal("base contract hash should not change when only host context changes")
 	}
-	if base.Fingerprint.DeveloperHash != changedSystem.Fingerprint.DeveloperHash {
-		t.Fatal("developer hash should not change when only host context changes")
+	if base.Fingerprint.DeveloperHash == changedSystem.Fingerprint.DeveloperHash {
+		t.Fatal("profile hash should change when host context changes")
+	}
+	if base.Fingerprint.StableHash == changedSystem.Fingerprint.StableHash {
+		t.Fatal("stable envelope hash should change when host profile context changes")
 	}
 
 	changedProtocol, err := NewCompiler().Compile(CompileContext{

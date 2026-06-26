@@ -69,6 +69,10 @@ func TestRetrieveManualsFullRedisRequestDirect(t *testing.T) {
 	if err := repo.SaveManual(redisMemoryManual()); err != nil {
 		t.Fatalf("SaveManual() error = %v", err)
 	}
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-redis-success", ManualID: "manual-redis-memory", WorkflowID: "workflow-redis-memory",
+		ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T01:00:00Z",
+	})
 	frame := BuildOperationFrame("生产 payment-api 的 Redis used_memory_rss 持续上涨，Coroot 显示 p95 升高，请通过 ssh 排查", map[string]any{"target_name": "redis-local-01"})
 	matches, err := RetrieveManuals(repo, frame)
 	if err != nil {
@@ -492,12 +496,15 @@ func TestSearchOpsManualsProvidesGenericStatefulClusterRepairFallback(t *testing
 	if err != nil {
 		t.Fatalf("SearchOpsManuals() error = %v", err)
 	}
-	if result.Decision != DecisionDirectExecute || len(result.Manuals) != 1 {
-		t.Fatalf("result = %#v, want one direct generic fallback manual", result)
+	if result.Decision != DecisionReference || len(result.Manuals) != 1 {
+		t.Fatalf("result = %#v, want one reference-only generic fallback manual", result)
 	}
 	hit := result.Manuals[0]
 	if hit.Manual.ID != "manual-generic-stateful-cluster-repair" {
 		t.Fatalf("manual id = %q, want generic stateful fallback", hit.Manual.ID)
+	}
+	if hit.UsableMode != DecisionReference || hit.RecommendedAction != "reference_manual" {
+		t.Fatalf("generic fallback mode/action = %q/%q, want reference_only/reference_manual", hit.UsableMode, hit.RecommendedAction)
 	}
 	if hit.Manual.Operation.TargetType != "redis" || !hit.Manual.Operation.Stateful {
 		t.Fatalf("manual operation = %#v, want request target type and stateful", hit.Manual.Operation)
@@ -527,6 +534,26 @@ func TestSearchOpsManualsNoMatchAccuracyForUnrelatedRequests(t *testing.T) {
 		}
 		if result.Decision == DecisionDirectExecute || result.Decision == DecisionAdapt {
 			t.Fatalf("SearchOpsManuals(%q) decision = %q, want no executable match; result=%#v", text, result.Decision, result)
+		}
+	}
+}
+
+func TestSearchOpsManualsDoesNotRecommendRedisManualForPGTimelineQuestion(t *testing.T) {
+	repo := NewMemoryStore()
+	mustSaveManual(t, repo, redisRcaManual())
+
+	result, err := SearchOpsManuals(repo, SearchOpsManualsRequest{
+		Text: "pgbackrest 恢复主机A后，从节点执行 pg_autoctl create postgres 加入集群，timeline 比主机A高导致无法同步，这是为什么？",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Decision == DecisionDirectExecute || result.Decision == DecisionAdapt {
+		t.Fatalf("decision = %q, want no executable Redis manual for PG timeline; result=%#v", result.Decision, result)
+	}
+	for _, hit := range result.Manuals {
+		if hit.Manual.Operation.TargetType == "redis" || hit.Manual.Applicability.Middleware == "redis" {
+			t.Fatalf("manuals = %#v, should not expose Redis manual for PG timeline", result.Manuals)
 		}
 	}
 }
@@ -606,6 +633,10 @@ func TestOpsManualSuppressionDoesNotFilterDifferentScopeOrAction(t *testing.T) {
 			store := NewMemorySessionOpsContextStore()
 			service := NewService(repo, WithSessionOpsContextStore(store))
 			mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+			mustSaveRunRecord(t, repo, RunRecord{
+				ID: "rr-success", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+				ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T01:00:00Z",
+			})
 			if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(tt.suppression, now)); err != nil {
 				t.Fatalf("UpsertFact() error = %v", err)
 			}
@@ -636,6 +667,10 @@ func TestOpsManualSuppressionCanBeOverriddenByExplicitUse(t *testing.T) {
 	store := NewMemorySessionOpsContextStore()
 	service := NewService(repo, WithSessionOpsContextStore(store))
 	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-success", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T01:00:00Z",
+	})
 	if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(OpsManualSuppression{
 		ManualID:    "manual-pg-backup-ubuntu",
 		ObjectType:  "postgresql",
@@ -672,6 +707,10 @@ func TestOpsManualSuppressionExpires(t *testing.T) {
 	store := NewMemorySessionOpsContextStore()
 	service := NewService(repo, WithSessionOpsContextStore(store))
 	mustSaveManual(t, repo, pgBackupManual("manual-pg-backup-ubuntu", "ubuntu", "ssh", "workflow-pg-backup-ubuntu"))
+	mustSaveRunRecord(t, repo, RunRecord{
+		ID: "rr-success", ManualID: "manual-pg-backup-ubuntu", WorkflowID: "workflow-pg-backup-ubuntu",
+		ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-15T01:00:00Z",
+	})
 	if err := store.UpsertFact(ctx, "sess-suppressed", NewOpsManualSuppressionFact(OpsManualSuppression{
 		ManualID:    "manual-pg-backup-ubuntu",
 		ObjectType:  "postgresql",

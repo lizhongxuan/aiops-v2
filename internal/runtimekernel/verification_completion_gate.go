@@ -42,6 +42,9 @@ func EvaluateVerificationCompletionGate(profile taskdepth.Profile, snapshot *Tur
 			decision.Action = VerificationCompletionActionBlockSuccessFinal
 			decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "execution_required")
 			decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "missing_verification_report")
+			if verificationCompletionRuntimeApprovalGateMissing(snapshot) {
+				decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "missing_runtime_approval_gate")
+			}
 		}
 		return decision
 	}
@@ -92,6 +95,9 @@ func EvaluateVerificationCompletionGate(profile taskdepth.Profile, snapshot *Tur
 }
 
 func verificationRequirementFromTaskDepth(profile taskdepth.Profile) verification.VerificationRequirement {
+	if profile.AnalysisOnly {
+		return verification.VerificationAnalysisAllowed
+	}
 	if profile.RequiresValidation ||
 		profile.RequiresEvidence ||
 		taskdepth.AtLeast(profile.Level, taskdepth.LevelMultiStep) ||
@@ -111,6 +117,12 @@ func verificationCompletionGateAllowsFinal(answer string, decision VerificationC
 	case "", VerificationCompletionActionAllow:
 		return true
 	case VerificationCompletionActionRequireBlockerFinal, VerificationCompletionActionBlockSuccessFinal:
+		if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
+			return safeTerminal.Valid
+		}
+		if verificationCompletionMissingReport(decision) && verificationCompletionMissingRuntimeApprovalGate(decision) {
+			return false
+		}
 		if verificationCompletionMissingReport(decision) && !finalAnswerClaimsVerificationCompletion(answer) {
 			return true
 		}
@@ -119,6 +131,9 @@ func verificationCompletionGateAllowsFinal(answer string, decision VerificationC
 		}
 		return finalLooksLikeVerificationBlocker(answer)
 	default:
+		if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
+			return safeTerminal.Valid
+		}
 		return finalLooksLikeVerificationBlocker(answer)
 	}
 }
@@ -126,6 +141,82 @@ func verificationCompletionGateAllowsFinal(answer string, decision VerificationC
 func verificationCompletionMissingReport(decision VerificationCompletionDecision) bool {
 	for _, reason := range decision.Reasons {
 		if reason == "missing_verification_report" {
+			return true
+		}
+	}
+	return false
+}
+
+func verificationCompletionMissingRuntimeApprovalGate(decision VerificationCompletionDecision) bool {
+	for _, reason := range decision.Reasons {
+		if reason == "missing_runtime_approval_gate" {
+			return true
+		}
+	}
+	return false
+}
+
+func verificationCompletionRuntimeApprovalGateMissing(snapshot *TurnSnapshot) bool {
+	return verificationCompletionRuntimeApprovalGateRequired(snapshot) && !verificationCompletionRuntimeApprovalGateObserved(snapshot)
+}
+
+func verificationCompletionRuntimeApprovalGateRequired(snapshot *TurnSnapshot) bool {
+	if snapshot == nil || snapshot.TaskDepth.AnalysisOnly || snapshot.TaskDepth.ExecutionProhibited {
+		return false
+	}
+	metadata := snapshot.Metadata
+	if !strings.EqualFold(strings.TrimSpace(metadata["aiops.intent.kind"]), "change") {
+		return false
+	}
+	if metadataBool(metadata["aiops.route.userProhibitedHostExec"]) || metadataBool(metadata["aiops.execution.prohibited"]) {
+		return false
+	}
+	if !metadataBool(metadata["aiops.tool.execCommandAllowed"]) && !metadataBool(metadata["aiops.route.allowsExecCommand"]) {
+		return false
+	}
+	if !metadataBool(metadata["aiops.tool.hostMutationAllowed"]) {
+		return false
+	}
+	return verificationCompletionHasTargetBinding(snapshot)
+}
+
+func verificationCompletionHasTargetBinding(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	metadata := snapshot.Metadata
+	switch strings.ToLower(strings.TrimSpace(metadata["aiops.target.binding"])) {
+	case "host", "multi_host", "resource":
+		return true
+	}
+	return strings.TrimSpace(metadata["aiops.target.hostId"]) != "" ||
+		strings.TrimSpace(metadata["aiops.target.refs"]) != ""
+}
+
+func verificationCompletionRuntimeApprovalGateObserved(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	if len(snapshotPendingApprovals(snapshot)) > 0 {
+		return true
+	}
+	for _, iter := range snapshot.Iterations {
+		for _, approval := range iter.PendingApprovals {
+			if pendingStatus(approval.Status) {
+				return true
+			}
+		}
+		for _, invocation := range iter.ToolInvocations {
+			if invocation.Mutating && invocation.Status != "" {
+				return true
+			}
+		}
+		if len(iter.ResourceLocks) > 0 {
+			return true
+		}
+	}
+	for _, item := range snapshot.AgentItems {
+		if item.Type == agentstate.TurnItemTypeToolCall && item.Status == agentstate.ItemStatusBlocked {
 			return true
 		}
 	}
@@ -272,12 +363,16 @@ func verificationCompletionGateTrace(decision VerificationCompletionDecision) *p
 }
 
 func verificationCompletionGateRetryPrompt(decision VerificationCompletionDecision) string {
-	return fmt.Sprintf("## Verification completion gate\nThe current answer cannot claim successful completion yet. Gate decision: %s. Verification requirement: %s. Status: %s. Reasons: %s. Continue by producing or fixing a structured VerificationReport, gather required evidence, or state the blocker/failure explicitly instead of claiming success.",
+	prompt := fmt.Sprintf("## Verification completion gate\nThe current answer cannot claim successful completion yet. Gate decision: %s. Verification requirement: %s. Status: %s. Reasons: %s. Continue by producing or fixing a structured VerificationReport, gather required evidence, or state the blocker/failure explicitly instead of claiming success.",
 		firstNonBlankRuntimeString(decision.Action, VerificationCompletionActionBlockSuccessFinal),
 		decision.Requirement,
 		decision.Status,
 		strings.Join(decision.Reasons, ", "),
 	)
+	if verificationCompletionMissingRuntimeApprovalGate(decision) {
+		prompt += " This is a scoped mutating operation. Do not ask for approval in prose; invoke the scoped mutating tool so the runtime approval gate can pause before execution, then resume with post-change validation after approval."
+	}
+	return prompt
 }
 
 func appendVerificationCompletionGateItem(snapshot *TurnSnapshot, turnID string, iteration int, decision VerificationCompletionDecision) {

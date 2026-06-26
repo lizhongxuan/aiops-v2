@@ -26,6 +26,17 @@ func NewPowerShellCommandTool(opts Options) tooling.Tool {
 			Pack:           "powershell",
 			DeferByDefault: true,
 			RiskLevel:      tooling.ToolRiskHigh,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "host",
+				ResourceID:    "selected_host",
+				OperationKind: "powershell_command",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{
+					"run an explicit read-only PowerShell verification command for the changed service, process, file, package, or endpoint",
+				},
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind:    "execute",
 				ResourceTypes:     []string{"host", "windows", "system"},
@@ -125,6 +136,17 @@ func NewREPLTool(opts Options) tooling.Tool {
 			DeferByDefault:   true,
 			RiskLevel:        tooling.ToolRiskMedium,
 			RequiresApproval: true,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "runtime",
+				ResourceID:    "scratch",
+				OperationKind: "debug_repl",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{
+					"run a read-only verification expression or command for any runtime state touched by the REPL code",
+				},
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind:    "repl",
 				ResourceTypes:     []string{"runtime", "scratch"},

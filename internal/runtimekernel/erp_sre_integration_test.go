@@ -147,8 +147,15 @@ func TestERPSREApprovalApprovedResumeContinuesAndDeniedCleansPending(t *testing.
 	if err != nil {
 		t.Fatalf("ResumeTurn denied error = %v", err)
 	}
-	if denied.Status != "blocked" {
-		t.Fatalf("denied result = %#v, want blocked", denied)
+	var deniedPayload struct {
+		Status           string   `json:"status"`
+		AllowedNextSteps []string `json:"allowedNextSteps"`
+	}
+	if err := json.Unmarshal([]byte(denied.Output), &deniedPayload); err != nil {
+		t.Fatalf("denied output is not structured JSON: %v; output=%q", err, denied.Output)
+	}
+	if denied.Status != "completed" || deniedPayload.Status != "approval_denied" || !containsString(deniedPayload.AllowedNextSteps, "ask_for_read_only_alternative") {
+		t.Fatalf("denied result = %#v payload=%#v, want completed structured denial final", denied, deniedPayload)
 	}
 	deniedSession = deniedKernel.sessions.Get(deniedSession.ID)
 	if got := len(deniedSession.PendingApprovals); got != 0 {

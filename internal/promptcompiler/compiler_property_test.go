@@ -153,9 +153,10 @@ func genCompileContext() *rapid.Generator[CompileContext] {
 }
 
 // ---------------------------------------------------------------------------
-// Property 9: PromptCompiler 四层输出结构
-// *For any* valid CompileContext, output should always contain four layers
-// in order: System → Developer → Tools → Policy.
+// Property 9: PromptCompiler section-envelope output structure
+// *For any* valid CompileContext, output should contain an ordered section
+// envelope consumed by CompileForEino. Legacy four-layer fields remain
+// populated as derived compatibility fields.
 // **Validates: Requirements 3.2, 3.3**
 // ---------------------------------------------------------------------------
 
@@ -183,28 +184,36 @@ func TestProperty9_FourLayerOutputStructure(t *testing.T) {
 			t.Fatal("Layer 4 (Policy) must not be empty")
 		}
 
-		// Verify layer order via CompileForEino (messages must be in order)
+		if len(result.Envelope.Sections) < 4 {
+			t.Fatalf("expected section envelope with at least 4 sections, got %#v", result.Envelope.Sections)
+		}
+		if result.Envelope.Sections[0].ID != "base.contract" {
+			t.Fatalf("first section = %q, want base.contract", result.Envelope.Sections[0].ID)
+		}
+		if result.Envelope.Sections[1].ID != "runtime.state" {
+			t.Fatalf("second section = %q, want runtime.state", result.Envelope.Sections[1].ID)
+		}
+		if !strings.HasPrefix(result.Envelope.Sections[2].ID, "profile.") {
+			t.Fatalf("third section = %q, want profile.*", result.Envelope.Sections[2].ID)
+		}
+
+		// Verify section order via CompileForEino (messages must be in order)
 		messages, err := compiler.CompileForEino(ctx)
 		if err != nil {
 			t.Fatalf("CompileForEino should not error: %v", err)
 		}
 
-		if len(messages) != 4 {
-			t.Fatalf("expected exactly 4 messages, got %d", len(messages))
+		if len(messages) != len(result.Envelope.Sections) {
+			t.Fatalf("expected %d compiled messages, got %d", len(result.Envelope.Sections), len(messages))
 		}
 
-		// Message order must match: System, Developer, Tools, Policy
-		if messages[0].Content != result.System.Content {
-			t.Fatal("Message[0] must be System layer content")
-		}
-		if messages[1].Content != result.Developer.Content {
-			t.Fatal("Message[1] must be Developer layer content")
-		}
-		if messages[2].Content != result.Tools.Content {
-			t.Fatal("Message[2] must be Tools layer content")
-		}
-		if messages[3].Content != result.Policy.Content {
-			t.Fatal("Message[3] must be Policy layer content")
+		for i, section := range result.Envelope.Sections {
+			if messages[i].Content != section.Content {
+				t.Fatalf("Message[%d] content mismatch with section %s", i, section.ID)
+			}
+			if messages[i].Extra["prompt_section_id"] != section.ID {
+				t.Fatalf("Message[%d] prompt_section_id = %#v, want %s", i, messages[i].Extra["prompt_section_id"], section.ID)
+			}
 		}
 
 		// All messages must have system role
@@ -311,12 +320,13 @@ func TestProperty11_ToolPromptContentConstraint(t *testing.T) {
 				t.Fatalf("Tool entry[%d] must have a capability description", i)
 			}
 
-			// The four allowed fields are: Capability, Constraints, ResultShape, ApprovalNote
+			// The allowed fields are: Capability, Constraints, Guidance, ResultShape, ApprovalNote
 			// No other content should be present in the entry struct (enforced by type system)
 			// But we verify the content text doesn't contain answer style patterns
 			allContent := strings.Join([]string{
 				entry.Capability,
 				entry.Constraints,
+				entry.Guidance,
 				entry.ResultShape,
 				entry.ApprovalNote,
 			}, " ")
@@ -438,9 +448,9 @@ func TestProperty10_PromptToEinoFormatFidelity(t *testing.T) {
 			t.Fatalf("CompileForEino should not error: %v", err)
 		}
 
-		// Step 3: Verify message count is exactly 4
-		if len(messages) != 4 {
-			t.Fatalf("expected exactly 4 messages, got %d", len(messages))
+		// Step 3: Verify message count has one message per compiled section.
+		if len(messages) != len(compiled.Envelope.Sections) {
+			t.Fatalf("expected %d compiled messages, got %d", len(compiled.Envelope.Sections), len(messages))
 		}
 
 		// Step 4: Verify all messages have role "system"
@@ -450,22 +460,12 @@ func TestProperty10_PromptToEinoFormatFidelity(t *testing.T) {
 			}
 		}
 
-		// Step 5: Verify each message's content exactly matches the corresponding layer
-		if messages[0].Content != compiled.System.Content {
-			t.Fatalf("Message[0] content mismatch with System layer.\nGot:  %q\nWant: %q",
-				messages[0].Content, compiled.System.Content)
-		}
-		if messages[1].Content != compiled.Developer.Content {
-			t.Fatalf("Message[1] content mismatch with Developer layer.\nGot:  %q\nWant: %q",
-				messages[1].Content, compiled.Developer.Content)
-		}
-		if messages[2].Content != compiled.Tools.Content {
-			t.Fatalf("Message[2] content mismatch with Tools layer.\nGot:  %q\nWant: %q",
-				messages[2].Content, compiled.Tools.Content)
-		}
-		if messages[3].Content != compiled.Policy.Content {
-			t.Fatalf("Message[3] content mismatch with Policy layer.\nGot:  %q\nWant: %q",
-				messages[3].Content, compiled.Policy.Content)
+		// Step 5: Verify each message's content exactly matches the corresponding section.
+		for i, section := range compiled.Envelope.Sections {
+			if messages[i].Content != section.Content {
+				t.Fatalf("Message[%d] content mismatch with section %s.\nGot:  %q\nWant: %q",
+					i, section.ID, messages[i].Content, section.Content)
+			}
 		}
 	})
 }

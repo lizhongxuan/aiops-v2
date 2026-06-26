@@ -91,7 +91,12 @@ func genericStatefulClusterRepairFallbackHits(repo ManualRepository, frame Opera
 	}
 	hit.MatchLevel = firstNonEmpty(hit.MatchLevel, "generic_stateful_cluster_repair")
 	hit.HintSources = appendUnique(hit.HintSources, "generic_capability_fallback")
-	hit.RecommendedAction = firstNonEmpty(hit.RecommendedAction, "run_readonly_preflight")
+	if hit.UsableMode == DecisionDirectExecute || hit.UsableMode == DecisionAdapt {
+		hit.UsableMode = DecisionReference
+		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "generic fallback is not a high-confidence manual match")
+	}
+	hit.RecommendedAction = "reference_manual"
+	hit = EnrichSearchManualHitRecommendation(hit)
 	return []SearchManualHit{hit}
 }
 
@@ -436,7 +441,7 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 	if !filter.Allowed {
 		hit.UsableMode = DecisionNoMatch
 		hit.BlockedReasons = append(hit.BlockedReasons, filter.Reasons...)
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	}
 	hit.ScoreBreakdown = calculateScoreBreakdown(manual, frame, summary, nil)
 	manualTarget := strings.TrimSpace(firstNonEmpty(manual.Operation.TargetType, manual.Applicability.Middleware))
@@ -456,17 +461,17 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		hit.UsableMode = DecisionReference
 		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "operation_type differs")
 		hit.RecommendedAction = "reference_manual"
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	case actionMatches:
 		hit.MatchLevel = "different_object_same_operation"
 		hit.MatchedFields = appendUnique(hit.MatchedFields, "operation_type")
 		hit.UsableMode = DecisionReference
 		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "object_type differs")
 		hit.RecommendedAction = "reference_manual"
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	default:
 		hit.UsableMode = DecisionNoMatch
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	}
 
 	missing := missingFieldsForManual(manual, frame)
@@ -498,14 +503,18 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		hit.UsableMode = DecisionDirectExecute
 		hit.PreflightStatus = PreflightStatusNotRun
 		hit.RecommendedAction = "run_preflight_probe"
-		if hit.ScoreBreakdown.FinalScore < directThreshold(manual) {
+		if hit.RunRecordSummary.SuccessCount == 0 {
+			hit.UsableMode = DecisionReference
+			hit.RecommendedAction = "reference_manual"
+			hit.BlockedReasons = appendUnique(hit.BlockedReasons, "no successful run record for execution recommendation")
+		} else if hit.ScoreBreakdown.FinalScore < directThreshold(manual) {
 			hit.UsableMode = DecisionReference
 			hit.RecommendedAction = "reference_manual"
 			hit.BlockedReasons = appendUnique(hit.BlockedReasons, "manual score is below direct execution threshold")
 		}
 	}
 	hit.UsableMode = capDecision(hit.UsableMode, filter.MaxDecision)
-	return hit
+	return EnrichSearchManualHitRecommendation(hit)
 }
 
 func operationsCompatibleForSearch(manualAction, frameAction string) bool {

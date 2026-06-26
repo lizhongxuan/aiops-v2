@@ -2,6 +2,7 @@ package promptcompiler
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/cloudwego/eino/schema"
 )
@@ -12,11 +13,7 @@ import (
 
 // CompileForEino compiles and converts to Eino *schema.Message format,
 // suitable for adk.ChatModelAgent's Instruction field.
-// Produces exactly 4 system messages, one per layer, in order:
-//   - Message[0]: System Prompt (Layer 1)
-//   - Message[1]: Developer Instructions (Layer 2)
-//   - Message[2]: Tool Prompt Set (Layer 3)
-//   - Message[3]: Runtime Policy Prompt (Layer 4)
+// Produces one system message per section in the compiled envelope.
 //
 // Content is preserved exactly (round-trip semantic preservation).
 func (c *PromptCompilerImpl) CompileForEino(ctx CompileContext) ([]*schema.Message, error) {
@@ -29,8 +26,23 @@ func (c *PromptCompilerImpl) CompileForEino(ctx CompileContext) ([]*schema.Messa
 }
 
 // CompiledPromptToMessages converts a CompiledPrompt to Eino *schema.Message format.
-// Each layer becomes a system message. Content is preserved exactly.
+// Each envelope section becomes a system message. Content is preserved exactly.
 func CompiledPromptToMessages(compiled CompiledPrompt) []*schema.Message {
+	if len(compiled.Envelope.Sections) > 0 {
+		messages := make([]*schema.Message, 0, len(compiled.Envelope.Sections))
+		for _, section := range compiled.Envelope.Sections {
+			content := strings.TrimSpace(section.Content)
+			if content == "" {
+				continue
+			}
+			msg := semanticPromptMessage(content, section.ID, section.Source)
+			msg.Extra["prompt_section_id"] = section.ID
+			msg.Extra["prompt_layer"] = section.ID
+			msg.Extra["semantic_role"] = firstNonEmptyEnvelopeString(section.Source, section.ID)
+			messages = append(messages, msg)
+		}
+		return messages
+	}
 	messages := make([]*schema.Message, 0, 4)
 
 	if system := compiled.effectiveSystemPrompt(); system.Content != "" {
@@ -45,11 +57,24 @@ func CompiledPromptToMessages(compiled CompiledPrompt) []*schema.Message {
 		messages = append(messages, semanticPromptMessage(tools.Content, "tool_index", "tool"))
 	}
 
+	if dynamicContent := compiled.effectiveDynamicContextContent(); dynamicContent != "" {
+		messages = append(messages, semanticPromptMessage(dynamicContent, "dynamic_prompt", "runtime_context"))
+	}
+
 	if policy := compiled.effectiveRuntimePolicyPrompt(); policy.Content != "" {
 		messages = append(messages, semanticPromptMessage(policy.Content, "runtime_policy", "context"))
 	}
 
 	return messages
+}
+
+func firstNonEmptyEnvelopeString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func semanticPromptMessage(content, layer, semanticRole string) *schema.Message {
@@ -87,4 +112,19 @@ func (c CompiledPrompt) effectiveRuntimePolicyPrompt() RuntimePolicyPrompt {
 		return c.Policy
 	}
 	return c.Dynamic.Policy
+}
+
+func (c CompiledPrompt) effectiveDynamicContextContent() string {
+	content := strings.TrimSpace(c.Dynamic.Content)
+	if content == "" {
+		return ""
+	}
+	policyContent := strings.TrimSpace(c.Policy.Content)
+	if policyContent == "" {
+		policyContent = strings.TrimSpace(c.Dynamic.Policy.Content)
+	}
+	if policyContent != "" && strings.HasSuffix(content, policyContent) {
+		content = strings.TrimSpace(strings.TrimSuffix(content, policyContent))
+	}
+	return content
 }

@@ -580,11 +580,16 @@ func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
 		TurnID:    "turn-governance",
 		PromptInputTrace: promptinput.PromptInputTrace{
 			ContextGovernance: []promptinput.ContextGovernanceTraceItem{{
-				Layer:        "L4",
-				Kind:         "context.compaction.started",
-				Message:      "compacting token=plain-token",
-				Budget:       map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
-				ReferenceIDs: []string{"ref-1", "artifact-token=plain-token"},
+				Layer:               "L4",
+				Kind:                "context.compaction.started",
+				Message:             "compacting token=plain-token",
+				ToolCallID:          "call-logs-1",
+				ToolName:            "logs.search",
+				MaterializationTier: "large",
+				OriginalBytes:       49152,
+				InlineBytes:         512,
+				Budget:              map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
+				ReferenceIDs:        []string{"ref-1", "artifact-token=plain-token"},
 			}},
 		},
 	})
@@ -596,7 +601,7 @@ func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
 		t.Fatalf("read json trace: %v", err)
 	}
 	jsonText := string(data)
-	for _, want := range []string{`"contextGovernance"`, `"layer": "L4"`, `"kind": "context.compaction.started"`, `"autoCompactThreshold": 167000`, `"referenceIds"`} {
+	for _, want := range []string{`"contextGovernance"`, `"layer": "L4"`, `"kind": "context.compaction.started"`, `"toolCallId": "call-logs-1"`, `"toolName": "logs.search"`, `"materializationTier": "large"`, `"originalBytes": 49152`, `"inlineBytes": 512`, `"autoCompactThreshold": 167000`, `"referenceIds"`} {
 		if !strings.Contains(jsonText, want) {
 			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
 		}

@@ -19,7 +19,10 @@ type Profile struct {
 	RequiresPlan         bool     `json:"requiresPlan,omitempty"`
 	RequiresEvidence     bool     `json:"requiresEvidence,omitempty"`
 	RequiresValidation   bool     `json:"requiresValidation,omitempty"`
+	RequiresApproval     bool     `json:"requiresApproval,omitempty"`
 	AllowsFirstTurnFinal bool     `json:"allowsFirstTurnFinal,omitempty"`
+	AnalysisOnly         bool     `json:"analysisOnly,omitempty"`
+	ExecutionProhibited  bool     `json:"executionProhibited,omitempty"`
 }
 
 type Options struct {

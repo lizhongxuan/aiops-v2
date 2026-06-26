@@ -82,6 +82,7 @@ function approvalDetails(block: AiopsProcessBlock) {
     { label: "来源", value: sourceLabel(block.source) },
     { label: "影响", value: block.expectedEffect },
     { label: "回滚", value: block.rollback },
+    { label: "验收", value: block.validation },
   ].filter((item): item is { label: string; value: string } =>
     Boolean(item.value),
   );

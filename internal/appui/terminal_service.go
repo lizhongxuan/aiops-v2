@@ -39,13 +39,16 @@ func NewTerminalServiceWithCredentialResolver(manager *terminal.Manager, resolve
 	return newTerminalService(manager, resolver, hosts...)
 }
 
-func newTerminalService(manager *terminal.Manager, _ CredentialResolver, hosts ...HostRepository) TerminalService {
+func newTerminalService(manager *terminal.Manager, resolver CredentialResolver, hosts ...HostRepository) TerminalService {
 	if manager == nil {
 		manager = terminal.NewManager()
 	}
 	var hostRepo HostRepository
 	if len(hosts) > 0 {
 		hostRepo = hosts[0]
+	}
+	if hostRepo != nil && resolver != nil {
+		manager.SetCommandFactory(NewHostSSHCommandFactory(hostRepo, resolver))
 	}
 	return &defaultTerminalService{manager: manager, hosts: hostRepo}
 }

@@ -47,6 +47,14 @@ describe("AnswerDocumentRenderer", () => {
     expect(text.indexOf("已生成 Coroot 图表，分析完成后展开")).toBeLessThan(text.indexOf("Coroot RCA 查询成功"));
   });
 
+  it("marks the rendered final answer with a stable selector", async () => {
+    await act(async () => {
+      root.render(<AnswerDocumentRenderer finalText="根因：timeline 分叉。" artifacts={[]} deferredArtifacts={[]} />);
+    });
+
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.textContent).toContain("timeline 分叉");
+  });
+
   it("renders a ready Coroot chart at the semantic slot", async () => {
     await act(async () => {
       root.render(

@@ -30,7 +30,7 @@
       "model_call",
       "tool_call",
       "tool_result",
-      "final_answer"
+      "assistant_message(final_answer)"
     ],
     "expectedCapabilityPath": [
       "observability_dependency_chain_rca"

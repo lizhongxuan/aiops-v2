@@ -68,9 +68,67 @@ describe("aiopsTransportRuntime", () => {
         source: "chat",
         status: "working",
         title: "主机A跟主机B上PG不同步",
+        routeMode: "multi_host_ops",
         targetSummary: "主机A/主机B PG 与主机C pg_mon",
+        toolSurfaceSummary: "无主机执行 / HostOps",
         evidenceCount: 2,
         currentStep: "正在只读采集 PG 同步证据",
+        currentStepId: "step-tool-1",
+        checkpointId: "checkpoint-1",
+        agentRun: {
+          id: "opsrun-turn-1",
+          sessionId: "sess-1",
+          rootTurnId: "turn-1",
+          activeTurnId: "turn-1",
+          userGoal: "主机A跟主机B上PG不同步",
+          normalizedGoal: "multi host database replication issue",
+          routeMode: "multi_host_ops",
+          profile: "manager",
+          status: "running",
+          targetSummary: "主机A/主机B PG 与主机C pg_mon",
+          currentStep: "正在只读采集 PG 同步证据",
+          currentStepId: "step-tool-1",
+          checkpointId: "checkpoint-1",
+          evidenceCount: 2,
+          startedAt: "2026-06-23T01:00:00Z",
+          updatedAt: "2026-06-23T01:00:01Z",
+          steps: [
+            {
+              id: "step-tool-1",
+              runId: "opsrun-turn-1",
+              turnId: "turn-1",
+              iteration: 1,
+              kind: "tool_call",
+              status: "completed",
+              title: "读取 Coroot 指标",
+              inputSummary: "service:checkout",
+              outputSummary: "p95 latency high",
+              toolName: "coroot.service_metrics",
+              toolCallId: "call-coroot-1",
+              checkpointId: "checkpoint-1",
+              targetRefs: ["service:checkout"],
+              evidenceRefs: ["evidence-coroot-1"],
+              completedAt: "2026-06-23T01:00:01Z",
+            },
+          ],
+        },
+      },
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "working",
+          process: [
+            {
+              id: "block-tool-1",
+              kind: "tool",
+              status: "completed",
+              text: "读取 Coroot 指标",
+              source: "coroot.service_metrics",
+              toolCallId: "call-coroot-1",
+              checkpointId: "checkpoint-1",
+            },
+          ],
+        },
       },
     });
 
@@ -78,8 +136,143 @@ describe("aiopsTransportRuntime", () => {
       id: "opsrun-turn-1",
       source: "chat",
       status: "working",
+      routeMode: "multi_host_ops",
+      toolSurfaceSummary: "无主机执行 / HostOps",
       evidenceCount: 2,
+      currentStepId: "step-tool-1",
+      checkpointId: "checkpoint-1",
+      agentRun: {
+        id: "opsrun-turn-1",
+        steps: [
+          expect.objectContaining({
+            kind: "tool_call",
+            toolName: "coroot.service_metrics",
+            toolCallId: "call-coroot-1",
+          }),
+        ],
+      },
     });
+    expect(state.turns["turn-1"]?.process?.[0]?.toolCallId).toBe("call-coroot-1");
+    expect(state.turns["turn-1"]?.process?.[0]?.checkpointId).toBe("checkpoint-1");
+  });
+
+  it("filters runtime internal completion gate text from normalized turns", () => {
+    const gate = "verification completion gate: block_success_final: execution_required,missing_verification_report";
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-gate"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "completed",
+          process: [
+            {
+              id: "gate-process",
+              kind: "evidence",
+              status: "completed",
+              text: gate,
+            },
+            {
+              id: "visible-process",
+              kind: "system",
+              status: "completed",
+              text: "已识别为证据分析",
+            },
+          ],
+          final: {
+            id: "final-gate",
+            text: gate,
+            status: "completed",
+          },
+        },
+      },
+    });
+
+    expect(state.turns["turn-1"]?.process).toEqual([
+      expect.objectContaining({ id: "visible-process", text: "已识别为证据分析" }),
+    ]);
+    expect(state.turns["turn-1"]?.final).toBeUndefined();
+  });
+
+  it("redacts risky assistant final operations without hiding the RCA answer", () => {
+    const risky = [
+      "## 结论",
+      "timeline 已经分叉。",
+      "",
+      "## 修复方向",
+      "可以执行 rm -rf $PG_DATA/recovery/repos/archive/paf/15-1/* 清理 archive。",
+      "下一步先确认 pgbackrest info 和恢复日志。",
+    ].join("\n");
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-risky"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "completed",
+          process: [
+            {
+              id: "assistant-risky",
+              kind: "assistant",
+              displayKind: "assistant.message",
+              phase: "final_answer",
+              streamState: "complete",
+              status: "completed",
+              text: risky,
+            },
+            {
+              id: "visible-system",
+              kind: "system",
+              status: "completed",
+              text: "已识别为证据分析",
+            },
+          ],
+          final: {
+            id: "final-risky",
+            text: risky,
+            status: "completed",
+          },
+        },
+      },
+    });
+
+    expect(state.turns["turn-1"]?.final?.text).toContain("timeline 已经分叉");
+    expect(state.turns["turn-1"]?.final?.text).toContain("下一步先确认");
+    expect(state.turns["turn-1"]?.final?.text).not.toContain("涉及清空数据目录或归档清理的高风险操作");
+    expect(state.turns["turn-1"]?.final?.text).not.toContain("rm -rf");
+    expect(state.turns["turn-1"]?.process).toEqual([
+      expect.objectContaining({
+        id: "assistant-risky",
+        text: expect.stringContaining("timeline 已经分叉"),
+      }),
+      expect.objectContaining({ id: "visible-system", text: "已识别为证据分析" }),
+    ]);
+  });
+
+  it("keeps RCA cause lines that mention residual PGDATA without direct mutation advice", () => {
+    const final = [
+      "可能导致 B timeline 更高的具体原因：",
+      "1. **B 的 `$PGDATA` 未完全清空**：步骤 4.2 要求清空，但若残留旧 `.history` 文件或 WAL 段，PostgreSQL 启动时可能识别到更高 timeline 起点并沿其分支。",
+      "2. **pg_autoctl 将 B 初始化为独立主库而非 standby**：若 monitor 中有旧节点残留，可能触发 promote 产生新 timeline。",
+    ].join("\n");
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-residual-pgdata"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "completed",
+          final: {
+            id: "final-residual-pgdata",
+            text: final,
+            status: "completed",
+          },
+        },
+      },
+    });
+
+    expect(state.turns["turn-1"]?.final?.text).toContain("1. **B 的 `$PGDATA` 未完全清空**");
+    expect(state.turns["turn-1"]?.final?.text).toContain("2. **pg_autoctl 将 B 初始化为独立主库");
   });
 
   it("builds custom AssistantTransport commands from the current state", () => {
@@ -136,7 +329,24 @@ describe("aiopsTransportRuntime", () => {
       status: "working",
       currentTurnId: "turn-1",
       turns: {
-        "turn-1": { id: "turn-1", status: "working" },
+        "turn-1": {
+          id: "turn-1",
+          status: "working",
+          process: [
+            {
+              id: "reasoning-1",
+              kind: "reasoning",
+              status: "running",
+              text: "正在等待模型返回",
+            },
+            {
+              id: "tool-1",
+              kind: "tool",
+              status: "completed",
+              text: "已读取日志",
+            },
+          ],
+        },
       },
     } satisfies AiopsTransportState;
 
@@ -151,9 +361,26 @@ describe("aiopsTransportRuntime", () => {
     expect(canceled).toMatchObject({
       status: "canceled",
       lastError: "user canceled",
-      turns: { "turn-1": { status: "canceled" } },
+      turns: {
+        "turn-1": {
+          status: "canceled",
+          process: [
+            {
+              id: "reasoning-1",
+              status: "rejected",
+              text: "模型调用已取消",
+            },
+            {
+              id: "tool-1",
+              status: "completed",
+              text: "已读取日志",
+            },
+          ],
+        },
+      },
     });
     expect(state.status).toBe("working");
     expect(state.turns["turn-1"]?.status).toBe("working");
+    expect(state.turns["turn-1"]?.process?.[0]?.text).toBe("正在等待模型返回");
   });
 });

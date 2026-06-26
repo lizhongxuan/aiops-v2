@@ -145,6 +145,11 @@ fi
 eval_out="${out}/eval"
 mkdir -p "$out"
 
+bash scripts/check-no-core-string-semantics.sh
+bash scripts/check-aiops-agent-runtime-context-single-path.sh
+go test ./internal/promptcompiler -run 'TestPromptBaselineBudgetByProfile|Test.*NoCrossProfile|TestRuntimePolicyOnlyContainsDynamicState|TestToolSurfaceSummaryBudget' -count=1
+go test ./internal/eval -run TestAgentRuntimeContextOptimizationTrace -count=1
+
 eval_args=(
   go run ./cmd/agent-eval
   -agent "$agent"

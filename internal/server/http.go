@@ -224,6 +224,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/mcp/servers", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/refresh", s.handleMCPServersRefresh)
+	s.mux.HandleFunc("/api/v2/runtime/mcp-health", s.handleRuntimeMCPHealth)
+	s.mux.HandleFunc("/api/v2/runtime/mcp-health/", s.handleRuntimeMCPHealth)
 	s.registerCapabilityRoutes()
 	s.registerAgentProfileRoutes()
 	s.mux.Handle("/api/v1/auth/", buildAuthRouter(s.ui, http.NotFoundHandler()))

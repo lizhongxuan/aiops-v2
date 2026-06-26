@@ -43,6 +43,19 @@ func TestResolveMentionsLeavesUnknownIPUnresolved(t *testing.T) {
 	}
 }
 
+func TestResolverMapsLocalAliasToServerLocal(t *testing.T) {
+	resolver := NewResolver(staticHostLookup{
+		{ID: "server-local", Hostname: "localhost", Address: "127.0.0.1", DisplayName: "Local"},
+	})
+	resolved, errs := resolver.Resolve(context.Background(), ParseHostMentions("@local 检查主机"))
+	if len(errs) != 0 {
+		t.Fatalf("errs = %#v, want none", errs)
+	}
+	if len(resolved) != 1 || !resolved[0].Resolved || resolved[0].HostID != "server-local" {
+		t.Fatalf("resolved = %#v, want server-local", resolved)
+	}
+}
+
 type staticHostLookup []HostRecordView
 
 func (lookup staticHostLookup) ListHosts(context.Context) ([]HostRecordView, error) {

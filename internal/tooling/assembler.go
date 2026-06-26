@@ -92,6 +92,35 @@ func (a *Assembler) AssembleToolPoolWithMetadata(session, mode string, metadata 
 	return AssembleEinoToolPool(a.CompileContextWithMetadata(session, mode, metadata))
 }
 
+// ToolHealthSnapshots returns dynamic provider health snapshots keyed by source
+// id. It keeps health metadata attached to the same catalog provider that
+// supplies dynamic tools, avoiding a parallel lookup path.
+func (a *Assembler) ToolHealthSnapshots() map[string]string {
+	if a == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, provider := range a.providers {
+		healthProvider, ok := provider.(interface {
+			ToolHealthSnapshots() map[string]string
+		})
+		if !ok {
+			continue
+		}
+		for id, status := range healthProvider.ToolHealthSnapshots() {
+			id = strings.TrimSpace(id)
+			status = strings.ToLower(strings.TrimSpace(status))
+			if id != "" && status != "" {
+				out[id] = status
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // RefreshToken returns a stable token that changes when the assembled tool
 // surface changes. It can be used by runtimekernel to decide whether an
 // iteration must refresh its tool context.

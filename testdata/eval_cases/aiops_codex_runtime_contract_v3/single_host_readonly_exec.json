@@ -1,0 +1,37 @@
+{
+  "name": "single_host_readonly_exec",
+  "input": "在 host-a 上只读检查 CPU、内存和磁盘空间，并给出证据摘要。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "hostops.synthetic_completed_turn"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.cpu_mem_disk"
+    ],
+    "evidenceRefs": [
+      "evidence:cpu",
+      "evidence:memory",
+      "evidence:disk"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "tool_call",
+      "tool_result",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "verification_pass",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

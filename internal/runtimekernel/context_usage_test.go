@@ -110,6 +110,34 @@ func TestContextUsageCategorizesHostTaskPromptAssetsSeparately(t *testing.T) {
 	}
 }
 
+func TestContextUsageUsesBudgetedDynamicSources(t *testing.T) {
+	rawSkill := strings.Repeat("raw skill body ", 1000)
+	usage := AnalyzeContextUsage(ContextUsageInput{
+		Compiled: promptcompiler.CompiledPrompt{
+			Dynamic: promptcompiler.DynamicPromptDelta{
+				Sources: []promptcompiler.DynamicContextSource{{
+					ID:          promptcompiler.DynamicContextSourceSkill,
+					Content:     "summary only",
+					TokenBudget: 1000,
+					Overflowed:  true,
+					SourceRef:   "prompt_trace://dynamic.skill",
+					EvidenceRef: "dynamic.skill:overflow",
+				}},
+				SkillPromptAssets: []string{rawSkill},
+			},
+		},
+	})
+
+	if got := categoryTokens(usage, "skills"); got == 0 || got > 20 {
+		t.Fatalf("skills tokens = %d, want bounded source tokens instead of raw asset; usage=%#v", got, usage)
+	}
+	for _, contributor := range usage.TopContributors {
+		if strings.Contains(contributor.Action, "raw skill body") {
+			t.Fatalf("context usage leaked raw dynamic source overflow: %#v", contributor)
+		}
+	}
+}
+
 func categoryTokens(usage ContextUsage, name string) int {
 	for _, category := range usage.Categories {
 		if category.Name == name {

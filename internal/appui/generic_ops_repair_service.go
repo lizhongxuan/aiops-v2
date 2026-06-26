@@ -246,12 +246,17 @@ func genericOpsRepairPlanItem(req runtimekernel.TurnRequest, plan *opsrepair.Rep
 func genericOpsRepairFinalItem(req runtimekernel.TurnRequest, final string, now time.Time) agentstate.TurnItem {
 	return agentstate.TurnItem{
 		ID:     req.TurnID + "-final",
-		Type:   agentstate.TurnItemTypeFinalAnswer,
+		Type:   agentstate.TurnItemTypeAssistantMessage,
 		Status: agentstate.ItemStatusCompleted,
 		Payload: agentstate.PayloadEnvelope{
-			Kind:    "assistant",
+			Kind:    "assistant_message",
 			Summary: final,
-			Data:    mustJSON(map[string]any{"text": final, "channel": "final"}),
+			Data: mustJSON(map[string]any{
+				"displayKind":    "assistant.message",
+				"phase":          "final_answer",
+				"streamState":    "complete",
+				"boundaryAction": "allow",
+			}),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,

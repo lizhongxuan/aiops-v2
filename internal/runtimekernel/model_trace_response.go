@@ -19,17 +19,24 @@ type modelTraceResponseUsage struct {
 	TotalTokens      int `json:"total_tokens,omitempty"`
 }
 
-func appendModelTraceResponse(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error) {
+type ModelStreamStats struct {
+	FirstDeltaMs int64 `json:"first_delta_ms,omitempty"`
+	StreamMs     int64 `json:"stream_ms,omitempty"`
+	DeltaCount   int   `json:"delta_count,omitempty"`
+	OutputChars  int   `json:"output_chars,omitempty"`
+}
+
+func appendModelTraceResponse(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error, stats ...ModelStreamStats) {
 	if strings.TrimSpace(tracePath) == "" {
 		return
 	}
-	if err := appendModelTraceResponseFile(tracePath, requestID, response, duration, callErr); err != nil {
+	if err := appendModelTraceResponseFile(tracePath, requestID, response, duration, callErr, stats...); err != nil {
 		// Prompt Trace is diagnostic-only. Runtime behavior must not depend on it.
 		return
 	}
 }
 
-func appendModelTraceResponseFile(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error) error {
+func appendModelTraceResponseFile(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error, stats ...ModelStreamStats) error {
 	if filepath.Ext(tracePath) != ".json" {
 		return nil
 	}
@@ -42,7 +49,7 @@ func appendModelTraceResponseFile(tracePath, requestID string, response *schema.
 		return err
 	}
 
-	entry := modelTraceResponseEntry(requestID, response, duration, callErr)
+	entry := modelTraceResponseEntry(requestID, response, duration, callErr, firstModelStreamStats(stats))
 	requests, _ := payload["llmRequests"].([]any)
 	requests = append(requests, entry)
 	payload["llmRequests"] = requests
@@ -59,6 +66,14 @@ func appendModelTraceResponseFile(tracePath, requestID string, response *schema.
 	if errText, ok := entry["error"]; ok {
 		payload["error"] = errText
 	}
+	if finishReason, ok := entry["finishReason"]; ok {
+		payload["finishReason"] = finishReason
+	}
+	for _, key := range []string{"first_delta_ms", "stream_ms", "delta_count", "output_chars"} {
+		if value, ok := entry[key]; ok {
+			payload[key] = value
+		}
+	}
 
 	next, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -67,7 +82,7 @@ func appendModelTraceResponseFile(tracePath, requestID string, response *schema.
 	return os.WriteFile(tracePath, append(next, '\n'), 0o644)
 }
 
-func modelTraceResponseEntry(requestID string, response *schema.Message, duration time.Duration, callErr error) map[string]any {
+func modelTraceResponseEntry(requestID string, response *schema.Message, duration time.Duration, callErr error, stats ModelStreamStats) map[string]any {
 	entry := map[string]any{
 		"id": strings.TrimSpace(requestID),
 	}
@@ -75,11 +90,7 @@ func modelTraceResponseEntry(requestID string, response *schema.Message, duratio
 		entry["id"] = "llm-request"
 	}
 	if duration > 0 {
-		durationMs := duration.Milliseconds()
-		if durationMs <= 0 {
-			durationMs = 1
-		}
-		entry["duration_ms"] = durationMs
+		entry["duration_ms"] = durationMilliseconds(duration)
 	}
 	if response != nil {
 		if output := strings.TrimSpace(diagnostics.RedactSensitiveText(response.Content)); output != "" {
@@ -100,7 +111,41 @@ func modelTraceResponseEntry(requestID string, response *schema.Message, duratio
 	if callErr != nil {
 		entry["error"] = diagnostics.RedactSensitiveText(callErr.Error())
 	}
+	appendModelStreamStats(entry, stats)
 	return entry
+}
+
+func firstModelStreamStats(stats []ModelStreamStats) ModelStreamStats {
+	if len(stats) == 0 {
+		return ModelStreamStats{}
+	}
+	return stats[0]
+}
+
+func appendModelStreamStats(entry map[string]any, stats ModelStreamStats) {
+	if stats.FirstDeltaMs > 0 {
+		entry["first_delta_ms"] = stats.FirstDeltaMs
+	}
+	if stats.StreamMs > 0 {
+		entry["stream_ms"] = stats.StreamMs
+	}
+	if stats.DeltaCount > 0 {
+		entry["delta_count"] = stats.DeltaCount
+	}
+	if stats.OutputChars > 0 {
+		entry["output_chars"] = stats.OutputChars
+	}
+}
+
+func durationMilliseconds(duration time.Duration) int64 {
+	if duration <= 0 {
+		return 0
+	}
+	durationMs := duration.Milliseconds()
+	if durationMs <= 0 {
+		return 1
+	}
+	return durationMs
 }
 
 func modelTraceUsageFromResponse(usage *schema.TokenUsage) *modelTraceResponseUsage {

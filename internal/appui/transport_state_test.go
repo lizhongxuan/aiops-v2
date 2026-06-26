@@ -5,6 +5,9 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimekernel"
 )
 
 func TestTransportStateInitializesDefaults(t *testing.T) {
@@ -232,5 +235,113 @@ func TestChildAgentTransportPreservesFullRuntimeTraceFields(t *testing.T) {
 
 	if !reflect.DeepEqual(roundTrip, child) {
 		t.Fatalf("round trip mismatch:\n got: %#v\nwant: %#v", roundTrip, child)
+	}
+}
+
+func TestTransportProjectionStandardizesTimelineFromTurnItems(t *testing.T) {
+	now := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	required := []agentstate.TurnItemType{
+		agentstate.TurnItemTypeRouteSelected,
+		agentstate.TurnItemTypeToolSurfaceSnapshot,
+		agentstate.TurnItemTypeAssistantMessage,
+		agentstate.TurnItemTypeToolCall,
+		agentstate.TurnItemTypeToolResult,
+		agentstate.TurnItemTypeApprovalRequested,
+		agentstate.TurnItemTypeApprovalDecided,
+		agentstate.TurnItemTypeChildAgentStarted,
+		agentstate.TurnItemTypeChildAgentResult,
+		agentstate.TurnItemTypeContextCompacted,
+		agentstate.TurnItemTypePendingInputAccepted,
+		agentstate.TurnItemTypeTurnCancelled,
+		agentstate.TurnItemTypePermissionSnapshot,
+		agentstate.TurnItemTypeResourceLock,
+	}
+	items := make([]agentstate.TurnItem, 0, len(required))
+	for index, typ := range required {
+		items = append(items, agentstate.TurnItem{
+			ID:        string(typ) + "-1",
+			Type:      typ,
+			Status:    agentstate.ItemStatusCompleted,
+			Payload:   agentstate.PayloadEnvelope{Kind: string(typ), Summary: "timeline item " + string(typ)},
+			CreatedAt: now.Add(time.Duration(index) * time.Second),
+			UpdatedAt: now.Add(time.Duration(index) * time.Second),
+		})
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-timeline",
+		SessionID:   "session-timeline",
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Minute),
+		AgentItems:  items,
+		FinalOutput: "approval_requested context_compacted resource_lock only appears in final markdown",
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-timeline", "thread-timeline"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	timeline := projected.Turns["turn-timeline"].Timeline
+	if len(timeline) != len(required) {
+		t.Fatalf("timeline length = %d, want %d: %#v", len(timeline), len(required), timeline)
+	}
+	for index, typ := range required {
+		item := timeline[index]
+		if item.Type != string(typ) {
+			t.Fatalf("timeline[%d].Type = %q, want %q", index, item.Type, typ)
+		}
+		if item.ID == "" || item.Status == "" || item.Text == "" || item.PayloadKind == "" {
+			t.Fatalf("timeline[%d] missing stable fields: %#v", index, item)
+		}
+	}
+}
+
+func TestTransportProjectionPreservesInterleavedProgressToolFinalOrder(t *testing.T) {
+	now := time.Date(2026, 6, 26, 9, 0, 0, 0, time.UTC)
+	items := []agentstate.TurnItem{
+		{ID: "message-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "assistant_message", Summary: "先查公开资料。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`)}, CreatedAt: now},
+		{ID: "tool-call-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_call", Summary: "web_search"}, CreatedAt: now.Add(time.Second)},
+		{ID: "tool-result-1", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_result", Summary: "web_search result"}, CreatedAt: now.Add(2 * time.Second)},
+		{ID: "message-2", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "assistant_message", Summary: "再核对主机只读状态。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`)}, CreatedAt: now.Add(3 * time.Second)},
+		{ID: "tool-call-2", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_call", Summary: "exec_readonly"}, CreatedAt: now.Add(4 * time.Second)},
+		{ID: "tool-result-2", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_result", Summary: "exec_readonly result"}, CreatedAt: now.Add(5 * time.Second)},
+		{ID: "tool-call-3", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_call", Summary: "read_config"}, CreatedAt: now.Add(6 * time.Second)},
+		{ID: "tool-result-3", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_result", Summary: "read_config result"}, CreatedAt: now.Add(7 * time.Second)},
+		{ID: "message-final", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "assistant_message", Summary: "结论：已有证据不足以确认异常。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(8 * time.Second)},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:         "turn-interleaved-order",
+		SessionID:  "session-interleaved-order",
+		Lifecycle:  runtimekernel.TurnLifecycleCompleted,
+		StartedAt:  now,
+		UpdatedAt:  now.Add(8 * time.Second),
+		AgentItems: items,
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-interleaved-order", "thread-interleaved-order"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	timeline := projected.Turns["turn-interleaved-order"].Timeline
+	want := []string{
+		"assistant_message",
+		"tool_call",
+		"tool_result",
+		"assistant_message",
+		"tool_call",
+		"tool_result",
+		"tool_call",
+		"tool_result",
+		"assistant_message",
+	}
+	if len(timeline) != len(want) {
+		t.Fatalf("timeline length = %d, want %d: %#v", len(timeline), len(want), timeline)
+	}
+	for i, wantType := range want {
+		if timeline[i].Type != wantType {
+			t.Fatalf("timeline[%d].Type = %q, want %q; timeline=%#v", i, timeline[i].Type, wantType, timeline)
+		}
 	}
 }

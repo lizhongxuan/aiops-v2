@@ -119,6 +119,7 @@ export function parsePromptTrace(input) {
       messageCount: layers.length,
       visibleToolCount: visibleTools.length,
       promptCharCount,
+      toolRegistryCharCount: toolRegistryText.length,
       roleCounts,
       layerCounts,
       largestLayer,
@@ -356,6 +357,8 @@ function buildContextGovernanceViewModel(payload = {}) {
     kind: event.kind,
     label: `${event.layer || "context"} / ${event.kind || "event"}`,
   })));
+  const externalKnowledgeEvidence = normalizeWebLearnEvidence(firstCollection(payload.webLearnEvidence, payload.web_learn_evidence, payload.metadata?.webLearnEvidence, payload.metadata?.web_learn_evidence));
+  const environmentContext = normalizeEnvironmentContext(payload);
 
   return {
     emptyText: CONTEXT_GOVERNANCE_EMPTY_TEXT,
@@ -366,15 +369,92 @@ function buildContextGovernanceViewModel(payload = {}) {
       compactionEventCount: compactionEvents.length,
       materializationEventCount: materializationEvents.length,
       externalReferenceCount: externalReferences.length,
+      externalKnowledgeCount: externalKnowledgeEvidence.length,
+      hasEnvironmentContext: Boolean(environmentContext),
       hasCompaction: compactionEvents.length > 0,
       hasMaterialization: materializationEvents.length > 0,
       hasExternalReferences: externalReferences.length > 0,
+      hasExternalKnowledge: externalKnowledgeEvidence.length > 0,
     },
     budgetEvents,
     compactionEvents,
     materializationEvents,
     externalReferences,
+    externalKnowledgeEvidence,
+    environmentContext,
   };
+}
+
+function normalizeWebLearnEvidence(value) {
+  return collectionToRecords(value, "id").map((entry, index) => {
+    const id = redactSensitiveText(firstText(entry.id, entry.ID, `weblearn-${index + 1}`));
+    const sourceUrl = redactSensitiveText(firstText(entry.sourceURL, entry.sourceUrl, entry.source_url, entry.url));
+    return {
+      id,
+      kind: redactSensitiveText(firstText(entry.kind, entry.Kind, "external_knowledge")),
+      query: redactSensitiveText(firstText(entry.query, entry.Query)),
+      sourceTitle: redactSensitiveText(firstText(entry.sourceTitle, entry.source_title, entry.title)),
+      sourceURL: sourceUrl,
+      sourceKind: redactSensitiveText(firstText(entry.sourceKind, entry.source_kind)),
+      product: redactSensitiveText(firstText(entry.product)),
+      version: redactSensitiveText(firstText(entry.version)),
+      applicability: redactSensitiveText(firstText(entry.applicability)),
+      confidence: redactSensitiveText(firstText(entry.confidence)),
+      relevantExcerpt: redactSensitiveText(firstText(entry.relevantExcerpt, entry.relevant_excerpt, entry.excerpt)),
+      retrievedAt: redactSensitiveText(firstText(entry.retrievedAt, entry.retrieved_at)),
+    };
+  }).filter((entry) => entry.id || entry.query || entry.sourceTitle || entry.sourceURL || entry.relevantExcerpt);
+}
+
+function normalizeEnvironmentContext(payload = {}) {
+  const metadata = isPlainObject(payload.metadata) ? payload.metadata : {};
+  const source = firstObject(
+    payload.environmentContext,
+    payload.environment_context,
+    metadata.environmentContext,
+    metadata.environment_context,
+  );
+  const targetRefs = collectMetadataStringList(
+    source.targetRefs,
+    source.target_refs,
+    metadata["aiops.target.refs"],
+    metadata["aiops.tool.targetRefs"],
+  );
+  const compactContext = redactSensitiveText(firstText(
+    source.compactContext,
+    source.compact_context,
+    metadata["aiops.env.compactContext"],
+    metadata["aiops.env.context"],
+  ));
+  const readOnlyReason = redactSensitiveText(firstText(
+    source.readOnlyReason,
+    source.read_only_reason,
+    metadata["aiops.env.readOnlyReason"],
+  ));
+  const hasConflict = Boolean(source.hasConflict || source.has_conflict)
+    || Boolean(readOnlyReason)
+    || /ConflictFacts|target_conflict|conflict/i.test(compactContext);
+  if (!targetRefs.length && !compactContext && !readOnlyReason && !hasConflict) return null;
+  return {
+    targetRefs,
+    compactContext,
+    readOnlyReason,
+    hasConflict,
+  };
+}
+
+function collectMetadataStringList(...values) {
+  const out = [];
+  for (const value of values) {
+    const entries = Array.isArray(value)
+      ? value
+      : compactText(value).split(/[,\n\r\t]+/);
+    for (const entry of entries) {
+      const text = redactSensitiveText(compactText(entry));
+      if (text && !out.includes(text)) out.push(text);
+    }
+  }
+  return out;
 }
 
 function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
@@ -397,7 +477,15 @@ function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
   const filteredTools = normalizeFilteredTools(firstCollection(top.filteredTools), selectionEvents);
   const mcpHealth = normalizeMcpHealth(top.mcpHealth, deferredFamilies);
   const toolSearchEvents = normalizeToolSearchEvents(firstCollection(top.toolSearchEvents, payload.toolSearchEvents, promptTrace.toolSearchEvents));
-  const rejectedToolReasons = normalizeRejectedToolReasons(firstCollection(top.rejectedToolReasons, payload.rejectedToolCalls, promptTrace.rejectedToolCalls));
+  const rejectedToolReasons = [
+    ...normalizeRejectedToolReasons(firstCollection(top.rejectedToolReasons, payload.rejectedToolCalls, promptTrace.rejectedToolCalls)),
+    ...toolSearchEvents.flatMap((event) => event.rejectedReasons.map((reason) => ({
+      ...reason,
+      errorType: reason.reason || reason.filteredReason,
+      requiredAction: reason.healthStatus,
+      source: "tool_search",
+    }))),
+  ];
 
   return {
     summary: {
@@ -494,14 +582,44 @@ function normalizeMcpHealth(value, deferredFamilies = []) {
 }
 
 function normalizeToolSearchEvents(value) {
-  return collectionToRecords(value, "id").map((event, index) => ({
-    id: redactSensitiveText(firstText(event.id, `tool-search-${index + 1}`)),
-    mode: redactSensitiveText(firstText(event.mode)),
-    query: redactSensitiveText(firstText(event.query)),
-    matchCount: numberOrZero(event.matchCount || event.match_count),
-    matches: collectStringList(event.matches),
-    reason: redactSensitiveText(firstText(event.reason)),
-  }));
+  return collectionToRecords(value, "id").map((event, index) => {
+    const request = firstObject(event.request, event.searchRequest, event.search_request);
+    const rejectedReasons = normalizeToolSearchRejectedReasons(firstCollection(event.rejectedReasons, event.rejected_reasons, event.rejected));
+    const rejectedCount = numberOrZero(event.rejectedCount || event.rejected_count) || rejectedReasons.length;
+    return {
+      id: redactSensitiveText(firstText(event.id, `tool-search-${index + 1}`)),
+      mode: redactSensitiveText(firstText(event.mode)),
+      query: redactSensitiveText(firstText(event.query, request.query)),
+      ranker: redactSensitiveText(firstText(event.ranker, request.ranker)),
+      intent: redactSensitiveText(firstText(event.intent, request.intent)),
+      targetRefs: collectStringList(event.targetRefs, event.target_refs, request.targetRefs, request.target_refs),
+      requiredCaps: collectStringList(event.requiredCaps, event.required_caps, request.requiredCaps, request.required_caps),
+      forbiddenCaps: collectStringList(event.forbiddenCaps, event.forbidden_caps, request.forbiddenCaps, request.forbidden_caps),
+      riskLevel: redactSensitiveText(firstText(event.riskLevel, event.risk_level, request.riskLevel, request.risk_level)),
+      environmentFacts: collectStringList(event.environmentFacts, event.environment_facts, request.environmentFacts, request.environment_facts),
+      targetCompatibility: redactSensitiveText(firstText(event.targetCompatibility, event.target_compatibility)),
+      riskDecision: redactSensitiveText(firstText(event.riskDecision, event.risk_decision)),
+      matchReasons: collectStringList(event.matchReasons, event.match_reasons),
+      matchCount: numberOrZero(event.matchCount || event.match_count),
+      rejectedCount,
+      matches: collectStringList(event.matches),
+      mcpHealth: normalizeMcpHealth(firstObject(event.mcpHealth, event.mcp_health, request.mcpHealth, request.mcp_health)),
+      rejectedReasons,
+      reason: redactSensitiveText(firstText(event.reason)),
+    };
+  });
+}
+
+function normalizeToolSearchRejectedReasons(value) {
+  return collectionToRecords(value, "toolName").map((entry) => ({
+    toolName: redactSensitiveText(firstText(entry.toolName, entry.tool_name, entry.name)),
+    reason: redactSensitiveText(firstText(entry.reason)),
+    status: redactSensitiveText(firstText(entry.status)),
+    source: redactSensitiveText(firstText(entry.source)),
+    mcpServerId: redactSensitiveText(firstText(entry.mcpServerId, entry.mcp_server_id, entry.mcpServerID)),
+    healthStatus: redactSensitiveText(firstText(entry.healthStatus, entry.health_status)),
+    filteredReason: redactSensitiveText(firstText(entry.filteredReason, entry.filtered_reason)),
+  })).filter((entry) => entry.toolName || entry.reason || entry.filteredReason);
 }
 
 function normalizeRejectedToolReasons(value) {
@@ -527,6 +645,18 @@ function normalizeContextGovernanceEvent(source, index) {
   const layer = redactSensitiveText(firstText(source.layer, metadata.layer));
   const kind = redactSensitiveText(firstText(source.kind, source.type, metadata.kind, metadata.type));
   const message = redactSensitiveText(firstText(source.message, source.summary, metadata.message, metadata.summary));
+  const toolCallId = redactSensitiveText(firstText(source.toolCallId, source.tool_call_id, metadata.toolCallId, metadata.tool_call_id));
+  const toolName = redactSensitiveText(firstText(source.toolName, source.tool_name, metadata.toolName, metadata.tool_name));
+  const materializationTier = redactSensitiveText(firstText(
+    source.materializationTier,
+    source.materialization_tier,
+    source.tier,
+    metadata.materializationTier,
+    metadata.materialization_tier,
+    metadata.tier,
+  ));
+  const originalBytes = numberOrZero(firstText(source.originalBytes, source.original_bytes, metadata.originalBytes, metadata.original_bytes));
+  const inlineBytes = numberOrZero(firstText(source.inlineBytes, source.inline_bytes, metadata.inlineBytes, metadata.inline_bytes));
   const retryAttempt = numberOrZero(firstText(source.retryAttempt, source.retry_attempt, metadata.retryAttempt, metadata.retry_attempt));
   const retryMax = numberOrZero(firstText(source.retryMax, source.retry_max, metadata.retryMax, metadata.retry_max));
   const referenceIds = collectStringList(source.referenceIds, source.reference_ids, source.references, source.refs, metadata.referenceIds, metadata.reference_ids);
@@ -539,6 +669,11 @@ function normalizeContextGovernanceEvent(source, index) {
     layer,
     kind,
     message,
+    toolCallId,
+    toolName,
+    materializationTier,
+    originalBytes,
+    inlineBytes,
     createdAt: redactSensitiveText(firstText(source.createdAt, source.created_at, metadata.createdAt, metadata.created_at)),
     timeout: Boolean(source.timeout || metadata.timeout),
     retryAttempt,
@@ -594,6 +729,16 @@ function collectStringList(...values) {
 function numberOrZero(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const text = compactText(value);
+    if (!text && value !== 0) continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
 }
 
 function findLast(items, predicate) {
@@ -761,6 +906,15 @@ function buildLlmRequestDetail(source, metadata, requestBody, messages, layers, 
     layerContent(layers, "assistant"),
   );
   const error = firstText(source.error, source.errorMessage, source.error_message, metadata.error, payload.error, payload.errorMessage);
+  const metrics = {
+    durationMs: firstFiniteNumber(source.durationMs, source.duration_ms, source.latencyMs, source.latency_ms, source.elapsedMs, source.elapsed_ms, metadata.durationMs, metadata.duration_ms),
+    firstDeltaMs: firstFiniteNumber(source.firstDeltaMs, source.first_delta_ms, source.firstTokenMs, source.first_token_ms, metadata.firstDeltaMs, metadata.first_delta_ms, payload.firstDeltaMs, payload.first_delta_ms),
+    streamMs: firstFiniteNumber(source.streamMs, source.stream_ms, metadata.streamMs, metadata.stream_ms, payload.streamMs, payload.stream_ms),
+    deltaCount: firstFiniteNumber(source.deltaCount, source.delta_count, metadata.deltaCount, metadata.delta_count, payload.deltaCount, payload.delta_count),
+    outputChars: firstFiniteNumber(source.outputChars, source.output_chars, metadata.outputChars, metadata.output_chars, payload.outputChars, payload.output_chars),
+  };
+  const finishReason = redactSensitiveText(firstText(source.finishReason, source.finish_reason, metadata.finishReason, metadata.finish_reason, payload.finishReason, payload.finish_reason));
+  const promptCharCount = layers.reduce((sum, item) => sum + item.charCount, 0) || promptObjectCharCount(isPlainObject(payload.prompt) ? payload.prompt : {});
 
   return {
     systemPrompt: redactOrEmpty(systemPrompt, DETAIL_EMPTY_TEXT.systemPrompt),
@@ -772,7 +926,19 @@ function buildLlmRequestDetail(source, metadata, requestBody, messages, layers, 
     error: redactOrEmpty(error, DETAIL_EMPTY_TEXT.error),
     tokens: formatUsage(source.usage || metadata.usage || payload.usage || requestBody?.usage),
     duration: formatDuration(firstText(source.durationMs, source.duration_ms, source.latencyMs, source.latency_ms, source.elapsedMs, source.elapsed_ms, metadata.durationMs, metadata.duration_ms)),
+    finishReason: finishReason || "",
+    metrics,
+    slowCauses: buildLlmSlowCauses(metrics, promptCharCount),
   };
+}
+
+function buildLlmSlowCauses(metrics, promptCharCount) {
+  const causes = [];
+  if ((metrics.firstDeltaMs || 0) > 30000) causes.push({ id: "first_delta_slow", label: "首 token 慢" });
+  if ((metrics.outputChars || 0) > 6000) causes.push({ id: "output_too_long", label: "输出过长" });
+  if ((metrics.deltaCount || 0) > 1000) causes.push({ id: "stream_fragmented", label: "流式碎片过多" });
+  if ((promptCharCount || 0) > 30000) causes.push({ id: "prompt_large", label: "提示内容偏大" });
+  return causes;
 }
 
 function buildLlmRequests(artifacts, toolCalls, explicitLlmRequests, payload, layers) {

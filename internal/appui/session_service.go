@@ -77,7 +77,7 @@ func (s *defaultSessionService) CreateSession(_ context.Context, kind string, ho
 	}
 	session := s.writer.GetOrCreate("", sessionType, mode)
 	if normalizedKind == "single_host" {
-		session.HostID = resolveCreateSessionHostID(hostID, session.HostID)
+		session.HostID = resolveCreateSessionHostID(hostID)
 	}
 	s.writer.Update(session)
 	return s.buildMutationResponse(session), nil
@@ -90,9 +90,6 @@ func (s *defaultSessionService) ActivateSession(_ context.Context, sessionID str
 	session := s.writer.Get(sessionID)
 	if session == nil {
 		return SessionMutationResponse{}, fmt.Errorf("session %q not found", sessionID)
-	}
-	if session.Type == runtimekernel.SessionTypeHost && session.HostID == "" {
-		session.HostID = "server-local"
 	}
 	s.writer.Update(session)
 	return s.buildMutationResponse(session), nil
@@ -107,16 +104,13 @@ func (s *defaultSessionService) buildMutationResponse(active *runtimekernel.Sess
 	}
 }
 
-func resolveCreateSessionHostID(requested []string, existing string) string {
+func resolveCreateSessionHostID(requested []string) string {
 	for _, candidate := range requested {
 		if hostID := strings.TrimSpace(candidate); hostID != "" {
 			return hostID
 		}
 	}
-	if hostID := strings.TrimSpace(existing); hostID != "" {
-		return hostID
-	}
-	return serverLocalHostID
+	return ""
 }
 
 func mapCreateKind(kind string) (runtimekernel.SessionType, runtimekernel.Mode, string, error) {

@@ -54,6 +54,10 @@ func TestRunTurn_AutoRecordsEvidenceForRawRefToolResult(t *testing.T) {
 		Mode:        ModeInspect,
 		TurnID:      "turn-auto-evidence",
 		Input:       "检查 checkout 延迟",
+		Metadata: map[string]string{
+			"aiops.coroot.explicitMention": "true",
+			"aiops.tool.corootRCAAllowed":  "true",
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)

@@ -12,6 +12,9 @@ import (
 // tools like curl where the executable alone is not enough to decide safety.
 func IsReadOnlyCommand(command string, args []string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
+	if IsHardDeniedCommand(command, args) {
+		return false
+	}
 	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
 		return IsReadOnlyCommand(wrappedCommand, wrappedArgs)
 	}
@@ -27,6 +30,9 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "hostnamectl" {
 		return isReadOnlyHostnamectlArgs(args)
 	}
+	if base == "systemctl" {
+		return isReadOnlySystemctlArgs(args)
+	}
 	if base == "sed" {
 		return isReadOnlySedArgs(args)
 	}
@@ -36,6 +42,9 @@ func IsReadOnlyCommand(command string, args []string) bool {
 	if base == "sysctl" {
 		return isReadOnlySysctlArgs(args)
 	}
+	if isReadOnlyVersionProbe(base, args) {
+		return true
+	}
 	return IsReadOnlyCommandName(command)
 }
 
@@ -44,6 +53,9 @@ func IsReadOnlyCommand(command string, args []string) bool {
 // must be operationally scoped before it can run without approval.
 func IsAllowedReadOnlyTerminal(command string, args []string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
+	if IsHardDeniedCommand(command, args) {
+		return false
+	}
 	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
 		return IsAllowedReadOnlyTerminal(wrappedCommand, wrappedArgs)
 	}
@@ -66,6 +78,9 @@ func IsAllowedReadOnlyTerminal(command string, args []string) bool {
 // narrower than IsReadOnlyCommand and avoids broad file reads such as cat.
 func IsAllowedHostInspectionTerminal(command string, args []string) bool {
 	base := filepath.Base(strings.TrimSpace(command))
+	if IsHardDeniedCommand(command, args) {
+		return false
+	}
 	if wrappedCommand, wrappedArgs, ok := unwrapReadOnlyShell(base, args); ok {
 		return IsAllowedHostInspectionTerminal(wrappedCommand, wrappedArgs)
 	}
@@ -74,6 +89,8 @@ func IsAllowedHostInspectionTerminal(command string, args []string) bool {
 		return allSafeTerminalTokens(args)
 	case "hostnamectl":
 		return isReadOnlyHostnamectlArgs(args)
+	case "systemctl":
+		return isReadOnlySystemctlArgs(args)
 	case "df":
 		return isAllowedHostInspectionWithFlags(args, map[string]bool{
 			"-h": true, "-H": true, "-k": true, "-m": true, "-g": true, "-T": true,
@@ -99,7 +116,7 @@ func IsAllowedHostInspectionTerminal(command string, args []string) bool {
 	case "ifconfig":
 		return isReadOnlyIfconfigArgs(args)
 	default:
-		return false
+		return isReadOnlyVersionProbe(base, args)
 	}
 }
 
@@ -729,6 +746,112 @@ func isReadOnlyHostnamectlArgs(args []string) bool {
 		}
 	}
 	return false
+}
+
+func isReadOnlySystemctlArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	verb := strings.TrimSpace(args[0])
+	switch verb {
+	case "status", "is-active", "is-enabled", "is-failed":
+		return systemctlStatusArgsAreSafe(args[1:])
+	case "show":
+		return systemctlShowArgsAreSafe(args[1:])
+	default:
+		return false
+	}
+}
+
+func systemctlStatusArgsAreSafe(args []string) bool {
+	seenTarget := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || !isSafeTerminalToken(arg) {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") {
+			switch {
+			case arg == "--no-pager" || arg == "--full" || arg == "--plain" || arg == "--quiet":
+				continue
+			case arg == "-l":
+				continue
+			default:
+				return false
+			}
+		}
+		if seenTarget {
+			return false
+		}
+		seenTarget = true
+	}
+	return true
+}
+
+func systemctlShowArgsAreSafe(args []string) bool {
+	seenTarget := false
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" || !isSafeTerminalToken(arg) {
+			return false
+		}
+		switch {
+		case arg == "--no-pager" || arg == "--full" || arg == "--plain":
+			continue
+		case arg == "-p" || arg == "--property":
+			i++
+			if i >= len(args) || !isSafeSystemctlPropertyList(args[i]) {
+				return false
+			}
+		case strings.HasPrefix(arg, "-p") && len(arg) > len("-p"):
+			if !isSafeSystemctlPropertyList(strings.TrimPrefix(arg, "-p")) {
+				return false
+			}
+		case strings.HasPrefix(arg, "--property="):
+			if !isSafeSystemctlPropertyList(strings.TrimPrefix(arg, "--property=")) {
+				return false
+			}
+		case strings.HasPrefix(arg, "-"):
+			return false
+		default:
+			if seenTarget {
+				return false
+			}
+			seenTarget = true
+		}
+	}
+	return true
+}
+
+func isSafeSystemctlPropertyList(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isReadOnlyVersionProbe(base string, args []string) bool {
+	if !isSafeTerminalToken(base) || len(args) != 1 {
+		return false
+	}
+	switch strings.TrimSpace(args[0]) {
+	case "-v", "-V", "--version", "-version", "version":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSafeInterfaceName(value string) bool {

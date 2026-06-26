@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
@@ -18,6 +17,7 @@ type chatRuntimeCapture struct {
 	mu           sync.Mutex
 	runCalled    bool
 	runReq       runtimekernel.TurnRequest
+	runResult    runtimekernel.TurnResult
 	resumeCalled bool
 	resumeReq    runtimekernel.ResumeRequest
 	cancelReq    runtimekernel.CancelRequest
@@ -614,7 +614,23 @@ func (r *chatRuntimeCapture) RunTurn(_ context.Context, req runtimekernel.TurnRe
 	r.mu.Lock()
 	r.runCalled = true
 	r.runReq = req
+	result := r.runResult
 	r.mu.Unlock()
+	if result.Status != "" {
+		if result.SessionID == "" {
+			result.SessionID = req.SessionID
+		}
+		if result.TurnID == "" {
+			result.TurnID = req.TurnID
+		}
+		if result.ClientMessageID == "" {
+			result.ClientMessageID = req.ClientMessageID
+		}
+		if result.ClientTurnID == "" {
+			result.ClientTurnID = req.ClientTurnID
+		}
+		return result, nil
+	}
 	return runtimekernel.TurnResult{
 		SessionID:       req.SessionID,
 		TurnID:          req.TurnID,
@@ -645,6 +661,13 @@ func (r *chatRuntimeCapture) runSnapshot() (runtimekernel.TurnRequest, bool) {
 	return r.runReq, r.runCalled
 }
 
+func (r *chatRuntimeCapture) resetRunSnapshot() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.runReq = runtimekernel.TurnRequest{}
+	r.runCalled = false
+}
+
 func (r *chatRuntimeCapture) resumeSnapshot() (runtimekernel.ResumeRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -668,6 +691,54 @@ func waitForRunTurn(t *testing.T, runtime *chatRuntimeCapture) runtimekernel.Tur
 	}
 	t.Fatal("RunTurn was not called")
 	return runtimekernel.TurnRequest{}
+}
+
+func TestPendingInputChatServiceUsesActiveTurnRuntimePath(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	now := time.Now().UTC()
+	session := sessions.GetOrCreate("sess-appui-active", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.ActiveTurn = runtimekernel.ActiveTurnState{TurnID: "turn-active", Kind: "regular", Status: string(runtimekernel.TurnLifecycleRunning)}
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-active",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{runResult: runtimekernel.TurnResult{
+		SessionID:       session.ID,
+		TurnID:          "turn-active",
+		ClientTurnID:    "client-turn-pending",
+		ClientMessageID: "client-message-pending",
+		Status:          "pending_input",
+	}}
+	service := NewChatService(runtime, sessions)
+
+	resp, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       session.ID,
+		SessionType:     string(runtimekernel.SessionTypeHost),
+		Mode:            string(runtimekernel.ModeChat),
+		ClientTurnID:    "client-turn-pending",
+		ClientMessageID: "client-message-pending",
+		Content:         "补充一个条件",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if resp.Status != "pending_input" || resp.TurnID != "turn-active" {
+		t.Fatalf("response = %#v, want pending_input on active turn", resp)
+	}
+	req, ok := runtime.runSnapshot()
+	if !ok {
+		t.Fatal("runtime RunTurn was not called")
+	}
+	if req.Input != "补充一个条件" || req.ClientMessageID != "client-message-pending" {
+		t.Fatalf("runtime request = %#v, want pending input request", req)
+	}
 }
 
 func waitForAgentEvents(t *testing.T, events AgentEventService, sessionID string, wantAtLeast int) []AgentEvent {
@@ -823,8 +894,8 @@ func TestChatService_SendMessageDefaultsToLatestSessionWhenSessionIDMissing(t *t
 	if runReq.SessionID != latest.ID {
 		t.Fatalf("RunTurn sessionId = %q, want latest session %q", runReq.SessionID, latest.ID)
 	}
-	if runReq.HostID != serverLocalHostID {
-		t.Fatalf("RunTurn hostId = %q, want %s", runReq.HostID, serverLocalHostID)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty advisory binding", runReq.HostID)
 	}
 }
 
@@ -851,11 +922,11 @@ func TestChatService_SendMessageUsesSessionModeWhenSessionIDProvided(t *testing.
 		t.Fatalf("result status = %q, want accepted", result.Status)
 	}
 	runReq := waitForRunTurn(t, runtime)
-	if runReq.SessionType != runtimekernel.SessionTypeHost {
-		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace advisory", runReq.SessionType)
 	}
-	if runReq.Mode != runtimekernel.ModeExecute {
-		t.Fatalf("RunTurn mode = %q, want execute", runReq.Mode)
+	if runReq.Mode != runtimekernel.ModeChat {
+		t.Fatalf("RunTurn mode = %q, want chat advisory", runReq.Mode)
 	}
 	if runReq.SessionID != "sess-host-exec" {
 		t.Fatalf("RunTurn sessionID = %q, want sess-host-exec", runReq.SessionID)
@@ -944,6 +1015,9 @@ func TestChatService_SendMessageMarksExplicitCorootRCA(t *testing.T) {
 	if got := runReq.Metadata["aiops.coroot.rcaDisplayAllowed"]; got != "true" {
 		t.Fatalf("RCA display metadata = %q; metadata=%#v", got, runReq.Metadata)
 	}
+	if got := runReq.Metadata["aiops.mentions.observabilityProvider"]; got != "coroot" {
+		t.Fatalf("observability provider metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
 }
 
 func TestChatService_SendMessageDoesNotMarkCorootRCAWithoutMention(t *testing.T) {
@@ -959,15 +1033,15 @@ func TestChatService_SendMessageDoesNotMarkCorootRCAWithoutMention(t *testing.T)
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	runReq := waitForRunTurn(t, runtime)
-	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "" {
-		t.Fatalf("explicit RCA metadata = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "false" {
+		t.Fatalf("explicit RCA metadata = %q, want false; metadata=%#v", got, runReq.Metadata)
 	}
-	if got := runReq.Metadata["aiops.coroot.rcaDisplayAllowed"]; got != "" {
-		t.Fatalf("RCA display metadata = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "false" {
+		t.Fatalf("RCA allowed metadata = %q, want false; metadata=%#v", got, runReq.Metadata)
 	}
 }
 
-func TestChatService_SendMessageDefaultsNewHostSessionToServerLocal(t *testing.T) {
+func TestChatService_SendMessageDoesNotDefaultNewHostSessionToServerLocal(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
 	service := NewChatService(runtime, sessions)
@@ -980,11 +1054,306 @@ func TestChatService_SendMessageDefaultsNewHostSessionToServerLocal(t *testing.T
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	runReq := waitForRunTurn(t, runtime)
-	if runReq.SessionType != runtimekernel.SessionTypeHost {
-		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace advisory", runReq.SessionType)
 	}
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty advisory binding", runReq.HostID)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "none" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServicePlainQuestionDoesNotBindServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   "sess-v2-advisory",
+		SessionType: string(runtimekernel.SessionTypeHost),
+		HostID:      "server-local",
+		Content:     "pg_auto_failover timeline 为什么会比主库高？",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty for advisory", runReq.HostID)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn sessionType = %q, want workspace", runReq.SessionType)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteAdvisory) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServicePastedEvidenceSetsEvidenceMetadata(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   "sess-v2-evidence",
+		SessionType: string(runtimekernel.SessionTypeHost),
+		HostID:      "server-local",
+		Content:     "不要执行命令，只基于输出分析：\npostgres=# select pg_is_in_recovery();\n f\npg_controldata: Latest checkpoint's TimeLineID: 11\nls: cannot access 'standby.signal': No such file or directory",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty for evidence RCA", runReq.HostID)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.userEvidence.present"]; got != "true" {
+		t.Fatalf("user evidence present = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceLocalMentionBindsServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   "sess-v2-local",
+		SessionType: string(runtimekernel.SessionTypeHost),
+		Content:     "@local 帮我只读检查 PG 状态",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
 	if runReq.HostID != "server-local" {
 		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "true" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceBareInventoryHostDoesNotBindOrAllowExec(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:          "host-a",
+		Name:        "db-a",
+		Address:     "10.10.0.11",
+		Status:      "online",
+		AgentStatus: "online",
+		Transport:   "agent_http",
+		OS:          "linux",
+		Arch:        "amd64",
+		Executable:  true,
+		AgentURL:    "http://host-a:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-bare-host-a-readonly",
+		Content:   "在 host-a 上只读检查 CPU、内存和磁盘空间，并给出证据摘要。",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty without @host or selected host context", runReq.HostID)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteAdvisory) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.target.hostId"]; got != "" {
+		t.Fatalf("target host metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.host.os"]; got != "" {
+		t.Fatalf("host os metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceRouteProfileCanSwitchPerTurnInSameSession(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+	const sessionID = "sess-v2-route-switch"
+
+	first, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   sessionID,
+		SessionType: string(runtimekernel.SessionTypeHost),
+		HostID:      serverLocalHostID,
+		Content:     "解释这个中间件同步异常可能有哪些通用原因，不要执行命令",
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if first.SessionID != sessionID || firstReq.SessionID != sessionID {
+		t.Fatalf("first session response/request = %q/%q, want %q", first.SessionID, firstReq.SessionID, sessionID)
+	}
+	if firstReq.Metadata["toolProfile"] != string(ChatRouteAdvisory) {
+		t.Fatalf("first toolProfile = %q; metadata=%#v", firstReq.Metadata["toolProfile"], firstReq.Metadata)
+	}
+	if firstReq.HostID != "" {
+		t.Fatalf("first HostID = %q, want empty advisory binding", firstReq.HostID)
+	}
+
+	runtime.resetRunSnapshot()
+	second, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   sessionID,
+		SessionType: string(runtimekernel.SessionTypeHost),
+		Content:     "@local 只读检查当前系统状态",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	secondReq := waitForRunTurn(t, runtime)
+	if second.SessionID != sessionID || secondReq.SessionID != sessionID {
+		t.Fatalf("second session response/request = %q/%q, want %q", second.SessionID, secondReq.SessionID, sessionID)
+	}
+	if secondReq.Metadata["toolProfile"] != string(ChatRouteHostBoundOps) {
+		t.Fatalf("second toolProfile = %q; metadata=%#v", secondReq.Metadata["toolProfile"], secondReq.Metadata)
+	}
+	if secondReq.HostID != serverLocalHostID {
+		t.Fatalf("second HostID = %q, want %s", secondReq.HostID, serverLocalHostID)
+	}
+	if first.OpsRun == nil || second.OpsRun == nil || first.OpsRun.ID == "" || second.OpsRun.ID == "" {
+		t.Fatalf("ops run metadata missing: first=%+v second=%+v", first.OpsRun, second.OpsRun)
+	}
+}
+
+func TestChatServiceShortFollowupUsesConcisePromptProfile(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-followup-profile", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.Messages = []runtimekernel.Message{
+		{ID: "msg-user-1", Role: "user", Content: "请分析这段现象", Timestamp: time.Now().Add(-time.Minute)},
+		{ID: "msg-assistant-1", Role: "assistant", Content: "结论：已有一轮完整分析。", Timestamp: time.Now().Add(-30 * time.Second)},
+	}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   session.ID,
+		SessionType: string(runtimekernel.SessionTypeHost),
+		Content:     "下一步呢？",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata[metadataTurnFollowup]; got != "true" {
+		t.Fatalf("followup metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata[metadataTurnHasExistingEvidence]; got != "true" {
+		t.Fatalf("existing evidence metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata[metadataTurnNoNewEvidence]; got != "true" {
+		t.Fatalf("no new evidence metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if runReq.Metadata["reasoningEffort"] != "low" || runReq.Metadata["answerStyle"] != "concise" {
+		t.Fatalf("prompt profile metadata = %#v, want low/concise", runReq.Metadata)
+	}
+}
+
+func TestChatServiceShortInputWithNewEvidenceKeepsNormalPromptProfile(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-followup-new-evidence", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.Messages = []runtimekernel.Message{
+		{ID: "msg-assistant-1", Role: "assistant", Content: "结论：已有一轮完整分析。", Timestamp: time.Now().Add(-30 * time.Second)},
+	}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   session.ID,
+		SessionType: string(runtimekernel.SessionTypeHost),
+		Content:     "error: timeout",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata[metadataTurnFollowup]; got != "" {
+		t.Fatalf("followup metadata = %q, want empty for new evidence; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["reasoningEffort"]; got == "low" {
+		t.Fatalf("reasoningEffort = %q, want not lowered for new evidence; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["answerStyle"]; got == "concise" {
+		t.Fatalf("answerStyle = %q, want not lowered for new evidence; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceMultipleHostMentionsCreateHostOpsMission(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(
+		store.HostRecord{ID: "v2-host-a", Name: "hostA", Address: "10.10.1.11", Status: "online", Executable: true, AgentURL: "http://host-a:7072"},
+		store.HostRecord{ID: "v2-host-b", Name: "hostB", Address: "10.10.1.12", Status: "online", Executable: true, AgentURL: "http://host-b:7072"},
+	)
+	hostOps := &chatHostOpsServiceCapture{}
+	services := NewServices(runtime, sessions, WithHostRepository(hosts), WithHostOpsService(hostOps))
+
+	result, err := services.ChatService().SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-v2-multi-host",
+		Content:   "@hostA @hostB 对比 PG 状态",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if hostOps.created {
+		t.Fatalf("HostOpsService.CreateMission was called from appui legacy route: %+v", hostOps.command)
+	}
+	if runReq.Metadata["aiops.hostops.missionId"] != "hostops:"+result.TurnID {
+		t.Fatalf("mission metadata = %q, want hostops:%s", runReq.Metadata["aiops.hostops.missionId"], result.TurnID)
+	}
+	for _, want := range []string{"v2-host-a", "v2-host-b"} {
+		if !strings.Contains(runReq.Metadata["aiops.hostops.mentions"], want) {
+			t.Fatalf("mentions metadata = %q, want resolved host %s", runReq.Metadata["aiops.hostops.mentions"], want)
+		}
+	}
+}
+
+func TestChatServiceIgnoresLegacySessionHostForAdvisory(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-v2-legacy-host", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	session.HostID = "server-local"
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-v2-legacy-host",
+		Content:   "pg_auto_failover timeline 为什么会比主库高？",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn hostId = %q, want empty despite legacy session host", runReq.HostID)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "none" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
 	}
 }
 
@@ -996,6 +1365,8 @@ func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T)
 		Name:        "remote-linux-01",
 		Address:     "10.10.20.30",
 		Status:      "online",
+		AgentStatus: "online",
+		SSHStatus:   "ok",
 		Transport:   "agent_http",
 		OS:          "linux",
 		Arch:        "amd64",
@@ -1018,15 +1389,18 @@ func TestChatService_SendMessageInjectsSelectedHostRuntimeMetadata(t *testing.T)
 	}
 	runReq := waitForRunTurn(t, runtime)
 	for key, want := range map[string]string{
-		"aiops.host.metadataAvailable": "true",
-		"aiops.host.id":                "remote-linux-01",
-		"aiops.host.os":                "linux",
-		"aiops.host.arch":              "amd64",
-		"aiops.host.transport":         "agent_http",
-		"aiops.host.status":            "online",
-		"aiops.host.address":           "10.10.20.30",
-		"aiops.host.sshUser":           "root",
-		"aiops.host.sshPort":           "22",
+		"aiops.host.metadataAvailable":   "true",
+		"aiops.host.id":                  "remote-linux-01",
+		"aiops.host.os":                  "linux",
+		"aiops.host.arch":                "amd64",
+		"aiops.host.transport":           "agent_http",
+		"aiops.host.status":              "online",
+		"aiops.host.agentStatus":         "online",
+		"aiops.host.sshStatus":           "ok",
+		"aiops.host.runtimeReachability": "agent_online",
+		"aiops.host.address":             "10.10.20.30",
+		"aiops.host.sshUser":             "root",
+		"aiops.host.sshPort":             "22",
 	} {
 		if got := runReq.Metadata[key]; got != want {
 			t.Fatalf("RunTurn metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
@@ -1058,21 +1432,16 @@ func TestChatService_SendMessageRoutesMultiHostMentionToHostOpsMission(t *testin
 	if result.Status != "accepted" {
 		t.Fatalf("Status = %q, want accepted", result.Status)
 	}
-	if _, ok := runtime.runSnapshot(); ok {
-		t.Fatal("RunTurn was called; multi-host mention should create a host-ops mission instead of binding main runtime to server-local")
+	runReq := waitForRunTurn(t, runtime)
+	if hostOps.created {
+		t.Fatalf("HostOpsService.CreateMission was called from appui legacy route: %+v", hostOps.command)
 	}
-	if !hostOps.created {
-		t.Fatal("HostOpsService.CreateMission was not called")
-	}
-	if hostOps.command.ID != "hostops:"+result.TurnID {
-		t.Fatalf("mission ID = %q, want hostops:%s", hostOps.command.ID, result.TurnID)
-	}
-	if len(hostOps.command.Mentions) != 3 {
-		t.Fatalf("len(Mentions) = %d, want 3: %#v", len(hostOps.command.Mentions), hostOps.command.Mentions)
+	if runReq.Metadata["aiops.hostops.missionId"] != "hostops:"+result.TurnID {
+		t.Fatalf("mission metadata = %q, want hostops:%s", runReq.Metadata["aiops.hostops.missionId"], result.TurnID)
 	}
 	for _, want := range []string{"accept-host-a", "accept-host-b", "accept-host-c"} {
-		if !hostMentionIDsForTest(hostOps.command.Mentions)[want] {
-			t.Fatalf("mentions = %#v, want resolved host %s", hostOps.command.Mentions, want)
+		if !strings.Contains(runReq.Metadata["aiops.hostops.mentions"], want) {
+			t.Fatalf("mentions metadata = %q, want resolved host %s", runReq.Metadata["aiops.hostops.mentions"], want)
 		}
 	}
 }
@@ -1110,30 +1479,24 @@ func TestChatService_SendMessageRoutesV1ClosurePGGoldenPathToGenericHostOps(t *t
 	if result.Status != "accepted" {
 		t.Fatalf("Status = %q, want accepted", result.Status)
 	}
-	if _, ok := runtime.runSnapshot(); ok {
-		t.Fatal("RunTurn was called; v1 closure golden path should use generic host-ops mission")
-	}
-	if !hostOps.created {
-		t.Fatal("HostOpsService.CreateMission was not called")
+	runReq := waitForRunTurn(t, runtime)
+	if hostOps.created {
+		t.Fatalf("HostOpsService.CreateMission was called from appui legacy route: %+v", hostOps.command)
 	}
 	for _, want := range []string{"host-a", "host-b", "host-c"} {
-		if !hostMentionIDsForTest(hostOps.command.Mentions)[want] {
-			t.Fatalf("mentions = %#v, want resolved host %s", hostOps.command.Mentions, want)
+		if !strings.Contains(runReq.Metadata["aiops.hostops.mentions"], want) {
+			t.Fatalf("mentions metadata = %q, want resolved host %s", runReq.Metadata["aiops.hostops.mentions"], want)
 		}
 	}
-	session := sessions.Get(result.SessionID)
-	if session == nil || session.CurrentTurn == nil {
-		t.Fatalf("session = %+v, want persisted host-ops turn", session)
+	if got := runReq.Metadata["aiops.hostops.planRequired"]; got != "true" {
+		t.Fatalf("planRequired metadata = %q, want true; metadata=%#v", got, runReq.Metadata)
 	}
-	if got := session.CurrentTurn.Metadata["aiops.hostops.planRequired"]; got != "true" {
-		t.Fatalf("planRequired metadata = %q, want true; metadata=%#v", got, session.CurrentTurn.Metadata)
-	}
-	if session.CurrentTurn.Metadata[metadataCorootExplicitRCA] == "true" || session.CurrentTurn.Metadata[metadataCorootRCADisplayAllowed] == "true" {
-		t.Fatalf("metadata = %#v, golden path without @Coroot must not show RCA", session.CurrentTurn.Metadata)
+	if runReq.Metadata[metadataCorootExplicitRCA] == "true" || runReq.Metadata[metadataCorootRCADisplayAllowed] == "true" {
+		t.Fatalf("metadata = %#v, golden path without @Coroot must not show RCA", runReq.Metadata)
 	}
 }
 
-func TestChatService_SendMessagePersistsHostOpsMissionTurn(t *testing.T) {
+func TestChatService_SendMessageHostOpsRouteDoesNotPersistTerminalTurn(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
 	hosts := newHostRepoStub(store.HostRecord{
@@ -1156,45 +1519,19 @@ func TestChatService_SendMessagePersistsHostOpsMissionTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SendMessage() error = %v", err)
 	}
-	if _, ok := runtime.runSnapshot(); ok {
-		t.Fatal("RunTurn was called; host-ops mission should be persisted without binding main runtime to server-local")
-	}
+	runReq := waitForRunTurn(t, runtime)
 	session := sessions.Get(result.SessionID)
-	if session == nil || session.CurrentTurn == nil {
-		t.Fatalf("session = %+v, want persisted current host-ops turn", session)
+	if session != nil && session.CurrentTurn != nil && session.CurrentTurn.Lifecycle == runtimekernel.TurnLifecycleCompleted {
+		t.Fatalf("appui persisted terminal host-ops turn: %+v", session.CurrentTurn)
 	}
-	if session.CurrentTurn.ID != result.TurnID {
-		t.Fatalf("CurrentTurn.ID = %q, want %q", session.CurrentTurn.ID, result.TurnID)
+	if got := runReq.Metadata["aiops.hostops.routeKind"]; got != "" {
+		t.Fatalf("routeKind metadata = %q, want empty for single host-bound route; metadata=%#v", got, runReq.Metadata)
 	}
-	if got := session.CurrentTurn.Metadata["aiops.hostops.routeKind"]; got != string(hostops.RouteKindHostOps) {
-		t.Fatalf("routeKind metadata = %q, want host_ops; metadata=%#v", got, session.CurrentTurn.Metadata)
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
 	}
-	if session.CurrentTurn.Metadata["aiops.hostops.mentions"] == "" {
-		t.Fatalf("hostops mentions metadata missing: %#v", session.CurrentTurn.Metadata)
-	}
-	if len(session.Messages) == 0 || session.Messages[0].Role != "user" || session.Messages[0].Content != "这是@120.77.239.90主机,查看其内存情况" {
-		t.Fatalf("Messages = %#v, want persisted user message", session.Messages)
-	}
-	var hasUserItem bool
-	for _, item := range session.CurrentTurn.AgentItems {
-		if item.Type == agentstate.TurnItemTypeUserMessage && strings.Contains(item.Payload.Summary, "查看其内存情况") {
-			hasUserItem = true
-		}
-	}
-	if !hasUserItem {
-		t.Fatalf("AgentItems = %#v, want user message item", session.CurrentTurn.AgentItems)
-	}
-	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(session.ID, session.ID), session.CurrentTurn)
-	if err != nil {
-		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
-	}
-	mission := projected.HostMissions[session.CurrentTurn.Metadata["aiops.hostops.missionId"]]
-	if len(mission.ChildAgentIDs) != 1 {
-		t.Fatalf("projected mission = %+v, want one persisted child agent", mission)
-	}
-	child := projected.ChildAgents[mission.ChildAgentIDs[0]]
-	if child.HostID != "remote-linux-01" || !strings.Contains(child.Task, "查看其内存情况") {
-		t.Fatalf("projected child = %+v, want remote-linux-01 bound to original task", child)
+	if runReq.Input != "这是@120.77.239.90主机,查看其内存情况" {
+		t.Fatalf("RunTurn input = %q, want original hostops request", runReq.Input)
 	}
 }
 

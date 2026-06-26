@@ -188,6 +188,20 @@ const mcpPayload = {
   ],
 };
 
+const mcpHealthPayload = {
+  items: [
+    {
+      serverId: "docs",
+      displayName: "Docs",
+      status: "unhealthy",
+      lastCheckedAt: "2026-06-23T10:00:00Z",
+      lastError: "connection refused token=[REDACTED]",
+      availableToolCount: 3,
+      retryAfterSeconds: 30,
+    },
+  ],
+};
+
 const auditsPayload = {
   items: [
     {
@@ -343,6 +357,9 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
     return jsonResponse(runbookPayload);
   if (url.includes("/api/v1/runbooks"))
     return jsonResponse({ items: [runbookPayload] });
+  if (url.includes("/api/v2/runtime/mcp-health/docs/refresh"))
+    return jsonResponse({ ...mcpHealthPayload.items[0], status: "healthy", lastError: "" });
+  if (url.includes("/api/v2/runtime/mcp-health")) return jsonResponse(mcpHealthPayload);
   if (url.includes("/api/v1/mcp/servers")) return jsonResponse(mcpPayload);
   if (url.includes("/api/v1/approval-audits"))
     return jsonResponse(auditsPayload);
@@ -612,11 +629,9 @@ describe("React complex migration pages", () => {
 
     await render("/opsgraph");
 
-    const guide = container.querySelector(
-      '[data-testid="opsgraph-empty-guide"]',
-    );
-    expect(guide?.textContent).toContain("这个图谱现在是空的");
-    expect(container.textContent).toContain("手工构建");
+    expect(container.textContent).toContain("还没有图谱");
+    expect(container.textContent).toContain("新建一张空图");
+    expect(container.textContent).toContain("手工维护");
     expect(container.textContent).not.toContain("Coroot MCP");
     expect(container.textContent).not.toContain("主机上报");
   });
@@ -653,10 +668,10 @@ describe("React complex migration pages", () => {
     expect(shellHeader?.textContent).not.toContain("Case 工作台");
     expect(shellHeader?.textContent).not.toContain("主机与租约");
 
-    expect(container.textContent).toContain("这个图谱现在是空的");
-    expect(container.textContent).toContain("新建服务");
-    expect(container.textContent).toContain("中间件集群");
-    expect(container.textContent).toContain("手工构建");
+    expect(container.textContent).toContain("还没有图谱");
+    expect(container.textContent).toContain("新建图谱");
+    expect(container.textContent).toContain("从示例开始");
+    expect(container.textContent).toContain("手工维护");
     expect(container.textContent).not.toContain("CMDB 编辑");
   });
 
@@ -719,6 +734,10 @@ describe("React complex migration pages", () => {
 
   it("runs mcp runtime server actions through mcp API", async () => {
     await render("/mcp");
+    expect(container.textContent).toContain("Runtime Health");
+    expect(container.textContent).toContain("ToolSearch 会拒绝选择");
+    expect(container.textContent).toContain("connection refused token=[REDACTED]");
+
     const close = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("关闭"),
     );
@@ -731,5 +750,19 @@ describe("React complex migration pages", () => {
       "/api/v1/mcp/servers/docs/close",
       expect.objectContaining({ method: "POST" }),
     );
+
+    const health = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("健康"),
+    );
+    expect(health).toBeTruthy();
+    await act(async () =>
+      health?.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+    await flush();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "/api/v2/runtime/mcp-health/docs/refresh",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(container.textContent).toContain("ToolSearch 可选择该 MCP 工具");
   });
 });

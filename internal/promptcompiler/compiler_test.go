@@ -100,6 +100,27 @@ func TestCompile_FourLayerOutput(t *testing.T) {
 	}
 }
 
+func TestCompileCarriesConciseAnswerProfile(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType:     "host",
+		Mode:            "chat",
+		ReasoningEffort: "low",
+		AnswerStyle:     "concise",
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if !strings.Contains(compiled.Developer.Content, "ordinary evidence/advisory answers") {
+		t.Fatalf("developer instructions missing advisory answer shape:\n%s", compiled.Developer.Content)
+	}
+	if !strings.Contains(compiled.Developer.Content, "AnswerStyle=concise") {
+		t.Fatalf("developer instructions missing concise profile:\n%s", compiled.Developer.Content)
+	}
+	if !strings.Contains(compiled.Policy.Content, "answer_style: concise") {
+		t.Fatalf("runtime policy missing concise output profile:\n%s", compiled.Policy.Content)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: System Prompt contains role and environment
 // ---------------------------------------------------------------------------
@@ -247,7 +268,7 @@ func TestCompile_DeveloperInstructions_ChatMode(t *testing.T) {
 	if !strings.Contains(result.Developer.Content, "read-only") {
 		t.Error("Chat mode should mention read-only constraint")
 	}
-	if !strings.Contains(result.Developer.Content, "mutation") {
+	if !strings.Contains(result.Developer.Content, "mutating operations are forbidden") {
 		t.Error("Chat mode should mention mutation prohibition")
 	}
 }
@@ -255,12 +276,7 @@ func TestCompile_DeveloperInstructions_ChatMode(t *testing.T) {
 func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t *testing.T) {
 	compiler := NewCompiler()
 
-	ctx := CompileContext{
-		SessionType: "host",
-		Mode:        "chat",
-	}
-
-	result, err := compiler.Compile(ctx)
+	result, err := compiler.Compile(CompileContext{SessionType: "host", Mode: "chat", Profile: PromptProfileAdvisor})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,19 +287,12 @@ func TestCompile_DeveloperInstructions_CodexStyleIntentAndCurrentSearchQuality(t
 		"use tools silently",
 		"only the key values",
 		"do not narrate tool process",
-		"complex, ambiguous, multi-step, or aiops/rca",
-		"before the first tool call",
-		"multi-step investigations",
-		"after each batch",
-		"current or latest",
-		"precise",
-		"cite source",
-		"machine-readable",
-		"curl",
+		"current or latest public facts",
+		"cite source links",
 	}
 	for _, want := range required {
 		if !strings.Contains(content, want) {
-			t.Fatalf("developer instructions should include %q, got:\n%s", want, result.Developer.Content)
+			t.Fatalf("developer instructions should include compact %q, got:\n%s", want, result.Developer.Content)
 		}
 	}
 }
@@ -307,9 +316,9 @@ func TestCompile_DeveloperInstructions_AgentProfilePolicies(t *testing.T) {
 	}
 
 	required := []string{
-		"Use structured plan events for complex, tool, and AIOps/RCA tasks.",
-		"Evidence must come from tool results or be explicitly marked as inference.",
-		"Show only reasoning summary to the user; do not expose raw chain-of-thought.",
+		"Use a short plan only for multi-step, risky, ambiguous, or multi-agent work.",
+		"Tool failure, empty output, denial, timeout, or unavailable evidence is not proof",
+		"Do not fabricate tool results",
 	}
 	for _, want := range required {
 		if !strings.Contains(result.Developer.Content, want) {
@@ -356,7 +365,7 @@ func TestCompile_DeveloperInstructions_AvoidsFinalAnswerPlaceholders(t *testing.
 	required := []string{
 		"empty citation placeholders",
 		"failed search queries",
-		"omit unverifiable fields",
+		"unverifiable fields",
 	}
 	for _, want := range required {
 		if !strings.Contains(result.Developer.Content, want) {
@@ -470,10 +479,10 @@ func TestCompile_ToolPromptSet_WithTools(t *testing.T) {
 	}
 
 	// Stable index should contain tool names and capability summaries.
-	if !strings.Contains(result.Tools.Content, "host.disk_usage") {
+	if !strings.Contains(result.Tools.Content, "host_disk_usage") {
 		t.Error("Tool prompt should contain disk_usage tool")
 	}
-	if !strings.Contains(result.Tools.Content, "host.file_write") {
+	if !strings.Contains(result.Tools.Content, "host_file_write") {
 		t.Error("Tool prompt should contain file_write tool")
 	}
 	if !strings.Contains(result.Tools.Content, "# Tool Index") {
@@ -569,9 +578,6 @@ func TestCompile_ToolPromptSet_UsesMetadataDescriptionBeforeDescription(t *testi
 	if len(result.Tools.Entries) != 1 {
 		t.Errorf("expected 1 tool entry, got %d", len(result.Tools.Entries))
 	}
-	if !strings.Contains(result.Tools.Content, "coroot.list_services") {
-		t.Error("Should include assembled tool in tool prompt")
-	}
 	if !strings.Contains(result.Tools.Content, "coroot_list_services") {
 		t.Error("Tool prompt should show provider-safe tool name for model invocation")
 	}
@@ -631,11 +637,11 @@ func TestCompile_RuntimePolicy_ChatMode(t *testing.T) {
 	if result.Policy.Mode != "chat" {
 		t.Errorf("expected mode chat, got %s", result.Policy.Mode)
 	}
-	if !strings.Contains(result.Policy.Content, "Chat mode") {
-		t.Error("Chat policy should mention chat mode")
+	if !strings.Contains(result.Policy.Content, "mode: chat") {
+		t.Error("Runtime state should mention chat mode")
 	}
-	if !strings.Contains(result.Policy.Content, "read-only") {
-		t.Error("Chat policy should mention read-only")
+	if !strings.Contains(result.Policy.Content, "mutation: read-only") {
+		t.Error("Runtime state should mention read-only mutation boundary")
 	}
 }
 
@@ -655,8 +661,8 @@ func TestCompile_RuntimePolicy_InspectMode(t *testing.T) {
 	if result.Policy.Mode != "inspect" {
 		t.Errorf("expected mode inspect, got %s", result.Policy.Mode)
 	}
-	if !strings.Contains(result.Policy.Content, "Inspect mode") {
-		t.Error("Inspect policy should mention inspect mode")
+	if !strings.Contains(result.Policy.Content, "mode: inspect") {
+		t.Error("Runtime state should mention inspect mode")
 	}
 }
 
@@ -676,8 +682,8 @@ func TestCompile_RuntimePolicy_PlanMode(t *testing.T) {
 	if result.Policy.Mode != "plan" {
 		t.Errorf("expected mode plan, got %s", result.Policy.Mode)
 	}
-	if !strings.Contains(result.Policy.Content, "Plan mode") {
-		t.Error("Plan policy should mention plan mode")
+	if !strings.Contains(result.Policy.Content, "mode: plan") {
+		t.Error("Runtime state should mention plan mode")
 	}
 }
 
@@ -697,14 +703,11 @@ func TestCompile_RuntimePolicy_ExecuteMode(t *testing.T) {
 	if result.Policy.Mode != "execute" {
 		t.Errorf("expected mode execute, got %s", result.Policy.Mode)
 	}
-	if !strings.Contains(result.Policy.Content, "Execute mode") {
-		t.Error("Execute policy should mention execute mode")
+	if !strings.Contains(result.Policy.Content, "mode: execute") {
+		t.Error("Runtime state should mention execute mode")
 	}
-	if !strings.Contains(result.Policy.Content, "approval") {
-		t.Error("Execute policy should mention approval")
-	}
-	if !strings.Contains(result.Policy.Content, "Do not ask for approval in prose") {
-		t.Error("Execute policy should tell the model to use tool approval gates instead of prose approval")
+	if !strings.Contains(result.Policy.Content, "mutation: approval_required") {
+		t.Error("Runtime state should mention approval-required mutation")
 	}
 }
 
@@ -833,6 +836,74 @@ func TestCompiledPromptToMessages_UsesStableDynamicFallback(t *testing.T) {
 	}
 }
 
+func TestCompile_ProducesSectionEnvelopeInRuntimeOrder(t *testing.T) {
+	compiler := NewCompiler()
+
+	compiled, err := compiler.Compile(CompileContext{
+		SessionType: "workspace",
+		Mode:        "inspect",
+		Profile:     "evidence_rca",
+		AnswerStyle: "concise",
+		ExtraSections: []PromptSection{{
+			Title:   "Evidence reminder",
+			Content: "Keep only direct evidence in context.",
+		}},
+		AssembledTools: []Tool{
+			&mockToolRuntime{
+				name:                "tool_search",
+				metadataDescription: "Search currently visible tools",
+				readOnly:            true,
+				concurrencySafe:     true,
+				outputSchema:        json.RawMessage(`{"type":"object"}`),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	var ids []string
+	for _, section := range compiled.Envelope.Sections {
+		ids = append(ids, section.ID)
+		if section.Content == "" {
+			t.Fatalf("section %q has empty content", section.ID)
+		}
+	}
+	want := []string{"base.contract", "runtime.state", "profile.evidence_rca", "tool.surface", "dynamic.context"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("section ids = %#v, want %#v", ids, want)
+	}
+}
+
+func TestCompiledPromptToMessages_UsesSectionEnvelopeOrder(t *testing.T) {
+	compiled := CompiledPrompt{
+		Envelope: PromptEnvelope{Sections: []PromptCompiledSection{
+			{ID: "base.contract", Role: "system", Content: "base", Source: "base", Required: true},
+			{ID: "runtime.state", Role: "system", Content: "state", Source: "runtime", Required: true},
+			{ID: "profile.advisor", Role: "system", Content: "profile", Source: "profile", Required: true},
+			{ID: "tool.surface", Role: "system", Content: "tools", Source: "tools", Required: true},
+			{ID: "dynamic.context", Role: "system", Content: "dynamic", Source: "dynamic"},
+		}},
+		System:    SystemPrompt{Content: "legacy system"},
+		Developer: DeveloperInstructions{Content: "legacy developer"},
+		Tools:     ToolPromptSet{Content: "legacy tools"},
+		Policy:    RuntimePolicyPrompt{Content: "legacy policy"},
+	}
+
+	messages := CompiledPromptToMessages(compiled)
+	if len(messages) != 5 {
+		t.Fatalf("messages = %d, want 5", len(messages))
+	}
+	for i, want := range []string{"base", "state", "profile", "tools", "dynamic"} {
+		if messages[i].Content != want {
+			t.Fatalf("message[%d] = %q, want %q", i, messages[i].Content, want)
+		}
+	}
+	if got := stringExtraForCompilerTest(messages[1].Extra, "prompt_section_id"); got != "runtime.state" {
+		t.Fatalf("runtime message prompt_section_id = %q", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: CompileForEino
 // ---------------------------------------------------------------------------
@@ -862,9 +933,12 @@ func TestCompileForEino_ProducesSystemMessages(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should produce 4 system messages (one per layer)
-	if len(messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(messages))
+	compiled, err := compiler.Compile(ctx)
+	if err != nil {
+		t.Fatalf("unexpected compile error: %v", err)
+	}
+	if len(messages) != len(compiled.Envelope.Sections) {
+		t.Fatalf("expected %d messages, got %d", len(compiled.Envelope.Sections), len(messages))
 	}
 
 	// All messages should be system role
@@ -877,18 +951,18 @@ func TestCompileForEino_ProducesSystemMessages(t *testing.T) {
 		}
 	}
 
-	// Verify layer order by content
-	if !strings.Contains(messages[0].Content, "Role") {
-		t.Error("First message should be system prompt (contains Role)")
+	// Verify section order by content
+	if messages[0].Content != buildBaseRuntimeContract("") {
+		t.Fatalf("First message should be thin base contract, got:\n%s", messages[0].Content)
 	}
-	if !strings.Contains(messages[1].Content, "Developer Instructions") {
-		t.Error("Second message should be developer instructions")
+	if got := stringExtraForCompilerTest(messages[1].Extra, "prompt_section_id"); got != "runtime.state" {
+		t.Fatalf("Second message prompt_section_id = %q, want runtime.state", got)
 	}
-	if !strings.Contains(messages[2].Content, "Tool Index") {
-		t.Error("Third message should be tool prompt set")
+	if got := stringExtraForCompilerTest(messages[2].Extra, "prompt_section_id"); !strings.HasPrefix(got, "profile.") {
+		t.Fatalf("Third message prompt_section_id = %q, want profile.*", got)
 	}
-	if !strings.Contains(messages[3].Content, "Runtime Policy") {
-		t.Error("Fourth message should be runtime policy")
+	if got := stringExtraForCompilerTest(messages[3].Extra, "prompt_section_id"); got != "tool.surface" {
+		t.Fatalf("Fourth message prompt_section_id = %q, want tool.surface", got)
 	}
 }
 
@@ -984,12 +1058,90 @@ func TestCompileSeparatesHostTaskPromptAssetsFromSkillPromptAssets(t *testing.T)
 	for _, section := range result.PromptSections {
 		byID[section.ID] = section
 	}
-	hostTaskSection := byID["host_task.context"]
-	if hostTaskSection.ID == "" {
-		t.Fatalf("missing host task prompt section trace: %#v", result.PromptSections)
+	dynamicSection := byID["dynamic.context"]
+	if dynamicSection.ID == "" {
+		t.Fatalf("missing dynamic context prompt section trace: %#v", result.PromptSections)
 	}
-	if hostTaskSection.RetentionRank != RetentionRankP1 || hostTaskSection.Source != "host-task" {
-		t.Fatalf("host task section trace = %#v, want P1 host-task trace", hostTaskSection)
+	if dynamicSection.RetentionRank != RetentionRankP1 || dynamicSection.Source != "dynamic" {
+		t.Fatalf("dynamic context section trace = %#v, want P1 dynamic trace", dynamicSection)
+	}
+}
+
+func TestCompile_DynamicContextSourcesAreBudgetedAndExternalized(t *testing.T) {
+	compiler := NewCompiler()
+	longSkill := "description: Use this skill for focused synthetic diagnosis.\n" + strings.Repeat("skill-context ", 1300) + "RAW_SKILL_TAIL_SHOULD_NOT_INLINE"
+	longProtocol := strings.Repeat("protocol-state ", 700) + "RAW_PROTOCOL_TAIL_SHOULD_NOT_INLINE"
+	longHostTask := strings.Repeat("host-task ", 900) + "RAW_HOST_TASK_TAIL_SHOULD_NOT_INLINE"
+
+	result, err := compiler.Compile(CompileContext{
+		SessionType:          "host",
+		Mode:                 "inspect",
+		SkillPromptAssets:    []string{longSkill},
+		HostTaskPromptAssets: []string{longHostTask},
+		EvidenceReminders:    []string{"capture pre/post evidence"},
+		ProtocolState: ProtocolPromptState{Items: []ProtocolPromptItem{{
+			Kind:   "plan",
+			ID:     "step-1",
+			Status: "in_progress",
+			Text:   longProtocol,
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	byID := map[string]DynamicContextSource{}
+	for _, source := range result.Dynamic.Sources {
+		byID[source.ID] = source
+	}
+	for _, id := range []string{DynamicContextSourceSkill, DynamicContextSourceHostTask, DynamicContextSourceEvidence, DynamicContextSourceProtocol} {
+		if byID[id].ID == "" {
+			t.Fatalf("missing dynamic source %s in %#v", id, result.Dynamic.Sources)
+		}
+	}
+	if byID[DynamicContextSourceSkill].TokenBudget != 1000 ||
+		byID[DynamicContextSourceHostTask].TokenBudget != 800 ||
+		byID[DynamicContextSourceProtocol].TokenBudget != 500 {
+		t.Fatalf("unexpected dynamic budgets: %#v", result.Dynamic.Sources)
+	}
+	if byID[DynamicContextSourceSkill].Overflowed {
+		t.Fatalf("skill source should use progressive disclosure before source overflow: %#v", byID[DynamicContextSourceSkill])
+	}
+	if !byID[DynamicContextSourceHostTask].Overflowed ||
+		!byID[DynamicContextSourceProtocol].Overflowed {
+		t.Fatalf("expected long dynamic sources to overflow: %#v", result.Dynamic.Sources)
+	}
+
+	messages := CompiledPromptToMessages(result)
+	var dynamicText string
+	for _, msg := range messages {
+		if msg != nil && msg.Extra["prompt_section_id"] == "dynamic.context" {
+			dynamicText = msg.Content
+			break
+		}
+	}
+	for _, want := range []string{
+		"source_id: dynamic.skill",
+		"source_id: dynamic.host_task",
+		"source_id: dynamic.evidence",
+		"source_id: dynamic.protocol",
+		"summary_type: progressive_disclosure",
+		"entry_tool_or_source_ref: skill_read or prompt_trace://dynamic.skill/asset-1",
+		"raw_available_via_tool_or_trace: true",
+		"evidence_ref: dynamic.protocol:overflow",
+	} {
+		if !strings.Contains(dynamicText, want) {
+			t.Fatalf("dynamic context missing %q:\n%s", want, dynamicText)
+		}
+	}
+	for _, forbidden := range []string{
+		"RAW_SKILL_TAIL_SHOULD_NOT_INLINE",
+		"RAW_PROTOCOL_TAIL_SHOULD_NOT_INLINE",
+		"RAW_HOST_TASK_TAIL_SHOULD_NOT_INLINE",
+	} {
+		if strings.Contains(dynamicText, forbidden) {
+			t.Fatalf("dynamic context leaked overflow tail %q", forbidden)
+		}
 	}
 }
 
@@ -1013,18 +1165,13 @@ func TestCompileForEino_ContentPreserved(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify content is preserved in messages
-	if messages[0].Content != compiled.System.Content {
-		t.Error("System message content should match compiled system prompt")
+	if len(messages) != len(compiled.Envelope.Sections) {
+		t.Fatalf("messages = %d, want %d", len(messages), len(compiled.Envelope.Sections))
 	}
-	if messages[1].Content != compiled.Developer.Content {
-		t.Error("Developer message content should match compiled developer instructions")
-	}
-	if messages[2].Content != compiled.Tools.Content {
-		t.Error("Tools message content should match compiled tool prompt set")
-	}
-	if messages[3].Content != compiled.Policy.Content {
-		t.Error("Policy message content should match compiled runtime policy")
+	for i, section := range compiled.Envelope.Sections {
+		if messages[i].Content != section.Content {
+			t.Fatalf("message[%d] content should match section %s", i, section.ID)
+		}
 	}
 }
 
@@ -1034,4 +1181,12 @@ func TestCompileForEino_ContentPreserved(t *testing.T) {
 
 func TestPromptCompilerImpl_ImplementsCompiler(t *testing.T) {
 	var _ Compiler = (*PromptCompilerImpl)(nil)
+}
+
+func stringExtraForCompilerTest(extra map[string]any, key string) string {
+	if len(extra) == 0 {
+		return ""
+	}
+	value, _ := extra[key].(string)
+	return value
 }

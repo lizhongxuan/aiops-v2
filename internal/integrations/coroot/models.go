@@ -24,6 +24,7 @@ type corootErrorResult struct {
 	SchemaVersion string             `json:"schemaVersion"`
 	Tool          string             `json:"tool"`
 	Status        string             `json:"status"`
+	SkipReason    string             `json:"skipReason,omitempty"`
 	Error         CorootErrorPayload `json:"error"`
 	RawRef        *CorootRawRef      `json:"rawRef,omitempty"`
 }

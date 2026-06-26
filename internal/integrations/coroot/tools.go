@@ -1479,8 +1479,34 @@ func corootStructuredError(tool string, rawRef *CorootRawRef, err error) corootE
 		SchemaVersion: corootSchemaVersion,
 		Tool:          tool,
 		Status:        "error",
+		SkipReason:    corootSkipReasonForError(payload),
 		Error:         payload,
 		RawRef:        rawRef,
+	}
+}
+
+func corootSkipReasonForError(payload CorootErrorPayload) string {
+	message := strings.ToLower(strings.TrimSpace(payload.Message))
+	switch strings.TrimSpace(payload.Kind) {
+	case "empty_response":
+		return "empty_data"
+	case "not_configured", "transport_error", "timeout", "upstream_server_error", "read_error", "decode_error":
+		return "coroot_mcp_unavailable"
+	case "upstream_client_error":
+		if payload.StatusCode == 404 {
+			return "target_not_matched"
+		}
+		if strings.Contains(message, "time window") ||
+			strings.Contains(message, "time_window") ||
+			(strings.Contains(message, "from") && strings.Contains(message, "to") && strings.Contains(message, "time")) {
+			return "time_window_not_matched"
+		}
+		return "coroot_mcp_unavailable"
+	default:
+		if strings.Contains(message, "no data") || strings.Contains(message, "empty data") {
+			return "empty_data"
+		}
+		return ""
 	}
 }
 

@@ -1009,9 +1009,18 @@ describe("OpsManualChatArtifacts", () => {
                   manual: {
                     id: "manual-redis-local-readonly-rca",
                     title: "Redis 本机只读排障运维手册",
+                    applicability: {
+                      middleware: "redis",
+                      os: ["linux"],
+                      execution_surface: ["ssh"],
+                    },
+                    cannot_use_when: ["需要重启 Redis"],
                   },
                   bound_workflow_id: "workflow-redis-local-readonly-rca",
                   usable_mode: "direct_execute",
+                  score_breakdown: {
+                    final_score: 0.93,
+                  },
                   matched_fields: [
                     "object_type",
                     "operation_type",
@@ -1040,13 +1049,69 @@ describe("OpsManualChatArtifacts", () => {
     expect(container.textContent).toContain(
       "下一步：可选择使用该手册/Workflow，也可以跳过继续 AI Chat 处理。",
     );
+    expect(container.textContent).toContain("匹配原因");
+    expect(container.textContent).toContain("对象类型");
+    expect(container.textContent).toContain("置信分 93%");
+    expect(container.textContent).toContain("适用边界");
+    expect(container.textContent).toContain("对象 Redis");
+    expect(container.textContent).toContain("不适用");
+    expect(container.textContent).toContain("需要重启 Redis");
+    expect(container.textContent).toContain("使用 1 次");
+    expect(container.textContent).toContain("成功率 100%");
     expect(
       Array.from(container.querySelectorAll("button")).map((button) =>
         button.textContent?.trim(),
       ),
     ).toEqual(["使用该手册/Workflow", "仅参考手册", "不使用"]);
     expect(container.textContent).not.toContain("Runner 已执行");
-    expect(container.textContent).not.toMatch(/\d+\s*%/);
+  });
+
+  it("renders reference_only search result without a use-manual primary action", async () => {
+    await act(async () => {
+      root.render(
+        <OpsManualSearchResultArtifact
+          artifact={{
+            id: "artifact-reference-only",
+            type: "ops_manual_search_result",
+            inlineData: {
+              decision: "reference_only",
+              summary: "没有可直接运行的 Workflow，可继续只读自动化排查。",
+              recommended_next_action:
+                "继续只读自动化排查，缺目标、时间范围或观测数据时再补齐。",
+              operation_frame: {
+                object_type: "postgresql",
+                operation_type: "rca_or_repair",
+              },
+              manuals: [
+                {
+                  manual: {
+                    id: "manual-generic-stateful-cluster-repair",
+                    title: "通用有状态集群恢复运维手册",
+                  },
+                  bound_workflow_id: "workflow-generic-stateful-cluster-repair",
+                  usable_mode: "reference_only",
+                  blocked_reasons: [
+                    "generic fallback is not a high-confidence manual match",
+                  ],
+                  recommended_action: "reference_manual",
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("仅参考");
+    expect(container.textContent).toContain("没有可直接运行的 Workflow");
+    expect(container.textContent).toContain("通用有状态集群恢复运维手册");
+    const buttonLabels = Array.from(container.querySelectorAll("button")).map(
+      (button) => button.textContent?.trim(),
+    );
+    expect(buttonLabels).toContain("仅参考手册");
+    expect(buttonLabels).toContain("不使用");
+    expect(buttonLabels).not.toContain("使用该手册/Workflow");
+    expect(container.textContent).not.toContain("运行预检");
   });
 
   it("renders direct_execute search and preflight as one compact card when merged", async () => {

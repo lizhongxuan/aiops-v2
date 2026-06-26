@@ -41,25 +41,31 @@ func TestContextGovernanceEventRoundTrip(t *testing.T) {
 
 func TestContextGovernanceTracePayloadIsRedactionSafe(t *testing.T) {
 	event := ContextGovernanceEvent{
-		ID:           "ctxgov-2",
-		Layer:        ContextGovernanceLayerL1,
-		Kind:         "tool_result.materialized",
-		ToolName:     "logs.search",
-		ReferenceIDs: []string{"ref-1"},
-		Message:      "materialized large result",
+		ID:                  "ctxgov-2",
+		Layer:               ContextGovernanceLayerL1,
+		Kind:                "tool_result.materialized",
+		ToolCallID:          "call-logs-1",
+		ToolName:            "logs.search",
+		MaterializationTier: "large",
+		OriginalBytes:       49152,
+		InlineBytes:         512,
+		ReferenceIDs:        []string{"ref-1"},
+		Message:             "materialized large result",
 	}
 	data, err := json.Marshal(event.TracePayload())
 	if err != nil {
 		t.Fatal(err)
 	}
 	payload := string(data)
-	for _, secret := range []string{"password=", "stack trace line", "raw tool result", "logs.search"} {
+	for _, secret := range []string{"password=", "stack trace line", "raw tool result"} {
 		if strings.Contains(payload, secret) {
 			t.Fatalf("trace payload leaked %q: %s", secret, payload)
 		}
 	}
-	if !strings.Contains(payload, "ref-1") {
-		t.Fatalf("trace payload missing reference id: %s", payload)
+	for _, want := range []string{"ref-1", "call-logs-1", "logs.search", `"materializationTier":"large"`, `"originalBytes":49152`, `"inlineBytes":512`} {
+		if !strings.Contains(payload, want) {
+			t.Fatalf("trace payload missing %q: %s", want, payload)
+		}
 	}
 }
 

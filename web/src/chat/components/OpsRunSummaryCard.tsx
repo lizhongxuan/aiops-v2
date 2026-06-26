@@ -15,8 +15,12 @@ import {
 } from "@/api/chatOpsRuns";
 import { Button } from "@/components/ui/button";
 import type {
+  AgentRunView,
+  AgentStepView,
   AiopsTransportOpsRun,
   AiopsTransportState,
+  PostRunSuggestion,
+  PostRunSuggestionType,
 } from "@/transport/aiopsTransportTypes";
 
 type OpsRunSummaryCardProps = {
@@ -31,9 +35,25 @@ export function OpsRunSummaryCard({ state }: OpsRunSummaryCardProps) {
   if (!opsRun?.id) {
     return null;
   }
-  const status = formatOpsRunStatus(opsRun.status);
-  const title = opsRun.title || "本次处理";
-  const canArchive = isTerminalOpsRunStatus(opsRun.status);
+  const agentRun = opsRun.agentRun;
+  const latestStep = latestAgentStep(agentRun);
+  const status = formatOpsRunStatus(agentRun?.status || opsRun.status);
+  const title = agentRun?.userGoal || opsRun.title || "本次处理";
+  const currentStep =
+    agentRun?.currentStep || latestStep?.title || opsRun.currentStep;
+  const targetSummary = agentRun?.targetSummary || opsRun.targetSummary;
+  const routeMode = agentRun?.routeMode || opsRun.routeMode;
+  const evidenceCount = agentRun?.evidenceCount ?? opsRun.evidenceCount;
+  const postRunActions = supportedPostRunActions(opsRun.postRunSuggestions);
+  const displayStatus = agentRun?.status || opsRun.status;
+  const canArchive =
+    isTerminalOpsRunStatus(opsRun.status) && postRunActions.length > 0;
+  const hasUsefulTerminalContent =
+    (evidenceCount || 0) > 0 || postRunActions.length > 0;
+
+  if (isTerminalOpsRunStatus(displayStatus) && !hasUsefulTerminalContent) {
+    return null;
+  }
 
   return (
     <section
@@ -54,75 +74,85 @@ export function OpsRunSummaryCard({ state }: OpsRunSummaryCardProps) {
             </div>
             <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
               <span>{formatSource(opsRun.source)}</span>
-              {opsRun.currentStep ? (
+              {currentStep ? (
                 <span className="max-w-full truncate">
-                  {opsRun.currentStep}
+                  {currentStep}
+                </span>
+              ) : null}
+              {latestStep?.title ? (
+                <span className="max-w-full truncate">
+                  最近：{latestStep.title} · {formatAgentStepStatus(latestStep.status)}
                 </span>
               ) : null}
             </div>
           </div>
         </div>
-        <OpsRunEvidencePill opsRun={opsRun} />
+        <OpsRunEvidencePill
+          evidenceCount={evidenceCount}
+          status={agentRun?.status || opsRun.status}
+        />
       </div>
-      {opsRun.targetSummary ? (
-        <div className="mt-2 flex min-w-0 items-center gap-1.5 rounded-md bg-slate-50 px-2 py-1 text-xs text-slate-600">
+      {targetSummary ? (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 rounded-md bg-slate-50 px-2 py-1 text-xs text-slate-600">
           <Route className="size-3.5 shrink-0" aria-hidden="true" />
-          <span className="truncate">{opsRun.targetSummary}</span>
+          <span className="truncate">{targetSummary}</span>
+          {routeMode ? (
+            <span className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+              {formatRouteMode(routeMode)}
+            </span>
+          ) : null}
+          {opsRun.toolSurfaceSummary ? (
+            <span className="min-w-0 truncate rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+              {opsRun.toolSurfaceSummary}
+            </span>
+          ) : null}
+        </div>
+      ) : routeMode || opsRun.toolSurfaceSummary ? (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-1.5 rounded-md bg-slate-50 px-2 py-1 text-xs text-slate-600">
+          <Route className="size-3.5 shrink-0" aria-hidden="true" />
+          {routeMode ? (
+            <span className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+              {formatRouteMode(routeMode)}
+            </span>
+          ) : null}
+          {opsRun.toolSurfaceSummary ? (
+            <span className="min-w-0 truncate rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-600">
+              {opsRun.toolSurfaceSummary}
+            </span>
+          ) : null}
         </div>
       ) : null}
       {canArchive ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() =>
-              handleArchiveAction(
-                "case",
-                opsRun,
-                setPendingAction,
-                setArchiveMessage,
-              )
+          {postRunActions.map((suggestion) => {
+            const action = postRunArchiveActionFor(suggestion.type);
+            if (!action) {
+              return null;
             }
-            disabled={pendingAction !== null}
-          >
-            <Briefcase className="size-3.5" aria-hidden="true" />
-            生成 Case
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() =>
-              handleArchiveAction(
-                "run-record",
-                opsRun,
-                setPendingAction,
-                setArchiveMessage,
-              )
-            }
-            disabled={pendingAction !== null}
-          >
-            <FileText className="size-3.5" aria-hidden="true" />
-            生成 Run Record
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="xs"
-            onClick={() =>
-              handleArchiveAction(
-                "experience",
-                opsRun,
-                setPendingAction,
-                setArchiveMessage,
-              )
-            }
-            disabled={pendingAction !== null}
-          >
-            <Lightbulb className="size-3.5" aria-hidden="true" />
-            生成经验候选
-          </Button>
+            const Icon = postRunActionIcon(action);
+            return (
+              <Button
+                key={suggestion.type}
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() =>
+                  handleArchiveAction(
+                    action,
+                    opsRun,
+                    setPendingAction,
+                    setArchiveMessage,
+                  )
+                }
+                disabled={pendingAction !== null}
+                title={suggestion.reason || postRunActionDescription(action)}
+                aria-label={postRunActionDescription(action)}
+              >
+                <Icon className="size-3.5" aria-hidden="true" />
+                {suggestion.label || postRunActionLabel(action)}
+              </Button>
+            );
+          })}
           {archiveMessage ? (
             <span
               className="min-w-0 text-xs text-slate-500"
@@ -138,7 +168,11 @@ export function OpsRunSummaryCard({ state }: OpsRunSummaryCardProps) {
   );
 }
 
-type OpsRunArchiveAction = "case" | "run-record" | "experience";
+type OpsRunArchiveAction =
+  | "case"
+  | "run-record"
+  | "processing-record"
+  | "experience";
 
 async function handleArchiveAction(
   action: OpsRunArchiveAction,
@@ -159,12 +193,12 @@ async function handleArchiveAction(
       const result = await archiveOpsRunCase(opsRun.id, payload);
       const caseId = String(result?.case?.id || result?.case?.externalId || "");
       setArchiveMessage(caseId ? `已生成 Case：${caseId}` : "已生成 Case");
-    } else if (action === "run-record") {
+    } else if (action === "run-record" || action === "processing-record") {
       const result = await createOpsRunRunRecord(opsRun.id, payload);
       const recordId = String(result?.id || "");
-      setArchiveMessage(
-        recordId ? `已生成 Run Record：${recordId}` : "已生成 Run Record",
-      );
+      const messagePrefix =
+        action === "processing-record" ? "已生成处理记录" : "已生成 Run Record";
+      setArchiveMessage(recordId ? `${messagePrefix}：${recordId}` : messagePrefix);
     } else {
       const result = await createOpsRunExperienceCandidates(opsRun.id, payload);
       const count = Array.isArray(result?.items) ? result.items.length : 0;
@@ -180,14 +214,135 @@ async function handleArchiveAction(
   }
 }
 
-function OpsRunEvidencePill({ opsRun }: { opsRun: AiopsTransportOpsRun }) {
-  const count = opsRun.evidenceCount || 0;
+function supportedPostRunActions(suggestions?: PostRunSuggestion[]) {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) {
+    return [];
+  }
+  const selected: PostRunSuggestion[] = [];
+  const indexByAction = new Map<string, number>();
+  for (const suggestion of suggestions) {
+    if (!suggestion?.type) {
+      continue;
+    }
+    const action = postRunArchiveActionFor(suggestion.type);
+    if (!action) {
+      continue;
+    }
+    const key = postRunActionDedupeKey(action);
+    const existingIndex = indexByAction.get(key);
+    if (existingIndex === undefined) {
+      indexByAction.set(key, selected.length);
+      selected.push(suggestion);
+      continue;
+    }
+    const existingAction = postRunArchiveActionFor(selected[existingIndex]?.type);
+    if (action === "processing-record" && existingAction === "run-record") {
+      selected[existingIndex] = suggestion;
+    }
+  }
+  return selected;
+}
+
+function postRunArchiveActionFor(
+  type: PostRunSuggestionType,
+): OpsRunArchiveAction | null {
+  switch (type) {
+    case "case":
+      return "case";
+    case "run_record":
+      return "run-record";
+    case "processing_record":
+      return "processing-record";
+    case "experience_candidate":
+      return "experience";
+    default:
+      return null;
+  }
+}
+
+function postRunActionDedupeKey(action: OpsRunArchiveAction) {
+  if (action === "run-record" || action === "processing-record") {
+    return "saved-record";
+  }
+  return action;
+}
+
+function postRunActionDescription(action: OpsRunArchiveAction) {
+  switch (action) {
+    case "case":
+      return "把本轮对话和结果归档为一个 Case，方便后续跟踪。";
+    case "experience":
+      return "从本轮处理过程里提炼可复用的经验候选，后续可审核入库。";
+    case "processing-record":
+      return "保存本轮运维处理记录，包含目标、摘要和关联证据。";
+    case "run-record":
+    default:
+      return "保存本轮 Agent Run 记录，包含目标、摘要和关联证据。";
+  }
+}
+
+function postRunActionIcon(action: OpsRunArchiveAction) {
+  switch (action) {
+    case "case":
+      return Briefcase;
+    case "experience":
+      return Lightbulb;
+    case "run-record":
+    case "processing-record":
+    default:
+      return FileText;
+  }
+}
+
+function postRunActionLabel(action: OpsRunArchiveAction) {
+  switch (action) {
+    case "case":
+      return "生成 Case";
+    case "experience":
+      return "生成经验候选";
+    case "processing-record":
+      return "生成处理记录";
+    case "run-record":
+    default:
+      return "生成 Run Record";
+  }
+}
+
+function OpsRunEvidencePill({
+  evidenceCount,
+  status,
+}: {
+  evidenceCount?: number;
+  status?: string;
+}) {
+  const count = evidenceCount || 0;
+  const label =
+    count > 0
+      ? `${count} 条证据`
+      : isTerminalOpsRunStatus(status)
+        ? "未采集证据"
+        : "证据采集中";
   return (
     <div className="hidden shrink-0 items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 sm:flex">
       <Database className="size-3.5" aria-hidden="true" />
-      <span>{count > 0 ? `${count} 条证据` : "证据采集中"}</span>
+      <span>{label}</span>
     </div>
   );
+}
+
+function latestAgentStep(agentRun?: AgentRunView): AgentStepView | undefined {
+  const steps = agentRun?.steps || [];
+  if (!steps.length) {
+    return undefined;
+  }
+  const currentStepId = agentRun?.currentStepId;
+  if (currentStepId) {
+    const current = steps.find((step) => step.id === currentStepId);
+    if (current) {
+      return current;
+    }
+  }
+  return steps[steps.length - 1];
 }
 
 function formatSource(source?: string) {
@@ -201,6 +356,7 @@ function formatOpsRunStatus(status?: string) {
   switch (status) {
     case "submitted":
     case "working":
+    case "running":
       return {
         label: "处理中",
         className:
@@ -225,6 +381,7 @@ function formatOpsRunStatus(status?: string) {
           "shrink-0 rounded-md bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700",
       };
     case "canceled":
+    case "cancelled":
       return {
         label: "已停止",
         className:
@@ -239,6 +396,47 @@ function formatOpsRunStatus(status?: string) {
   }
 }
 
+function formatAgentStepStatus(status?: string) {
+  switch (status) {
+    case "waiting_approval":
+      return "等待确认";
+    case "running":
+      return "执行中";
+    case "pending":
+      return "排队中";
+    case "failed":
+      return "失败";
+    case "cancelled":
+      return "已停止";
+    case "skipped":
+      return "已跳过";
+    case "completed":
+    default:
+      return "已完成";
+  }
+}
+
+function formatRouteMode(mode?: string) {
+  switch (mode) {
+    case "chat_advisory":
+      return "咨询";
+    case "evidence_rca":
+      return "证据分析";
+    case "host_bound_ops":
+      return "单主机";
+    case "multi_host_ops":
+      return "多主机";
+    default:
+      return mode || "";
+  }
+}
+
 function isTerminalOpsRunStatus(status?: string) {
-  return status === "completed" || status === "failed" || status === "canceled";
+  return (
+    status === "completed" ||
+    status === "failed" ||
+    status === "canceled" ||
+    status === "cancelled" ||
+    status === "stopped"
+  );
 }

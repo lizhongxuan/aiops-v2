@@ -4,16 +4,24 @@ import "strings"
 
 // BuildPromptSectionTrace returns redaction-safe prompt section metadata.
 func BuildPromptSectionTrace(compiled CompiledPrompt) []PromptSectionTrace {
-	sections := []PromptSectionTrace{
-		promptSectionTrace("system.role", PromptSectionKindStable, "system", compiled.Stable.System.Content, PromptSectionCacheMiss),
-		promptSectionTrace("developer.core_rules", PromptSectionKindStable, "developer", compiled.Stable.Developer.Content, PromptSectionCacheMiss),
-		promptSectionTrace("tools.index", PromptSectionKindStable, "tool-registry", compiled.Stable.Tools.Content, PromptSectionCacheMiss),
-		promptSectionTrace("runtime.policy", PromptSectionKindDynamic, "runtime-policy", compiled.Dynamic.Policy.Content, PromptSectionCacheMiss),
-		promptSectionTrace("protocol.state", PromptSectionKindDynamic, "protocol-state", renderProtocolPromptState(compiled.Dynamic.ProtocolState), PromptSectionCacheMiss),
-		promptSectionTrace("context.dynamic_assets", PromptSectionKindDynamic, "dynamic-assets", dynamicAssetsFingerprintText(compiled.Dynamic), PromptSectionCacheMiss),
-	}
-	if hostTaskText := strings.Join(compiled.Dynamic.HostTaskPromptAssets, "\n"); strings.TrimSpace(hostTaskText) != "" {
-		sections = append(sections, promptSectionTrace("host_task.context", PromptSectionKindDynamic, "host-task", hostTaskText, PromptSectionCacheMiss))
+	sections := make([]PromptSectionTrace, 0, len(compiled.Envelope.Sections))
+	for _, section := range compiled.Envelope.Sections {
+		content := strings.TrimSpace(section.Content)
+		if content == "" {
+			continue
+		}
+		kind := strings.TrimSpace(section.Stability)
+		if kind == "" {
+			kind = strings.TrimSpace(section.Layer)
+		}
+		if kind == "" {
+			kind = PromptSectionKindDynamic
+		}
+		source := strings.TrimSpace(section.Source)
+		if source == "" {
+			source = section.ID
+		}
+		sections = append(sections, promptSectionTrace(section.ID, kind, source, content, PromptSectionCacheMiss))
 	}
 	return sections
 }
@@ -110,20 +118,6 @@ func promptSectionTrace(id, kind, source, content, cache string) PromptSectionTr
 	}
 }
 
-func dynamicAssetsFingerprintText(dynamic DynamicPromptDelta) string {
-	var parts []string
-	parts = append(parts, dynamic.SkillPromptAssets...)
-	parts = append(parts, dynamic.HostTaskPromptAssets...)
-	parts = append(parts, dynamic.EvidenceReminders...)
-	for _, section := range dynamic.ExtraSections {
-		parts = append(parts, section.Title, section.Content)
-	}
-	if dynamic.ToolDelta.Content != "" {
-		parts = append(parts, dynamic.ToolDelta.Content)
-	}
-	return strings.Join(parts, "\n")
-}
-
 func promptSectionEstimateTokens(value string) int {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -138,17 +132,13 @@ func promptSectionEstimateTokens(value string) int {
 
 func promptSectionChangeReason(id string) string {
 	switch id {
-	case "system.role":
+	case "base.contract":
 		return PromptSectionChangeSystemRoleChanged
-	case "developer.core_rules":
-		return PromptSectionChangeDeveloperRulesChanged
-	case "tools.index":
+	case "tool.surface":
 		return PromptSectionChangeToolsIndexChanged
-	case "runtime.policy":
+	case "runtime.state":
 		return PromptSectionChangeRuntimePolicyChanged
-	case "protocol.state":
-		return PromptSectionChangeProtocolStateChanged
-	case "context.dynamic_assets":
+	case "dynamic.context":
 		return PromptSectionChangeDynamicAssetsChanged
 	default:
 		return PromptSectionChangeSectionContentChanged

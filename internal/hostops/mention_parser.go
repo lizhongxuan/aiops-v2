@@ -37,6 +37,9 @@ func ParseHostMentions(input string) []HostMention {
 		if !isPlausibleHostToken(token) {
 			continue
 		}
+		if isObservabilityMentionToken(token) {
+			continue
+		}
 		raw := input[start:i]
 		source := HostMentionSourceHostnameLiteral
 		address := ""
@@ -44,6 +47,9 @@ func ParseHostMentions(input string) []HostMention {
 		if isIPLiteral(token) {
 			source = HostMentionSourceIPLiteral
 			address = token
+		} else if isLocalAliasToken(token) {
+			source = HostMentionSourceLocalAlias
+			display = "local"
 		}
 		mentions = append(mentions, HostMention{
 			TokenID:     stableMentionTokenID(start, raw),
@@ -59,6 +65,139 @@ func ParseHostMentions(input string) []HostMention {
 		i--
 	}
 	return mentions
+}
+
+// DetectInventoryHostMentions is kept for older callers, but intentionally no
+// longer binds bare inventory names. Host execution requires @host, @ip, or an
+// explicit selected-host context so prose like "on host-a" cannot silently pick
+// an execution target.
+func DetectInventoryHostMentions(input string, hosts []HostRecordView) []HostMention {
+	input = strings.TrimSpace(input)
+	if input == "" || len(hosts) == 0 {
+		return nil
+	}
+	return nil
+}
+
+func detectInventoryHostMentionsLegacy(input string, hosts []HostRecordView) []HostMention {
+	candidates := inventoryHostMentionCandidates(hosts)
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if len(candidates[i].value) == len(candidates[j].value) {
+			return candidates[i].host.ID < candidates[j].host.ID
+		}
+		return len(candidates[i].value) > len(candidates[j].value)
+	})
+	seenHosts := map[string]struct{}{}
+	mentions := make([]HostMention, 0)
+	lowerInput := strings.ToLower(input)
+	for _, candidate := range candidates {
+		hostID := strings.TrimSpace(candidate.host.ID)
+		if hostID == "" {
+			continue
+		}
+		if _, ok := seenHosts[strings.ToLower(hostID)]; ok {
+			continue
+		}
+		start := firstBoundedHostTokenIndex(lowerInput, strings.ToLower(candidate.value))
+		if start < 0 {
+			continue
+		}
+		end := start + len(candidate.value)
+		mentions = append(mentions, HostMention{
+			TokenID:     stableMentionTokenID(start, input[start:end]),
+			Raw:         input[start:end],
+			SpanStart:   start,
+			SpanEnd:     end,
+			HostID:      hostID,
+			Address:     strings.TrimSpace(candidate.host.Address),
+			DisplayName: firstNonEmpty(candidate.host.DisplayName, candidate.host.Hostname, candidate.host.Address, hostID),
+			Source:      HostMentionSourceInventory,
+			Resolved:    true,
+			Confidence:  1,
+		})
+		seenHosts[strings.ToLower(hostID)] = struct{}{}
+	}
+	sort.SliceStable(mentions, func(i, j int) bool {
+		return mentions[i].SpanStart < mentions[j].SpanStart
+	})
+	return mentions
+}
+
+type inventoryHostMentionCandidate struct {
+	value string
+	host  HostRecordView
+}
+
+func inventoryHostMentionCandidates(hosts []HostRecordView) []inventoryHostMentionCandidate {
+	candidates := make([]inventoryHostMentionCandidate, 0, len(hosts)*4)
+	seen := map[string]struct{}{}
+	for _, host := range hosts {
+		host.ID = strings.TrimSpace(host.ID)
+		if host.ID == "" || isBareLocalHostAlias(host.ID) {
+			continue
+		}
+		for _, value := range []string{host.ID, host.Hostname, host.DisplayName, host.Address} {
+			value = strings.TrimSpace(value)
+			if value == "" || isBareLocalHostAlias(value) {
+				continue
+			}
+			key := strings.ToLower(host.ID + "\x00" + value)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			candidates = append(candidates, inventoryHostMentionCandidate{value: value, host: host})
+		}
+	}
+	return candidates
+}
+
+func isBareLocalHostAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "local", "localhost", "server-local", "127.0.0.1", "::1", "[::1]":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstBoundedHostTokenIndex(inputLower, tokenLower string) int {
+	if tokenLower == "" {
+		return -1
+	}
+	offset := 0
+	for {
+		idx := strings.Index(inputLower[offset:], tokenLower)
+		if idx < 0 {
+			return -1
+		}
+		start := offset + idx
+		end := start + len(tokenLower)
+		if hasHostTokenBoundary(inputLower, start, end) {
+			return start
+		}
+		offset = end
+		if offset >= len(inputLower) {
+			return -1
+		}
+	}
+}
+
+func hasHostTokenBoundary(input string, start, end int) bool {
+	if start > 0 && isBareHostTokenByte(input[start-1]) {
+		return false
+	}
+	if end < len(input) && isBareHostTokenByte(input[end]) {
+		return false
+	}
+	return true
+}
+
+func isBareHostTokenByte(ch byte) bool {
+	return isASCIILetter(ch) || isASCIIDigit(ch) || ch == '_' || ch == '-' || ch == '.' || ch == ':' || ch == '[' || ch == ']'
 }
 
 // UniqueMentionKeys returns normalized unique mention keys in deterministic
@@ -142,6 +281,19 @@ func isPlausibleHostToken(token string) bool {
 		}
 	}
 	return true
+}
+
+func isLocalAliasToken(token string) bool {
+	return strings.EqualFold(strings.TrimSpace(token), "local")
+}
+
+func isObservabilityMentionToken(token string) bool {
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "coroot":
+		return true
+	default:
+		return false
+	}
 }
 
 func isIPLiteral(token string) bool {

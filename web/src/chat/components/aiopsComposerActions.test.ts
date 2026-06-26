@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 
 import {
+  buildAiopsSpecialMentionMetadata,
   buildCorootMentionMetadata,
   buildOpsManualParamFormSubmit,
   resolveStopDispatchTarget,
@@ -80,5 +81,24 @@ describe("aiopsComposerActions", () => {
     expect(buildCorootMentionMetadata("请采集 Coroot 指标作为证据")).toEqual(
       {},
     );
+  });
+
+  it("adds special tool metadata only for explicit mention tokens", () => {
+    expect(
+      buildAiopsSpecialMentionMetadata("@ops_graph 分析 order-api 业务影响"),
+    ).toMatchObject({
+      enableToolPack: "opsgraph",
+      "aiops.opsGraph.explicitMention": "true",
+    });
+    expect(
+      buildAiopsSpecialMentionMetadata("@ops_manus 搜索 Redis 运维手册"),
+    ).toMatchObject({
+      enableToolPack: "ops_manual_flow",
+      enableTool: "search_ops_manuals",
+      "aiops.opsManuals.explicitMention": "true",
+    });
+    expect(
+      buildAiopsSpecialMentionMetadata("请看 ops_graph 相关内容"),
+    ).toEqual({});
   });
 });

@@ -21,7 +21,7 @@ describe("HostMentionComposer", () => {
     container.remove();
   });
 
-  it("renders resolved host mentions inline with the textarea text", async () => {
+  it("highlights resolved host mentions while keeping plain textarea text", async () => {
     await act(async () => {
       root.render(
         <HostMentionComposer
@@ -43,12 +43,14 @@ describe("HostMentionComposer", () => {
 
     expect(container.querySelector('[data-testid="composer-host-list"]')).toBeNull();
     expect(container.querySelector('[data-testid="host-mention-chip-list"]')).toBeNull();
-    const overlay = container.querySelector('[data-testid="composer-inline-host-overlay"]');
-    expect(overlay?.textContent).toContain("这是@1.1.1.1主机,检查pg");
+    expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@1.1.1.1");
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("这是@1.1.1.1主机,检查pg");
+    expect(textarea.className).toContain("text-transparent");
   });
 
-  it("does not duplicate the same host label inside one inline mention", async () => {
+  it("does not render duplicated host label overlays", async () => {
     await act(async () => {
       root.render(
         <HostMentionComposer
@@ -71,12 +73,14 @@ describe("HostMentionComposer", () => {
       );
     });
 
-    const inlineMention = container.querySelector('[data-testid="composer-inline-host-mention"]');
-    const occurrences = (inlineMention?.textContent?.match(/@pg-a/g) || []).length;
+    expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@pg-a");
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    const occurrences = (textarea.value.match(/@pg-a/g) || []).length;
     expect(occurrences).toBe(1);
   });
 
-  it("renders every inline host mention occurrence without a separate selected-host list", async () => {
+  it("keeps every host mention occurrence in plain textarea text without a separate selected-host list", async () => {
     await act(async () => {
       root.render(
         <HostMentionComposer
@@ -123,7 +127,9 @@ describe("HostMentionComposer", () => {
 
     const list = container.querySelector('[data-testid="composer-host-list"]');
     expect(list).toBeNull();
-    const inlineMentions = Array.from(container.querySelectorAll('[data-testid="composer-inline-host-mention"]'));
-    expect(inlineMentions.map((element) => element.textContent)).toEqual(["@host-a", "@host-b", "@host-a"]);
+    expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="composer-inline-host-mention"]')).toHaveLength(3);
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("@host-a @host-b @host-a 检查两台主机");
   });
 });

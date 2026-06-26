@@ -2437,6 +2437,7 @@ function SearchManualHit({
   const [useSubmitted, setUseSubmitted] = useState(false);
   const manualTitle = manualTitleFromHit(hit) || `相关手册 ${index + 1}`;
   const manualId = manualIdFromHit(hit);
+  const manual = asRecord(pick(hit, "manual", "opsManual", "ops_manual"));
   const boundWorkflowId = text(
     pick(
       hit,
@@ -2449,6 +2450,15 @@ function SearchManualHit({
   const usableMode = normalizeDecision(
     text(pick(hit, "usableMode", "usable_mode", "decision", "state")),
   );
+  const matchedFields = stringArray(
+    pick(hit, "matchedFields", "matched_fields"),
+  ).map((item) => matchedFieldLabel(item));
+  const scoreBreakdown = asRecord(pick(hit, "scoreBreakdown", "score_breakdown"));
+  const finalScore = numberValue(
+    pick(scoreBreakdown, "finalScore", "final_score"),
+  );
+  const applicableBoundaries = manualApplicableBoundaryLabels(manual);
+  const notApplicableBoundaries = manualNotApplicableBoundaryLabels(manual);
   const environmentDiffs = stringArray(
     pick(
       hit,
@@ -2461,6 +2471,10 @@ function SearchManualHit({
   const blockedReasons = stringArray(
     pick(hit, "blockedReasons", "blocked_reasons"),
   ).map((item) => blockedReasonLabel(item, hit, operationFrame));
+  const runSummary = asRecord(
+    pick(hit, "runRecordSummary", "run_record_summary"),
+  );
+  const runSummaryLabel = runRecordSummaryLabel(runSummary);
   const referenceRelation = referenceRelationLabel(
     hit,
     operationFrame,
@@ -2497,6 +2511,35 @@ function SearchManualHit({
           <>
             <dt className="font-medium text-slate-500">绑定 Workflow</dt>
             <dd className="font-mono text-slate-700">{boundWorkflowId}</dd>
+          </>
+        ) : null}
+        {matchedFields.length || finalScore !== undefined ? (
+          <>
+            <dt className="font-medium text-slate-500">匹配原因</dt>
+            <dd>
+              {matchedFields.length ? matchedFields.join("；") : "语义匹配"}
+              {finalScore !== undefined
+                ? `，置信分 ${Math.round(finalScore * 100)}%`
+                : ""}
+            </dd>
+          </>
+        ) : null}
+        {applicableBoundaries.length ? (
+          <>
+            <dt className="font-medium text-slate-500">适用边界</dt>
+            <dd>{applicableBoundaries.join("；")}</dd>
+          </>
+        ) : null}
+        {notApplicableBoundaries.length ? (
+          <>
+            <dt className="font-medium text-slate-500">不适用</dt>
+            <dd>{notApplicableBoundaries.join("；")}</dd>
+          </>
+        ) : null}
+        {runSummaryLabel ? (
+          <>
+            <dt className="font-medium text-slate-500">执行记录</dt>
+            <dd>{runSummaryLabel}</dd>
           </>
         ) : null}
         {environmentDiffs.length ? (
@@ -2954,6 +2997,73 @@ function matchedFieldLabel(field: string) {
     signal: "现象/信号",
   };
   return labels[normalized] || taxonomyLabel(field);
+}
+
+function manualApplicableBoundaryLabels(manual: LooseRecord): string[] {
+  const applicability = asRecord(pick(manual, "applicability"));
+  const labels: string[] = [];
+  const middleware = taxonomyLabel(text(pick(applicability, "middleware")));
+  if (middleware) labels.push(`对象 ${middleware}`);
+  const versions = stringArray(
+    pick(applicability, "middlewareVersions", "middleware_versions"),
+  );
+  if (versions.length) labels.push(`版本 ${versions.join("/")}`);
+  const os = stringArray(pick(applicability, "os")).map((item) =>
+    taxonomyLabel(item),
+  );
+  if (os.length) labels.push(`系统 ${os.join("/")}`);
+  const platform = stringArray(pick(applicability, "platform")).map((item) =>
+    taxonomyLabel(item),
+  );
+  if (platform.length) labels.push(`平台 ${platform.join("/")}`);
+  const surface = stringArray(
+    pick(applicability, "executionSurface", "execution_surface"),
+  ).map((item) => taxonomyLabel(item));
+  if (surface.length) labels.push(`入口 ${surface.join("/")}`);
+  const topology = stringArray(pick(applicability, "topology")).map((item) =>
+    taxonomyLabel(item),
+  );
+  if (topology.length) labels.push(`拓扑 ${topology.join("/")}`);
+  const preconditions = stringArray(pick(manual, "preconditions")).slice(0, 3);
+  labels.push(...preconditions);
+  return Array.from(new Set(labels.filter(Boolean))).slice(0, 6);
+}
+
+function manualNotApplicableBoundaryLabels(manual: LooseRecord): string[] {
+  const diagnosis = asRecord(pick(manual, "diagnosis"));
+  const riskPolicy = asRecord(pick(manual, "riskPolicy", "risk_policy"));
+  const labels = [
+    ...stringArray(pick(manual, "cannotUseWhen", "cannot_use_when")),
+    ...stringArray(
+      pick(diagnosis, "notApplicableWhen", "not_applicable_when"),
+    ),
+  ];
+  const blastRadius = text(
+    pick(riskPolicy, "blastRadius", "blast_radius"),
+  );
+  if (blastRadius) labels.push(`风险边界 ${blastRadius}`);
+  return Array.from(new Set(labels.filter(Boolean))).slice(0, 6);
+}
+
+function runRecordSummaryLabel(summary: LooseRecord) {
+  if (!Object.keys(summary).length) return "";
+  const success = numberValue(pick(summary, "successCount", "success_count")) || 0;
+  const failure = numberValue(pick(summary, "failureCount", "failure_count")) || 0;
+  const total = success + failure;
+  const recent = text(pick(summary, "recentResult", "recent_result"));
+  if (total <= 0) {
+    return recent ? `暂无成功记录，最近 ${recent}` : "暂无成功记录";
+  }
+  const successRate = Math.round((success / total) * 100);
+  return [
+    `使用 ${total} 次`,
+    `成功 ${success} 次`,
+    `失败 ${failure} 次`,
+    `成功率 ${successRate}%`,
+    recent ? `最近 ${recent}` : "",
+  ]
+    .filter(Boolean)
+    .join("，");
 }
 
 function inferredMatchedFieldLabels(operationFrame?: LooseRecord) {
@@ -3504,6 +3614,7 @@ function booleanValue(value: unknown) {
 
 function numberValue(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && !value.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
 }

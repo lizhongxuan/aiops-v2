@@ -117,4 +117,72 @@ func TestSettingsAndLLMConfigAPI(t *testing.T) {
 	if storedLLM.ReasoningEffort != "low" {
 		t.Fatalf("stored LLM = %+v, want reasoningEffort low", storedLLM)
 	}
+
+	deepSeekBody, _ := json.Marshal(map[string]any{
+		"provider":        "deepseek",
+		"apiKey":          "sk-deepseek-test",
+		"reasoningEffort": "max",
+		"thinkingType":    "enabled",
+	})
+	deepSeekReq, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/llm-config", bytes.NewReader(deepSeekBody))
+	if err != nil {
+		t.Fatalf("new deepseek update request: %v", err)
+	}
+	deepSeekReq.Header.Set("Content-Type", "application/json")
+	deepSeekResp, err := http.DefaultClient.Do(deepSeekReq)
+	if err != nil {
+		t.Fatalf("PUT deepseek /api/v1/llm-config error = %v", err)
+	}
+	defer deepSeekResp.Body.Close()
+	if deepSeekResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT deepseek status = %d, want 200", deepSeekResp.StatusCode)
+	}
+	var deepSeekResult map[string]any
+	if err := json.NewDecoder(deepSeekResp.Body).Decode(&deepSeekResult); err != nil {
+		t.Fatalf("decode deepseek update response error = %v", err)
+	}
+	if deepSeekResult["maxContextTokens"] != float64(1000000) || deepSeekResult["maxOutputTokens"] != float64(20000) {
+		t.Fatalf("deepseek result = %+v, want context/output 1000000/20000", deepSeekResult)
+	}
+	storedLLM, err = dataStore.GetLLMConfig()
+	if err != nil {
+		t.Fatalf("GetLLMConfig() after deepseek update error = %v", err)
+	}
+	if storedLLM.Provider != "deepseek" || storedLLM.Model != "deepseek-v4-pro" || storedLLM.BaseURL != "https://api.deepseek.com" {
+		t.Fatalf("stored deepseek LLM = %+v, want official defaults", storedLLM)
+	}
+	if storedLLM.ReasoningEffort != "max" || storedLLM.ThinkingType != "enabled" {
+		t.Fatalf("stored deepseek reasoning/thinking = %q/%q, want max/enabled", storedLLM.ReasoningEffort, storedLLM.ThinkingType)
+	}
+
+	zhipuBody, _ := json.Marshal(map[string]any{
+		"provider":        "zhipu",
+		"apiKey":          "zai-test-key",
+		"reasoningEffort": "xhigh",
+		"thinkingType":    "disabled",
+		"toolStream":      true,
+	})
+	zhipuReq, err := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/llm-config", bytes.NewReader(zhipuBody))
+	if err != nil {
+		t.Fatalf("new zhipu update request: %v", err)
+	}
+	zhipuReq.Header.Set("Content-Type", "application/json")
+	zhipuResp, err := http.DefaultClient.Do(zhipuReq)
+	if err != nil {
+		t.Fatalf("PUT zhipu /api/v1/llm-config error = %v", err)
+	}
+	defer zhipuResp.Body.Close()
+	if zhipuResp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT zhipu status = %d, want 200", zhipuResp.StatusCode)
+	}
+	storedLLM, err = dataStore.GetLLMConfig()
+	if err != nil {
+		t.Fatalf("GetLLMConfig() after zhipu update error = %v", err)
+	}
+	if storedLLM.Provider != "zhipu" || storedLLM.Model != "glm-5.2" || storedLLM.BaseURL != "https://open.bigmodel.cn/api/paas/v4/" {
+		t.Fatalf("stored zhipu LLM = %+v, want official defaults", storedLLM)
+	}
+	if storedLLM.ReasoningEffort != "xhigh" || storedLLM.ThinkingType != "disabled" || !storedLLM.ToolStream {
+		t.Fatalf("stored zhipu reasoning/thinking/toolStream = %q/%q/%v, want xhigh/disabled/true", storedLLM.ReasoningEffort, storedLLM.ThinkingType, storedLLM.ToolStream)
+	}
 }

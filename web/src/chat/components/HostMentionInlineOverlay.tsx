@@ -1,18 +1,20 @@
 import { cn } from "@/lib/utils";
 
-import type { HostMentionCandidate } from "../hostMentions";
+import type { HostMentionCandidate, SpecialAiMentionCandidate } from "../hostMentions";
 
 type HostMentionInlineOverlayVariant = "chat" | "default";
 
 type HostMentionInlineOverlayProps = {
   text: string;
-  mentions: HostMentionCandidate[];
+  mentions: InlineMention[];
   variant?: HostMentionInlineOverlayVariant;
 };
 
+type InlineMention = HostMentionCandidate | SpecialAiMentionCandidate;
+
 type HostMentionTextSegment =
   | { type: "text"; text: string; key: string }
-  | { type: "mention"; text: string; key: string };
+  | { type: "mention"; text: string; key: string; mention: InlineMention };
 
 export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: HostMentionInlineOverlayProps) {
   const segments = buildHostMentionTextSegments(text, mentions);
@@ -33,8 +35,14 @@ export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: H
         segment.type === "mention" ? (
           <span
             key={segment.key}
-            data-testid="composer-inline-host-mention"
-            className="rounded-md bg-sky-50 px-1 font-semibold text-sky-700 ring-1 ring-sky-200"
+            data-testid={segment.mention.source === "ai_tool" ? "composer-inline-special-mention" : "composer-inline-host-mention"}
+            data-mention-kind={segment.mention.source === "ai_tool" ? "ai_tool" : "host"}
+            className={cn(
+              "rounded-sm",
+              segment.mention.source === "ai_tool"
+                ? "bg-blue-50 text-blue-700"
+                : "bg-sky-50 text-sky-700",
+            )}
           >
             {segment.text}
           </span>
@@ -46,7 +54,7 @@ export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: H
   );
 }
 
-function buildHostMentionTextSegments(text: string, mentions: HostMentionCandidate[]): HostMentionTextSegment[] {
+function buildHostMentionTextSegments(text: string, mentions: InlineMention[]): HostMentionTextSegment[] {
   const segments: HostMentionTextSegment[] = [];
   let cursor = 0;
   const orderedMentions = [...mentions]
@@ -68,6 +76,7 @@ function buildHostMentionTextSegments(text: string, mentions: HostMentionCandida
       type: "mention",
       text: text.slice(mention.start, mention.end),
       key: `mention-${mention.start}-${mention.end}-${mention.raw}`,
+      mention,
     });
     cursor = mention.end;
   }

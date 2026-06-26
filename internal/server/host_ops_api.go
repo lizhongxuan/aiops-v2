@@ -299,7 +299,7 @@ func hostOpsRuntimeTranscriptItem(turn runtimekernel.TurnSnapshot, item agentsta
 	case agentstate.TurnItemTypeModelCall:
 		transcript.Type = hostops.TranscriptItemType("llm_request")
 		transcript.Content = hostOpsModelCallContent(item, payload)
-	case agentstate.TurnItemTypeFinalAnswer:
+	case agentstate.TurnItemTypeAssistantMessage:
 		transcript.Type = hostops.TranscriptItemType("llm_response")
 		transcript.Content = hostOpsFirstNonEmptyString(
 			item.Payload.Summary,

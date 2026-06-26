@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/runtimekernel"
 )
 
 type TransportCommandType string
@@ -187,7 +188,7 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		return state, TransportCommandResult{}, nil
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
-	route := detectHostOpsTransportRoute(messageText, command.Metadata)
+	route := buildChatRuntimeTransportRoute(messageText, command.Metadata)
 	hostID := strings.TrimSpace(command.HostID)
 	if hostID == "" {
 		hostID = strings.TrimSpace(route.metadata["aiops.target.hostId"])
@@ -236,50 +237,55 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 				state = mergeHostOpsMissionView(state, view, resp.TurnID)
 			}
 		}
-		state.Status = AiopsTransportStatusIdle
-		turnID := strings.TrimSpace(resp.TurnID)
-		if turnID != "" {
-			delete(state.RuntimeLiveness.ActiveTurns, turnID)
-			if turn := state.Turns[turnID]; turn.ID != "" {
-				turn.Status = AiopsTransportTurnStatusCompleted
-				turn.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-				state.Turns[turnID] = turn
-			}
-		}
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
 }
 
-type hostOpsTransportRoute struct {
-	decision hostops.RouteDecision
-	metadata map[string]string
-}
-
-func detectHostOpsTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
+func buildChatRuntimeTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
 	nextMetadata := cloneStringMetadata(metadata)
-	if _, ok := parseAddWorkflowMention(messageText); ok {
-		return hostOpsTransportRoute{decision: hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Reason: "workflow generation request"}, metadata: nextMetadata}
-	}
-	if _, ok := parsePlainWorkflowWritingRequest(messageText); ok {
-		return hostOpsTransportRoute{decision: hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Reason: "workflow generation request"}, metadata: nextMetadata}
-	}
 	mentions := filterHostOpsRouteMentions(hostOpsMentionsFromMetadata(nextMetadata["aiops.hostops.mentions"]))
 	if len(mentions) == 0 {
 		mentions = filterHostOpsRouteMentions(hostops.ParseHostMentions(messageText))
 	}
-	decision := hostops.DetectRoute(messageText, mentions)
-	if decision.Kind != hostops.RouteKindHostOps {
-		return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+	evidence := ExtractUserEvidence(messageText)
+	chatRoute := BuildChatRuntimeRoute(messageText, mentions, evidence)
+	envelope := BuildEvidenceEnvelope(messageText, nil, nil)
+	intentFrame := BuildIntentFrame(messageText, envelope, nil)
+	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, chatRoute)
+	activeRoute, routingMode := selectActiveChatRuntimeRoute(chatRoute, intentRoute, intentFrame)
+	req := &runtimekernel.TurnRequest{Input: messageText, Metadata: nextMetadata}
+	applyChatRuntimeRouteMetadata(req, activeRoute)
+	applyIntentFrameRouteMetadata(req, chatRoute, intentRoute, intentFrame)
+	req.Metadata["aiops.route.activeSource"] = routingMode
+	applyChatRuntimeToolSurfaceMetadata(req, activeRoute)
+	applyUserEvidenceMetadata(req, evidence)
+	applyChatRuntimeRouteHostBinding(req, activeRoute, mentions)
+
+	decision := hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Mentions: append([]hostops.HostMention(nil), mentions...), Reason: strings.Join(activeRoute.Reasons, "; ")}
+	_, addWorkflowRequest := parseAddWorkflowMention(messageText)
+	_, plainWorkflowRequest := parsePlainWorkflowWritingRequest(messageText)
+	if !addWorkflowRequest && !plainWorkflowRequest && activeRoute.Mode == ChatRouteMultiHostOps {
+		decision = hostops.RouteDecision{
+			Kind:         hostops.RouteKindHostOps,
+			Mentions:     append([]hostops.HostMention(nil), mentions...),
+			PlanRequired: true,
+			Reason:       "multi-host operation requires plan mode",
+		}
+		req.Metadata["aiops.hostops.routeKind"] = string(decision.Kind)
+		req.Metadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
+		req.Metadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
+		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], hostops.ToolPackHostOps)
+		if serialized, err := json.Marshal(decision.Mentions); err == nil {
+			req.Metadata["aiops.hostops.mentions"] = string(serialized)
+		}
 	}
-	nextMetadata["aiops.hostops.routeKind"] = string(decision.Kind)
-	nextMetadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
-	nextMetadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
-	nextMetadata["enableToolPack"] = appendMetadataListValue(nextMetadata["enableToolPack"], hostops.ToolPackHostOps)
-	if serialized, err := json.Marshal(decision.Mentions); err == nil {
-		nextMetadata["aiops.hostops.mentions"] = string(serialized)
-	}
-	return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
+	return hostOpsTransportRoute{decision: decision, metadata: req.Metadata}
+}
+
+type hostOpsTransportRoute struct {
+	decision hostops.RouteDecision
+	metadata map[string]string
 }
 
 func appendMetadataListValue(current, next string) string {

@@ -102,15 +102,7 @@ func TestHostOpsTranscriptAPIAddsHostAgentRuntimeConversation(t *testing.T) {
 				},
 				CreatedAt: now.Add(2 * time.Second),
 			},
-			{
-				ID:     "final-1",
-				Type:   agentstate.TurnItemTypeFinalAnswer,
-				Status: agentstate.ItemStatusCompleted,
-				Payload: agentstate.PayloadEnvelope{
-					Summary: "容器资源正常",
-				},
-				CreatedAt: now.Add(3 * time.Second),
-			},
+			assistantMessageFinalItemForServerTest("final-1", agentstate.ItemStatusCompleted, "容器资源正常", now.Add(3*time.Second)),
 		},
 	}
 	sessions.Update(session)

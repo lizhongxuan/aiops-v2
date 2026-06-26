@@ -107,7 +107,15 @@ func (v *HostTaskReportValidator) Sanitize(report HostTaskReport) (HostTaskRepor
 
 func validHostTaskReportStatus(status HostTaskReportStatus) bool {
 	switch status {
-	case HostTaskReportStatusCompleted, HostTaskReportStatusFailed, HostTaskReportStatusBlocked, HostTaskReportStatusNeedsManagerCoordination, HostTaskReportStatusNeedsUserApproval:
+	case HostTaskReportStatusCompleted,
+		HostTaskReportStatusFailed,
+		HostTaskReportStatusBlocked,
+		HostTaskReportStatusBlockedApproval,
+		HostTaskReportStatusBlockedEvidence,
+		HostTaskReportStatusCancelled,
+		HostTaskReportStatusTimeout,
+		HostTaskReportStatusNeedsManagerCoordination,
+		HostTaskReportStatusNeedsUserApproval:
 		return true
 	default:
 		return false

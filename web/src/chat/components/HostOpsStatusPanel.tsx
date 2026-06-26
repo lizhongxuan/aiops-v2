@@ -31,7 +31,7 @@ function HostOpsStatusPanelView({ state, onOpenChildAgent }: Required<Pick<HostO
     return null;
   }
   const hasPlanSteps = selectPlanSteps(mission).length > 0;
-  if (!hasPlanSteps && !hasChildAgents(mission, state) && !hasMissionHosts(mission)) {
+  if (!hasPlanSteps && !hasChildAgents(mission, state)) {
     return null;
   }
 
