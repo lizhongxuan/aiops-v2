@@ -2380,7 +2380,7 @@ Run one chat turn with model trace enabled, then inspect generated Trace v2 JSON
 - `toolSurface.modelVisibleTools` and `toolSurface.dispatchableTools` are both present.
 - `rawPayloadRefs` exists when raw provider request/response or tool result is externalized.
 
-- [ ] **Step 7: Final commit**
+- [x] **Step 7: Final commit**
 
 ```bash
 git add internal web scripts docs/superpowers/plans/2026-06-26-aiops-v2-agent-runtime-layering-implementation-todo.zh.md
