@@ -1896,7 +1896,7 @@ git commit -m "refactor(runtime): unify visible and dispatchable tools"
 - Test: `internal/runtimekernel/model_input_trace_test.go`
 - Test: `internal/promptdiag/*_test.go`
 
-- [ ] **Step 1: Write failing Trace v2 writer test**
+- [x] **Step 1: Write failing Trace v2 writer test**
 
 Add `internal/modeltrace/trace_v2_test.go`:
 
@@ -1949,7 +1949,7 @@ func TestWriteTraceDocumentV2WritesSummaryAndRawRefs(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1959,7 +1959,7 @@ go test ./internal/modeltrace -run TestWriteTraceDocumentV2WritesSummaryAndRawRe
 
 Expected: FAIL with undefined `TraceDocumentV2`.
 
-- [ ] **Step 3: Add Trace v2 types and writer**
+- [x] **Step 3: Add Trace v2 types and writer**
 
 Create `internal/modeltrace/trace_v2.go`:
 
@@ -2027,7 +2027,7 @@ func WriteTraceDocumentV2(root string, doc TraceDocumentV2) (string, error) {
 }
 ```
 
-- [ ] **Step 4: Add raw payload refs**
+- [x] **Step 4: Add raw payload refs**
 
 Create `internal/modeltrace/raw_payload.go`:
 
@@ -2043,7 +2043,7 @@ type RawPayloadRef struct {
 }
 ```
 
-- [ ] **Step 5: Replace writeModelInputDebugTrace production call**
+- [x] **Step 5: Replace writeModelInputDebugTrace production call**
 
 In runtime trace path, replace `writeModelInputDebugTrace(ModelInputDebugTraceRequest{...})` with:
 
@@ -2078,7 +2078,7 @@ rg -n "writeModelInputDebugTrace|ModelInputDebugTraceRequest|modeltrace\\.Reques
 
 Expected: no production matches after migration.
 
-- [ ] **Step 7: Run trace and promptdiag tests**
+- [x] **Step 7: Run trace and promptdiag tests**
 
 Run:
 

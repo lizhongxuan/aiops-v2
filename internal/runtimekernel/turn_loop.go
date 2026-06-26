@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
@@ -123,6 +124,9 @@ func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) 
 }
 
 func writeRuntimeStepTrace(step RuntimeStepContext, req ModelInputDebugTraceRequest) (string, error) {
+	if !modeltrace.Enabled() {
+		return "", nil
+	}
 	req.SessionID = step.Turn.SessionID
 	req.TurnID = step.Turn.TurnID
 	req.Iteration = step.Iteration
@@ -130,5 +134,48 @@ func writeRuntimeStepTrace(step RuntimeStepContext, req ModelInputDebugTraceRequ
 	if len(req.VisibleTools) == 0 {
 		req.VisibleTools = append([]string(nil), step.ToolSurface.ModelVisibleTools...)
 	}
-	return writeModelInputDebugTrace(req)
+	traceReq := buildModelInputTraceRequest(req)
+	root := modeltrace.TraceDocumentV2Directory("", step.Turn.SessionID, step.Turn.TurnID)
+	rawRef, err := modeltrace.WriteRawPayloadRef(root, "provider-request", "provider_request", step.ProviderRequest)
+	if err != nil {
+		return "", err
+	}
+	return modeltrace.WriteTraceDocumentV2(root, modeltrace.TraceDocumentV2{
+		SessionID:         step.Turn.SessionID,
+		TurnID:            step.Turn.TurnID,
+		Iteration:         step.Iteration,
+		Metadata:          traceReq.Metadata,
+		VisibleTools:      traceReq.VisibleTools,
+		PromptFingerprint: traceReq.PromptFingerprint,
+		TurnContext:       step.Turn,
+		StepContext: runtimeStepTraceDocumentV2{
+			RuntimeStepContext: step,
+			PromptInputTrace:   traceReq.PromptInputTrace,
+			PromptInputDiff:    traceReq.PromptInputDiff,
+			DiagnosticTrace:    traceReq.DiagnosticTrace,
+			ProviderMessages:   traceReq.ModelInput,
+		},
+		ProviderRequest: modeltrace.ProviderRequestTrace{
+			ModelInputHash:        step.ProviderRequest.ModelInputHash,
+			ProviderMessagesHash:  step.ProviderRequest.ProviderMessagesHash,
+			RequestPropertiesHash: step.ProviderRequest.RequestPropertiesHash,
+			PromptCacheKey:        step.ProviderRequest.PromptCacheKey,
+		},
+		ToolSurface:        step.ToolSurface,
+		Prompt:             traceReq.Prompt,
+		ModelInput:         traceReq.ModelInput,
+		PromptInputTrace:   traceReq.PromptInputTrace,
+		PromptInputDiff:    traceReq.PromptInputDiff,
+		DiagnosticTrace:    traceReq.DiagnosticTrace,
+		FinalEvidenceState: traceReq.FinalEvidenceState,
+		RawPayloadRefs:     []modeltrace.RawPayloadRef{rawRef},
+	})
+}
+
+type runtimeStepTraceDocumentV2 struct {
+	RuntimeStepContext
+	PromptInputTrace any               `json:"promptInputTrace,omitempty"`
+	PromptInputDiff  any               `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace  any               `json:"diagnosticTrace,omitempty"`
+	ProviderMessages []*schema.Message `json:"providerMessages,omitempty"`
 }

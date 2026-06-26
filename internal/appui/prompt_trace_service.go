@@ -225,6 +225,22 @@ func NewPromptTraceService(rootDir string) PromptTraceService {
 	return promptTraceService{rootDir: strings.TrimSpace(rootDir)}
 }
 
+func shouldSkipPromptTraceJSON(root, path string) bool {
+	if strings.EqualFold(filepath.Base(path), "index.json") {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(part, "raw") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s promptTraceService) ListModelInputTraces(ctx context.Context, req PromptTraceListRequest) (PromptTraceListResponse, error) {
 	root, err := promptTraceRootDir(s.rootDir)
 	if err != nil {
@@ -248,7 +264,7 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
+		if entry.IsDir() || filepath.Ext(path) != ".json" || shouldSkipPromptTraceJSON(root, path) {
 			return nil
 		}
 		item, err := readPromptTraceItem(root, path)

@@ -232,7 +232,7 @@ func traceDirContainsLoadedPackDelta(t *testing.T, dir, turnID, pack string) boo
 		if err != nil {
 			return err
 		}
-		if found || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if found || entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") || strings.EqualFold(entry.Name(), "index.json") || strings.Contains(filepath.ToSlash(path), "/raw/") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
@@ -244,14 +244,26 @@ func traceDirContainsLoadedPackDelta(t *testing.T, dir, turnID, pack string) boo
 			ToolSurfaceSnapshot *struct {
 				LoadedPacksDelta []string `json:"loadedPacksDelta"`
 			} `json:"toolSurfaceSnapshot"`
+			PromptInputTrace *struct {
+				ToolSurfaceSnapshot *struct {
+					LoadedPacksDelta []string `json:"loadedPacksDelta"`
+				} `json:"toolSurfaceSnapshot"`
+			} `json:"promptInputTrace"`
 		}
 		if err := json.Unmarshal(data, &payload); err != nil {
 			return err
 		}
-		if payload.TurnID != turnID || payload.ToolSurfaceSnapshot == nil {
+		if payload.TurnID != turnID {
 			return nil
 		}
-		if containsString(payload.ToolSurfaceSnapshot.LoadedPacksDelta, pack) {
+		loadedPacksDelta := []string(nil)
+		if payload.ToolSurfaceSnapshot != nil {
+			loadedPacksDelta = payload.ToolSurfaceSnapshot.LoadedPacksDelta
+		}
+		if len(loadedPacksDelta) == 0 && payload.PromptInputTrace != nil && payload.PromptInputTrace.ToolSurfaceSnapshot != nil {
+			loadedPacksDelta = payload.PromptInputTrace.ToolSurfaceSnapshot.LoadedPacksDelta
+		}
+		if containsString(loadedPacksDelta, pack) {
 			found = true
 		}
 		return nil

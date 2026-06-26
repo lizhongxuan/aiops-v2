@@ -1009,6 +1009,10 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 }
 
 func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
+	return modeltrace.Write(buildModelInputTraceRequest(req))
+}
+
+func buildModelInputTraceRequest(req ModelInputDebugTraceRequest) modeltrace.Request {
 	promptTrace := req.PromptInputTrace
 	if len(promptTrace.PromptSections) == 0 {
 		promptTrace.PromptSections = append([]promptcompiler.PromptSectionTrace(nil), req.Compiled.PromptSections...)
@@ -1210,7 +1214,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	if style := strings.TrimSpace(req.AnswerStyle); style != "" {
 		metadata["answerStyle.configured"] = style
 	}
-	return modeltrace.Write(modeltrace.Request{
+	return modeltrace.Request{
 		Kind:                          "runtime_model_input",
 		SessionID:                     req.SessionID,
 		TurnID:                        req.TurnID,
@@ -1257,7 +1261,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		PromptInputTrace: promptTrace,
 		PromptInputDiff:  req.PromptInputDiff,
 		DiagnosticTrace:  req.DiagnosticTrace,
-	})
+	}
 }
 
 func cloneDeferredToolDirectoryForTrace(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {

@@ -41,7 +41,7 @@ func BuildTraceIndex(root string) (TraceIndex, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".json") {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".json") || shouldSkipTraceIndexJSON(absRoot, path) {
 			return nil
 		}
 		trace, err := readTraceLink(absRoot, path)
@@ -113,6 +113,22 @@ func (i TraceIndex) register(trace TraceLink) {
 	if key := promptFingerprintKey(trace.Fingerprint); key != "" {
 		i.byFingerprint[key] = appendTrace(i.byFingerprint[key], trace)
 	}
+}
+
+func shouldSkipTraceIndexJSON(root, path string) bool {
+	if strings.EqualFold(filepath.Base(path), "index.json") {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(part, "raw") {
+			return true
+		}
+	}
+	return false
 }
 
 func readTraceLink(root, jsonPath string) (TraceLink, error) {
