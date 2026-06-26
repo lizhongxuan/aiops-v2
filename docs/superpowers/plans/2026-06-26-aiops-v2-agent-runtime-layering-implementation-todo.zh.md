@@ -12,10 +12,10 @@
 
 ## Scope Rules
 
-- [ ] 最终代码不加 runtime feature flag。
-- [ ] 最终代码不保留旧 `RunTurn` 成功路径。
-- [ ] 最终代码不双写 v1/v2 trace。
-- [ ] 最终代码不保留 `EinoKernel` alias。
+- [x] 最终代码不加 runtime feature flag。
+- [x] 最终代码不保留旧 `RunTurn` 成功路径。
+- [x] 最终代码不双写 v1/v2 trace。
+- [x] 最终代码不保留 `EinoKernel` alias。
 - [ ] 最终代码不让 `schema.Message` 穿透到 `promptcompiler`、`promptinput`、`runtimekernel`、`modeltrace`。
 - [ ] 历史 trace 文件不迁移；PromptTrace UI 只读新 v2 index 和 v2 document。
 
