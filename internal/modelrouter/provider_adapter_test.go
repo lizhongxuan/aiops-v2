@@ -1,4 +1,4 @@
-package runtimekernel
+package modelrouter
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptinput"
 
 	"github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -28,8 +28,48 @@ func (m *emptyResponseModel) BindTools([]*schema.ToolInfo) error {
 	return nil
 }
 
+type recordingProviderChatModel struct {
+	input []*schema.Message
+}
+
+func (m *recordingProviderChatModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.input = append([]*schema.Message(nil), input...)
+	return schema.AssistantMessage("ok", nil), nil
+}
+
+func (m *recordingProviderChatModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (m *recordingProviderChatModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
+	model := &recordingProviderChatModel{}
+	adapter := NewEinoProviderAdapter(model)
+	resp, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
+		Provider: "openai",
+		Model:    "gpt-4.1",
+		Input: []promptinput.ModelInputItem{{
+			ID:           "user-1",
+			ProviderRole: promptinput.ProviderRoleUser,
+			Content:      "hello",
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if resp.Output != "ok" || resp.RequestID == "" || resp.Message == nil {
+		t.Fatalf("provider response = %#v, want output, request id, and raw message", resp)
+	}
+	if len(model.input) != 1 || model.input[0].Role != schema.User || model.input[0].Content != "hello" {
+		t.Fatalf("model input = %#v, want converted user message", model.input)
+	}
+}
+
 func TestGenerateModelResponseRejectsEmptyAssistantMessage(t *testing.T) {
-	_, err := generateModelResponse(context.Background(), &emptyResponseModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponse(context.Background(), &emptyResponseModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected empty model response error")
 	}
@@ -40,7 +80,7 @@ func TestGenerateModelResponseRejectsEmptyAssistantMessage(t *testing.T) {
 
 func TestGenerateModelResponseUsesLatestToolEvidenceWhenModelStaysEmpty(t *testing.T) {
 	var deltas []string
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		&emptyResponseModel{},
 		[]*schema.Message{
@@ -62,7 +102,7 @@ func TestGenerateModelResponseUsesLatestToolEvidenceWhenModelStaysEmpty(t *testi
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg == nil || !strings.Contains(msg.Content, "glm-4.7") {
 		t.Fatalf("fallback content = %q, want model evidence", msg.Content)
@@ -124,7 +164,7 @@ func TestGenerateModelResponseFallsBackToGenerateWhenStreamIsEmpty(t *testing.T)
 	model := &emptyStreamGenerateResponseModel{}
 	var deltas []string
 
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		model,
 		[]*schema.Message{schema.UserMessage("ping")},
@@ -135,7 +175,7 @@ func TestGenerateModelResponseFallsBackToGenerateWhenStreamIsEmpty(t *testing.T)
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "fallback final" {
 		t.Fatalf("response content = %q, want fallback final", msg.Content)
@@ -189,7 +229,7 @@ func TestGenerateModelResponseFallsBackWithoutToolOptionsWhenToolOptionsStayEmpt
 	model := &emptyToolOptionsGenerateResponseModel{}
 	var deltas []string
 
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		model,
 		[]*schema.Message{schema.UserMessage("ping")},
@@ -200,7 +240,7 @@ func TestGenerateModelResponseFallsBackWithoutToolOptionsWhenToolOptionsStayEmpt
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "no-tool fallback final" {
 		t.Fatalf("response content = %q, want no-tool fallback final", msg.Content)
@@ -250,7 +290,7 @@ func TestGenerateModelResponseRetriesEmptyNoToolFallbackOnce(t *testing.T) {
 	model := &retryEmptyToolOptionsGenerateResponseModel{}
 	var deltas []string
 
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		model,
 		[]*schema.Message{schema.UserMessage("ping")},
@@ -261,7 +301,7 @@ func TestGenerateModelResponseRetriesEmptyNoToolFallbackOnce(t *testing.T) {
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "retry no-tool fallback final" {
 		t.Fatalf("response content = %q, want retry no-tool fallback final", msg.Content)
@@ -287,7 +327,7 @@ func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) 
 	}
 
 	var deltas []string
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		model,
 		[]*schema.Message{schema.UserMessage("ping")},
@@ -298,7 +338,7 @@ func TestGenerateModelResponseStreamsChunksAndConcatsFinalMessage(t *testing.T) 
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "第一段\n\n第二段" {
 		t.Fatalf("response content = %q, want concatenated stream", msg.Content)
@@ -331,9 +371,9 @@ func (m *noToolOptionModel) BindTools([]*schema.ToolInfo) error {
 }
 
 func TestGenerateModelResponseOmitsToolOptionsWhenNoTools(t *testing.T) {
-	msg, err := generateModelResponse(context.Background(), &noToolOptionModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	msg, err := generateEinoModelResponse(context.Background(), &noToolOptionModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "final" {
 		t.Fatalf("response content = %q, want final", msg.Content)
@@ -367,7 +407,7 @@ func (m *optionCaptureModel) BindTools([]*schema.ToolInfo) error {
 
 func TestGenerateModelResponsePassesExtraOptionsWithoutTools(t *testing.T) {
 	capture := &optionCaptureModel{}
-	msg, err := generateModelResponse(
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		capture,
 		[]*schema.Message{schema.UserMessage("ping")},
@@ -377,7 +417,7 @@ func TestGenerateModelResponsePassesExtraOptionsWithoutTools(t *testing.T) {
 		model.WithMaxTokens(321),
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "bounded final" {
 		t.Fatalf("response content = %q, want bounded final", msg.Content)
@@ -420,19 +460,19 @@ func TestGenerateModelResponseEmitsOnlyReasoningSummaryEvents(t *testing.T) {
 		},
 	}
 
-	var reasoning []modelrouter.ReasoningStreamEvent
-	msg, err := generateModelResponse(
+	var reasoning []ReasoningStreamEvent
+	msg, err := generateEinoModelResponse(
 		context.Background(),
 		model,
 		[]*schema.Message{schema.UserMessage("ping")},
 		nil,
 		nil,
-		func(event modelrouter.ReasoningStreamEvent) {
+		func(event ReasoningStreamEvent) {
 			reasoning = append(reasoning, event)
 		},
 	)
 	if err != nil {
-		t.Fatalf("generateModelResponse returned error: %v", err)
+		t.Fatalf("generateEinoModelResponse returned error: %v", err)
 	}
 	if msg.Content != "final" {
 		t.Fatalf("response content = %q, want final", msg.Content)
@@ -471,7 +511,7 @@ func TestGenerateModelResponseReturnsContextCanceledImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := generateModelResponse(ctx, &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponse(ctx, &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from canceled context")
 	}
@@ -484,7 +524,7 @@ func TestGenerateModelResponseTimesOutWhenProviderDoesNotReturn(t *testing.T) {
 	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
 
 	started := time.Now()
-	_, err := generateModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -508,7 +548,7 @@ func TestModelResponseTimeoutDefaultAllowsLongOperationalAnalysis(t *testing.T) 
 func TestGenerateModelResponseWrapsProviderDeadlineWithReadableTimeout(t *testing.T) {
 	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
 
-	_, err := generateModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}

@@ -1102,7 +1102,7 @@ func stableHash(value any) string {
 }
 ```
 
-- [ ] **Step 5: Add provider response types**
+- [x] **Step 5: Add provider response types**
 
 Create `internal/modelrouter/provider_response.go`:
 
@@ -1261,7 +1261,7 @@ func (i ModelInputItem) ToolResultToolCallID() string {
 }
 ```
 
-- [ ] **Step 7: Add provider adapter interface**
+- [x] **Step 7: Add provider adapter interface**
 
 Create `internal/modelrouter/provider_adapter.go`:
 
@@ -1275,7 +1275,7 @@ type ProviderAdapter interface {
 }
 ```
 
-- [ ] **Step 8: Run modelrouter tests**
+- [x] **Step 8: Run modelrouter tests**
 
 Run:
 
@@ -1301,7 +1301,7 @@ git commit -m "feat(modelrouter): add provider request snapshot and eino adapter
 - Modify: `internal/runtimekernel/eino_kernel.go`
 - Move tests: `internal/runtimekernel/model_response_test.go` to `internal/modelrouter/provider_adapter_test.go`
 
-- [ ] **Step 1: Write failing provider adapter stream test**
+- [x] **Step 1: Write failing provider adapter stream test**
 
 Add `internal/modelrouter/provider_adapter_test.go`:
 
@@ -1339,7 +1339,7 @@ func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1349,7 +1349,7 @@ go test ./internal/modelrouter -run TestEinoProviderAdapterCallsModelThroughSnap
 
 Expected: FAIL with undefined `NewEinoProviderAdapter`.
 
-- [ ] **Step 3: Implement EinoProviderAdapter**
+- [x] **Step 3: Implement EinoProviderAdapter**
 
 Extend `internal/modelrouter/provider_adapter.go` with the existing `generateModelResponse` behavior moved from runtime:
 
@@ -1389,7 +1389,7 @@ func (a *EinoProviderAdapter) Call(ctx context.Context, req ProviderRequestSnaps
 }
 ```
 
-- [ ] **Step 4: Delete runtime-owned generateModelResponse**
+- [x] **Step 4: Delete runtime-owned generateModelResponse**
 
 Move these functions from `internal/runtimekernel/eino_kernel.go` to `internal/modelrouter/provider_adapter.go` with provider-oriented names:
 
@@ -1403,7 +1403,7 @@ isEmptyAssistantResponse -> isEmptyAssistantResponse
 fallbackResponseFromToolEvidence -> fallbackResponseFromToolEvidence
 ```
 
-- [ ] **Step 5: Run provider adapter tests**
+- [x] **Step 5: Run provider adapter tests**
 
 Run:
 
@@ -1413,7 +1413,7 @@ go test ./internal/modelrouter
 
 Expected: PASS.
 
-- [ ] **Step 6: Run static check that runtime does not call provider directly**
+- [x] **Step 6: Run static check that runtime does not call provider directly**
 
 Run:
 

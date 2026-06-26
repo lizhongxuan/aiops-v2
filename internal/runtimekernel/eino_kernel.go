@@ -7,17 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
 
-	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
@@ -777,6 +774,18 @@ func modelNameForTrace(chatModel modelrouter.ChatModel) string {
 		return ""
 	}
 	return strings.TrimPrefix(fmt.Sprintf("%T", chatModel), "*")
+}
+
+func providerToolSpecsFromVisibleTools(names []string, fingerprint string) []modelrouter.ProviderToolSpec {
+	out := make([]modelrouter.ProviderToolSpec, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out = append(out, modelrouter.ProviderToolSpec{Name: name, Hash: fingerprint})
+	}
+	return out
 }
 
 func modelTraceMarkdownPath(tracePath string) string {
@@ -2109,7 +2118,22 @@ func (k *EinoKernel) runHostIterationLoop(
 		streamStats := ModelStreamStats{}
 		var firstDeltaAt time.Time
 		var lastDeltaAt time.Time
-		response, genErr := generateModelResponse(modelCtx, chatModel, modelInput, toolPool, func(delta string) {
+		providerRequest := modelrouter.ProviderRequestSnapshot{
+			Provider:        string(agentKind),
+			Model:           modelNameForTrace(chatModel),
+			Input:           promptBuild.Items,
+			Tools:           providerToolSpecsFromVisibleTools(visibleToolNames, toolFingerprint),
+			ReasoningEffort: compileCtx.ReasoningEffort,
+			ClientMetadata: map[string]string{
+				"sessionId":       session.ID,
+				"turnId":          turnID,
+				"clientTurnId":    req.ClientTurnID,
+				"clientMessageId": req.ClientMessageID,
+			},
+		}
+		providerRequest.ComputeHashes()
+		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool))
+		providerResponse, genErr := providerAdapter.Call(modelCtx, providerRequest, func(delta string) {
 			if delta != "" {
 				now := time.Now()
 				if firstDeltaAt.IsZero() {
@@ -2181,6 +2205,7 @@ func (k *EinoKernel) runHostIterationLoop(
 				"foldable":     true,
 			})
 		})
+		response := providerResponse.Message
 		modelCallDuration := time.Since(modelCallStartedAt)
 		if !firstDeltaAt.IsZero() {
 			streamEnd := time.Now()
@@ -4831,216 +4856,6 @@ func (l deferredCatalogLookup) LookupDeferredTool(name string) (tooling.ToolMeta
 	return meta, ok
 }
 
-func generateModelResponse(
-	ctx context.Context,
-	chatModel modelrouter.ChatModel,
-	input []*schema.Message,
-	toolPool []tool.BaseTool,
-	onFinalDelta func(string),
-	onReasoning func(modelrouter.ReasoningStreamEvent),
-	extraOptions ...einomodel.Option,
-) (*schema.Message, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	timeout := modelResponseTimeout()
-	modelCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ctx = modelCtx
-
-	toolInfos, err := toolInfosFromPool(ctx, toolPool)
-	if err != nil {
-		return nil, fmt.Errorf("tool info: %w", err)
-	}
-	opts := modelOptionsForTools(toolInfos, extraOptions...)
-
-	stream, streamErr := chatModel.Stream(ctx, input, opts...)
-	if streamErr == nil && stream != nil {
-		defer stream.Close()
-		chunks := make([]*schema.Message, 0, 8)
-		for {
-			msg, err := stream.Recv()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				// Fast exit on context cancellation — propagate immediately so
-				// the caller (runHostIterationLoop) can mark the turn cancelled.
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return nil, readableModelResponseTimeoutError(err, timeout)
-				}
-				return nil, err
-			}
-			if msg == nil {
-				continue
-			}
-			if onReasoning != nil && len(msg.Extra) > 0 {
-				event, err := modelrouter.ParseOpenAIReasoningExtra(msg.Extra, false)
-				if err != nil {
-					return nil, err
-				}
-				if event != nil {
-					onReasoning(*event)
-				}
-			}
-			if onFinalDelta != nil && msg.Content != "" {
-				onFinalDelta(msg.Content)
-			}
-			chunks = append(chunks, msg)
-		}
-		response, err := schema.ConcatMessages(chunks)
-		if err != nil {
-			return nil, err
-		}
-		attachConcatenatedResponseMeta(response, chunks)
-		if isEmptyAssistantResponse(response) {
-			return generateFallbackResponse(ctx, chatModel, input, opts, onFinalDelta)
-		}
-		return response, nil
-	}
-
-	response, err := chatModel.Generate(ctx, input, opts...)
-	if err != nil {
-		if streamErr != nil {
-			return nil, readableModelResponseTimeoutError(streamErr, timeout)
-		}
-		return nil, readableModelResponseTimeoutError(err, timeout)
-	}
-	if isEmptyAssistantResponse(response) {
-		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
-			if onFinalDelta != nil && fallback.Content != "" {
-				onFinalDelta(fallback.Content)
-			}
-			return fallback, nil
-		}
-		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
-	}
-	if onFinalDelta != nil && response.Content != "" {
-		onFinalDelta(response.Content)
-	}
-	return response, nil
-}
-
-const defaultModelResponseTimeout = 5 * time.Minute
-
-func modelResponseTimeout() time.Duration {
-	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT_MS")); raw != "" {
-		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
-			return time.Duration(ms) * time.Millisecond
-		}
-	}
-	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT")); raw != "" {
-		if duration, err := time.ParseDuration(raw); err == nil && duration > 0 {
-			return duration
-		}
-	}
-	return defaultModelResponseTimeout
-}
-
-func readableModelResponseTimeoutError(err error, timeout time.Duration) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, context.Canceled) {
-		return err
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("模型响应超时：%s 内未收到模型完整响应或下一个流式片段: %w", timeout, err)
-	}
-	return err
-}
-
-func attachConcatenatedResponseMeta(response *schema.Message, chunks []*schema.Message) {
-	if response == nil {
-		return
-	}
-	var latest *schema.ResponseMeta
-	for i := len(chunks) - 1; i >= 0; i-- {
-		if chunks[i] == nil || chunks[i].ResponseMeta == nil {
-			continue
-		}
-		latest = chunks[i].ResponseMeta
-		break
-	}
-	if latest == nil {
-		return
-	}
-	if response.ResponseMeta == nil {
-		cp := *latest
-		response.ResponseMeta = &cp
-		return
-	}
-	if strings.TrimSpace(response.ResponseMeta.FinishReason) == "" && strings.TrimSpace(latest.FinishReason) != "" {
-		response.ResponseMeta.FinishReason = latest.FinishReason
-	}
-	if response.ResponseMeta.Usage == nil && latest.Usage != nil {
-		response.ResponseMeta.Usage = latest.Usage
-	}
-}
-
-func generateFallbackResponse(
-	ctx context.Context,
-	chatModel modelrouter.ChatModel,
-	input []*schema.Message,
-	opts []einomodel.Option,
-	onFinalDelta func(string),
-) (*schema.Message, error) {
-	const fallbackAttempts = 2
-	var response *schema.Message
-
-	for attempt := 0; attempt < fallbackAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		var err error
-		response, err = chatModel.Generate(ctx, input, opts...)
-		if err != nil {
-			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; generate fallback failed: %w", err)
-		}
-		if !isEmptyAssistantResponse(response) {
-			break
-		}
-		if len(opts) == 0 {
-			continue
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		response, err = chatModel.Generate(ctx, input)
-		if err != nil {
-			return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls; no-tool generate fallback failed: %w", err)
-		}
-		if !isEmptyAssistantResponse(response) {
-			break
-		}
-	}
-	if isEmptyAssistantResponse(response) {
-		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
-			if onFinalDelta != nil && fallback.Content != "" {
-				onFinalDelta(fallback.Content)
-			}
-			return fallback, nil
-		}
-		return nil, fmt.Errorf("empty model response: provider returned no assistant content or tool calls")
-	}
-	if onFinalDelta != nil && response.Content != "" {
-		onFinalDelta(response.Content)
-	}
-	return response, nil
-}
-
-func modelOptionsForTools(toolInfos []*schema.ToolInfo, extraOptions ...einomodel.Option) []einomodel.Option {
-	opts := make([]einomodel.Option, 0, len(extraOptions)+2)
-	if len(toolInfos) == 0 {
-		return append(opts, extraOptions...)
-	}
-	opts = append(opts,
-		einomodel.WithTools(toolInfos),
-		einomodel.WithToolChoice(schema.ToolChoiceAllowed),
-	)
-	return append(opts, extraOptions...)
-}
-
 func reasoningSummaryKey(event modelrouter.ReasoningStreamEvent) string {
 	itemID := reasoningItemID(event)
 	return fmt.Sprintf("%s:%d", itemID, event.SummaryIndex)
@@ -5056,223 +4871,6 @@ func reasoningItemID(event modelrouter.ReasoningStreamEvent) string {
 		turnID = "turn"
 	}
 	return fmt.Sprintf("%s:reasoning:%d", turnID, event.SummaryIndex)
-}
-
-func isEmptyAssistantResponse(msg *schema.Message) bool {
-	if msg == nil {
-		return true
-	}
-	return strings.TrimSpace(msg.Content) == "" &&
-		len(msg.ToolCalls) == 0 &&
-		len(msg.MultiContent) == 0 &&
-		len(msg.AssistantGenMultiContent) == 0
-}
-
-func fallbackResponseFromToolEvidence(input []*schema.Message) *schema.Message {
-	userRequest := latestUserContent(input)
-	content := latestSuccessfulToolEvidenceContent(input)
-	if content == "" {
-		return nil
-	}
-	fallback := fallbackTextFromToolEvidence(userRequest, content)
-	if strings.TrimSpace(fallback) == "" {
-		return nil
-	}
-	return schema.AssistantMessage(fallback, nil)
-}
-
-func latestUserContent(input []*schema.Message) string {
-	for i := len(input) - 1; i >= 0; i-- {
-		msg := input[i]
-		if msg == nil || msg.Role != schema.User {
-			continue
-		}
-		if text := strings.TrimSpace(msg.Content); text != "" {
-			return text
-		}
-	}
-	return ""
-}
-
-func latestSuccessfulToolEvidenceContent(input []*schema.Message) string {
-	for i := len(input) - 1; i >= 0; i-- {
-		msg := input[i]
-		if msg == nil || msg.Role != schema.Tool {
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" || toolEvidenceLooksFailed(content) {
-			continue
-		}
-		return content
-	}
-	return ""
-}
-
-func toolEvidenceLooksFailed(content string) bool {
-	var obj map[string]any
-	if json.Unmarshal([]byte(content), &obj) == nil {
-		if errorValue, ok := obj["error"]; ok && strings.TrimSpace(fmt.Sprint(errorValue)) != "" {
-			return true
-		}
-		status := strings.ToLower(strings.TrimSpace(fmt.Sprint(obj["status"])))
-		return status == "error" || status == "failed" || status == "failure"
-	}
-	lower := strings.ToLower(content)
-	return strings.Contains(lower, "tool not found") ||
-		strings.Contains(lower, "permission denied") ||
-		strings.Contains(lower, "failed to") ||
-		strings.Contains(lower, "执行失败")
-}
-
-func fallbackTextFromToolEvidence(userRequest, content string) string {
-	if answer, ok := scalarJSONFieldAnswerFromRequest(userRequest, content); ok {
-		return answer
-	}
-	sanitized := sanitizeToolEvidenceForFallback(content)
-	if sanitized == "" {
-		return ""
-	}
-	return "已获取工具结果：\n\n" + truncateRunes(sanitized, 1200)
-}
-
-func scalarJSONFieldAnswerFromRequest(userRequest, content string) (string, bool) {
-	var obj map[string]any
-	if json.Unmarshal([]byte(content), &obj) != nil || len(obj) == 0 {
-		return "", false
-	}
-	request := normalizePromptLookupText(userRequest)
-	for key, value := range obj {
-		if isSensitiveEvidenceKey(key) || !requestMentionsJSONField(request, key) {
-			continue
-		}
-		text, ok := scalarJSONValueText(value)
-		if !ok || strings.TrimSpace(text) == "" {
-			continue
-		}
-		return fmt.Sprintf("%s 字段是 %s。", key, text), true
-	}
-	return "", false
-}
-
-func requestMentionsJSONField(normalizedRequest, key string) bool {
-	normalizedKey := normalizePromptLookupText(key)
-	if normalizedKey != "" && strings.Contains(normalizedRequest, normalizedKey) {
-		return true
-	}
-	switch strings.ToLower(key) {
-	case "model":
-		return strings.Contains(normalizedRequest, "模型")
-	case "provider":
-		return strings.Contains(normalizedRequest, "供应商") || strings.Contains(normalizedRequest, "提供商") || strings.Contains(normalizedRequest, "接入")
-	case "status":
-		return strings.Contains(normalizedRequest, "状态")
-	default:
-		return false
-	}
-}
-
-func scalarJSONValueText(value any) (string, bool) {
-	switch v := value.(type) {
-	case string:
-		return v, true
-	case float64, bool:
-		return fmt.Sprint(v), true
-	case nil:
-		return "", false
-	default:
-		return "", false
-	}
-}
-
-func sanitizeToolEvidenceForFallback(content string) string {
-	var value any
-	if json.Unmarshal([]byte(content), &value) == nil {
-		redacted := redactSensitiveEvidenceValue(value)
-		encoded, err := json.MarshalIndent(redacted, "", "  ")
-		if err == nil {
-			return string(encoded)
-		}
-	}
-	return redactSensitiveEvidenceText(content)
-}
-
-func redactSensitiveEvidenceValue(value any) any {
-	switch v := value.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for key, child := range v {
-			if isSensitiveEvidenceKey(key) {
-				out[key] = "[REDACTED]"
-				continue
-			}
-			out[key] = redactSensitiveEvidenceValue(child)
-		}
-		return out
-	case []any:
-		out := make([]any, 0, len(v))
-		for _, child := range v {
-			out = append(out, redactSensitiveEvidenceValue(child))
-		}
-		return out
-	default:
-		return value
-	}
-}
-
-func isSensitiveEvidenceKey(key string) bool {
-	normalized := normalizePromptLookupText(key)
-	return strings.Contains(normalized, "apikey") ||
-		strings.Contains(normalized, "token") ||
-		strings.Contains(normalized, "secret") ||
-		strings.Contains(normalized, "password") ||
-		strings.Contains(normalized, "passwd") ||
-		strings.Contains(normalized, "credential") ||
-		strings.Contains(normalized, "authorization")
-}
-
-func normalizePromptLookupText(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "", ":", "", "/", "")
-	return replacer.Replace(value)
-}
-
-func redactSensitiveEvidenceText(content string) string {
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		if isSensitiveEvidenceLine(line) {
-			lines[i] = "[REDACTED]"
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func isSensitiveEvidenceLine(line string) bool {
-	normalized := normalizePromptLookupText(line)
-	return strings.Contains(normalized, "apikey") ||
-		strings.Contains(normalized, "token") ||
-		strings.Contains(normalized, "secret") ||
-		strings.Contains(normalized, "password") ||
-		strings.Contains(normalized, "passwd") ||
-		strings.Contains(normalized, "credential") ||
-		strings.Contains(normalized, "authorization")
-}
-
-func toolInfosFromPool(ctx context.Context, toolPool []tool.BaseTool) ([]*schema.ToolInfo, error) {
-	infos := make([]*schema.ToolInfo, 0, len(toolPool))
-	for _, baseTool := range toolPool {
-		if baseTool == nil {
-			continue
-		}
-		info, err := baseTool.Info(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if info != nil {
-			infos = append(infos, info)
-		}
-	}
-	return infos, nil
 }
 
 func runtimeMessagesToSchema(messages []Message) ([]*schema.Message, error) {
