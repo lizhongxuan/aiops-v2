@@ -809,7 +809,7 @@ go test ./internal/promptinput
 
 Expected: PASS after updating existing tests to assert `result.Items` instead of `result.Messages`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add internal/promptinput/model_input_item.go internal/promptinput/model_input_validation.go internal/promptinput/types.go internal/promptinput/builder.go internal/promptinput/*_test.go
