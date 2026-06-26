@@ -40,23 +40,23 @@ const SENSITIVE_VALUE = "[已脱敏]";
 export function parsePromptTrace(input) {
   const warnings = [];
   const payload = parseInput(input, warnings);
+  const isTraceV2 = payload.schemaVersion === "aiops.trace/v2";
+  if (!isTraceV2) {
+    warnings.push(warning("danger", "当前 PromptTrace UI 只支持 aiops.trace/v2 trace document。"));
+  }
   const stepContext = isPlainObject(payload.stepContext) ? payload.stepContext : {};
   const modelInput = Array.isArray(stepContext.modelInput)
     ? stepContext.modelInput
-    : Array.isArray(payload.modelInput)
-      ? payload.modelInput
-      : [];
-  if (!Array.isArray(payload.modelInput) && !Array.isArray(stepContext.modelInput)) {
+    : [];
+  if (!Array.isArray(stepContext.modelInput)) {
     warnings.push(warning("warning", "trace 中没有 modelInput[]，只能展示空输入。"));
   }
 
   const v2ToolSurface = isPlainObject(payload.toolSurface) ? payload.toolSurface : {};
   const visibleTools = Array.isArray(v2ToolSurface.modelVisibleTools)
     ? v2ToolSurface.modelVisibleTools.map(compactText).filter(Boolean)
-    : Array.isArray(payload.visibleTools)
-      ? payload.visibleTools.map(compactText).filter(Boolean)
-      : [];
-  if (!Array.isArray(payload.visibleTools) && !Array.isArray(v2ToolSurface.modelVisibleTools)) {
+    : [];
+  if (!Array.isArray(v2ToolSurface.modelVisibleTools)) {
     warnings.push(warning("info", "trace 中没有 visibleTools[]。"));
   }
 

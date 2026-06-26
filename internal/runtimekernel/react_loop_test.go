@@ -3475,7 +3475,7 @@ func TestRunTurn_LargeToolResultIsSummarizedAndSpilled(t *testing.T) {
 	}
 }
 
-func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) {
+func TestRunTurn_MediumToolResultKeepsSummaryOnlyAndSpillsFullContent(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{
@@ -3539,8 +3539,8 @@ func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) 
 	if !toolMsg.ToolResult.Spilled {
 		t.Fatal("expected spilled tool result")
 	}
-	if !strings.Contains(toolMsg.Content, "Preview:") {
-		t.Fatalf("tool message content = %q, want preview marker", toolMsg.Content)
+	if strings.Contains(toolMsg.Content, "Preview:") {
+		t.Fatalf("tool message content = %q, should not include preview marker", toolMsg.Content)
 	}
 	if !strings.Contains(toolMsg.Content, "Summary:") {
 		t.Fatalf("tool message content = %q, want summary marker", toolMsg.Content)
@@ -3554,17 +3554,20 @@ func TestRunTurn_MediumToolResultKeepsPreviewAndSpillsFullContent(t *testing.T) 
 	if len(model.inputs) != 2 {
 		t.Fatalf("Generate calls = %d, want 2", len(model.inputs))
 	}
-	foundPreview := false
+	foundSummaryOnly := false
 	for _, msg := range model.inputs[1] {
 		if msg.Role != schema.Tool || msg.ToolCallID != "call-medium" {
 			continue
 		}
 		if strings.Contains(msg.Content, "Preview:") {
-			foundPreview = true
+			t.Fatalf("model input tool content = %q, should not include preview marker", msg.Content)
+		}
+		if strings.Contains(msg.Content, "Summary:") && strings.Contains(msg.Content, "External ref:") {
+			foundSummaryOnly = true
 		}
 	}
-	if !foundPreview {
-		t.Fatal("expected second model input to include previewed tool result")
+	if !foundSummaryOnly {
+		t.Fatal("expected second model input to include summarized tool result with external ref")
 	}
 }
 

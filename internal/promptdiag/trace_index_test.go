@@ -9,18 +9,23 @@ func TestTraceIndexLookupByMarkdownAndFindByCase(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "traces")
 	jsonPath := filepath.Join(root, "eval-run-my-case", "turn-1", "iteration-000.json")
 	writeTestJSON(t, jsonPath, map[string]any{
-		"createdAt":    "2026-05-03T00:00:00Z",
-		"sessionId":    "eval-run-my-case",
-		"turnId":       "turn-1",
-		"iteration":    0,
-		"visibleTools": []string{"exec_command"},
+		"schemaVersion": "aiops.trace/v2",
+		"createdAt":     "2026-05-03T00:00:00Z",
+		"sessionId":     "eval-run-my-case",
+		"turnId":        "turn-1",
+		"iteration":     0,
 		"promptFingerprint": map[string]string{
 			"stableHash": "stable",
 		},
 		"prompt": map[string]string{
 			"stable": "abc",
 		},
-		"modelInput": []map[string]string{{"providerRole": "user", "content": "hello"}},
+		"toolSurface": map[string]any{
+			"modelVisibleTools": []string{"exec_command"},
+		},
+		"stepContext": map[string]any{
+			"modelInput": []map[string]string{{"providerRole": "user", "content": "hello"}},
+		},
 	})
 	index, err := BuildTraceIndex(root)
 	if err != nil {

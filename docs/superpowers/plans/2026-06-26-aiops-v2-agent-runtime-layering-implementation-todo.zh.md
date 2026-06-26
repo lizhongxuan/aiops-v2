@@ -17,7 +17,7 @@
 - [x] 最终代码不双写 v1/v2 trace。
 - [x] 最终代码不保留 `EinoKernel` alias。
 - [ ] 最终代码不让 `schema.Message` 穿透到 `promptcompiler`、`promptinput`、`runtimekernel`、`modeltrace`。
-- [ ] 历史 trace 文件不迁移；PromptTrace UI 只读新 v2 index 和 v2 document。
+- [x] 历史 trace 文件不迁移；PromptTrace UI 只读新 v2 index 和 v2 document。
 
 ## File Structure
 
@@ -2403,7 +2403,7 @@ git commit -m "feat(runtime): switch to single layered agent runtime"
 - [x] `ProviderMessageAudit` can map every provider message back to a `ModelInputItem`.
 - [x] Tool visible and dispatchable lists come from one `RuntimeToolRouterSnapshot`.
 - [x] Trace v2 does not reconstruct prompt or provider request from markdown.
-- [ ] PromptTrace UI reads v2 index/document only.
+- [x] PromptTrace UI reads v2 index/document only.
 - [ ] `preview` never flows into prompt, provider request, or runtime state.
 - [x] `go test ./...` passes.
 - [x] `npm run build` passes.
@@ -2412,5 +2412,7 @@ git commit -m "feat(runtime): switch to single layered agent runtime"
 ## Self-Review Notes
 
 - Spec coverage: tasks cover final types, promptinput fact source, provider adapter, turn loop, kernel rename, tool router snapshot, Trace v2, PromptTrace UI, static guards, and regression verification.
+- Remaining `schema.Message` boundary: production runtime/modeltrace still depend on Eino DTOs at response, legacy trace, context usage, and agent-config-runner boundaries. Removing this safely requires a dedicated provider-response DTO migration rather than a status-only cleanup.
+- Remaining `preview` boundary: `Preview:` text no longer enters model input for externalized tool results, but runtime still stores UI/event `outputPreview` and context-artifact preview fields, so the full "no preview in runtime state" rule remains open.
 - Ambiguity resolved: no compatibility mode, no feature flag, no old runtime alias, no v1/v2 trace dual write.
 - Highest-risk area covered: `ModelInputItem -> schema.Message` uses strict validation, golden parity, round-trip checks, provider message audit, and hash verification.

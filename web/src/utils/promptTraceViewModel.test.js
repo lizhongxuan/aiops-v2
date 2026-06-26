@@ -2,15 +2,60 @@ import { describe, expect, it } from "vitest";
 import { parsePromptTrace, shortHash } from "./promptTraceViewModel";
 
 function sampleTrace(overrides = {}) {
+  const {
+    modelInput,
+    visibleTools,
+    toolSurface,
+    stepContext,
+    ...rest
+  } = overrides;
+  const defaultVisibleTools = ["browse_url", "exec_command"];
+  const defaultModelInput = [
+    {
+      index: 0,
+      providerRole: "system",
+      semanticRole: "system",
+      promptLayer: "system",
+      content: "# Role\nYou are an agent.",
+    },
+    {
+      index: 1,
+      providerRole: "system",
+      semanticRole: "developer",
+      promptLayer: "developer",
+      content: "Use tools carefully.",
+    },
+    {
+      index: 2,
+      providerRole: "system",
+      semanticRole: "tool",
+      promptLayer: "tool_index",
+      content: "browse_url\nexec_command",
+    },
+    {
+      index: 3,
+      providerRole: "system",
+      semanticRole: "context",
+      promptLayer: "runtime_policy",
+      content: "Current mode: execute",
+    },
+    {
+      index: 4,
+      providerRole: "user",
+      semanticRole: "user",
+      promptLayer: "conversation",
+      content: "请只回复 smoke",
+    },
+  ];
+  const nextVisibleTools = visibleTools ?? toolSurface?.modelVisibleTools ?? defaultVisibleTools;
   return {
-    schemaVersion: 1,
+    schemaVersion: "aiops.trace/v2",
     kind: "runtime_model_input",
     caseId: "case-1",
     sessionId: "sess-1",
     turnId: "turn-1",
     iteration: 0,
     createdAt: "2026-05-02T05:42:25Z",
-    visibleTools: ["browse_url", "exec_command"],
     promptFingerprint: {
       stableHash: "40a0e0f6a5e811df620c05fce37837adbd9511fac9e341872cc0e3ee60bd6e4a",
       systemHash: "system-hash",
@@ -22,44 +67,17 @@ function sampleTrace(overrides = {}) {
     prompt: {
       tools: "## browse_url\nRead URL.\n\n## exec_command\nRun command.",
     },
-    modelInput: [
-      {
-        index: 0,
-        providerRole: "system",
-        semanticRole: "system",
-        promptLayer: "system",
-        content: "# Role\nYou are an agent.",
-      },
-      {
-        index: 1,
-        providerRole: "system",
-        semanticRole: "developer",
-        promptLayer: "developer",
-        content: "Use tools carefully.",
-      },
-      {
-        index: 2,
-        providerRole: "system",
-        semanticRole: "tool",
-        promptLayer: "tool_index",
-        content: "browse_url\nexec_command",
-      },
-      {
-        index: 3,
-        providerRole: "system",
-        semanticRole: "context",
-        promptLayer: "runtime_policy",
-        content: "Current mode: execute",
-      },
-      {
-        index: 4,
-        providerRole: "user",
-        semanticRole: "user",
-        promptLayer: "conversation",
-        content: "请只回复 smoke",
-      },
-    ],
-    ...overrides,
+    toolSurface: {
+      modelVisibleTools: nextVisibleTools,
+      dispatchableTools: nextVisibleTools,
+      hiddenReasons: {},
+      ...toolSurface,
+    },
+    stepContext: {
+      modelInput: modelInput ?? stepContext?.modelInput ?? defaultModelInput,
+      ...stepContext,
+    },
+    ...rest,
   };
 }
 
@@ -150,7 +168,7 @@ describe("parsePromptTrace", () => {
 
   it("warns when no user message is present", () => {
     const trace = sampleTrace({
-      modelInput: sampleTrace().modelInput.filter((item) => item.providerRole !== "user"),
+      modelInput: sampleTrace().stepContext.modelInput.filter((item) => item.providerRole !== "user"),
     });
     const vm = parsePromptTrace(trace);
     expect(vm.summary.hasUserMessage).toBe(false);

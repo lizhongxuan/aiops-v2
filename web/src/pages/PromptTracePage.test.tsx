@@ -497,7 +497,7 @@ describe("PromptTracePage", () => {
     expect(container.textContent).toContain("Direct Prompt MD");
     expect(container.textContent).toContain("第 1 轮调用 LLM");
     expect(container.textContent).toContain("Token 29");
-    expect(container.textContent).toContain("工具 1");
+    expect(container.textContent).toContain("工具 0");
     expect(container.textContent).toContain("复制内容");
     expect(container.textContent).toContain("复制路径");
     expect(container.textContent).toContain("返回 Agent");

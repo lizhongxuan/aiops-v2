@@ -5176,11 +5176,7 @@ func materializedInlineContent(original, summary string, ref ExternalReference, 
 		if summary == "" {
 			summary = fallbackSummary("", original, budget.MaxInlineResultBytes)
 		}
-		preview := truncateForBudget(original, budget.MaxInlineResultBytes)
-		if strings.TrimSpace(preview) == "" {
-			preview = summary
-		}
-		return fmt.Sprintf("Summary: %s\nPreview:\n%s\nExternal ref: %s.", summary, preview, externalReferenceLabel(ref))
+		return fmt.Sprintf("Summary: %s\nExternal ref: %s.", summary, externalReferenceLabel(ref))
 	default:
 		if summary == "" {
 			summary = fallbackSummary("", original, budget.MaxInlineResultBytes)
