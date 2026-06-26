@@ -2068,7 +2068,7 @@ if err != nil {
 }
 ```
 
-- [ ] **Step 6: Remove v1 writer from production imports**
+- [x] **Step 6: Remove v1 writer from production imports**
 
 Run:
 
@@ -2088,7 +2088,7 @@ go test ./internal/modeltrace ./internal/runtimekernel ./internal/promptdiag
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add internal/modeltrace internal/runtimekernel internal/promptdiag
@@ -2314,7 +2314,7 @@ git commit -m "test(runtime): guard single runtime path"
 **Files:**
 - Verify only unless failures require fixes in prior task files.
 
-- [ ] **Step 1: Run focused Go packages**
+- [x] **Step 1: Run focused Go packages**
 
 Run:
 
@@ -2324,7 +2324,7 @@ go test ./internal/runtimekernel ./internal/promptinput ./internal/promptcompile
 
 Expected: PASS.
 
-- [ ] **Step 2: Run frontend tests for PromptTrace**
+- [x] **Step 2: Run frontend tests for PromptTrace**
 
 Run:
 
@@ -2334,7 +2334,7 @@ npm test -- --run web/src/utils/promptTraceViewModel.test.ts web/src/pages/Promp
 
 Expected: PASS.
 
-- [ ] **Step 3: Run static guard**
+- [x] **Step 3: Run static guard**
 
 Run:
 
@@ -2348,7 +2348,7 @@ Expected:
 PASS: single runtime path guards
 ```
 
-- [ ] **Step 4: Run full Go tests if focused tests pass**
+- [x] **Step 4: Run full Go tests if focused tests pass**
 
 Run:
 
@@ -2358,7 +2358,7 @@ go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 5: Run app smoke path**
+- [x] **Step 5: Run app smoke path**
 
 Run:
 
@@ -2368,7 +2368,7 @@ npm run build
 
 Expected: PASS, frontend build completes.
 
-- [ ] **Step 6: Manual trace inspection**
+- [x] **Step 6: Manual trace inspection**
 
 Run one chat turn with model trace enabled, then inspect generated Trace v2 JSON. Required observations:
 
@@ -2391,23 +2391,23 @@ git commit -m "feat(runtime): switch to single layered agent runtime"
 
 ## Final Acceptance Checklist
 
-- [ ] `RuntimeKernel` is the only runtime kernel type.
-- [ ] `EinoKernel`, `NewEinoKernel`, and `EinoKernelConfig` do not exist.
-- [ ] `CompileForEino` does not exist.
-- [ ] `promptinput.BuildResult.Messages` does not exist.
+- [x] `RuntimeKernel` is the only runtime kernel type.
+- [x] `EinoKernel`, `NewEinoKernel`, and `EinoKernelConfig` do not exist.
+- [x] `CompileForEino` does not exist.
+- [x] `promptinput.BuildResult.Messages` does not exist.
 - [ ] `modeltrace.Request.ModelInput []*schema.Message` does not exist.
-- [ ] `runtimekernel` does not call `chatModel.Stream` or `chatModel.Generate`.
+- [x] `runtimekernel` does not call `chatModel.Stream` or `chatModel.Generate`.
 - [ ] `promptcompiler`, `promptinput`, `modeltrace`, and `runtimekernel` do not import `github.com/cloudwego/eino/schema`.
-- [ ] `ModelInputItem` is the fact source for promptinput, provider request, Trace v2, and promptdiag.
-- [ ] `ProviderRequestSnapshot` records `modelInputHash`, `providerMessagesHash`, `requestPropertiesHash`, and `promptCacheKey`.
-- [ ] `ProviderMessageAudit` can map every provider message back to a `ModelInputItem`.
-- [ ] Tool visible and dispatchable lists come from one `RuntimeToolRouterSnapshot`.
-- [ ] Trace v2 does not reconstruct prompt or provider request from markdown.
+- [x] `ModelInputItem` is the fact source for promptinput, provider request, Trace v2, and promptdiag.
+- [x] `ProviderRequestSnapshot` records `modelInputHash`, `providerMessagesHash`, `requestPropertiesHash`, and `promptCacheKey`.
+- [x] `ProviderMessageAudit` can map every provider message back to a `ModelInputItem`.
+- [x] Tool visible and dispatchable lists come from one `RuntimeToolRouterSnapshot`.
+- [x] Trace v2 does not reconstruct prompt or provider request from markdown.
 - [ ] PromptTrace UI reads v2 index/document only.
 - [ ] `preview` never flows into prompt, provider request, or runtime state.
-- [ ] `go test ./...` passes.
-- [ ] `npm run build` passes.
-- [ ] `./scripts/verify-agent-runtime-single-path.sh` passes.
+- [x] `go test ./...` passes.
+- [x] `npm run build` passes.
+- [x] `./scripts/verify-agent-runtime-single-path.sh` passes.
 
 ## Self-Review Notes
 

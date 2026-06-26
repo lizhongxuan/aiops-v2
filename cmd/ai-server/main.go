@@ -286,9 +286,9 @@ func run() error {
 	}
 
 	// ---------------------------------------------------------------------------
-	// 9. EinoKernel (RuntimeKernel)
+	// 9. RuntimeKernel
 	// ---------------------------------------------------------------------------
-	kernelCfg := runtimekernel.EinoKernelConfig{
+	kernelCfg := runtimekernel.RuntimeKernelConfig{
 		ToolSource:       newRegistryAdapter(toolAssembler, commandRegistry),
 		Compiler:         compiler,
 		Policy:           policyEngine,
@@ -306,7 +306,7 @@ func run() error {
 		ResourceLockGate: resourceLockGate,
 		Observer:         runtimeObserver,
 	}
-	kernel := runtimekernel.NewEinoKernel(kernelCfg)
+	kernel := runtimekernel.NewRuntimeKernel(kernelCfg)
 
 	var oauthProvider auth.OAuthProvider
 	if strings.TrimSpace(oauthAuthorizeURL) != "" {

@@ -11,7 +11,7 @@ import (
 
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/modelrouter"
-	"aiops-v2/internal/modeltrace"
+	mt "aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
@@ -1008,7 +1008,7 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 	}
 }
 
-func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) modeltrace.Request {
+func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	promptTrace := req.PromptInputTrace
 	if len(promptTrace.PromptSections) == 0 {
 		promptTrace.PromptSections = append([]promptcompiler.PromptSectionTrace(nil), req.Compiled.PromptSections...)
@@ -1210,7 +1210,7 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) modeltrace.Reques
 	if style := strings.TrimSpace(req.AnswerStyle); style != "" {
 		metadata["answerStyle.configured"] = style
 	}
-	return modeltrace.Request{
+	return mt.Request{
 		Kind:                          "runtime_model_input",
 		SessionID:                     req.SessionID,
 		TurnID:                        req.TurnID,
@@ -1244,7 +1244,7 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) modeltrace.Reques
 		PlanRequirementDecision:       promptTrace.PlanRequirementDecision,
 		PlanCompletionGate:            promptTrace.PlanCompletionGate,
 		FinalEvidenceState:            req.FinalEvidenceState,
-		Prompt: modeltrace.Prompt{
+		Prompt: mt.Prompt{
 			StableHash: promptContentHash(promptcompiler.CompiledPromptStableText(req.Compiled)),
 			Stable:     promptcompiler.CompiledPromptStableText(req.Compiled),
 			Dynamic:    promptcompiler.CompiledPromptDynamicText(req.Compiled),
