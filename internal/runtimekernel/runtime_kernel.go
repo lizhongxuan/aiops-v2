@@ -2006,7 +2006,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
 		uxProgressTrace := BuildUXProgressTrace(snapshot)
 		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
-		tracePath, _ := writeRuntimeStepTrace(stepCtx, ModelInputDebugTraceRequest{
+		tracePath, _ := writeRuntimeStepTrace(stepCtx, RuntimeTraceDebugRequest{
 			Metadata:                      turnMetadata,
 			ModelInput:                    modelInput,
 			PromptInputTrace:              promptBuild.Trace,
