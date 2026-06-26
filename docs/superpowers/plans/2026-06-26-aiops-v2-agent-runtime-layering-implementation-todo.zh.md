@@ -2300,7 +2300,7 @@ Run:
 
 Expected: PASS after all previous tasks are complete.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add scripts/verify-agent-runtime-single-path.sh
