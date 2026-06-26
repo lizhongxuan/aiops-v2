@@ -56,11 +56,11 @@ func TestModelSpanAttrsCarryLocalTracePaths(t *testing.T) {
 	}
 }
 
-func TestEinoKernelConfigAcceptsObserver(t *testing.T) {
-	kernel := NewEinoKernel(EinoKernelConfig{
+func TestRuntimeKernelConfigAcceptsObserver(t *testing.T) {
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{
 		Observer: NoopObserver{},
 	})
 	if kernel == nil {
-		t.Fatal("NewEinoKernel returned nil")
+		t.Fatal("NewRuntimeKernel returned nil")
 	}
 }

@@ -1613,11 +1613,12 @@ git commit -m "refactor(runtime): drive model calls from step context"
 
 **Files:**
 - Create: `internal/runtimekernel/runtime_kernel.go`
-- Modify: `internal/runtimekernel/eino_kernel.go`
+- Delete: `internal/runtimekernel/eino_kernel.go`
 - Modify: all `NewEinoKernel`, `EinoKernel`, `EinoKernelConfig` references
 - Test: `internal/runtimekernel/*_test.go`, `internal/appui/*_test.go`, `internal/agentmgr/*_test.go`
+- Modify: `internal/eval/mock_agent.go`, `internal/eval/scorer_runner_test.go`, `testdata/eval_cases/*.json` path expectations
 
-- [ ] **Step 1: Run reference scan before rename**
+- [x] **Step 1: Run reference scan before rename**
 
 Run:
 
@@ -1627,7 +1628,7 @@ rg -n "EinoKernel|NewEinoKernel|EinoKernelConfig" internal
 
 Expected: shows production and test references to rename.
 
-- [ ] **Step 2: Rename public type and constructor**
+- [x] **Step 2: Rename public type and constructor**
 
 Create `internal/runtimekernel/runtime_kernel.go`:
 
@@ -1684,7 +1685,7 @@ type RuntimeKernelConfig struct {
 }
 ```
 
-- [ ] **Step 3: Rename constructor**
+- [x] **Step 3: Rename constructor**
 
 Replace constructor with:
 
@@ -1723,7 +1724,7 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 }
 ```
 
-- [ ] **Step 4: Rename all method receivers**
+- [x] **Step 4: Rename all method receivers**
 
 Run non-interactive replacements carefully:
 
@@ -1733,7 +1734,7 @@ perl -pi -e 's/\\bEinoKernelConfig\\b/RuntimeKernelConfig/g; s/\\bNewEinoKernel\
 
 Expected: source now uses `RuntimeKernel`.
 
-- [ ] **Step 5: Verify no alias exists**
+- [x] **Step 5: Verify no alias exists**
 
 Run:
 
@@ -1743,7 +1744,7 @@ rg -n "type EinoKernel|NewEinoKernel|EinoKernelConfig|type RuntimeKernel = EinoK
 
 Expected: no matches.
 
-- [ ] **Step 6: Run impacted tests**
+- [x] **Step 6: Run impacted tests**
 
 Run:
 

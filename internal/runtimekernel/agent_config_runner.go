@@ -93,7 +93,7 @@ func (r *AgentConfigRunner) Run(ctx context.Context, config agentruntime.Config)
 		reasoningEffort: firstMetadataValue(runtimeMetadata, "reasoningEffort", "reasoning_effort"),
 	})
 
-	kernel := NewEinoKernel(EinoKernelConfig{
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:       fixedAgentToolSource{sessionType: sessionType, mode: mode, assembledTools: assembledTools, runtimeTools: config.RuntimeTools(), metadata: runtimeMetadata, config: config},
 		Compiler:         fixedAgentCompiler{instructions: append([]*schema.Message(nil), config.RuntimeInstructions()...)},
 		Policy:           r.cfg.Policy,

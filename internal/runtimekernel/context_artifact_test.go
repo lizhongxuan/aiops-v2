@@ -194,7 +194,7 @@ func TestReadContextArtifactToolReturnsRangeReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveContextArtifact failed: %v", err)
 	}
-	kernel := &EinoKernel{artifactRepo: store}
+	kernel := &RuntimeKernel{artifactRepo: store}
 	tools := kernel.contextArtifactTools()
 	if len(tools) != 1 {
 		t.Fatalf("context artifact tools = %d, want 1", len(tools))
@@ -234,7 +234,7 @@ func TestCompileContextAddsReadContextArtifactOnlyWhenContextArtifactEnabled(t *
 	}); err != nil {
 		t.Fatalf("Register core tool failed: %v", err)
 	}
-	kernel := &EinoKernel{
+	kernel := &RuntimeKernel{
 		tools:        &testMockToolAssemblySource{registry: registry},
 		artifactRepo: store,
 	}

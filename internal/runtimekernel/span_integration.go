@@ -10,10 +10,10 @@ import (
 
 // ---------------------------------------------------------------------------
 // SpanStreamSource — interface to avoid circular imports with spanstream pkg.
-// EinoKernel uses this to create and manage spans during turn execution.
+// RuntimeKernel uses this to create and manage spans during turn execution.
 // ---------------------------------------------------------------------------
 
-// SpanStreamSource provides span lifecycle management for the EinoKernel.
+// SpanStreamSource provides span lifecycle management for the RuntimeKernel.
 // Implemented by an adapter wrapping *spanstream.MultiplexedStream.
 type SpanStreamSource interface {
 	// StartTurnSpan creates a root span for a new turn and returns its ID.
@@ -93,12 +93,12 @@ func (a *MultiplexedStreamAdapter) Chunks() <-chan spanstream.TypedEventChunk {
 // layer and the SpanTree. Each tool call creates a child span under the
 // turn's root span.
 type SpanAwareRunnerCallback struct {
-	sessionID    string
-	turnID       string
-	projector    EventEmitter
-	spanSource   SpanStreamSource
-	turnSpanID   string            // root span for this turn
-	toolSpanIDs  map[string]string // toolCallID → spanID
+	sessionID   string
+	turnID      string
+	projector   EventEmitter
+	spanSource  SpanStreamSource
+	turnSpanID  string            // root span for this turn
+	toolSpanIDs map[string]string // toolCallID → spanID
 }
 
 // NewSpanAwareRunnerCallback creates a callback that tracks spans for tool calls.

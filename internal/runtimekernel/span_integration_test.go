@@ -519,7 +519,7 @@ func TestToolDispatcher_PreToolHookBlocksExecution(t *testing.T) {
 // Test helpers
 // ---------------------------------------------------------------------------
 
-func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
+func newTestKernelWithSpanSource(spanSource SpanStreamSource) *RuntimeKernel {
 	registry := newMockToolAssemblySource()
 	compiler := &testMockCompiler{}
 	policy := &policyengine.Engine{
@@ -533,7 +533,7 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
 	router := modelrouter.NewRouter("mock", providers, nil)
 	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
-	return NewEinoKernel(EinoKernelConfig{
+	return NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:  registry,
 		Compiler:    compiler,
 		Policy:      policy,
@@ -543,7 +543,7 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *EinoKernel {
 	})
 }
 
-func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compiler promptcompiler.Compiler) *EinoKernel {
+func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compiler promptcompiler.Compiler) *RuntimeKernel {
 	registry := newMockToolAssemblySource()
 	policy := &policyengine.Engine{
 		ModePolicy:       make(map[string]policyengine.ModePolicy),
@@ -556,7 +556,7 @@ func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compile
 	router := modelrouter.NewRouter("mock", providers, nil)
 	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
-	return NewEinoKernel(EinoKernelConfig{
+	return NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:  registry,
 		Compiler:    compiler,
 		Policy:      policy,

@@ -215,10 +215,10 @@ func genNonEmptyString() *rapid.Generator[string] {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: create a fully wired EinoKernel for testing
+// Helper: create a fully wired RuntimeKernel for testing
 // ---------------------------------------------------------------------------
 
-func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
+func newTestKernel(compiler promptcompiler.Compiler) *RuntimeKernel {
 	registry := tooling.NewRegistry()
 	if compiler == nil {
 		compiler = &testMockCompiler{}
@@ -234,7 +234,7 @@ func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
 	router := modelrouter.NewRouter("mock", providers, nil)
 	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: 64000}})
 
-	return NewEinoKernel(EinoKernelConfig{
+	return NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:  &testMockToolAssemblySource{registry: registry},
 		Compiler:    compiler,
 		Policy:      policy,
@@ -243,7 +243,7 @@ func newTestKernel(compiler promptcompiler.Compiler) *EinoKernel {
 	})
 }
 
-func newTestKernelWithHooks(compiler promptcompiler.Compiler, registry *hooks.Registry) *EinoKernel {
+func newTestKernelWithHooks(compiler promptcompiler.Compiler, registry *hooks.Registry) *RuntimeKernel {
 	kernel := newTestKernel(compiler)
 	kernel.hooks = registry
 	return kernel

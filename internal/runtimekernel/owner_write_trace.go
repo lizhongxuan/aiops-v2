@@ -18,7 +18,7 @@ const (
 )
 
 const (
-	OwnerEinoKernel      = "runtimekernel.EinoKernel"
+	OwnerRuntimeKernel   = "runtimekernel.RuntimeKernel"
 	OwnerPendingApproval = "runtimekernel.PendingApproval"
 	OwnerToolDispatcher  = "runtimekernel.ToolDispatcher"
 	OwnerContextPipeline = "runtimekernel.ContextPipeline"
@@ -140,7 +140,7 @@ func promptInputOwnerWriteTraces(traces []OwnerWriteTrace) []promptinput.OwnerWr
 func ownerForWriteResponsibility(responsibility OwnerWriteResponsibility) string {
 	switch responsibility {
 	case OwnerWriteTurnLifecycle, OwnerWriteAssistantMessage:
-		return OwnerEinoKernel
+		return OwnerRuntimeKernel
 	case OwnerWriteApprovalLedger:
 		return OwnerPendingApproval
 	case OwnerWriteToolResult:

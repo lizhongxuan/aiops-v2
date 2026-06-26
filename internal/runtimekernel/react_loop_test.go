@@ -459,7 +459,7 @@ func newKernelForLoopTests(
 	source ToolAssemblySource,
 	compiler promptcompiler.Compiler,
 	chatModel modelrouter.ChatModel,
-) (*EinoKernel, *testMockEventEmitter) {
+) (*RuntimeKernel, *testMockEventEmitter) {
 	t.Helper()
 
 	policy := &policyengine.Engine{
@@ -469,7 +469,7 @@ func newKernelForLoopTests(
 	projector := &testMockEventEmitter{}
 	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
 	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: DefaultMaxTokens}})
-	return NewEinoKernel(EinoKernelConfig{
+	return NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:  source,
 		Compiler:    compiler,
 		Policy:      policy,
@@ -478,7 +478,7 @@ func newKernelForLoopTests(
 	}), projector
 }
 
-func newLoopKernel(t *testing.T, chatModel modelrouter.ChatModel, tools []tooling.Tool, hookRegistry *hooks.Registry, modePolicies map[policyengine.Mode]policyengine.ModePolicy) *EinoKernel {
+func newLoopKernel(t *testing.T, chatModel modelrouter.ChatModel, tools []tooling.Tool, hookRegistry *hooks.Registry, modePolicies map[policyengine.Mode]policyengine.ModePolicy) *RuntimeKernel {
 	return newLoopKernelWithDeps(t, chatModel, tools, hookRegistry, modePolicies, nil, nil)
 }
 
@@ -490,7 +490,7 @@ func newLoopKernelWithDeps(
 	modePolicies map[policyengine.Mode]policyengine.ModePolicy,
 	compressor *spanstream.ContextCompressor,
 	spillRepo ToolResultSpillRepository,
-) *EinoKernel {
+) *RuntimeKernel {
 	t.Helper()
 
 	registry := tooling.NewRegistry()
@@ -511,7 +511,7 @@ func newLoopKernelWithDeps(
 	router := modelrouter.NewRouter("mock", map[string]modelrouter.ChatModel{"mock": chatModel}, nil)
 	router.SetProviderConfigResolver(testProviderConfigResolver{config: modelrouter.ProviderConfig{Provider: "mock", Model: "mock", MaxContextTokens: DefaultMaxTokens}})
 
-	return NewEinoKernel(EinoKernelConfig{
+	return NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:  &testMockToolAssemblySource{registry: registry},
 		Compiler:    &testMockCompiler{},
 		Policy:      policy,

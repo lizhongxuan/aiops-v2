@@ -23,14 +23,14 @@ func TestScoreCaseAppliesContentToolFileAndQualityChecks(t *testing.T) {
 			MustInclude:       []string{"RuntimeKernel", "AgentEvent"},
 			MustNotInclude:    []string{"不知道"},
 			ExpectedToolCalls: []string{"read_file"},
-			MustMentionFiles:  []string{"internal/runtimekernel/eino_kernel.go"},
+			MustMentionFiles:  []string{"internal/runtimekernel/runtime_kernel.go"},
 			ExpectedTurnItems: []string{"user_message", "model_call", "assistant_message(final_answer)"},
 		},
 	}
 	output := RunOutput{
-		Answer: "结论：RuntimeKernel 通过 internal/runtimekernel/eino_kernel.go 驱动 turn，并把 AgentEvent 作为验证链路。验证方式：go test ./internal/runtimekernel ./internal/eval。",
+		Answer: "结论：RuntimeKernel 通过 internal/runtimekernel/runtime_kernel.go 驱动 turn，并把 AgentEvent 作为验证链路。验证方式：go test ./internal/runtimekernel ./internal/eval。",
 		ToolCalls: []ToolCall{
-			{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/eino_kernel.go"}`)},
+			{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/runtime_kernel.go"}`)},
 		},
 		TurnItems: []agentstate.TurnItem{
 			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
@@ -648,7 +648,7 @@ func TestRunnerWritesArtifactsAndReport(t *testing.T) {
 			MustInclude:       []string{"RuntimeKernel", "AgentEvent"},
 			MustNotInclude:    []string{"无法判断"},
 			ExpectedToolCalls: []string{"read_file"},
-			MustMentionFiles:  []string{"internal/runtimekernel/eino_kernel.go"},
+			MustMentionFiles:  []string{"internal/runtimekernel/runtime_kernel.go"},
 		},
 	})
 

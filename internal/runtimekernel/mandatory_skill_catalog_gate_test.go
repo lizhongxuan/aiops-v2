@@ -26,7 +26,7 @@ func TestMandatorySkillCatalogDefinitionsUseGlobalSkillIndex(t *testing.T) {
 		},
 	})
 
-	kernel := NewEinoKernel(EinoKernelConfig{SkillRegistry: reg})
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{SkillRegistry: reg})
 	defs := kernel.mandatorySkillDefinitionsForInput("diagnose the failing log")
 	decision := EvaluateMandatorySkillActivation(defs, "diagnose the failing log", "Root cause confirmed.", SkillActivationSessionState{})
 

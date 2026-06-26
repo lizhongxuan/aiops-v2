@@ -16,7 +16,7 @@ import (
 
 // KernelAdapter wraps an AgentManager and its AgentFactory to implement
 // runtimekernel.AgentManagerSource. This is the bridge used at wiring time
-// (e.g., in main.go) to inject AgentManager into EinoKernel.
+// (e.g., in main.go) to inject AgentManager into RuntimeKernel.
 type KernelAdapter struct {
 	manager    *AgentManager
 	factory    *AgentFactory

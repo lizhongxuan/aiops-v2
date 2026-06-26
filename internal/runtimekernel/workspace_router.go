@@ -122,7 +122,7 @@ func (wr *WorkspaceRouter) ClassifyRequest(req TurnRequest) RoutingDecision {
 
 // RouteRequest executes the workspace request according to its classification.
 // Returns the TurnResult from the appropriate execution path.
-func (wr *WorkspaceRouter) RouteRequest(ctx context.Context, req TurnRequest, kernel *EinoKernel) (TurnResult, error) {
+func (wr *WorkspaceRouter) RouteRequest(ctx context.Context, req TurnRequest, kernel *RuntimeKernel) (TurnResult, error) {
 	decision := wr.ClassifyRequest(req)
 
 	switch decision.Category {
@@ -143,7 +143,7 @@ func (wr *WorkspaceRouter) RouteRequest(ctx context.Context, req TurnRequest, ke
 
 // handleStateQuery reads directly from the projection layer without
 // executing any agent. This is the fastest path for status questions.
-func (wr *WorkspaceRouter) handleStateQuery(ctx context.Context, req TurnRequest, kernel *EinoKernel) (TurnResult, error) {
+func (wr *WorkspaceRouter) handleStateQuery(ctx context.Context, req TurnRequest, kernel *RuntimeKernel) (TurnResult, error) {
 	_ = ctx // projection read is synchronous
 
 	turnID := req.TurnID
@@ -186,13 +186,13 @@ func (wr *WorkspaceRouter) handleStateQuery(ctx context.Context, req TurnRequest
 
 // handleSingleHostReadonly completes the request in the current turn using
 // the shared runtime iteration loop.
-func (wr *WorkspaceRouter) handleSingleHostReadonly(ctx context.Context, req TurnRequest, kernel *EinoKernel) (TurnResult, error) {
+func (wr *WorkspaceRouter) handleSingleHostReadonly(ctx context.Context, req TurnRequest, kernel *RuntimeKernel) (TurnResult, error) {
 	return kernel.RunTurn(ctx, req)
 }
 
 // handleComplexTask routes the request through the same runtime iteration
 // loop so workspace sessions do not fork into a second orchestration chain.
-func (wr *WorkspaceRouter) handleComplexTask(ctx context.Context, req TurnRequest, kernel *EinoKernel, decision RoutingDecision) (TurnResult, error) {
+func (wr *WorkspaceRouter) handleComplexTask(ctx context.Context, req TurnRequest, kernel *RuntimeKernel, decision RoutingDecision) (TurnResult, error) {
 	_ = decision
 	return kernel.RunTurn(ctx, req)
 }

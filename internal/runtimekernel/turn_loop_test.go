@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
-	kernel := NewEinoKernel(EinoKernelConfig{})
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{})
 	session := &SessionState{
 		ID:     "session-step",
 		Type:   SessionTypeHost,

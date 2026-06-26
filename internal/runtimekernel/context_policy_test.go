@@ -115,7 +115,7 @@ func TestContextBudgetPolicyAdoptsManualContextWindow(t *testing.T) {
 			Content: "hello",
 		}},
 	}
-	kernel := &EinoKernel{
+	kernel := &RuntimeKernel{
 		modelRouter: modelrouterWithContextWindow(12000),
 	}
 

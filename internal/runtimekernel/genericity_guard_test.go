@@ -70,7 +70,7 @@ func TestCoreRuntimeProductionFilesAvoidProviderSpecificTerms(t *testing.T) {
 	term := "coroot"
 	for _, path := range []string{
 		"model_input.go",
-		"eino_kernel.go",
+		"runtime_kernel.go",
 		"tool_pack_intent.go",
 	} {
 		data, err := os.ReadFile(path)
@@ -86,7 +86,7 @@ func TestCoreRuntimeProductionFilesAvoidProviderSpecificTerms(t *testing.T) {
 func TestCoreProductionFilesAvoidScenarioSpecificTerms(t *testing.T) {
 	terms := []string{"pg_mon", "主机a", "主机b", "主机c", "服务a", "服务b", "服务c"}
 	paths := []string{
-		"eino_kernel.go",
+		"runtime_kernel.go",
 		"model_input.go",
 		"tool_pack_intent.go",
 	}

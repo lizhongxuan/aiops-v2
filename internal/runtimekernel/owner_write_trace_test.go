@@ -17,8 +17,8 @@ func TestOwnerWriteTraceAcceptsCanonicalOwners(t *testing.T) {
 		responsibility OwnerWriteResponsibility
 		owner          string
 	}{
-		{OwnerWriteTurnLifecycle, OwnerEinoKernel},
-		{OwnerWriteAssistantMessage, OwnerEinoKernel},
+		{OwnerWriteTurnLifecycle, OwnerRuntimeKernel},
+		{OwnerWriteAssistantMessage, OwnerRuntimeKernel},
 		{OwnerWriteApprovalLedger, OwnerPendingApproval},
 		{OwnerWriteToolResult, OwnerToolDispatcher},
 		{OwnerWriteContextCompaction, OwnerContextPipeline},
@@ -48,8 +48,8 @@ func TestOwnerWriteTraceRejectsNonOwnerWriter(t *testing.T) {
 		TurnID:         "turn-owner",
 	})
 
-	if trace.Owner != OwnerEinoKernel {
-		t.Fatalf("owner = %q, want %q", trace.Owner, OwnerEinoKernel)
+	if trace.Owner != OwnerRuntimeKernel {
+		t.Fatalf("owner = %q, want %q", trace.Owner, OwnerRuntimeKernel)
 	}
 	if trace.Outcome != OwnerWriteOutcomeRejectedNonOwner {
 		t.Fatalf("outcome = %q, want rejected_non_owner", trace.Outcome)
@@ -109,8 +109,8 @@ func TestRunTurnRecordsLifecycleAndAssistantMessageOwnerWriteTrace(t *testing.T)
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("expected current turn")
 	}
-	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerEinoKernel, OwnerWriteOutcomeAccepted)
-	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteAssistantMessage, OwnerEinoKernel, OwnerWriteOutcomeAccepted)
+	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerRuntimeKernel, OwnerWriteOutcomeAccepted)
+	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteAssistantMessage, OwnerRuntimeKernel, OwnerWriteOutcomeAccepted)
 }
 
 func TestRunTurnApprovalResumeRecordsApprovalAndToolOwnerWriteTrace(t *testing.T) {
@@ -159,7 +159,7 @@ func TestRunTurnApprovalResumeRecordsApprovalAndToolOwnerWriteTrace(t *testing.T
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("expected blocked current turn")
 	}
-	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerEinoKernel, OwnerWriteOutcomeAccepted)
+	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerRuntimeKernel, OwnerWriteOutcomeAccepted)
 	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteApprovalLedger, OwnerPendingApproval, OwnerWriteOutcomeAccepted)
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
@@ -178,7 +178,7 @@ func TestRunTurnApprovalResumeRecordsApprovalAndToolOwnerWriteTrace(t *testing.T
 		t.Fatal("expected resumed current turn")
 	}
 	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteToolResult, OwnerToolDispatcher, OwnerWriteOutcomeAccepted)
-	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteAssistantMessage, OwnerEinoKernel, OwnerWriteOutcomeAccepted)
+	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteAssistantMessage, OwnerRuntimeKernel, OwnerWriteOutcomeAccepted)
 }
 
 func TestMarkTurnCanceledRecordsLifecycleOwnerWriteTrace(t *testing.T) {
@@ -200,7 +200,7 @@ func TestMarkTurnCanceledRecordsLifecycleOwnerWriteTrace(t *testing.T) {
 	if ok := kernel.markTurnCanceled(session, snapshot, "user stop"); !ok {
 		t.Fatal("markTurnCanceled returned false")
 	}
-	assertOwnerWriteTrace(t, snapshot.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerEinoKernel, OwnerWriteOutcomeAccepted)
+	assertOwnerWriteTrace(t, snapshot.OwnerWriteTraces, OwnerWriteTurnLifecycle, OwnerRuntimeKernel, OwnerWriteOutcomeAccepted)
 }
 
 func assertOwnerWriteTrace(t *testing.T, traces []OwnerWriteTrace, responsibility OwnerWriteResponsibility, writer string, outcome OwnerWriteOutcome) {

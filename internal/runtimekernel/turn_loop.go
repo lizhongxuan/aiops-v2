@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-func (k *EinoKernel) buildRuntimeStepContext(
+func (k *RuntimeKernel) buildRuntimeStepContext(
 	req TurnRequest,
 	session *SessionState,
 	agentKind modelrouter.AgentKind,

@@ -6,7 +6,7 @@ import (
 	"aiops-v2/internal/skills"
 )
 
-func (k *EinoKernel) mandatorySkillDefinitionsForInput(input string) []skills.Definition {
+func (k *RuntimeKernel) mandatorySkillDefinitionsForInput(input string) []skills.Definition {
 	if k == nil || k.skillRegistry == nil {
 		return nil
 	}

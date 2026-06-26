@@ -294,7 +294,7 @@ func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 
 	ownerTrace := NewOwnerWriteTrace(OwnerWriteTraceInput{
 		Responsibility: OwnerWriteTurnLifecycle,
-		Writer:         OwnerEinoKernel,
+		Writer:         OwnerRuntimeKernel,
 		SessionID:      "sess-owner-trace",
 		TurnID:         "turn-owner-trace",
 		CreatedAt:      time.Date(2026, 6, 24, 8, 0, 0, 0, time.UTC),
@@ -316,7 +316,7 @@ func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trace json: %v", err)
 	}
-	for _, want := range []string{`"ownerWriteTraces"`, `"turn_lifecycle"`, `"runtimekernel.EinoKernel"`, `"accepted"`} {
+	for _, want := range []string{`"ownerWriteTraces"`, `"turn_lifecycle"`, `"runtimekernel.RuntimeKernel"`, `"accepted"`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("trace missing %s:\n%s", want, string(data))
 		}
@@ -326,7 +326,7 @@ func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trace markdown: %v", err)
 	}
-	for _, want := range []string{"Owner Write Trace", "turn_lifecycle", "runtimekernel.EinoKernel"} {
+	for _, want := range []string{"Owner Write Trace", "turn_lifecycle", "runtimekernel.RuntimeKernel"} {
 		if !strings.Contains(string(markdown), want) {
 			t.Fatalf("markdown trace missing %q:\n%s", want, string(markdown))
 		}

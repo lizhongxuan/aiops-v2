@@ -41,7 +41,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// ToolAssemblySource is the interface that the EinoKernel uses to access
+// ToolAssemblySource is the interface that the RuntimeKernel uses to access
 // assembled tools without importing the capability package directly (avoids
 // circular imports since capability imports runtimekernel).
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ type toolRefreshAwareSource interface {
 }
 
 // ---------------------------------------------------------------------------
-// AgentManagerSource is the interface that the EinoKernel uses to access
+// AgentManagerSource is the interface that the RuntimeKernel uses to access
 // AgentManager without importing the agentmgr package directly (avoids
 // circular imports since agentmgr imports projection which imports runtimekernel).
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ type AgentResult struct {
 	DurationMs int64
 }
 
-// AgentManagerSource provides agent lifecycle management for the EinoKernel.
+// AgentManagerSource provides agent lifecycle management for the RuntimeKernel.
 // Implemented by an adapter wrapping *agentmgr.AgentManager.
 type AgentManagerSource interface {
 	// CreateWorkspaceAgent creates a workspace PlanExecuteAgent config via AgentFactory.
@@ -115,12 +115,12 @@ type AgentManagerSource interface {
 }
 
 // ---------------------------------------------------------------------------
-// EinoKernel — the Eino ADK-based RuntimeKernel implementation.
+// RuntimeKernel — the Eino ADK-based RuntimeKernel implementation.
 // ---------------------------------------------------------------------------
 
-// EinoKernel implements the RuntimeKernel interface using Eino ADK.
+// RuntimeKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
-type EinoKernel struct {
+type RuntimeKernel struct {
 	tools            ToolAssemblySource
 	compiler         promptcompiler.Compiler
 	policy           *policyengine.Engine
@@ -144,8 +144,8 @@ type EinoKernel struct {
 	pendingTurnCancel  map[string]string
 }
 
-// EinoKernelConfig holds the dependencies for creating an EinoKernel.
-type EinoKernelConfig struct {
+// RuntimeKernelConfig holds the dependencies for creating an RuntimeKernel.
+type RuntimeKernelConfig struct {
 	ToolSource       ToolAssemblySource
 	Compiler         promptcompiler.Compiler
 	Policy           *policyengine.Engine
@@ -166,8 +166,8 @@ type EinoKernelConfig struct {
 	EvidenceService  *evidencecore.Service
 }
 
-// NewEinoKernel creates a new EinoKernel with the given dependencies.
-func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
+// NewRuntimeKernel creates a new RuntimeKernel with the given dependencies.
+func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 	sessions := cfg.Sessions
 	if sessions == nil {
 		sessions = NewSessionManager(cfg.SessionRepo)
@@ -176,7 +176,7 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 	if observer == nil {
 		observer = NoopObserver{}
 	}
-	return &EinoKernel{
+	return &RuntimeKernel{
 		tools:              cfg.ToolSource,
 		compiler:           cfg.Compiler,
 		policy:             cfg.Policy,
@@ -199,7 +199,7 @@ func NewEinoKernel(cfg EinoKernelConfig) *EinoKernel {
 	}
 }
 
-func (k *EinoKernel) runtimeObserver() Observer {
+func (k *RuntimeKernel) runtimeObserver() Observer {
 	if k == nil || k.observer == nil {
 		return NoopObserver{}
 	}
@@ -210,7 +210,7 @@ func turnExecutionKey(sessionID, turnID string) string {
 	return strings.TrimSpace(sessionID) + ":" + strings.TrimSpace(turnID)
 }
 
-func (k *EinoKernel) registerTurnExecution(sessionID, turnID string, cancel context.CancelFunc) string {
+func (k *RuntimeKernel) registerTurnExecution(sessionID, turnID string, cancel context.CancelFunc) string {
 	if k == nil || cancel == nil {
 		return ""
 	}
@@ -223,7 +223,7 @@ func (k *EinoKernel) registerTurnExecution(sessionID, turnID string, cancel cont
 	return reason
 }
 
-func (k *EinoKernel) releaseTurnExecution(sessionID, turnID string, cancel context.CancelFunc) {
+func (k *RuntimeKernel) releaseTurnExecution(sessionID, turnID string, cancel context.CancelFunc) {
 	if k == nil {
 		return
 	}
@@ -236,7 +236,7 @@ func (k *EinoKernel) releaseTurnExecution(sessionID, turnID string, cancel conte
 	delete(k.inFlightTurnCancel, key)
 }
 
-func (k *EinoKernel) requestTurnCancel(sessionID, turnID, reason string) bool {
+func (k *RuntimeKernel) requestTurnCancel(sessionID, turnID, reason string) bool {
 	if k == nil {
 		return false
 	}
@@ -288,7 +288,7 @@ func turnLifecycleStateForValidator(lifecycle TurnLifecycleState) (runtimestate.
 	}
 }
 
-func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
+func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
 	if session == nil || snapshot == nil {
 		return false
 	}
@@ -321,7 +321,7 @@ func (k *EinoKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnaps
 	appendAbortedToolResultsForCancel(session, snapshot, reason, now)
 	session.PendingApprovals = nil
 	session.PendingEvidence = nil
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		k.projector.Emit(LifecycleEvent{
@@ -455,7 +455,7 @@ func (r *PipelineRecorder) Record(step PipelineStep) {
 //  9. Process AgentEvents via callback → Projection
 //  10. Final gate check via PolicyEngine.CompletionPolicy
 //  11. Return TurnResult
-func (k *EinoKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnResult, err error) {
+func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result TurnResult, err error) {
 	var observedTurnSpan ObservedSpan
 	observedTurnDone := false
 	finishObservedTurn := func(status, message string) {
@@ -836,7 +836,7 @@ func readModelInputPromptTrace(path string) (*promptinput.PromptInputTrace, erro
 // ---------------------------------------------------------------------------
 
 // ResumeTurn resumes a turn that was interrupted by approval or user input.
-func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnResult, error) {
+func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnResult, error) {
 	if err := req.Validate(); err != nil {
 		return TurnResult{}, fmt.Errorf("invalid resume request: %w", err)
 	}
@@ -1054,7 +1054,7 @@ func (k *EinoKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (TurnRes
 	}, nil
 }
 
-func (k *EinoKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approvalID, decision, status string, at time.Time) {
+func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approvalID, decision, status string, at time.Time) {
 	if k == nil || k.projector == nil || session == nil || snapshot == nil {
 		return
 	}
@@ -1173,7 +1173,7 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 	session.RejectedApprovals = append(session.RejectedApprovals, rejected)
 }
 
-func (k *EinoKernel) completeDeniedApprovalTurn(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
+func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
 	if session == nil || snapshot == nil {
 		return TurnResult{}, fmt.Errorf("session and snapshot are required")
 	}
@@ -1213,7 +1213,7 @@ func (k *EinoKernel) completeDeniedApprovalTurn(session *SessionState, snapshot 
 		last.UpdatedAt = at
 		last.CompletedAt = &at
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
 	completeAssistantMessageItem(snapshot, itemID, finalText, assistantMessageData{
 		MessageID:        message.ID,
@@ -1225,7 +1225,7 @@ func (k *EinoKernel) completeDeniedApprovalTurn(session *SessionState, snapshot 
 		TextHash:         debugTextHash(finalText),
 	})
 	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
 	syncActiveTurnState(session, snapshot)
 	k.persistTurnSnapshot(session, snapshot)
 	return TurnResult{
@@ -1320,7 +1320,7 @@ func rememberSessionApprovalGrant(session *SessionState, toolCall ToolCall, appr
 // ---------------------------------------------------------------------------
 
 // CancelTurn cancels an active turn and returns the cancellation result.
-func (k *EinoKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResult, error) {
+func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResult, error) {
 	if err := req.Validate(); err != nil {
 		return TurnResult{}, fmt.Errorf("invalid cancel request: %w", err)
 	}
@@ -1360,7 +1360,7 @@ func (k *EinoKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResul
 }
 
 // RunTurnWithRecorder executes RunTurn while recording pipeline steps for testing.
-func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, recorder *PipelineRecorder) (result TurnResult, err error) {
+func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, recorder *PipelineRecorder) (result TurnResult, err error) {
 	// Panic recovery
 	defer func() {
 		if r := recover(); r != nil {
@@ -1527,7 +1527,7 @@ func (k *EinoKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, r
 	}, nil
 }
 
-func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session *SessionState, req TurnRequest, turnID, output string, turnErr error) (hooks.TurnEvent, error) {
+func (k *RuntimeKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session *SessionState, req TurnRequest, turnID, output string, turnErr error) (hooks.TurnEvent, error) {
 	if k.hooks == nil {
 		return hooks.TurnEvent{}, nil
 	}
@@ -1546,7 +1546,7 @@ func (k *EinoKernel) runTurnHook(ctx context.Context, stage hooks.Stage, session
 	return event, nil
 }
 
-func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
+func (k *RuntimeKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
 	flags := featureflag.FromEnv(os.Getenv)
 	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
@@ -1569,7 +1569,7 @@ func (k *EinoKernel) compileContext(session SessionType, mode Mode, metadata map
 	return applyRuntimeFeatureFlags(compileCtx, flags)
 }
 
-func (k *EinoKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
+func (k *RuntimeKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
 	if len(ctx.DeferredToolCatalog) == 0 {
 		ctx.DeferredToolCatalog = k.progressiveDiscoveryCatalog(session, mode)
 	}
@@ -1598,7 +1598,7 @@ func mcpHealthSnapshotForPrompt() map[string]string {
 	return out
 }
 
-func (k *EinoKernel) contextArtifactToolsForMetadata(metadata map[string]string) []promptcompiler.Tool {
+func (k *RuntimeKernel) contextArtifactToolsForMetadata(metadata map[string]string) []promptcompiler.Tool {
 	if !contextArtifactToolsEnabled(metadata) {
 		return nil
 	}
@@ -1617,7 +1617,7 @@ func contextArtifactToolsEnabled(metadata map[string]string) bool {
 	return metadataListContains(metadata["enableTool"], "read_context_artifact")
 }
 
-func (k *EinoKernel) contextArtifactTools() []promptcompiler.Tool {
+func (k *RuntimeKernel) contextArtifactTools() []promptcompiler.Tool {
 	if k == nil || (k.artifactRepo == nil && k.spillRepo == nil) {
 		return nil
 	}
@@ -1744,11 +1744,11 @@ func applyDefaultRuntimePromptProfile(metadata map[string]string, sessionType Se
 	return metadata
 }
 
-func (k *EinoKernel) applyProgressiveToolPackMetadata(metadata map[string]string, input string, sessionType SessionType, mode Mode, session *SessionState) map[string]string {
+func (k *RuntimeKernel) applyProgressiveToolPackMetadata(metadata map[string]string, input string, sessionType SessionType, mode Mode, session *SessionState) map[string]string {
 	return applyProgressiveToolPackMetadata(metadata, input, session, k.progressiveDiscoveryCatalog(sessionType, mode))
 }
 
-func (k *EinoKernel) progressiveDiscoveryCatalog(session SessionType, mode Mode) []tooling.Tool {
+func (k *RuntimeKernel) progressiveDiscoveryCatalog(session SessionType, mode Mode) []tooling.Tool {
 	source, ok := k.tools.(fullToolCatalogSource)
 	if !ok {
 		return nil
@@ -1756,7 +1756,7 @@ func (k *EinoKernel) progressiveDiscoveryCatalog(session SessionType, mode Mode)
 	return source.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{IncludeDeferredCatalog: true})
 }
 
-func (k *EinoKernel) contextBudgetPolicyForSession(session *SessionState, agentKind modelrouter.AgentKind) ContextBudgetPolicy {
+func (k *RuntimeKernel) contextBudgetPolicyForSession(session *SessionState, agentKind modelrouter.AgentKind) ContextBudgetPolicy {
 	caps := modelrouter.ModelCapabilities{
 		MaxContextTokens: DefaultMaxTokens,
 		MaxOutputTokens:  20000,
@@ -1805,7 +1805,7 @@ func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featurefl
 	return ctx
 }
 
-func (k *EinoKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
+func (k *RuntimeKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
 	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
 		return source.AssembleToolPoolWithMetadata(session, assemblyMode, metadata)
@@ -1827,7 +1827,7 @@ func effectiveToolAssemblyMode(session SessionType, mode Mode, metadata map[stri
 	return mode
 }
 
-func (k *EinoKernel) runHostIterationLoop(
+func (k *RuntimeKernel) runHostIterationLoop(
 	ctx context.Context,
 	chatModel modelrouter.ChatModel,
 	agentKind modelrouter.AgentKind,
@@ -2539,8 +2539,8 @@ func (k *EinoKernel) runHostIterationLoop(
 				Duration:         modelCallDuration,
 			})
 			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
-			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
-			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerEinoKernel)
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
 			snapshot.UpdatedAt = now
 			snapshot.CompletedAt = &now
 			if last := latestIteration(snapshot); last != nil {
@@ -2842,7 +2842,7 @@ func (k *EinoKernel) runHostIterationLoop(
 		last.Checkpoint = checkpoint
 		last.UpdatedAt = now
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, maxIterations), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "iteration limit exceeded", nil))
 	k.persistTurnSnapshot(session, snapshot)
 	return "", nil, fmt.Errorf("iteration limit exceeded")
@@ -4282,7 +4282,7 @@ func filterOpsManualTools(tools []promptcompiler.Tool) []promptcompiler.Tool {
 	return filtered
 }
 
-func (k *EinoKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (*TurnResult, error) {
+func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (*TurnResult, error) {
 	toolCall, ok := pendingToolCall(snapshot)
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
@@ -4353,7 +4353,7 @@ func blockedTurnResult(session *SessionState, snapshot *TurnSnapshot, reason str
 	}
 }
 
-func (k *EinoKernel) drainRemainingToolCallsAfterResume(
+func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 	ctx context.Context,
 	session *SessionState,
 	snapshot *TurnSnapshot,
@@ -4641,7 +4641,7 @@ func cleanEvidenceRefs(values []string) []string {
 	return out
 }
 
-func (k *EinoKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {
+func (k *RuntimeKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {
 	recordedResult, materializeErr := k.materializeToolResult(session, snapshot, iteration, toolCall, meta, result)
 	if materializeErr != nil {
 		return ToolResult{}, materializeErr
@@ -4671,7 +4671,7 @@ func (k *EinoKernel) recordResumedToolResult(session *SessionState, snapshot *Tu
 		appendExternalReferences(&last.ExternalReferences, recordedResult.ExternalReferences...)
 		last.UpdatedAt = now
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
 	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
 	appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
@@ -4703,7 +4703,7 @@ func appendResumeInputMessage(session *SessionState, input string) {
 	recomputeContextWindow(&session.Context, session.Messages)
 }
 
-func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
+func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
 	if session == nil || snapshot == nil {
 		return fmt.Errorf("session and snapshot are required")
 	}
@@ -4733,7 +4733,7 @@ func (k *EinoKernel) markSnapshotResuming(session *SessionState, snapshot *TurnS
 	return nil
 }
 
-func (k *EinoKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
+func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool) *ToolDispatcher {
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
 		if toolDef == nil {
@@ -4780,7 +4780,7 @@ func toolMetadataList(tools []promptcompiler.Tool) []tooling.ToolMetadata {
 	return out
 }
 
-func (k *EinoKernel) deferredCatalogLookup(session SessionType, mode Mode) DeferredToolCatalogLookup {
+func (k *RuntimeKernel) deferredCatalogLookup(session SessionType, mode Mode) DeferredToolCatalogLookup {
 	source, ok := k.tools.(fullToolCatalogSource)
 	if !ok {
 		return nil
@@ -4912,7 +4912,7 @@ const (
 	toolResultTierLarge  toolResultMaterializationTier = "large"
 )
 
-func (k *EinoKernel) materializeToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, toolResult tooling.ToolResult) (ToolResult, error) {
+func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, toolResult tooling.ToolResult) (ToolResult, error) {
 	result := ToolResult{
 		ToolCallID: tc.ID,
 		Content:    toolResult.Content,
@@ -4974,7 +4974,7 @@ func (k *EinoKernel) materializeToolResult(session *SessionState, snapshot *Turn
 	return result, nil
 }
 
-func (k *EinoKernel) persistToolResultSpill(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, spill *tooling.ResultSpill) (ExternalReference, error) {
+func (k *RuntimeKernel) persistToolResultSpill(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, spill *tooling.ResultSpill) (ExternalReference, error) {
 	if spill == nil {
 		return ExternalReference{}, fmt.Errorf("tool result spill is nil")
 	}
@@ -5028,7 +5028,7 @@ func (k *EinoKernel) persistToolResultSpill(session *SessionState, snapshot *Tur
 	}, nil
 }
 
-func (k *EinoKernel) applyAggregateToolResultBudget(session *SessionState, snapshot *TurnSnapshot, iteration int, assembledTools []promptcompiler.Tool) {
+func (k *RuntimeKernel) applyAggregateToolResultBudget(session *SessionState, snapshot *TurnSnapshot, iteration int, assembledTools []promptcompiler.Tool) {
 	if session == nil || snapshot == nil {
 		return
 	}
@@ -5067,7 +5067,7 @@ func (k *EinoKernel) applyAggregateToolResultBudget(session *SessionState, snaps
 	}
 }
 
-func aggregateToolResultExternalizer(k *EinoKernel, session *SessionState, snapshot *TurnSnapshot, iteration int, calls []ToolCall, assembledTools []promptcompiler.Tool) func(ToolResult) (ExternalReference, error) {
+func aggregateToolResultExternalizer(k *RuntimeKernel, session *SessionState, snapshot *TurnSnapshot, iteration int, calls []ToolCall, assembledTools []promptcompiler.Tool) func(ToolResult) (ExternalReference, error) {
 	return func(result ToolResult) (ExternalReference, error) {
 		tc := toolCallByID(calls, result.ToolCallID)
 		if tc.ID == "" {
@@ -5515,7 +5515,7 @@ func appendCheckpointExternalRefs(checkpoint *CheckpointMetadata, refs []Externa
 	}
 }
 
-func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRequest, turnID string) *TurnSnapshot {
+func (k *RuntimeKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRequest, turnID string) *TurnSnapshot {
 	if session.CurrentTurn != nil && session.CurrentTurn.ID == turnID {
 		syncActiveTurnState(session, session.CurrentTurn)
 		return session.CurrentTurn
@@ -5539,7 +5539,7 @@ func (k *EinoKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRe
 	return snapshot
 }
 
-func (k *EinoKernel) persistTurnSnapshot(session *SessionState, snapshot *TurnSnapshot) {
+func (k *RuntimeKernel) persistTurnSnapshot(session *SessionState, snapshot *TurnSnapshot) {
 	if session == nil || snapshot == nil {
 		return
 	}
@@ -5595,7 +5595,7 @@ func syncActiveTurnState(session *SessionState, snapshot *TurnSnapshot) {
 	}
 }
 
-func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
+func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionToolInvocationBlocked, TurnLifecycleSuspended); err != nil {
 		return err
 	}
@@ -5700,7 +5700,7 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 		appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteApprovalLedger, OwnerPendingApproval)
 	}
 
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector != nil {
 		payload, _ := json.Marshal(map[string]any{
@@ -5732,7 +5732,7 @@ func (k *EinoKernel) markTurnBlocked(session *SessionState, snapshot *TurnSnapsh
 	return nil
 }
 
-func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
+func (k *RuntimeKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapshot, tc ToolCall, result DispatchResult) error {
 	if session == nil || snapshot == nil {
 		return fmt.Errorf("session and snapshot are required")
 	}
@@ -5764,12 +5764,12 @@ func (k *EinoKernel) markTurnFailed(session *SessionState, snapshot *TurnSnapsho
 		last.Checkpoint = checkpoint
 		last.UpdatedAt = now
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	return nil
 }
 
-func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) error {
+func (k *RuntimeKernel) markTurnFailedFromError(session *SessionState, snapshot *TurnSnapshot, err error, checkpointKind string) error {
 	if session == nil || snapshot == nil || snapshot.Lifecycle.IsTerminal() {
 		return nil
 	}
@@ -5804,7 +5804,7 @@ func (k *EinoKernel) markTurnFailedFromError(session *SessionState, snapshot *Tu
 		last.UpdatedAt = now
 		last.CompletedAt = &now
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	return nil
 }
@@ -5813,7 +5813,7 @@ func isRecoverableModelTimeout(err error) bool {
 	return err != nil && errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 }
 
-func (k *EinoKernel) markTurnResumableFromModelTimeout(session *SessionState, snapshot *TurnSnapshot, iteration int, err error) (TurnResult, error) {
+func (k *RuntimeKernel) markTurnResumableFromModelTimeout(session *SessionState, snapshot *TurnSnapshot, iteration int, err error) (TurnResult, error) {
 	if session == nil || snapshot == nil {
 		return TurnResult{}, fmt.Errorf("session and snapshot are required")
 	}
@@ -5844,7 +5844,7 @@ func (k *EinoKernel) markTurnResumableFromModelTimeout(session *SessionState, sn
 		last.Checkpoint = checkpoint
 		last.UpdatedAt = now
 	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerEinoKernel)
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
 	return TurnResult{
 		SessionType:     snapshot.SessionType,
@@ -5890,7 +5890,7 @@ func currentBlockedID(snapshot *TurnSnapshot) string {
 	return ""
 }
 
-func (k *EinoKernel) emitIterationStage(sessionID, turnID string, iteration int, stage string, turnSpanID string) {
+func (k *RuntimeKernel) emitIterationStage(sessionID, turnID string, iteration int, stage string, turnSpanID string) {
 	if k.projector == nil && (k.spanSource == nil || turnSpanID == "") {
 		return
 	}
@@ -5913,7 +5913,7 @@ func (k *EinoKernel) emitIterationStage(sessionID, turnID string, iteration int,
 	}
 }
 
-func (k *EinoKernel) emitRuntimeEvent(eventType EventType, sessionID, turnID string, payload any) {
+func (k *RuntimeKernel) emitRuntimeEvent(eventType EventType, sessionID, turnID string, payload any) {
 	if k == nil || k.projector == nil {
 		return
 	}
@@ -5934,7 +5934,7 @@ func latestIteration(snapshot *TurnSnapshot) *IterationState {
 	return &snapshot.Iterations[len(snapshot.Iterations)-1]
 }
 
-func (k *EinoKernel) progressSink(session *SessionState, snapshot *TurnSnapshot, iteration int) ToolProgressSink {
+func (k *RuntimeKernel) progressSink(session *SessionState, snapshot *TurnSnapshot, iteration int) ToolProgressSink {
 	if session == nil || snapshot == nil {
 		return nil
 	}
@@ -5963,7 +5963,7 @@ func (k *EinoKernel) progressSink(session *SessionState, snapshot *TurnSnapshot,
 	}
 }
 
-func (k *EinoKernel) upsertPartialToolProgressMessage(session *SessionState, snapshot *TurnSnapshot, iteration int, update ToolProgressUpdate, now time.Time) {
+func (k *RuntimeKernel) upsertPartialToolProgressMessage(session *SessionState, snapshot *TurnSnapshot, iteration int, update ToolProgressUpdate, now time.Time) {
 	if session == nil || snapshot == nil {
 		return
 	}

@@ -6,7 +6,7 @@
     "mustInclude": ["synthesis-only", "tool budget", "停止继续调用工具", "证据不足"],
     "mustNotInclude": ["继续调用更多工具", "无限循环"],
     "expectedToolCalls": [],
-    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go"]
+    "mustMentionFiles": ["internal/runtimekernel/runtime_kernel.go"]
   },
   "scoreRules": {}
 }
