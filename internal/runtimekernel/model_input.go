@@ -18,7 +18,7 @@ import (
 	"aiops-v2/internal/taskdepth"
 )
 
-type ModelInputDebugTraceRequest struct {
+type RuntimeTraceDebugRequest struct {
 	SessionID                     string
 	TurnID                        string
 	Iteration                     int
@@ -1008,11 +1008,7 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 	}
 }
 
-func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
-	return modeltrace.Write(buildModelInputTraceRequest(req))
-}
-
-func buildModelInputTraceRequest(req ModelInputDebugTraceRequest) modeltrace.Request {
+func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) modeltrace.Request {
 	promptTrace := req.PromptInputTrace
 	if len(promptTrace.PromptSections) == 0 {
 		promptTrace.PromptSections = append([]promptcompiler.PromptSectionTrace(nil), req.Compiled.PromptSections...)

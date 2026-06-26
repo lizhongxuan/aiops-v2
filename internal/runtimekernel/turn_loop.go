@@ -123,7 +123,7 @@ func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) 
 	return out
 }
 
-func writeRuntimeStepTrace(step RuntimeStepContext, req ModelInputDebugTraceRequest) (string, error) {
+func writeRuntimeStepTrace(step RuntimeStepContext, req RuntimeTraceDebugRequest) (string, error) {
 	if !modeltrace.Enabled() {
 		return "", nil
 	}

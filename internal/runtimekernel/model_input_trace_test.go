@@ -35,7 +35,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 		{Role: schema.User, Content: "user asks"},
 	}
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
 		Iteration:  2,
@@ -91,7 +91,7 @@ func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 		{Role: schema.User, Content: "user asks"},
 	}
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:    "sess-metrics",
 		TurnID:       "turn-metrics",
 		Iteration:    1,
@@ -187,7 +187,7 @@ func TestModelInputTraceWritesContextDedupe(t *testing.T) {
 	input := []*schema.Message{
 		{Role: schema.User, Content: "User evidence repeated from previous turn.\ndigest=sha256:abc\nsummary=restore issue\ndelta_user_request=?"},
 	}
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:  "sess-context-dedupe",
 		TurnID:     "turn-context-dedupe",
 		Iteration:  0,
@@ -258,7 +258,7 @@ func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-plan-requirement",
 		TurnID:    "turn-plan-requirement",
 		Iteration: 0,
@@ -299,7 +299,7 @@ func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 		TurnID:         "turn-owner-trace",
 		CreatedAt:      time.Date(2026, 6, 24, 8, 0, 0, 0, time.UTC),
 	})
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-owner-trace",
 		TurnID:    "turn-owner-trace",
 		Iteration: 1,
@@ -366,7 +366,7 @@ func TestModelInputDebugTraceIncludesToolSurfaceSnapshot(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:                     "sess-tool-surface",
 		TurnID:                        "turn-tool-surface",
 		Iteration:                     1,
@@ -457,7 +457,7 @@ func TestPermissionSnapshotTrace(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:  "sess-permission-trace",
 		TurnID:     "turn-permission-trace",
 		Iteration:  1,
@@ -584,7 +584,7 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 			{Source: "conversation", SemanticRole: "tool_result", ID: "call-1", Content: "ok"},
 		}},
 	)
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		Iteration: 2,
@@ -626,7 +626,7 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-sections",
 		TurnID:    "turn-sections",
 		Iteration: 2,
@@ -726,7 +726,7 @@ func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:                     "sess-tool-discovery",
 		TurnID:                        "turn-tool-discovery",
 		Iteration:                     1,
@@ -784,7 +784,7 @@ func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:         "sess-skill-discovery",
 		TurnID:            "turn-skill-discovery",
 		Iteration:         1,
@@ -829,7 +829,7 @@ func TestTraceIncludesRejectedToolCalls(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-rejected",
 		TurnID:    "turn-rejected",
 		RejectedToolCalls: []promptinput.RejectedToolCallTraceEvent{{
@@ -861,7 +861,7 @@ func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-parallel",
 		TurnID:    "turn-parallel",
 		ParallelDispatchGroups: []promptinput.ParallelDispatchTraceGroup{{
@@ -894,7 +894,7 @@ func TestTraceIncludesAgentSchedulingState(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:      "sess-agent-scheduling",
 		TurnID:         "turn-agent-scheduling",
 		AgentIndexHash: "agent-index-sha256:synthetic",
@@ -963,7 +963,7 @@ func TestTraceIncludesFailedToolSummaries(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-failed-summary",
 		TurnID:    "turn-failed-summary",
 		FailedToolSummaries: []promptinput.FailedToolSummary{{
@@ -994,7 +994,7 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-response",
 		TurnID:    "turn-response",
 		Iteration: 1,
@@ -1084,7 +1084,7 @@ func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		Iteration: 1,
@@ -1350,7 +1350,7 @@ func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", t.TempDir())
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 	})
@@ -1367,7 +1367,7 @@ func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeModelInputDebugTrace(RuntimeTraceDebugRequest{
 		SessionID:  "sess-depth",
 		TurnID:     "turn-depth",
 		Iteration:  0,
