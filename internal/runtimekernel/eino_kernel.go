@@ -1994,7 +1994,12 @@ func (k *EinoKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, modelErr
 		}
-		modelInput := promptBuild.Messages
+		modelInput, _, modelErr := modelrouter.ModelInputItemsToEinoMessages(promptBuild.Items)
+		if modelErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, modelErr
+		}
 		var promptInputDiff *promptinput.TraceDiff
 		if previousPromptInputTrace != nil {
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)

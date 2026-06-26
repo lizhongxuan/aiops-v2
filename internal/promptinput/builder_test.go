@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/promptcompiler"
 )
@@ -55,7 +53,7 @@ func TestBuilderDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t *testing
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	joined := joinedMessageContent(result.Messages)
+	joined := joinedModelInputItemContent(result.Items)
 	if strings.Contains(joined, "old-result") || strings.Contains(joined, "旧轮次工具前说明") {
 		t.Fatalf("model input leaked prior turn tool noise:\n%s", joined)
 	}
@@ -97,11 +95,11 @@ func TestBuilderTraceIncludesPromptFragmentsAndProtocolState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if len(result.Messages) < 5 {
-		t.Fatalf("messages len = %d, want prompt layers plus history", len(result.Messages))
+	if len(result.Items) < 5 {
+		t.Fatalf("items len = %d, want prompt layers plus history", len(result.Items))
 	}
-	if result.Messages[0].Role != schema.System {
-		t.Fatalf("first provider role = %q, want system", result.Messages[0].Role)
+	if result.Items[0].ProviderRole != ProviderRoleSystem {
+		t.Fatalf("first provider role = %q, want system", result.Items[0].ProviderRole)
 	}
 	for _, want := range []struct {
 		source string
@@ -141,19 +139,16 @@ func TestBuilderIncludesDynamicPromptContentInModelMessages(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 
-	joined := joinedMessageContent(result.Messages)
+	joined := joinedModelInputItemContent(result.Items)
 	if !strings.Contains(joined, "dynamic retry guard") {
 		t.Fatalf("model messages missing dynamic prompt content:\n%s", joined)
 	}
 }
 
-func joinedMessageContent(messages []*schema.Message) string {
+func joinedModelInputItemContent(items []ModelInputItem) string {
 	var joined strings.Builder
-	for _, msg := range messages {
-		if msg == nil {
-			continue
-		}
-		joined.WriteString(msg.Content)
+	for _, item := range items {
+		joined.WriteString(item.Content)
 		joined.WriteString("\n")
 	}
 	return joined.String()
@@ -171,21 +166,21 @@ func traceHas(trace PromptInputTrace, source, role, id string) bool {
 	return false
 }
 
-func TestSchemaToolCallRoundTrip(t *testing.T) {
+func TestModelInputToolCallRoundTrip(t *testing.T) {
 	args := json.RawMessage(`{"path":"/tmp"}`)
-	msg, err := messageToSchema(Message{
+	items, err := MessagesToModelInputItems([]Message{{
 		Role: "assistant",
 		ToolCalls: []ToolCall{{
 			ID:        "call-1",
 			Name:      "read_file",
 			Arguments: args,
 		}},
-	})
+	}})
 	if err != nil {
-		t.Fatalf("messageToSchema() error = %v", err)
+		t.Fatalf("MessagesToModelInputItems() error = %v", err)
 	}
-	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "read_file" || msg.ToolCalls[0].Function.Arguments != string(args) {
-		t.Fatalf("schema tool calls = %#v, want read_file with args", msg.ToolCalls)
+	if len(items) != 1 || len(items[0].ToolCalls) != 1 || items[0].ToolCalls[0].Name != "read_file" || string(items[0].ToolCalls[0].Arguments) != string(args) {
+		t.Fatalf("model input tool calls = %#v, want read_file with args", items)
 	}
 }
 
@@ -204,7 +199,7 @@ func TestBuilderInjectsLimitedMemoryWithTraceBeforeCurrentEvidence(t *testing.T)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	joined := joinedMessageContent(result.Messages)
+	joined := joinedModelInputItemContent(result.Items)
 	if !strings.Contains(joined, "historical redis runbook") || strings.Contains(joined, "older redis note") {
 		t.Fatalf("memory injection did not respect limit:\n%s", joined)
 	}
@@ -234,7 +229,7 @@ func TestPromptInputOpsManualContextDoesNotGrowLinearlyAcrossTurns(t *testing.T)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	joined := joinedMessageContent(result.Messages)
+	joined := joinedModelInputItemContent(result.Items)
 	if strings.Contains(joined, "ops_manual_search_result artifact ref") || strings.Contains(joined, "ops_manual_param_resolution artifact ref") {
 		t.Fatalf("model input leaked historical ops manual artifacts:\n%s", joined)
 	}

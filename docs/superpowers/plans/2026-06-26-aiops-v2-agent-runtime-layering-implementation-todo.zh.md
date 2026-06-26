@@ -383,7 +383,7 @@ git commit -m "feat(runtime): add runtime context snapshots"
 - Test: `internal/promptinput/model_input_item_test.go`
 - Test: `internal/promptinput/builder_test.go`
 
-- [ ] **Step 1: Write failing tests for item validation and builder output**
+- [x] **Step 1: Write failing tests for item validation and builder output**
 
 Add `internal/promptinput/model_input_item_test.go`:
 
@@ -447,7 +447,7 @@ func TestModelInputToolCallArgumentsMustBeJSON(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -457,7 +457,7 @@ go test ./internal/promptinput -run 'TestModelInput'
 
 Expected: FAIL with undefined `ModelInputItem`, `ProviderRoleUser`, `ModelInputToolCall`, or `StableHash`.
 
-- [ ] **Step 3: Add ModelInputItem types**
+- [x] **Step 3: Add ModelInputItem types**
 
 Create `internal/promptinput/model_input_item.go`:
 
@@ -516,7 +516,7 @@ type ModelInputItem struct {
 }
 ```
 
-- [ ] **Step 4: Add validation and hashing**
+- [x] **Step 4: Add validation and hashing**
 
 Create `internal/promptinput/model_input_validation.go`:
 
@@ -587,7 +587,7 @@ func StableModelInputHash(items []ModelInputItem) string {
 }
 ```
 
-- [ ] **Step 5: Change BuildResult to expose items instead of Eino messages**
+- [x] **Step 5: Change BuildResult to expose items instead of Eino messages**
 
 Modify `internal/promptinput/types.go`:
 
@@ -605,7 +605,7 @@ Remove this import from `internal/promptinput/types.go`:
 "github.com/cloudwego/eino/schema"
 ```
 
-- [ ] **Step 6: Change builder to create ModelInputItem values**
+- [x] **Step 6: Change builder to create ModelInputItem values**
 
 Modify `internal/promptinput/builder.go` so `Build` returns `Items`:
 
@@ -637,7 +637,7 @@ func (Builder) Build(req BuildRequest) (BuildResult, error) {
 }
 ```
 
-- [ ] **Step 7: Add promptinput-local conversion helpers**
+- [x] **Step 7: Add promptinput-local conversion helpers**
 
 Add these helpers in `internal/promptinput/builder.go` or split to `internal/promptinput/model_input_builder.go`:
 
@@ -799,7 +799,7 @@ func firstNonBlankPromptInputString(values ...string) string {
 }
 ```
 
-- [ ] **Step 8: Run promptinput tests**
+- [x] **Step 8: Run promptinput tests**
 
 Run:
 
@@ -928,7 +928,7 @@ git commit -m "refactor(promptcompiler): remove eino compiler output"
 - Test: `internal/modelrouter/eino_message_adapter_test.go`
 - Test: `internal/modelrouter/provider_request_snapshot_test.go`
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Add `internal/modelrouter/eino_message_adapter_test.go`:
 
@@ -974,7 +974,7 @@ func TestModelInputItemsToEinoMessagesRejectsInvalidItem(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Write failing snapshot hash tests**
+- [x] **Step 2: Write failing snapshot hash tests**
 
 Add `internal/modelrouter/provider_request_snapshot_test.go`:
 
@@ -1016,7 +1016,7 @@ func TestBuildProviderRequestSnapshotSeparatesStableCacheKeyFromDynamicIds(t *te
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run:
 
@@ -1026,7 +1026,7 @@ go test ./internal/modelrouter -run 'TestModelInputItemsToEinoMessages|TestBuild
 
 Expected: FAIL with undefined provider snapshot and adapter types.
 
-- [ ] **Step 4: Add provider request snapshot types**
+- [x] **Step 4: Add provider request snapshot types**
 
 Create `internal/modelrouter/provider_request_snapshot.go`:
 
@@ -1142,7 +1142,7 @@ type promptinputToolCall struct {
 }
 ```
 
-- [ ] **Step 6: Add Eino message adapter**
+- [x] **Step 6: Add Eino message adapter**
 
 Create `internal/modelrouter/eino_message_adapter.go`:
 

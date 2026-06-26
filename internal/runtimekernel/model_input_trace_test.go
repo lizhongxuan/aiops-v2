@@ -151,7 +151,7 @@ func TestModelInputDedupeRepeatedLongUserEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build prompt input: %v", err)
 	}
-	joined := joinedSchemaMessageContent(result.Messages)
+	joined := joinedModelInputItemContent(result.Items)
 	if got := strings.Count(joined, "service join failed after restore"); got > 81 {
 		t.Fatalf("expected repeated large evidence body to be deduped, got %d occurrences\n%s", got, joined)
 	}
@@ -239,6 +239,15 @@ func joinedSchemaMessageContent(messages []*schema.Message) string {
 			continue
 		}
 		b.WriteString(msg.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func joinedModelInputItemContent(items []promptinput.ModelInputItem) string {
+	var b strings.Builder
+	for _, item := range items {
+		b.WriteString(item.Content)
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -1577,7 +1586,7 @@ func buildG01FirstTurnPromptMetrics(t *testing.T) firstTurnPromptMetrics {
 		names = append(names, tool.Metadata().Name)
 	}
 	return firstTurnPromptMetrics{
-		PromptCharCount:       schemaMessageCharCount(promptBuild.Messages),
+		PromptCharCount:       modelInputItemCharCount(promptBuild.Items),
 		ToolRegistryCharCount: len(compiled.Tools.Content),
 		VisibleToolCount:      len(names),
 		VisibleToolNames:      names,
@@ -1642,6 +1651,17 @@ func schemaMessageCharCount(messages []*schema.Message) int {
 			continue
 		}
 		total += len(msg.Content)
+	}
+	return total
+}
+
+func modelInputItemCharCount(items []promptinput.ModelInputItem) int {
+	total := 0
+	for _, item := range items {
+		total += len(item.Content)
+		if item.ToolResult != nil {
+			total += len(item.ToolResult.Content)
+		}
 	}
 	return total
 }

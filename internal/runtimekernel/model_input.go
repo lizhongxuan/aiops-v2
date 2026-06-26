@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/diagnostics"
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
@@ -81,7 +82,11 @@ func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) 
 	if err != nil {
 		return nil, err
 	}
-	return result.Messages, nil
+	messages, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
+	if err != nil {
+		return nil, fmt.Errorf("provider messages: %w", err)
+	}
+	return messages, nil
 }
 
 func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt) (promptinput.BuildResult, error) {
@@ -101,9 +106,13 @@ func buildPromptInputWithContextGovernance(history []Message, compiled promptcom
 	if contextDedupe != nil {
 		result.Trace.ContextDedupe = contextDedupe
 	}
+	modelInput, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
+	if err != nil {
+		return promptinput.BuildResult{}, fmt.Errorf("provider messages: %w", err)
+	}
 	result.Trace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
 		Compiled:   compiled,
-		Messages:   result.Messages,
+		Messages:   modelInput,
 		Governance: governance,
 	})
 	return result, nil

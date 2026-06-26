@@ -4,50 +4,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
 )
 
-func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []MemoryItem, history []Message, runtimeMessages []*schema.Message) PromptInputTrace {
-	items := make([]TraceItem, 0, len(promptMessages)+len(memories)+len(req.Compiled.Dynamic.ProtocolState.Items)+len(history))
+func buildTrace(req BuildRequest, modelInputItems []ModelInputItem, memories []MemoryItem, history []Message) PromptInputTrace {
+	items := make([]TraceItem, 0, len(modelInputItems)+len(req.Compiled.Dynamic.ProtocolState.Items))
 
-	for _, msg := range promptMessages {
-		if msg == nil {
-			continue
-		}
-		promptLayer := stringExtra(msg.Extra, "prompt_layer")
-		semanticRole := promptLayer
-		if semanticRole == "" {
-			semanticRole = stringExtra(msg.Extra, "semantic_role")
-		}
+	for _, item := range modelInputItems {
 		items = append(items, TraceItem{
-			Source:       promptSource(promptLayer),
-			SemanticRole: semanticRole,
-			ProviderRole: string(msg.Role),
-			PromptLayer:  promptLayer,
-			Content:      msg.Content,
-		})
-	}
-
-	for _, memory := range memories {
-		items = append(items, TraceItem{
-			Source:       "memory",
-			SemanticRole: "memory",
-			ProviderRole: string(schema.System),
-			PromptLayer:  "memory",
-			ID:           memory.ID,
-			Content:      memory.Text,
-		})
-	}
-
-	if req.OpsContextCapsule != "" {
-		items = append(items, TraceItem{
-			Source:       "ops_context",
-			SemanticRole: "ops_context_capsule",
-			ProviderRole: string(schema.System),
-			PromptLayer:  "ops_context_capsule",
-			Content:      req.OpsContextCapsule,
+			Source:       firstNonBlankPromptInputString(item.Source.Origin, item.Source.Layer),
+			SemanticRole: item.SemanticRole,
+			ProviderRole: string(item.ProviderRole),
+			PromptLayer:  item.Source.Layer,
+			ID:           traceItemID(item),
+			Content:      traceItemContent(item),
 		})
 	}
 
@@ -58,20 +28,6 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 			ID:           item.ID,
 			Status:       item.Status,
 			Content:      item.Text,
-		})
-	}
-
-	for i, msg := range history {
-		providerRole := msg.Role
-		if i < len(runtimeMessages) && runtimeMessages[i] != nil {
-			providerRole = string(runtimeMessages[i].Role)
-		}
-		items = append(items, TraceItem{
-			Source:       "conversation",
-			SemanticRole: conversationSemanticRole(msg),
-			ProviderRole: providerRole,
-			ID:           conversationTraceID(msg),
-			Content:      msg.Content,
 		})
 	}
 
@@ -99,6 +55,29 @@ func buildTrace(req BuildRequest, promptMessages []*schema.Message, memories []M
 		PlanModeState:          planModeTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.PlanMode),
 		TaskTodoState:          taskTodoTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.TaskTodo),
 	}
+}
+
+func traceItemID(item ModelInputItem) string {
+	if item.Source.MessageID != "" {
+		return item.Source.MessageID
+	}
+	if item.ToolCallID != "" {
+		return item.ToolCallID
+	}
+	if len(item.ToolCalls) == 1 {
+		return item.ToolCalls[0].ID
+	}
+	if len(item.ToolCalls) > 1 {
+		return fmt.Sprintf("%s+%d", item.ToolCalls[0].ID, len(item.ToolCalls)-1)
+	}
+	return item.ID
+}
+
+func traceItemContent(item ModelInputItem) string {
+	if item.ProviderRole == ProviderRoleTool && item.ToolResult != nil && item.ToolResult.Content != "" {
+		return item.ToolResult.Content
+	}
+	return item.Content
 }
 
 func cloneDeferredToolDirectory(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {

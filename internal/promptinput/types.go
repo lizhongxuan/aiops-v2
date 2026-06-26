@@ -3,8 +3,6 @@ package promptinput
 import (
 	"encoding/json"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/resourceio"
@@ -60,10 +58,10 @@ type BuildRequest struct {
 	ApprovalScope         *ApprovalScopeTrace
 }
 
-// BuildResult is the provider-facing model input plus its explainable trace.
+// BuildResult is the provider-neutral model input plus its explainable trace.
 type BuildResult struct {
-	Messages []*schema.Message
-	Trace    PromptInputTrace
+	Items []ModelInputItem
+	Trace PromptInputTrace
 }
 
 // PromptInputTrace records where each prompt input item came from.
