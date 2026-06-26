@@ -1754,7 +1754,7 @@ go test ./internal/runtimekernel ./internal/appui ./internal/agentmgr
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/runtimekernel internal/appui internal/agentmgr
