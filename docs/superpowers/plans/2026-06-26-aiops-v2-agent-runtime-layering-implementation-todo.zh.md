@@ -1876,7 +1876,7 @@ go test ./internal/tooling ./internal/runtimekernel -run 'ToolSurface|Dispatch'
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/tooling internal/runtimekernel
