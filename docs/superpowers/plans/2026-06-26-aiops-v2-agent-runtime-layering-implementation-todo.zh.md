@@ -1600,7 +1600,7 @@ go test ./internal/runtimekernel -run 'TestRunTurnBuildsProviderRequestFromRunti
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/runtimekernel
