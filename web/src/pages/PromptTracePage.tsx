@@ -589,6 +589,9 @@ function PromptTraceDetailDialog({
                   {selectedTrace?.promptFingerprint?.stableHash ? <ToneBadge>稳定哈希 {shortHash(selectedTrace.promptFingerprint.stableHash)}</ToneBadge> : null}
                   {selectedTrace?.promptFingerprint?.developerHash ? <ToneBadge>开发者规则 {shortHash(selectedTrace.promptFingerprint.developerHash)}</ToneBadge> : null}
                   {selectedTrace?.promptFingerprint?.toolRegistryHash ? <ToneBadge>工具表 {shortHash(selectedTrace.promptFingerprint.toolRegistryHash)}</ToneBadge> : null}
+                  {traceViewModel?.providerRequest?.modelInputHash ? <ToneBadge>输入 {shortHash(traceViewModel.providerRequest.modelInputHash)}</ToneBadge> : null}
+                  {traceViewModel?.providerRequest?.providerMessagesHash ? <ToneBadge>Provider {shortHash(traceViewModel.providerRequest.providerMessagesHash)}</ToneBadge> : null}
+                  {traceViewModel?.providerRequest?.promptCacheKey ? <ToneBadge>Cache {shortHash(traceViewModel.providerRequest.promptCacheKey)}</ToneBadge> : null}
                 </span>
               </DialogDescription>
             </div>
@@ -648,6 +651,19 @@ function PromptTraceDetailDialog({
                   contextGovernance={contextGovernance}
                   emptyText={contextGovernanceEmptyText}
                 />
+                <ContextPanel title="Raw Payload Refs">
+                  {traceViewModel?.rawPayloadRefs?.length ? (
+                    <div className="grid gap-2">
+                      {traceViewModel.rawPayloadRefs.map((ref) => (
+                        <div key={ref.id || ref.path} className="rounded-lg border border-slate-100 bg-white p-2 text-xs">
+                          <ToneBadge>{ref.kind || "raw_payload"}</ToneBadge>
+                          <span className="ml-2 break-all font-mono text-slate-600">{ref.path}</span>
+                          {ref.sha256 ? <span className="ml-2 font-mono text-slate-400">{shortHash(ref.sha256)}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : <EmptyGovernanceState text="暂无 raw payload refs" />}
+                </ContextPanel>
               </section>
             ) : null}
 

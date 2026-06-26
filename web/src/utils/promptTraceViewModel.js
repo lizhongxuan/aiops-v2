@@ -40,13 +40,23 @@ const SENSITIVE_VALUE = "[已脱敏]";
 export function parsePromptTrace(input) {
   const warnings = [];
   const payload = parseInput(input, warnings);
-  const modelInput = Array.isArray(payload.modelInput) ? payload.modelInput : [];
-  if (!Array.isArray(payload.modelInput)) {
+  const stepContext = isPlainObject(payload.stepContext) ? payload.stepContext : {};
+  const modelInput = Array.isArray(stepContext.modelInput)
+    ? stepContext.modelInput
+    : Array.isArray(payload.modelInput)
+      ? payload.modelInput
+      : [];
+  if (!Array.isArray(payload.modelInput) && !Array.isArray(stepContext.modelInput)) {
     warnings.push(warning("warning", "trace 中没有 modelInput[]，只能展示空输入。"));
   }
 
-  const visibleTools = Array.isArray(payload.visibleTools) ? payload.visibleTools.map(compactText).filter(Boolean) : [];
-  if (!Array.isArray(payload.visibleTools)) {
+  const v2ToolSurface = isPlainObject(payload.toolSurface) ? payload.toolSurface : {};
+  const visibleTools = Array.isArray(v2ToolSurface.modelVisibleTools)
+    ? v2ToolSurface.modelVisibleTools.map(compactText).filter(Boolean)
+    : Array.isArray(payload.visibleTools)
+      ? payload.visibleTools.map(compactText).filter(Boolean)
+      : [];
+  if (!Array.isArray(payload.visibleTools) && !Array.isArray(v2ToolSurface.modelVisibleTools)) {
     warnings.push(warning("info", "trace 中没有 visibleTools[]。"));
   }
 
@@ -105,6 +115,16 @@ export function parsePromptTrace(input) {
   const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
   const contextGovernance = buildContextGovernanceViewModel(payload);
   const toolSurface = buildToolSurfaceViewModel(payload, visibleTools);
+  const providerRequest = isPlainObject(payload.providerRequest) ? payload.providerRequest : {};
+  const rawPayloadRefs = Array.isArray(payload.rawPayloadRefs)
+    ? payload.rawPayloadRefs.map((ref) => ({
+      id: compactText(ref?.id),
+      kind: compactText(ref?.kind),
+      path: compactText(ref?.path),
+      sha256: compactText(ref?.sha256),
+      bytes: numberOrZero(ref?.bytes),
+    })).filter((ref) => ref.id || ref.path)
+    : [];
 
   return {
     raw: redactSensitiveValue(payload),
@@ -136,6 +156,8 @@ export function parsePromptTrace(input) {
       surface: toolSurface,
     },
     toolSurface,
+    providerRequest,
+    rawPayloadRefs,
     agentUiSources,
     agentUiArtifacts: agentUiSources.flatArtifacts,
     contextGovernance,
@@ -458,8 +480,12 @@ function collectMetadataStringList(...values) {
 }
 
 function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
+  const v2Surface = isPlainObject(payload.toolSurface) ? payload.toolSurface : {};
   const top = isPlainObject(payload.toolSurfaceTrace) ? payload.toolSurfaceTrace : {};
   const promptTrace = isPlainObject(payload.promptInputTrace) ? payload.promptInputTrace : {};
+  const modelVisibleTools = collectStringList(v2Surface.modelVisibleTools);
+  const dispatchableTools = collectStringList(v2Surface.dispatchableTools);
+  const hiddenReasons = isPlainObject(v2Surface.hiddenReasons) ? v2Surface.hiddenReasons : {};
   const loadedTools = collectStringList(top.loadedTools, payload.loadedToolsDelta, promptTrace.loadedToolsDelta);
   const loadedPacks = collectStringList(top.loadedPacks, payload.loadedPacksDelta, promptTrace.loadedPacksDelta);
   const selectionEvents = [
@@ -472,7 +498,7 @@ function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
     ...selectionEvents.map((event) => event.loadedTools),
   );
   const initialTools = collectStringList(top.initialTools);
-  const effectiveInitialTools = initialTools.length ? initialTools : deriveInitialTools(visibleTools, selectedTools);
+  const effectiveInitialTools = initialTools.length ? initialTools : deriveInitialTools(modelVisibleTools.length ? modelVisibleTools : visibleTools, selectedTools);
   const deferredFamilies = normalizeDeferredFamilies(firstCollection(top.deferredFamilies, promptTrace.deferredToolDirectory));
   const filteredTools = normalizeFilteredTools(firstCollection(top.filteredTools), selectionEvents);
   const mcpHealth = normalizeMcpHealth(top.mcpHealth, deferredFamilies);
@@ -499,7 +525,13 @@ function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
       toolSearchEventCount: toolSearchEvents.length,
       selectedToolCount: selectedTools.length,
       rejectedToolReasonCount: rejectedToolReasons.length,
+      visibleCount: modelVisibleTools.length || visibleTools.length,
+      dispatchableCount: dispatchableTools.length,
+      hiddenCount: Object.keys(hiddenReasons).length,
     },
+    visible: modelVisibleTools.length ? modelVisibleTools : collectStringList(visibleTools),
+    dispatchable: dispatchableTools,
+    hiddenReasons,
     initialTools: effectiveInitialTools,
     deferredFamilies,
     loadedTools,

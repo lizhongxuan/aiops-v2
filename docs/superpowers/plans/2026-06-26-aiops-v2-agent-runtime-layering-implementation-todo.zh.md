@@ -2104,7 +2104,7 @@ git commit -m "feat(trace): replace model input trace with trace v2"
 - Modify/Create: `web/src/utils/promptTraceViewModel.ts`
 - Test: `web/src/pages/PromptTracePage.test.tsx`
 
-- [ ] **Step 1: Write failing v2 parser test**
+- [x] **Step 1: Write failing v2 parser test**
 
 Add or modify `web/src/utils/promptTraceViewModel.test.ts`:
 
@@ -2141,7 +2141,7 @@ describe("parsePromptTrace v2", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2151,7 +2151,7 @@ npm test -- --run web/src/utils/promptTraceViewModel.test.ts
 
 Expected: FAIL because parser does not expose v2 fields.
 
-- [ ] **Step 3: Update parser to v2 view model**
+- [x] **Step 3: Update parser to v2 view model**
 
 Implement v2 output shape:
 
@@ -2196,7 +2196,7 @@ export function parsePromptTrace(raw: string) {
 }
 ```
 
-- [ ] **Step 4: Update PromptTracePage labels and panels**
+- [x] **Step 4: Update PromptTracePage labels and panels**
 
 In `web/src/pages/PromptTracePage.tsx`, add overview badges for:
 
@@ -2221,7 +2221,7 @@ Add raw refs panel:
 </ContextPanel>
 ```
 
-- [ ] **Step 5: Run UI tests**
+- [x] **Step 5: Run UI tests**
 
 Run:
 

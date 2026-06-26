@@ -64,6 +64,36 @@ function sampleTrace(overrides = {}) {
 }
 
 describe("parsePromptTrace", () => {
+  it("reads provider request and raw payload refs from trace v2", () => {
+    const vm = parsePromptTrace(JSON.stringify({
+      schemaVersion: "aiops.trace/v2",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      iteration: 0,
+      providerRequest: {
+        modelInputHash: "mih",
+        providerMessagesHash: "pmh",
+        requestPropertiesHash: "rph",
+        promptCacheKey: "cache",
+      },
+      toolSurface: {
+        modelVisibleTools: ["exec_command"],
+        dispatchableTools: ["exec_command"],
+        hiddenReasons: {},
+      },
+      rawPayloadRefs: [{ id: "raw-request", kind: "provider_request", path: "raw/raw-request.json" }],
+      stepContext: {
+        modelInput: [{ id: "history-1", providerRole: "user", semanticRole: "user", content: "hello" }],
+      },
+    }));
+
+    expect(vm.summary.schemaVersion).toBe("aiops.trace/v2");
+    expect(vm.providerRequest.modelInputHash).toBe("mih");
+    expect(vm.rawPayloadRefs).toHaveLength(1);
+    expect(vm.toolSurface.summary.visibleCount).toBe(1);
+    expect(vm.summary.messageCount).toBe(1);
+  });
+
   it("parses a real-shaped prompt trace into summary, layers, tools, and fingerprints", () => {
     const vm = parsePromptTrace(sampleTrace());
 
