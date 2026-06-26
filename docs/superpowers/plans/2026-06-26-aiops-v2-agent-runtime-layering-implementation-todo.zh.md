@@ -2231,7 +2231,7 @@ npm test -- --run web/src/utils/promptTraceViewModel.test.ts web/src/pages/Promp
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add web/src/utils web/src/pages/PromptTracePage.tsx web/src/pages/PromptTracePage.test.tsx
