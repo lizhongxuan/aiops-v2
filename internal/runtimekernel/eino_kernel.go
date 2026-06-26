@@ -776,18 +776,6 @@ func modelNameForTrace(chatModel modelrouter.ChatModel) string {
 	return strings.TrimPrefix(fmt.Sprintf("%T", chatModel), "*")
 }
 
-func providerToolSpecsFromVisibleTools(names []string, fingerprint string) []modelrouter.ProviderToolSpec {
-	out := make([]modelrouter.ProviderToolSpec, 0, len(names))
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		out = append(out, modelrouter.ProviderToolSpec{Name: name, Hash: fingerprint})
-	}
-	return out
-}
-
 func modelTraceMarkdownPath(tracePath string) string {
 	tracePath = strings.TrimSpace(tracePath)
 	if tracePath == "" {
@@ -1997,13 +1985,8 @@ func (k *EinoKernel) runHostIterationLoop(
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
 		toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "call_model", turnSpanID)
-		promptBuild, modelErr := buildPromptInputWithContextGovernance(contextMessages, compiled, append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...))
-		if modelErr != nil {
-			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
-			k.persistTurnSnapshot(session, snapshot)
-			return "", nil, modelErr
-		}
-		modelInput, _, modelErr := modelrouter.ModelInputItemsToEinoMessages(promptBuild.Items)
+		runtimeToolSurface := runtimeToolRouterSnapshotFromCompile(compileCtx.AssembledTools, visibleToolNames, toolFingerprint, surfacePolicy)
+		stepCtx, promptBuild, modelInput, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, thresholds, modelNameForTrace(chatModel))
 		if modelErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
@@ -2023,14 +2006,9 @@ func (k *EinoKernel) runHostIterationLoop(
 		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
 		uxProgressTrace := BuildUXProgressTrace(snapshot)
 		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
-		tracePath, _ := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
-			SessionID:                     session.ID,
-			TurnID:                        turnID,
-			Iteration:                     iteration,
+		tracePath, _ := writeRuntimeStepTrace(stepCtx, ModelInputDebugTraceRequest{
 			Metadata:                      turnMetadata,
-			Compiled:                      compiled,
 			ModelInput:                    modelInput,
-			VisibleTools:                  visibleToolNames,
 			PromptInputTrace:              promptBuild.Trace,
 			PromptInputDiff:               promptInputDiff,
 			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
@@ -2118,22 +2096,8 @@ func (k *EinoKernel) runHostIterationLoop(
 		streamStats := ModelStreamStats{}
 		var firstDeltaAt time.Time
 		var lastDeltaAt time.Time
-		providerRequest := modelrouter.ProviderRequestSnapshot{
-			Provider:        string(agentKind),
-			Model:           modelNameForTrace(chatModel),
-			Input:           promptBuild.Items,
-			Tools:           providerToolSpecsFromVisibleTools(visibleToolNames, toolFingerprint),
-			ReasoningEffort: compileCtx.ReasoningEffort,
-			ClientMetadata: map[string]string{
-				"sessionId":       session.ID,
-				"turnId":          turnID,
-				"clientTurnId":    req.ClientTurnID,
-				"clientMessageId": req.ClientMessageID,
-			},
-		}
-		providerRequest.ComputeHashes()
 		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool))
-		providerResponse, genErr := providerAdapter.Call(modelCtx, providerRequest, func(delta string) {
+		providerResponse, genErr := providerAdapter.Call(modelCtx, stepCtx.ProviderRequest, func(delta string) {
 			if delta != "" {
 				now := time.Now()
 				if firstDeltaAt.IsZero() {

@@ -1441,7 +1441,7 @@ git commit -m "refactor(modelrouter): own provider model calls"
 - Test: `internal/runtimekernel/react_loop_test.go`
 - Test: `internal/runtimekernel/runturn_hook_output_test.go`
 
-- [ ] **Step 1: Write failing test that model call receives ProviderRequestSnapshot**
+- [x] **Step 1: Write failing test that model call receives ProviderRequestSnapshot**
 
 Add to `internal/runtimekernel/react_loop_test.go`:
 
@@ -1471,7 +1471,7 @@ func TestRunTurnBuildsProviderRequestFromRuntimeStepContext(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1481,7 +1481,7 @@ go test ./internal/runtimekernel -run TestRunTurnBuildsProviderRequestFromRuntim
 
 Expected: FAIL because runtime still calls Eino model path directly.
 
-- [ ] **Step 3: Add turn loop helper signatures**
+- [x] **Step 3: Add turn loop helper signatures**
 
 Create `internal/runtimekernel/turn_loop.go`:
 
@@ -1547,7 +1547,7 @@ func providerToolsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) []mo
 }
 ```
 
-- [ ] **Step 4: Replace model input build and provider call in turn loop**
+- [x] **Step 4: Replace model input build and provider call in turn loop**
 
 In the turn loop, replace:
 
@@ -1578,7 +1578,7 @@ if err != nil {
 providerResp, genErr := k.providerAdapter.Call(modelCtx, stepCtx.ProviderRequest, onFinalDelta, onReasoning)
 ```
 
-- [ ] **Step 5: Update trace writer call to consume step context**
+- [x] **Step 5: Update trace writer call to consume step context**
 
 Change model input trace call from field list to:
 
@@ -1590,7 +1590,7 @@ tracePath, _ := k.writeRuntimeStepTrace(stepCtx, RuntimeStepTraceOptions{
 })
 ```
 
-- [ ] **Step 6: Run runtime tests**
+- [x] **Step 6: Run runtime tests**
 
 Run:
 
