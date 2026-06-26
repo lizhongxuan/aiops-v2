@@ -150,6 +150,21 @@ func CompiledPromptDynamicText(compiled CompiledPrompt) string {
 	return strings.TrimSpace(compiled.Dynamic.Content)
 }
 
+func (c CompiledPrompt) effectiveDynamicContextContent() string {
+	content := strings.TrimSpace(c.Dynamic.Content)
+	if content == "" {
+		return ""
+	}
+	policyContent := strings.TrimSpace(c.Policy.Content)
+	if policyContent == "" {
+		policyContent = strings.TrimSpace(c.Dynamic.Policy.Content)
+	}
+	if policyContent != "" && strings.HasSuffix(content, policyContent) {
+		content = strings.TrimSpace(strings.TrimSuffix(content, policyContent))
+	}
+	return content
+}
+
 func CompiledPromptToolSurfaceText(compiled CompiledPrompt) string {
 	return CompiledPromptSectionContent(compiled, "tool.surface")
 }

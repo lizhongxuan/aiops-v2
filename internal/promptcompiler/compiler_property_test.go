@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/tooling"
 	"pgregory.net/rapid"
 )
@@ -155,7 +153,7 @@ func genCompileContext() *rapid.Generator[CompileContext] {
 // ---------------------------------------------------------------------------
 // Property 9: PromptCompiler section-envelope output structure
 // *For any* valid CompileContext, output should contain an ordered section
-// envelope consumed by CompileForEino. Legacy four-layer fields remain
+// envelope consumed by provider adapters. Legacy four-layer fields remain
 // populated as derived compatibility fields.
 // **Validates: Requirements 3.2, 3.3**
 // ---------------------------------------------------------------------------
@@ -197,29 +195,12 @@ func TestProperty9_FourLayerOutputStructure(t *testing.T) {
 			t.Fatalf("third section = %q, want profile.*", result.Envelope.Sections[2].ID)
 		}
 
-		// Verify section order via CompileForEino (messages must be in order)
-		messages, err := compiler.CompileForEino(ctx)
-		if err != nil {
-			t.Fatalf("CompileForEino should not error: %v", err)
-		}
-
-		if len(messages) != len(result.Envelope.Sections) {
-			t.Fatalf("expected %d compiled messages, got %d", len(result.Envelope.Sections), len(messages))
-		}
-
 		for i, section := range result.Envelope.Sections {
-			if messages[i].Content != section.Content {
-				t.Fatalf("Message[%d] content mismatch with section %s", i, section.ID)
+			if section.Content == "" {
+				t.Fatalf("section[%d] %s content is empty", i, section.ID)
 			}
-			if messages[i].Extra["prompt_section_id"] != section.ID {
-				t.Fatalf("Message[%d] prompt_section_id = %#v, want %s", i, messages[i].Extra["prompt_section_id"], section.ID)
-			}
-		}
-
-		// All messages must have system role
-		for i, msg := range messages {
-			if msg.Role != schema.System {
-				t.Fatalf("Message[%d] must have role 'system', got %q", i, msg.Role)
+			if section.Role != "system" {
+				t.Fatalf("section[%d] %s role = %q, want system", i, section.ID, section.Role)
 			}
 		}
 	})
@@ -442,29 +423,13 @@ func TestProperty10_PromptToEinoFormatFidelity(t *testing.T) {
 			t.Fatalf("Compile should not error for valid context: %v", err)
 		}
 
-		// Step 2: CompileForEino to get Messages
-		messages, err := compiler.CompileForEino(ctx)
-		if err != nil {
-			t.Fatalf("CompileForEino should not error: %v", err)
-		}
-
-		// Step 3: Verify message count has one message per compiled section.
-		if len(messages) != len(compiled.Envelope.Sections) {
-			t.Fatalf("expected %d compiled messages, got %d", len(compiled.Envelope.Sections), len(messages))
-		}
-
-		// Step 4: Verify all messages have role "system"
-		for i, msg := range messages {
-			if msg.Role != schema.System {
-				t.Fatalf("Message[%d] must have role 'system', got %q", i, msg.Role)
-			}
-		}
-
-		// Step 5: Verify each message's content exactly matches the corresponding section.
+		// Step 2: Verify each compiled section is provider-adapter ready.
 		for i, section := range compiled.Envelope.Sections {
-			if messages[i].Content != section.Content {
-				t.Fatalf("Message[%d] content mismatch with section %s.\nGot:  %q\nWant: %q",
-					i, section.ID, messages[i].Content, section.Content)
+			if section.Role != "system" {
+				t.Fatalf("section[%d] %s role = %q, want system", i, section.ID, section.Role)
+			}
+			if strings.TrimSpace(section.Content) == "" {
+				t.Fatalf("section[%d] %s content is empty", i, section.ID)
 			}
 		}
 	})

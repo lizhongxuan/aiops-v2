@@ -115,6 +115,3 @@ func clonePromptSections(sections []PromptSection) []PromptSection {
 	}
 	return out
 }
-
-// CompileForEino is defined in eino_format.go — it compiles and converts
-// to Eino Message format for adk.ChatModelAgent's Instruction field.

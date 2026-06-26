@@ -6,37 +6,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/tooling"
 )
 
-func TestCompiledPromptToMessagesCarriesSemanticLayerMetadata(t *testing.T) {
-	messages := CompiledPromptToMessages(CompiledPrompt{
-		System:    SystemPrompt{Content: "system"},
-		Developer: DeveloperInstructions{Content: "developer"},
-		Tools:     ToolPromptSet{Content: "tools"},
-		Policy:    RuntimePolicyPrompt{Content: "policy"},
-	})
-
-	if len(messages) != 4 {
-		t.Fatalf("messages len = %d, want 4", len(messages))
+func TestCompiledPromptEnvelopeCarriesSemanticLayerMetadata(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(compiled.Envelope.Sections) < 4 {
+		t.Fatalf("sections len = %d, want at least 4", len(compiled.Envelope.Sections))
 	}
 	want := []struct {
-		layer string
-		role  string
+		layer  string
+		source string
 	}{
-		{"system", "system"},
-		{"developer", "developer"},
-		{"tool_index", "tool"},
-		{"runtime_policy", "context"},
+		{PromptSectionKindStable, "base"},
+		{PromptSectionKindDynamic, "runtime"},
+		{PromptSectionKindStable, "profile"},
+		{PromptSectionKindStable, "tools"},
 	}
-	for i, msg := range messages {
-		if msg.Role != schema.System {
-			t.Fatalf("provider role at %d = %q, want system fallback", i, msg.Role)
-		}
-		if msg.Extra["prompt_layer"] != want[i].layer || msg.Extra["semantic_role"] != want[i].role {
-			t.Fatalf("message %d extra = %#v, want layer=%s role=%s", i, msg.Extra, want[i].layer, want[i].role)
+	for i, section := range compiled.Envelope.Sections[:4] {
+		if section.Layer != want[i].layer || section.Source != want[i].source {
+			t.Fatalf("section %d = %#v, want layer=%s source=%s", i, section, want[i].layer, want[i].source)
 		}
 	}
 }

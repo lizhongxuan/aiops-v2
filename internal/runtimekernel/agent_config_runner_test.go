@@ -163,11 +163,9 @@ func TestFixedAgentCompilerProducesSectionEnvelope(t *testing.T) {
 	if len(compiled.Envelope.Sections) != 3 {
 		t.Fatalf("sections = %#v, want base/tool/runtime", compiled.Envelope.Sections)
 	}
-	messages := promptcompiler.CompiledPromptToMessages(compiled)
 	var layers []string
-	for _, msg := range messages {
-		layer, _ := msg.Extra["prompt_layer"].(string)
-		layers = append(layers, layer)
+	for _, section := range compiled.Envelope.Sections {
+		layers = append(layers, section.ID)
 	}
 	if got := strings.Join(layers, ","); got != "base.contract,tool.surface,runtime.state" {
 		t.Fatalf("prompt layers = %q", got)

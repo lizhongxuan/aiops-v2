@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/tooling"
 )
 
@@ -802,40 +800,6 @@ func TestCompile_StableAndDynamicSplit(t *testing.T) {
 	}
 }
 
-func TestCompiledPromptToMessages_UsesStableDynamicFallback(t *testing.T) {
-	compiled := CompiledPrompt{
-		Stable: StablePromptEnvelope{
-			System: SystemPrompt{Content: "system"},
-			Developer: DeveloperInstructions{
-				Content: "developer",
-			},
-			Tools:   ToolPromptSet{Content: "tools"},
-			Content: strings.Join([]string{"system", "developer", "tools"}, "\n\n"),
-		},
-		Dynamic: DynamicPromptDelta{
-			Policy:  RuntimePolicyPrompt{Content: "policy", Mode: "execute"},
-			Content: "policy",
-		},
-	}
-
-	messages := CompiledPromptToMessages(compiled)
-	if len(messages) != 4 {
-		t.Fatalf("expected 4 messages, got %d", len(messages))
-	}
-	if messages[0].Content != "system" {
-		t.Fatalf("message[0] = %q, want %q", messages[0].Content, "system")
-	}
-	if messages[1].Content != "developer" {
-		t.Fatalf("message[1] = %q, want %q", messages[1].Content, "developer")
-	}
-	if messages[2].Content != "tools" {
-		t.Fatalf("message[2] = %q, want %q", messages[2].Content, "tools")
-	}
-	if messages[3].Content != "policy" {
-		t.Fatalf("message[3] = %q, want %q", messages[3].Content, "policy")
-	}
-}
-
 func TestCompile_ProducesSectionEnvelopeInRuntimeOrder(t *testing.T) {
 	compiler := NewCompiler()
 
@@ -875,7 +839,7 @@ func TestCompile_ProducesSectionEnvelopeInRuntimeOrder(t *testing.T) {
 	}
 }
 
-func TestCompiledPromptToMessages_UsesSectionEnvelopeOrder(t *testing.T) {
+func TestCompiledPromptEnvelope_UsesSectionEnvelopeOrder(t *testing.T) {
 	compiled := CompiledPrompt{
 		Envelope: PromptEnvelope{Sections: []PromptCompiledSection{
 			{ID: "base.contract", Role: "system", Content: "base", Source: "base", Required: true},
@@ -890,25 +854,20 @@ func TestCompiledPromptToMessages_UsesSectionEnvelopeOrder(t *testing.T) {
 		Policy:    RuntimePolicyPrompt{Content: "legacy policy"},
 	}
 
-	messages := CompiledPromptToMessages(compiled)
-	if len(messages) != 5 {
-		t.Fatalf("messages = %d, want 5", len(messages))
+	if len(compiled.Envelope.Sections) != 5 {
+		t.Fatalf("sections = %d, want 5", len(compiled.Envelope.Sections))
 	}
 	for i, want := range []string{"base", "state", "profile", "tools", "dynamic"} {
-		if messages[i].Content != want {
-			t.Fatalf("message[%d] = %q, want %q", i, messages[i].Content, want)
+		if compiled.Envelope.Sections[i].Content != want {
+			t.Fatalf("section[%d] = %q, want %q", i, compiled.Envelope.Sections[i].Content, want)
 		}
 	}
-	if got := stringExtraForCompilerTest(messages[1].Extra, "prompt_section_id"); got != "runtime.state" {
-		t.Fatalf("runtime message prompt_section_id = %q", got)
+	if got := compiled.Envelope.Sections[1].ID; got != "runtime.state" {
+		t.Fatalf("runtime section id = %q", got)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Test: CompileForEino
-// ---------------------------------------------------------------------------
-
-func TestCompileForEino_ProducesSystemMessages(t *testing.T) {
+func TestCompile_ProducesProviderReadySections(t *testing.T) {
 	compiler := NewCompiler()
 
 	ctx := CompileContext{
@@ -928,41 +887,30 @@ func TestCompileForEino_ProducesSystemMessages(t *testing.T) {
 		},
 	}
 
-	messages, err := compiler.CompileForEino(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
 	compiled, err := compiler.Compile(ctx)
 	if err != nil {
 		t.Fatalf("unexpected compile error: %v", err)
 	}
-	if len(messages) != len(compiled.Envelope.Sections) {
-		t.Fatalf("expected %d messages, got %d", len(compiled.Envelope.Sections), len(messages))
-	}
-
-	// All messages should be system role
-	for i, msg := range messages {
-		if msg.Role != schema.System {
-			t.Errorf("message[%d] should have role 'system', got %q", i, msg.Role)
+	for i, section := range compiled.Envelope.Sections {
+		if section.Role != "system" {
+			t.Errorf("section[%d] should have role system, got %q", i, section.Role)
 		}
-		if msg.Content == "" {
-			t.Errorf("message[%d] should have non-empty content", i)
+		if section.Content == "" {
+			t.Errorf("section[%d] should have non-empty content", i)
 		}
 	}
 
-	// Verify section order by content
-	if messages[0].Content != buildBaseRuntimeContract("") {
-		t.Fatalf("First message should be thin base contract, got:\n%s", messages[0].Content)
+	if compiled.Envelope.Sections[0].Content != buildBaseRuntimeContract("") {
+		t.Fatalf("first section should be thin base contract, got:\n%s", compiled.Envelope.Sections[0].Content)
 	}
-	if got := stringExtraForCompilerTest(messages[1].Extra, "prompt_section_id"); got != "runtime.state" {
-		t.Fatalf("Second message prompt_section_id = %q, want runtime.state", got)
+	if got := compiled.Envelope.Sections[1].ID; got != "runtime.state" {
+		t.Fatalf("second section id = %q, want runtime.state", got)
 	}
-	if got := stringExtraForCompilerTest(messages[2].Extra, "prompt_section_id"); !strings.HasPrefix(got, "profile.") {
-		t.Fatalf("Third message prompt_section_id = %q, want profile.*", got)
+	if got := compiled.Envelope.Sections[2].ID; !strings.HasPrefix(got, "profile.") {
+		t.Fatalf("third section id = %q, want profile.*", got)
 	}
-	if got := stringExtraForCompilerTest(messages[3].Extra, "prompt_section_id"); got != "tool.surface" {
-		t.Fatalf("Fourth message prompt_section_id = %q, want tool.surface", got)
+	if got := compiled.Envelope.Sections[3].ID; got != "tool.surface" {
+		t.Fatalf("fourth section id = %q, want tool.surface", got)
 	}
 }
 
@@ -1112,11 +1060,10 @@ func TestCompile_DynamicContextSourcesAreBudgetedAndExternalized(t *testing.T) {
 		t.Fatalf("expected long dynamic sources to overflow: %#v", result.Dynamic.Sources)
 	}
 
-	messages := CompiledPromptToMessages(result)
 	var dynamicText string
-	for _, msg := range messages {
-		if msg != nil && msg.Extra["prompt_section_id"] == "dynamic.context" {
-			dynamicText = msg.Content
+	for _, section := range result.Envelope.Sections {
+		if section.ID == "dynamic.context" {
+			dynamicText = section.Content
 			break
 		}
 	}
@@ -1145,7 +1092,7 @@ func TestCompile_DynamicContextSourcesAreBudgetedAndExternalized(t *testing.T) {
 	}
 }
 
-func TestCompileForEino_ContentPreserved(t *testing.T) {
+func TestCompileEnvelopeContentPreserved(t *testing.T) {
 	compiler := NewCompiler()
 
 	ctx := CompileContext{
@@ -1160,18 +1107,13 @@ func TestCompileForEino_ContentPreserved(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	messages, err := compiler.CompileForEino(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(messages) != len(compiled.Envelope.Sections) {
-		t.Fatalf("messages = %d, want %d", len(messages), len(compiled.Envelope.Sections))
-	}
 	for i, section := range compiled.Envelope.Sections {
-		if messages[i].Content != section.Content {
-			t.Fatalf("message[%d] content should match section %s", i, section.ID)
+		if strings.TrimSpace(section.Content) == "" {
+			t.Fatalf("section[%d] %s content should not be empty", i, section.ID)
 		}
+	}
+	if !strings.Contains(compiled.Policy.Content, "Special policy: require dual approval.") {
+		t.Fatalf("compiled policy missing runtime policy: %q", compiled.Policy.Content)
 	}
 }
 

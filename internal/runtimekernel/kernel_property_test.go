@@ -59,18 +59,10 @@ func (m *testMockCompiler) Compile(_ promptcompiler.CompileContext) (promptcompi
 	}, nil
 }
 
-func (m *testMockCompiler) CompileForEino(_ promptcompiler.CompileContext) ([]*schema.Message, error) {
-	return []*schema.Message{{Role: schema.System, Content: "compiled"}}, nil
-}
-
 // testPanicCompiler panics during Compile (for panic recovery testing).
 type testPanicCompiler struct{}
 
 func (p *testPanicCompiler) Compile(_ promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
-	panic("compiler panic for testing")
-}
-
-func (p *testPanicCompiler) CompileForEino(_ promptcompiler.CompileContext) ([]*schema.Message, error) {
 	panic("compiler panic for testing")
 }
 
@@ -387,10 +379,6 @@ func (c *recordingTestCompiler) Compile(ctx promptcompiler.CompileContext) (prom
 	cloned.AssembledTools = append([]promptcompiler.Tool(nil), ctx.AssembledTools...)
 	c.contexts = append(c.contexts, cloned)
 	return c.delegate.Compile(ctx)
-}
-
-func (c *recordingTestCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
-	return c.delegate.CompileForEino(ctx)
 }
 
 // ---------------------------------------------------------------------------

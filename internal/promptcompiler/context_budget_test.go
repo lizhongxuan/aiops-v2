@@ -173,11 +173,11 @@ func assertPromptExcludes(t *testing.T, compiled CompiledPrompt, forbidden []str
 
 func promptMessagesBytes(compiled CompiledPrompt) int {
 	total := 0
-	for _, msg := range CompiledPromptToMessages(compiled) {
-		if msg == nil {
+	for _, section := range compiled.Envelope.Sections {
+		if section.Content == "" {
 			continue
 		}
-		total += len([]byte(msg.Content))
+		total += len([]byte(section.Content))
 	}
 	return total
 }
@@ -193,11 +193,11 @@ func promptSectionBytes(compiled CompiledPrompt, sectionID string) int {
 
 func promptCompiledContent(compiled CompiledPrompt) string {
 	var b strings.Builder
-	for _, msg := range CompiledPromptToMessages(compiled) {
-		if msg == nil {
+	for _, section := range compiled.Envelope.Sections {
+		if section.Content == "" {
 			continue
 		}
-		b.WriteString(msg.Content)
+		b.WriteString(section.Content)
 		b.WriteByte('\n')
 	}
 	return b.String()

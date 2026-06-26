@@ -8,7 +8,6 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agents"
 	"aiops-v2/internal/hostops"
@@ -24,12 +23,9 @@ import (
 
 // mockCompiler implements promptcompiler.Compiler for testing.
 type mockCompiler struct {
-	compileFunc         func(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error)
-	compileForEino      func(ctx promptcompiler.CompileContext) ([]*schema.Message, error)
-	compileCalls        []promptcompiler.CompileContext
-	compileForEinoCalls []promptcompiler.CompileContext
-	lastCompileCtx      promptcompiler.CompileContext
-	lastCompileForEino  promptcompiler.CompileContext
+	compileFunc    func(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error)
+	compileCalls   []promptcompiler.CompileContext
+	lastCompileCtx promptcompiler.CompileContext
 }
 
 func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
@@ -43,20 +39,6 @@ func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompile
 		Developer: promptcompiler.DeveloperInstructions{Content: "developer"},
 		Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
 		Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy", Mode: ctx.Mode},
-	}, nil
-}
-
-func (m *mockCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
-	m.lastCompileForEino = ctx
-	m.compileForEinoCalls = append(m.compileForEinoCalls, ctx)
-	if m.compileForEino != nil {
-		return m.compileForEino(ctx)
-	}
-	return []*schema.Message{
-		schema.SystemMessage("system"),
-		schema.SystemMessage("developer"),
-		schema.SystemMessage("tools"),
-		schema.SystemMessage("policy:" + ctx.Mode),
 	}, nil
 }
 
@@ -302,7 +284,7 @@ func TestCreateHostAgent(t *testing.T) {
 	if cfg.MaxIterations <= 0 {
 		t.Error("expected positive max iterations")
 	}
-	if got := compiledToolCount(compiler.lastCompileForEino); got == 0 {
+	if got := compiledToolCount(compiler.lastCompileCtx); got == 0 {
 		t.Fatal("expected assembled tools in host compile context")
 	}
 }
@@ -336,16 +318,16 @@ func TestCreateHostChildAgentAddsBoundPromptAsset(t *testing.T) {
 	if cfg.HostID != "host-a" || cfg.MissionID != "mission-1" {
 		t.Fatalf("cfg = %+v, want host-a/mission-1", cfg)
 	}
-	if len(compiler.lastCompileForEino.SkillPromptAssets) != 0 {
-		t.Fatalf("SkillPromptAssets = %#v, want host child prompt separated from skill context", compiler.lastCompileForEino.SkillPromptAssets)
+	if len(compiler.lastCompileCtx.SkillPromptAssets) != 0 {
+		t.Fatalf("SkillPromptAssets = %#v, want host child prompt separated from skill context", compiler.lastCompileCtx.SkillPromptAssets)
 	}
-	if len(compiler.lastCompileForEino.HostTaskPromptAssets) != 1 {
-		t.Fatalf("HostTaskPromptAssets = %#v, want one host child prompt asset", compiler.lastCompileForEino.HostTaskPromptAssets)
+	if len(compiler.lastCompileCtx.HostTaskPromptAssets) != 1 {
+		t.Fatalf("HostTaskPromptAssets = %#v, want one host child prompt asset", compiler.lastCompileCtx.HostTaskPromptAssets)
 	}
-	if len(compiler.lastCompileForEino.ExtraSections) != 0 {
-		t.Fatalf("ExtraSections = %#v, want no host task context in generic extra sections", compiler.lastCompileForEino.ExtraSections)
+	if len(compiler.lastCompileCtx.ExtraSections) != 0 {
+		t.Fatalf("ExtraSections = %#v, want no host task context in generic extra sections", compiler.lastCompileCtx.ExtraSections)
 	}
-	prompt := compiler.lastCompileForEino.HostTaskPromptAssets[0]
+	prompt := compiler.lastCompileCtx.HostTaskPromptAssets[0]
 	for _, want := range []string{
 		"prompt_section_id: host_agent.binding.v1",
 		"prompt_section_id: host_agent.assigned_subtask.v1",
@@ -536,7 +518,7 @@ func TestCreateWorkspaceAgent(t *testing.T) {
 	if wsCfg.Replanner.Model == nil {
 		t.Error("expected non-nil replanner model")
 	}
-	if got := compiledToolCount(compiler.lastCompileForEino); got == 0 {
+	if got := compiledToolCount(compiler.lastCompileCtx); got == 0 {
 		t.Fatal("expected assembled tools in workspace compile context")
 	}
 }
@@ -552,7 +534,7 @@ func TestCreateHostAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T) {
 	}
 
 	got := runtimeToolNames(t, cfg.Tools)
-	want := assembledToolNames(compiler.lastCompileForEino.AssembledTools)
+	want := assembledToolNames(compiler.lastCompileCtx.AssembledTools)
 	if len(got) != len(want) {
 		t.Fatalf("runtime tools len = %d, want %d", len(got), len(want))
 	}
@@ -573,8 +555,8 @@ func TestCreateWorkspaceAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing
 		t.Fatalf("CreateWorkspaceAgent() error = %v", err)
 	}
 
-	if len(compiler.compileForEinoCalls) != 3 {
-		t.Fatalf("compileForEino calls = %d, want 3", len(compiler.compileForEinoCalls))
+	if len(compiler.compileCalls) != 3 {
+		t.Fatalf("compileFunc calls = %d, want 3", len(compiler.compileCalls))
 	}
 
 	cases := []struct {
@@ -582,9 +564,9 @@ func TestCreateWorkspaceAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing
 		cfg  AgentConfig
 		ctx  promptcompiler.CompileContext
 	}{
-		{name: "planner", cfg: wsCfg.Planner, ctx: compiler.compileForEinoCalls[0]},
-		{name: "executor", cfg: wsCfg.Executor, ctx: compiler.compileForEinoCalls[1]},
-		{name: "replanner", cfg: wsCfg.Replanner, ctx: compiler.compileForEinoCalls[2]},
+		{name: "planner", cfg: wsCfg.Planner, ctx: compiler.compileCalls[0]},
+		{name: "executor", cfg: wsCfg.Executor, ctx: compiler.compileCalls[1]},
+		{name: "replanner", cfg: wsCfg.Replanner, ctx: compiler.compileCalls[2]},
 	}
 
 	for _, tc := range cases {
@@ -635,7 +617,7 @@ func TestCreateWorkerAgent(t *testing.T) {
 	if cfg.MaxIterations <= 0 {
 		t.Error("expected positive max iterations")
 	}
-	if got := compiledToolCount(compiler.lastCompileForEino); got == 0 {
+	if got := compiledToolCount(compiler.lastCompileCtx); got == 0 {
 		t.Fatal("expected assembled tools in worker compile context")
 	}
 }
@@ -651,7 +633,7 @@ func TestCreateWorkerAgent_RuntimeToolsMatchCompiledAssembledTools(t *testing.T)
 	}
 
 	got := runtimeToolNames(t, cfg.Tools)
-	want := assembledToolNames(compiler.lastCompileForEino.AssembledTools)
+	want := assembledToolNames(compiler.lastCompileCtx.AssembledTools)
 	if len(got) != len(want) {
 		t.Fatalf("runtime tools len = %d, want %d", len(got), len(want))
 	}
@@ -672,14 +654,14 @@ func TestCreateWorkerAgent_ReusesHostAgentRuntimeProfile(t *testing.T) {
 		t.Fatalf("CreateWorkerAgent() error = %v", err)
 	}
 
-	if compiler.lastCompileForEino.SessionType != "host" {
-		t.Fatalf("SessionType = %q, want host", compiler.lastCompileForEino.SessionType)
+	if compiler.lastCompileCtx.SessionType != "host" {
+		t.Fatalf("SessionType = %q, want host", compiler.lastCompileCtx.SessionType)
 	}
-	if compiler.lastCompileForEino.Mode != "execute" {
-		t.Fatalf("Mode = %q, want execute", compiler.lastCompileForEino.Mode)
+	if compiler.lastCompileCtx.Mode != "execute" {
+		t.Fatalf("Mode = %q, want execute", compiler.lastCompileCtx.Mode)
 	}
-	if compiler.lastCompileForEino.HostContext != "host-2" {
-		t.Fatalf("HostContext = %q, want host-2", compiler.lastCompileForEino.HostContext)
+	if compiler.lastCompileCtx.HostContext != "host-2" {
+		t.Fatalf("HostContext = %q, want host-2", compiler.lastCompileCtx.HostContext)
 	}
 	if cfg.Input != "check disk usage" {
 		t.Fatalf("Input = %q, want task input", cfg.Input)
@@ -922,10 +904,10 @@ func TestCreateWorkerAgent_PreservesMetadataTraitsWithoutKindMCPTool(t *testing.
 		t.Fatalf("CreateWorkerAgent() error = %v", err)
 	}
 
-	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
-		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	if len(compiler.lastCompileCtx.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileCtx.AssembledTools))
 	}
-	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	meta := compiler.lastCompileCtx.AssembledTools[0].Metadata()
 	if !meta.HasMCPSource() {
 		t.Fatalf("expected MCP traits in worker assembled tool, got %#v", meta)
 	}
@@ -978,10 +960,10 @@ func TestCreateWorkerAgent_ToolAllowlistKeepsMetadataDrivenMCPTool(t *testing.T)
 		t.Fatalf("CreateWorkerAgent() error = %v", err)
 	}
 
-	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
-		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	if len(compiler.lastCompileCtx.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileCtx.AssembledTools))
 	}
-	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	meta := compiler.lastCompileCtx.AssembledTools[0].Metadata()
 	if !meta.HasMCPSource() {
 		t.Fatalf("expected scope to keep metadata-driven MCP tool, got %#v", meta)
 	}
@@ -1029,10 +1011,10 @@ func TestCreateWorkerAgent_PrefersBuiltinOverMetadataDrivenMCPConflict(t *testin
 		t.Fatalf("CreateWorkerAgent() error = %v", err)
 	}
 
-	if len(compiler.lastCompileForEino.AssembledTools) != 1 {
-		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileForEino.AssembledTools))
+	if len(compiler.lastCompileCtx.AssembledTools) != 1 {
+		t.Fatalf("assembled tools len = %d, want 1", len(compiler.lastCompileCtx.AssembledTools))
 	}
-	meta := compiler.lastCompileForEino.AssembledTools[0].Metadata()
+	meta := compiler.lastCompileCtx.AssembledTools[0].Metadata()
 	if meta.Description != "builtin tool" {
 		t.Fatalf("worker tool description = %q, want builtin tool", meta.Description)
 	}

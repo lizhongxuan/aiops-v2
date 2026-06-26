@@ -826,7 +826,7 @@ git commit -m "feat(promptinput): make model input items the fact source"
 - Delete: `internal/promptcompiler/eino_format.go`
 - Modify tests: `internal/promptcompiler/*_test.go`, `internal/agentmgr/factory_test.go`, `internal/runtimekernel/*_test.go`
 
-- [ ] **Step 1: Write interface guard test**
+- [x] **Step 1: Write interface guard test**
 
 Add `internal/promptcompiler/compiler_interface_test.go`:
 
@@ -849,7 +849,7 @@ func TestCompilerInterfaceExposesOnlyCompile(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -859,7 +859,7 @@ go test ./internal/promptcompiler -run TestCompilerInterfaceExposesOnlyCompile
 
 Expected: FAIL because `CompileForEino` still exists.
 
-- [ ] **Step 3: Remove CompileForEino from compiler interface**
+- [x] **Step 3: Remove CompileForEino from compiler interface**
 
 Modify `internal/promptcompiler/types.go`:
 
@@ -872,7 +872,7 @@ type Compiler interface {
 }
 ```
 
-- [ ] **Step 4: Delete Eino format implementation**
+- [x] **Step 4: Delete Eino format implementation**
 
 Delete:
 
@@ -880,7 +880,7 @@ Delete:
 git rm internal/promptcompiler/eino_format.go
 ```
 
-- [ ] **Step 5: Replace tests that asserted CompileForEino**
+- [x] **Step 5: Replace tests that asserted CompileForEino**
 
 For promptcompiler tests that verified section order through Eino messages, change them to assert `CompiledPrompt.Envelope.Sections` order:
 
@@ -899,7 +899,7 @@ if !reflect.DeepEqual(got[:len(want)], want) {
 }
 ```
 
-- [ ] **Step 6: Run promptcompiler tests**
+- [x] **Step 6: Run promptcompiler tests**
 
 Run:
 

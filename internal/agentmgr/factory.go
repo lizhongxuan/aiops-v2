@@ -13,6 +13,7 @@ import (
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
 
@@ -168,6 +169,22 @@ func compileContextWithAssembledTools(base promptcompiler.CompileContext, tools 
 	return base
 }
 
+func (f *AgentFactory) compileInstructions(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
+	compiled, err := f.compiler.Compile(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{Compiled: compiled})
+	if err != nil {
+		return nil, err
+	}
+	messages, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
+	if err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
 func buildEinoToolPool(tools []tooling.Tool) []tool.BaseTool {
 	return tooling.AssembleEinoToolPool(tools)
 }
@@ -296,7 +313,7 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 		HostTaskPromptAssets: append([]string(nil), hostTaskAssets...),
 		AgentKind:            promptcompiler.AgentKindWorker,
 	}, toolSet.assembled)
-	instructions, err := f.compiler.CompileForEino(compileCtx)
+	instructions, err := f.compileInstructions(compileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create host agent: compile prompt: %w", err)
 	}
@@ -477,7 +494,7 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, plannerToolSet.assembled)
-	plannerInstructions, err := f.compiler.CompileForEino(plannerCompileCtx)
+	plannerInstructions, err := f.compileInstructions(plannerCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile planner prompt: %w", err)
 	}
@@ -513,7 +530,7 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, executorToolSet.assembled)
-	executorInstructions, err := f.compiler.CompileForEino(executorCompileCtx)
+	executorInstructions, err := f.compileInstructions(executorCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile executor prompt: %w", err)
 	}
@@ -544,7 +561,7 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, replannerToolSet.assembled)
-	replannerInstructions, err := f.compiler.CompileForEino(replannerCompileCtx)
+	replannerInstructions, err := f.compileInstructions(replannerCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile replanner prompt: %w", err)
 	}

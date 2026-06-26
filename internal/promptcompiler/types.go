@@ -1,8 +1,6 @@
 package promptcompiler
 
 import (
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
@@ -542,12 +540,9 @@ type CompiledPrompt struct {
 // ---------------------------------------------------------------------------
 
 // Compiler is the unique prompt truth source. It compiles structured inputs
-// into a section-first CompiledPrompt and can convert it to Eino message format.
+// into a section-first CompiledPrompt. Provider-specific message conversion
+// belongs to modelrouter provider adapters.
 type Compiler interface {
 	// Compile compiles the section-first prompt from the given context.
 	Compile(ctx CompileContext) (CompiledPrompt, error)
-
-	// CompileForEino compiles and converts to Eino *schema.Message format,
-	// suitable for adk.ChatModelAgent's Instruction field.
-	CompileForEino(ctx CompileContext) ([]*schema.Message, error)
 }

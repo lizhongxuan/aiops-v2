@@ -454,10 +454,6 @@ func (c *recordingCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 	return c.delegate.Compile(ctx)
 }
 
-func (c *recordingCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
-	return c.delegate.CompileForEino(ctx)
-}
-
 func newKernelForLoopTests(
 	t *testing.T,
 	source ToolAssemblySource,

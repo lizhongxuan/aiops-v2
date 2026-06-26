@@ -248,14 +248,6 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 	return compiled, nil
 }
 
-func (c fixedAgentCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
-	compiled, err := c.Compile(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return promptcompiler.CompiledPromptToMessages(compiled), nil
-}
-
 type agentConfigProviderResolver struct {
 	provider        string
 	model           string
