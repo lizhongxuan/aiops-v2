@@ -909,7 +909,7 @@ go test ./internal/promptcompiler
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/promptcompiler internal/agentmgr internal/runtimekernel
