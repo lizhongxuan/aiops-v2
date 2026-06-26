@@ -1285,7 +1285,7 @@ go test ./internal/modelrouter -run 'TestModelInputItemsToEinoMessages|TestBuild
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add internal/modelrouter internal/promptinput/model_input_item.go
@@ -1423,7 +1423,7 @@ rg -n "chatModel\\.Stream|chatModel\\.Generate|generateModelResponse" internal/r
 
 Expected: no matches.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add internal/modelrouter internal/runtimekernel
