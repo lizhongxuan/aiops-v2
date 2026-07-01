@@ -13,26 +13,7 @@ data:
   AIOPS_GRPC_ADDR: ":18090"
   AIOPS_DATA_DIR: "/var/lib/aiops"
   AIOPS_WEB_DIST_DIR: "/app/web/dist"
-  AIOPS_BOOTSTRAP_LLM_CONFIG: "if-missing"
-  AIOPS_LLM_PROVIDER: "openai"
-  AIOPS_LLM_MODEL: "gpt-5.4"
-  AIOPS_LLM_COMPACT_MODEL: "gpt-5.4-mini"
-  AIOPS_AGENT_SERVER_URL: "http://172.18.13.11:8001"
-  AIOPS_AGENT_GRPC_URL: "172.18.13.11:8002"
-  AIOPS_API_URL: "http://172.18.13.11:8001"
-  # OpenAI-compatible gateway example:
-  # AIOPS_LLM_BASE_URL: "https://api.openai.com/v1"
   # Coroot is configured from the Coroot Observability page after startup.
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: aiops-v2-secret
-  namespace: aiops
-type: Opaque
-stringData:
-  AIOPS_LLM_API_KEY: "replace-with-your-api-key"
-  AIOPS_ACTION_TOKEN_SECRET: "replace-with-a-random-long-secret"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

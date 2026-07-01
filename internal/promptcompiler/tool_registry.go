@@ -109,6 +109,7 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 	}
 	if promptNote := toolPromptConstraint(tool, capability); promptNote != "" {
 		constraints = append(constraints, promptNote)
+		te.Guidance = promptNote
 	}
 	te.Constraints = strings.Join(constraints, ", ")
 
@@ -127,37 +128,47 @@ func (c *PromptCompilerImpl) buildToolPromptEntry(tool Tool) ToolPromptEntry {
 
 func (c *PromptCompilerImpl) formatToolIndexLine(tool Tool, entry ToolPromptEntry) string {
 	name := toolPromptSectionTitle(tool)
-	lines := []string{"- " + name}
+	line := "- " + name
 	if entry.Capability != "" {
-		lines[0] = fmt.Sprintf("- %s: %s", name, entry.Capability)
+		line = fmt.Sprintf("- %s: %s", name, entry.Capability)
 	}
-	if canonical := toolCanonicalNameForPrompt(tool); canonical != "" && canonical != name {
-		lines = append(lines, "  Canonical name: "+canonical)
+	var tags []string
+	if tool.IsReadOnly(nil) {
+		tags = append(tags, "read_only")
 	}
-	if entry.Governance != "" {
-		lines = append(lines, "  Governance: "+entry.Governance)
+	if tool.IsDestructive(nil) {
+		tags = append(tags, "mutation")
 	}
-	return strings.Join(lines, "\n")
+	if strings.Contains(strings.ToLower(entry.Governance), "approval=required") || strings.Contains(strings.ToLower(entry.Governance), "approval=true") {
+		tags = append(tags, "approval_required")
+	}
+	if !tool.IsConcurrencySafe(nil) {
+		tags = append(tags, "not_concurrency_safe")
+	}
+	if len(tags) > 0 {
+		line += " [" + strings.Join(tags, ",") + "]"
+	}
+	return line
 }
 
 func commonToolPolicyPrompt() string {
 	return strings.Join([]string{
 		"Common policy:",
-		"- Read-only tool failure is missing or blocked evidence, not proof of target state.",
-		"- Permission denied or policy blocked does not prove system health.",
-		"- Non-zero exit requires stderr and exit code interpretation.",
-		"- Empty output does not prove no abnormality.",
-		"- Mutating tools require explicit user intent, scoped target, runtime approval gate, and verification.",
-		"- Failed mutations must stop at the scoped action and must not broaden scope.",
-		"- Tool selection: for current or selected entity facts, gather direct evidence from the bound resource first.",
-		"- Tool selection: use external observability for historical, aggregate, topology, or cross-entity evidence only when the candidate is selected and available.",
-		"- Tool selection: do not call unavailable, filtered, or not-yet-selected candidates; search/select the needed pack first.",
-		"- Tool selection: external evidence source failure is unavailable evidence, not proof that the target state is normal.",
-		"- Tool selection: do not use advanced or aggregate tools to skip cheaper current direct evidence.",
+		"- Only visible tools are callable.",
+		"- Failure, empty output, denial, or timeout is not proof of healthy state.",
+		"- Mutation requires scoped runtime approval and post-check.",
+		"- Summarize large results and keep raw data behind refs.",
 	}, "\n")
 }
 
 const maxDeferredToolDirectoryEntries = 18
+
+type deferredDirectoryAggregate struct {
+	entry        DeferredToolDirectoryEntry
+	capability   map[string]struct{}
+	resourceSet  map[string]struct{}
+	operationSet map[string]struct{}
+}
 
 func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry {
 	if len(ctx.DeferredToolCatalog) == 0 {
@@ -173,13 +184,7 @@ func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry
 		}
 	}
 
-	type aggregate struct {
-		entry        DeferredToolDirectoryEntry
-		capability   map[string]struct{}
-		resourceSet  map[string]struct{}
-		operationSet map[string]struct{}
-	}
-	byPack := map[string]*aggregate{}
+	byPack := map[string]*deferredDirectoryAggregate{}
 	for _, tool := range ctx.DeferredToolCatalog {
 		if tool == nil {
 			continue
@@ -201,7 +206,7 @@ func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry
 		}
 		agg := byPack[pack]
 		if agg == nil {
-			agg = &aggregate{
+			agg = &deferredDirectoryAggregate{
 				entry: DeferredToolDirectoryEntry{
 					Pack:             pack,
 					Source:           string(discovery.LoadingPolicy),
@@ -253,7 +258,14 @@ func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry
 	for pack := range byPack {
 		packs = append(packs, pack)
 	}
-	sort.Strings(packs)
+	sort.Slice(packs, func(i, j int) bool {
+		left := deferredDirectoryRelevanceScore(ctx, packs[i], byPack[packs[i]])
+		right := deferredDirectoryRelevanceScore(ctx, packs[j], byPack[packs[j]])
+		if left != right {
+			return left > right
+		}
+		return packs[i] < packs[j]
+	})
 	out := make([]DeferredToolDirectoryEntry, 0, len(packs))
 	for _, pack := range packs {
 		agg := byPack[pack]
@@ -268,6 +280,82 @@ func buildDeferredToolDirectory(ctx CompileContext) []DeferredToolDirectoryEntry
 			break
 		}
 	}
+	return out
+}
+
+func deferredDirectoryRelevanceScore(ctx CompileContext, pack string, agg *deferredDirectoryAggregate) int {
+	if agg == nil {
+		return 0
+	}
+	score := 0
+	text := strings.ToLower(strings.Join([]string{
+		pack,
+		agg.entry.MCPServerID,
+		strings.Join(setKeys(agg.capability), " "),
+		strings.Join(setKeys(agg.resourceSet), " "),
+		strings.Join(setKeys(agg.operationSet), " "),
+	}, " "))
+	if runtimeStateRequested(ctx.WebState) && strings.Contains(text, "public_web") {
+		score += 100
+	}
+	if runtimeStateRequested(ctx.OpsGraphState) && (strings.Contains(text, "opsgraph") || strings.Contains(text, "ops_graph")) {
+		score += 100
+	}
+	if runtimeStateRequested(ctx.CorootState) && strings.Contains(text, "coroot") {
+		score += 100
+	}
+	if runtimeStateRequested(ctx.OpsManusState) && (strings.Contains(text, "ops_manual") || strings.Contains(text, "ops_manus")) {
+		score += 100
+	}
+	switch normalizePromptProfile(ctx.Profile) {
+	case PromptProfileEvidenceRCA:
+		if containsAnyDirectoryTerm(text, "rca", "metrics", "logs", "traces", "observability", "service") {
+			score += 20
+		}
+	case PromptProfileHostWorker:
+		if containsAnyDirectoryTerm(text, "host", "system", "command", "process", "disk", "network") {
+			score += 20
+		}
+	case PromptProfileHostManager:
+		if containsAnyDirectoryTerm(text, "host", "agent", "workflow", "plan") {
+			score += 20
+		}
+	}
+	if agg.entry.RequiresSelect {
+		score += 5
+	}
+	if agg.entry.RequiresHealth && agg.entry.HealthStatus != "" && agg.entry.HealthStatus != "healthy" {
+		score -= 10
+	}
+	return score
+}
+
+func runtimeStateRequested(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "requested", "available", "enabled", "visible":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsAnyDirectoryTerm(text string, terms ...string) bool {
+	for _, term := range terms {
+		if strings.Contains(text, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func setKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

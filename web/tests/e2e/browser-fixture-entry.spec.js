@@ -43,7 +43,7 @@ test.describe("browser fixture entry", () => {
     await openBrowserFixturePage(page, "/", "ops-manual-preflight");
 
     const searchCard = page.getByTestId("ops-manual-search-result-card");
-    await expect(searchCard).toContainText("运行预检");
+    await expect(searchCard).toContainText("使用该手册/Workflow");
     await expect(searchCard.getByTestId("ops-manual-merged-preflight")).toContainText("预检通过");
     await expect(searchCard.getByTestId("ops-manual-merged-preflight")).toContainText("确认执行");
     await expect(page.getByTestId("ops-manual-preflight-result-card")).toHaveCount(0);

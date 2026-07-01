@@ -10,8 +10,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // PromptCompilerImpl is the concrete implementation of the PromptCompiler.
-// It is the unique prompt truth source, compiling structured inputs into
-// a four-layer CompiledPrompt.
+// It is the unique prompt truth source, compiling structured inputs into a
+// section-first CompiledPrompt. Four-layer fields are compatibility views.
 //
 // Layer compilation rules are defined in separate files:
 //   - system_rules.go: Layer 1 (System Prompt)
@@ -25,8 +25,8 @@ func NewCompiler() *PromptCompilerImpl {
 	return &PromptCompilerImpl{}
 }
 
-// Compile compiles the four-layer prompt from the given context.
-// Layer order: System Prompt → Developer Instructions → Tool Prompt Set → Runtime Policy Prompt.
+// Compile compiles the section-first prompt from the given context.
+// Envelope order: base.contract → runtime.state → profile.* → tool.surface → dynamic.*.
 func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error) {
 	system, err := c.buildSystemPrompt(ctx)
 	if err != nil {
@@ -51,15 +51,11 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 	}
 
 	stableContent := joinNonEmpty(system.Content, stableDeveloper.Content, tools.Content)
-	dynamicParts := dynamicPromptFragments(ctx)
-	if toolDelta.Content != "" {
-		dynamicParts = append(dynamicParts, toolDelta.Content)
-	}
 	protocolState := normalizeProtocolState(ctx.ProtocolState)
-	if protocolContent := renderProtocolPromptState(protocolState); protocolContent != "" {
-		dynamicParts = append(dynamicParts, protocolContent)
-	}
+	protocolContent := joinNonEmpty(toolDelta.Content, renderProtocolPromptState(protocolState))
 	nextProtocolState := advanceProtocolStateAfterRender(protocolState)
+	dynamicSources := buildDynamicContextSources(ctx, protocolContent)
+	dynamicParts := renderDynamicContextSources(dynamicSources)
 	dynamicContent := joinNonEmpty(append(dynamicParts, policy.Content)...)
 
 	compiled := CompiledPrompt{
@@ -71,6 +67,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 		},
 		Dynamic: DynamicPromptDelta{
 			Content:              dynamicContent,
+			Sources:              append([]DynamicContextSource(nil), dynamicSources...),
 			SkillPromptAssets:    append([]string(nil), ctx.SkillPromptAssets...),
 			HostTaskPromptAssets: append([]string(nil), ctx.HostTaskPromptAssets...),
 			EvidenceReminders:    append([]string(nil), ctx.EvidenceReminders...),
@@ -84,6 +81,7 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 		Tools:     tools,
 		Policy:    policy,
 	}
+	compiled.Envelope = BuildPromptEnvelope(compiled, ctx)
 	compiled.Fingerprint = buildPromptFingerprint(compiled)
 	compiled.PromptSections = BuildPromptSectionTrace(compiled)
 	return compiled, nil
@@ -117,6 +115,3 @@ func clonePromptSections(sections []PromptSection) []PromptSection {
 	}
 	return out
 }
-
-// CompileForEino is defined in eino_format.go — it compiles and converts
-// to Eino Message format for adk.ChatModelAgent's Instruction field.

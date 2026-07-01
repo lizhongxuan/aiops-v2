@@ -46,6 +46,9 @@ capabilities:
 	if cfg.GRPCURL != "127.0.0.1:18090" {
 		t.Fatalf("GRPCURL = %q", cfg.GRPCURL)
 	}
+	if cfg.ConnectionMode != ConnectionModeNodePushGRPC {
+		t.Fatalf("ConnectionMode = %q, want legacy node push mode", cfg.ConnectionMode)
+	}
 	if cfg.HostID != "prod-web-01" {
 		t.Fatalf("HostID = %q", cfg.HostID)
 	}
@@ -103,7 +106,7 @@ heartbeat_interval: 30s
 	}
 }
 
-func TestHostAgentConfigRejectsMissingServerURL(t *testing.T) {
+func TestHostAgentConfigAllowsAIOPSPullWithoutServerURL(t *testing.T) {
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, "token")
 	if err := os.WriteFile(tokenPath, []byte("secret-token"), 0o600); err != nil {
@@ -111,6 +114,37 @@ func TestHostAgentConfigRejectsMissingServerURL(t *testing.T) {
 	}
 	configPath := filepath.Join(dir, "host-agent.yaml")
 	yaml := `
+connection_mode: aiops_pull
+host_id: prod-web-01
+listen_addr: :7072
+token_ref: ` + tokenPath + `
+heartbeat_interval: 30s
+`
+	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v, want pull mode without server_url to load", err)
+	}
+	if cfg.ConnectionMode != ConnectionModeAIOPSPull {
+		t.Fatalf("ConnectionMode = %q, want aiops_pull", cfg.ConnectionMode)
+	}
+	if cfg.ServerURL != "" || cfg.GRPCURL != "" {
+		t.Fatalf("ServerURL=%q GRPCURL=%q, want empty pull-mode callback fields", cfg.ServerURL, cfg.GRPCURL)
+	}
+}
+
+func TestHostAgentConfigRequiresServerURLForNodePushGRPC(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte("secret-token"), 0o600); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	configPath := filepath.Join(dir, "host-agent.yaml")
+	yaml := `
+connection_mode: node_push_grpc
 host_id: prod-web-01
 listen_addr: :7072
 token_ref: ` + tokenPath + `

@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/promptcompiler"
 )
@@ -22,10 +20,6 @@ func (c *captureCompileContextCompiler) Compile(ctx promptcompiler.CompileContex
 		Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
 		Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy"},
 	}, nil
-}
-
-func (c *captureCompileContextCompiler) CompileForEino(_ promptcompiler.CompileContext) ([]*schema.Message, error) {
-	return []*schema.Message{{Role: schema.System, Content: "compiled"}}, nil
 }
 
 func TestRunTurn_PreTurnHookCanRewriteInput(t *testing.T) {

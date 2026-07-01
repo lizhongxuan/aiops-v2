@@ -8,121 +8,116 @@ import (
 )
 
 func TestTaskDepthContractSectionPlacementAndContent(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{
+	compiled, err := NewCompiler().Compile(CompileContext{
 		TaskDepth: taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
-	}), "\n\n")
-	triage := strings.Index(developer, "## Task Triage")
-	depth := strings.Index(developer, "## Task Depth Contract")
-	planning := strings.Index(developer, "## Planning and Status Tracking")
-	if triage == -1 || depth == -1 || planning == -1 {
-		t.Fatalf("missing sections:\n%s", developer)
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if !(triage < depth && depth < planning) {
-		t.Fatalf("section order invalid: triage=%d depth=%d planning=%d", triage, depth, planning)
+	wantOrder := []string{"base.contract", "runtime.state", "profile.advisor", "tool.surface"}
+	for i, want := range wantOrder {
+		if i >= len(compiled.Envelope.Sections) || compiled.Envelope.Sections[i].ID != want {
+			t.Fatalf("section[%d] = %#v, want %q", i, compiled.Envelope.Sections, want)
+		}
 	}
+	state := compiledPromptSectionForTest(t, compiled, "runtime.state").Content
 	for _, want := range []string{
-		"Classify the user's request before answering",
-		"do not finalize in the first assistant response",
-		"gather direct evidence before naming a root cause",
-		"Conciseness controls user-facing wording only",
+		"task_depth: investigation",
+		"requires_plan: true",
+		"requires_evidence: true",
 	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		if !strings.Contains(state, want) {
+			t.Fatalf("runtime.state missing %q:\n%s", want, state)
+		}
+	}
+	base := compiledPromptSectionForTest(t, compiled, "base.contract").Content
+	if !strings.Contains(base, "Simple tasks get concise answers; complex tasks advance by evidence.") {
+		t.Fatalf("base contract missing task-depth invariant:\n%s", base)
+	}
+}
+
+func TestCompletionGateLongRulesDoNotEnterEnvelope(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	for _, want := range []string{
+		"base.contract",
+		"runtime.state",
+		"tool.surface",
+	} {
+		if !strings.Contains(strings.Join(compiledSectionIDsForTest(compiled.Envelope.Sections), "\n"), want) {
+			t.Fatalf("compiled envelope missing %q: %#v", want, compiled.Envelope.Sections)
+		}
+	}
+	for _, forbidden := range []string{"## Completion Gate", "verification status is PARTIAL", "expected vs actual", "budget-limited synthesis"} {
+		if strings.Contains(modelInput, forbidden) {
+			t.Fatalf("model input leaked old completion rule %q:\n%s", forbidden, modelInput)
 		}
 	}
 }
 
-func TestCompletionGateSectionContent(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	completion := strings.Index(developer, "## Completion Gate")
-	finalAnswer := strings.Index(developer, "## Final Answer Shape")
-	if completion == -1 || finalAnswer == -1 {
-		t.Fatalf("missing completion or final section:\n%s", developer)
+func TestResourceInspectionLongRuleDoesNotEnterEnvelope(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if !(completion < finalAnswer) {
-		t.Fatalf("completion gate should appear before final answer shape")
-	}
-	for _, want := range []string{
-		"verified conclusion",
-		"blocker",
-		"budget-limited synthesis",
-		"Never characterize incomplete, unverified, or blocked work as completed",
-	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("completion gate missing %q:\n%s", want, developer)
-		}
-	}
-}
-
-func TestResourceInspectionAnswerMustReportConcreteValues(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	for _, want := range []string{
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	for _, forbidden := range []string{
 		"resource inspection",
 		"concrete requested values",
 		"not only health or normality",
 	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		if strings.Contains(modelInput, forbidden) {
+			t.Fatalf("model input leaked old resource inspection rule %q:\n%s", forbidden, modelInput)
 		}
 	}
 }
 
-func TestCurrentEnvironmentFactsMustUseEnvironmentBoundTools(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	for _, want := range []string{
-		"Current host, current environment, local runtime, selected resource",
+func TestCurrentEnvironmentLongRuleDoesNotEnterEnvelope(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	for _, forbidden := range []string{
+		"current host, current environment, local runtime, or selected resource",
 		"do not use web_search or browse_url",
 		"environment-bound tools",
 	} {
-		if !strings.Contains(developer, want) {
-			t.Fatalf("developer instructions missing %q:\n%s", want, developer)
+		if strings.Contains(modelInput, forbidden) {
+			t.Fatalf("model input leaked old current-environment rule %q:\n%s", forbidden, modelInput)
 		}
 	}
 }
 
 func TestReasoningEffortFallbackPolicy(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{ReasoningEffort: "high"}), "\n\n")
-	if !strings.Contains(developer, "Reasoning depth: high") {
-		t.Fatalf("developer instructions missing reasoning effort fallback:\n%s", developer)
+	compiled, err := NewCompiler().Compile(CompileContext{ReasoningEffort: "high"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if strings.Contains(strings.ToLower(developer), "show raw reasoning") {
-		t.Fatalf("reasoning fallback must not expose raw reasoning:\n%s", developer)
+	state := compiledPromptSectionForTest(t, compiled, "runtime.state").Content
+	if !strings.Contains(state, "reasoning_effort: high") {
+		t.Fatalf("runtime.state missing reasoning effort:\n%s", state)
+	}
+	if strings.Contains(strings.ToLower(compiledEnvelopeTextForTest(compiled)), "show raw reasoning") {
+		t.Fatalf("model input must not expose raw reasoning:\n%s", compiledEnvelopeTextForTest(compiled))
 	}
 }
 
 func TestReasoningEffortFallbackPolicyVisibleWhenProviderUnsupported(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{ReasoningEffort: "high"}), "\n\n")
-	policy := extractReasoningFallbackPolicyLine(developer)
-	if policy == "" {
-		t.Fatalf("developer instructions missing unsupported-provider fallback policy:\n%s", developer)
+	compiled, err := NewCompiler().Compile(CompileContext{ReasoningEffort: "high"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	for _, want := range []string{
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	for _, forbidden := range []string{
 		"decompose the goal",
 		"list assumptions",
-		"gather evidence before conclusions",
-		"cover key claims with evidence",
-		"state the blocker",
 	} {
-		if !strings.Contains(strings.ToLower(policy), want) {
-			t.Fatalf("fallback policy missing %q:\n%s", want, policy)
-		}
-	}
-	for _, forbidden := range []string{
-		"aiops",
-		"rca",
-		"incident",
-		"host",
-		"service",
-		"pod",
-		"kubernetes",
-		"metric",
-		"log",
-		"alert",
-		"monitoring",
-		"coroot",
-	} {
-		if strings.Contains(strings.ToLower(policy), forbidden) {
-			t.Fatalf("fallback policy contains domain term %q:\n%s", forbidden, policy)
+		if strings.Contains(strings.ToLower(modelInput), forbidden) {
+			t.Fatalf("model input contains old reasoning fallback/domain term %q:\n%s", forbidden, modelInput)
 		}
 	}
 }
@@ -134,4 +129,12 @@ func extractReasoningFallbackPolicyLine(developer string) string {
 		}
 	}
 	return ""
+}
+
+func compiledEnvelopeTextForTest(compiled CompiledPrompt) string {
+	parts := make([]string, 0, len(compiled.Envelope.Sections)*2)
+	for _, section := range compiled.Envelope.Sections {
+		parts = append(parts, section.ID, section.Content)
+	}
+	return strings.Join(parts, "\n")
 }

@@ -32,7 +32,9 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 RUN mkdir -p /out/artifacts/host-agent/v0.1.0/linux-amd64 \
     && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -trimpath -ldflags="-s -w" -o /out/artifacts/host-agent/v0.1.0/linux-amd64/host-agent ./cmd/host-agent
+    go build -trimpath -ldflags="-s -w" -o /out/artifacts/host-agent/v0.1.0/linux-amd64/host-agent ./cmd/host-agent \
+    && sha256sum /out/artifacts/host-agent/v0.1.0/linux-amd64/host-agent | awk '{print $1}' >/tmp/host-agent.sha \
+    && printf '{\n  "version": "v0.1.0",\n  "artifacts": [\n    {\n      "platform": "linux/ubuntu",\n      "os": "linux",\n      "arch": "amd64",\n      "path": "artifacts/host-agent/v0.1.0/linux-amd64/host-agent",\n      "sha256": "%s"\n    }\n  ]\n}\n' "$(cat /tmp/host-agent.sha)" >/out/artifacts/host-agent/manifest.json
 
 FROM debian:bookworm-slim AS runtime
 

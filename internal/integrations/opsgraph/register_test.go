@@ -3,7 +3,7 @@ package opsgraph
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
+	"strings"
 	"testing"
 
 	graph "aiops-v2/internal/opsgraph"
@@ -11,10 +11,7 @@ import (
 )
 
 func TestRegisterBuiltinsAddsReadOnlyOpsGraphTools(t *testing.T) {
-	store, err := graph.LoadSeedFile(filepath.Join("..", "..", "..", "data", "opsgraph", "erp.seed.yaml"))
-	if err != nil {
-		t.Fatalf("LoadSeedFile() error = %v", err)
-	}
+	store := manualOpsGraphStoreForTest()
 	registry := tooling.NewRegistry()
 	if err := RegisterBuiltins(registry, store); err != nil {
 		t.Fatalf("RegisterBuiltins() error = %v", err)
@@ -55,7 +52,7 @@ func TestRegisterBuiltinsAddsReadOnlyOpsGraphTools(t *testing.T) {
 	}
 
 	lookup := toolByName(t, tools, "opsgraph.lookup")
-	result, err := lookup.Execute(context.Background(), json.RawMessage(`{"query":"订单提交"}`))
+	result, err := lookup.Execute(context.Background(), json.RawMessage(`{"query":"订单服务"}`))
 	if err != nil {
 		t.Fatalf("lookup Execute() error = %v", err)
 	}
@@ -69,6 +66,99 @@ func TestRegisterBuiltinsAddsReadOnlyOpsGraphTools(t *testing.T) {
 	if body.Status != "ok" || len(body.Matches) == 0 {
 		t.Fatalf("lookup result = %#v, want ok matches", body)
 	}
+
+	impact := toolByName(t, tools, "opsgraph.business_impact")
+	result, err = impact.Execute(context.Background(), json.RawMessage(`{"entityId":"service.order-api"}`))
+	if err != nil {
+		t.Fatalf("business_impact Execute() error = %v", err)
+	}
+	var impactBody struct {
+		Status string               `json:"status"`
+		Impact graph.BusinessImpact `json:"impact"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &impactBody); err != nil {
+		t.Fatalf("decode impact result: %v", err)
+	}
+	if impactBody.Status != "ok" || len(impactBody.Impact.Capabilities) != 1 || impactBody.Impact.Capabilities[0].ID != "business.order-submit" {
+		t.Fatalf("impact result = %#v, want business.order-submit", impactBody)
+	}
+
+	runbooks := toolByName(t, tools, "opsgraph.related_runbooks")
+	result, err = runbooks.Execute(context.Background(), json.RawMessage(`{"entityId":"service.order-api"}`))
+	if err != nil {
+		t.Fatalf("related_runbooks Execute() error = %v", err)
+	}
+	var runbookBody struct {
+		Status   string               `json:"status"`
+		Runbooks []graph.RunbookMatch `json:"runbooks"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &runbookBody); err != nil {
+		t.Fatalf("decode runbook result: %v", err)
+	}
+	if runbookBody.Status != "ok" || len(runbookBody.Runbooks) != 1 || runbookBody.Runbooks[0].Runbook.ID != "workflow.order-restart" {
+		t.Fatalf("runbook result = %#v, want workflow.order-restart", runbookBody)
+	}
+}
+
+func TestRegisterBuiltinsWithProviderReadsLatestGraph(t *testing.T) {
+	current := graph.CompileGraphStore(graph.GraphRecord{
+		ID:        "graph.default",
+		Name:      "默认图谱",
+		IsDefault: true,
+		Nodes: []graph.Node{
+			{ID: "service.legacy-api", Type: graph.NodeService, Name: "legacy-api"},
+		},
+	})
+	registry := tooling.NewRegistry()
+	if err := RegisterBuiltinsWithProvider(registry, func(context.Context) (*graph.Store, error) {
+		return current, nil
+	}); err != nil {
+		t.Fatalf("RegisterBuiltinsWithProvider() error = %v", err)
+	}
+	tools := registry.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{EnabledPacks: []string{"opsgraph"}})
+	lookup := toolByName(t, tools, "opsgraph.lookup")
+
+	current = graph.CompileGraphStore(graph.GraphRecord{
+		ID:        "graph.default",
+		Name:      "默认图谱",
+		IsDefault: true,
+		Nodes: []graph.Node{
+			{ID: "service.checkout-api", Type: graph.NodeService, Name: "checkout-api", Properties: map[string]string{"host": "120.77.239.90"}},
+			{ID: "middleware.checkout-postgres", Type: graph.NodeMiddleware, Subtype: "postgres", Name: "checkout-postgres"},
+		},
+		Edges: []graph.Edge{
+			{ID: "e1", From: "service.checkout-api", Type: graph.RelDependsOn, To: "middleware.checkout-postgres"},
+		},
+	})
+
+	result, err := lookup.Execute(context.Background(), json.RawMessage(`{"query":"checkout-api","limit":5}`))
+	if err != nil {
+		t.Fatalf("lookup Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, "checkout-api") || !strings.Contains(result.Content, "120.77.239.90") {
+		t.Fatalf("lookup result = %s, want latest graph service and host property", result.Content)
+	}
+	if strings.Contains(result.Content, "legacy-api") {
+		t.Fatalf("lookup result = %s, should not use stale graph snapshot", result.Content)
+	}
+}
+
+func manualOpsGraphStoreForTest() *graph.Store {
+	record := graph.GraphRecord{
+		ID:        "graph.default",
+		Name:      "默认图谱",
+		IsDefault: true,
+		Nodes: []graph.Node{
+			{ID: "service.order-api", Type: graph.NodeService, Name: "order-api", Aliases: []string{"订单服务"}},
+			{ID: "business.order-submit", Type: graph.NodeBusiness, Name: "订单提交"},
+			{ID: "workflow.order-restart", Type: graph.NodeWorkflow, Name: "订单服务重启 Workflow"},
+		},
+		Edges: []graph.Edge{
+			{ID: "e1", From: "service.order-api", Type: graph.RelAffects, To: "business.order-submit"},
+			{ID: "e2", From: "service.order-api", Type: graph.RelHandledBy, To: "workflow.order-restart", Reason: "服务重启和回滚"},
+		},
+	}
+	return graph.CompileGraphStore(record)
 }
 
 func toolNamesForOpsGraphTest(tools []tooling.Tool) []string {

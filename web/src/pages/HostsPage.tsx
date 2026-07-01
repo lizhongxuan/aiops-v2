@@ -1,23 +1,41 @@
-import { Download, ExternalLink, Plus, Save, Search, Trash2 } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Circle,
+  Download,
+  ExternalLink,
+  Loader2,
+  Plus,
+  Save,
+  Search,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { listHostLeases, listHostProfiles, listHostReportHistory } from "@/api/hostProfiles";
 import {
-  buildHostTerminalEntry,
-  buildHostProfileDetail,
-  buildHostExecutionRisks,
-  buildHostProfileRows,
-  normalizeHostLease,
-  type HostExecutionRiskView,
-  type HostLeaseRowView,
-  type HostProfileRowView,
-} from "@/components/hosts/hostProfileViewModels";
-import { ConfirmButton, EmptyState, Field, LoadingState, SelectField, SettingsPageFrame, StatusAlert, ToneBadge } from "@/pages/settingsComponents";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { buildHostTerminalEntry } from "@/components/hosts/hostProfileViewModels";
+import {
+  ConfirmButton,
+  EmptyState,
+  Field,
+  LoadingState,
+  SelectField,
+  SettingsPageFrame,
+  StatusAlert,
+  ToneBadge,
+} from "@/pages/settingsComponents";
 import {
   buildHostsViewModel,
   createHost,
@@ -38,7 +56,33 @@ type HostDraft = {
   sshPort: string;
   sshPassword: string;
   agentVersion: string;
+  connectionMode: string;
+  agentUrl: string;
+  agentServerUrl: string;
   labelsText: string;
+};
+
+type InstallDialogState = {
+  open: boolean;
+  host: HostRecord | null;
+  status: "running" | "success" | "error";
+  currentStep: string;
+  runId: string;
+  error: string;
+};
+
+type HostErrorDialogState = {
+  open: boolean;
+  hostLabel: string;
+  heartbeatLabel: string;
+  detailLabel: string;
+  error: string;
+};
+
+type HostOperationResultState = {
+  open: boolean;
+  type: "success" | "error" | "info";
+  text: string;
 };
 
 const blankDraft: HostDraft = {
@@ -49,30 +93,62 @@ const blankDraft: HostDraft = {
   sshPort: "22",
   sshPassword: "",
   agentVersion: "v0.1.0",
+  connectionMode: "aiops_pull",
+  agentUrl: "",
+  agentServerUrl: "",
   labelsText: "",
 };
-type HostTab = "profiles" | "leases" | "reports" | "access";
-type HostReportRow = { reportId: string; hostId: string; status: string; reportedAt: string; summary: string };
+
+const hostAgentInstallSteps = [
+  { id: "validate-inputs", label: "校验输入" },
+  { id: "validate-agent-server-url", label: "校验安装地址" },
+  { id: "connect-ssh", label: "连接 SSH" },
+  { id: "detect-platform", label: "识别平台" },
+  { id: "ssh-preflight", label: "SSH 预检" },
+  { id: "build-artifact", label: "构建 Node" },
+  { id: "upload-artifact", label: "上传 Node" },
+  { id: "write-config", label: "写入配置" },
+  { id: "install-files", label: "安装文件" },
+  { id: "install-service", label: "安装服务" },
+  { id: "start-service", label: "启动服务" },
+  { id: "verify-local-health", label: "验证本机健康检查" },
+  { id: "finalize-host", label: "完成安装" },
+];
 
 export function HostsPage() {
   const navigate = useNavigate();
   const [hosts, setHosts] = useState<HostRecord[]>([]);
   const [sessions, setSessions] = useState<unknown[]>([]);
   const [terminalSessions, setTerminalSessions] = useState<unknown[]>([]);
-  const [hostProfiles, setHostProfiles] = useState<HostProfileRowView[]>([]);
-  const [hostLeases, setHostLeases] = useState<HostLeaseRowView[]>([]);
-  const [hostReports, setHostReports] = useState<HostReportRow[]>([]);
-  const [hostRisks, setHostRisks] = useState<HostExecutionRiskView[]>([]);
-  const [tab, setTab] = useState<HostTab>("profiles");
   const [query, setQuery] = useState("");
   const [heartbeat, setHeartbeat] = useState("all");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
-  const [dialogMessage, setDialogMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
+  const [pageError, setPageError] = useState("");
+  const [operationResult, setOperationResult] =
+    useState<HostOperationResultState | null>(null);
+  const [dialogMessage, setDialogMessage] = useState<{
+    type: "success" | "error" | "info";
+    text: string;
+  } | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<HostRecord | null>(null);
   const [draft, setDraft] = useState<HostDraft>(blankDraft);
+  const [installDialog, setInstallDialog] = useState<InstallDialogState>({
+    open: false,
+    host: null,
+    status: "running",
+    currentStep: "validate-inputs",
+    runId: "",
+    error: "",
+  });
+  const [hostErrorDialog, setHostErrorDialog] = useState<HostErrorDialogState>({
+    open: false,
+    hostLabel: "",
+    heartbeatLabel: "",
+    detailLabel: "",
+    error: "",
+  });
 
   const model = useMemo(
     () =>
@@ -90,27 +166,19 @@ export function HostsPage() {
   async function load() {
     setLoading(true);
     try {
-      const [hostPayload, sessionPayload, terminalPayload, profilePayload, leasePayload] = await Promise.all([
+      const [hostPayload, sessionPayload, terminalPayload] = await Promise.all([
         fetchHosts(),
         fetchSessions(),
         fetchTerminalSessions(),
-        listHostProfiles({ limit: 100 }).catch(() => ({ items: [] })),
-        listHostLeases({ limit: 100 }).catch(() => ({ items: [] })),
       ]);
-      const rawProfiles = itemsFrom(profilePayload);
-      const rawLeases = itemsFrom(leasePayload);
-      const firstHostId = hostIdOf(rawProfiles[0]) || hostPayload.items?.[0]?.id || "";
-      const reportPayload = firstHostId ? await listHostReportHistory(firstHostId).catch(() => ({ items: [] })) : { items: [] };
       setHosts(hostPayload.items || []);
       setSessions(sessionPayload.items || sessionPayload.sessions || []);
-      setTerminalSessions(terminalPayload.items || terminalPayload.sessions || []);
-      setHostLeases(rawLeases.map(normalizeHostLease));
-      setHostProfiles(buildHostProfileRows({ profiles: rawProfiles, leases: rawLeases }));
-      setHostRisks(buildHostExecutionRisks({ profiles: rawProfiles, leases: rawLeases }));
-      setHostReports(itemsFrom(reportPayload).map(normalizeHostReport));
-      setMessage(null);
+      setTerminalSessions(
+        terminalPayload.items || terminalPayload.sessions || [],
+      );
+      setPageError("");
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "加载主机列表失败" });
+      setPageError(error instanceof Error ? error.message : "加载主机列表失败");
     } finally {
       setLoading(false);
     }
@@ -134,6 +202,9 @@ export function HostsPage() {
       sshPort: String(host.sshPort || "22"),
       sshPassword: "",
       agentVersion: host.agentVersion || "v0.1.0",
+      connectionMode: normalizeHostConnectionMode(host.connectionMode),
+      agentUrl: editableAgentURL(host),
+      agentServerUrl: editableAgentServerURL(host.agentServerUrl),
       labelsText: formatLabels(host.labels),
     });
     setDialogOpen(true);
@@ -157,6 +228,9 @@ export function HostsPage() {
         installViaSsh: false,
         sshPassword: draft.sshPassword,
         agentVersion: draft.agentVersion || "v0.1.0",
+        connectionMode: normalizeHostConnectionMode(draft.connectionMode),
+        agentUrl: draft.agentUrl.trim(),
+        agentServerUrl: draft.agentServerUrl.trim(),
         labels: parseLabels(draft.labelsText),
       };
       if (editingHost?.id) {
@@ -166,11 +240,13 @@ export function HostsPage() {
         await createHost(payload);
       }
       setDialogOpen(false);
-      setMessage({ type: "success", text: "主机信息已保存" });
-      setTab("access");
+      showOperationResult("success", "主机信息已保存");
       await load();
     } catch (error) {
-      setDialogMessage({ type: "error", text: error instanceof Error ? error.message : "保存主机失败" });
+      setDialogMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "保存主机失败",
+      });
     } finally {
       setSaving(false);
     }
@@ -179,41 +255,106 @@ export function HostsPage() {
   async function removeHost(hostId: string) {
     try {
       await deleteHost(hostId);
-      setMessage({ type: "success", text: "主机已删除" });
+      showOperationResult("success", "主机已删除");
       await load();
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "删除主机失败" });
+      showOperationResult(
+        "error",
+        error instanceof Error ? error.message : "删除主机失败",
+      );
     }
   }
 
   async function installAgent(host: HostRecord) {
+    const connectionMode = normalizeHostConnectionMode(host.connectionMode);
+    setInstallDialog({
+      open: true,
+      host,
+      status: "running",
+      currentStep: "validate-inputs",
+      runId: host.installRunId || "",
+      error: "",
+    });
     try {
-      await retryHostInstall(host.id, {
+      const response = (await retryHostInstall(host.id, {
         agentVersion: host.agentVersion || "v0.1.0",
+        connectionMode,
+        agentServerUrl:
+          connectionMode === "node_push_grpc"
+            ? resolveInstallCallbackURL(host)
+            : "",
         sshCredentialRef: host.sshCredentialRef || "",
         force: false,
+      })) as {
+        host?: HostRecord;
+        items?: HostRecord[];
+        installRunId?: string;
+        installWorkflowId?: string;
+      };
+      const responseHost =
+        response.items?.find((item) => item.id === host.id) ||
+        response.host ||
+        host;
+      const nextStep = responseHost.installStep || "finalize-host";
+      const nextStatus =
+        responseHost.installState === "installed" ||
+        nextStep === "finalize-host"
+          ? "success"
+          : "running";
+      setInstallDialog({
+        open: true,
+        host: responseHost,
+        status: nextStatus,
+        currentStep: nextStep,
+        runId:
+          response.installRunId ||
+          responseHost.installRunId ||
+          host.installRunId ||
+          "",
+        error: responseHost.lastError || "",
       });
-      setMessage({ type: "success", text: "已提交 Agent 安装任务" });
+      showOperationResult("success", "已提交 Node 安装任务");
       await load();
     } catch (error) {
-      setMessage({ type: "error", text: error instanceof Error ? error.message : "安装 Agent 失败" });
+      setInstallDialog((current) => ({
+        ...current,
+        open: true,
+        host,
+        status: "error",
+        currentStep:
+          current.currentStep || host.installStep || "validate-inputs",
+        error: error instanceof Error ? error.message : "安装 Node 失败",
+      }));
     }
+  }
+
+  function openHostError(row: any) {
+    setHostErrorDialog({
+      open: true,
+      hostLabel: row.title || row.id || "目标主机",
+      heartbeatLabel: row.heartbeatLabel || "心跳异常",
+      detailLabel: row.heartbeatDetailLabel || "",
+      error: row.lastError || "暂无错误详情",
+    });
+  }
+
+  function showOperationResult(
+    type: HostOperationResultState["type"],
+    text: string,
+  ) {
+    setOperationResult({ open: true, type, text });
   }
 
   useEffect(() => {
     void load();
   }, []);
 
-  useEffect(() => {
-    if (!loading && tab === "profiles" && hostProfiles.length === 0 && model.allRows.length > 0) {
-      setTab("access");
-    }
-  }, [hostProfiles.length, loading, model.allRows.length, tab]);
+  const draftConnectionMode = normalizeHostConnectionMode(draft.connectionMode);
 
   return (
     <SettingsPageFrame
-      title="主机与租约"
-      description="展示主机客户端上报画像、HostLease 锁状态、上报历史和接入配置。"
+      title="主机列表"
+      description="展示已接入主机、心跳状态、系统基础信息和操作入口。"
       actions={
         <Button onClick={openCreate}>
           <Plus />
@@ -221,195 +362,365 @@ export function HostsPage() {
         </Button>
       }
     >
-      {message ? <StatusAlert type={message.type} title={message.type === "error" ? "操作失败" : "操作完成"} message={message.text} /> : null}
+      {pageError ? (
+        <StatusAlert type="error" title="加载失败" message={pageError} />
+      ) : null}
       {loading ? (
         <LoadingState label="加载主机列表" />
       ) : (
-        <>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <StatCard label="主机画像" value={hostProfiles.length} />
-            <StatCard label="主机租约" value={hostLeases.length} />
-            <StatCard label="执行风险" value={hostRisks.length} />
-            <StatCard label="上报历史" value={hostReports.length} />
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {[
-              ["profiles", "主机画像"],
-              ["leases", "主机租约"],
-              ["reports", "上报历史"],
-              ["access", "接入配置"],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                className={`rounded-lg border px-3 py-2 text-sm ${tab === key ? "bg-slate-900 text-white" : "bg-white text-slate-700"}`}
-                onClick={() => setTab(key as HostTab)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {tab === "profiles" ? (
-            <HostProfilesPanel rows={hostProfiles} leases={hostLeases} reports={hostReports} risks={hostRisks} />
-          ) : null}
-
-          {tab === "leases" ? (
-            <HostLeasesPanel rows={hostLeases} />
-          ) : null}
-
-          {tab === "reports" ? (
-            <HostReportsPanel rows={hostReports} />
-          ) : null}
-
-          {tab === "access" ? (
-          <Card className="rounded-lg bg-white">
-            <CardContent className="flex flex-col gap-3 pt-0">
-              <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                <label className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
-                  <Input className="pl-8" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 IP、用户名、来源" />
-                </label>
-                <div className="w-full md:w-44">
-                  <SelectField
-                    aria-label="heartbeat filter"
-                    value={heartbeat}
-                    onChange={setHeartbeat}
-                    options={[
-                      { label: "全部心跳", value: "all" },
-                      { label: "在线", value: "online" },
-                      { label: "待安装", value: "installing" },
-                      { label: "离线", value: "offline" },
-                      { label: "超时", value: "stale" },
-                    ]}
-                  />
-                </div>
+        <Card className="rounded-lg bg-white">
+          <CardContent className="flex flex-col gap-3 pt-0">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+              <label className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />
+                <Input
+                  className="pl-8"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="搜索 IP、用户名、来源"
+                />
+              </label>
+              <div className="w-full md:w-44">
+                <SelectField
+                  aria-label="heartbeat filter"
+                  value={heartbeat}
+                  onChange={setHeartbeat}
+                  options={[
+                    { label: "全部心跳", value: "all" },
+                    { label: "在线", value: "online" },
+                    { label: "待安装", value: "installing" },
+                    { label: "离线", value: "offline" },
+                    { label: "超时", value: "stale" },
+                  ]}
+                />
               </div>
+            </div>
 
-              {model.pageRows.length ? (
-                <div className="hosts-table-shell overflow-x-auto">
-                  <table className="w-full min-w-[900px] text-left text-sm">
-                    <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
-                      <tr>
-                        <th className="py-2 pr-3">主机 IP / 用户名</th>
-                        <th className="py-2 pr-3">心跳</th>
-                        <th className="py-2 pr-3">标签</th>
-                        <th className="py-2 pr-3">会话</th>
-                        <th className="py-2 pr-3">来源 / SSH</th>
-                        <th className="py-2 text-right">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {model.pageRows.map((row: any) => {
-                        const terminalEntry = buildHostTerminalEntry(row.raw || row);
-                        return (
-                          <tr key={row.id}>
+            {model.pageRows.length ? (
+              <div className="hosts-table-shell overflow-x-auto">
+                <table className="w-full table-fixed text-left text-sm">
+                  <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
+                    <tr>
+                      <th className="w-[18%] py-2 pr-3">主机 IP / 用户名</th>
+                      <th className="w-[8%] py-2 pr-3">心跳</th>
+                      <th className="w-[22%] py-2 pr-3">基础信息</th>
+                      <th className="w-[17%] py-2 pr-3">标签</th>
+                      <th className="w-[10%] py-2 pr-3">来源 / SSH</th>
+                      <th className="w-[25%] py-2 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {model.pageRows.map((row: any) => {
+                      const terminalEntry = buildHostTerminalEntry(
+                        row.raw || row,
+                      );
+                      return (
+                        <tr key={row.id}>
                           <td className="py-3 pr-3">
-                            <div className="font-medium text-slate-900">{row.title}</div>
-                            <div className="text-xs text-slate-500">{row.subtitle}</div>
+                            <div className="font-medium text-slate-900">
+                              {row.title}
+                            </div>
                           </td>
                           <td className="py-3 pr-3">
-                            <ToneBadge tone={toneFromHeartbeat(row.heartbeatTone)}>{row.heartbeatLabel}</ToneBadge>
-                            {row.installDetailLabel ? <div className="mt-1 text-xs text-slate-500">{row.installDetailLabel}</div> : null}
-                            {row.lastError ? <div className="mt-1 max-w-xs break-words text-xs text-red-700">{row.lastError}</div> : null}
+                            <ToneBadge
+                              tone={toneFromHeartbeat(row.heartbeatTone)}
+                            >
+                              {row.heartbeatLabel}
+                            </ToneBadge>
+                            {row.heartbeatDetailLabel ? (
+                              <div className="mt-1 max-w-[160px] break-words text-xs leading-4 text-slate-500">
+                                {row.heartbeatDetailLabel}
+                              </div>
+                            ) : null}
+                            {row.lastError ? (
+                              <Button
+                                variant="destructive"
+                                size="xs"
+                                className="mt-2"
+                                aria-label={`查看 ${row.title} 错误详情`}
+                                onClick={() => openHostError(row)}
+                              >
+                                <AlertCircle />
+                                查看错误
+                              </Button>
+                            ) : null}
+                          </td>
+                          <td className="py-3 pr-3">
+                            <div
+                              className="max-w-[220px] truncate text-slate-900"
+                              title={row.systemLabel}
+                            >
+                              {row.systemLabel}
+                            </div>
+                            <div
+                              className="max-w-[220px] truncate text-xs text-slate-500"
+                              title={row.kernelLabel}
+                            >
+                              Kernel {row.kernelLabel}
+                            </div>
+                            <div
+                              className="max-w-[220px] truncate text-xs text-slate-500"
+                              title={row.resourceLabel}
+                            >
+                              {row.resourceLabel}
+                            </div>
                           </td>
                           <td className="py-3 pr-3">
                             {row.labels?.length ? (
                               <div className="flex max-w-xs flex-wrap gap-1">
-                                {row.labels.map((label: { key: string; value: string; label: string }) => (
-                                  <ToneBadge key={label.label}>{label.label}</ToneBadge>
-                                ))}
+                                {row.labels.map(
+                                  (label: {
+                                    key: string;
+                                    value: string;
+                                    label: string;
+                                  }) => (
+                                    <ToneBadge key={label.label}>
+                                      {label.label}
+                                    </ToneBadge>
+                                  ),
+                                )}
                               </div>
                             ) : (
-                              <span className="text-xs text-slate-400">未打标签</span>
+                              <span className="text-xs text-slate-400">
+                                未打标签
+                              </span>
                             )}
                           </td>
-                          <td className="py-3 pr-3">{row.sessionCount}</td>
                           <td className="py-3 pr-3">
                             <div>{row.sourceLabel}</div>
-                            <div className="text-xs text-slate-500">{row.sshLabel}</div>
+                            <div className="text-xs text-slate-500">
+                              {row.sshLabel}
+                            </div>
                           </td>
                           <td className="py-3">
-                            <div className="flex justify-end gap-2">
+                            <div className="flex flex-wrap justify-end gap-2">
                               {row.canOpenInstallRun ? (
-                                <Button variant="outline" asChild>
-                                  <Link to={`/runner-studio/runs/${encodeURIComponent(row.installRunId)}`}>
+                                <Button variant="outline" size="sm" asChild>
+                                  <Link
+                                    to={`/runner-studio/runs/${encodeURIComponent(row.installRunId)}`}
+                                  >
                                     <ExternalLink />
                                     Run
                                   </Link>
                                 </Button>
                               ) : null}
-                              <Button variant="outline" onClick={() => void installAgent(row.raw)} disabled={row.heartbeat === "installing"}>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void installAgent(row.raw)}
+                                disabled={row.heartbeat === "installing"}
+                              >
                                 <Download />
-                                安装 Agent
+                                安装 Node
                               </Button>
                               <Button
                                 variant="outline"
+                                size="sm"
                                 onClick={() => navigate(`/terminal/${row.id}`)}
                                 disabled={!terminalEntry.canOpenTerminal}
-                                title={terminalEntry.disabledReason || "打开独立主机终端"}
+                                title={
+                                  terminalEntry.disabledReason ||
+                                  "打开独立主机终端"
+                                }
                               >
                                 终端
                               </Button>
-                              <Button variant="outline" onClick={() => openEdit(row.raw)}>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openEdit(row.raw)}
+                              >
                                 编辑
                               </Button>
-                              <ConfirmButton variant="destructive" confirm={`确认删除主机 ${row.id}？`} onConfirm={() => void removeHost(row.id)}>
+                              <ConfirmButton
+                                variant="destructive"
+                                size="icon-sm"
+                                aria-label={`删除主机 ${row.id}`}
+                                confirm={`确认删除主机 ${row.id}？`}
+                                onConfirm={() => void removeHost(row.id)}
+                              >
                                 <Trash2 />
                               </ConfirmButton>
                             </div>
                           </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <EmptyState title="暂无主机" description="没有符合条件的主机，调整筛选或接入新主机。" />
-              )}
-            </CardContent>
-          </Card>
-          ) : null}
-        </>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <EmptyState
+                title="暂无主机"
+                description="没有符合条件的主机，调整筛选或接入新主机。"
+              />
+            )}
+          </CardContent>
+        </Card>
       )}
 
       <Dialog open={dialogOpen} onOpenChange={changeDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle>{editingHost ? "编辑主机" : "接入主机"}</DialogTitle>
-            <DialogDescription>填写主机接入信息并保存配置。SSH 用户必须是 root 或具备 sudo 权限。</DialogDescription>
+            <DialogDescription>
+              填写主机接入信息并保存配置。SSH 用户必须是 root 或具备 sudo 权限。
+            </DialogDescription>
           </DialogHeader>
-          {dialogMessage ? <StatusAlert type={dialogMessage.type} title={dialogMessage.type === "error" ? "操作失败" : "操作完成"} message={dialogMessage.text} /> : null}
+          {dialogMessage ? (
+            <StatusAlert
+              type={dialogMessage.type}
+              title={dialogMessage.type === "error" ? "操作失败" : "操作完成"}
+              message={dialogMessage.text}
+            />
+          ) : null}
           <div className="grid gap-3 md:grid-cols-2">
             <Field label="名称（可选）">
-              <Input value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} />
+              <Input
+                value={draft.name}
+                onChange={(event) =>
+                  setDraft((prev) => ({ ...prev, name: event.target.value }))
+                }
+              />
             </Field>
             <Field label="地址">
-              <Input value={draft.address} onChange={(event) => setDraft((prev) => ({ ...prev, address: event.target.value }))} />
+              <Input
+                value={draft.address}
+                onChange={(event) =>
+                  setDraft((prev) => {
+                    const address = event.target.value;
+                    const shouldFollowAddress =
+                      draftConnectionMode === "aiops_pull" &&
+                      (!prev.agentUrl.trim() ||
+                        prev.agentUrl.trim() === defaultAgentURL(prev.address));
+                    return {
+                      ...prev,
+                      address,
+                      agentUrl: shouldFollowAddress
+                        ? defaultAgentURL(address)
+                        : prev.agentUrl,
+                    };
+                  })
+                }
+              />
             </Field>
             <Field label="SSH 用户">
-              <Input value={draft.sshUser} onChange={(event) => setDraft((prev) => ({ ...prev, sshUser: event.target.value }))} />
+              <Input
+                value={draft.sshUser}
+                onChange={(event) =>
+                  setDraft((prev) => ({ ...prev, sshUser: event.target.value }))
+                }
+              />
             </Field>
             <Field label="SSH 端口">
-              <Input value={draft.sshPort} onChange={(event) => setDraft((prev) => ({ ...prev, sshPort: event.target.value }))} />
+              <Input
+                value={draft.sshPort}
+                onChange={(event) =>
+                  setDraft((prev) => ({ ...prev, sshPort: event.target.value }))
+                }
+              />
             </Field>
-            <Field label="SSH 密码" hint="可选。保存后仅由服务端内部 secret 使用；编辑时留空表示保留已保存密码或使用默认 SSH 认证。">
+            <Field label="SSH 密码" hint="留空保留已保存密码">
               <Input
                 type="password"
                 value={draft.sshPassword}
-                onChange={(event) => setDraft((prev) => ({ ...prev, sshPassword: event.target.value }))}
+                onChange={(event) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    sshPassword: event.target.value,
+                  }))
+                }
                 placeholder="输入 SSH 用户密码"
                 autoComplete="new-password"
               />
             </Field>
-            <Field label="Agent 版本">
-              <Input value={draft.agentVersion} onChange={(event) => setDraft((prev) => ({ ...prev, agentVersion: event.target.value }))} placeholder="v0.1.0" />
+            <Field label="Node 版本">
+              <Input
+                value={draft.agentVersion}
+                onChange={(event) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    agentVersion: event.target.value,
+                  }))
+                }
+                placeholder="v0.1.0"
+              />
+            </Field>
+            <Field label="连接方式">
+              <SelectField
+                value={draftConnectionMode}
+                onChange={(connectionMode) =>
+                  setDraft((prev) => ({
+                    ...prev,
+                    connectionMode,
+                    agentUrl:
+                      connectionMode === "aiops_pull" && !prev.agentUrl.trim()
+                        ? defaultAgentURL(prev.address)
+                        : prev.agentUrl,
+                  }))
+                }
+                options={[
+                  {
+                    label: "aiops-v2 主动连接 Node（默认）",
+                    value: "aiops_pull",
+                  },
+                  {
+                    label: "Node 主动回连 aiops-v2（gRPC）",
+                    value: "node_push_grpc",
+                  },
+                ]}
+              />
             </Field>
             <div className="md:col-span-2">
-              <Field label="标签" hint="用逗号或换行分隔，例如 env=prod, role=web, cluster=ops-k8s">
-                <Input value={draft.labelsText} onChange={(event) => setDraft((prev) => ({ ...prev, labelsText: event.target.value }))} placeholder="env=prod, role=web" />
+              {draftConnectionMode === "node_push_grpc" ? (
+                <Field
+                  label="AI Server 回调地址"
+                  hint="Node 主动回连 aiops-v2 时使用，必须是目标主机可访问的 ai-server HTTP 地址"
+                >
+                  <Input
+                    value={draft.agentServerUrl}
+                    onChange={(event) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        agentServerUrl: event.target.value,
+                      }))
+                    }
+                    placeholder="http://ai-server.example:18080"
+                  />
+                </Field>
+              ) : (
+                <Field
+                  label="Node 连接地址"
+                  hint="aiops-v2 主动连接 Node 时使用，通常是 http://主机IP:7072"
+                >
+                  <Input
+                    value={draft.agentUrl}
+                    onChange={(event) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        agentUrl: event.target.value,
+                      }))
+                    }
+                    placeholder={defaultAgentURL(draft.address)}
+                  />
+                </Field>
+              )}
+            </div>
+            <div className="md:col-span-2">
+              <Field
+                label="标签"
+                hint="用逗号或换行分隔，例如 env=prod, role=web, cluster=ops-k8s"
+              >
+                <Input
+                  value={draft.labelsText}
+                  onChange={(event) =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      labelsText: event.target.value,
+                    }))
+                  }
+                  placeholder="env=prod, role=web"
+                />
               </Field>
             </div>
           </div>
@@ -417,185 +728,218 @@ export function HostsPage() {
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               取消
             </Button>
-            <Button onClick={() => void saveHost()} disabled={saving || !draft.address || !draft.sshUser}>
+            <Button
+              onClick={() => void saveHost()}
+              disabled={saving || !draft.address || !draft.sshUser}
+            >
               <Save />
               保存
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <HostAgentInstallDialog
+        state={installDialog}
+        onOpenChange={(open) =>
+          setInstallDialog((current) => ({ ...current, open }))
+        }
+      />
+      <HostErrorDialog
+        state={hostErrorDialog}
+        onOpenChange={(open) =>
+          setHostErrorDialog((current) => ({ ...current, open }))
+        }
+      />
+      <HostOperationResultDialog
+        state={operationResult}
+        onOpenChange={(open) => {
+          if (!open) setOperationResult(null);
+        }}
+      />
     </SettingsPageFrame>
   );
 }
 
-function StatCard({ label, value }: { label: string; value: number }) {
-  return (
-    <Card size="sm" className="rounded-lg bg-white">
-      <CardContent className="py-3">
-        <div className="whitespace-nowrap text-xs font-medium uppercase tracking-normal text-slate-500">{label}</div>
-        <div className="mt-1 text-lg font-semibold text-slate-950">{value}</div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function HostProfilesPanel({
-  rows,
-  leases,
-  reports,
-  risks,
+function HostOperationResultDialog({
+  state,
+  onOpenChange,
 }: {
-  rows: HostProfileRowView[];
-  leases: HostLeaseRowView[];
-  reports: HostReportRow[];
-  risks: HostExecutionRiskView[];
+  state: HostOperationResultState | null;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const [selectedHostId, setSelectedHostId] = useState("");
-  const selectedProfile = rows.find((row) => row.hostId === selectedHostId) || rows[0];
-  const detail = selectedProfile ? buildHostProfileDetail({ profile: selectedProfile, leases, reports }) : null;
-
+  const Icon = state?.type === "error" ? AlertCircle : CheckCircle2;
+  const title = state?.type === "error" ? "操作失败" : "操作完成";
+  const iconClass =
+    state?.type === "error" ? "text-red-600" : "text-emerald-600";
   return (
-    <Card className="rounded-lg bg-white">
-      <CardContent className="grid gap-4 pt-0">
-        {risks.length ? (
-          <div className="grid gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <div className="text-sm font-medium text-amber-900">执行风险提示</div>
-            <div className="grid gap-2">
-              {risks.map((risk, index) => (
-                <div key={`${risk.key}-${risk.hostId}-${index}`} className="text-sm text-amber-900">
-                  <strong>{risk.label}</strong>：{risk.message}
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        {rows.length ? (
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[900px] text-left text-sm">
-                <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
-                  <tr>
-                    <th className="py-2 pr-3">主机</th>
-                    <th className="py-2 pr-3">状态</th>
-                    <th className="py-2 pr-3">OS / 架构</th>
-                    <th className="py-2 pr-3">标签</th>
-                    <th className="py-2 pr-3">最近上报</th>
-                    <th className="py-2 pr-3">允许执行</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {rows.map((row) => (
-                    <tr
-                      key={`${row.hostId}-${row.displayName}`}
-                      className={selectedProfile?.hostId === row.hostId ? "bg-slate-50" : ""}
-                      onClick={() => setSelectedHostId(row.hostId)}
-                    >
-                      <td className="py-3 pr-3">
-                        <button type="button" className="text-left" onClick={() => setSelectedHostId(row.hostId)}>
-                          <div className="font-medium text-slate-900">{row.displayName}</div>
-                          <div className="text-xs text-slate-500">{row.hostId}</div>
-                        </button>
-                      </td>
-                      <td className="py-3 pr-3"><ToneBadge tone={badgeTone(row.statusTone)}>{row.statusLabel}</ToneBadge></td>
-                      <td className="py-3 pr-3">{row.osLabel} / {row.archLabel}</td>
-                      <td className="py-3 pr-3">{row.labelsText || "未标注"}</td>
-                      <td className="py-3 pr-3">{row.lastHeartbeatAt || "-"}</td>
-                      <td className="py-3 pr-3">{row.riskCount ? `否，${row.riskCount} 个风险` : "是"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {detail ? (
-              <aside className="grid content-start gap-3 rounded-lg border bg-slate-50 p-3 text-sm">
-                <div>
-                  <div className="font-medium text-slate-950">{detail.displayName}</div>
-                  <div className="text-xs text-slate-500">{detail.hostId}</div>
-                </div>
-                {detail.sections.map((section) => (
-                  <section key={section.title} className="grid gap-1 border-t pt-3">
-                    <h3 className="text-xs font-semibold uppercase tracking-normal text-slate-500">{section.title}</h3>
-                    {section.items.map((item) => (
-                      <div key={`${section.title}-${item.label}`} className="grid grid-cols-[96px_minmax(0,1fr)] gap-2">
-                        <span className="text-slate-500">{item.label}</span>
-                        <span className="break-words text-slate-900">{item.value}</span>
-                      </div>
-                    ))}
-                  </section>
-                ))}
-              </aside>
-            ) : null}
-          </div>
-        ) : <EmptyState title="暂无主机画像" description="主机客户端上报环境信息后会显示在这里。" />}
-      </CardContent>
-    </Card>
+    <Dialog open={Boolean(state?.open)} onOpenChange={onOpenChange}>
+      <DialogContent
+        data-testid="host-operation-result-dialog"
+        className="sm:max-w-sm"
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Icon className={`h-5 w-5 ${iconClass}`} />
+            {title}
+          </DialogTitle>
+          <DialogDescription className="whitespace-pre-wrap break-words text-base text-slate-700">
+            {state?.text || ""}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function HostLeasesPanel({ rows }: { rows: HostLeaseRowView[] }) {
+function HostErrorDialog({
+  state,
+  onOpenChange,
+}: {
+  state: HostErrorDialogState;
+  onOpenChange: (open: boolean) => void;
+}) {
   return (
-    <Card className="rounded-lg bg-white">
-      <CardContent className="pt-0">
-        {rows.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-left text-sm">
-              <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
-                <tr>
-                  <th className="py-2 pr-3">Lease</th>
-                  <th className="py-2 pr-3">主机</th>
-                  <th className="py-2 pr-3">状态</th>
-                  <th className="py-2 pr-3">持有 Case</th>
-                  <th className="py-2 pr-3">会话</th>
-                  <th className="py-2 pr-3">过期时间</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {rows.map((row) => (
-                  <tr key={row.leaseId}>
-                    <td className="py-3 pr-3 font-medium text-slate-900">{row.leaseId}</td>
-                    <td className="py-3 pr-3">{row.hostId}</td>
-                    <td className="py-3 pr-3"><ToneBadge tone={badgeTone(row.statusTone)}>{row.statusLabel}</ToneBadge></td>
-                    <td className="py-3 pr-3">{row.missionLabel}</td>
-                    <td className="py-3 pr-3">{row.ownerSessionLabel}</td>
-                    <td className="py-3 pr-3">{row.expiresAt || "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : <EmptyState title="暂无主机租约" description="聊天或 Workflow 锁定主机后会显示租约。" />}
-      </CardContent>
-    </Card>
+    <Dialog open={state.open} onOpenChange={onOpenChange}>
+      <DialogContent
+        data-testid="host-error-dialog"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-2xl"
+      >
+        <DialogHeader>
+          <DialogTitle>主机错误详情</DialogTitle>
+          <DialogDescription>
+            {state.hostLabel} · {state.heartbeatLabel}
+            {state.detailLabel ? ` · ${state.detailLabel}` : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <div
+          data-testid="host-error-dialog-scroll"
+          className="min-h-0 overflow-y-auto rounded-lg border bg-slate-950 p-3 text-xs leading-5 text-slate-100"
+        >
+          <pre className="whitespace-pre-wrap break-words font-mono">
+            {state.error}
+          </pre>
+        </div>
+        <DialogFooter className="shrink-0">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function HostReportsPanel({ rows }: { rows: HostReportRow[] }) {
+function HostAgentInstallDialog({
+  state,
+  onOpenChange,
+}: {
+  state: InstallDialogState;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const hostLabel =
+    state.host?.name || state.host?.address || state.host?.id || "目标主机";
   return (
-    <Card className="rounded-lg bg-white">
-      <CardContent className="grid gap-2 pt-0">
-        {rows.length ? rows.map((row) => (
-          <div key={row.reportId} className="rounded-lg border bg-slate-50 p-3 text-sm">
-            <div className="font-medium text-slate-900">{row.reportId}</div>
-            <div className="mt-1 text-xs text-slate-500">{row.hostId} · {row.status} · {row.reportedAt}</div>
-            <div className="mt-1 text-slate-700">{row.summary}</div>
+    <Dialog open={state.open} onOpenChange={onOpenChange}>
+      <DialogContent
+        data-testid="host-agent-install-dialog"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden sm:max-w-lg"
+      >
+        <DialogHeader>
+          <DialogTitle>Node 安装步骤</DialogTitle>
+          <DialogDescription>
+            {hostLabel} ·{" "}
+            {state.status === "success"
+              ? "安装流程已完成"
+              : state.status === "error"
+                ? "安装流程失败"
+                : "正在执行安装流程"}
+          </DialogDescription>
+        </DialogHeader>
+        <div
+          data-testid="host-agent-install-dialog-scroll"
+          className="min-h-0 space-y-3 overflow-y-auto pr-1"
+        >
+          <div className="grid gap-2">
+            {hostAgentInstallSteps.map((step) => {
+              const status = installStepStatus(step.id, state);
+              return (
+                <div
+                  key={step.id}
+                  className="flex items-center gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm"
+                >
+                  {status === "done" ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : null}
+                  {status === "running" ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                  ) : null}
+                  {status === "failed" ? (
+                    <XCircle className="h-4 w-4 text-red-600" />
+                  ) : null}
+                  {status === "pending" ? (
+                    <Circle className="h-4 w-4 text-slate-300" />
+                  ) : null}
+                  <span
+                    className={
+                      status === "pending"
+                        ? "text-slate-500"
+                        : "font-medium text-slate-900"
+                    }
+                  >
+                    {step.label}
+                  </span>
+                </div>
+              );
+            })}
           </div>
-        )) : <EmptyState title="暂无上报历史" description="主机客户端上报后会保留最近历史。" />}
-      </CardContent>
-    </Card>
+          {state.runId ? (
+            <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Run ID: {state.runId}
+            </div>
+          ) : null}
+          {state.error ? (
+            <StatusAlert type="error" title="安装失败" message={state.error} />
+          ) : null}
+        </div>
+        <DialogFooter className="shrink-0">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
+}
+
+function installStepStatus(stepId: string, state: InstallDialogState) {
+  const currentIndex = Math.max(
+    0,
+    hostAgentInstallSteps.findIndex((step) => step.id === state.currentStep),
+  );
+  const stepIndex = hostAgentInstallSteps.findIndex(
+    (step) => step.id === stepId,
+  );
+  if (state.status === "success") return "done";
+  if (state.status === "error" && stepIndex === currentIndex) return "failed";
+  if (stepIndex < currentIndex) return "done";
+  if (stepIndex === currentIndex) return "running";
+  return "pending";
 }
 
 function formatLabels(labels?: Record<string, string>) {
   return Object.entries(labels || {})
     .map(([key, value]) => [key.trim(), String(value || "").trim()])
     .filter(([key, value]) => key && value)
-    .sort(([leftKey, leftValue], [rightKey, rightValue]) => `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`))
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`),
+    )
     .map(([key, value]) => `${key}=${value}`)
     .join(", ");
-}
-
-function badgeTone(tone: "success" | "warning" | "danger" | "neutral") {
-  return tone === "neutral" ? "default" : tone;
 }
 
 function toneFromHeartbeat(tone: string) {
@@ -616,34 +960,57 @@ function parseLabels(input: string) {
   return labels;
 }
 
-function itemsFrom(payload: unknown): unknown[] {
-  if (Array.isArray(payload)) return payload;
-  if (payload && typeof payload === "object" && Array.isArray((payload as { items?: unknown[] }).items)) {
-    return (payload as { items: unknown[] }).items;
+function editableAgentServerURL(value?: string) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  if (looksLikeNodeEndpointURL(trimmed)) return browserOrigin();
+  return trimmed;
+}
+
+function editableAgentURL(host: HostRecord) {
+  const saved = String(host.agentUrl || "").trim();
+  if (saved) return saved;
+  return defaultAgentURL(host.address || host.name || host.id || "");
+}
+
+function defaultAgentURL(address?: string) {
+  const trimmed = String(address || "").trim();
+  if (!trimmed) return "http://<host>:7072";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, "");
+  return `http://${trimmed}:7072`;
+}
+
+function normalizeHostConnectionMode(value?: string) {
+  const mode = String(value || "").trim();
+  if (mode === "node_push_grpc" || mode === "grpc_reverse") {
+    return "node_push_grpc";
   }
-  return [];
+  return "aiops_pull";
 }
 
-function readText(source: unknown, ...keys: string[]) {
-  if (!source || typeof source !== "object" || Array.isArray(source)) return "";
-  const record = source as Record<string, unknown>;
-  for (const key of keys) {
-    const value = record[key];
-    if (value !== undefined && value !== null && value !== "") return String(value).trim();
+function resolveInstallCallbackURL(host: HostRecord) {
+  const saved = String(host.agentServerUrl || "").trim();
+  if (saved && !looksLikeNodeEndpointURL(saved)) return saved;
+  return browserOrigin();
+}
+
+function looksLikeNodeEndpointURL(value: string) {
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname.replace(/\/+$/, "");
+    return (
+      parsed.port === "7072" ||
+      path === "/exec" ||
+      path === "/run" ||
+      path === "/terminal" ||
+      path.startsWith("/api/v1/host-agents")
+    );
+  } catch {
+    return false;
   }
-  return "";
 }
 
-function hostIdOf(source: unknown) {
-  return readText(source, "hostId", "host_id", "id");
-}
-
-function normalizeHostReport(source: unknown): HostReportRow {
-  return {
-    reportId: readText(source, "reportId", "report_id", "id") || "unknown-report",
-    hostId: readText(source, "hostId", "host_id"),
-    status: readText(source, "status", "state") || "unknown",
-    reportedAt: readText(source, "reportedAt", "reported_at", "createdAt", "created_at"),
-    summary: readText(source, "summary", "description", "detail"),
-  };
+function browserOrigin() {
+  if (typeof window === "undefined") return "";
+  return window.location.origin === "null" ? "" : window.location.origin;
 }

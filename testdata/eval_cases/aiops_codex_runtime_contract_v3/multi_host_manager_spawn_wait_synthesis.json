@@ -1,0 +1,40 @@
+{
+  "name": "multi_host_manager_spawn_wait_synthesis",
+  "input": "同时检查 host-a、host-b、host-c 的 Redis 延迟，并由 manager 汇总，不直接在主 turn 执行主机命令。",
+  "expected": {
+    "profile": "host_manager",
+    "hiddenTools": [
+      "exec_command",
+      "hostops.worker_raw_dump"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_manager",
+    "visibleTools": [
+      "hostops.spawn_child_agent",
+      "hostops.wait_child_agents",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "hostops.spawn_child_agent",
+      "hostops.wait_child_agents"
+    ],
+    "evidenceRefs": [
+      "child:host-a:evidence",
+      "child:host-b:evidence",
+      "child:host-c:evidence"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "child_agent_started",
+      "child_agent_result",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "manager_synthesis_verified",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

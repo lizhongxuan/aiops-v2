@@ -1,0 +1,43 @@
+{
+  "name": "mutation_partial_failure_requires_postcheck",
+  "input": "执行变更后 post-check 失败，runtime 必须保留 partial mutation outcome 和下一步 blocker。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "success_without_postcheck"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.mutation",
+      "exec_command.post_check"
+    ],
+    "approvalEvents": [
+      "approval_requested",
+      "approval_decided"
+    ],
+    "evidenceRefs": [
+      "evidence:mutation-attempt",
+      "evidence:post-check-failed"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "approval_requested",
+      "approval_decided",
+      "resource_lock",
+      "tool_call",
+      "tool_result",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "partial_mutation",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

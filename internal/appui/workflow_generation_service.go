@@ -4,22 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 	"aiops-v2/internal/workflowgen"
 )
 
 type WorkflowGenerationChatService struct {
-	sessionStore SessionStore
-	store        workflowgen.SessionStore
-	builder      workflowgen.PlanBuilder
-	generator    workflowgen.GraphGenerator
-	agentEvents  AgentEventService
+	sessionStore    SessionStore
+	store           workflowgen.SessionStore
+	builder         workflowgen.PlanBuilder
+	generator       workflowgen.GraphGenerator
+	agentEvents     AgentEventService
+	runtimeSettings RuntimeSettingsProvider
 
 	mu                   sync.Mutex
 	activeByConversation map[string]string
@@ -31,6 +33,7 @@ func NewWorkflowGenerationChatService(
 	builder workflowgen.PlanBuilder,
 	generator workflowgen.GraphGenerator,
 	agentEvents AgentEventService,
+	runtimeSettings ...RuntimeSettingsProvider,
 ) *WorkflowGenerationChatService {
 	if store == nil {
 		store = workflowgen.NewMemorySessionStore()
@@ -41,12 +44,17 @@ func NewWorkflowGenerationChatService(
 	if generator == nil {
 		generator = workflowgen.RunnerGraphGenerator{}
 	}
+	var provider RuntimeSettingsProvider
+	if len(runtimeSettings) > 0 {
+		provider = runtimeSettings[0]
+	}
 	return &WorkflowGenerationChatService{
 		sessionStore:         sessionStore,
 		store:                store,
 		builder:              builder,
 		generator:            generator,
 		agentEvents:          agentEvents,
+		runtimeSettings:      provider,
 		activeByConversation: map[string]string{},
 	}
 }
@@ -61,6 +69,9 @@ func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatComm
 		return response, handled, err
 	}
 	requirement, isNew := parseAddWorkflowMention(content)
+	if !isNew && s.activeSession(req.SessionID) == "" {
+		requirement, isNew = parsePlainWorkflowWritingRequest(content)
+	}
 	if !isNew && !s.shouldRevisePlan(req.SessionID, content) {
 		return TurnResponse{}, false, nil
 	}
@@ -71,7 +82,7 @@ func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatComm
 		err     error
 	)
 	if isNew {
-		plan, err = s.builder.BuildPlan(ctx, workflowgen.BuildPlanRequest{Requirement: requirement})
+		plan, err = s.buildInitialWorkflowPlan(ctx, requirement)
 		if err != nil {
 			return TurnResponse{}, true, err
 		}
@@ -135,7 +146,9 @@ func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatComm
 		FinalOutput:     final,
 		AgentItems: []agentstate.TurnItem{
 			workflowGenerationUserItem(req, content, now),
+			workflowGenerationModelCallItem(req, plan, now),
 			workflowGenerationPlanItem(req, plan, now),
+			workflowGenerationEvidenceItem(req, plan, now),
 			workflowGenerationArtifactItem(req, session, plan, now, false, nil),
 			workflowGenerationFinalItem(req, final, now),
 		},
@@ -150,6 +163,17 @@ func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatComm
 		Status:          "completed",
 		Output:          final,
 	}, true, nil
+}
+
+func (s *WorkflowGenerationChatService) buildInitialWorkflowPlan(ctx context.Context, requirement string) (*workflowgen.WorkflowGenerationPlan, error) {
+	frame := opsmanual.BuildOperationFrame(requirement, nil)
+	if shouldUseResourceWorkflowPlan(requirement, frame) {
+		return workflowgen.ResourcePlanBuilder{}.BuildResourcePlan(ctx, workflowgen.BuildResourcePlanRequest{
+			Requirement:    requirement,
+			OperationFrame: frame,
+		})
+	}
+	return s.builder.BuildPlan(ctx, workflowgen.BuildPlanRequest{Requirement: requirement})
 }
 
 func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.Context, req runtimekernel.TurnRequest, content string) (TurnResponse, bool, error) {
@@ -167,7 +191,7 @@ func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.C
 	agent := workflowgen.WorkflowBuilderAgent{
 		Store:          s.store,
 		GraphGenerator: s.generator,
-		Validator:      workflowGenerationValidationProvider(session.Plan, req.Metadata),
+		Validator:      workflowGenerationValidationProvider(session.Plan, req.Metadata, s.runtimeSettingsSnapshot(ctx)),
 	}
 	result, err := agent.GenerateDraft(ctx, workflowgen.GenerateDraftRequest{SessionID: session.ID})
 	if err != nil {
@@ -208,16 +232,22 @@ func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.C
 	return TurnResponse{SessionID: req.SessionID, TurnID: req.TurnID, ClientTurnID: req.ClientTurnID, ClientMessageID: req.ClientMessageID, Status: "completed", Output: final}, true, nil
 }
 
-func workflowGenerationValidationProvider(_ *workflowgen.WorkflowGenerationPlan, metadata map[string]string) workflowgen.WorkflowValidationProvider {
-	override := strings.ToLower(strings.TrimSpace(os.Getenv("AIOPS_WORKFLOW_VALIDATION_PROVIDER")))
-	switch override {
+func (s *WorkflowGenerationChatService) runtimeSettingsSnapshot(ctx context.Context) store.RuntimeSettings {
+	if s != nil && s.runtimeSettings != nil {
+		return s.runtimeSettings.Snapshot(ctx)
+	}
+	return store.DefaultRuntimeSettings()
+}
+
+func workflowGenerationValidationProvider(_ *workflowgen.WorkflowGenerationPlan, metadata map[string]string, settings store.RuntimeSettings) workflowgen.WorkflowValidationProvider {
+	switch strings.ToLower(strings.TrimSpace(settings.Workflow.ValidationProvider)) {
 	case "docker":
-		return workflowgen.DockerValidator{Image: workflowGenerationValidationImages(metadata)[0]}
+		return workflowgen.DockerValidator{Image: workflowGenerationValidationImages(settings, metadata)[0]}
 	}
 	return workflowgen.StaticValidationProvider{}
 }
 
-func workflowGenerationValidationImages(metadata ...map[string]string) []string {
+func workflowGenerationValidationImages(settings store.RuntimeSettings, metadata ...map[string]string) []string {
 	for _, item := range metadata {
 		if image := strings.TrimSpace(item["workflowValidationImage"]); image != "" {
 			return []string{image}
@@ -226,7 +256,7 @@ func workflowGenerationValidationImages(metadata ...map[string]string) []string 
 			return []string{image}
 		}
 	}
-	if image := strings.TrimSpace(os.Getenv("AIOPS_WORKFLOW_VALIDATION_IMAGE")); image != "" {
+	if image := strings.TrimSpace(settings.Workflow.ValidationImage); image != "" {
 		return []string{image}
 	}
 	return []string{"python:3.12-slim"}
@@ -323,8 +353,43 @@ func parseAddWorkflowMention(content string) (string, bool) {
 	return "", false
 }
 
+func parsePlainWorkflowWritingRequest(content string) (string, bool) {
+	value := strings.TrimSpace(content)
+	if value == "" {
+		return "", false
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(value, "确认生成工作流候选") || strings.HasPrefix(lower, "confirm workflow generation") {
+		return "", false
+	}
+	if !containsAnyWorkflowKeyword(lower, []string{"workflow", "工作流"}) {
+		return "", false
+	}
+	if !containsAnyWorkflowKeyword(lower, []string{
+		"写", "生成", "创建", "新建", "设计", "编排", "搭建",
+		"write", "generate", "create", "build", "design",
+	}) {
+		return "", false
+	}
+	return value, true
+}
+
+func containsAnyWorkflowKeyword(text string, keywords []string) bool {
+	for _, keyword := range keywords {
+		keyword = strings.TrimSpace(strings.ToLower(keyword))
+		if keyword != "" && strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *WorkflowGenerationChatService) shouldRevisePlan(conversationID, content string) bool {
 	if strings.TrimSpace(content) == "" || s.activeSession(conversationID) == "" {
+		return false
+	}
+	frame := opsmanual.BuildOperationFrame(content, nil)
+	if shouldHandleGenericOpsRepair(content, frame) {
 		return false
 	}
 	keywords := []string{"改成", "不要", "直接返回", "飞书", "邮件", "webhook", "调度", "每天", "手动", "推送"}
@@ -378,6 +443,24 @@ func workflowGenerationUserItem(req runtimekernel.TurnRequest, content string, n
 	}
 }
 
+func workflowGenerationModelCallItem(req runtimekernel.TurnRequest, plan *workflowgen.WorkflowGenerationPlan, now time.Time) agentstate.TurnItem {
+	return agentstate.TurnItem{
+		ID:     req.TurnID + "-model-call",
+		Type:   agentstate.TurnItemTypeModelCall,
+		Status: agentstate.ItemStatusCompleted,
+		Payload: agentstate.PayloadEnvelope{
+			Summary: "生成资源型 workflow 计划并检查通用 contract 信号",
+			Data: mustJSON(map[string]any{
+				"capabilityPath":     plan.Intent,
+				"reviewStatus":       plan.ReviewStatus,
+				"genericOpsContract": workflowGenerationGenericOpsContracts(plan),
+			}),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func workflowGenerationPlanItem(req runtimekernel.TurnRequest, plan *workflowgen.WorkflowGenerationPlan, now time.Time) agentstate.TurnItem {
 	steps := make([]map[string]string, 0, len(plan.Nodes))
 	for _, node := range plan.Nodes {
@@ -388,7 +471,14 @@ func workflowGenerationPlanItem(req runtimekernel.TurnRequest, plan *workflowgen
 			"summary": node.Description,
 		})
 	}
-	payload := map[string]any{"title": plan.Title, "steps": steps}
+	payload := map[string]any{
+		"title":              plan.Title,
+		"steps":              steps,
+		"capabilityPath":     plan.Intent,
+		"reviewStatus":       plan.ReviewStatus,
+		"resourceRoles":      workflowGenerationResourceRoleSignals(plan),
+		"genericOpsContract": workflowGenerationGenericOpsContracts(plan),
+	}
 	return agentstate.TurnItem{
 		ID:     req.TurnID + "-plan",
 		Type:   agentstate.TurnItemTypePlan,
@@ -397,6 +487,29 @@ func workflowGenerationPlanItem(req runtimekernel.TurnRequest, plan *workflowgen
 			Kind:    "workflow_generation_plan",
 			Summary: plan.Title,
 			Data:    mustJSON(payload),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
+func workflowGenerationEvidenceItem(req runtimekernel.TurnRequest, plan *workflowgen.WorkflowGenerationPlan, now time.Time) agentstate.TurnItem {
+	data := map[string]any{
+		"evidenceKind":        "workflow_generation_preflight_requirements",
+		"capabilityPath":      plan.Intent,
+		"reviewStatus":        plan.ReviewStatus,
+		"resourceRoles":       workflowGenerationResourceRoleSignals(plan),
+		"genericOpsContract":  workflowGenerationGenericOpsContracts(plan),
+		"evidenceLimitations": workflowGenerationEvidenceLimitations(plan),
+	}
+	return agentstate.TurnItem{
+		ID:     req.TurnID + "-workflow-generation-evidence",
+		Type:   agentstate.TurnItemTypeEvidence,
+		Status: agentstate.ItemStatusCompleted,
+		Payload: agentstate.PayloadEnvelope{
+			Kind:    "workflow_generation_evidence",
+			Summary: "workflow generation evidence: draft_until_reviewed secret_ref_only pending_review",
+			Data:    mustJSON(data),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -430,11 +543,17 @@ func workflowGenerationArtifactItem(req runtimekernel.TurnRequest, session *work
 func workflowGenerationFinalItem(req runtimekernel.TurnRequest, final string, now time.Time) agentstate.TurnItem {
 	return agentstate.TurnItem{
 		ID:     req.TurnID + "-final",
-		Type:   agentstate.TurnItemTypeFinalAnswer,
+		Type:   agentstate.TurnItemTypeAssistantMessage,
 		Status: agentstate.ItemStatusCompleted,
 		Payload: agentstate.PayloadEnvelope{
+			Kind:    "assistant_message",
 			Summary: final,
-			Data:    mustJSON(map[string]string{"text": final}),
+			Data: mustJSON(map[string]any{
+				"displayKind":    "assistant.message",
+				"phase":          "final_answer",
+				"streamState":    "complete",
+				"boundaryAction": "allow",
+			}),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -520,6 +639,12 @@ func workflowGenerationArtifactPayload(session *workflowgen.WorkflowGenerationSe
 		"workflowSessionId":   session.ID,
 		"status":              string(session.Status),
 		"planVersion":         plan.Version,
+		"capabilityPath":      plan.Intent,
+		"reviewStatus":        plan.ReviewStatus,
+		"resourceKind":        plan.ResourceKind,
+		"resourceRoles":       workflowGenerationResourceRoleSignals(plan),
+		"genericOpsContract":  workflowGenerationGenericOpsContracts(plan),
+		"evidenceLimitations": workflowGenerationEvidenceLimitations(plan),
 		"requirement":         session.Requirement,
 		"trigger":             plan.Trigger,
 		"outputs":             outputs,
@@ -590,7 +715,7 @@ func workflowGenerationValidationDetails(plan *workflowgen.WorkflowGenerationPla
 		"summary":        summary,
 		"scenario":       plan.ValidationStrategy.Scenario,
 		"networkPolicy":  firstNonEmptyString(plan.ValidationStrategy.Network, "none"),
-		"allowedImages":  workflowGenerationValidationImages(),
+		"allowedImages":  workflowGenerationValidationImages(store.DefaultRuntimeSettings()),
 		"sandboxSummary": "Docker Provider 会创建临时工作区，把生成的节点脚本只读挂载到容器内，使用 CPU、内存和网络策略限制执行验证脚本。",
 	}
 	if result != nil && result.Validation != nil {
@@ -650,6 +775,18 @@ func limitWorkflowGenerationString(value string, limit int) string {
 func workflowPlanFinalText(session *workflowgen.WorkflowGenerationSession, plan *workflowgen.WorkflowGenerationPlan) string {
 	var b strings.Builder
 	b.WriteString("已生成工作流计划，先不创建生产工作流。\n\n")
+	if plan.Intent != "" {
+		b.WriteString("- capability_path：" + plan.Intent + "\n")
+	}
+	if plan.ReviewStatus != "" {
+		b.WriteString("- review_status：" + string(plan.ReviewStatus) + "\n")
+	}
+	if roles := workflowGenerationResourceRoleSignals(plan); len(roles) > 0 {
+		b.WriteString("- resource_roles：" + strings.Join(roles, ", ") + "\n")
+	}
+	if contracts := workflowGenerationGenericOpsContracts(plan); len(contracts) > 0 {
+		b.WriteString("- generic_ops_contract：" + strings.Join(contracts, ", ") + "\n")
+	}
 	b.WriteString("**工作流计划**\n")
 	b.WriteString("- 名称：" + plan.Title + "\n")
 	b.WriteString("- 触发：" + firstNonEmptyString(plan.Trigger.Summary, string(plan.Trigger.Type)) + "\n")
@@ -660,6 +797,9 @@ func workflowPlanFinalText(session *workflowgen.WorkflowGenerationSession, plan 
 				b.WriteString(" -> ")
 			}
 			b.WriteString(node.Title)
+			if stage, ok := node.Config["stage"].(string); ok && stage != "" {
+				b.WriteString("(" + stage + ")")
+			}
 		}
 		b.WriteString("（生成过程中可以拆分、合并或调整节点）\n")
 	}
@@ -667,7 +807,7 @@ func workflowPlanFinalText(session *workflowgen.WorkflowGenerationSession, plan 
 		b.WriteString("- 输出：" + plan.Outputs[0].Description + "\n")
 	}
 	if len(plan.RequiredSlots) > 0 {
-		b.WriteString("\n**需要你确认**\n")
+		b.WriteString("\n**需要确认**\n")
 		for _, slot := range plan.RequiredSlots {
 			b.WriteString("- " + slot.Question + "\n")
 		}
@@ -677,6 +817,88 @@ func workflowPlanFinalText(session *workflowgen.WorkflowGenerationSession, plan 
 	b.WriteString("\n确认后点击卡片里的“生成”，我会按这个初始大纲继续探索、生成节点、验证结果；实际 Runner 草稿以生成与验证后的节点为准，并按受控 Docker Provider 做 mock 验证。\n")
 	_ = session
 	return b.String()
+}
+
+func shouldUseResourceWorkflowPlan(requirement string, frame opsmanual.OperationFrame) bool {
+	if len(frame.Roles) > 0 || len(frame.Relationships) > 0 || len(frame.ObservationPoints) > 0 {
+		return true
+	}
+	lower := strings.ToLower(requirement)
+	resourceTerms := []string{"主机", "节点", "集群", "部署", "形成", "host", "node", "cluster", "service", "resource"}
+	for _, term := range resourceTerms {
+		if strings.Contains(lower, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGenerationResourceRoleSignals(plan *workflowgen.WorkflowGenerationPlan) []string {
+	if plan == nil || len(plan.OperationFrame) == 0 {
+		return nil
+	}
+	rawRoles, ok := plan.OperationFrame["roles"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	seen := map[string]struct{}{}
+	for _, raw := range rawRoles {
+		role, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind := workflowGenerationMapString(role, "kind")
+		ref := firstNonEmptyString(
+			workflowGenerationMapString(role, "user_label"),
+			workflowGenerationMapString(role, "runtime_name"),
+			workflowGenerationMapString(role, "resource_ref"),
+			workflowGenerationMapString(role, "id"),
+		)
+		if kind == "" {
+			continue
+		}
+		signal := kind
+		if ref != "" && ref != "<nil>" {
+			signal += ":" + ref
+		}
+		runtimeName := workflowGenerationMapString(role, "runtime_name")
+		if runtimeName != "" && runtimeName != ref {
+			signal += ":" + runtimeName
+		}
+		if _, exists := seen[signal]; exists {
+			continue
+		}
+		seen[signal] = struct{}{}
+		out = append(out, signal)
+	}
+	return out
+}
+
+func workflowGenerationMapString(values map[string]any, key string) string {
+	value, ok := values[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func workflowGenerationGenericOpsContracts(plan *workflowgen.WorkflowGenerationPlan) []string {
+	if plan == nil || plan.Intent != "generate_resource_ops_workflow" {
+		return nil
+	}
+	return []string{"draft_until_reviewed", "secret_ref_only"}
+}
+
+func workflowGenerationEvidenceLimitations(plan *workflowgen.WorkflowGenerationPlan) []string {
+	if plan == nil || plan.Intent != "generate_resource_ops_workflow" {
+		return nil
+	}
+	return []string{
+		"需要在 preflight 阶段确认目标资源、执行面和观察点可访问。",
+		"需要用 secret_ref 提供凭据引用，不能把密码或 token 写入 workflow。",
+		"pending_review 状态下不能声明生产 verified。",
+	}
 }
 
 func mustJSON(value any) json.RawMessage {

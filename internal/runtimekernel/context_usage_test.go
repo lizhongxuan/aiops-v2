@@ -4,9 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/promptinput"
 )
 
 func TestContextUsageAnalyzerCategorizesModelInput(t *testing.T) {
@@ -75,9 +74,14 @@ func TestContextUsageAnalyzerCategorizesModelInput(t *testing.T) {
 
 func TestAnalyzeContextUsageDoesNotRequireRawSensitiveContributors(t *testing.T) {
 	usage := AnalyzeContextUsage(ContextUsageInput{
-		Messages: []*schema.Message{
-			{Role: schema.User, Content: "user-secret-content"},
-			{Role: schema.Tool, Content: strings.Repeat("tool-secret-content ", 20), ToolCallID: "call-1"},
+		Items: []promptinput.ModelInputItem{
+			{ProviderRole: promptinput.ProviderRoleUser, Content: "user-secret-content"},
+			{
+				ProviderRole: promptinput.ProviderRoleTool,
+				Content:      strings.Repeat("tool-secret-content ", 20),
+				ToolCallID:   "call-1",
+				ToolResult:   &promptinput.ModelInputToolResult{ToolCallID: "call-1", Content: strings.Repeat("tool-secret-content ", 20)},
+			},
 		},
 	})
 	for _, contributor := range usage.TopContributors {
@@ -106,6 +110,34 @@ func TestContextUsageCategorizesHostTaskPromptAssetsSeparately(t *testing.T) {
 	for _, contributor := range usage.TopContributors {
 		if contributor.Kind == "skills" && strings.Contains(contributor.ID, "host") {
 			t.Fatalf("host task contributor was attributed to skills: %#v", contributor)
+		}
+	}
+}
+
+func TestContextUsageUsesBudgetedDynamicSources(t *testing.T) {
+	rawSkill := strings.Repeat("raw skill body ", 1000)
+	usage := AnalyzeContextUsage(ContextUsageInput{
+		Compiled: promptcompiler.CompiledPrompt{
+			Dynamic: promptcompiler.DynamicPromptDelta{
+				Sources: []promptcompiler.DynamicContextSource{{
+					ID:          promptcompiler.DynamicContextSourceSkill,
+					Content:     "summary only",
+					TokenBudget: 1000,
+					Overflowed:  true,
+					SourceRef:   "prompt_trace://dynamic.skill",
+					EvidenceRef: "dynamic.skill:overflow",
+				}},
+				SkillPromptAssets: []string{rawSkill},
+			},
+		},
+	})
+
+	if got := categoryTokens(usage, "skills"); got == 0 || got > 20 {
+		t.Fatalf("skills tokens = %d, want bounded source tokens instead of raw asset; usage=%#v", got, usage)
+	}
+	for _, contributor := range usage.TopContributors {
+		if strings.Contains(contributor.Action, "raw skill body") {
+			t.Fatalf("context usage leaked raw dynamic source overflow: %#v", contributor)
 		}
 	}
 }

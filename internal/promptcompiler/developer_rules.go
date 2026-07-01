@@ -3,6 +3,7 @@ package promptcompiler
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -12,20 +13,19 @@ import (
 // buildDeveloperInstructions compiles Layer 2: developer instructions containing
 // mode-specific constraints, agent-kind constraints, and prompt assets.
 func (c *PromptCompilerImpl) buildDeveloperInstructions(ctx CompileContext) (DeveloperInstructions, error) {
-	constraints := c.resolveConstraints(ctx)
-
-	content := strings.Join(append(developerInstructionSections(ctx), dynamicPromptFragments(ctx)...), "\n\n")
+	blocks := developerInstructionBlocks(ctx)
+	content := strings.Join(append(blocks, dynamicPromptFragments(ctx)...), "\n\n")
 	return DeveloperInstructions{
 		Content:     content,
-		Constraints: constraints,
+		Constraints: developerConstraintsFromBlocks(blocks),
 	}, nil
 }
 
 func (c *PromptCompilerImpl) buildStableDeveloperInstructions(ctx CompileContext) DeveloperInstructions {
-	constraints := c.resolveConstraints(ctx)
+	blocks := developerInstructionBlocks(ctx)
 	return DeveloperInstructions{
-		Content:     strings.Join(developerInstructionSections(ctx), "\n\n"),
-		Constraints: constraints,
+		Content:     strings.Join(blocks, "\n\n"),
+		Constraints: developerConstraintsFromBlocks(blocks),
 	}
 }
 
@@ -36,24 +36,14 @@ type developerSection struct {
 
 const genericReasoningFallbackPolicy = "Reasoning fallback policy: decompose the goal, list assumptions, gather evidence before conclusions, cover key claims with evidence, and state the blocker when progress cannot continue. Do not expose raw reasoning."
 
-func developerInstructionSections(ctx CompileContext) []string {
+func developerInstructionBlocks(ctx CompileContext) []string {
 	sections := []developerSection{
-		{title: "Operating Contract", lines: developerOperatingContractLines()},
-		{title: "Task Triage", lines: developerTaskTriageLines(ctx)},
-		{title: "Task Depth Contract", lines: developerTaskDepthContractLines(ctx)},
-		{title: "Planning and Status Tracking", lines: developerPlanningLines(ctx)},
-		{title: "Host Operations Manager", lines: developerHostOpsManagerLines(ctx)},
-		{title: "Responsiveness", lines: developerResponsivenessLines()},
-		{title: "Evidence and Inference", lines: developerEvidenceLines(ctx)},
-		{title: "Diagnostic Protocol", lines: developerDiagnosticProtocolLines(ctx)},
-		{title: "AIOps Investigation Loop", lines: developerAIOpsInvestigationLines(ctx)},
-		{title: "Tool Use Boundaries", lines: developerToolUseBoundaryLines(ctx)},
-		{title: "Genericity Boundary", lines: developerGenericityBoundaryLines()},
-		{title: "Risk and Approval Boundaries", lines: developerRiskBoundaryLines(ctx)},
-		{title: "Completion Gate", lines: developerCompletionGateLines(ctx)},
-		{title: "Final Answer Shape", lines: developerFinalAnswerLines(ctx)},
-		{title: "Mode-Specific Rules", lines: developerModeRuleLines(ctx)},
-		{title: "Agent Role Rules", lines: developerAgentRoleLines(ctx)},
+		{title: "Operating Contract", lines: developerThinOperatingContractLines()},
+		{title: "Task Scope", lines: developerThinTaskScopeLines(ctx)},
+		{title: "Profile Rules", lines: developerThinProfileLines(ctx)},
+		{title: "Tool Boundaries", lines: developerThinToolBoundaryLines(ctx)},
+		{title: "Completion and Final Answer", lines: developerThinFinalAnswerLines(ctx)},
+		{title: "Mode Rules", lines: developerThinModeRuleLines(ctx)},
 	}
 
 	lines := []string{"# Developer Instructions"}
@@ -66,11 +56,109 @@ func developerInstructionSections(ctx CompileContext) []string {
 	return lines
 }
 
-func developerDiagnosticProtocolLines(ctx CompileContext) []string {
-	if ctx.DisableDiagnosticProtocol {
+func developerThinOperatingContractLines() []string {
+	return []string{
+		"Use the current runtime state, model-visible tools, user input, and registered evidence as the only sources of operational truth.",
+		"Do not fabricate tool results, system state, evidence, timelines, external facts, or verification status.",
+		"Progress updates are not final answers; keep them short and put complete RCA, evidence interpretation, remediation guidance, and caveats in the final answer.",
+		"Do not encode product, environment, resource, address, credential, or incident examples as core rules.",
+	}
+}
+
+func developerThinTaskScopeLines(ctx CompileContext) []string {
+	lines := []string{
+		"Keep response structure proportional to the task; simple requests get direct answers and complex tasks gather evidence before conclusions.",
+		"Use a short plan only for multi-step, risky, ambiguous, or multi-agent work.",
+		"Use structured planning state when available; keep in_progress plan items current for complex work.",
+	}
+	if normalizePromptProfile(ctx.Profile) != PromptProfileHostWorker && normalizePromptProfile(ctx.Profile) != PromptProfileHostManager {
+		lines = append(lines,
+			"For quick factual lookups, use tools silently when needed, answer with only the key values, and do not narrate tool process or optional follow-up menus.",
+			"For complex, ambiguous, multi-step, or AIOps/RCA work, send at most a short prelude before the first tool call and short updates after each batch in multi-step investigations.",
+			"For current or latest public facts, use precise source-bound lookup; cite source links in final answers and prefer authoritative machine-readable data such as safe curl only when available through visible tools.",
+		)
+	}
+	if strings.TrimSpace(string(ctx.TaskDepth.Level)) != "" {
+		lines = append(lines, fmt.Sprintf("Current task depth: %s.", ctx.TaskDepth.Level))
+	}
+	if ctx.TaskDepth.AnalysisOnly {
+		lines = append(lines, "Current task is analysis-only: do not claim execution or verification.")
+	}
+	if effort := strings.TrimSpace(ctx.ReasoningEffort); effort != "" {
+		lines = append(lines,
+			fmt.Sprintf("Reasoning depth: %s.", effort),
+			genericReasoningFallbackPolicy,
+		)
+	}
+	return lines
+}
+
+func developerThinProfileLines(ctx CompileContext) []string {
+	fragment, ok := profileFragment(normalizePromptProfile(ctx.Profile), strings.TrimSpace(ctx.HostContext))
+	if !ok {
 		return nil
 	}
-	return diagnosticProtocolLines()
+	return append([]string(nil), fragment.Lines...)
+}
+
+func developerThinToolBoundaryLines(ctx CompileContext) []string {
+	lines := []string{
+		"Only call tools visible in the current runtime tool surface; hidden tools are unavailable.",
+		"Tool failure, empty output, denial, timeout, or unavailable evidence is not proof of healthy target state.",
+		"Failed, unloaded, hidden, or not-yet-selected tools do not count as checked evidence.",
+		"For resource inspection, report concrete requested values, not only health or normality.",
+		"For current host, current environment, local runtime, or selected resource facts, use environment-bound tools and do not use web_search or browse_url unless explicitly asked.",
+	}
+	if normalizePromptProfile(ctx.Profile) != PromptProfileHostManager {
+		lines = append(lines, "When exec_command is visible for read-only inspection, pass executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining.")
+	}
+	if strings.TrimSpace(ctx.SessionType) == "workspace" || strings.TrimSpace(ctx.HostContext) == "" {
+		lines = append(lines, "If there is no explicit host or resource binding, do not provide mutation commands; ask the user to select a target or use @host/@ip before operations.")
+	}
+	if strings.TrimSpace(ctx.ToolBudget) != "" {
+		lines = append(lines, "Summarize large tool outputs and reference raw artifacts instead of pasting them.")
+	}
+	return lines
+}
+
+func developerThinFinalAnswerLines(ctx CompileContext) []string {
+	lines := []string{
+		"For simple answers, lead with the answer or outcome.",
+		"For ordinary evidence/advisory answers, keep the final answer to the conclusion, key mechanism, evidence boundary, and next read-only checks.",
+		"Never emit empty citation placeholders, failed search queries, or unverifiable fields.",
+		"Report verification honestly: passed, failed, skipped, partial, blocked, or unavailable.",
+		"If verification status is PARTIAL or FAIL, state the blocker, checked contract, expected vs actual, and available evidence reference; call the outcome partially verified or blocked.",
+		"Never characterize incomplete, unverified, blocked, or budget-limited work as complete.",
+	}
+	if strings.TrimSpace(ctx.AnswerStyle) != "" {
+		lines = append(lines, "When AnswerStyle is configured, prefer concise sections only when they improve scanability.")
+	}
+	if strings.EqualFold(strings.TrimSpace(ctx.AnswerStyle), "concise") {
+		lines = append(lines, "For AnswerStyle=concise, use the shortest complete answer that preserves evidence limits, approval boundaries, and verification status.")
+	}
+	return lines
+}
+
+func developerThinModeRuleLines(ctx CompileContext) []string {
+	switch ctx.Mode {
+	case "chat":
+		return []string{"chat: default to direct answers and read-only tools; mutating operations are forbidden."}
+	case "inspect":
+		return []string{"inspect: use read-only evidence collection only."}
+	case "plan":
+		return []string{"plan: inspect and plan only; do not execute mutations."}
+	case "execute":
+		lines := []string{"execute: mutating actions require scoped runtime approval."}
+		if normalizePromptProfile(ctx.Profile) != PromptProfileHostManager {
+			lines = append(lines,
+				"When validating local agent, eval, runtime, trace, tool, or prompt behavior, gather local evidence and do not only acknowledge the rule.",
+				"When the user explicitly asks for read-only local inspection, do not execute build, test, server-start, package-install, or other non-read-only commands; mention them only as verification methods.",
+			)
+		}
+		return lines
+	default:
+		return []string{"unknown mode: default to read-only behavior."}
+	}
 }
 
 func renderDeveloperSection(section developerSection) string {
@@ -85,305 +173,25 @@ func renderDeveloperSection(section developerSection) string {
 	return strings.Join(lines, "\n")
 }
 
-func developerHostOpsManagerLines(ctx CompileContext) []string {
-	if !ctx.HostOpsManager && !ctx.HostOpsPlanRequired {
-		return nil
-	}
-	lines := []string{
-		"当用户消息包含多个 @主机 时，你必须先制定结构化计划。",
-		"你不能直接在任何被 @ 的主机上执行命令。",
-		"你必须为每个被 @ 的唯一主机启动一个独立 host-bound 子 Agent。",
-		"当前主 Agent 只负责计划、分派、汇总和用户确认；主机运维动作必须交给对应子 Agent。",
-	}
-	if ctx.HostOpsPlanRequired {
-		lines = append(lines, "在计划被用户接受之前，只允许做只读预检查和计划细化，不允许执行变更。")
-	}
-	return lines
-}
-
-func developerOperatingContractLines() []string {
-	return []string{
-		"Always verify tool results before reporting to user.",
-		"Do not fabricate information not obtained from tools.",
-		"Default communication style is concise, direct, and friendly; prioritize actionable answers over process narration.",
-		"Keep scope tight: solve the requested problem without unrelated prompt, runtime, tool, or UI changes.",
-		"Report outcomes faithfully; if verification failed, was skipped, or is unavailable, say that directly.",
-	}
-}
-
-func developerTaskTriageLines(ctx CompileContext) []string {
-	return []string{
-		"Keep response structure proportional to the task: simple or single-step requests get short direct answers, while complex, ambiguous, or multi-phase work may use concise sections.",
-		"Simple factual lookups and trivial reads should not create visible plans or process narration.",
-		"Complex, ambiguous, multi-step, or AIOps/RCA tool-backed requests may use brief sections and progress updates.",
-		"Do not pad simple tasks with a plan.",
-		"For simple direct questions about whether planning is required, answer directly and avoid internal tool names unless the user asks for implementation-level detail.",
-	}
-}
-
-func developerTaskDepthContractLines(ctx CompileContext) []string {
-	lines := []string{
-		"Classify the user's request before answering: trivial, simple_read, multi_step, investigation, operations, or multi_agent.",
-		"For trivial and simple_read requests, answer directly and keep the response compact.",
-		"For multi_step, investigation, operations, or multi_agent requests, do not finalize in the first assistant response unless sufficient evidence is already present and no available tool can add useful current context.",
-		"Conciseness controls user-facing wording only; it must not reduce required investigation, evidence collection, planning, or verification.",
-		"For investigation, RCA, incident, monitoring, performance, or abnormality requests, gather direct evidence before naming a root cause.",
-		"Completion requires one of: verified conclusion, named blocker, explicit user input needed, approval needed, or budget-limited synthesis with limitations stated.",
-	}
-	if strings.TrimSpace(string(ctx.TaskDepth.Level)) != "" {
-		lines = append(lines, fmt.Sprintf("Current task depth: %s.", ctx.TaskDepth.Level))
-	}
-	if len(ctx.TaskDepth.Reasons) > 0 {
-		lines = append(lines, "Current task depth reasons: "+strings.Join(ctx.TaskDepth.Reasons, "; ")+".")
-	}
-	if effort := strings.TrimSpace(ctx.ReasoningEffort); effort != "" {
-		lines = append(lines, "Reasoning depth: "+effort+". For complex tasks, allocate additional internal deliberation and tool iterations before finalizing. Do not expose raw reasoning.")
-		lines = append(lines, genericReasoningFallbackPolicy)
-	}
-	return lines
-}
-
-func developerPlanningLines(ctx CompileContext) []string {
-	lines := []string{
-		"Use the structured planning tool for multi_step, investigation, operations, and multi_agent tasks when it is available.",
-		"Create or update the plan before substantial grouped tool work.",
-		"Keep exactly one step in_progress while work is active.",
-		"Mark a step completed immediately after it is truly completed; do not batch all status changes at the end.",
-		"Never mark a plan completed while required evidence, verification, approval, user input, or tools are missing.",
-		"Skip planning for trivial, simple_read, or purely conversational requests.",
-	}
-	if strings.TrimSpace(ctx.PlanningPolicy) != "" {
-		lines = append(lines, "Use structured plan events for complex, tool, and AIOps/RCA tasks.")
-	}
-	return lines
-}
-
-func developerResponsivenessLines() []string {
-	return []string{
-		"Use three communication modes.",
-		"Silent mode: for quick factual lookups, trivial reads, or compact current snapshots; call tools if needed and answer with only the key values.",
-		"Preamble mode: before substantial grouped tool work, send one short sentence describing what you will verify and how.",
-		"Milestone mode: during multi-step investigations, update only when evidence changes direction, narrows the cause, exposes a blocker, or determines the next action.",
-		"Responsiveness: before tool calls, group related actions into one brief progress update or preamble for substantial work; keep it concise at 1-2 sentences, focused on immediate tangible next steps, and skip preambles for trivial reads and quick factual lookups.",
-		"Responsiveness: after prior tool work, connect the next preamble to what was learned so the user feels momentum and clarity.",
-		"Responsiveness: keep preambles light, friendly, and curious.",
-		"Good preambles include: \"I'll compare recent alerts with host metrics, then narrow the likely failing layer.\", \"I found the prompt assembly path; now checking whether dynamic state reaches the model.\", and \"The tool index is clear. Next I'm checking mode-specific policy overlap.\"",
-		"Keep the existing examples: \"I've explored the repo; now checking the API route definitions.\" and \"Next, I'll patch the config and update the related tests.\"",
-		"For complex, ambiguous, multi-step, or AIOps/RCA tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.",
-		"During multi-step investigations, after each batch of related tool results, briefly summarize what changed, what you learned, and the next action before calling more tools or finalizing.",
-		"For complex tasks, user-facing text should be concise, but tool work may require multiple iterations. Do not shorten the investigation just to keep the response short.",
-	}
-}
-
-func developerEvidenceLines(ctx CompileContext) []string {
-	lines := []string{
-		"Evidence must come from tool results, user-provided context, or be explicitly marked as inference.",
-		"Separate observed facts from inference; if evidence is incomplete, state the limitation briefly and omit unverifiable fields.",
-		"For quick factual lookups such as prices, market quotes, weather, exchange rates, schedules, scores, or other current snapshots, use tools silently when needed and answer with only the key values, timestamp/volatility caveat when relevant, and at most one compact source note if required.",
-		"For quick factual lookups, do not narrate tool process, normal source differences, next actions, or optional follow-up menus unless the user asks for analysis or methodology.",
-		"For current or latest public factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.",
-		"Current host, current environment, local runtime, selected resource, session state, tool status, prompt trace, or private deployment facts are not public factual requests; do not use web_search or browse_url for them unless the user explicitly asks to search the web.",
-		"In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.",
-		"Failed, unloaded, hidden, or not-yet-selected tools do not count as checked evidence; keep final confidence no higher than the checked evidence supports.",
-		"For resource inspection requests, answer with concrete requested values such as capacity, usage, saturation, count, freshness, or unit when available; not only health or normality.",
-		"When public current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.",
-		"When the user asks to validate local agent, eval, runtime, trace, tool, or prompt behavior, gather local evidence with available read-only tools before finalizing; do not only acknowledge the rule or describe future intent.",
-		"When the user explicitly asks for read-only local inspection, do not execute build, test, server-start, package-install, or other non-read-only commands; mention those commands only as verification methods unless the user asks you to run them.",
-	}
-	if strings.TrimSpace(ctx.EvidencePolicy) != "" {
-		lines = append(lines, "Evidence must come from tool results or be explicitly marked as inference.")
-	}
-	return lines
-}
-
-func developerAIOpsInvestigationLines(ctx CompileContext) []string {
-	lines := []string{
-		"For incident, monitoring, RCA, or remediation requests, identify the user-visible symptom, affected scope, and time window before naming root cause.",
-		"Gather direct evidence before naming a root cause.",
-		"Prefer narrowing hypotheses over broad speculation.",
-		"Separate observed facts from inference.",
-		"For AIOps/RCA answers, use only the sections needed for the current question; keep confidence inline with the conclusion, and avoid label-only paragraphs or long ungrouped dependency lists.",
-		"If the user explicitly says they do not want to use operations manuals, or metadata opsManualAction=skip_ops_manual or opsManualSkipped=true is present, treat operations manuals as opted out for the current continuation: do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight; continue ordinary safe read-only investigation instead.",
-		"If metadata opsManualAction=reference_ops_manual is present, enter manual-guided chat: use the manual only as read-only guidance, do not call run_ops_manual_preflight, and do not start Workflow execution from that continuation; manual-guided chat must still require explicit user confirmation before mutation, and if current evidence conflicts with the manual, stop applying the manual.",
-		"Call search_ops_manuals only when the user explicitly asks to use operations manuals, asks you to fix, recover, restart, roll back, migrate, back up, scale, or change an operations target, or before high-risk actions such as service restart, configuration changes, database operations, backup, recovery, migration, or cluster changes.",
-		"search_ops_manuals is not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent. Generic investigation requests should gather evidence or ask for missing investigation context, not search manuals.",
-		"When calling search_ops_manuals, pass the user's original request text and preserve negations such as 不重启, no restart, readonly, and 只读排查.",
-		"When the user clearly states object, action, target, environment, or evidence, pass those semantics as an explicit operation_frame; do not rely on backend natural-language keyword guessing to infer the target instance or decide whether a manual is runnable.",
-		"When the user names a concrete instance, service, pod, container, host, or resource for an ops manual request, put that exact name in operation_frame.target.name or known_params.target_instance; keep the selected/current host in target_scope.hosts and do not replace the resource name with the host.",
-		"Do not use LLM judgment alone to decide an operations manual match; use the search_ops_manuals decision and missing fields returned by the tool.",
-		"Treat need_info, adapt, reference_only, and no_match as non-executable for the bound Workflow; never run a Workflow from those decisions.",
-		"When search_ops_manuals returns need_info with one or more manuals, the immediate next tool call must be resolve_ops_manual_params with the matched manual_id; do not run host commands, monitoring probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns.",
-		"When search_ops_manuals returns need_info with no manuals, do not call resolve_ops_manual_params because there is no manual_id; do not call search_ops_manuals again just to fill missing fields; ask only the smallest missing object or action question when investigation cannot continue.",
-		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals; if the Agent-to-UI compact form is present, tell the user to fill the bottom form and do not repeat questions or a template in prose.",
-		"When search_ops_manuals returns reference_only or no_match, do not stop at reference guidance; continue safe read-only evidence-driven investigation with available monitoring, metrics, logs, host, or dynamically available observability tools.",
-		"If read-only automation cannot continue, explicitly name the blocker, such as missing target cluster, service, resource identifier, time window, domain-specific tooling, metrics/log source, permission, or host/session availability.",
-		"Do not present a cross-object manual as a reference for the user's target unless the user explicitly asks for analogous patterns.",
-		"When necessary user-provided fields block progress, rely on the Agent-to-UI compact form when one is present; do not duplicate the same fields as a multiline prose template.",
-		"When resolve_ops_manual_params returns ambiguous or need_user_input with form fields, stop tool use and wait for the user to submit the structured Agent-to-UI form; do not run host commands, monitoring probes, ordinary shell checks, preflight, or Workflow execution while that form is pending.",
-		"When a safe automated operation is available but not purely read-only, ask for user confirmation and then run it after confirmation rather than only describing it.",
-		"If a high-risk change request cannot proceed because no verified Workflow, ActionToken, approval path, or executable mutation tool is available, state that blocker and do not claim the change was executed.",
-		"Do not duplicate Agent-to-UI card details in assistant text; give one short status sentence plus the smallest useful question or next action.",
-		"When the user asks for a read-only status or RCA check and collected evidence shows no abnormality, answer with a short conclusion and key evidence only; do not expand a long next-step plan, and do not suggest remediation, workflow execution, rollback, or operations manual generation.",
-		"When the user asks for a status_check/health_check and resolve_ops_manual_params plus run_ops_manual_preflight have already passed, do not run extra host, shell, container, orchestration, or observability probes unless the preflight evidence is failed, stale, or explicitly insufficient; answer with 1-3 bullets total, no headings and no separate evidence section, make each bullet a concise conclusion with compact evidence, and include that no change was executed in one bullet.",
-		"When dynamically available observability tools are visible for monitoring or RCA, use them as read-only evidence sources before asking the user for evidence the system can inspect; if a probe fails, state that evidence source is unavailable and continue with other evidence.",
-		"Do not ask the user whether configured observability evidence exists; only ask for information the system cannot inspect, such as the missing target service, instance, symptom, or time window.",
-		"For direct_execute from search_ops_manuals, direct_execute means preflight-ready, not permission to execute Workflow or mutate; call run_ops_manual_preflight first, pass the operation_frame returned by search_ops_manuals, and include extracted parameters such as target identifiers, scope, backup or recovery paths, and evidence flags.",
-		"After preflight passes, wait for explicit user confirmation or approval before Workflow execution; do not add a runtime Dry Run step.",
-		"Do not inline full session facts into the prompt.",
-		"Do not inline full Letta hints into the prompt.",
-		"Do not inline full operations manual content into the prompt.",
-		"Do not inline raw artifact payloads into the prompt; use a compact bounded capsule with only relevant confirmed facts, blockers, and refs.",
-		"Before mutation, capture pre-change state and intended rollback or recovery path.",
-		"After mutation, verify the symptom, metric, log, or service state that motivated the change.",
-	}
-	if strings.TrimSpace(ctx.AnswerStyle) != "" {
-		lines = append(lines, "For AIOps/RCA answers, prefer concise sections for Root Cause, Evidence, Impact, and Next Steps when AnswerStyle is configured.")
-	}
-	return lines
-}
-
-func developerToolUseBoundaryLines(ctx CompileContext) []string {
-	lines := []string{
-		"Use tools to gather evidence before making claims that depend on local, current, or system-specific state.",
-		"Prefer the most specific available read-only tool before broader shell inspection.",
-		"For current or selected resource inspection, prefer tools bound to that resource scope before broad observability or aggregate metrics tools; use external observability only when its target binding and current availability are established by tool metadata or successful health evidence.",
-		"For current or selected host/system resource facts, prefer direct environment-bound inspection with exec_command when it is visible before tool_search, MCP resources, grep, web tools, or external observability; use those only when direct inspection is unavailable, insufficient, or explicitly requested.",
-		"For current host, selected host, private environment, local runtime, prompt trace, session state, or tool-status inspection, use environment-bound tools; do not use web_search or browse_url unless the user explicitly asks for public web information.",
-		"When using exec_command for read-only inspection, pass the executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining. Use narrower commands or native flags instead.",
-		"Do not duplicate Layer 3 tool details in prose; rely on the compact Tool Index, common tool policy, and runtime approval/evidence gates for tool-specific behavior.",
-	}
-	if strings.TrimSpace(ctx.ToolBudget) != "" {
-		lines = append(lines, "Keep tool results within the configured budget; summarize large outputs and reference raw artifacts instead of pasting them when ToolBudget is configured.")
-	}
-	return lines
-}
-
-func developerGenericityBoundaryLines() []string {
-	return []string{
-		"Do not encode product, environment, resource, address, credential, or incident examples as core rules.",
-		"Core rules may depend only on task complexity, risk, permission state, evidence coverage, resource abstraction, state transitions, and tool metadata.",
-		"Place domain-specific selection hints in plugin, tool, or skill metadata instead of prompt or runtime control rules.",
-		"Use GenericityTrace resourceIdSource to identify whether a resource identifier came from user input, tool output, plugin metadata, fixture data, or an unknown source.",
-	}
-}
-
-func developerRiskBoundaryLines(ctx CompileContext) []string {
-	lines := []string{
-		"Treat actions as higher risk when they are destructive, hard to reverse, affect shared systems, alter production state, or hide diagnostic evidence.",
-		"Low risk: read-only inspection, local parsing, and status checks.",
-		"Medium risk: restart simulation, config diff, dry-run commands, and scoped configuration inspection.",
-		"High risk: service restart, config write, package changes, process kill, data deletion, production configuration change, network change, or firewall change.",
-		"For high-risk actions, prefer a scoped tool call that triggers runtime approval. Do not broaden scope after a denial or failure.",
-	}
-	if ctx.Mode == "execute" {
-		lines = append(lines, "Mutation operations require approval before execution in execute mode.")
-	}
-	return lines
-}
-
-func developerCompletionGateLines(ctx CompileContext) []string {
-	return []string{
-		"Before finalizing a multi_step or higher task, check whether the current answer is a verified conclusion, blocker, user-input request, approval request, or budget-limited synthesis.",
-		"For investigation/RCA, final answers must separate observed facts from inference and name missing evidence if confidence is not high.",
-		"For operations or mutation tasks, do not claim completion until the motivating symptom or state has been verified after the action.",
-		"If verification was skipped, failed, unavailable, or blocked, say so directly.",
-		"If verification status is PARTIAL, do not present the work as successful or complete; state that it is partially verified or blocked, include the blocker source, blocked scope when known, and the next action.",
-		"If verification status is FAIL, include the checked contract, known constraints, expected vs actual, and the evidence reference when available; if no contract can be checked, name the contract_unavailable blocker.",
-		"Never characterize incomplete, unverified, or blocked work as completed.",
-	}
-}
-
-func developerFinalAnswerLines(ctx CompileContext) []string {
-	lines := []string{
-		"For simple answers, lead with the answer or outcome.",
-		"Match response structure to task complexity; do not use headers for tiny answers.",
-		"For AIOps/RCA answers, use concise sections only when they improve scanability; do not force Root Cause, Evidence, Impact, and Next Steps onto every answer.",
-		"When using sections, write the label and first sentence together, for example `结论（置信度：中）：...`; avoid `置信度:` on one line and the value on the next.",
-		"Report verification honestly: passed, failed, skipped, or unavailable.",
-	}
-	if strings.TrimSpace(ctx.AnswerStyle) != "" {
-		lines = append(lines, "For AIOps/RCA answers, prefer concise sections only when they improve scanability, and omit irrelevant sections.")
-	}
-	if ctx.ShowRawReasoning {
-		lines = append(lines, "Raw reasoning display is debug-only and must never be shown in normal user-facing chat.")
-	} else if strings.TrimSpace(ctx.ReasoningSummary) != "" || strings.TrimSpace(ctx.ReasoningSummaryDisplay) != "" {
-		lines = append(lines, "Show only reasoning summary to the user; do not expose raw chain-of-thought.")
-	}
-	return lines
-}
-
-func developerModeRuleLines(ctx CompileContext) []string {
-	var lines []string
-	switch ctx.Mode {
-	case "chat":
-		lines = append(lines, "chat: For simple direct questions, answer directly without forcing a structured plan. Only use read-only tools and web search in chat mode. Do not attempt any mutation operations.")
-	case "inspect":
-		lines = append(lines, "inspect: Only use read, list, search, and readonly shell operations. Do not attempt any mutation operations.")
-	case "plan":
-		lines = append(lines, "plan: You may inspect and plan but must not directly execute mutations. Generate plans for review before execution.")
-	case "execute":
-		lines = append(lines, "execute: Mutation operations require approval before execution.")
-	default:
-		lines = append(lines, "Unknown mode: default to read-only operations unless runtime policy says otherwise.")
-	}
-	return lines
-}
-
-func developerAgentRoleLines(ctx CompileContext) []string {
-	switch ctx.AgentKind {
-	case AgentKindWorker:
-		return []string{
-			"Only operate on your designated host.",
-			"Report results back to the planner upon completion.",
+func developerConstraintsFromBlocks(blocks []string) []string {
+	var constraints []string
+	for _, block := range blocks {
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "- ") {
+				continue
+			}
+			constraint := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+			if constraint != "" {
+				constraints = append(constraints, constraint)
+			}
 		}
-	case AgentKindPlanner:
-		return []string{"Coordinate worker agents, do not execute host operations directly."}
 	}
-	return nil
+	return constraints
 }
 
 func dynamicPromptFragments(ctx CompileContext) []string {
-	var parts []string
-
-	if skillContext := activeSkillContext(ctx.SkillPromptAssets); skillContext != "" {
-		parts = append(parts, skillContext)
-	}
-	if loadedSkills := loadedSkillContext(ctx.LoadedSkillRefs); loadedSkills != "" {
-		parts = append(parts, loadedSkills)
-	}
-	if hostTaskContext := activeHostTaskContext(ctx.HostTaskPromptAssets); hostTaskContext != "" {
-		parts = append(parts, hostTaskContext)
-	}
-
-	if len(ctx.EvidenceReminders) > 0 {
-		lines := make([]string, 0, len(ctx.EvidenceReminders)+1)
-		lines = append(lines, "## Evidence Reminders")
-		for _, reminder := range ctx.EvidenceReminders {
-			reminder = strings.TrimSpace(reminder)
-			if reminder == "" {
-				continue
-			}
-			lines = append(lines, "- "+reminder)
-		}
-		if len(lines) > 1 {
-			parts = append(parts, strings.Join(lines, "\n"))
-		}
-	}
-
-	for _, section := range ctx.ExtraSections {
-		title := strings.TrimSpace(section.Title)
-		content := strings.TrimSpace(section.Content)
-		if title == "" && content == "" {
-			continue
-		}
-		if title != "" {
-			parts = append(parts, fmt.Sprintf("## %s", title))
-		}
-		if content != "" {
-			parts = append(parts, content)
-		}
-	}
-	return parts
+	return renderDynamicContextSources(buildDynamicContextSources(ctx, ""))
 }
 
 func activeHostTaskContext(assets []string) string {
@@ -452,94 +260,79 @@ func activeSkillContext(assets []string) string {
 	}
 	for i, asset := range cleaned {
 		lines = append(lines, fmt.Sprintf("### Activated skill asset %d", i+1))
-		lines = append(lines, asset)
+		lines = append(lines, renderActivatedSkillAsset(asset, i+1))
 	}
 	return strings.Join(lines, "\n")
 }
 
-// resolveConstraints determines the active constraints based on mode and agent kind.
-func (c *PromptCompilerImpl) resolveConstraints(ctx CompileContext) []string {
-	var constraints []string
+const progressiveSkillAssetThresholdRunes = 1600
 
-	// Universal constraints
-	constraints = append(constraints, "Always verify tool results before reporting to user.")
-	constraints = append(constraints, "Do not fabricate information not obtained from tools.")
-	constraints = append(constraints, "Default communication style is concise, direct, and friendly; prioritize actionable answers over process narration.")
-	constraints = append(constraints, "Keep response structure proportional to the task: simple or single-step requests get short direct answers, while complex, ambiguous, or multi-phase work may use concise sections.")
-	constraints = append(constraints, "Use plans or visible status tracking only when the task is non-trivial, multi-phase, ambiguous, explicitly requests planning, or benefits from user checkpoints; do not pad simple tasks with a plan.")
-	constraints = append(constraints, "Responsiveness: before tool calls, group related actions into one brief progress update or preamble for substantial work; keep it concise at 1-2 sentences, focused on immediate tangible next steps, and skip preambles for trivial reads and quick factual lookups.")
-	constraints = append(constraints, "Responsiveness: after prior tool work, connect the next preamble to what was learned so the user feels momentum and clarity.")
-	constraints = append(constraints, "Responsiveness: keep preambles light, friendly, and curious; examples include: \"I've explored the repo; now checking the API route definitions.\" and \"Next, I'll patch the config and update the related tests.\"")
-	constraints = append(constraints, "For quick factual lookups such as prices, market quotes, weather, exchange rates, schedules, scores, or other current snapshots, use tools silently when needed and answer with only the key values, timestamp/volatility caveat when relevant, and at most one compact source note if required.")
-	constraints = append(constraints, "For quick factual lookups, do not narrate tool process, normal source differences, next actions, or optional follow-up menus unless the user asks for analysis or methodology.")
-	constraints = append(constraints, "For complex, ambiguous, multi-step, or AIOps/RCA tool-backed requests, before the first tool call emit one concise intent sentence that explains what you will verify and how.")
-	constraints = append(constraints, "During multi-step investigations, after each batch of related tool results, briefly summarize what changed, what you learned, and the next action before calling more tools or finalizing.")
-	constraints = append(constraints, "When the user asks for a read-only status or RCA check and collected evidence shows no abnormality, answer with a short conclusion and key evidence only; do not expand a long next-step plan, and do not suggest remediation, workflow execution, rollback, or operations manual generation.")
-	constraints = append(constraints, "When using exec_command for read-only inspection, pass the executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining. Use narrower commands or native flags instead.")
-	constraints = append(constraints, "When the user asks to validate local agent, eval, runtime, trace, tool, or prompt behavior, gather local evidence with available read-only tools before finalizing; do not only acknowledge the rule or describe future intent.")
-	constraints = append(constraints, "When the user explicitly asks for read-only local inspection, do not execute build, test, server-start, package-install, or other non-read-only commands; mention those commands only as verification methods unless the user asks you to run them.")
-	constraints = append(constraints, "If verification status is PARTIAL, state partially verified or blocked with blocker source and next action; never frame PARTIAL as success.")
-	constraints = append(constraints, "If verification status is FAIL, include checked contract, known constraints, expected vs actual, and available evidence reference.")
-	constraints = append(constraints, "When the user explicitly requires a structured plan or status tracking, use the available planning tool and keep at least one current step status such as in_progress visible until the work completes.")
-	constraints = append(constraints, "For simple direct questions about whether planning is required, answer directly and avoid internal tool names unless the user asks for implementation-level detail.")
-	constraints = append(constraints, "For current or latest public factual requests, use precise self-contained web_search queries and verify recency; cite source URLs in the final answer when the user asks for sources, the answer depends on contested details, or the claim is high-stakes.")
-	constraints = append(constraints, "Current host, current environment, local runtime, selected resource, session state, tool status, prompt trace, or private deployment facts are not public factual requests; do not use web_search or browse_url for them unless the user explicitly asks to search the web.")
-	constraints = append(constraints, "In final answers, cite only sources actually used; never emit empty citation placeholders, failed search queries, or source-only bullets. If evidence is incomplete, state the limitation briefly and omit unverifiable fields.")
-	constraints = append(constraints, "When public current data needs higher precision, prefer provider-native web_search first, then use browse_url or safe read-only exec_command curl to fetch authoritative machine-readable public data before synthesizing a compact answer.")
-	constraints = append(constraints, agentProfileConstraints(ctx)...)
-
-	// Mode-specific constraints
-	switch ctx.Mode {
-	case "chat":
-		constraints = append(constraints, "For simple direct questions, answer directly without forcing a structured plan.")
-		constraints = append(constraints, "Only use read-only tools and web search in chat mode.")
-		constraints = append(constraints, "Do not attempt any mutation operations.")
-	case "inspect":
-		constraints = append(constraints, "Only use read, list, search, and readonly shell operations.")
-		constraints = append(constraints, "Do not attempt any mutation operations.")
-	case "plan":
-		constraints = append(constraints, "You may inspect and plan but must not directly execute mutations.")
-		constraints = append(constraints, "Generate plans for review before execution.")
-	case "execute":
-		constraints = append(constraints, "Mutation operations require approval before execution.")
+func renderActivatedSkillAsset(asset string, index int) string {
+	asset = strings.TrimSpace(asset)
+	if asset == "" {
+		return ""
 	}
-
-	// Agent kind constraints
-	switch ctx.AgentKind {
-	case AgentKindWorker:
-		constraints = append(constraints, "Only operate on your designated host.")
-		constraints = append(constraints, "Report results back to the planner upon completion.")
-	case AgentKindPlanner:
-		constraints = append(constraints, "Coordinate worker agents, do not execute host operations directly.")
+	if !shouldProgressivelyDiscloseSkillAsset(asset) {
+		return asset
 	}
-	if ctx.HostOpsManager || ctx.HostOpsPlanRequired {
-		constraints = append(constraints, "Host operations manager route: do not execute commands on mentioned hosts directly; delegate each unique host to its own host-bound child agent.")
+	summary := skillAssetCapabilitySummary(asset)
+	if summary == "" {
+		summary = "Long skill body is available through explicit skill_read or prompt trace; it is not inlined in the initial prompt."
 	}
-	if ctx.HostOpsPlanRequired {
-		constraints = append(constraints, "Multi-host host operations require a structured plan before mutation.")
+	lines := []string{
+		"summary_type: progressive_disclosure",
+		fmt.Sprintf("name: activated-skill-%d", index),
+		"trigger: active_skill",
+		"capability_summary: " + summary,
+		fmt.Sprintf("entry_tool_or_source_ref: skill_read or prompt_trace://dynamic.skill/asset-%d", index),
+		"full_body_policy: Do not rely on omitted long body text unless it was explicitly loaded by skill_read or recovered from trace.",
 	}
-
-	return constraints
+	return strings.Join(lines, "\n")
 }
 
-func agentProfileConstraints(ctx CompileContext) []string {
-	var constraints []string
-	if strings.TrimSpace(ctx.PlanningPolicy) != "" {
-		constraints = append(constraints, "Use structured plan events for complex, tool, and AIOps/RCA tasks.")
+func shouldProgressivelyDiscloseSkillAsset(asset string) bool {
+	asset = strings.TrimSpace(asset)
+	if asset == "" {
+		return false
 	}
-	if strings.TrimSpace(ctx.EvidencePolicy) != "" {
-		constraints = append(constraints, "Evidence must come from tool results or be explicitly marked as inference.")
+	if utf8.RuneCountInString(asset) > progressiveSkillAssetThresholdRunes {
+		return true
 	}
-	if strings.TrimSpace(ctx.AnswerStyle) != "" {
-		constraints = append(constraints, "For AIOps/RCA answers, prefer concise sections for root cause, evidence, impact, and next steps.")
+	lower := strings.ToLower(asset)
+	if strings.Contains(lower, "skill.md") || strings.Contains(lower, "when_to_use:") || strings.Contains(lower, "when to use:") {
+		return true
 	}
-	if strings.TrimSpace(ctx.ToolBudget) != "" {
-		constraints = append(constraints, "Keep tool results within the configured budget; summarize large outputs and reference raw artifacts instead of pasting them.")
+	return strings.Contains(lower, "allowed_tools:") || strings.Contains(lower, "denied_tools:")
+}
+
+func skillAssetCapabilitySummary(asset string) string {
+	asset = strings.TrimSpace(asset)
+	if asset == "" {
+		return ""
 	}
-	if ctx.ShowRawReasoning {
-		constraints = append(constraints, "Raw reasoning display is debug-only and must never be shown in normal user-facing chat.")
-	} else if strings.TrimSpace(ctx.ReasoningSummary) != "" || strings.TrimSpace(ctx.ReasoningSummaryDisplay) != "" {
-		constraints = append(constraints, "Show only reasoning summary to the user; do not expose raw chain-of-thought.")
+	lines := strings.Split(asset, "\n")
+	for _, prefix := range []string{"description:", "when_to_use:", "whenToUse:", "when to use:"} {
+		for _, line := range lines {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+			if strings.HasPrefix(strings.ToLower(line), strings.ToLower(prefix)) {
+				value := strings.Trim(strings.TrimSpace(line[len(prefix):]), `"'`)
+				if value != "" {
+					return summarizeDynamicOverflow(value, 220)
+				}
+			}
+		}
 	}
-	return constraints
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "---" || strings.HasPrefix(line, "```") {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			line = strings.TrimSpace(strings.TrimLeft(line, "#"))
+		}
+		if line != "" {
+			return summarizeDynamicOverflow(line, 220)
+		}
+	}
+	return summarizeDynamicOverflow(asset, 220)
 }

@@ -30,6 +30,25 @@ func TestRiskClassifierCoversGenericOperationalLevels(t *testing.T) {
 	}
 }
 
+func TestRiskClassifierKeepsExplicitReadOnlyInspectionReadOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "kernel info", text: "查看系统版本和内核信息，只读执行 uname -a 和 hostnamectl 并总结"},
+		{name: "network listeners", text: "检查网络监听端口情况，只读执行 ss -ltnp 并总结"},
+		{name: "certificate expiry", text: "查看证书过期时间并回传证据"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyRisk(tt.text); got != RiskReadOnly {
+				t.Fatalf("ClassifyRisk(%q) = %q, want %q", tt.text, got, RiskReadOnly)
+			}
+		})
+	}
+}
+
 func TestRiskRequiresApprovalFromMediumWriteUp(t *testing.T) {
 	tests := []struct {
 		risk OpsRiskLevel

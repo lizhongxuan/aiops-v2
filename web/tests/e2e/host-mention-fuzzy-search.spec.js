@@ -42,6 +42,37 @@ test("filters @host suggestions by name/ip and sends selected mention metadata",
   expect(mentions.map((item) => item.raw)).toEqual(["@120.77.239.90"]);
 });
 
+test("highlights special AI mentions and sends explicit tool metadata without host binding", async ({ page }) => {
+  const transportRequests = [];
+  await mockHostInventory(page);
+  await installAssistantTransportRoute(page, transportRequests);
+  await installUiFixture(page, createIdleFixture());
+
+  await page.goto("/", { waitUntil: "networkidle" });
+  await waitForFixtureStable(page);
+
+  const input = page.getByTestId("omnibar-input");
+  await expect(input).toBeVisible();
+  await input.fill("@coroot @ops_graph @ops_manus 分析 checkout 根因");
+
+  await expect(page.getByTestId("composer-inline-special-mention")).toHaveCount(3);
+  await expect(page.getByTestId("composer-inline-host-mention")).toHaveCount(0);
+  await page.getByTestId("omnibar-primary-action").click();
+
+  await expect.poll(() => transportRequests.length, { timeout: 5000 }).toBe(1);
+  const command = transportRequests[0]?.commands?.[0];
+  expect(command?.type).toBe("add-message");
+  expect(command?.message?.hostId).toBeUndefined();
+  expect(command?.message?.metadata?.["aiops.hostops.mentions"]).toBeUndefined();
+  expect(command?.message?.metadata).toMatchObject({
+    "aiops.coroot.explicitRCA": "true",
+    "aiops.opsGraph.explicitMention": "true",
+    "aiops.opsManuals.explicitMention": "true",
+    enableTool: "search_ops_manuals",
+    enableToolPack: "opsgraph,ops_manual_flow",
+  });
+});
+
 async function mockHostInventory(page) {
   const hosts = [
     { id: "host-a", name: "pg-primary", ip: "120.77.239.90", status: "online", hostname: "ignored-hostname", labels: { role: "ignored" } },

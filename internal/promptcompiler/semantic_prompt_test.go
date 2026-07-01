@@ -36,12 +36,11 @@ func TestSemanticPromptSimpleChatDoesNotForcePlan(t *testing.T) {
 		"use tools silently",
 	})
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"concise, direct, and friendly",
-		"actionable answers",
-		"structure proportional to the task",
-		"simple",
-		"direct",
-		"do not pad simple tasks with a plan",
+		"response structure proportional to the task",
+		"simple requests get direct answers",
+		"Use a short plan only for multi-step",
+		"quick factual lookups",
+		"only the key values",
 	})
 	assertPromptOmitsAll(t, "developer", compiled.Developer.Content, []string{
 		"always create a plan",
@@ -65,31 +64,20 @@ func TestSemanticPromptDeveloperInstructionsUseClaudeCodeStyleSections(t *testin
 
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
 		"## Operating Contract",
-		"## Task Triage",
-		"## Planning and Status Tracking",
-		"## Responsiveness",
-		"## Evidence and Inference",
+		"## Task Scope",
+		"## Tool Boundaries",
+		"## Completion and Final Answer",
+		"## Mode Rules",
+		"registered evidence",
+		"Use structured planning state when available",
+		"tool failure, empty output, denial, timeout",
+		"mutating actions require scoped runtime approval",
+		"final answer",
+	})
+	assertPromptOmitsAll(t, "developer", compiled.Developer.Content, []string{
 		"## AIOps Investigation Loop",
-		"## Tool Use Boundaries",
 		"## Risk and Approval Boundaries",
 		"## Final Answer Shape",
-		"## Mode-Specific Rules",
-		"## Agent Role Rules",
-		"verify tool results",
-		"structured plan events",
-		"Evidence must come from tool results",
-		"Layer 3 tool details",
-		"symptom, affected scope, and time window",
-		"before mutation, capture pre-change state",
-		"after mutation, verify",
-		"Low risk",
-		"Medium risk",
-		"High risk",
-		"Only operate on your designated host",
-		"Root Cause",
-		"Evidence",
-		"Impact",
-		"Next Steps",
 	})
 }
 
@@ -99,19 +87,11 @@ func TestSemanticPromptResponsivenessUsesCommunicationModes(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"Use three communication modes",
-		"Silent mode",
-		"Preamble mode",
-		"Milestone mode",
 		"quick factual lookups",
-		"trivial reads",
-		"substantial grouped tool work",
-		"evidence changes direction",
-		"narrows the cause",
-		"exposes a blocker",
-		"I'll compare recent alerts with host metrics",
-		"I found the prompt assembly path",
-		"The tool index is clear",
+		"use tools silently",
+		"short prelude before the first tool call",
+		"short updates after each batch",
+		"multi-step investigations",
 	})
 }
 
@@ -125,29 +105,11 @@ func TestSemanticPromptAIOpsInvestigationLoopIsOperational(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"user-visible symptom",
-		"affected scope",
-		"time window",
-		"direct evidence",
-		"narrowing hypotheses",
-		"observed facts from inference",
-		"opsManualAction=skip_ops_manual",
-		"opsManualSkipped=true",
-		"do not call search_ops_manuals, resolve_ops_manual_params, or run_ops_manual_preflight",
-		"ordinary safe read-only investigation",
-		"opsManualAction=reference_ops_manual",
-		"manual-guided chat",
-		"must still require explicit user confirmation before mutation",
-		"if current evidence conflicts with the manual, stop applying the manual",
-		"direct_execute means preflight-ready",
-		"not permission to execute Workflow or mutate",
-		"Do not inline full session facts",
-		"Do not inline full Letta hints",
-		"Do not inline full operations manual content",
-		"Do not inline raw artifact payloads",
-		"pre-change state",
-		"rollback or recovery path",
-		"symptom, metric, log, or service state",
+		"complex tasks gather evidence before conclusions",
+		"complete RCA",
+		"evidence interpretation",
+		"remediation guidance",
+		"verification status",
 	})
 }
 
@@ -161,17 +123,11 @@ func TestSemanticPromptCleanReadOnlyStatusChecksStayCompact(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"read-only status or RCA check",
-		"no abnormality",
-		"short conclusion",
-		"do not expand a long next-step plan",
-		"do not suggest remediation, workflow execution, rollback, or operations manual generation",
-		"resolve_ops_manual_params plus run_ops_manual_preflight have already passed",
-		"do not run extra host, shell, container, orchestration, or observability probes",
-		"1-3 bullets total",
-		"no headings and no separate evidence section",
-		"concise conclusion with compact evidence",
-		"no change was executed in one bullet",
+		"For simple answers, lead with the answer or outcome.",
+		"ordinary evidence/advisory answers",
+		"conclusion",
+		"evidence boundary",
+		"next read-only checks",
 	})
 }
 
@@ -186,114 +142,53 @@ func TestSemanticPromptDoesNotInlineProviderSpecificCorootRules(t *testing.T) {
 		"Coroot chart summaries",
 	})
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"dynamically available observability tools",
-		"read-only evidence sources",
+		"Only call tools visible in the current runtime tool surface",
+		"Failed, unloaded, hidden, or not-yet-selected tools do not count as checked evidence",
 	})
 }
 
-func TestSemanticPromptOpsManualSearchTriggerRules(t *testing.T) {
+func TestSemanticPromptOpsManualWorkflowRulesOmittedFromDeveloperPrompt(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
-	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+	assertPromptOmitsAll(t, "developer", compiled.Developer.Content, []string{
 		"search_ops_manuals",
-		"operations manuals",
-		"explicitly asks to use operations manuals",
-		"fix, recover, restart, roll back, migrate, back up, scale, or change",
-		"not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent",
-		"Generic investigation requests should gather evidence",
-		"high-risk actions",
-		"service restart",
-		"configuration changes",
-		"database operations",
-		"backup",
-		"recovery",
-		"migration",
-		"cluster changes",
-		"original request text",
-		"preserve negations",
-		"不重启",
-		"no restart",
-		"operation_frame.target.name or known_params.target_instance",
-		"keep the selected/current host in target_scope.hosts",
-		"LLM judgment alone",
-		"no verified Workflow, ActionToken, approval path, or executable mutation tool",
-		"do not claim the change was executed",
-		"need_info",
-		"need_info with one or more manuals",
-		"immediate next tool call must be resolve_ops_manual_params with the matched manual_id",
-		"do not run host commands, monitoring probes, ordinary shell checks, or normal investigation before resolve_ops_manual_params returns",
-		"need_info with no manuals",
-		"do not call resolve_ops_manual_params because there is no manual_id",
-		"do not call search_ops_manuals again just to fill missing fields",
-		"ask only the smallest missing object or action question",
-		"Do not mention operations manual search or no-match status unless the user explicitly asked about manuals",
-		"fill the bottom form",
-		"do not repeat questions or a template in prose",
-		"Do not duplicate Agent-to-UI card details",
-		"one short status sentence plus the smallest useful question or next action",
-		"dynamically available observability tools are visible",
-		"Do not ask the user whether configured observability evidence exists",
-		"system cannot inspect",
-		"adapt",
-		"reference_only",
-		"no_match",
-		"non-executable",
-		"never run a Workflow from those decisions",
-		"reference_only or no_match",
-		"continue safe read-only evidence-driven investigation",
-		"metrics/log source",
-		"host/session availability",
-		"Do not present a cross-object manual",
-		"unless the user explicitly asks for analogous patterns",
-		"Agent-to-UI compact form",
-		"do not duplicate the same fields as a multiline prose template",
-		"resolve_ops_manual_params returns ambiguous or need_user_input",
-		"stop tool use and wait for the user to submit the structured Agent-to-UI form",
-		"do not run host commands, monitoring probes, ordinary shell checks, preflight, or Workflow execution while that form is pending",
-		"ask for user confirmation and then run it after confirmation",
-		"direct_execute",
 		"run_ops_manual_preflight",
-		"target identifiers, scope, backup or recovery paths, and evidence flags",
-		"pass the operation_frame",
-		"extracted parameters",
-		"After preflight passes",
-		"user confirmation or approval",
-		"do not add a runtime Dry Run step",
+		"resolve_ops_manual_params",
+		"direct_execute means preflight-ready",
+		"Workflow execution",
 	})
 }
 
-func TestDeveloperRulesDirectExecuteUsesPreflightThenConfirmation(t *testing.T) {
-	lines := developerAIOpsInvestigationLines(CompileContext{})
-	text := strings.Join(lines, "\n")
-	if !strings.Contains(text, "direct_execute means preflight-ready") {
-		t.Fatalf("missing direct_execute preflight-ready rule:\n%s", text)
+func TestDeveloperRulesDoNotCarryOpsManualPreflightWorkflow(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if !strings.Contains(text, "After preflight passes, wait for explicit user confirmation or approval before Workflow execution") {
-		t.Fatalf("missing confirmation after preflight rule:\n%s", text)
-	}
-	if strings.Contains(text, "proceed to Dry Run only after preflight passed") {
-		t.Fatalf("runtime prompt still requires Dry Run:\n%s", text)
+	text := compiledEnvelopeTextForTest(compiled)
+	for _, forbidden := range []string{"direct_execute means preflight-ready", "Workflow execution", "run_ops_manual_preflight", "resolve_ops_manual_params", "proceed to Dry Run only after preflight passed"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("developer prompt still carries OpsManual workflow rule %q:\n%s", forbidden, text)
+		}
 	}
 }
 
 func TestSemanticPromptRiskBoundariesUseBlastRadius(t *testing.T) {
-	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host",
+		Mode:        "execute",
+		Profile:     PromptProfileHostWorker,
+		HostContext: "host-1",
+	})
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"destructive",
-		"hard to reverse",
-		"shared systems",
-		"production state",
-		"hide diagnostic evidence",
-		"Low risk",
-		"Medium risk",
-		"High risk",
 		"runtime approval",
-		"Do not broaden scope after a denial or failure",
+		"verification after the action",
+		"Report verification honestly",
+		"Never characterize incomplete",
 	})
 }
 
@@ -303,11 +198,24 @@ func TestSemanticPromptProgressUpdatesAreScoped(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"group related actions",
-		"one brief progress update",
-		"substantial work",
-		"skip preambles for trivial reads",
+		"Progress updates are not final answers",
 		"quick factual lookups",
+		"do not narrate tool process",
+		"short prelude",
+		"short updates",
+	})
+}
+
+func TestSemanticPromptKeepsRCAInFinalAnswerWithInlineSources(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"Progress updates are not final answers",
+		"complete RCA, evidence interpretation, remediation guidance, and caveats in the final answer",
+		"cite source links in final answers",
+		"precise source-bound lookup",
 	})
 }
 
@@ -317,15 +225,9 @@ func TestSemanticPromptResponsivenessPreambles(t *testing.T) {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"Responsiveness",
-		"progress update or preamble",
-		"1-2 sentences",
-		"immediate tangible next steps",
-		"connect the next preamble",
-		"momentum and clarity",
-		"light, friendly, and curious",
-		"I've explored the repo; now checking the API route definitions.",
-		"Next, I'll patch the config and update the related tests.",
+		"short prelude before the first tool call",
+		"short updates after each batch",
+		"multi-step investigations",
 	})
 }
 
@@ -436,14 +338,26 @@ func TestSemanticPromptExecCommandAvoidsShellPipelines(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptRequiresExplicitHostBindingBeforeMutationAdvice(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "workspace", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"no explicit host or resource binding",
+		"do not provide mutation commands",
+		"ask the user to select a target or use @host/@ip",
+	})
+}
+
 func TestSemanticPromptExplicitPlanRequestUsesPlanningTool(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "execute"})
 	if err != nil {
 		t.Fatalf("Compile failed: %v", err)
 	}
 	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
-		"Use the structured planning tool",
-		"multi_step, investigation, operations, and multi_agent tasks",
+		"Use structured planning state when available",
+		"multi-step, risky, ambiguous, or multi-agent work",
 		"in_progress",
 	})
 }

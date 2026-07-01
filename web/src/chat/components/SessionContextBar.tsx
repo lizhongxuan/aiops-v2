@@ -53,6 +53,7 @@ type SessionContextBarProps = {
 };
 
 export const SESSION_CONTEXT_TIMEOUT_MS = 8000;
+const CHAT_LLM_CONFIG_CACHE_KEY = "aiops.chat.llmConfig";
 
 export function withSessionContextTimeout<T>(
   promise: Promise<T>,
@@ -75,6 +76,52 @@ export function formatLlmLabel(config: Pick<LlmConfigView, "model" | "provider">
   return model || "LLM 未配置";
 }
 
+export function readCachedLlmConfigForChat(): LlmConfigView | null {
+  try {
+    const raw = window.localStorage.getItem(CHAT_LLM_CONFIG_CACHE_KEY);
+    if (!raw) return null;
+    return normalizeCacheableLlmConfig(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedLlmConfigForChat(config: LlmConfigView | null) {
+  try {
+    const cacheable = normalizeCacheableLlmConfig(config);
+    if (!cacheable) {
+      window.localStorage.removeItem(CHAT_LLM_CONFIG_CACHE_KEY);
+      return;
+    }
+    window.localStorage.setItem(CHAT_LLM_CONFIG_CACHE_KEY, JSON.stringify(cacheable));
+  } catch {
+    // Cache is only a first-paint hint; failed storage must not break chat.
+  }
+}
+
+function normalizeCacheableLlmConfig(value: unknown): LlmConfigView | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as LlmConfigView;
+  const provider = firstText(input.provider);
+  const model = firstText(input.model);
+  if (!provider || !model) return null;
+  return {
+    provider,
+    model,
+    apiKeySet: Boolean(input.apiKeySet),
+    apiKeyMasked: firstText(input.apiKeyMasked) || undefined,
+    baseURL: firstText(input.baseURL) || undefined,
+    maxContextTokens: typeof input.maxContextTokens === "number" ? input.maxContextTokens : undefined,
+    maxOutputTokens: typeof input.maxOutputTokens === "number" ? input.maxOutputTokens : undefined,
+    temperature: typeof input.temperature === "number" ? input.temperature : undefined,
+    topP: typeof input.topP === "number" ? input.topP : undefined,
+    thinkingType: firstText(input.thinkingType) || undefined,
+    reasoningEffort: firstText(input.reasoningEffort) || undefined,
+    toolStream: typeof input.toolStream === "boolean" ? input.toolStream : undefined,
+    bifrostActive: typeof input.bifrostActive === "boolean" ? input.bifrostActive : undefined,
+  };
+}
+
 export function SessionContextBar({
   kind,
   title,
@@ -89,8 +136,8 @@ export function SessionContextBar({
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState(() => (skipInitialLoad ? activeThreadId : ""));
   const [hosts, setHosts] = useState<HostRecord[]>([]);
-  const [llm, setLlm] = useState<LlmConfigView | null>(null);
-  const [target, setTarget] = useState(kind === "single_host" ? "host:server-local" : "all");
+  const [llm, setLlm] = useState<LlmConfigView | null>(() => (skipInitialLoad ? null : readCachedLlmConfigForChat()));
+  const [target, setTarget] = useState(fallbackTargetValue(kind));
   const [busy, setBusy] = useState(false);
   const [activeAction, setActiveAction] = useState<"create" | "refresh" | null>(null);
   const [createFeedback, setCreateFeedback] = useState<"idle" | "success" | "error">("idle");
@@ -167,7 +214,11 @@ export function SessionContextBar({
 
       setSessions(nextSessions);
       setHosts(nextHosts);
-      setLlm(llmResult.status === "fulfilled" ? llmResult.value : null);
+      if (llmResult.status === "fulfilled") {
+        const nextLlm = normalizeCacheableLlmConfig(llmResult.value);
+        setLlm(nextLlm);
+        writeCachedLlmConfigForChat(nextLlm);
+      }
       const nextActive =
         firstText(
           sessionResult.status === "fulfilled"
@@ -179,7 +230,7 @@ export function SessionContextBar({
         ) || "";
       if (!nextActive && sessionResult.status === "fulfilled") {
         try {
-          const hostIdToBind = resolveHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
+          const hostIdToBind = resolveNewSessionHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
           const payload = await withSessionContextTimeout(createSession(kind, hostIdToBind), SESSION_CONTEXT_TIMEOUT_MS, "创建会话");
           const createdSessions = payload.sessions || payload.items || [];
           const createdActive = payload.activeSessionId || createdSessions.find((session) => normalizeKind(session.kind) === kind)?.id || "";
@@ -208,7 +259,7 @@ export function SessionContextBar({
     setBusy(true);
     try {
       const nextHosts = hosts;
-      const hostIdToBind = resolveHostTargetId(kind, targetOptions, target, nextHosts);
+      const hostIdToBind = resolveNewSessionHostTargetId(kind, targetOptions, target, nextHosts);
       const payload = await createSession(kind, hostIdToBind);
       const nextSessions = payload.sessions || payload.items || [];
       const nextActive = payload.activeSessionId || nextSessions[0]?.id || "";
@@ -298,7 +349,9 @@ export function SessionContextBar({
     const nextTarget = targetValueFromSession(session, sourceHosts, kind, hostIdOverride);
     setActiveSessionId(sessionId);
     setTarget(nextTarget);
-    if (force || sessionId !== activeThreadId) {
+    const shouldSwitchThread = sessionId !== activeThreadId;
+    const shouldApplyHydratedState = Boolean(hydratedInitialState);
+    if (shouldSwitchThread || shouldApplyHydratedState) {
       const initialState = hydratedInitialState || createInitialAiopsTransportState(sessionId);
       initialState.sessionId = sessionId;
       initialState.threadId = sessionId;
@@ -312,7 +365,11 @@ export function SessionContextBar({
       return null;
     }
     try {
-      return await fetchAssistantTransportResumeState(sessionId);
+      return await withSessionContextTimeout(
+        fetchAssistantTransportResumeState(sessionId),
+        SESSION_CONTEXT_TIMEOUT_MS,
+        "恢复会话",
+      );
     } catch (error) {
       console.error(error);
       return null;
@@ -321,6 +378,16 @@ export function SessionContextBar({
 
   useEffect(() => {
     if (skipInitialLoad) {
+      const fixtureSessions = resolveUiFixtureSessions();
+      const fixtureState = resolveUiFixtureState();
+      if (fixtureSessions) {
+        const nextSessions = fixtureSessions.sessions || fixtureSessions.items || [];
+        setSessions(nextSessions);
+        if (Array.isArray(fixtureState?.hosts)) {
+          setHosts(fixtureState.hosts);
+        }
+        setLlm({ provider: "openai", model: "gpt-5.4", apiKeySet: true });
+      }
       setActiveSessionId(activeThreadId);
       return;
     }
@@ -362,27 +429,29 @@ export function SessionContextBar({
           )}
           {createButtonLabel}
         </Button>
-        <SessionMenu
-          label={kind === "workspace" ? "工作目标" : "主机"}
-          icon={<Server className="h-3.5 w-3.5" />}
-          currentLabel={formatTargetButtonLabel(kind, activeTarget?.label)}
-          disabled={!targetOptions.length || busy}
-          items={targetOptions.map((option) => ({
-            key: option.value,
-            label: option.label,
-            description: option.description,
-            onSelect: () => void handleTargetChange(option.value),
-          }))}
-        />
+        {kind === "workspace" ? (
+          <SessionMenu
+            label="工作目标"
+            icon={<Server className="h-3.5 w-3.5" />}
+            currentLabel={formatTargetButtonLabel(kind, activeTarget?.label)}
+            disabled={!targetOptions.length || busy}
+            items={targetOptions.map((option) => ({
+              key: option.value,
+              label: option.label,
+              description: option.description,
+              onSelect: () => void handleTargetChange(option.value),
+            }))}
+          />
+        ) : null}
         <MoreActionsMenu
           busy={busy}
-          currentSessionLabel={activeSession ? sessionLabel(activeSession) : "未创建会话"}
+          currentSessionLabel={activeSession ? sessionLabel(activeSession, kind) : "未创建会话"}
           terminalHref={terminalHref}
           canClear={Boolean(activeSession)}
           onClearContext={() => void handleClearContext()}
           sessionItems={scopedSessions.map((session) => ({
             key: session.id,
-            label: sessionLabel(session),
+            label: sessionLabel(session, kind),
             onSelect: () => void handleActivateSession(session.id),
           }))}
         />
@@ -400,7 +469,7 @@ export function SessionContextBar({
           kind,
           title,
           activeSessionId,
-          activeSessionLabel: activeSession ? sessionLabel(activeSession) : activeSessionId || "未创建",
+          activeSessionLabel: activeSession ? sessionLabel(activeSession, kind) : activeSessionId || "未创建",
           llmLabel,
           llmConfigured,
           busy,
@@ -525,10 +594,23 @@ export function buildTargetOptionsForTest(hosts: HostRecord[], kind: SessionKind
   return buildTargetOptions(hosts, kind);
 }
 
+export function resolveHostTargetIdForTest(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+  return resolveHostTargetId(kind, options, targetValue, hosts);
+}
+
 function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOption[] {
   const normalizedHosts = hostOptions(hosts);
   if (kind === "single_host") {
-    return normalizedHosts;
+    return [
+      {
+        value: "none",
+        label: "未选择执行目标",
+        description: "默认咨询模式；输入 @local 或 @主机名 选择执行目标",
+        kind: "all",
+        metadata: {},
+      },
+      ...normalizedHosts,
+    ];
   }
 
   const options: TargetOption[] = [
@@ -677,9 +759,12 @@ function normalizeKind(kind?: string) {
   return kind === "workspace" ? "workspace" : "single_host";
 }
 
-function sessionLabel(session: SessionSummary) {
+function sessionLabel(session: SessionSummary, kind: SessionKind = "single_host") {
   const title = firstText(session.title, session.preview, session.id);
-  const host = firstText(session.selectedHostId, "server-local");
+  if (kind === "single_host") {
+    return title;
+  }
+  const host = firstText(session.selectedHostId, "未选择执行目标");
   return `${title} · ${host}`;
 }
 
@@ -706,9 +791,9 @@ function targetValueFromSession(
   kind: SessionKind = "single_host",
   hostIdOverride?: string,
 ) {
-  const selectedHostId = firstText(hostIdOverride, session?.selectedHostId, "server-local");
+  const selectedHostId = firstText(hostIdOverride, session?.selectedHostId);
   if (kind === "single_host") {
-    return `host:${selectedHostId || "server-local"}`;
+    return "none";
   }
   if (selectedHostId === "server-local") {
     return "all";
@@ -717,9 +802,16 @@ function targetValueFromSession(
   return hostExists ? `host:${selectedHostId}` : "all";
 }
 
+function resolveNewSessionHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+  if (kind === "single_host") {
+    return undefined;
+  }
+  return resolveHostTargetId(kind, options, targetValue, hosts);
+}
+
 export function formatTargetButtonLabel(kind: SessionKind, label?: string) {
   if (kind === "single_host") {
-    return label || "server-local";
+    return label || "未选择执行目标";
   }
   return label || "全部主机";
 }
@@ -748,28 +840,24 @@ export function resolveComposerDisabledReason({
 }
 
 function fallbackTargetValue(kind: SessionKind) {
-  return kind === "single_host" ? "host:server-local" : "all";
+  return kind === "single_host" ? "none" : "all";
 }
 
 function fallbackTargetKind(kind: SessionKind): SessionTargetContextValue["targetKind"] {
-  return kind === "single_host" ? "host" : "all";
+  return "all";
 }
 
 function fallbackTargetLabel(kind: SessionKind) {
-  return kind === "single_host" ? "server-local" : "全部主机";
+  return kind === "single_host" ? "未选择执行目标" : "全部主机";
 }
 
 function fallbackTargetDescription(kind: SessionKind) {
-  return kind === "single_host" ? "当前单机会话目标主机" : "全部主机上下文";
+  return kind === "single_host" ? "默认咨询模式；输入 @local 或 @主机名 选择执行目标" : "全部主机上下文";
 }
 
 function fallbackTargetMetadata(kind: SessionKind) {
   if (kind === "single_host") {
-    return {
-      "aiops.target.kind": "host",
-      "aiops.target.hostId": "server-local",
-      "aiops.target.label": "server-local",
-    };
+    return {};
   }
   return {
     "aiops.target.kind": "all",
@@ -781,11 +869,14 @@ function resolveHostTargetId(kind: SessionKind, options: TargetOption[], targetV
   if (kind !== "single_host") {
     return undefined;
   }
+  if (!targetValue || targetValue === "none") {
+    return undefined;
+  }
   const explicit = options.find((item) => item.value === targetValue && item.hostId)?.hostId;
   if (explicit) {
     return explicit;
   }
-  return ensureLocalHost(hosts).find((host) => host.id === "server-local")?.id || ensureLocalHost(hosts)[0]?.id || "server-local";
+  return undefined;
 }
 
 function firstText(...values: unknown[]) {

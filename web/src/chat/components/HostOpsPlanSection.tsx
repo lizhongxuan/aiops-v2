@@ -32,6 +32,10 @@ export function HostOpsPlanSection({ mission, defaultCollapsed = false }: HostOp
   const [selectedStepId, setSelectedStepId] = useSelectedStep(steps);
   const selectedStep = steps.find((step, index) => stepId(step, index) === selectedStepId);
 
+  if (steps.length === 0) {
+    return null;
+  }
+
   return (
     <div className="min-w-0">
       <TaskChecklistCard

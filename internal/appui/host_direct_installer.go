@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,7 +17,6 @@ import (
 
 	"aiops-v2/internal/store"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 	"gopkg.in/yaml.v3"
 )
 
@@ -143,8 +141,11 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	if err := validateBootstrapHost(host); err != nil {
 		return i.failInstall(&host, run, "validate-inputs", "failed", err)
 	}
-	if err := validateInstallAgentServerURLReachable(host, resolveInstallAgentServerURL(host)); err != nil {
-		return i.failInstall(&host, run, "validate-agent-server-url", "failed", err)
+	if hostConnectionModeRequiresCallback(host.ConnectionMode) {
+		serverURL := resolveInstallAgentServerURL(host)
+		if err := validateInstallAgentServerURLReachable(host, serverURL); err != nil {
+			return i.failInstall(&host, run, "validate-agent-server-url", "failed", err)
+		}
 	}
 
 	i.setStep(&host, &run, "connect-ssh")
@@ -252,6 +253,7 @@ func (i *DirectHostAgentInstaller) Install(ctx context.Context, hostID string, r
 	host.InstallWorkflowID = ""
 	host.Transport = "agent_http"
 	host.ControlMode = "managed"
+	host.ConnectionMode = NormalizeHostConnectionMode(host.ConnectionMode)
 	host.TerminalCapable = true
 	host.Executable = true
 	host.AgentURL = "http://" + net.JoinHostPort(host.Address, "7072")
@@ -342,6 +344,10 @@ func (i *DirectHostAgentInstaller) loadInstallHost(hostID string, req HostInstal
 	if version := strings.TrimSpace(req.AgentVersion); version != "" {
 		next.AgentVersion = version
 	}
+	if serverURL := strings.TrimSpace(req.AgentServerURL); serverURL != "" {
+		next.AgentServerURL = serverURL
+	}
+	next.ConnectionMode = NormalizeHostConnectionMode(firstNonEmpty(req.ConnectionMode, next.ConnectionMode))
 	if next.AgentVersion == "" {
 		next.AgentVersion = "v0.1.0"
 	}
@@ -438,7 +444,7 @@ func (i *DirectHostAgentInstaller) uploadRemote(ctx context.Context, client SSHB
 }
 
 func (i *DirectHostAgentInstaller) verifyLocalHealth(ctx context.Context, client SSHBootstrapClient, host *store.HostRecord, run *HostInstallRun) error {
-	command := "if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi"
+	command := hostAgentLocalDiagnosticsCommand()
 	var lastErr error
 	for attempt := 0; attempt < 15; attempt++ {
 		if err := i.runRemote(ctx, client, "verify-local-health", host, run, command, nil); err == nil {
@@ -455,6 +461,31 @@ func (i *DirectHostAgentInstaller) verifyLocalHealth(ctx context.Context, client
 	}
 	_, err := i.failInstall(host, *run, "verify-local-health", "failed", lastErr)
 	return err
+}
+
+func hostAgentLocalDiagnosticsCommand() string {
+	return strings.Join([]string{
+		"set -eu",
+		"if [ -r /etc/aiops/host-agent.token ]; then",
+		"  token_path=/etc/aiops/host-agent.token",
+		"elif [ -r /usr/local/etc/aiops/host-agent.token ]; then",
+		"  token_path=/usr/local/etc/aiops/host-agent.token",
+		"else",
+		"  printf 'host-agent token file not found\\n' >&2",
+		"  exit 66",
+		"fi",
+		"token=\"$(cat \"$token_path\")\"",
+		"if command -v curl >/dev/null 2>&1; then",
+		"  curl_config=\"$(mktemp)\"",
+		"  trap 'rm -f \"$curl_config\"' EXIT",
+		"  printf 'header = \"Authorization: Bearer %s\"\\n' \"$token\" > \"$curl_config\"",
+		"  curl -fsS -K \"$curl_config\" 'http://127.0.0.1:7072/diagnostics'",
+		"elif command -v wget >/dev/null 2>&1; then",
+		"  wget -qO- --header=\"Authorization: Bearer $token\" 'http://127.0.0.1:7072/diagnostics'",
+		"else",
+		"  exit 127",
+		"fi",
+	}, "\n")
 }
 
 type unsupportedPlatformError struct {
@@ -559,8 +590,16 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 	if err != nil {
 		return nil, hostAgentRemoteLayout{}, err
 	}
+	connectionMode := NormalizeHostConnectionMode(host.ConnectionMode)
+	serverURL := ""
+	grpcURL := ""
+	if hostConnectionModeRequiresCallback(connectionMode) {
+		serverURL = resolveInstallAgentServerURL(host)
+		grpcURL = derivedAgentGRPCURL(serverURL)
+	}
 	cfg := struct {
-		ServerURL         string            `yaml:"server_url"`
+		ConnectionMode    string            `yaml:"connection_mode"`
+		ServerURL         string            `yaml:"server_url,omitempty"`
 		GRPCURL           string            `yaml:"grpc_url,omitempty"`
 		HostID            string            `yaml:"host_id"`
 		ListenAddr        string            `yaml:"listen_addr"`
@@ -569,8 +608,9 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 		Labels            map[string]string `yaml:"labels,omitempty"`
 		Capabilities      []string          `yaml:"capabilities"`
 	}{
-		ServerURL:         resolveInstallAgentServerURL(host),
-		GRPCURL:           firstNonEmpty(os.Getenv("AIOPS_AGENT_GRPC_URL"), derivedAgentGRPCURL(os.Getenv("AIOPS_AGENT_SERVER_URL"))),
+		ConnectionMode:    connectionMode,
+		ServerURL:         serverURL,
+		GRPCURL:           grpcURL,
 		HostID:            host.ID,
 		ListenAddr:        "0.0.0.0:7072",
 		TokenRef:          layout.TokenPath,
@@ -589,22 +629,47 @@ func buildHostAgentRemoteConfig(host store.HostRecord, platform detectedHostPlat
 }
 
 func resolveInstallAgentServerURL(host store.HostRecord) string {
-	return firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080")
+	if serverURL := strings.TrimSpace(host.AgentServerURL); serverURL != "" && !looksLikeHostAgentEndpointString(serverURL) {
+		return serverURL
+	}
+	return "http://127.0.0.1:18080"
 }
 
 func validateInstallAgentServerURLReachable(host store.HostRecord, serverURL string) error {
 	trimmed := strings.TrimSpace(serverURL)
 	if trimmed == "" {
-		return fmt.Errorf("agent server URL is empty; set AIOPS_AGENT_SERVER_URL to an address reachable from the target host")
+		return fmt.Errorf("AI Server callback URL is empty; configure an ai-server HTTP address reachable from the target host")
 	}
 	parsed, err := url.Parse(trimmed)
 	if err != nil || parsed.Hostname() == "" {
-		return fmt.Errorf("agent server URL %q is invalid; set AIOPS_AGENT_SERVER_URL to a valid http(s) address reachable from the target host", trimmed)
+		return fmt.Errorf("AI Server callback URL %q is invalid; configure a valid http(s) ai-server address reachable from the target host", trimmed)
+	}
+	if looksLikeHostAgentEndpoint(parsed) {
+		return fmt.Errorf("AI Server callback URL %s looks like a Node endpoint (:7072); configure the ai-server HTTP address reachable from the target host", trimmed)
 	}
 	if !isLoopbackHostName(parsed.Hostname()) || isLocalInstallTarget(host.Address) {
 		return nil
 	}
-	return fmt.Errorf("agent server URL %s is loopback; remote host %s cannot reach it. Set AIOPS_AGENT_SERVER_URL to an address reachable from the target host before installing host-agent", trimmed, firstNonEmpty(host.Address, host.ID))
+	return fmt.Errorf("AI Server callback URL %s is loopback; remote host %s cannot reach it. Configure an ai-server HTTP address reachable from the target host before installing Node", trimmed, firstNonEmpty(host.Address, host.ID))
+}
+
+func looksLikeHostAgentEndpoint(parsed *url.URL) bool {
+	if parsed == nil {
+		return false
+	}
+	if parsed.Port() == "7072" {
+		return true
+	}
+	path := strings.TrimRight(strings.ToLower(strings.TrimSpace(parsed.Path)), "/")
+	return path == "/exec" || path == "/run" || strings.HasPrefix(path, "/terminal")
+}
+
+func looksLikeHostAgentEndpointString(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	return looksLikeHostAgentEndpoint(parsed)
 }
 
 func isLocalInstallTarget(address string) bool {
@@ -738,12 +803,34 @@ func startServiceScript(platform detectedHostPlatform) string {
 			"set -eu",
 			sudo,
 			"run_sudo systemctl enable aiops-host-agent.service",
-			"run_sudo systemctl restart aiops-host-agent.service",
-			"if ! run_sudo systemctl is-active aiops-host-agent.service; then",
-			"  run_sudo systemctl status aiops-host-agent.service --no-pager -l >&2 || true",
-			"  run_sudo journalctl -u aiops-host-agent.service -n 40 --no-pager >&2 || true",
-			"  exit 3",
+			"run_sudo systemctl stop aiops-host-agent.service >/dev/null 2>&1 || true",
+			"stale_pids=\"$(pgrep -f '[/]opt/aiops/host-agent/host-agent --config /etc/aiops/host-agent.yaml' || true)\"",
+			"if [ -n \"$stale_pids\" ]; then",
+			"  for stale_pid in $stale_pids; do",
+			"    run_sudo kill \"$stale_pid\" >/dev/null 2>&1 || true",
+			"  done",
+			"  sleep 1",
 			"fi",
+			"stale_pids=\"$(pgrep -f '[/]opt/aiops/host-agent/host-agent --config /etc/aiops/host-agent.yaml' || true)\"",
+			"if [ -n \"$stale_pids\" ]; then",
+			"  for stale_pid in $stale_pids; do",
+			"    run_sudo kill -9 \"$stale_pid\" >/dev/null 2>&1 || true",
+			"  done",
+			"fi",
+			"for attempt in 1 2 3; do",
+			"  if run_sudo systemctl restart aiops-host-agent.service; then",
+			"    for wait_tick in 1 2 3 4 5; do",
+			"      if run_sudo systemctl is-active --quiet aiops-host-agent.service; then",
+			"        exit 0",
+			"      fi",
+			"      sleep 1",
+			"    done",
+			"  fi",
+			"  sleep 2",
+			"done",
+			"run_sudo systemctl status aiops-host-agent.service --no-pager -l >&2 || true",
+			"run_sudo journalctl -u aiops-host-agent.service -n 80 --no-pager >&2 || true",
+			"exit 3",
 		}, "\n")
 	case "darwin/arm64":
 		return strings.Join([]string{
@@ -805,7 +892,7 @@ type goBuildHostAgentArtifactBuilder struct {
 	RepoRoot string
 }
 
-func (b goBuildHostAgentArtifactBuilder) BuildHostAgentArtifact(ctx context.Context, goos, goarch, version string) (HostAgentArtifact, error) {
+func (b goBuildHostAgentArtifactBuilder) BuildHostAgentArtifact(_ context.Context, goos, goarch, version string) (HostAgentArtifact, error) {
 	goos = strings.TrimSpace(goos)
 	goarch = strings.TrimSpace(goarch)
 	version = strings.TrimSpace(firstNonEmpty(version, "v0.1.0"))
@@ -815,27 +902,12 @@ func (b goBuildHostAgentArtifactBuilder) BuildHostAgentArtifact(ctx context.Cont
 	repoRoot := strings.TrimSpace(firstNonEmpty(b.RepoRoot, defaultHostInstallRepoRoot()))
 	artifactDir := filepath.Join(repoRoot, "artifacts", "host-agent", version, goos+"-"+goarch)
 	artifactPath := filepath.Join(artifactDir, "host-agent")
-	if data, err := os.ReadFile(artifactPath); err == nil && len(data) > 0 {
-		sum := sha256.Sum256(data)
-		return HostAgentArtifact{
-			Path:   artifactPath,
-			Bytes:  data,
-			SHA256: fmt.Sprintf("%x", sum[:]),
-		}, nil
-	}
-	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
-		return HostAgentArtifact{}, fmt.Errorf("create host-agent artifact dir: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", artifactPath, "./cmd/host-agent")
-	cmd.Dir = repoRoot
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
-	output, buildErr := cmd.CombinedOutput()
-	if buildErr != nil {
-		return HostAgentArtifact{}, fmt.Errorf("build host-agent artifact: %w: %s", buildErr, strings.TrimSpace(string(output)))
-	}
 	data, err := os.ReadFile(artifactPath)
 	if err != nil {
-		return HostAgentArtifact{}, fmt.Errorf("read host-agent artifact: %w", err)
+		return HostAgentArtifact{}, fmt.Errorf("prebuilt Node artifact not found at %s; run scripts/build-node-artifacts.sh before installing Node: %w", artifactPath, err)
+	}
+	if len(data) == 0 {
+		return HostAgentArtifact{}, fmt.Errorf("prebuilt Node artifact is empty at %s; run scripts/build-node-artifacts.sh before installing Node", artifactPath)
 	}
 	sum := sha256.Sum256(data)
 	return HostAgentArtifact{
@@ -914,23 +986,6 @@ func sshAuthMethods(credential ResolvedSSHCredential) ([]ssh.AuthMethod, error) 
 
 func defaultSSHAuthMethods() []ssh.AuthMethod {
 	var methods []ssh.AuthMethod
-	if sock := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); sock != "" {
-		methods = append(methods, ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
-			conn, err := net.Dial("unix", sock)
-			if err != nil {
-				return nil, err
-			}
-			defer func() { _ = conn.Close() }()
-			signers, err := agent.NewClient(conn).Signers()
-			if err != nil {
-				return nil, err
-			}
-			if len(signers) == 0 {
-				return nil, fmt.Errorf("ssh agent has no identities")
-			}
-			return signers, nil
-		}))
-	}
 	for _, keyPath := range defaultSSHKeyPaths() {
 		data, err := os.ReadFile(keyPath)
 		if err != nil {

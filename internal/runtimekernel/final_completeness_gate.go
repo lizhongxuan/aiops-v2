@@ -5,18 +5,23 @@ import "strings"
 const finalCompletenessRetryMetadataKey = "finalCompletenessRetry"
 
 type FinalCompletenessDecision struct {
-	Action  string
-	Reasons []string
-	Tail    string
+	Action       string
+	Reasons      []string
+	Tail         string
+	FinishReason string
 }
 
-func EvaluateFinalCompleteness(answer string) FinalCompletenessDecision {
+func EvaluateFinalCompleteness(answer string, finishReasons ...string) FinalCompletenessDecision {
 	trimmed := strings.TrimSpace(answer)
 	if trimmed == "" {
 		return FinalCompletenessDecision{Action: "allow"}
 	}
 
 	reasons := make([]string, 0, 3)
+	finishReason := finalCompletenessFinishReason(finishReasons...)
+	if finalFinishReasonIndicatesIncomplete(finishReason) {
+		reasons = append(reasons, "non_terminal_finish_reason:"+finishReason)
+	}
 	if endsWithOpenContinuation(trimmed) {
 		reasons = append(reasons, "ends_with_continuation_marker")
 	}
@@ -31,9 +36,10 @@ func EvaluateFinalCompleteness(answer string) FinalCompletenessDecision {
 		return FinalCompletenessDecision{Action: "allow"}
 	}
 	return FinalCompletenessDecision{
-		Action:  "retry_complete_final",
-		Reasons: reasons,
-		Tail:    finalAnswerTail(trimmed, 160),
+		Action:       "retry_complete_final",
+		Reasons:      reasons,
+		Tail:         finalAnswerTail(trimmed, 160),
+		FinishReason: finishReason,
 	}
 }
 
@@ -111,6 +117,28 @@ func finalAnswerTail(text string, maxRunes int) string {
 		return text
 	}
 	return string(runes[len(runes)-maxRunes:])
+}
+
+func finalCompletenessFinishReason(values ...string) string {
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		normalized = strings.ReplaceAll(normalized, "-", "_")
+		normalized = strings.ReplaceAll(normalized, " ", "_")
+		return normalized
+	}
+	return ""
+}
+
+func finalFinishReasonIndicatesIncomplete(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "", "stop", "end_turn", "complete", "completed":
+		return false
+	default:
+		return true
+	}
 }
 
 func lastRune(text string) rune {

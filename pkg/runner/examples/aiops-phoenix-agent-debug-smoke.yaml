@@ -69,9 +69,8 @@ steps:
       script: |
         cat <<'EOF'
         Manual trace check:
-        1. Start aiops server with AIOPS_OTEL_ENABLED=1 and AIOPS_DEBUG_MODEL_INPUT_TRACE=1.
+        1. Start aiops server with AIOPS_DEBUG_MODEL_INPUT_TRACE=1.
         2. Run one chat turn.
-        3. Open http://localhost:6006.
-        4. Confirm agent.turn contains model_call and tool_call child spans.
-        5. Open trace.file and trace.diff under .data/model-input-traces.
+        3. Open /debug/prompts.
+        4. Open trace files under .data/model-input-traces.
         EOF

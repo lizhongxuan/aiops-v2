@@ -4,8 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
@@ -15,7 +13,7 @@ type ContextUsageCategory = promptinput.ContextUsageCategory
 type ContextContributor = promptinput.ContextContributor
 
 type ContextUsageInput struct {
-	Messages   []*schema.Message
+	Items      []promptinput.ModelInputItem
 	Compiled   promptcompiler.CompiledPrompt
 	Governance []ContextGovernanceEvent
 }
@@ -25,12 +23,18 @@ func AnalyzeContextUsage(input ContextUsageInput) ContextUsage {
 	acc.addText("system", input.Compiled.Stable.System.Content, "compiled.system")
 	acc.addText("developer", input.Compiled.Stable.Developer.Content, "compiled.developer")
 	acc.addText("tools", input.Compiled.Stable.Tools.Content, "compiled.tools")
-	for i, asset := range input.Compiled.Dynamic.SkillPromptAssets {
-		acc.addText("skills", asset, "skill")
-		_ = i
-	}
-	for _, asset := range input.Compiled.Dynamic.HostTaskPromptAssets {
-		acc.addText("host_task", asset, "host_task")
+	if len(input.Compiled.Dynamic.Sources) > 0 {
+		for _, source := range input.Compiled.Dynamic.Sources {
+			acc.addText(contextUsageCategoryForDynamicSource(source.ID), source.Content, source.ID)
+		}
+	} else {
+		for i, asset := range input.Compiled.Dynamic.SkillPromptAssets {
+			acc.addText("skills", asset, "skill")
+			_ = i
+		}
+		for _, asset := range input.Compiled.Dynamic.HostTaskPromptAssets {
+			acc.addText("host_task", asset, "host_task")
+		}
 	}
 	for _, section := range input.Compiled.Dynamic.ExtraSections {
 		category := "messages"
@@ -50,20 +54,21 @@ func AnalyzeContextUsage(input ContextUsageInput) ContextUsage {
 			acc.addText("buffers", "context budget thresholds", event.Kind)
 		}
 	}
-	for _, msg := range input.Messages {
-		if msg == nil {
-			continue
-		}
+	for _, item := range input.Items {
 		category := "messages"
-		id := string(msg.Role)
-		if msg.Role == schema.Tool {
+		id := string(item.ProviderRole)
+		content := item.Content
+		if item.ProviderRole == promptinput.ProviderRoleTool || item.ToolResult != nil {
 			category = "tool_results"
-			id = strings.TrimSpace(msg.ToolCallID)
+			id = strings.TrimSpace(firstNonBlankRuntimeString(item.ToolCallID, item.ToolResultToolCallID()))
 			if id == "" {
 				id = "tool_result"
 			}
+			if item.ToolResult != nil && strings.TrimSpace(item.ToolResult.Content) != "" {
+				content = item.ToolResult.Content
+			}
 		}
-		acc.addText(category, msg.Content, id)
+		acc.addText(category, content, id)
 	}
 	return acc.result()
 }
@@ -77,10 +82,29 @@ type contextUsageAccumulator struct {
 
 func newContextUsageAccumulator() *contextUsageAccumulator {
 	acc := &contextUsageAccumulator{categories: map[string]*ContextUsageCategory{}}
-	for _, name := range []string{"system", "developer", "tools", "skills", "host_task", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
+	for _, name := range []string{"system", "developer", "tools", "skills", "host_task", "dynamic_evidence", "dynamic_protocol", "memory", "history_compacted", "mcp", "messages", "tool_results", "artifacts", "buffers"} {
 		acc.categories[name] = &ContextUsageCategory{Name: name}
 	}
 	return acc
+}
+
+func contextUsageCategoryForDynamicSource(sourceID string) string {
+	switch strings.TrimSpace(sourceID) {
+	case promptcompiler.DynamicContextSourceSkill:
+		return "skills"
+	case promptcompiler.DynamicContextSourceHostTask:
+		return "host_task"
+	case promptcompiler.DynamicContextSourceEvidence:
+		return "dynamic_evidence"
+	case promptcompiler.DynamicContextSourceProtocol:
+		return "dynamic_protocol"
+	case promptcompiler.DynamicContextSourceMemory:
+		return "memory"
+	case promptcompiler.DynamicContextSourceHistoryCompacted:
+		return "history_compacted"
+	default:
+		return "messages"
+	}
 }
 
 func (a *contextUsageAccumulator) addText(category, content, id string) {

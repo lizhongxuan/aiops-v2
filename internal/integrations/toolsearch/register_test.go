@@ -27,7 +27,7 @@ func TestRegisterBuiltinsRegistersToolSearch(t *testing.T) {
 func TestRegisterBuiltinsUsesInjectedCatalogProvider(t *testing.T) {
 	registry := tooling.NewRegistry()
 	providerRegistry := tooling.NewRegistry()
-	if err := providerRegistry.Register(fakeStaticTool("provider.only_tool", "Provider only tool")); err != nil {
+	if err := providerRegistry.Register(fakeDeferredTool("provider.only_tool", "Provider only tool")); err != nil {
 		t.Fatalf("provider register error = %v", err)
 	}
 	if err := RegisterBuiltins(registry, providerRegistry); err != nil {

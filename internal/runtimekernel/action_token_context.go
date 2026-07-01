@@ -48,6 +48,7 @@ func toolExecutionContextForDispatch(hostID string, metadata map[string]string) 
 		HostID:   strings.TrimSpace(hostID),
 		TenantID: firstMetadataValue(metadata, "tenantId", "tenantID", "tenant_id"),
 		UserID:   firstMetadataValue(metadata, "userId", "userID", "user_id"),
+		Metadata: cloneTurnMetadata(metadata),
 	}
 }
 

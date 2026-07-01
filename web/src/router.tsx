@@ -7,7 +7,6 @@ import { AgentProfilePage } from "@/pages/AgentProfilePage";
 import { AgentUICenterPage } from "@/pages/AgentUICenterPage";
 import { ApprovalManagementPage } from "@/pages/ApprovalManagementPage";
 import { CapabilityCenterPage } from "@/pages/CapabilityCenterPage";
-import { CorootOverviewPage } from "@/pages/CorootOverviewPage";
 import { ERPHealthPage } from "@/pages/ERPHealthPage";
 import { GeneratorWorkshopPage } from "@/pages/GeneratorWorkshopPage";
 import { HostsPage } from "@/pages/HostsPage";
@@ -15,9 +14,9 @@ import { IncidentListPage } from "@/pages/IncidentListPage";
 import { IncidentWorkbenchPage } from "@/pages/IncidentWorkbenchPage";
 import { LabEnvironmentPage } from "@/pages/LabEnvironmentPage";
 import { LLMConfigPage } from "@/pages/LLMConfigPage";
-import { McpCatalogPage } from "@/pages/McpCatalogPage";
 import { McpServersPage } from "@/pages/McpServersPage";
 import { OpsGraphPage } from "@/pages/OpsGraphPage";
+import { OpsGraphListPage } from "@/pages/opsgraph/OpsGraphListPage";
 import { OpsManualsPage } from "@/pages/OpsManualsPage";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
 import { PostmortemPage } from "@/pages/PostmortemPage";
@@ -26,9 +25,9 @@ import { ProtocolWorkspacePage } from "@/pages/ProtocolWorkspacePage";
 import { RunbookCatalogPage } from "@/pages/RunbookCatalogPage";
 import { RunbookDetailPage } from "@/pages/RunbookDetailPage";
 import { RunnerStudioPage } from "@/pages/RunnerStudioPage";
+import { RuntimeSettingsPage } from "@/pages/RuntimeSettingsPage";
 import { ScriptConfigPage } from "@/pages/ScriptConfigPage";
 import { SettingsPage } from "@/pages/SettingsPage";
-import { SkillCatalogPage } from "@/pages/SkillCatalogPage";
 import { TerminalPage } from "@/pages/TerminalPage";
 import { UICardManagementPage } from "@/pages/UICardManagementPage";
 
@@ -39,7 +38,9 @@ function placeholderElement(title: string, description: string, routePath: strin
 const concreteRoutes: Record<string, React.ReactNode> = {
   "/protocol": <ProtocolWorkspacePage />,
   "/erp": <ERPHealthPage />,
-  "/opsgraph": <OpsGraphPage />,
+  "/opsgraph": <Navigate to="/opsgraph/graphs" replace />,
+  "/opsgraph/:graphId": <OpsGraphPage />,
+  "/opsgraph/graphs": <OpsGraphListPage />,
   "/incidents": <IncidentListPage />,
   "/incidents/:incidentId": <IncidentWorkbenchPage />,
   "/runbooks": <RunbookCatalogPage />,
@@ -50,19 +51,21 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/postmortems/:postmortemId": <PostmortemPage />,
   "/settings": <SettingsPage />,
   "/settings/llm": <LLMConfigPage />,
+  "/settings/runtime": <RuntimeSettingsPage />,
   "/settings/hosts": <HostsPage />,
   "/settings/ops-manuals": <OpsManualsPage />,
   "/settings/experience-packs": <OpsManualsPage />,
   "/settings/agent": <AgentProfilePage />,
-  "/settings/skills": <SkillCatalogPage />,
-  "/settings/mcp": <McpCatalogPage />,
+  "/settings/skills": <Navigate to="/capabilities" replace />,
+  "/settings/mcp": <Navigate to="/capabilities" replace />,
+  "/settings/connectors": <Navigate to="/capabilities" replace />,
   "/mcp": <McpServersPage />,
   "/approval-management": <ApprovalManagementPage />,
-  "/capability-center": <CapabilityCenterPage />,
+  "/capabilities": <CapabilityCenterPage />,
+  "/capability-center": <Navigate to="/capabilities" replace />,
   "/agent-ui": <AgentUICenterPage />,
   "/ui-cards": <UICardManagementPage />,
   "/script-configs": <ScriptConfigPage />,
-  "/coroot": <CorootOverviewPage />,
   "/lab": <LabEnvironmentPage />,
   "/generator": <GeneratorWorkshopPage />,
   "/debug/prompts": <PromptTracePage />,

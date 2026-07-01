@@ -26,10 +26,6 @@ func TestWorkflowManualDefaultLLMSummarizerUsesConfiguredProvider(t *testing.T) 
 			},
 		},
 	})
-	t.Setenv("AIOPS_LLM_BASE_URL", "")
-	t.Setenv("AIOPS_LLM_API_KEY", "")
-	t.Setenv("AIOPS_LLM_MODEL", "")
-	t.Setenv("AIOPS_LLM_CONFIG_FILE", "")
 
 	req := WorkflowManualGenerationRequest{
 		WorkflowID: "builtin-probes",
@@ -93,10 +89,6 @@ func TestModelRouterWorkflowManualLLMSummarizerFailureKeepsDeterministicCandidat
 	t.Cleanup(resetWorkflowManualLLMDefaultsForTest)
 	router := modelrouter.NewRouter("missing", nil, nil)
 	SetDefaultWorkflowManualLLMSummarizer(ModelRouterWorkflowManualLLMSummarizer{Router: router})
-	t.Setenv("AIOPS_LLM_BASE_URL", "")
-	t.Setenv("AIOPS_LLM_API_KEY", "")
-	t.Setenv("AIOPS_LLM_MODEL", "")
-	t.Setenv("AIOPS_LLM_CONFIG_FILE", "")
 
 	req := WorkflowManualGenerationRequest{
 		WorkflowID: "pg-restore",

@@ -25,6 +25,10 @@ func TestHostAgentServiceRegisterMarksHostManagedOnline(t *testing.T) {
 		Hostname:      "prod-web-01",
 		OS:            "linux",
 		Arch:          "amd64",
+		OSRelease:     "Ubuntu 24.04 LTS",
+		KernelVersion: "6.8.0-31-generic",
+		CPUCores:      8,
+		MemoryBytes:   34359738368,
 		AgentVersion:  "v0.1.0",
 		ListenAddress: ":7072",
 		Labels:        map[string]string{"role": "web"},
@@ -48,6 +52,9 @@ func TestHostAgentServiceRegisterMarksHostManagedOnline(t *testing.T) {
 	}
 	if saved.OS != "linux" || saved.Arch != "amd64" || saved.AgentVersion != "v0.1.0" {
 		t.Fatalf("registered host platform = %+v", saved)
+	}
+	if saved.OSRelease != "Ubuntu 24.04 LTS" || saved.KernelVersion != "6.8.0-31-generic" || saved.CPUCores != 8 || saved.MemoryBytes != 34359738368 {
+		t.Fatalf("registered host system basics = %+v", saved)
 	}
 	if saved.AgentURL != "http://10.0.0.11:7072" {
 		t.Fatalf("AgentURL = %q, want http://10.0.0.11:7072", saved.AgentURL)
@@ -75,9 +82,13 @@ func TestHostAgentServiceHeartbeatUpdatesLastHeartbeat(t *testing.T) {
 	service := NewHostAgentService(repo)
 
 	resp, err := service.Heartbeat(context.Background(), HostAgentHeartbeatRequest{
-		HostID:       "host-a",
-		AgentVersion: "v0.1.1",
-		Timestamp:    "2026-05-18T10:00:00+08:00",
+		HostID:        "host-a",
+		AgentVersion:  "v0.1.1",
+		Timestamp:     "2026-05-18T10:00:00+08:00",
+		OSRelease:     "Debian GNU/Linux 12",
+		KernelVersion: "6.1.0-21-amd64",
+		CPUCores:      4,
+		MemoryBytes:   8589934592,
 	}, token)
 	if err != nil {
 		t.Fatalf("Heartbeat() error = %v", err)
@@ -94,6 +105,9 @@ func TestHostAgentServiceHeartbeatUpdatesLastHeartbeat(t *testing.T) {
 	}
 	if saved.AgentVersion != "v0.1.1" {
 		t.Fatalf("AgentVersion = %q, want v0.1.1", saved.AgentVersion)
+	}
+	if saved.OSRelease != "Debian GNU/Linux 12" || saved.KernelVersion != "6.1.0-21-amd64" || saved.CPUCores != 4 || saved.MemoryBytes != 8589934592 {
+		t.Fatalf("heartbeat host system basics = %+v", saved)
 	}
 }
 

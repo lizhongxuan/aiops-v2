@@ -3,8 +3,6 @@ package promptinput
 import (
 	"encoding/json"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/resourceio"
@@ -60,10 +58,10 @@ type BuildRequest struct {
 	ApprovalScope         *ApprovalScopeTrace
 }
 
-// BuildResult is the provider-facing model input plus its explainable trace.
+// BuildResult is the provider-neutral model input plus its explainable trace.
 type BuildResult struct {
-	Messages []*schema.Message
-	Trace    PromptInputTrace
+	Items []ModelInputItem
+	Trace PromptInputTrace
 }
 
 // PromptInputTrace records where each prompt input item came from.
@@ -77,10 +75,16 @@ type PromptInputTrace struct {
 	MemoryItemCount               int                                         `json:"memoryItemCount,omitempty"`
 	VisibleOpsManualTools         []string                                    `json:"visibleOpsManualTools,omitempty"`
 	DroppedContextReasons         []string                                    `json:"droppedContextReasons,omitempty"`
+	ContextDedupe                 *ContextDedupeTrace                         `json:"contextDedupe,omitempty"`
 	ContextGovernance             []ContextGovernanceTraceItem                `json:"contextGovernance,omitempty"`
 	ContextUsage                  ContextUsage                                `json:"contextUsage,omitempty"`
 	ToolSurfaceFingerprint        string                                      `json:"toolSurfaceFingerprint,omitempty"`
 	ToolSurfacePolicySnapshotHash string                                      `json:"toolSurfacePolicySnapshotHash,omitempty"`
+	ToolSurfaceSnapshot           *ToolSurfaceSnapshot                        `json:"toolSurfaceSnapshot,omitempty"`
+	PublicWebBudget               *PublicWebBudgetTrace                       `json:"publicWebBudget,omitempty"`
+	WebSearchPolicy               *WebSearchPolicyTrace                       `json:"webSearchPolicy,omitempty"`
+	WebSearch                     *WebSearchTrace                             `json:"webSearch,omitempty"`
+	Final                         *FinalTrace                                 `json:"final,omitempty"`
 	DeferredToolDirectory         []promptcompiler.DeferredToolDirectoryEntry `json:"deferredToolDirectory,omitempty"`
 	LoadedToolsDelta              []string                                    `json:"loadedToolsDelta,omitempty"`
 	LoadedPacksDelta              []string                                    `json:"loadedPacksDelta,omitempty"`
@@ -89,6 +93,7 @@ type PromptInputTrace struct {
 	ToolSearchEvents              []ToolSearchTraceEvent                      `json:"toolSearchEvents,omitempty"`
 	ToolSelectionEvents           []ToolSelectionTraceEvent                   `json:"toolSelectionEvents,omitempty"`
 	RejectedToolCalls             []RejectedToolCallTraceEvent                `json:"rejectedToolCalls,omitempty"`
+	DispatchDecisions             []DispatchDecisionTrace                     `json:"dispatchDecisions,omitempty"`
 	SkillSearchEvents             []SkillSearchTraceEvent                     `json:"skillSearchEvents,omitempty"`
 	SkillReadEvents               []SkillReadTraceEvent                       `json:"skillReadEvents,omitempty"`
 	RejectedSkillActivations      []RejectedSkillActivationTraceEvent         `json:"rejectedSkillActivations,omitempty"`
@@ -103,6 +108,7 @@ type PromptInputTrace struct {
 	AgentAssignmentLint           []AgentAssignmentLintTrace                  `json:"agentAssignmentLint,omitempty"`
 	AgentParallelTraceGroups      []AgentParallelTraceGroup                   `json:"agentParallelTraceGroups,omitempty"`
 	ResourceLocks                 []ResourceLockTrace                         `json:"resourceLocks,omitempty"`
+	OwnerWriteTraces              []OwnerWriteTrace                           `json:"ownerWriteTraces,omitempty"`
 	AgentFinalGate                *AgentFinalGateDecisionTrace                `json:"agentFinalGate,omitempty"`
 	AgentNotifications            []AgentNotificationTrace                    `json:"agentNotifications,omitempty"`
 	VerificationAgentReport       *VerificationAgentReportTrace               `json:"verificationAgentReport,omitempty"`
@@ -126,6 +132,71 @@ type PromptInputTrace struct {
 	TaskTodoState                 *TaskTodoTraceState                         `json:"taskTodoState,omitempty"`
 }
 
+type ContextDedupeTrace struct {
+	RepeatedUserMessageCount int `json:"repeatedUserMessageCount,omitempty"`
+	SavedChars               int `json:"savedChars,omitempty"`
+	RetainedDeltaChars       int `json:"retainedDeltaChars,omitempty"`
+}
+
+type PublicWebBudgetTrace struct {
+	MaxSearchCalls        int  `json:"maxSearchCalls,omitempty"`
+	MaxQueries            int  `json:"maxQueries,omitempty"`
+	MaxResults            int  `json:"maxResults,omitempty"`
+	MaxCallsPerTurn       int  `json:"maxCallsPerTurn,omitempty"`
+	MaxQueriesPerCall     int  `json:"maxQueriesPerCall,omitempty"`
+	MaxResultsPerDomain   int  `json:"maxResultsPerDomain,omitempty"`
+	ExplicitUserRequested bool `json:"explicitUserRequested,omitempty"`
+}
+
+type WebSearchPolicyTrace struct {
+	Level            string   `json:"level,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	ReasonCodes      []string `json:"reasonCodes,omitempty"`
+	QuerySeeds       []string `json:"querySeeds,omitempty"`
+	DisabledBy       string   `json:"disabledBy,omitempty"`
+	RequireCitations bool     `json:"requireCitations,omitempty"`
+}
+
+type WebSearchTrace struct {
+	Attempted     bool   `json:"attempted,omitempty"`
+	RetryCount    int    `json:"retryCount,omitempty"`
+	Adapter       string `json:"adapter,omitempty"`
+	SourceCount   int    `json:"sourceCount,omitempty"`
+	FailureReason string `json:"failureReason,omitempty"`
+}
+
+type FinalTrace struct {
+	PublicWebLimitation bool `json:"publicWebLimitation,omitempty"`
+}
+
+type DispatchDecisionTrace struct {
+	ToolName               string `json:"toolName,omitempty"`
+	ToolCallID             string `json:"toolCallId,omitempty"`
+	ToolSurfaceFingerprint string `json:"toolSurfaceFingerprint"`
+	PermissionSnapshotHash string `json:"permissionSnapshotHash"`
+	ArgumentsHash          string `json:"argumentsHash"`
+}
+
+type ToolSurfaceSnapshot struct {
+	Fingerprint      string              `json:"fingerprint,omitempty"`
+	VisibleTools     []string            `json:"visibleTools,omitempty"`
+	DeferredTools    []string            `json:"deferredTools,omitempty"`
+	HiddenTools      []string            `json:"hiddenTools,omitempty"`
+	HiddenReasons    map[string][]string `json:"hiddenReasons,omitempty"`
+	LoadedPacksDelta []string            `json:"loadedPacksDelta,omitempty"`
+	PolicyHash       string              `json:"policyHash,omitempty"`
+}
+
+type OwnerWriteTrace struct {
+	Responsibility string `json:"responsibility"`
+	Owner          string `json:"owner"`
+	Writer         string `json:"writer"`
+	SessionID      string `json:"sessionId,omitempty"`
+	TurnID         string `json:"turnId,omitempty"`
+	Outcome        string `json:"outcome"`
+	CreatedAt      string `json:"createdAt,omitempty"`
+}
+
 // TraceItem is one semantic prompt-input trace entry.
 type TraceItem struct {
 	Source       string `json:"source"`
@@ -138,14 +209,20 @@ type TraceItem struct {
 }
 
 type ContextGovernanceTraceItem struct {
-	Layer        string             `json:"layer"`
-	Kind         string             `json:"kind"`
-	Message      string             `json:"message,omitempty"`
-	Budget       map[string]int     `json:"budget,omitempty"`
-	ReferenceIDs []string           `json:"referenceIds,omitempty"`
-	Resource     *ResourceTraceItem `json:"resource,omitempty"`
-	RetryAttempt int                `json:"retryAttempt,omitempty"`
-	RetryMax     int                `json:"retryMax,omitempty"`
+	ID                  string             `json:"id,omitempty"`
+	Layer               string             `json:"layer"`
+	Kind                string             `json:"kind"`
+	Message             string             `json:"message,omitempty"`
+	ToolCallID          string             `json:"toolCallId,omitempty"`
+	ToolName            string             `json:"toolName,omitempty"`
+	MaterializationTier string             `json:"materializationTier,omitempty"`
+	OriginalBytes       int64              `json:"originalBytes,omitempty"`
+	InlineBytes         int64              `json:"inlineBytes,omitempty"`
+	Budget              map[string]int     `json:"budget,omitempty"`
+	ReferenceIDs        []string           `json:"referenceIds,omitempty"`
+	Resource            *ResourceTraceItem `json:"resource,omitempty"`
+	RetryAttempt        int                `json:"retryAttempt,omitempty"`
+	RetryMax            int                `json:"retryMax,omitempty"`
 }
 
 type ResourceRange = resourceio.Range
@@ -182,11 +259,24 @@ type ContextContributor struct {
 }
 
 type ToolSearchTraceEvent struct {
-	Mode       string   `json:"mode,omitempty"`
-	Query      string   `json:"query,omitempty"`
-	MatchCount int      `json:"matchCount,omitempty"`
-	Matches    []string `json:"matches,omitempty"`
-	Reason     string   `json:"reason,omitempty"`
+	Mode            string                     `json:"mode,omitempty"`
+	Query           string                     `json:"query,omitempty"`
+	Ranker          string                     `json:"ranker,omitempty"`
+	MatchCount      int                        `json:"matchCount,omitempty"`
+	RejectedCount   int                        `json:"rejectedCount,omitempty"`
+	Matches         []string                   `json:"matches,omitempty"`
+	RejectedReasons []ToolSearchRejectedReason `json:"rejectedReasons,omitempty"`
+	Reason          string                     `json:"reason,omitempty"`
+}
+
+type ToolSearchRejectedReason struct {
+	ToolName       string `json:"toolName,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Source         string `json:"source,omitempty"`
+	MCPServerID    string `json:"mcpServerId,omitempty"`
+	HealthStatus   string `json:"healthStatus,omitempty"`
+	FilteredReason string `json:"filteredReason,omitempty"`
 }
 
 type ToolSelectionTraceEvent struct {
@@ -306,11 +396,13 @@ type CompletionGateTrace struct {
 }
 
 type TaskDepthTrace struct {
-	Level              string   `json:"level,omitempty"`
-	Reasons            []string `json:"reasons,omitempty"`
-	RequiresPlan       bool     `json:"requiresPlan"`
-	RequiresEvidence   bool     `json:"requiresEvidence"`
-	RequiresValidation bool     `json:"requiresValidation"`
+	Level               string   `json:"level,omitempty"`
+	Reasons             []string `json:"reasons,omitempty"`
+	RequiresPlan        bool     `json:"requiresPlan"`
+	RequiresEvidence    bool     `json:"requiresEvidence"`
+	RequiresValidation  bool     `json:"requiresValidation"`
+	AnalysisOnly        bool     `json:"analysisOnly,omitempty"`
+	ExecutionProhibited bool     `json:"executionProhibited,omitempty"`
 }
 
 type EvidenceCoverageTrace struct {

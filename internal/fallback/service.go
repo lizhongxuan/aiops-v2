@@ -65,6 +65,9 @@ func (s *Service) PlanExec(req PlanExecRequest) (PlanExecResult, error) {
 			return PlanExecResult{}, err
 		}
 		expiresAt := now.Add(15 * time.Minute)
+		targetSummary := fallbackTargetSummary(req, proposed)
+		actionSummary := fallbackActionSummary(proposed)
+		riskSummary := fallbackRiskSummary(classification.Risk, classification.ApprovalRequired, proposed)
 		claims := actionproposal.ActionTokenClaims{
 			SessionID:      req.SessionID,
 			TurnID:         req.TurnID,
@@ -74,7 +77,10 @@ func (s *Service) PlanExec(req PlanExecRequest) (PlanExecResult, error) {
 			ToolName:       proposed.ToolName,
 			InputHash:      inputHash,
 			Source:         actionproposal.SourceFallback,
+			TargetSummary:  targetSummary,
+			ActionSummary:  actionSummary,
 			Risk:           classification.Risk,
+			RiskSummary:    riskSummary,
 			Reason:         proposed.Reason,
 			ExpectedEffect: proposed.ExpectedEffect,
 			Rollback:       proposed.Rollback,
@@ -93,7 +99,10 @@ func (s *Service) PlanExec(req PlanExecRequest) (PlanExecResult, error) {
 			Source:           actionproposal.SourceFallback,
 			ToolName:         proposed.ToolName,
 			ToolInput:        append([]byte(nil), proposed.ToolInput...),
+			TargetSummary:    targetSummary,
+			ActionSummary:    actionSummary,
 			Risk:             classification.Risk,
+			RiskSummary:      riskSummary,
 			ApprovalRequired: classification.ApprovalRequired,
 			Reason:           proposed.Reason,
 			EvidenceRefs:     append([]string(nil), req.EvidenceRefs...),
@@ -125,6 +134,45 @@ func (s *Service) ObserveResult(req ObserveResultRequest) error {
 		ObservedAt:    s.now(),
 	})
 	return nil
+}
+
+func fallbackTargetSummary(req PlanExecRequest, action ProposedAction) string {
+	if value := strings.TrimSpace(action.TargetSummary); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(req.Goal); value != "" {
+		return value
+	}
+	return strings.TrimSpace(req.IncidentID)
+}
+
+func fallbackActionSummary(action ProposedAction) string {
+	if value := strings.TrimSpace(action.ActionSummary); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(action.Reason); value != "" {
+		return value
+	}
+	if action.ToolName != "" {
+		return "执行 " + strings.TrimSpace(action.ToolName)
+	}
+	return "执行 fallback 动作"
+}
+
+func fallbackRiskSummary(risk actionproposal.Risk, approvalRequired bool, action ProposedAction) string {
+	if value := strings.TrimSpace(action.RiskSummary); value != "" {
+		return value
+	}
+	parts := []string{"风险等级：" + string(risk)}
+	if approvalRequired {
+		parts = append(parts, "需要用户审批后才可执行")
+	} else {
+		parts = append(parts, "只读动作可直接采集证据")
+	}
+	if reason := strings.TrimSpace(action.Reason); reason != "" {
+		parts = append(parts, reason)
+	}
+	return strings.Join(parts, "；")
 }
 
 type actionClassification struct {

@@ -124,6 +124,42 @@ func TestToolDiscoveryMetadataNormalizesPolicyFields(t *testing.T) {
 	}
 }
 
+func TestToolDiscoveryMetadataNormalizesV3Fields(t *testing.T) {
+	meta := ToolMetadata{
+		Name:      "synthetic.v3_tool",
+		RiskLevel: ToolRiskHigh,
+		Discovery: ToolDiscoveryMetadata{
+			CapabilityKind:         " Read ",
+			Capabilities:           []string{"inspect", "READ", " "},
+			ResourceTypes:          []string{" Service "},
+			TargetKinds:            []string{"Host", "service"},
+			RequiresExplicitTarget: true,
+			EvidenceKind:           " Environment_Fact ",
+		},
+	}
+
+	effective := meta.EffectiveDiscovery()
+	assertStringListForDiscoveryTest(t, "Capabilities", effective.Capabilities, []string{"inspect", "read"})
+	assertStringListForDiscoveryTest(t, "TargetKinds", effective.TargetKinds, []string{"host", "service"})
+	assertStringListForDiscoveryTest(t, "ResourceTypes", effective.ResourceTypes, []string{"host", "service"})
+	if effective.RiskLevel != ToolRiskHigh {
+		t.Fatalf("RiskLevel = %q, want %q", effective.RiskLevel, ToolRiskHigh)
+	}
+	if !effective.RequiresExplicitTarget {
+		t.Fatal("RequiresExplicitTarget = false, want true")
+	}
+	if effective.EvidenceKind != "environment_fact" {
+		t.Fatalf("EvidenceKind = %q, want environment_fact", effective.EvidenceKind)
+	}
+
+	searchText := ToolDiscoverySearchText(meta)
+	for _, want := range []string{"inspect", "host", "environment_fact", "high"} {
+		if !strings.Contains(searchText, want) {
+			t.Fatalf("search text %q missing %q", searchText, want)
+		}
+	}
+}
+
 func assertStringListForDiscoveryTest(t *testing.T, label string, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

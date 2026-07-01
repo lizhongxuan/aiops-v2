@@ -411,11 +411,15 @@ func serverTurnItems(events []agentui.AgentEvent) []agentstate.TurnItem {
 		if !ok {
 			continue
 		}
+		data := event.Payload
+		if typ == agentstate.TurnItemTypeAssistantMessage {
+			data = serverAssistantMessagePayloadData(event)
+		}
 		items = append(items, agentstate.TurnItem{
 			ID:      firstNonEmpty(event.EventID, fmt.Sprintf("%s-%d", event.Kind, event.Seq)),
 			Type:    typ,
 			Status:  serverItemStatus(event.Status),
-			Payload: agentstate.PayloadEnvelope{Kind: string(event.Kind), Summary: serverEventSummary(event), Data: event.Payload},
+			Payload: agentstate.PayloadEnvelope{Kind: string(event.Kind), Summary: serverEventSummary(event), Data: data},
 		})
 	}
 	return items
@@ -435,7 +439,7 @@ func serverTurnItemType(event agentui.AgentEvent) (agentstate.TurnItemType, bool
 	case agentui.AgentEventEvidence:
 		return agentstate.TurnItemTypeEvidence, true
 	case agentui.AgentEventAssistant:
-		return agentstate.TurnItemTypeFinalAnswer, true
+		return agentstate.TurnItemTypeAssistantMessage, true
 	case agentui.AgentEventSystem:
 		if isModelCallSystemEvent(event) {
 			return agentstate.TurnItemTypeModelCall, true
@@ -449,6 +453,39 @@ func serverTurnItemType(event agentui.AgentEvent) (agentstate.TurnItemType, bool
 	default:
 		return "", false
 	}
+}
+
+func serverAssistantMessagePayloadData(event agentui.AgentEvent) json.RawMessage {
+	payload := map[string]any{}
+	if len(event.Payload) > 0 {
+		_ = json.Unmarshal(event.Payload, &payload)
+	}
+	if strings.TrimSpace(serverPayloadStringValue(payload["displayKind"])) == "" {
+		payload["displayKind"] = "assistant.message"
+	}
+	if strings.TrimSpace(serverPayloadStringValue(payload["phase"])) == "" {
+		payload["phase"] = "final_answer"
+	}
+	if strings.TrimSpace(serverPayloadStringValue(payload["streamState"])) == "" {
+		switch event.Phase {
+		case agentui.AgentEventPhaseCompleted:
+			payload["streamState"] = "complete"
+		case agentui.AgentEventPhaseFailed, agentui.AgentEventPhaseCanceled, agentui.AgentEventPhaseBlocked:
+			payload["streamState"] = "incomplete"
+		default:
+			payload["streamState"] = "streaming"
+		}
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)
+	}
+	return data
+}
+
+func serverPayloadStringValue(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func serverToolEventIsResult(event agentui.AgentEvent) bool {

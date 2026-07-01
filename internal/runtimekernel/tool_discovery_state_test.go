@@ -84,6 +84,58 @@ func TestApplyToolSearchDiscoveryStatePersistsNotLoadedReasons(t *testing.T) {
 	}
 }
 
+func TestApplyToolSearchDiscoveryStatePersistsV3SearchSnapshots(t *testing.T) {
+	session := &SessionState{ID: "sess-tool-search-v3"}
+	applyToolSearchDiscoveryState(session, "tool_search", ToolResult{
+		Content: `{
+			"mode":"search",
+			"ranker":"bm25",
+			"request":{
+				"mode":"search",
+				"query":"service metrics",
+				"intent":"rca",
+				"sessionType":"host",
+				"runtimeMode":"chat",
+				"limit":5,
+				"mcpHealth":{"coroot":"unavailable"},
+				"ranker":"bm25"
+			},
+			"matches":[{"kind":"tool","name":"local.service_logs","capabilityKind":"read","resourceTypes":["service"],"operationKinds":["read"],"riskLevel":"low","requiresSelect":false}],
+			"rejected":[{"name":"coroot.service_metrics","reason":"mcp_unavailable","status":"unavailable","source":"mcp","mcpServerId":"coroot","healthStatus":"unavailable"}]
+		}`,
+	}, "turn-v3")
+
+	if session.ToolDiscovery.LastSearchRequest == nil {
+		t.Fatal("LastSearchRequest = nil, want v3 request snapshot")
+	}
+	if got := session.ToolDiscovery.LastSearchRequest.Query; got != "service metrics" {
+		t.Fatalf("LastSearchRequest.Query = %q, want service metrics", got)
+	}
+	if got := session.ToolDiscovery.LastSearchRequest.Ranker; got != "bm25" {
+		t.Fatalf("LastSearchRequest.Ranker = %q, want bm25", got)
+	}
+	if got := session.ToolDiscovery.LastSearchRequest.MCPHealth["coroot"]; got != "unavailable" {
+		t.Fatalf("LastSearchRequest.MCPHealth[coroot] = %q, want unavailable", got)
+	}
+	if session.ToolDiscovery.LastSearchResponse == nil {
+		t.Fatal("LastSearchResponse = nil, want v3 response snapshot")
+	}
+	if session.ToolDiscovery.LastSearchResponse.MatchCount != 1 || session.ToolDiscovery.LastSearchResponse.RejectedCount != 1 {
+		t.Fatalf("LastSearchResponse = %#v, want match/rejected counts 1/1", session.ToolDiscovery.LastSearchResponse)
+	}
+	if len(session.ToolDiscovery.LastRejectedSearchResults) != 1 || session.ToolDiscovery.LastRejectedSearchResults[0].Reason != "mcp_unavailable" {
+		t.Fatalf("LastRejectedSearchResults = %#v, want one mcp_unavailable rejection", session.ToolDiscovery.LastRejectedSearchResults)
+	}
+
+	events := toolSearchTraceEventsFromDiscovery(session.ToolDiscovery)
+	if len(events) != 1 {
+		t.Fatalf("toolSearchTraceEvents = %d, want 1", len(events))
+	}
+	if events[0].Query != "service metrics" || events[0].Ranker != "bm25" || events[0].RejectedCount != 1 {
+		t.Fatalf("tool search trace event = %#v, want query/ranker/rejected count", events[0])
+	}
+}
+
 func TestToolDiscoveryStateInvalidatesOnFingerprintChange(t *testing.T) {
 	now := time.Unix(100, 0)
 	state := ToolDiscoverySessionState{}

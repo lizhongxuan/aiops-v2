@@ -2,6 +2,7 @@ package appui
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -9,6 +10,12 @@ import (
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
 )
+
+type terminalCredentialResolverStub struct{}
+
+func (terminalCredentialResolverStub) ResolveSSHCredential(context.Context, string) (ResolvedSSHCredential, error) {
+	return ResolvedSSHCredential{}, fmt.Errorf("resolver was used")
+}
 
 func TestTerminalService_CreateAndListSessions(t *testing.T) {
 	mgr := terminal.NewManager(terminal.WithCommandFactory(func(req terminal.CreateSessionRequest) (*exec.Cmd, error) {
@@ -45,6 +52,24 @@ func TestTerminalService_CreateAndListSessions(t *testing.T) {
 	}
 	if list.Sessions[0].Status != terminal.SessionStatusRunning {
 		t.Fatalf("Sessions[0].Status = %q, want running", list.Sessions[0].Status)
+	}
+}
+
+func TestTerminalServiceWithCredentialResolverInstallsSSHCommandFactory(t *testing.T) {
+	mgr := terminal.NewManager()
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "remote-terminal",
+		Status:           "online",
+		TerminalCapable:  true,
+		Address:          "10.0.0.10",
+		SSHUser:          "root",
+		SSHCredentialRef: "secret://hosts/remote-terminal/ssh-password",
+	})
+	svc := NewTerminalServiceWithCredentialResolver(mgr, terminalCredentialResolverStub{}, repo)
+
+	_, err := svc.CreateSession(context.Background(), TerminalCreateSessionCommand{HostID: "remote-terminal"})
+	if err == nil || !strings.Contains(err.Error(), "resolver was used") {
+		t.Fatalf("CreateSession() error = %v, want command factory to use credential resolver", err)
 	}
 }
 

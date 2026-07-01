@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -50,16 +51,43 @@ func (h *WebAssetsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasPrefix(cleanedPath, "/assets/") {
+		if h.servePrecompressedGzip(w, r, cleanedPath) {
+			return
+		}
 		h.fileServer.ServeHTTP(w, withPath(r, cleanedPath))
 		return
 	}
 	if candidate, ok := h.resolveFile(cleanedPath); ok {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			if h.servePrecompressedGzip(w, r, cleanedPath) {
+				return
+			}
 			h.fileServer.ServeHTTP(w, withPath(r, cleanedPath))
 			return
 		}
 	}
 	http.ServeFile(w, r, h.indexPath)
+}
+
+func (h *WebAssetsHandler) servePrecompressedGzip(w http.ResponseWriter, r *http.Request, requestPath string) bool {
+	if h == nil || !clientAcceptsGzip(r) {
+		return false
+	}
+	gzipPath, ok := h.resolveFile(requestPath + ".gz")
+	if !ok {
+		return false
+	}
+	info, err := os.Stat(gzipPath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if contentType := mime.TypeByExtension(filepath.Ext(requestPath)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Vary", "Accept-Encoding")
+	http.ServeFile(w, r, gzipPath)
+	return true
 }
 
 func (h *WebAssetsHandler) resolveFile(requestPath string) (string, bool) {
@@ -85,6 +113,18 @@ func normalizeWebPath(value string) string {
 
 func isReservedTransportPath(value string) bool {
 	return strings.HasPrefix(value, "/api/") || value == "/ws" || strings.HasPrefix(value, "/api/v1/terminal/ws")
+}
+
+func clientAcceptsGzip(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.EqualFold(strings.TrimSpace(strings.Split(part, ";")[0]), "gzip") {
+			return true
+		}
+	}
+	return false
 }
 
 func withPath(r *http.Request, requestPath string) *http.Request {

@@ -19,14 +19,14 @@ type ResourceIdentity struct {
 type ResourceRange = resourceio.Range
 
 type ResourceReadRecord struct {
-	Identity    ResourceIdentity `json:"identity"`
-	SourceRef   string           `json:"sourceRef,omitempty"`
-	Summary     string           `json:"summary,omitempty"`
-	Preview     string           `json:"preview,omitempty"`
-	Content     string           `json:"content,omitempty"`
-	ContentType string           `json:"contentType,omitempty"`
-	Bytes       int64            `json:"bytes,omitempty"`
-	LastReadAt  time.Time        `json:"lastReadAt,omitempty"`
+	Identity       ResourceIdentity `json:"identity"`
+	SourceRef      string           `json:"sourceRef,omitempty"`
+	Summary        string           `json:"summary,omitempty"`
+	ContentSnippet string           `json:"contentSnippet,omitempty"`
+	Content        string           `json:"content,omitempty"`
+	ContentType    string           `json:"contentType,omitempty"`
+	Bytes          int64            `json:"bytes,omitempty"`
+	LastReadAt     time.Time        `json:"lastReadAt,omitempty"`
 }
 
 type ResourceCheckResult struct {
@@ -114,13 +114,13 @@ func normalizeResourceReadRecord(record ResourceReadRecord) ResourceReadRecord {
 	record.Identity = record.Identity.normalize()
 	record.SourceRef = strings.TrimSpace(record.SourceRef)
 	record.Summary = strings.TrimSpace(record.Summary)
-	record.Preview = strings.TrimSpace(record.Preview)
+	record.ContentSnippet = strings.TrimSpace(record.ContentSnippet)
 	record.ContentType = strings.TrimSpace(record.ContentType)
 	if record.Summary == "" {
-		record.Summary = contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.Preview, record.Content))
+		record.Summary = contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.ContentSnippet, record.Content))
 	}
-	if record.Preview == "" {
-		record.Preview = contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.Content, record.Summary))
+	if record.ContentSnippet == "" {
+		record.ContentSnippet = contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.Content, record.Summary))
 	}
 	if record.LastReadAt.IsZero() {
 		record.LastReadAt = time.Now().UTC()
@@ -170,9 +170,9 @@ func (id ResourceIdentity) fullKey() string {
 
 func boundedResourceMissContent(record ResourceReadRecord) string {
 	if record.Identity.Digest == "" {
-		return contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.Preview, record.Summary, record.Content))
+		return contextArtifactBoundedSnippet(contextArtifactFirstNonBlank(record.ContentSnippet, record.Summary, record.Content))
 	}
-	return contextArtifactFirstNonBlank(record.Content, record.Preview, record.Summary)
+	return contextArtifactFirstNonBlank(record.Content, record.ContentSnippet, record.Summary)
 }
 
 func resourceUnchangedStub(record ResourceReadRecord) string {

@@ -2,15 +2,60 @@ import { describe, expect, it } from "vitest";
 import { parsePromptTrace, shortHash } from "./promptTraceViewModel";
 
 function sampleTrace(overrides = {}) {
+  const {
+    modelInput,
+    visibleTools,
+    toolSurface,
+    stepContext,
+    ...rest
+  } = overrides;
+  const defaultVisibleTools = ["browse_url", "exec_command"];
+  const defaultModelInput = [
+    {
+      index: 0,
+      providerRole: "system",
+      semanticRole: "system",
+      promptLayer: "system",
+      content: "# Role\nYou are an agent.",
+    },
+    {
+      index: 1,
+      providerRole: "system",
+      semanticRole: "developer",
+      promptLayer: "developer",
+      content: "Use tools carefully.",
+    },
+    {
+      index: 2,
+      providerRole: "system",
+      semanticRole: "tool",
+      promptLayer: "tool_index",
+      content: "browse_url\nexec_command",
+    },
+    {
+      index: 3,
+      providerRole: "system",
+      semanticRole: "context",
+      promptLayer: "runtime_policy",
+      content: "Current mode: execute",
+    },
+    {
+      index: 4,
+      providerRole: "user",
+      semanticRole: "user",
+      promptLayer: "conversation",
+      content: "请只回复 smoke",
+    },
+  ];
+  const nextVisibleTools = visibleTools ?? toolSurface?.modelVisibleTools ?? defaultVisibleTools;
   return {
-    schemaVersion: 1,
+    schemaVersion: "aiops.trace/v2",
     kind: "runtime_model_input",
     caseId: "case-1",
     sessionId: "sess-1",
     turnId: "turn-1",
     iteration: 0,
     createdAt: "2026-05-02T05:42:25Z",
-    visibleTools: ["browse_url", "exec_command"],
     promptFingerprint: {
       stableHash: "40a0e0f6a5e811df620c05fce37837adbd9511fac9e341872cc0e3ee60bd6e4a",
       systemHash: "system-hash",
@@ -22,48 +67,51 @@ function sampleTrace(overrides = {}) {
     prompt: {
       tools: "## browse_url\nRead URL.\n\n## exec_command\nRun command.",
     },
-    modelInput: [
-      {
-        index: 0,
-        providerRole: "system",
-        semanticRole: "system",
-        promptLayer: "system",
-        content: "# Role\nYou are an agent.",
-      },
-      {
-        index: 1,
-        providerRole: "system",
-        semanticRole: "developer",
-        promptLayer: "developer",
-        content: "Use tools carefully.",
-      },
-      {
-        index: 2,
-        providerRole: "system",
-        semanticRole: "tool",
-        promptLayer: "tool_index",
-        content: "browse_url\nexec_command",
-      },
-      {
-        index: 3,
-        providerRole: "system",
-        semanticRole: "context",
-        promptLayer: "runtime_policy",
-        content: "Current mode: execute",
-      },
-      {
-        index: 4,
-        providerRole: "user",
-        semanticRole: "user",
-        promptLayer: "conversation",
-        content: "请只回复 smoke",
-      },
-    ],
-    ...overrides,
+    toolSurface: {
+      modelVisibleTools: nextVisibleTools,
+      dispatchableTools: nextVisibleTools,
+      hiddenReasons: {},
+      ...toolSurface,
+    },
+    stepContext: {
+      modelInput: modelInput ?? stepContext?.modelInput ?? defaultModelInput,
+      ...stepContext,
+    },
+    ...rest,
   };
 }
 
 describe("parsePromptTrace", () => {
+  it("reads provider request and raw payload refs from trace v2", () => {
+    const vm = parsePromptTrace(JSON.stringify({
+      schemaVersion: "aiops.trace/v2",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      iteration: 0,
+      providerRequest: {
+        modelInputHash: "mih",
+        providerMessagesHash: "pmh",
+        requestPropertiesHash: "rph",
+        promptCacheKey: "cache",
+      },
+      toolSurface: {
+        modelVisibleTools: ["exec_command"],
+        dispatchableTools: ["exec_command"],
+        hiddenReasons: {},
+      },
+      rawPayloadRefs: [{ id: "raw-request", kind: "provider_request", path: "raw/raw-request.json" }],
+      stepContext: {
+        modelInput: [{ id: "history-1", providerRole: "user", semanticRole: "user", content: "hello" }],
+      },
+    }));
+
+    expect(vm.summary.schemaVersion).toBe("aiops.trace/v2");
+    expect(vm.providerRequest.modelInputHash).toBe("mih");
+    expect(vm.rawPayloadRefs).toHaveLength(1);
+    expect(vm.toolSurface.summary.visibleCount).toBe(1);
+    expect(vm.summary.messageCount).toBe(1);
+  });
+
   it("parses a real-shaped prompt trace into summary, layers, tools, and fingerprints", () => {
     const vm = parsePromptTrace(sampleTrace());
 
@@ -120,7 +168,7 @@ describe("parsePromptTrace", () => {
 
   it("warns when no user message is present", () => {
     const trace = sampleTrace({
-      modelInput: sampleTrace().modelInput.filter((item) => item.providerRole !== "user"),
+      modelInput: sampleTrace().stepContext.modelInput.filter((item) => item.providerRole !== "user"),
     });
     const vm = parsePromptTrace(trace);
     expect(vm.summary.hasUserMessage).toBe(false);
@@ -273,12 +321,38 @@ describe("parsePromptTrace", () => {
     });
   });
 
+  it("builds environment context from aiops metadata and redacts secrets", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      metadata: {
+        "aiops.target.refs": "host:10.0.0.1,service:checkout",
+        "aiops.env.readOnlyReason": "target_conflict_requires_clarification token=env-reason-secret",
+        "aiops.env.compactContext": [
+          "EnvironmentFactsContext:",
+          "ConfirmedFacts:",
+          "- host_identity=10.0.0.1 source=user_explicit",
+          "ConflictFacts:",
+          "- target_conflict service:checkout -> host:10.0.0.2 password=env-compact-secret",
+        ].join("\n"),
+      },
+    }));
+
+    expect(vm.contextGovernance.environmentContext).toMatchObject({
+      targetRefs: ["host:10.0.0.1", "service:checkout"],
+      hasConflict: true,
+    });
+    expect(vm.contextGovernance.environmentContext.readOnlyReason).toContain("target_conflict_requires_clarification");
+    expect(vm.contextGovernance.environmentContext.compactContext).toContain("ConflictFacts");
+    expect(vm.contextGovernance.environmentContext.compactContext).not.toContain("env-compact-secret");
+    expect(vm.contextGovernance.environmentContext.readOnlyReason).not.toContain("env-reason-secret");
+  });
+
   it("builds LLM request details from common trace fields and redacts sensitive values by default", () => {
     const vm = parsePromptTrace({
       ...sampleTrace({
         prompt: {
           system: "system prompt token=sk-system-123",
           developer: "developer prompt password=dev-pass-123",
+          tools: "## browse_url\nRead URL.\n\n## exec_command\nRun command.",
         },
         modelInput: [
           {
@@ -309,6 +383,11 @@ describe("parsePromptTrace", () => {
           error: "请求失败 secret=err-secret-123",
           usage: { prompt_tokens: 12, completion_tokens: 7, total_tokens: 19 },
           duration_ms: 321,
+          first_delta_ms: 31000,
+          stream_ms: 65000,
+          delta_count: 1201,
+          output_chars: 7001,
+          finishReason: "stop",
           tool_messages: [{ content: "tool message request body={\"password\":\"body-pass-123\"}" }],
         },
       ],
@@ -330,7 +409,17 @@ describe("parsePromptTrace", () => {
       error: expect.stringContaining("[已脱敏]"),
       tokens: "prompt 12 / completion 7 / total 19",
       duration: "321 ms",
+      finishReason: "stop",
+      metrics: {
+        durationMs: 321,
+        firstDeltaMs: 31000,
+        streamMs: 65000,
+        deltaCount: 1201,
+        outputChars: 7001,
+      },
     });
+    expect(vm.summary.toolRegistryCharCount).toBeGreaterThan(0);
+    expect(detail.slowCauses.map((item) => item.label)).toEqual(expect.arrayContaining(["首 token 慢", "输出过长", "流式碎片过多"]));
     expect(JSON.stringify(vm)).not.toContain("sk-request-123");
     expect(JSON.stringify(vm)).not.toContain("dev-secret-123");
     expect(JSON.stringify(vm)).not.toContain("user-pass-123");
@@ -366,6 +455,43 @@ describe("parsePromptTrace", () => {
     });
   });
 
+  it("keeps tool calls returned directly by an LLM request", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      visibleTools: ["web_search"],
+      llmRequests: [
+        {
+          id: "llm-tool-call",
+          finishReason: "tool_calls",
+          usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+          toolCalls: [
+            {
+              id: "call-web-search",
+              name: "web_search",
+              arguments: "{\"query\":\"PostgreSQL timeline pgBackRest api_key=tool-secret\"}",
+            },
+          ],
+        },
+      ],
+    }));
+
+    const request = vm.agentUiSources.userRequests[0].llmRequests[0];
+
+    expect(request.detail).toMatchObject({
+      finishReason: "tool_calls",
+      output: "暂无输出",
+      hasOutput: false,
+      tokens: "prompt 9 / completion 4 / total 13",
+    });
+    expect(request.toolCalls).toHaveLength(1);
+    expect(request.toolCalls[0]).toMatchObject({
+      id: "call-web-search",
+      name: "web_search",
+      arguments: expect.stringContaining("PostgreSQL timeline pgBackRest"),
+      llmRequestId: "llm-tool-call",
+    });
+    expect(JSON.stringify(vm)).not.toContain("tool-secret");
+  });
+
   it("parses context governance events into budget, compaction, materialization, and external references", () => {
     const vm = parsePromptTrace(sampleTrace({
       contextGovernance: [
@@ -388,6 +514,11 @@ describe("parsePromptTrace", () => {
           layer: "L5",
           kind: "tool_result.materialized",
           message: "large tool result externalized",
+          toolCallId: "call-large-logs",
+          toolName: "exec_command",
+          materializationTier: "large",
+          originalBytes: 49152,
+          inlineBytes: 512,
           referenceIds: ["tool-ref-1"],
         },
       ],
@@ -420,11 +551,64 @@ describe("parsePromptTrace", () => {
     ]);
     expect(vm.contextGovernance.materializationEvents[0]).toMatchObject({
       id: "cg-materialized-1",
+      toolCallId: "call-large-logs",
+      toolName: "exec_command",
+      materializationTier: "large",
+      originalBytes: 49152,
+      inlineBytes: 512,
       hasMaterialization: true,
     });
     expect(vm.contextGovernance.externalReferences.map((item) => item.referenceId)).toEqual(["ref-1", "ref-2", "tool-ref-1"]);
     expect(JSON.stringify(vm.contextGovernance)).not.toContain("secret-context-token");
     expect(JSON.stringify(vm.contextGovernance)).toContain("[已脱敏]");
+  });
+
+  it("keeps WebLearn external knowledge separate from ToolSearch environment facts", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      webLearnEvidence: [
+        {
+          id: "wl-redis-1",
+          kind: "external_knowledge",
+          query: "redis latency doctor token=weblearn-query-secret",
+          sourceTitle: "Redis latency official docs",
+          sourceURL: "https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/",
+          sourceKind: "official_docs",
+          product: "redis",
+          version: "7.2",
+          applicability: "matches Redis 7 latency diagnosis",
+          confidence: "high",
+          relevantExcerpt: "Use LATENCY DOCTOR to inspect latency events password=weblearn-pass",
+        },
+      ],
+      toolSurfaceTrace: {
+        toolSearchEvents: [
+          {
+            mode: "search",
+            query: "redis latency",
+            request: {
+              environmentFacts: ["host redis version token=env-secret"],
+            },
+          },
+        ],
+      },
+    }));
+
+    expect(vm.contextGovernance.summary).toMatchObject({
+      externalKnowledgeCount: 1,
+      hasExternalKnowledge: true,
+    });
+    expect(vm.contextGovernance.externalKnowledgeEvidence[0]).toMatchObject({
+      id: "wl-redis-1",
+      kind: "external_knowledge",
+      sourceKind: "official_docs",
+      product: "redis",
+      version: "7.2",
+      confidence: "high",
+    });
+    expect(vm.contextGovernance.externalKnowledgeEvidence[0].query).toContain("[已脱敏]");
+    expect(vm.contextGovernance.externalKnowledgeEvidence[0].relevantExcerpt).toContain("[已脱敏]");
+    expect(vm.toolSurface.toolSearchEvents[0].environmentFacts[0]).toContain("[已脱敏]");
+    expect(vm.contextGovernance.externalKnowledgeEvidence[0].relevantExcerpt).not.toContain("env-secret");
   });
 
   it("returns a stable empty context governance view model", () => {
@@ -436,12 +620,14 @@ describe("parsePromptTrace", () => {
       hasCompaction: false,
       hasMaterialization: false,
       hasExternalReferences: false,
+      hasExternalKnowledge: false,
     });
     expect(vm.contextGovernance.events).toEqual([]);
     expect(vm.contextGovernance.budgetEvents).toEqual([]);
     expect(vm.contextGovernance.compactionEvents).toEqual([]);
     expect(vm.contextGovernance.materializationEvents).toEqual([]);
     expect(vm.contextGovernance.externalReferences).toEqual([]);
+    expect(vm.contextGovernance.externalKnowledgeEvidence).toEqual([]);
   });
 
   it("parses tool surface trace for Prompt Trace UI and redacts sensitive reasons", () => {
@@ -470,7 +656,44 @@ describe("parsePromptTrace", () => {
           observability: "unavailable: https://user:health-pass@metrics.example.internal/api",
         },
         toolSearchEvents: [
-          { mode: "search", query: "metrics token=query-secret", matchCount: 1, matches: ["generic.metrics.read"] },
+          {
+            mode: "search",
+            query: "metrics token=query-secret",
+            ranker: "bm25",
+            matchCount: 1,
+            rejectedCount: 3,
+            matches: ["generic.metrics.read"],
+            targetCompatibility: "matched",
+            riskDecision: "allowed",
+            matchReasons: ["bm25", "target_compatible", "risk_allowed", "environment_fact_match"],
+            request: {
+              intent: "rca",
+              targetRefs: ["service:checkout"],
+              requiredCaps: ["read"],
+              forbiddenCaps: ["execute"],
+              riskLevel: "low",
+              environmentFacts: ["checkout service p95 latency token=env-secret"],
+              mcpHealth: {
+                observability: "unavailable",
+              },
+            },
+            rejectedReasons: [
+              {
+                toolName: "external.metrics.read",
+                reason: "mcp_unavailable password=search-reject-secret",
+                mcpServerId: "observability",
+                healthStatus: "unavailable",
+              },
+              {
+                toolName: "host.logs",
+                reason: "target_incompatible",
+              },
+              {
+                toolName: "service.restart",
+                reason: "risk_exceeds_request",
+              },
+            ],
+          },
         ],
         selectedTools: ["generic.metrics.read"],
         rejectedToolReasons: [
@@ -489,7 +712,7 @@ describe("parsePromptTrace", () => {
       mcpHealthCount: 1,
       toolSearchEventCount: 1,
       selectedToolCount: 1,
-      rejectedToolReasonCount: 1,
+      rejectedToolReasonCount: 4,
     });
     expect(vm.toolSurface.initialTools).toEqual(["exec_command", "tool_search"]);
     expect(vm.toolSurface.deferredFamilies[0]).toMatchObject({
@@ -509,12 +732,44 @@ describe("parsePromptTrace", () => {
       toolName: "external.metrics.read",
       errorType: "mcp_unavailable",
     });
+    expect(vm.toolSurface.toolSearchEvents[0]).toMatchObject({
+      mode: "search",
+      ranker: "bm25",
+      intent: "rca",
+      matchCount: 1,
+      rejectedCount: 3,
+      matches: ["generic.metrics.read"],
+      targetCompatibility: "matched",
+      riskDecision: "allowed",
+      targetRefs: ["service:checkout"],
+      requiredCaps: ["read"],
+      forbiddenCaps: ["execute"],
+      riskLevel: "low",
+    });
+    expect(vm.toolSurface.toolSearchEvents[0].matchReasons).toContain("environment_fact_match");
+    expect(vm.toolSurface.toolSearchEvents[0].environmentFacts[0]).toContain("[已脱敏]");
+    expect(vm.toolSurface.toolSearchEvents[0].mcpHealth[0]).toMatchObject({
+      serverId: "observability",
+      status: "unavailable",
+    });
+    expect(vm.toolSurface.toolSearchEvents[0].rejectedReasons[0]).toMatchObject({
+      toolName: "external.metrics.read",
+      mcpServerId: "observability",
+      healthStatus: "unavailable",
+    });
+    expect(vm.toolSurface.toolSearchEvents[0].rejectedReasons[0].reason).toContain("mcp_unavailable");
+    expect(vm.toolSurface.toolSearchEvents[0].rejectedReasons[0].reason).toContain("[已脱敏]");
+    expect(vm.toolSurface.rejectedToolReasons.some((entry) => entry.source === "tool_search" && entry.reason.includes("mcp_unavailable") && entry.reason.includes("[已脱敏]"))).toBe(true);
+    expect(vm.toolSurface.rejectedToolReasons.some((entry) => entry.source === "tool_search" && entry.reason === "target_incompatible")).toBe(true);
+    expect(vm.toolSurface.rejectedToolReasons.some((entry) => entry.source === "tool_search" && entry.reason === "risk_exceeds_request")).toBe(true);
     expect(JSON.stringify(vm.toolSurface)).not.toContain("surface-pass");
     expect(JSON.stringify(vm.toolSurface)).not.toContain("surface-secret");
     expect(JSON.stringify(vm.toolSurface)).not.toContain("filtered-secret");
     expect(JSON.stringify(vm.toolSurface)).not.toContain("health-pass");
     expect(JSON.stringify(vm.toolSurface)).not.toContain("query-secret");
     expect(JSON.stringify(vm.toolSurface)).not.toContain("reject-secret");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("search-reject-secret");
+    expect(JSON.stringify(vm.toolSurface)).not.toContain("env-secret");
     expect(JSON.stringify(vm.toolSurface)).toContain("[已脱敏]");
   });
 });

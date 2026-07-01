@@ -1,0 +1,33 @@
+{
+  "name": "unknown_host_degrades_to_evidence_or_blocker",
+  "input": "用户说“检查那台机器”，但没有明确 host id；runtime 不能默认 server-local，应返回需要目标信息的 blocker。",
+  "expected": {
+    "profile": "advisor",
+    "hiddenTools": [
+      "server-local.default_binding",
+      "exec_command"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "advisor",
+    "visibleTools": [
+      "tool_search"
+    ],
+    "toolCalls": [
+      "target_resolution_blocker"
+    ],
+    "evidenceRefs": [
+      "blocker:missing-host-target"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "insufficient_evidence",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

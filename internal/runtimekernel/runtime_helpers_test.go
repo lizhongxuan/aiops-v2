@@ -430,21 +430,20 @@ func eventTypes(events []LifecycleEvent) []string {
 	return out
 }
 
-func TestLegacyRuntimeSchemaAdaptersPreserveRolesAndToolCalls(t *testing.T) {
-	messages, err := runtimeMessagesToSchema([]Message{
-		{Role: "system", Content: "sys"},
-		{Role: "user", Content: "user"},
-		{Role: "assistant", Content: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"x"}`)}}},
-		{Role: "tool", Content: "result", ToolResult: &ToolResult{ToolCallID: "call-1"}},
+func TestRuntimeProviderResponseAdapterPreservesToolCalls(t *testing.T) {
+	msg := runtimeMessageFromProviderResponse(modelrouter.ProviderResponse{
+		Output: "assistant",
+		ToolCalls: []promptinput.ModelInputToolCall{{
+			ID:        "call-1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"path":"x"}`),
+		}},
 	})
-	if err != nil {
-		t.Fatalf("runtimeMessagesToSchema() error = %v", err)
+	if msg.Role != "assistant" || msg.Content != "assistant" || len(msg.ToolCalls) != 1 {
+		t.Fatalf("runtime message = %#v, want assistant message with tool call", msg)
 	}
-	if len(messages) != 4 || messages[0].Role != schema.System || messages[2].ToolCalls[0].Function.Name != "read_file" || messages[3].ToolCallID != "call-1" {
-		t.Fatalf("schema messages = %#v, want roles and tool call metadata preserved", messages)
-	}
-	if _, err := runtimeMessagesToSchema([]Message{{Role: "unknown"}}); err == nil {
-		t.Fatal("expected unsupported role to fail")
+	if got := msg.ToolCalls[0]; got.ID != "call-1" || got.Name != "read_file" || string(got.Arguments) != `{"path":"x"}` {
+		t.Fatalf("runtime tool call = %#v, want provider-neutral tool call metadata preserved", got)
 	}
 }
 

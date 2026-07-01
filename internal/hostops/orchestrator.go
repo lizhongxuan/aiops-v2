@@ -207,6 +207,7 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 
 	allowed := missionAllowedHostKeys(mission)
 	children := make([]HostChildAgent, 0, len(assignments))
+	includedHosts := map[string]bool{}
 	for _, assignment := range assignments {
 		assignment = normalizeAssignment(assignment, mission)
 		assignment = bindAssignmentPlanStep(assignment, mission)
@@ -218,7 +219,10 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 			return nil, fmt.Errorf("%w: %s", ErrHostOutsideMission, assignment.HostID)
 		}
 		if existingChild, ok := childrenByHost[key]; ok {
-			children = append(children, existingChild)
+			if !includedHosts[key] {
+				children = append(children, existingChild)
+				includedHosts[key] = true
+			}
 			continue
 		}
 
@@ -367,6 +371,7 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 		})
 		childrenByHost[key] = child
 		children = append(children, child)
+		includedHosts[key] = true
 	}
 	return children, nil
 }

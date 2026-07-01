@@ -64,6 +64,13 @@ const (
 	OutputTargetWebhook OutputTarget = "webhook"
 )
 
+type ReviewStatus string
+
+const (
+	ReviewStatusDraft         ReviewStatus = "draft"
+	ReviewStatusPendingReview ReviewStatus = "pending_review"
+)
+
 type NodeKind string
 
 const (
@@ -94,6 +101,9 @@ type WorkflowGenerationPlan struct {
 	Version            int                `json:"version"`
 	Title              string             `json:"title"`
 	Intent             string             `json:"intent"`
+	ReviewStatus       ReviewStatus       `json:"review_status,omitempty"`
+	ResourceKind       string             `json:"resource_kind,omitempty"`
+	OperationFrame     map[string]any     `json:"operation_frame,omitempty"`
 	Trigger            WorkflowTrigger    `json:"trigger"`
 	Inputs             []WorkflowIO       `json:"inputs,omitempty"`
 	Nodes              []WorkflowPlanNode `json:"nodes"`

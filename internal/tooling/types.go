@@ -166,23 +166,28 @@ type ToolGovernance struct {
 // These fields intentionally describe capabilities and resource types instead
 // of product-specific names so new tools do not need core runtime changes.
 type ToolDiscoveryMetadata struct {
-	DiscoveryGroup       string            `json:"discoveryGroup,omitempty"`
-	DiscoveryTags        []string          `json:"discoveryTags,omitempty"`
-	CapabilityKind       string            `json:"capabilityKind,omitempty"`
-	ResourceTypes        []string          `json:"resourceTypes,omitempty"`
-	OperationKinds       []string          `json:"operationKinds,omitempty"`
-	LoadingPolicy        ToolLoadingPolicy `json:"loadingPolicy,omitempty"`
-	AgentProfiles        []string          `json:"agentProfiles,omitempty"`
-	ToolPackIDs          []string          `json:"toolPackIds,omitempty"`
-	MCPServerID          string            `json:"mcpServerId,omitempty"`
-	RequiresHealthyMCP   bool              `json:"requiresHealthyMcp,omitempty"`
-	PermissionScope      string            `json:"permissionScope,omitempty"`
-	PromptBudgetClass    string            `json:"promptBudgetClass,omitempty"`
-	SchemaBudgetClass    string            `json:"schemaBudgetClass,omitempty"`
-	HiddenFromDiscovery  bool              `json:"hiddenFromDiscovery,omitempty"`
-	HiddenFromPrompt     bool              `json:"hiddenFromPrompt,omitempty"`
-	RequiresSelect       bool              `json:"requiresSelect,omitempty"`
-	SupersedesShellHints []string          `json:"supersedesShellHints,omitempty"`
+	DiscoveryGroup         string            `json:"discoveryGroup,omitempty"`
+	DiscoveryTags          []string          `json:"discoveryTags,omitempty"`
+	CapabilityKind         string            `json:"capabilityKind,omitempty"`
+	Capabilities           []string          `json:"capabilities,omitempty"`
+	ResourceTypes          []string          `json:"resourceTypes,omitempty"`
+	TargetKinds            []string          `json:"targetKinds,omitempty"`
+	OperationKinds         []string          `json:"operationKinds,omitempty"`
+	RiskLevel              ToolRiskLevel     `json:"riskLevel,omitempty"`
+	LoadingPolicy          ToolLoadingPolicy `json:"loadingPolicy,omitempty"`
+	AgentProfiles          []string          `json:"agentProfiles,omitempty"`
+	ToolPackIDs            []string          `json:"toolPackIds,omitempty"`
+	MCPServerID            string            `json:"mcpServerId,omitempty"`
+	RequiresHealthyMCP     bool              `json:"requiresHealthyMcp,omitempty"`
+	RequiresExplicitTarget bool              `json:"requiresExplicitTarget,omitempty"`
+	EvidenceKind           string            `json:"evidenceKind,omitempty"`
+	PermissionScope        string            `json:"permissionScope,omitempty"`
+	PromptBudgetClass      string            `json:"promptBudgetClass,omitempty"`
+	SchemaBudgetClass      string            `json:"schemaBudgetClass,omitempty"`
+	HiddenFromDiscovery    bool              `json:"hiddenFromDiscovery,omitempty"`
+	HiddenFromPrompt       bool              `json:"hiddenFromPrompt,omitempty"`
+	RequiresSelect         bool              `json:"requiresSelect,omitempty"`
+	SupersedesShellHints   []string          `json:"supersedesShellHints,omitempty"`
 }
 
 // ToolResourceLockKey declares the generic resource scope a tool must lock
@@ -191,6 +196,21 @@ type ToolResourceLockKey struct {
 	ResourceType  string `json:"resourceType,omitempty"`
 	ResourceID    string `json:"resourceId,omitempty"`
 	OperationKind string `json:"operationKind,omitempty"`
+}
+
+type ToolIdempotencyStrategy string
+
+const (
+	ToolIdempotencyStrategyExplicitKey   ToolIdempotencyStrategy = "explicit_key"
+	ToolIdempotencyStrategyArgumentsHash ToolIdempotencyStrategy = "arguments_hash"
+)
+
+// ToolIdempotencyMetadata declares how a mutating tool can be retried or
+// reconciled without guessing side effects.
+type ToolIdempotencyMetadata struct {
+	Strategy      ToolIdempotencyStrategy `json:"strategy,omitempty"`
+	KeyFields     []string                `json:"keyFields,omitempty"`
+	PostCheckRefs []string                `json:"postCheckRefs,omitempty"`
 }
 
 // ToolMetadata captures the registry-facing metadata for a tool.
@@ -223,6 +243,7 @@ type ToolMetadata struct {
 	FailurePolicy          ToolFailurePolicy       `json:"failurePolicy,omitempty"`
 	Discovery              ToolDiscoveryMetadata   `json:"discovery,omitempty"`
 	ResourceLocks          []ToolResourceLockKey   `json:"resourceLocks,omitempty"`
+	Idempotency            ToolIdempotencyMetadata `json:"idempotency,omitempty"`
 	MCPInfo                MCPInfo                 `json:"mcpInfo,omitempty"`
 	ProviderNative         *ProviderNativeToolInfo `json:"providerNative,omitempty"`
 }
@@ -400,6 +421,7 @@ type PermissionApprovalPayload struct {
 	RunbookStep    string `json:"runbookStep,omitempty"`
 	ExpectedEffect string `json:"expectedEffect,omitempty"`
 	Rollback       string `json:"rollback,omitempty"`
+	Validation     string `json:"validation,omitempty"`
 }
 
 // DescribeContext carries contextual data for Description generation.

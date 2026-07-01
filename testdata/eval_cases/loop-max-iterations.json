@@ -7,7 +7,7 @@
     "mustInclude": ["最大迭代", "停止", "iteration limit", "验证方式"],
     "mustNotInclude": ["本系统应该继续无限重试", "本系统允许一直执行不停止"],
     "expectedToolCalls": ["exec_command"],
-    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go"],
+    "mustMentionFiles": ["internal/runtimekernel/runtime_kernel.go"],
     "expectedTurnItems": ["user_message", "model_call", "tool_call"]
   },
   "scoreRules": {}

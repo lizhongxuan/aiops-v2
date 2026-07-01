@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { ArrowLeft, Eraser, Maximize2, OctagonX } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { SettingsPageFrame, ToneBadge } from "@/pages/settingsComponents";
+import { useRegisterAppShellPageChrome } from "@/app/AppShellChromeContext";
+import { ToneBadge } from "@/pages/settingsComponents";
 
 type TerminalSession = {
   sessionId?: string;
@@ -130,26 +131,47 @@ export function TerminalPage() {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "signal", signal }));
   }
 
+  const chromeActions = useMemo(
+    () => (
+      <>
+        <Button asChild type="button" size="sm" variant="outline">
+          <Link to="/settings/hosts" title="返回主机管理列表">
+            <ArrowLeft />
+            退出
+          </Link>
+        </Button>
+        <ToneBadge tone={status === "ready" || status === "connected" ? "success" : status === "error" ? "danger" : "warning"}>{status}</ToneBadge>
+        <Button size="sm" variant="outline" onClick={() => terminalRef.current?.clear()}>
+          <Eraser />
+          清屏
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => sendSignal("SIGINT")}>
+          <OctagonX />
+          Ctrl-C
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => fitAddonRef.current?.fit()}>
+          <Maximize2 />
+          Fit
+        </Button>
+      </>
+    ),
+    [status],
+  );
+
+  useRegisterAppShellPageChrome({
+    title: `Terminal · ${hostId || "host"}`,
+    description: `gRPC 主机客户端 · terminal session + websocket · ${session?.shell || "shell"} · ${session?.cwd || "~"}`,
+    actions: chromeActions,
+  });
+
   return (
-    <SettingsPageFrame title={`Terminal · ${hostId || "host"}`} description="gRPC 主机客户端终端，通过 terminal session + websocket 连接主机。">
-      <Card className="rounded-lg bg-white">
-        <CardHeader className="flex flex-row items-start justify-between gap-3">
-          <div>
-            <CardTitle>{hostId}</CardTitle>
-            <CardDescription>gRPC 主机客户端 · terminal session + websocket · {session?.shell || "shell"} · {session?.cwd || "~"}</CardDescription>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <ToneBadge tone={status === "ready" || status === "connected" ? "success" : status === "error" ? "danger" : "warning"}>{status}</ToneBadge>
-            <Button size="sm" variant="outline" onClick={() => terminalRef.current?.clear()}>清屏</Button>
-            <Button size="sm" variant="outline" onClick={() => sendSignal("SIGINT")}>Ctrl-C</Button>
-            <Button size="sm" variant="outline" onClick={() => fitAddonRef.current?.fit()}>Fit</Button>
-          </div>
-        </CardHeader>
-        <CardContent className="grid gap-3">
-          {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
-          <div ref={terminalElementRef} className="h-[620px] overflow-hidden rounded-lg border bg-slate-950 p-2" data-testid="terminal-xterm" />
-        </CardContent>
-      </Card>
-    </SettingsPageFrame>
+    <section data-testid="terminal-page" className="flex h-full min-h-0 flex-col bg-slate-950 text-slate-100">
+      {error ? <div className="shrink-0 border-b border-red-500/40 bg-red-950/80 px-4 py-2 text-sm text-red-100">{error}</div> : null}
+      <div
+        ref={terminalElementRef}
+        className="min-h-0 flex-1 overflow-hidden bg-slate-950 p-2 [&_.xterm]:h-full"
+        data-testid="terminal-xterm"
+      />
+    </section>
   );
 }

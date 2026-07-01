@@ -1,24 +1,26 @@
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import type { PropsWithChildren, ReactNode } from "react";
+import { useState, type PropsWithChildren, type ReactNode } from "react";
 
 import { useRegisterAppShellPageChrome } from "@/app/AppShellChromeContext";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 export function SettingsPageFrame({
   title,
   description,
   actions,
+  contentClassName,
   children,
-}: PropsWithChildren<{ title: string; description: string; actions?: ReactNode }>) {
+}: PropsWithChildren<{ title: string; description: string; actions?: ReactNode; contentClassName?: string }>) {
   useRegisterAppShellPageChrome({ title, description, actions: actions || null });
 
   return (
     <section className="h-full overflow-y-auto bg-slate-50 px-4 py-5 text-slate-900 lg:px-6">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+      <div className={cn("mx-auto flex w-full max-w-7xl flex-col gap-4", contentClassName)}>
         {children}
       </div>
     </section>
@@ -140,19 +142,49 @@ export function ConfirmButton({
   children,
   confirm,
   onConfirm,
+  onClick,
   ...props
 }: PropsWithChildren<React.ComponentProps<typeof Button> & { confirm: string; onConfirm: () => void }>) {
+  const [open, setOpen] = useState(false);
+  const isDeleteAction = confirm.includes("删除");
+  const title = isDeleteAction ? "确认删除" : "确认操作";
+  const confirmLabel = isDeleteAction ? "删除" : "确认";
+
   return (
-    <Button
-      {...props}
-      onClick={(event) => {
-        props.onClick?.(event);
-        if (!event.defaultPrevented && window.confirm(confirm)) {
-          onConfirm();
-        }
-      }}
-    >
-      {children}
-    </Button>
+    <>
+      <Button
+        {...props}
+        onClick={(event) => {
+          onClick?.(event);
+          if (!event.defaultPrevented) {
+            setOpen(true);
+          }
+        }}
+      >
+        {children}
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+            <DialogDescription>{confirm}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant={isDeleteAction ? "destructive" : "default"}
+              onClick={() => {
+                setOpen(false);
+                onConfirm();
+              }}
+            >
+              {confirmLabel}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

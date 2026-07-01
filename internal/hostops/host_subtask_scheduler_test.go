@@ -3,6 +3,7 @@ package hostops
 import (
 	"context"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/opssemantic"
 )
@@ -136,5 +137,50 @@ func TestHostSubTaskSchedulerPersistsActiveSubtaskID(t *testing.T) {
 	}
 	if !ok || active != decision.SubTaskID {
 		t.Fatalf("active = %q ok=%v, want %q", active, ok, decision.SubTaskID)
+	}
+}
+
+func TestHostSubTaskSchedulerMergesChildReportTerminalStatuses(t *testing.T) {
+	store := NewInMemoryMissionStore()
+	scheduler := NewHostSubTaskSchedulerWithLimits(store, HostManagerRuntimeLimits{
+		MaxChildAgents:  4,
+		MaxChildRuntime: time.Minute,
+	})
+	for _, tc := range []struct {
+		reportStatus HostTaskReportStatus
+		wantStatus   HostSubTaskStatus
+	}{
+		{HostTaskReportStatusCompleted, HostSubTaskStatusCompleted},
+		{HostTaskReportStatusBlockedApproval, HostSubTaskStatusBlockedApproval},
+		{HostTaskReportStatusBlockedEvidence, HostSubTaskStatusBlockedEvidence},
+		{HostTaskReportStatusFailed, HostSubTaskStatusFailed},
+		{HostTaskReportStatusCancelled, HostSubTaskStatusCancelled},
+		{HostTaskReportStatusTimeout, HostSubTaskStatusTimeout},
+	} {
+		t.Run(string(tc.reportStatus), func(t *testing.T) {
+			decision, err := scheduler.MergeChildReport(context.Background(), HostSubTask{
+				ID:         "subtask-" + string(tc.reportStatus),
+				MissionID:  "mission-merge",
+				PlanStepID: "step-" + string(tc.reportStatus),
+				HostID:     "host-a",
+			}, HostTaskReport{
+				MissionID:    "mission-merge",
+				PlanStepID:   "step-" + string(tc.reportStatus),
+				HostAgentID:  "child-a",
+				HostID:       "host-a",
+				Status:       string(tc.reportStatus),
+				EvidenceRefs: []string{"eref-" + string(tc.reportStatus)},
+				Blockers:     []string{"blocker-" + string(tc.reportStatus)},
+			})
+			if err != nil {
+				t.Fatalf("MergeChildReport error = %v", err)
+			}
+			if decision.Status != tc.wantStatus {
+				t.Fatalf("decision = %#v, want status %s", decision, tc.wantStatus)
+			}
+			if decision.EvidenceRef == "" {
+				t.Fatalf("decision = %#v, want merged evidence ref", decision)
+			}
+		})
 	}
 }

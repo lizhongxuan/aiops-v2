@@ -9,7 +9,7 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-func (k *EinoKernel) autoRecordToolResultEvidence(ctx context.Context, session *SessionState, turnID string, tc ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) tooling.ToolResult {
+func (k *RuntimeKernel) autoRecordToolResultEvidence(ctx context.Context, session *SessionState, turnID string, tc ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) tooling.ToolResult {
 	if k == nil || k.evidenceService == nil {
 		return result
 	}

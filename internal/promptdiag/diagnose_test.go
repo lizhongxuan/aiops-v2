@@ -29,13 +29,12 @@ func TestDiagnoseClassifiesVisibleExpectedToolNotCalled(t *testing.T) {
 	})
 	tracePath := filepath.Join(traceDir, "eval-run-tool-case", "turn-1", "iteration-000.json")
 	writeTestJSON(t, tracePath, map[string]any{
-		"schemaVersion": 1,
+		"schemaVersion": "aiops.trace/v2",
 		"kind":          "runtime_model_input",
 		"createdAt":     "2026-05-03T00:00:00Z",
 		"sessionId":     "eval-run-tool-case",
 		"turnId":        "turn-1",
 		"iteration":     0,
-		"visibleTools":  []string{"read_file"},
 		"promptFingerprint": map[string]string{
 			"stableHash":       "stable-hash",
 			"developerHash":    "developer-hash",
@@ -45,9 +44,14 @@ func TestDiagnoseClassifiesVisibleExpectedToolNotCalled(t *testing.T) {
 			"stable":  "system rules",
 			"dynamic": "runtime context",
 		},
-		"modelInput": []map[string]string{
-			{"providerRole": "system", "content": "rules"},
-			{"providerRole": "user", "content": "read local file"},
+		"toolSurface": map[string]any{
+			"modelVisibleTools": []string{"read_file"},
+		},
+		"stepContext": map[string]any{
+			"modelInput": []map[string]string{
+				{"providerRole": "system", "content": "rules"},
+				{"providerRole": "user", "content": "read local file"},
+			},
 		},
 	})
 	turnItemsPath := filepath.Join(evalDir, "tool-case", "turn_items.json")
@@ -123,12 +127,15 @@ func TestDiagnoseReadsAnswerSummaryAndMatchesTraceByFingerprint(t *testing.T) {
 	fp := map[string]string{"stableHash": "stable", "developerHash": "dev", "toolRegistryHash": "tools"}
 	tracePath := filepath.Join(traceDir, "custom-session", "turn-1", "iteration-000.json")
 	writeTestJSON(t, tracePath, map[string]any{
+		"schemaVersion":     "aiops.trace/v2",
 		"createdAt":         "2026-05-03T00:00:00Z",
 		"sessionId":         "custom-session",
 		"turnId":            "turn-1",
 		"iteration":         0,
 		"promptFingerprint": fp,
-		"modelInput":        []map[string]string{{"providerRole": "user", "content": "hello"}},
+		"stepContext": map[string]any{
+			"modelInput": []map[string]string{{"providerRole": "user", "content": "hello"}},
+		},
 	})
 	answerPath := filepath.Join(evalDir, "case-1", "answer.txt")
 	if err := os.MkdirAll(filepath.Dir(answerPath), 0o755); err != nil {

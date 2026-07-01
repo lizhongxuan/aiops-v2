@@ -222,9 +222,9 @@ func TestCompressorUsesAIOpsCompactionPrompt(t *testing.T) {
 }
 
 func TestCompressWritesModelInputTraceWhenEnabled(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	root := t.TempDir()
+	t.Chdir(root)
+	dir := filepath.Join(root, ".data", "model-input-traces")
 
 	mock := &mockSummaryModel{response: "summary"}
 	cc := NewContextCompressor(mock, 1)
@@ -235,7 +235,7 @@ func TestCompressWritesModelInputTraceWhenEnabled(t *testing.T) {
 		t.Fatalf("Compress returned error: %v", err)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(dir, "spanstream_compressor", "span-trace", "*.json"))
+	matches, err := filepath.Glob(filepath.Join(dir, "spanstream_compressor", "span-trace", "iteration-*.json"))
 	if err != nil {
 		t.Fatalf("glob trace output: %v", err)
 	}
@@ -246,7 +246,9 @@ func TestCompressWritesModelInputTraceWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
-	if !strings.Contains(string(data), `"kind": "spanstream_compressor"`) || !strings.Contains(string(data), "Summarize the following conversation/output") {
+	if !strings.Contains(string(data), `"schemaVersion": "aiops.trace/v2"`) ||
+		!strings.Contains(string(data), `"kind": "spanstream_compressor"`) ||
+		!strings.Contains(string(data), "Summarize the following conversation/output") {
 		t.Fatalf("trace missing compressor model input:\n%s", string(data))
 	}
 	if _, err := os.Stat(strings.TrimSuffix(matches[0], filepath.Ext(matches[0])) + ".md"); err != nil {

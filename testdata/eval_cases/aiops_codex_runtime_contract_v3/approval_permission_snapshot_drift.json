@@ -1,0 +1,41 @@
+{
+  "name": "approval_permission_snapshot_drift",
+  "input": "审批弹出后权限快照发生变化，恢复时必须检测 fingerprint drift 并阻断危险继续执行。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "stale_approval_resume"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.blocked_by_fingerprint_drift"
+    ],
+    "approvalEvents": [
+      "approval_requested",
+      "approval_decided",
+      "requires_reapproval"
+    ],
+    "evidenceRefs": [
+      "approval:approval-1",
+      "fingerprint:permission-snapshot"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "permission_snapshot",
+      "approval_requested",
+      "approval_decided",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "requires_reapproval",
+    "permissionToolSurfaceFingerprint": "requires_reapproval",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

@@ -20,7 +20,7 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 		"诊断协议",
 		"证据矩阵",
 		"工具失败语义",
-		"置信度校准",
+		"证据边界校准",
 		"输出契约",
 		"安全边界",
 		"choose only the sections the user needs",
@@ -39,8 +39,12 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 		"not a terminal root cause",
 		"resolve dependency identity",
 		"endpoint/port",
+		"restart-loop RCA",
+		"health/readiness/liveness probes",
+		"candidate cause",
+		"restart policy",
 		"结论",
-		"置信度",
+		"证据边界",
 		"关键证据",
 		"仍缺少的证据",
 		"下一步",
@@ -52,27 +56,32 @@ func TestDiagnosticProtocolSectionContentAndLength(t *testing.T) {
 }
 
 func TestDiagnosticProtocolSectionPlacement(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{}), "\n\n")
-	depth := strings.Index(developer, "## Task Depth Contract")
-	planning := strings.Index(developer, "## Planning and Status Tracking")
-	evidence := strings.Index(developer, "## Evidence and Inference")
-	diagnostic := strings.Index(developer, "## Diagnostic Protocol")
-	investigation := strings.Index(developer, "## AIOps Investigation Loop")
-	if depth == -1 || planning == -1 || evidence == -1 || diagnostic == -1 || investigation == -1 {
-		t.Fatalf("developer instructions missing required sections:\n%s", developer)
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if !(depth < planning && evidence < diagnostic && diagnostic < investigation) {
-		t.Fatalf("Diagnostic Protocol placement invalid: depth=%d planning=%d evidence=%d diagnostic=%d investigation=%d", depth, planning, evidence, diagnostic, investigation)
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	if strings.Contains(modelInput, "## Diagnostic Protocol") {
+		t.Fatalf("diagnostic protocol must not be rendered in the model envelope:\n%s", modelInput)
+	}
+	for _, want := range []string{"base.contract", "runtime.state", "tool.surface"} {
+		if !strings.Contains(modelInput, want) {
+			t.Fatalf("model envelope missing compact section %q:\n%s", want, modelInput)
+		}
 	}
 }
 
 func TestDiagnosticProtocolCanBeDisabledByCompileContext(t *testing.T) {
-	developer := strings.Join(developerInstructionSections(CompileContext{DisableDiagnosticProtocol: true}), "\n\n")
-	if strings.Contains(developer, "## Diagnostic Protocol") {
-		t.Fatalf("diagnostic protocol should be disabled:\n%s", developer)
+	compiled, err := NewCompiler().Compile(CompileContext{DisableDiagnosticProtocol: true})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
-	if !strings.Contains(developer, "## Evidence and Inference") || !strings.Contains(developer, "## AIOps Investigation Loop") {
-		t.Fatalf("other developer sections should remain:\n%s", developer)
+	modelInput := compiledEnvelopeTextForTest(compiled)
+	if strings.Contains(modelInput, "## Diagnostic Protocol") {
+		t.Fatalf("diagnostic protocol should be disabled:\n%s", modelInput)
+	}
+	if !strings.Contains(modelInput, "base.contract") || !strings.Contains(modelInput, "tool.surface") {
+		t.Fatalf("compact envelope sections should remain:\n%s", modelInput)
 	}
 }
 

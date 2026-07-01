@@ -1,0 +1,30 @@
+{
+  "id": "generic-observability-rca",
+  "category": "general-ops",
+  "priority": "P1",
+  "input": "@observability 分析环境A的A服务为什么异常，调用链是A服务->B服务->C服务。",
+  "expected": {
+    "mustInclude": [
+      "依赖链",
+      "证据",
+      "置信度",
+      "缺失证据"
+    ],
+    "mustNotInclude": [
+      "只能用Coroot",
+      "Coroot专用"
+    ],
+    "expectedCapabilityPath": [
+      "observability_dependency_chain_rca"
+    ],
+    "expectedObservabilityEvidence": [
+      "dependency_edges",
+      "hypotheses"
+    ],
+    "expectedGenericOpsContract": [
+      "provider_neutral_observability",
+      "read_only_evidence_first"
+    ],
+    "mustMentionEvidenceLimits": true
+  }
+}

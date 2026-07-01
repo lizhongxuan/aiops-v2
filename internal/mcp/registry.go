@@ -305,6 +305,27 @@ func (r *Registry) ListServerHealthSnapshots() []HealthSnapshot {
 	return r.health.List()
 }
 
+// ToolHealthSnapshots exposes MCP health to the unified tool catalog provider
+// without forcing callers to know about MCP internals.
+func (r *Registry) ToolHealthSnapshots() map[string]string {
+	snapshots := r.ListServerHealthSnapshots()
+	if len(snapshots) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(snapshots))
+	for _, snapshot := range snapshots {
+		serverID := strings.TrimSpace(snapshot.ServerID)
+		status := strings.ToLower(strings.TrimSpace(string(snapshot.Status)))
+		if serverID != "" && status != "" {
+			out[serverID] = status
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func (r *Registry) RefreshServerHealth(ctx context.Context, serverID string, force bool, probe HealthProbe) HealthSnapshot {
 	if r == nil || r.health == nil {
 		return HealthSnapshot{}

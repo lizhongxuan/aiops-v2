@@ -8,17 +8,18 @@ import (
 type toolExecutionContextKey struct{}
 
 type ToolExecutionContext struct {
-	SessionID      string          `json:"sessionId,omitempty"`
-	TurnID         string          `json:"turnId,omitempty"`
-	TenantID       string          `json:"tenantId,omitempty"`
-	UserID         string          `json:"userId,omitempty"`
-	ToolCallID     string          `json:"toolCallId,omitempty"`
-	ToolName       string          `json:"toolName,omitempty"`
-	HostID         string          `json:"hostId,omitempty"`
-	IncidentID     string          `json:"incidentId,omitempty"`
-	ActionToken    string          `json:"actionToken,omitempty"`
-	OriginalInput  json.RawMessage `json:"originalInput,omitempty"`
-	SanitizedInput json.RawMessage `json:"sanitizedInput,omitempty"`
+	SessionID      string            `json:"sessionId,omitempty"`
+	TurnID         string            `json:"turnId,omitempty"`
+	TenantID       string            `json:"tenantId,omitempty"`
+	UserID         string            `json:"userId,omitempty"`
+	ToolCallID     string            `json:"toolCallId,omitempty"`
+	ToolName       string            `json:"toolName,omitempty"`
+	HostID         string            `json:"hostId,omitempty"`
+	IncidentID     string            `json:"incidentId,omitempty"`
+	ActionToken    string            `json:"actionToken,omitempty"`
+	OriginalInput  json.RawMessage   `json:"originalInput,omitempty"`
+	SanitizedInput json.RawMessage   `json:"sanitizedInput,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
 }
 
 func ContextWithToolExecution(ctx context.Context, execCtx ToolExecutionContext) context.Context {

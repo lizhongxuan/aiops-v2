@@ -6,7 +6,7 @@
     "mustInclude": ["RuntimeKernel", "AgentEvent", "风险点"],
     "mustNotInclude": ["无法判断", "随便"],
     "expectedToolCalls": ["read_file"],
-    "mustMentionFiles": ["internal/runtimekernel/eino_kernel.go", "internal/agentui/agent_event.go"]
+    "mustMentionFiles": ["internal/runtimekernel/runtime_kernel.go", "internal/agentui/agent_event.go"]
   },
   "scoreRules": {}
 }

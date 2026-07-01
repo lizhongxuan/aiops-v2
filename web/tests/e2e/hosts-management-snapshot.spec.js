@@ -33,6 +33,11 @@ function createHostsFixture() {
           transport: "grpc_reverse",
           agentVersion: "v0.8.1",
           lastHeartbeat,
+          osRelease: "Ubuntu 24.04 LTS",
+          arch: "amd64",
+          kernelVersion: "6.8.0-31-generic",
+          cpuCores: 8,
+          memoryBytes: 34359738368,
           executable: true,
           terminalCapable: true,
         },
@@ -158,12 +163,14 @@ test.describe("Hosts management redesign snapshot", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openFixturePage(page, "/settings/hosts", fixture);
 
-    await expect(page.getByText("主机与租约").first()).toBeVisible();
-    await page.getByRole("button", { name: "接入配置" }).click();
+    await expect(page.getByText("主机列表").first()).toBeVisible();
     await expect(page.locator(".hosts-page-heading")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "终端" }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /清空上下文/ })).toHaveCount(0);
     await expect(page.locator(".hosts-table-shell")).toContainText("10.0.2.15 / root");
+    await expect(page.locator(".hosts-table-shell")).toContainText("Ubuntu 24.04 LTS");
+    await expect(page.locator(".hosts-table-shell")).toContainText("6.8.0-31-generic");
+    await expect(page.locator(".hosts-table-shell")).toContainText("8 核 / 32 GiB");
     await expect(page.locator(".hosts-table-shell")).toContainText("verify_heartbeat");
     await expect(page.locator(".hosts-table-shell")).toContainText("heartbeat timeout");
     await expect(page.locator(".hosts-table-shell")).toContainText("不支持的平台");
@@ -173,7 +180,6 @@ test.describe("Hosts management redesign snapshot", () => {
 
     await page.setViewportSize({ width: 390, height: 820 });
     await openFixturePage(page, "/settings/hosts", fixture);
-    await page.getByRole("button", { name: "接入配置" }).click();
     await expectStableLocatorScreenshot(page.locator(".hosts-table-shell"), "hosts-management-redesign-mobile-table.png");
   });
 });

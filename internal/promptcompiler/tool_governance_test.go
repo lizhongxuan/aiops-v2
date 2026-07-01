@@ -3,6 +3,7 @@ package promptcompiler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -31,12 +32,11 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 	}
 	content := compiled.Tools.Content
 	for _, want := range []string{
-		"Governance: risk=high",
-		"mutating=true",
-		"approval=required",
-		"resultBudget=2048",
-		"failure=fail_turn",
-		"runtime approval gate",
+		"restart_service: restart a service",
+		"mutation",
+		"approval_required",
+		"not_concurrency_safe",
+		"Mutation requires scoped runtime approval and post-check.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("tool prompt missing %q:\n%s", want, content)
@@ -46,6 +46,9 @@ func TestToolPromptShowsGovernanceMetadata(t *testing.T) {
 		"after approval",
 		"Requires approval before execution",
 		"Use only after confirming",
+		"Governance:",
+		"resultBudget=",
+		"failure=",
 	} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("tool prompt should not ask the model to wait for %q:\n%s", forbidden, content)
@@ -73,10 +76,10 @@ func TestToolPromptCommonPolicyTreatsReadOnlyFailureAsMissingEvidence(t *testing
 	content := compiled.Tools.Content
 	for _, want := range []string{
 		"Common policy:",
-		"Read-only tool failure is missing or blocked evidence, not proof of target state.",
-		"Permission denied or policy blocked does not prove system health.",
-		"Non-zero exit requires stderr and exit code interpretation.",
-		"Empty output does not prove no abnormality.",
+		"Only visible tools are callable.",
+		"Failure, empty output, denial, or timeout is not proof of healthy state.",
+		"Summarize large results and keep raw data behind refs.",
+		"inspect_metrics: inspect metrics [read_only]",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("common policy missing %q:\n%s", want, content)
@@ -107,8 +110,8 @@ func TestToolPromptCommonPolicyCoversDestructiveFailureBoundary(t *testing.T) {
 	}
 	content := compiled.Tools.Content
 	for _, want := range []string{
-		"Mutating tools require explicit user intent, scoped target, runtime approval gate, and verification.",
-		"Failed mutations must stop at the scoped action and must not broaden scope.",
+		"restart_service: restart a service [mutation,approval_required,not_concurrency_safe]",
+		"Mutation requires scoped runtime approval and post-check.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("destructive common policy missing %q:\n%s", want, content)
@@ -157,7 +160,7 @@ func TestToolPromptSetOmitsHiddenFromPromptTools(t *testing.T) {
 			t.Fatalf("tool prompt contains removed tool %q:\n%s", forbidden, compiled.Tools.Content)
 		}
 	}
-	if !strings.Contains(compiled.Tools.Content, "synthetic.visible") {
+	if !strings.Contains(compiled.Tools.Content, "synthetic_visible") {
 		t.Fatalf("tool prompt should keep visible tool:\n%s", compiled.Tools.Content)
 	}
 }
@@ -222,8 +225,162 @@ func TestToolPromptSetRendersCompactDeferredDirectoryWithoutSchemas(t *testing.T
 	}
 }
 
+func TestDeferredDirectorySortedByMentionRelevanceAndCapped(t *testing.T) {
+	compiler := NewCompiler()
+	var catalog []Tool
+	catalog = append(catalog,
+		deferredDirectoryToolForTest("aa_low_priority", "generic.metrics", "metrics"),
+		deferredDirectoryToolForTest("coroot_metrics", "coroot.service_metrics", "metrics"),
+	)
+	for i := 0; i < maxDeferredToolDirectoryEntries+3; i++ {
+		catalog = append(catalog, deferredDirectoryToolForTest(fmt.Sprintf("synthetic_pack_%02d", i), fmt.Sprintf("synthetic.tool_%02d", i), "generic"))
+	}
+
+	compiled, err := compiler.Compile(CompileContext{
+		CorootState:         "requested",
+		DeferredToolCatalog: catalog,
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if len(compiled.Tools.DeferredDirectory) != maxDeferredToolDirectoryEntries {
+		t.Fatalf("deferred directory entries = %d, want cap %d", len(compiled.Tools.DeferredDirectory), maxDeferredToolDirectoryEntries)
+	}
+	if got := compiled.Tools.DeferredDirectory[0].Pack; got != "coroot_metrics" {
+		t.Fatalf("first deferred pack = %q, want coroot_metrics; entries=%#v", got, compiled.Tools.DeferredDirectory)
+	}
+}
+
+func TestBaseRuntimeContractThinSections(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Policy.Content
+	for _, want := range []string{
+		"# Runtime State",
+		"mode: chat",
+		"profile: default",
+		"mutation: read-only",
+		"web: not_requested",
+		"ops_graph: not_requested",
+		"coroot: not_requested",
+		"ops_manus: not_requested",
+		"pending_approvals: 0",
+		"pending_evidence: 0",
+		"visible_tool_fingerprint: unknown",
+		"user_constraints: none",
+		"timeout_recovery_state: none",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("runtime state missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"OpsManual", "Coroot", "HostOps", "AIOps Investigation Loop", "host_manager", "workflow long rules"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("base runtime contract contains domain/profile rule %q:\n%s", forbidden, content)
+		}
+	}
+}
+
+func TestRuntimePolicyPromptIncludesThinBaseContract(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{Mode: "execute"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Policy.Content
+	for _, want := range []string{
+		"# Runtime State",
+		"mode: execute",
+		"mutation: approval_required",
+		"pending_approvals: 0",
+		"timeout_recovery_state: none",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("runtime policy missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestDomainRulesAdvisorPromptOmitsCorootAndOpsManualLongRules(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{Mode: "chat", Profile: "advisor"})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := strings.Join([]string{compiled.Policy.Content, compiled.Tools.Content, compiled.Developer.Content}, "\n\n")
+	for _, forbidden := range []string{
+		"Coroot edge evidence",
+		"Z依赖异常导致X异常",
+		"resolve_ops_manual_params",
+		"Workflow preflight failure",
+		"run_ops_manual_preflight",
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("advisor prompt leaked domain long rule %q:\n%s", forbidden, content)
+		}
+	}
+}
+
+func TestToolGovernanceRendersLoadedDomainGuidance(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{
+		Mode: "inspect",
+		AssembledTools: []Tool{
+			promptGuidanceTool{
+				readOnlyGovernancePromptTool: readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{
+					Name:        "coroot.collect_rca_context",
+					Description: "Collect Coroot RCA context",
+					Domain:      "coroot",
+					RiskLevel:   tooling.ToolRiskLow,
+				}},
+				prompt: "Use Coroot edge evidence as RCA evidence and keep missing observability separate from system health.",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	content := compiled.Tools.Content
+	for _, want := range []string{
+		"coroot_collect_rca_context",
+		"Collect Coroot RCA context",
+		"[read_only]",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("tool prompt missing loaded domain guidance %q:\n%s", want, content)
+		}
+	}
+}
+
+func runtimePolicySectionTitles(content string) []string {
+	lines := strings.Split(content, "\n")
+	titles := make([]string, 0, 9)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "## ") {
+			titles = append(titles, strings.TrimSpace(strings.TrimPrefix(line, "## ")))
+		}
+	}
+	return titles
+}
+
 type governancePromptTool struct {
 	meta tooling.ToolMetadata
+}
+
+func deferredDirectoryToolForTest(pack, name, capability string) Tool {
+	return readOnlyGovernancePromptTool{meta: tooling.ToolMetadata{
+		Name:           name,
+		Description:    "Deferred " + capability,
+		Layer:          tooling.ToolLayerDeferred,
+		Pack:           pack,
+		DeferByDefault: true,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			CapabilityKind:    capability,
+			LoadingPolicy:     tooling.ToolLoadingPolicyDeferred,
+			RequiresSelect:    true,
+			SchemaBudgetClass: "on_demand",
+		},
+	}}
 }
 
 func (t governancePromptTool) Metadata() tooling.ToolMetadata { return t.meta }
@@ -275,6 +432,13 @@ func (t readOnlyGovernancePromptTool) CheckPermissions(context.Context, json.Raw
 func (t readOnlyGovernancePromptTool) Execute(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 	return tooling.ToolResult{}, nil
 }
+
+type promptGuidanceTool struct {
+	readOnlyGovernancePromptTool
+	prompt string
+}
+
+func (t promptGuidanceTool) Prompt(tooling.PromptContext) string { return t.prompt }
 
 type schemaPromptTool struct {
 	readOnlyGovernancePromptTool

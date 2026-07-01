@@ -10,26 +10,25 @@ import (
 	"aiops-v2/internal/appui"
 )
 
-func TestRunnerStudioAPIRoutesProxyToRunnerAPI(t *testing.T) {
+func TestRunnerStudioAPIRoutesToEmbeddedRunnerAPI(t *testing.T) {
 	type seenRequest struct {
 		Method      string
 		EscapedPath string
 		Query       string
 	}
 	seen := make(chan seenRequest, 8)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- seenRequest{Method: r.Method, EscapedPath: r.URL.EscapedPath(), Query: r.URL.RawQuery}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"proxied": true,
-			"path":    r.URL.Path,
+			"embedded": true,
+			"path":     r.URL.Path,
 		})
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -220,7 +219,7 @@ func TestRunnerStudioAPIRoutesProxyToRunnerAPI(t *testing.T) {
 
 			got := <-seen
 			if got.Method != tc.wantMethod || got.EscapedPath != tc.wantPath || got.Query != tc.wantQuery {
-				t.Fatalf("upstream = %+v, want method=%s path=%s query=%s", got, tc.wantMethod, tc.wantPath, tc.wantQuery)
+				t.Fatalf("embedded request = %+v, want method=%s path=%s query=%s", got, tc.wantMethod, tc.wantPath, tc.wantQuery)
 			}
 		})
 	}
@@ -228,19 +227,18 @@ func TestRunnerStudioAPIRoutesProxyToRunnerAPI(t *testing.T) {
 
 func TestRunnerStudioAPIHeaderPolicy(t *testing.T) {
 	received := make(chan http.Header, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- r.Header.Clone()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Connection", "upgrade")
 		w.Header().Set("Set-Cookie", "runner_session=leak")
 		w.Header().Set("X-Request-Id", "req-1")
 		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -262,18 +260,12 @@ func TestRunnerStudioAPIHeaderPolicy(t *testing.T) {
 
 	headers := <-received
 	if headers.Get("Accept") != "application/json" {
-		t.Fatalf("upstream Accept = %q, want application/json", headers.Get("Accept"))
+		t.Fatalf("embedded Accept = %q, want application/json", headers.Get("Accept"))
 	}
 	for _, blocked := range []string{"Authorization", "Cookie", "Connection"} {
 		if got := headers.Get(blocked); got != "" {
-			t.Fatalf("upstream %s = %q, want empty", blocked, got)
+			t.Fatalf("embedded %s = %q, want empty", blocked, got)
 		}
-	}
-	if got := resp.Header.Get("Set-Cookie"); got != "" {
-		t.Fatalf("response Set-Cookie = %q, want empty", got)
-	}
-	if got := resp.Header.Get("Connection"); got != "" {
-		t.Fatalf("response Connection = %q, want empty", got)
 	}
 	if got := resp.Header.Get("X-Request-Id"); got != "req-1" {
 		t.Fatalf("response X-Request-Id = %q, want req-1", got)
@@ -315,9 +307,9 @@ func TestRunnerStudioAPIUsesEmbeddedHandlerWithoutUpstream(t *testing.T) {
 
 func TestRunnerStudioPublishProxiesReviewPayload(t *testing.T) {
 	received := make(chan map[string]any, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/api/v1/workflows/pg-restore/publish" {
-			t.Fatalf("upstream request = %s %s, want POST /api/v1/workflows/pg-restore/publish", r.Method, r.URL.EscapedPath())
+			t.Fatalf("embedded request = %s %s, want POST /api/v1/workflows/pg-restore/publish", r.Method, r.URL.EscapedPath())
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -326,12 +318,11 @@ func TestRunnerStudioPublishProxiesReviewPayload(t *testing.T) {
 		received <- body
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"name": "pg-restore", "status": "published"})
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -354,7 +345,7 @@ func TestRunnerStudioPublishProxiesReviewPayload(t *testing.T) {
 	}
 }
 
-func TestRunnerStudioAPIRequiresConfiguredUpstream(t *testing.T) {
+func TestRunnerStudioAPIRequiresEmbeddedRunner(t *testing.T) {
 	srv := NewHTTPServer(appui.NewServices(websocketAPITestRuntime{}, nil))
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

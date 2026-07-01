@@ -1,0 +1,5 @@
+{"id":"explain-local-log","input":"下面是服务错误日志，请解释可能原因，但不要执行命令。","expected":{"intent":"explain","data_scopes":["workspace"],"allow_public_web":false,"allow_host_exec":false}}
+{"id":"diagnose-with-approval-needed","input":"帮我定位这个实例为什么不断重启，可以读取本机状态，但执行变更前先问我。","expected":{"intent":"diagnose","risk_budget":["host_exec"],"allow_host_exec":"approval_required"}}
+{"id":"public-research-docs","input":"查一下这个错误在官方文档里是否有已知说明。","expected":{"intent":"research","data_scopes":["public_web"],"allow_public_web":true}}
+{"id":"runbook-authoring","input":"基于这些排查步骤整理成通用 runbook。","expected":{"intent":"runbook_authoring","allow_host_exec":false}}
+{"id":"change-request","input":"帮我生成一个修复计划，先不要执行。","expected":{"intent":"plan","risk_budget":["write"],"allow_host_exec":false}}

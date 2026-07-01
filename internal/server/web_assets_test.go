@@ -1,6 +1,7 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"net/http"
@@ -53,10 +54,48 @@ func TestWebAssetsHandlerDoesNotSwallowAPIOrWebsocketPaths(t *testing.T) {
 	server := httptest.NewServer(NewHTTPServer(appui.NewServices(webAssetsTestKernel{}, nil), WithWebAssets(handler)).Handler())
 	defer server.Close()
 
-	assertBodyContains(t, server.URL+"/api/v1/state", http.StatusOK, "\"selectedHostId\":\"server-local\"")
+	assertBodyContains(t, server.URL+"/api/v1/state", http.StatusOK, "\"selectedHostId\":\"\"")
 	assertBodyExcludes(t, server.URL+"/api/v1/unknown", http.StatusNotFound, "<div id=\"app\">web root</div>")
 	assertBodyExcludes(t, server.URL+"/ws", http.StatusBadRequest, "<div id=\"app\">web root</div>")
 	assertBodyExcludes(t, server.URL+"/api/v1/terminal/ws", http.StatusBadRequest, "<div id=\"app\">web root</div>")
+}
+
+func TestWebAssetsHandlerServesPrecompressedGzipAsset(t *testing.T) {
+	distDir := writeWebDistFixture(t)
+	assetPath := filepath.Join(distDir, "assets", "app.js")
+	if err := writeGzipFile(assetPath+".gz", []byte("console.log('web asset');")); err != nil {
+		t.Fatalf("write gzip asset: %v", err)
+	}
+	handler, err := NewWebAssetsHandler(distDir)
+	if err != nil {
+		t.Fatalf("NewWebAssetsHandler() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Encoding"); got != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", got)
+	}
+	if got := rr.Header().Get("Vary"); got != "Accept-Encoding" {
+		t.Fatalf("Vary = %q, want Accept-Encoding", got)
+	}
+	reader, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip reader: %v", err)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read gzip body: %v", err)
+	}
+	if string(body) != "console.log('web asset');" {
+		t.Fatalf("decompressed body = %q", body)
+	}
 }
 
 func TestNewWebAssetsHandlerRequiresIndexHTML(t *testing.T) {
@@ -79,6 +118,20 @@ func writeWebDistFixture(t *testing.T) string {
 		t.Fatalf("WriteFile(app.js) error = %v", err)
 	}
 	return distDir
+}
+
+func writeGzipFile(path string, content []byte) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	writer := gzip.NewWriter(file)
+	if _, err := writer.Write(content); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
 }
 
 func assertBodyContains(t *testing.T, url string, wantStatus int, wantBody string) {

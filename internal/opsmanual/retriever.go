@@ -50,6 +50,9 @@ func SearchOpsManualsWithHintProvider(ctx context.Context, repo ManualRepository
 		return SearchOpsManualsResult{}, err
 	}
 	hits := generateCandidates(repo, manuals, frame)
+	if len(hits) == 0 {
+		hits = append(hits, genericStatefulClusterRepairFallbackHits(repo, frame)...)
+	}
 	sortSearchHits(hits)
 	hits = applyManualHintsToSearchHits(ctx, hits, frame, req, provider)
 	if req.Limit > 0 && len(hits) > req.Limit {
@@ -75,6 +78,118 @@ func SearchOpsManualsWithHintProvider(ctx context.Context, repo ManualRepository
 	}
 	result.RecommendedNextAction = recommendedNextAction(result.Decision)
 	return result, nil
+}
+
+func genericStatefulClusterRepairFallbackHits(repo ManualRepository, frame OperationFrame) []SearchManualHit {
+	if !shouldOfferGenericStatefulClusterRepair(frame) {
+		return nil
+	}
+	manual := genericStatefulClusterRepairManual(frame)
+	hit := evaluateSearchManual(repo, manual, frame)
+	if hit.UsableMode == DecisionNoMatch {
+		return nil
+	}
+	hit.MatchLevel = firstNonEmpty(hit.MatchLevel, "generic_stateful_cluster_repair")
+	hit.HintSources = appendUnique(hit.HintSources, "generic_capability_fallback")
+	if hit.UsableMode == DecisionDirectExecute || hit.UsableMode == DecisionAdapt {
+		hit.UsableMode = DecisionReference
+		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "generic fallback is not a high-confidence manual match")
+	}
+	hit.RecommendedAction = "reference_manual"
+	hit = EnrichSearchManualHitRecommendation(hit)
+	return []SearchManualHit{hit}
+}
+
+func shouldOfferGenericStatefulClusterRepair(frame OperationFrame) bool {
+	targetType := strings.TrimSpace(frame.Target.Type)
+	if targetType == "" {
+		return false
+	}
+	if !operationFrameHasResourceScope(frame) {
+		return false
+	}
+	action := strings.TrimSpace(firstNonEmpty(frame.Operation.Action, frame.OperationType, frame.Intent))
+	switch action {
+	case "restore", "rca_or_repair", "repair", "recover":
+	default:
+		lower := strings.ToLower(frame.RawText)
+		if !strings.Contains(lower, "恢复") &&
+			!strings.Contains(lower, "修复") &&
+			!strings.Contains(lower, "异常") &&
+			!strings.Contains(lower, "recover") &&
+			!strings.Contains(lower, "restore") &&
+			!strings.Contains(lower, "repair") &&
+			!strings.Contains(lower, "fix") {
+			return false
+		}
+	}
+	if frame.Operation.Stateful || DefaultOpsManualCapabilityRegistry().IsStatefulTargetType(targetType) {
+		return true
+	}
+	for _, role := range frame.Roles {
+		if role.Kind == ResourceRoleDataNode || role.Kind == ResourceRoleMonitor {
+			return true
+		}
+	}
+	return false
+}
+
+func genericStatefulClusterRepairManual(frame OperationFrame) OpsManual {
+	targetType := strings.TrimSpace(frame.Target.Type)
+	action := strings.TrimSpace(firstNonEmpty(frame.Operation.Action, frame.OperationType, frame.Intent, "rca_or_repair"))
+	return OpsManual{
+		ID:      "manual-generic-stateful-cluster-repair",
+		Title:   "通用有状态集群恢复运维手册",
+		Status:  ManualStatusVerified,
+		Version: "v1",
+		WorkflowRef: WorkflowRef{
+			WorkflowID: "workflow-generic-stateful-cluster-repair",
+		},
+		Operation: OperationProfile{
+			TargetType: targetType,
+			Action:     action,
+			RiskLevel:  "high",
+			Stateful:   true,
+		},
+		RetrievalProfile: RetrievalProfile{
+			MinScore: ScoreThresholds{Candidate: 0.1, DirectExecute: 0.5},
+		},
+		RunnableConditions: RunnableConditions{
+			RequiresApproval: true,
+		},
+		PreflightProbe: PreflightProbe{
+			ID:       "generic_stateful_cluster_readonly_preflight",
+			Type:     "generic",
+			Action:   "collect_readonly_cluster_evidence",
+			ReadOnly: true,
+			RequiredOutputs: []string{
+				"resource_roles",
+				"member_health",
+				"storage_health",
+				"sync_status",
+				"observer_health",
+			},
+		},
+		RiskPolicy: RiskPolicy{
+			BlastRadius:  "cluster",
+			DataMutation: true,
+			ApprovalRequiredWhen: []string{
+				"repair_execution",
+				"data_loss_acceptable",
+				"role_rebuild",
+			},
+		},
+		Validation: []string{
+			"验证 member_health 正常",
+			"验证 sync_status 正常",
+			"验证 observer_health 正常",
+		},
+		SearchDoc:        "generic stateful middleware cluster repair recovery read_only_evidence_first approval_before_mutation member_health storage_health sync_status observer_health",
+		DocumentMarkdown: "通用有状态集群恢复手册：先收集只读证据，再给方案；执行前必须审批；恢复后必须独立验证成员健康、同步状态和观察点健康。",
+		Metadata: map[string]any{
+			"preflight_discovers_context": true,
+		},
+	}
 }
 
 func applyManualHintsToSearchHits(ctx context.Context, hits []SearchManualHit, frame OperationFrame, req SearchOpsManualsRequest, provider HintProvider) []SearchManualHit {
@@ -326,7 +441,7 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 	if !filter.Allowed {
 		hit.UsableMode = DecisionNoMatch
 		hit.BlockedReasons = append(hit.BlockedReasons, filter.Reasons...)
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	}
 	hit.ScoreBreakdown = calculateScoreBreakdown(manual, frame, summary, nil)
 	manualTarget := strings.TrimSpace(firstNonEmpty(manual.Operation.TargetType, manual.Applicability.Middleware))
@@ -346,17 +461,17 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		hit.UsableMode = DecisionReference
 		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "operation_type differs")
 		hit.RecommendedAction = "reference_manual"
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	case actionMatches:
 		hit.MatchLevel = "different_object_same_operation"
 		hit.MatchedFields = appendUnique(hit.MatchedFields, "operation_type")
 		hit.UsableMode = DecisionReference
 		hit.BlockedReasons = appendUnique(hit.BlockedReasons, "object_type differs")
 		hit.RecommendedAction = "reference_manual"
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	default:
 		hit.UsableMode = DecisionNoMatch
-		return hit
+		return EnrichSearchManualHitRecommendation(hit)
 	}
 
 	missing := missingFieldsForManual(manual, frame)
@@ -388,14 +503,18 @@ func evaluateSearchManual(repo ManualRepository, manual OpsManual, frame Operati
 		hit.UsableMode = DecisionDirectExecute
 		hit.PreflightStatus = PreflightStatusNotRun
 		hit.RecommendedAction = "run_preflight_probe"
-		if hit.ScoreBreakdown.FinalScore < directThreshold(manual) {
+		if hit.RunRecordSummary.SuccessCount == 0 {
+			hit.UsableMode = DecisionReference
+			hit.RecommendedAction = "reference_manual"
+			hit.BlockedReasons = appendUnique(hit.BlockedReasons, "no successful run record for execution recommendation")
+		} else if hit.ScoreBreakdown.FinalScore < directThreshold(manual) {
 			hit.UsableMode = DecisionReference
 			hit.RecommendedAction = "reference_manual"
 			hit.BlockedReasons = appendUnique(hit.BlockedReasons, "manual score is below direct execution threshold")
 		}
 	}
 	hit.UsableMode = capDecision(hit.UsableMode, filter.MaxDecision)
-	return hit
+	return EnrichSearchManualHitRecommendation(hit)
 }
 
 func operationsCompatibleForSearch(manualAction, frameAction string) bool {
@@ -425,9 +544,11 @@ func directThreshold(manual OpsManual) float64 {
 }
 
 func missingFieldsForManual(manual OpsManual, frame OperationFrame) []string {
-	missing := relevantFrameMissing(frame)
+	missing := relevantFrameMissingForManual(manual, frame)
 	if len(manual.Applicability.ExecutionSurface) > 0 && frame.Environment.ExecutionSurface == "" {
-		missing = appendUnique(missing, "execution_surface")
+		if !manualPreflightDiscoversContext(manual) {
+			missing = appendUnique(missing, "execution_surface")
+		}
 	}
 	if len(manual.Applicability.OS) > 0 && frame.Environment.OS == "" {
 		missing = appendUnique(missing, "os")
@@ -437,6 +558,9 @@ func missingFieldsForManual(manual OpsManual, frame OperationFrame) []string {
 	}
 	for _, evidence := range manual.RequiredContext.RequiredEvidence {
 		if frame.Operation.Action == "status_check" && (evidence == "symptom" || evidence == "metrics") {
+			continue
+		}
+		if manualPreflightDiscoversContext(manual) && manualReadOnlyPreflightCanCollect(manual, evidence) {
 			continue
 		}
 		if !hasAny(frame.Evidence.Provided, evidence) {
@@ -459,6 +583,63 @@ func missingFieldsForManual(manual OpsManual, frame OperationFrame) []string {
 		missing = appendUnique(missing, "risk_level")
 	}
 	return dedupe(missing)
+}
+
+func relevantFrameMissingForManual(manual OpsManual, frame OperationFrame) []string {
+	var missing []string
+	for _, item := range relevantFrameMissing(frame) {
+		switch item {
+		case "target_instance":
+			if !manualRequiresInput(manual, item) && (operationFrameHasResourceScope(frame) || manualPreflightDiscoversContext(manual)) {
+				continue
+			}
+		case "execution_surface":
+			if !manualRequiresInput(manual, item) && manualPreflightDiscoversContext(manual) {
+				continue
+			}
+		case "environment", "symptom", "metrics":
+			if manualPreflightDiscoversContext(manual) {
+				continue
+			}
+		}
+		missing = appendUnique(missing, item)
+	}
+	return missing
+}
+
+func manualRequiresInput(manual OpsManual, input string) bool {
+	for _, required := range manual.RequiredContext.RequiredInputs {
+		if strings.EqualFold(strings.TrimSpace(required), strings.TrimSpace(input)) {
+			return true
+		}
+	}
+	if rule, ok := manual.ParameterRules[input]; ok && rule.Required {
+		return true
+	}
+	return false
+}
+
+func operationFrameHasResourceScope(frame OperationFrame) bool {
+	if len(frame.Roles) > 0 || len(frame.TargetScope.Hosts) > 0 {
+		return true
+	}
+	return strings.TrimSpace(frame.TargetScope.Service) != "" || strings.TrimSpace(frame.TargetScope.Cluster) != ""
+}
+
+func manualReadOnlyPreflightCanCollect(manual OpsManual, field string) bool {
+	if !manual.PreflightProbe.ReadOnly || strings.TrimSpace(field) == "" {
+		return false
+	}
+	return hasAny(manual.PreflightProbe.RequiredOutputs, field)
+}
+
+func manualPreflightDiscoversContext(manual OpsManual) bool {
+	value, ok := manual.Metadata["preflight_discovers_context"]
+	if !ok {
+		return false
+	}
+	enabled, ok := value.(bool)
+	return ok && enabled && manual.PreflightProbe.ReadOnly
 }
 
 func relevantFrameMissing(frame OperationFrame) []string {

@@ -3,24 +3,25 @@ package runtimekernel
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/diagnostics"
-	"aiops-v2/internal/modeltrace"
+	mt "aiops-v2/internal/modeltrace"
+	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/taskdepth"
 )
 
-type ModelInputDebugTraceRequest struct {
+type RuntimeTraceDebugRequest struct {
 	SessionID                     string
 	TurnID                        string
 	Iteration                     int
 	Metadata                      map[string]string
 	Compiled                      promptcompiler.CompiledPrompt
-	ModelInput                    []*schema.Message
+	ModelInput                    []promptinput.ModelInputItem
 	VisibleTools                  []string
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
@@ -32,8 +33,14 @@ type ModelInputDebugTraceRequest struct {
 	PlanRequirementDecision       *promptinput.PlanRequirementDecisionTrace
 	PlanCompletionGate            *promptinput.PlanCompletionGateTrace
 	ReasoningEffort               string
+	AnswerStyle                   string
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
+	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
+	PublicWebBudget               *promptinput.PublicWebBudgetTrace
+	WebSearchPolicy               *promptinput.WebSearchPolicyTrace
+	WebSearch                     *promptinput.WebSearchTrace
+	Final                         *promptinput.FinalTrace
 	LoadedToolsDelta              []string
 	LoadedPacksDelta              []string
 	SkillIndexHash                string
@@ -41,6 +48,7 @@ type ModelInputDebugTraceRequest struct {
 	ToolSearchEvents              []promptinput.ToolSearchTraceEvent
 	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent
 	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent
+	DispatchDecisions             []promptinput.DispatchDecisionTrace
 	SkillSearchEvents             []promptinput.SkillSearchTraceEvent
 	SkillReadEvents               []promptinput.SkillReadTraceEvent
 	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent
@@ -56,6 +64,7 @@ type ModelInputDebugTraceRequest struct {
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
 	ResourceLocks                 []promptinput.ResourceLockTrace
+	OwnerWriteTraces              []OwnerWriteTrace
 	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
 	AgentNotifications            []promptinput.AgentNotificationTrace
 	VerificationAgentReport       *promptinput.VerificationAgentReportTrace
@@ -68,12 +77,12 @@ type ModelInputDebugTraceRequest struct {
 	FinalEvidenceState            *FinalEvidenceState
 }
 
-func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]*schema.Message, error) {
+func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]promptinput.ModelInputItem, error) {
 	result, err := buildPromptInput(history, compiled)
 	if err != nil {
 		return nil, err
 	}
-	return result.Messages, nil
+	return append([]promptinput.ModelInputItem(nil), result.Items...), nil
 }
 
 func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt) (promptinput.BuildResult, error) {
@@ -81,17 +90,21 @@ func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt)
 }
 
 func buildPromptInputWithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent) (promptinput.BuildResult, error) {
+	promptHistory, contextDedupe := promptInputMessagesFromRuntimeWithContextDedupe(history)
 	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{
-		History:           promptInputMessagesFromRuntime(history),
+		History:           promptHistory,
 		Compiled:          compiled,
 		ContextGovernance: promptInputContextGovernanceFromRuntime(governance),
 	})
 	if err != nil {
 		return promptinput.BuildResult{}, err
 	}
+	if contextDedupe != nil {
+		result.Trace.ContextDedupe = contextDedupe
+	}
 	result.Trace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
 		Compiled:   compiled,
-		Messages:   result.Messages,
+		Items:      result.Items,
 		Governance: governance,
 	})
 	return result, nil
@@ -161,12 +174,12 @@ func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
 			Digest:  ref.Digest,
 			Range:   ref.Range,
 		},
-		SourceRef:   firstNonBlankRuntimeString(ref.ID, uri),
-		Summary:     firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
-		Preview:     contextArtifactBoundedSnippet(msg.ToolResult.Content),
-		Content:     msg.ToolResult.Content,
-		ContentType: ref.ContentType,
-		Bytes:       ref.Bytes,
+		SourceRef:      firstNonBlankRuntimeString(ref.ID, uri),
+		Summary:        firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
+		ContentSnippet: contextArtifactBoundedSnippet(msg.ToolResult.Content),
+		Content:        msg.ToolResult.Content,
+		ContentType:    ref.ContentType,
+		Bytes:          ref.Bytes,
 	}, true
 }
 
@@ -228,14 +241,20 @@ func promptInputContextGovernanceFromRuntime(events []ContextGovernanceEvent) []
 			continue
 		}
 		item := promptinput.ContextGovernanceTraceItem{
-			Layer:        string(event.Layer),
-			Kind:         event.Kind,
-			Message:      event.Message,
-			Budget:       contextBudgetTraceMap(event.Budget),
-			ReferenceIDs: append([]string(nil), event.ReferenceIDs...),
-			Resource:     promptInputResourceTraceFromRuntime(event.Resource),
-			RetryAttempt: event.RetryAttempt,
-			RetryMax:     event.RetryMax,
+			ID:                  event.ID,
+			Layer:               string(event.Layer),
+			Kind:                event.Kind,
+			Message:             event.Message,
+			ToolCallID:          event.ToolCallID,
+			ToolName:            event.ToolName,
+			MaterializationTier: event.MaterializationTier,
+			OriginalBytes:       event.OriginalBytes,
+			InlineBytes:         event.InlineBytes,
+			Budget:              contextBudgetTraceMap(event.Budget),
+			ReferenceIDs:        append([]string(nil), event.ReferenceIDs...),
+			Resource:            promptInputResourceTraceFromRuntime(event.Resource),
+			RetryAttempt:        event.RetryAttempt,
+			RetryMax:            event.RetryMax,
 		}
 		if len(event.DroppedGroupIDs) > 0 {
 			item.ReferenceIDs = append(item.ReferenceIDs, event.DroppedGroupIDs...)
@@ -283,9 +302,48 @@ func messagesForCurrentTurnModelInput(history []Message) []Message {
 }
 
 func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
+	messages, _ := promptInputMessagesFromRuntimeWithContextDedupe(history)
+	return messages
+}
+
+func promptInputMessagesFromRuntimeWithContextDedupe(history []Message) ([]promptinput.Message, *promptinput.ContextDedupeTrace) {
 	out := make([]promptinput.Message, 0, len(history))
+	dedupe := newUserEvidenceDedupeState()
 	for _, msg := range history {
+		userContent := userEvidenceModelView{Content: msg.Content}
+		if msg.Role == "user" {
+			userContent = dedupe.Process(msg.Content)
+		}
+		if msg.Role == "user" {
+			if userContent.Capsule != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: userContent.Capsule,
+				})
+			}
+			if context := generalOpsOperationFrameContext(msg.Content); context != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: context,
+				})
+			}
+			if context := generalOpsObservabilityContext(msg.Content, msg.Metadata); context != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: context,
+				})
+			}
+			if context := generalOpsDatabaseRecoveryEvidenceContext(msg.Content); context != "" {
+				out = append(out, promptinput.Message{
+					Role:    "system",
+					Content: context,
+				})
+			}
+		}
 		content := msg.Content
+		if msg.Role == "user" {
+			content = userContent.Content
+		}
 		if msg.Role == "tool" {
 			content = compactChartPayloadForModel(content)
 		}
@@ -300,7 +358,318 @@ func promptInputMessagesFromRuntime(history []Message) []promptinput.Message {
 			ToolResult: toolResult,
 		})
 	}
-	return out
+	return out, dedupe.Trace()
+}
+
+func generalOpsOperationFrameContext(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	frame := opsmanual.BuildOperationFrame(input, nil)
+	if len(frame.Roles) == 0 &&
+		len(frame.Relationships) == 0 &&
+		len(frame.ObservationPoints) == 0 &&
+		!frame.RiskPreference.DataLossAcceptable &&
+		len(frame.EvidenceRequirements) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Operation Frame v2\n")
+	if generalOpsStatefulRepairFrame(frame) {
+		b.WriteString("- capability_path: stateful_middleware_cluster_repair\n")
+		b.WriteString("- generic_ops_contract: read_only_evidence_first,approval_before_mutation,run_record_required,verify_after_repair\n")
+		b.WriteString("- recommended_tool_flow: search_ops_manuals -> run_ops_manual_preflight -> read_only_host_or_provider_probes -> propose_repair_options -> approval_gate -> execute -> verify\n")
+		b.WriteString("- answer_requirements: 诊断,恢复方案,风险与审批,验证方式,缺失证据\n")
+	}
+	if frame.Target.Type != "" || frame.Target.Name != "" {
+		b.WriteString("- target: ")
+		b.WriteString(firstNonBlankRuntimeString(frame.Target.Type, "unknown"))
+		if frame.Target.Name != "" {
+			b.WriteString("/")
+			b.WriteString(frame.Target.Name)
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.Roles) > 0 {
+		b.WriteString("- roles:")
+		for _, role := range frame.Roles {
+			b.WriteString(" ")
+			b.WriteString(firstNonBlankRuntimeString(role.Kind, "unknown"))
+			b.WriteString(":")
+			b.WriteString(firstNonBlankRuntimeString(role.ResourceRef, role.UserLabel, role.ID, "unknown"))
+			if role.RuntimeName != "" {
+				b.WriteString("(")
+				b.WriteString(role.RuntimeName)
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.Relationships) > 0 {
+		b.WriteString("- relationships:")
+		for _, rel := range frame.Relationships {
+			b.WriteString(" ")
+			b.WriteString(rel.From)
+			b.WriteString("->")
+			b.WriteString(rel.To)
+			if rel.Type != "" {
+				b.WriteString(":")
+				b.WriteString(rel.Type)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(frame.ObservationPoints) > 0 {
+		b.WriteString("- observation_points:")
+		for _, point := range frame.ObservationPoints {
+			b.WriteString(" ")
+			b.WriteString(firstNonBlankRuntimeString(point.Kind, "unknown"))
+			b.WriteString(":")
+			b.WriteString(firstNonBlankRuntimeString(point.ResourceRef, "unknown"))
+			if point.Role != "" {
+				b.WriteString("(")
+				b.WriteString(point.Role)
+				b.WriteString(")")
+			}
+		}
+		b.WriteString("\n")
+	}
+	if frame.ExecutionSurfaceV2.Kind != "" {
+		b.WriteString("- execution_surface: ")
+		b.WriteString(frame.ExecutionSurfaceV2.Kind)
+		if len(frame.ExecutionSurfaceV2.Resources) > 0 {
+			b.WriteString(" resources=")
+			b.WriteString(strings.Join(frame.ExecutionSurfaceV2.Resources, ","))
+		}
+		b.WriteString("\n")
+	}
+	if frame.RiskPreference.DataLossAcceptable || frame.RiskPreference.StillRequiresApproval {
+		b.WriteString("- risk_preference: ")
+		b.WriteString(fmt.Sprintf("data_loss_acceptable=%t still_requires_approval=%t", frame.RiskPreference.DataLossAcceptable, frame.RiskPreference.StillRequiresApproval))
+		b.WriteString("\n")
+	}
+	if len(frame.EvidenceRequirements) > 0 {
+		b.WriteString("- evidence_requirements: ")
+		b.WriteString(strings.Join(frame.EvidenceRequirements, ","))
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func generalOpsStatefulRepairFrame(frame opsmanual.OperationFrame) bool {
+	if frame.Operation.Stateful || len(frame.Roles) > 0 || len(frame.ObservationPoints) > 0 {
+		switch strings.TrimSpace(frame.Operation.Action) {
+		case "rca_or_repair", "restore", "repair", "recover":
+			return true
+		}
+		if frame.Risk.DataMutation || frame.RiskPreference.DataLossAcceptable {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	observabilityDependencyChainPattern   = regexp.MustCompile(`(?:调用链|依赖链|服务链)?(?:是|:|：)?\s*([A-Za-z0-9_\-一-龥]+服务(?:\s*->\s*[A-Za-z0-9_\-一-龥]+服务)+)`)
+	observabilityEnvironmentPattern       = regexp.MustCompile(`环境([^\s的，。；,;]+)`)
+	observabilityTargetServicePattern     = regexp.MustCompile(`(?:环境[^\s的，。；,;]+的|的)\s*([A-Za-z0-9_\-一-龥]+服务)`)
+	observabilityRCASignalPattern         = regexp.MustCompile(`(?i)(调用链|依赖链|服务链|服务.*异常|root cause|rca|service.*dependency|dependency.*service)`)
+	databaseEvidenceBlockHeaderPattern    = regexp.MustCompile(`(?im)^\s*(?:主机|host)\s*([A-Za-z0-9_-]+)\s*[:：]`)
+	databaseRecoveryEvidenceSignalPattern = regexp.MustCompile(`(?i)(database|db|cluster|replication|replica|standby|primary|restore|recovery|archive|wal|lineage|history|control data|checkpoint|恢复|从库|主从|集群|归档|备份)`)
+	databaseControlEvidenceSignalPattern  = regexp.MustCompile(`(?i)(control data|checkpoint|primary_conninfo|restore_command|recovery_target|in_recovery|standby\.signal|receiver|sender)`)
+	standaloneTrueLinePattern             = regexp.MustCompile(`(?im)^\s*t\s*$`)
+	standaloneZeroLinePattern             = regexp.MustCompile(`(?im)^\s*0\s*$`)
+)
+
+func generalOpsDatabaseRecoveryEvidenceContext(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" || !generalOpsHasDatabaseRecoveryEvidenceSignals(input) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Database replication/recovery RCA evidence profile\n")
+	b.WriteString("- capability_path: stateful_database_replication_recovery_rca\n")
+	b.WriteString("- generic_ops_contract: user_evidence_first,no_host_execution_when_prohibited,read_only_evidence_before_mutation,approval_before_data_repair\n")
+	b.WriteString("- evidence_requirements: observed_role_state,lineage_history,recovery_source_config,recovery_target_config,replication_sender_receiver_state,ha_control_plane_state,data_authority,post_repair_validation\n")
+	b.WriteString("- output_requirements: separate observed facts from inference; preserve user-provided resource labels; include missing evidence, safe rebuild direction for the affected standby/replica, and validation/check commands (验收命令)\n")
+	if label := extractAffectedDatabaseReplicaLabel(input); label != "" {
+		b.WriteString("- affected_standby_label: ")
+		b.WriteString(label)
+		b.WriteString("\n")
+		b.WriteString("- safe_rebuild_requirement: include a rebuild direction for affected_standby_label using the correct base backup/source selection\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func generalOpsHasDatabaseRecoveryEvidenceSignals(input string) bool {
+	if !databaseRecoveryEvidenceSignalPattern.MatchString(input) {
+		return false
+	}
+	frame := opsmanual.BuildOperationFrame(input, nil)
+	return frame.Operation.Stateful ||
+		len(frame.Roles) > 0 ||
+		len(frame.ObservationPoints) > 0 ||
+		databaseControlEvidenceSignalPattern.MatchString(input)
+}
+
+func extractAffectedDatabaseReplicaLabel(input string) string {
+	matches := databaseEvidenceBlockHeaderPattern.FindAllStringSubmatchIndex(input, -1)
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		label := strings.TrimSpace(input[match[2]:match[3]])
+		if label == "" {
+			continue
+		}
+		blockStart := match[1]
+		blockEnd := len(input)
+		for _, next := range matches {
+			if len(next) > 0 && next[0] > match[0] {
+				blockEnd = next[0]
+				break
+			}
+		}
+		if blockEnd < blockStart {
+			continue
+		}
+		block := strings.ToLower(input[blockStart:blockEnd])
+		if databaseEvidenceBlockLooksLikeStandby(block) {
+			return label
+		}
+	}
+	return ""
+}
+
+func databaseEvidenceBlockLooksLikeStandby(block string) bool {
+	block = strings.ToLower(block)
+	if strings.Contains(block, "archive recovery") {
+		return true
+	}
+	if (strings.Contains(block, "pg_is_in_recovery()") || strings.Contains(block, "pg_is_in_recovery")) &&
+		standaloneTrueLinePattern.MatchString(block) {
+		return true
+	}
+	if strings.Contains(block, "standby.signal") && standaloneZeroLinePattern.MatchString(block) {
+		return true
+	}
+	return false
+}
+
+func generalOpsObservabilityContext(input string, metadata ...map[string]string) string {
+	input = strings.TrimSpace(input)
+	provider := extractExplicitObservabilityProviderFromMetadata(metadata...)
+	if input == "" || !generalOpsHasObservabilityRCASignals(input, provider) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Observability RCA contract\n")
+	b.WriteString("- capability_path: observability_dependency_chain_rca\n")
+	b.WriteString("- generic_ops_contract: provider_neutral_observability,read_only_evidence_first\n")
+	b.WriteString("- observability_evidence: dependency_edges,hypotheses,missing_evidence\n")
+	if target := extractObservabilityTargetService(input); target != "" {
+		b.WriteString("- target_service: ")
+		b.WriteString(target)
+		b.WriteString("\n")
+	}
+	if env := extractObservabilityEnvironment(input); env != "" {
+		b.WriteString("- environment_hint: ")
+		b.WriteString(env)
+		b.WriteString("\n")
+		b.WriteString("- provider_project_rule: environment_hint is not a provider project unless session metadata or provider discovery explicitly maps it; omit provider project when ambiguous\n")
+	}
+	if chain := extractObservabilityDependencyChain(input); chain != "" {
+		b.WriteString("- dependency_chain_from_user: ")
+		b.WriteString(chain)
+		b.WriteString("\n")
+	}
+	if provider != "" && provider != "observability" {
+		providerDisplay := observabilityProviderDisplayName(provider)
+		b.WriteString("- provider_hint: explicit observability provider requested: ")
+		b.WriteString(provider)
+		b.WriteString("\n")
+		b.WriteString("- first_tool: provider aggregate RCA context tool if visible\n")
+		b.WriteString("- tool_order: collect RCA evidence first; use service discovery only when project or target resolution is ambiguous\n")
+		b.WriteString("- evidence_boundary_template: verified conclusion only with ")
+		b.WriteString(providerDisplay)
+		b.WriteString(" edge evidence\n")
+		b.WriteString("- safety_guardrail_template: read-only ")
+		b.WriteString(providerDisplay)
+		b.WriteString(" evidence first\n")
+	}
+	b.WriteString("- evidence_rules: use read-only provider evidence before final RCA; state missing_evidence when dependency edges, metrics, logs, traces, incidents, or deployment evidence are unavailable\n")
+	b.WriteString("- evidence_boundary_rule: mark RCA as evidence-limited unless provider dependency edge evidence and supporting status or hypothesis evidence are present\n")
+	b.WriteString("- output_signals: capability_path=observability_dependency_chain_rca; generic_ops_contract=provider_neutral_observability,read_only_evidence_first; observability_evidence=dependency_edges,hypotheses,missing_evidence\n")
+	b.WriteString("- chain_candidate_template: for a chain X->Y->Z, include root cause candidates exactly as Z依赖异常导致X异常, Y传播上游异常, X自身资源或发布异常 when supported or as hypotheses with evidence limits\n")
+	b.WriteString("- output_requirements: include literal machine-signal lines for capability_path, generic_ops_contract, observability_evidence, then include 依赖链,根因,证据,证据边界,缺失证据,解决方案,验证方式; do not print confidence labels\n")
+	return strings.TrimSpace(b.String())
+}
+
+func generalOpsHasObservabilityRCASignals(input string, provider ...string) bool {
+	if len(provider) > 0 && strings.TrimSpace(provider[0]) != "" {
+		return true
+	}
+	return observabilityRCASignalPattern.MatchString(input)
+}
+
+func extractExplicitObservabilityProviderFromMetadata(metadata ...map[string]string) string {
+	for _, group := range metadata {
+		for _, key := range []string{
+			"aiops.mentions.observabilityProvider",
+			"aiops.observability.provider",
+			"observabilityProvider",
+		} {
+			if value := strings.TrimSpace(group[key]); value != "" {
+				return strings.ToLower(value)
+			}
+		}
+	}
+	return ""
+}
+
+func observabilityProviderDisplayName(provider string) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "provider"
+	}
+	return strings.ToUpper(provider[:1]) + provider[1:]
+}
+
+func extractObservabilityDependencyChain(input string) string {
+	match := observabilityDependencyChainPattern.FindStringSubmatch(input)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.ReplaceAll(strings.TrimSpace(match[1]), " ", "")
+}
+
+func extractObservabilityEnvironment(input string) string {
+	match := observabilityEnvironmentPattern.FindStringSubmatch(input)
+	if len(match) <= 1 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Trim(match[1], "，。；,; "))
+}
+
+func extractObservabilityTargetService(input string) string {
+	if chain := extractObservabilityDependencyChain(input); chain != "" {
+		parts := strings.Split(chain, "->")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	matches := observabilityTargetServicePattern.FindAllStringSubmatch(input, -1)
+	for _, match := range matches {
+		if len(match) <= 1 {
+			continue
+		}
+		candidate := strings.TrimSpace(strings.Trim(match[1], "，。；,; "))
+		if candidate != "" && candidate != "服务" {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func compactChartPayloadForModel(content string) string {
@@ -631,7 +1000,7 @@ func runtimeToolResultFromPromptInput(result *promptinput.ToolResult) *ToolResul
 	}
 }
 
-func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) {
+func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	promptTrace := req.PromptInputTrace
 	if len(promptTrace.PromptSections) == 0 {
 		promptTrace.PromptSections = append([]promptcompiler.PromptSectionTrace(nil), req.Compiled.PromptSections...)
@@ -642,7 +1011,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	if promptInputContextUsageEmpty(promptTrace.ContextUsage) {
 		promptTrace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
 			Compiled: req.Compiled,
-			Messages: req.ModelInput,
+			Items:    req.ModelInput,
 		})
 	}
 	if len(promptTrace.VisibleOpsManualTools) == 0 {
@@ -677,6 +1046,37 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	if len(promptTrace.LoadedPacksDelta) == 0 {
 		promptTrace.LoadedPacksDelta = append([]string(nil), req.LoadedPacksDelta...)
 	}
+	promptTrace.ToolSurfaceSnapshot = completePromptToolSurfaceSnapshot(
+		promptTrace.ToolSurfaceSnapshot,
+		req.ToolSurfaceSnapshot,
+		req.VisibleTools,
+		promptTrace.DeferredToolDirectory,
+		promptTrace.ToolSurfaceFingerprint,
+		promptTrace.ToolSurfacePolicySnapshotHash,
+		promptTrace.LoadedPacksDelta,
+	)
+	if promptTrace.PublicWebBudget == nil && req.PublicWebBudget != nil {
+		budget := *req.PublicWebBudget
+		promptTrace.PublicWebBudget = &budget
+	}
+	if promptTrace.WebSearchPolicy == nil {
+		if req.WebSearchPolicy != nil {
+			policy := *req.WebSearchPolicy
+			policy.ReasonCodes = append([]string(nil), req.WebSearchPolicy.ReasonCodes...)
+			policy.QuerySeeds = append([]string(nil), req.WebSearchPolicy.QuerySeeds...)
+			promptTrace.WebSearchPolicy = &policy
+		} else {
+			promptTrace.WebSearchPolicy = promptInputWebSearchPolicyTraceFromMetadata(req.Metadata)
+		}
+	}
+	if promptTrace.WebSearch == nil && req.WebSearch != nil {
+		search := *req.WebSearch
+		promptTrace.WebSearch = &search
+	}
+	if promptTrace.Final == nil && req.Final != nil {
+		final := *req.Final
+		promptTrace.Final = &final
+	}
 	if strings.TrimSpace(promptTrace.SkillIndexHash) == "" {
 		promptTrace.SkillIndexHash = strings.TrimSpace(req.SkillIndexHash)
 	}
@@ -691,6 +1091,9 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	}
 	if len(promptTrace.RejectedToolCalls) == 0 {
 		promptTrace.RejectedToolCalls = append([]promptinput.RejectedToolCallTraceEvent(nil), req.RejectedToolCalls...)
+	}
+	if len(promptTrace.DispatchDecisions) == 0 {
+		promptTrace.DispatchDecisions = append([]promptinput.DispatchDecisionTrace(nil), req.DispatchDecisions...)
 	}
 	if len(promptTrace.SkillSearchEvents) == 0 {
 		promptTrace.SkillSearchEvents = append([]promptinput.SkillSearchTraceEvent(nil), req.SkillSearchEvents...)
@@ -737,6 +1140,9 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	}
 	if len(promptTrace.ResourceLocks) == 0 {
 		promptTrace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
+	}
+	if len(promptTrace.OwnerWriteTraces) == 0 {
+		promptTrace.OwnerWriteTraces = promptInputOwnerWriteTraces(req.OwnerWriteTraces)
 	}
 	if promptTrace.AgentFinalGate == nil && req.AgentFinalGate != nil {
 		gate := *req.AgentFinalGate
@@ -795,6 +1201,9 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		metadata["taskDepth.level"] = string(req.TaskDepth.Level)
 		metadata["taskDepth.requiresPlan"] = fmt.Sprint(req.TaskDepth.RequiresPlan)
 		metadata["taskDepth.requiresEvidence"] = fmt.Sprint(req.TaskDepth.RequiresEvidence)
+		metadata["taskDepth.requiresValidation"] = fmt.Sprint(req.TaskDepth.RequiresValidation)
+		metadata["taskDepth.analysisOnly"] = fmt.Sprint(req.TaskDepth.AnalysisOnly)
+		metadata["taskDepth.executionProhibited"] = fmt.Sprint(req.TaskDepth.ExecutionProhibited)
 	}
 	if req.UXProgressTrace != nil {
 		metadata["uxProgress.phase"] = strings.TrimSpace(req.UXProgressTrace.Phase)
@@ -808,7 +1217,10 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 	if effort := strings.TrimSpace(req.ReasoningEffort); effort != "" {
 		metadata["reasoningEffort.configured"] = effort
 	}
-	return modeltrace.Write(modeltrace.Request{
+	if style := strings.TrimSpace(req.AnswerStyle); style != "" {
+		metadata["answerStyle.configured"] = style
+	}
+	return mt.Request{
 		Kind:                          "runtime_model_input",
 		SessionID:                     req.SessionID,
 		TurnID:                        req.TurnID,
@@ -825,6 +1237,7 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		ToolSearchEvents:              promptTrace.ToolSearchEvents,
 		ToolSelectionEvents:           promptTrace.ToolSelectionEvents,
 		RejectedToolCalls:             promptTrace.RejectedToolCalls,
+		DispatchDecisions:             promptTrace.DispatchDecisions,
 		SkillSearchEvents:             promptTrace.SkillSearchEvents,
 		SkillReadEvents:               promptTrace.SkillReadEvents,
 		RejectedSkillActivations:      promptTrace.RejectedSkillActivations,
@@ -841,20 +1254,63 @@ func writeModelInputDebugTrace(req ModelInputDebugTraceRequest) (string, error) 
 		PlanRequirementDecision:       promptTrace.PlanRequirementDecision,
 		PlanCompletionGate:            promptTrace.PlanCompletionGate,
 		FinalEvidenceState:            req.FinalEvidenceState,
-		Prompt: modeltrace.Prompt{
-			StableHash: promptContentHash(req.Compiled.Stable.Content),
-			Stable:     req.Compiled.Stable.Content,
-			Dynamic:    req.Compiled.Dynamic.Content,
-			System:     effectiveSystemPrompt(req.Compiled).Content,
-			Developer:  effectiveDeveloperInstructions(req.Compiled).Content,
-			Tools:      effectiveToolPromptSet(req.Compiled).Content,
-			Policy:     effectiveRuntimePolicyPrompt(req.Compiled).Content,
+		Prompt: mt.Prompt{
+			StableHash: promptContentHash(promptcompiler.CompiledPromptStableText(req.Compiled)),
+			Stable:     promptcompiler.CompiledPromptStableText(req.Compiled),
+			Dynamic:    promptcompiler.CompiledPromptDynamicText(req.Compiled),
+			System:     promptcompiler.CompiledPromptBaseContractText(req.Compiled),
+			Developer:  promptcompiler.CompiledPromptProfileText(req.Compiled),
+			Tools:      promptcompiler.CompiledPromptToolSurfaceText(req.Compiled),
+			Policy:     promptcompiler.CompiledPromptRuntimeStateText(req.Compiled),
 		},
 		ModelInput:       req.ModelInput,
 		PromptInputTrace: promptTrace,
 		PromptInputDiff:  req.PromptInputDiff,
 		DiagnosticTrace:  req.DiagnosticTrace,
+	}
+}
+
+func promptInputWebSearchPolicyTraceFromMetadata(metadata map[string]string) *promptinput.WebSearchPolicyTrace {
+	if len(metadata) == 0 {
+		return nil
+	}
+	level := strings.ToLower(strings.TrimSpace(metadata["aiops.webSearch.policy"]))
+	if level == "must_search" {
+		level = string(WebSearchEnabled)
+	}
+	reason := strings.TrimSpace(metadata["aiops.webSearch.reason"])
+	disabledBy := strings.TrimSpace(metadata["aiops.webSearch.disabledBy"])
+	reasonCodes := compactStringList(strings.FieldsFunc(metadata["aiops.webSearch.reasonCodes"], func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t'
+	}))
+	querySeeds := webSearchQuerySeedsTraceValues(metadata["aiops.webSearch.querySeeds"])
+	requireCitations := metadataBool(metadata["aiops.webSearch.requireCitations"])
+	if level == "" && reason == "" && disabledBy == "" && len(reasonCodes) == 0 && len(querySeeds) == 0 && !requireCitations {
+		return nil
+	}
+	return &promptinput.WebSearchPolicyTrace{
+		Level:            level,
+		Reason:           reason,
+		ReasonCodes:      reasonCodes,
+		QuerySeeds:       querySeeds,
+		DisabledBy:       disabledBy,
+		RequireCitations: requireCitations,
+	}
+}
+
+func webSearchQuerySeedsTraceValues(raw string) []string {
+	values := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r'
 	})
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = sanitizeWebSearchQuerySeed(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, truncateWebSearchSeed(value))
+	}
+	return out
 }
 
 func cloneDeferredToolDirectoryForTrace(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {
@@ -870,16 +1326,100 @@ func cloneDeferredToolDirectoryForTrace(entries []promptcompiler.DeferredToolDir
 	return out
 }
 
+func completePromptToolSurfaceSnapshot(existing, requested *promptinput.ToolSurfaceSnapshot, visibleTools []string, deferredDirectory []promptcompiler.DeferredToolDirectoryEntry, fingerprint, policyHash string, loadedPacksDelta []string) *promptinput.ToolSurfaceSnapshot {
+	snapshot := clonePromptToolSurfaceSnapshot(existing)
+	if snapshot == nil {
+		snapshot = clonePromptToolSurfaceSnapshot(requested)
+	}
+	if snapshot == nil && (strings.TrimSpace(fingerprint) != "" || strings.TrimSpace(policyHash) != "" || len(visibleTools) > 0 || len(deferredDirectory) > 0 || len(loadedPacksDelta) > 0) {
+		snapshot = &promptinput.ToolSurfaceSnapshot{}
+	}
+	if snapshot == nil {
+		return nil
+	}
+	if strings.TrimSpace(snapshot.Fingerprint) == "" {
+		snapshot.Fingerprint = strings.TrimSpace(fingerprint)
+	}
+	if strings.TrimSpace(snapshot.PolicyHash) == "" {
+		snapshot.PolicyHash = strings.TrimSpace(policyHash)
+	}
+	if len(snapshot.VisibleTools) == 0 {
+		snapshot.VisibleTools = uniqueSortedTraceStrings(visibleTools)
+	}
+	if len(snapshot.DeferredTools) == 0 {
+		snapshot.DeferredTools = deferredToolSnapshotNames(deferredDirectory)
+	}
+	if len(snapshot.LoadedPacksDelta) == 0 {
+		snapshot.LoadedPacksDelta = uniqueSortedTraceStrings(loadedPacksDelta)
+	}
+	if len(snapshot.HiddenTools) == 0 && len(snapshot.HiddenReasons) > 0 {
+		for name := range snapshot.HiddenReasons {
+			if strings.TrimSpace(name) != "" {
+				snapshot.HiddenTools = append(snapshot.HiddenTools, strings.TrimSpace(name))
+			}
+		}
+		sort.Strings(snapshot.HiddenTools)
+	}
+	if toolSurfaceSnapshotEmpty(snapshot) {
+		return nil
+	}
+	return snapshot
+}
+
+func clonePromptToolSurfaceSnapshot(snapshot *promptinput.ToolSurfaceSnapshot) *promptinput.ToolSurfaceSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	out := &promptinput.ToolSurfaceSnapshot{
+		Fingerprint:      strings.TrimSpace(snapshot.Fingerprint),
+		VisibleTools:     uniqueSortedTraceStrings(snapshot.VisibleTools),
+		DeferredTools:    uniqueSortedTraceStrings(snapshot.DeferredTools),
+		HiddenTools:      uniqueSortedTraceStrings(snapshot.HiddenTools),
+		LoadedPacksDelta: uniqueSortedTraceStrings(snapshot.LoadedPacksDelta),
+		PolicyHash:       strings.TrimSpace(snapshot.PolicyHash),
+	}
+	if len(snapshot.HiddenReasons) > 0 {
+		out.HiddenReasons = make(map[string][]string, len(snapshot.HiddenReasons))
+		for name, reasons := range snapshot.HiddenReasons {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			out.HiddenReasons[name] = uniqueSortedTraceStrings(reasons)
+		}
+		if len(out.HiddenReasons) == 0 {
+			out.HiddenReasons = nil
+		}
+	}
+	return out
+}
+
+func deferredToolSnapshotNames(entries []promptcompiler.DeferredToolDirectoryEntry) []string {
+	if len(entries) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := firstNonEmpty(entry.Pack, entry.Capability, entry.MCPServerID)
+		if name != "" {
+			values = append(values, name)
+		}
+	}
+	return uniqueSortedTraceStrings(values)
+}
+
 func promptInputTaskDepthTrace(profile taskdepth.Profile) *promptinput.TaskDepthTrace {
 	if profile.Level == "" {
 		return nil
 	}
 	return &promptinput.TaskDepthTrace{
-		Level:              string(profile.Level),
-		Reasons:            append([]string(nil), profile.Reasons...),
-		RequiresPlan:       profile.RequiresPlan,
-		RequiresEvidence:   profile.RequiresEvidence,
-		RequiresValidation: profile.RequiresValidation,
+		Level:               string(profile.Level),
+		Reasons:             append([]string(nil), profile.Reasons...),
+		RequiresPlan:        profile.RequiresPlan,
+		RequiresEvidence:    profile.RequiresEvidence,
+		RequiresValidation:  profile.RequiresValidation,
+		AnalysisOnly:        profile.AnalysisOnly,
+		ExecutionProhibited: profile.ExecutionProhibited,
 	}
 }
 
@@ -934,32 +1474,4 @@ func promptFingerprintMap(fp promptcompiler.PromptFingerprint) map[string]string
 		return nil
 	}
 	return out
-}
-
-func effectiveSystemPrompt(compiled promptcompiler.CompiledPrompt) promptcompiler.SystemPrompt {
-	if compiled.System.Content != "" || compiled.System.Role != "" || compiled.System.Environment != "" {
-		return compiled.System
-	}
-	return compiled.Stable.System
-}
-
-func effectiveDeveloperInstructions(compiled promptcompiler.CompiledPrompt) promptcompiler.DeveloperInstructions {
-	if compiled.Developer.Content != "" || len(compiled.Developer.Constraints) > 0 {
-		return compiled.Developer
-	}
-	return compiled.Stable.Developer
-}
-
-func effectiveToolPromptSet(compiled promptcompiler.CompiledPrompt) promptcompiler.ToolPromptSet {
-	if compiled.Tools.Content != "" || len(compiled.Tools.Entries) > 0 {
-		return compiled.Tools
-	}
-	return compiled.Stable.Tools
-}
-
-func effectiveRuntimePolicyPrompt(compiled promptcompiler.CompiledPrompt) promptcompiler.RuntimePolicyPrompt {
-	if compiled.Policy.Content != "" || compiled.Policy.Mode != "" {
-		return compiled.Policy
-	}
-	return compiled.Dynamic.Policy
 }

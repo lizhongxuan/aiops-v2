@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"aiops-v2/internal/opsmanual"
 	"runner/workflow/visual"
 )
 
@@ -153,4 +154,68 @@ func TestGraphGeneratorScriptsMatchWorkflowTopic(t *testing.T) {
 	if strings.Contains(searchScript, "AI 基础设施投资持续增长") || strings.Contains(searchScript, `"node_id": "search-news"`) {
 		t.Fatalf("ops incident script reused AI news fixture:\n%s", searchScript)
 	}
+}
+
+func TestRunnerGraphGeneratorPreservesResourcePlanVarsAndStageMetadata(t *testing.T) {
+	frame := opsmanual.OperationFrame{
+		Target: opsmanual.OperationTarget{Type: "postgresql", Name: "pg-cluster"},
+		Roles: []opsmanual.OperationResourceRole{
+			{ID: "host-a", Kind: opsmanual.ResourceRoleDataNode, ResourceRef: "host-a"},
+			{ID: "host-b", Kind: opsmanual.ResourceRoleDataNode, ResourceRef: "host-b"},
+		},
+		RiskPreference: opsmanual.OperationRiskPreference{StillRequiresApproval: true},
+		RawText:        "让主机A和主机B形成PG集群",
+	}
+	plan, err := (ResourcePlanBuilder{}).BuildResourcePlan(context.Background(), BuildResourcePlanRequest{
+		Requirement:    frame.RawText,
+		OperationFrame: frame,
+	})
+	if err != nil {
+		t.Fatalf("BuildResourcePlan() error = %v", err)
+	}
+
+	graph, err := (RunnerGraphGenerator{}).GenerateGraph(context.Background(), GenerateGraphRequest{
+		SessionID: "wfgen-resource-1",
+		Plan:      *plan,
+	})
+	if err != nil {
+		t.Fatalf("GenerateGraph() error = %v", err)
+	}
+
+	if graph.Workflow.Vars["workflow_generation_session_id"] != "wfgen-resource-1" {
+		t.Fatalf("workflow_generation_session_id var = %#v", graph.Workflow.Vars["workflow_generation_session_id"])
+	}
+	if graph.Workflow.Vars["review_status"] != string(ReviewStatusPendingReview) {
+		t.Fatalf("review_status var = %#v, want pending_review", graph.Workflow.Vars["review_status"])
+	}
+	if graph.Workflow.Vars["resource_kind"] != "postgresql" {
+		t.Fatalf("resource_kind var = %#v, want postgresql", graph.Workflow.Vars["resource_kind"])
+	}
+
+	preflight := graphNodeByStage(t, graph.Nodes, "preflight")
+	if preflight.UI["read_only"] != true {
+		t.Fatalf("preflight UI = %#v, want read_only=true", preflight.UI)
+	}
+	verify := graphNodeByStage(t, graph.Nodes, "verify")
+	if verify.UI["read_only"] != true {
+		t.Fatalf("verify UI = %#v, want read_only=true", verify.UI)
+	}
+	execute := graphNodeByStage(t, graph.Nodes, "execute")
+	if execute.UI["requires_approval"] != true {
+		t.Fatalf("execute UI = %#v, want requires_approval=true", execute.UI)
+	}
+}
+
+func graphNodeByStage(t *testing.T, nodes []visual.Node, stage string) visual.Node {
+	t.Helper()
+	for _, node := range nodes {
+		if node.UI == nil {
+			continue
+		}
+		if got, _ := node.UI["stage"].(string); got == stage {
+			return node
+		}
+	}
+	t.Fatalf("stage %q not found in graph nodes: %#v", stage, nodes)
+	return visual.Node{}
 }

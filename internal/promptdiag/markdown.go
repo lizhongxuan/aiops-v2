@@ -146,7 +146,7 @@ func RenderTraceLinksMarkdown(d RunDiagnosis) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Prompt Trace Links\n\n")
 	if len(d.TraceLinks) == 0 {
-		fmt.Fprintf(&b, "没有找到可关联的 model input trace。确认启动时设置了 `AIOPS_DEBUG_MODEL_INPUT_TRACE=1`，且 `-trace-dir` 指向正确目录。\n")
+		fmt.Fprintf(&b, "没有找到可关联的 model input trace。确认运行时配置页已开启 Debug / Model Input Trace，且 `-trace-dir` 指向正确目录。\n")
 		return b.String()
 	}
 	for _, trace := range d.TraceLinks {

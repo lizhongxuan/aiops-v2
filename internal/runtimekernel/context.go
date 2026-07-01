@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -29,13 +30,17 @@ type ContextCompactionPlan struct {
 
 // ContextPipelineOptions controls compaction-time behavior for a turn iteration.
 type ContextPipelineOptions struct {
-	SessionID        string
-	TurnID           string
-	Iteration        int
-	Compressor       *spanstream.ContextCompressor
-	PendingApprovals []PendingApproval
-	PendingEvidence  []PendingEvidence
-	BudgetPolicy     ContextBudgetPolicy
+	SessionID         string
+	TurnID            string
+	Iteration         int
+	Compressor        *spanstream.ContextCompressor
+	Profile           string
+	TargetRefs        []string
+	PendingApprovals  []PendingApproval
+	PendingEvidence   []PendingEvidence
+	RejectedApprovals []RejectedApproval
+	ToolPacksLoaded   []string
+	BudgetPolicy      ContextBudgetPolicy
 }
 
 // ContextPipelineResult contains the compacted view that is safe to show the model.
@@ -255,7 +260,7 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 	}
 
 	refs := collectMessageReferences(plan.Compactable)
-	summary := heuristicCompactionSummary(plan.Compactable)
+	summary := heuristicCompactionSummary(plan.Compactable, opts, refs)
 	startedEvent := BuildContextGovernanceEvent(ContextGovernanceEvent{
 		ID:           fmt.Sprintf("ctxgov-%s-%d-l4-started", opts.TurnID, opts.Iteration),
 		Layer:        ContextGovernanceLayerL4,
@@ -502,6 +507,29 @@ func pendingApprovalToolCallIDs(items []PendingApproval) []string {
 	return ids
 }
 
+func compactionTargetRefs(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var refs []string
+	if snapshot.LatestCheckpoint != nil {
+		refs = append(refs, snapshot.LatestCheckpoint.TargetRefs...)
+	}
+	for _, approval := range snapshot.PendingApprovals {
+		refs = append(refs, approval.TargetRefs...)
+		refs = append(refs, approval.ResourceScopes...)
+		if strings.TrimSpace(approval.HostID) != "" {
+			refs = append(refs, "host:"+strings.TrimSpace(approval.HostID))
+		}
+	}
+	for _, evidence := range snapshot.PendingEvidence {
+		if strings.TrimSpace(evidence.ToolName) != "" {
+			refs = append(refs, "tool:"+strings.TrimSpace(evidence.ToolName))
+		}
+	}
+	return nonEmptyRuntimeStrings(refs)
+}
+
 func compactHardKeepReasons(retained []Message, opts ContextPipelineOptions, minRetained int) []string {
 	reasons := make([]string, 0, 5)
 	if retainedHasRole(retained, "user") {
@@ -531,31 +559,235 @@ func retainedHasRole(messages []Message, role string) bool {
 	return false
 }
 
-func heuristicCompactionSummary(messages []Message) string {
+func heuristicCompactionSummary(messages []Message, opts ContextPipelineOptions, refs []ExternalReference) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	first := messages[0]
-	last := messages[len(messages)-1]
-	var builder strings.Builder
-	builder.WriteString(fmt.Sprintf("Compressed %d earlier messages.", len(messages)))
-	if snippet := summarizeSnippet(first.Content); snippet != "" {
-		builder.WriteString(" Started with ")
-		builder.WriteString(first.Role)
-		builder.WriteString(": ")
-		builder.WriteString(snippet)
-		builder.WriteString(".")
+	summary := buildEvidenceHandoffSummary(messages, opts, refs)
+	data, err := json.Marshal(summary)
+	if err != nil {
+		return "{}"
 	}
-	if len(messages) > 1 {
-		if snippet := summarizeSnippet(last.Content); snippet != "" {
-			builder.WriteString(" Most recent compacted context was ")
-			builder.WriteString(last.Role)
-			builder.WriteString(": ")
-			builder.WriteString(snippet)
-			builder.WriteString(".")
+	return string(data)
+}
+
+func buildEvidenceHandoffSummary(messages []Message, opts ContextPipelineOptions, refs []ExternalReference) CompactSummaryV1 {
+	latestUser := latestCompactUserMessage(messages, opts.TurnID)
+	userGoal := latestUser.Quote
+	if firstUser := firstCompactUserMessage(messages, opts.TurnID); strings.TrimSpace(firstUser.Quote) != "" {
+		userGoal = firstUser.Quote
+	}
+	if strings.TrimSpace(userGoal) == "" {
+		userGoal = "Continue the current task after context compaction."
+	}
+	if strings.TrimSpace(latestUser.Quote) == "" {
+		latestUser = CompactSummaryMessageRefV1{TurnID: firstNonEmptyRuntimeString(opts.TurnID, "compacted-context"), Quote: userGoal}
+	}
+	facts, artifacts := compactSummaryEvidenceArtifacts(refs)
+	if len(facts) == 0 {
+		facts = append(facts, CompactSummaryFactV1{
+			Statement: "Earlier context was compacted; no direct evidence refs were present in the compacted prefix.",
+			SourceRef: firstNonEmptyRuntimeString(opts.TurnID, "compacted-context"),
+		})
+	}
+	decisions := compactSummaryDecisions(messages, opts.TurnID)
+	if len(decisions) == 0 {
+		decisions = append(decisions, CompactSummaryDecisionV1{
+			Decision:  "Continue from compacted context without treating missing raw payloads as confirmed evidence.",
+			SourceRef: firstNonEmptyRuntimeString(opts.TurnID, "compacted-context"),
+		})
+	}
+	inferences := compactSummaryInferences(messages, opts.TurnID)
+	if len(inferences) == 0 {
+		inferences = append(inferences, CompactSummaryInferenceV1{
+			Statement:  "No additional inference was preserved from the compacted prefix.",
+			Confidence: "low",
+			SourceRef:  firstNonEmptyRuntimeString(opts.TurnID, "compacted-context"),
+		})
+	}
+	return CompactSummaryV1{
+		SchemaVersion:      CompactSummarySchemaVersionV1,
+		UserGoal:           userGoal,
+		CurrentProfile:     strings.TrimSpace(opts.Profile),
+		TargetRefs:         nonEmptyRuntimeStrings(opts.TargetRefs),
+		LatestUserMessages: []CompactSummaryMessageRefV1{latestUser},
+		ActiveConstraints: []string{
+			"Use compacted evidence refs instead of raw stdout/stderr, manual content, or artifact payload.",
+			"Keep observed facts, inferences, pending work, and rejected approvals separate.",
+		},
+		CurrentTask: CompactSummaryCurrentTaskV1{
+			Description:  "Resume the current task from compacted evidence handoff summary.",
+			SourceTurnID: firstNonEmptyRuntimeString(opts.TurnID, latestUser.TurnID),
+		},
+		ConfirmedFacts:    facts,
+		Inferences:        inferences,
+		OpenQuestions:     []string{"Which remaining next step can be completed with the retained context and available tools?"},
+		Decisions:         decisions,
+		Artifacts:         artifacts,
+		PendingApprovals:  compactSummaryPendingApprovals(opts.PendingApprovals),
+		PendingEvidence:   compactSummaryPendingEvidence(opts.PendingEvidence),
+		RejectedApprovals: compactSummaryRejectedApprovals(opts.RejectedApprovals),
+		ToolPacksLoaded:   nonEmptyRuntimeStrings(opts.ToolPacksLoaded),
+		PlanState:         CompactSummaryPlanStateV1{Status: "in_progress"},
+		NextStep: CompactSummaryNextStepV1{
+			Action:          "Continue with retained context, compacted evidence refs, and the smallest safe next step.",
+			SourceTurnID:    firstNonEmptyRuntimeString(opts.TurnID, latestUser.TurnID),
+			RecentUserQuote: latestUser.Quote,
+		},
+	}
+}
+
+func firstCompactUserMessage(messages []Message, turnID string) CompactSummaryMessageRefV1 {
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if quote := summarizeSnippet(msg.Content); quote != "" {
+			return CompactSummaryMessageRefV1{TurnID: firstNonEmptyRuntimeString(turnID, msg.ID), Quote: quote}
 		}
 	}
-	return builder.String()
+	return CompactSummaryMessageRefV1{}
+}
+
+func latestCompactUserMessage(messages []Message, turnID string) CompactSummaryMessageRefV1 {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		if quote := summarizeSnippet(msg.Content); quote != "" {
+			return CompactSummaryMessageRefV1{TurnID: firstNonEmptyRuntimeString(turnID, msg.ID), Quote: quote}
+		}
+	}
+	return CompactSummaryMessageRefV1{}
+}
+
+func compactSummaryEvidenceArtifacts(refs []ExternalReference) ([]CompactSummaryFactV1, []CompactSummaryArtifactV1) {
+	facts := make([]CompactSummaryFactV1, 0, len(refs))
+	artifacts := make([]CompactSummaryArtifactV1, 0, len(refs))
+	for _, ref := range refs {
+		id := strings.TrimSpace(ref.ID)
+		if id == "" {
+			continue
+		}
+		summary := firstNonEmptyRuntimeString(ref.Summary, ref.Title, "externalized evidence reference")
+		facts = append(facts, CompactSummaryFactV1{
+			Statement: "Observed evidence was externalized as " + id + ".",
+			SourceRef: id,
+		})
+		artifacts = append(artifacts, CompactSummaryArtifactV1{
+			ID:        id,
+			SourceRef: firstNonEmptyRuntimeString(ref.URI, ref.FilePath, ref.CardRef, id),
+			Summary:   summarizeSnippet(summary),
+		})
+	}
+	return facts, artifacts
+}
+
+func compactSummaryDecisions(messages []Message, turnID string) []CompactSummaryDecisionV1 {
+	out := make([]CompactSummaryDecisionV1, 0)
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if !strings.Contains(strings.ToLower(content), "decision") {
+			continue
+		}
+		out = append(out, CompactSummaryDecisionV1{Decision: summarizeSnippet(content), SourceRef: firstNonEmptyRuntimeString(msg.ID, turnID)})
+	}
+	return out
+}
+
+func compactSummaryInferences(messages []Message, turnID string) []CompactSummaryInferenceV1 {
+	out := make([]CompactSummaryInferenceV1, 0)
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		lower := strings.ToLower(content)
+		if !strings.Contains(lower, "inference") && !strings.Contains(lower, "confidence") {
+			continue
+		}
+		out = append(out, CompactSummaryInferenceV1{Statement: summarizeSnippet(content), Confidence: compactSummaryConfidence(lower), SourceRef: firstNonEmptyRuntimeString(msg.ID, turnID)})
+	}
+	return out
+}
+
+func compactSummaryConfidence(lower string) string {
+	switch {
+	case strings.Contains(lower, "high"):
+		return "high"
+	case strings.Contains(lower, "medium"):
+		return "medium"
+	case strings.Contains(lower, "low"):
+		return "low"
+	default:
+		return "unknown"
+	}
+}
+
+func compactSummaryPendingApprovals(items []PendingApproval) []CompactSummaryPendingItemV1 {
+	out := make([]CompactSummaryPendingItemV1, 0, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, CompactSummaryPendingItemV1{ID: id, SourceRef: firstNonEmptyRuntimeString(item.ToolCallID, item.ToolName, item.TurnID)})
+	}
+	return out
+}
+
+func compactSummaryPendingEvidence(items []PendingEvidence) []CompactSummaryPendingItemV1 {
+	out := make([]CompactSummaryPendingItemV1, 0, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, CompactSummaryPendingItemV1{ID: id, SourceRef: firstNonEmptyRuntimeString(item.ToolCallID, item.ToolName, item.TurnID)})
+	}
+	return out
+}
+
+func compactSummaryRejectedApprovals(items []RejectedApproval) []CompactSummaryPendingItemV1 {
+	out := make([]CompactSummaryPendingItemV1, 0, len(items))
+	for _, item := range items {
+		id := firstNonEmptyRuntimeString(item.ID, item.ToolCallID, item.ToolName)
+		if id == "" {
+			continue
+		}
+		out = append(out, CompactSummaryPendingItemV1{ID: id, SourceRef: firstNonEmptyRuntimeString(item.ToolCallID, item.ToolName, item.Reason)})
+	}
+	return out
+}
+
+func nonEmptyRuntimeStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func firstNonEmptyRuntimeString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func summarizeSnippet(value string) string {

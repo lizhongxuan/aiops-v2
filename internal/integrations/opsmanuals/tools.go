@@ -26,7 +26,7 @@ func newSearchOpsManualsTool(service *core.Service, cache *turnSearchContextCach
 			DeferByDefault: true,
 			Description:    "Search verified ops manuals for an operations request and return an auditable decision: direct_execute, need_info, adapt, reference_only, or no_match. Preserve explicit user targets, negations, and clearly stated semantics in text or operation_frame.",
 			SearchHint:     "ops manual runbook repair fix operation procedure search",
-			Triggers:       []string{"ops manual", "runbook", "manual", "repair", "fix", "修复", "手册", "预案", "操作步骤"},
+			Triggers:       []string{"ops manual", "runbook", "manual", "repair", "fix", "recover", "restore", "修复", "恢复", "手册", "预案", "操作步骤"},
 			RiskLevel:      tooling.ToolRiskLow,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				DiscoveryGroup:    "runbook",
@@ -42,6 +42,9 @@ func newSearchOpsManualsTool(service *core.Service, cache *turnSearchContextCach
 		},
 		Visibility:      visibility,
 		InputSchemaData: searchOpsManualsInputSchema,
+		PromptFunc: func(tooling.PromptContext) string {
+			return searchOpsManualsPrompt()
+		},
 		ReadOnlyFunc: func(json.RawMessage) bool {
 			return true
 		},
@@ -87,12 +90,26 @@ func newSearchOpsManualsTool(service *core.Service, cache *turnSearchContextCach
 	}
 }
 
+func searchOpsManualsPrompt() string {
+	return "OpsManual workflow guidance: Call this only when the user explicitly asks to use operations manuals, asks to fix/recover/restart/roll back/migrate/back up/scale/change an operations target, or before high-risk operational changes. It is not for ordinary investigation, question-answering, RCA, status check, or troubleshooting intent. Preserve the user's original request, negations, explicit target, and operation_frame. Do not execute workflows directly. If the result is need_info with a matched manual, call resolve_ops_manual_params next. If direct_execute is returned, treat it as preflight-ready only: call run_ops_manual_preflight, then wait for explicit user confirmation or runtime approval before any mutation."
+}
+
 type searchOpsManualsModelManual struct {
-	ID                string   `json:"id,omitempty"`
-	Title             string   `json:"title,omitempty"`
-	UsableMode        string   `json:"usable_mode,omitempty"`
-	RecommendedAction string   `json:"recommended_action,omitempty"`
-	BlockedReasons    []string `json:"blocked_reasons,omitempty"`
+	ID                    string                             `json:"id,omitempty"`
+	Title                 string                             `json:"title,omitempty"`
+	UsableMode            string                             `json:"usable_mode,omitempty"`
+	RecommendedAction     string                             `json:"recommended_action,omitempty"`
+	Confidence            string                             `json:"confidence,omitempty"`
+	TraceOnly             bool                               `json:"trace_only,omitempty"`
+	MatchLevel            string                             `json:"match_level,omitempty"`
+	MatchReasons          []string                           `json:"match_reasons,omitempty"`
+	ApplicabilityBoundary []string                           `json:"applicability_boundary,omitempty"`
+	NotApplicableWhen     []string                           `json:"not_applicable_when,omitempty"`
+	MatchedFields         []string                           `json:"matched_fields,omitempty"`
+	HistoryStats          core.RecommendationHistoryStats    `json:"history_stats,omitempty"`
+	Workflow              core.WorkflowRecommendationSummary `json:"workflow,omitempty"`
+	RunSummary            string                             `json:"run_summary,omitempty"`
+	BlockedReasons        []string                           `json:"blocked_reasons,omitempty"`
 }
 
 type searchOpsManualsModelPayload struct {
@@ -118,13 +135,27 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 		RecommendedNextAction: result.RecommendedNextAction,
 	}
 	if len(result.Manuals) > 0 {
-		hit := result.Manuals[0]
+		hit := core.EnrichSearchManualHitRecommendation(result.Manuals[0])
+		recommendedAction := hit.RecommendedAction
+		if result.Decision == core.DecisionDirectExecute {
+			recommendedAction = "confirm_use_ops_manual"
+		}
 		payload.Manuals = []searchOpsManualsModelManual{{
-			ID:                hit.Manual.ID,
-			Title:             hit.Manual.Title,
-			UsableMode:        string(hit.UsableMode),
-			RecommendedAction: hit.RecommendedAction,
-			BlockedReasons:    limitStrings(hit.BlockedReasons, 2),
+			ID:                    hit.Manual.ID,
+			Title:                 hit.Manual.Title,
+			UsableMode:            string(hit.UsableMode),
+			RecommendedAction:     recommendedAction,
+			Confidence:            hit.Confidence,
+			TraceOnly:             hit.TraceOnly,
+			MatchLevel:            hit.MatchLevel,
+			MatchReasons:          limitStrings(hit.MatchReasons, 8),
+			ApplicabilityBoundary: limitStrings(hit.ApplicabilityBoundary, 8),
+			NotApplicableWhen:     limitStrings(hit.NotApplicableWhen, 6),
+			MatchedFields:         limitStrings(hit.MatchedFields, 4),
+			HistoryStats:          hit.HistoryStats,
+			Workflow:              hit.Workflow,
+			RunSummary:            compactRunSummary(hit.RunRecordSummary),
+			BlockedReasons:        limitStrings(hit.BlockedReasons, 2),
 		}}
 	}
 	switch result.Decision {
@@ -151,10 +182,12 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 			}
 		}
 	case core.DecisionDirectExecute:
+		payload.RecommendedNextAction = "confirm_use_ops_manual"
 		payload.Instructions = []string{
 			"Do not execute the workflow directly.",
-			"Say the manual is matched and the next step is Workflow preflight; do not say it will execute now.",
-			"Run run_ops_manual_preflight before any confirmation, approval, workflow execution, or mutation.",
+			"Say the manual/workflow is a high-confidence match and ask whether the user wants to use it.",
+			"The user may skip; if the user declines, continue ordinary AI Chat handling without this manual/workflow.",
+			"Do not run preflight as the first-version primary path unless the user explicitly asks for it or an existing legacy flow already returned a preflight artifact.",
 			"Keep the assistant text short and do not repeat the Agent-to-UI card details.",
 		}
 	case core.DecisionAdapt:
@@ -180,6 +213,25 @@ func searchOpsManualsModelResult(result core.SearchOpsManualsResult) searchOpsMa
 		}
 	}
 	return payload
+}
+
+func compactRunSummary(summary core.RunRecordSummary) string {
+	total := summary.UsedCount
+	if total == 0 {
+		total = summary.SuccessCount + summary.FailureCount
+	}
+	if total == 0 {
+		return "no confirmed successful run record"
+	}
+	successRate := (summary.SuccessCount * 100) / total
+	label := fmt.Sprintf("used=%d success=%d failure=%d success_rate=%d%%", total, summary.SuccessCount, summary.FailureCount, successRate)
+	if summary.SkippedCount > 0 {
+		label += fmt.Sprintf(" skipped=%d", summary.SkippedCount)
+	}
+	if summary.RecentResult != "" {
+		label += " recent=" + summary.RecentResult
+	}
+	return label
 }
 
 func limitStrings(values []string, limit int) []string {

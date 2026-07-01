@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/mcp"
@@ -227,6 +228,89 @@ func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testin
 	}
 }
 
+func TestDispatchDecisionFingerprint(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "ok"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"synthetic.read": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "synthetic.read", RiskLevel: tooling.ToolRiskLow}},
+			executor: executor,
+		},
+	}}, nil, emitter).
+		WithToolSurfaceFingerprint("surface-fp-1").
+		WithPermissionSnapshotHash("permission-fp-1")
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-dispatch-fp",
+		"turn-dispatch-fp",
+		ToolCall{ID: "call-read", Name: "synthetic.read", Arguments: json.RawMessage(`{"path":"/tmp/app.log"}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.DecisionTrace.ToolSurfaceFingerprint != "surface-fp-1" {
+		t.Fatalf("tool surface fingerprint = %q, want surface-fp-1", result.DecisionTrace.ToolSurfaceFingerprint)
+	}
+	if result.DecisionTrace.PermissionSnapshotHash != "permission-fp-1" {
+		t.Fatalf("permission snapshot hash = %q, want permission-fp-1", result.DecisionTrace.PermissionSnapshotHash)
+	}
+	if result.DecisionTrace.ArgumentsHash == "" {
+		t.Fatalf("arguments hash is empty: %#v", result.DecisionTrace)
+	}
+}
+
+func TestPendingApprovalContractIncludesUnifiedLedgerFields(t *testing.T) {
+	createdAt := time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)
+	approval := PendingApproval{
+		ID:                     "approval-ledger-1",
+		SessionID:              "sess-ledger",
+		TurnID:                 "turn-ledger",
+		Iteration:              2,
+		IterationID:            "turn-ledger-iteration-2",
+		ToolCallID:             "tool-call-1",
+		Source:                 "tool",
+		ToolName:               "exec_command",
+		TargetRefs:             []string{"host:host-a"},
+		Command:                "systemctl restart demo.service",
+		ArgumentsHash:          "sha256:args",
+		Risk:                   "high",
+		Reason:                 "restart requires approval",
+		RequestedScope:         "host:host-a service:demo.service",
+		PreChangeEvidenceRefs:  []string{"evidence://before"},
+		ApprovalOptions:        []string{"approved", "denied"},
+		ToolSurfaceFingerprint: "surface-1",
+		PermissionSnapshotHash: "permission-1",
+		CreatedAt:              createdAt,
+		UpdatedAt:              createdAt,
+	}
+	raw, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatalf("Marshal error = %v", err)
+	}
+	for _, want := range []string{
+		`"iterationId"`,
+		`"targetRefs"`,
+		`"argumentsHash"`,
+		`"requestedScope"`,
+		`"preChangeEvidenceRefs"`,
+		`"approvalOptions"`,
+		`"toolSurfaceFingerprint"`,
+		`"permissionSnapshotHash"`,
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("pending approval JSON = %s, missing %s", raw, want)
+		}
+	}
+	var decoded PendingApproval
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal error = %v", err)
+	}
+	if decoded.ArgumentsHash != approval.ArgumentsHash || decoded.ToolSurfaceFingerprint != approval.ToolSurfaceFingerprint || decoded.PermissionSnapshotHash != approval.PermissionSnapshotHash {
+		t.Fatalf("decoded approval = %#v, want ledger fingerprints preserved", decoded)
+	}
+}
+
 func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter).
@@ -262,6 +346,31 @@ func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T
 	}
 	if !strings.Contains(result.Error, `"requiredAction":"call tool_search with mode=search, then mode=select"`) {
 		t.Fatalf("dispatch error missing recovery action: %s", result.Error)
+	}
+}
+
+func TestToolDispatcher_MissingNonDeferredToolDoesNotSuggestToolSearch(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-missing",
+		"turn-missing",
+		ToolCall{
+			ID:        "call-missing",
+			Name:      "host_cpu_checker",
+			Arguments: json.RawMessage(`{}`),
+		},
+		SessionTypeHost,
+		ModeChat,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_not_found"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_not_found", result.Error)
+	}
+	if strings.Contains(result.Error, "tool_search") || strings.Contains(result.Error, "requiredAction") {
+		t.Fatalf("dispatch error = %s, must not suggest tool_search for non-deferred missing tool", result.Error)
 	}
 }
 
@@ -384,14 +493,106 @@ func TestDispatchUsesSamePolicySnapshot(t *testing.T) {
 		ModeInspect,
 	)
 
-	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_hidden_by_policy"`) {
-		t.Fatalf("dispatch error = %q, want tool_hidden_by_policy", result.Error)
+	if result.Error != "" || !strings.Contains(result.Content, `"schemaVersion":"aiops.tool_unavailable/v1"`) {
+		t.Fatalf("dispatch result = %#v, want structured unavailable content", result)
 	}
-	if !strings.Contains(result.Error, `"policySnapshotHash":"policy-hash-1"`) {
-		t.Fatalf("dispatch error missing policy snapshot hash: %s", result.Error)
+	if !strings.Contains(result.Content, `"policySnapshotHash":"policy-hash-1"`) {
+		t.Fatalf("dispatch content missing policy snapshot hash: %s", result.Content)
 	}
 	if executor.calls != 0 {
 		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestDispatcherRejectsToolNotInRuntimeStepDispatchableTools(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithRuntimeToolRouterSnapshot(RuntimeToolRouterSnapshot{
+		RegisteredTools:   []string{"exec_command"},
+		ModelVisibleTools: []string{"exec_command"},
+		DispatchableTools: []string{},
+		HiddenReasons: map[string][]string{
+			"exec_command": {"profile_denied"},
+		},
+		PolicyHash:  "policy-1",
+		Fingerprint: "surface-1",
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"session-1",
+		"turn-1",
+		ToolCall{ID: "call-1", Name: "exec_command", Arguments: json.RawMessage(`{"cmd":"date"}`)},
+		SessionTypeHost,
+		ModeChat,
+	)
+
+	if !result.Blocked || !strings.Contains(result.Content, "tool_unavailable") {
+		t.Fatalf("result = %#v, want blocked unavailable", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
+func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	executor := &mockToolExecutor{result: "should-not-run"}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
+		"exec_command": {
+			desc:     ToolDescriptor{Metadata: tooling.ToolMetadata{Name: "exec_command"}},
+			executor: executor,
+		},
+	}}, nil, emitter).WithToolSurfacePolicySnapshot(&tooling.ToolSurfacePolicySnapshot{
+		Hash: "policy-hidden-exec",
+		HiddenTools: []tooling.ToolHiddenReason{{
+			Name:   "exec_command",
+			Reason: "profile_disallowed",
+		}},
+	})
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-hidden",
+		"turn-hidden",
+		ToolCall{ID: "call-hidden-exec", Name: "exec_command", Arguments: json.RawMessage(`{"command":"uptime"}`)},
+		SessionTypeHost,
+		ModeInspect,
+	)
+
+	if result.Error != "" || result.Outcome != "tool_unavailable" || result.Source != "policy" {
+		t.Fatalf("dispatch result = %#v, want model-visible unavailable content without error", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+	var payload struct {
+		SchemaVersion string `json:"schemaVersion"`
+		ToolName      string `json:"toolName"`
+		Reason        string `json:"reason"`
+		Instruction   string `json:"instruction"`
+	}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		t.Fatalf("unmarshal unavailable result: %v; content=%s", err, result.Content)
+	}
+	if payload.SchemaVersion != "aiops.tool_unavailable/v1" ||
+		payload.ToolName != "exec_command" ||
+		payload.Reason != "profile_disallowed" ||
+		payload.Instruction != "Continue without this tool or ask for explicit host target." {
+		t.Fatalf("payload = %#v, want structured unavailable result", payload)
+	}
+	if result.Result.Content != result.Content {
+		t.Fatalf("tool result content = %q, want dispatch content", result.Result.Content)
+	}
+	for _, event := range emitter.events {
+		if event.Type == EventToolStarted || event.Type == EventToolFailed {
+			t.Fatalf("emitted %s for hidden unavailable tool", event.Type)
+		}
 	}
 }
 

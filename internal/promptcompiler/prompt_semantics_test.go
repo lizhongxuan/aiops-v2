@@ -6,37 +6,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/tooling"
 )
 
-func TestCompiledPromptToMessagesCarriesSemanticLayerMetadata(t *testing.T) {
-	messages := CompiledPromptToMessages(CompiledPrompt{
-		System:    SystemPrompt{Content: "system"},
-		Developer: DeveloperInstructions{Content: "developer"},
-		Tools:     ToolPromptSet{Content: "tools"},
-		Policy:    RuntimePolicyPrompt{Content: "policy"},
-	})
-
-	if len(messages) != 4 {
-		t.Fatalf("messages len = %d, want 4", len(messages))
+func TestCompiledPromptEnvelopeCarriesSemanticLayerMetadata(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(compiled.Envelope.Sections) < 4 {
+		t.Fatalf("sections len = %d, want at least 4", len(compiled.Envelope.Sections))
 	}
 	want := []struct {
-		layer string
-		role  string
+		layer  string
+		source string
 	}{
-		{"system", "system"},
-		{"developer", "developer"},
-		{"tool_index", "tool"},
-		{"runtime_policy", "context"},
+		{PromptSectionKindStable, "base"},
+		{PromptSectionKindDynamic, "runtime"},
+		{PromptSectionKindStable, "profile"},
+		{PromptSectionKindStable, "tools"},
 	}
-	for i, msg := range messages {
-		if msg.Role != schema.System {
-			t.Fatalf("provider role at %d = %q, want system fallback", i, msg.Role)
-		}
-		if msg.Extra["prompt_layer"] != want[i].layer || msg.Extra["semantic_role"] != want[i].role {
-			t.Fatalf("message %d extra = %#v, want layer=%s role=%s", i, msg.Extra, want[i].layer, want[i].role)
+	for i, section := range compiled.Envelope.Sections[:4] {
+		if section.Layer != want[i].layer || section.Source != want[i].source {
+			t.Fatalf("section %d = %#v, want layer=%s source=%s", i, section, want[i].layer, want[i].source)
 		}
 	}
 }
@@ -53,7 +45,7 @@ func TestToolIndexIncludesCommonPolicyAndCompactEntries(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	content := compiled.Tools.Content
-	for _, want := range []string{"Common policy:", "Read-only tool failure is missing or blocked evidence", "read_file", "Read a workspace file."} {
+	for _, want := range []string{"Common policy:", "Failure, empty output, denial, or timeout is not proof of healthy state.", "read_file", "Read a workspace file."} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("tool index missing %q:\n%s", want, content)
 		}
@@ -80,6 +72,37 @@ func TestSkillPromptAssetsRenderAsProgressiveDisclosureContext(t *testing.T) {
 	}
 	if strings.HasPrefix(strings.TrimSpace(compiled.Dynamic.Content), "Full activated skill body") {
 		t.Fatalf("skill body was appended raw without wrapper:\n%s", compiled.Dynamic.Content)
+	}
+}
+
+func TestLongSkillPromptAssetRendersOnlyProgressiveDisclosure(t *testing.T) {
+	longBody := strings.Join([]string{
+		"---",
+		"name: synthetic.long",
+		"description: Use this skill for long operational diagnosis.",
+		"when_to_use: Use when the model needs a detailed checklist.",
+		"---",
+		strings.Repeat("FULL_SKILL_BODY_SHOULD_NOT_INLINE ", 120),
+	}, "\n")
+	compiled, err := NewCompiler().Compile(CompileContext{
+		SkillPromptAssets: []string{longBody},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	for _, want := range []string{
+		"summary_type: progressive_disclosure",
+		"name: activated-skill-1",
+		"trigger: active_skill",
+		"capability_summary: Use this skill for long operational diagnosis.",
+		"entry_tool_or_source_ref: skill_read or prompt_trace://dynamic.skill/asset-1",
+	} {
+		if !strings.Contains(compiled.Dynamic.Content, want) {
+			t.Fatalf("dynamic prompt missing %q:\n%s", want, compiled.Dynamic.Content)
+		}
+	}
+	if strings.Contains(compiled.Dynamic.Content, "FULL_SKILL_BODY_SHOULD_NOT_INLINE") {
+		t.Fatalf("dynamic prompt leaked full skill body:\n%s", compiled.Dynamic.Content)
 	}
 }
 
@@ -133,10 +156,8 @@ func TestPromptDeveloperRulesIncludeGenericityHardcodingBoundary(t *testing.T) {
 	}
 	content := compiled.Developer.Content
 	for _, want := range []string{
-		"## Genericity Boundary",
 		"Do not encode product, environment, resource, address, credential, or incident examples as core rules.",
-		"Core rules may depend only on task complexity, risk, permission state, evidence coverage, resource abstraction, state transitions, and tool metadata.",
-		"Use GenericityTrace resourceIdSource to identify whether a resource identifier came from user input, tool output, plugin metadata, fixture data, or an unknown source.",
+		"current runtime state, model-visible tools, user input, and registered evidence",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("developer prompt missing genericity rule %q:\n%s", want, content)

@@ -99,6 +99,58 @@ func (s *HTTPServer) handleMCPServersRefresh(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, payload)
 }
 
+func (s *HTTPServer) handleRuntimeMCPHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	base := "/api/v2/runtime/mcp-health"
+	if r.URL.Path == base || r.URL.Path == base+"/" {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		payload, err := s.ui.MCPService().Health(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, base+"/"), "/")
+	if r.Method == http.MethodPost {
+		parts := strings.Split(trimmed, "/")
+		if len(parts) != 2 || parts[1] != "refresh" || strings.TrimSpace(parts[0]) == "" {
+			http.NotFound(w, r)
+			return
+		}
+		serverID := strings.TrimSpace(parts[0])
+		if _, err := s.ui.MCPService().Act(r.Context(), serverID, "refresh"); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		payload, err := s.ui.MCPService().HealthOne(r.Context(), serverID)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, payload)
+		return
+	}
+	serverID := trimmed
+	if serverID == "" || strings.Contains(serverID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	payload, err := s.ui.MCPService().HealthOne(r.Context(), serverID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payload)
+}
+
 func decodeJSONBody(r *http.Request, target any) error {
 	if r.Body == nil {
 		return io.EOF

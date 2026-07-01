@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import { ArrowLeftIcon, CopyIcon, FileTextIcon } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -81,6 +82,7 @@ function sessionCardTitle(group: TraceSessionGroup) {
     group.latestAt ? `最近 ${displayTime(group.latestAt)}` : "",
     `用户请求 ${group.turns.length}`,
     `LLM 请求 ${group.traces.length}`,
+    group.hostAgentCount ? `主机 Agent ${group.hostAgentCount}` : "",
     group.caseIds.length ? `Case ${group.caseIds.join("，")}` : "",
   ].filter(Boolean).join("\n");
 }
@@ -115,6 +117,11 @@ function formatDurationMs(value = 0) {
   return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 }
 
+function formatTraceMs(value = 0) {
+  const ms = Number(value) || 0;
+  return ms > 0 ? `${formatNumber(ms)} ms` : "-";
+}
+
 function traceTurnStats(turn: TraceTurnGroup) {
   const usage = turn.traces.reduce<TraceUsage>((sum, trace) => ({
     promptTokens: (sum.promptTokens || 0) + (trace.usage?.promptTokens || 0),
@@ -129,23 +136,32 @@ function traceTurnStats(turn: TraceTurnGroup) {
 }
 
 export function PromptTracePage() {
+  const initialQuery = useMemo(() => readPromptTraceQuery(), []);
   const [loading, setLoading] = useState(false);
   const [traces, setTraces] = useState<TraceItem[]>([]);
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState("");
-  const [activeView, setActiveView] = useState("overview");
-  const [activeRaw, setActiveRaw] = useState("markdown");
+  const [activeView, setActiveView] = useState(initialQuery.view || "overview");
+  const [activeRaw, setActiveRaw] = useState(initialQuery.raw || "markdown");
   const [fileCache, setFileCache] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(Boolean(initialQuery.path));
+  const directPath = initialQuery.path;
 
   async function loadTraces() {
     setLoading(true);
     setError("");
     try {
       const payload = await requestJson<TraceListPayload>("/api/v1/debug/model-input-traces?limit=2000");
-      setTraces(payload.traces || []);
-      setSelectedId((current) => payload.selectedId || current || payload.traces?.[0]?.id || "");
+      const nextTraces = payload.traces || [];
+      setTraces(nextTraces);
+      setSelectedId((current) => {
+        const directTrace = directPath ? findTraceByPath(nextTraces, directPath) : null;
+        return directTrace?.id || payload.selectedId || current || nextTraces[0]?.id || "";
+      });
+      if (directPath) {
+        setDetailOpen(true);
+      }
     } catch (cause) {
       setError((cause as Error).message || "Prompt trace 加载失败");
     } finally {
@@ -165,10 +181,14 @@ export function PromptTracePage() {
 
   const sessionGroups = useMemo(() => buildTraceSessionGroups(filteredTraces), [filteredTraces]);
   const selectedTrace = filteredTraces.find((item) => item.id === selectedId) || sessionGroups[0]?.traces[0] || null;
-  const selectedSessionGroup = selectedTrace ? sessionGroups.find((group) => group.id === traceSessionKey(selectedTrace)) || null : null;
-  const selectedTurnGroup = selectedTrace && selectedSessionGroup ? selectedSessionGroup.turns.find((turn) => turn.id === traceTurnKey(selectedTrace)) || null : null;
+  const selectedSessionGroup = selectedTrace ? sessionGroups.find((group) => group.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
+  const selectedTurnGroup = selectedTrace && selectedSessionGroup ? selectedSessionGroup.turns.find((turn) => turn.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
   const rawPath = selectedTrace ? (activeRaw === "markdown" ? selectedTrace.markdownPath : selectedTrace.jsonPath) || "" : "";
-  const activePath = activeView === "raw" ? rawPath : activeView === "diff" ? selectedTrace?.diffPath || "" : selectedTrace?.jsonPath || "";
+  const activePath = activeView === "raw"
+    ? directPath || rawPath
+    : activeView === "diff"
+      ? selectedTrace?.diffPath || ""
+      : selectedTrace?.jsonPath || "";
 
   useEffect(() => {
     async function loadFile() {
@@ -184,18 +204,46 @@ export function PromptTracePage() {
   }, [activePath, fileCache]);
 
   const jsonContent = selectedTrace?.jsonPath ? fileCache[selectedTrace.jsonPath] || "" : "";
-  const rawContent = rawPath ? fileCache[rawPath] || "" : "";
+  const rawContentPath = activeView === "raw" ? activePath : rawPath;
+  const rawContent = rawContentPath ? fileCache[rawContentPath] || "" : "";
   const diffContent = selectedTrace?.diffPath ? fileCache[selectedTrace.diffPath] || "" : "";
   const traceViewModel = useMemo(() => jsonContent ? parsePromptTrace(jsonContent) : null, [jsonContent]);
   const sourceUserRequests = ((traceViewModel?.agentUiSources as AgentUiSources | undefined)?.userRequests || []);
+  const directJsonPath = isPromptMarkdownDirectView(directPath, activeView, activeRaw) ? selectedTrace?.jsonPath || "" : "";
+
+  useEffect(() => {
+    async function loadDirectJsonMetadata() {
+      if (!directJsonPath || fileCache[directJsonPath]) return;
+      try {
+        const payload = await requestJson<FilePayload>(`/api/v1/debug/model-input-traces/file?path=${encodeURIComponent(directJsonPath)}`);
+        setFileCache((current) => ({ ...current, [directJsonPath]: payload.content || "" }));
+      } catch {
+        // The Prompt MD remains useful even if optional JSON metadata is missing.
+      }
+    }
+    void loadDirectJsonMetadata();
+  }, [directJsonPath, fileCache]);
+
+  if (isPromptMarkdownDirectView(directPath, activeView, activeRaw)) {
+    return (
+      <PromptMarkdownFilePage
+        path={directPath}
+        content={rawContent}
+        loading={Boolean(activePath && !rawContent && !error)}
+        error={error}
+        selectedTrace={selectedTrace}
+        traceViewModel={traceViewModel}
+      />
+    );
+  }
 
   const views = [
     ["overview", "概览"],
-    ["layers", "Prompt 层"],
+    ["layers", "提示层"],
     ["messages", "消息"],
     ["tools", "工具"],
-    ["diff", "Diff"],
-    ["raw", "Raw"],
+    ["diff", "差异"],
+    ["raw", "原始"],
   ];
 
   return (
@@ -234,6 +282,7 @@ export function PromptTracePage() {
                   <span className="mt-2 flex flex-wrap gap-2">
                     <ToneBadge>用户请求 {group.turns.length}</ToneBadge>
                     <ToneBadge>LLM 请求 {group.traces.length}</ToneBadge>
+                    {group.hostAgentCount ? <ToneBadge>主机 Agent {group.hostAgentCount}</ToneBadge> : null}
                   </span>
                 </button>
               )) : null}
@@ -263,6 +312,7 @@ export function PromptTracePage() {
                 >
                   <div data-testid="prompt-trace-turn-preview" className="line-clamp-2 overflow-hidden text-sm font-medium leading-5 text-slate-950" style={TWO_LINE_CLAMP_STYLE}>{preview}</div>
                   <div className="mt-2 flex min-w-0 flex-wrap gap-2 overflow-hidden">
+                    <ToneBadge>{turn.role === "host" ? "主机 Agent" : "管理 Agent"}</ToneBadge>
                     <ToneBadge><span className="block max-w-[180px] truncate">{compactTraceLabel(turn.label)}</span></ToneBadge>
                     {stats.usage.totalTokens ? <ToneBadge>Token {formatNumber(stats.usage.totalTokens)}</ToneBadge> : null}
                     {stats.averageDurationMs ? <ToneBadge>平均 {formatDurationMs(stats.averageDurationMs)}</ToneBadge> : null}
@@ -324,6 +374,172 @@ export function PromptTracePage() {
   );
 }
 
+function readPromptTraceQuery() {
+  if (typeof window === "undefined") {
+    return { path: "", view: "", raw: "" };
+  }
+  const params = new URLSearchParams(window.location.search);
+  const view = params.get("view") || "";
+  const raw = params.get("raw") || "";
+  return {
+    path: normalizeModelInputTracePath(params.get("path") || ""),
+    view: ["overview", "layers", "messages", "tools", "diff", "raw"].includes(view) ? view : "",
+    raw: ["markdown", "json"].includes(raw) ? raw : "",
+  };
+}
+
+function normalizeModelInputTracePath(value: string) {
+  const text = value.trim();
+  const marker = "model-input-traces/";
+  const index = text.indexOf(marker);
+  if (index >= 0) {
+    return text.slice(index + marker.length).replace(/^\/+/, "");
+  }
+  return text.replace(/^\/+/, "");
+}
+
+function findTraceByPath(traces: TraceItem[], path: string) {
+  const normalized = normalizeModelInputTracePath(path);
+  return traces.find((trace) => (
+    normalizeModelInputTracePath(trace.id || "") === normalized ||
+    normalizeModelInputTracePath(trace.relativePath || "") === normalized ||
+    normalizeModelInputTracePath(trace.jsonPath || "") === normalized ||
+    normalizeModelInputTracePath(trace.markdownPath || "") === normalized ||
+    normalizeModelInputTracePath(trace.diffPath || "") === normalized
+  )) || null;
+}
+
+function isPromptMarkdownDirectView(path: string, view: string, raw: string) {
+  return Boolean(path && (path.endsWith(".md") || (view === "raw" && raw === "markdown")));
+}
+
+function PromptMarkdownFilePage({
+  path,
+  content,
+  loading,
+  error,
+  selectedTrace,
+  traceViewModel,
+}: {
+  path: string;
+  content: string;
+  loading: boolean;
+  error: string;
+  selectedTrace: TraceItem | null;
+  traceViewModel: ReturnType<typeof parsePromptTrace> | null;
+}) {
+  const [copied, setCopied] = useState<"content" | "path" | "">("");
+  const safePath = normalizeModelInputTracePath(path);
+  const modelCallTitle = promptMarkdownModelCallTitle(selectedTrace, safePath);
+  const fileName = safePath.split("/").filter(Boolean).at(-1) || safePath || "Prompt MD";
+  const toolCount = selectedTrace?.visibleTools?.length || traceViewModel?.summary.visibleToolCount || 0;
+
+  function returnToAgent() {
+    window.history.back();
+  }
+
+  async function copyText(value: string, kind: "content" | "path") {
+    if (!value) return;
+    try {
+      await navigator.clipboard?.writeText(value);
+      setCopied(kind);
+      window.setTimeout(() => setCopied(""), 1500);
+    } catch {
+      setCopied("");
+    }
+  }
+
+  return (
+    <SettingsPageFrame
+      title="Prompt MD"
+      description="查看主机 Agent 发给 LLM 的完整模型输入。"
+      actions={(
+        <button
+          type="button"
+          data-testid="prompt-md-header-return"
+          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          onClick={returnToAgent}
+        >
+          <ArrowLeftIcon className="size-4" aria-hidden="true" />
+          返回主机 Agent
+        </button>
+      )}
+    >
+      <section className="grid min-h-[calc(100vh-8rem)] grid-rows-[auto_minmax(0,1fr)] gap-4">
+        <div className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-slate-50 text-slate-600">
+                  <FileTextIcon className="size-4" aria-hidden="true" />
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-base font-semibold text-slate-950">{modelCallTitle}</h2>
+                  <p className="mt-1 truncate font-mono text-xs text-slate-500" title={safePath}>{safePath}</p>
+                </div>
+              </div>
+              <div className="mt-3 flex min-w-0 flex-wrap gap-2">
+                {selectedTrace?.createdAt ? <ToneBadge>{displayTime(selectedTrace.createdAt)}</ToneBadge> : null}
+                {selectedTrace?.usage?.totalTokens ? <ToneBadge>Token {formatNumber(selectedTrace.usage.totalTokens)}</ToneBadge> : null}
+                <ToneBadge>工具 {toolCount}</ToneBadge>
+                <ToneBadge>{fileName}</ToneBadge>
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => copyText(content, "content")}
+                disabled={!content}
+              >
+                <CopyIcon className="size-4" aria-hidden="true" />
+                {copied === "content" ? "已复制" : "复制内容"}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => copyText(safePath, "path")}
+              >
+                <CopyIcon className="size-4" aria-hidden="true" />
+                {copied === "path" ? "已复制" : "复制路径"}
+              </button>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                onClick={returnToAgent}
+              >
+                <ArrowLeftIcon className="size-4" aria-hidden="true" />
+                返回 Agent
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {error ? <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div> : null}
+        <article className="min-h-0 overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <pre
+            data-testid="prompt-md-content"
+            className="h-full min-h-[520px] overflow-auto whitespace-pre-wrap break-words p-4 font-mono text-xs leading-5 text-slate-900"
+          >
+            {loading ? "Loading Prompt MD..." : content || "暂无 Prompt MD 内容"}
+          </pre>
+        </article>
+      </section>
+    </SettingsPageFrame>
+  );
+}
+
+function promptMarkdownModelCallTitle(trace: TraceItem | null, path: string) {
+  if (typeof trace?.iteration === "number") {
+    return `第 ${trace.iteration} 轮调用 LLM`;
+  }
+  const match = path.match(/iteration-(\d+)/);
+  if (match) {
+    return `第 ${Number(match[1])} 轮调用 LLM`;
+  }
+  return "Prompt MD";
+}
+
 function PromptTraceDetailDialog({
   open,
   onOpenChange,
@@ -358,56 +574,85 @@ function PromptTraceDetailDialog({
   const llmRequests = (traceViewModel?.agentUiSources?.userRequests || []).flatMap((request) => request.llmRequests || []);
   const contextGovernance = traceViewModel?.contextGovernance;
   const contextGovernanceEmptyText = contextGovernance?.emptyText || "暂无上下文治理事件";
+  const primaryMetrics = llmRequests[0]?.detail?.metrics || {};
+  const primaryFinishReason = llmRequests[0]?.detail?.finishReason || "";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="max-h-[88vh] overflow-hidden sm:max-w-5xl">
-        <DialogHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3 pr-2">
-            <div className="min-w-0">
-              <DialogTitle>LLM 请求详情</DialogTitle>
+      <DialogContent
+        showCloseButton={false}
+        data-testid="prompt-trace-detail-dialog"
+        className="!flex max-h-[calc(100vh-3rem)] w-[min(1120px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+      >
+        <DialogHeader className="shrink-0 border-b border-slate-100 px-5 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <DialogTitle>模型请求详情</DialogTitle>
               <DialogDescription className="mt-2 grid gap-2">
-                <span className="truncate" title={selectedTrace?.relativePath || activePath || ""}>{selectedTrace?.relativePath || activePath || "未选择 Prompt Trace"}</span>
-                <span className="flex flex-wrap gap-2">
-                  {selectedTrace?.promptFingerprint?.stableHash ? <ToneBadge>stable {shortHash(selectedTrace.promptFingerprint.stableHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.developerHash ? <ToneBadge>developer {shortHash(selectedTrace.promptFingerprint.developerHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.toolRegistryHash ? <ToneBadge>tools {shortHash(selectedTrace.promptFingerprint.toolRegistryHash)}</ToneBadge> : null}
-                </span>
+                <span className="block max-w-full truncate font-mono" title={selectedTrace?.relativePath || activePath || ""}>{selectedTrace?.relativePath || activePath || "未选择 Prompt Trace"}</span>
               </DialogDescription>
             </div>
             <DialogClose asChild>
-              <button type="button" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              <button type="button" className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                 关闭
               </button>
             </DialogClose>
           </div>
         </DialogHeader>
-        <div className="max-h-[calc(88vh-120px)] overflow-auto pr-1">
+        <div className="shrink-0 border-b border-slate-100 px-5 py-3">
           <div className="flex flex-wrap gap-2">
             {views.map(([key, label]) => (
               <button key={key} type="button" className={`rounded-lg border px-3 py-2 text-sm ${activeView === key ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setActiveView(key)}>{label}</button>
             ))}
           </div>
+        </div>
 
-          <div className="mt-4 grid gap-4">
+        <div data-testid="prompt-trace-detail-scroll" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="grid gap-4">
             {activeView === "overview" ? (
-              <section className="grid gap-3 md:grid-cols-5">
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Messages</CardDescription><CardTitle>{traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Tools</CardDescription><CardTitle>{traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Prompt chars</CardDescription><CardTitle>{traceViewModel?.summary.promptCharCount ?? 0}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Total tokens</CardDescription><CardTitle>{selectedTrace?.usage?.totalTokens ? formatNumber(selectedTrace.usage.totalTokens) : "-"}</CardTitle></CardHeader></Card>
-                <Card className="rounded-lg bg-slate-50"><CardHeader><CardDescription>Avg response</CardDescription><CardTitle>{selectedTrace?.averageDurationMs ? formatDurationMs(selectedTrace.averageDurationMs) : "-"}</CardTitle></CardHeader></Card>
+              <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                <CompactMetricCard label="消息数" value={traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0} />
+                <CompactMetricCard label="工具数" value={traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0} />
+                <CompactMetricCard label="输入字符" value={formatNumber(traceViewModel?.summary.promptCharCount ?? 0)} />
+                <CompactMetricCard label="工具表字符" value={formatNumber(traceViewModel?.summary.toolRegistryCharCount ?? 0)} />
+                <CompactMetricCard label="总词元" value={selectedTrace?.usage?.totalTokens ? formatNumber(selectedTrace.usage.totalTokens) : "-"} />
+                <CompactMetricCard label="平均响应" value={selectedTrace?.averageDurationMs ? formatDurationMs(selectedTrace.averageDurationMs) : "-"} />
+                <CompactMetricCard label="首词元" value={formatTraceMs(primaryMetrics.firstDeltaMs)} />
+                <CompactMetricCard label="流式耗时" value={formatTraceMs(primaryMetrics.streamMs)} />
+                <CompactMetricCard label="流式片段" value={primaryMetrics.deltaCount ? formatNumber(primaryMetrics.deltaCount) : "-"} />
+                <CompactMetricCard label="输出字符" value={primaryMetrics.outputChars ? formatNumber(primaryMetrics.outputChars) : "-"} />
+                <CompactMetricCard label="结束原因" value={finishReasonLabel(primaryFinishReason)} />
                 {llmRequests.length ? (
-                  <section className="md:col-span-5 rounded-lg border border-slate-200 bg-white p-4">
-                    <h3 className="font-medium text-slate-950">LLM 返回内容</h3>
+                  <section className="rounded-lg border border-slate-200 bg-white p-4 sm:col-span-2 lg:col-span-6">
+                    <h3 className="font-medium text-slate-950">模型返回内容</h3>
                     <div className="mt-3 grid gap-3">
                       {llmRequests.map((request) => (
-                        <div key={request.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
-                          <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
-                            <ToneBadge>{request.id}</ToneBadge>
-                            <ToneBadge>{request.detail?.tokens || "暂无 token 信息"}</ToneBadge>
-                            <ToneBadge>{request.detail?.duration || "暂无耗时"}</ToneBadge>
+                        <div key={request.id} data-testid="prompt-trace-llm-response-card" className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                          {request.detail?.slowCauses?.length ? (
+                            <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+                              {request.detail.slowCauses.map((cause) => <ToneBadge key={cause.id}>{cause.label}</ToneBadge>)}
+                            </div>
+                          ) : null}
+                          <div className="mt-3 grid gap-3">
+                            <div>
+                              <pre
+                                data-testid="prompt-trace-llm-output"
+                                className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-3 text-xs text-white"
+                              >
+                                {llmTextOutput(request)}
+                              </pre>
+                            </div>
+                            {request.toolCalls?.length ? (
+                              <div>
+                                <div className="text-xs font-medium text-slate-600">模型工具调用</div>
+                                <pre
+                                  data-testid="prompt-trace-llm-tool-calls"
+                                  className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-3 text-xs text-white"
+                                >
+                                  {formatToolCallsForDisplay(request.toolCalls)}
+                                </pre>
+                              </div>
+                            ) : null}
                           </div>
-                          <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-white">{request.detail?.output || "暂无输出"}</pre>
                           {request.detail?.error && request.detail.error !== "暂无错误" ? <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-red-950 p-3 text-xs text-white">{request.detail.error}</pre> : null}
                         </div>
                       ))}
@@ -418,7 +663,19 @@ function PromptTraceDetailDialog({
                   contextGovernance={contextGovernance}
                   emptyText={contextGovernanceEmptyText}
                 />
-                <pre className="md:col-span-5 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-white">{JSON.stringify({ summary: traceViewModel?.summary, warnings: traceViewModel?.warnings }, null, 2)}</pre>
+                <ContextPanel title="Raw Payload Refs">
+                  {traceViewModel?.rawPayloadRefs?.length ? (
+                    <div className="grid gap-2">
+                      {traceViewModel.rawPayloadRefs.map((ref) => (
+                        <div key={ref.id || ref.path} className="rounded-lg border border-slate-100 bg-white p-2 text-xs">
+                          <ToneBadge>{ref.kind || "raw_payload"}</ToneBadge>
+                          <span className="ml-2 break-all font-mono text-slate-600">{ref.path}</span>
+                          {ref.sha256 ? <span className="ml-2 font-mono text-slate-400">{shortHash(ref.sha256)}</span> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : <EmptyGovernanceState text="暂无 raw payload refs" />}
+                </ContextPanel>
               </section>
             ) : null}
 
@@ -444,6 +701,52 @@ function PromptTraceDetailDialog({
 
 type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
 type ToolSurfaceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["toolSurface"]>;
+
+function CompactMetricCard({ label, value }: { label: string; value: ReactNode }) {
+  const title = `${label}: ${String(value ?? "")}`;
+  return (
+    <div
+      className="flex h-14 min-h-14 max-h-14 flex-col justify-center overflow-hidden rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
+      title={title}
+    >
+      <div className="truncate text-xs leading-5 text-slate-500">{label}</div>
+      <div className="truncate text-sm font-semibold leading-5 text-slate-950">{value}</div>
+    </div>
+  );
+}
+
+function finishReasonLabel(value?: string) {
+  const text = (value || "").trim();
+  if (!text) return "-";
+  const labels: Record<string, string> = {
+    stop: "正常结束",
+    length: "达到长度上限",
+    tool_calls: "等待工具调用",
+    content_filter: "内容过滤",
+  };
+  return labels[text] || text;
+}
+
+function llmTextOutput(request: { detail?: { output?: string; hasOutput?: boolean }; toolCalls?: unknown[] }) {
+  const output = request.detail?.output || "暂无输出";
+  if (request.detail?.hasOutput === false && request.toolCalls?.length) {
+    return "本轮没有自然语言文本，模型返回工具调用。";
+  }
+  return output;
+}
+
+function formatToolCallsForDisplay(toolCalls: Array<{ id?: string; type?: string; name?: string; arguments?: string }>) {
+  return JSON.stringify(
+    toolCalls.map((call) => ({
+      id: call.id || "",
+      type: call.type || "function",
+      name: call.name || "",
+      arguments: call.arguments || "",
+    })),
+    null,
+    2,
+  );
+}
 
 function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel }) {
   const summary = toolSurface?.summary;
@@ -500,6 +803,60 @@ function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel
             </div>
           ) : <EmptyGovernanceState text="暂无 MCP health" />}
         </ContextPanel>
+        <ContextPanel title="Tool Search Events">
+          {toolSurface?.toolSearchEvents.length ? (
+            <div className="grid gap-2">
+              {toolSurface.toolSearchEvents.map((event) => (
+                <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                  <div className="flex min-w-0 flex-wrap gap-2">
+                    {event.mode ? <ToneBadge>{event.mode}</ToneBadge> : null}
+                    {event.ranker ? <ToneBadge>{event.ranker}</ToneBadge> : null}
+                    {event.intent ? <ToneBadge>{event.intent}</ToneBadge> : null}
+                    {event.targetCompatibility ? <ToneBadge>{event.targetCompatibility}</ToneBadge> : null}
+                    {event.riskDecision ? <ToneBadge>{event.riskDecision}</ToneBadge> : null}
+                    {event.riskLevel ? <ToneBadge>risk {event.riskLevel}</ToneBadge> : null}
+                    {event.matchCount ? <ToneBadge>matches {formatNumber(event.matchCount)}</ToneBadge> : null}
+                    {event.rejectedCount ? <ToneBadge>rejected {formatNumber(event.rejectedCount)}</ToneBadge> : null}
+                  </div>
+                  {event.query ? <p className="mt-2 break-words text-slate-700">{event.query}</p> : null}
+                  <div className="mt-2 grid gap-2">
+                    <ReferenceLine label="Targets" values={event.targetRefs} />
+                    <ReferenceLine label="Required Caps" values={event.requiredCaps} />
+                    <ReferenceLine label="Forbidden Caps" values={event.forbiddenCaps} />
+                    <ReferenceLine label="Match Reasons" values={event.matchReasons} />
+                    <ReferenceLine label="Environment" values={event.environmentFacts} />
+                    <ReferenceLine label="Matches" values={event.matches} />
+                    {event.mcpHealth.length ? (
+                      <div className="grid gap-1">
+                        {event.mcpHealth.map((item) => (
+                          <div key={`${event.id}-${item.serverId}`} className="flex min-w-0 flex-wrap gap-2">
+                            <ToneBadge>{item.serverId}</ToneBadge>
+                            <span className="min-w-0 flex-1 break-words text-slate-600">{item.status || "-"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                    {event.rejectedReasons.length ? (
+                      <div className="grid gap-1">
+                        {event.rejectedReasons.map((reason, index) => (
+                          <div key={`${event.id}-${reason.toolName}-${index}`} className="rounded-md border border-slate-100 bg-white p-2">
+                            <div className="flex flex-wrap gap-2">
+                              {reason.toolName ? <ToneBadge>{reason.toolName}</ToneBadge> : null}
+                              {reason.reason ? <ToneBadge>{reason.reason}</ToneBadge> : null}
+                              {reason.mcpServerId ? <ToneBadge>{reason.mcpServerId}</ToneBadge> : null}
+                              {reason.healthStatus ? <ToneBadge>{reason.healthStatus}</ToneBadge> : null}
+                            </div>
+                            {reason.filteredReason ? <p className="mt-1 break-words text-slate-600">{reason.filteredReason}</p> : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <EmptyGovernanceState text="暂无 tool search events" />}
+        </ContextPanel>
         <ContextPanel title="Filtered Tools">
           {toolSurface?.filteredTools.length ? (
             <div className="grid gap-2">
@@ -546,23 +903,38 @@ function ToolSurfaceMetric({ label, value }: { label: string; value: number }) {
 
 function ContextGovernancePanels({
   contextGovernance,
-  emptyText,
+  emptyText: _emptyText,
 }: {
   contextGovernance?: ContextGovernanceViewModel;
   emptyText: string;
 }) {
+  const hasBudget = Boolean(contextGovernance?.budgetEvents.length);
+  const hasCompaction = Boolean(contextGovernance?.compactionEvents.length);
+  const hasMaterialization = Boolean(contextGovernance?.materializationEvents.length);
+  const hasExternalReferences = Boolean(contextGovernance?.externalReferences.length);
+  const hasEnvironmentContext = Boolean(contextGovernance?.environmentContext);
+  const hasExternalKnowledge = Boolean(contextGovernance?.externalKnowledgeEvidence.length);
+
+  const materializationEvents = contextGovernance?.materializationEvents || [];
+  const detailedMaterializationEvents = materializationEvents.filter(hasMaterializationDetail);
+  const genericMaterializationCount = materializationEvents.length - detailedMaterializationEvents.length;
+
+  if (!hasBudget && !hasCompaction && !hasMaterialization && !hasExternalReferences && !hasEnvironmentContext && !hasExternalKnowledge) {
+    return null;
+  }
+
   return (
-    <section className="md:col-span-5 grid gap-3 md:grid-cols-2">
-      <ContextPanel title="Context Budget">
-        {contextGovernance?.budgetEvents.length ? (
+    <section className="md:col-span-6 grid gap-3 md:grid-cols-2">
+      {hasBudget ? (
+        <ContextPanel title="上下文预算">
           <div className="grid gap-3">
-            {contextGovernance.budgetEvents.map((event) => (
+            {contextGovernance?.budgetEvents.map((event) => (
               <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
                 <EventHeader event={event} />
                 <div className="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
                   {event.budgetItems.map((item) => (
                     <div key={item.key} className="rounded-md border border-slate-200 bg-white p-2">
-                      <div className="truncate text-slate-500" title={item.key}>{item.label}</div>
+                      <div className="truncate text-slate-500" title={item.key}>{governanceBudgetLabel(item.label)}</div>
                       <div className="mt-1 font-mono font-medium text-slate-950">{formatGovernanceValue(item.value)}</div>
                     </div>
                   ))}
@@ -570,49 +942,89 @@ function ContextGovernancePanels({
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="Compaction Events">
-        {contextGovernance?.compactionEvents.length ? (
+      {hasCompaction ? (
+        <ContextPanel title="历史上下文压缩">
           <div className="grid gap-3">
-            {contextGovernance.compactionEvents.map((event) => (
+            {contextGovernance?.compactionEvents.map((event) => (
               <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
                 <EventHeader event={event} />
-                {event.compactedIds.length ? <ReferenceLine label="Compacted" values={event.compactedIds} /> : null}
-                {event.droppedGroupIds.length ? <ReferenceLine label="Dropped" values={event.droppedGroupIds} /> : null}
+                {event.compactedIds.length ? <ReferenceLine label="已压缩" values={event.compactedIds} /> : null}
+                {event.droppedGroupIds.length ? <ReferenceLine label="已移除" values={event.droppedGroupIds} /> : null}
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="Tool Result Materialization">
-        {contextGovernance?.materializationEvents.length ? (
+      {hasMaterialization ? (
+        <ContextPanel title="工具结果整理">
+          <p className="mb-3 text-sm text-slate-600">
+            工具返回内容较长时，系统会按上下文预算整理为摘要或引用，避免把原始大文本全部塞进提示词。
+          </p>
           <div className="grid gap-3">
-            {contextGovernance.materializationEvents.map((event) => (
-              <div key={event.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
-                <EventHeader event={event} />
-                {event.referenceIds.length ? <ReferenceLine label="Refs" values={event.referenceIds} /> : null}
-              </div>
+            {genericMaterializationCount > 0 ? <GenericMaterializationSummary count={genericMaterializationCount} /> : null}
+            {detailedMaterializationEvents.map((event, index) => (
+              <MaterializationEventCard key={event.id} event={event} index={index} />
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
 
-      <ContextPanel title="External References">
-        {contextGovernance?.externalReferences.length ? (
+      {hasExternalReferences ? (
+        <ContextPanel title="外部引用">
           <div className="grid gap-2">
-            {contextGovernance.externalReferences.map((reference) => (
+            {contextGovernance?.externalReferences.map((reference) => (
               <div key={reference.id} className="flex min-w-0 flex-wrap items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
-                <ToneBadge>{reference.layer || "context"}</ToneBadge>
+                <ToneBadge>{reference.layer || "上下文"}</ToneBadge>
                 <span className="min-w-0 flex-1 truncate font-mono text-slate-950" title={reference.referenceId}>{reference.referenceId}</span>
-                <span className="truncate text-slate-500" title={reference.kind}>{reference.kind}</span>
+                <span className="truncate text-slate-500" title={reference.kind}>{governanceKindLabel(reference.kind)}</span>
               </div>
             ))}
           </div>
-        ) : <EmptyGovernanceState text={emptyText} />}
-      </ContextPanel>
+        </ContextPanel>
+      ) : null}
+
+      {hasEnvironmentContext ? (
+        <ContextPanel title="环境上下文">
+          <div className="grid gap-2 text-xs">
+            <div className="flex min-w-0 flex-wrap gap-2">
+              {contextGovernance?.environmentContext?.hasConflict ? <ToneBadge>目标冲突</ToneBadge> : null}
+              {contextGovernance?.environmentContext?.readOnlyReason ? <ToneBadge>{contextGovernance.environmentContext.readOnlyReason}</ToneBadge> : null}
+            </div>
+            <ReferenceLine label="目标" values={contextGovernance?.environmentContext?.targetRefs || []} />
+            {contextGovernance?.environmentContext?.compactContext ? (
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950 p-3 text-white">{contextGovernance.environmentContext.compactContext}</pre>
+            ) : null}
+          </div>
+        </ContextPanel>
+      ) : null}
+
+      {hasExternalKnowledge ? (
+        <ContextPanel title="外部知识证据">
+          <div className="grid gap-2">
+            {contextGovernance?.externalKnowledgeEvidence.map((item) => (
+              <div key={item.id} className="grid gap-2 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+                <div className="flex min-w-0 flex-wrap gap-2">
+                  {item.kind ? <ToneBadge>{knowledgeLabel(item.kind)}</ToneBadge> : null}
+                  {item.sourceKind ? <ToneBadge>{knowledgeLabel(item.sourceKind)}</ToneBadge> : null}
+                  {item.product ? <ToneBadge>{item.product}</ToneBadge> : null}
+                  {item.version ? <ToneBadge>{item.version}</ToneBadge> : null}
+                  {item.confidence ? <ToneBadge>{knowledgeLabel(item.confidence)}</ToneBadge> : null}
+                </div>
+                {item.query ? <p className="break-words text-slate-700">{item.query}</p> : null}
+                {item.sourceTitle || item.sourceURL ? (
+                  <p className="break-words font-mono text-slate-600">{item.sourceTitle || item.sourceURL}</p>
+                ) : null}
+                {item.applicability ? <p className="break-words text-slate-600">{item.applicability}</p> : null}
+                {item.relevantExcerpt ? <p className="break-words text-slate-700">{item.relevantExcerpt}</p> : null}
+              </div>
+            ))}
+          </div>
+        </ContextPanel>
+      ) : null}
     </section>
   );
 }
@@ -630,14 +1042,151 @@ function EventHeader({ event }: { event: ContextGovernanceViewModel["events"][nu
   return (
     <div className="grid gap-2">
       <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
-        {event.layer ? <ToneBadge>{event.layer}</ToneBadge> : null}
-        {event.kind ? <ToneBadge>{event.kind}</ToneBadge> : null}
-        {event.retryLabel ? <ToneBadge>retry {event.retryLabel}</ToneBadge> : null}
-        {event.timeout ? <ToneBadge>timeout</ToneBadge> : null}
+        <ToneBadge>{governanceKindLabel(event.kind)}</ToneBadge>
+        {event.retryLabel ? <ToneBadge>重试 {event.retryLabel}</ToneBadge> : null}
+        {event.timeout ? <ToneBadge>已超时</ToneBadge> : null}
       </div>
-      {event.message ? <p className="text-sm text-slate-700">{event.message}</p> : null}
+      <p className="text-sm text-slate-700">{governanceMessage(event)}</p>
     </div>
   );
+}
+
+function MaterializationEventCard({
+  event,
+  index,
+}: {
+  event: ContextGovernanceViewModel["events"][number];
+  index: number;
+}) {
+  const toolLabel = event.toolName || event.toolCallId || `第 ${index + 1} 次整理`;
+  const tier = materializationTierLabel(event.materializationTier);
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+        <ToneBadge>{toolLabel}</ToneBadge>
+        {tier ? <ToneBadge>{tier}</ToneBadge> : null}
+        {event.referenceIds.length ? <ToneBadge>{`引用 ${event.referenceIds.length} 个`}</ToneBadge> : null}
+      </div>
+      <div className="mt-2 grid gap-1 text-sm text-slate-700">
+        {event.toolName ? <p>工具：{event.toolName}</p> : null}
+        {event.toolCallId ? <p>调用 ID：{event.toolCallId}</p> : null}
+        {tier ? <p>结果级别：{tier}</p> : null}
+        {event.originalBytes ? <p>原始大小：{formatBytes(event.originalBytes)}</p> : null}
+        {event.inlineBytes ? <p>放入提示词：{formatBytes(event.inlineBytes)}</p> : null}
+        <p>{materializationDetailMessage(event)}</p>
+      </div>
+      {event.referenceIds.length ? <ReferenceLine label="引用" values={event.referenceIds} /> : null}
+    </div>
+  );
+}
+
+function GenericMaterializationSummary({ count }: { count: number }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm text-slate-700">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <ToneBadge>{`${count} 次整理`}</ToneBadge>
+        <ToneBadge>旧格式记录</ToneBadge>
+      </div>
+      <p className="mt-2">
+        这些记录只说明工具结果经过上下文预算处理；当前 trace 未记录工具名、级别和大小，所以合并展示，避免重复刷屏。
+      </p>
+    </div>
+  );
+}
+
+function hasMaterializationDetail(event: ContextGovernanceViewModel["events"][number]) {
+  return Boolean(
+    event.toolCallId ||
+      event.toolName ||
+      event.materializationTier ||
+      event.originalBytes ||
+      event.inlineBytes ||
+      event.referenceIds.length,
+  );
+}
+
+function materializationTierLabel(tier = "") {
+  const labels: Record<string, string> = {
+    small: "小结果",
+    medium: "中等结果",
+    large: "大结果",
+  };
+  return labels[tier] || tier;
+}
+
+function materializationDetailMessage(event: ContextGovernanceViewModel["events"][number]) {
+  const tier = (event.materializationTier || "").toLowerCase();
+  if (tier === "small") {
+    return "结果较小，内容直接放入提示词。";
+  }
+  if (tier === "medium") {
+    return "结果中等，提示词内保留摘要、预览和外部引用。";
+  }
+  if (tier === "large") {
+    return "结果较大，提示词内只保留摘要和外部引用，完整内容保存在引用中。";
+  }
+  return governanceMessage(event);
+}
+
+function formatBytes(value = 0) {
+  const bytes = Number(value) || 0;
+  if (bytes <= 0) return "-";
+  const units = ["B", "KB", "MB", "GB"];
+  let amount = bytes;
+  let unitIndex = 0;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex += 1;
+  }
+  const formatted = amount >= 10 || Number.isInteger(amount) ? Math.round(amount).toString() : amount.toFixed(1);
+  return `${formatted} ${units[unitIndex]}`;
+}
+
+function governanceKindLabel(kind = "") {
+  const normalized = kind.toLowerCase();
+  if (/material|spill|externalize|tool[._-]?result/.test(normalized)) return "工具结果整理";
+  if (normalized.includes("compact")) return "历史上下文压缩";
+  if (normalized.includes("budget")) return "上下文预算";
+  if (normalized.includes("reference")) return "外部引用";
+  return "上下文治理";
+}
+
+function governanceMessage(event: ContextGovernanceViewModel["events"][number]) {
+  const kind = event.kind.toLowerCase();
+  if (/material|spill|externalize|tool[._-]?result/.test(kind)) {
+    return "工具输出已按上下文预算整理，只把后续回答需要的摘要或引用放入 Prompt。";
+  }
+  if (kind.includes("compact") || event.compactedIds.length || event.droppedGroupIds.length) {
+    return "历史对话内容较长，已压缩为摘要继续参与后续请求。";
+  }
+  if (event.budgetItems.length) {
+    return "本次请求记录了上下文窗口、压缩阈值等预算参数。";
+  }
+  return event.message || "已记录一条上下文治理事件。";
+}
+
+function governanceBudgetLabel(label = "") {
+  const labels: Record<string, string> = {
+    "Max Context": "最大上下文",
+    "Reserved Output": "预留输出",
+    "Effective Window": "可用窗口",
+    Warning: "预警阈值",
+    "Auto Compact": "自动压缩阈值",
+    "Blocking Limit": "阻断上限",
+    "Small Context": "小上下文模式",
+  };
+  return labels[label] || label;
+}
+
+function knowledgeLabel(value = "") {
+  const labels: Record<string, string> = {
+    external_knowledge: "外部知识",
+    official_docs: "官方文档",
+    high: "高可信度",
+    medium: "中可信度",
+    low: "低可信度",
+  };
+  return labels[value] || value;
 }
 
 function ReferenceLine({ label, values }: { label: string; values: string[] }) {
@@ -660,6 +1209,7 @@ function formatGovernanceValue(value: string | number) {
 type TraceTurnGroup = {
   id: string;
   label: string;
+  role: "manager" | "host";
   preview: string;
   traces: TraceItem[];
   latestAt: string;
@@ -672,23 +1222,29 @@ type TraceSessionGroup = {
   traces: TraceItem[];
   turns: TraceTurnGroup[];
   caseIds: string[];
+  hostAgentCount: number;
   latestAt: string;
 };
 
 function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
+  const hostParentTurnIds = new Set(items.map(hostParentTurnId).filter(Boolean) as string[]);
   const groups = new Map<string, TraceSessionGroup>();
   for (const trace of items) {
-    const sessionId = traceSessionKey(trace);
+    const sessionId = traceSessionKey(trace, hostParentTurnIds);
     const group = groups.get(sessionId) || {
       id: sessionId,
-      label: trace.sessionId || "未知会话",
+      label: sessionLabelForTrace(trace, sessionId),
       topic: "",
       traces: [],
       turns: [],
       caseIds: [],
+      hostAgentCount: 0,
       latestAt: "",
     };
     group.traces.push(trace);
+    if (isHostAgentTrace(trace)) {
+      group.hostAgentCount = uniqueHostAgentCount(group.traces);
+    }
     if (trace.caseId && !group.caseIds.includes(trace.caseId)) {
       group.caseIds.push(trace.caseId);
     }
@@ -702,7 +1258,8 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
       const turnId = traceTurnKey(trace);
       const turn = turns.get(turnId) || {
         id: turnId,
-        label: trace.turnId || "未知 Turn",
+        label: turnLabelForTrace(trace),
+        role: isHostAgentTrace(trace) ? "host" : "manager",
         preview: "",
         traces: [],
         latestAt: "",
@@ -718,19 +1275,88 @@ function buildTraceSessionGroups(items: TraceItem[]): TraceSessionGroup[] {
       turn.traces.sort(compareTraceRequestOrder);
     }
     group.turns = Array.from(turns.values()).sort(compareLatestDesc);
-    group.topic = group.turns.find((turn) => turn.preview)?.preview || group.label;
+    group.topic = group.turns.find((turn) => turn.role === "manager" && turn.preview)?.preview
+      || group.turns.find((turn) => turn.preview)?.preview
+      || group.label;
     group.traces.sort(compareTraceDesc);
   }
 
   return Array.from(groups.values()).sort(compareLatestDesc);
 }
 
-function traceSessionKey(trace: TraceItem) {
+function traceSessionKey(trace: TraceItem, hostParentTurnIds = new Set<string>()) {
+  const parentTurnId = hostParentTurnId(trace);
+  if (parentTurnId) {
+    return `hostops:${parentTurnId}`;
+  }
+  if (trace.turnId && hostParentTurnIds.has(trace.turnId)) {
+    return `hostops:${trace.turnId}`;
+  }
   return trace.sessionId || "unknown-session";
 }
 
 function traceTurnKey(trace: TraceItem) {
+  if (isHostAgentTrace(trace)) {
+    return `host:${hostAgentKey(trace)}:${trace.turnId || "unknown-turn"}`;
+  }
   return trace.turnId || "unknown-turn";
+}
+
+function isHostAgentTrace(trace: TraceItem) {
+  return Boolean(
+    trace.sessionId?.startsWith("host-child:") ||
+    trace.relativePath?.startsWith("host-child-") ||
+    trace.id?.startsWith("host-child-"),
+  );
+}
+
+function hostParentTurnId(trace: TraceItem) {
+  const fromSession = trace.sessionId?.match(/^host-child:hostops:(turn-[^:]+):/)?.[1];
+  if (fromSession) return fromSession;
+  const path = trace.relativePath || trace.id || "";
+  return path.match(/^host-child-hostops-(turn-[^-\/]+(?:-[^-\/]+)*)-/)?.[1] || "";
+}
+
+function hostAgentKey(trace: TraceItem) {
+  return hostAgentDisplay(trace) || trace.sessionId || trace.relativePath || trace.id || "host-agent";
+}
+
+function hostAgentDisplay(trace: TraceItem) {
+  const sessionHost = trace.sessionId?.match(/^host-child:hostops:turn-[^:]+:(.+)$/)?.[1] || "";
+  const path = trace.relativePath || trace.id || "";
+  const pathHost = path.match(/^host-child-hostops-turn-[^-\/]+(?:-[^-\/]+)*-(.+?)\//)?.[1] || "";
+  return formatHostAgentName(sessionHost || pathHost);
+}
+
+function formatHostAgentName(value: string) {
+  const text = value.trim();
+  if (!text) return "";
+  const normalized = text.startsWith("remote-") ? text.slice("remote-".length) : text;
+  const octets = normalized.match(/^(\d+)-(\d+)-(\d+)-(\d+)$/);
+  if (octets) {
+    return `@${octets.slice(1).join(".")}`;
+  }
+  return text.startsWith("@") ? text : `@${text}`;
+}
+
+function sessionLabelForTrace(trace: TraceItem, sessionId: string) {
+  const parentTurnId = hostParentTurnId(trace);
+  if (parentTurnId || sessionId.startsWith("hostops:")) {
+    return parentTurnId || sessionId.replace(/^hostops:/, "");
+  }
+  return trace.sessionId || "未知会话";
+}
+
+function turnLabelForTrace(trace: TraceItem) {
+  if (isHostAgentTrace(trace)) {
+    return hostAgentDisplay(trace) || trace.turnId || "主机 Agent";
+  }
+  return trace.turnId || "未知 Turn";
+}
+
+function uniqueHostAgentCount(traces: TraceItem[]) {
+  const keys = new Set(traces.filter(isHostAgentTrace).map(hostAgentKey));
+  return keys.size;
 }
 
 function latestTime(left = "", right = "") {

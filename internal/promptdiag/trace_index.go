@@ -41,7 +41,7 @@ func BuildTraceIndex(root string) (TraceIndex, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".json") {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(path), ".json") || shouldSkipTraceIndexJSON(absRoot, path) {
 			return nil
 		}
 		trace, err := readTraceLink(absRoot, path)
@@ -115,18 +115,34 @@ func (i TraceIndex) register(trace TraceLink) {
 	}
 }
 
+func shouldSkipTraceIndexJSON(root, path string) bool {
+	if strings.EqualFold(filepath.Base(path), "index.json") {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(part, "raw") {
+			return true
+		}
+	}
+	return false
+}
+
 func readTraceLink(root, jsonPath string) (TraceLink, error) {
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
 		return TraceLink{}, err
 	}
 	var payload struct {
+		SchemaVersion     string            `json:"schemaVersion"`
 		Kind              string            `json:"kind"`
 		CreatedAt         string            `json:"createdAt"`
 		SessionID         string            `json:"sessionId"`
 		TurnID            string            `json:"turnId"`
 		Iteration         int               `json:"iteration"`
-		VisibleTools      []string          `json:"visibleTools"`
 		PromptFingerprint map[string]string `json:"promptFingerprint"`
 		CaseID            string            `json:"caseId"`
 		Metadata          map[string]string `json:"metadata"`
@@ -138,15 +154,29 @@ func readTraceLink(root, jsonPath string) (TraceLink, error) {
 			Tools     string `json:"tools"`
 			Policy    string `json:"policy"`
 		} `json:"prompt"`
-		ModelInput []struct {
-			ProviderRole string `json:"providerRole"`
-			SemanticRole string `json:"semanticRole"`
-			PromptLayer  string `json:"promptLayer"`
-			Content      string `json:"content"`
-		} `json:"modelInput"`
+		ToolSurface struct {
+			ModelVisibleTools []string `json:"modelVisibleTools"`
+		} `json:"toolSurface"`
+		StepContext struct {
+			ModelInput []struct {
+				ProviderRole string `json:"providerRole"`
+				SemanticRole string `json:"semanticRole"`
+				PromptLayer  string `json:"promptLayer"`
+				Content      string `json:"content"`
+			} `json:"modelInput"`
+		} `json:"stepContext"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return TraceLink{}, err
+	}
+	if strings.TrimSpace(payload.SchemaVersion) != "aiops.trace/v2" {
+		return TraceLink{}, fmt.Errorf("unsupported trace schema version %q", payload.SchemaVersion)
+	}
+	promptSizeChars := len(payload.Prompt.Stable) + len(payload.Prompt.Dynamic)
+	if promptSizeChars == 0 {
+		for _, msg := range payload.StepContext.ModelInput {
+			promptSizeChars += len(msg.Content)
+		}
 	}
 	base := strings.TrimSuffix(jsonPath, filepath.Ext(jsonPath))
 	trace := TraceLink{
@@ -159,15 +189,15 @@ func readTraceLink(root, jsonPath string) (TraceLink, error) {
 		MarkdownPath:    relIfExists(root, base+".md"),
 		DiffPath:        relIfExists(root, base+".diff.md"),
 		StableHash:      strings.TrimSpace(payload.PromptFingerprint["stableHash"]),
-		MessageCount:    len(payload.ModelInput),
-		PromptSizeChars: promptSize(payload),
-		VisibleTools:    cleanStrings(payload.VisibleTools),
+		MessageCount:    len(payload.StepContext.ModelInput),
+		PromptSizeChars: promptSizeChars,
+		VisibleTools:    cleanStrings(payload.ToolSurface.ModelVisibleTools),
 		Fingerprint:     cleanMap(payload.PromptFingerprint),
 	}
 	if trace.CaseID == "" {
 		trace.CaseID = firstNonEmpty(deriveTraceCaseID(trace.SessionID), deriveTraceCaseID(trace.JSONPath))
 	}
-	for _, msg := range payload.ModelInput {
+	for _, msg := range payload.StepContext.ModelInput {
 		if strings.EqualFold(strings.TrimSpace(msg.ProviderRole), "user") || strings.EqualFold(strings.TrimSpace(msg.SemanticRole), "user") {
 			trace.HasUserMessage = true
 			break
@@ -222,41 +252,6 @@ func deriveTraceCaseIDFromPart(value string) string {
 		return strings.Trim(rest, "-")
 	}
 	return ""
-}
-
-func promptSize(payload struct {
-	Kind              string            `json:"kind"`
-	CreatedAt         string            `json:"createdAt"`
-	SessionID         string            `json:"sessionId"`
-	TurnID            string            `json:"turnId"`
-	Iteration         int               `json:"iteration"`
-	VisibleTools      []string          `json:"visibleTools"`
-	PromptFingerprint map[string]string `json:"promptFingerprint"`
-	CaseID            string            `json:"caseId"`
-	Metadata          map[string]string `json:"metadata"`
-	Prompt            struct {
-		Stable    string `json:"stable"`
-		Dynamic   string `json:"dynamic"`
-		System    string `json:"system"`
-		Developer string `json:"developer"`
-		Tools     string `json:"tools"`
-		Policy    string `json:"policy"`
-	} `json:"prompt"`
-	ModelInput []struct {
-		ProviderRole string `json:"providerRole"`
-		SemanticRole string `json:"semanticRole"`
-		PromptLayer  string `json:"promptLayer"`
-		Content      string `json:"content"`
-	} `json:"modelInput"`
-}) int {
-	total := len(payload.Prompt.Stable) + len(payload.Prompt.Dynamic)
-	if total > 0 {
-		return total
-	}
-	for _, msg := range payload.ModelInput {
-		total += len(msg.Content)
-	}
-	return total
 }
 
 func traceLookupKeys(root, path string) []string {

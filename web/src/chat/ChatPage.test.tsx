@@ -2,9 +2,16 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getChildAgentTranscript, submitHostOpsApprovalDecision } from "@/api/hostOps";
+import {
+  getChildAgentTranscript,
+  submitHostOpsApprovalDecision,
+} from "@/api/hostOps";
 import { ChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
+import {
+  resetAiopsTransportStateCacheForTest,
+  setCachedAiopsTransportState,
+} from "@/transport/aiopsTransportStateCache";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 
 vi.mock("@/api/hostOps", () => ({
@@ -29,14 +36,86 @@ describe("ChatPage", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    resetAiopsTransportStateCacheForTest();
   });
 
   afterEach(() => {
     act(() => {
       root.unmount();
     });
+    vi.useRealTimers();
     window.localStorage.clear();
+    resetAiopsTransportStateCacheForTest();
     container.remove();
+  });
+
+  it("renders cached chat state immediately when returning to the chat page", async () => {
+    const cached = sampleState();
+    cached.sessionId = "cached-session";
+    cached.threadId = "cached-session";
+    setCachedAiopsTransportState("single_host", cached);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/api/v1/assistant/resume")) {
+          return new Response("aui-state:[]\n", {
+            status: 200,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        if (url.includes("/api/v1/sessions")) {
+          return new Response(
+            JSON.stringify({
+              activeSessionId: "cached-session",
+              sessions: [
+                {
+                  id: "cached-session",
+                  kind: "single_host",
+                  selectedHostId: "server-local",
+                  status: "working",
+                  messageCount: 1,
+                  title: "Cached chat",
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (url.includes("/api/v1/llm-config")) {
+          return new Response(
+            JSON.stringify({
+              provider: "openai",
+              model: "gpt-5",
+              apiKeySet: true,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        return new Response(JSON.stringify({ items: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+    await act(async () => {
+      root.render(<ChatPage />);
+    });
+
+    expect(container.textContent).toContain(
+      "Investigate payment-api saturation",
+    );
+    expect(container.textContent).toContain(
+      "payment-api is waiting for rollout approval.",
+    );
+    expect(container.textContent).not.toContain("Hello there");
+    fetchSpy.mockRestore();
   });
 
   it("renders assistant-ui chat state with typed process and approval blocks", async () => {
@@ -53,8 +132,9 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain(
       "payment-api is waiting for rollout approval.",
     );
-    expect(container.textContent).toContain("等待审批");
-    expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
+	    expect(container.textContent).toContain("等待审批");
+	    expect(container.textContent).toContain("host-a 等待审批");
+	    expect(container.textContent).toContain("要执行这个命令，需要你确认吗？");
     expect(container.textContent).toContain("1. 是");
     expect(container.textContent).toContain(
       "2. 是，且对于以后类似命令不再询问",
@@ -64,10 +144,86 @@ describe("ChatPage", () => {
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
     ).not.toBeNull();
+	    expect(
+	      container.querySelector('[data-testid="codex-approval-command"]'),
+	    ).not.toBeNull();
+	    expect(
+	      container.querySelector('[data-testid="codex-approval-details"]')?.textContent,
+	    ).toContain("host:host-a");
+	    expect(container.querySelector("textarea")).toBeNull();
+	  });
+
+  it("shows rejected approvals as audit trail without a global error", async () => {
+    const state = sampleState();
+    state.status = "idle";
+    state.turns["turn-1"].status = "completed";
+    state.turns["turn-1"].process = [
+      {
+        id: "approval-rejected",
+        kind: "approval",
+        status: "rejected",
+        text: "approval denied",
+        command: "kubectl rollout restart deploy/payment-api",
+        risk: "high",
+        source: "ai_chat_direct",
+        targetSummary: "host:host-a；service:payment-api",
+        expectedEffect: "重启 payment-api deployment",
+        rollback: "如验收失败则回滚到上一版本",
+        validation: "检查 rollout 状态、端口和错误日志",
+        approvalId: "approval-1",
+      },
+    ];
+    state.turns["turn-1"].final = {
+      id: "final-1",
+      text: "已根据现有证据继续只读分析。",
+      status: "completed",
+    };
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const header = container.querySelector(
+      '[data-testid="aiops-process-header"]',
+    );
+    await act(async () => {
+      header?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain(
+      "已拒绝，将基于已有证据继续分析",
+    );
+    expect(container.textContent).toContain(
+      "kubectl rollout restart deploy/payment-api",
+    );
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.textContent).toContain("已根据现有证据继续只读分析。");
+  });
+
+  it("does not render the chat ops run summary card above the composer", async () => {
+    const state = sampleState();
+    state.opsRun = {
+      id: "opsrun-turn-1",
+      source: "chat",
+      status: "working",
+      title: "主机A跟主机B上PG不同步",
+      targetSummary: "主机A/主机B PG 与主机C pg_mon",
+      evidenceCount: 2,
+      currentStep: "正在只读采集 PG 同步证据",
+    };
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
     expect(
-      container.querySelector('[data-testid="codex-approval-command"]'),
-    ).not.toBeNull();
-    expect(container.querySelector("textarea")).toBeNull();
+      container.querySelector('[data-testid="ops-run-summary-card"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("主机A跟主机B上PG不同步");
+    expect(container.textContent).not.toContain("主机A/主机B PG 与主机C pg_mon");
+    expect(container.textContent).not.toContain("2 条证据");
   });
 
   it("renders Agent-to-UI artifacts inside assistant messages", async () => {
@@ -125,7 +281,9 @@ describe("ChatPage", () => {
       "接口 P95 延迟在 14:03 后明显升高。",
     );
     expect(container.textContent).toContain("p95_latency_ms");
-    expect(container.querySelector('a[href="/incidents/case-debug-1"]')).toBeNull();
+    expect(
+      container.querySelector('a[href="/incidents/case-debug-1"]'),
+    ).toBeNull();
     expect(container.textContent).not.toContain("来源：coroot");
   });
 
@@ -164,7 +322,12 @@ describe("ChatPage", () => {
               title: "指标趋势",
               visual: {
                 kind: "timeseries",
-                series: [{ name: "failed_tcp_connections", data: [{ timestamp: 1, value: 0.33 }] }],
+                series: [
+                  {
+                    name: "failed_tcp_connections",
+                    data: [{ timestamp: 1, value: 0.33 }],
+                  },
+                ],
               },
             },
           },
@@ -177,8 +340,12 @@ describe("ChatPage", () => {
     });
 
     const text = container.textContent || "";
-    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(text.indexOf("aiops-host-agent 服务"));
-    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(text.indexOf("Coroot RCA 查询成功"));
+    expect(text.indexOf("外部依赖 external:18090 unknown")).toBeLessThan(
+      text.indexOf("aiops-host-agent 服务"),
+    );
+    expect(text.indexOf("aiops-host-agent 服务")).toBeLessThan(
+      text.indexOf("Coroot RCA 查询成功"),
+    );
   });
 
   it("shows a lightweight Coroot chart notice while the assistant is still running", async () => {
@@ -228,7 +395,9 @@ describe("ChatPage", () => {
     });
 
     expect(container.textContent).toContain("我先读取 Coroot 指标并继续分析。");
-    expect(container.textContent).toContain("已生成 Coroot 图表，分析完成后展开");
+    expect(container.textContent).toContain(
+      "已生成 Coroot 图表，分析完成后展开",
+    );
     expect(container.textContent).not.toContain("aiops-host-agent 服务");
     expect(container.textContent).not.toContain("p95_latency_ms");
   });
@@ -308,7 +477,26 @@ describe("ChatPage", () => {
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
     ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="codex-approval-details"]')
+        ?.textContent,
+    ).toContain("检查 rollout 状态、端口和错误日志");
+    expect(container.textContent).toContain("host:host-a；service:payment-api");
     expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("does not render approval options when runtime liveness has no pending approval", async () => {
+    const state = sampleState();
+    state.runtimeLiveness.pendingApprovals = {};
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    expect(
+      container.querySelector('[data-testid="codex-approval-inline"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain("要执行这个命令，需要你确认吗？");
   });
 
   it("renders the host ops status panel above the composer when a host mission is active", async () => {
@@ -321,12 +509,18 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const panel = container.querySelector('[data-testid="host-ops-status-panel"]');
-    const composer = container.querySelector('[data-testid="aiops-composer-shell"]');
+    const panel = container.querySelector(
+      '[data-testid="host-ops-status-panel"]',
+    );
+    const composer = container.querySelector(
+      '[data-testid="aiops-composer-shell"]',
+    );
 
     expect(panel).not.toBeNull();
     expect(composer).not.toBeNull();
-    expect(panel?.compareDocumentPosition(composer as Node)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(panel?.compareDocumentPosition(composer as Node)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(container.textContent).toContain("共 3 个主机 Agent");
   });
 
@@ -364,9 +558,9 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    const open = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("打开"),
-    );
+    const open = container.querySelector(
+      '[data-testid="host-child-agent-name-child-1"]',
+    ) as HTMLButtonElement | null;
 
     await act(async () => {
       open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -374,16 +568,64 @@ describe("ChatPage", () => {
     await flushMicrotasks();
 
     expect(getChildAgentTranscript).toHaveBeenCalledWith("child-1");
-    expect(document.body.querySelector('[data-testid="host-subagent-drawer"]')).not.toBeNull();
+    expect(
+      document.body.querySelector('[data-testid="host-subagent-drawer"]'),
+    ).not.toBeNull();
     expect(document.body.textContent).toContain("Franklin");
     expect(document.body.textContent).toContain("初始化 Franklin 上的主库");
-    const toolsTab = Array.from(document.body.querySelectorAll("button")).find((button) =>
-      button.textContent?.trim().includes("工具"),
+    const toolsTab = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim().includes("工具"),
     );
     await act(async () => {
       toolsTab?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(document.body.textContent).toContain("pg_isready -h 127.0.0.1");
+  });
+
+  it("opens the child agent drawer when the transport map key differs from the runtime child agent id", async () => {
+    const state = sampleStateWithHostOps();
+    state.status = "idle";
+    state.pendingApprovals = {};
+    state.runtimeLiveness.pendingApprovals = {};
+    const keyedChild = state.childAgents?.["child-1"];
+    if (!keyedChild || !state.hostMissions?.["mission-1"]) {
+      throw new Error("sample host ops state is missing child agent data");
+    }
+    state.hostMissions["mission-1"].childAgentIds = ["transport-key-1"];
+    state.childAgents = {
+      "transport-key-1": {
+        ...keyedChild,
+        id: "runtime-child-1",
+      },
+    };
+    vi.mocked(getChildAgentTranscript).mockResolvedValue({
+      childAgentId: "runtime-child-1",
+      items: [
+        {
+          id: "item-manager",
+          type: "manager_message",
+          content: "检查 runtime-child-1",
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(<ChatPage initialState={state} />);
+    });
+
+    const open = container.querySelector(
+      '[data-testid="host-child-agent-name-runtime-child-1"]',
+    ) as HTMLButtonElement | null;
+    await act(async () => {
+      open?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(getChildAgentTranscript).toHaveBeenCalledWith("runtime-child-1");
+    expect(
+      document.body.querySelector('[data-testid="host-subagent-drawer"]'),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain("检查 runtime-child-1");
   });
 
   it("shows immediate feedback after submitting an approval decision", async () => {
@@ -402,6 +644,33 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain("已提交确认，正在继续执行");
     expect(submit?.textContent).toContain("提交中");
     expect(submit?.disabled).toBe(true);
+  });
+
+  it("times out a submitted approval decision when backend state does not settle", async () => {
+    await act(async () => {
+      root.render(<ChatPage initialState={sampleState()} />);
+    });
+    vi.useFakeTimers();
+
+    const submit = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("提交"),
+    ) as HTMLButtonElement | undefined;
+
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("已提交确认，正在继续执行");
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    const submitAfterTimeout = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("提交"),
+    ) as HTMLButtonElement | undefined;
+    expect(container.textContent).toContain("审批请求超时");
+    expect(submitAfterTimeout?.disabled).toBe(false);
   });
 
   it("replaces the textarea with an ops manual generation confirmation panel", async () => {
@@ -1142,7 +1411,9 @@ describe("ChatPage", () => {
       ).toBeNull();
       expect(container.querySelector("textarea")).not.toBeNull();
       expect(fetchSpy).toHaveBeenCalled();
-      const requestBody = fetchSpy.mock.calls.map((call) => String(call[1]?.body || "")).join("\n");
+      const requestBody = fetchSpy.mock.calls
+        .map((call) => String(call[1]?.body || ""))
+        .join("\n");
       expect(requestBody).toContain("已选择跳过运维手册");
       expect(requestBody).toContain("search_ops_manuals");
       expect(requestBody).toContain("skip_ops_manual");
@@ -1214,6 +1485,12 @@ function sampleState(): AiopsTransportState {
         type: "command",
         status: "blocked",
         command: "kubectl rollout restart deploy/payment-api",
+        risk: "high",
+        source: "ai_chat_direct",
+        targetSummary: "host:host-a；service:payment-api",
+        expectedEffect: "重启 payment-api deployment",
+        rollback: "如验收失败则回滚到上一版本",
+        validation: "检查 rollout 状态、端口和错误日志",
       },
     },
     runtimeLiveness: {

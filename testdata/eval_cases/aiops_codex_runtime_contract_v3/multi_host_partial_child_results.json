@@ -1,0 +1,38 @@
+{
+  "name": "multi_host_partial_child_results",
+  "input": "三台主机里一台 SSH 失败，manager 必须综合 partial child results 并明确 blocker/evidence refs。",
+  "expected": {
+    "profile": "host_manager",
+    "hiddenTools": [
+      "raw_worker_dump",
+      "hostops.synthetic_completed_turn"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_manager",
+    "visibleTools": [
+      "hostops.spawn_child_agent",
+      "hostops.wait_child_agents",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "hostops.wait_child_agents.partial"
+    ],
+    "evidenceRefs": [
+      "child:host-a:evidence",
+      "child:host-b:blocker"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "child_agent_started",
+      "child_agent_result",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "multi_host_partial",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

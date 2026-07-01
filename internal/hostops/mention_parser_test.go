@@ -27,3 +27,38 @@ func TestParseHostMentionsIgnoresPlainEmail(t *testing.T) {
 		t.Fatalf("mentions = %#v, want none", mentions)
 	}
 }
+
+func TestParseHostMentionsIncludesLocalAlias(t *testing.T) {
+	mentions := ParseHostMentions("@local 帮我只读检查主机状态")
+	if len(mentions) != 1 {
+		t.Fatalf("len(mentions) = %d, want 1: %#v", len(mentions), mentions)
+	}
+	if mentions[0].Raw != "@local" || mentions[0].Source != HostMentionSourceLocalAlias {
+		t.Fatalf("mention = %#v, want local alias", mentions[0])
+	}
+}
+
+func TestParseHostMentionsSkipsCorootObservabilityMention(t *testing.T) {
+	mentions := ParseHostMentions("@Coroot 分析 order-api 延迟")
+	if len(mentions) != 0 {
+		t.Fatalf("mentions = %#v, want @Coroot to stay out of host mentions", mentions)
+	}
+}
+
+func TestDetectInventoryHostMentionsDoesNotBindBareHostID(t *testing.T) {
+	mentions := DetectInventoryHostMentions("在 host-a 上只读检查 CPU、内存和磁盘空间", []HostRecordView{
+		{ID: "host-a", Hostname: "db-a", Address: "10.0.0.11", DisplayName: "DB A", Executable: true},
+	})
+	if len(mentions) != 0 {
+		t.Fatalf("mentions = %#v, want none: host execution requires @host, @ip, or selected host context", mentions)
+	}
+}
+
+func TestDetectInventoryHostMentionsSkipsBareServerLocal(t *testing.T) {
+	mentions := DetectInventoryHostMentions("没有 host id 时不能默认 server-local", []HostRecordView{
+		{ID: "server-local", Hostname: "localhost", Address: "server-local", DisplayName: "server-local", Executable: true},
+	})
+	if len(mentions) != 0 {
+		t.Fatalf("mentions = %#v, want no bare server-local mention", mentions)
+	}
+}

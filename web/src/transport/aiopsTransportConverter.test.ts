@@ -84,7 +84,9 @@ describe("aiopsTransportConverter", () => {
     expect(result.messages[1]).toMatchObject({
       role: "assistant",
       id: "turn-1:assistant",
-      content: [{ type: "text", text: "payment-api is healthy after restart." }],
+      content: [
+        { type: "text", text: "payment-api is healthy after restart." },
+      ],
       status: { type: "complete", reason: "stop" },
     });
     expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
@@ -101,8 +103,167 @@ describe("aiopsTransportConverter", () => {
       ],
     });
     expect(result.messages[1]?.content).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ text: "systemctl status payment-api" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ text: "systemctl status payment-api" }),
+      ]),
     );
+  });
+
+  it("uses the backend error when a failed turn only has a short assistant prelude", () => {
+    const state = createState();
+    state.status = "failed";
+    state.lastError = "error, status code: 500, status: 500 Internal Server Error, message: Network error";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      completedAt: "2026-05-06T00:02:05Z",
+      final: undefined,
+      process: [
+        {
+          id: "assistant-progress-1",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([
+      {
+        type: "text",
+        text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
+      },
+    ]);
+    expect(result.messages[1]?.content).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。" }),
+      ]),
+    );
+  });
+
+  it("marks commentary-only running turns with empty final text metadata", () => {
+    const state = createState();
+    state.status = "working";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      completedAt: undefined,
+      final: undefined,
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "让我查看一下这台主机的基本信息。",
+        },
+        {
+          id: "command-hostname",
+          kind: "command",
+          status: "completed",
+          text: "hostname",
+          command: "hostname",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([]);
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      finalText: "",
+    });
+    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "commentary",
+          text: "让我查看一下这台主机的基本信息。",
+        }),
+      ]),
+    );
+  });
+
+  it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
+    const state = createState();
+    const preservedAnswer = [
+      "Now I have enough context from the PostgreSQL PITR documentation and pg_auto_failover operations guide.",
+      "",
+      "根因：pgBackRest 恢复主机A后 promote 产生了新的 timeline 分支；当从节点恢复时又跟随了归档中更高的历史 timeline，导致主从 timeline 分叉不兼容。",
+      "",
+      "下一步：先核对主机 A 和主机 B 的 pg_controldata timeline，再检查恢复残留配置和归档 timeline history。",
+    ].join("\n");
+    state.status = "failed";
+    state.lastError = "failed to receive stream chunk: context deadline exceeded";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      completedAt: "2026-05-06T00:05:25Z",
+      final: {
+        id: "final-stream-error",
+        status: "failed",
+        text: "failed to receive stream chunk: context deadline exceeded",
+      },
+      process: [
+        {
+          id: "assistant-analysis",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: preservedAnswer,
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([{ type: "text", text: preservedAnswer }]);
+    expect(result.messages[1]?.content).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
+      ]),
+    );
+  });
+
+  it("keeps streamed assistant progress visible when a turn is canceled after partial output", () => {
+    const state = createState();
+    state.status = "canceled";
+    state.lastError = "user stop";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "canceled",
+      completedAt: "2026-05-06T00:02:05Z",
+      final: undefined,
+      process: [
+        {
+          id: "assistant-progress-canceled",
+          kind: "assistant",
+          status: "rejected",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "incomplete",
+          text: "已经输出的部分分析应该保留，不能因为取消而消失。",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([
+      { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
+    ]);
   });
 
   it("normalizes legacy stream states before reading liveness and extension maps", () => {
@@ -131,6 +292,29 @@ describe("aiopsTransportConverter", () => {
       pendingApprovals: {},
       mcpSurfaces: {},
       artifacts: {},
+    });
+  });
+
+  it("preserves the ops run view in normalized assistant transport state", () => {
+    const state = {
+      ...createState(),
+      opsRun: {
+        id: "opsrun-turn-1",
+        source: "chat",
+        status: "working",
+        title: "主机A跟主机B上PG不同步",
+        evidenceCount: 2,
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.state.opsRun).toMatchObject({
+      id: "opsrun-turn-1",
+      source: "chat",
+      status: "working",
+      evidenceCount: 2,
     });
   });
 
@@ -165,7 +349,9 @@ describe("aiopsTransportConverter", () => {
 
     expect(before.messages[1]?.id).toBe("turn-1:assistant");
     expect(after.messages[1]?.id).toBe("turn-1:assistant");
-    expect(after.messages[1]?.content).toEqual([{ type: "text", text: "partial" }]);
+    expect(after.messages[1]?.content).toEqual([
+      { type: "text", text: "partial" },
+    ]);
   });
 
   it("adds optimistic pending add-message commands without mutating source state", () => {
@@ -341,7 +527,9 @@ describe("aiopsTransportConverter", () => {
           },
         ],
         childAgentIds: ["child-a"],
-        planSteps: [{ id: "prepare-primary", text: "准备主库", status: "running" }],
+        planSteps: [
+          { id: "prepare-primary", text: "准备主库", status: "running" },
+        ],
       },
     };
     state.childAgents = {
@@ -366,7 +554,12 @@ describe("aiopsTransportConverter", () => {
         "mission-1": expect.objectContaining({
           id: "mission-1",
           childAgentIds: ["child-a"],
-          planSteps: [expect.objectContaining({ id: "prepare-primary", text: "准备主库" })],
+          planSteps: [
+            expect.objectContaining({
+              id: "prepare-primary",
+              text: "准备主库",
+            }),
+          ],
         }),
       },
       childAgents: {
@@ -401,7 +594,13 @@ describe("aiopsTransportConverter", () => {
           },
         ],
         childAgentIds: ["child-generic-a"],
-        planSteps: [{ id: "inspect-generic-service", text: "Inspect generic service state", status: "running" }],
+        planSteps: [
+          {
+            id: "inspect-generic-service",
+            text: "Inspect generic service state",
+            status: "running",
+          },
+        ],
       },
     };
     state.childAgents = {
@@ -465,12 +664,48 @@ describe("aiopsTransportConverter", () => {
             redaction: "hash:human-terminal",
           },
         ],
-        mcpInstructionDeltas: [{ id: "mcp-delta", server: "generic-docs", sourceRef: "mcp://generic-docs" }],
-        skillActivationTrace: [{ id: "skill-trace", skill: "generic-log-review", status: "activated" }],
-        approvalTrace: [{ id: "approval-trace", approvalId: "approval-generic", status: "approved" }],
-        evidenceTrace: [{ id: "evidence-trace", artifactRef: "artifact://evidence/generic-service", hash: "hash:evidence" }],
-        reportTimeline: [{ id: "report-event", event: "report.sent_to_manager", status: "completed" }],
-        agentMessages: [{ id: "agent-message", role: "host_agent", content: "Stored redacted evidence refs." }],
+        mcpInstructionDeltas: [
+          {
+            id: "mcp-delta",
+            server: "generic-docs",
+            sourceRef: "mcp://generic-docs",
+          },
+        ],
+        skillActivationTrace: [
+          {
+            id: "skill-trace",
+            skill: "generic-log-review",
+            status: "activated",
+          },
+        ],
+        approvalTrace: [
+          {
+            id: "approval-trace",
+            approvalId: "approval-generic",
+            status: "approved",
+          },
+        ],
+        evidenceTrace: [
+          {
+            id: "evidence-trace",
+            artifactRef: "artifact://evidence/generic-service",
+            hash: "hash:evidence",
+          },
+        ],
+        reportTimeline: [
+          {
+            id: "report-event",
+            event: "report.sent_to_manager",
+            status: "completed",
+          },
+        ],
+        agentMessages: [
+          {
+            id: "agent-message",
+            role: "host_agent",
+            content: "Stored redacted evidence refs.",
+          },
+        ],
         subtaskStatus: "queued",
         queueReason: "waiting for host session capacity",
         source: "manager_plan",
@@ -483,20 +718,46 @@ describe("aiopsTransportConverter", () => {
     expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
       childAgents: {
         "child-generic-a": expect.objectContaining({
-          runtimeProfile: expect.objectContaining({ id: "host-agent-full-runtime" }),
+          runtimeProfile: expect.objectContaining({
+            id: "host-agent-full-runtime",
+          }),
           promptSections: [
-            expect.objectContaining({ category: "base_runtime", redaction: "hash:prompt-base-runtime" }),
-            expect.objectContaining({ category: "host_task_context", redaction: "redacted" }),
+            expect.objectContaining({
+              category: "base_runtime",
+              redaction: "hash:prompt-base-runtime",
+            }),
+            expect.objectContaining({
+              category: "host_task_context",
+              redaction: "redacted",
+            }),
           ],
           toolSurfaceSnapshot: [
-            expect.objectContaining({ source: "host_agent_tool", name: "HostCommandTool" }),
-            expect.objectContaining({ source: "human_terminal", name: "operator-terminal" }),
+            expect.objectContaining({
+              source: "host_agent_tool",
+              name: "HostCommandTool",
+            }),
+            expect.objectContaining({
+              source: "human_terminal",
+              name: "operator-terminal",
+            }),
           ],
-          mcpInstructionDeltas: [expect.objectContaining({ server: "generic-docs" })],
-          skillActivationTrace: [expect.objectContaining({ skill: "generic-log-review" })],
-          approvalTrace: [expect.objectContaining({ approvalId: "approval-generic" })],
-          evidenceTrace: [expect.objectContaining({ artifactRef: "artifact://evidence/generic-service" })],
-          reportTimeline: [expect.objectContaining({ event: "report.sent_to_manager" })],
+          mcpInstructionDeltas: [
+            expect.objectContaining({ server: "generic-docs" }),
+          ],
+          skillActivationTrace: [
+            expect.objectContaining({ skill: "generic-log-review" }),
+          ],
+          approvalTrace: [
+            expect.objectContaining({ approvalId: "approval-generic" }),
+          ],
+          evidenceTrace: [
+            expect.objectContaining({
+              artifactRef: "artifact://evidence/generic-service",
+            }),
+          ],
+          reportTimeline: [
+            expect.objectContaining({ event: "report.sent_to_manager" }),
+          ],
           agentMessages: [expect.objectContaining({ role: "host_agent" })],
           subtaskStatus: "queued",
           queueReason: "waiting for host session capacity",
@@ -539,11 +800,19 @@ describe("aiopsTransportConverter", () => {
         }),
       ],
     });
-    expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "ops_manual_search_result" })]),
+    expect(
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "ops_manual_search_result" }),
+      ]),
     );
-    expect(result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "coroot_chart" })]),
+    expect(
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
+    ).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "coroot_chart" }),
+      ]),
     );
   });
 
@@ -586,7 +855,10 @@ describe("aiopsTransportConverter", () => {
             decision: "direct_execute",
             manuals: [
               {
-                manual: { id: "manual-mysql-backup-ssh", title: "MySQL SSH 备份运维手册" },
+                manual: {
+                  id: "manual-mysql-backup-ssh",
+                  title: "MySQL SSH 备份运维手册",
+                },
                 bound_workflow_id: "workflow-mysql-backup-ssh",
               },
             ],
@@ -609,7 +881,8 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts =
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -637,7 +910,10 @@ describe("aiopsTransportConverter", () => {
             decision: "need_info",
             manuals: [
               {
-                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                manual: {
+                  id: "manual-redis-rca-ssh",
+                  title: "Redis SSH 排障运维手册",
+                },
                 bound_workflow_id: "workflow-redis-rca-ssh",
               },
             ],
@@ -667,7 +943,8 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts =
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -707,7 +984,10 @@ describe("aiopsTransportConverter", () => {
             ops_manual_flow_id: "flow-search-mysql",
             manuals: [
               {
-                manual: { id: "manual-mysql-backup-ssh", title: "MySQL SSH 备份运维手册" },
+                manual: {
+                  id: "manual-mysql-backup-ssh",
+                  title: "MySQL SSH 备份运维手册",
+                },
                 bound_workflow_id: "workflow-mysql-backup-ssh",
               },
             ],
@@ -729,7 +1009,8 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts =
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -759,7 +1040,10 @@ describe("aiopsTransportConverter", () => {
             ops_manual_flow_id: "flow-a",
             manuals: [
               {
-                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                manual: {
+                  id: "manual-redis-rca-ssh",
+                  title: "Redis SSH 排障运维手册",
+                },
                 bound_workflow_id: "workflow-redis-rca-ssh",
               },
             ],
@@ -773,7 +1057,10 @@ describe("aiopsTransportConverter", () => {
             ops_manual_flow_id: "flow-b",
             manuals: [
               {
-                manual: { id: "manual-redis-rca-ssh", title: "Redis SSH 排障运维手册" },
+                manual: {
+                  id: "manual-redis-rca-ssh",
+                  title: "Redis SSH 排障运维手册",
+                },
                 bound_workflow_id: "workflow-redis-rca-ssh",
               },
             ],
@@ -795,7 +1082,8 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts = result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts =
+      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
 
     expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({
@@ -816,7 +1104,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("treats working and blocked transport states as running", () => {
+  it("keeps approval-blocked transport interactive instead of treating it as running", () => {
     const state = createState();
 
     expect(isAiopsTransportRunning(state)).toBe(false);
@@ -827,6 +1115,17 @@ describe("aiopsTransportConverter", () => {
         status: "blocked",
         runtimeLiveness: {
           ...state.runtimeLiveness,
+          pendingApprovals: { "approval-1": true },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isAiopsTransportRunning({
+        ...state,
+        status: "blocked",
+        runtimeLiveness: {
+          ...state.runtimeLiveness,
+          activeTurns: { "turn-1": true },
           pendingApprovals: { "approval-1": true },
         },
       }),

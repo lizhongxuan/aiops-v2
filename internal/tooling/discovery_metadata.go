@@ -11,19 +11,32 @@ func (m ToolMetadata) EffectiveDiscovery() ToolDiscoveryMetadata {
 	d.DiscoveryGroup = strings.TrimSpace(d.DiscoveryGroup)
 	d.CapabilityKind = normalizeDiscoveryToken(d.CapabilityKind)
 	d.DiscoveryTags = normalizeDiscoveryList(d.DiscoveryTags)
+	d.Capabilities = normalizeDiscoveryList(d.Capabilities)
 	d.ResourceTypes = normalizeDiscoveryList(d.ResourceTypes)
+	d.TargetKinds = normalizeDiscoveryList(d.TargetKinds)
 	d.OperationKinds = normalizeDiscoveryList(d.OperationKinds)
+	if d.RiskLevel != "" {
+		d.RiskLevel = d.RiskLevel.Normalize()
+	} else if m.RiskLevel != "" {
+		d.RiskLevel = m.RiskLevel.Normalize()
+	}
 	d.LoadingPolicy = m.effectiveLoadingPolicy(d.LoadingPolicy)
 	d.AgentProfiles = mergeDiscoveryLists(d.AgentProfiles, m.Profiles)
 	d.ToolPackIDs = mergeDiscoveryLists(d.ToolPackIDs, singletonIfNotEmpty(m.Pack))
 	d.MCPServerID = normalizeDiscoveryToken(firstNonEmpty(d.MCPServerID, m.MCPInfo.ServerID, m.MCPInfo.ServerName))
+	d.EvidenceKind = normalizeDiscoveryToken(d.EvidenceKind)
 	d.PermissionScope = normalizeDiscoveryToken(d.PermissionScope)
 	d.PromptBudgetClass = normalizeDiscoveryToken(d.PromptBudgetClass)
 	d.SchemaBudgetClass = normalizeDiscoveryToken(d.SchemaBudgetClass)
 	d.SupersedesShellHints = normalizeDiscoveryList(d.SupersedesShellHints)
+	d.TargetKinds = mergeDiscoveryLists(d.TargetKinds, d.ResourceTypes)
+	d.ResourceTypes = mergeDiscoveryLists(d.ResourceTypes, d.TargetKinds)
 
 	if m.HasMCPSource() && !m.AlwaysLoad {
 		d.RequiresHealthyMCP = true
+	}
+	if d.CapabilityKind == "" {
+		d.CapabilityKind = discoveryCapabilityFromCapabilities(d.Capabilities)
 	}
 	if d.CapabilityKind == "" {
 		switch {
@@ -50,6 +63,7 @@ func (m ToolMetadata) EffectiveDiscovery() ToolDiscoveryMetadata {
 	if d.CapabilityKind == "" {
 		d.CapabilityKind = "read"
 	}
+	d.Capabilities = mergeDiscoveryLists(d.Capabilities, singletonIfNotEmpty(d.CapabilityKind))
 	if m.Layer == ToolLayerInternal {
 		d.HiddenFromDiscovery = true
 		d.HiddenFromPrompt = true
@@ -67,6 +81,60 @@ func (m ToolMetadata) EffectiveLoadingPolicy() ToolLoadingPolicy {
 // discovery listings such as tool_search.
 func ToolHiddenFromDiscovery(meta ToolMetadata) bool {
 	return meta.EffectiveDiscovery().HiddenFromDiscovery
+}
+
+// ToolExcludedFromDeferredDiscovery reports whether a tool belongs to a
+// first-class runtime surface that must not be discovered through tool_search.
+func ToolExcludedFromDeferredDiscovery(meta ToolMetadata) bool {
+	name := strings.ToLower(strings.TrimSpace(meta.Name))
+	pack := strings.ToLower(strings.TrimSpace(meta.Pack))
+	switch name {
+	case "tool_search", "web_search", "browse_url":
+		return true
+	}
+	return pack == "public_web"
+}
+
+// ExplicitToolSearchDiscoveryRequested reports whether the user explicitly asks
+// to use tool_search for deferred tool discovery. Mentions while debugging,
+// forbidding, or discussing tool_search should not expose the tool.
+func ExplicitToolSearchDiscoveryRequested(input string) bool {
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" || !strings.Contains(text, "tool_search") {
+		return false
+	}
+	if containsAnyDiscoveryPhrase(text,
+		"不要", "别用", "不要用", "不应该", "不要再", "禁止",
+		"do not", "don't", "dont", "should not", "must not", "without tool_search",
+	) {
+		return false
+	}
+	if containsAnyDiscoveryPhrase(text, "@tool_search") {
+		return true
+	}
+	action := containsAnyDiscoveryPhrase(text,
+		"use tool_search", "call tool_search", "enable tool_search", "invoke tool_search", "select tool_search",
+		"使用 tool_search", "使用tool_search", "用 tool_search", "用tool_search",
+		"调用 tool_search", "调用tool_search", "启用 tool_search", "启用tool_search",
+		"选择 tool_search", "选择tool_search",
+	)
+	if !action {
+		return false
+	}
+	return containsAnyDiscoveryPhrase(text,
+		"deferred", "defer", "discover", "discovery", "select", "pack", "tool family",
+		"发现", "延迟", "未暴露", "还没暴露", "工具包", "工具家族", "选择工具",
+	)
+}
+
+func containsAnyDiscoveryPhrase(text string, phrases ...string) bool {
+	for _, phrase := range phrases {
+		phrase = strings.ToLower(strings.TrimSpace(phrase))
+		if phrase != "" && strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolHiddenFromPrompt reports whether a tool should be omitted from the
@@ -106,19 +174,40 @@ func ToolDiscoverySearchText(meta ToolMetadata) string {
 		meta.SearchHint,
 		d.DiscoveryGroup,
 		d.CapabilityKind,
+		strings.Join(d.Capabilities, " "),
 		strings.Join(d.DiscoveryTags, " "),
 		strings.Join(d.ResourceTypes, " "),
+		strings.Join(d.TargetKinds, " "),
 		strings.Join(d.OperationKinds, " "),
+		string(d.RiskLevel),
 		string(d.LoadingPolicy),
 		strings.Join(d.AgentProfiles, " "),
 		strings.Join(d.ToolPackIDs, " "),
 		d.MCPServerID,
+		d.EvidenceKind,
 		d.PermissionScope,
 		d.PromptBudgetClass,
 		d.SchemaBudgetClass,
 		strings.Join(meta.Triggers, " "),
 	}
+	if d.RequiresExplicitTarget {
+		parts = append(parts, "requires_explicit_target")
+	}
 	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func discoveryCapabilityFromCapabilities(capabilities []string) string {
+	for _, preferred := range []string{"execute", "write", "read", "inspect", "search"} {
+		for _, capability := range capabilities {
+			if capability == preferred {
+				return capability
+			}
+		}
+	}
+	if len(capabilities) == 0 {
+		return ""
+	}
+	return capabilities[0]
 }
 
 func (m ToolMetadata) effectiveLoadingPolicy(explicit ToolLoadingPolicy) ToolLoadingPolicy {

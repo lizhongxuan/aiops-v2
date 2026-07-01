@@ -5,14 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/opssemantic"
 )
 
 var ErrInvalidHostSubTaskSchedule = errors.New("invalid host subtask schedule request")
 
+type HostManagerRuntimeLimits struct {
+	MaxChildAgents  int           `json:"maxChildAgents"`
+	MaxChildRuntime time.Duration `json:"maxChildRuntime"`
+}
+
 type HostSubTaskScheduler struct {
-	store hostSubTaskScheduleStore
+	store  hostSubTaskScheduleStore
+	limits HostManagerRuntimeLimits
 }
 
 type hostSubTaskScheduleStore interface {
@@ -21,7 +28,21 @@ type hostSubTaskScheduleStore interface {
 }
 
 func NewHostSubTaskScheduler(store hostSubTaskScheduleStore) *HostSubTaskScheduler {
-	return &HostSubTaskScheduler{store: store}
+	return NewHostSubTaskSchedulerWithLimits(store, HostManagerRuntimeLimits{})
+}
+
+func NewHostSubTaskSchedulerWithLimits(store hostSubTaskScheduleStore, limits HostManagerRuntimeLimits) *HostSubTaskScheduler {
+	return &HostSubTaskScheduler{store: store, limits: normalizeHostManagerRuntimeLimits(limits)}
+}
+
+func normalizeHostManagerRuntimeLimits(limits HostManagerRuntimeLimits) HostManagerRuntimeLimits {
+	if limits.MaxChildAgents <= 0 {
+		limits.MaxChildAgents = 8
+	}
+	if limits.MaxChildRuntime <= 0 {
+		limits.MaxChildRuntime = 30 * time.Minute
+	}
+	return limits
 }
 
 func (s *HostSubTaskScheduler) Schedule(ctx context.Context, task HostSubTask) (HostSubTaskScheduleDecision, error) {
@@ -72,6 +93,76 @@ func (s *HostSubTaskScheduler) Schedule(ctx context.Context, task HostSubTask) (
 	}
 	decision.Status = HostSubTaskStatusRunning
 	return decision, s.store.SaveHostSubTaskScheduleDecision(ctx, decision)
+}
+
+func (s *HostSubTaskScheduler) MergeChildReport(ctx context.Context, task HostSubTask, report HostTaskReport) (HostSubTaskScheduleDecision, error) {
+	task.ID = strings.TrimSpace(task.ID)
+	task.MissionID = strings.TrimSpace(firstNonEmptyString(task.MissionID, report.MissionID))
+	task.HostID = strings.TrimSpace(firstNonEmptyString(task.HostID, report.HostID))
+	task.PlanStepID = strings.TrimSpace(firstNonEmptyString(task.PlanStepID, report.PlanStepID))
+	if task.ID == "" {
+		task.ID = "subtask-" + digestText(task.MissionID + ":" + task.HostID + ":" + task.PlanStepID)[:12]
+	}
+	if task.MissionID == "" || task.HostID == "" {
+		return HostSubTaskScheduleDecision{}, ErrInvalidHostSubTaskSchedule
+	}
+	if s == nil || s.store == nil {
+		return HostSubTaskScheduleDecision{}, ErrInvalidHostSubTaskSchedule
+	}
+	decision := HostSubTaskScheduleDecision{
+		SubTaskID:      task.ID,
+		MissionID:      task.MissionID,
+		HostID:         task.HostID,
+		PlanStepID:     task.PlanStepID,
+		Status:         hostSubTaskStatusFromReportStatus(HostTaskReportStatus(strings.TrimSpace(report.Status))),
+		ToolCallID:     "tool-call:" + task.ID,
+		EvidenceRef:    firstEvidenceRef(report, task),
+		BlockingReason: firstNonEmptyString(firstReportText(report.Blockers), firstReportText(report.Errors)),
+	}
+	return decision, s.store.SaveHostSubTaskScheduleDecision(ctx, decision)
+}
+
+func hostSubTaskStatusFromReportStatus(status HostTaskReportStatus) HostSubTaskStatus {
+	switch status {
+	case HostTaskReportStatusCompleted:
+		return HostSubTaskStatusCompleted
+	case HostTaskReportStatusBlockedApproval, HostTaskReportStatusNeedsUserApproval:
+		return HostSubTaskStatusBlockedApproval
+	case HostTaskReportStatusBlockedEvidence, HostTaskReportStatusBlocked, HostTaskReportStatusNeedsManagerCoordination:
+		return HostSubTaskStatusBlockedEvidence
+	case HostTaskReportStatusFailed:
+		return HostSubTaskStatusFailed
+	case HostTaskReportStatusCancelled:
+		return HostSubTaskStatusCancelled
+	case HostTaskReportStatusTimeout:
+		return HostSubTaskStatusTimeout
+	default:
+		return HostSubTaskStatusFailed
+	}
+}
+
+func firstEvidenceRef(report HostTaskReport, task HostSubTask) string {
+	if ref := firstReportText(report.EvidenceRefs); ref != "" {
+		return ref
+	}
+	for _, evidence := range report.Evidence {
+		if strings.TrimSpace(evidence.ID) != "" {
+			return strings.TrimSpace(evidence.ID)
+		}
+		if strings.TrimSpace(evidence.ArtifactRef) != "" {
+			return strings.TrimSpace(evidence.ArtifactRef)
+		}
+	}
+	return "evidence://" + task.MissionID + "/" + task.HostID + "/" + task.ID
+}
+
+func firstReportText(values []string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func isWriteHostSubTask(task HostSubTask) bool {

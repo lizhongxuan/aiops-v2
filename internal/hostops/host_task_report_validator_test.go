@@ -85,6 +85,42 @@ func TestHostTaskReportValidatorAllowsExplicitSanitizedArtifactRef(t *testing.T)
 	}
 }
 
+func TestHostTaskReportValidatorAcceptsRuntimeChildTerminalStatuses(t *testing.T) {
+	validator := NewHostTaskReportValidator(HostTaskReportValidationContext{
+		MissionID:   "mission-report",
+		PlanStepID:  "step-a",
+		HostAgentID: "child-a",
+		HostID:      "host-a",
+	})
+	for _, status := range []HostTaskReportStatus{
+		HostTaskReportStatusCompleted,
+		HostTaskReportStatusBlockedApproval,
+		HostTaskReportStatusBlockedEvidence,
+		HostTaskReportStatusFailed,
+		HostTaskReportStatusCancelled,
+		HostTaskReportStatusTimeout,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			err := validator.Validate(HostTaskReport{
+				MissionID:   "mission-report",
+				PlanStepID:  "step-a",
+				HostAgentID: "child-a",
+				HostID:      "host-a",
+				Status:      string(status),
+				Evidence: []HostTaskEvidence{{
+					ID:              "ev-" + string(status),
+					HostID:          "host-a",
+					Source:          EvidenceSourceHostCommandTool,
+					RedactionStatus: RedactionStatusNotRequired,
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Validate(%s) error = %v", status, err)
+			}
+		})
+	}
+}
+
 func TestHostTaskReportValidatorRedactsSensitiveCommandSummaries(t *testing.T) {
 	report := HostTaskReport{
 		MissionID:   "mission-report",

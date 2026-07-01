@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agentruntime"
 	evidencecore "aiops-v2/internal/evidence"
@@ -93,9 +92,9 @@ func (r *AgentConfigRunner) Run(ctx context.Context, config agentruntime.Config)
 		reasoningEffort: firstMetadataValue(runtimeMetadata, "reasoningEffort", "reasoning_effort"),
 	})
 
-	kernel := NewEinoKernel(EinoKernelConfig{
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:       fixedAgentToolSource{sessionType: sessionType, mode: mode, assembledTools: assembledTools, runtimeTools: config.RuntimeTools(), metadata: runtimeMetadata, config: config},
-		Compiler:         fixedAgentCompiler{instructions: append([]*schema.Message(nil), config.RuntimeInstructions()...)},
+		Compiler:         fixedAgentCompiler{instructionsText: modelrouter.EinoInstructionMessagesText(config.RuntimeInstructions())},
 		Policy:           r.cfg.Policy,
 		Permissions:      r.cfg.Permissions,
 		Hooks:            r.cfg.Hooks,
@@ -189,11 +188,11 @@ func (s fixedAgentToolSource) compileContext(session SessionType, mode Mode, met
 }
 
 type fixedAgentCompiler struct {
-	instructions []*schema.Message
+	instructionsText string
 }
 
 func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
-	systemContent := instructionsText(c.instructions)
+	systemContent := strings.TrimSpace(c.instructionsText)
 	if systemContent == "" {
 		systemContent = "你是一个子 Agent，按 manager 分派的任务执行并返回可核验结果。"
 	}
@@ -214,15 +213,38 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 		Tools:  promptcompiler.ToolPromptSet{Content: toolContent},
 		Policy: promptcompiler.RuntimePolicyPrompt{Content: ctx.RuntimePolicy, Mode: ctx.Mode},
 	}
+	compiled.Envelope = promptcompiler.PromptEnvelope{Sections: []promptcompiler.PromptCompiledSection{
+		{
+			ID:        "base.contract",
+			Layer:     promptcompiler.PromptSectionKindStable,
+			Role:      "system",
+			Content:   systemContent,
+			Stability: promptcompiler.PromptSectionKindStable,
+			Source:    "child_agent",
+			Required:  true,
+		},
+		{
+			ID:        "tool.surface",
+			Layer:     promptcompiler.PromptSectionKindStable,
+			Role:      "system",
+			Content:   toolContent,
+			Stability: promptcompiler.PromptSectionKindStable,
+			Source:    "tools",
+			Required:  true,
+		},
+		{
+			ID:        "runtime.state",
+			Layer:     promptcompiler.PromptSectionKindDynamic,
+			Role:      "system",
+			Content:   ctx.RuntimePolicy,
+			Stability: promptcompiler.PromptSectionKindDynamic,
+			Source:    "runtime",
+			Required:  true,
+		},
+	}}
+	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
+	compiled.PromptSections = promptcompiler.BuildPromptSectionTrace(compiled)
 	return compiled, nil
-}
-
-func (c fixedAgentCompiler) CompileForEino(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
-	compiled, err := c.Compile(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return promptcompiler.CompiledPromptToMessages(compiled), nil
 }
 
 type agentConfigProviderResolver struct {
@@ -279,26 +301,6 @@ func childRuntimeMetadata(config agentruntime.Config) map[string]string {
 		metadata["missionId"] = missionID
 	}
 	return metadata
-}
-
-func instructionsText(messages []*schema.Message) string {
-	var builder strings.Builder
-	for _, msg := range messages {
-		if msg == nil || strings.TrimSpace(msg.Content) == "" {
-			continue
-		}
-		if builder.Len() > 0 {
-			builder.WriteString("\n\n")
-		}
-		role := strings.TrimSpace(string(msg.Role))
-		if role != "" {
-			builder.WriteString("[")
-			builder.WriteString(role)
-			builder.WriteString("]\n")
-		}
-		builder.WriteString(msg.Content)
-	}
-	return strings.TrimSpace(builder.String())
 }
 
 func toolPromptContent(tools []tooling.Tool) string {

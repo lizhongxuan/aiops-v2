@@ -36,6 +36,9 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
+		if appui.NormalizeHostConnectionMode(req.ConnectionMode) == appui.HostConnectionModeNodePushGRPC && strings.TrimSpace(req.AgentServerURL) == "" {
+			req.AgentServerURL = requestBaseURL(r)
+		}
 		resp, err := s.ui.HostService().InstallHost(r.Context(), hostID, req)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -50,6 +53,14 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp, err := s.ui.HostService().TestHostSSH(r.Context(), hostID, req)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case r.Method == http.MethodGet && strings.HasSuffix(strings.Trim(r.URL.Path, "/"), "/node/diagnostics"):
+		hostID := hostIDFromNestedHostPath(r.URL.Path, "node/diagnostics")
+		resp, err := s.ui.HostService().DiagnoseHostNode(r.Context(), hostID)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -83,6 +94,34 @@ func (s *HTTPServer) handleHosts(w http.ResponseWriter, r *http.Request) {
 func hostIDFromNestedHostPath(path, suffix string) string {
 	trimmed := strings.Trim(strings.TrimPrefix(path, "/api/v1/hosts/"), "/")
 	return strings.Trim(strings.TrimSuffix(trimmed, "/"+suffix), "/")
+}
+
+func requestBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwardedProto := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = forwardedProto
+	}
+	host := firstForwardedValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = strings.TrimSpace(r.Host)
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstForwardedValue(value string) string {
+	if idx := strings.Index(value, ","); idx >= 0 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
 }
 
 func (s *HTTPServer) handleSelectHost(w http.ResponseWriter, r *http.Request) {

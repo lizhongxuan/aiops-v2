@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const resumeRunSpy = vi.fn();
 const transportRuntimeSpy = vi.fn(() => ({}));
+let transportStateForHook: unknown = undefined;
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: React.ReactNode }) => children,
@@ -18,10 +19,15 @@ vi.mock("@assistant-ui/react", () => ({
     transportRuntimeSpy(options);
     return {};
   },
+  useAssistantTransportState: () => transportStateForHook,
 }));
 
 import { ChatTransportProvider } from "./ChatTransportProvider";
 import { createInitialAiopsTransportState } from "./aiopsTransportRuntime";
+import {
+  getCachedAiopsTransportState,
+  resetAiopsTransportStateCacheForTest,
+} from "./aiopsTransportStateCache";
 
 describe("ChatTransportProvider", () => {
   let container: HTMLDivElement;
@@ -34,6 +40,8 @@ describe("ChatTransportProvider", () => {
     root = createRoot(container);
     resumeRunSpy.mockReset();
     transportRuntimeSpy.mockClear();
+    transportStateForHook = undefined;
+    resetAiopsTransportStateCacheForTest();
   });
 
   afterEach(() => {
@@ -109,5 +117,26 @@ describe("ChatTransportProvider", () => {
         }),
       }),
     );
+  });
+
+  it("writes transport state updates to the in-memory cache", async () => {
+    const state = createInitialAiopsTransportState("thread-cache-provider");
+    state.sessionId = "sess-cache-provider";
+    state.turnOrder = ["turn-1"];
+    transportStateForHook = state;
+
+    await act(async () => {
+      root.render(
+        <ChatTransportProvider cacheScope="single_host" initialState={state} threadId="thread-cache-provider">
+          <div>chat</div>
+        </ChatTransportProvider>,
+      );
+    });
+
+    expect(getCachedAiopsTransportState("single_host")).toMatchObject({
+      sessionId: "sess-cache-provider",
+      threadId: "thread-cache-provider",
+      turnOrder: ["turn-1"],
+    });
   });
 });

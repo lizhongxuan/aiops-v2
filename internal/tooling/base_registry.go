@@ -26,12 +26,17 @@ func MandatoryInitialToolNames() []string {
 	return append([]string(nil), mandatoryInitialToolNames...)
 }
 
-// IsAlwaysModelCallableTool reports tools that must remain in the executable
-// model-facing surface in every session, mode, profile, skill, and runtime
-// policy context. Execution is still governed by the tool's own argument-level
-// validation and permission checks.
-func IsAlwaysModelCallableTool(meta ToolMetadata) bool {
+// IsRuntimeRegisteredTool reports tools that may stay registered with the
+// runtime even when they are not exposed in the current model-visible surface.
+func IsRuntimeRegisteredTool(meta ToolMetadata) bool {
 	return matchesName(meta, ExecCommandToolName)
+}
+
+// IsModelVisibleToolForProfile reports whether a registered tool is allowed to
+// appear in the model-facing surface for the selected profile. Runtime
+// registration does not override this check.
+func IsModelVisibleToolForProfile(meta ToolMetadata, profile string) bool {
+	return profileAllowsTool(meta, strings.TrimSpace(profile))
 }
 
 // IsReservedRuntimeToolName reports names reserved for runtime/helper

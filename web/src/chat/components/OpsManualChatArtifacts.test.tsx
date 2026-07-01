@@ -146,7 +146,7 @@ describe("OpsManualChatArtifacts", () => {
     window.removeEventListener("aiops:composer-context-submit", submitHandler);
   });
 
-  it("renders resolved parameter resolution as the preflight entry point", async () => {
+  it("renders resolved parameter resolution as the use-manual entry point", async () => {
     await act(async () => {
       root.render(
         <OpsManualParamResolutionArtifact
@@ -173,19 +173,19 @@ describe("OpsManualChatArtifacts", () => {
                   evidence: "docker ps discovered one Redis container",
                 },
               ],
-              next_action: "run_preflight",
+              next_action: "confirm_use_ops_manual",
             },
           }}
         />,
       );
     });
 
-    expect(container.textContent).toContain("参数已补齐，可进入预检");
+    expect(container.textContent).toContain("参数已补齐，可推荐使用");
     expect(container.textContent).toContain("manual-redis-rca-ssh");
     expect(container.textContent).toContain("server-local");
     expect(container.textContent).toContain("docker:aiops-redis");
     expect(container.textContent).toContain("当前选择主机");
-    expect(container.textContent).toContain("运行预检");
+    expect(container.textContent).toContain("使用该手册/Workflow");
     expect(container.textContent).not.toContain("resolver_log");
     expect(container.textContent).not.toContain("请在底部补充");
   });
@@ -705,7 +705,7 @@ describe("OpsManualChatArtifacts", () => {
     window.removeEventListener("aiops:composer-context-submit", handler);
   });
 
-  it("sends distinct metadata for skip, reference-only, and run-preflight actions on a direct manual hit", async () => {
+  it("sends distinct metadata for skip, reference-only, and use-manual actions on a direct manual hit", async () => {
     const events: Array<{
       text?: string;
       artifactId?: string;
@@ -750,18 +750,20 @@ describe("OpsManualChatArtifacts", () => {
     const referenceButton = buttons.find((button) =>
       button.textContent?.includes("仅参考手册"),
     );
-    const preflightButton = buttons.find((button) =>
-      button.textContent?.includes("运行预检"),
+    const useButton = buttons.find((button) =>
+      button.textContent?.includes("使用该手册/Workflow"),
     );
     const skipButton = buttons.find((button) =>
       button.textContent?.includes("不使用"),
     );
     expect(referenceButton).toBeTruthy();
-    expect(preflightButton).toBeTruthy();
+    expect(useButton).toBeTruthy();
     expect(skipButton).toBeTruthy();
 
     await act(async () => {
-      referenceButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      referenceButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     expect(events.at(-1)).toMatchObject({
       artifactId: "artifact-direct-actions",
@@ -777,26 +779,24 @@ describe("OpsManualChatArtifacts", () => {
     });
     expect(events.at(-1)?.text).toContain("仅参考运维手册");
     expect(
-      container.querySelector('[data-testid="ops-manual-preflight-running"]'),
+      container.querySelector('[data-testid="ops-manual-use-submitted"]'),
     ).toBeNull();
 
     await act(async () => {
-      preflightButton?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      useButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(events.at(-1)).toMatchObject({
       artifactId: "artifact-direct-actions",
       metadata: {
-        opsManualAction: "run_ops_manual_preflight",
+        opsManualAction: "use_ops_manual",
         opsManualManualId: "manual-redis-rca-ssh",
         opsManualWorkflowId: "workflow-redis-rca-ssh",
         ops_manual_flow_id: "flow-redis-direct-actions",
       },
     });
-    expect(container.textContent).toContain("预检中");
+    expect(container.textContent).toContain("已选择使用");
     expect(
-      container.querySelector('[data-testid="ops-manual-preflight-running"]'),
+      container.querySelector('[data-testid="ops-manual-use-submitted"]'),
     ).not.toBeNull();
 
     await act(async () => {
@@ -814,7 +814,7 @@ describe("OpsManualChatArtifacts", () => {
     });
     expect(events.map((event) => event.metadata?.opsManualAction)).toEqual([
       "reference_ops_manual",
-      "run_ops_manual_preflight",
+      "use_ops_manual",
       "skip_ops_manual",
     ]);
 
@@ -1009,9 +1009,18 @@ describe("OpsManualChatArtifacts", () => {
                   manual: {
                     id: "manual-redis-local-readonly-rca",
                     title: "Redis 本机只读排障运维手册",
+                    applicability: {
+                      middleware: "redis",
+                      os: ["linux"],
+                      execution_surface: ["ssh"],
+                    },
+                    cannot_use_when: ["需要重启 Redis"],
                   },
                   bound_workflow_id: "workflow-redis-local-readonly-rca",
                   usable_mode: "direct_execute",
+                  score_breakdown: {
+                    final_score: 0.93,
+                  },
                   matched_fields: [
                     "object_type",
                     "operation_type",
@@ -1032,21 +1041,77 @@ describe("OpsManualChatArtifacts", () => {
       );
     });
 
-    expect(container.textContent).toContain("可进入预检");
+    expect(container.textContent).toContain("可推荐使用");
     expect(container.textContent).toContain("Redis 本机只读排障运维手册");
     expect(container.textContent).toContain(
       "workflow-redis-local-readonly-rca",
     );
     expect(container.textContent).toContain(
-      "下一步：AI 会先运行只读预检；通过后确认或审批执行。",
+      "下一步：可选择使用该手册/Workflow，也可以跳过继续 AI Chat 处理。",
     );
+    expect(container.textContent).toContain("匹配原因");
+    expect(container.textContent).toContain("对象类型");
+    expect(container.textContent).toContain("置信分 93%");
+    expect(container.textContent).toContain("适用边界");
+    expect(container.textContent).toContain("对象 Redis");
+    expect(container.textContent).toContain("不适用");
+    expect(container.textContent).toContain("需要重启 Redis");
+    expect(container.textContent).toContain("使用 1 次");
+    expect(container.textContent).toContain("成功率 100%");
     expect(
       Array.from(container.querySelectorAll("button")).map((button) =>
         button.textContent?.trim(),
       ),
-    ).toEqual(["运行预检", "仅参考手册", "不使用"]);
+    ).toEqual(["使用该手册/Workflow", "仅参考手册", "不使用"]);
     expect(container.textContent).not.toContain("Runner 已执行");
-    expect(container.textContent).not.toMatch(/\d+\s*%/);
+  });
+
+  it("renders reference_only search result without a use-manual primary action", async () => {
+    await act(async () => {
+      root.render(
+        <OpsManualSearchResultArtifact
+          artifact={{
+            id: "artifact-reference-only",
+            type: "ops_manual_search_result",
+            inlineData: {
+              decision: "reference_only",
+              summary: "没有可直接运行的 Workflow，可继续只读自动化排查。",
+              recommended_next_action:
+                "继续只读自动化排查，缺目标、时间范围或观测数据时再补齐。",
+              operation_frame: {
+                object_type: "postgresql",
+                operation_type: "rca_or_repair",
+              },
+              manuals: [
+                {
+                  manual: {
+                    id: "manual-generic-stateful-cluster-repair",
+                    title: "通用有状态集群恢复运维手册",
+                  },
+                  bound_workflow_id: "workflow-generic-stateful-cluster-repair",
+                  usable_mode: "reference_only",
+                  blocked_reasons: [
+                    "generic fallback is not a high-confidence manual match",
+                  ],
+                  recommended_action: "reference_manual",
+                },
+              ],
+            },
+          }}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("仅参考");
+    expect(container.textContent).toContain("没有可直接运行的 Workflow");
+    expect(container.textContent).toContain("通用有状态集群恢复运维手册");
+    const buttonLabels = Array.from(container.querySelectorAll("button")).map(
+      (button) => button.textContent?.trim(),
+    );
+    expect(buttonLabels).toContain("仅参考手册");
+    expect(buttonLabels).toContain("不使用");
+    expect(buttonLabels).not.toContain("使用该手册/Workflow");
+    expect(container.textContent).not.toContain("运行预检");
   });
 
   it("renders direct_execute search and preflight as one compact card when merged", async () => {
@@ -1105,7 +1170,7 @@ describe("OpsManualChatArtifacts", () => {
         '[data-testid="ops-manual-preflight-result-card"]',
       ),
     ).toHaveLength(0);
-    expect(container.textContent).toContain("可进入预检");
+    expect(container.textContent).toContain("可推荐使用");
     expect(container.textContent).toContain("mysql / backup");
     expect(container.textContent).toContain("MySQL SSH 备份运维手册");
     expect(container.textContent).toContain("workflow-mysql-backup-ssh");
@@ -1257,11 +1322,11 @@ describe("OpsManualChatArtifacts", () => {
       );
     });
 
-    expect(container.textContent).toContain("可进入预检");
+    expect(container.textContent).toContain("可推荐使用");
     expect(container.textContent).toContain("Redis 内存压力排障");
     expect(container.textContent).toContain("workflow-redis-memory");
     expect(container.textContent).toContain(
-      "下一步：先运行预检，通过后确认或审批执行。",
+      "下一步：用户确认后按手册边界处理；高风险动作仍需审批。",
     );
     expect(container.querySelectorAll("button")).toHaveLength(0);
     expect(container.textContent).not.toMatch(/\d+\s*%/);
@@ -1370,18 +1435,18 @@ describe("OpsManualChatArtifacts", () => {
     });
 
     const button = Array.from(container.querySelectorAll("button")).find(
-      (item) => item.textContent?.includes("运行预检"),
+      (item) => item.textContent?.includes("使用该手册/Workflow"),
     );
     await act(async () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(container.textContent).toContain("预检中");
+    expect(container.textContent).toContain("已选择使用");
     expect(container.textContent).toContain(
-      "预检请求已提交，正在等待只读探针结果。",
+      "已选择使用该手册/Workflow，Agent 会按手册边界继续处理；高风险动作仍需审批。",
     );
     expect((button as HTMLButtonElement | undefined)?.disabled).toBe(true);
-    expect(detail?.metadata?.opsManualAction).toBe("run_ops_manual_preflight");
+    expect(detail?.metadata?.opsManualAction).toBe("use_ops_manual");
 
     window.removeEventListener("aiops:composer-context-submit", handler);
   });
@@ -1729,7 +1794,11 @@ describe("OpsManualChatArtifacts", () => {
               },
               steps: [
                 { id: "search-news", title: "搜索 AI 新闻", status: "waiting" },
-                { id: "extract-news", title: "提取关键新闻", status: "waiting" },
+                {
+                  id: "extract-news",
+                  title: "提取关键新闻",
+                  status: "waiting",
+                },
               ],
             },
           }}
@@ -1737,7 +1806,9 @@ describe("OpsManualChatArtifacts", () => {
       );
     });
 
-    const imageSelect = container.querySelector('[data-testid="runner-workflow-validation-image"]') as HTMLSelectElement | null;
+    const imageSelect = container.querySelector(
+      '[data-testid="runner-workflow-validation-image"]',
+    ) as HTMLSelectElement | null;
     expect(imageSelect?.value).toBe("python:3.12-slim");
     await act(async () => {
       if (imageSelect) {
@@ -1746,9 +1817,9 @@ describe("OpsManualChatArtifacts", () => {
       }
     });
 
-    const generateButton = Array.from(container.querySelectorAll("button")).find(
-      (item) => item.textContent?.includes("生成"),
-    );
+    const generateButton = Array.from(
+      container.querySelectorAll("button"),
+    ).find((item) => item.textContent?.includes("生成"));
     await act(async () => {
       generateButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
@@ -1840,7 +1911,8 @@ describe("OpsManualChatArtifacts", () => {
                   scriptPreview: "print('AIOPS_NODE_RESULT_BEGIN')",
                   validationStatus: "passed",
                   validationSummary: "节点脚本在 Docker 中执行成功。",
-                  validationStdout: "AIOPS_NODE_RESULT_BEGIN\n{\"ok\": true}\nAIOPS_NODE_RESULT_END",
+                  validationStdout:
+                    'AIOPS_NODE_RESULT_BEGIN\n{"ok": true}\nAIOPS_NODE_RESULT_END',
                   validationStderr: "",
                 },
               ],
@@ -1869,8 +1941,12 @@ describe("OpsManualChatArtifacts", () => {
     expect(document.body.textContent).toContain("节点详情");
     expect(document.body.textContent).toContain("Python 脚本");
     expect(document.body.textContent).toContain("script.python");
-    expect(document.body.textContent).toContain("print('AIOPS_NODE_RESULT_BEGIN')");
-    const scriptPreview = document.body.querySelector("pre") as HTMLElement | null;
+    expect(document.body.textContent).toContain(
+      "print('AIOPS_NODE_RESULT_BEGIN')",
+    );
+    const scriptPreview = document.body.querySelector(
+      "pre",
+    ) as HTMLElement | null;
     expect(scriptPreview?.className).toContain("max-h-[520px]");
     expect(scriptPreview?.className).toContain("min-h-[240px]");
     expect(document.body.textContent).not.toContain("只读节点");
@@ -1878,7 +1954,7 @@ describe("OpsManualChatArtifacts", () => {
     expect(document.body.textContent).toContain("验证镜像");
     expect(document.body.textContent).toContain("python:3.12-slim");
     expect(document.body.textContent).toContain("执行输出");
-    expect(document.body.textContent).toContain("{\"ok\": true}");
+    expect(document.body.textContent).toContain('{"ok": true}');
   });
 
   it("renders runner workflow generation artifact without raw inline fields", async () => {
@@ -1895,12 +1971,16 @@ describe("OpsManualChatArtifacts", () => {
             inlineData: {
               workflowTitle: "AI 新闻摘要工作流",
               generationAvailable: true,
-              actions: [{ id: "generate_workflow", label: "生成", kind: "confirm" }],
+              actions: [
+                { id: "generate_workflow", label: "生成", kind: "confirm" },
+              ],
               draftWorkflowId: "",
               outputs: [{ id: "delivery", target: "return" }],
               planVersion: 1,
               requiredSlots: [],
-              steps: [{ id: "search-news", title: "搜索 AI 新闻", status: "waiting" }],
+              steps: [
+                { id: "search-news", title: "搜索 AI 新闻", status: "waiting" },
+              ],
             },
           }}
         />,
@@ -2132,9 +2212,9 @@ describe("OpsManualChatArtifacts", () => {
     expect(resolvedParams.textContent).not.toContain("server-local");
     expect(resolvedParams.textContent).not.toContain("docker:aiops-postgres");
     await act(async () => {
-      resolvedParams.querySelector("button")?.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
+      resolvedParams
+        .querySelector("button")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(resolvedParams.textContent).toContain("server-local");
     expect(resolvedParams.textContent).toContain("docker:aiops-postgres");

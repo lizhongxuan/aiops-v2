@@ -37,6 +37,11 @@ export function AppShell() {
     }
   }, [sidebarCollapsed]);
 
+  useEffect(() => {
+    document.documentElement.style.setProperty("--aiops-shell-sidebar-width", sidebarCollapsed ? "5rem" : "18rem");
+    document.documentElement.style.setProperty("--aiops-shell-header-height", "3.5rem");
+  }, [sidebarCollapsed]);
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
       <aside

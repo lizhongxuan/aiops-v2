@@ -3,14 +3,20 @@ package appui
 import (
 	"context"
 	"strings"
+	"sync"
+	"time"
 
 	"aiops-v2/internal/auth"
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/store"
 )
 
 type defaultSettingsService struct {
-	repo        SettingsRepository
-	authManager *auth.Manager
+	repo             SettingsRepository
+	authManager      *auth.Manager
+	runtimeMu        sync.RWMutex
+	runtimeSettings  store.RuntimeSettings
+	runtimeListeners []func(store.RuntimeSettings)
 }
 
 func NewSettingsService(repo SettingsRepository, managers ...*auth.Manager) SettingsService {
@@ -18,13 +24,61 @@ func NewSettingsService(repo SettingsRepository, managers ...*auth.Manager) Sett
 	if len(managers) > 0 {
 		manager = managers[0]
 	}
-	service := &defaultSettingsService{repo: repo, authManager: manager}
+	service := &defaultSettingsService{
+		repo:            repo,
+		authManager:     manager,
+		runtimeSettings: store.DefaultRuntimeSettings(),
+	}
+	if repo != nil {
+		if runtimeSettings, err := repo.GetRuntimeSettings(); err == nil && runtimeSettings != nil {
+			service.runtimeSettings = store.NormalizeRuntimeSettings(*runtimeSettings)
+		}
+	}
 	if repo != nil && manager != nil {
 		if cfg, err := repo.GetLLMConfig(); err == nil {
 			service.syncAuthFromLLMConfig(context.Background(), cfg)
 		}
 	}
 	return service
+}
+
+type RuntimeSettingsProvider interface {
+	Snapshot(ctx context.Context) store.RuntimeSettings
+}
+
+type RuntimeSettingsListenerRegistrar interface {
+	AddRuntimeSettingsListener(listener func(store.RuntimeSettings))
+}
+
+func (s *defaultSettingsService) Snapshot(context.Context) store.RuntimeSettings {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return store.NormalizeRuntimeSettings(s.runtimeSettings)
+}
+
+func (s *defaultSettingsService) setRuntimeSnapshot(settings store.RuntimeSettings) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.runtimeSettings = store.NormalizeRuntimeSettings(settings)
+}
+
+func (s *defaultSettingsService) AddRuntimeSettingsListener(listener func(store.RuntimeSettings)) {
+	if listener == nil {
+		return
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.runtimeListeners = append(s.runtimeListeners, listener)
+}
+
+func (s *defaultSettingsService) notifyRuntimeSettingsListeners(settings store.RuntimeSettings) {
+	s.runtimeMu.RLock()
+	listeners := append([]func(store.RuntimeSettings){}, s.runtimeListeners...)
+	s.runtimeMu.RUnlock()
+	settings = store.NormalizeRuntimeSettings(settings)
+	for _, listener := range listeners {
+		listener(settings)
+	}
 }
 
 func (s *defaultSettingsService) GetSettings(context.Context) (WebSettingsPayload, error) {
@@ -86,11 +140,118 @@ func (s *defaultSettingsService) UpdateSettings(ctx context.Context, payload Web
 	return s.GetSettings(ctx)
 }
 
+func (s *defaultSettingsService) GetRuntimeSettings(ctx context.Context) (RuntimeSettingsPayload, error) {
+	settings := s.Snapshot(ctx)
+	if s.repo != nil {
+		if current, err := s.repo.GetRuntimeSettings(); err == nil && current != nil {
+			settings = store.NormalizeRuntimeSettings(*current)
+			s.setRuntimeSnapshot(settings)
+		}
+	}
+	return runtimeSettingsPayload(settings), nil
+}
+
+func (s *defaultSettingsService) UpdateRuntimeSettings(ctx context.Context, payload RuntimeSettingsUpdate) (RuntimeSettingsPayload, error) {
+	next := mergeRuntimeSettingsUpdate(s.Snapshot(ctx), payload)
+	next = store.NormalizeRuntimeSettings(next)
+	if s.repo != nil {
+		if err := s.repo.SaveRuntimeSettings(&next); err != nil {
+			return RuntimeSettingsPayload{}, err
+		}
+		if current, err := s.repo.GetRuntimeSettings(); err == nil && current != nil {
+			next = store.NormalizeRuntimeSettings(*current)
+		}
+	}
+	if next.UpdatedAt.IsZero() {
+		next.UpdatedAt = time.Now().UTC()
+	}
+	s.setRuntimeSnapshot(next)
+	s.notifyRuntimeSettingsListeners(next)
+	return runtimeSettingsPayload(next), nil
+}
+
+func runtimeSettingsPayload(settings store.RuntimeSettings) RuntimeSettingsPayload {
+	settings = store.NormalizeRuntimeSettings(settings)
+	updatedAt := ""
+	if !settings.UpdatedAt.IsZero() {
+		updatedAt = settings.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return RuntimeSettingsPayload{
+		Settings:            settings,
+		Defaults:            store.DefaultRuntimeSettings(),
+		RestartRequiredKeys: []string{},
+		UpdatedAt:           updatedAt,
+	}
+}
+
+func mergeRuntimeSettingsUpdate(base store.RuntimeSettings, update RuntimeSettingsUpdate) store.RuntimeSettings {
+	next := store.NormalizeRuntimeSettings(base)
+	if update.AgentRuntime != nil {
+		if update.AgentRuntime.IntentFrameRouting != nil {
+			next.AgentRuntime.IntentFrameRouting = strings.TrimSpace(*update.AgentRuntime.IntentFrameRouting)
+		}
+		if update.AgentRuntime.DiagnosticProtocol != nil {
+			next.AgentRuntime.DiagnosticProtocol = *update.AgentRuntime.DiagnosticProtocol
+		}
+	}
+	if update.Tooling != nil {
+		if update.Tooling.ReadOnlyRetryEnabled != nil {
+			next.Tooling.ReadOnlyRetryEnabled = *update.Tooling.ReadOnlyRetryEnabled
+		}
+		if update.Tooling.ReadOnlyRetryMaxPerCall != nil {
+			next.Tooling.ReadOnlyRetryMaxPerCall = *update.Tooling.ReadOnlyRetryMaxPerCall
+		}
+		if update.Tooling.ReadOnlyRetryMaxPerTurn != nil {
+			next.Tooling.ReadOnlyRetryMaxPerTurn = *update.Tooling.ReadOnlyRetryMaxPerTurn
+		}
+		if update.Tooling.ReadOnlyRetryBackoffBaseMs != nil {
+			next.Tooling.ReadOnlyRetryBackoffBaseMs = *update.Tooling.ReadOnlyRetryBackoffBaseMs
+		}
+		if update.Tooling.ReadOnlyRetryBackoffMaxMs != nil {
+			next.Tooling.ReadOnlyRetryBackoffMaxMs = *update.Tooling.ReadOnlyRetryBackoffMaxMs
+		}
+	}
+	if update.Workflow != nil {
+		if update.Workflow.ReferenceGuardMode != nil {
+			next.Workflow.ReferenceGuardMode = strings.TrimSpace(*update.Workflow.ReferenceGuardMode)
+		}
+		if update.Workflow.ValidationProvider != nil {
+			next.Workflow.ValidationProvider = strings.TrimSpace(*update.Workflow.ValidationProvider)
+		}
+		if update.Workflow.ValidationImage != nil {
+			next.Workflow.ValidationImage = strings.TrimSpace(*update.Workflow.ValidationImage)
+		}
+	}
+	if update.OpsManual != nil && update.OpsManual.AutoRetrieval != nil {
+		next.OpsManual.AutoRetrieval = *update.OpsManual.AutoRetrieval
+	}
+	if update.Debug != nil {
+		if update.Debug.ModelInputTrace != nil {
+			next.Debug.ModelInputTrace = *update.Debug.ModelInputTrace
+		}
+		if update.Debug.FinalState != nil {
+			next.Debug.FinalState = *update.Debug.FinalState
+		}
+		if update.Debug.TransportProjection != nil {
+			next.Debug.TransportProjection = *update.Debug.TransportProjection
+		}
+		if update.Debug.TranscriptProjection != nil {
+			next.Debug.TranscriptProjection = *update.Debug.TranscriptProjection
+		}
+	}
+	if update.PublicWeb != nil && update.PublicWeb.Enabled != nil {
+		next.PublicWeb.Enabled = *update.PublicWeb.Enabled
+	}
+	return next
+}
+
 func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, error) {
 	view := LLMConfigView{
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
+		MaxOutputTokens:  20000,
+		RequestTimeoutMs: 300000,
 		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 		BifrostActive:    false,
@@ -102,11 +263,18 @@ func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, e
 	if err != nil || cfg == nil {
 		return view, nil
 	}
-	view.Provider = strings.TrimSpace(firstNonEmpty(cfg.Provider, view.Provider))
-	view.Model = strings.TrimSpace(firstNonEmpty(cfg.Model, view.Model))
-	view.BaseURL = strings.TrimSpace(cfg.BaseURL)
-	view.MaxContextTokens = normalizeLLMContextWindow(cfg.MaxContextTokens)
-	view.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
+	normalized := normalizeStoredLLMConfig(cfg)
+	view.Provider = normalized.Provider
+	view.Model = normalized.Model
+	view.BaseURL = normalized.BaseURL
+	view.MaxContextTokens = normalized.MaxContextTokens
+	view.MaxOutputTokens = normalized.MaxOutputTokens
+	view.RequestTimeoutMs = normalized.RequestTimeoutMs
+	view.Temperature = cloneFloat64Ptr(normalized.Temperature)
+	view.TopP = cloneFloat64Ptr(normalized.TopP)
+	view.ThinkingType = normalized.ThinkingType
+	view.ReasoningEffort = normalized.ReasoningEffort
+	view.ToolStream = normalized.ToolStream
 	view.FallbackProvider = strings.TrimSpace(cfg.FallbackProvider)
 	view.FallbackModel = strings.TrimSpace(cfg.FallbackModel)
 	view.CompactModel = strings.TrimSpace(firstNonEmpty(cfg.CompactModel, view.CompactModel))
@@ -125,24 +293,17 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
+		MaxOutputTokens:  20000,
+		RequestTimeoutMs: 300000,
 		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 	}
 	if current != nil {
 		*next = *current
 	}
-	if trimmed := strings.TrimSpace(payload.Provider); trimmed != "" {
-		next.Provider = trimmed
-	}
-	if trimmed := strings.TrimSpace(payload.Model); trimmed != "" {
-		next.Model = trimmed
-	}
 	if trimmed := strings.TrimSpace(payload.APIKey); trimmed != "" {
 		next.APIKey = trimmed
 	}
-	next.BaseURL = strings.TrimSpace(payload.BaseURL)
-	next.MaxContextTokens = normalizeLLMContextWindow(payload.MaxContextTokens)
-	next.ReasoningEffort = normalizeReasoningEffort(firstNonEmpty(payload.ReasoningEffort, next.ReasoningEffort))
 	next.FallbackProvider = strings.TrimSpace(payload.FallbackProvider)
 	next.FallbackModel = strings.TrimSpace(payload.FallbackModel)
 	if trimmed := strings.TrimSpace(payload.FallbackAPIKey); trimmed != "" {
@@ -151,6 +312,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 	if trimmed := strings.TrimSpace(payload.CompactModel); trimmed != "" {
 		next.CompactModel = trimmed
 	}
+	next = normalizeLLMConfigUpdate(next, payload)
 	if err := s.repo.SaveLLMConfig(next); err != nil {
 		return LLMConfigUpdateResult{}, err
 	}
@@ -179,6 +341,8 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		OK:               true,
 		Message:          "配置已保存。",
 		MaxContextTokens: next.MaxContextTokens,
+		MaxOutputTokens:  next.MaxOutputTokens,
+		RequestTimeoutMs: next.RequestTimeoutMs,
 	}, nil
 }
 
@@ -190,6 +354,198 @@ func normalizeLLMContextWindow(value int) int {
 		return 10000
 	}
 	return value
+}
+
+func normalizeStoredLLMConfig(cfg *store.LLMConfig) store.LLMConfig {
+	if cfg == nil {
+		return store.LLMConfig{
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			MaxContextTokens: 200000,
+			MaxOutputTokens:  20000,
+			RequestTimeoutMs: 300000,
+			ReasoningEffort:  "medium",
+		}
+	}
+	cp := *cfg
+	cp.Temperature = cloneFloat64Ptr(cfg.Temperature)
+	cp.TopP = cloneFloat64Ptr(cfg.TopP)
+	return *normalizeLLMConfigUpdate(&cp, LLMConfigUpdate{
+		Provider:         cp.Provider,
+		Model:            cp.Model,
+		BaseURL:          cp.BaseURL,
+		MaxContextTokens: cp.MaxContextTokens,
+		MaxOutputTokens:  cp.MaxOutputTokens,
+		RequestTimeoutMs: cp.RequestTimeoutMs,
+		Temperature:      cp.Temperature,
+		TopP:             cp.TopP,
+		ThinkingType:     cp.ThinkingType,
+		ReasoningEffort:  cp.ReasoningEffort,
+		ToolStream:       cp.ToolStream,
+	})
+}
+
+func normalizeLLMConfigUpdate(base *store.LLMConfig, payload LLMConfigUpdate) *store.LLMConfig {
+	next := &store.LLMConfig{}
+	if base != nil {
+		*next = *base
+		next.Temperature = cloneFloat64Ptr(base.Temperature)
+		next.TopP = cloneFloat64Ptr(base.TopP)
+	}
+
+	oldProvider := modelrouter.NormalizeProviderID(next.Provider)
+	requestedProvider := strings.TrimSpace(payload.Provider)
+	provider := modelrouter.NormalizeProviderID(firstNonEmpty(requestedProvider, next.Provider, "openai"))
+	providerChanged := requestedProvider != "" && provider != oldProvider
+	next.Provider = provider
+	model := strings.TrimSpace(payload.Model)
+	if model == "" && !providerChanged {
+		model = strings.TrimSpace(next.Model)
+	}
+	if model == "" {
+		model = modelrouter.DefaultModelForProvider(provider)
+	}
+	if model == "" {
+		model = "gpt-5.4"
+	}
+	next.Model = model
+
+	if baseURL := strings.TrimSpace(payload.BaseURL); baseURL != "" {
+		next.BaseURL = baseURL
+	} else if provider != "openai" && (providerChanged || strings.TrimSpace(next.BaseURL) == "") {
+		next.BaseURL = modelrouter.DefaultBaseURLForProvider(provider)
+	} else {
+		next.BaseURL = strings.TrimSpace(next.BaseURL)
+	}
+
+	if payload.Temperature != nil {
+		next.Temperature = cloneFloat64Ptr(payload.Temperature)
+	} else if providerChanged {
+		next.Temperature = nil
+	}
+	if payload.TopP != nil {
+		next.TopP = cloneFloat64Ptr(payload.TopP)
+	} else if providerChanged {
+		next.TopP = nil
+	}
+
+	contextValue := payload.MaxContextTokens
+	if contextValue <= 0 && !providerChanged {
+		contextValue = next.MaxContextTokens
+	}
+	next.MaxContextTokens = normalizeLLMContextWindowForModel(provider, model, contextValue)
+
+	outputValue := payload.MaxOutputTokens
+	if outputValue <= 0 && !providerChanged {
+		outputValue = next.MaxOutputTokens
+	}
+	next.MaxOutputTokens = normalizeLLMMaxOutputTokens(provider, model, outputValue)
+	next.RequestTimeoutMs = normalizeLLMRequestTimeoutMs(firstPositiveLLMConfigInt(payload.RequestTimeoutMs, boolInt(!providerChanged, next.RequestTimeoutMs)))
+	next.ThinkingType = modelrouter.NormalizeThinkingType(provider, firstNonEmpty(payload.ThinkingType, boolString(!providerChanged, next.ThinkingType)))
+	next.ReasoningEffort = normalizeLLMReasoningEffort(provider, model, firstNonEmpty(payload.ReasoningEffort, boolString(!providerChanged, next.ReasoningEffort)))
+	next.ToolStream = normalizeLLMToolStream(provider, payload.ToolStream)
+	return next
+}
+
+func normalizeLLMContextWindowForModel(provider, model string, value int) int {
+	if value > 0 {
+		if preset, ok := modelrouter.ModelPresetByID(provider, model); shouldClampLLMConfigToModelPreset(provider) && ok && preset.MaxContextTokens > 0 && value > preset.MaxContextTokens {
+			return preset.MaxContextTokens
+		}
+		return normalizeLLMContextWindow(value)
+	}
+	if preset, ok := modelrouter.ModelPresetByID(provider, model); ok && preset.MaxContextTokens > 0 {
+		return preset.MaxContextTokens
+	}
+	return normalizeLLMContextWindow(value)
+}
+
+func normalizeLLMMaxOutputTokens(provider, model string, value int) int {
+	preset, ok := modelrouter.ModelPresetByID(provider, model)
+	cap := 0
+	defaultValue := 20000
+	if ok {
+		if preset.MaxOutputTokens > 0 {
+			cap = preset.MaxOutputTokens
+		}
+		if preset.DefaultMaxTokens > 0 {
+			defaultValue = preset.DefaultMaxTokens
+		}
+	}
+	if value <= 0 {
+		value = defaultValue
+	}
+	if value < 1 {
+		return 1
+	}
+	if shouldClampLLMConfigToModelPreset(provider) && cap > 0 && value > cap {
+		return cap
+	}
+	return value
+}
+
+func normalizeLLMRequestTimeoutMs(value int) int {
+	if value <= 0 {
+		return 300000
+	}
+	if value < 1000 {
+		return 1000
+	}
+	return value
+}
+
+func shouldClampLLMConfigToModelPreset(provider string) bool {
+	switch modelrouter.NormalizeProviderID(provider) {
+	case "deepseek", "zhipu":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeLLMReasoningEffort(provider, model string, value string) string {
+	switch modelrouter.NormalizeProviderID(provider) {
+	case "deepseek", "zhipu":
+		return modelrouter.NormalizeReasoningEffortForProvider(provider, model, value)
+	default:
+		return normalizeReasoningEffort(value)
+	}
+}
+
+func normalizeLLMToolStream(provider string, value bool) bool {
+	preset, ok := modelrouter.ProviderPresetByID(provider)
+	return ok && preset.SupportsToolStream && value
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cp := *value
+	return &cp
+}
+
+func boolString(ok bool, value string) string {
+	if !ok {
+		return ""
+	}
+	return value
+}
+
+func boolInt(ok bool, value int) int {
+	if !ok {
+		return 0
+	}
+	return value
+}
+
+func firstPositiveLLMConfigInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func normalizeReasoningEffort(value string) string {

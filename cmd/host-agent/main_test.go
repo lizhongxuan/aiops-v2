@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +106,160 @@ func TestHostAgentGRPCExecRunsLocalCommand(t *testing.T) {
 	}
 }
 
+func TestRunHostAgentStartsHTTPServerWhenInitialRegisterFails(t *testing.T) {
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not registered", http.StatusNotFound)
+	}))
+	defer control.Close()
+
+	cfg := hostagent.Config{
+		ServerURL:         control.URL,
+		HostID:            "prod-web-01",
+		ListenAddr:        "127.0.0.1:0",
+		Token:             "secret-token",
+		HeartbeatInterval: time.Hour,
+		Capabilities:      hostagent.DefaultCapabilities(),
+	}
+	var stderr bytes.Buffer
+	serveStopped := errors.New("server stopped")
+	served := false
+	err := runHostAgent(
+		context.Background(),
+		cfg,
+		agentOptions{AsyncThreshold: time.Second, MaxOutputBytes: 4096},
+		&http.Client{Timeout: time.Second},
+		&stderr,
+		func(handler http.Handler) error {
+			served = true
+			req := httptest.NewRequest(http.MethodGet, "/health", nil)
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("GET /health status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+			}
+			return serveStopped
+		},
+	)
+	if !errors.Is(err, serveStopped) {
+		t.Fatalf("runHostAgent() error = %v, want serve sentinel", err)
+	}
+	if !served {
+		t.Fatal("serve function was not called after register failure")
+	}
+	if !strings.Contains(stderr.String(), "register host-agent") {
+		t.Fatalf("stderr = %q, want register failure log", stderr.String())
+	}
+}
+
+func TestRunHostAgentAIOPSPullSkipsPushRegistration(t *testing.T) {
+	cfg := hostagent.Config{
+		ConnectionMode:    hostagent.ConnectionModeAIOPSPull,
+		HostID:            "prod-web-01",
+		ListenAddr:        "127.0.0.1:0",
+		Token:             "secret-token",
+		HeartbeatInterval: time.Hour,
+		Capabilities:      hostagent.DefaultCapabilities(),
+	}
+	var stderr bytes.Buffer
+	serveStopped := errors.New("server stopped")
+	served := false
+	err := runHostAgent(
+		context.Background(),
+		cfg,
+		agentOptions{AsyncThreshold: time.Second, MaxOutputBytes: 4096},
+		&http.Client{Timeout: time.Second},
+		&stderr,
+		func(handler http.Handler) error {
+			served = true
+			req := httptest.NewRequest(http.MethodGet, "/diagnostics", nil)
+			req.Header.Set("Authorization", "Bearer secret-token")
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("GET /diagnostics status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode diagnostics: %v", err)
+			}
+			if payload["connection_mode"] != hostagent.ConnectionModeAIOPSPull {
+				t.Fatalf("diagnostics = %+v, want connection_mode aiops_pull", payload)
+			}
+			if _, ok := payload["server_url"]; ok {
+				t.Fatalf("diagnostics should not expose empty server_url in pull mode: %+v", payload)
+			}
+			return serveStopped
+		},
+	)
+	if !errors.Is(err, serveStopped) {
+		t.Fatalf("runHostAgent() error = %v, want serve sentinel", err)
+	}
+	if !served {
+		t.Fatal("serve function was not called")
+	}
+	if strings.Contains(stderr.String(), "register host-agent") {
+		t.Fatalf("stderr = %q, want no push register attempt in aiops_pull mode", stderr.String())
+	}
+}
+
+func TestHostAgentDiagnosticsReportsInitialRegisterFailure(t *testing.T) {
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "not registered", http.StatusNotFound)
+	}))
+	defer control.Close()
+
+	cfg := hostagent.Config{
+		ServerURL:         control.URL,
+		GRPCURL:           "127.0.0.1:1",
+		HostID:            "prod-web-01",
+		ListenAddr:        "127.0.0.1:0",
+		Token:             "secret-token",
+		HeartbeatInterval: time.Hour,
+		Capabilities:      hostagent.DefaultCapabilities(),
+	}
+	serveStopped := errors.New("server stopped")
+	err := runHostAgent(
+		context.Background(),
+		cfg,
+		agentOptions{AsyncThreshold: time.Second, MaxOutputBytes: 4096},
+		&http.Client{Timeout: time.Second},
+		io.Discard,
+		func(handler http.Handler) error {
+			req := httptest.NewRequest(http.MethodGet, "/diagnostics", nil)
+			req.Header.Set("Authorization", "Bearer secret-token")
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("GET /diagnostics status = %d, want 200; body=%s", resp.Code, resp.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode diagnostics: %v", err)
+			}
+			if payload["host_id"] != "prod-web-01" || payload["server_url"] != control.URL || payload["token_configured"] != true {
+				t.Fatalf("diagnostics identity = %+v", payload)
+			}
+			if _, ok := payload["token"]; ok {
+				t.Fatalf("diagnostics leaked token: %+v", payload)
+			}
+			register, ok := payload["register"].(map[string]any)
+			if !ok {
+				t.Fatalf("register diagnostics = %#v, want object", payload["register"])
+			}
+			if register["last_status_code"] != float64(http.StatusNotFound) || register["last_category"] != "not_found" {
+				t.Fatalf("register diagnostics = %+v, want 404 not_found", register)
+			}
+			if got := strings.TrimSpace(fmt.Sprint(register["last_error"])); !strings.Contains(got, "status 404") {
+				t.Fatalf("register last_error = %q, want status 404", got)
+			}
+			return serveStopped
+		},
+	)
+	if !errors.Is(err, serveStopped) {
+		t.Fatalf("runHostAgent() error = %v, want serve sentinel", err)
+	}
+}
+
 func TestHostAgentHandlerExecRunsDirectCommand(t *testing.T) {
 	cfg := hostagent.Config{
 		ServerURL:         "http://aiops.example.test",
@@ -126,6 +284,42 @@ func TestHostAgentHandlerExecRunsDirectCommand(t *testing.T) {
 	}
 	if payload.Status != "success" || payload.ExitCode != 0 || payload.Stdout != "http-agent-ok" {
 		t.Fatalf("payload = %#v, want direct exec success", payload)
+	}
+}
+
+func TestBuildHostAgentEventPayloadIncludesSystemBasics(t *testing.T) {
+	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
+		HostID:        "prod-web-01",
+		Hostname:      "node-a",
+		ListenAddress: ":7072",
+		Capabilities:  []string{"script.shell", "terminal"},
+		Labels:        map[string]string{"role": "web"},
+		System: hostSystemInfo{
+			OS:            "linux",
+			Arch:          "amd64",
+			OSRelease:     "Ubuntu 24.04 LTS",
+			KernelVersion: "6.8.0-31-generic",
+			CPUCores:      8,
+			MemoryBytes:   34359738368,
+		},
+		Registration: true,
+	})
+
+	if payload["hostId"] != "prod-web-01" || payload["hostname"] != "node-a" || payload["listenAddress"] != ":7072" {
+		t.Fatalf("registration identity payload = %+v", payload)
+	}
+	if payload["os"] != "linux" || payload["arch"] != "amd64" || payload["osRelease"] != "Ubuntu 24.04 LTS" || payload["kernelVersion"] != "6.8.0-31-generic" {
+		t.Fatalf("system identity payload = %+v", payload)
+	}
+	if payload["cpuCores"] != 8 || payload["memoryBytes"] != uint64(34359738368) {
+		t.Fatalf("resource identity payload = %+v", payload)
+	}
+}
+
+func TestParseLinuxMeminfoBytes(t *testing.T) {
+	got := parseLinuxMeminfoBytes("MemTotal:       32768000 kB\nMemFree: 1 kB\n")
+	if got != 33554432000 {
+		t.Fatalf("parseLinuxMeminfoBytes() = %d, want 33554432000", got)
 	}
 }
 

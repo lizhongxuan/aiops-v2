@@ -11,7 +11,10 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-const defaultLimit = 10
+const (
+	defaultLimit                = 10
+	defaultMCPServerBucketLimit = 8
+)
 
 var inputSchema = json.RawMessage(`{
 	"type": "object",
@@ -23,9 +26,14 @@ var inputSchema = json.RawMessage(`{
 		"resource_scope": {"type": "string", "description": "Optional generic resource scope for search ranking"},
 		"intent": {"type": "string", "description": "Optional task intent for search ranking"},
 		"evidence_preference": {"type": "string", "description": "Optional evidence preference for search ranking"},
-		"query": {"type": "string", "description": "Natural language description of the operational tool needed"},
+		"target_refs": {"type": "array", "items": {"type": "string"}, "description": "Explicit user-selected targets such as service:checkout, host:db-a, @local, or @IP"},
+		"required_caps": {"type": "array", "items": {"type": "string"}, "description": "Capabilities that search results must provide, for example read, inspect, execute"},
+		"forbidden_caps": {"type": "array", "items": {"type": "string"}, "description": "Capabilities that search results must not require"},
+		"risk_level": {"type": "string", "description": "Maximum acceptable risk level for this search, for example low, medium, high, or critical"},
+		"environment_facts": {"type": "array", "items": {"type": "string"}, "description": "Known environment facts used only for ranking and traceability"},
+		"query": {"type": "string", "description": "Natural language description of the deferred MCP or dynamic operational tool needed. Not for public web, official documentation, middleware knowledge, or checking whether web_search exists."},
 		"limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum number of matches to return"},
-		"includeLoaded": {"type": "boolean", "description": "Whether already selected tools should be included in search output"},
+		"includeLoaded": {"type": "boolean", "description": "Whether already loaded/currently visible tools should be included in search output for diagnostics"},
 		"include_unavailable": {"type": "boolean", "description": "Include unavailable MCP candidates as non-selectable search results"},
 		"mcp_health": {"type": "object", "additionalProperties": {"type": "string"}, "description": "MCP server health snapshot keyed by server id"},
 		"tools": {"type": "array", "items": {"type": "string"}, "description": "Tool names to select or describe"},
@@ -38,6 +46,9 @@ var inputSchema = json.RawMessage(`{
 var outputSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
+		"mode": {"type": "string"},
+		"ranker": {"type": "string"},
+		"request": {"type": "object"},
 		"matches": {
 			"type": "array",
 			"items": {
@@ -64,8 +75,29 @@ var outputSchema = json.RawMessage(`{
 					"mcpServerId": {"type": "string"},
 					"healthStatus": {"type": "string"},
 					"filteredReason": {"type": "string"},
+					"targetCompatibility": {"type": "string"},
+					"riskDecision": {"type": "string"},
+					"matchReasons": {"type": "array", "items": {"type": "string"}},
 					"why": {"type": "string"},
 					"selectHint": {"type": "string"}
+				}
+			}
+		},
+		"rejected": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {"type": "string"},
+					"reason": {"type": "string"},
+					"status": {"type": "string"},
+					"source": {"type": "string"},
+					"mcpServerId": {"type": "string"},
+					"healthStatus": {"type": "string"},
+					"filteredReason": {"type": "string"},
+					"targetCompatibility": {"type": "string"},
+					"riskDecision": {"type": "string"},
+					"matchReasons": {"type": "array", "items": {"type": "string"}}
 				}
 			}
 		},
@@ -82,6 +114,11 @@ type searchInput struct {
 	ResourceScope      string            `json:"resource_scope"`
 	Intent             string            `json:"intent"`
 	EvidencePreference string            `json:"evidence_preference"`
+	TargetRefs         []string          `json:"target_refs"`
+	RequiredCaps       []string          `json:"required_caps"`
+	ForbiddenCaps      []string          `json:"forbidden_caps"`
+	RiskLevel          string            `json:"risk_level"`
+	EnvironmentFacts   []string          `json:"environment_facts"`
 	Query              string            `json:"query"`
 	Limit              int               `json:"limit"`
 	IncludeLoaded      bool              `json:"includeLoaded"`
@@ -94,11 +131,14 @@ type searchInput struct {
 }
 
 type searchOutput struct {
-	Mode         string            `json:"mode"`
-	Matches      []searchMatch     `json:"matches,omitempty"`
-	Selection    *selectionPayload `json:"selection,omitempty"`
-	Descriptions []describePayload `json:"descriptions,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	Mode         string                          `json:"mode"`
+	Ranker       string                          `json:"ranker,omitempty"`
+	Request      *tooling.ToolSearchRequest      `json:"request,omitempty"`
+	Matches      []searchMatch                   `json:"matches,omitempty"`
+	Rejected     []tooling.RejectedToolCandidate `json:"rejected,omitempty"`
+	Selection    *selectionPayload               `json:"selection,omitempty"`
+	Descriptions []describePayload               `json:"descriptions,omitempty"`
+	Error        string                          `json:"error,omitempty"`
 }
 
 type selectionPayload struct {
@@ -131,51 +171,72 @@ type describePayload struct {
 }
 
 type searchMatch struct {
-	Kind             string                `json:"kind,omitempty"`
-	Name             string                `json:"name"`
-	Description      string                `json:"description,omitempty"`
-	Domain           string                `json:"domain,omitempty"`
-	Layer            tooling.ToolLayer     `json:"layer,omitempty"`
-	Pack             string                `json:"pack,omitempty"`
-	Deferred         bool                  `json:"deferred,omitempty"`
-	Tools            []string              `json:"tools,omitempty"`
-	Mock             bool                  `json:"mock,omitempty"`
-	RiskLevel        tooling.ToolRiskLevel `json:"riskLevel"`
-	Mutating         bool                  `json:"mutating"`
-	RequiresApproval bool                  `json:"requiresApproval"`
-	CapabilityKind   string                `json:"capabilityKind,omitempty"`
-	ResourceTypes    []string              `json:"resourceTypes,omitempty"`
-	OperationKinds   []string              `json:"operationKinds,omitempty"`
-	RequiresSelect   bool                  `json:"requiresSelect,omitempty"`
-	Status           string                `json:"status,omitempty"`
-	Source           string                `json:"source,omitempty"`
-	MCPServerID      string                `json:"mcpServerId,omitempty"`
-	HealthStatus     string                `json:"healthStatus,omitempty"`
-	FilteredReason   string                `json:"filteredReason,omitempty"`
-	Why              string                `json:"why,omitempty"`
-	SelectHint       string                `json:"selectHint,omitempty"`
+	Kind                string                `json:"kind,omitempty"`
+	Name                string                `json:"name"`
+	Description         string                `json:"description,omitempty"`
+	Domain              string                `json:"domain,omitempty"`
+	Layer               tooling.ToolLayer     `json:"layer,omitempty"`
+	Pack                string                `json:"pack,omitempty"`
+	Deferred            bool                  `json:"deferred,omitempty"`
+	Tools               []string              `json:"tools,omitempty"`
+	Mock                bool                  `json:"mock,omitempty"`
+	RiskLevel           tooling.ToolRiskLevel `json:"riskLevel"`
+	Mutating            bool                  `json:"mutating"`
+	RequiresApproval    bool                  `json:"requiresApproval"`
+	CapabilityKind      string                `json:"capabilityKind,omitempty"`
+	ResourceTypes       []string              `json:"resourceTypes,omitempty"`
+	OperationKinds      []string              `json:"operationKinds,omitempty"`
+	RequiresSelect      bool                  `json:"requiresSelect,omitempty"`
+	Status              string                `json:"status,omitempty"`
+	Source              string                `json:"source,omitempty"`
+	MCPServerID         string                `json:"mcpServerId,omitempty"`
+	HealthStatus        string                `json:"healthStatus,omitempty"`
+	FilteredReason      string                `json:"filteredReason,omitempty"`
+	TargetCompatibility string                `json:"targetCompatibility,omitempty"`
+	RiskDecision        string                `json:"riskDecision,omitempty"`
+	MatchReasons        []string              `json:"matchReasons,omitempty"`
+	Why                 string                `json:"why,omitempty"`
+	SelectHint          string                `json:"selectHint,omitempty"`
 }
 
 type packCandidate struct {
-	name           string
-	description    string
-	domain         string
-	tools          []string
-	score          int
-	capabilityKind string
-	resourceTypes  []string
-	operationKinds []string
-	status         string
-	source         string
-	mcpServerID    string
-	healthStatus   string
-	filteredReason string
-	why            string
+	name                string
+	description         string
+	domain              string
+	tools               []string
+	score               float64
+	capabilityKind      string
+	resourceTypes       []string
+	operationKinds      []string
+	status              string
+	source              string
+	mcpServerID         string
+	healthStatus        string
+	filteredReason      string
+	targetCompatibility string
+	riskDecision        string
+	matchReasons        []string
+	why                 string
 }
 
 type scoredMatch struct {
 	match searchMatch
-	score int
+	score float64
+}
+
+type toolSearchIndexEntry struct {
+	tool         tooling.Tool
+	meta         tooling.ToolMetadata
+	availability toolAvailabilityResult
+	searchText   string
+}
+
+type toolSearchCandidateEvaluation struct {
+	rejectReason        string
+	scoreBoost          float64
+	targetCompatibility string
+	riskDecision        string
+	matchReasons        []string
 }
 
 // NewToolSearchTool creates a read-only discovery tool for the current catalog.
@@ -183,7 +244,7 @@ func NewToolSearchTool(provider tooling.ToolCatalogProvider) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
 			Name:        "tool_search",
-			Description: "Search available operational tools by name, description, domain, and governance metadata",
+			Description: "Discover deferred MCP or dynamic operational tools that are not currently exposed in the tool surface. Do not use for public web search, official documentation, knowledge lookup, middleware semantics, checking whether web_search exists, or current host facts.",
 			Origin:      tooling.ToolOriginMeta,
 			Layer:       tooling.ToolLayerCore,
 			AlwaysLoad:  true,
@@ -210,7 +271,7 @@ func NewToolSearchTool(provider tooling.ToolCatalogProvider) tooling.Tool {
 	}
 }
 
-func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, input json.RawMessage) (tooling.ToolResult, error) {
+func executeSearch(ctx context.Context, provider tooling.ToolCatalogProvider, input json.RawMessage) (tooling.ToolResult, error) {
 	if provider == nil {
 		return tooling.ToolResult{}, fmt.Errorf("tool_search: catalog provider is required")
 	}
@@ -229,7 +290,12 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 	req.ResourceScope = strings.TrimSpace(req.ResourceScope)
 	req.Intent = strings.TrimSpace(req.Intent)
 	req.EvidencePreference = strings.TrimSpace(req.EvidencePreference)
-	req.MCPHealth = mergeRegistryMCPHealth(req.MCPHealth)
+	req.TargetRefs = trimmedStrings(req.TargetRefs)
+	req.RequiredCaps = trimmedStrings(req.RequiredCaps)
+	req.ForbiddenCaps = trimmedStrings(req.ForbiddenCaps)
+	req.RiskLevel = strings.ToLower(strings.TrimSpace(req.RiskLevel))
+	req.EnvironmentFacts = trimmedStrings(req.EnvironmentFacts)
+	req.MCPHealth = mergeProviderMCPHealth(provider, req.MCPHealth)
 	req.Reason = strings.TrimSpace(req.Reason)
 	req.Detail = strings.TrimSpace(req.Detail)
 	switch req.Mode {
@@ -249,8 +315,9 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 			return tooling.ToolResult{}, fmt.Errorf("tool_search: describe requires tools")
 		}
 	}
+	useDefaultLimit := req.Limit <= 0 || req.Limit > 20
 	limit := req.Limit
-	if limit <= 0 || limit > 20 {
+	if useDefaultLimit {
 		limit = defaultLimit
 	}
 
@@ -259,6 +326,9 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 		IncludeDeferredCatalog: true,
 		MCPHealthSnapshot:      req.MCPHealth,
 	})
+	if execCtx, ok := tooling.ToolExecutionContextFrom(ctx); ok {
+		catalog = tooling.FilterToolsByPackMetadata(catalog, execCtx.Metadata)
+	}
 	switch req.Mode {
 	case "select":
 		return emitOutput(selectTools(catalog, req))
@@ -267,86 +337,100 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 	}
 
 	terms := searchTerms(req.Query)
+	request := toolSearchV3Request(req, limit)
+	entries := buildToolSearchIndexEntries(catalog, req)
+	bm25Scores := scoreToolSearchEntries(entries, req.Query)
 	scored := make([]scoredMatch, 0)
+	rejected := make([]tooling.RejectedToolCandidate, 0)
 	packs := map[string]*packCandidate{}
-	for _, candidate := range catalog {
-		meta := candidate.Metadata()
-		if tooling.ToolHiddenFromDiscovery(meta) {
+	for index, entry := range entries {
+		meta := entry.meta
+		score := combinedToolSearchScore(meta, bm25Scores[index], terms)
+		if meta.Mock {
+			score -= 0.25
+		}
+		evaluation := evaluateToolSearchCandidate(meta, entry.searchText, score, req)
+		score += evaluation.scoreBoost
+		if score <= 0 {
+			continue
+		}
+		if evaluation.rejectReason != "" {
+			rejected = append(rejected, rejectedToolCandidate(meta, entry.availability, evaluation))
+			continue
+		}
+		if !req.IncludeUnavailable && !entry.availability.selectable {
+			rejected = append(rejected, rejectedToolCandidate(meta, entry.availability, evaluation))
 			continue
 		}
 		if isDeferredPackTool(meta) {
-			accumulatePackCandidate(packs, meta, terms, req)
+			accumulatePackCandidate(packs, meta, entry.availability, evaluation, score)
 			continue
-		}
-		score := scoreTool(meta, terms)
-		if score == 0 {
-			continue
-		}
-		if meta.Mock {
-			score--
 		}
 		gov := meta.EffectiveGovernance(0)
 		discovery := meta.EffectiveDiscovery()
-		availability := toolAvailability(meta, req)
-		if !req.IncludeUnavailable && !availability.selectable {
-			continue
-		}
+		availability := entry.availability
 		requiresSelect := tooling.ToolRequiresSelect(meta)
 		scored = append(scored, scoredMatch{
 			score: score,
 			match: searchMatch{
-				Kind:             "tool",
-				Name:             meta.Name,
-				Description:      meta.Description,
-				Domain:           meta.Domain,
-				Layer:            meta.Layer,
-				Pack:             meta.Pack,
-				Mock:             meta.Mock,
-				RiskLevel:        gov.RiskLevel,
-				Mutating:         gov.Mutating,
-				RequiresApproval: gov.RequiresApproval,
-				CapabilityKind:   discovery.CapabilityKind,
-				ResourceTypes:    discovery.ResourceTypes,
-				OperationKinds:   discovery.OperationKinds,
-				RequiresSelect:   requiresSelect,
-				Status:           availability.status,
-				Source:           availability.source,
-				MCPServerID:      availability.mcpServerID,
-				HealthStatus:     availability.healthStatus,
-				FilteredReason:   availability.filteredReason,
-				Why:              searchWhy(score, availability),
-				SelectHint:       selectHint(requiresSelect),
+				Kind:                "tool",
+				Name:                meta.Name,
+				Description:         meta.Description,
+				Domain:              meta.Domain,
+				Layer:               meta.Layer,
+				Pack:                meta.Pack,
+				Mock:                meta.Mock,
+				RiskLevel:           gov.RiskLevel,
+				Mutating:            gov.Mutating,
+				RequiresApproval:    gov.RequiresApproval,
+				CapabilityKind:      discovery.CapabilityKind,
+				ResourceTypes:       discovery.ResourceTypes,
+				OperationKinds:      discovery.OperationKinds,
+				RequiresSelect:      requiresSelect,
+				Status:              availability.status,
+				Source:              availability.source,
+				MCPServerID:         availability.mcpServerID,
+				HealthStatus:        availability.healthStatus,
+				FilteredReason:      availability.filteredReason,
+				TargetCompatibility: evaluation.targetCompatibility,
+				RiskDecision:        evaluation.riskDecision,
+				MatchReasons:        evaluation.matchReasons,
+				Why:                 searchWhy(score, availability),
+				SelectHint:          selectHint(requiresSelect),
 			},
 		})
 	}
 	for _, pack := range packs {
-		if pack.score == 0 {
+		if pack.score <= 0 {
 			continue
 		}
 		sort.Strings(pack.tools)
 		scored = append(scored, scoredMatch{
 			score: pack.score,
 			match: searchMatch{
-				Kind:           "pack",
-				Name:           pack.name,
-				Description:    pack.description,
-				Domain:         pack.domain,
-				Layer:          tooling.ToolLayerDeferred,
-				Pack:           pack.name,
-				Deferred:       true,
-				Tools:          pack.tools,
-				RiskLevel:      tooling.ToolRiskLow,
-				CapabilityKind: pack.capabilityKind,
-				ResourceTypes:  pack.resourceTypes,
-				OperationKinds: pack.operationKinds,
-				RequiresSelect: true,
-				Status:         firstNonEmpty(pack.status, "deferred"),
-				Source:         firstNonEmpty(pack.source, string(tooling.ToolLoadingPolicyDeferred)),
-				MCPServerID:    pack.mcpServerID,
-				HealthStatus:   pack.healthStatus,
-				FilteredReason: pack.filteredReason,
-				Why:            firstNonEmpty(pack.why, "matched_deferred_pack"),
-				SelectHint:     selectHint(true),
+				Kind:                "pack",
+				Name:                pack.name,
+				Description:         pack.description,
+				Domain:              pack.domain,
+				Layer:               tooling.ToolLayerDeferred,
+				Pack:                pack.name,
+				Deferred:            true,
+				Tools:               pack.tools,
+				RiskLevel:           tooling.ToolRiskLow,
+				CapabilityKind:      pack.capabilityKind,
+				ResourceTypes:       pack.resourceTypes,
+				OperationKinds:      pack.operationKinds,
+				RequiresSelect:      true,
+				Status:              firstNonEmpty(pack.status, "deferred"),
+				Source:              firstNonEmpty(pack.source, string(tooling.ToolLoadingPolicyDeferred)),
+				MCPServerID:         pack.mcpServerID,
+				HealthStatus:        pack.healthStatus,
+				FilteredReason:      pack.filteredReason,
+				TargetCompatibility: pack.targetCompatibility,
+				RiskDecision:        pack.riskDecision,
+				MatchReasons:        pack.matchReasons,
+				Why:                 firstNonEmpty(pack.why, "matched_deferred_pack"),
+				SelectHint:          selectHint(true),
 			},
 		})
 	}
@@ -358,11 +442,20 @@ func executeSearch(_ context.Context, provider tooling.ToolCatalogProvider, inpu
 		}
 		return scored[i].match.Name < scored[j].match.Name
 	})
+	if useDefaultLimit {
+		scored = limitDefaultMCPServerBuckets(scored)
+	}
 	if len(scored) > limit {
 		scored = scored[:limit]
 	}
 
-	out := searchOutput{Mode: "search", Matches: make([]searchMatch, 0, len(scored))}
+	out := searchOutput{
+		Mode:     "search",
+		Ranker:   "bm25",
+		Request:  &request,
+		Matches:  make([]searchMatch, 0, len(scored)),
+		Rejected: rejected,
+	}
 	for _, item := range scored {
 		out.Matches = append(out.Matches, item.match)
 	}
@@ -435,6 +528,27 @@ func searchMatchHasAnyResource(match searchMatch, values []string) bool {
 	return false
 }
 
+func limitDefaultMCPServerBuckets(scored []scoredMatch) []scoredMatch {
+	if len(scored) == 0 {
+		return scored
+	}
+	counts := map[string]int{}
+	filtered := make([]scoredMatch, 0, len(scored))
+	for _, item := range scored {
+		serverID := strings.TrimSpace(item.match.MCPServerID)
+		if serverID == "" {
+			filtered = append(filtered, item)
+			continue
+		}
+		if counts[serverID] >= defaultMCPServerBucketLimit {
+			continue
+		}
+		counts[serverID]++
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
 func emitOutput(out searchOutput) (tooling.ToolResult, error) {
 	content, err := json.Marshal(out)
 	if err != nil {
@@ -458,7 +572,7 @@ func selectTools(catalog []tooling.Tool, req searchInput) searchOutput {
 			continue
 		}
 		meta := tool.Metadata()
-		if tooling.ToolHiddenFromDiscovery(meta) {
+		if tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolExcludedFromDeferredDiscovery(meta) {
 			continue
 		}
 		toolsByName[meta.Name] = tool
@@ -678,13 +792,27 @@ func toolAvailability(meta tooling.ToolMetadata, req searchInput) toolAvailabili
 	return out
 }
 
-func mergeRegistryMCPHealth(explicit map[string]string) map[string]string {
+func mergeProviderMCPHealth(provider tooling.ToolCatalogProvider, explicit map[string]string) map[string]string {
 	out := make(map[string]string, len(explicit))
 	for serverID, status := range explicit {
 		serverID = strings.TrimSpace(serverID)
 		status = strings.ToLower(strings.TrimSpace(status))
 		if serverID != "" && status != "" {
 			out[serverID] = status
+		}
+	}
+	if healthProvider, ok := provider.(interface {
+		ToolHealthSnapshots() map[string]string
+	}); ok {
+		for serverID, status := range healthProvider.ToolHealthSnapshots() {
+			serverID = strings.TrimSpace(serverID)
+			status = strings.ToLower(strings.TrimSpace(status))
+			if serverID == "" || status == "" {
+				continue
+			}
+			if _, exists := out[serverID]; !exists {
+				out[serverID] = status
+			}
 		}
 	}
 	registry := mcp.DefaultRegistry()
@@ -713,7 +841,7 @@ func mergeRegistryMCPHealth(explicit map[string]string) map[string]string {
 	return out
 }
 
-func searchWhy(score int, availability toolAvailabilityResult) string {
+func searchWhy(score float64, availability toolAvailabilityResult) string {
 	if availability.filteredReason != "" {
 		return availability.filteredReason
 	}
@@ -734,6 +862,345 @@ func trimmedStrings(values []string) []string {
 		seen[value] = true
 		out = append(out, value)
 	}
+	return out
+}
+
+func buildToolSearchIndexEntries(catalog []tooling.Tool, req searchInput) []toolSearchIndexEntry {
+	entries := make([]toolSearchIndexEntry, 0, len(catalog))
+	for _, candidate := range catalog {
+		if candidate == nil {
+			continue
+		}
+		meta := candidate.Metadata()
+		if tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolExcludedFromDeferredDiscovery(meta) {
+			continue
+		}
+		if !req.IncludeLoaded && !toolSearchDeferredCandidate(meta) {
+			continue
+		}
+		availability := toolAvailability(meta, req)
+		entries = append(entries, toolSearchIndexEntry{
+			tool:         candidate,
+			meta:         meta,
+			availability: availability,
+			searchText:   toolSearchIndexText(candidate, meta),
+		})
+	}
+	return entries
+}
+
+func toolSearchDeferredCandidate(meta tooling.ToolMetadata) bool {
+	if tooling.ToolRequiresSelect(meta) || meta.HasMCPSource() || meta.DeferByDefault {
+		return true
+	}
+	discovery := meta.EffectiveDiscovery()
+	switch discovery.LoadingPolicy {
+	case tooling.ToolLoadingPolicyDeferred, tooling.ToolLoadingPolicyMCP, tooling.ToolLoadingPolicyProfile, tooling.ToolLoadingPolicyConditional:
+		return true
+	}
+	return strings.TrimSpace(meta.Pack) != ""
+}
+
+func toolSearchV3Request(req searchInput, limit int) tooling.ToolSearchRequest {
+	return tooling.NormalizeToolSearchRequest(tooling.ToolSearchRequest{
+		Mode:               "search",
+		Query:              req.Query,
+		Intent:             req.Intent,
+		SessionType:        req.SessionType,
+		RuntimeMode:        req.RuntimeMode,
+		AgentProfile:       req.AgentProfile,
+		ResourceScope:      req.ResourceScope,
+		EvidencePreference: req.EvidencePreference,
+		TargetRefs:         req.TargetRefs,
+		RequiredCaps:       req.RequiredCaps,
+		ForbiddenCaps:      req.ForbiddenCaps,
+		RiskLevel:          req.RiskLevel,
+		Limit:              limit,
+		IncludeUnavailable: req.IncludeUnavailable,
+		MCPHealth:          req.MCPHealth,
+		EnvironmentFacts:   req.EnvironmentFacts,
+		Ranker:             "bm25",
+	})
+}
+
+func rejectedToolCandidate(meta tooling.ToolMetadata, availability toolAvailabilityResult, evaluation toolSearchCandidateEvaluation) tooling.RejectedToolCandidate {
+	reason := strings.TrimSpace(availability.filteredReason)
+	if strings.TrimSpace(evaluation.rejectReason) != "" {
+		reason = strings.TrimSpace(evaluation.rejectReason)
+	}
+	if reason == "" {
+		reason = "not_selectable"
+	}
+	return tooling.RejectedToolCandidate{
+		Name:                strings.TrimSpace(meta.Name),
+		Reason:              reason,
+		Status:              strings.TrimSpace(availability.status),
+		Source:              strings.TrimSpace(availability.source),
+		MCPServerID:         strings.TrimSpace(availability.mcpServerID),
+		HealthStatus:        strings.TrimSpace(availability.healthStatus),
+		FilteredReason:      strings.TrimSpace(availability.filteredReason),
+		TargetCompatibility: strings.TrimSpace(evaluation.targetCompatibility),
+		RiskDecision:        strings.TrimSpace(evaluation.riskDecision),
+		MatchReasons:        append([]string(nil), evaluation.matchReasons...),
+	}
+}
+
+func scoreToolSearchEntries(entries []toolSearchIndexEntry, query string) map[int]float64 {
+	if len(entries) == 0 {
+		return nil
+	}
+	documents := make([]tooling.BM25Document, 0, len(entries))
+	for index, entry := range entries {
+		documents = append(documents, tooling.BM25Document{ID: index, Text: entry.searchText})
+	}
+	index := tooling.NewBM25Index(documents)
+	results := index.Search(query, len(entries))
+	scores := make(map[int]float64, len(results))
+	for _, result := range results {
+		scores[result.ID] = result.Score
+	}
+	return scores
+}
+
+func combinedToolSearchScore(meta tooling.ToolMetadata, bm25Score float64, terms []string) float64 {
+	score := bm25Score * 10
+	alignment := scoreDiscoveryAlignment(meta, terms)
+	score += float64(alignment)
+	if score == 0 && lexicalTermMatchScore(tooling.ToolDiscoverySearchText(meta), terms) > 0 {
+		score = 0.1
+	}
+	return score
+}
+
+func evaluateToolSearchCandidate(meta tooling.ToolMetadata, searchText string, baseScore float64, req searchInput) toolSearchCandidateEvaluation {
+	discovery := meta.EffectiveDiscovery()
+	evaluation := toolSearchCandidateEvaluation{
+		targetCompatibility: targetCompatibilityForSearch(discovery, req.TargetRefs),
+		riskDecision:        riskDecisionForSearch(meta, req.RiskLevel),
+	}
+	if baseScore > 0 {
+		evaluation.matchReasons = append(evaluation.matchReasons, "bm25")
+	}
+	switch evaluation.targetCompatibility {
+	case "matched":
+		evaluation.matchReasons = append(evaluation.matchReasons, "target_compatible", "explicit_target")
+		evaluation.scoreBoost += 2
+	case "incompatible":
+		evaluation.rejectReason = "target_incompatible"
+	}
+	capabilityDecision := capabilityDecisionForSearch(discovery, req.RequiredCaps, req.ForbiddenCaps)
+	switch capabilityDecision {
+	case "matched":
+		evaluation.matchReasons = append(evaluation.matchReasons, "capability_match")
+		evaluation.scoreBoost++
+	case "forbidden":
+		if evaluation.rejectReason == "" {
+			evaluation.rejectReason = "forbidden_capability"
+		}
+	case "missing_required":
+		if evaluation.rejectReason == "" {
+			evaluation.rejectReason = "capability_mismatch"
+		}
+	}
+	if lexicalTermMatchScore(searchText, searchTerms(req.Intent)) > 0 {
+		evaluation.matchReasons = append(evaluation.matchReasons, "intent_match")
+		evaluation.scoreBoost++
+	}
+	switch evaluation.riskDecision {
+	case "allowed":
+		if req.RiskLevel != "" {
+			evaluation.matchReasons = append(evaluation.matchReasons, "risk_allowed")
+			evaluation.scoreBoost += 0.5
+		}
+	case "exceeds_request":
+		if evaluation.rejectReason == "" {
+			evaluation.rejectReason = "risk_exceeds_request"
+		}
+	}
+	if environmentFactMatchScore(searchText, req.EnvironmentFacts) > 0 {
+		evaluation.matchReasons = append(evaluation.matchReasons, "environment_fact_match")
+		evaluation.scoreBoost++
+	}
+	evaluation.matchReasons = uniqueNonEmptyStrings(evaluation.matchReasons)
+	return evaluation
+}
+
+func targetCompatibilityForSearch(discovery tooling.ToolDiscoveryMetadata, targetRefs []string) string {
+	targetTypes := targetTypesFromRefs(targetRefs)
+	if len(targetTypes) == 0 {
+		return "unspecified"
+	}
+	resourceTypes := append([]string{}, discovery.ResourceTypes...)
+	resourceTypes = append(resourceTypes, discovery.TargetKinds...)
+	if len(resourceTypes) == 0 {
+		return "unknown"
+	}
+	for _, resource := range resourceTypes {
+		resource = strings.ToLower(strings.TrimSpace(resource))
+		if _, ok := targetTypes[resource]; ok {
+			return "matched"
+		}
+	}
+	return "incompatible"
+}
+
+func targetTypesFromRefs(targetRefs []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, ref := range targetRefs {
+		ref = strings.ToLower(strings.TrimSpace(ref))
+		if ref == "" {
+			continue
+		}
+		if strings.HasPrefix(ref, "@") {
+			out["host"] = struct{}{}
+			continue
+		}
+		if index := strings.Index(ref, ":"); index > 0 {
+			if kind := strings.TrimSpace(ref[:index]); kind != "" {
+				out[kind] = struct{}{}
+			}
+			continue
+		}
+		if strings.Count(ref, ".") == 3 {
+			out["host"] = struct{}{}
+			continue
+		}
+	}
+	return out
+}
+
+func capabilityDecisionForSearch(discovery tooling.ToolDiscoveryMetadata, requiredCaps, forbiddenCaps []string) string {
+	caps := capabilitySetForSearch(discovery)
+	for _, cap := range forbiddenCaps {
+		if _, ok := caps[strings.ToLower(strings.TrimSpace(cap))]; ok {
+			return "forbidden"
+		}
+	}
+	if len(requiredCaps) == 0 {
+		return ""
+	}
+	for _, cap := range requiredCaps {
+		if _, ok := caps[strings.ToLower(strings.TrimSpace(cap))]; !ok {
+			return "missing_required"
+		}
+	}
+	return "matched"
+}
+
+func capabilitySetForSearch(discovery tooling.ToolDiscoveryMetadata) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range append([]string{discovery.CapabilityKind}, discovery.OperationKinds...) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	for _, value := range discovery.Capabilities {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
+}
+
+func riskDecisionForSearch(meta tooling.ToolMetadata, maxRisk string) string {
+	maxRisk = strings.ToLower(strings.TrimSpace(maxRisk))
+	if maxRisk == "" {
+		return ""
+	}
+	if riskRank(string(meta.EffectiveGovernance(0).RiskLevel)) > riskRank(maxRisk) {
+		return "exceeds_request"
+	}
+	return "allowed"
+}
+
+func riskRank(value string) int {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "low":
+		return 1
+	case "medium", "":
+		return 2
+	case "high":
+		return 3
+	case "critical":
+		return 4
+	default:
+		return 2
+	}
+}
+
+func environmentFactMatchScore(searchText string, facts []string) int {
+	if strings.TrimSpace(searchText) == "" || len(facts) == 0 {
+		return 0
+	}
+	terms := searchTerms(strings.Join(facts, " "))
+	return lexicalTermMatchScore(searchText, terms)
+}
+
+func lexicalTermMatchScore(text string, terms []string) int {
+	if strings.TrimSpace(text) == "" || len(terms) == 0 {
+		return 0
+	}
+	text = strings.ToLower(text)
+	score := 0
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term != "" && strings.Contains(text, term) {
+			score++
+		}
+	}
+	return score
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func toolSearchIndexText(tool tooling.Tool, meta tooling.ToolMetadata) string {
+	parts := []string{tooling.ToolDiscoverySearchText(meta)}
+	parts = append(parts, schemaPropertySearchText(tool.InputSchema())...)
+	return strings.Join(parts, " ")
+}
+
+func schemaPropertySearchText(schema json.RawMessage) []string {
+	if len(schema) == 0 {
+		return nil
+	}
+	var payload struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &payload); err != nil || len(payload.Properties) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(payload.Properties)*2)
+	for key := range payload.Properties {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out = append(out, key)
+		if expanded := strings.ReplaceAll(key, "_", " "); expanded != key {
+			out = append(out, expanded)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -850,11 +1317,7 @@ func isDeferredPackTool(meta tooling.ToolMetadata) bool {
 	return meta.Pack != "" && (meta.Layer == tooling.ToolLayerDeferred || meta.DeferByDefault)
 }
 
-func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolMetadata, terms []string, req searchInput) {
-	availability := toolAvailability(meta, req)
-	if !req.IncludeUnavailable && !availability.selectable {
-		return
-	}
+func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolMetadata, availability toolAvailabilityResult, evaluation toolSearchCandidateEvaluation, score float64) {
 	pack := packs[meta.Pack]
 	if pack == nil {
 		pack = &packCandidate{name: meta.Pack, domain: meta.Domain}
@@ -867,15 +1330,6 @@ func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolM
 	if pack.domain == "" {
 		pack.domain = meta.Domain
 	}
-	score := scoreTool(tooling.ToolMetadata{
-		Name:        strings.Join([]string{meta.Pack, meta.Name}, " "),
-		Description: meta.Description,
-		SearchHint:  meta.SearchHint,
-		Domain:      meta.Domain,
-		Aliases:     meta.Aliases,
-		Triggers:    meta.Triggers,
-		Discovery:   meta.Discovery,
-	}, terms)
 	if score > pack.score {
 		pack.score = score
 		d := meta.EffectiveDiscovery()
@@ -887,6 +1341,9 @@ func accumulatePackCandidate(packs map[string]*packCandidate, meta tooling.ToolM
 		pack.mcpServerID = availability.mcpServerID
 		pack.healthStatus = availability.healthStatus
 		pack.filteredReason = availability.filteredReason
+		pack.targetCompatibility = evaluation.targetCompatibility
+		pack.riskDecision = evaluation.riskDecision
+		pack.matchReasons = append([]string(nil), evaluation.matchReasons...)
 		pack.why = searchWhy(score, availability)
 	}
 }

@@ -49,3 +49,51 @@ func TestAgentStateValidateChecksPhaseAndItems(t *testing.T) {
 		t.Fatalf("expected invalid phase to fail")
 	}
 }
+
+func TestTurnItemTimelineTypesAreStandardized(t *testing.T) {
+	required := []TurnItemType{
+		TurnItemTypeRouteSelected,
+		TurnItemTypeToolSurfaceSnapshot,
+		TurnItemTypeAssistantMessage,
+		TurnItemTypeToolCall,
+		TurnItemTypeToolResult,
+		TurnItemTypeApprovalRequested,
+		TurnItemTypeApprovalDecided,
+		TurnItemTypeChildAgentStarted,
+		TurnItemTypeChildAgentResult,
+		TurnItemTypeContextCompacted,
+		TurnItemTypePendingInputAccepted,
+		TurnItemTypeTurnCancelled,
+		TurnItemTypePermissionSnapshot,
+		TurnItemTypeResourceLock,
+	}
+
+	seen := map[TurnItemType]bool{}
+	for _, typ := range required {
+		if typ == "" {
+			t.Fatalf("empty turn item type in required list")
+		}
+		if seen[typ] {
+			t.Fatalf("duplicate turn item type %q", typ)
+		}
+		seen[typ] = true
+		if !typ.IsValid() {
+			t.Fatalf("required turn item type %q is not valid", typ)
+		}
+	}
+}
+
+func TestTurnItemTypeAssistantMessageIsOnlyAssistantTextType(t *testing.T) {
+	if !TurnItemType("assistant_message").IsValid() {
+		t.Fatal("assistant_message must be a valid TurnItemType")
+	}
+	for _, legacy := range []TurnItemType{
+		TurnItemType("assistant_progress"),
+		TurnItemType("assistant_answer"),
+		TurnItemType("final_answer"),
+	} {
+		if legacy.IsValid() {
+			t.Fatalf("%s must not remain a valid production TurnItemType", legacy)
+		}
+	}
+}

@@ -1,6 +1,17 @@
-export type AiopsTransportStatus = "idle" | "working" | "blocked" | "failed" | "canceled";
+export type AiopsTransportStatus =
+  | "idle"
+  | "working"
+  | "blocked"
+  | "failed"
+  | "canceled";
 
-export type AiopsTransportTurnStatus = "submitted" | "working" | "blocked" | "completed" | "failed" | "canceled";
+export type AiopsTransportTurnStatus =
+  | "submitted"
+  | "working"
+  | "blocked"
+  | "completed"
+  | "failed"
+  | "canceled";
 
 export type AiopsTransportProcessKind =
   | "plan"
@@ -16,9 +27,75 @@ export type AiopsTransportProcessKind =
   | "system"
   | "subagent";
 
-export type AiopsTransportProcessStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "rejected";
+export type AiopsTransportProcessStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "rejected"
+  | "skipped";
 
 export type AiopsTransportFinalStatus = "running" | "completed" | "failed";
+
+export type AgentRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AgentStepKind =
+  | "reasoning"
+  | "tool_search"
+  | "tool_call"
+  | "approval"
+  | "mcp_health"
+  | "evidence"
+  | "checkpoint"
+  | "final_response"
+  | "error";
+
+export type AgentStepStatus =
+  | "pending"
+  | "running"
+  | "waiting_approval"
+  | "skipped"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export type AiopsTransportTimelineItemType =
+  | "route_selected"
+  | "tool_surface_snapshot"
+  | "assistant_message"
+  | "tool_call"
+  | "tool_result"
+  | "approval_requested"
+  | "approval_decided"
+  | "child_agent_started"
+  | "child_agent_result"
+  | "context_compacted"
+  | "pending_input_accepted"
+  | "turn_cancelled"
+  | "permission_snapshot"
+  | "resource_lock";
+
+export type AiopsAssistantMessagePhase = "commentary" | "final_answer";
+export type AiopsAssistantMessageStreamState = "streaming" | "complete" | "incomplete";
+
+export type PostRunSuggestionType =
+  | "run_record"
+  | "processing_record"
+  | "experience_candidate"
+  | "case"
+  | "postmortem";
+
+export type PostRunSuggestion = {
+  type: PostRunSuggestionType;
+  label: string;
+  reason?: string;
+};
 
 export type AiopsTransportState = {
   schemaVersion: string;
@@ -26,6 +103,7 @@ export type AiopsTransportState = {
   threadId: string;
   status: AiopsTransportStatus;
   currentTurnId?: string;
+  opsRun?: AiopsTransportOpsRun;
   turns: Record<string, AiopsTransportTurn>;
   turnOrder: string[];
   pendingApprovals: Record<string, AiopsTransportApproval>;
@@ -40,17 +118,88 @@ export type AiopsTransportState = {
   updatedAt: string;
 };
 
+export type AiopsTransportOpsRun = {
+  id: string;
+  sessionId?: string;
+  turnId?: string;
+  clientTurnId?: string;
+  source: string;
+  status: string;
+  title?: string;
+  routeMode?: string;
+  targetSummary?: string;
+  toolSurfaceSummary?: string;
+  evidenceCount?: number;
+  currentStep?: string;
+  currentStepId?: string;
+  checkpointId?: string;
+  agentRun?: AgentRunView;
+  postRunSuggestions?: PostRunSuggestion[];
+};
+
+export type AgentRunView = {
+  id: string;
+  sessionId?: string;
+  rootTurnId?: string;
+  activeTurnId?: string;
+  userGoal?: string;
+  normalizedGoal?: string;
+  routeMode?: string;
+  profile?: string;
+  status?: AgentRunStatus;
+  targetSummary?: string;
+  currentStep?: string;
+  currentStepId?: string;
+  checkpointId?: string;
+  evidenceCount?: number;
+  startedAt?: string;
+  updatedAt?: string;
+  steps?: AgentStepView[];
+};
+
+export type AgentStepView = {
+  id: string;
+  runId?: string;
+  turnId?: string;
+  iteration?: number;
+  kind?: AgentStepKind;
+  status?: AgentStepStatus;
+  title?: string;
+  inputSummary?: string;
+  outputSummary?: string;
+  toolName?: string;
+  toolCallId?: string;
+  approvalId?: string;
+  checkpointId?: string;
+  targetRefs?: string[];
+  evidenceRefs?: string[];
+  error?: string;
+  startedAt?: string;
+  completedAt?: string;
+};
+
 export type AiopsTransportTurn = {
   id: string;
   user?: AiopsTransportMessage;
   intent?: AiopsTransportIntent;
   process?: AiopsProcessBlock[];
+  timeline?: AiopsTransportTimelineItem[];
   contextGovernance?: AiopsContextGovernanceEvent[];
   agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
   final?: AiopsTransportFinal;
   status: AiopsTransportTurnStatus;
   startedAt?: string;
   completedAt?: string;
+  updatedAt?: string;
+};
+
+export type AiopsTransportTimelineItem = {
+  id: string;
+  type: AiopsTransportTimelineItemType | string;
+  status?: string;
+  text?: string;
+  payloadKind?: string;
+  createdAt?: string;
   updatedAt?: string;
 };
 
@@ -69,22 +218,43 @@ export type AiopsTransportFinal = {
   id: string;
   text: string;
   status: AiopsTransportFinalStatus;
+  durationMs?: number;
 };
 
 export type AiopsProcessBlock = {
   id: string;
   kind: AiopsTransportProcessKind;
   displayKind?: string;
+  phase?: AiopsAssistantMessagePhase;
+  streamState?: AiopsAssistantMessageStreamState;
+  commentarySource?: "model_prelude" | "runtime_tool_intent" | string;
+  toolCallIds?: string[];
+  evidenceBoundary?: "sufficient" | "limited" | "blocked" | string;
   status: AiopsTransportProcessStatus;
   text: string;
   command?: string;
   inputSummary?: string;
   outputPreview?: string;
+  foldGroupId?: string;
+  foldGroupKind?: "web_lookup" | "command" | string;
   steps?: AiopsTransportPlanStep[];
   queries?: string[];
   results?: AiopsSearchResult[];
+  operation?: "search" | "open" | string;
+  url?: string;
+  adapter?: string;
+  backend?: string;
+  sourceCount?: number;
+  toolCallId?: string;
+  checkpointId?: string;
   approvalId?: string;
   source?: string;
+  targetSummary?: string;
+  risk?: string;
+  riskSummary?: string;
+  expectedEffect?: string;
+  rollback?: string;
+  validation?: string;
   confidence?: string;
   window?: string;
   rawRef?: string;
@@ -144,6 +314,10 @@ export type AiopsSearchResult = {
   title?: string;
   url?: string;
   snippet?: string;
+  text?: string;
+  fetched?: boolean;
+  fetchError?: string;
+  contentType?: string;
 };
 
 export type AiopsTransportApproval = {
@@ -153,6 +327,12 @@ export type AiopsTransportApproval = {
   status?: string;
   command?: string;
   reason?: string;
+  risk?: string;
+  source?: string;
+  targetSummary?: string;
+  expectedEffect?: string;
+  rollback?: string;
+  validation?: string;
   requestedAt?: string;
   resolvedAt?: string;
 };

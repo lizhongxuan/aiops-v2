@@ -15,7 +15,7 @@ import (
 
 func TestOpsManualGenerateFromWorkflowUsesRunnerStudioGraphAndCatalog(t *testing.T) {
 	workflowYAML := readOpsManualWorkflowFixture(t, "pg_restore.yaml")
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	runner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/workflows/pg-restore/graph":
 			writeJSON(w, http.StatusOK, map[string]any{"graph": map[string]any{"nodes": []any{}}})
@@ -39,12 +39,11 @@ func TestOpsManualGenerateFromWorkflowUsesRunnerStudioGraphAndCatalog(t *testing
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer runner.Close()
+	})
 
 	repo := opsmanual.NewMemoryStore()
 	service := appui.NewOpsManualService(opsmanual.NewService(repo))
-	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithRunnerStudioUpstreamURL(runner.URL), WithWebAssets(http.NotFoundHandler()))
+	server := NewHTTPServer(&opsManualAPITestServices{service: service}, WithRunnerStudioHandler(runner), WithWebAssets(http.NotFoundHandler()))
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
@@ -120,7 +119,7 @@ func TestOpsManualGenerateFromWorkflowHandlesRunnerUnavailable(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode error payload: %v", err)
 	}
-	if payload["error"] != "runner studio upstream is not configured" {
+	if payload["error"] != "embedded runner is not available" {
 		t.Fatalf("payload = %#v, want runner unavailable error", payload)
 	}
 }

@@ -30,7 +30,7 @@ type InstructionReconcileDecision struct {
 	Reasons          []string `json:"reasons,omitempty"`
 	CancelledStepIDs []string `json:"cancelledStepIds,omitempty"`
 	BlockedStepIDs   []string `json:"blockedStepIds,omitempty"`
-	NewStepIDs        []string `json:"newStepIds,omitempty"`
+	NewStepIDs       []string `json:"newStepIds,omitempty"`
 }
 
 type ResumeContinuationPolicy struct {
@@ -64,6 +64,13 @@ type CompletionReadinessDecision struct {
 	OpenQuestions      []string `json:"openQuestions,omitempty"`
 	VerificationStatus string   `json:"verificationStatus,omitempty"`
 	Reasons            []string `json:"reasons,omitempty"`
+}
+
+type SafeTerminalFinalDecision struct {
+	TerminalStates []string `json:"terminalStates,omitempty"`
+	Valid          bool     `json:"valid"`
+	MissingFields  []string `json:"missingFields,omitempty"`
+	Reasons        []string `json:"reasons,omitempty"`
 }
 
 type FailureSignatureDecision struct {
@@ -234,6 +241,19 @@ func EvaluateCompletionReadiness(snapshot *TurnSnapshot, answer string) Completi
 		OpenQuestions:      coverage.OpenQuestions,
 		VerificationStatus: coverage.VerificationStatus,
 	}
+	safeTerminal := EvaluateSafeTerminalFinal(answer)
+	if len(safeTerminal.TerminalStates) > 0 {
+		decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.Reasons...)
+		if safeTerminal.Valid {
+			decision.Action = "allow_blocker_final"
+			decision.Reasons = appendUniqueSorted(decision.Reasons, "safe_terminal_final")
+			decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.TerminalStates...)
+			return decision
+		}
+		decision.Action = "block_success_final"
+		decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.MissingFields...)
+		return decision
+	}
 	if coverage.Action == "blocker_final_allowed" && finalLooksLikeBlocker(answer) {
 		decision.Action = "allow_blocker_final"
 		decision.Reasons = appendUniqueSorted(decision.Reasons, "explicit_blocker_final")
@@ -254,6 +274,79 @@ func EvaluateCompletionReadiness(snapshot *TurnSnapshot, answer string) Completi
 	return decision
 }
 
+func EvaluateSafeTerminalFinal(answer string) SafeTerminalFinalDecision {
+	text := strings.ToLower(strings.TrimSpace(answer))
+	decision := SafeTerminalFinalDecision{}
+	if text == "" {
+		return decision
+	}
+	for _, state := range []struct {
+		name    string
+		markers []string
+	}{
+		{name: "insufficient_evidence", markers: []string{"insufficient_evidence", "insufficient evidence", "missing_evidence", "证据不足"}},
+		{name: "user_denied_action", markers: []string{"user_denied_action", "approval denied", "denied approval", "用户拒绝", "拒绝审批", "审批拒绝"}},
+		{name: "partial_mutation", markers: []string{"partial_mutation", "partial mutation", "partially executed", "may have partially executed", "可能已部分执行", "部分执行"}},
+		{name: "tool_unavailable", markers: []string{"tool_unavailable", "tool unavailable", "mcp_unavailable", "mcp unavailable", "工具不可用", "工具不可达"}},
+		{name: "multi_host_partial", markers: []string{"multi_host_partial", "multi-host partial", "multi host partial", "some hosts", "部分主机", "部分主机完成"}},
+	} {
+		if textContainsAny(text, state.markers...) {
+			decision.TerminalStates = appendUniqueSorted(decision.TerminalStates, state.name)
+			decision.Reasons = appendUniqueSorted(decision.Reasons, state.name)
+		}
+	}
+	if len(decision.TerminalStates) == 0 {
+		return decision
+	}
+	decision.Valid = true
+	if containsRuntimeString(decision.TerminalStates, "partial_mutation") {
+		decision.MissingFields = partialMutationMissingFields(text)
+		if len(decision.MissingFields) > 0 {
+			decision.Valid = false
+			decision.Reasons = appendUniqueSorted(decision.Reasons, "partial_mutation_missing_required_fields")
+			decision.Reasons = appendUniqueSorted(decision.Reasons, decision.MissingFields...)
+		}
+	}
+	return decision
+}
+
+func partialMutationMissingFields(text string) []string {
+	required := []struct {
+		name    string
+		markers []string
+	}{
+		{name: "missing_partial_mutation_executed_scope", markers: []string{"what may have partially executed", "may have partially executed", "可能已部分执行", "部分执行内容", "执行范围"}},
+		{name: "missing_partial_mutation_known_evidence_refs", markers: []string{"known evidence refs", "evidence refs", "known evidence", "证据引用", "已知证据"}},
+		{name: "missing_partial_mutation_unknown_state", markers: []string{"unknown state", "unknown status", "unknown", "未知状态", "未知结果"}},
+		{name: "missing_partial_mutation_required_post_check", markers: []string{"required post-check", "post-check", "post check", "postcheck", "复查", "后续检查"}},
+	}
+	var missing []string
+	for _, requirement := range required {
+		if !textContainsAny(text, requirement.markers...) {
+			missing = appendUniqueSorted(missing, requirement.name)
+		}
+	}
+	return missing
+}
+
+func textContainsAny(text string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(text, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsRuntimeString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func BuildFailureSignature(toolName string, args json.RawMessage, result ToolResult) string {
 	normalized := map[string]any{
 		"tool":  strings.TrimSpace(toolName),
@@ -269,10 +362,10 @@ func BuildFailureSignature(toolName string, args json.RawMessage, result ToolRes
 
 func EvaluateFailureSignatureDecision(signature string, seenCount int) FailureSignatureDecision {
 	decision := FailureSignatureDecision{
-		Signature:  strings.TrimSpace(signature),
-		SeenCount:  seenCount,
-		Action:     "retry_same_path",
-		Reasons:    []string{"below_repeat_threshold"},
+		Signature: strings.TrimSpace(signature),
+		SeenCount: seenCount,
+		Action:    "retry_same_path",
+		Reasons:   []string{"below_repeat_threshold"},
 	}
 	if seenCount >= 3 {
 		decision.Action = "switch_path"

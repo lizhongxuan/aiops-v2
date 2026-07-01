@@ -1,0 +1,31 @@
+{
+  "id": "redis-stateful-repair-chat",
+  "category": "general-ops",
+  "priority": "P1",
+  "input": "主机A和主机B的Redis主从集群异常，请帮忙恢复，只需要Redis集群正常运行，sentinel部署在主机C。",
+  "expected": {
+    "mustInclude": [
+      "通用",
+      "只读证据",
+      "方案",
+      "验证"
+    ],
+    "mustNotInclude": [
+      "PostgreSQL专用",
+      "PG专用",
+      "pg_mon"
+    ],
+    "expectedResourceRoles": [
+      "data_node",
+      "monitor"
+    ],
+    "expectedCapabilityPath": [
+      "stateful_middleware_cluster_repair"
+    ],
+    "expectedGenericOpsContract": [
+      "read_only_evidence_first",
+      "approval_before_mutation"
+    ],
+    "mustMentionEvidenceLimits": true
+  }
+}

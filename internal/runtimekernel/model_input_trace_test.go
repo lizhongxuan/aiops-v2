@@ -13,6 +13,7 @@ import (
 
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/featureflag"
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/taskdepth"
@@ -21,8 +22,7 @@ import (
 
 func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	compiled := promptcompiler.CompiledPrompt{
 		System: promptcompiler.SystemPrompt{Content: "system layer"},
@@ -35,13 +35,13 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 		{Role: schema.User, Content: "user asks"},
 	}
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:  "sess-1",
 		TurnID:     "turn-1",
 		Iteration:  2,
 		Metadata:   map[string]string{"eval.caseId": "case-runtime"},
 		Compiled:   compiled,
-		ModelInput: input,
+		ModelInput: schemaMessagesToModelInputItems(input),
 		VisibleTools: []string{
 			"read_file",
 		},
@@ -80,8 +80,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 
 func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	compiled := promptcompiler.CompiledPrompt{
 		Tools: promptcompiler.ToolPromptSet{Content: "# Tool Index\n\n- read_file: Read files."},
@@ -91,12 +90,12 @@ func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 		{Role: schema.User, Content: "user asks"},
 	}
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:    "sess-metrics",
 		TurnID:       "turn-metrics",
 		Iteration:    1,
 		Compiled:     compiled,
-		ModelInput:   input,
+		ModelInput:   schemaMessagesToModelInputItems(input),
 		VisibleTools: []string{"read_file", "tool_search"},
 	})
 	if err != nil {
@@ -129,19 +128,145 @@ func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 	}
 }
 
+func TestModelInputDedupeRepeatedLongUserEvidence(t *testing.T) {
+	longEvidence := strings.Join([]string{
+		"我用备份系统对主机A做了几次备份，然后选择某个备份记录恢复了主机A。",
+		"现在想把主机A加入主机C的监控，并且把主机B当做从节点加入集群，为什么从节点执行加入命令失败？",
+		"已有证据：主机B报 timeline 高于主节点，恢复后存在历史分支。",
+		"参考流程：",
+		"| 步骤 | 命令 | 说明 |",
+		"| 准备 | ssh host82.example.internal | 参考环境，不是当前目标 |",
+		"| 加入 | run join node_16 --from backup | 文档示例，不是当前目标 |",
+		"日志片段：",
+		strings.Repeat("service join failed after restore; retry waits for lineage validation\n", 80),
+	}, "\n")
+	repeatedWithDelta := longEvidence + "\n?"
+
+	result, err := buildPromptInput([]Message{
+		{Role: "user", Content: longEvidence},
+		{Role: "assistant", Content: "需要确认恢复后的 timeline 和从节点数据目录状态。"},
+		{Role: "user", Content: repeatedWithDelta},
+	}, promptcompiler.CompiledPrompt{})
+	if err != nil {
+		t.Fatalf("build prompt input: %v", err)
+	}
+	joined := joinedModelInputItemContent(result.Items)
+	if got := strings.Count(joined, "service join failed after restore"); got > 81 {
+		t.Fatalf("expected repeated large evidence body to be deduped, got %d occurrences\n%s", got, joined)
+	}
+	for _, want := range []string{
+		"User evidence capsule",
+		"User evidence repeated from previous turn.",
+		"digest=sha256:",
+		"delta_user_request=?",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("model input missing %q:\n%s", want, joined)
+		}
+	}
+	if result.Trace.ContextDedupe == nil {
+		t.Fatal("expected contextDedupe trace")
+	}
+	if result.Trace.ContextDedupe.RepeatedUserMessageCount != 1 {
+		t.Fatalf("repeated count = %d, want 1", result.Trace.ContextDedupe.RepeatedUserMessageCount)
+	}
+	if result.Trace.ContextDedupe.SavedChars <= 0 {
+		t.Fatalf("saved chars = %d, want > 0", result.Trace.ContextDedupe.SavedChars)
+	}
+	if result.Trace.ContextDedupe.RetainedDeltaChars != 1 {
+		t.Fatalf("retained delta chars = %d, want 1", result.Trace.ContextDedupe.RetainedDeltaChars)
+	}
+}
+
+func TestModelInputTraceWritesContextDedupe(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	input := []*schema.Message{
+		{Role: schema.User, Content: "User evidence repeated from previous turn.\ndigest=sha256:abc\nsummary=restore issue\ndelta_user_request=?"},
+	}
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID:  "sess-context-dedupe",
+		TurnID:     "turn-context-dedupe",
+		Iteration:  0,
+		ModelInput: schemaMessagesToModelInputItems(input),
+		PromptInputTrace: promptinput.PromptInputTrace{
+			ContextDedupe: &promptinput.ContextDedupeTrace{
+				RepeatedUserMessageCount: 1,
+				SavedChars:               3931,
+				RetainedDeltaChars:       1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		ContextDedupe struct {
+			RepeatedUserMessageCount int `json:"repeatedUserMessageCount"`
+			SavedChars               int `json:"savedChars"`
+			RetainedDeltaChars       int `json:"retainedDeltaChars"`
+		} `json:"contextDedupe"`
+		PromptInputTrace struct {
+			ContextDedupe struct {
+				RepeatedUserMessageCount int `json:"repeatedUserMessageCount"`
+				SavedChars               int `json:"savedChars"`
+				RetainedDeltaChars       int `json:"retainedDeltaChars"`
+			} `json:"contextDedupe"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.ContextDedupe.RepeatedUserMessageCount != 1 || payload.ContextDedupe.SavedChars != 3931 || payload.ContextDedupe.RetainedDeltaChars != 1 {
+		t.Fatalf("root contextDedupe mismatch: %#v", payload.ContextDedupe)
+	}
+	if payload.PromptInputTrace.ContextDedupe.RepeatedUserMessageCount != 1 {
+		t.Fatalf("promptInputTrace contextDedupe missing: %#v", payload.PromptInputTrace.ContextDedupe)
+	}
+}
+
+func joinedSchemaMessageContent(messages []*schema.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		b.WriteString(msg.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func schemaMessagesToModelInputItems(messages []*schema.Message) []promptinput.ModelInputItem {
+	return modelrouter.ModelInputItemsFromEinoMessages(messages)
+}
+
+func joinedModelInputItemContent(items []promptinput.ModelInputItem) string {
+	var b strings.Builder
+	for _, item := range items {
+		b.WriteString(item.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-plan-requirement",
 		TurnID:    "turn-plan-requirement",
 		Iteration: 0,
 		Compiled:  promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			{Role: schema.User, Content: "排查一个复杂问题"},
-		},
+		}),
 		PlanRequirementDecision: &promptinput.PlanRequirementDecisionTrace{
 			Required: true,
 			Decision: "soft",
@@ -157,6 +282,201 @@ func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
 		t.Fatalf("read trace json: %v", err)
 	}
 	for _, want := range []string{`"planRequirementDecision"`, `"task_depth_requires_plan"`, `"evidence"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace missing %s:\n%s", want, string(data))
+		}
+	}
+}
+
+func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	ownerTrace := NewOwnerWriteTrace(OwnerWriteTraceInput{
+		Responsibility: OwnerWriteTurnLifecycle,
+		Writer:         OwnerRuntimeKernel,
+		SessionID:      "sess-owner-trace",
+		TurnID:         "turn-owner-trace",
+		CreatedAt:      time.Date(2026, 6, 24, 8, 0, 0, 0, time.UTC),
+	})
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID: "sess-owner-trace",
+		TurnID:    "turn-owner-trace",
+		Iteration: 1,
+		Compiled:  promptcompiler.CompiledPrompt{},
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
+			{Role: schema.User, Content: "check owner trace"},
+		}),
+		OwnerWriteTraces: []OwnerWriteTrace{ownerTrace},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"ownerWriteTraces"`, `"turn_lifecycle"`, `"runtimekernel.RuntimeKernel"`, `"accepted"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("trace missing %s:\n%s", want, string(data))
+		}
+	}
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read trace markdown: %v", err)
+	}
+	for _, want := range []string{"Owner Write Trace", "turn_lifecycle", "runtimekernel.RuntimeKernel"} {
+		if !strings.Contains(string(markdown), want) {
+			t.Fatalf("markdown trace missing %q:\n%s", want, string(markdown))
+		}
+	}
+}
+
+func TestBuildModelInputToolTraceFieldsIncludesOwnerWriteTrace(t *testing.T) {
+	sessionTrace := NewOwnerWriteTrace(OwnerWriteTraceInput{
+		Responsibility: OwnerWriteApprovalLedger,
+		Writer:         OwnerPendingApproval,
+		SessionID:      "sess-owner-fields",
+		TurnID:         "turn-owner-fields",
+	})
+	turnTrace := NewOwnerWriteTrace(OwnerWriteTraceInput{
+		Responsibility: OwnerWriteToolResult,
+		Writer:         OwnerToolDispatcher,
+		SessionID:      "sess-owner-fields",
+		TurnID:         "turn-owner-fields",
+	})
+	fields := buildModelInputToolTraceFields(
+		&SessionState{ID: "sess-owner-fields", OwnerWriteTraces: []OwnerWriteTrace{sessionTrace}},
+		&TurnSnapshot{ID: "turn-owner-fields", OwnerWriteTraces: []OwnerWriteTrace{turnTrace}},
+		"surface-owner",
+		"policy-owner",
+	)
+
+	if len(fields.OwnerWriteTraces) != 2 {
+		t.Fatalf("owner write traces = %#v, want session and turn traces", fields.OwnerWriteTraces)
+	}
+	if fields.OwnerWriteTraces[0].Responsibility != OwnerWriteApprovalLedger || fields.OwnerWriteTraces[1].Responsibility != OwnerWriteToolResult {
+		t.Fatalf("owner write traces = %#v, want session trace followed by turn trace", fields.OwnerWriteTraces)
+	}
+}
+
+func TestModelInputDebugTraceIncludesToolSurfaceSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID:                     "sess-tool-surface",
+		TurnID:                        "turn-tool-surface",
+		Iteration:                     1,
+		Compiled:                      promptcompiler.CompiledPrompt{},
+		ModelInput:                    schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "inspect tool surface"}}),
+		VisibleTools:                  []string{"web_search"},
+		ToolSurfaceFingerprint:        "tools:abc",
+		ToolSurfacePolicySnapshotHash: "policy:def",
+		LoadedPacksDelta:              []string{"generic_metrics"},
+		ToolSurfaceSnapshot: &promptinput.ToolSurfaceSnapshot{
+			HiddenTools: []string{"exec_command"},
+			HiddenReasons: map[string][]string{
+				"exec_command": {"profile_denied"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		ToolSurfaceSnapshot *promptinput.ToolSurfaceSnapshot `json:"toolSurfaceSnapshot"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.ToolSurfaceSnapshot == nil {
+		t.Fatalf("toolSurfaceSnapshot missing:\n%s", string(data))
+	}
+	snapshot := payload.ToolSurfaceSnapshot
+	if snapshot.Fingerprint != "tools:abc" || snapshot.PolicyHash != "policy:def" {
+		t.Fatalf("snapshot hashes = %#v, want tools:abc/policy:def", snapshot)
+	}
+	if got := strings.Join(snapshot.VisibleTools, ","); got != "web_search" {
+		t.Fatalf("visible tools = %q, want web_search", got)
+	}
+	if got := strings.Join(snapshot.HiddenTools, ","); got != "exec_command" {
+		t.Fatalf("hidden tools = %q, want exec_command", got)
+	}
+	if got := strings.Join(snapshot.HiddenReasons["exec_command"], ","); got != "profile_denied" {
+		t.Fatalf("hidden reasons = %q, want profile_denied", got)
+	}
+	if got := strings.Join(snapshot.LoadedPacksDelta, ","); got != "generic_metrics" {
+		t.Fatalf("loaded packs delta = %q, want generic_metrics", got)
+	}
+}
+
+func TestBuildModelInputToolTraceFieldsIncludesToolSurfaceSnapshot(t *testing.T) {
+	fields := buildModelInputToolTraceFields(
+		&SessionState{ID: "sess-tool-surface"},
+		&TurnSnapshot{
+			ID: "turn-tool-surface",
+			ToolSurfaceSnapshot: &ToolSurfaceSnapshotRef{
+				Fingerprint:        "tools:runtime",
+				ToolNames:          []string{"web_search"},
+				PolicySnapshotHash: "policy:runtime",
+				PolicySnapshot: &tooling.ToolSurfacePolicySnapshot{
+					HiddenTools: []tooling.ToolHiddenReason{{Name: "exec_command", Reason: "profile_denied"}},
+				},
+			},
+		},
+		"tools:runtime",
+		"policy:runtime",
+	)
+
+	if fields.ToolSurfaceSnapshot == nil {
+		t.Fatal("ToolSurfaceSnapshot = nil, want normalized snapshot")
+	}
+	if got := strings.Join(fields.ToolSurfaceSnapshot.VisibleTools, ","); got != "web_search" {
+		t.Fatalf("visible tools = %q, want web_search", got)
+	}
+	if got := strings.Join(fields.ToolSurfaceSnapshot.HiddenTools, ","); got != "exec_command" {
+		t.Fatalf("hidden tools = %q, want exec_command", got)
+	}
+	if got := strings.Join(fields.ToolSurfaceSnapshot.HiddenReasons["exec_command"], ","); got != "profile_denied" {
+		t.Fatalf("hidden reason = %q, want profile_denied", got)
+	}
+	if fields.ToolSurfaceSnapshot.PolicyHash != "policy:runtime" {
+		t.Fatalf("policy hash = %q, want policy:runtime", fields.ToolSurfaceSnapshot.PolicyHash)
+	}
+}
+
+func TestPermissionSnapshotTrace(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID:  "sess-permission-trace",
+		TurnID:     "turn-permission-trace",
+		Iteration:  1,
+		Compiled:   promptcompiler.CompiledPrompt{},
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "check permission trace"}}),
+		DispatchDecisions: []promptinput.DispatchDecisionTrace{{
+			ToolName:               "exec_command",
+			ToolCallID:             "call-exec",
+			ToolSurfaceFingerprint: "surface-fp-1",
+			PermissionSnapshotHash: "permission-fp-1",
+			ArgumentsHash:          "sha256:args",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	for _, want := range []string{`"dispatchDecisions"`, `"surface-fp-1"`, `"permission-fp-1"`, `"sha256:args"`} {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("trace missing %s:\n%s", want, string(data))
 		}
@@ -250,8 +570,7 @@ func TestModelInputTraceG01FirstTurnFinalTargetBudget(t *testing.T) {
 
 func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	diff := promptinput.DiffTrace(
 		promptinput.PromptInputTrace{Items: []promptinput.TraceItem{
@@ -262,7 +581,7 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 			{Source: "conversation", SemanticRole: "tool_result", ID: "call-1", Content: "ok"},
 		}},
 	)
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		Iteration: 2,
@@ -299,12 +618,86 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	}
 }
 
+func TestModelInputDebugTraceWritesWebSearchPolicyAndRedactedSeeds(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID: "sess-web-search-trace",
+		TurnID:    "turn-web-search-trace",
+		Iteration: 1,
+		Metadata: map[string]string{
+			"aiops.webSearch.policy":           "must_search",
+			"aiops.webSearch.reason":           "explicit_public_web_request",
+			"aiops.webSearch.reasonCodes":      "explicit_public_web_request",
+			"aiops.webSearch.querySeeds":       "PostgreSQL timeline official docs token abc123 120.77.239.90 root",
+			"aiops.webSearch.requireCitations": "true",
+		},
+		WebSearch: &promptinput.WebSearchTrace{
+			Attempted:   true,
+			RetryCount:  1,
+			Adapter:     "custom_public_web:search",
+			SourceCount: 2,
+		},
+		Final: &promptinput.FinalTrace{PublicWebLimitation: true},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		PromptInputTrace struct {
+			WebSearchPolicy struct {
+				Level      string   `json:"level"`
+				QuerySeeds []string `json:"querySeeds"`
+			} `json:"webSearchPolicy"`
+			WebSearch struct {
+				Attempted   bool   `json:"attempted"`
+				RetryCount  int    `json:"retryCount"`
+				Adapter     string `json:"adapter"`
+				SourceCount int    `json:"sourceCount"`
+			} `json:"webSearch"`
+			Final struct {
+				PublicWebLimitation bool `json:"publicWebLimitation"`
+			} `json:"final"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.PromptInputTrace.WebSearchPolicy.Level != "enabled" {
+		t.Fatalf("webSearchPolicy = %#v", payload.PromptInputTrace.WebSearchPolicy)
+	}
+	if !payload.PromptInputTrace.WebSearch.Attempted || payload.PromptInputTrace.WebSearch.RetryCount != 1 || payload.PromptInputTrace.WebSearch.SourceCount != 2 {
+		t.Fatalf("webSearch trace = %#v", payload.PromptInputTrace.WebSearch)
+	}
+	if !payload.PromptInputTrace.Final.PublicWebLimitation {
+		t.Fatalf("final trace = %#v, want public web limitation", payload.PromptInputTrace.Final)
+	}
+	seeds := strings.Join(payload.PromptInputTrace.WebSearchPolicy.QuerySeeds, " ")
+	for _, forbidden := range []string{"abc123", "120.77.239.90", "root"} {
+		if strings.Contains(seeds, forbidden) {
+			t.Fatalf("query seeds = %#v, leaked %q", payload.PromptInputTrace.WebSearchPolicy.QuerySeeds, forbidden)
+		}
+	}
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read trace markdown: %v", err)
+	}
+	if !strings.Contains(string(markdown), "### Web Search") || !strings.Contains(string(markdown), "policy_level: enabled") {
+		t.Fatalf("markdown missing web search section:\n%s", string(markdown))
+	}
+}
+
 func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-sections",
 		TurnID:    "turn-sections",
 		Iteration: 2,
@@ -323,10 +716,10 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 				CurrentHash: "sha256:abc",
 			}},
 		},
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			{Role: schema.System, Content: "system"},
 			{Role: schema.User, Content: "user"},
-		},
+		}),
 		PromptInputTrace: promptinput.PromptInputTrace{
 			ContextUsage: promptinput.ContextUsage{
 				MaxContextTokens:     1000,
@@ -336,6 +729,13 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 					Name:           "messages",
 					Bytes:          4,
 					TokensEstimate: 1,
+				}},
+				TopContributors: []promptinput.ContextContributor{{
+					Kind:           "messages",
+					ID:             "user",
+					Bytes:          4,
+					TokensEstimate: 1,
+					Action:         "keep_inline",
 				}},
 			},
 		},
@@ -348,19 +748,55 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 		t.Fatalf("read trace json: %v", err)
 	}
 	jsonText := string(data)
-	for _, want := range []string{`"promptSections"`, `"changedSections"`, `"protocol.state"`, `"contextUsage"`, `"messages"`} {
+	for _, want := range []string{`"promptSections"`, `"changedSections"`, `"protocol.state"`, `"contextUsage"`, `"topContributors"`, `"modelInputStats"`, `"promptBytes"`, `"messages"`} {
 		if !strings.Contains(jsonText, want) {
 			t.Fatalf("trace json missing %q:\n%s", want, jsonText)
 		}
+	}
+	var payload struct {
+		ModelInputStats struct {
+			PromptBytes  int `json:"promptBytes"`
+			MessageCount int `json:"messageCount"`
+		} `json:"modelInputStats"`
+		PromptInputTrace struct {
+			PromptSections []struct {
+				ID             string `json:"id"`
+				Bytes          int    `json:"bytes"`
+				TokensEstimate int    `json:"tokensEstimate"`
+			} `json:"promptSections"`
+			ContextUsage struct {
+				TopContributors []struct {
+					Kind           string `json:"kind"`
+					ID             string `json:"id"`
+					Bytes          int    `json:"bytes"`
+					TokensEstimate int    `json:"tokensEstimate"`
+				} `json:"topContributors"`
+			} `json:"contextUsage"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.ModelInputStats.PromptBytes != len("system")+len("user") || payload.ModelInputStats.MessageCount != 2 {
+		t.Fatalf("modelInputStats = %#v, want prompt bytes and message count", payload.ModelInputStats)
+	}
+	if len(payload.PromptInputTrace.PromptSections) != 1 ||
+		payload.PromptInputTrace.PromptSections[0].ID != "protocol.state" ||
+		payload.PromptInputTrace.PromptSections[0].Bytes != 32 ||
+		payload.PromptInputTrace.PromptSections[0].TokensEstimate != 8 {
+		t.Fatalf("prompt section trace mismatch: %#v", payload.PromptInputTrace.PromptSections)
+	}
+	if len(payload.PromptInputTrace.ContextUsage.TopContributors) != 1 ||
+		payload.PromptInputTrace.ContextUsage.TopContributors[0].ID != "user" {
+		t.Fatalf("top contributors mismatch: %#v", payload.PromptInputTrace.ContextUsage.TopContributors)
 	}
 }
 
 func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:                     "sess-tool-discovery",
 		TurnID:                        "turn-tool-discovery",
 		Iteration:                     1,
@@ -415,10 +851,9 @@ func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
 
 func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:         "sess-skill-discovery",
 		TurnID:            "turn-skill-discovery",
 		Iteration:         1,
@@ -460,10 +895,9 @@ func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
 
 func TestTraceIncludesRejectedToolCalls(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-rejected",
 		TurnID:    "turn-rejected",
 		RejectedToolCalls: []promptinput.RejectedToolCallTraceEvent{{
@@ -492,10 +926,9 @@ func TestTraceIncludesRejectedToolCalls(t *testing.T) {
 
 func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-parallel",
 		TurnID:    "turn-parallel",
 		ParallelDispatchGroups: []promptinput.ParallelDispatchTraceGroup{{
@@ -525,10 +958,9 @@ func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
 
 func TestTraceIncludesAgentSchedulingState(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:      "sess-agent-scheduling",
 		TurnID:         "turn-agent-scheduling",
 		AgentIndexHash: "agent-index-sha256:synthetic",
@@ -594,10 +1026,9 @@ func TestTraceIncludesAgentSchedulingState(t *testing.T) {
 
 func TestTraceIncludesFailedToolSummaries(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-failed-summary",
 		TurnID:    "turn-failed-summary",
 		FailedToolSummaries: []promptinput.FailedToolSummary{{
@@ -625,31 +1056,36 @@ func TestTraceIncludesFailedToolSummaries(t *testing.T) {
 
 func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-response",
 		TurnID:    "turn-response",
 		Iteration: 1,
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			schema.UserMessage("show trace"),
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatalf("write trace: %v", err)
 	}
 
-	response := &schema.Message{
-		Role:    schema.Assistant,
-		Content: "模型输出 api_key=ak-output-123",
-		ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+	response := modelrouter.ProviderResponse{
+		RequestID: "provider-request-hash",
+		Output:    "模型输出 api_key=ak-output-123",
+		Usage: modelrouter.ProviderUsage{
 			PromptTokens:     21,
 			CompletionTokens: 8,
 			TotalTokens:      29,
-		}},
+		},
 	}
-	if err := appendModelTraceResponseFile(path, "llm-1", response, 456*time.Millisecond, nil); err != nil {
+	stats := ModelStreamStats{
+		FirstDeltaMs: 123,
+		StreamMs:     234,
+		DeltaCount:   3,
+		OutputChars:  8,
+	}
+	if err := appendModelTraceResponseFile(path, "llm-1", response, 456*time.Millisecond, nil, stats); err != nil {
 		t.Fatalf("append response: %v", err)
 	}
 
@@ -658,18 +1094,26 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 		t.Fatalf("read trace json: %v", err)
 	}
 	var payload struct {
-		Output     string `json:"output"`
-		DurationMs int64  `json:"duration_ms"`
-		Usage      struct {
+		Output       string `json:"output"`
+		DurationMs   int64  `json:"duration_ms"`
+		FirstDeltaMs int64  `json:"first_delta_ms"`
+		StreamMs     int64  `json:"stream_ms"`
+		DeltaCount   int    `json:"delta_count"`
+		OutputChars  int    `json:"output_chars"`
+		Usage        struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
 		} `json:"usage"`
 		LLMRequests []struct {
-			ID         string `json:"id"`
-			Output     string `json:"output"`
-			DurationMs int64  `json:"duration_ms"`
-			Usage      struct {
+			ID           string `json:"id"`
+			Output       string `json:"output"`
+			DurationMs   int64  `json:"duration_ms"`
+			FirstDeltaMs int64  `json:"first_delta_ms"`
+			StreamMs     int64  `json:"stream_ms"`
+			DeltaCount   int    `json:"delta_count"`
+			OutputChars  int    `json:"output_chars"`
+			Usage        struct {
 				PromptTokens     int `json:"prompt_tokens"`
 				CompletionTokens int `json:"completion_tokens"`
 				TotalTokens      int `json:"total_tokens"`
@@ -679,14 +1123,20 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("unmarshal trace json: %v", err)
 	}
-	if len(payload.LLMRequests) != 1 || payload.LLMRequests[0].ID != "llm-1" {
-		t.Fatalf("llmRequests = %#v, want appended llm request", payload.LLMRequests)
+	if len(payload.LLMRequests) != 1 || payload.LLMRequests[0].ID != "provider-request-hash" {
+		t.Fatalf("llmRequests = %#v, want appended provider request id", payload.LLMRequests)
 	}
 	if !strings.Contains(payload.Output, "[REDACTED]") || strings.Contains(payload.Output, "ak-output-123") {
 		t.Fatalf("output was not redacted: %q", payload.Output)
 	}
 	if payload.DurationMs != 456 || payload.LLMRequests[0].DurationMs != 456 {
 		t.Fatalf("duration_ms root/request = %d/%d, want 456", payload.DurationMs, payload.LLMRequests[0].DurationMs)
+	}
+	if payload.FirstDeltaMs != 123 || payload.StreamMs != 234 || payload.DeltaCount != 3 || payload.OutputChars != 8 {
+		t.Fatalf("root stream stats = first=%d stream=%d deltas=%d chars=%d, want 123/234/3/8", payload.FirstDeltaMs, payload.StreamMs, payload.DeltaCount, payload.OutputChars)
+	}
+	if payload.LLMRequests[0].FirstDeltaMs != 123 || payload.LLMRequests[0].StreamMs != 234 || payload.LLMRequests[0].DeltaCount != 3 || payload.LLMRequests[0].OutputChars != 8 {
+		t.Fatalf("request stream stats = first=%d stream=%d deltas=%d chars=%d, want 123/234/3/8", payload.LLMRequests[0].FirstDeltaMs, payload.LLMRequests[0].StreamMs, payload.LLMRequests[0].DeltaCount, payload.LLMRequests[0].OutputChars)
 	}
 	if payload.Usage.TotalTokens != 29 || payload.LLMRequests[0].Usage.PromptTokens != 21 || payload.LLMRequests[0].Usage.CompletionTokens != 8 {
 		t.Fatalf("usage root/request = %#v/%#v, want token usage", payload.Usage, payload.LLMRequests[0].Usage)
@@ -695,10 +1145,9 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 
 func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		Iteration: 1,
@@ -739,9 +1188,7 @@ func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 
 func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
-	t.Setenv("AIOPS_DIAGNOSTIC_PROTOCOL", "1")
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("诊断完成", nil),
@@ -791,8 +1238,7 @@ func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 
 func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{{
 		Role:    schema.Assistant,
@@ -833,18 +1279,26 @@ func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 		t.Fatalf("read runtime trace %q: %v", tracePath, err)
 	}
 	var payload struct {
-		Output     string `json:"output"`
-		DurationMs int64  `json:"duration_ms"`
-		Usage      struct {
+		Output       string `json:"output"`
+		DurationMs   int64  `json:"duration_ms"`
+		FirstDeltaMs int64  `json:"first_delta_ms"`
+		StreamMs     int64  `json:"stream_ms"`
+		DeltaCount   int    `json:"delta_count"`
+		OutputChars  int    `json:"output_chars"`
+		Usage        struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 			TotalTokens      int `json:"total_tokens"`
 		} `json:"usage"`
 		LLMRequests []struct {
-			ID         string `json:"id"`
-			Output     string `json:"output"`
-			DurationMs int64  `json:"duration_ms"`
-			Usage      struct {
+			ID           string `json:"id"`
+			Output       string `json:"output"`
+			DurationMs   int64  `json:"duration_ms"`
+			FirstDeltaMs int64  `json:"first_delta_ms"`
+			StreamMs     int64  `json:"stream_ms"`
+			DeltaCount   int    `json:"delta_count"`
+			OutputChars  int    `json:"output_chars"`
+			Usage        struct {
 				PromptTokens     int `json:"prompt_tokens"`
 				CompletionTokens int `json:"completion_tokens"`
 				TotalTokens      int `json:"total_tokens"`
@@ -863,6 +1317,15 @@ func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 	if payload.DurationMs <= 0 || payload.LLMRequests[0].DurationMs <= 0 {
 		t.Fatalf("duration root/request = %d/%d, want positive", payload.DurationMs, payload.LLMRequests[0].DurationMs)
 	}
+	if payload.FirstDeltaMs <= 0 || payload.LLMRequests[0].FirstDeltaMs <= 0 {
+		t.Fatalf("first_delta_ms root/request = %d/%d, want positive", payload.FirstDeltaMs, payload.LLMRequests[0].FirstDeltaMs)
+	}
+	if payload.StreamMs <= 0 || payload.LLMRequests[0].StreamMs <= 0 {
+		t.Fatalf("stream_ms root/request = %d/%d, want positive", payload.StreamMs, payload.LLMRequests[0].StreamMs)
+	}
+	if payload.DeltaCount <= 0 || payload.LLMRequests[0].DeltaCount <= 0 || payload.OutputChars <= 0 || payload.LLMRequests[0].OutputChars <= 0 {
+		t.Fatalf("stream counts root/request = deltas %d/%d chars %d/%d, want positive", payload.DeltaCount, payload.LLMRequests[0].DeltaCount, payload.OutputChars, payload.LLMRequests[0].OutputChars)
+	}
 	if !strings.Contains(payload.Output, "[REDACTED]") || strings.Contains(payload.Output, "secret-output") {
 		t.Fatalf("output was not redacted: %q", payload.Output)
 	}
@@ -870,8 +1333,7 @@ func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 
 func TestRunTurnInjectsRuntimeEnvironmentContextInDebugTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("诊断完成", nil),
@@ -944,10 +1406,9 @@ func TestBuildRuntimeDiagnosticTraceCarriesRuntimeEnvironmentContext(t *testing.
 }
 
 func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", t.TempDir())
+	setLegacyTraceDisabledForTest(t)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 	})
@@ -961,15 +1422,14 @@ func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
 
 func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
-	path, err := writeModelInputDebugTrace(ModelInputDebugTraceRequest{
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:  "sess-depth",
 		TurnID:     "turn-depth",
 		Iteration:  0,
 		Compiled:   promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{{Role: schema.User, Content: "排查异常"}},
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "排查异常"}}),
 		TaskDepth:  taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
 		EvidenceCoverage: &EvidenceCoverageDecision{
 			Action:             "continue_gathering",
@@ -980,6 +1440,7 @@ func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 			Reasons:            []string{"missing_coverage_dimension"},
 		},
 		ReasoningEffort: "high",
+		AnswerStyle:     "concise",
 	})
 	if err != nil {
 		t.Fatalf("write trace: %v", err)
@@ -993,7 +1454,7 @@ func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 		t.Fatalf("unmarshal trace: %v", err)
 	}
 	metadata := payload["metadata"].(map[string]any)
-	if metadata["taskDepth.level"] != "investigation" || metadata["reasoningEffort.configured"] != "high" {
+	if metadata["taskDepth.level"] != "investigation" || metadata["reasoningEffort.configured"] != "high" || metadata["answerStyle.configured"] != "concise" {
 		t.Fatalf("metadata = %#v, want taskDepth and reasoning", metadata)
 	}
 	trace := payload["promptInputTrace"].(map[string]any)
@@ -1011,6 +1472,109 @@ func TestEnrichCompileContextSetsAgentKindFromSessionType(t *testing.T) {
 	workspaceCtx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", nil, fixedModelInputTraceTime())
 	if workspaceCtx.AgentKind != promptcompiler.AgentKindPlanner {
 		t.Fatalf("workspace AgentKind = %q, want planner", workspaceCtx.AgentKind)
+	}
+}
+
+func TestEnrichCompileContextAddsWebSearchPolicyGuidance(t *testing.T) {
+	ctx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", map[string]string{
+		"aiops.webSearch.policy":           "must_search",
+		"aiops.webSearch.reason":           "explicit_public_web_request",
+		"aiops.webSearch.reasonCodes":      "explicit_public_web_request",
+		"aiops.webSearch.querySeeds":       "PostgreSQL recovery_target_timeline official docs",
+		"aiops.webSearch.requireCitations": "true",
+		"aiops.weblearn.enabled":           "true",
+		"aiops.weblearn.sourcePolicy":      "official_first",
+	}, fixedModelInputTraceTime())
+	content := promptSectionsContentForModelInputTraceTest(ctx.ExtraSections)
+	for _, want := range []string{
+		"Web Search Policy",
+		"WebSearchPolicy: enabled",
+		"Tool availability: web_search is enabled for this turn",
+		"Reason: explicit_public_web_request",
+		"Query seeds:",
+		"PostgreSQL recovery_target_timeline official docs",
+		"Use web_search when public evidence would materially improve correctness",
+		"web_search",
+		"operation=open",
+		"official documentation",
+		"version-specific documentation",
+		"source URL",
+		"Do not use exec_command",
+		"官方来源优先",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Web Search prompt sections missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "Use web_search before the final answer") {
+		t.Fatalf("prompt must not force web_search before final answer:\n%s", content)
+	}
+	if strings.Contains(content, "WebLearn Source Policy") {
+		t.Fatalf("prompt should not expose legacy WebLearn title:\n%s", content)
+	}
+}
+
+func TestEnrichCompileContextInjectsOnlyApplicableWebSearchEvidence(t *testing.T) {
+	longExcerpt := strings.Repeat("Redis official docs explain latency doctor output. ", 40)
+	ctx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", map[string]string{
+		"aiops.webSearch.policy":      "enabled",
+		"aiops.webSearch.reason":      "public_technical_knowledge",
+		"aiops.webSearch.querySeeds":  "Redis latency doctor official docs",
+		"aiops.weblearn.enabled":      "true",
+		"aiops.weblearn.sourcePolicy": "official_first",
+		"aiops.weblearn.evidence": `[
+			{
+				"kind": "external_knowledge",
+				"query": "redis 7.2 latency doctor official docs",
+				"sourceUrl": "https://redis.io/docs/latest/commands/latency-doctor/",
+				"sourceTitle": "LATENCY DOCTOR",
+				"sourceKind": "official_docs",
+				"product": "Redis",
+				"version": "7.2",
+				"relevantExcerpt": "` + longExcerpt + `",
+				"applicability": "applies to Redis 7.2 latency subsystem command semantics",
+				"confidence": "high"
+			},
+			{
+				"kind": "external_knowledge",
+				"query": "redis random forum answer",
+				"sourceUrl": "https://example.com/forum",
+				"sourceTitle": "forum answer",
+				"sourceKind": "community_post",
+				"product": "Redis",
+				"confidence": "high"
+			},
+			{
+				"kind": "environment_fact",
+				"query": "host redis version",
+				"sourceUrl": "https://redis.io/",
+				"sourceKind": "official_docs",
+				"product": "Redis",
+				"confidence": "low"
+			}
+		]`,
+	}, fixedModelInputTraceTime())
+
+	content := promptSectionsContentForModelInputTraceTest(ctx.ExtraSections)
+	for _, want := range []string{
+		"Web Search Evidence",
+		"LATENCY DOCTOR",
+		"https://redis.io/docs/latest/commands/latency-doctor/",
+		"applies to Redis 7.2",
+		"Redis official docs explain latency doctor output",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("Web Search evidence prompt section missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		"forum answer",
+		"environment_fact",
+		strings.Repeat("Redis official docs explain latency doctor output. ", 20),
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("WebLearn evidence prompt section contains forbidden %q:\n%s", forbidden, content)
+		}
 	}
 }
 
@@ -1100,7 +1664,7 @@ func buildG01FirstTurnPromptMetrics(t *testing.T) firstTurnPromptMetrics {
 		names = append(names, tool.Metadata().Name)
 	}
 	return firstTurnPromptMetrics{
-		PromptCharCount:       schemaMessageCharCount(promptBuild.Messages),
+		PromptCharCount:       modelInputItemCharCount(promptBuild.Items),
 		ToolRegistryCharCount: len(compiled.Tools.Content),
 		VisibleToolCount:      len(names),
 		VisibleToolNames:      names,
@@ -1136,6 +1700,19 @@ func staticTraceToolWithSchema(meta tooling.ToolMetadata, inputSchema json.RawMe
 	return tool
 }
 
+func promptSectionsContentForModelInputTraceTest(sections []promptcompiler.PromptSection) string {
+	var b strings.Builder
+	for _, section := range sections {
+		if section.Title != "" {
+			b.WriteString(section.Title)
+			b.WriteString("\n")
+		}
+		b.WriteString(section.Content)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
 func deferredDirectoryContainsPack(entries []promptcompiler.DeferredToolDirectoryEntry, pack string) bool {
 	for _, entry := range entries {
 		if entry.Pack == pack {
@@ -1152,6 +1729,17 @@ func schemaMessageCharCount(messages []*schema.Message) int {
 			continue
 		}
 		total += len(msg.Content)
+	}
+	return total
+}
+
+func modelInputItemCharCount(items []promptinput.ModelInputItem) int {
+	total := 0
+	for _, item := range items {
+		total += len(item.Content)
+		if item.ToolResult != nil {
+			total += len(item.ToolResult.Content)
+		}
 	}
 	return total
 }

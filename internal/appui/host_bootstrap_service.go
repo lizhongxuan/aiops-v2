@@ -65,6 +65,11 @@ func (s *HostBootstrapService) Install(ctx context.Context, hostID string, req H
 	if version := strings.TrimSpace(req.AgentVersion); version != "" {
 		next.AgentVersion = version
 	}
+	requestedServerURL := strings.TrimSpace(req.AgentServerURL)
+	next.ConnectionMode = NormalizeHostConnectionMode(firstNonEmpty(req.ConnectionMode, next.ConnectionMode))
+	if requestedServerURL != "" && hostConnectionModeRequiresCallback(next.ConnectionMode) {
+		next.AgentServerURL = requestedServerURL
+	}
 	if next.AgentVersion == "" {
 		next.AgentVersion = "v0.1.0"
 	}
@@ -74,6 +79,20 @@ func (s *HostBootstrapService) Install(ctx context.Context, hostID string, req H
 		next.LastError = err.Error()
 		_ = s.repo.SaveHost(&next)
 		return HostInstallRun{}, err
+	}
+	if hostConnectionModeRequiresCallback(next.ConnectionMode) {
+		serverURL := resolveInstallAgentServerURL(next)
+		if requestedServerURL != "" {
+			serverURL = requestedServerURL
+		}
+		if err := validateInstallAgentServerURLReachable(next, serverURL); err != nil {
+			next.Status = "install_failed"
+			next.InstallState = "failed"
+			next.InstallStep = "validate-agent-server-url"
+			next.LastError = err.Error()
+			_ = s.repo.SaveHost(&next)
+			return HostInstallRun{}, err
+		}
 	}
 	graph := BuiltinHostAgentInstallGraph()
 	if err := ValidateHostAgentInstallGraph(graph); err != nil {
@@ -244,6 +263,13 @@ func validateBootstrapHost(host store.HostRecord) error {
 }
 
 func hostInstallVars(host store.HostRecord) map[string]any {
+	connectionMode := NormalizeHostConnectionMode(host.ConnectionMode)
+	agentServerURL := ""
+	agentGRPCURL := ""
+	if hostConnectionModeRequiresCallback(connectionMode) {
+		agentServerURL = resolveInstallAgentServerURL(host)
+		agentGRPCURL = derivedAgentGRPCURL(agentServerURL)
+	}
 	return map[string]any{
 		"host_id":            host.ID,
 		"ssh_host":           host.Address,
@@ -251,8 +277,10 @@ func hostInstallVars(host store.HostRecord) map[string]any {
 		"ssh_port":           host.SSHPort,
 		"ssh_credential_ref": host.SSHCredentialRef,
 		"agent_version":      host.AgentVersion,
-		"agent_server_url":   firstNonEmpty(os.Getenv("AIOPS_AGENT_SERVER_URL"), host.AgentURL, "http://127.0.0.1:18080"),
-		"aiops_api_url":      firstNonEmpty(os.Getenv("AIOPS_API_URL"), os.Getenv("AIOPS_AGENT_SERVER_URL"), "http://127.0.0.1:18080"),
+		"connection_mode":    connectionMode,
+		"agent_server_url":   agentServerURL,
+		"agent_grpc_url":     agentGRPCURL,
+		"aiops_api_url":      agentServerURL,
 		"agent_listen_port":  7072,
 		"secret_dir":         defaultHostInstallSecretDir(),
 		"repo_root":          defaultHostInstallRepoRoot(),
@@ -271,9 +299,6 @@ func defaultHostInstallSecretDir() string {
 }
 
 func defaultHostInstallRepoRoot() string {
-	if value := strings.TrimSpace(os.Getenv("AIOPS_REPO_ROOT")); value != "" {
-		return value
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "."

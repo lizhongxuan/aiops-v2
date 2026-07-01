@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,37 +19,22 @@ func (s *HTTPServer) handleRunnerStudio(w http.ResponseWriter, r *http.Request) 
 		s.serveEmbeddedRunnerStudio(w, r, targetPath)
 		return
 	}
-	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
-	if upstream == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
-		return
-	}
-	targetURL, err := joinRunnerStudioUpstreamURL(upstream, targetPath, r.URL.RawQuery)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, r.Body)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	copyRunnerStudioRequestHeaders(req.Header, r.Header)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	copyRunnerStudioResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "embedded runner is not available"})
 }
 
 func (s *HTTPServer) serveEmbeddedRunnerStudio(w http.ResponseWriter, r *http.Request, targetPath string) {
 	req := r.Clone(r.Context())
-	req.URL.Path = targetPath
-	req.URL.RawPath = ""
+	if decoded, err := url.PathUnescape(targetPath); err == nil {
+		req.URL.Path = decoded
+		if decoded != targetPath {
+			req.URL.RawPath = targetPath
+		} else {
+			req.URL.RawPath = ""
+		}
+	} else {
+		req.URL.Path = targetPath
+		req.URL.RawPath = ""
+	}
 	req.RequestURI = ""
 	req.Header = http.Header{}
 	copyRunnerStudioRequestHeaders(req.Header, r.Header)
@@ -128,25 +112,6 @@ func splitRunnerStudioPath(path string) []string {
 	return out
 }
 
-func joinRunnerStudioUpstreamURL(upstream, path, rawQuery string) (string, error) {
-	base, err := url.Parse(strings.TrimRight(upstream, "/"))
-	if err != nil {
-		return "", err
-	}
-	if base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("invalid runner studio upstream url")
-	}
-	prefix := base.Scheme + "://"
-	if base.User != nil {
-		prefix += base.User.String() + "@"
-	}
-	prefix += base.Host + strings.TrimRight(base.EscapedPath(), "/")
-	if rawQuery != "" {
-		return prefix + path + "?" + rawQuery, nil
-	}
-	return prefix + path, nil
-}
-
 func copyRunnerStudioRequestHeaders(dst, src http.Header) {
 	for key, values := range src {
 		if !isAllowedRunnerStudioRequestHeader(key) {
@@ -158,29 +123,9 @@ func copyRunnerStudioRequestHeaders(dst, src http.Header) {
 	}
 }
 
-func copyRunnerStudioResponseHeaders(dst, src http.Header) {
-	for key, values := range src {
-		if !isAllowedRunnerStudioResponseHeader(key) {
-			continue
-		}
-		for _, value := range values {
-			dst.Add(key, value)
-		}
-	}
-}
-
 func isAllowedRunnerStudioRequestHeader(key string) bool {
 	switch http.CanonicalHeaderKey(key) {
 	case "Accept", "Content-Type", "Idempotency-Key", "User-Agent", "X-Request-Id", "X-Trace-Id":
-		return true
-	default:
-		return false
-	}
-}
-
-func isAllowedRunnerStudioResponseHeader(key string) bool {
-	switch http.CanonicalHeaderKey(key) {
-	case "Cache-Control", "Content-Type", "Etag", "Last-Modified", "Location", "Retry-After", "X-Request-Id", "X-Trace-Id":
 		return true
 	default:
 		return false

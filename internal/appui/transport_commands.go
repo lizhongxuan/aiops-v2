@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/runtimekernel"
 )
 
 type TransportCommandType string
@@ -187,7 +188,7 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		return state, TransportCommandResult{}, nil
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
-	route := detectHostOpsTransportRoute(messageText, command.Metadata)
+	route := buildChatRuntimeTransportRoute(messageText, command.Metadata)
 	hostID := strings.TrimSpace(command.HostID)
 	if hostID == "" {
 		hostID = strings.TrimSpace(route.metadata["aiops.target.hostId"])
@@ -227,31 +228,79 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 	}
 	if route.decision.Kind == hostops.RouteKindHostOps {
 		state = addHostOpsMissionFromRoute(state, route, resp.TurnID)
+		if h.hostOps != nil {
+			missionID := strings.TrimSpace(route.metadata["aiops.hostops.missionId"])
+			if missionID == "" {
+				missionID = "hostops:" + strings.TrimSpace(resp.TurnID)
+			}
+			if view, getErr := h.hostOps.GetMission(ctx, missionID); getErr == nil {
+				state = mergeHostOpsMissionView(state, view, resp.TurnID)
+			}
+		}
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
 }
 
+func buildChatRuntimeTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
+	nextMetadata := cloneStringMetadata(metadata)
+	structuredMentions := parseInputMentions(messageText, nextMetadata)
+	mentions := filterHostOpsRouteMentions(hostOpsMentionsFromMetadata(nextMetadata["aiops.hostops.mentions"]))
+	if structuredMentions.Present {
+		if structuredMentions.Invalid {
+			mentions = nil
+		} else {
+			mentions = filterHostOpsRouteMentions(inputMentionHostHintsToHostMentions(structuredMentions.Hosts))
+		}
+	} else if len(mentions) == 0 {
+		if inputMentionStrictMode() {
+			mentions = nil
+		} else {
+			mentions = filterHostOpsRouteMentions(hostops.ParseHostMentions(messageText))
+		}
+	}
+	mentionSource, mentionValidation := mentionSourceForCommand(ChatCommand{Content: messageText, Metadata: nextMetadata}, messageText, structuredMentions, mentions)
+	evidence := ExtractUserEvidence(messageText)
+	chatRoute := BuildChatRuntimeRoute(messageText, mentions, evidence)
+	envelope := BuildEvidenceEnvelope(messageText, nil, nil)
+	intentFrame := BuildIntentFrame(messageText, envelope, nil)
+	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, chatRoute)
+	activeRoute, routingMode := selectActiveChatRuntimeRoute(chatRoute, intentRoute, intentFrame, intentFrameRoutingTraceOnly)
+	applyStructuredMentionRouteHints(&activeRoute, structuredMentions)
+	req := &runtimekernel.TurnRequest{Input: messageText, Metadata: nextMetadata}
+	applyChatRuntimeRouteMetadata(req, activeRoute)
+	applyIntentFrameRouteMetadata(req, chatRoute, intentRoute, activeRoute, intentFrame, routingMode)
+	req.Metadata["aiops.route.activeSource"] = routingMode
+	applyChatRuntimeToolSurfaceMetadata(req, activeRoute)
+	applyStructuredCapabilityMetadata(req.Metadata, structuredMentions)
+	applyUserEvidenceMetadata(req, evidence)
+	applyInputMentionDiagnosticValues(req, mentionSource, mentionValidation)
+	applyChatRuntimeRouteHostBinding(req, activeRoute, mentions)
+
+	decision := hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Mentions: append([]hostops.HostMention(nil), mentions...), Reason: strings.Join(activeRoute.Reasons, "; ")}
+	_, addWorkflowRequest := parseAddWorkflowMention(messageText)
+	_, plainWorkflowRequest := parsePlainWorkflowWritingRequest(messageText)
+	if !addWorkflowRequest && !plainWorkflowRequest && activeRoute.Mode == ChatRouteMultiHostOps {
+		decision = hostops.RouteDecision{
+			Kind:         hostops.RouteKindHostOps,
+			Mentions:     append([]hostops.HostMention(nil), mentions...),
+			PlanRequired: true,
+			Reason:       "multi-host operation requires plan mode",
+		}
+		req.Metadata["aiops.hostops.routeKind"] = string(decision.Kind)
+		req.Metadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
+		req.Metadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
+		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], hostops.ToolPackHostOps)
+		if serialized, err := json.Marshal(decision.Mentions); err == nil {
+			req.Metadata["aiops.hostops.mentions"] = string(serialized)
+		}
+	}
+	return hostOpsTransportRoute{decision: decision, metadata: req.Metadata}
+}
+
 type hostOpsTransportRoute struct {
 	decision hostops.RouteDecision
 	metadata map[string]string
-}
-
-func detectHostOpsTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
-	nextMetadata := cloneStringMetadata(metadata)
-	mentions := hostops.ParseHostMentions(messageText)
-	decision := hostops.DetectRoute(messageText, mentions)
-	if decision.Kind != hostops.RouteKindHostOps {
-		return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
-	}
-	nextMetadata["aiops.hostops.routeKind"] = string(decision.Kind)
-	nextMetadata["aiops.hostops.planRequired"] = boolMetadataString(decision.PlanRequired)
-	nextMetadata["aiops.hostops.serverDetectedMultiHost"] = boolMetadataString(decision.PlanRequired)
-	nextMetadata["enableToolPack"] = appendMetadataListValue(nextMetadata["enableToolPack"], hostops.ToolPackHostOps)
-	if serialized, err := json.Marshal(decision.Mentions); err == nil {
-		nextMetadata["aiops.hostops.mentions"] = string(serialized)
-	}
-	return hostOpsTransportRoute{decision: decision, metadata: nextMetadata}
 }
 
 func appendMetadataListValue(current, next string) string {
@@ -320,6 +369,104 @@ func transportHostMentionsFromHostOps(mentions []hostops.HostMention) []AiopsTra
 		})
 	}
 	return result
+}
+
+func mergeHostOpsMissionView(state AiopsTransportState, view HostOperationView, turnID string) AiopsTransportState {
+	missionID := strings.TrimSpace(view.ID)
+	if missionID == "" {
+		return state
+	}
+	if state.HostMissions == nil {
+		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	if state.ChildAgents == nil {
+		state.ChildAgents = map[string]AiopsTransportChildAgent{}
+	}
+	mission := state.HostMissions[missionID]
+	mission.ID = missionID
+	mission.TurnID = firstNonEmptyString(strings.TrimSpace(view.UserTurnID), strings.TrimSpace(turnID), mission.TurnID)
+	mission.Status = firstNonEmptyString(strings.TrimSpace(view.Status), mission.Status)
+	mission.PlanRequired = view.PlanRequired
+	mission.PlanAccepted = view.PlanAccepted
+	mission.ManagerAgentID = firstNonEmptyString(strings.TrimSpace(view.ManagerAgentID), mission.ManagerAgentID)
+	mission.MentionedHosts = transportHostMentionsFromView(view.MentionedHosts)
+	mission.PlanSteps = transportPlanStepsFromView(view.Plan)
+	mission.CreatedAt = firstNonEmptyString(strings.TrimSpace(view.CreatedAt), mission.CreatedAt)
+	mission.UpdatedAt = firstNonEmptyString(strings.TrimSpace(view.UpdatedAt), mission.UpdatedAt)
+	mission.ChildAgentIDs = mission.ChildAgentIDs[:0]
+	for _, childView := range view.ChildAgents {
+		child := transportChildAgentFromView(childView)
+		if child.ID == "" {
+			continue
+		}
+		state.ChildAgents[child.ID] = child
+		mission.ChildAgentIDs = append(mission.ChildAgentIDs, child.ID)
+		mission.ActiveChildAgentID = child.ID
+	}
+	state.HostMissions[missionID] = mission
+	state.ActiveHostMissionID = missionID
+	return state
+}
+
+func transportHostMentionsFromView(mentions []HostMentionView) []AiopsTransportHostMention {
+	result := make([]AiopsTransportHostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		result = append(result, AiopsTransportHostMention{
+			Raw:         strings.TrimSpace(mention.Raw),
+			HostID:      strings.TrimSpace(mention.HostID),
+			Address:     strings.TrimSpace(mention.Address),
+			DisplayName: strings.TrimSpace(mention.DisplayName),
+			Source:      strings.TrimSpace(mention.Source),
+			Resolved:    mention.Resolved,
+		})
+	}
+	return result
+}
+
+func transportPlanStepsFromView(plan *HostPlanView) []AiopsTransportPlanStep {
+	if plan == nil || len(plan.Steps) == 0 {
+		return nil
+	}
+	steps := make([]AiopsTransportPlanStep, 0, len(plan.Steps))
+	for _, step := range plan.Steps {
+		title := strings.TrimSpace(step.Title)
+		steps = append(steps, AiopsTransportPlanStep{
+			ID:               strings.TrimSpace(step.ID),
+			Index:            step.Index,
+			Text:             title,
+			Title:            title,
+			Summary:          strings.TrimSpace(step.Summary),
+			Status:           strings.TrimSpace(step.Status),
+			Risk:             strings.TrimSpace(step.Risk),
+			HostIDs:          append([]string(nil), step.HostIDs...),
+			ChildAgentIDs:    append([]string(nil), step.ChildAgentIDs...),
+			ApprovalRequired: step.ApprovalRequired,
+		})
+	}
+	return steps
+}
+
+func transportChildAgentFromView(view HostChildAgentView) AiopsTransportChildAgent {
+	return AiopsTransportChildAgent{
+		ID:                strings.TrimSpace(view.ID),
+		MissionID:         strings.TrimSpace(view.MissionID),
+		ParentAgentID:     strings.TrimSpace(view.ParentAgentID),
+		SessionID:         strings.TrimSpace(view.SessionID),
+		HostID:            strings.TrimSpace(view.HostID),
+		HostAddress:       strings.TrimSpace(view.HostAddress),
+		HostDisplayName:   strings.TrimSpace(view.HostDisplayName),
+		Role:              strings.TrimSpace(view.Role),
+		Task:              strings.TrimSpace(view.Task),
+		CurrentStepTitle:  strings.TrimSpace(view.CurrentStepTitle),
+		Status:            strings.TrimSpace(view.Status),
+		PlanStepIDs:       append([]string(nil), view.PlanStepIDs...),
+		LastInputPreview:  strings.TrimSpace(view.LastInputPreview),
+		LastOutputPreview: strings.TrimSpace(view.LastOutputPreview),
+		Error:             strings.TrimSpace(view.Error),
+		StartedAt:         strings.TrimSpace(view.StartedAt),
+		UpdatedAt:         strings.TrimSpace(view.UpdatedAt),
+		CompletedAt:       strings.TrimSpace(view.CompletedAt),
+	}
 }
 
 func boolMetadataString(value bool) string {

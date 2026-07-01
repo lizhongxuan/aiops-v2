@@ -92,12 +92,20 @@ func TestGetModel_ProviderConfigResolverOverridesDefaultRouting(t *testing.T) {
 			Provider:         "openai",
 			Model:            "gpt-5.4",
 			BaseURL:          "http://127.0.0.1:8317/v1",
+			Temperature:      1,
+			TopP:             0.95,
+			MaxTokens:        20000,
 			MaxContextTokens: 64000,
 			ReasoningEffort:  "high",
+			ThinkingType:     "enabled",
+			ToolStream:       true,
 		},
 		ok: true,
 	})
 	r.SetProviderFactory("openai", func(_ context.Context, _ AgentKind, config ProviderConfig, _ auth.CredentialTruth, _ bool) (ChatModel, error) {
+		if config.Temperature != 1 || config.TopP != 0.95 || config.MaxTokens != 20000 || config.ThinkingType != "enabled" || !config.ToolStream {
+			t.Fatalf("provider config missing generation fields: %+v", config)
+		}
 		return &mockModel{name: config.Provider + "|" + config.Model + "|" + config.BaseURL + "|" + config.ReasoningEffort}, nil
 	})
 
@@ -112,5 +120,8 @@ func TestGetModel_ProviderConfigResolverOverridesDefaultRouting(t *testing.T) {
 	caps := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{})
 	if caps.MaxContextTokens != 64000 {
 		t.Fatalf("capabilities max context = %d, want resolver override 64000", caps.MaxContextTokens)
+	}
+	if caps.MaxOutputTokens != 20000 {
+		t.Fatalf("capabilities max output = %d, want resolver override 20000", caps.MaxOutputTokens)
 	}
 }

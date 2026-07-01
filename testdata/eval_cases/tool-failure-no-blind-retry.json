@@ -7,7 +7,7 @@
     "mustNotInclude": ["无限重试", "忽略失败"],
     "expectedToolCalls": ["run_command"],
     "mustMentionFiles": ["internal/runtimekernel/agent_items.go"],
-    "expectedTurnItems": ["user_message", "model_call", "tool_call", "tool_result", "final_answer"]
+    "expectedTurnItems": ["user_message", "model_call", "tool_call", "tool_result", "assistant_message(final_answer)"]
   },
   "scoreRules": {}
 }

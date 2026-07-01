@@ -420,12 +420,20 @@ func TestRegistryCompileContextWithMetadataEnablesOpsManualPackProgressively(t *
 	manualIntent := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
 		"enableToolPack": "ops_manual_flow",
 	}))
-	if !containsToolNameForRegistryTest(manualIntent, "search_ops_manuals") {
-		t.Fatalf("manual intent tools = %v, want search_ops_manuals", manualIntent)
+	if containsToolNameForRegistryTest(manualIntent, "search_ops_manuals") {
+		t.Fatalf("manual intent tools = %v, should not include search_ops_manuals without explicit trigger", manualIntent)
+	}
+
+	explicitManualIntent := toolNamesForTest(r.CompileContextWithMetadata("host", "chat", map[string]string{
+		"enableToolPack": "ops_manual_flow",
+		"enableTool":     "search_ops_manuals",
+	}))
+	if !containsToolNameForRegistryTest(explicitManualIntent, "search_ops_manuals") {
+		t.Fatalf("explicit manual intent tools = %v, want search_ops_manuals", explicitManualIntent)
 	}
 	for _, forbidden := range []string{"resolve_ops_manual_params", "run_ops_manual_preflight"} {
-		if containsToolNameForRegistryTest(manualIntent, forbidden) {
-			t.Fatalf("manual intent tools = %v, should not include %q before match/direct_execute", manualIntent, forbidden)
+		if containsToolNameForRegistryTest(explicitManualIntent, forbidden) {
+			t.Fatalf("explicit manual intent tools = %v, should not include %q before match/direct_execute", explicitManualIntent, forbidden)
 		}
 	}
 

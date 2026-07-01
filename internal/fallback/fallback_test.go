@@ -39,6 +39,9 @@ func TestPlanExecCreatesReadOnlyTerminalProposalWhenNoRunbookMatches(t *testing.
 	if action.TenantID != "tenant-a" || action.UserID != "user-a" {
 		t.Fatalf("action tenant/user = %q/%q, want tenant-a/user-a", action.TenantID, action.UserID)
 	}
+	if action.TargetSummary != "检查磁盘" || action.ActionSummary != "检查磁盘空间" || action.RiskSummary == "" {
+		t.Fatalf("action summaries = %q/%q/%q", action.TargetSummary, action.ActionSummary, action.RiskSummary)
+	}
 	inputHash, err := actionproposal.NormalizedInputHash(action.ToolInput)
 	if err != nil {
 		t.Fatalf("hash input: %v", err)
@@ -55,6 +58,13 @@ func TestPlanExecCreatesReadOnlyTerminalProposalWhenNoRunbookMatches(t *testing.
 		Risk:       actionproposal.RiskLow,
 	}); err != nil {
 		t.Fatalf("Verify(action token) error = %v", err)
+	}
+	claims, err := actionproposal.NewSigner([]byte("fallback-secret"), func() time.Time { return now }).Parse(action.ActionToken)
+	if err != nil {
+		t.Fatalf("Parse(action token) error = %v", err)
+	}
+	if claims.TargetSummary != action.TargetSummary || claims.ActionSummary != action.ActionSummary || claims.RiskSummary != action.RiskSummary {
+		t.Fatalf("claims summaries = %#v, want action summaries", claims)
 	}
 }
 

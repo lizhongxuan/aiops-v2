@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 )
@@ -77,6 +78,54 @@ func TestCancelTurn_PersistsCanceledLifecycle(t *testing.T) {
 	}
 	if updated.CurrentTurn.CompletedAt == nil {
 		t.Fatal("CurrentTurn.CompletedAt is nil after cancel")
+	}
+}
+
+func TestCancelTurn_MarksRunningAgentItemsCancelled(t *testing.T) {
+	kernel := newTestKernel(nil)
+	now := time.Now().UTC()
+	session := kernel.sessions.GetOrCreate("sess-cancel-agent-items", SessionTypeHost, ModeChat)
+	session.CurrentTurn = &TurnSnapshot{
+		ID:          "turn-cancel-agent-items",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   TurnLifecycleRunning,
+		ResumeState: TurnResumeStateNone,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			newAgentItem("model-running", agentstate.TurnItemTypeModelCall, agentstate.ItemStatusRunning, "calling model", nil),
+			newAgentItem("assistant-running", agentstate.TurnItemTypeAssistantMessage, agentstate.ItemStatusRunning, "正在分析已有证据", map[string]any{"displayKind": "assistant.message", "phase": "commentary", "streamState": "streaming"}),
+			newAgentItem("tool-completed", agentstate.TurnItemTypeToolCall, agentstate.ItemStatusCompleted, "web_search", nil),
+		},
+	}
+	kernel.sessions.Update(session)
+
+	if _, err := kernel.CancelTurn(context.Background(), CancelRequest{
+		SessionID: session.ID,
+		TurnID:    session.CurrentTurn.ID,
+		Reason:    "user stop",
+	}); err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+
+	updated := kernel.sessions.Get(session.ID)
+	if updated == nil || updated.CurrentTurn == nil {
+		t.Fatal("updated session/current turn is nil")
+	}
+	for _, item := range updated.CurrentTurn.AgentItems {
+		switch item.ID {
+		case "model-running", "assistant-running":
+			if item.Status != agentstate.ItemStatusCancelled {
+				t.Fatalf("item %s status = %q, want cancelled", item.ID, item.Status)
+			}
+		case "tool-completed":
+			if item.Status != agentstate.ItemStatusCompleted {
+				t.Fatalf("completed item status = %q, want unchanged", item.Status)
+			}
+		}
 	}
 }
 
@@ -175,6 +224,20 @@ func TestCancelTurn_CancelsInFlightRunTurn(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunTurn did not exit after cancel")
 	}
+	updated := kernel.sessions.Get(session.ID)
+	if updated == nil || updated.CurrentTurn == nil {
+		t.Fatal("updated session/current turn is nil")
+	}
+	modelItem := findAgentItem(updated.CurrentTurn.AgentItems, agentstate.TurnItemTypeModelCall)
+	if modelItem.ID == "" {
+		t.Fatalf("agent items = %#v, want model call item", updated.CurrentTurn.AgentItems)
+	}
+	if modelItem.Status != agentstate.ItemStatusCancelled {
+		t.Fatalf("model item status = %q summary=%q, want cancelled", modelItem.Status, modelItem.Payload.Summary)
+	}
+	if strings.Contains(modelItem.Payload.Summary, "context canceled") {
+		t.Fatalf("model item summary leaked raw cancellation error: %q", modelItem.Payload.Summary)
+	}
 }
 
 func TestRunTurn_DoesNotStartModelWhenCanceledBeforeExecution(t *testing.T) {
@@ -212,6 +275,86 @@ func TestRunTurn_DoesNotStartModelWhenCanceledBeforeExecution(t *testing.T) {
 	case <-blockingModel.started:
 		t.Fatal("model started despite pending cancel")
 	default:
+	}
+}
+
+func TestCancelTurn_WritesAbortedToolResultMarker(t *testing.T) {
+	kernel := newTestKernel(nil)
+	now := time.Now().UTC()
+	session := kernel.sessions.GetOrCreate("sess-cancel-tool", SessionTypeHost, ModeChat)
+	session.CurrentTurn = &TurnSnapshot{
+		ID:          "turn-cancel-tool",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   TurnLifecycleRunning,
+		ResumeState: TurnResumeStateNone,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		Iterations: []IterationState{{
+			ID:        "turn-cancel-tool-iter-1",
+			SessionID: session.ID,
+			TurnID:    "turn-cancel-tool",
+			Iteration: 1,
+			Lifecycle: TurnLifecycleRunning,
+			ToolCalls: []ToolCall{{
+				ID:   "call-running",
+				Name: "exec_command",
+			}},
+			ToolInvocations: []ToolInvocationState{{
+				ID:         "inv-running",
+				ToolCallID: "call-running",
+				ToolName:   "exec_command",
+				Status:     ToolInvocationRunning,
+				StartedAt:  now,
+				UpdatedAt:  now,
+			}},
+			StartedAt: now,
+			UpdatedAt: now,
+		}},
+	}
+	kernel.sessions.Update(session)
+
+	if _, err := kernel.CancelTurn(context.Background(), CancelRequest{
+		SessionID: session.ID,
+		TurnID:    "turn-cancel-tool",
+		Reason:    "user_cancelled",
+	}); err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+
+	updated := kernel.sessions.Get(session.ID)
+	last := latestIteration(updated.CurrentTurn)
+	if last == nil || len(last.ToolResults) != 1 {
+		t.Fatalf("tool results = %#v, want one aborted result", last)
+	}
+	result := last.ToolResults[0]
+	if result.ToolCallID != "call-running" || !strings.Contains(result.Content, `"schemaVersion":"aiops.tool_aborted/v1"`) {
+		t.Fatalf("aborted tool result = %#v, want aiops.tool_aborted/v1", result)
+	}
+	if !strings.Contains(result.Content, `"partialExecutionRisk":true`) {
+		t.Fatalf("aborted tool result missing partialExecutionRisk: %s", result.Content)
+	}
+	if len(updated.Messages) == 0 || updated.Messages[len(updated.Messages)-1].ToolResult == nil ||
+		!strings.Contains(updated.Messages[len(updated.Messages)-1].Content, `"schemaVersion":"aiops.tool_aborted/v1"`) {
+		t.Fatalf("session messages missing abort marker: %#v", updated.Messages)
+	}
+}
+
+func TestAbortMarkerAppearsInNextModelInput(t *testing.T) {
+	content := `{"schemaVersion":"aiops.tool_aborted/v1","reason":"user_cancelled","partialExecutionRisk":true}`
+	messages := promptInputMessagesFromRuntime([]Message{{
+		ID:      "msg-abort",
+		Role:    "tool",
+		Content: content,
+		ToolResult: &ToolResult{
+			ToolCallID: "call-running",
+			Content:    content,
+		},
+	}})
+	if len(messages) != 1 || messages[0].ToolResult == nil || !strings.Contains(messages[0].ToolResult.Content, "aiops.tool_aborted/v1") {
+		t.Fatalf("prompt input messages = %#v, want abort marker tool result", messages)
 	}
 }
 
@@ -268,8 +411,23 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResumeTurn() error = %v", err)
 	}
-	if result.Status != "blocked" {
-		t.Fatalf("ResumeTurn status = %q, want blocked", result.Status)
+	if result.Status != "completed" {
+		t.Fatalf("ResumeTurn status = %q, want completed", result.Status)
+	}
+	var deniedPayload struct {
+		Status           string   `json:"status"`
+		ApprovalID       string   `json:"approvalId"`
+		Reason           string   `json:"reason"`
+		AllowedNextSteps []string `json:"allowedNextSteps"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &deniedPayload); err != nil {
+		t.Fatalf("ResumeTurn output is not structured denial JSON: %v; output=%q", err, result.Output)
+	}
+	if deniedPayload.Status != "approval_denied" ||
+		deniedPayload.ApprovalID != "approval-1" ||
+		deniedPayload.Reason != "synthetic rejection reason" ||
+		!containsString(deniedPayload.AllowedNextSteps, "continue_with_existing_evidence") {
+		t.Fatalf("denied payload = %#v", deniedPayload)
 	}
 
 	if len(emitter.events) == 0 {
@@ -297,6 +455,9 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	}
 	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" {
 		t.Fatalf("rejected approvals = %#v, want rejection reason recorded", session.RejectedApprovals)
+	}
+	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted || !strings.Contains(session.CurrentTurn.FinalOutput, `"status":"approval_denied"`) {
+		t.Fatalf("turn lifecycle=%q final=%q, want completed structured denial final", session.CurrentTurn.Lifecycle, session.CurrentTurn.FinalOutput)
 	}
 	protocolState := buildProtocolPromptState(session.CurrentTurn, promptcompiler.ToolPromptDelta{}, nil, nil, session.RejectedApprovals)
 	if len(protocolState.Items) != 1 || protocolState.Items[0].Status != "denied" || !strings.Contains(protocolState.Items[0].Text, "synthetic rejection reason") {

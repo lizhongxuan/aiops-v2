@@ -29,9 +29,8 @@ func TestContextArtifactReaderReadsOffsetLimit(t *testing.T) {
 	}
 
 	reader := NewContextArtifactReader(ContextArtifactReaderOptions{
-		Repository:     store,
-		MaxReadBytes:   64,
-		DefaultPreview: 12,
+		Repository:   store,
+		MaxReadBytes: 64,
 	})
 	result, err := reader.Read(ContextArtifactReadRequest{
 		ID:     artifact.ID,
@@ -139,7 +138,7 @@ func TestContextArtifactReaderDoesNotEmitBinaryPayload(t *testing.T) {
 	if result.Ref != artifact.URI {
 		t.Fatalf("ref = %q, want %q", result.Ref, artifact.URI)
 	}
-	if result.Artifact.Extension == "" || result.Artifact.Digest == "" || result.Artifact.Preview == "" {
+	if result.Artifact.Extension == "" || result.Artifact.Digest == "" || result.Artifact.ContentSnippet == "" {
 		t.Fatalf("binary metadata incomplete: %#v", result.Artifact)
 	}
 }
@@ -194,7 +193,7 @@ func TestReadContextArtifactToolReturnsRangeReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SaveContextArtifact failed: %v", err)
 	}
-	kernel := &EinoKernel{artifactRepo: store}
+	kernel := &RuntimeKernel{artifactRepo: store}
 	tools := kernel.contextArtifactTools()
 	if len(tools) != 1 {
 		t.Fatalf("context artifact tools = %d, want 1", len(tools))
@@ -234,7 +233,7 @@ func TestCompileContextAddsReadContextArtifactOnlyWhenContextArtifactEnabled(t *
 	}); err != nil {
 		t.Fatalf("Register core tool failed: %v", err)
 	}
-	kernel := &EinoKernel{
+	kernel := &RuntimeKernel{
 		tools:        &testMockToolAssemblySource{registry: registry},
 		artifactRepo: store,
 	}

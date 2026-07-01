@@ -20,8 +20,8 @@ import (
 // It enforces a maximum number of concurrently running tasks and queues
 // excess tasks for automatic backfill when running tasks complete.
 type BudgetController struct {
-	mu       sync.Mutex
-	maxBudget int            // maximum concurrent running tasks
+	mu        sync.Mutex
+	maxBudget int             // maximum concurrent running tasks
 	running   map[string]bool // taskID → true for currently running tasks
 	queue     []string        // ordered queue of pending task IDs waiting for budget
 }

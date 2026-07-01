@@ -41,6 +41,7 @@ import (
 	"aiops-v2/internal/mcp"
 	mcpruntime "aiops-v2/internal/mcp/runtime"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/observability"
 	opsgraphstore "aiops-v2/internal/opsgraph"
 	"aiops-v2/internal/opsmanual"
@@ -81,13 +82,7 @@ func run() error {
 	if secretDir == "" {
 		secretDir = filepath.Join(dataDir, "secrets")
 	}
-	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
-	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
-	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
-	runnerStudioUpstreamURL := runnerStudioUpstreamFromEnv(os.Getenv)
-	opsManualAutoRetrieval := envBoolDefault("AIOPS_OPS_MANUAL_AUTO_RETRIEVAL", false)
-	workflowReferenceGuardMode := workflowReferenceGuardModeFromEnv(os.Getenv)
+	defaultProvider := "openai"
 
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
@@ -117,13 +112,9 @@ func run() error {
 		return fmt.Errorf("init skill registry: %w", err)
 	}
 	commandRegistry := buildCommandRegistryFromSkills(skillRegistry)
-	flags := featureflag.FromEnv(os.Getenv)
 	permissionEngine := permissions.NewEngine(nil)
 	pluginHookRegistry := hooks.NewRegistry()
-	var runtimeHookRegistry *hooks.Registry
-	if flags.HooksV2 {
-		runtimeHookRegistry = pluginHookRegistry
-	}
+	runtimeHookRegistry := pluginHookRegistry
 	governance := settings.NewGovernance()
 	commandRegistry.SetGovernance(governance)
 
@@ -184,7 +175,8 @@ func run() error {
 	sessionManager := runtimekernel.NewSessionManager(dataStore)
 	contextArtifactRepo := runtimekernel.NewMemoryContextArtifactRepository()
 	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
-	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
+	resourceLockGate := agentmgr.NewToolResourceLockGate(agentmgr.NewResourceLockManager())
+	runtimeObserver, otelProvider := buildRuntimeObserver(ctx)
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -192,7 +184,7 @@ func run() error {
 			log.Printf("otel shutdown: %v", err)
 		}
 	}()
-	agentRunner := newServerAgentRunner(policyEngine, permissionEngine, runtimeHookRegistry, projector, sessionManager, dataStore, dataStore, contextArtifactRepo, skillRegistry, evidenceService, runtimeObserver)
+	agentRunner := newServerAgentRunner(policyEngine, permissionEngine, runtimeHookRegistry, projector, sessionManager, dataStore, dataStore, contextArtifactRepo, skillRegistry, evidenceService, resourceLockGate, runtimeObserver)
 	agentManager := agentmgr.NewAgentManager(agentFactory, agentRunner, projector)
 	hostOpsMissions := hostops.NewInMemoryMissionStore()
 	hostOpsTranscripts := hostops.NewInMemoryTranscriptStore()
@@ -252,14 +244,21 @@ func run() error {
 	pluginSpecs = append(pluginSpecs, builtinSpecs...)
 	grpcServer := server.NewGRPCServerWithAuthenticator(hostAgentGRPCAuthenticator{repo: dataStore})
 	terminalPolicyService := appui.NewTerminalPolicyService(filepath.Join(dataDir, "terminal-command-policies.json"))
+	credentialResolver := appui.NewLocalSecretCredentialResolver(secretDir)
 	if err := localtools.RegisterBuiltins(toolRegistry, dataStore, localtools.Options{
 		EvidenceService: evidenceService,
 		HostRepository:  dataStore,
 		TerminalPolicy:  terminalPolicyService,
-		HostAgentCommandRunner: hostAgentCommandRunner{
-			grpc:          grpcServer,
-			repo:          dataStore,
-			tokenResolver: appui.NewLocalHostAgentTokenStore(secretDir),
+		HostAgentCommandRunner: fallbackHostCommandRunner{
+			primary: hostAgentCommandRunner{
+				grpc:          grpcServer,
+				repo:          dataStore,
+				tokenResolver: appui.NewLocalHostAgentTokenStore(secretDir),
+			},
+			fallback: hostSSHCommandRunner{
+				repo:               dataStore,
+				credentialResolver: credentialResolver,
+			},
 		},
 	}); err != nil {
 		return fmt.Errorf("init local tools: %w", err)
@@ -282,42 +281,53 @@ func run() error {
 		return fmt.Errorf("start mcp runtime: %w", err)
 	}
 
-	// ---------------------------------------------------------------------------
-	// 9. EinoKernel (RuntimeKernel)
-	// ---------------------------------------------------------------------------
-	kernelCfg := runtimekernel.EinoKernelConfig{
-		ToolSource:      newRegistryAdapter(toolAssembler, commandRegistry, flags),
-		Compiler:        compiler,
-		Policy:          policyEngine,
-		Permissions:     permissionEngine,
-		Hooks:           runtimeHookRegistry,
-		Projector:       projector,
-		ModelRouter:     router,
-		AgentMgr:        newAgentManagerAdapter(agentManager, agentFactory),
-		Sessions:        sessionManager,
-		SessionRepo:     dataStore,
-		SpillRepo:       dataStore,
-		ArtifactRepo:    contextArtifactRepo,
-		SkillRegistry:   skillRegistry,
-		EvidenceService: evidenceService,
-		Observer:        runtimeObserver,
+	authManager := auth.NewManager(nil)
+	settingsService := appui.NewSettingsService(dataStore, authManager)
+	runtimeFeatureFlags := func(ctx context.Context) featureflag.Flags {
+		if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+			return featureflag.FromRuntimeSettings(provider.Snapshot(ctx))
+		}
+		return featureflag.Default()
 	}
-	kernel := runtimekernel.NewEinoKernel(kernelCfg)
-
-	var oauthProvider auth.OAuthProvider
-	if strings.TrimSpace(oauthAuthorizeURL) != "" {
-		oauthProvider = &auth.DefaultOAuthProvider{
-			AuthorizeURL: oauthAuthorizeURL,
-			ExchangeFunc: func(context.Context, auth.OAuthCallbackRequest) (auth.CredentialTruth, error) {
-				return auth.CredentialTruth{
-					Mode:     auth.ModeChatGPT,
-					Email:    strings.TrimSpace(oauthEmail),
-					PlanType: strings.TrimSpace(oauthPlanType),
-				}, nil
-			},
+	runtimeDebugConfig := func(ctx context.Context) runtimekernel.RuntimeDebugConfig {
+		settings := store.DefaultRuntimeSettings()
+		if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+			settings = provider.Snapshot(ctx)
+		}
+		return runtimekernel.RuntimeDebugConfig{
+			ModelInputTrace:      settings.Debug.ModelInputTrace,
+			ModelInputTraceRoot:  modeltrace.DefaultRootDir(dataDir),
+			FinalState:           settings.Debug.FinalState,
+			TransportProjection:  settings.Debug.TransportProjection,
+			TranscriptProjection: settings.Debug.TranscriptProjection,
 		}
 	}
-	authManager := auth.NewManager(oauthProvider)
+
+	// ---------------------------------------------------------------------------
+	// 9. RuntimeKernel
+	// ---------------------------------------------------------------------------
+	kernelCfg := runtimekernel.RuntimeKernelConfig{
+		ToolSource:       newRegistryAdapter(toolAssembler, commandRegistry),
+		Compiler:         compiler,
+		Policy:           policyEngine,
+		Permissions:      permissionEngine,
+		Hooks:            runtimeHookRegistry,
+		Projector:        projector,
+		ModelRouter:      router,
+		AgentMgr:         newAgentManagerAdapter(agentManager, agentFactory),
+		Sessions:         sessionManager,
+		SessionRepo:      dataStore,
+		SpillRepo:        dataStore,
+		ArtifactRepo:     contextArtifactRepo,
+		SkillRegistry:    skillRegistry,
+		EvidenceService:  evidenceService,
+		ResourceLockGate: resourceLockGate,
+		Observer:         runtimeObserver,
+		FeatureFlags:     runtimeFeatureFlags,
+		DebugConfig:      runtimeDebugConfig,
+	}
+	kernel := runtimekernel.NewRuntimeKernel(kernelCfg)
+
 	llmResolver := &storeLLMResolver{repo: dataStore, fallback: authManager}
 	router.SetCredentialResolver(llmResolver)
 	router.SetProviderConfigResolver(llmResolver)
@@ -330,37 +340,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init web assets: %w", err)
 	}
-	var runnerRuntime *runnerembed.Runtime
-	if strings.TrimSpace(os.Getenv("AIOPS_RUNNER_DISABLED")) != "1" {
-		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{
-			DataDir:                    dataDir,
-			WorkflowReferenceGuardMode: workflowReferenceGuardMode,
+	runnerRuntime, err := runnerembed.NewRuntime(ctx, runnerembed.Options{
+		DataDir:                    dataDir,
+		WorkflowReferenceGuardMode: workflowReferenceGuardModeFromRuntimeSettings(runtimeDebugRuntimeSettings(settingsService, context.Background())),
+	})
+	if err != nil {
+		return fmt.Errorf("init runner runtime: %w", err)
+	}
+	if registrar, ok := settingsService.(appui.RuntimeSettingsListenerRegistrar); ok {
+		registrar.AddRuntimeSettingsListener(func(settings store.RuntimeSettings) {
+			runnerRuntime.SetWorkflowReferenceGuardMode(workflowReferenceGuardModeFromRuntimeSettings(settings))
 		})
-		if err != nil {
-			return fmt.Errorf("init runner runtime: %w", err)
-		}
-		runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
-		runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	}
-	if strings.TrimSpace(runnerStudioUpstreamURL) != "" {
-		if runnerRuntime != nil {
-			log.Printf("ai-server: Runner Studio upstream configuration is deprecated and ignored while embedded Runner is enabled")
-		} else {
-			log.Printf("ai-server: Runner Studio upstream configuration is deprecated; embedded Runner is disabled")
-		}
-	}
+	runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
+	runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	httpOptions := []server.HTTPServerOption{
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
-		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
-		server.WithOpsManualAutoRetrieval(opsManualAutoRetrieval),
+		server.WithPromptTraceService(appui.NewPromptTraceService(modeltrace.DefaultRootDir(dataDir))),
 	}
-	if runnerRuntime != nil {
-		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
-	}
+	httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	hostAgentTokenStore := appui.NewLocalHostAgentTokenStore(secretDir)
 	serviceOptions := []appui.ServicesOption{
 		appui.WithStore(dataStore),
+		appui.WithSettingsService(settingsService),
 		appui.WithMCPRegistry(mcpRegistry),
 		appui.WithMCPRuntime(mcpRuntime),
 		appui.WithPluginSpecs(pluginSpecs),
@@ -368,14 +371,12 @@ func run() error {
 		appui.WithTerminalManager(terminalManager),
 		appui.WithOpsManualService(appui.NewOpsManualService(opsManualDomainService)),
 		appui.WithLifecycleContext(ctx),
-		appui.WithCredentialResolver(appui.NewLocalSecretCredentialResolver(secretDir)),
+		appui.WithCredentialResolver(credentialResolver),
 		appui.WithHostAgentTokenStore(hostAgentTokenStore),
 		appui.WithHostOpsService(appui.NewHostOpsService(hostOpsMissions, hostOpsTranscripts, hostOpsOrchestrator)),
 		appui.WithTerminalPolicyService(terminalPolicyService),
 	}
-	if runnerRuntime != nil {
-		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
-	}
+	serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
@@ -437,10 +438,8 @@ func run() error {
 	}
 	grpcAPIServer.GracefulStop()
 
-	if runnerRuntime != nil {
-		if err := runnerRuntime.Close(shutdownCtx); err != nil {
-			log.Printf("runner runtime shutdown: %v", err)
-		}
+	if err := runnerRuntime.Close(shutdownCtx); err != nil {
+		log.Printf("runner runtime shutdown: %v", err)
 	}
 
 	if err := dataStore.Flush(); err != nil {
@@ -462,47 +461,24 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-func envBoolDefault(key string, defaultVal bool) bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	switch value {
-	case "":
-		return defaultVal
-	case "1", "true", "yes", "on", "enabled":
-		return true
-	case "0", "false", "no", "off", "disabled":
-		return false
-	default:
-		return defaultVal
-	}
-}
-
-func workflowReferenceGuardModeFromEnv(getenv func(string) string) runnerservice.WorkflowReferenceGuardMode {
-	if getenv == nil {
-		getenv = func(string) string { return "" }
-	}
-	switch strings.ToLower(strings.TrimSpace(getenv("AIOPS_WORKFLOW_REFERENCE_GUARD_MODE"))) {
-	case "warn", "warning":
+func workflowReferenceGuardModeFromRuntimeSettings(settings store.RuntimeSettings) runnerservice.WorkflowReferenceGuardMode {
+	switch strings.ToLower(strings.TrimSpace(settings.Workflow.ReferenceGuardMode)) {
+	case store.RuntimeWorkflowReferenceGuardWarning, "warn":
 		return runnerservice.WorkflowReferenceGuardModeWarn
 	default:
 		return runnerservice.WorkflowReferenceGuardModeEnforce
 	}
 }
 
-func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
-	return store.OpenConfiguredStore(store.OpenConfigFromEnv(dataDir, getenv))
+func runtimeDebugRuntimeSettings(settingsService appui.SettingsService, ctx context.Context) store.RuntimeSettings {
+	if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+		return provider.Snapshot(ctx)
+	}
+	return store.DefaultRuntimeSettings()
 }
 
-func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
-	for _, key := range []string{
-		"AIOPS_RUNNER_STUDIO_UPSTREAM_URL",
-		"RUNNER_STUDIO_UPSTREAM_URL",
-		"AIOPS_RUNNER_API_BASE_URL",
-	} {
-		if value := strings.TrimSpace(getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
+func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
+	return store.OpenConfiguredStore(store.OpenConfigFromEnv(dataDir, getenv))
 }
 
 func newServerAgentRunner(
@@ -516,20 +492,22 @@ func newServerAgentRunner(
 	artifactRepo runtimekernel.ContextArtifactRepository,
 	skillRegistry *skills.Registry,
 	evidenceService *evidence.Service,
+	resourceLockGate runtimekernel.ToolResourceLockGate,
 	observer runtimekernel.Observer,
 ) agentmgr.AgentRunner {
 	return runtimekernel.NewAgentConfigRunner(runtimekernel.AgentConfigRunnerConfig{
-		Policy:          policyEngine,
-		Permissions:     permissionEngine,
-		Hooks:           hookRegistry,
-		Projector:       projector,
-		Sessions:        sessionManager,
-		SessionRepo:     sessionRepo,
-		SpillRepo:       spillRepo,
-		ArtifactRepo:    artifactRepo,
-		SkillRegistry:   skillRegistry,
-		EvidenceService: evidenceService,
-		Observer:        observer,
+		Policy:           policyEngine,
+		Permissions:      permissionEngine,
+		Hooks:            hookRegistry,
+		Projector:        projector,
+		Sessions:         sessionManager,
+		SessionRepo:      sessionRepo,
+		SpillRepo:        spillRepo,
+		ArtifactRepo:     artifactRepo,
+		SkillRegistry:    skillRegistry,
+		EvidenceService:  evidenceService,
+		ResourceLockGate: resourceLockGate,
+		Observer:         observer,
 	})
 }
 
@@ -553,11 +531,8 @@ func registerAIOpsToolSurfaceWithOptions(
 	if toolRegistry == nil {
 		return fmt.Errorf("tool registry is required")
 	}
-	opsGraphStore, err := opsgraphstore.LoadSeedFile(projectRelativePath("data/opsgraph/erp.seed.yaml"))
-	if err != nil {
-		opsGraphStore = opsgraphstore.NewStore(nil, nil)
-	}
-	if err := opsgraphtools.RegisterBuiltins(toolRegistry, opsGraphStore); err != nil {
+	opsGraphRepo := opsgraphstore.NewFileRepository(projectRelativePath("data/opsgraph/manual.graph.json"))
+	if err := opsgraphtools.RegisterBuiltinsWithProvider(toolRegistry, manualOpsGraphStoreProvider(opsGraphRepo)); err != nil {
 		return err
 	}
 	if evidenceService != nil {
@@ -601,6 +576,23 @@ func registerAIOpsToolSurfaceWithOptions(
 		return err
 	}
 	return toolsearch.RegisterBuiltins(toolRegistry, catalogProvider)
+}
+
+func manualOpsGraphStoreProvider(repo opsgraphstore.Repository) opsgraphtools.StoreProvider {
+	return func(ctx context.Context) (*opsgraphstore.Store, error) {
+		if repo == nil {
+			return opsgraphstore.NewStore(nil, nil), nil
+		}
+		doc, err := repo.Load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		graph, ok := doc.DefaultGraph()
+		if !ok {
+			return opsgraphstore.NewStore(nil, nil), nil
+		}
+		return opsgraphstore.CompileGraphStore(graph), nil
+	}
 }
 
 func projectRelativePath(rel string) string {
@@ -847,18 +839,14 @@ func (c opsManualWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Conte
 	return refs, nil
 }
 
-func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {
-	otelCfg := observability.ConfigFromEnv(getenv)
-	otelProvider, err := observability.Init(ctx, otelCfg)
+func buildRuntimeObserver(ctx context.Context) (runtimekernel.Observer, *observability.Provider) {
+	otelProvider, err := observability.Init(ctx, observability.Config{})
 	if err != nil {
 		log.Printf("ai-server: observability disabled: %v", err)
 		otelProvider, _ = observability.Init(ctx, observability.Config{})
 	}
 	if otelProvider == nil {
 		return runtimekernel.NoopObserver{}, &observability.Provider{}
-	}
-	if otelProvider.Enabled() {
-		return observability.NewRuntimeObserver(otelProvider.Tracer(), otelCfg), otelProvider
 	}
 	return runtimekernel.NoopObserver{}, otelProvider
 }
@@ -913,7 +901,14 @@ func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelro
 		Provider:         provider,
 		Model:            model,
 		BaseURL:          strings.TrimSpace(cfg.BaseURL),
+		Temperature:      derefFloat64(cfg.Temperature),
+		TopP:             derefFloat64(cfg.TopP),
+		MaxTokens:        cfg.MaxOutputTokens,
 		MaxContextTokens: normalizeLLMContextWindow(cfg.MaxContextTokens),
+		RequestTimeoutMs: normalizeLLMRequestTimeoutMs(cfg.RequestTimeoutMs),
+		ReasoningEffort:  strings.TrimSpace(cfg.ReasoningEffort),
+		ThinkingType:     strings.TrimSpace(cfg.ThinkingType),
+		ToolStream:       cfg.ToolStream,
 	}, true
 }
 
@@ -938,6 +933,23 @@ func normalizeLLMContextWindow(value int) int {
 	return value
 }
 
+func normalizeLLMRequestTimeoutMs(value int) int {
+	if value <= 0 {
+		return 300000
+	}
+	if value < 1000 {
+		return 1000
+	}
+	return value
+}
+
+func derefFloat64(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 // ---------------------------------------------------------------------------
 // RegistryAdapter adapts the unified tool assembler to runtimekernel.ToolAssemblySource.
 // ---------------------------------------------------------------------------
@@ -947,16 +959,14 @@ type registryAdapter struct {
 		AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
 	}
 	commandRegistry *commands.CommandRegistry
-	flags           featureflag.Flags
 }
 
 func newRegistryAdapter(tools interface {
 	AssembleToolsWithOptions(session, mode string, opts tooling.AssembleOptions) []tooling.Tool
-}, commandRegistry *commands.CommandRegistry, flags featureflag.Flags) *registryAdapter {
+}, commandRegistry *commands.CommandRegistry) *registryAdapter {
 	return &registryAdapter{
 		tools:           tools,
 		commandRegistry: commandRegistry,
-		flags:           flags.Clone(),
 	}
 }
 
@@ -985,8 +995,6 @@ func (a *registryAdapter) AssembleToolsWithOptions(session, mode string, opts to
 	if a.tools == nil {
 		return nil
 	}
-	opts.MetadataTransform = a.withFlagMetadataTransform(opts.MetadataTransform)
-	opts.Filter = a.withFlagToolFilter(opts.Filter)
 	return a.tools.AssembleToolsWithOptions(session, mode, opts)
 }
 
@@ -997,12 +1005,7 @@ func (a *registryAdapter) RefreshToken(session runtimekernel.SessionType, mode r
 	if refresher, ok := a.tools.(interface {
 		RefreshToken(session, mode string, opts tooling.AssembleOptions) string
 	}); ok {
-		return refresher.RefreshToken(string(session), string(mode), tooling.AssembleOptions{
-			MetadataTransform: a.flags.ApplyToolMetadata,
-			Filter: func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-				return a.flags.IsToolVisible(meta)
-			},
-		})
+		return refresher.RefreshToken(string(session), string(mode), tooling.AssembleOptions{})
 	}
 	return ""
 }
@@ -1022,39 +1025,8 @@ func (a *registryAdapter) assembledToolsWithMetadata(session, mode string, metad
 	if a.tools == nil {
 		return nil
 	}
-	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{
-		MetadataTransform: a.flags.ApplyToolMetadata,
-		Filter:            a.flagsToolFilter(),
-	}, metadata)
+	opts := tooling.ApplyTurnMetadataToAssembleOptions(tooling.AssembleOptions{}, metadata)
 	return a.tools.AssembleToolsWithOptions(session, mode, opts)
-}
-
-func (a *registryAdapter) withFlagMetadataTransform(next func(tooling.ToolMetadata) tooling.ToolMetadata) func(tooling.ToolMetadata) tooling.ToolMetadata {
-	return func(meta tooling.ToolMetadata) tooling.ToolMetadata {
-		meta = a.flags.ApplyToolMetadata(meta)
-		if next != nil {
-			meta = next(meta)
-		}
-		return meta
-	}
-}
-
-func (a *registryAdapter) withFlagToolFilter(next func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool) func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
-	return func(tool tooling.Tool, ctx tooling.ToolContext, meta tooling.ToolMetadata) bool {
-		if !a.flags.IsToolVisible(meta) {
-			return false
-		}
-		if next != nil {
-			return next(tool, ctx, meta)
-		}
-		return true
-	}
-}
-
-func (a *registryAdapter) flagsToolFilter() func(tooling.Tool, tooling.ToolContext, tooling.ToolMetadata) bool {
-	return func(_ tooling.Tool, _ tooling.ToolContext, meta tooling.ToolMetadata) bool {
-		return a.flags.IsToolVisible(meta)
-	}
 }
 
 // ---------------------------------------------------------------------------

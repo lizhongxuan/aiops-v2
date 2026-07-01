@@ -146,8 +146,6 @@ func TestRunCLIRecordsRunPhaseRepetitionsAndFlagMetadata(t *testing.T) {
 	casesDir := t.TempDir()
 	outDir := filepath.Join(t.TempDir(), "out")
 	writeCLICase(t, casesDir, "cli-repeat")
-	t.Setenv("AIOPS_DIAGNOSTIC_PROTOCOL", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 
 	var stdout, stderr bytes.Buffer
 	code := runCLI(context.Background(), []string{
@@ -171,7 +169,7 @@ func TestRunCLIRecordsRunPhaseRepetitionsAndFlagMetadata(t *testing.T) {
 	if report.RunPhase != "candidate" || report.Repetitions != 2 {
 		t.Fatalf("report run metadata = phase %q reps %d", report.RunPhase, report.Repetitions)
 	}
-	if report.Metadata["AIOPS_DIAGNOSTIC_PROTOCOL"] != "1" || report.Metadata["AIOPS_DEBUG_MODEL_INPUT_TRACE"] != "1" {
+	if report.Metadata["runtime_settings"] != "not_loaded_by_agent_eval" {
 		t.Fatalf("report flag metadata missing: %#v", report.Metadata)
 	}
 }

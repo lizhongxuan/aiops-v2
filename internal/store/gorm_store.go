@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -27,6 +26,7 @@ const (
 	gormNamespaceUICards             = "ui_cards"
 	gormNamespaceLLMConfig           = "llm_config"
 	gormNamespaceWebSettings         = "web_settings"
+	gormNamespaceRuntimeSettings     = "runtime_settings"
 	gormNamespaceCorootConfig        = "coroot_config"
 	gormNamespaceHosts               = "hosts"
 	gormNamespaceMCPServers          = "mcp_servers"
@@ -88,20 +88,6 @@ func NewGormStore(db *gorm.DB) (*GormStore, error) {
 		return nil, fmt.Errorf("migrate gorm store: %w", err)
 	}
 	return &GormStore{db: db}, nil
-}
-
-// NewMySQLStore opens a MySQL-backed GORM store. The caller must supply a DSN;
-// connection and migration errors are returned to startup.
-func NewMySQLStore(dsn string) (*GormStore, error) {
-	dsn = strings.TrimSpace(dsn)
-	if dsn == "" {
-		return nil, fmt.Errorf("mysql dsn is required")
-	}
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("open mysql gorm store: %w", err)
-	}
-	return NewGormStore(db)
 }
 
 // NewPostgresStore opens a PostgreSQL-backed GORM store. The caller must supply
@@ -325,6 +311,29 @@ func (s *GormStore) SaveWebSettings(settings *WebSettings) error {
 	}
 	cp := cloneWebSettings(*settings)
 	return s.saveKV(gormNamespaceWebSettings, gormSingletonKey, cp)
+}
+
+func (s *GormStore) GetRuntimeSettings() (*RuntimeSettings, error) {
+	var settings RuntimeSettings
+	ok, err := s.loadKV(gormNamespaceRuntimeSettings, gormSingletonKey, &settings)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		defaults := DefaultRuntimeSettings()
+		return &defaults, nil
+	}
+	cp := cloneRuntimeSettings(settings)
+	return &cp, nil
+}
+
+func (s *GormStore) SaveRuntimeSettings(settings *RuntimeSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings is nil")
+	}
+	cp := cloneRuntimeSettings(*settings)
+	cp.UpdatedAt = time.Now().UTC()
+	return s.saveKV(gormNamespaceRuntimeSettings, gormSingletonKey, cp)
 }
 
 func (s *GormStore) GetCorootConfig() (*CorootConfig, error) {

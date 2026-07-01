@@ -15,17 +15,17 @@ import (
 var ErrContextArtifactNotFound = errors.New("context artifact not found")
 
 type ContextArtifact struct {
-	ID          string                `json:"id"`
-	Kind        string                `json:"kind"`
-	URI         string                `json:"uri"`
-	ContentType string                `json:"contentType"`
-	Extension   string                `json:"extension"`
-	Digest      string                `json:"digest"`
-	Bytes       int64                 `json:"bytes"`
-	Summary     string                `json:"summary,omitempty"`
-	Preview     string                `json:"preview,omitempty"`
-	CreatedAt   time.Time             `json:"createdAt,omitempty"`
-	Source      ContextArtifactSource `json:"source,omitempty"`
+	ID             string                `json:"id"`
+	Kind           string                `json:"kind"`
+	URI            string                `json:"uri"`
+	ContentType    string                `json:"contentType"`
+	Extension      string                `json:"extension"`
+	Digest         string                `json:"digest"`
+	Bytes          int64                 `json:"bytes"`
+	Summary        string                `json:"summary,omitempty"`
+	ContentSnippet string                `json:"contentSnippet,omitempty"`
+	CreatedAt      time.Time             `json:"createdAt,omitempty"`
+	Source         ContextArtifactSource `json:"source,omitempty"`
 }
 
 type ContextArtifactSource struct {
@@ -36,15 +36,15 @@ type ContextArtifactSource struct {
 }
 
 type ContextArtifactWrite struct {
-	ID          string
-	Kind        string
-	URI         string
-	ContentType string
-	Content     []byte
-	Summary     string
-	Preview     string
-	CreatedAt   time.Time
-	Source      ContextArtifactSource
+	ID             string
+	Kind           string
+	URI            string
+	ContentType    string
+	Content        []byte
+	Summary        string
+	ContentSnippet string
+	CreatedAt      time.Time
+	Source         ContextArtifactSource
 }
 
 type MemoryContextArtifactRepository struct {
@@ -103,26 +103,26 @@ func BuildContextArtifact(write ContextArtifactWrite) ContextArtifact {
 	} else {
 		createdAt = createdAt.UTC()
 	}
-	preview := strings.TrimSpace(write.Preview)
-	if preview == "" {
-		preview = contextArtifactPreview(contentType, write.Content, uri, 240)
+	contentSnippet := strings.TrimSpace(write.ContentSnippet)
+	if contentSnippet == "" {
+		contentSnippet = contextArtifactSnippet(contentType, write.Content, uri, 240)
 	}
 	summary := strings.TrimSpace(write.Summary)
 	if summary == "" {
-		summary = contextArtifactBoundedSnippet(preview)
+		summary = contextArtifactBoundedSnippet(contentSnippet)
 	}
 	return ContextArtifact{
-		ID:          id,
-		Kind:        contextArtifactFirstNonBlank(write.Kind, "generated"),
-		URI:         uri,
-		ContentType: contentType,
-		Extension:   contextArtifactExtension(contentType, uri),
-		Digest:      digest,
-		Bytes:       int64(len(write.Content)),
-		Summary:     summary,
-		Preview:     preview,
-		CreatedAt:   createdAt,
-		Source:      write.Source,
+		ID:             id,
+		Kind:           contextArtifactFirstNonBlank(write.Kind, "generated"),
+		URI:            uri,
+		ContentType:    contentType,
+		Extension:      contextArtifactExtension(contentType, uri),
+		Digest:         digest,
+		Bytes:          int64(len(write.Content)),
+		Summary:        summary,
+		ContentSnippet: contentSnippet,
+		CreatedAt:      createdAt,
+		Source:         write.Source,
 	}
 }
 
@@ -164,7 +164,7 @@ func contextArtifactDigest(content []byte) string {
 	return resourceio.DigestContent(content)
 }
 
-func contextArtifactPreview(contentType string, content []byte, uri string, limit int) string {
+func contextArtifactSnippet(contentType string, content []byte, uri string, limit int) string {
 	if limit <= 0 {
 		limit = 240
 	}

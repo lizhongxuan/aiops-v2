@@ -173,6 +173,10 @@ done
 case "$host_id" in ''|*[!A-Za-z0-9_.-]*) printf 'host_id contains unsupported characters\n' >&2; exit 64;; esac
 case "$ssh_user" in ''|*[!A-Za-z0-9_.-]*) printf 'ssh_user contains unsupported characters\n' >&2; exit 64;; esac
 case "$ssh_port" in ''|*[!0-9]*) printf 'ssh_port must be numeric\n' >&2; exit 64;; esac
+case "$connection_mode" in aiops_pull|node_push_grpc) ;; *) printf 'unsupported connection_mode: %s\n' "$connection_mode" >&2; exit 64;; esac
+if [ "$connection_mode" = "node_push_grpc" ]; then
+  required_var agent_server_url
+fi
 if [ -n "${ssh_credential_ref:-}" ]; then
   credential_file="$(secret_path_from_ref "$ssh_credential_ref")"
   if [ ! -s "$credential_file" ]; then
@@ -257,7 +261,7 @@ case "$platform" in
   *) printf 'unsupported platform: %s\n' "$platform" >&2; exit 65;;
 esac
 cat > "$cfg_file" <<YAML
-server_url: "$agent_server_url"
+connection_mode: "$connection_mode"
 host_id: "$host_id"
 listen_addr: "0.0.0.0:$agent_listen_port"
 token_ref: "$token_ref"
@@ -267,6 +271,14 @@ capabilities:
   - script.python
   - terminal
 YAML
+if [ "$connection_mode" = "node_push_grpc" ]; then
+  {
+    printf 'server_url: "%s"\n' "$agent_server_url"
+    if [ -n "${agent_grpc_url:-}" ]; then
+      printf 'grpc_url: "%s"\n' "$agent_grpc_url"
+    fi
+  } >> "$cfg_file"
+fi
 scp_put "$cfg_file" "$remote_tmp/host-agent.yaml"
 case "$platform" in
   linux/ubuntu)
@@ -394,9 +406,12 @@ esac`
   sleep 2
 done
 printf 'host-agent local health check timed out\n' >&2
-exit 1`
+	exit 1`
 	case "verify-aiops-heartbeat":
-		return `required_var aiops_api_url
+		return `if [ "$connection_mode" = "aiops_pull" ]; then
+  exit 0
+fi
+required_var aiops_api_url
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   body="$(curl -fsS "$aiops_api_url/api/v1/hosts" 2>/dev/null || true)"
   if printf '%s' "$body" | grep -q "\"id\":\"$host_id\"" &&
@@ -421,8 +436,10 @@ func hostAgentInstallCommonPrelude() string {
 	return `ssh_port="${ssh_port:-22}"
 agent_version="${agent_version:-v0.1.0}"
 agent_listen_port="${agent_listen_port:-7072}"
-agent_server_url="${agent_server_url:-http://127.0.0.1:18080}"
-aiops_api_url="${aiops_api_url:-http://127.0.0.1:18080}"
+connection_mode="${connection_mode:-aiops_pull}"
+agent_server_url="${agent_server_url:-}"
+agent_grpc_url="${agent_grpc_url:-}"
+aiops_api_url="${aiops_api_url:-$agent_server_url}"
 secret_dir="${secret_dir:-${AIOPS_SECRET_DIR:-.data/secrets}}"
 repo_root="${repo_root:-$(pwd)}"
 remote_tmp="/tmp/aiops-host-agent-${host_id:-unknown}"

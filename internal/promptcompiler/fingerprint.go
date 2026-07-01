@@ -9,15 +9,21 @@ import (
 
 const promptFingerprintVersion = "prompt-fingerprint-v1"
 
+// BuildPromptFingerprintForAdapter fingerprints a CompiledPrompt assembled by
+// thin adapters that already provide a section-first envelope.
+func BuildPromptFingerprintForAdapter(compiled CompiledPrompt) PromptFingerprint {
+	return buildPromptFingerprint(compiled)
+}
+
 func buildPromptFingerprint(compiled CompiledPrompt) PromptFingerprint {
 	return PromptFingerprint{
 		Version:           promptFingerprintVersion,
 		CompilerVersion:   promptFingerprintVersion,
-		StableHash:        hashPromptText(compiled.Stable.Content),
-		SystemHash:        hashPromptText(compiled.Stable.System.Content),
-		DeveloperHash:     hashPromptText(compiled.Stable.Developer.Content),
-		ToolRegistryHash:  hashPromptText(compiled.Stable.Tools.Content),
-		RuntimePolicyHash: hashPromptText(compiled.Dynamic.Policy.Content),
+		StableHash:        hashPromptText(CompiledPromptStableText(compiled)),
+		SystemHash:        hashPromptText(CompiledPromptBaseContractText(compiled)),
+		DeveloperHash:     hashPromptText(CompiledPromptProfileText(compiled)),
+		ToolRegistryHash:  hashPromptText(CompiledPromptToolSurfaceText(compiled)),
+		RuntimePolicyHash: hashPromptText(CompiledPromptRuntimeStateText(compiled)),
 		ProtocolStateHash: hashPromptJSON(compiled.Dynamic.ProtocolState),
 	}
 }

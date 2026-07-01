@@ -90,6 +90,9 @@ func TestSessionAPI_ListCreateAndActivate(t *testing.T) {
 	if hostCreated.Snapshot.Kind != "single_host" {
 		t.Fatalf("host snapshot kind = %q, want single_host", hostCreated.Snapshot.Kind)
 	}
+	if hostCreated.Snapshot.SelectedHostID != "" {
+		t.Fatalf("host snapshot selectedHostId = %q, want empty until explicit host selection", hostCreated.Snapshot.SelectedHostID)
+	}
 
 	remoteBody, _ := json.Marshal(map[string]string{"kind": "single_host", "hostId": "remote-linux-01"})
 	remoteResp, err := http.Post(ts.URL+"/api/v1/sessions", "application/json", bytes.NewReader(remoteBody))

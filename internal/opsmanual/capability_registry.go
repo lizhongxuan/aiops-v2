@@ -64,6 +64,7 @@ type CapabilityPreflightProbe struct {
 	TargetType string
 	Action     string
 	RiskLevel  string
+	ReadOnly   bool
 }
 
 type CapabilityWorkflowOperationRule struct {
@@ -96,6 +97,7 @@ func DefaultOpsManualCapabilityRegistry() *CapabilityRegistry {
 	for _, pack := range OpsManualCoreCapabilityPacks() {
 		_ = registry.RegisterPack(pack)
 	}
+	_ = registry.RegisterPack(PostgresCapabilityPack())
 	return registry
 }
 
@@ -166,6 +168,9 @@ func (r *CapabilityRegistry) DetectOperationType(text string) string {
 	}
 	if looksLikeStatusCheck(normalized) && !looksLikeTroubleshooting(normalized) {
 		return "status_check"
+	}
+	if looksLikeTroubleshooting(normalized) {
+		return "rca_or_repair"
 	}
 	for _, registered := range r.sortedPacks() {
 		if !registered.pack.Enabled {
@@ -361,8 +366,16 @@ func (r *CapabilityRegistry) ParameterHintsFor(targetType, action string) []Capa
 }
 
 func (r *CapabilityRegistry) PreflightProbeFor(targetType, action string) (CapabilityPreflightProbe, bool) {
-	if r == nil {
+	probes := r.PreflightProbesFor(targetType, action)
+	if len(probes) == 0 {
 		return CapabilityPreflightProbe{}, false
+	}
+	return probes[0], true
+}
+
+func (r *CapabilityRegistry) PreflightProbesFor(targetType, action string) []CapabilityPreflightProbe {
+	if r == nil {
+		return nil
 	}
 	merged := map[string]CapabilityPreflightProbe{}
 	order := []string{}
@@ -380,6 +393,7 @@ func (r *CapabilityRegistry) PreflightProbeFor(targetType, action string) (Capab
 			}
 			if current, ok := merged[key]; ok {
 				probe.RiskLevel = maxRiskLevel(current.RiskLevel, probe.RiskLevel)
+				probe.ReadOnly = current.ReadOnly || probe.ReadOnly
 				if strings.TrimSpace(probe.TargetType) == "" {
 					probe.TargetType = current.TargetType
 				}
@@ -393,9 +407,13 @@ func (r *CapabilityRegistry) PreflightProbeFor(targetType, action string) (Capab
 		}
 	}
 	if len(order) == 0 {
-		return CapabilityPreflightProbe{}, false
+		return nil
 	}
-	return merged[order[0]], true
+	out := make([]CapabilityPreflightProbe, 0, len(order))
+	for _, key := range order {
+		out = append(out, merged[key])
+	}
+	return out
 }
 
 func (r *CapabilityRegistry) InferWorkflowOperation(text string) (targetType string, action string, evidence string) {

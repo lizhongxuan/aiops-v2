@@ -21,6 +21,7 @@ type IncidentCase struct {
 	BusinessCapabilityID string           `json:"businessCapabilityId,omitempty"`
 	AffectedServices     []string         `json:"affectedServices,omitempty"`
 	EvidenceRefs         []string         `json:"evidenceRefs,omitempty"`
+	Evidence             []EvidenceRef    `json:"evidence,omitempty"`
 	Actions              []ActionRecord   `json:"actions,omitempty"`
 	Approvals            []ApprovalRecord `json:"approvals,omitempty"`
 	Hypotheses           []Hypothesis     `json:"hypotheses,omitempty"`

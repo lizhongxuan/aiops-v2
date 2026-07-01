@@ -509,7 +509,7 @@ function formatRunnerStudioNotice(error: unknown): ApiNotice {
   return {
     title: "内置 Runner API 暂不可用",
     message: "当前 ai-server 未返回 Runner Studio API，已启用本地动作库，可先完成工作流草稿。",
-    hint: "请确认 ai-server 已用最新 start.sh 启动，且未设置 AIOPS_RUNNER_DISABLED=1。",
+    hint: "请确认 ai-server 已用最新 start.sh 启动，Runner Studio API 会随 ai-server 默认挂载。",
   };
 }
 

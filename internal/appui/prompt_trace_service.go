@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"aiops-v2/internal/diagnostics"
-	"aiops-v2/internal/modeltrace"
 )
 
 const defaultPromptTraceLimit = 500
@@ -30,30 +29,34 @@ type PromptTraceListResponse struct {
 	RootDir    string            `json:"rootDir"`
 	Traces     []PromptTraceItem `json:"traces"`
 	SelectedID string            `json:"selectedId,omitempty"`
+	SetupHint  string            `json:"setupHint,omitempty"`
 }
 
 type PromptTraceItem struct {
-	ID                string                         `json:"id"`
-	RelativePath      string                         `json:"relativePath"`
-	JSONPath          string                         `json:"jsonPath"`
-	MarkdownPath      string                         `json:"markdownPath,omitempty"`
-	DiffPath          string                         `json:"diffPath,omitempty"`
-	Kind              string                         `json:"kind,omitempty"`
-	SessionID         string                         `json:"sessionId,omitempty"`
-	TurnID            string                         `json:"turnId,omitempty"`
-	Iteration         int                            `json:"iteration"`
-	CaseID            string                         `json:"caseId,omitempty"`
-	CreatedAt         string                         `json:"createdAt,omitempty"`
-	ModifiedAt        string                         `json:"modifiedAt,omitempty"`
-	VisibleTools      []string                       `json:"visibleTools,omitempty"`
-	MessageCount      int                            `json:"messageCount,omitempty"`
-	LLMRequestCount   int                            `json:"llmRequestCount,omitempty"`
-	Usage             *PromptTraceUsage              `json:"usage,omitempty"`
-	AverageDurationMs int64                          `json:"averageDurationMs,omitempty"`
-	UserPromptPreview string                         `json:"userPromptPreview,omitempty"`
-	ToolSurface       *PromptTraceToolSurfaceSummary `json:"toolSurface,omitempty"`
-	PromptFingerprint map[string]string              `json:"promptFingerprint,omitempty"`
-	Metadata          map[string]string              `json:"metadata,omitempty"`
+	ID                 string                                `json:"id"`
+	RelativePath       string                                `json:"relativePath"`
+	JSONPath           string                                `json:"jsonPath"`
+	MarkdownPath       string                                `json:"markdownPath,omitempty"`
+	DiffPath           string                                `json:"diffPath,omitempty"`
+	Kind               string                                `json:"kind,omitempty"`
+	SessionID          string                                `json:"sessionId,omitempty"`
+	TurnID             string                                `json:"turnId,omitempty"`
+	Iteration          int                                   `json:"iteration"`
+	CaseID             string                                `json:"caseId,omitempty"`
+	CreatedAt          string                                `json:"createdAt,omitempty"`
+	ModifiedAt         string                                `json:"modifiedAt,omitempty"`
+	VisibleTools       []string                              `json:"visibleTools,omitempty"`
+	MessageCount       int                                   `json:"messageCount,omitempty"`
+	LLMRequestCount    int                                   `json:"llmRequestCount,omitempty"`
+	Usage              *PromptTraceUsage                     `json:"usage,omitempty"`
+	AverageDurationMs  int64                                 `json:"averageDurationMs,omitempty"`
+	UserPromptPreview  string                                `json:"userPromptPreview,omitempty"`
+	ToolSurface        *PromptTraceToolSurfaceSummary        `json:"toolSurface,omitempty"`
+	Checkpoints        []PromptTraceCheckpointSummary        `json:"checkpoints,omitempty"`
+	WebLearnEvidence   []WebLearnEvidence                    `json:"webLearnEvidence,omitempty"`
+	EnvironmentContext *PromptTraceEnvironmentContextSummary `json:"environmentContext,omitempty"`
+	PromptFingerprint  map[string]string                     `json:"promptFingerprint,omitempty"`
+	Metadata           map[string]string                     `json:"metadata,omitempty"`
 }
 
 type PromptTraceUsage struct {
@@ -63,17 +66,55 @@ type PromptTraceUsage struct {
 }
 
 type PromptTraceToolSurfaceSummary struct {
-	InitialToolCount     int               `json:"initialToolCount,omitempty"`
-	BaseRegistryCount    int               `json:"baseRegistryCount,omitempty"`
-	DeferredFamilyCount  int               `json:"deferredFamilyCount,omitempty"`
-	LoadedToolCount      int               `json:"loadedToolCount,omitempty"`
-	LoadedPackCount      int               `json:"loadedPackCount,omitempty"`
-	FilteredToolCount    int               `json:"filteredToolCount,omitempty"`
-	ToolSearchEventCount int               `json:"toolSearchEventCount,omitempty"`
-	SelectedToolCount    int               `json:"selectedToolCount,omitempty"`
-	RejectedToolCount    int               `json:"rejectedToolCount,omitempty"`
-	MCPHealth            map[string]string `json:"mcpHealth,omitempty"`
-	FilteredReasons      map[string]string `json:"filteredReasons,omitempty"`
+	InitialToolCount     int                            `json:"initialToolCount,omitempty"`
+	BaseRegistryCount    int                            `json:"baseRegistryCount,omitempty"`
+	DeferredFamilyCount  int                            `json:"deferredFamilyCount,omitempty"`
+	LoadedToolCount      int                            `json:"loadedToolCount,omitempty"`
+	LoadedPackCount      int                            `json:"loadedPackCount,omitempty"`
+	FilteredToolCount    int                            `json:"filteredToolCount,omitempty"`
+	ToolSearchEventCount int                            `json:"toolSearchEventCount,omitempty"`
+	SelectedToolCount    int                            `json:"selectedToolCount,omitempty"`
+	RejectedToolCount    int                            `json:"rejectedToolCount,omitempty"`
+	MCPHealth            map[string]string              `json:"mcpHealth,omitempty"`
+	FilteredReasons      map[string]string              `json:"filteredReasons,omitempty"`
+	ToolSearches         []PromptTraceToolSearchSummary `json:"toolSearches,omitempty"`
+}
+
+type PromptTraceEnvironmentContextSummary struct {
+	TargetRefs     []string `json:"targetRefs,omitempty"`
+	CompactContext string   `json:"compactContext,omitempty"`
+	ReadOnlyReason string   `json:"readOnlyReason,omitempty"`
+	HasConflict    bool     `json:"hasConflict,omitempty"`
+}
+
+type PromptTraceToolSearchSummary struct {
+	Mode                string                                 `json:"mode,omitempty"`
+	Query               string                                 `json:"query,omitempty"`
+	Ranker              string                                 `json:"ranker,omitempty"`
+	Intent              string                                 `json:"intent,omitempty"`
+	TargetRefs          []string                               `json:"targetRefs,omitempty"`
+	RequiredCaps        []string                               `json:"requiredCaps,omitempty"`
+	ForbiddenCaps       []string                               `json:"forbiddenCaps,omitempty"`
+	RiskLevel           string                                 `json:"riskLevel,omitempty"`
+	EnvironmentFacts    []string                               `json:"environmentFacts,omitempty"`
+	TargetCompatibility string                                 `json:"targetCompatibility,omitempty"`
+	RiskDecision        string                                 `json:"riskDecision,omitempty"`
+	MatchReasons        []string                               `json:"matchReasons,omitempty"`
+	MatchCount          int                                    `json:"matchCount,omitempty"`
+	RejectedCount       int                                    `json:"rejectedCount,omitempty"`
+	Matches             []string                               `json:"matches,omitempty"`
+	MCPHealth           map[string]string                      `json:"mcpHealth,omitempty"`
+	RejectedReasons     []PromptTraceToolSearchRejectedSummary `json:"rejectedReasons,omitempty"`
+}
+
+type PromptTraceToolSearchRejectedSummary struct {
+	ToolName       string `json:"toolName,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Source         string `json:"source,omitempty"`
+	MCPServerID    string `json:"mcpServerId,omitempty"`
+	HealthStatus   string `json:"healthStatus,omitempty"`
+	FilteredReason string `json:"filteredReason,omitempty"`
 }
 
 type PromptTraceFileRequest struct {
@@ -150,7 +191,29 @@ type promptTraceFilteredTool struct {
 }
 
 type promptTraceToolSearchEvent struct {
-	Mode string `json:"mode"`
+	Mode                string                                 `json:"mode"`
+	Query               string                                 `json:"query"`
+	Ranker              string                                 `json:"ranker"`
+	Intent              string                                 `json:"intent"`
+	TargetCompatibility string                                 `json:"targetCompatibility"`
+	RiskDecision        string                                 `json:"riskDecision"`
+	MatchReasons        []string                               `json:"matchReasons"`
+	MatchCount          int                                    `json:"matchCount"`
+	RejectedCount       int                                    `json:"rejectedCount"`
+	Matches             []string                               `json:"matches"`
+	MCPHealth           map[string]string                      `json:"mcpHealth"`
+	Request             promptTraceToolSearchRequest           `json:"request"`
+	RejectedReasons     []PromptTraceToolSearchRejectedSummary `json:"rejectedReasons"`
+}
+
+type promptTraceToolSearchRequest struct {
+	Intent           string            `json:"intent"`
+	TargetRefs       []string          `json:"targetRefs"`
+	RequiredCaps     []string          `json:"requiredCaps"`
+	ForbiddenCaps    []string          `json:"forbiddenCaps"`
+	RiskLevel        string            `json:"riskLevel"`
+	EnvironmentFacts []string          `json:"environmentFacts"`
+	MCPHealth        map[string]string `json:"mcpHealth"`
 }
 
 type promptTraceRejectedToolReason struct {
@@ -159,6 +222,22 @@ type promptTraceRejectedToolReason struct {
 
 func NewPromptTraceService(rootDir string) PromptTraceService {
 	return promptTraceService{rootDir: strings.TrimSpace(rootDir)}
+}
+
+func shouldSkipPromptTraceJSON(root, path string) bool {
+	if strings.EqualFold(filepath.Base(path), "index.json") {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
+		if strings.EqualFold(part, "raw") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s promptTraceService) ListModelInputTraces(ctx context.Context, req PromptTraceListRequest) (PromptTraceListResponse, error) {
@@ -170,6 +249,7 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 	response := PromptTraceListResponse{RootDir: root}
 	if _, err := os.Stat(root); err != nil {
 		if os.IsNotExist(err) {
+			response.SetupHint = promptTraceSetupHint(root)
 			return response, nil
 		}
 		return PromptTraceListResponse{}, fmt.Errorf("stat prompt trace root: %w", err)
@@ -183,7 +263,7 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() || filepath.Ext(path) != ".json" {
+		if entry.IsDir() || filepath.Ext(path) != ".json" || shouldSkipPromptTraceJSON(root, path) {
 			return nil
 		}
 		item, err := readPromptTraceItem(root, path)
@@ -216,7 +296,14 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 	if selectedID != "" && promptTraceContainsID(items, selectedID) {
 		response.SelectedID = selectedID
 	}
+	if len(response.Traces) == 0 {
+		response.SetupHint = promptTraceSetupHint(root)
+	}
 	return response, nil
+}
+
+func promptTraceSetupHint(root string) string {
+	return fmt.Sprintf("No model input traces found under %s. Enable Debug / Model Input Trace in runtime settings, then send a new chat request.", root)
 }
 
 func (s promptTraceService) GetModelInputTraceFile(ctx context.Context, req PromptTraceFileRequest) (PromptTraceFileResponse, error) {
@@ -244,9 +331,6 @@ func (s promptTraceService) GetModelInputTraceFile(ctx context.Context, req Prom
 
 func promptTraceRootDir(configured string) (string, error) {
 	root := strings.TrimSpace(configured)
-	if root == "" {
-		root = strings.TrimSpace(os.Getenv(modeltrace.DirEnv))
-	}
 	if root == "" {
 		root = filepath.Join(".data", "model-input-traces")
 	}
@@ -280,28 +364,32 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		ModifiedAt:   info.ModTime().UTC().Format(time.RFC3339Nano),
 	}
 	var payload struct {
-		Kind               string                         `json:"kind"`
-		CreatedAt          string                         `json:"createdAt"`
-		SessionID          string                         `json:"sessionId"`
-		TurnID             string                         `json:"turnId"`
-		Iteration          int                            `json:"iteration"`
-		VisibleTools       []string                       `json:"visibleTools"`
-		PromptFingerprint  map[string]string              `json:"promptFingerprint"`
-		CaseID             string                         `json:"caseId"`
-		Metadata           map[string]string              `json:"metadata"`
-		ToolSurfaceTrace   promptTraceToolSurfacePayload  `json:"toolSurfaceTrace"`
-		ModelInput         []promptTraceMessage           `json:"modelInput"`
-		Usage              promptTraceUsagePayload        `json:"usage"`
-		DurationMs         float64                        `json:"durationMs"`
-		DurationMSSnake    float64                        `json:"duration_ms"`
-		LatencyMs          float64                        `json:"latencyMs"`
-		LatencyMSSnake     float64                        `json:"latency_ms"`
-		ElapsedMs          float64                        `json:"elapsedMs"`
-		ElapsedMSSnake     float64                        `json:"elapsed_ms"`
-		LLMRequests        []promptTraceLLMRequestPayload `json:"llmRequests"`
-		LLMRequestsSnake   []promptTraceLLMRequestPayload `json:"llm_requests"`
-		ModelRequests      []promptTraceLLMRequestPayload `json:"modelRequests"`
-		ModelRequestsSnake []promptTraceLLMRequestPayload `json:"model_requests"`
+		Kind                    string                               `json:"kind"`
+		CreatedAt               string                               `json:"createdAt"`
+		SessionID               string                               `json:"sessionId"`
+		TurnID                  string                               `json:"turnId"`
+		Iteration               int                                  `json:"iteration"`
+		VisibleTools            []string                             `json:"visibleTools"`
+		PromptFingerprint       map[string]string                    `json:"promptFingerprint"`
+		CaseID                  string                               `json:"caseId"`
+		Metadata                map[string]string                    `json:"metadata"`
+		Checkpoints             []PromptTraceCheckpointSummary       `json:"checkpoints"`
+		WebLearnEvidence        []WebLearnEvidence                   `json:"webLearnEvidence"`
+		EnvironmentContext      PromptTraceEnvironmentContextSummary `json:"environmentContext"`
+		EnvironmentContextSnake PromptTraceEnvironmentContextSummary `json:"environment_context"`
+		ToolSurfaceTrace        promptTraceToolSurfacePayload        `json:"toolSurfaceTrace"`
+		ModelInput              []promptTraceMessage                 `json:"modelInput"`
+		Usage                   promptTraceUsagePayload              `json:"usage"`
+		DurationMs              float64                              `json:"durationMs"`
+		DurationMSSnake         float64                              `json:"duration_ms"`
+		LatencyMs               float64                              `json:"latencyMs"`
+		LatencyMSSnake          float64                              `json:"latency_ms"`
+		ElapsedMs               float64                              `json:"elapsedMs"`
+		ElapsedMSSnake          float64                              `json:"elapsed_ms"`
+		LLMRequests             []promptTraceLLMRequestPayload       `json:"llmRequests"`
+		LLMRequestsSnake        []promptTraceLLMRequestPayload       `json:"llm_requests"`
+		ModelRequests           []promptTraceLLMRequestPayload       `json:"modelRequests"`
+		ModelRequestsSnake      []promptTraceLLMRequestPayload       `json:"model_requests"`
 	}
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
@@ -321,6 +409,9 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 	item.LLMRequestCount, item.Usage, item.AverageDurationMs = promptTraceLLMStats(payload.Usage, promptTraceFirstDuration(payload.DurationMs, payload.DurationMSSnake, payload.LatencyMs, payload.LatencyMSSnake, payload.ElapsedMs, payload.ElapsedMSSnake), payload.LLMRequests, payload.LLMRequestsSnake, payload.ModelRequests, payload.ModelRequestsSnake)
 	item.UserPromptPreview = promptTraceUserPromptPreview(payload.ModelInput)
 	item.ToolSurface = promptTraceToolSurfaceSummary(payload.ToolSurfaceTrace)
+	item.Checkpoints = promptTraceCheckpointSummaries(payload.Checkpoints)
+	item.WebLearnEvidence = promptTraceWebLearnEvidence(payload.WebLearnEvidence)
+	item.EnvironmentContext = promptTraceEnvironmentContextSummary(payload.EnvironmentContext, payload.EnvironmentContextSnake, payload.Metadata)
 	item.PromptFingerprint = cleanPromptTraceFingerprint(payload.PromptFingerprint)
 	item.Metadata = cleanPromptTraceFingerprint(payload.Metadata)
 
@@ -332,6 +423,129 @@ func readPromptTraceItem(root, jsonPath string) (PromptTraceItem, error) {
 		item.DiffPath = promptTraceRelativePath(root, base+".diff.md")
 	}
 	return item, nil
+}
+
+func promptTraceCheckpointSummaries(in []PromptTraceCheckpointSummary) []PromptTraceCheckpointSummary {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]PromptTraceCheckpointSummary, 0, len(in))
+	for _, checkpoint := range in {
+		checkpoint.ID = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.ID))
+		checkpoint.Kind = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.Kind))
+		checkpoint.StepID = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.StepID))
+		checkpoint.TurnID = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.TurnID))
+		checkpoint.ApprovalState = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.ApprovalState))
+		checkpoint.ToolSurfaceSummary = strings.TrimSpace(diagnostics.RedactSensitiveText(checkpoint.ToolSurfaceSummary))
+		checkpoint.TargetRefs = redactPromptTraceStringSlice(checkpoint.TargetRefs)
+		checkpoint.EvidenceRefs = redactPromptTraceStringSlice(checkpoint.EvidenceRefs)
+		if checkpoint.ID == "" {
+			continue
+		}
+		out = append(out, checkpoint)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceWebLearnEvidence(in []WebLearnEvidence) []WebLearnEvidence {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]WebLearnEvidence, 0, len(in))
+	for _, ev := range in {
+		ev.ID = diagnostics.RedactSensitiveText(ev.ID)
+		ev.Query = diagnostics.RedactSensitiveText(ev.Query)
+		ev.SourceURL = diagnostics.RedactSensitiveText(ev.SourceURL)
+		ev.SourceTitle = diagnostics.RedactSensitiveText(ev.SourceTitle)
+		ev.SourceKind = diagnostics.RedactSensitiveText(ev.SourceKind)
+		ev.Product = diagnostics.RedactSensitiveText(ev.Product)
+		ev.Version = diagnostics.RedactSensitiveText(ev.Version)
+		ev.RelevantExcerpt = diagnostics.RedactSensitiveText(ev.RelevantExcerpt)
+		ev.Applicability = diagnostics.RedactSensitiveText(ev.Applicability)
+		ev.Confidence = diagnostics.RedactSensitiveText(ev.Confidence)
+		ev = NormalizeWebLearnEvidence(ev)
+		if ev.ID == "" && ev.SourceURL == "" && ev.RelevantExcerpt == "" {
+			continue
+		}
+		out = append(out, ev)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceEnvironmentContextSummary(primary PromptTraceEnvironmentContextSummary, snake PromptTraceEnvironmentContextSummary, metadata map[string]string) *PromptTraceEnvironmentContextSummary {
+	targetRefs := promptTraceEnvironmentTargetRefs(
+		primary.TargetRefs,
+		snake.TargetRefs,
+		promptTraceSplitMetadataList(metadata["aiops.target.refs"]),
+		promptTraceSplitMetadataList(metadata["aiops.tool.targetRefs"]),
+	)
+	compactContext := strings.TrimSpace(diagnostics.RedactSensitiveText(firstPromptTraceNonEmpty(
+		primary.CompactContext,
+		snake.CompactContext,
+		metadata["aiops.env.compactContext"],
+		metadata["aiops.env.context"],
+	)))
+	readOnlyReason := strings.TrimSpace(diagnostics.RedactSensitiveText(firstPromptTraceNonEmpty(
+		primary.ReadOnlyReason,
+		snake.ReadOnlyReason,
+		metadata["aiops.env.readOnlyReason"],
+	)))
+	hasConflict := primary.HasConflict ||
+		snake.HasConflict ||
+		readOnlyReason != "" ||
+		strings.Contains(strings.ToLower(compactContext), "conflictfacts") ||
+		strings.Contains(strings.ToLower(compactContext), "target_conflict")
+	if len(targetRefs) == 0 && compactContext == "" && readOnlyReason == "" && !hasConflict {
+		return nil
+	}
+	return &PromptTraceEnvironmentContextSummary{
+		TargetRefs:     targetRefs,
+		CompactContext: compactContext,
+		ReadOnlyReason: readOnlyReason,
+		HasConflict:    hasConflict,
+	}
+}
+
+func promptTraceEnvironmentTargetRefs(groups ...[]string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0)
+	for _, group := range groups {
+		for _, value := range redactPromptTraceStringSlice(group) {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceSplitMetadataList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
 }
 
 var promptTraceSecretPattern = regexp.MustCompile(`(?i)\b(api[_\s-]*key|token|secret|password|cookie|authorization)\s*[:=]\s*["']?[^"\s,;}\]]+`)
@@ -359,6 +573,7 @@ func promptTraceRedactPreview(value string) string {
 }
 
 func promptTraceToolSurfaceSummary(in promptTraceToolSurfacePayload) *PromptTraceToolSurfaceSummary {
+	toolSearches := promptTraceToolSearchSummaries(in.ToolSearchEvents)
 	summary := &PromptTraceToolSurfaceSummary{
 		InitialToolCount:     len(in.InitialTools),
 		BaseRegistryCount:    in.BaseRegistryCount,
@@ -368,14 +583,90 @@ func promptTraceToolSurfaceSummary(in promptTraceToolSurfacePayload) *PromptTrac
 		FilteredToolCount:    len(in.FilteredTools),
 		ToolSearchEventCount: len(in.ToolSearchEvents),
 		SelectedToolCount:    len(in.SelectedTools),
-		RejectedToolCount:    len(in.RejectedToolReasons),
+		RejectedToolCount:    len(in.RejectedToolReasons) + promptTraceToolSearchRejectedCount(toolSearches),
 		MCPHealth:            redactPromptTraceStringMap(in.MCPHealth),
 		FilteredReasons:      promptTraceFilteredReasons(in.FilteredTools),
+		ToolSearches:         toolSearches,
 	}
 	if promptTraceToolSurfaceSummaryEmpty(summary) {
 		return nil
 	}
 	return summary
+}
+
+func promptTraceToolSearchSummaries(events []promptTraceToolSearchEvent) []PromptTraceToolSearchSummary {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]PromptTraceToolSearchSummary, 0, len(events))
+	for _, event := range events {
+		summary := PromptTraceToolSearchSummary{
+			Mode:                strings.TrimSpace(diagnostics.RedactSensitiveText(event.Mode)),
+			Query:               strings.TrimSpace(diagnostics.RedactSensitiveText(event.Query)),
+			Ranker:              strings.TrimSpace(diagnostics.RedactSensitiveText(event.Ranker)),
+			Intent:              strings.TrimSpace(diagnostics.RedactSensitiveText(firstPromptTraceNonEmpty(event.Intent, event.Request.Intent))),
+			TargetRefs:          redactPromptTraceStringSlice(event.Request.TargetRefs),
+			RequiredCaps:        redactPromptTraceStringSlice(event.Request.RequiredCaps),
+			ForbiddenCaps:       redactPromptTraceStringSlice(event.Request.ForbiddenCaps),
+			RiskLevel:           strings.TrimSpace(diagnostics.RedactSensitiveText(event.Request.RiskLevel)),
+			EnvironmentFacts:    redactPromptTraceStringSlice(event.Request.EnvironmentFacts),
+			TargetCompatibility: strings.TrimSpace(diagnostics.RedactSensitiveText(event.TargetCompatibility)),
+			RiskDecision:        strings.TrimSpace(diagnostics.RedactSensitiveText(event.RiskDecision)),
+			MatchReasons:        redactPromptTraceStringSlice(event.MatchReasons),
+			MatchCount:          event.MatchCount,
+			RejectedCount:       event.RejectedCount,
+			Matches:             redactPromptTraceStringSlice(event.Matches),
+			MCPHealth:           redactPromptTraceStringMap(firstPromptTraceStringMap(event.MCPHealth, event.Request.MCPHealth)),
+			RejectedReasons:     promptTraceToolSearchRejectedSummaries(event.RejectedReasons),
+		}
+		if summary.RejectedCount == 0 {
+			summary.RejectedCount = len(summary.RejectedReasons)
+		}
+		if summary.Mode == "" && summary.Query == "" && summary.Ranker == "" && summary.Intent == "" && len(summary.TargetRefs) == 0 && summary.MatchCount == 0 && summary.RejectedCount == 0 {
+			continue
+		}
+		out = append(out, summary)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceToolSearchRejectedSummaries(reasons []PromptTraceToolSearchRejectedSummary) []PromptTraceToolSearchRejectedSummary {
+	if len(reasons) == 0 {
+		return nil
+	}
+	out := make([]PromptTraceToolSearchRejectedSummary, 0, len(reasons))
+	for _, reason := range reasons {
+		reason.ToolName = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.ToolName))
+		reason.Reason = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.Reason))
+		reason.Status = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.Status))
+		reason.Source = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.Source))
+		reason.MCPServerID = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.MCPServerID))
+		reason.HealthStatus = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.HealthStatus))
+		reason.FilteredReason = strings.TrimSpace(diagnostics.RedactSensitiveText(reason.FilteredReason))
+		if reason.ToolName == "" && reason.Reason == "" && reason.FilteredReason == "" {
+			continue
+		}
+		out = append(out, reason)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func promptTraceToolSearchRejectedCount(searches []PromptTraceToolSearchSummary) int {
+	total := 0
+	for _, search := range searches {
+		if search.RejectedCount > 0 {
+			total += search.RejectedCount
+			continue
+		}
+		total += len(search.RejectedReasons)
+	}
+	return total
 }
 
 func promptTraceFilteredReasons(filtered []promptTraceFilteredTool) map[string]string {
@@ -416,6 +707,33 @@ func redactPromptTraceStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+func firstPromptTraceStringMap(values ...map[string]string) map[string]string {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
+		}
+	}
+	return nil
+}
+
+func redactPromptTraceStringSlice(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		value = strings.TrimSpace(diagnostics.RedactSensitiveText(value))
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func promptTraceToolSurfaceSummaryEmpty(summary *PromptTraceToolSurfaceSummary) bool {
 	return summary == nil ||
 		summary.InitialToolCount == 0 &&
@@ -428,7 +746,8 @@ func promptTraceToolSurfaceSummaryEmpty(summary *PromptTraceToolSurfaceSummary) 
 			summary.SelectedToolCount == 0 &&
 			summary.RejectedToolCount == 0 &&
 			len(summary.MCPHealth) == 0 &&
-			len(summary.FilteredReasons) == 0
+			len(summary.FilteredReasons) == 0 &&
+			len(summary.ToolSearches) == 0
 }
 
 func promptTracePreviewText(value string, maxRunes int) string {

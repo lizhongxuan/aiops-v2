@@ -94,6 +94,9 @@ type transportCommandMCPServiceStub struct {
 }
 
 type transportCommandHostOpsServiceStub struct {
+	getMissionID string
+	getView      HostOperationView
+
 	acceptedMissionID string
 	acceptedPlanID    string
 
@@ -110,8 +113,9 @@ func (s *transportCommandHostOpsServiceStub) CreateMission(context.Context, Host
 	return HostOperationView{}, nil
 }
 
-func (s *transportCommandHostOpsServiceStub) GetMission(context.Context, string) (HostOperationView, error) {
-	return HostOperationView{}, nil
+func (s *transportCommandHostOpsServiceStub) GetMission(_ context.Context, missionID string) (HostOperationView, error) {
+	s.getMissionID = missionID
+	return s.getView, nil
 }
 
 func (s *transportCommandHostOpsServiceStub) AcceptPlan(_ context.Context, missionID, planID string) (HostOperationView, error) {
@@ -143,6 +147,14 @@ func (s *transportCommandHostOpsServiceStub) ChildTranscript(context.Context, st
 
 func (s *transportCommandMCPServiceStub) List(context.Context) (MCPServersPayload, error) {
 	return MCPServersPayload{}, nil
+}
+
+func (s *transportCommandMCPServiceStub) Health(context.Context) (MCPHealthPayload, error) {
+	return MCPHealthPayload{}, nil
+}
+
+func (s *transportCommandMCPServiceStub) HealthOne(context.Context, string) (MCPHealthView, error) {
+	return MCPHealthView{}, nil
 }
 
 func (s *transportCommandMCPServiceStub) Create(context.Context, MCPServerUpsert) (MCPServersPayload, error) {
@@ -286,6 +298,219 @@ func TestTransportCommandsAddMessageCreatesMultiHostMissionRoute(t *testing.T) {
 	}
 	if len(mission.MentionedHosts) != 2 {
 		t.Fatalf("mentioned hosts = %+v, want 2", mission.MentionedHosts)
+	}
+}
+
+func TestTransportCommandsAddMessageDoesNotCreateHostOpsPlaceholderForSingleHostBoundChat(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@remote-120-77-239-90 只读检查 hostname 和系统版本"},
+			Metadata: map[string]string{
+				"aiops.hostops.mentions": `[{"raw":"@remote-120-77-239-90","hostId":"remote-120-77-239-90","address":"120.77.239.90","displayName":"remote-120-77-239-90","source":"inventory","resolved":true}]`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if chat.sendCmd.HostID != "remote-120-77-239-90" {
+		t.Fatalf("SendMessage HostID = %q, want remote-120-77-239-90", chat.sendCmd.HostID)
+	}
+	if chat.sendCmd.Metadata["aiops.route.mode"] != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", chat.sendCmd.Metadata["aiops.route.mode"], chat.sendCmd.Metadata)
+	}
+	if nextState.ActiveHostMissionID != "" || len(nextState.HostMissions) != 0 {
+		t.Fatalf("host mission placeholder = %q/%#v, want none for single host-bound chat", nextState.ActiveHostMissionID, nextState.HostMissions)
+	}
+	if nextState.Status != AiopsTransportStatusWorking {
+		t.Fatalf("state status = %q, want working for real AI Chat turn", nextState.Status)
+	}
+	if !nextState.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("activeTurns[turn-1] = false, want true for real AI Chat turn")
+	}
+}
+
+func TestTransportCommandsAddMessageMergesHostOpsMissionView(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-1", Status: "accepted"},
+	}
+	hostOps := &transportCommandHostOpsServiceStub{
+		getView: HostOperationView{
+			ID:           "hostops:turn-1",
+			UserTurnID:   "turn-1",
+			Status:       "waiting_plan_acceptance",
+			PlanRequired: true,
+			MentionedHosts: []HostMentionView{
+				{Raw: "@pg-a", HostID: "host-a", DisplayName: "@pg-a", Source: "inventory", Resolved: true},
+				{Raw: "@pg-b", HostID: "host-b", DisplayName: "@pg-b", Source: "inventory", Resolved: true},
+			},
+			Plan: &HostPlanView{ID: "plan-1", Steps: []HostPlanStepView{
+				{ID: "step-a", Index: 1, Title: "Run assigned host operation", Status: "pending", HostIDs: []string{"host-a"}},
+				{ID: "step-b", Index: 2, Title: "Run assigned host operation", Status: "pending", HostIDs: []string{"host-b"}},
+			}},
+		},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil).WithHostOpsService(hostOps)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@pg-a 和 @pg-b 执行通用运维检查"},
+			Metadata: map[string]string{
+				"aiops.hostops.mentions": `[{"raw":"@pg-a","hostId":"host-a","displayName":"@pg-a","source":"inventory","resolved":true},{"raw":"@pg-b","hostId":"host-b","displayName":"@pg-b","source":"inventory","resolved":true}]`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if hostOps.getMissionID != "hostops:turn-1" {
+		t.Fatalf("GetMission missionID = %q, want hostops:turn-1", hostOps.getMissionID)
+	}
+	mission := nextState.HostMissions["hostops:turn-1"]
+	if len(mission.PlanSteps) != 2 {
+		t.Fatalf("planSteps = %#v, want 2 steps from HostOpsService view", mission.PlanSteps)
+	}
+	if len(mission.MentionedHosts) != 2 || mission.MentionedHosts[0].HostID != "host-a" {
+		t.Fatalf("mentionedHosts = %#v, want service-resolved hosts", mission.MentionedHosts)
+	}
+	if nextState.Status != AiopsTransportStatusWorking {
+		t.Fatalf("state status = %q, want working while runtime owns host-ops turn", nextState.Status)
+	}
+	if !nextState.RuntimeLiveness.ActiveTurns["turn-1"] {
+		t.Fatalf("activeTurns[turn-1] = false, want true while runtime owns host-ops turn")
+	}
+	if nextState.Turns["turn-1"].Status != AiopsTransportTurnStatusSubmitted {
+		t.Fatalf("turn status = %q, want submitted until runtime projection completes it", nextState.Turns["turn-1"].Status)
+	}
+}
+
+func TestTransportCommandsAddMessageDoesNotRouteUnresolvedToolMentionToHostOps(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-coroot", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@coroot 分析环境A的A服务为什么异常"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.routeKind"] != "" {
+		t.Fatalf("routeKind metadata = %q, want empty for @coroot", chat.sendCmd.Metadata["aiops.hostops.routeKind"])
+	}
+	if nextState.ActiveHostMissionID != "" || len(nextState.HostMissions) != 0 {
+		t.Fatalf("host missions = %#v active=%q, want none", nextState.HostMissions, nextState.ActiveHostMissionID)
+	}
+}
+
+func TestTransportCommandsAddMessageInjectsChatRuntimeRouteMetadata(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-route", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "pg_auto_failover timeline 为什么会比主库高？"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if got := chat.sendCmd.Metadata["aiops.route.mode"]; got != string(ChatRouteAdvisory) {
+		t.Fatalf("aiops.route.mode = %q, want %q", got, ChatRouteAdvisory)
+	}
+	if got := chat.sendCmd.Metadata["aiops.tool.corootRCAAllowed"]; got != "false" {
+		t.Fatalf("aiops.tool.corootRCAAllowed = %q, want false", got)
+	}
+	if got := chat.sendCmd.Metadata["aiops.toolPack.coroot_rca.allowed"]; got != "false" {
+		t.Fatalf("coroot_rca pack gate = %q, want false", got)
+	}
+	if !metadataListContainsValueForTest(chat.sendCmd.Metadata["enableToolPack"], "public_web") {
+		t.Fatalf("enableToolPack = %q, want public_web for operational mechanism diagnosis", chat.sendCmd.Metadata["enableToolPack"])
+	}
+	projected := transportProjectionText(nextState)
+	for _, forbidden := range []string{
+		"已进入咨询分析",
+		"不会执行主机命令",
+		"优先检索官方资料",
+		"遇到不熟悉的中间件",
+		"Coroot",
+		"@Coroot",
+	} {
+		if strings.Contains(projected, forbidden) {
+			t.Fatalf("projected text = %q, should not expose route summary %q", projected, forbidden)
+		}
+	}
+}
+
+func TestTransportCommandsAddMessageAllowsCorootOnlyWithExplicitMention(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-coroot-rca", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	_, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "@Coroot 分析 checkout 服务异常"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	if got := chat.sendCmd.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("aiops.tool.corootRCAAllowed = %q, want true", got)
+	}
+	if got := chat.sendCmd.Metadata["aiops.toolPack.coroot_rca.allowed"]; got != "true" {
+		t.Fatalf("coroot_rca pack gate = %q, want true", got)
+	}
+}
+
+func TestTransportCommandsAddMessageDoesNotPreRouteWorkflowWritingToHostOps(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-1", TurnID: "turn-workflow", Status: "completed", Output: "Workflow 计划已生成"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-1")
+
+	nextState, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			Message: TransportUserMessage{Text: "帮我写一个workflow，让主机A=@pg-a和主机B=@pg-b通过主机C=@pg-mon形成PG集群"},
+			Metadata: map[string]string{
+				"aiops.hostops.mentions": `[{"raw":"@pg-a","hostId":"host-a","displayName":"@pg-a","source":"inventory","resolved":true},{"raw":"@pg-b","hostId":"host-b","displayName":"@pg-b","source":"inventory","resolved":true},{"raw":"@pg-mon","hostId":"host-c","displayName":"@pg-mon","source":"inventory","resolved":true}]`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.Metadata["aiops.hostops.routeKind"] != "" {
+		t.Fatalf("routeKind metadata = %q, want empty for workflow writing request", chat.sendCmd.Metadata["aiops.hostops.routeKind"])
+	}
+	if nextState.ActiveHostMissionID != "" || len(nextState.HostMissions) != 0 {
+		t.Fatalf("host missions = %#v active=%q, want none for workflow writing request", nextState.HostMissions, nextState.ActiveHostMissionID)
 	}
 }
 

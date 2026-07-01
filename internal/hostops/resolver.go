@@ -60,6 +60,12 @@ func (r *Resolver) Resolve(ctx context.Context, mentions []HostMention) ([]HostM
 		keyCandidates := mentionResolutionKeys(resolved[i])
 		host, ok := firstHostMatch(index, keyCandidates)
 		if !ok {
+			if resolved[i].Source == HostMentionSourceLocalAlias {
+				host = HostRecordView{ID: "server-local", Hostname: "localhost", Address: "127.0.0.1", DisplayName: "Local"}
+				ok = true
+			}
+		}
+		if !ok {
 			errs = append(errs, MentionResolutionError{Raw: resolved[i].Raw, Reason: "no matching inventory host"})
 			continue
 		}
@@ -90,12 +96,18 @@ func addHostIndex(index map[string]HostRecordView, prefix, value string, host Ho
 		return
 	}
 	index[prefix+":"+value] = host
+	if trimmed := strings.TrimPrefix(value, "@"); trimmed != "" && trimmed != value {
+		index[prefix+":"+trimmed] = host
+	}
 }
 
 func mentionResolutionKeys(mention HostMention) []string {
 	keys := make([]string, 0, 4)
 	if mention.HostID != "" {
 		keys = append(keys, "id:"+strings.ToLower(strings.TrimSpace(mention.HostID)))
+	}
+	if mention.Source == HostMentionSourceLocalAlias {
+		keys = append(keys, "id:server-local", "addr:127.0.0.1", "name:localhost", "name:local")
 	}
 	value := strings.TrimPrefix(strings.TrimSpace(mention.Raw), "@")
 	if mention.Address != "" {

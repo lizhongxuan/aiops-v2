@@ -10,10 +10,13 @@ import { ComplexPageFrame, EmptyPanel, MetricStrip, RiskBadge } from "@/pages/co
 import {
   compactText,
   deleteMcpServer,
+  fetchMcpRuntimeHealth,
   fetchMcpServers,
+  refreshMcpRuntimeHealth,
   refreshMcpServers,
   runMcpServerAction,
   saveMcpServer,
+  type McpHealthRecord,
   type McpServerRecord,
 } from "@/pages/complexPagesApi";
 import { ConfirmButton, Field, LoadingState, SelectField, StatusAlert } from "@/pages/settingsComponents";
@@ -54,6 +57,40 @@ function normalizeServer(item: Partial<McpServerRecord> = {}): McpServerRecord {
     toolCount: Number(item.toolCount || 0),
     resourceCount: Number(item.resourceCount || 0),
   };
+}
+
+function normalizeHealth(item: Partial<McpHealthRecord> = {}): McpHealthRecord {
+  return {
+    serverId: compactText(item.serverId),
+    displayName: compactText(item.displayName),
+    status: compactText(item.status) || "unknown",
+    lastCheckedAt: compactText(item.lastCheckedAt),
+    lastError: compactText(item.lastError),
+    availableToolCount: Number(item.availableToolCount || 0),
+    disabledReason: compactText(item.disabledReason),
+    retryAfterSeconds: Number(item.retryAfterSeconds || 0),
+  };
+}
+
+function healthImpact(health: McpHealthRecord | null) {
+  if (!health) return "等待健康检查";
+  switch (health.status) {
+    case "healthy":
+      return "ToolSearch 可选择该 MCP 工具";
+    case "degraded":
+      return "ToolSearch 会降级处理";
+    case "unhealthy":
+      return health.disabledReason ? "工具被禁用" : "ToolSearch 会拒绝选择";
+    default:
+      return "健康状态未知";
+  }
+}
+
+function formatRuntimeTime(value = "") {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 function uniqueName(items: McpServerRecord[]) {
@@ -105,6 +142,7 @@ function payloadFromDraft(draft: McpDraft): McpServerRecord {
 
 export function McpServersPage() {
   const [items, setItems] = useState<McpServerRecord[]>([]);
+  const [healthItems, setHealthItems] = useState<McpHealthRecord[]>([]);
   const [configPath, setConfigPath] = useState("");
   const [selectedName, setSelectedName] = useState("");
   const [query, setQuery] = useState("");
@@ -120,6 +158,13 @@ export function McpServersPage() {
     return items.filter((item) => [item.name, item.transport, item.status, item.url, item.command].map((value) => compactText(value).toLowerCase()).some((value) => value.includes(keyword)));
   }, [items, query]);
   const selected = items.find((item) => item.name === selectedName) || null;
+  const healthByServer = useMemo(() => {
+    const next = new Map<string, McpHealthRecord>();
+    for (const item of healthItems) {
+      if (item.serverId) next.set(item.serverId, item);
+    }
+    return next;
+  }, [healthItems]);
 
   function applyItems(nextItems: McpServerRecord[], preferred = selectedName) {
     const normalized = nextItems.map(normalizeServer);
@@ -129,16 +174,25 @@ export function McpServersPage() {
     setDraft(draftFromItem(next, normalized));
   }
 
+  function applyHealth(nextItems: McpHealthRecord[]) {
+    setHealthItems(nextItems.map(normalizeHealth).filter((item) => item.serverId));
+  }
+
   async function load() {
     setLoading(true);
     try {
-      const payload = await fetchMcpServers();
+      const [payload, health] = await Promise.all([
+        fetchMcpServers(),
+        fetchMcpRuntimeHealth(),
+      ]);
       setConfigPath(compactText(payload.configPath));
       applyItems(payload.items || []);
+      applyHealth(health.items || []);
       setMessage(null);
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "加载 MCP 列表失败" });
       applyItems([]);
+      applyHealth([]);
     } finally {
       setLoading(false);
     }
@@ -196,9 +250,32 @@ export function McpServersPage() {
     try {
       const result = nextAction === "refresh-all" ? await refreshMcpServers() : await runMcpServerAction(name, nextAction);
       applyItems(result.items || [], name);
+      try {
+        const health = await fetchMcpRuntimeHealth();
+        applyHealth(health.items || []);
+      } catch {
+        // Keep the server action result visible even if health refresh fails.
+      }
       setMessage({ type: "success", text: "MCP action 已执行" });
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "MCP action 失败" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refreshRuntimeHealth(serverId: string) {
+    if (!serverId) return;
+    setSaving(true);
+    try {
+      const health = normalizeHealth(await refreshMcpRuntimeHealth(serverId));
+      setHealthItems((prev) => {
+        const without = prev.filter((item) => item.serverId !== health.serverId);
+        return [...without, health].sort((a, b) => a.serverId.localeCompare(b.serverId));
+      });
+      setMessage({ type: "success", text: "MCP runtime health 已刷新" });
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "刷新 MCP runtime health 失败" });
     } finally {
       setSaving(false);
     }
@@ -231,6 +308,7 @@ export function McpServersPage() {
         items={[
           { label: "Servers", value: items.length },
           { label: "Connected", value: items.filter((item) => item.status === "connected").length, tone: "ok" },
+          { label: "Healthy", value: healthItems.filter((item) => item.status === "healthy").length, tone: "ok" },
           { label: "Disabled", value: items.filter((item) => item.disabled).length, tone: "warn" },
           { label: "Config", value: configPath || "mcp-servers.json" },
         ]}
@@ -250,38 +328,52 @@ export function McpServersPage() {
             </label>
             {filteredItems.length ? (
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[860px] text-left text-sm">
+                <table className="w-full min-w-[1040px] text-left text-sm">
                   <thead className="border-b text-xs uppercase tracking-normal text-slate-500">
                     <tr>
                       <th className="py-2 pr-3">Server</th>
                       <th className="py-2 pr-3">Transport</th>
                       <th className="py-2 pr-3">Status</th>
+                      <th className="py-2 pr-3">Runtime Health</th>
+                      <th className="py-2 pr-3">Impact</th>
                       <th className="py-2 pr-3">Tools / Resources</th>
                       <th className="py-2 text-right">操作</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {filteredItems.map((item) => (
-                      <tr key={item.name}>
-                        <td className="py-3 pr-3">
-                          <div className="font-medium">{item.name}</div>
-                          <div className="text-xs text-slate-500">{item.url || item.command || item.error || "-"}</div>
-                        </td>
-                        <td className="py-3 pr-3">{item.transport}</td>
-                        <td className="py-3 pr-3"><RiskBadge value={item.disabled ? "disabled" : item.status} /></td>
-                        <td className="py-3 pr-3">{item.toolCount || 0} / {item.resourceCount || 0}</td>
-                        <td className="py-3">
-                          <div className="flex justify-end gap-2">
-                            <Button variant="outline" onClick={() => void action(item.name, item.status === "connected" ? "close" : "open")} disabled={saving}>
-                              <Zap />
-                              {item.status === "connected" ? "关闭" : "打开"}
-                            </Button>
-                            <Button variant="outline" onClick={() => void action(item.name, "refresh")} disabled={saving}>刷新</Button>
-                            <Button variant="outline" onClick={() => openEdit(item)}>编辑</Button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredItems.map((item) => {
+                      const health = healthByServer.get(item.name) || null;
+                      return (
+                        <tr key={item.name}>
+                          <td className="py-3 pr-3">
+                            <div className="font-medium">{item.name}</div>
+                            <div className="text-xs text-slate-500">{item.url || item.command || item.error || "-"}</div>
+                          </td>
+                          <td className="py-3 pr-3">{item.transport}</td>
+                          <td className="py-3 pr-3"><RiskBadge value={item.disabled ? "disabled" : item.status} /></td>
+                          <td className="py-3 pr-3">
+                            <div className="flex items-center gap-2">
+                              <RiskBadge value={health?.status || "unknown"} />
+                              <span className="text-xs text-slate-500">{formatRuntimeTime(health?.lastCheckedAt)}</span>
+                            </div>
+                            {health?.lastError ? <div className="mt-1 max-w-64 truncate text-xs text-rose-600">{health.lastError}</div> : null}
+                          </td>
+                          <td className="py-3 pr-3 text-xs text-slate-600">{healthImpact(health)}</td>
+                          <td className="py-3 pr-3">{health?.availableToolCount ?? item.toolCount ?? 0} / {item.resourceCount || 0}</td>
+                          <td className="py-3">
+                            <div className="flex justify-end gap-2">
+                              <Button variant="outline" onClick={() => void action(item.name, item.status === "connected" ? "close" : "open")} disabled={saving}>
+                                <Zap />
+                                {item.status === "connected" ? "关闭" : "打开"}
+                              </Button>
+                              <Button variant="outline" onClick={() => void action(item.name, "refresh")} disabled={saving}>刷新</Button>
+                              <Button variant="outline" onClick={() => void refreshRuntimeHealth(item.name)} disabled={saving}>健康</Button>
+                              <Button variant="outline" onClick={() => openEdit(item)}>编辑</Button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

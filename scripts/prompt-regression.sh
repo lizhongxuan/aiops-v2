@@ -18,9 +18,9 @@ failed_from=""
 worse_from=""
 history_path=""
 llm_suggestions=0
-llm_base_url="${AIOPS_LAB_LLM_BASE_URL:-${AIOPS_LLM_BASE_URL:-}}"
-llm_api_key="${AIOPS_LAB_LLM_API_KEY:-${AIOPS_LLM_API_KEY:-}}"
-llm_model="${AIOPS_LAB_LLM_MODEL:-${AIOPS_LLM_MODEL:-}}"
+llm_base_url="${AIOPS_LAB_LLM_BASE_URL:-}"
+llm_api_key="${AIOPS_LAB_LLM_API_KEY:-}"
+llm_model="${AIOPS_LAB_LLM_MODEL:-}"
 case_ids=()
 case_id_count=0
 tmp_root=""
@@ -145,6 +145,11 @@ fi
 eval_out="${out}/eval"
 mkdir -p "$out"
 
+bash scripts/check-no-core-string-semantics.sh
+bash scripts/check-aiops-agent-runtime-context-single-path.sh
+go test ./internal/promptcompiler -run 'TestPromptBaselineBudgetByProfile|Test.*NoCrossProfile|TestRuntimePolicyOnlyContainsDynamicState|TestToolSurfaceSummaryBudget' -count=1
+go test ./internal/eval -run TestAgentRuntimeContextOptimizationTrace -count=1
+
 eval_args=(
   go run ./cmd/agent-eval
   -agent "$agent"
@@ -193,13 +198,13 @@ fi
 if [ "$llm_suggestions" -eq 1 ]; then
   diag_args+=(-llm-suggestions)
   if [ -n "$llm_base_url" ]; then
-    export AIOPS_LLM_BASE_URL="$llm_base_url"
+    diag_args+=(-llm-base-url "$llm_base_url")
   fi
   if [ -n "$llm_api_key" ]; then
-    export AIOPS_LLM_API_KEY="$llm_api_key"
+    diag_args+=(-llm-api-key "$llm_api_key")
   fi
   if [ -n "$llm_model" ]; then
-    export AIOPS_LLM_MODEL="$llm_model"
+    diag_args+=(-llm-model "$llm_model")
   fi
 fi
 

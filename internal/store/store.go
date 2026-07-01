@@ -52,6 +52,10 @@ type Store interface {
 	GetWebSettings() (*WebSettings, error)
 	SaveWebSettings(settings *WebSettings) error
 
+	// Runtime settings
+	GetRuntimeSettings() (*RuntimeSettings, error)
+	SaveRuntimeSettings(settings *RuntimeSettings) error
+
 	// Coroot connection config
 	GetCorootConfig() (*CorootConfig, error)
 	SaveCorootConfig(config *CorootConfig) error
@@ -138,16 +142,22 @@ type UICard struct {
 
 // LLMConfig represents the LLM provider configuration persisted in llm-config.json.
 type LLMConfig struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	APIKey           string `json:"apiKey"`
-	BaseURL          string `json:"baseURL"`
-	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
-	ReasoningEffort  string `json:"reasoningEffort,omitempty"`
-	FallbackProvider string `json:"fallbackProvider"`
-	FallbackModel    string `json:"fallbackModel"`
-	FallbackAPIKey   string `json:"fallbackApiKey"`
-	CompactModel     string `json:"compactModel"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model"`
+	APIKey           string   `json:"apiKey"`
+	BaseURL          string   `json:"baseURL"`
+	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
+	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	RequestTimeoutMs int      `json:"requestTimeoutMs,omitempty"`
+	Temperature      *float64 `json:"temperature,omitempty"`
+	TopP             *float64 `json:"topP,omitempty"`
+	ThinkingType     string   `json:"thinkingType,omitempty"`
+	ReasoningEffort  string   `json:"reasoningEffort,omitempty"`
+	ToolStream       bool     `json:"toolStream,omitempty"`
+	FallbackProvider string   `json:"fallbackProvider"`
+	FallbackModel    string   `json:"fallbackModel"`
+	FallbackAPIKey   string   `json:"fallbackApiKey"`
+	CompactModel     string   `json:"compactModel"`
 }
 
 // SettingModelOption represents one selectable model option for the web UI.
@@ -184,11 +194,19 @@ type HostRecord struct {
 	Kind                string            `json:"kind,omitempty"`
 	Address             string            `json:"address,omitempty"`
 	Transport           string            `json:"transport,omitempty"`
+	ConnectionMode      string            `json:"connectionMode,omitempty"`
 	Status              string            `json:"status,omitempty"`
+	AgentStatus         string            `json:"agentStatus,omitempty"`
+	SSHStatus           string            `json:"sshStatus,omitempty"`
+	RuntimeReachability string            `json:"runtimeReachability,omitempty"`
 	Executable          bool              `json:"executable,omitempty"`
 	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
 	OS                  string            `json:"os,omitempty"`
 	Arch                string            `json:"arch,omitempty"`
+	OSRelease           string            `json:"osRelease,omitempty"`
+	KernelVersion       string            `json:"kernelVersion,omitempty"`
+	CPUCores            int               `json:"cpuCores,omitempty"`
+	MemoryBytes         uint64            `json:"memoryBytes,omitempty"`
 	AgentVersion        string            `json:"agentVersion,omitempty"`
 	LastHeartbeat       string            `json:"lastHeartbeat,omitempty"`
 	Labels              map[string]string `json:"labels,omitempty"`
@@ -197,6 +215,7 @@ type HostRecord struct {
 	SSHPort             int               `json:"sshPort,omitempty"`
 	SSHCredentialRef    string            `json:"sshCredentialRef,omitempty"`
 	AgentURL            string            `json:"agentUrl,omitempty"`
+	AgentServerURL      string            `json:"agentServerUrl,omitempty"`
 	AgentTokenRef       string            `json:"agentTokenRef,omitempty"`
 	AgentTokenSecretRef string            `json:"agentTokenSecretRef,omitempty"`
 	InstallState        string            `json:"installState,omitempty"`
@@ -277,21 +296,22 @@ type AgentProfileRecord map[string]any
 
 // JSONFileStore implements Store with in-memory state and async JSON file persistence.
 type JSONFileStore struct {
-	mu        sync.RWMutex
-	dataDir   string
-	sessions  map[string]*runtimekernel.SessionState
-	tasks     map[string]*runtimekernel.WorkspaceTask
-	audits    []*runtimekernel.ApprovalRecord
-	uiCards   []UICard
-	llmCfg    *LLMConfig
-	webCfg    *WebSettings
-	corootCfg *CorootConfig
-	hosts     map[string]*HostRecord
-	mcpSrv    []MCPServerRecord
-	skillCat  []SkillCatalogEntry
-	agentMCP  []AgentMCPCatalogEntry
-	profiles  []AgentProfileRecord
-	spills    map[string]*tooling.ResultSpill
+	mu         sync.RWMutex
+	dataDir    string
+	sessions   map[string]*runtimekernel.SessionState
+	tasks      map[string]*runtimekernel.WorkspaceTask
+	audits     []*runtimekernel.ApprovalRecord
+	uiCards    []UICard
+	llmCfg     *LLMConfig
+	webCfg     *WebSettings
+	runtimeCfg *RuntimeSettings
+	corootCfg  *CorootConfig
+	hosts      map[string]*HostRecord
+	mcpSrv     []MCPServerRecord
+	skillCat   []SkillCatalogEntry
+	agentMCP   []AgentMCPCatalogEntry
+	profiles   []AgentProfileRecord
+	spills     map[string]*tooling.ResultSpill
 
 	opsManuals          map[string]opsmanual.OpsManual
 	opsManualCandidates map[string]opsmanual.ManualCandidate
@@ -572,6 +592,34 @@ func (s *JSONFileStore) SaveWebSettings(settings *WebSettings) error {
 	cp := cloneWebSettings(*settings)
 	s.webCfg = &cp
 	s.dirty["websettings"] = true
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Runtime settings
+// ---------------------------------------------------------------------------
+
+func (s *JSONFileStore) GetRuntimeSettings() (*RuntimeSettings, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.runtimeCfg == nil {
+		defaults := DefaultRuntimeSettings()
+		return &defaults, nil
+	}
+	cp := cloneRuntimeSettings(*s.runtimeCfg)
+	return &cp, nil
+}
+
+func (s *JSONFileStore) SaveRuntimeSettings(settings *RuntimeSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := cloneRuntimeSettings(*settings)
+	cp.UpdatedAt = time.Now().UTC()
+	s.runtimeCfg = &cp
+	s.dirty["runtimesettings"] = true
 	return nil
 }
 
@@ -1208,6 +1256,10 @@ func (s *JSONFileStore) writeDirty(dirtyKeys map[string]bool) error {
 			if err := s.writeJSON("web-settings.json", s.webCfg); err != nil {
 				return err
 			}
+		case key == "runtimesettings":
+			if err := s.writeJSON("runtime-settings.json", s.runtimeCfg); err != nil {
+				return err
+			}
 		case key == "corootconfig":
 			if err := s.writeJSON("coroot-config.json", s.corootCfg); err != nil {
 				return err
@@ -1405,6 +1457,16 @@ func (s *JSONFileStore) loadFromDisk() error {
 		var cfg WebSettings
 		if err := json.Unmarshal(raw, &cfg); err == nil {
 			s.webCfg = &cfg
+		}
+	}
+
+	// Load runtime settings
+	runtimeCfgPath := filepath.Join(s.dataDir, "runtime-settings.json")
+	if raw, err := os.ReadFile(runtimeCfgPath); err == nil {
+		var cfg RuntimeSettings
+		if err := json.Unmarshal(raw, &cfg); err == nil {
+			cp := cloneRuntimeSettings(cfg)
+			s.runtimeCfg = &cp
 		}
 	}
 

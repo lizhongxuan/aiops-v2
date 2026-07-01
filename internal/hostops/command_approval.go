@@ -238,6 +238,36 @@ func (c *CommandApprovalController) DecideGroup(ctx context.Context, groupID, de
 	return group, results, nil
 }
 
+func (c *CommandApprovalController) DecideGroupAsync(ctx context.Context, groupID, decision string) (CommandApprovalGroup, error) {
+	groupID = strings.TrimSpace(groupID)
+	if c == nil || c.store == nil || groupID == "" {
+		return CommandApprovalGroup{}, ErrCommandApprovalNotFound
+	}
+	items, err := c.store.List(ctx)
+	if err != nil {
+		return CommandApprovalGroup{}, err
+	}
+	targets := make([]CommandApproval, 0)
+	for _, item := range items {
+		if strings.TrimSpace(item.GroupID) != groupID || item.Status != CommandApprovalStatusPending {
+			continue
+		}
+		targets = append(targets, item)
+	}
+	if len(targets) == 0 {
+		return CommandApprovalGroup{}, ErrCommandApprovalNotFound
+	}
+	sort.SliceStable(targets, func(i, j int) bool {
+		return targets[i].ID < targets[j].ID
+	})
+	for _, item := range targets {
+		if _, err := c.DecideAsync(ctx, item.ID, decision); err != nil {
+			return CommandApprovalGroup{}, err
+		}
+	}
+	return c.GetGroup(ctx, groupID)
+}
+
 func (c *CommandApprovalController) GetGroup(ctx context.Context, groupID string) (CommandApprovalGroup, error) {
 	groupID = strings.TrimSpace(groupID)
 	if c == nil || c.store == nil || groupID == "" {
@@ -320,6 +350,55 @@ func (c *CommandApprovalController) Decide(ctx context.Context, approvalID, deci
 		return CommandApproval{}, HostCommandResult{}, err
 	}
 	c.appendApprovalTranscript(ctx, approval, "approved", "command approval approved")
+	return c.completeApprovedExecution(ctx, approval)
+}
+
+func (c *CommandApprovalController) DecideAsync(ctx context.Context, approvalID, decision string) (CommandApproval, error) {
+	if c == nil || c.store == nil {
+		return CommandApproval{}, ErrCommandApprovalNotFound
+	}
+	approval, err := c.store.Get(ctx, strings.TrimSpace(approvalID))
+	if err != nil {
+		return CommandApproval{}, err
+	}
+	decision = normalizeApprovalDecision(decision)
+	now := time.Now().UTC()
+	approval.Decision = decision
+	approval.DecidedAt = &now
+	if decision != "approved" && decision != "approved_for_session" {
+		observability.RecordOpsMetric(observability.OpsMetricCommandApproval, false)
+		approval.Status = CommandApprovalStatusDenied
+		if err := c.store.Save(ctx, approval); err != nil {
+			return CommandApproval{}, err
+		}
+		c.markDenied(ctx, approval)
+		c.appendApprovalTranscript(ctx, approval, "denied", "command approval denied")
+		updated, _ := c.store.Get(ctx, approval.ID)
+		return updated, nil
+	}
+	approval.Status = CommandApprovalStatusApproved
+	observability.RecordOpsMetric(observability.OpsMetricCommandApproval, true)
+	if err := c.store.Save(ctx, approval); err != nil {
+		return CommandApproval{}, err
+	}
+	c.markApprovedAccepted(ctx, approval)
+	c.appendApprovalTranscript(ctx, approval, "approved", "command approval approved")
+	updated, _ := c.store.Get(ctx, approval.ID)
+	go c.completeApprovedExecutionAsync(approval)
+	return updated, nil
+}
+
+func (c *CommandApprovalController) completeApprovedExecutionAsync(approval CommandApproval) {
+	if c == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	_, _, _ = c.completeApprovedExecution(context.Background(), approval)
+}
+
+func (c *CommandApprovalController) completeApprovedExecution(ctx context.Context, approval CommandApproval) (CommandApproval, HostCommandResult, error) {
 	result, err := c.executeApproved(ctx, approval)
 	if err != nil {
 		observability.RecordOpsMetric(observability.OpsMetricCommandExecution, false)
@@ -395,6 +474,25 @@ func (c *CommandApprovalController) markDenied(ctx context.Context, approval Com
 		child.Error = "command approval denied"
 		_ = c.missions.SaveChildAgent(ctx, child)
 	}
+}
+
+func (c *CommandApprovalController) markApprovedAccepted(ctx context.Context, approval CommandApproval) {
+	if c == nil || c.missions == nil {
+		return
+	}
+	child, err := c.missions.GetChildAgent(ctx, approval.ChildAgentID)
+	if err == nil {
+		child.Status = HostChildAgentStatusRunning
+		child.Error = ""
+		_ = c.missions.SaveChildAgent(ctx, child)
+	}
+	mission, err := c.missions.GetMission(ctx, approval.MissionID)
+	if err != nil {
+		return
+	}
+	mission.Status = HostMissionStatusRunning
+	mission.Plan = updatePlanStepForApproval(mission.Plan, approval.PlanStepID, PlanStepStatusRunning, true)
+	_ = c.missions.SaveMission(ctx, mission)
 }
 
 func (c *CommandApprovalController) markExecutionFailed(ctx context.Context, approval CommandApproval, errorText string) {
@@ -586,6 +684,10 @@ func commandApprovalGroupFromItems(groupID string, items []CommandApproval) Comm
 		switch item.Status {
 		case CommandApprovalStatusPending:
 			group.Status = CommandApprovalStatusPending
+		case CommandApprovalStatusApproved:
+			if group.Status != CommandApprovalStatusPending && group.Status != CommandApprovalStatusFailed && group.Status != CommandApprovalStatusDenied {
+				group.Status = CommandApprovalStatusApproved
+			}
 		case CommandApprovalStatusFailed:
 			if group.Status != CommandApprovalStatusPending {
 				group.Status = CommandApprovalStatusFailed

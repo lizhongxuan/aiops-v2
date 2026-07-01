@@ -1,3 +1,4 @@
+import { cn } from "@/lib/utils";
 import type {
   AiopsTransportChildAgent,
   AiopsTransportHostMission,
@@ -10,6 +11,7 @@ type HostAgentChecklistSectionProps = {
   mission: AiopsTransportHostMission;
   state: AiopsTransportState;
   defaultCollapsed?: boolean;
+  withDivider?: boolean;
   onOpenChildAgent?: (childAgentId: string) => void;
 };
 
@@ -17,6 +19,7 @@ export function HostAgentChecklistSection({
   mission,
   state,
   defaultCollapsed = false,
+  withDivider = true,
   onOpenChildAgent,
 }: HostAgentChecklistSectionProps) {
   const childAgents = mission.childAgentIds
@@ -28,7 +31,7 @@ export function HostAgentChecklistSection({
   }
 
   return (
-    <div className="border-t border-zinc-200">
+    <div className={cn(withDivider && "border-t border-zinc-200")}>
       <TaskChecklistCard
         title="主机 Agent"
         items={childAgents.map((childAgent, index) => ({

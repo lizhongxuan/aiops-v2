@@ -41,7 +41,12 @@ func (s *defaultIncidentService) Create(_ context.Context, cmd IncidentCreateCom
 }
 
 func (s *defaultIncidentService) Get(_ context.Context, id string) (IncidentView, bool) {
-	return s.domain.Get(id)
+	incident, ok := s.domain.Get(id)
+	if !ok {
+		return IncidentView{}, false
+	}
+	incident.Evidence = s.domain.Evidence(id)
+	return incident, true
 }
 
 func (s *defaultIncidentService) List(context.Context) ([]IncidentView, error) {

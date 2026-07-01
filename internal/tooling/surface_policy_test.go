@@ -170,7 +170,7 @@ func TestArgumentScopedApprovalToolRemainsCallable(t *testing.T) {
 	assertSurfaceDecisionForTest(t, snapshot, "synthetic.exec", true, SurfaceDispatchAllow, "argument_scoped_permission")
 }
 
-func TestExecCommandAlwaysRemainsModelCallable(t *testing.T) {
+func TestExecCommandRuntimeRegisteredCanBeHiddenBySurfacePolicy(t *testing.T) {
 	tools := []Tool{
 		&StaticTool{
 			Meta: ToolMetadata{
@@ -202,15 +202,13 @@ func TestExecCommandAlwaysRemainsModelCallable(t *testing.T) {
 		}},
 	})
 
-	if got := toolNamesForTest(filtered); !reflect.DeepEqual(got, []string{"exec_command", "synthetic.read"}) {
-		t.Fatalf("filtered tools = %#v, want exec_command callable plus synthetic.read", got)
+	if got := toolNamesForTest(filtered); !reflect.DeepEqual(got, []string{"synthetic.read"}) {
+		t.Fatalf("filtered tools = %#v, want exec_command hidden from model surface", got)
 	}
-	if hiddenReasonForTest(snapshot, "exec_command", "runtime_denied_for_test") ||
-		hiddenReasonForTest(snapshot, "exec_command", "skill_denied_tool") ||
-		hiddenReasonForTest(snapshot, "exec_command", "agent_role_read_only") {
-		t.Fatalf("hidden tools = %#v, exec_command should not be hidden", snapshot.HiddenTools)
+	if !hiddenReasonForTest(snapshot, "exec_command", "runtime_denied_for_test") {
+		t.Fatalf("hidden tools = %#v, want exec_command hidden by runtime decision", snapshot.HiddenTools)
 	}
-	assertSurfaceDecisionForTest(t, snapshot, "exec_command", true, SurfaceDispatchAllow, "always_model_callable")
+	assertSurfaceDecisionForTest(t, snapshot, "exec_command", false, SurfaceDispatchDeny, "runtime_denied_for_test")
 }
 
 func TestSkillGovernanceFiltersToolSurface(t *testing.T) {

@@ -117,8 +117,20 @@ func TestGoBuildHostAgentArtifactBuilderUsesPrebuiltArtifactWithoutGo(t *testing
 	}
 }
 
+func TestGoBuildHostAgentArtifactBuilderRequiresPrebuiltArtifact(t *testing.T) {
+	repoRoot := t.TempDir()
+	t.Setenv("PATH", "")
+
+	_, err := (goBuildHostAgentArtifactBuilder{RepoRoot: repoRoot}).BuildHostAgentArtifact(context.Background(), "linux", "amd64", "v0.1.0")
+	if err == nil {
+		t.Fatal("BuildHostAgentArtifact() error = nil, want missing prebuilt artifact error")
+	}
+	if !strings.Contains(err.Error(), "prebuilt Node artifact") || !strings.Contains(err.Error(), "scripts/build-node-artifacts.sh") {
+		t.Fatalf("error = %q, want prebuilt artifact build instruction", err.Error())
+	}
+}
+
 func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "arm-linux-smoke",
 		Address:          "120.77.239.90",
@@ -126,6 +138,7 @@ func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *tes
 		SSHPort:          22,
 		SSHCredentialRef: "secret://lab/arm-linux-smoke",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
 		"uname -s":                        {Stdout: "Linux\n"},
@@ -167,8 +180,7 @@ func TestDirectHostAgentInstallerRejectsNonAMD64LinuxAndRedactsCredential(t *tes
 	}
 }
 
-func TestDirectHostAgentInstallerRejectsLoopbackAgentServerURLForRemoteHost(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "")
+func TestDirectHostAgentInstallerDefaultsToAIOPSPullWithoutCallbackURL(t *testing.T) {
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "remote-smoke",
 		Address:          "120.77.239.90",
@@ -177,29 +189,204 @@ func TestDirectHostAgentInstallerRejectsLoopbackAgentServerURLForRemoteHost(t *t
 		SSHCredentialRef: "secret://lab/remote-smoke",
 		AgentVersion:     "v0.1.0",
 	})
+	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
+		"uname -s":                        {Stdout: "Linux\n"},
+		"uname -m":                        {Stdout: "x86_64\n"},
+		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Alibaba Cloud Linux\"\nID=\"alinux\"\nID_LIKE=\"rhel fedora centos anolis\"\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "root\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
+	}}
+	dialer := &fakeSSHBootstrapDialer{client: client}
 	installer := NewDirectHostAgentInstaller(
 		repo,
 		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/remote-smoke", Password: "do-not-leak"}},
-		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: &fakeSSHBootstrapClient{}}),
-		WithHostAgentArtifactBuilder(&fakeHostAgentArtifactBuilder{}),
+		WithSSHBootstrapDialer(dialer),
+		WithHostAgentArtifactBuilder(&fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
+			Bytes:  []byte("host-agent-binary"),
+			SHA256: "sha256-test",
+		}}),
 	)
 
 	run, err := installer.Install(context.Background(), "remote-smoke", HostInstallRequest{AgentVersion: "v0.1.0"})
-	if err == nil {
-		t.Fatal("Install() error = nil, want loopback agent server URL rejection")
+	if err != nil {
+		t.Fatalf("Install() error = %v, want default aiops_pull install to skip callback validation", err)
 	}
-	if run.Status != "failed" || run.CurrentStep != "validate-agent-server-url" {
-		t.Fatalf("run = %+v, want validate-agent-server-url failure", run)
+	if run.Status != "success" || run.CurrentStep != "finalize-host" {
+		t.Fatalf("run = %+v, want successful aiops_pull install", run)
 	}
-	if !strings.Contains(err.Error(), "AIOPS_AGENT_SERVER_URL") || !strings.Contains(err.Error(), "127.0.0.1") {
-		t.Fatalf("Install() error = %v, want actionable loopback URL guidance", err)
+	if dialer.calls != 1 {
+		t.Fatalf("dialer.calls = %d, want SSH install to continue", dialer.calls)
+	}
+	uploaded := ""
+	for _, stdin := range client.stdins {
+		text := string(stdin)
+		if strings.Contains(text, "connection_mode:") {
+			uploaded = text
+			break
+		}
+	}
+	if !strings.Contains(uploaded, "connection_mode: aiops_pull") {
+		t.Fatalf("uploaded config = %q, want aiops_pull", uploaded)
+	}
+	if strings.Contains(uploaded, "server_url:") || strings.Contains(uploaded, "grpc_url:") {
+		t.Fatalf("uploaded config = %q, want no push callback fields in aiops_pull mode", uploaded)
 	}
 	saved, err := repo.GetHost("remote-smoke")
 	if err != nil {
 		t.Fatalf("GetHost() error = %v", err)
 	}
-	if saved.InstallStep != "validate-agent-server-url" || !strings.Contains(saved.LastError, "AIOPS_AGENT_SERVER_URL") {
-		t.Fatalf("saved host = %+v, want actionable install failure", saved)
+	if saved.ConnectionMode != HostConnectionModeAIOPSPull {
+		t.Fatalf("saved ConnectionMode = %q, want aiops_pull", saved.ConnectionMode)
+	}
+}
+
+func TestDirectHostAgentInstallerRejectsLoopbackCallbackForNodePushGRPCInstall(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "remote-smoke",
+		Address:          "120.77.239.90",
+		SSHUser:          "root",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://lab/remote-smoke",
+		AgentVersion:     "v0.1.0",
+	})
+	dialer := &fakeSSHBootstrapDialer{client: &fakeSSHBootstrapClient{}}
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/remote-smoke", Password: "do-not-leak"}},
+		WithSSHBootstrapDialer(dialer),
+		WithHostAgentArtifactBuilder(&fakeHostAgentArtifactBuilder{}),
+	)
+
+	run, err := installer.Install(context.Background(), "remote-smoke", HostInstallRequest{
+		AgentVersion:   "v0.1.0",
+		ConnectionMode: HostConnectionModeNodePushGRPC,
+	})
+	if err == nil {
+		t.Fatal("Install() error = nil, want loopback callback rejection")
+	}
+	if !strings.Contains(err.Error(), "loopback") || !strings.Contains(err.Error(), "remote host 120.77.239.90 cannot reach it") {
+		t.Fatalf("Install() error = %q, want loopback callback guidance", err.Error())
+	}
+	if run.Status != "failed" || run.CurrentStep != "validate-agent-server-url" {
+		t.Fatalf("run = %+v, want failed validate-agent-server-url", run)
+	}
+	if dialer.calls != 0 {
+		t.Fatalf("dialer.calls = %d, want validation to fail before SSH", dialer.calls)
+	}
+	saved, err := repo.GetHost("remote-smoke")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if saved.Status != "install_failed" || saved.InstallState != "failed" || saved.InstallStep != "validate-agent-server-url" {
+		t.Fatalf("saved host = %+v, want failed validate-agent-server-url", saved)
+	}
+	if !strings.Contains(saved.LastError, "loopback") {
+		t.Fatalf("LastError = %q, want loopback callback guidance", saved.LastError)
+	}
+}
+
+func TestDirectHostAgentInstallerIgnoresSavedHostAgentEndpointAsAgentServerURL(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:               "remote-smoke",
+		Address:          "120.77.239.90",
+		SSHUser:          "root",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://lab/remote-smoke",
+		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://120.77.239.90:7072",
+	})
+	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
+		"uname -s":                        {Stdout: "Linux\n"},
+		"uname -m":                        {Stdout: "x86_64\n"},
+		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Alibaba Cloud Linux\"\nID=\"alinux\"\nID_LIKE=\"rhel fedora centos anolis\"\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "root\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
+	}}
+	installer := NewDirectHostAgentInstaller(
+		repo,
+		&fakeSSHCredentialResolver{credential: ResolvedSSHCredential{Ref: "secret://lab/remote-smoke", Password: "do-not-leak"}},
+		WithSSHBootstrapDialer(&fakeSSHBootstrapDialer{client: client}),
+		WithHostAgentArtifactBuilder(&fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
+			Bytes:  []byte("host-agent-binary"),
+			SHA256: "sha256-test",
+		}}),
+	)
+
+	run, err := installer.Install(context.Background(), "remote-smoke", HostInstallRequest{
+		AgentVersion:   "v0.1.0",
+		AgentServerURL: "http://aiops.example.test:18080",
+		ConnectionMode: HostConnectionModeNodePushGRPC,
+	})
+	if err != nil {
+		t.Fatalf("Install() error = %v, want saved Node endpoint to be ignored", err)
+	}
+	if run.Status != "success" || run.CurrentStep != "finalize-host" {
+		t.Fatalf("run = %+v, want successful direct install", run)
+	}
+	uploaded := ""
+	for _, stdin := range client.stdins {
+		text := string(stdin)
+		if strings.Contains(text, "server_url:") {
+			uploaded = text
+			break
+		}
+	}
+	if !strings.Contains(uploaded, "server_url: http://aiops.example.test:18080") {
+		t.Fatalf("uploaded config = %q, want requested ai-server callback URL", uploaded)
+	}
+	if !strings.Contains(uploaded, "connection_mode: node_push_grpc") {
+		t.Fatalf("uploaded config = %q, want node_push_grpc mode", uploaded)
+	}
+	if strings.Contains(uploaded, "server_url: http://120.77.239.90:7072") {
+		t.Fatalf("uploaded config = %q, must not use saved Node endpoint as server_url", uploaded)
+	}
+}
+
+func TestResolveInstallAgentServerURLDoesNotUseHostAgentEndpoint(t *testing.T) {
+	got := resolveInstallAgentServerURL(store.HostRecord{
+		ID:       "remote-smoke",
+		Address:  "120.77.239.90",
+		AgentURL: "http://120.77.239.90:7072",
+	})
+	if got == "http://120.77.239.90:7072" {
+		t.Fatalf("resolveInstallAgentServerURL() = %q, must not reuse host-agent endpoint as ai-server callback URL", got)
+	}
+	if got != "http://127.0.0.1:18080" {
+		t.Fatalf("resolveInstallAgentServerURL() = %q, want default ai-server URL", got)
+	}
+}
+
+func TestResolveInstallAgentServerURLIgnoresSavedHostAgentEndpoint(t *testing.T) {
+	got := resolveInstallAgentServerURL(store.HostRecord{
+		ID:             "remote-smoke",
+		Address:        "120.77.239.90",
+		AgentServerURL: "http://120.77.239.90:7072",
+	})
+	if got == "http://120.77.239.90:7072" {
+		t.Fatalf("resolveInstallAgentServerURL() = %q, must not write Node endpoint as ai-server callback URL", got)
+	}
+	if got != "http://127.0.0.1:18080" {
+		t.Fatalf("resolveInstallAgentServerURL() = %q, want default ai-server URL", got)
+	}
+}
+
+func TestBuildHostAgentRemoteConfigUsesAgentServerURLBeforeAgentEndpoint(t *testing.T) {
+	config, _, err := buildHostAgentRemoteConfig(store.HostRecord{
+		ID:             "remote-smoke",
+		Address:        "120.77.239.90",
+		AgentURL:       "http://120.77.239.90:7072",
+		AgentServerURL: "http://aiops.example.test:18080",
+		ConnectionMode: HostConnectionModeNodePushGRPC,
+	}, detectedHostPlatform{OS: "linux", Arch: "amd64", Platform: "linux/ubuntu"}, "agent-token")
+	if err != nil {
+		t.Fatalf("buildHostAgentRemoteConfig() error = %v", err)
+	}
+	data := string(config)
+	if !strings.Contains(data, "server_url: http://aiops.example.test:18080") {
+		t.Fatalf("config = %s, want AgentServerURL as server_url", data)
+	}
+	if strings.Contains(data, "server_url: http://120.77.239.90:7072") {
+		t.Fatalf("config = %s, must not use host-agent endpoint as server_url", data)
 	}
 }
 
@@ -267,7 +454,6 @@ func TestHostBootstrapServicePrefersDirectInstallerOverWorkflowRunner(t *testing
 }
 
 func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "ubuntu-smoke",
 		Address:          "10.0.0.11",
@@ -275,13 +461,14 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 		SSHPort:          22,
 		SSHCredentialRef: "secret://lab/ubuntu-smoke",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
 		"uname -s":                        {Stdout: "Linux\n"},
 		"uname -m":                        {Stdout: "x86_64\n"},
 		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
-		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "root\n"},
-		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "root\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
 	}}
 	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
 		Bytes:  []byte("host-agent-binary"),
@@ -333,8 +520,26 @@ func TestDirectHostAgentInstallerInstallsUbuntuAgentWithScriptedCommands(t *test
 	}
 }
 
+func TestStartServiceScriptRetriesSystemdRestartBeforeFailing(t *testing.T) {
+	script := startServiceScript(detectedHostPlatform{Platform: "linux/amd64"})
+
+	for _, required := range []string{
+		"for attempt in 1 2 3; do",
+		"run_sudo systemctl stop aiops-host-agent.service >/dev/null 2>&1 || true",
+		"pgrep -f '[/]opt/aiops/host-agent/host-agent --config /etc/aiops/host-agent.yaml'",
+		"run_sudo kill",
+		"if run_sudo systemctl restart aiops-host-agent.service; then",
+		"run_sudo systemctl is-active --quiet aiops-host-agent.service",
+		"sleep 2",
+		"run_sudo journalctl -u aiops-host-agent.service -n 80 --no-pager >&2 || true",
+	} {
+		if !strings.Contains(script, required) {
+			t.Fatalf("startServiceScript() missing %q:\n%s", required, script)
+		}
+	}
+}
+
 func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "ubuntu-smoke",
 		Address:          "10.0.0.11",
@@ -342,13 +547,14 @@ func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testi
 		SSHPort:          22,
 		SSHCredentialRef: "secret://lab/ubuntu-smoke",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
 		"uname -s":                        {Stdout: "Linux\n"},
 		"uname -m":                        {Stdout: "x86_64\n"},
 		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
-		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "sudo\n"},
-		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "sudo\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
 	}}
 	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
 		Bytes:  []byte("host-agent-binary"),
@@ -387,20 +593,20 @@ func TestDirectHostAgentInstallerUsesPasswordStdinForNonInteractiveSudo(t *testi
 }
 
 func TestDirectHostAgentInstallerInstallsWithDefaultSSHAuthWhenCredentialRefEmpty(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
-		ID:           "ubuntu-smoke",
-		Address:      "10.0.0.11",
-		SSHUser:      "ubuntu",
-		SSHPort:      22,
-		AgentVersion: "v0.1.0",
+		ID:             "ubuntu-smoke",
+		Address:        "10.0.0.11",
+		SSHUser:        "ubuntu",
+		SSHPort:        22,
+		AgentVersion:   "v0.1.0",
+		AgentServerURL: "http://aiops.example.test:18080",
 	})
 	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
 		"uname -s":                        {Stdout: "Linux\n"},
 		"uname -m":                        {Stdout: "x86_64\n"},
 		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n"},
-		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "sudo\n"},
-		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "sudo\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
 	}}
 	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
 		Bytes:  []byte("host-agent-binary"),
@@ -434,7 +640,6 @@ func TestDirectHostAgentInstallerInstallsWithDefaultSSHAuthWhenCredentialRefEmpt
 }
 
 func TestSSHAuthMethodsAllowNoExplicitCredential(t *testing.T) {
-	t.Setenv("SSH_AUTH_SOCK", "")
 	t.Setenv("HOME", t.TempDir())
 
 	methods, err := sshAuthMethods(ResolvedSSHCredential{})
@@ -447,7 +652,6 @@ func TestSSHAuthMethodsAllowNoExplicitCredential(t *testing.T) {
 }
 
 func TestDirectHostAgentInstallerInstallsGenericLinuxAMD64AgentWithSystemd(t *testing.T) {
-	t.Setenv("AIOPS_AGENT_SERVER_URL", "http://aiops.example.test:18080")
 	repo := newHostRepoStub(store.HostRecord{
 		ID:               "alinux-smoke",
 		Address:          "120.77.239.90",
@@ -455,13 +659,14 @@ func TestDirectHostAgentInstallerInstallsGenericLinuxAMD64AgentWithSystemd(t *te
 		SSHPort:          22,
 		SSHCredentialRef: "secret://lab/alinux-smoke",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	client := &fakeSSHBootstrapClient{responses: map[string]SSHBootstrapResult{
 		"uname -s":                        {Stdout: "Linux\n"},
 		"uname -m":                        {Stdout: "x86_64\n"},
 		"cat /etc/os-release 2>/dev/null": {Stdout: "NAME=\"Alibaba Cloud Linux\"\nID=\"alinux\"\nID_LIKE=\"rhel fedora centos anolis\"\n"},
-		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi":                                                                       {Stdout: "root\n"},
-		"if command -v curl >/dev/null 2>&1; then curl -fsS 'http://127.0.0.1:7072/health'; elif command -v wget >/dev/null 2>&1; then wget -qO- 'http://127.0.0.1:7072/health'; else exit 127; fi": {Stdout: "ok\n"},
+		"if [ \"$(id -u)\" -eq 0 ]; then echo root; elif command -v sudo >/dev/null 2>&1; then echo sudo; else echo none; fi": {Stdout: "root\n"},
+		hostAgentLocalDiagnosticsCommand(): {Stdout: "ok\n"},
 	}}
 	builder := &fakeHostAgentArtifactBuilder{artifact: HostAgentArtifact{
 		Bytes:  []byte("host-agent-binary"),

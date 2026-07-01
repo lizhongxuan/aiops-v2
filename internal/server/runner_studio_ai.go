@@ -48,33 +48,7 @@ func (s *HTTPServer) handleRunnerStudioAI(w http.ResponseWriter, r *http.Request
 		s.runnerStudioHandler.ServeHTTP(w, req)
 		return
 	}
-
-	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
-	if upstream == "" {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "runner studio upstream is not configured"})
-		return
-	}
-	targetURL, err := joinRunnerStudioUpstreamURL(upstream, "/api/v1/workflows/ai/draft", r.URL.RawQuery)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(upstreamBody))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	copyRunnerStudioRequestHeaders(req.Header, r.Header)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	defer resp.Body.Close()
-	copyRunnerStudioResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "embedded runner is not available"})
 }
 
 func sanitizeRunnerStudioAIDraftPayload(body []byte) (map[string]any, error) {

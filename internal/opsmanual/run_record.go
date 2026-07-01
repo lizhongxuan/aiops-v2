@@ -77,6 +77,9 @@ func BuildRunRecordFromWorkflowResult(result WorkflowResult) (RunRecord, error) 
 func SummarizeRunRecords(records []RunRecord) RunRecordSummary {
 	summary := RunRecordSummary{}
 	for _, record := range records {
+		if runRecordSkipped(record) {
+			summary.SkippedCount++
+		}
 		if runRecordPassed(record) {
 			summary.SuccessCount++
 		}
@@ -90,6 +93,7 @@ func SummarizeRunRecords(records []RunRecord) RunRecordSummary {
 			summary.RecentResult = summary.LatestStatus
 		}
 	}
+	summary.UsedCount = summary.SuccessCount + summary.FailureCount
 	sorted := append([]RunRecord{}, records...)
 	sortRunRecordsByTime(sorted)
 	for _, record := range sorted {
@@ -202,12 +206,20 @@ func runRecordFailed(record RunRecord) bool {
 		normalizeRunRecordStatus(record.ExecutionStatus) == "failed"
 }
 
+func runRecordSkipped(record RunRecord) bool {
+	return normalizeRunRecordStatus(record.ValidationStatus) == "skipped" ||
+		normalizeRunRecordStatus(record.ExecutionStatus) == "skipped" ||
+		normalizeRunRecordStatus(record.DryRunStatus) == "skipped"
+}
+
 func normalizeRunRecordStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "passed", "pass", "success", "succeeded", "ok":
 		return "passed"
 	case "failed", "fail", "error", "errored":
 		return "failed"
+	case "skipped", "skip", "declined", "not_used", "not-used", "user_skipped", "user-skipped":
+		return "skipped"
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}

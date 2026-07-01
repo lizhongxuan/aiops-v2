@@ -10,16 +10,15 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/diagnostics"
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
 
 func TestWriteLocksJSONAndMarkdownTraceSchema(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "1")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:         "runtime_model_input",
 		SessionID:    "sess-1",
 		TurnID:       "turn-1",
@@ -29,7 +28,7 @@ func TestWriteLocksJSONAndMarkdownTraceSchema(t *testing.T) {
 			StableHash: "stable-hash",
 			Dynamic:    "dynamic delta",
 		},
-		ModelInput: []*schema.Message{
+		ModelInput: modelrouter.ModelInputItemsFromEinoMessages([]*schema.Message{
 			{
 				Role:    schema.System,
 				Content: "developer instructions",
@@ -38,7 +37,7 @@ func TestWriteLocksJSONAndMarkdownTraceSchema(t *testing.T) {
 					"prompt_layer":  "developer",
 				},
 			},
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatalf("Write returned error: %v", err)
@@ -85,10 +84,8 @@ func TestWriteLocksJSONAndMarkdownTraceSchema(t *testing.T) {
 
 func TestWriteOmitsFullStablePromptAfterInitialIteration(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "1")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-delta",
 		TurnID:    "turn-delta",
@@ -102,7 +99,7 @@ func TestWriteOmitsFullStablePromptAfterInitialIteration(t *testing.T) {
 			Policy:     "runtime policy body",
 			Dynamic:    "dynamic delta body",
 		},
-		ModelInput: []*schema.Message{{
+		ModelInput: modelrouter.ModelInputItemsFromEinoMessages([]*schema.Message{{
 			Role:    schema.System,
 			Content: "tool registry body",
 			Extra: map[string]any{
@@ -112,7 +109,7 @@ func TestWriteOmitsFullStablePromptAfterInitialIteration(t *testing.T) {
 		}, {
 			Role:    schema.User,
 			Content: "new user message stays visible",
-		}},
+		}}),
 	})
 	if err != nil {
 		t.Fatalf("Write returned error: %v", err)
@@ -149,10 +146,7 @@ func TestWriteOmitsFullStablePromptAfterInitialIteration(t *testing.T) {
 }
 
 func TestWriteDisabledReturnsEmptyPath(t *testing.T) {
-	t.Setenv(EnabledEnv, "")
-	t.Setenv(DirEnv, t.TempDir())
-
-	path, err := Write(Request{Kind: "runtime_model_input"})
+	path, err := WriteWithConfig(Config{Enabled: false, RootDir: t.TempDir()}, Request{Kind: "runtime_model_input"})
 	if err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
@@ -163,14 +157,12 @@ func TestWriteDisabledReturnsEmptyPath(t *testing.T) {
 
 func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
 	diff := promptinput.DiffTrace(
 		promptinput.PromptInputTrace{Items: []promptinput.TraceItem{{Source: "conversation", SemanticRole: "user", Content: "old"}}},
 		promptinput.PromptInputTrace{Items: []promptinput.TraceItem{{Source: "conversation", SemanticRole: "tool_result", ID: "call-1", Content: "token=secret-value"}}},
 	)
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime model input",
 		TraceID:   "trace/with spaces",
 		SessionID: "sess-1",
@@ -211,10 +203,8 @@ func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 
 func TestWriteIncludesPromptInputTraceBudgetMetrics(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-ops",
 		TurnID:    "turn-ops",
@@ -250,10 +240,8 @@ func TestWriteIncludesPromptInputTraceBudgetMetrics(t *testing.T) {
 
 func TestModelTraceIncludesPlanModeTaskTransitionsAndCompletionGate(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-plan",
 		TurnID:    "turn-plan",
@@ -317,10 +305,8 @@ func TestModelTraceIncludesPlanModeTaskTransitionsAndCompletionGate(t *testing.T
 
 func TestModelTraceRedactsVerificationSafetyTraceFields(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-verification",
 		TurnID:    "turn-verification",
@@ -382,10 +368,8 @@ func TestModelTraceRedactsVerificationSafetyTraceFields(t *testing.T) {
 
 func TestModelTraceIncludesRedactedToolSurfaceTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:         "runtime_model_input",
 		SessionID:    "sess-tool-surface",
 		TurnID:       "turn-tool-surface",
@@ -464,10 +448,8 @@ func TestModelTraceIncludesRedactedToolSurfaceTrace(t *testing.T) {
 
 func TestModelTraceRedactsGenericityTraceDepthAndCoverage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-genericity",
 		TurnID:    "turn-genericity",
@@ -527,10 +509,8 @@ func TestModelTraceRedactsGenericityTraceDepthAndCoverage(t *testing.T) {
 
 func TestWriteIncludesFinalEvidenceState(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-final-evidence",
 		TurnID:    "turn-final-evidence",
@@ -571,20 +551,23 @@ func TestWriteIncludesFinalEvidenceState(t *testing.T) {
 
 func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-governance",
 		TurnID:    "turn-governance",
 		PromptInputTrace: promptinput.PromptInputTrace{
 			ContextGovernance: []promptinput.ContextGovernanceTraceItem{{
-				Layer:        "L4",
-				Kind:         "context.compaction.started",
-				Message:      "compacting token=plain-token",
-				Budget:       map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
-				ReferenceIDs: []string{"ref-1", "artifact-token=plain-token"},
+				Layer:               "L4",
+				Kind:                "context.compaction.started",
+				Message:             "compacting token=plain-token",
+				ToolCallID:          "call-logs-1",
+				ToolName:            "logs.search",
+				MaterializationTier: "large",
+				OriginalBytes:       49152,
+				InlineBytes:         512,
+				Budget:              map[string]int{"autoCompactThreshold": 167000, "blockingLimit": 177000},
+				ReferenceIDs:        []string{"ref-1", "artifact-token=plain-token"},
 			}},
 		},
 	})
@@ -596,7 +579,7 @@ func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
 		t.Fatalf("read json trace: %v", err)
 	}
 	jsonText := string(data)
-	for _, want := range []string{`"contextGovernance"`, `"layer": "L4"`, `"kind": "context.compaction.started"`, `"autoCompactThreshold": 167000`, `"referenceIds"`} {
+	for _, want := range []string{`"contextGovernance"`, `"layer": "L4"`, `"kind": "context.compaction.started"`, `"toolCallId": "call-logs-1"`, `"toolName": "logs.search"`, `"materializationTier": "large"`, `"originalBytes": 49152`, `"inlineBytes": 512`, `"autoCompactThreshold": 167000`, `"referenceIds"`} {
 		if !strings.Contains(jsonText, want) {
 			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
 		}
@@ -625,10 +608,8 @@ func TestWriteIncludesContextGovernanceTrace(t *testing.T) {
 
 func TestWriteIncludesResourceDedupeRange(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-resource",
 		TurnID:    "turn-resource",
@@ -685,10 +666,8 @@ func TestWriteIncludesResourceDedupeRange(t *testing.T) {
 
 func TestWriteIncludesPromptSectionTraceAndContextUsage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-sections",
 		TurnID:    "turn-sections",
@@ -752,10 +731,8 @@ func TestWriteIncludesPromptSectionTraceAndContextUsage(t *testing.T) {
 
 func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
@@ -788,10 +765,8 @@ func TestWriteIncludesPromptFingerprintSummary(t *testing.T) {
 
 func TestWriteIncludesDiagnosticTraceAndRedactsSecrets(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
@@ -852,17 +827,15 @@ func TestWriteIncludesDiagnosticTraceAndRedactsSecrets(t *testing.T) {
 
 func TestWriteRedactsSecretsFromPromptModelInputAndToolCalls(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv(EnabledEnv, "true")
-	t.Setenv(DirEnv, dir)
 
-	path, err := Write(Request{
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
 		Kind:      "runtime_model_input",
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		Prompt: Prompt{
 			Dynamic: "## Runtime Environment Context\nCurrentFocus: target=redis dsn=redis://:secret-pass@127.0.0.1:6379/0",
 		},
-		ModelInput: []*schema.Message{
+		ModelInput: modelrouter.ModelInputItemsFromEinoMessages([]*schema.Message{
 			{Role: schema.User, Content: "连接串 redis://:secret-pass@127.0.0.1:6379/0 帮我排查"},
 			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
 				ID:   "call-1",
@@ -872,7 +845,7 @@ func TestWriteRedactsSecretsFromPromptModelInputAndToolCalls(t *testing.T) {
 					Arguments: `{"cmd":"redis-cli -a secret-pass PING","token":"plain-token"}`,
 				},
 			}}},
-		},
+		}),
 		PromptInputTrace: promptinput.PromptInputTrace{Items: []promptinput.TraceItem{{
 			Source:       "conversation",
 			SemanticRole: "user",

@@ -1,0 +1,6 @@
+# 2026/06/18 00:13:11.362077 [TestProperty13_InspectModeDeniesMutation] [rapid] draw mutationTool: "service_stop"
+# 2026/06/18 00:13:11.362140 [TestProperty13_InspectModeDeniesMutation] inspect mode should deny mutation tool "service_stop", got action=allow
+# 
+v0.4.8#14868525053314494037
+0x9867f1f40f739
+0x8

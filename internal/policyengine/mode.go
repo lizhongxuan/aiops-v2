@@ -23,14 +23,31 @@ var readOnlyPatterns = []string{
 }
 
 var readOnlyExactNames = map[string]struct{}{
-	"coroot_list_services":     {},
-	"coroot_service_metrics":   {},
-	"coroot_rca_report":        {},
-	"coroot_service_topology":  {},
-	"coroot_alert_rules":       {},
-	"coroot_incidents":         {},
-	"coroot_incident_timeline": {},
-	"coroot_slo_status":        {},
+	"coroot_list_services":       {},
+	"coroot_collect_rca_context": {},
+	"coroot_service_metrics":     {},
+	"coroot_rca_report":          {},
+	"coroot_service_topology":    {},
+	"coroot_alert_rules":         {},
+	"coroot_incidents":           {},
+	"coroot_incident_timeline":   {},
+	"coroot_slo_status":          {},
+}
+
+var readOnlyOperationKinds = map[string]struct{}{
+	"browse":    {},
+	"fetch":     {},
+	"get":       {},
+	"info":      {},
+	"inspect":   {},
+	"list":      {},
+	"preflight": {},
+	"query":     {},
+	"read":      {},
+	"search":    {},
+	"show":      {},
+	"status":    {},
+	"summarize": {},
 }
 
 // mutationPatterns identifies tools that modify state.
@@ -61,6 +78,48 @@ func isReadOnly(name string) bool {
 		return true
 	}
 	return containsAny(name, readOnlyPatterns)
+}
+
+func isReadOnlyTool(input PolicyInput) bool {
+	if isReadOnly(normalizeToolName(input)) {
+		return true
+	}
+	return metadataDeclaresReadOnly(input.Tool)
+}
+
+func hasExplicitReadOnlyToolMetadata(input PolicyInput) bool {
+	return metadataDeclaresReadOnly(input.Tool)
+}
+
+func metadataDeclaresReadOnly(meta tooling.ToolMetadata) bool {
+	if !hasExplicitReadOnlyMetadata(meta) {
+		return false
+	}
+	governance := meta.EffectiveGovernance(defaultPolicyInlineBudgetBytes)
+	if governance.Mutating || governance.RequiresApproval || governance.RiskLevel != tooling.ToolRiskLow {
+		return false
+	}
+	discovery := meta.EffectiveDiscovery()
+	if discovery.PermissionScope == "read" {
+		return true
+	}
+	if len(discovery.OperationKinds) > 0 {
+		for _, op := range discovery.OperationKinds {
+			if _, ok := readOnlyOperationKinds[op]; !ok {
+				return false
+			}
+		}
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(meta.Discovery.CapabilityKind), "read")
+}
+
+func hasExplicitReadOnlyMetadata(meta tooling.ToolMetadata) bool {
+	discovery := meta.Discovery
+	return meta.RiskLevel != "" ||
+		discovery.PermissionScope != "" ||
+		len(discovery.OperationKinds) > 0 ||
+		strings.TrimSpace(discovery.CapabilityKind) != ""
 }
 
 func normalizedReadOnlyName(name string) string {
@@ -188,6 +247,10 @@ func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	if decision, ok := governanceBoundaryDecision(input, false, "chat"); ok {
 		return decision
 	}
+	if hasExplicitReadOnlyToolMetadata(input) {
+		return PolicyDecision{Action: PolicyActionAllow}
+	}
+
 	if isMutation(toolName) {
 		if isPlanTool(toolName) {
 			return PolicyDecision{Action: PolicyActionAllow}
@@ -198,16 +261,12 @@ func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 
-	if isWebSearch(toolName) {
-		return PolicyDecision{Action: PolicyActionAllow}
-	}
-
-	if isReadOnly(toolName) {
+	if isWebSearch(toolName) || isReadOnlyTool(input) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
 	if isMCPTool(input) {
-		if isReadOnly(toolName) || isWebSearch(toolName) {
+		if isReadOnlyTool(input) || isWebSearch(toolName) {
 			return PolicyDecision{Action: PolicyActionAllow}
 		}
 		return PolicyDecision{
@@ -254,6 +313,10 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 	if decision, ok := governanceBoundaryDecision(input, false, "inspect"); ok {
 		return decision
 	}
+	if hasExplicitReadOnlyToolMetadata(input) {
+		return PolicyDecision{Action: PolicyActionAllow}
+	}
+
 	if isMutation(toolName) {
 		if isPlanTool(toolName) {
 			return PolicyDecision{Action: PolicyActionAllow}
@@ -264,7 +327,7 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 
-	if isReadOnly(toolName) || isWebSearch(toolName) {
+	if isWebSearch(toolName) || isReadOnlyTool(input) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 
@@ -321,6 +384,10 @@ func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		return decision
 	}
 
+	if hasExplicitReadOnlyToolMetadata(input) {
+		return PolicyDecision{Action: PolicyActionAllow}
+	}
+
 	if isMutation(toolName) {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
@@ -328,7 +395,7 @@ func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		}
 	}
 
-	if isReadOnly(toolName) || isWebSearch(toolName) {
+	if isWebSearch(toolName) || isReadOnlyTool(input) {
 		return PolicyDecision{Action: PolicyActionAllow}
 	}
 

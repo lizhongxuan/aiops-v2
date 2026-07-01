@@ -1,0 +1,10 @@
+[aiops-v2] skip web build
+[aiops-v2] skip go build
+[aiops-v2] data dir: .data-toolsearch-ui
+[aiops-v2] web dist: web/dist
+[aiops-v2] http: http://127.0.0.1:18083
+[aiops-v2] grpc: :18090
+[aiops-v2] start server
+2026/06/23 16:48:04 ai-server: restored latest session sess-1782204407624403000 (host/execute)
+2026/06/23 16:48:04 ai-server: HTTP listening on :18083
+2026/06/23 16:48:04 ai-server: gRPC listening on :18090

@@ -3,6 +3,7 @@ package toolsearch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,8 +13,8 @@ import (
 
 func TestToolSearchToolIsReadOnlyAndReturnsToolMatches(t *testing.T) {
 	registry := tooling.NewRegistry()
-	mustRegister(t, registry, fakeStaticTool("coroot.service_metrics", "Get service metrics"))
-	mustRegister(t, registry, fakeStaticTool("opsgraph.business_impact", "Read business impact"))
+	mustRegister(t, registry, fakeDeferredTool("coroot.service_metrics", "Get service metrics"))
+	mustRegister(t, registry, fakeDeferredTool("opsgraph.business_impact", "Read business impact"))
 
 	tool := NewToolSearchTool(registry)
 	input := json.RawMessage(`{"query":"redis metrics","limit":5}`)
@@ -93,14 +94,14 @@ func TestToolSearchReturnsDiscoveryMetadata(t *testing.T) {
 func TestToolSearchUsesRequestedSessionModeAndProfileCatalog(t *testing.T) {
 	registry := tooling.NewRegistry()
 	mustRegister(t, registry, &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{Name: "synthetic.host_inspect", Description: "Inspect host resource", Layer: tooling.ToolLayerCore},
+		Meta: tooling.ToolMetadata{Name: "synthetic.host_inspect", Description: "Inspect host resource", Layer: tooling.ToolLayerDeferred},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{"host"},
 			Modes:        []string{"chat"},
 		},
 	})
 	mustRegister(t, registry, &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{Name: "synthetic.workspace_inspect", Description: "Inspect workspace resource", Layer: tooling.ToolLayerCore},
+		Meta: tooling.ToolMetadata{Name: "synthetic.workspace_inspect", Description: "Inspect workspace resource", Layer: tooling.ToolLayerDeferred},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{"workspace"},
 			Modes:        []string{"chat"},
@@ -209,6 +210,7 @@ func TestToolSearchUsesMCPRegistryHealthWhenRequestOmitsSnapshot(t *testing.T) {
 		t.Fatalf("OnServerConnected() error = %v", err)
 	}
 	mcpRegistry.SetServerHealthSnapshot(mcp.HealthSnapshot{ServerID: "synthetic_obs", Status: mcp.HealthUnavailable})
+	_ = mcp.NewRegistry()
 	provider := tooling.NewAssembler(registry, mcpRegistry)
 
 	content := runToolSearchWithInput(t, provider, map[string]any{
@@ -283,6 +285,82 @@ func TestToolSearchSearchDoesNotReturnSelection(t *testing.T) {
 	}
 }
 
+func TestToolSearchDefaultSearchOnlyReturnsDeferredMCPOrDynamicTools(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "selected_host.inspect",
+			Description: "Inspect CPU memory and disk on the selected host",
+			Layer:       tooling.ToolLayerCore,
+			AlwaysLoad:  true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"host"},
+				OperationKinds: []string{"inspect"},
+			},
+		},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "observability.service_metrics",
+			Description:    "Read service CPU and memory metrics",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "observability_metrics",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	content := runToolSearchWithProvider(t, registry, "cpu memory metrics")
+	if strings.Contains(content, `"name":"selected_host.inspect"`) {
+		t.Fatalf("default tool_search should not return already-loaded core tools: %s", content)
+	}
+	if !strings.Contains(content, `"name":"observability_metrics"`) {
+		t.Fatalf("default tool_search should return deferred pack: %s", content)
+	}
+
+	withLoaded := runToolSearchWithInput(t, registry, map[string]any{
+		"query":         "cpu memory metrics",
+		"includeLoaded": true,
+	})
+	if !strings.Contains(withLoaded, `"name":"selected_host.inspect"`) {
+		t.Fatalf("includeLoaded=true should expose already-loaded tools for diagnostics: %s", withLoaded)
+	}
+}
+
+func TestToolSearchNeverDiscoversPublicWebOrToolSearch(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "tool_search", Description: "Search deferred tools", Layer: tooling.ToolLayerCore, AlwaysLoad: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "web_search", Description: "Search public web", Layer: tooling.ToolLayerCore, Pack: "public_web", AlwaysLoad: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "browse_url", Description: "Open public URL", Layer: tooling.ToolLayerDeferred, Pack: "public_web", DeferByDefault: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "synthetic.deferred", Description: "Read deferred evidence", Layer: tooling.ToolLayerDeferred, Pack: "synthetic_pack", DeferByDefault: true},
+	})
+
+	content := runToolSearchWithInput(t, registry, map[string]any{
+		"query":         "web search browse deferred",
+		"includeLoaded": true,
+	})
+	for _, forbidden := range []string{`"name":"tool_search"`, `"name":"web_search"`, `"name":"browse_url"`, `"name":"public_web"`} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("tool_search result must not expose public-web/tool-search entry %s: %s", forbidden, content)
+		}
+	}
+	if !strings.Contains(content, `"name":"synthetic_pack"`) {
+		t.Fatalf("tool_search result = %s, want ordinary deferred pack still discoverable", content)
+	}
+}
+
 func TestToolSearchReturnsGovernanceMetadata(t *testing.T) {
 	registry := tooling.NewRegistry()
 	mustRegister(t, registry, &tooling.StaticTool{
@@ -291,6 +369,7 @@ func TestToolSearchReturnsGovernanceMetadata(t *testing.T) {
 			Description:      "Scale workload",
 			Mock:             true,
 			Domain:           "opsgraph",
+			Layer:            tooling.ToolLayerDeferred,
 			RiskLevel:        tooling.ToolRiskHigh,
 			Mutating:         true,
 			RequiresApproval: true,
@@ -307,6 +386,7 @@ func TestToolSearchReturnsGovernanceMetadata(t *testing.T) {
 
 func TestToolSearchSearchesAssemblerDynamicMCPTools(t *testing.T) {
 	registry := tooling.NewRegistry()
+	mustRegister(t, registry, fakeStaticTool("tool_search", "Search deferred tools"))
 	mcpRegistry := mcp.NewRegistry()
 	if err := mcpRegistry.OnServerConnected("coroot", []tooling.Tool{
 		&tooling.StaticTool{
@@ -319,12 +399,30 @@ func TestToolSearchSearchesAssemblerDynamicMCPTools(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("OnServerConnected() error = %v", err)
 	}
+	provider := tooling.NewAssembler(registry, mcpRegistry)
 
-	content := runToolSearchWithProvider(t, tooling.NewAssembler(registry, mcpRegistry), "coroot metrics")
+	initialNames := toolNamesForToolSearchTest(provider.AssembleToolsWithOptions("host", "chat", tooling.AssembleOptions{}))
+	if !containsToolSearchName(initialNames, "tool_search") {
+		t.Fatalf("initial names = %v, want tool_search visible", initialNames)
+	}
+	if containsToolSearchName(initialNames, "coroot.service_metrics") {
+		t.Fatalf("initial names = %v, should defer dynamic MCP tool until tool_search select", initialNames)
+	}
+
+	content := runToolSearchWithProvider(t, provider, "coroot metrics")
 	for _, want := range []string{`"kind":"pack"`, `"tools":["coroot.service_metrics"]`, `"domain":"coroot"`, `"requiresSelect":true`} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %s: %s", want, content)
 		}
+	}
+
+	selectContent := runToolSearchWithInput(t, provider, map[string]any{
+		"mode":   "select",
+		"tools":  []string{"coroot.service_metrics"},
+		"reason": "need coroot service metrics",
+	})
+	if !strings.Contains(selectContent, `"loadedTools":["coroot.service_metrics"]`) {
+		t.Fatalf("select content = %s, want dynamic MCP tool loadable after selection", selectContent)
 	}
 }
 
@@ -362,6 +460,55 @@ func TestToolSearchReturnsDeferredPackSummaryWithoutExpandingPromptCatalog(t *te
 		if !strings.Contains(content, want) {
 			t.Fatalf("content missing %s: %s", want, content)
 		}
+	}
+}
+
+func TestToolSearchRespectsExecutionMetadataPackGate(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "synthetic.metrics_read",
+			Description:    "Read synthetic metrics",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "synthetic_metrics",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "metrics",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	tool := NewToolSearchTool(registry)
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{
+		Metadata: map[string]string{
+			tooling.ToolPackAllowedMetadataKey("synthetic_metrics"): "false",
+		},
+	})
+	searchInput, _ := json.Marshal(map[string]any{"query": "synthetic metrics", "limit": 10})
+	searchResult, err := tool.Execute(ctx, searchInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(searchResult.Content, "synthetic_metrics") || strings.Contains(searchResult.Content, "synthetic.metrics_read") {
+		t.Fatalf("search leaked gated pack/tool: %s", searchResult.Content)
+	}
+
+	selectInput, _ := json.Marshal(map[string]any{
+		"mode":   "select",
+		"packs":  []string{"synthetic_metrics"},
+		"reason": "need metrics",
+	})
+	selectResult, err := tool.Execute(ctx, selectInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(selectResult.Content, `"loadedPacks":["synthetic_metrics"]`) {
+		t.Fatalf("select loaded gated pack: %s", selectResult.Content)
+	}
+	if !strings.Contains(selectResult.Content, `"notLoaded":["synthetic_metrics"]`) {
+		t.Fatalf("select result missing notLoaded gated pack: %s", selectResult.Content)
 	}
 }
 
@@ -409,6 +556,7 @@ func TestToolSearchRanksDirectHostInspectionAheadOfGenericMetricsPack(t *testing
 		Meta: tooling.ToolMetadata{
 			Name:        "selected_host.inspect",
 			Description: "Inspect resources on the selected host",
+			Layer:       tooling.ToolLayerDeferred,
 			RiskLevel:   tooling.ToolRiskHigh,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind: "execute",
@@ -452,6 +600,7 @@ func TestToolSearchRanksSelectedHostForChineseHostResourceQuery(t *testing.T) {
 		Meta: tooling.ToolMetadata{
 			Name:        "selected_host.inspect",
 			Description: "Inspect resources on the selected host",
+			Layer:       tooling.ToolLayerDeferred,
 			RiskLevel:   tooling.ToolRiskHigh,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind: "execute",
@@ -495,6 +644,7 @@ func TestToolSearchKeepsExplicitObservationDomainForHostQuery(t *testing.T) {
 		Meta: tooling.ToolMetadata{
 			Name:        "selected_host.inspect",
 			Description: "Inspect resources on the selected host",
+			Layer:       tooling.ToolLayerDeferred,
 			RiskLevel:   tooling.ToolRiskHigh,
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind: "execute",
@@ -530,6 +680,243 @@ func TestToolSearchKeepsExplicitObservationDomainForHostQuery(t *testing.T) {
 	}
 }
 
+func TestToolSearchBM25IndexesInputSchemaPropertyNames(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "backup.generic_status",
+			Description:    "Read generic backup status",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "backup_generic",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"backup"},
+				OperationKinds: []string{"read"},
+			},
+		},
+		InputSchemaData: json.RawMessage(`{"type":"object","properties":{"target":{"type":"string"}}}`),
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "backup.restore_window",
+			Description:    "Inspect backup restore window",
+			Layer:          tooling.ToolLayerDeferred,
+			Pack:           "backup_restore",
+			DeferByDefault: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"backup"},
+				OperationKinds: []string{"inspect"},
+			},
+		},
+		InputSchemaData: json.RawMessage(`{"type":"object","properties":{"stanza":{"type":"string"},"repo_path":{"type":"string"},"timeline":{"type":"string"}}}`),
+	})
+
+	content := runToolSearchWithProvider(t, registry, "stanza repo path timeline")
+	restorePos := strings.Index(content, `"name":"backup_restore"`)
+	genericPos := strings.Index(content, `"name":"backup_generic"`)
+	if restorePos < 0 {
+		t.Fatalf("content missing backup_restore matched by schema properties: %s", content)
+	}
+	if genericPos >= 0 && genericPos < restorePos {
+		t.Fatalf("generic backup pack ranked ahead of schema-specific restore pack: %s", content)
+	}
+}
+
+func TestToolSearchLimitsDefaultResultsPerMCPServerBucket(t *testing.T) {
+	registry := tooling.NewRegistry()
+	for i := 0; i < 12; i++ {
+		mustRegister(t, registry, &tooling.StaticTool{
+			Meta: tooling.ToolMetadata{
+				Name:        fmt.Sprintf("coroot.synthetic_signal_%02d", i),
+				Description: "Read synthetic diagnostics signal",
+				Layer:       tooling.ToolLayerMCP,
+				IsMCP:       true,
+				MCPInfo:     tooling.MCPInfo{ServerID: "coroot", ToolName: fmt.Sprintf("synthetic_signal_%02d", i)},
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "read",
+					ResourceTypes:  []string{"service"},
+					OperationKinds: []string{"read"},
+				},
+			},
+		})
+	}
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "opsgraph.synthetic_diagnostics",
+			Description: "Read synthetic diagnostics from topology graph",
+			Layer:       tooling.ToolLayerMCP,
+			IsMCP:       true,
+			MCPInfo:     tooling.MCPInfo{ServerID: "opsgraph", ToolName: "synthetic_diagnostics"},
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	content := runToolSearchWithInput(t, registry, map[string]any{"query": "synthetic diagnostics"})
+	if strings.Count(content, `"mcpServerId":"coroot"`) > defaultMCPServerBucketLimit {
+		t.Fatalf("content returned too many coroot bucket results: %s", content)
+	}
+	if !strings.Contains(content, `"mcpServerId":"opsgraph"`) {
+		t.Fatalf("content should preserve other MCP server result under default bucket limit: %s", content)
+	}
+}
+
+func TestToolSearchV3ReturnsRequestRankerAndRejectedCandidates(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "observability.service_metrics",
+			Description: "Read service metrics from observability MCP",
+			Layer:       tooling.ToolLayerMCP,
+			IsMCP:       true,
+			MCPInfo:     tooling.MCPInfo{ServerID: "observability", ToolName: "service_metrics"},
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "local.service_logs",
+			Description: "Read local service logs",
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	content := runToolSearchWithInput(t, registry, map[string]any{
+		"query":          "service metrics",
+		"intent":         "rca",
+		"resource_scope": "service",
+		"limit":          5,
+		"mcp_health": map[string]string{
+			"observability": "unavailable",
+		},
+	})
+
+	for _, want := range []string{
+		`"ranker":"bm25"`,
+		`"request"`,
+		`"query":"service metrics"`,
+		`"intent":"rca"`,
+		`"rejected"`,
+		`"name":"observability.service_metrics"`,
+		`"reason":"mcp_unavailable"`,
+		`"mcpServerId":"observability"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content missing %s: %s", want, content)
+		}
+	}
+	if strings.Contains(content, `"matches":[{"kind":"tool","name":"observability.service_metrics"`) {
+		t.Fatalf("unavailable MCP should be rejected, not returned as selectable match: %s", content)
+	}
+}
+
+func TestToolSearchV3ConsidersTargetRiskCapabilitiesAndEnvironmentFacts(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "observability.service_metrics",
+			Description: "Read checkout service metrics",
+			SearchHint:  "checkout latency p95",
+			Layer:       tooling.ToolLayerDeferred,
+			RiskLevel:   tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "host.service_logs",
+			Description: "Read host service logs",
+			Layer:       tooling.ToolLayerDeferred,
+			RiskLevel:   tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"host"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "service.restart",
+			Description: "Restart checkout service",
+			Layer:       tooling.ToolLayerDeferred,
+			RiskLevel:   tooling.ToolRiskHigh,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "execute",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"execute"},
+			},
+		},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "service.audit_export",
+			Description: "Read checkout service audit export",
+			Layer:       tooling.ToolLayerDeferred,
+			RiskLevel:   tooling.ToolRiskHigh,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "read",
+				ResourceTypes:  []string{"service"},
+				OperationKinds: []string{"read"},
+			},
+		},
+	})
+
+	content := runToolSearchWithInput(t, registry, map[string]any{
+		"query":             "checkout service metrics",
+		"intent":            "service metrics",
+		"target_refs":       []string{"service:checkout"},
+		"required_caps":     []string{"read"},
+		"forbidden_caps":    []string{"execute"},
+		"risk_level":        "low",
+		"environment_facts": []string{"checkout service p95 latency is high"},
+	})
+
+	for _, want := range []string{
+		`"targetRefs":["service:checkout"]`,
+		`"requiredCaps":["read"]`,
+		`"forbiddenCaps":["execute"]`,
+		`"riskLevel":"low"`,
+		`"environmentFacts":["checkout service p95 latency is high"]`,
+		`"name":"observability.service_metrics"`,
+		`"targetCompatibility":"matched"`,
+		`"riskDecision":"allowed"`,
+		`"matchReasons":["bm25"`,
+		`"target_compatible"`,
+		`"capability_match"`,
+		`"intent_match"`,
+		`"risk_allowed"`,
+		`"environment_fact_match"`,
+		`"name":"host.service_logs"`,
+		`"reason":"target_incompatible"`,
+		`"name":"service.restart"`,
+		`"reason":"forbidden_capability"`,
+		`"name":"service.audit_export"`,
+		`"reason":"risk_exceeds_request"`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content missing %s: %s", want, content)
+		}
+	}
+}
+
 func mustRegister(t *testing.T, registry *tooling.Registry, tool tooling.Tool) {
 	t.Helper()
 	if err := registry.Register(tool); err != nil {
@@ -542,6 +929,16 @@ func fakeStaticTool(name, description string) tooling.Tool {
 		Meta: tooling.ToolMetadata{
 			Name:        name,
 			Description: description,
+		},
+	}
+}
+
+func fakeDeferredTool(name, description string) tooling.Tool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        name,
+			Description: description,
+			Layer:       tooling.ToolLayerDeferred,
 		},
 	}
 }

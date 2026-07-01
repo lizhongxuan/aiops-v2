@@ -87,6 +87,17 @@ func (s *defaultHostOpsService) CreateMission(ctx context.Context, command HostM
 			"planRequired": mission.PlanRequired,
 		},
 	})
+	if !mission.PlanRequired && hostCount > 0 && s.orchestrator != nil {
+		if _, err := s.orchestrator.SpawnChildren(ctx, mission.ID, autoSpawnAssignmentsForMission(mission, goal)); err != nil {
+			return HostOperationView{}, err
+		}
+		if latest, err := s.missions.GetMission(ctx, mission.ID); err == nil {
+			latest.Status = hostops.HostMissionStatusRunning
+			if err := s.missions.SaveMission(ctx, latest); err != nil {
+				return HostOperationView{}, err
+			}
+		}
+	}
 	return s.operationView(ctx, mission.ID)
 }
 
@@ -266,6 +277,34 @@ func normalizeMissionMentions(command HostMissionCreateCommand) []hostops.HostMe
 		out = append(out, mention)
 	}
 	return out
+}
+
+func autoSpawnAssignmentsForMission(mission hostops.HostOperationMission, goal string) []hostops.ChildAgentAssignment {
+	goal = strings.TrimSpace(goal)
+	if goal == "" {
+		goal = "Operate on the assigned host and report evidence to the manager."
+	}
+	assignments := make([]hostops.ChildAgentAssignment, 0, len(mission.Mentions))
+	seen := map[string]struct{}{}
+	for _, mention := range mission.Mentions {
+		hostID := firstNonEmptyHostOpsString(mention.HostID, mention.Address, mention.DisplayName, strings.TrimPrefix(mention.Raw, "@"))
+		key := strings.ToLower(strings.TrimSpace(hostID))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		assignments = append(assignments, hostops.ChildAgentAssignment{
+			HostID:          hostID,
+			HostAddress:     strings.TrimSpace(mention.Address),
+			HostDisplayName: firstNonEmptyHostOpsString(mention.DisplayName, strings.TrimPrefix(mention.Raw, "@"), hostID),
+			Task:            goal,
+			RiskLevel:       mission.SemanticTask.RiskLevel,
+		})
+	}
+	return assignments
 }
 
 func mentionViews(mentions []hostops.HostMention) []HostMentionView {

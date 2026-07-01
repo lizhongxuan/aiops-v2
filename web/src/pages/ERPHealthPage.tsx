@@ -61,7 +61,6 @@ export function ERPHealthPage() {
               <Button data-testid="erp-create-incident" onClick={() => void createIncidentFromHealth()}>创建事故</Button>
               <Button asChild variant="outline"><Link to="/incidents">事故工作台</Link></Button>
               <Button asChild variant="outline"><Link to="/opsgraph">ERP 图谱</Link></Button>
-              <Button asChild variant="outline"><Link to="/coroot">Coroot 高级详情</Link></Button>
             </>
           }
         >

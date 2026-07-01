@@ -1,0 +1,9 @@
+# 2026/06/18 00:13:11.380749 [TestProperty13_ModeEnforcementViaEngine] [rapid] draw mode: "chat"
+# 2026/06/18 00:13:11.380750 [TestProperty13_ModeEnforcementViaEngine] [rapid] draw mutationTool: "service_stop"
+# 2026/06/18 00:13:11.380760 [TestProperty13_ModeEnforcementViaEngine] engine with mode "chat" should deny mutation tool "service_stop", got action=allow
+# 
+v0.4.8#2311850434166025433
+0x0
+0x0
+0x9867f1f40f739
+0x8

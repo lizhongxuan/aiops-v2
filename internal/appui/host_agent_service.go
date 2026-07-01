@@ -59,6 +59,7 @@ func (s *defaultHostAgentService) Register(ctx context.Context, req HostAgentReg
 	next.Executable = true
 	next.OS = strings.TrimSpace(req.OS)
 	next.Arch = strings.TrimSpace(req.Arch)
+	applyHostSystemBasics(&next, req.OSRelease, req.KernelVersion, req.CPUCores, req.MemoryBytes)
 	if version := strings.TrimSpace(req.AgentVersion); version != "" {
 		next.AgentVersion = version
 	}
@@ -113,6 +114,7 @@ func (s *defaultHostAgentService) Heartbeat(ctx context.Context, req HostAgentHe
 	if version := strings.TrimSpace(req.AgentVersion); version != "" {
 		next.AgentVersion = version
 	}
+	applyHostSystemBasics(&next, req.OSRelease, req.KernelVersion, req.CPUCores, req.MemoryBytes)
 	if strings.TrimSpace(next.InstallState) == "" || next.InstallState == "running" || next.InstallState == "pending_install" {
 		next.InstallState = "installed"
 	}
@@ -129,6 +131,24 @@ func (s *defaultHostAgentService) Heartbeat(ctx context.Context, req HostAgentHe
 		LastHeartbeat: summary.LastHeartbeat,
 		Host:          summary,
 	}, nil
+}
+
+func applyHostSystemBasics(host *store.HostRecord, osRelease, kernelVersion string, cpuCores int, memoryBytes uint64) {
+	if host == nil {
+		return
+	}
+	if trimmed := strings.TrimSpace(osRelease); trimmed != "" {
+		host.OSRelease = trimmed
+	}
+	if trimmed := strings.TrimSpace(kernelVersion); trimmed != "" {
+		host.KernelVersion = trimmed
+	}
+	if cpuCores > 0 {
+		host.CPUCores = cpuCores
+	}
+	if memoryBytes > 0 {
+		host.MemoryBytes = memoryBytes
+	}
 }
 
 func hostAgentTokenHashRef(token string) string {

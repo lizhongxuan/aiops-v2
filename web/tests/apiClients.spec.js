@@ -46,7 +46,6 @@ import {
   fetchApprovalGrants,
   revokeApprovalGrant,
 } from "../src/api/approvalManagement";
-import { fetchCorootConfig, fetchCorootJson, fetchCorootServices } from "../src/api/coroot";
 import { fetchLlmConfig, updateLlmConfig } from "../src/api/llm";
 import { fetchUiCards, previewUiCard, updateUiCard } from "../src/api/uiCards";
 import { generateDraft, lintDraft, previewDraft, publishDraft } from "../src/api/generator";
@@ -203,9 +202,6 @@ describe("api clients", () => {
     await revokeApprovalGrant("grant-1");
     await disableApprovalGrant("grant-2");
     await enableApprovalGrant("grant-3");
-    await fetchCorootConfig();
-    await fetchCorootServices();
-    await fetchCorootJson("/api/v1/coroot/api/v1/services/svc-1/overview");
     await fetchLlmConfig();
     await updateLlmConfig({ provider: "openai" });
     await fetchUiCards();
@@ -274,9 +270,6 @@ describe("api clients", () => {
       ["/api/v1/approval-grants/grant-1/revoke", expect.objectContaining({ method: "POST" })],
       ["/api/v1/approval-grants/grant-2/disable", expect.objectContaining({ method: "POST" })],
       ["/api/v1/approval-grants/grant-3/enable", expect.objectContaining({ method: "POST" })],
-      ["/api/v1/coroot/config", expect.objectContaining({ method: "GET" })],
-      ["/api/v1/coroot/api/v1/services", expect.objectContaining({ method: "GET" })],
-      ["/api/v1/coroot/api/v1/services/svc-1/overview", expect.objectContaining({ method: "GET" })],
       ["/api/v1/llm-config", expect.objectContaining({ method: "GET" })],
       ["/api/v1/llm-config", expect.objectContaining({ method: "PUT" })],
       ["/api/v1/ui-cards", expect.objectContaining({ method: "GET" })],

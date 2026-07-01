@@ -29,3 +29,20 @@ func TestBuildModelInputToolTraceFieldsIncludesResourceLocksFromSnapshot(t *test
 		t.Fatalf("resource lock trace = %#v, want acquired file lock", fields.ResourceLocks[0])
 	}
 }
+
+func TestBuildModelInputToolTraceFieldsIncludesPublicWebBudget(t *testing.T) {
+	fields := buildModelInputToolTraceFields(nil, nil, "", "")
+	if fields.PublicWebBudget == nil {
+		t.Fatal("expected public web budget trace")
+	}
+	budget := DefaultPublicWebBudget()
+	if fields.PublicWebBudget.MaxSearchCalls != budget.MaxSearchCalls ||
+		fields.PublicWebBudget.MaxQueries != budget.MaxQueries ||
+		fields.PublicWebBudget.MaxResults != budget.MaxResults ||
+		fields.PublicWebBudget.MaxCallsPerTurn != budget.MaxCallsPerTurn ||
+		fields.PublicWebBudget.MaxQueriesPerCall != budget.MaxQueriesPerCall ||
+		fields.PublicWebBudget.MaxResultsPerDomain != budget.MaxResultsPerDomain ||
+		fields.PublicWebBudget.ExplicitUserRequested != budget.ExplicitUserRequested {
+		t.Fatalf("public web budget = %#v, want %#v", fields.PublicWebBudget, budget)
+	}
+}

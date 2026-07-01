@@ -253,6 +253,40 @@ func TestSnapshotBuilderProjectsProtocolRuntimeFields(t *testing.T) {
 	}
 }
 
+func TestSnapshotBuilderUsesCurrentTurnModeForPolicyProjection(t *testing.T) {
+	now := time.Date(2026, 6, 24, 16, 0, 0, 0, time.UTC)
+	builder := NewSnapshotBuilder()
+	session := &runtimekernel.SessionState{
+		ID:        "sess-mode-downgrade",
+		Type:      runtimekernel.SessionTypeHost,
+		Mode:      runtimekernel.ModeExecute,
+		UpdatedAt: now,
+		CurrentTurn: &runtimekernel.TurnSnapshot{
+			ID:          "turn-evidence-rca",
+			SessionID:   "sess-mode-downgrade",
+			SessionType: runtimekernel.SessionTypeWorkspace,
+			Mode:        runtimekernel.ModeChat,
+			Lifecycle:   runtimekernel.TurnLifecyclePending,
+			UpdatedAt:   now,
+		},
+	}
+
+	snapshot := builder.BuildStateSnapshot(session)
+
+	if snapshot.CurrentMode != "analysis" {
+		t.Fatalf("CurrentMode = %q, want analysis from current turn mode", snapshot.CurrentMode)
+	}
+	if snapshot.CurrentLane != "answer" {
+		t.Fatalf("CurrentLane = %q, want answer from current turn mode", snapshot.CurrentLane)
+	}
+	if snapshot.TurnPolicy.IntentClass != "factual" || snapshot.TurnPolicy.Lane != "answer" {
+		t.Fatalf("TurnPolicy = %#v, want factual/answer from current turn mode", snapshot.TurnPolicy)
+	}
+	if snapshot.PromptEnvelope.IntentClass != "factual" || snapshot.PromptEnvelope.CurrentLane != "answer" {
+		t.Fatalf("PromptEnvelope = %#v, want factual/answer from current turn mode", snapshot.PromptEnvelope)
+	}
+}
+
 func TestSnapshotBuilderExposesAgentItemEventsAsShadowDebugConfig(t *testing.T) {
 	now := time.Date(2026, 4, 28, 9, 30, 0, 0, time.UTC)
 	builder := NewSnapshotBuilder()
@@ -323,7 +357,10 @@ func TestSnapshotBuilderProjectsAgentItemsIntoAgentEventProjection(t *testing.T)
 				{ID: "tool-call-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "payment-api 5xx"}, CreatedAt: now},
 				{ID: "evidence-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "payment-api 5xx increased", Data: evidenceData}, CreatedAt: now},
 				{ID: "approval-1", Type: agentstate.TurnItemTypeApproval, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{Summary: "Rollback payment-api", Data: approvalData}, CreatedAt: now},
-				{ID: "final-1", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "Final answer"}, CreatedAt: now},
+				{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+					Summary: "Final answer",
+					Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+				}, CreatedAt: now},
 			},
 		},
 	}

@@ -1098,6 +1098,7 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-studio-api-notice")).toContainText("内置 Runner API");
     await expect(page.getByTestId("runner-studio-api-notice")).not.toContainText("Runner API upstream");
     await expect(page.getByTestId("runner-studio-api-notice")).not.toContainText("设置 Runner API upstream");
+    await expect(page.getByTestId("runner-studio-api-notice")).not.toContainText("AIOPS_RUNNER_" + "DISABLED");
     await page.getByTestId("runner-api-notice-close").click();
     await expect(page.getByTestId("runner-studio-api-notice")).toHaveCount(0);
     await expect(page.getByTestId("runner-workflow-library")).toBeVisible();

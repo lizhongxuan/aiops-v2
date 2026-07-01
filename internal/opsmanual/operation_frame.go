@@ -87,6 +87,7 @@ func BuildOperationFrameWithCapabilityRegistry(text string, metadata map[string]
 	if len(frame.RequiredParams) == 0 {
 		frame.RequiredParams = nil
 	}
+	applyResourceRoleContext(&frame, text, metadata, registry)
 	return frame
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/tooling"
 )
 
@@ -142,6 +143,35 @@ func TestAgentConfigRunnerBindsOnlyConfiguredChildTools(t *testing.T) {
 	}
 	if got := schemaMessagesText(flattenMessageBatches(managerModel.inputs)); !strings.Contains(got, managerTool.Metadata().Name) || !strings.Contains(strings.ToLower(got), "not found") {
 		t.Fatalf("manager tool call was not surfaced as unavailable tool result:\n%s", got)
+	}
+}
+
+func TestFixedAgentCompilerProducesSectionEnvelope(t *testing.T) {
+	compiler := fixedAgentCompiler{
+		instructionsText: modelrouter.EinoInstructionMessagesText([]*schema.Message{{Role: schema.System, Content: "host child instructions"}}),
+	}
+	compiled, err := compiler.Compile(promptcompiler.CompileContext{
+		Mode:          "execute",
+		RuntimePolicy: "mode: execute",
+		AssembledTools: []tooling.Tool{
+			&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_host", Description: "read host"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(compiled.Envelope.Sections) != 3 {
+		t.Fatalf("sections = %#v, want base/tool/runtime", compiled.Envelope.Sections)
+	}
+	var layers []string
+	for _, section := range compiled.Envelope.Sections {
+		layers = append(layers, section.ID)
+	}
+	if got := strings.Join(layers, ","); got != "base.contract,tool.surface,runtime.state" {
+		t.Fatalf("prompt layers = %q", got)
+	}
+	if strings.Contains(strings.Join(layers, ","), "system") {
+		t.Fatalf("fixed child compiler should not use legacy prompt layers: %#v", layers)
 	}
 }
 

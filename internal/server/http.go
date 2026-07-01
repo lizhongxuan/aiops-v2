@@ -35,14 +35,15 @@ type ChatMessageRequest struct {
 
 // ChatMessageResponse is the JSON response for POST /api/v1/chat/message.
 type ChatMessageResponse struct {
-	Accepted        bool   `json:"accepted"`
-	SessionID       string `json:"sessionId"`
-	TurnID          string `json:"turnId"`
-	ClientTurnID    string `json:"clientTurnId,omitempty"`
-	ClientMessageID string `json:"clientMessageId,omitempty"`
-	Status          string `json:"status"`
-	Output          string `json:"output,omitempty"`
-	Error           string `json:"error,omitempty"`
+	Accepted        bool                    `json:"accepted"`
+	SessionID       string                  `json:"sessionId"`
+	TurnID          string                  `json:"turnId"`
+	ClientTurnID    string                  `json:"clientTurnId,omitempty"`
+	ClientMessageID string                  `json:"clientMessageId,omitempty"`
+	Status          string                  `json:"status"`
+	Output          string                  `json:"output,omitempty"`
+	Error           string                  `json:"error,omitempty"`
+	OpsRun          *appui.ChatRunTraceView `json:"opsRun,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -87,17 +88,16 @@ func chatRequestContent(req ChatMessageRequest) string {
 
 // HTTPServer provides the first-party HTTP REST API and WebSocket entrypoints.
 type HTTPServer struct {
-	ui                      appui.HTTPServices
-	mux                     *http.ServeMux
-	web                     http.Handler
-	runnerStudioHandler     http.Handler
-	runnerStudioUpstreamURL string
-	terminalManager         *terminal.Manager
-	appWSHeartbeatTick      time.Duration
-	appSnapshots            *AppSnapshotBroadcaster
-	agentEvents             appui.AgentEventService
-	promptTraces            appui.PromptTraceService
-	opsManualAutoRetrieval  bool
+	ui                             appui.HTTPServices
+	mux                            *http.ServeMux
+	web                            http.Handler
+	runnerStudioHandler            http.Handler
+	terminalManager                *terminal.Manager
+	appWSHeartbeatTick             time.Duration
+	appSnapshots                   *AppSnapshotBroadcaster
+	agentEvents                    appui.AgentEventService
+	promptTraces                   appui.PromptTraceService
+	opsManualAutoRetrievalOverride *bool
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -135,15 +135,7 @@ func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
 
 func WithOpsManualAutoRetrieval(enabled bool) HTTPServerOption {
 	return func(s *HTTPServer) {
-		s.opsManualAutoRetrieval = enabled
-	}
-}
-
-// WithRunnerStudioUpstreamURL configures the server-side runner API upstream
-// used by same-origin /api/runner-studio/* aggregation routes.
-func WithRunnerStudioUpstreamURL(rawURL string) HTTPServerOption {
-	return func(s *HTTPServer) {
-		s.runnerStudioUpstreamURL = strings.TrimSpace(rawURL)
+		s.opsManualAutoRetrievalOverride = &enabled
 	}
 }
 
@@ -166,14 +158,13 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		}
 	}
 	s := &HTTPServer{
-		ui:                     ui,
-		mux:                    http.NewServeMux(),
-		terminalManager:        terminal.NewManager(),
-		appWSHeartbeatTick:     15 * time.Second,
-		agentEvents:            agentEvents,
-		promptTraces:           appui.NewPromptTraceService(""),
-		appSnapshots:           NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
-		opsManualAutoRetrieval: false,
+		ui:                 ui,
+		mux:                http.NewServeMux(),
+		terminalManager:    terminal.NewManager(),
+		appWSHeartbeatTick: 15 * time.Second,
+		agentEvents:        agentEvents,
+		promptTraces:       appui.NewPromptTraceService(""),
+		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -197,6 +188,7 @@ func (s *HTTPServer) registerRoutes() {
 	// Core chat endpoint
 	s.mux.HandleFunc("/api/v1/chat/message", s.handleChatMessage)
 	s.mux.HandleFunc("/api/v1/chat/stop", s.handleChatStop)
+	s.mux.HandleFunc("/api/v1/chat/ops-runs/", s.handleChatOpsRuns)
 	s.mux.HandleFunc("/api/v1/assistant/transport", s.handleAssistantTransport)
 	s.mux.HandleFunc("/api/v1/assistant/resume", s.handleAssistantTransportResume)
 	s.mux.HandleFunc("/api/v1/host-ops/child-agents/", s.handleHostOpsChildAgents)
@@ -210,6 +202,7 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/sessions/", s.handleSessions)
 	s.mux.HandleFunc("/api/v1/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/v1/llm-config", s.handleLLMConfig)
+	s.mux.HandleFunc("/api/v1/runtime-settings", s.handleRuntimeSettings)
 	s.mux.HandleFunc("/api/v1/terminal-policies", s.handleTerminalPolicies)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces", s.handlePromptTraces)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces/file", s.handlePromptTraceFile)
@@ -222,6 +215,9 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/mcp/servers", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/", s.handleMCPServers)
 	s.mux.HandleFunc("/api/v1/mcp/servers/refresh", s.handleMCPServersRefresh)
+	s.mux.HandleFunc("/api/v2/runtime/mcp-health", s.handleRuntimeMCPHealth)
+	s.mux.HandleFunc("/api/v2/runtime/mcp-health/", s.handleRuntimeMCPHealth)
+	s.registerCapabilityRoutes()
 	s.registerAgentProfileRoutes()
 	s.mux.Handle("/api/v1/auth/", buildAuthRouter(s.ui, http.NotFoundHandler()))
 	s.mux.HandleFunc("/api/v1/terminal/sessions", s.handleTerminalSessions)
@@ -234,6 +230,8 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/ops-manuals/", s.handleOpsManuals)
 	s.mux.HandleFunc("/api/v1/coroot/webhook", s.handleCorootWebhook)
 	s.mux.HandleFunc("/api/v1/opsgraph/lookup", s.handleOpsGraphLookup)
+	s.mux.HandleFunc("/api/v1/opsgraph/graphs", s.handleOpsGraphGraphs)
+	s.mux.HandleFunc("/api/v1/opsgraph/graphs/", s.handleOpsGraphGraphs)
 	s.mux.HandleFunc("/api/v1/opsgraph/entities/", s.handleOpsGraphEntity)
 	s.mux.HandleFunc("/api/v1/runbooks", s.handleRunbooks)
 	s.mux.HandleFunc("/api/v1/runbooks/", s.handleRunbooks)
@@ -319,6 +317,7 @@ func (s *HTTPServer) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 		Status:          result.Status,
 		Output:          result.Output,
 		Error:           result.Error,
+		OpsRun:          result.OpsRun,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

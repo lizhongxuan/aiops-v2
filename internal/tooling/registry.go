@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
@@ -167,14 +168,13 @@ func (r *Registry) AssembleToolsWithOptions(session, mode string, opts AssembleO
 			continue
 		}
 		ctx := ToolContext{SessionType: session, Mode: mode, Metadata: meta}
-		alwaysCallable := IsAlwaysModelCallableTool(meta)
-		if !alwaysCallable && !t.IsEnabled(ctx) {
+		if opts.Filter != nil && !opts.Filter(t, ctx, meta) {
 			continue
 		}
-		if !alwaysCallable && !isVisibleForAssembleOptions(meta, opts) {
+		if !t.IsEnabled(ctx) {
 			continue
 		}
-		if !alwaysCallable && opts.Filter != nil && !opts.Filter(t, ctx, meta) {
+		if !isVisibleForAssembleOptions(meta, opts) {
 			continue
 		}
 		name := meta.Name
@@ -304,11 +304,12 @@ func toolEnabled(meta ToolMetadata, enabled []string) bool {
 }
 
 func profileAllowsTool(meta ToolMetadata, profile string) bool {
+	profile = strings.TrimSpace(profile)
 	if len(meta.Profiles) == 0 {
 		return true
 	}
 	for _, candidate := range meta.Profiles {
-		if candidate == profile {
+		if strings.TrimSpace(candidate) == profile {
 			return true
 		}
 	}

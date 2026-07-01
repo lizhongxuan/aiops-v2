@@ -16,6 +16,9 @@ func ProjectTurnItemsToAgentEvents(sessionID, turnID string, items []agentstate.
 	events := make([]AgentEvent, 0, len(items))
 	seen := map[string]bool{}
 	for _, item := range items {
+		if isUserProvidedEvidenceItem(item) {
+			continue
+		}
 		event, ok := agentEventFromTurnItem(sessionID, turnID, item)
 		if !ok {
 			continue
@@ -28,6 +31,11 @@ func ProjectTurnItemsToAgentEvents(sessionID, turnID string, items []agentstate.
 		events = append(events, event)
 	}
 	return events
+}
+
+func isUserProvidedEvidenceItem(item agentstate.TurnItem) bool {
+	return item.Type == agentstate.TurnItemTypeEvidence &&
+		strings.EqualFold(strings.TrimSpace(item.Payload.Kind), "user_provided")
 }
 
 func agentEventFromTurnItem(sessionID, turnID string, item agentstate.TurnItem) (AgentEvent, bool) {
@@ -68,7 +76,7 @@ func eventKindForTurnItem(typ agentstate.TurnItemType) AgentEventKind {
 		return AgentEventApproval
 	case agentstate.TurnItemTypeEvidence:
 		return AgentEventEvidence
-	case agentstate.TurnItemTypeFinalAnswer:
+	case agentstate.TurnItemTypeAssistantMessage:
 		return AgentEventAssistant
 	case agentstate.TurnItemTypeError:
 		return AgentEventTurn
@@ -89,7 +97,12 @@ func eventPhaseForTurnItem(typ agentstate.TurnItemType, status agentstate.ItemSt
 	switch typ {
 	case agentstate.TurnItemTypeToolCall:
 		return AgentEventPhaseStarted
-	case agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypeFinalAnswer:
+	case agentstate.TurnItemTypeAssistantMessage:
+		if status == agentstate.ItemStatusRunning {
+			return AgentEventPhaseDelta
+		}
+		return AgentEventPhaseCompleted
+	case agentstate.TurnItemTypeToolResult:
 		return AgentEventPhaseCompleted
 	case agentstate.TurnItemTypePlan:
 		return AgentEventPhaseUpdated
@@ -126,7 +139,7 @@ func eventStatusForTurnItem(status agentstate.ItemStatus) AgentEventStatus {
 
 func eventVisibilityForTurnItem(typ agentstate.TurnItemType) AgentEventVisibility {
 	switch typ {
-	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypePlan, agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeFinalAnswer:
+	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypePlan, agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeAssistantMessage:
 		return AgentEventVisibilityPrimary
 	default:
 		return AgentEventVisibilityDebug
@@ -150,8 +163,8 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 		tool := decodeToolPayloadData(item.Payload.Data)
 		applyToolPayloadEnvelope(&tool, item.Payload, false)
 		payload = tool
-	case agentstate.TurnItemTypeFinalAnswer:
-		payload = AssistantPayload{Text: summary, Channel: "final"}
+	case agentstate.TurnItemTypeAssistantMessage:
+		payload = assistantPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypePlan:
 		payload = planPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeApproval:
@@ -167,6 +180,33 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 	}
 	data, _ := json.Marshal(payload)
 	return data
+}
+
+type assistantMessageProjectionPayload struct {
+	Phase     string `json:"phase"`
+	MessageID string `json:"messageId"`
+}
+
+func assistantPayloadFromTurnItem(item agentstate.TurnItem) AssistantPayload {
+	payload := AssistantPayload{
+		Text:    strings.TrimSpace(item.Payload.Summary),
+		Channel: "commentary",
+	}
+	if len(item.Payload.Data) == 0 {
+		return payload
+	}
+	var raw assistantMessageProjectionPayload
+	if err := json.Unmarshal(item.Payload.Data, &raw); err != nil {
+		return payload
+	}
+	switch strings.TrimSpace(raw.Phase) {
+	case "final_answer":
+		payload.Channel = "final"
+	case "commentary":
+		payload.Channel = "commentary"
+	}
+	payload.MessageID = strings.TrimSpace(raw.MessageID)
+	return payload
 }
 
 func modelCallPayloadFromTurnItem(item agentstate.TurnItem) map[string]any {

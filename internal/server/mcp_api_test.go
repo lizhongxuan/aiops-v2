@@ -175,11 +175,54 @@ func TestMCPServersAPI(t *testing.T) {
 	if refreshResp.StatusCode != http.StatusOK {
 		t.Fatalf("refresh status = %d, body = %s", refreshResp.StatusCode, bodyString(refreshResp))
 	}
+
+	var health struct {
+		Items []appui.MCPHealthView `json:"items"`
+	}
+	if err := getJSON(ts.URL+"/api/v2/runtime/mcp-health", &health); err != nil {
+		t.Fatalf("GET /api/v2/runtime/mcp-health error = %v", err)
+	}
+	if generator := findMCPHealthAPIItem(health.Items, "generator"); generator == nil || generator.Status != "unhealthy" || generator.AvailableToolCount != 1 {
+		t.Fatalf("generator runtime health = %+v, want unhealthy with tool count", generator)
+	}
+
+	var one appui.MCPHealthView
+	if err := getJSON(ts.URL+"/api/v2/runtime/mcp-health/generator", &one); err != nil {
+		t.Fatalf("GET /api/v2/runtime/mcp-health/generator error = %v", err)
+	}
+	if one.ServerID != "generator" || one.Status != "unhealthy" || strings.Contains(one.LastError, "secret") {
+		t.Fatalf("single runtime health = %+v", one)
+	}
+
+	refreshOneResp, err := http.Post(ts.URL+"/api/v2/runtime/mcp-health/search/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /api/v2/runtime/mcp-health/search/refresh error = %v", err)
+	}
+	defer refreshOneResp.Body.Close()
+	if refreshOneResp.StatusCode != http.StatusOK {
+		t.Fatalf("single health refresh status = %d, body = %s", refreshOneResp.StatusCode, bodyString(refreshOneResp))
+	}
+	var refreshedOne appui.MCPHealthView
+	if err := json.NewDecoder(refreshOneResp.Body).Decode(&refreshedOne); err != nil {
+		t.Fatalf("decode single health refresh error = %v", err)
+	}
+	if refreshedOne.ServerID != "search" || refreshedOne.Status != "healthy" {
+		t.Fatalf("refreshed single runtime health = %+v, want healthy search", refreshedOne)
+	}
 }
 
 func findMCPAPIItem(items []appui.MCPServerView, name string) *appui.MCPServerView {
 	for i := range items {
 		if items[i].Name == name {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func findMCPHealthAPIItem(items []appui.MCPHealthView, serverID string) *appui.MCPHealthView {
+	for i := range items {
+		if items[i].ServerID == serverID {
 			return &items[i]
 		}
 	}

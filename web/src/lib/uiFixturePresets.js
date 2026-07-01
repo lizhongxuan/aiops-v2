@@ -298,6 +298,427 @@ export function createChatFixtureSessions(overrides = {}) {
   };
 }
 
+export function createAgentRunReadModelFixtureState(overrides = {}) {
+  const state = createChatFixtureState({
+    sessionId: "agent-run-read-model",
+    threadId: "agent-run-read-model",
+    status: "working",
+    cards: [
+      {
+        id: "user-agent-run-read-model",
+        type: "UserMessageCard",
+        role: "user",
+        text: "修复 checkout 服务异常",
+        createdAt: "2026-06-23T01:00:00Z",
+        updatedAt: "2026-06-23T01:00:00Z",
+      },
+    ],
+    runtime: {
+      turn: { active: true, phase: "thinking" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    finalText: "我会基于已采集证据继续处理 checkout 服务异常。",
+  });
+  const turnId = state.currentTurnId;
+  if (state.turns?.[turnId]) {
+    state.turns[turnId].process = [];
+    state.turns[turnId].updatedAt = "2026-06-23T01:00:01Z";
+  }
+  state.opsRun = {
+    id: "opsrun-agent-run-read-model",
+    sessionId: "agent-run-read-model",
+    turnId,
+    source: "chat",
+    status: "working",
+    title: "legacy title should not win",
+    routeMode: "chat_advisory",
+    targetSummary: "legacy-target",
+    evidenceCount: 0,
+    currentStep: "legacy current step",
+    currentStepId: "step-coroot",
+    checkpointId: "checkpoint-agent-run-1",
+    agentRun: {
+      id: "opsrun-agent-run-read-model",
+      sessionId: "agent-run-read-model",
+      rootTurnId: turnId,
+      activeTurnId: turnId,
+      userGoal: "修复 checkout 服务异常",
+      normalizedGoal: "repair checkout service incident",
+      routeMode: "multi_host_ops",
+      profile: "manager",
+      status: "running",
+      targetSummary: "service:checkout",
+      currentStep: "正在读取 Coroot 指标",
+      currentStepId: "step-coroot",
+      checkpointId: "checkpoint-agent-run-1",
+      evidenceCount: 4,
+      startedAt: "2026-06-23T01:00:00Z",
+      updatedAt: "2026-06-23T01:00:01Z",
+      steps: [
+        {
+          id: "step-search",
+          runId: "opsrun-agent-run-read-model",
+          turnId,
+          iteration: 1,
+          kind: "tool_search",
+          status: "completed",
+          title: "搜索可用工具",
+          toolName: "tool_search",
+          inputSummary: "checkout service metrics",
+        },
+        {
+          id: "step-coroot",
+          runId: "opsrun-agent-run-read-model",
+          turnId,
+          iteration: 1,
+          kind: "tool_call",
+          status: "completed",
+          title: "读取 Coroot 指标",
+          toolName: "coroot.service_metrics",
+          toolCallId: "call-coroot-1",
+          outputSummary: "p95 latency high",
+          targetRefs: ["service:checkout"],
+          evidenceRefs: ["evidence-coroot-1"],
+          completedAt: "2026-06-23T01:00:01Z",
+        },
+      ],
+    },
+  };
+  return {
+    ...state,
+    sessionId: "agent-run-read-model",
+    threadId: "agent-run-read-model",
+    lastActivityAt: "2026-06-23T01:00:01Z",
+    ...overrides,
+  };
+}
+
+export function createAgentRunReadModelFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "agent-run-read-model",
+    sessions: [
+      {
+        id: "agent-run-read-model",
+        kind: "single_host",
+        title: "AgentRun read model",
+        status: "running",
+        messageCount: 1,
+        preview: "修复 checkout 服务异常",
+        lastActivityAt: "2026-06-23T01:00:01Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+export function createSecondClosureApprovalCheckpointFixtureState(overrides = {}) {
+  const now = "2026-06-23T02:00:00Z";
+  const state = createChatFixtureState({
+    sessionId: "second-closure-approval-checkpoints",
+    threadId: "second-closure-approval-checkpoints",
+    status: "blocked",
+    cards: [
+      {
+        id: "user-second-closure-approval",
+        type: "UserMessageCard",
+        role: "user",
+        text: "@web-02 修复 nginx reload 失败，执行 reload 前必须审批。",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    runtime: {
+      turn: { active: true, phase: "waiting_approval", hostId: "web-02" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    approvals: [
+      {
+        id: "approval-second-closure-reload",
+        status: "pending",
+        command: "systemctl reload nginx",
+        reason: "需要审批后才能执行变更命令。",
+        requestedAt: "2026-06-23T02:00:04Z",
+      },
+    ],
+    finalText: "等待用户审批；审批后将从 checkpoint-after-approval-request 继续。",
+  });
+  const turnId = state.currentTurnId;
+  state.turns[turnId] = {
+    ...state.turns[turnId],
+    status: "blocked",
+    updatedAt: "2026-06-23T02:00:05Z",
+    process: [
+      {
+        id: "checkpoint-before-approval",
+        kind: "system",
+        displayKind: "checkpoint.before_approval",
+        status: "completed",
+        text: "checkpoint before approval: observed facts and target refs captured before requesting approval",
+        checkpointId: "checkpoint-before-approval",
+        targetSummary: "host:web-02 service:nginx",
+        evidenceRefs: ["evidence-nginx-log"],
+        updatedAt: "2026-06-23T02:00:02Z",
+      },
+      {
+        id: "approval-second-closure-reload",
+        kind: "approval",
+        displayKind: "approval.command",
+        status: "blocked",
+        text: "approval required: systemctl reload nginx",
+        command: "systemctl reload nginx",
+        approvalId: "approval-second-closure-reload",
+        checkpointId: "checkpoint-before-approval",
+        targetSummary: "host:web-02 service:nginx",
+        updatedAt: "2026-06-23T02:00:04Z",
+      },
+      {
+        id: "checkpoint-after-approval-request",
+        kind: "system",
+        displayKind: "checkpoint.after_approval_request",
+        status: "blocked",
+        text: "checkpoint after approval request: waiting to resume with approved command or fallback analysis",
+        checkpointId: "checkpoint-after-approval-request",
+        targetSummary: "host:web-02 service:nginx",
+        evidenceRefs: ["evidence-nginx-log"],
+        updatedAt: "2026-06-23T02:00:05Z",
+      },
+    ],
+  };
+  state.opsRun = {
+    id: "opsrun-second-closure-approval",
+    sessionId: "second-closure-approval-checkpoints",
+    turnId,
+    source: "chat",
+    status: "blocked",
+    title: "@web-02 修复 nginx reload 失败",
+    routeMode: "host_bound_ops",
+    targetSummary: "host:web-02 service:nginx",
+    currentStep: "等待审批",
+    currentStepId: "approval-second-closure-reload",
+    checkpointId: "checkpoint-after-approval-request",
+    evidenceCount: 1,
+    agentRun: {
+      id: "opsrun-second-closure-approval",
+      sessionId: "second-closure-approval-checkpoints",
+      rootTurnId: turnId,
+      activeTurnId: turnId,
+      userGoal: "@web-02 修复 nginx reload 失败",
+      normalizedGoal: "nginx reload repair with approval",
+      routeMode: "host_bound_ops",
+      status: "running",
+      targetSummary: "host:web-02 service:nginx",
+      currentStep: "等待审批",
+      currentStepId: "approval-second-closure-reload",
+      checkpointId: "checkpoint-after-approval-request",
+      evidenceCount: 1,
+      steps: [
+        {
+          id: "checkpoint-before-approval",
+          kind: "checkpoint",
+          status: "completed",
+          title: "checkpoint before approval",
+          checkpointId: "checkpoint-before-approval",
+          targetRefs: ["host:web-02", "service:nginx"],
+          evidenceRefs: ["evidence-nginx-log"],
+        },
+        {
+          id: "approval-second-closure-reload",
+          kind: "approval",
+          status: "waiting_approval",
+          title: "approval required: systemctl reload nginx",
+          approvalId: "approval-second-closure-reload",
+          checkpointId: "checkpoint-before-approval",
+        },
+        {
+          id: "checkpoint-after-approval-request",
+          kind: "checkpoint",
+          status: "waiting_approval",
+          title: "checkpoint after approval request",
+          checkpointId: "checkpoint-after-approval-request",
+          targetRefs: ["host:web-02", "service:nginx"],
+          evidenceRefs: ["evidence-nginx-log"],
+        },
+      ],
+    },
+  };
+  return {
+    ...state,
+    sessionId: "second-closure-approval-checkpoints",
+    threadId: "second-closure-approval-checkpoints",
+    lastActivityAt: "2026-06-23T02:00:05Z",
+    ...overrides,
+  };
+}
+
+export function createSecondClosureApprovalCheckpointFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "second-closure-approval-checkpoints",
+    sessions: [
+      {
+        id: "second-closure-approval-checkpoints",
+        kind: "single_host",
+        title: "Approval checkpoints",
+        status: "blocked",
+        messageCount: 1,
+        preview: "@web-02 修复 nginx reload 失败",
+        selectedHostId: "web-02",
+        lastActivityAt: "2026-06-23T02:00:05Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+export function createSecondClosureErrorRecoveryCheckpointFixtureState(overrides = {}) {
+  const now = "2026-06-23T02:10:00Z";
+  const state = createChatFixtureState({
+    sessionId: "second-closure-error-recovery-checkpoint",
+    threadId: "second-closure-error-recovery-checkpoint",
+    status: "working",
+    cards: [
+      {
+        id: "user-second-closure-error",
+        type: "UserMessageCard",
+        role: "user",
+        text: "排查 Redis 复制延迟，工具失败时继续普通分析。",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    runtime: {
+      turn: { active: true, phase: "thinking", hostId: "workspace" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    finalText: "工具失败后已进入 error recovery checkpoint，继续基于已有证据和可用工具分析。",
+  });
+  const turnId = state.currentTurnId;
+  state.turns[turnId] = {
+    ...state.turns[turnId],
+    status: "completed",
+    updatedAt: "2026-06-23T02:10:07Z",
+    process: [
+      {
+        id: "tool-redis-info",
+        kind: "tool",
+        displayKind: "redis.info",
+        status: "failed",
+        text: "redis.info failed: connection timeout",
+        outputPreview: "connection timeout while reading replication info",
+        targetSummary: "service:redis",
+        updatedAt: "2026-06-23T02:10:03Z",
+      },
+      {
+        id: "checkpoint-error-recovery",
+        kind: "system",
+        displayKind: "checkpoint.error_recovery",
+        status: "completed",
+        text: "error recovery checkpoint: captured failed tool output, preserved evidence, and continued ordinary AI Chat analysis",
+        checkpointId: "checkpoint-error-recovery",
+        targetSummary: "service:redis",
+        evidenceRefs: ["tool-redis-info"],
+        updatedAt: "2026-06-23T02:10:04Z",
+      },
+      {
+        id: "assistant-error-recovery-final",
+        kind: "assistant",
+        displayKind: "assistant.message", phase: "final_answer", streamState: "complete",
+        status: "completed",
+        text: "继续普通分析：需要补充复制角色、offset 差异、网络延迟和慢日志证据。",
+        updatedAt: "2026-06-23T02:10:07Z",
+      },
+    ],
+    final: {
+      id: `${turnId}:final`,
+      text: "继续普通分析：需要补充复制角色、offset 差异、网络延迟和慢日志证据。",
+      status: "completed",
+    },
+  };
+  state.opsRun = {
+    id: "opsrun-second-closure-error-recovery",
+    sessionId: "second-closure-error-recovery-checkpoint",
+    turnId,
+    source: "chat",
+    status: "completed",
+    title: "Redis 复制延迟排查",
+    routeMode: "chat_advisory",
+    targetSummary: "service:redis",
+    currentStep: "继续普通分析",
+    currentStepId: "checkpoint-error-recovery",
+    checkpointId: "checkpoint-error-recovery",
+    evidenceCount: 1,
+    agentRun: {
+      id: "opsrun-second-closure-error-recovery",
+      sessionId: "second-closure-error-recovery-checkpoint",
+      rootTurnId: turnId,
+      activeTurnId: turnId,
+      userGoal: "排查 Redis 复制延迟",
+      normalizedGoal: "redis replication lag diagnosis",
+      routeMode: "chat_advisory",
+      status: "completed",
+      targetSummary: "service:redis",
+      currentStep: "继续普通分析",
+      currentStepId: "checkpoint-error-recovery",
+      checkpointId: "checkpoint-error-recovery",
+      evidenceCount: 1,
+      steps: [
+        {
+          id: "tool-redis-info",
+          kind: "tool_call",
+          status: "failed",
+          title: "redis.info failed",
+          toolName: "redis.info",
+          outputSummary: "connection timeout while reading replication info",
+          targetRefs: ["service:redis"],
+        },
+        {
+          id: "checkpoint-error-recovery",
+          kind: "checkpoint",
+          status: "completed",
+          title: "error recovery checkpoint",
+          checkpointId: "checkpoint-error-recovery",
+          targetRefs: ["service:redis"],
+          evidenceRefs: ["tool-redis-info"],
+        },
+        {
+          id: "assistant-error-recovery-final",
+          kind: "final_response",
+          status: "completed",
+          title: "继续普通分析",
+          outputSummary: "需要补充复制角色、offset 差异、网络延迟和慢日志证据。",
+        },
+      ],
+    },
+  };
+  return {
+    ...state,
+    sessionId: "second-closure-error-recovery-checkpoint",
+    threadId: "second-closure-error-recovery-checkpoint",
+    lastActivityAt: "2026-06-23T02:10:07Z",
+    ...overrides,
+  };
+}
+
+export function createSecondClosureErrorRecoveryCheckpointFixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "second-closure-error-recovery-checkpoint",
+    sessions: [
+      {
+        id: "second-closure-error-recovery-checkpoint",
+        kind: "single_host",
+        title: "Error recovery checkpoint",
+        status: "completed",
+        messageCount: 1,
+        preview: "Redis 复制延迟排查",
+        lastActivityAt: "2026-06-23T02:10:07Z",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 export function createHostOpsThreeHostsFixtureState(overrides = {}) {
   const now = "2026-06-04T10:00:00Z";
   const state = createChatFixtureState({
@@ -1209,7 +1630,7 @@ export function createToolProgressiveDiscoveryFixtureState(overrides = {}) {
     {
       id: "tool-progressive-final-evidence",
       kind: "assistant",
-      displayKind: "assistant.final",
+      displayKind: "assistant.message", phase: "final_answer", streamState: "complete",
       status: "completed",
       text: finalText,
       updatedAt: "2026-06-06T02:00:12Z",
@@ -1406,7 +1827,7 @@ export function createSkillsMcpProgressiveDiscoveryFixtureState(overrides = {}) 
     { id: "mcp-instruction-delta", kind: "system", displayKind: "mcp_instruction_delta", status: "completed", text: "mcp instruction delta: added synthetic-docs", outputPreview: "server=synthetic-docs action=added", updatedAt: "2026-06-06T03:00:08Z" },
     { id: "mcp-sparse-reminder", kind: "system", displayKind: "mcp_instruction_reminder", status: "completed", text: "mcp sparse reminder", outputPreview: "server=synthetic-docs hash=sha256:synthetic summary=bounded resource reads", updatedAt: "2026-06-06T03:00:10Z" },
     { id: "mcp-artifact", kind: "tool", displayKind: "read_mcp_resource", status: "completed", text: "mcp resource artifact: application/pdf", outputPreview: "artifactRef=store://artifacts/mcp-resource-synthetic.pdf metadataOnly=true", updatedAt: "2026-06-06T03:00:12Z" },
-    { id: "skills-mcp-final-evidence", kind: "assistant", displayKind: "assistant.final", status: "completed", text: finalText, updatedAt: "2026-06-06T03:00:16Z" },
+    { id: "skills-mcp-final-evidence", kind: "assistant", displayKind: "assistant.message", phase: "final_answer", streamState: "complete", status: "completed", text: finalText, updatedAt: "2026-06-06T03:00:16Z" },
   ];
   return {
     ...state,
@@ -1498,7 +1919,7 @@ export function createMultiAgentSchedulingFixtureState(overrides = {}) {
     { id: "multi-agent-wait-notifications", kind: "tool", displayKind: "wait_agent", status: "completed", text: "wait_agent notifications: completed", outputPreview: "synthetic.explorer completed with manager summary", updatedAt: "2026-06-06T04:00:14Z" },
     { id: "multi-agent-continuation", kind: "system", displayKind: "agent_continuation_decision", status: "completed", text: "continuation decision: continue_existing", outputPreview: "agent=synthetic.explorer reason=active_context_matches", updatedAt: "2026-06-06T04:00:16Z" },
     { id: "multi-agent-verifier", kind: "tool", displayKind: "verification_agent", status: "completed", text: "verification agent: PASS", outputPreview: "checked=synthetic.evidence_bundle result=PASS", updatedAt: "2026-06-06T04:00:18Z" },
-    { id: "multi-agent-final-synthesis", kind: "system", displayKind: "assistant.final", status: "completed", text: "final synthesis: evidence checked", outputPreview: finalText, updatedAt: "2026-06-06T04:00:20Z" },
+    { id: "multi-agent-final-synthesis", kind: "assistant", displayKind: "assistant.message", phase: "final_answer", streamState: "complete", status: "completed", text: "final synthesis: evidence checked", outputPreview: finalText, updatedAt: "2026-06-06T04:00:20Z" },
   ];
   return {
     ...state,
@@ -1638,7 +2059,7 @@ export function createVerificationCompletionSafetyPermissionFixtureState(overrid
     {
       id: "verification-completion-safety-final",
       kind: "assistant",
-      displayKind: "assistant.final",
+      displayKind: "assistant.message", phase: "final_answer", streamState: "complete",
       status: "completed",
       text: finalText,
       updatedAt: "2026-06-07T02:20:18Z",
@@ -2043,6 +2464,315 @@ export function createCorootRcaReportFixtureSessions(overrides = {}) {
   });
 }
 
+export function createCodexLikeProcessTranscriptFixtureState(overrides = {}) {
+  const now = "2026-06-27T10:00:00.000Z";
+  const turnId = "turn-codex-like-process";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "codex-like-process-transcript",
+    threadId: "codex-like-process-transcript",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-27T10:00:08.000Z",
+        updatedAt: "2026-06-27T10:00:08.000Z",
+        user: {
+          id: "user-codex-like-process",
+          text: "@server-local 查看cpu情况",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-tool-search",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-search-tools"],
+            updatedAt: "2026-06-27T10:00:01.000Z",
+          },
+          {
+            id: "tool-search-tools",
+            kind: "tool",
+            displayKind: "tool_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "tool_search",
+            inputSummary: "host CPU monitoring status check server local",
+            queries: ["host CPU monitoring status check server local"],
+            updatedAt: "2026-06-27T10:00:02.000Z",
+          },
+          {
+            id: "assistant-exec-command",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-cpu"],
+            updatedAt: "2026-06-27T10:00:03.000Z",
+          },
+          {
+            id: "cmd-cpu",
+            kind: "command",
+            foldGroupKind: "command",
+            status: "completed",
+            text: "top -l 1 | head",
+            command: "top -l 1 | head",
+            outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
+            updatedAt: "2026-06-27T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-codex-like-process",
+          text: "CPU 当前空闲约 73%，没有看到持续高负载；建议继续观察 load average 和异常进程。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 10,
+    updatedAt: "2026-06-27T10:00:08.000Z",
+    ...overrides,
+  };
+}
+
+export function createCodexLikeProcessTranscriptFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "codex-like-process-transcript",
+    sessions: [
+      {
+        id: "codex-like-process-transcript",
+        kind: "single_host",
+        title: "Codex-like process transcript",
+        status: "completed",
+        messageCount: 1,
+        preview: "@server-local 查看cpu情况",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-27T10:00:08.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createCodexLikeRunningSearchFixtureState(overrides = {}) {
+  const state = createCodexLikeProcessTranscriptFixtureState({
+    sessionId: "codex-like-running-search",
+    threadId: "codex-like-running-search",
+    status: "working",
+  });
+  const turnId = state.currentTurnId;
+  const turn = state.turns[turnId];
+  turn.status = "working";
+  turn.completedAt = undefined;
+  turn.updatedAt = "2026-06-27T10:00:02.000Z";
+  turn.process = [
+    {
+      id: "assistant-tool-search",
+      kind: "assistant",
+      displayKind: "assistant.message",
+      phase: "commentary",
+      streamState: "complete",
+      status: "completed",
+      text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+      commentarySource: "runtime_tool_intent",
+      toolCallIds: ["call-search-tools"],
+      updatedAt: "2026-06-27T10:00:01.000Z",
+    },
+    {
+      id: "tool-search-tools",
+      kind: "tool",
+      displayKind: "web_search",
+      foldGroupKind: "web_lookup",
+      status: "running",
+      text: "正在搜索网页",
+      inputSummary: "pg_autoctl standby timeline higher than primary",
+      queries: ["pg_autoctl standby timeline higher than primary"],
+      updatedAt: "2026-06-27T10:00:02.000Z",
+    },
+  ];
+  turn.final = undefined;
+  state.runtimeLiveness.activeTurns = { [turnId]: true };
+  state.seq = 4;
+  state.updatedAt = "2026-06-27T10:00:02.000Z";
+  return {
+    ...state,
+    ...overrides,
+  };
+}
+
+export function createCodexLikeRunningSearchFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "codex-like-running-search",
+    sessions: [
+      {
+        id: "codex-like-running-search",
+        kind: "single_host",
+        title: "Codex-like running search",
+        status: "running",
+        messageCount: 1,
+        preview: "@server-local 查看cpu情况",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-27T10:00:02.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createWebSearchOpenTranscriptFixtureState(overrides = {}) {
+  const now = "2026-06-29T10:00:00.000Z";
+  const turnId = "turn-web-search-open";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "web-search-open-transcript",
+    threadId: "web-search-open-transcript",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-29T10:00:08.000Z",
+        updatedAt: "2026-06-29T10:00:08.000Z",
+        user: {
+          id: "user-web-search-open",
+          text: "查 PostgreSQL recovery_target_timeline 官方文档",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-search-plan",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先搜索官方文档来源，再打开最相关页面读取正文。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-web-search"],
+            updatedAt: "2026-06-29T10:00:01.000Z",
+          },
+          {
+            id: "web-search-postgres",
+            kind: "search",
+            displayKind: "web_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "PostgreSQL recovery_target_timeline official docs",
+            inputSummary: "PostgreSQL recovery_target_timeline official docs",
+            queries: ["PostgreSQL recovery_target_timeline official docs"],
+            results: [
+              {
+                title: "PostgreSQL official docs: recovery_target_timeline setting",
+                url: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+                snippet: "Official setting reference for selecting latest, current, or a specific recovery target timeline.",
+              },
+              {
+                title: "PostgreSQL official docs: continuous archiving and point-in-time recovery",
+                url: "https://www.postgresql.org/docs/current/continuous-archiving.html",
+                snippet: "Official PostgreSQL recovery guidance, including timeline behavior during archive recovery.",
+              },
+            ],
+            updatedAt: "2026-06-29T10:00:02.000Z",
+          },
+          {
+            id: "assistant-open-docs",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会打开官方参数页面，确认适用范围后再总结。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-web-open"],
+            updatedAt: "2026-06-29T10:00:03.000Z",
+          },
+          {
+            id: "web-open-postgres",
+            kind: "search",
+            displayKind: "web_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+            inputSummary: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+            queries: ["https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE"],
+            results: [
+              {
+                title: "PostgreSQL official docs: recovery_target_timeline setting",
+                url: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+                snippet: "The setting controls which timeline to recover into during archive recovery.",
+                fetched: true,
+                text: "Full bounded page text is intentionally not rendered in the process transcript.",
+              },
+            ],
+            updatedAt: "2026-06-29T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-web-search-open",
+          text: "结论：`recovery_target_timeline=latest` 适用于需要沿最新时间线恢复的场景；实际执行前仍需结合当前集群拓扑和备份状态验证。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 6,
+    updatedAt: "2026-06-29T10:00:08.000Z",
+    ...overrides,
+  };
+}
+
+export function createWebSearchOpenTranscriptFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "web-search-open-transcript",
+    sessions: [
+      {
+        id: "web-search-open-transcript",
+        kind: "single_host",
+        title: "Web search open transcript",
+        status: "completed",
+        messageCount: 1,
+        preview: "查 PostgreSQL recovery_target_timeline 官方文档",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-29T10:00:08.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 export function createTaskTodoPlanModeFixtureState(overrides = {}) {
   const now = "2026-06-07T01:30:00Z";
   const planId = "plan-synthetic-task-todo-1";
@@ -2283,6 +3013,236 @@ export function createTaskTodoPlanModeFixtureSessions(overrides = {}) {
   };
 }
 
+function createRuntimeContractV3CompletedTurn({
+  id,
+  status = "completed",
+  user,
+  process = [],
+  final,
+  finalStatus = "completed",
+}) {
+  return {
+    id,
+    status,
+    startedAt: "2026-06-24T01:00:00Z",
+    completedAt: "2026-06-24T01:00:08Z",
+    user: {
+      id: `${id}:user`,
+      text: user,
+      createdAt: "2026-06-24T01:00:00Z",
+    },
+    process,
+    final: {
+      id: `${id}:final`,
+      status: finalStatus,
+      text: final,
+    },
+  };
+}
+
+export function createRuntimeContractV3FixtureState(overrides = {}) {
+  const turnOrder = [
+    "turn-approval-denied",
+    "turn-context-compacted",
+    "turn-pending-input",
+    "turn-cancelled",
+    "turn-resource-lock",
+    "turn-approval-pause",
+  ];
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "fixture-runtime-contract-v3",
+    threadId: "fixture-runtime-contract-v3",
+    status: "blocked",
+    currentTurnId: "turn-approval-pause",
+    turnOrder,
+    turns: {
+      "turn-approval-denied": createRuntimeContractV3CompletedTurn({
+        id: "turn-approval-denied",
+        user: "Reject the risky restart and continue with read-only evidence.",
+        process: [
+          {
+            id: "approval-denied-audit",
+            kind: "approval",
+            status: "rejected",
+            text: "approval denied continuation marker",
+            command: "systemctl restart postgresql",
+            approvalId: "approval-denied-v3",
+          },
+        ],
+        final:
+          "approval denied continuation marker: continued with read-only diagnostics after operator rejection.",
+      }),
+      "turn-context-compacted": {
+        ...createRuntimeContractV3CompletedTurn({
+          id: "turn-context-compacted",
+          user: "Continue the long RCA after context compaction.",
+          final: "Context compaction completed and the turn continued.",
+        }),
+        contextGovernance: [
+          {
+            id: "ctx-v3-compacted",
+            layer: "L4",
+            kind: "context.compaction.completed",
+            message:
+              "context compacted marker: retained current task, approvals, evidence refs, and child-agent status.",
+            referenceIds: ["evidence:pg-timeline", "approval:restart"],
+          },
+        ],
+      },
+      "turn-pending-input": createRuntimeContractV3CompletedTurn({
+        id: "turn-pending-input",
+        user: "While the turn is running, also inspect inode pressure.",
+        process: [
+          {
+            id: "pending-input-steer",
+            kind: "system",
+            displayKind: "pending_input.accepted",
+            status: "completed",
+            text:
+              "pending input accepted / steer marker: queued follow-up input into the active regular turn.",
+          },
+        ],
+        final: "The queued steer was merged into the running turn.",
+      }),
+      "turn-cancelled": createRuntimeContractV3CompletedTurn({
+        id: "turn-cancelled",
+        status: "canceled",
+        user: "Cancel the current operation.",
+        process: [
+          {
+            id: "aborted-tool-marker",
+            kind: "tool",
+            displayKind: "aiops.tool_aborted/v1",
+            status: "rejected",
+            text:
+              "turn cancelled / aborted tool marker: active tool call aborted and partial execution risk preserved.",
+            outputPreview:
+              "partialExecutionRisk=unknown; no completed mutation should be inferred.",
+          },
+        ],
+        final: "The turn was cancelled by the operator.",
+        finalStatus: "failed",
+      }),
+      "turn-resource-lock": createRuntimeContractV3CompletedTurn({
+        id: "turn-resource-lock",
+        user: "Try a conflicting service mutation.",
+        process: [
+          {
+            id: "resource-lock-conflict",
+            kind: "tool",
+            displayKind: "resource_lock.conflict",
+            status: "blocked",
+            text:
+              "resource lock conflict marker: write lock for systemd:postgresql is held by another turn.",
+            outputPreview:
+              "lockHolder=turn-previous; nextAction=wait_or_cancel_conflicting_turn",
+          },
+        ],
+        final:
+          "resource lock conflict marker: the mutation did not run because the resource lock was denied.",
+      }),
+      "turn-approval-pause": {
+        id: "turn-approval-pause",
+        status: "blocked",
+        startedAt: "2026-06-24T01:05:00Z",
+        user: {
+          id: "user-approval-pause",
+          text: "Restart postgresql on host-alpha if safe.",
+          createdAt: "2026-06-24T01:05:00Z",
+        },
+        process: [
+          {
+            id: "approval-pause-process",
+            kind: "approval",
+            status: "blocked",
+            text:
+              "approval pause marker: runtime is waiting for explicit operator approval.",
+            command: "runtime-contract-v3 approval pause marker",
+            approvalId: "approval-pause-v3",
+          },
+        ],
+        final: {
+          id: "final-approval-pause",
+          status: "running",
+          text: "approval pause marker: waiting for approval before any host mutation.",
+        },
+      },
+    },
+    pendingApprovals: {
+      "approval-pause-v3": {
+        id: "approval-pause-v3",
+        turnId: "turn-approval-pause",
+        type: "command",
+        status: "blocked",
+        command: "runtime-contract-v3 approval pause marker",
+        reason: "approval pause marker: restart requires explicit approval",
+      },
+    },
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: { "turn-approval-pause": true },
+      activeAgents: { "agent-main": true },
+      pendingApprovals: { "approval-pause-v3": true },
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    hostMissions: {
+      "mission-runtime-contract-v3": {
+        id: "mission-runtime-contract-v3",
+        turnId: "turn-approval-pause",
+        status: "running",
+        planRequired: true,
+        planAccepted: true,
+        mentionedHosts: [],
+        childAgentIds: ["child-alpha", "child-beta", "child-gamma"],
+        planSteps: [
+          {
+            id: "step-multi-host",
+            text: "multi-host child agent timeline marker",
+            status: "running",
+          },
+        ],
+      },
+    },
+    childAgents: Object.fromEntries(
+      ["alpha", "beta", "gamma"].map((name) => [
+        `child-${name}`,
+        {
+          id: `child-${name}`,
+          missionId: "mission-runtime-contract-v3",
+          sessionId: `child-session-${name}`,
+          hostId: `host-${name}`,
+          hostDisplayName: `host-${name}`,
+          status: name === "gamma" ? "approval_required" : "running",
+          currentStepTitle: "multi-host child agent timeline marker",
+          lastOutputPreview: `multi-host child agent timeline marker: child-${name} status update`,
+        },
+      ]),
+    ),
+    activeHostMissionId: "mission-runtime-contract-v3",
+    seq: 7,
+    updatedAt: "2026-06-24T01:06:00Z",
+    ...overrides,
+  };
+}
+
+export function createRuntimeContractV3FixtureSessions(overrides = {}) {
+  return {
+    activeSessionId: "fixture-runtime-contract-v3",
+    sessions: [
+      {
+        id: "fixture-runtime-contract-v3",
+        title: "Runtime Contract V3",
+        preview: "Runtime contract V3 smoke fixture",
+        status: "blocked",
+      },
+    ],
+    ...overrides,
+  };
+}
+
 export function createProtocolFixtureState(overrides = {}) {
   const cards = overrides.cards || [
     {
@@ -2480,6 +3440,27 @@ export function resolveUiFixturePreset(key = "") {
         state: createToolProgressiveDiscoveryFixtureState(),
         sessions: createToolProgressiveDiscoveryFixtureSessions(),
       };
+    case "agent-run-read-model":
+    case "agent_run_read_model":
+      return {
+        name: "agent-run-read-model",
+        state: createAgentRunReadModelFixtureState(),
+        sessions: createAgentRunReadModelFixtureSessions(),
+      };
+    case "second-closure-approval-checkpoints":
+    case "second_closure_approval_checkpoints":
+      return {
+        name: "second-closure-approval-checkpoints",
+        state: createSecondClosureApprovalCheckpointFixtureState(),
+        sessions: createSecondClosureApprovalCheckpointFixtureSessions(),
+      };
+    case "second-closure-error-recovery-checkpoint":
+    case "second_closure_error_recovery_checkpoint":
+      return {
+        name: "second-closure-error-recovery-checkpoint",
+        state: createSecondClosureErrorRecoveryCheckpointFixtureState(),
+        sessions: createSecondClosureErrorRecoveryCheckpointFixtureSessions(),
+      };
     case "tool-mcp-slimming":
     case "tool_mcp_slimming":
       return {
@@ -2522,12 +3503,43 @@ export function resolveUiFixturePreset(key = "") {
         state: createTaskTodoPlanModeFixtureState(),
         sessions: createTaskTodoPlanModeFixtureSessions(),
       };
+    case "runtime-contract-v3":
+    case "runtime_contract_v3":
+    case "codex-runtime-contract-v3":
+    case "codex_runtime_contract_v3":
+      return {
+        name: "runtime-contract-v3",
+        state: createRuntimeContractV3FixtureState(),
+        sessions: createRuntimeContractV3FixtureSessions(),
+      };
     case "coroot-rca-report":
     case "rca-report":
       return {
         name: "coroot-rca-report",
         state: createCorootRcaReportFixtureState(),
         sessions: createCorootRcaReportFixtureSessions(),
+      };
+    case "codex-like-process-transcript":
+    case "codex_like_process_transcript":
+    case "codex-like-process":
+      return {
+        name: "codex-like-process-transcript",
+        state: createCodexLikeProcessTranscriptFixtureState(),
+        sessions: createCodexLikeProcessTranscriptFixtureSessions(),
+      };
+    case "codex-like-running-search":
+    case "codex_like_running_search":
+      return {
+        name: "codex-like-running-search",
+        state: createCodexLikeRunningSearchFixtureState(),
+        sessions: createCodexLikeRunningSearchFixtureSessions(),
+      };
+    case "web-search-open-transcript":
+    case "web_search_open_transcript":
+      return {
+        name: "web-search-open-transcript",
+        state: createWebSearchOpenTranscriptFixtureState(),
+        sessions: createWebSearchOpenTranscriptFixtureSessions(),
       };
     default:
       return null;

@@ -4,64 +4,66 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  CUSTOM_BASE_URL_VALUE,
+  CUSTOM_MODEL_VALUE,
+  LLM_PROVIDER_PRESETS,
+  defaultFormForModel,
+  defaultFormForProvider,
+  getBaseURLOptions,
+  getModelOptions,
+  getModelPreset,
+  getProviderPreset,
+  getReasoningOptions,
+  normalizeProviderId,
+  type LlmConfigFormDefaults,
+} from "@/pages/llmProviderCatalog";
+import {
+  DEFAULT_LLM_CONTEXT_TOKENS,
+  DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+  DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+  fetchLlmConfig,
+  type LlmConfigUpdate,
+  type LlmConfigView,
+  normalizeLlmContextTokens,
+  normalizeLlmMaxOutputTokens,
+  normalizeLlmRequestTimeoutMs,
+  updateLlmConfig,
+} from "@/pages/settingsApi";
 import { Field, LoadingState, SelectField, SettingsPageFrame, StatGrid, StatusAlert } from "@/pages/settingsComponents";
-import { DEFAULT_LLM_CONTEXT_TOKENS, fetchLlmConfig, type LlmConfigView, normalizeLlmContextTokens, updateLlmConfig } from "@/pages/settingsApi";
 
-const providers = [
-  { label: "OpenAI 兼容", value: "openai" },
-  { label: "智谱 GLM", value: "zhipu" },
-  { label: "Anthropic", value: "anthropic" },
-  { label: "Ollama", value: "ollama" },
-];
-
-const reasoningEffortOptions = [
-  { label: "Low", value: "low" },
-  { label: "Medium", value: "medium" },
-  { label: "High", value: "high" },
-];
-
-const modelPresets: Record<string, string[]> = {
-  openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini", "o3-mini"],
-  zhipu: ["glm-4.7"],
-  anthropic: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
-  ollama: ["qwen2.5:7b", "qwen2.5:14b", "llama3.1:8b", "deepseek-coder-v2:16b"],
+type LlmConfigForm = LlmConfigFormDefaults & {
+  apiKey: string;
+  requestTimeoutMs: string;
 };
 
-function defaultBaseURL(provider: string) {
-  if (provider === "openai") return "https://api.openai.com/v1";
-  if (provider === "zhipu") return "https://api.z.ai/api/paas/v4";
-  if (provider === "anthropic") return "https://api.anthropic.com";
-  if (provider === "ollama") return "http://127.0.0.1:11434/v1";
-  return "";
-}
+const providerOptions = LLM_PROVIDER_PRESETS.map((provider) => ({ label: provider.label, value: provider.id }));
 
 function providerLabel(provider: string) {
-  return providers.find((item) => item.value === provider)?.label || provider || "未选择";
+  return getProviderPreset(provider).label || provider || "未选择";
 }
 
 function providerProtocolLabel(provider: string) {
-  if (provider === "openai" || provider === "zhipu") {
-    return "OpenAI 兼容接口";
-  }
-  if (provider === "anthropic") {
-    return "Anthropic API";
-  }
-  if (provider === "ollama") {
-    return "Ollama 本地接口";
-  }
-  return "自定义接口";
+  return getProviderPreset(provider).protocol || "自定义接口";
 }
 
-function inferProvider(config: Pick<LlmConfigView, "provider" | "model" | "baseURL"> | { provider?: string; model?: string; baseURL?: string } | null | undefined) {
-  const provider = String(config?.provider || "openai").trim() || "openai";
-  if (provider === "openai" && (isGLMModel(config?.model) || isZhipuBaseURL(config?.baseURL))) {
-    return "zhipu";
-  }
+function inferProvider(config: Pick<LlmConfigView, "provider" | "model" | "baseURL"> | null | undefined) {
+  const provider = normalizeProviderId(config?.provider);
+  if (provider === "openai" && (isDeepSeekBaseURL(config?.baseURL) || isDeepSeekModel(config?.model))) return "deepseek";
+  if (provider === "openai" && (isGLMModel(config?.model) || isZhipuBaseURL(config?.baseURL))) return "zhipu";
   return provider;
+}
+
+function isDeepSeekModel(model: unknown) {
+  return String(model || "").trim().toLowerCase().startsWith("deepseek-");
 }
 
 function isGLMModel(model: unknown) {
   return String(model || "").trim().toLowerCase().startsWith("glm-");
+}
+
+function isDeepSeekBaseURL(baseURL: unknown) {
+  return String(baseURL || "").trim().toLowerCase().includes("api.deepseek.com");
 }
 
 function isZhipuBaseURL(baseURL: unknown) {
@@ -69,38 +71,67 @@ function isZhipuBaseURL(baseURL: unknown) {
   return normalized.includes("api.z.ai") || normalized.includes("open.bigmodel.cn");
 }
 
+function formWithApiKey(defaults: LlmConfigFormDefaults): LlmConfigForm {
+  return { ...defaults, apiKey: "", requestTimeoutMs: String(DEFAULT_LLM_REQUEST_TIMEOUT_MS) };
+}
+
+function formFromConfig(config: LlmConfigView): LlmConfigForm {
+  const provider = inferProvider(config);
+  const defaults = defaultFormForProvider(provider);
+  const preset = getProviderPreset(provider);
+  const savedModel = String(config.model || "").trim();
+  const knownModel = getModelPreset(provider, savedModel);
+  const savedBaseURL = String(config.baseURL || "").trim();
+  const knownBaseURL = preset.baseURLPresets.find((item) => !item.custom && item.baseURL === savedBaseURL);
+  const modelDefaults = defaultFormForModel(provider, knownModel?.id || savedModel || defaults.model);
+  return {
+    ...defaults,
+    ...modelDefaults,
+    provider,
+    modelMode: knownModel || !savedModel ? "preset" : "custom",
+    model: knownModel?.id || defaults.model,
+    customModel: knownModel || !savedModel ? "" : savedModel,
+    baseURLMode: knownBaseURL || !savedBaseURL ? "preset" : "custom",
+    baseURL: knownBaseURL?.baseURL || defaults.baseURL,
+    customBaseURL: knownBaseURL || !savedBaseURL ? "" : savedBaseURL,
+    apiKey: "",
+    maxContextTokens: String(normalizeLlmContextTokens(config.maxContextTokens || modelDefaults.maxContextTokens || DEFAULT_LLM_CONTEXT_TOKENS)),
+    maxOutputTokens: String(
+      normalizeLlmMaxOutputTokens(config.maxOutputTokens || modelDefaults.maxOutputTokens || DEFAULT_LLM_MAX_OUTPUT_TOKENS, knownModel?.maxOutputTokens),
+    ),
+    requestTimeoutMs: String(normalizeLlmRequestTimeoutMs(config.requestTimeoutMs || DEFAULT_LLM_REQUEST_TIMEOUT_MS)),
+    temperature: config.temperature === undefined || config.temperature === null ? String(modelDefaults.temperature || "1") : String(config.temperature),
+    topP: config.topP === undefined || config.topP === null ? String(modelDefaults.topP || "1") : String(config.topP),
+    thinkingType: config.thinkingType || String(modelDefaults.thinkingType || ""),
+    reasoningEffort: config.reasoningEffort || String(modelDefaults.reasoningEffort || ""),
+    toolStream: Boolean(config.toolStream ?? modelDefaults.toolStream),
+  };
+}
+
 export function LLMConfigPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<LlmConfigView | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error" | "info"; text: string } | null>(null);
-  const [form, setForm] = useState({
-    provider: "openai",
-    model: "gpt-5.4",
-    apiKey: "",
-    baseURL: "",
-    maxContextTokens: String(DEFAULT_LLM_CONTEXT_TOKENS),
-    reasoningEffort: "medium",
-  });
+  const [form, setForm] = useState<LlmConfigForm>(() => formWithApiKey(defaultFormForProvider("openai")));
 
-  const modelOptions = useMemo(() => (modelPresets[form.provider] || []).map((model) => ({ label: model, value: model })), [form.provider]);
-  const needsApiKey = form.provider !== "ollama";
+  const providerPreset = useMemo(() => getProviderPreset(form.provider), [form.provider]);
+  const modelOptions = useMemo(() => getModelOptions(form.provider), [form.provider]);
+  const baseURLOptions = useMemo(() => getBaseURLOptions(form.provider), [form.provider]);
+  const reasoningOptions = useMemo(() => getReasoningOptions(form.provider, form.modelMode === "custom" ? form.customModel : form.model), [form.provider, form.model, form.modelMode, form.customModel]);
+  const effectiveModel = form.modelMode === "custom" ? form.customModel.trim() : form.model;
+  const effectiveBaseURL = form.baseURLMode === "custom" ? form.customBaseURL.trim() : form.baseURL;
+  const selectedModelPreset = getModelPreset(form.provider, effectiveModel);
+  const needsApiKey = providerPreset.requiresAPIKey;
   const connected = Boolean(config?.bifrostActive && (!needsApiKey || config.apiKeySet));
+  const showSamplingNoEffectHint = form.provider === "deepseek" && form.thinkingType === "enabled";
 
   async function load() {
     setLoading(true);
     try {
       const next = await fetchLlmConfig();
-      const provider = inferProvider(next);
       setConfig(next);
-      setForm({
-        provider,
-        model: next.model || modelPresets[provider]?.[0] || "gpt-5.4",
-        apiKey: "",
-        baseURL: next.baseURL || "",
-        maxContextTokens: String(normalizeLlmContextTokens(next.maxContextTokens)),
-        reasoningEffort: next.reasoningEffort || "medium",
-      });
+      setForm(formFromConfig(next));
       setMessage(null);
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "加载配置失败" });
@@ -112,10 +143,27 @@ export function LLMConfigPage() {
   async function save() {
     setSaving(true);
     try {
-      const payload = { ...form };
-      if (!payload.apiKey) delete (payload as { apiKey?: string }).apiKey;
-      payload.maxContextTokens = String(normalizeLlmContextTokens(payload.maxContextTokens));
-      setForm((prev) => ({ ...prev, maxContextTokens: payload.maxContextTokens }));
+      const outputCap = selectedModelPreset?.maxOutputTokens;
+      const normalizedContext = normalizeLlmContextTokens(form.maxContextTokens);
+      const normalizedOutput = normalizeLlmMaxOutputTokens(form.maxOutputTokens, outputCap);
+      const normalizedRequestTimeout = normalizeLlmRequestTimeoutMs(form.requestTimeoutMs);
+      const payload: LlmConfigUpdate = {
+        provider: form.provider,
+        model: effectiveModel || providerPreset.defaultModel,
+        maxContextTokens: normalizedContext,
+        maxOutputTokens: normalizedOutput,
+        requestTimeoutMs: normalizedRequestTimeout,
+        reasoningEffort: reasoningOptions.length ? form.reasoningEffort : undefined,
+      };
+      if (form.apiKey.trim()) payload.apiKey = form.apiKey.trim();
+      if (!(form.provider === "openai" && form.baseURLMode === "preset" && effectiveBaseURL === providerPreset.defaultBaseURL)) {
+        payload.baseURL = effectiveBaseURL;
+      }
+      if (providerPreset.supportsTemperature) payload.temperature = form.temperature;
+      if (providerPreset.supportsTopP) payload.topP = form.topP;
+      if (providerPreset.supportsThinking) payload.thinkingType = form.thinkingType;
+      if (providerPreset.supportsToolStream) payload.toolStream = form.toolStream;
+      setForm((prev) => ({ ...prev, maxContextTokens: String(normalizedContext), maxOutputTokens: String(normalizedOutput), requestTimeoutMs: String(normalizedRequestTimeout) }));
       const result = await updateLlmConfig(payload);
       await load();
       setMessage({ type: result.ok === false ? "info" : "success", text: result.ok === false ? result.message || result.error || "配置已保存" : "配置已保存" });
@@ -124,6 +172,37 @@ export function LLMConfigPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  function selectProvider(provider: string) {
+    setForm((prev) => ({ ...formWithApiKey(defaultFormForProvider(provider)), requestTimeoutMs: prev.requestTimeoutMs }));
+  }
+
+  function selectModel(value: string) {
+    if (value === CUSTOM_MODEL_VALUE) {
+      setForm((prev) => ({
+        ...prev,
+        modelMode: "custom",
+        customModel: "",
+        ...defaultFormForModel(prev.provider, ""),
+      }));
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      modelMode: "preset",
+      model: value,
+      customModel: "",
+      ...defaultFormForModel(prev.provider, value),
+    }));
+  }
+
+  function selectBaseURL(value: string) {
+    if (value === CUSTOM_BASE_URL_VALUE) {
+      setForm((prev) => ({ ...prev, baseURLMode: "custom", customBaseURL: "" }));
+      return;
+    }
+    setForm((prev) => ({ ...prev, baseURLMode: "preset", baseURL: value, customBaseURL: "" }));
   }
 
   useEffect(() => {
@@ -150,7 +229,7 @@ export function LLMConfigPage() {
             items={[
               { label: "模型接入", value: providerLabel(config ? inferProvider(config) : form.provider) },
               { label: "接口协议", value: providerProtocolLabel(config ? inferProvider(config) : form.provider) },
-              { label: "Model", value: config?.model || form.model },
+              { label: "Model", value: config?.model || effectiveModel },
               { label: "Context", value: normalizeLlmContextTokens(config?.maxContextTokens || form.maxContextTokens).toLocaleString() },
               { label: "API Key", value: config?.apiKeySet ? config.apiKeyMasked || "已设置" : "未设置", tone: config?.apiKeySet ? "ok" : "warn" },
               { label: "模型状态", value: connected ? "已配置" : "未连接", tone: connected ? "ok" : "bad" },
@@ -163,30 +242,36 @@ export function LLMConfigPage() {
             </CardHeader>
             <CardContent className="grid gap-4 md:grid-cols-2">
               <Field label="模型接入">
-                <SelectField
-                  aria-label="Provider"
-                  value={form.provider}
-                  options={providers}
-                  onChange={(provider) =>
-                    setForm({
-                      provider,
-                      model: modelPresets[provider]?.[0] || form.model,
-                      apiKey: "",
-                      baseURL: provider === "openai" || provider === "anthropic" ? "" : defaultBaseURL(provider),
-                      maxContextTokens: form.maxContextTokens,
-                      reasoningEffort: form.reasoningEffort,
-                    })
-                  }
-                />
+                <SelectField data-testid="llm-provider-select" aria-label="Provider" value={form.provider} options={providerOptions} onChange={selectProvider} />
               </Field>
               <Field label="Model">
-                <Input list="llm-model-presets" value={form.model} onChange={(event) => setForm((prev) => ({ ...prev, model: event.target.value }))} />
-                <datalist id="llm-model-presets">
-                  {modelOptions.map((option) => (
-                    <option key={option.value} value={option.value} />
-                  ))}
-                </datalist>
+                <SelectField
+                  data-testid="llm-model-select"
+                  aria-label="Model"
+                  value={form.modelMode === "custom" ? CUSTOM_MODEL_VALUE : form.model}
+                  options={modelOptions}
+                  onChange={selectModel}
+                />
               </Field>
+              {form.modelMode === "custom" ? (
+                <Field label="自定义 Model">
+                  <Input data-testid="llm-custom-model-input" value={form.customModel} onChange={(event) => setForm((prev) => ({ ...prev, customModel: event.target.value }))} />
+                </Field>
+              ) : null}
+              <Field label="Base URL">
+                <SelectField
+                  data-testid="llm-base-url-select"
+                  aria-label="Base URL"
+                  value={form.baseURLMode === "custom" ? CUSTOM_BASE_URL_VALUE : form.baseURL}
+                  options={baseURLOptions}
+                  onChange={selectBaseURL}
+                />
+              </Field>
+              {form.baseURLMode === "custom" ? (
+                <Field label="自定义 Base URL">
+                  <Input data-testid="llm-custom-base-url-input" value={form.customBaseURL} onChange={(event) => setForm((prev) => ({ ...prev, customBaseURL: event.target.value }))} />
+                </Field>
+              ) : null}
               <Field label="上下文大小">
                 <Input
                   data-testid="llm-context-tokens-input"
@@ -197,23 +282,71 @@ export function LLMConfigPage() {
                   onChange={(event) => setForm((prev) => ({ ...prev, maxContextTokens: event.target.value }))}
                 />
               </Field>
-              <Field label="Reasoning">
-                <SelectField
-                  data-testid="llm-reasoning-effort-select"
-                  aria-label="Reasoning"
-                  value={form.reasoningEffort}
-                  options={reasoningEffortOptions}
-                  onChange={(reasoningEffort) => setForm((prev) => ({ ...prev, reasoningEffort }))}
+              <Field label="最大输出 Tokens">
+                <Input
+                  data-testid="llm-max-output-tokens-input"
+                  type="number"
+                  min={1}
+                  step={1000}
+                  value={form.maxOutputTokens}
+                  onChange={(event) => setForm((prev) => ({ ...prev, maxOutputTokens: event.target.value }))}
                 />
               </Field>
-              {needsApiKey ? (
-                <Field label="API Key">
-                  <Input type="password" value={form.apiKey} onChange={(event) => setForm((prev) => ({ ...prev, apiKey: event.target.value }))} />
+              <Field label="请求超时 ms">
+                <Input
+                  data-testid="llm-request-timeout-ms-input"
+                  type="number"
+                  min={1}
+                  step={1000}
+                  value={form.requestTimeoutMs}
+                  onChange={(event) => setForm((prev) => ({ ...prev, requestTimeoutMs: event.target.value }))}
+                />
+              </Field>
+              {reasoningOptions.length ? (
+                <Field label="Reasoning">
+                  <SelectField
+                    data-testid="llm-reasoning-effort-select"
+                    aria-label="Reasoning"
+                    value={form.reasoningEffort}
+                    options={reasoningOptions.map((option) => ({ label: option, value: option }))}
+                    onChange={(reasoningEffort) => setForm((prev) => ({ ...prev, reasoningEffort }))}
+                  />
                 </Field>
               ) : null}
-              <Field label="Base URL">
-                <Input value={form.baseURL} onChange={(event) => setForm((prev) => ({ ...prev, baseURL: event.target.value }))} />
-              </Field>
+              {providerPreset.supportsThinking ? (
+                <Field label="Thinking">
+                  <SelectField
+                    data-testid="llm-thinking-type-select"
+                    aria-label="Thinking"
+                    value={form.thinkingType}
+                    options={providerPreset.thinkingOptions.map((option) => ({ label: option, value: option }))}
+                    onChange={(thinkingType) => setForm((prev) => ({ ...prev, thinkingType }))}
+                  />
+                </Field>
+              ) : null}
+              {needsApiKey ? (
+                <Field label="API Key">
+                  <Input data-testid="llm-api-key-input" type="password" value={form.apiKey} onChange={(event) => setForm((prev) => ({ ...prev, apiKey: event.target.value }))} />
+                </Field>
+              ) : null}
+              {providerPreset.supportsTemperature ? (
+                <Field label="Temperature" hint={showSamplingNoEffectHint ? "DeepSeek thinking enabled 时采样参数不会生效。" : undefined}>
+                  <Input data-testid="llm-temperature-input" type="number" step="0.01" value={form.temperature} onChange={(event) => setForm((prev) => ({ ...prev, temperature: event.target.value }))} />
+                </Field>
+              ) : null}
+              {providerPreset.supportsTopP ? (
+                <Field label="Top P" hint={showSamplingNoEffectHint ? "DeepSeek thinking enabled 时 top_p 不会生效。" : undefined}>
+                  <Input data-testid="llm-top-p-input" type="number" step="0.01" value={form.topP} onChange={(event) => setForm((prev) => ({ ...prev, topP: event.target.value }))} />
+                </Field>
+              ) : null}
+              {providerPreset.supportsToolStream ? (
+                <Field label="Tool Stream">
+                  <label className="flex h-8 items-center gap-2 text-sm text-slate-700">
+                    <input data-testid="llm-tool-stream-checkbox" type="checkbox" checked={form.toolStream} onChange={(event) => setForm((prev) => ({ ...prev, toolStream: event.target.checked }))} />
+                    启用工具调用过程流式输出
+                  </label>
+                </Field>
+              ) : null}
             </CardContent>
           </Card>
         </>

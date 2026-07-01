@@ -28,6 +28,9 @@ func (Classifier) Classify(input ClassificationInput) Decision {
 	source := strings.ToLower(strings.TrimSpace(input.Source))
 	outcome := strings.ToLower(strings.TrimSpace(input.Outcome))
 
+	if strings.Contains(errText, "side_effect_unknown") {
+		return Decision{Kind: KindSideEffectUnknown, Action: ActionFeedErrorToModel, Reason: input.Error, RequiresUser: true}
+	}
 	if strings.Contains(errText, "mcp_unavailable") {
 		return Decision{Kind: KindMCPServerUnavailable, Action: ActionFeedErrorToModel, Reason: input.Error, RequiresUser: true}
 	}

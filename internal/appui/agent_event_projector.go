@@ -279,6 +279,10 @@ func completeFinalMessageForTurn(proj AgentEventProjection, event AgentEvent) Ag
 	if !ok {
 		return proj
 	}
+	if event.Status == AgentEventStatusFailed || event.Status == AgentEventStatusCanceled {
+		delete(proj.FinalMessages, event.TurnID)
+		return proj
+	}
 	final.Status = event.Status
 	final.UpdatedAt = event.CreatedAt
 	proj.FinalMessages[event.TurnID] = final
@@ -387,11 +391,18 @@ func applyToolEventToProjection(proj AgentEventProjection, event AgentEvent) Age
 }
 
 func clearRunningFinalMessageForToolEvent(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
+	return archiveFinalMessageForProcess(proj, event, "assistant-before-tool", false)
+}
+
+func archiveFinalMessageForProcess(proj AgentEventProjection, event AgentEvent, idKind string, includeCompleted bool) AgentEventProjection {
 	if event.TurnID == "" || proj.FinalMessages == nil {
 		return proj
 	}
 	final, ok := proj.FinalMessages[event.TurnID]
-	if !ok || (final.Status == AgentEventStatusCompleted && event.Phase != AgentEventPhaseStarted) {
+	if !ok {
+		return proj
+	}
+	if final.Status == AgentEventStatusCompleted && !includeCompleted && event.Phase != AgentEventPhaseStarted {
 		return proj
 	}
 	if text := strings.TrimSpace(final.Text); text != "" {
@@ -399,7 +410,11 @@ func clearRunningFinalMessageForToolEvent(proj AgentEventProjection, event Agent
 		if sourceID == "" {
 			sourceID = fmt.Sprintf("%d", event.Seq)
 		}
-		id := fmt.Sprintf("%s:assistant-before-tool:%s", event.TurnID, sourceID)
+		idKind = strings.TrimSpace(idKind)
+		if idKind == "" {
+			idKind = "assistant-process"
+		}
+		id := fmt.Sprintf("%s:%s:%s", event.TurnID, idKind, sourceID)
 		seq := event.Seq
 		if seq > 0 {
 			seq--
@@ -576,6 +591,9 @@ func applyReasoningEventToProjection(proj AgentEventProjection, event AgentEvent
 func applySystemEventToProjection(proj AgentEventProjection, event AgentEvent) AgentEventProjection {
 	var payload SystemPayload
 	decodeAgentEventPayload(event.Payload, &payload)
+	if shouldResetFinalForRuntimeIteration(event, payload) {
+		proj = archiveFinalMessageForProcess(proj, event, "assistant-before-runtime-iteration", true)
+	}
 	id := payload.ID
 	if id == "" {
 		id = event.EventID
@@ -611,6 +629,19 @@ func applySystemEventToProjection(proj AgentEventProjection, event AgentEvent) A
 		proj.ProcessGroups[event.TurnID] = upsertTimelineEntry(proj.ProcessGroups[event.TurnID], row)
 	}
 	return proj
+}
+
+func shouldResetFinalForRuntimeIteration(event AgentEvent, payload SystemPayload) bool {
+	if event.TurnID == "" || event.Phase != AgentEventPhaseUpdated || event.Status != AgentEventStatusRunning {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(payload.DisplayKind), "runtime.activity") {
+		return false
+	}
+	if payload.Iteration <= 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(payload.Stage), "context_pipeline")
 }
 
 func toolProjectionSummary(payload ToolPayload) string {

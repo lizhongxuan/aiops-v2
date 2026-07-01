@@ -1,0 +1,35 @@
+{
+  "name": "turn_cancel_aborts_tool_and_resumes_next_turn",
+  "input": "用户停止正在执行的主机检查，runtime 应取消当前 turn、写 aborted tool result，并允许下一轮重新开始。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "transport_disconnect_terminal_write"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.aborted"
+    ],
+    "evidenceRefs": [
+      "evidence:aborted-tool-result"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "tool_call",
+      "turn_cancelled",
+      "tool_result",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "tool_unavailable_or_cancelled",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

@@ -204,6 +204,88 @@ func TestHostAPIInstallRetriesHostAgentWorkflow(t *testing.T) {
 	if payload.Host.Status != "installing" || payload.Host.InstallState != "pending_install" {
 		t.Fatalf("install response host = %+v", payload.Host)
 	}
+	if payload.Host.ConnectionMode != appui.HostConnectionModeAIOPSPull {
+		t.Fatalf("ConnectionMode = %q, want default aiops_pull", payload.Host.ConnectionMode)
+	}
+	if payload.Host.AgentServerURL != "" {
+		t.Fatalf("AgentServerURL = %q, want default aiops_pull install to avoid callback URL", payload.Host.AgentServerURL)
+	}
+}
+
+func TestHostAPINodeDiagnosticsProxiesWithStoredToken(t *testing.T) {
+	var sawAuth string
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/diagnostics" {
+			http.NotFound(w, r)
+			return
+		}
+		sawAuth = r.Header.Get("Authorization")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":        "ok",
+			"host_id":       "host-a",
+			"server_url":    "http://aiops.example.test:18080",
+			"last_category": "not_found",
+		})
+	}))
+	defer node.Close()
+
+	dataDir := t.TempDir()
+	dataStore, err := store.NewJSONFileStore(dataDir, 10)
+	if err != nil {
+		t.Fatalf("NewJSONFileStore() error = %v", err)
+	}
+	defer dataStore.Close()
+	tokenStore := appui.NewLocalHostAgentTokenStore(t.TempDir())
+	tokenRef, err := tokenStore.StoreHostAgentToken(context.Background(), "host-a", "node-secret")
+	if err != nil {
+		t.Fatalf("StoreHostAgentToken() error = %v", err)
+	}
+	if err := dataStore.SaveHost(&store.HostRecord{
+		ID:                  "host-a",
+		Name:                "host-a",
+		Address:             "10.0.0.11",
+		AgentURL:            node.URL,
+		AgentTokenSecretRef: tokenRef,
+	}); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	sessionMgr := runtimekernel.NewSessionManager(dataStore)
+	srv := NewHTTPServer(appui.NewServices(
+		sessionAPITestRuntime{},
+		sessionMgr,
+		appui.WithStore(dataStore),
+		appui.WithHostAgentTokenStore(tokenStore),
+	))
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/v1/hosts/host-a/node/diagnostics")
+	if err != nil {
+		t.Fatalf("GET node diagnostics error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET node diagnostics status = %d, want 200", resp.StatusCode)
+	}
+	if sawAuth != "Bearer node-secret" {
+		t.Fatalf("Authorization = %q, want stored bearer token", sawAuth)
+	}
+	var payload struct {
+		Status      string         `json:"status"`
+		HostID      string         `json:"hostId"`
+		AgentURL    string         `json:"agentUrl"`
+		Diagnostics map[string]any `json:"diagnostics"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Status != "ok" || payload.HostID != "host-a" || payload.AgentURL != node.URL {
+		t.Fatalf("diagnostics response = %+v", payload)
+	}
+	if payload.Diagnostics["server_url"] != "http://aiops.example.test:18080" {
+		t.Fatalf("diagnostics payload = %+v", payload.Diagnostics)
+	}
 }
 
 func TestHostAPISSHTestAcceptsMissingCredentialRef(t *testing.T) {

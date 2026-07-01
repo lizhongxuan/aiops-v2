@@ -10,17 +10,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
 
-const (
-	EnabledEnv = "AIOPS_DEBUG_MODEL_INPUT_TRACE"
-	DirEnv     = "AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR"
-)
+type Config struct {
+	Enabled bool
+	RootDir string
+}
+
+func DefaultRootDir(dataDir string) string {
+	root := strings.TrimSpace(dataDir)
+	if root == "" {
+		root = ".data"
+	}
+	return filepath.Join(root, "model-input-traces")
+}
+
+func DefaultConfig() Config {
+	return Config{
+		Enabled: true,
+		RootDir: DefaultRootDir(""),
+	}
+}
 
 type Prompt struct {
 	StableHash string `json:"stableHash,omitempty"`
@@ -43,7 +56,7 @@ type Request struct {
 	VisibleTools                  []string
 	PromptFingerprint             map[string]string
 	Prompt                        Prompt
-	ModelInput                    []*schema.Message
+	ModelInput                    []promptinput.ModelInputItem
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
 	DiagnosticTrace               diagnostics.DiagnosticTrace
@@ -65,6 +78,7 @@ type Request struct {
 	ToolSearchEvents              []promptinput.ToolSearchTraceEvent
 	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent
 	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent
+	DispatchDecisions             []promptinput.DispatchDecisionTrace
 	SkillSearchEvents             []promptinput.SkillSearchTraceEvent
 	SkillReadEvents               []promptinput.SkillReadTraceEvent
 	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent
@@ -79,6 +93,7 @@ type Request struct {
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
 	ResourceLocks                 []promptinput.ResourceLockTrace
+	OwnerWriteTraces              []promptinput.OwnerWriteTrace
 	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
 	AgentNotifications            []promptinput.AgentNotificationTrace
 	VerificationAgentReport       *promptinput.VerificationAgentReportTrace
@@ -107,6 +122,7 @@ type payload struct {
 	VisibleTools                  []string                                        `json:"visibleTools,omitempty"`
 	VisibleToolCount              int                                             `json:"visibleToolCount,omitempty"`
 	PromptCharCount               int                                             `json:"promptCharCount,omitempty"`
+	ModelInputStats               modelInputStats                                 `json:"modelInputStats,omitempty"`
 	ToolRegistryCharCount         int                                             `json:"toolRegistryCharCount,omitempty"`
 	PromptFingerprint             map[string]string                               `json:"promptFingerprint,omitempty"`
 	PlanModeState                 *promptinput.PlanModeTraceState                 `json:"planModeState,omitempty"`
@@ -120,6 +136,7 @@ type payload struct {
 	TaskTodoState                 *promptinput.TaskTodoTraceState                 `json:"taskTodoState,omitempty"`
 	ToolSurfaceFingerprint        string                                          `json:"toolSurfaceFingerprint,omitempty"`
 	ToolSurfacePolicySnapshotHash string                                          `json:"toolSurfacePolicySnapshotHash,omitempty"`
+	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot                `json:"toolSurfaceSnapshot,omitempty"`
 	ToolSurfaceTrace              *ToolSurfaceTrace                               `json:"toolSurfaceTrace,omitempty"`
 	LoadedToolsDelta              []string                                        `json:"loadedToolsDelta,omitempty"`
 	LoadedPacksDelta              []string                                        `json:"loadedPacksDelta,omitempty"`
@@ -128,6 +145,7 @@ type payload struct {
 	ToolSearchEvents              []promptinput.ToolSearchTraceEvent              `json:"toolSearchEvents,omitempty"`
 	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent           `json:"toolSelectionEvents,omitempty"`
 	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent        `json:"rejectedToolCalls,omitempty"`
+	DispatchDecisions             []promptinput.DispatchDecisionTrace             `json:"dispatchDecisions,omitempty"`
 	SkillSearchEvents             []promptinput.SkillSearchTraceEvent             `json:"skillSearchEvents,omitempty"`
 	SkillReadEvents               []promptinput.SkillReadTraceEvent               `json:"skillReadEvents,omitempty"`
 	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent `json:"rejectedSkillActivations,omitempty"`
@@ -142,6 +160,7 @@ type payload struct {
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace          `json:"agentAssignmentLint,omitempty"`
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup           `json:"agentParallelTraceGroups,omitempty"`
 	ResourceLocks                 []promptinput.ResourceLockTrace                 `json:"resourceLocks,omitempty"`
+	OwnerWriteTraces              []promptinput.OwnerWriteTrace                   `json:"ownerWriteTraces,omitempty"`
 	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace        `json:"agentFinalGate,omitempty"`
 	AgentNotifications            []promptinput.AgentNotificationTrace            `json:"agentNotifications,omitempty"`
 	VerificationAgentReport       *promptinput.VerificationAgentReportTrace       `json:"verificationAgentReport,omitempty"`
@@ -157,6 +176,7 @@ type payload struct {
 	FinalEvidenceState            any                                             `json:"finalEvidenceState,omitempty"`
 	Prompt                        Prompt                                          `json:"prompt"`
 	ModelInput                    []traceMessage                                  `json:"modelInput"`
+	ContextDedupe                 *promptinput.ContextDedupeTrace                 `json:"contextDedupe,omitempty"`
 	ContextGovernance             []promptinput.ContextGovernanceTraceItem        `json:"contextGovernance,omitempty"`
 	PromptInputTrace              promptinput.PromptInputTrace                    `json:"promptInputTrace,omitempty"`
 	DiagnosticTrace               *diagnostics.DiagnosticTrace                    `json:"diagnosticTrace,omitempty"`
@@ -203,22 +223,38 @@ type RejectedToolReasonTrace struct {
 }
 
 type traceMessage struct {
-	Index        int               `json:"index"`
-	ProviderRole string            `json:"providerRole"`
-	SemanticRole string            `json:"semanticRole,omitempty"`
-	PromptLayer  string            `json:"promptLayer,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	Content      string            `json:"content,omitempty"`
-	ToolCallID   string            `json:"toolCallId,omitempty"`
-	ToolName     string            `json:"toolName,omitempty"`
-	ToolCalls    []schema.ToolCall `json:"toolCalls,omitempty"`
+	Index        int             `json:"index"`
+	ProviderRole string          `json:"providerRole"`
+	SemanticRole string          `json:"semanticRole,omitempty"`
+	PromptLayer  string          `json:"promptLayer,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	ToolCallID   string          `json:"toolCallId,omitempty"`
+	ToolName     string          `json:"toolName,omitempty"`
+	ToolCalls    []traceToolCall `json:"toolCalls,omitempty"`
+}
+
+type traceToolCall struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+type modelInputStats struct {
+	PromptBytes  int `json:"promptBytes,omitempty"`
+	MessageCount int `json:"messageCount,omitempty"`
 }
 
 func Write(req Request) (string, error) {
-	if !Enabled() {
+	return WriteWithConfig(DefaultConfig(), req)
+}
+
+func WriteWithConfig(cfg Config, req Request) (string, error) {
+	cfg = normalizeConfig(cfg)
+	if !cfg.Enabled {
 		return "", nil
 	}
-	traceDir, err := traceDirectory(req)
+	traceDir, err := traceDirectory(cfg.RootDir, req)
 	if err != nil {
 		return "", err
 	}
@@ -252,13 +288,12 @@ func Write(req Request) (string, error) {
 	return jsonPath, nil
 }
 
-func Enabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnabledEnv))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
+func normalizeConfig(cfg Config) Config {
+	cfg.RootDir = strings.TrimSpace(cfg.RootDir)
+	if cfg.RootDir == "" {
+		cfg.RootDir = DefaultRootDir("")
 	}
+	return cfg
 }
 
 func buildPayload(req Request) payload {
@@ -271,6 +306,7 @@ func buildPayload(req Request) payload {
 		prompt = deltaPromptTrace(prompt)
 		modelInput = deltaModelInputTrace(modelInput)
 	}
+	inputCharCount := modelInputCharCount(modelInput)
 	return payload{
 		SchemaVersion:                 1,
 		Kind:                          strings.TrimSpace(req.Kind),
@@ -283,7 +319,8 @@ func buildPayload(req Request) payload {
 		Metadata:                      redactStringMap(copyStringMap(req.Metadata)),
 		VisibleTools:                  visibleTools,
 		VisibleToolCount:              len(visibleTools),
-		PromptCharCount:               modelInputCharCount(modelInput),
+		PromptCharCount:               inputCharCount,
+		ModelInputStats:               buildModelInputStats(modelInput, inputCharCount),
 		ToolRegistryCharCount:         len(req.Prompt.Tools),
 		PromptFingerprint:             copyStringMap(req.PromptFingerprint),
 		PlanModeState:                 redactedPromptTrace.PlanModeState,
@@ -297,6 +334,7 @@ func buildPayload(req Request) payload {
 		TaskTodoState:                 redactedPromptTrace.TaskTodoState,
 		ToolSurfaceFingerprint:        redactedPromptTrace.ToolSurfaceFingerprint,
 		ToolSurfacePolicySnapshotHash: redactedPromptTrace.ToolSurfacePolicySnapshotHash,
+		ToolSurfaceSnapshot:           redactedPromptTrace.ToolSurfaceSnapshot,
 		ToolSurfaceTrace:              buildToolSurfaceTrace(visibleTools, redactedPromptTrace),
 		LoadedToolsDelta:              append([]string(nil), redactedPromptTrace.LoadedToolsDelta...),
 		LoadedPacksDelta:              append([]string(nil), redactedPromptTrace.LoadedPacksDelta...),
@@ -305,6 +343,7 @@ func buildPayload(req Request) payload {
 		ToolSearchEvents:              append([]promptinput.ToolSearchTraceEvent(nil), redactedPromptTrace.ToolSearchEvents...),
 		ToolSelectionEvents:           append([]promptinput.ToolSelectionTraceEvent(nil), redactedPromptTrace.ToolSelectionEvents...),
 		RejectedToolCalls:             append([]promptinput.RejectedToolCallTraceEvent(nil), redactedPromptTrace.RejectedToolCalls...),
+		DispatchDecisions:             append([]promptinput.DispatchDecisionTrace(nil), redactedPromptTrace.DispatchDecisions...),
 		SkillSearchEvents:             append([]promptinput.SkillSearchTraceEvent(nil), redactedPromptTrace.SkillSearchEvents...),
 		SkillReadEvents:               append([]promptinput.SkillReadTraceEvent(nil), redactedPromptTrace.SkillReadEvents...),
 		RejectedSkillActivations:      append([]promptinput.RejectedSkillActivationTraceEvent(nil), redactedPromptTrace.RejectedSkillActivations...),
@@ -319,6 +358,7 @@ func buildPayload(req Request) payload {
 		AgentAssignmentLint:           append([]promptinput.AgentAssignmentLintTrace(nil), redactedPromptTrace.AgentAssignmentLint...),
 		AgentParallelTraceGroups:      append([]promptinput.AgentParallelTraceGroup(nil), redactedPromptTrace.AgentParallelTraceGroups...),
 		ResourceLocks:                 append([]promptinput.ResourceLockTrace(nil), redactedPromptTrace.ResourceLocks...),
+		OwnerWriteTraces:              append([]promptinput.OwnerWriteTrace(nil), redactedPromptTrace.OwnerWriteTraces...),
 		AgentFinalGate:                redactedPromptTrace.AgentFinalGate,
 		AgentNotifications:            append([]promptinput.AgentNotificationTrace(nil), redactedPromptTrace.AgentNotifications...),
 		VerificationAgentReport:       redactedPromptTrace.VerificationAgentReport,
@@ -334,6 +374,7 @@ func buildPayload(req Request) payload {
 		FinalEvidenceState:            req.FinalEvidenceState,
 		Prompt:                        prompt,
 		ModelInput:                    modelInput,
+		ContextDedupe:                 redactedPromptTrace.ContextDedupe,
 		ContextGovernance:             append([]promptinput.ContextGovernanceTraceItem(nil), redactedPromptTrace.ContextGovernance...),
 		PromptInputTrace:              redactedPromptTrace,
 		DiagnosticTrace:               diagnosticTracePayload(req.DiagnosticTrace),
@@ -545,6 +586,9 @@ func mergeRequestToolTraceFields(req Request) promptinput.PromptInputTrace {
 	if len(trace.RejectedToolCalls) == 0 {
 		trace.RejectedToolCalls = append([]promptinput.RejectedToolCallTraceEvent(nil), req.RejectedToolCalls...)
 	}
+	if len(trace.DispatchDecisions) == 0 {
+		trace.DispatchDecisions = append([]promptinput.DispatchDecisionTrace(nil), req.DispatchDecisions...)
+	}
 	if len(trace.SkillSearchEvents) == 0 {
 		trace.SkillSearchEvents = append([]promptinput.SkillSearchTraceEvent(nil), req.SkillSearchEvents...)
 	}
@@ -624,6 +668,9 @@ func mergeRequestToolTraceFields(req Request) promptinput.PromptInputTrace {
 	}
 	if len(trace.ResourceLocks) == 0 {
 		trace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
+	}
+	if len(trace.OwnerWriteTraces) == 0 {
+		trace.OwnerWriteTraces = append([]promptinput.OwnerWriteTrace(nil), req.OwnerWriteTraces...)
 	}
 	if trace.AgentFinalGate == nil && req.AgentFinalGate != nil {
 		gate := *req.AgentFinalGate
@@ -712,11 +759,17 @@ func deltaModelInputTrace(messages []traceMessage) []traceMessage {
 }
 
 func isPromptLayerTraceMessage(msg traceMessage) bool {
-	switch strings.TrimSpace(msg.PromptLayer) {
+	layer := strings.TrimSpace(msg.PromptLayer)
+	if layer == "" {
+		return false
+	}
+	switch layer {
+	case "memory", "ops_context_capsule":
+		return false
 	case "system", "developer", "tool_index", "runtime_policy":
 		return true
 	default:
-		return false
+		return strings.Contains(layer, ".") || strings.HasPrefix(layer, "dynamic")
 	}
 }
 
@@ -726,6 +779,16 @@ func modelInputCharCount(messages []traceMessage) int {
 		total += len(msg.Content)
 	}
 	return total
+}
+
+func buildModelInputStats(messages []traceMessage, promptBytes int) modelInputStats {
+	if len(messages) == 0 && promptBytes == 0 {
+		return modelInputStats{}
+	}
+	return modelInputStats{
+		PromptBytes:  promptBytes,
+		MessageCount: len(messages),
+	}
 }
 
 func diagnosticTracePayload(trace diagnostics.DiagnosticTrace) *diagnostics.DiagnosticTrace {
@@ -751,32 +814,43 @@ func diagnosticTraceEmpty(trace diagnostics.DiagnosticTrace) bool {
 		!trace.RequiresApproval
 }
 
-func traceMessages(messages []*schema.Message) []traceMessage {
-	out := make([]traceMessage, 0, len(messages))
-	for i, msg := range messages {
-		if msg == nil {
-			continue
+func traceMessages(items []promptinput.ModelInputItem) []traceMessage {
+	out := make([]traceMessage, 0, len(items))
+	for i, item := range items {
+		content := item.Content
+		if item.ProviderRole == promptinput.ProviderRoleTool && item.ToolResult != nil && strings.TrimSpace(item.ToolResult.Content) != "" {
+			content = item.ToolResult.Content
 		}
-		item := traceMessage{
+		toolCallID := strings.TrimSpace(firstNonEmpty(item.ToolCallID, item.ToolResultToolCallID()))
+		traceMsg := traceMessage{
 			Index:        i,
-			ProviderRole: string(msg.Role),
-			Name:         msg.Name,
-			Content:      diagnostics.RedactSensitiveText(msg.Content),
-			ToolCallID:   msg.ToolCallID,
-			ToolName:     msg.ToolName,
-			ToolCalls:    redactToolCalls(msg.ToolCalls),
+			ProviderRole: string(item.ProviderRole),
+			SemanticRole: strings.TrimSpace(item.SemanticRole),
+			PromptLayer:  modelInputItemPromptLayer(item),
+			Name:         item.Name,
+			Content:      diagnostics.RedactSensitiveText(content),
+			ToolCallID:   toolCallID,
+			ToolName:     item.Name,
+			ToolCalls:    redactToolCalls(item.ToolCalls),
 		}
-		if msg.Extra != nil {
-			if role, ok := msg.Extra["semantic_role"].(string); ok {
-				item.SemanticRole = role
-			}
-			if layer, ok := msg.Extra["prompt_layer"].(string); ok {
-				item.PromptLayer = layer
-			}
-		}
-		out = append(out, item)
+		out = append(out, traceMsg)
 	}
 	return out
+}
+
+func modelInputItemPromptLayer(item promptinput.ModelInputItem) string {
+	if layer := strings.TrimSpace(item.Source.Layer); layer != "" {
+		return layer
+	}
+	if item.Metadata != nil {
+		if layer := strings.TrimSpace(item.Metadata["prompt_layer"]); layer != "" {
+			return layer
+		}
+		if layer := strings.TrimSpace(item.Metadata["source_layer"]); layer != "" {
+			return layer
+		}
+	}
+	return ""
 }
 
 func redactPrompt(prompt Prompt) Prompt {
@@ -791,15 +865,17 @@ func redactPrompt(prompt Prompt) Prompt {
 	}
 }
 
-func redactToolCalls(calls []schema.ToolCall) []schema.ToolCall {
+func redactToolCalls(calls []promptinput.ModelInputToolCall) []traceToolCall {
 	if len(calls) == 0 {
 		return nil
 	}
-	out := make([]schema.ToolCall, 0, len(calls))
+	out := make([]traceToolCall, 0, len(calls))
 	for _, call := range calls {
-		call.Function.Name = diagnostics.RedactSensitiveText(call.Function.Name)
-		call.Function.Arguments = diagnostics.RedactSensitiveText(call.Function.Arguments)
-		out = append(out, call)
+		out = append(out, traceToolCall{
+			ID:        diagnostics.RedactSensitiveText(call.ID),
+			Name:      diagnostics.RedactSensitiveText(call.Name),
+			Arguments: diagnostics.RedactSensitiveText(string(call.Arguments)),
+		})
 	}
 	return out
 }
@@ -818,10 +894,16 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		MemoryItemCount:               trace.MemoryItemCount,
 		VisibleOpsManualTools:         append([]string(nil), trace.VisibleOpsManualTools...),
 		DroppedContextReasons:         append([]string(nil), trace.DroppedContextReasons...),
+		ContextDedupe:                 cloneContextDedupeTrace(trace.ContextDedupe),
 		ContextGovernance:             redactContextGovernanceTraceItems(trace.ContextGovernance),
 		ContextUsage:                  redactContextUsage(trace.ContextUsage),
 		ToolSurfaceFingerprint:        diagnostics.RedactSensitiveText(trace.ToolSurfaceFingerprint),
 		ToolSurfacePolicySnapshotHash: diagnostics.RedactSensitiveText(trace.ToolSurfacePolicySnapshotHash),
+		ToolSurfaceSnapshot:           redactToolSurfaceSnapshot(trace.ToolSurfaceSnapshot),
+		PublicWebBudget:               clonePublicWebBudgetTrace(trace.PublicWebBudget),
+		WebSearchPolicy:               redactWebSearchPolicyTrace(trace.WebSearchPolicy),
+		WebSearch:                     redactWebSearchTrace(trace.WebSearch),
+		Final:                         redactFinalTrace(trace.Final),
 		DeferredToolDirectory:         redactDeferredToolDirectory(trace.DeferredToolDirectory),
 		LoadedToolsDelta:              redactStringSlice(trace.LoadedToolsDelta),
 		LoadedPacksDelta:              redactStringSlice(trace.LoadedPacksDelta),
@@ -830,6 +912,7 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		ToolSearchEvents:              redactToolSearchTraceEvents(trace.ToolSearchEvents),
 		ToolSelectionEvents:           redactToolSelectionTraceEvents(trace.ToolSelectionEvents),
 		RejectedToolCalls:             redactRejectedToolCallTraceEvents(trace.RejectedToolCalls),
+		DispatchDecisions:             redactDispatchDecisionTraces(trace.DispatchDecisions),
 		SkillSearchEvents:             redactSkillSearchTraceEvents(trace.SkillSearchEvents),
 		SkillReadEvents:               redactSkillReadTraceEvents(trace.SkillReadEvents),
 		RejectedSkillActivations:      redactRejectedSkillActivationTraceEvents(trace.RejectedSkillActivations),
@@ -853,6 +936,7 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		AgentAssignmentLint:           redactAgentAssignmentLintTraces(trace.AgentAssignmentLint),
 		AgentParallelTraceGroups:      redactAgentParallelTraceGroups(trace.AgentParallelTraceGroups),
 		ResourceLocks:                 redactResourceLockTraces(trace.ResourceLocks),
+		OwnerWriteTraces:              redactOwnerWriteTraces(trace.OwnerWriteTraces),
 		AgentFinalGate:                redactAgentFinalGateDecisionTrace(trace.AgentFinalGate),
 		AgentNotifications:            redactAgentNotificationTraces(trace.AgentNotifications),
 		VerificationAgentReport:       redactVerificationAgentReportTrace(trace.VerificationAgentReport),
@@ -872,6 +956,106 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		out.Items = append(out.Items, item)
 	}
 	return out
+}
+
+func redactWebSearchPolicyTrace(trace *promptinput.WebSearchPolicyTrace) *promptinput.WebSearchPolicyTrace {
+	if trace == nil {
+		return nil
+	}
+	out := &promptinput.WebSearchPolicyTrace{
+		Level:            diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Level)),
+		Reason:           diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Reason)),
+		ReasonCodes:      redactStringSlice(trace.ReasonCodes),
+		QuerySeeds:       redactStringSlice(trace.QuerySeeds),
+		DisabledBy:       diagnostics.RedactSensitiveText(strings.TrimSpace(trace.DisabledBy)),
+		RequireCitations: trace.RequireCitations,
+	}
+	if out.Level == "" && out.Reason == "" && len(out.ReasonCodes) == 0 && len(out.QuerySeeds) == 0 && out.DisabledBy == "" && !out.RequireCitations {
+		return nil
+	}
+	return out
+}
+
+func redactWebSearchTrace(trace *promptinput.WebSearchTrace) *promptinput.WebSearchTrace {
+	if trace == nil {
+		return nil
+	}
+	out := &promptinput.WebSearchTrace{
+		Attempted:     trace.Attempted,
+		RetryCount:    trace.RetryCount,
+		Adapter:       diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Adapter)),
+		SourceCount:   trace.SourceCount,
+		FailureReason: diagnostics.RedactSensitiveText(strings.TrimSpace(trace.FailureReason)),
+	}
+	if !out.Attempted && out.RetryCount == 0 && out.Adapter == "" && out.SourceCount == 0 && out.FailureReason == "" {
+		return nil
+	}
+	return out
+}
+
+func redactFinalTrace(trace *promptinput.FinalTrace) *promptinput.FinalTrace {
+	if trace == nil || !trace.PublicWebLimitation {
+		return nil
+	}
+	return &promptinput.FinalTrace{PublicWebLimitation: true}
+}
+
+func redactToolSurfaceSnapshot(snapshot *promptinput.ToolSurfaceSnapshot) *promptinput.ToolSurfaceSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	out := &promptinput.ToolSurfaceSnapshot{
+		Fingerprint:      diagnostics.RedactSensitiveText(strings.TrimSpace(snapshot.Fingerprint)),
+		VisibleTools:     redactStringSlice(snapshot.VisibleTools),
+		DeferredTools:    redactStringSlice(snapshot.DeferredTools),
+		HiddenTools:      redactStringSlice(snapshot.HiddenTools),
+		LoadedPacksDelta: redactStringSlice(snapshot.LoadedPacksDelta),
+		PolicyHash:       diagnostics.RedactSensitiveText(strings.TrimSpace(snapshot.PolicyHash)),
+	}
+	if len(snapshot.HiddenReasons) > 0 {
+		out.HiddenReasons = make(map[string][]string, len(snapshot.HiddenReasons))
+		for name, reasons := range snapshot.HiddenReasons {
+			name = diagnostics.RedactSensitiveText(strings.TrimSpace(name))
+			if name == "" {
+				continue
+			}
+			out.HiddenReasons[name] = redactStringSlice(reasons)
+		}
+		if len(out.HiddenReasons) == 0 {
+			out.HiddenReasons = nil
+		}
+	}
+	if toolSurfaceSnapshotTraceEmpty(out) {
+		return nil
+	}
+	return out
+}
+
+func cloneContextDedupeTrace(trace *promptinput.ContextDedupeTrace) *promptinput.ContextDedupeTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	return &out
+}
+
+func clonePublicWebBudgetTrace(trace *promptinput.PublicWebBudgetTrace) *promptinput.PublicWebBudgetTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	return &out
+}
+
+func toolSurfaceSnapshotTraceEmpty(snapshot *promptinput.ToolSurfaceSnapshot) bool {
+	return snapshot == nil ||
+		strings.TrimSpace(snapshot.Fingerprint) == "" &&
+			len(snapshot.VisibleTools) == 0 &&
+			len(snapshot.DeferredTools) == 0 &&
+			len(snapshot.HiddenTools) == 0 &&
+			len(snapshot.HiddenReasons) == 0 &&
+			len(snapshot.LoadedPacksDelta) == 0 &&
+			strings.TrimSpace(snapshot.PolicyHash) == ""
 }
 
 func cloneSafetySignalTraces(signals []promptinput.SafetySignalTrace) []promptinput.SafetySignalTrace {
@@ -894,9 +1078,45 @@ func redactToolSearchTraceEvents(events []promptinput.ToolSearchTraceEvent) []pr
 	for _, event := range events {
 		event.Mode = diagnostics.RedactSensitiveText(event.Mode)
 		event.Query = diagnostics.RedactSensitiveText(event.Query)
+		event.Ranker = diagnostics.RedactSensitiveText(event.Ranker)
 		event.Matches = redactStringSlice(event.Matches)
+		event.RejectedReasons = redactToolSearchRejectedReasons(event.RejectedReasons)
 		event.Reason = diagnostics.RedactSensitiveText(event.Reason)
 		out = append(out, event)
+	}
+	return out
+}
+
+func redactToolSearchRejectedReasons(reasons []promptinput.ToolSearchRejectedReason) []promptinput.ToolSearchRejectedReason {
+	if len(reasons) == 0 {
+		return nil
+	}
+	out := make([]promptinput.ToolSearchRejectedReason, 0, len(reasons))
+	for _, reason := range reasons {
+		reason.ToolName = diagnostics.RedactSensitiveText(reason.ToolName)
+		reason.Reason = diagnostics.RedactSensitiveText(reason.Reason)
+		reason.Status = diagnostics.RedactSensitiveText(reason.Status)
+		reason.Source = diagnostics.RedactSensitiveText(reason.Source)
+		reason.MCPServerID = diagnostics.RedactSensitiveText(reason.MCPServerID)
+		reason.HealthStatus = diagnostics.RedactSensitiveText(reason.HealthStatus)
+		reason.FilteredReason = diagnostics.RedactSensitiveText(reason.FilteredReason)
+		out = append(out, reason)
+	}
+	return out
+}
+
+func redactDispatchDecisionTraces(traces []promptinput.DispatchDecisionTrace) []promptinput.DispatchDecisionTrace {
+	if len(traces) == 0 {
+		return nil
+	}
+	out := make([]promptinput.DispatchDecisionTrace, 0, len(traces))
+	for _, trace := range traces {
+		trace.ToolName = diagnostics.RedactSensitiveText(trace.ToolName)
+		trace.ToolCallID = diagnostics.RedactSensitiveText(trace.ToolCallID)
+		trace.ToolSurfaceFingerprint = diagnostics.RedactSensitiveText(trace.ToolSurfaceFingerprint)
+		trace.PermissionSnapshotHash = diagnostics.RedactSensitiveText(trace.PermissionSnapshotHash)
+		trace.ArgumentsHash = diagnostics.RedactSensitiveText(trace.ArgumentsHash)
+		out = append(out, trace)
 	}
 	return out
 }
@@ -1452,9 +1672,13 @@ func redactContextGovernanceTraceItems(items []promptinput.ContextGovernanceTrac
 	}
 	out := make([]promptinput.ContextGovernanceTraceItem, 0, len(items))
 	for _, item := range items {
+		item.ID = diagnostics.RedactSensitiveText(item.ID)
 		item.Layer = diagnostics.RedactSensitiveText(item.Layer)
 		item.Kind = diagnostics.RedactSensitiveText(item.Kind)
 		item.Message = diagnostics.RedactSensitiveText(item.Message)
+		item.ToolCallID = diagnostics.RedactSensitiveText(item.ToolCallID)
+		item.ToolName = diagnostics.RedactSensitiveText(item.ToolName)
+		item.MaterializationTier = diagnostics.RedactSensitiveText(item.MaterializationTier)
 		item.ReferenceIDs = redactStringSlice(item.ReferenceIDs)
 		if item.Resource != nil {
 			resource := *item.Resource
@@ -1488,6 +1712,25 @@ func redactStringSlice(in []string) []string {
 	return out
 }
 
+func redactOwnerWriteTraces(in []promptinput.OwnerWriteTrace) []promptinput.OwnerWriteTrace {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]promptinput.OwnerWriteTrace, 0, len(in))
+	for _, trace := range in {
+		out = append(out, promptinput.OwnerWriteTrace{
+			Responsibility: diagnostics.RedactSensitiveText(trace.Responsibility),
+			Owner:          diagnostics.RedactSensitiveText(trace.Owner),
+			Writer:         diagnostics.RedactSensitiveText(trace.Writer),
+			SessionID:      diagnostics.RedactSensitiveText(trace.SessionID),
+			TurnID:         diagnostics.RedactSensitiveText(trace.TurnID),
+			Outcome:        diagnostics.RedactSensitiveText(trace.Outcome),
+			CreatedAt:      diagnostics.RedactSensitiveText(trace.CreatedAt),
+		})
+	}
+	return out
+}
+
 func redactStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -1499,10 +1742,10 @@ func redactStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func traceDirectory(req Request) (string, error) {
-	root := strings.TrimSpace(os.Getenv(DirEnv))
+func traceDirectory(root string, req Request) (string, error) {
+	root = strings.TrimSpace(root)
 	if root == "" {
-		root = filepath.Join(".data", "model-input-traces")
+		root = DefaultRootDir("")
 	}
 	kind := sanitizePath(firstNonEmpty(req.Kind, "model-call"))
 	if strings.TrimSpace(req.SessionID) != "" || strings.TrimSpace(req.TurnID) != "" {
@@ -1662,10 +1905,16 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		trace.MemoryItemCount == 0 &&
 		len(trace.VisibleOpsManualTools) == 0 &&
 		len(trace.DroppedContextReasons) == 0 &&
+		trace.ContextDedupe == nil &&
 		len(trace.ContextGovernance) == 0 &&
 		contextUsageEmpty(trace.ContextUsage) &&
 		strings.TrimSpace(trace.ToolSurfaceFingerprint) == "" &&
 		strings.TrimSpace(trace.ToolSurfacePolicySnapshotHash) == "" &&
+		toolSurfaceSnapshotTraceEmpty(trace.ToolSurfaceSnapshot) &&
+		trace.PublicWebBudget == nil &&
+		trace.WebSearchPolicy == nil &&
+		trace.WebSearch == nil &&
+		trace.Final == nil &&
 		len(trace.DeferredToolDirectory) == 0 &&
 		len(trace.LoadedToolsDelta) == 0 &&
 		len(trace.LoadedPacksDelta) == 0 &&
@@ -1674,6 +1923,7 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		len(trace.ToolSearchEvents) == 0 &&
 		len(trace.ToolSelectionEvents) == 0 &&
 		len(trace.RejectedToolCalls) == 0 &&
+		len(trace.DispatchDecisions) == 0 &&
 		len(trace.SkillSearchEvents) == 0 &&
 		len(trace.SkillReadEvents) == 0 &&
 		len(trace.RejectedSkillActivations) == 0 &&
@@ -1688,6 +1938,7 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		len(trace.AgentAssignmentLint) == 0 &&
 		len(trace.AgentParallelTraceGroups) == 0 &&
 		len(trace.ResourceLocks) == 0 &&
+		len(trace.OwnerWriteTraces) == 0 &&
 		trace.AgentFinalGate == nil &&
 		len(trace.AgentNotifications) == 0 &&
 		trace.VerificationAgentReport == nil &&

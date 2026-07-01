@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,8 +26,8 @@ func (s *HTTPServer) opsManualGenerationRequestFromRunner(ctx context.Context, r
 	if workflowID == "" {
 		return opsmanual.WorkflowManualGenerationRequest{}, workflowSourceError{status: http.StatusBadRequest, message: "workflow_id is required"}
 	}
-	if s.runnerStudioHandler == nil && strings.TrimSpace(s.runnerStudioUpstreamURL) == "" {
-		return opsmanual.WorkflowManualGenerationRequest{}, workflowSourceError{status: http.StatusServiceUnavailable, message: "runner studio upstream is not configured"}
+	if s.runnerStudioHandler == nil {
+		return opsmanual.WorkflowManualGenerationRequest{}, workflowSourceError{status: http.StatusServiceUnavailable, message: "embedded runner is not available"}
 	}
 	rawYAML, storageURI, err := s.fetchRunnerWorkflowYAML(ctx, workflowID)
 	if err != nil {
@@ -145,31 +144,7 @@ func (s *HTTPServer) runnerStudioRequest(ctx context.Context, method string, pat
 		s.runnerStudioHandler.ServeHTTP(rec, req)
 		return rec.Code, rec.Body.Bytes(), nil
 	}
-	upstream := strings.TrimSpace(s.runnerStudioUpstreamURL)
-	if upstream == "" {
-		return 0, nil, workflowSourceError{status: http.StatusServiceUnavailable, message: "runner studio upstream is not configured"}
-	}
-	targetURL, err := joinRunnerStudioUpstreamURL(upstream, path, rawQuery)
-	if err != nil {
-		return 0, nil, err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, err
-	}
-	if len(body) > 0 {
-		httpReq.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return 0, nil, workflowSourceError{status: http.StatusBadGateway, message: err.Error()}
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return 0, nil, err
-	}
-	return resp.StatusCode, raw, nil
+	return 0, nil, workflowSourceError{status: http.StatusServiceUnavailable, message: "embedded runner is not available"}
 }
 
 func yamlFromRunnerResponse(raw []byte) []byte {

@@ -257,6 +257,51 @@ func TestMCPServiceListIncludesRedactedHealth(t *testing.T) {
 	}
 }
 
+func TestMCPServiceRuntimeHealthUsesSharedViewModel(t *testing.T) {
+	repo := &mcpRepoStub{}
+	registry := mcp.NewRegistry()
+	if err := registry.RegisterServer(mcp.ServerConfig{ID: "coroot", Name: "Coroot", Transport: "builtin"}); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	if err := registry.OnServerConnected("coroot", []tooling.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.service_metrics", Description: "metrics"}},
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.application_logs", Description: "logs"}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:      "coroot",
+		Status:        mcp.HealthUnavailable,
+		LastCheckedAt: time.Unix(100, 0),
+		LastError:     "502 bad gateway token=secret",
+		TTLSeconds:    30,
+	})
+
+	svc := NewMCPService(repo, registry)
+	payload, err := svc.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("health items = %#v, want one coroot item", payload.Items)
+	}
+	item := payload.Items[0]
+	if item.ServerID != "coroot" || item.DisplayName != "Coroot" || item.Status != "unhealthy" || item.AvailableToolCount != 2 || item.RetryAfterSeconds != 30 {
+		t.Fatalf("health item = %#v", item)
+	}
+	if strings.Contains(item.LastError, "secret") || !strings.Contains(item.LastError, "[REDACTED]") {
+		t.Fatalf("LastError = %q, want redacted error", item.LastError)
+	}
+
+	one, err := svc.HealthOne(context.Background(), "coroot")
+	if err != nil {
+		t.Fatalf("HealthOne() error = %v", err)
+	}
+	if one.ServerID != "coroot" || one.Status != "unhealthy" {
+		t.Fatalf("HealthOne() = %#v", one)
+	}
+}
+
 func TestMCPServiceRefreshRecordsUnavailableHealth(t *testing.T) {
 	repo := &mcpRepoStub{items: []store.MCPServerRecord{{
 		Name:      "synthetic_obs",

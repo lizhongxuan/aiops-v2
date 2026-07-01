@@ -27,7 +27,23 @@ func NewEnsurePostgreSQLInstalledTool(opts Options) tooling.Tool {
 			SearchHint:       "database package install middleware postgresql postgres",
 			RiskLevel:        tooling.ToolRiskMedium,
 			Mutating:         true,
-			RequiresApproval: false,
+			RequiresApproval: true,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "host",
+				ResourceID:    "selected_host",
+				OperationKind: "package_install",
+			}, {
+				ResourceType:  "package",
+				ResourceID:    "postgresql",
+				OperationKind: "install",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy: tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{
+					"psql --version",
+					"systemctl is-active postgresql or pg_isready when available",
+				},
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind: "database_ops",
 				ResourceTypes:  []string{"database", "host", "package"},

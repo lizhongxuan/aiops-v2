@@ -200,6 +200,10 @@ describe("hostProfileViewModels", () => {
       canOpenTerminal: true,
       disabledReason: "",
     });
+    expect(buildHostTerminalEntry({ id: "host-2b", status: "stale", terminalCapable: true })).toMatchObject({
+      canOpenTerminal: true,
+      disabledReason: "",
+    });
     expect(buildHostTerminalEntry({ id: "host-3", status: "offline", terminalCapable: true })).toMatchObject({
       canOpenTerminal: false,
       disabledReason: "主机离线",

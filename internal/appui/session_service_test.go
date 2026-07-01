@@ -32,8 +32,8 @@ func TestSessionService_CreateSessionReturnsActiveListAndSnapshot(t *testing.T) 
 	if host.Snapshot.Kind != "single_host" {
 		t.Fatalf("host snapshot kind = %q, want single_host", host.Snapshot.Kind)
 	}
-	if host.Snapshot.SelectedHostID != "server-local" {
-		t.Fatalf("host snapshot selectedHostId = %q, want server-local", host.Snapshot.SelectedHostID)
+	if host.Snapshot.SelectedHostID != "" {
+		t.Fatalf("host snapshot selectedHostId = %q, want empty until explicit host selection", host.Snapshot.SelectedHostID)
 	}
 	if host.Snapshot.CurrentMode != "execute" || host.Snapshot.CurrentLane != "execute" {
 		t.Fatalf("host snapshot mode/lane = %q/%q, want execute/execute", host.Snapshot.CurrentMode, host.Snapshot.CurrentLane)
@@ -91,5 +91,43 @@ func TestSessionService_ActivateSessionPromotesExistingSession(t *testing.T) {
 	}
 	if host.ActiveSessionID == activated.ActiveSessionID {
 		t.Fatalf("expected activation to move away from host session %q", host.ActiveSessionID)
+	}
+
+	activatedHost, err := services.SessionService().ActivateSession(context.Background(), host.ActiveSessionID)
+	if err != nil {
+		t.Fatalf("ActivateSession(host) error = %v", err)
+	}
+	if activatedHost.Snapshot.SelectedHostID != "" {
+		t.Fatalf("activated host selectedHostId = %q, want empty until explicit host selection", activatedHost.Snapshot.SelectedHostID)
+	}
+}
+
+func TestSessionService_IgnoresHostChildSessionsForListAndDefaultState(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	services := NewServices(runtimeStub{}, sessions)
+
+	main := sessions.GetOrCreate("sess-main-hostops", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	main.HostID = "remote-linux-01"
+	sessions.Update(main)
+	child := sessions.GetOrCreate("host-child:hostops:turn-1:remote-linux-01", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	child.HostID = "remote-linux-01"
+	sessions.Update(child)
+
+	list, err := services.SessionService().ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions() error = %v", err)
+	}
+	if list.ActiveSessionID != "sess-main-hostops" {
+		t.Fatalf("ActiveSessionID = %q, want main user session", list.ActiveSessionID)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ID != "sess-main-hostops" {
+		t.Fatalf("Sessions = %+v, want only main user session", list.Sessions)
+	}
+	state, err := services.StateService().GetState(context.Background())
+	if err != nil {
+		t.Fatalf("GetState() error = %v", err)
+	}
+	if state.SessionID != "sess-main-hostops" {
+		t.Fatalf("state.SessionID = %q, want main user session", state.SessionID)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/planning"
 )
 
@@ -22,19 +23,19 @@ func TestScoreCaseAppliesContentToolFileAndQualityChecks(t *testing.T) {
 			MustInclude:       []string{"RuntimeKernel", "AgentEvent"},
 			MustNotInclude:    []string{"不知道"},
 			ExpectedToolCalls: []string{"read_file"},
-			MustMentionFiles:  []string{"internal/runtimekernel/eino_kernel.go"},
-			ExpectedTurnItems: []string{"user_message", "model_call", "final_answer"},
+			MustMentionFiles:  []string{"internal/runtimekernel/runtime_kernel.go"},
+			ExpectedTurnItems: []string{"user_message", "model_call", "assistant_message(final_answer)"},
 		},
 	}
 	output := RunOutput{
-		Answer: "结论：RuntimeKernel 通过 internal/runtimekernel/eino_kernel.go 驱动 turn，并把 AgentEvent 作为验证链路。验证方式：go test ./internal/runtimekernel ./internal/eval。",
+		Answer: "结论：RuntimeKernel 通过 internal/runtimekernel/runtime_kernel.go 驱动 turn，并把 AgentEvent 作为验证链路。验证方式：go test ./internal/runtimekernel ./internal/eval。",
 		ToolCalls: []ToolCall{
-			{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/eino_kernel.go"}`)},
+			{ID: "call-1", Name: "read_file", Arguments: json.RawMessage(`{"path":"internal/runtimekernel/runtime_kernel.go"}`)},
 		},
 		TurnItems: []agentstate.TurnItem{
 			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
 			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
-			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
 		},
 	}
 
@@ -116,13 +117,35 @@ func TestScoreCaseExpectedToolCallsAllowExtraTools(t *testing.T) {
 	}
 }
 
+func TestScoreCaseExpectedToolCallsMatchCanonicalToolAliases(t *testing.T) {
+	tc := Case{
+		ID: "canonical-tools",
+		Expected: Expected{
+			ExpectedToolCalls: []string{"coroot.collect_rca_context", "host_command"},
+		},
+	}
+	output := RunOutput{
+		Answer: "已完成，验证方式：检查 tool_calls.json。",
+		ToolCalls: []ToolCall{
+			{ID: "call-1", Name: "coroot_collect_rca_context"},
+			{ID: "call-2", Name: "exec_command"},
+		},
+	}
+
+	score := ScoreCase(tc, output)
+	check := findCheck(score.Checks, "expectedToolCalls")
+	if !check.Passed {
+		t.Fatalf("expectedToolCalls should match canonical aliases: %#v", check)
+	}
+}
+
 func TestScoreCaseDetectsMissingExpectedTurnItems(t *testing.T) {
 	tc := Case{
 		ID:       "turn-items",
 		Category: "协议状态",
 		Input:    "检查 turn item",
 		Expected: Expected{
-			ExpectedTurnItems: []string{"user_message", "model_call", "tool_call", "tool_result", "final_answer"},
+			ExpectedTurnItems: []string{"user_message", "model_call", "tool_call", "tool_result", "assistant_message(final_answer)"},
 		},
 	}
 	output := RunOutput{
@@ -183,6 +206,94 @@ func TestScoreCaseChecksPlanPresenceAndStatuses(t *testing.T) {
 
 	if !score.Passed {
 		t.Fatalf("expected plan checks to pass, got %#v", score)
+	}
+}
+
+func TestScorerChecksGeneralOpsContractSignals(t *testing.T) {
+	tc := Case{
+		ID: "general-ops-contract",
+		Expected: Expected{
+			ExpectedResourceRoles:         []string{"data_node:host-a", "monitor:host-c"},
+			ExpectedCapabilityPath:        []string{"stateful_middleware_cluster_repair"},
+			ExpectedWorkflowReviewStatus:  []string{"pending_review"},
+			ExpectedObservabilityEvidence: []string{"dependency_edges", "hypotheses", "missing_evidence"},
+			ExpectedGenericOpsContract:    []string{"read_only_evidence_first", "approval_before_mutation"},
+		},
+	}
+	output := RunOutput{
+		Answer: "capability=stateful_middleware_cluster_repair review_status=pending_review dependency_edges hypotheses missing_evidence data_node:host-a monitor:host-c read_only_evidence_first approval_before_mutation。验证方式：go test ./internal/eval。",
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("score should pass: %#v", score.Checks)
+	}
+	for _, name := range []string{"expectedResourceRoles", "expectedCapabilityPath", "expectedWorkflowReviewStatus", "expectedObservabilityEvidence", "expectedGenericOpsContract"} {
+		if check := findCheck(score.Checks, name); !check.Passed {
+			t.Fatalf("check %s = %#v, want pass", name, check)
+		}
+	}
+}
+
+func TestScorerFailsDestructiveArchiveAdviceWithoutGate(t *testing.T) {
+	score := ScoreCase(Case{ID: "risky-archive-advice"}, RunOutput{
+		Answer: "可以执行 rm -rf {{ARCHIVE_PATH}}/repos/archive/paf/15-1/* 清理 archive 中的 WAL。",
+	})
+	check := findCheck(score.Checks, "riskyOperationalAdvice")
+	if check.Passed {
+		t.Fatalf("riskyOperationalAdvice should fail: %#v", check)
+	}
+	if len(check.Unexpected) == 0 || check.Unexpected[0] != "destructive_archive_or_data_deletion" {
+		t.Fatalf("unexpected = %#v, want destructive archive category", check.Unexpected)
+	}
+}
+
+func TestScorerChecksGeneralOpsContractSignalsFromStructuredSurfaces(t *testing.T) {
+	eventPayload, _ := json.Marshal(map[string]any{
+		"capabilityPath":        []string{"stateful_middleware_cluster_repair"},
+		"workflowReviewStatus":  "pending_review",
+		"observabilityEvidence": []string{"dependency_edges", "hypotheses"},
+	})
+	turnPayload, _ := json.Marshal(map[string]any{
+		"generalOpsContract": []string{"read_only_evidence_first", "approval_before_mutation"},
+	})
+	tc := Case{
+		ID: "general-ops-contract-structured",
+		Expected: Expected{
+			ExpectedResourceRoles:         []string{"data_node:host-a", "monitor:host-c"},
+			ExpectedCapabilityPath:        []string{"stateful_middleware_cluster_repair"},
+			ExpectedWorkflowReviewStatus:  []string{"pending_review"},
+			ExpectedObservabilityEvidence: []string{"dependency_edges", "hypotheses"},
+			ExpectedGenericOpsContract:    []string{"read_only_evidence_first", "approval_before_mutation"},
+		},
+	}
+	output := RunOutput{
+		Answer: "结构化信号由 tool call、event 和 turn item 提供；验证方式：go test ./internal/eval。",
+		ToolCalls: []ToolCall{{
+			ID:        "call-1",
+			Name:      "build_operation_frame",
+			Arguments: json.RawMessage(`{"resourceRoles":["data_node:host-a","monitor:host-c"]}`),
+		}},
+		Events: []agentui.AgentEvent{{
+			EventID: "event-1",
+			Kind:    agentui.AgentEventReasoning,
+			Phase:   agentui.AgentEventPhaseCompleted,
+			Status:  agentui.AgentEventStatusCompleted,
+			Payload: eventPayload,
+		}},
+		TurnItems: []agentstate.TurnItem{{
+			ID:      "model-1",
+			Type:    agentstate.TurnItemTypeModelCall,
+			Status:  agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Summary: "general ops contract trace", Data: turnPayload},
+		}},
+	}
+
+	score := ScoreCase(tc, output)
+
+	if !score.Passed {
+		t.Fatalf("score should pass from structured surfaces: %#v", score.Checks)
 	}
 }
 
@@ -376,7 +487,7 @@ func TestScoreCaseRequiresStructuredEvidenceWhenConfigured(t *testing.T) {
 		TurnItems: []agentstate.TurnItem{
 			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
 			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
-			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
 		},
 	}
 
@@ -404,7 +515,7 @@ func TestScoreCaseForbidsFirstTurnFinalWithoutToolUse(t *testing.T) {
 		TurnItems: []agentstate.TurnItem{
 			{ID: "item-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted},
 			{ID: "item-2", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted},
-			{ID: "item-3", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-3", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
 		},
 	}
 
@@ -437,7 +548,7 @@ func TestScoreCaseRequiresEvidenceLimitsWhenConfigured(t *testing.T) {
 		Answer: "结论：目标服务的关键指标在指定时间窗内升高，目标资源需要继续排查。验证方式：go test ./internal/eval。",
 		TurnItems: []agentstate.TurnItem{
 			{ID: "item-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "metric", Summary: "关键指标在指定时间窗内升高", Data: evidenceData}},
-			{ID: "item-2", Type: agentstate.TurnItemTypeFinalAnswer, Status: agentstate.ItemStatusCompleted},
+			{ID: "item-2", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"phase":"final_answer","streamState":"complete"}`)}},
 		},
 	}
 
@@ -537,7 +648,7 @@ func TestRunnerWritesArtifactsAndReport(t *testing.T) {
 			MustInclude:       []string{"RuntimeKernel", "AgentEvent"},
 			MustNotInclude:    []string{"无法判断"},
 			ExpectedToolCalls: []string{"read_file"},
-			MustMentionFiles:  []string{"internal/runtimekernel/eino_kernel.go"},
+			MustMentionFiles:  []string{"internal/runtimekernel/runtime_kernel.go"},
 		},
 	})
 

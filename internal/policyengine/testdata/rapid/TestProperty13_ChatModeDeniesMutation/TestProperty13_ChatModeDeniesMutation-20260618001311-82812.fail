@@ -1,0 +1,6 @@
+# 2026/06/18 00:13:11.353893 [TestProperty13_ChatModeDeniesMutation] [rapid] draw mutationTool: "service_stop"
+# 2026/06/18 00:13:11.353907 [TestProperty13_ChatModeDeniesMutation] chat mode should deny mutation tool "service_stop", got action=allow
+# 
+v0.4.8#9088811612184756213
+0x9867f1f40f739
+0x8

@@ -34,26 +34,205 @@ describe("HostOpsStatusPanel", () => {
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("mx-auto");
-    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("max-w-[46.5rem]");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("w-[calc(100%-4rem)]");
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("max-w-[44.5rem]");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("-mb-8");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("rounded-b-none");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).toContain("border-b-0");
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')?.className).not.toContain("shadow-[");
     expect(container.textContent).toContain("共 5 个步骤，已经完成 0 个");
     expect(container.textContent).toContain("共 3 个主机 Agent");
-    expect(container.textContent).toContain("Franklin(@1.1.1.1)");
-    expect(container.textContent).toContain("打开");
+    expect(container.textContent).toContain("@1.1.1.1");
+    expect(container.textContent).not.toContain("Franklin(@1.1.1.1)");
 
-    const openButtons = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("打开"),
-    );
-    expect(openButtons).toHaveLength(3);
+    expect(container.textContent).not.toContain("打开");
+    expect(container.querySelector('[data-testid="host-subagent-list-card"]')?.className).toContain("px-4");
+    expect(container.querySelector('[data-testid="host-subagent-list-card"]')?.className).toContain("py-1.5");
+    expect(container.querySelector('[data-testid="host-subagent-list-card"]')?.className).toContain("text-[12px]");
 
     await act(async () => {
-      openButtons[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      const hostName = container.querySelector('[data-testid="host-child-agent-name-child-1"]') as HTMLButtonElement;
+      hostName.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
     expect(openChildAgent).toHaveBeenCalledWith("child-1");
+  });
+
+  it("collapses host-bound child agent rows and keeps each row in one line", async () => {
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={sampleHostOpsState()} onOpenChildAgent={vi.fn()} />);
+    });
+
+    const toggle = container.querySelector('[data-testid="host-subagent-row-toggle"]') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    const firstRow = container.querySelector('[data-testid="host-child-agent-child-1"]');
+    expect(firstRow?.className).toContain("flex");
+    expect(firstRow?.className).toContain("min-h-6");
+    expect(firstRow?.textContent).toContain("@1.1.1.1");
+    expect(firstRow?.textContent).toContain("执行主机 A 准备步骤");
+    expect(firstRow?.textContent).toContain("running");
+
+    await act(async () => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="host-child-agent-child-1"]')).toBeNull();
+    expect(container.textContent).toContain("主机 Agent");
+    expect(container.textContent).toContain("共 3 个主机 Agent");
+  });
+
+  it("colors adjacent host names differently and opens details by clicking the host name", async () => {
+    const openChildAgent = vi.fn();
+
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={sampleTenHostOpsState()} onOpenChildAgent={openChildAgent} />);
+    });
+
+    const hostNameButtons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('[data-testid^="host-child-agent-name-child-"]'),
+    );
+    expect(hostNameButtons).toHaveLength(10);
+    expect(new Set(hostNameButtons.map((button) => button.className)).size).toBe(10);
+    expect(hostNameButtons.every((button) => !button.className.includes("text-zinc-900"))).toBe(true);
+    expect(container.textContent).not.toContain("打开");
+
+    await act(async () => {
+      hostNameButtons[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(openChildAgent).toHaveBeenCalledWith("child-1");
+  });
+
+  it("colors host agent status badges by status", async () => {
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={sampleStatusHostOpsState()} onOpenChildAgent={vi.fn()} />);
+    });
+
+    const badges = Array.from(container.querySelectorAll<HTMLElement>('[data-testid^="host-child-agent-status-"]'));
+    expect(badges).toHaveLength(5);
+    expect(new Set(badges.map((badge) => badge.className)).size).toBe(5);
+    expect(container.querySelector('[data-testid="host-child-agent-status-child-running"]')?.className).toContain("text-sky-700");
+    expect(container.querySelector('[data-testid="host-child-agent-status-child-waiting"]')?.className).toContain("text-amber-700");
+    expect(container.querySelector('[data-testid="host-child-agent-status-child-completed"]')?.className).toContain("text-emerald-700");
+    expect(container.querySelector('[data-testid="host-child-agent-status-child-failed"]')?.className).toContain("text-red-700");
+    expect(container.querySelector('[data-testid="host-child-agent-status-child-approval"]')?.className).toContain("text-violet-700");
+  });
+
+  it("renders one host-bound child agent status item per mission host", async () => {
+    await act(async () => {
+      root.render(
+        <HostOpsStatusPanel
+          state={{
+            ...createInitialAiopsTransportState("thread-hostops-child-rows"),
+            hostMissions: {
+              "mission-1": {
+                id: "mission-1",
+                status: "running",
+                mentions: [
+                  { hostId: "host-a", displayName: "主机A", resolved: true },
+                  { hostId: "host-b", displayName: "主机B", resolved: true },
+                ],
+                childAgentIds: ["child-host-a", "child-host-b"],
+              },
+            },
+            activeHostMissionId: "mission-1",
+            childAgents: {
+              "child-host-a": {
+                id: "child-host-a",
+                hostId: "host-a",
+                hostDisplayName: "主机A",
+                status: "running",
+              },
+              "child-host-b": {
+                id: "child-host-b",
+                hostId: "host-b",
+                hostDisplayName: "主机B",
+                status: "waiting",
+              },
+            },
+          } as AiopsTransportState}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("主机A");
+    expect(container.textContent).toContain("主机B");
+    expect(container.querySelector('[data-testid="host-child-agent-child-host-a"]')?.textContent).toContain("running");
+    expect(container.querySelector('[data-testid="host-child-agent-child-host-b"]')?.textContent).toContain("waiting");
+  });
+
+  it("does not render planned mission host placeholders before a child agent exists", async () => {
+    const openChildAgent = vi.fn();
+    await act(async () => {
+      root.render(
+        <HostOpsStatusPanel
+          state={{
+            ...createInitialAiopsTransportState("thread-hostops-pending-host"),
+            hostMissions: {
+              "mission-1": {
+                id: "mission-1",
+                status: "running",
+                mentions: [
+                  {
+                    hostId: "server-local",
+                    displayName: "server-local",
+                    resolved: true,
+                  },
+                ],
+                childAgentIds: [],
+              },
+            },
+            activeHostMissionId: "mission-1",
+            childAgents: {},
+          } as AiopsTransportState}
+          onOpenChildAgent={openChildAgent}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("尚未创建子 Agent");
+    expect(container.textContent).not.toContain("planned");
+    expect(openChildAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not render planned placeholders for a single host-bound chat without child agents", async () => {
+    await act(async () => {
+      root.render(
+        <HostOpsStatusPanel
+          state={{
+            ...createInitialAiopsTransportState("thread-host-bound-chat"),
+            hostMissions: {
+              "hostops:turn-host-bound": {
+                id: "hostops:turn-host-bound",
+                turnId: "turn-host-bound",
+                status: "planning",
+                routeMode: "host_bound_ops",
+                planRequired: false,
+                mentionedHosts: [
+                  {
+                    raw: "@remote-120-77-239-90",
+                    hostId: "remote-120-77-239-90",
+                    displayName: "remote-120-77-239-90",
+                    resolved: true,
+                  },
+                ],
+                childAgentIds: [],
+              },
+            },
+            activeHostMissionId: "hostops:turn-host-bound",
+            childAgents: {},
+          } as AiopsTransportState}
+        />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("尚未创建子 Agent");
+    expect(container.textContent).not.toContain("planned");
   });
 
   it("ignores legacy transport states without host operation maps", async () => {
@@ -66,6 +245,22 @@ describe("HostOpsStatusPanel", () => {
     });
 
     expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+  });
+
+  it("does not render an empty plan-only panel", async () => {
+    const state = sampleHostOpsState();
+    const mission = state.hostMissions["mission-1"];
+    mission.planSteps = [];
+    mission.mentionedHosts = [];
+    mission.childAgentIds = [];
+    state.childAgents = {};
+
+    await act(async () => {
+      root.render(<HostOpsStatusPanel state={state} />);
+    });
+
+    expect(container.querySelector('[data-testid="host-ops-status-panel"]')).toBeNull();
+    expect(container.textContent).not.toContain("共 0 个步骤");
   });
 });
 
@@ -151,5 +346,92 @@ function sampleHostOpsState(): AiopsTransportState {
         task: "执行辅助节点检查",
       },
     },
+  };
+}
+
+function sampleTenHostOpsState(): AiopsTransportState {
+  const base = sampleHostOpsState();
+  const mentionedHosts = Array.from({ length: 10 }, (_, index) => {
+    const hostNumber = index + 1;
+    return {
+      tokenId: `mention-${hostNumber}`,
+      raw: `@1.1.1.${hostNumber}`,
+      hostId: `host-${hostNumber}`,
+      address: `1.1.1.${hostNumber}`,
+      displayName: `Host ${hostNumber}`,
+      source: "inventory",
+      resolved: true,
+    };
+  });
+  const childAgents = Object.fromEntries(
+    mentionedHosts.map((host, index) => {
+      const hostNumber = index + 1;
+      return [
+        `child-${hostNumber}`,
+        {
+          id: `child-${hostNumber}`,
+          missionId: "mission-1",
+          hostId: host.hostId,
+          hostAddress: host.address,
+          hostDisplayName: host.displayName,
+          status: "running",
+          task: `执行主机 ${hostNumber} 步骤`,
+        },
+      ];
+    }),
+  );
+  return {
+    ...base,
+    hostMissions: {
+      "mission-1": {
+        ...base.hostMissions["mission-1"],
+        mentionedHosts,
+        childAgentIds: mentionedHosts.map((_, index) => `child-${index + 1}`),
+      },
+    } as AiopsTransportState["hostMissions"],
+    childAgents: childAgents as AiopsTransportState["childAgents"],
+  };
+}
+
+function sampleStatusHostOpsState(): AiopsTransportState {
+  const statuses = [
+    ["child-running", "running"],
+    ["child-waiting", "waiting"],
+    ["child-completed", "completed"],
+    ["child-failed", "failed"],
+    ["child-approval", "approval_required"],
+  ] as const;
+  const base = sampleHostOpsState();
+  return {
+    ...base,
+    hostMissions: {
+      "mission-1": {
+        ...base.hostMissions["mission-1"],
+        mentionedHosts: statuses.map(([id], index) => ({
+          tokenId: `mention-${id}`,
+          raw: `@10.0.0.${index + 1}`,
+          hostId: `host-${id}`,
+          address: `10.0.0.${index + 1}`,
+          displayName: id,
+          source: "inventory",
+          resolved: true,
+        })),
+        childAgentIds: statuses.map(([id]) => id),
+      },
+    } as AiopsTransportState["hostMissions"],
+    childAgents: Object.fromEntries(
+      statuses.map(([id, status], index) => [
+        id,
+        {
+          id,
+          missionId: "mission-1",
+          hostId: `host-${id}`,
+          hostAddress: `10.0.0.${index + 1}`,
+          hostDisplayName: id,
+          status,
+          task: `${status} 状态验证`,
+        },
+      ]),
+    ) as AiopsTransportState["childAgents"],
   };
 }

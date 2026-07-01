@@ -144,8 +144,8 @@ func TestBuildPromptInputReturnsSemanticTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildPromptInput() error = %v", err)
 	}
-	if len(result.Messages) == 0 {
-		t.Fatal("expected provider messages")
+	if len(result.Items) == 0 {
+		t.Fatal("expected model input items")
 	}
 	if !runtimeTraceHas(result.Trace, "stable_prompt", "system") || !runtimeTraceHas(result.Trace, "conversation", "user") {
 		t.Fatalf("semantic trace missing prompt or user item: %#v", result.Trace)

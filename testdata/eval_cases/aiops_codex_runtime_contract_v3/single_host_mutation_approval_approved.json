@@ -1,0 +1,43 @@
+{
+  "name": "single_host_mutation_approval_approved",
+  "input": "在 host-a 上重启 nginx。需要先展示审批，用户批准后继续同一个 turn。",
+  "expected": {
+    "profile": "host_worker",
+    "hiddenTools": [
+      "appui.approval_terminal_write"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "host_worker",
+    "visibleTools": [
+      "exec_command",
+      "tool_search"
+    ],
+    "toolCalls": [
+      "exec_command.nginx_restart",
+      "exec_command.post_check"
+    ],
+    "approvalEvents": [
+      "approval_requested",
+      "approval_decided"
+    ],
+    "evidenceRefs": [
+      "approval:nginx-restart",
+      "evidence:post-check"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "approval_requested",
+      "approval_decided",
+      "resource_lock",
+      "tool_call",
+      "tool_result",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "verification_pass",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

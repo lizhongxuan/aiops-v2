@@ -1,9 +1,9 @@
-import { ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
+import { Bot, ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { AiopsProcessBlock } from "@/transport/aiopsTransportTypes";
+import type { AgentStepView, AiopsProcessBlock, AiopsTransportProcessKind, AiopsTransportProcessStatus } from "@/transport/aiopsTransportTypes";
 
 import { MessageMarkdown } from "./MessageMarkdown";
 
@@ -22,12 +22,63 @@ export function stripHtml(text: string): string {
   return text;
 }
 
+function debugTranscriptProjection(event: string, payload: Record<string, unknown>) {
+  if (!isTranscriptDebugEnabled()) return;
+  // Keep customer content out of browser diagnostics; callers pass hashes and lengths.
+  console.debug("aiops.transcript_projection", event, payload);
+}
+
+function isTranscriptDebugEnabled() {
+  if (typeof window === "undefined") return false;
+  try {
+    const params = new URLSearchParams(window.location.search || "");
+    return params.get("debugTranscript") === "1" || window.localStorage?.getItem("aiops.debugTranscript") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function debugProcessBlock(block: AiopsProcessBlock, index: number) {
+  return {
+    index,
+    id: block.id,
+    kind: block.kind,
+    displayKind: block.displayKind,
+    status: block.status,
+    phase: block.phase || "",
+    streamState: block.streamState || "",
+    textChars: (block.text || "").trim().length,
+    textHash: debugTextHash(block.text || ""),
+  };
+}
+
+function debugTextHash(text: string) {
+  const normalized = (text || "").trim();
+  if (!normalized) return "";
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function debugTextFacts(text: string) {
+  const normalized = (text || "").trim();
+  return {
+    chars: normalized.length,
+    hash: debugTextHash(normalized),
+  };
+}
+
 type ProcessTranscriptProps = {
   process: AiopsProcessBlock[];
+  agentSteps?: AgentStepView[];
   turnStatus?: string;
   turnStartedAt?: string;
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
+  finalDurationMs?: number;
   finalText?: string;
   renderFinalText?: boolean;
   onApprovalDecision?: ApprovalDecisionHandler;
@@ -38,6 +89,7 @@ type ApprovalDecisionHandler = (approvalId: string, decision: "accept" | "reject
 const TOOL_TRANSCRIPT_TEXT_CLASS = "text-[14px] leading-6";
 const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
 const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
+type TranscriptGroupKind = "search" | "command" | "tool" | "mcp" | "file" | "";
 
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
@@ -45,43 +97,31 @@ const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
  */
 export type ProcessGroup =
   | { kind: "single"; block: AiopsProcessBlock }
-  | { kind: "merged"; blocks: AiopsProcessBlock[]; mergedKind: string };
+  | { kind: "merged"; blocks: AiopsProcessBlock[]; mergedKind: Exclude<TranscriptGroupKind, ""> | "mixed" };
 
 export function ProcessTranscript({
   process,
+  agentSteps,
   turnStatus,
   turnStartedAt,
   turnCompletedAt,
   turnUpdatedAt,
+  finalDurationMs,
   finalText,
   renderFinalText = true,
 }: ProcessTranscriptProps) {
-  const visibleProcess = useMemo(() => process.filter(shouldShowInTranscript), [process]);
+  const projectedAgentProcess = useMemo(() => agentStepsToProcessBlocks(agentSteps || []), [agentSteps]);
+  const sourceProcess = process.length ? process : projectedAgentProcess;
+  const visibleProcess = useMemo(() => sourceProcess.filter(shouldShowInTranscript), [sourceProcess]);
   const running = isProcessRunning(visibleProcess, turnStatus);
   const waiting = isProcessWaiting(visibleProcess, turnStatus);
-  const explicitFinalText = finalText?.trim() || "";
-  const finalAssistantIndex = terminalFinalAssistantIndex(visibleProcess, explicitFinalText);
-  const hiddenFinalAssistantIndexes = hiddenFinalAssistantBlockIndexes(
-    visibleProcess,
-    explicitFinalText,
-    renderFinalText,
-    finalAssistantIndex,
-  );
-  const finalAssistantText =
-    finalAssistantIndex >= 0 ? visibleProcess[finalAssistantIndex]?.text?.trim() || "" : "";
-  const processBlocks = visibleProcess.filter((_, index) => !hiddenFinalAssistantIndexes.has(index));
-  const retainedAssistantTexts = new Set(
-    processBlocks
-      .filter((block) => block.kind === "assistant")
-      .map((block) => block.text?.trim() || "")
-      .filter(Boolean),
-  );
-  const renderedFinalText = (
-    explicitFinalText && !retainedAssistantTexts.has(explicitFinalText) ? explicitFinalText : finalAssistantText
-  ).trim();
+  const explicitFinalText = sanitizeFinalTranscriptText(finalText?.trim() || "");
+  const processBlocks = visibleProcess;
+  const renderedFinalText = explicitFinalText.trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming;
+  const finalGenerationLabel = formatFinalGenerationDuration(finalDurationMs);
+  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const live = running || waiting;
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
@@ -108,6 +148,28 @@ export function ProcessTranscript({
       setOpen(true);
     }
   }, [live]);
+
+  useEffect(() => {
+    debugTranscriptProjection("render_decision", {
+      turnStatus,
+      renderFinalText,
+      sourceCount: sourceProcess.length,
+      visibleCount: visibleProcess.length,
+      processCount: processBlocks.length,
+      explicitFinal: debugTextFacts(explicitFinalText),
+      renderedFinal: debugTextFacts(renderedFinalText),
+      visibleBlocks: visibleProcess.map(debugProcessBlock),
+      renderedProcessBlocks: processBlocks.map(debugProcessBlock),
+    });
+  }, [
+    explicitFinalText,
+    processBlocks,
+    renderFinalText,
+    renderedFinalText,
+    sourceProcess,
+    turnStatus,
+    visibleProcess,
+  ]);
 
   if (!shouldRenderProcess && (!renderFinalText || !renderedFinalText)) {
     return null;
@@ -144,7 +206,7 @@ export function ProcessTranscript({
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
           </button>
 
-          {open && (processGroups.length || (running && hasMeaningful)) ? (
+          {open && (processGroups.length || finalGenerationLabel || (running && hasMeaningful)) ? (
             <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
               {processGroups.length ? (
                 <div className="space-y-2">
@@ -157,10 +219,7 @@ export function ProcessTranscript({
                   ))}
                 </div>
               ) : null}
-              {/* Bottom status indicator: only when running AND has meaningful content */}
-              {running && hasMeaningful ? (
-                <InlineStatusIndicator blocks={processBlocks} />
-              ) : null}
+              {finalGenerationLabel ? <FinalGenerationDuration label={finalGenerationLabel} /> : null}
             </div>
           ) : null}
         </>
@@ -170,55 +229,95 @@ export function ProcessTranscript({
   );
 }
 
-function terminalFinalAssistantIndex(blocks: AiopsProcessBlock[], finalText?: string) {
-  const lastIndex = blocks.length - 1;
-  if (lastIndex < 0) {
-    return -1;
-  }
-  return isFinalAssistantBlock(blocks[lastIndex], finalText) ? lastIndex : -1;
+function FinalGenerationDuration({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[13px] leading-6 text-slate-400" data-testid="aiops-final-generation-duration">
+      <span className="h-1.5 w-1.5 rounded-full bg-slate-300" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
 }
 
-function hiddenFinalAssistantBlockIndexes(
-  blocks: AiopsProcessBlock[],
-  finalText: string,
-  renderFinalText: boolean,
-  terminalIndex: number,
-) {
-  const indexes = new Set<number>();
-  if (terminalIndex >= 0) {
-    indexes.add(terminalIndex);
-  }
-  if (renderFinalText || !finalText) {
-    return indexes;
-  }
-  blocks.forEach((block, index) => {
-    if (isCompletedDuplicateFinalBlock(block, finalText)) {
-      indexes.add(index);
-    }
-  });
-  return indexes;
+function agentStepsToProcessBlocks(steps: AgentStepView[]): AiopsProcessBlock[] {
+  return steps
+    .filter((step) => step?.id && (step.title || step.toolName || step.outputSummary || step.inputSummary))
+    .map((step) => {
+      const kind = processKindForAgentStep(step.kind);
+      const text = step.title || step.outputSummary || step.inputSummary || step.toolName || step.id;
+      return {
+        id: step.id,
+        kind,
+        displayKind: step.kind,
+        status: processStatusForAgentStep(step.status),
+        text,
+        source: step.toolName,
+        toolCallId: step.toolCallId,
+        checkpointId: step.checkpointId,
+        approvalId: step.approvalId,
+        inputSummary: step.title || step.inputSummary,
+        outputPreview: step.outputSummary,
+        queries: kind === "search" ? [step.title || step.inputSummary || text] : undefined,
+        targetSummary: step.targetRefs?.join("；"),
+        evidenceRefs: step.evidenceRefs,
+        updatedAt: step.completedAt || step.startedAt,
+      };
+    });
 }
 
-function isFinalAssistantBlock(block: AiopsProcessBlock, finalText?: string) {
-  if (block.kind !== "assistant") {
-    return false;
+function processKindForAgentStep(kind?: AgentStepView["kind"]): AiopsTransportProcessKind {
+  switch (kind) {
+    case "tool_search":
+      return "tool";
+    case "tool_call":
+      return "tool";
+    case "approval":
+      return "approval";
+    case "mcp_health":
+      return "mcp";
+    case "evidence":
+      return "evidence";
+    case "final_response":
+      return "assistant";
+    case "error":
+    case "checkpoint":
+      return "system";
+    case "reasoning":
+    default:
+      return "reasoning";
   }
-  if (block.displayKind === "assistant.final") {
-    return true;
-  }
-  const blockText = (block.text || "").trim();
-  return Boolean(blockText && finalText?.trim() && blockText === finalText.trim());
 }
 
-function isCompletedDuplicateFinalBlock(block: AiopsProcessBlock, finalText: string) {
-  if (!isFinalAssistantBlock(block, finalText)) {
+function processStatusForAgentStep(status?: AgentStepView["status"]): AiopsTransportProcessStatus {
+  switch (status) {
+    case "pending":
+      return "queued";
+    case "running":
+      return "running";
+    case "waiting_approval":
+      return "blocked";
+    case "failed":
+      return "failed";
+    case "cancelled":
+      return "rejected";
+    case "skipped":
+      return "skipped";
+    case "completed":
+    default:
+      return "completed";
+  }
+}
+
+function isRawRuntimeFailureText(text: string) {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
     return false;
   }
-  const blockText = (block.text || "").trim();
-  if (!blockText || blockText !== finalText.trim()) {
-    return false;
-  }
-  return block.status === "completed" || block.status === "failed";
+  return (
+    normalized.includes("failed to receive stream chunk") ||
+    normalized.includes("context deadline exceeded") ||
+    normalized.includes("stream chunk") ||
+    normalized.includes("upstream request timeout")
+  );
 }
 
 function processHeaderLabel({ running, waiting }: { running: boolean; waiting: boolean }) {
@@ -233,16 +332,42 @@ function processHeaderLabel({ running, waiting }: { running: boolean; waiting: b
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
   if (block.kind === "approval") {
-    return false;
+    return block.status === "rejected";
   }
   const text = (block.text || block.command || block.outputPreview || "").trim().toLowerCase();
+  if (isRuntimeInternalGateText(text)) {
+    return false;
+  }
+  if (block.kind === "assistant" && isRiskyOperationalAdviceText(text)) {
+    return false;
+  }
   if (!text && !block.steps?.length && !block.queries?.length && !block.results?.length) {
     return false;
   }
-  if (block.kind === "reasoning" && (text === "model response received" || text === "calling model")) {
+  if (block.kind === "reasoning" && text === "model response received") {
     return false;
   }
   return true;
+}
+
+function isRuntimeInternalGateText(text: string) {
+  return [
+    "verification completion gate",
+    "block_success_final",
+    "missing_verification_report",
+    "execution_required,missing_verification_report",
+  ].some((marker) => text.includes(marker));
+}
+
+function sanitizeFinalTranscriptText(text: string) {
+  if (!text) {
+    return "";
+  }
+  return isRiskyOperationalAdviceText(text.toLowerCase()) ? "" : text;
+}
+
+function isRiskyOperationalAdviceText(text: string) {
+  return /(rm\s+-rf|删除|清理).{0,120}(archive|wal|pgdata|数据目录|归档)/i.test(text);
 }
 
 function isSearchLikeBlock(block: AiopsProcessBlock) {
@@ -286,7 +411,7 @@ function hasMeaningfulContent(blocks: AiopsProcessBlock[]): boolean {
 }
 
 /**
- * Groups consecutive same-kind tool blocks into merged groups.
+ * Groups only consecutive same-class web lookups or commands.
  */
 export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGroup[] {
   const groups: ProcessGroup[] = [];
@@ -294,8 +419,9 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
   while (i < blocks.length) {
     const block = blocks[i];
+    const groupKind = groupingKindForBlock(block);
 
-    if (block.kind === "reasoning" || !isGroupedProcessBlock(block)) {
+    if (block.kind === "reasoning" || !groupKind) {
       groups.push({ kind: "single", block });
       i += 1;
       continue;
@@ -303,7 +429,7 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
     const consecutive: AiopsProcessBlock[] = [block];
     let j = i + 1;
-    while (j < blocks.length && isGroupedProcessBlock(blocks[j])) {
+    while (j < blocks.length && groupingKindForBlock(blocks[j]) === groupKind) {
       consecutive.push(blocks[j]);
       j += 1;
     }
@@ -319,19 +445,27 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
   return groups;
 }
 
-function groupingKindForBlock(block: AiopsProcessBlock) {
+function groupingKindForBlock(block: AiopsProcessBlock): TranscriptGroupKind {
+  const explicitKind = (block.foldGroupKind || "").trim();
+  if (explicitKind === "web_lookup") {
+    return "search";
+  }
+  if (explicitKind === "command") {
+    return "command";
+  }
   if (isSearchLikeBlock(block)) {
     return "search";
   }
-  return block.kind;
+  if (block.kind === "command") {
+    return "command";
+  }
+  return "";
 }
 
-function isGroupedProcessBlock(block: AiopsProcessBlock): boolean {
-  return isSearchLikeBlock(block) || isToolSummaryBlock(block);
-}
-
-function mergedKindForBlocks(blocks: AiopsProcessBlock[]) {
-  const kinds = Array.from(new Set(blocks.map(groupingKindForBlock).filter(Boolean)));
+function mergedKindForBlocks(blocks: AiopsProcessBlock[]): Exclude<TranscriptGroupKind, ""> | "mixed" {
+  const kinds = Array.from(
+    new Set(blocks.map(groupingKindForBlock).filter((kind): kind is Exclude<TranscriptGroupKind, ""> => kind !== "")),
+  );
   return kinds.length === 1 ? kinds[0] : "mixed";
 }
 
@@ -342,7 +476,7 @@ export function getMergedSummaryText(mergedKind: string, count: number): string 
     case "command":
       return count > 1 ? `已运行 ${count} 条命令` : "已运行命令";
     case "search":
-      return `网页检索 ${count} 项`;
+      return `网页搜索 ${count} 项`;
     case "tool":
     case "mcp":
       return `已调用 ${count} 个工具`;
@@ -372,12 +506,13 @@ function toolSummaryIconForKind(kind: string): LucideIcon {
   }
 }
 
-function DisclosureChevron({ open, testId }: { open: boolean; testId?: string }) {
+function DisclosureChevron({ open, testId, className }: { open: boolean; testId?: string; className?: string }) {
   return (
     <ChevronDown
       className={cn(
         "h-3.5 w-3.5 shrink-0 text-slate-400 opacity-0 transition-all group-hover:opacity-100 group-focus-visible:opacity-100",
         open ? "rotate-0 opacity-100" : "-rotate-90",
+        className,
       )}
       data-testid={testId}
       aria-hidden="true"
@@ -409,16 +544,22 @@ function SearchTranscriptFromBlocks({
   blocks: AiopsProcessBlock[];
   turnRunning: boolean;
 }) {
-  const searchDetails = uniqueLines(blocks.flatMap(searchLines));
-  const searchedCount = searchDetails.length || blocks.length;
+  const searchSummary = summarizeSearchBlocks(blocks);
   const activeSearchQuery = primarySearchQuery(blocks);
   const running = turnRunning && blocks.some(isBlockActive);
+  const failedSearch = blocks.find((block) => block.status === "failed");
+  const failureText = failedSearch
+    ? `检索失败 ${searchQueryForBlock(failedSearch) || stripHtml(failedSearch.text || "") || failedSearch.displayKind || ""}`.trim()
+    : "";
   return (
     <SearchTranscript
       query={activeSearchQuery}
-      count={searchedCount}
-      lines={searchDetails}
+      searchCount={searchSummary.searchCount}
+      resultCount={searchSummary.resultCount}
+      rows={searchSummary.rows}
       running={running}
+      defaultOpen={false}
+      failureText={failureText}
     />
   );
 }
@@ -589,7 +730,7 @@ function CommandDetailRow({
           </div>
           {hasOutput ? (
             <pre
-              className="mt-3 min-h-0 max-h-48 flex-1 overflow-x-auto overflow-y-auto overscroll-contain rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
+              className="mt-3 min-h-0 max-h-[12rem] flex-1 overflow-x-hidden overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
               data-testid={`aiops-command-output-${detail.id}`}
             >
               {detail.output}
@@ -662,7 +803,7 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
   let text = "";
   const hasOutputPreview = typeof block.outputPreview === "string" && block.outputPreview.trim() !== "";
   if (isSearchLikeBlock(block)) {
-    text = searchLines(block)[0] || searchQueryForBlock(block) || "搜索网页";
+    text = searchDetailTextForBlock(block);
   } else if (block.kind === "command") {
     text = block.command || block.inputSummary || stripHtml(block.text || "");
   } else if (block.kind === "file") {
@@ -685,6 +826,11 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
   };
 }
 
+function searchDetailTextForBlock(block: AiopsProcessBlock) {
+  const source = searchResultSources(block)[0];
+  return source ? searchSourceRowLabel(source) : searchQueryForBlock(block) || browseUrlForBlock(block) || "搜索网页";
+}
+
 function isExternalizedProcessBlock(block: AiopsProcessBlock) {
   const tier = (block.materializationTier || "").toLowerCase();
   return Boolean(block.externalReferences?.length || tier === "large" || tier === "externalized" || tier === "summary");
@@ -695,7 +841,8 @@ function cleanCommandOutput(value?: string) {
 }
 
 function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
-  const output = cleanCommandOutput(block.outputPreview);
+  const rawOutput = cleanCommandOutput(block.outputPreview);
+  const output = block.kind === "command" ? commandTerminalOutputForDisplay(rawOutput, block) : rawOutput;
   if (!output) {
     return "";
   }
@@ -703,6 +850,100 @@ function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
     return truncateToolOutputPreview(output);
   }
   return output;
+}
+
+type CommandTerminalOutputEnvelope = {
+  status?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
+  output?: unknown;
+  error?: unknown;
+  exitCode?: unknown;
+};
+
+function commandTerminalOutputForDisplay(outputPreview: string, block: AiopsProcessBlock) {
+  const envelope = parseCommandTerminalOutputEnvelope(outputPreview);
+  if (!envelope) {
+    return outputPreview;
+  }
+  const failed = commandOutputFailed(envelope, block);
+  if (failed) {
+    return firstNonEmptyDisplayString(envelope.stderr, envelope.error, envelope.stdout, envelope.output);
+  }
+  return firstNonEmptyDisplayString(envelope.stdout, envelope.output, envelope.stderr, envelope.error);
+}
+
+function parseCommandTerminalOutputEnvelope(outputPreview: string): CommandTerminalOutputEnvelope | null {
+  const text = outputPreview.trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "string" && parsed.trim().startsWith("{")) {
+      return parseCommandTerminalOutputEnvelope(parsed);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const envelope = parsed as CommandTerminalOutputEnvelope;
+    if (
+      ["stdout", "stderr", "output", "error", "exitCode", "status"].some((key) =>
+        Object.prototype.hasOwnProperty.call(envelope, key),
+      )
+    ) {
+      return envelope;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function commandOutputFailed(envelope: CommandTerminalOutputEnvelope, block: AiopsProcessBlock) {
+  const envelopeExitCode = numericValue(envelope.exitCode);
+  const blockExitCode = typeof block.exitCode === "number" ? block.exitCode : undefined;
+  const status = stringValue(envelope.status).toLowerCase();
+  return (
+    block.status === "failed" ||
+    block.status === "rejected" ||
+    (typeof blockExitCode === "number" && blockExitCode !== 0) ||
+    (typeof envelopeExitCode === "number" && envelopeExitCode !== 0) ||
+    status === "error" ||
+    status === "failed" ||
+    status === "failure"
+  );
+}
+
+function firstNonEmptyDisplayString(...values: unknown[]) {
+  for (const value of values) {
+    const text = stringValue(value);
+    if (text.trim()) {
+      return text.trim();
+    }
+  }
+  return "";
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value);
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function truncateToolOutputPreview(value: string) {
@@ -789,6 +1030,20 @@ function commandSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
 function toolDetailSummaryLabel(detail: ReturnType<typeof mergedBlockDetail>) {
   const text = detail.text || "工具调用";
   const prefix = detail.mock ? "Mock " : "";
+  if (detail.kind === "search") {
+    switch (detail.status) {
+      case "failed":
+        return `检索失败 ${text}`;
+      case "running":
+        return `正在检索 ${text}`;
+      case "queued":
+        return `排队检索 ${text}`;
+      case "rejected":
+        return `已取消检索 ${text}`;
+      default:
+        return text;
+    }
+  }
   switch (detail.status) {
     case "blocked":
       return `等待审核 ${prefix}${text}`;
@@ -811,9 +1066,15 @@ function NativeProcessText({
   block: AiopsProcessBlock;
 }) {
   if (block.kind === "assistant") {
-    return <AssistantFinalText text={block.text} />;
+    return <AssistantProgressText text={block.text} />;
+  }
+  if (block.kind === "system" && isRawRuntimeFailureText(stripHtml(block.text || ""))) {
+    return <RuntimeStreamInterruptedPill />;
   }
   if (block.kind === "reasoning") {
+    if (isModelWaitReasoningBlock(block)) {
+      return <ModelWaitPill text={stripHtml(block.text || "")} />;
+    }
     return <ThinkingText block={block} />;
   }
   if (block.kind === "plan") {
@@ -834,6 +1095,37 @@ function NativeProcessText({
       {text}
     </div>
   );
+}
+
+function RuntimeStreamInterruptedPill() {
+  return (
+    <div className="inline-flex w-fit items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-amber-700">
+      模型流中断，已保留已生成内容
+    </div>
+  );
+}
+
+function ModelWaitPill({ text }: { text: string }) {
+  return (
+    <div
+      className="inline-flex w-fit items-center gap-1.5 rounded-full border border-sky-100 bg-sky-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-sky-700"
+      data-testid="aiops-model-wait-pill"
+    >
+      <span
+        className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-100 text-sky-600"
+        data-testid="aiops-model-wait-icon"
+        aria-hidden="true"
+      >
+        <Bot className="h-2.5 w-2.5" />
+      </span>
+      <span>{text.trim() || "正在等待模型返回"}</span>
+    </div>
+  );
+}
+
+function isModelWaitReasoningBlock(block: AiopsProcessBlock) {
+  const text = stripHtml(block.text || "").trim();
+  return text === "正在等待模型返回" || text === "排队等待模型返回";
 }
 
 function PlanSteps({ block }: { block: AiopsProcessBlock }) {
@@ -864,16 +1156,32 @@ function isCompactPlanSummary(text?: string) {
   return /^plan updated:/i.test((text || "").trim());
 }
 
-function AssistantFinalText({ text }: { text: string }) {
+function AssistantFinalText({ text, live = false }: { text: string; live?: boolean }) {
   return (
-    <div className="max-w-none py-1 text-[15px] leading-7 text-slate-950" data-testid="aiops-final-text">
+    <div
+      className="max-w-none py-1 text-[15px] leading-7 text-slate-950"
+      data-testid={live ? "aiops-live-answer-text" : "aiops-final-text"}
+      data-answer-state={live ? "live" : "final"}
+    >
+      <MessageMarkdown text={text} />
+    </div>
+  );
+}
+
+function AssistantProgressText({ text }: { text: string }) {
+  return (
+    <div
+      className="max-w-none py-1 text-[15px] leading-7 text-slate-950"
+      data-testid="aiops-assistant-progress-text"
+      data-answer-state="progress"
+    >
       <MessageMarkdown text={text} />
     </div>
   );
 }
 
 function isToolSummaryBlock(block: AiopsProcessBlock): boolean {
-  return block.kind === "command" || block.kind === "tool" || block.kind === "file" || block.kind === "mcp";
+  return block.kind === "search" || block.kind === "command" || block.kind === "tool" || block.kind === "file" || block.kind === "mcp";
 }
 
 function getToolIcon(block: AiopsProcessBlock): string {
@@ -955,58 +1263,36 @@ function transformThinkingText(raw: string): string {
 }
 
 /**
- * Inline status indicator at the bottom of the timeline while running.
- */
-function InlineStatusIndicator({ blocks }: { blocks: AiopsProcessBlock[] }) {
-  const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : undefined;
-  let label: string;
-
-  if (!lastBlock || lastBlock.kind === "reasoning") {
-    label = "正在思考";
-  } else if (
-    (lastBlock.kind === "tool" ||
-      lastBlock.kind === "command" ||
-      lastBlock.kind === "file" ||
-      lastBlock.kind === "search" ||
-      lastBlock.kind === "mcp") &&
-    (lastBlock.status === "running" || lastBlock.status === "queued")
-  ) {
-    label = "正在执行";
-  } else {
-    label = "正在思考";
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-slate-400" data-testid="aiops-inline-status-indicator">
-      <span className="h-1.5 w-1.5 rounded-full bg-slate-300" aria-hidden="true" />
-      <span>{label}</span>
-    </div>
-  );
-}
-
-/**
  * Search transcript: collapsible with max-height constraint.
  * Shows web search references with expandable details.
  */
 function SearchTranscript({
   query,
-  count,
-  lines,
+  searchCount,
+  resultCount,
+  rows,
   running,
+  defaultOpen,
+  failureText,
 }: {
   query: string;
-  count: number;
-  lines: string[];
+  searchCount: number;
+  resultCount: number;
+  rows: SearchDetailRow[];
   running: boolean;
+  defaultOpen: boolean;
+  failureText?: string;
 }) {
-  const [open, setOpen] = useState(running);
+  const [open, setOpen] = useState(defaultOpen);
+  const visibleRows = running && query
+    ? rows.filter((row) => row.kind !== "query" || row.label !== query)
+    : rows;
 
-  // Auto-collapse when search completes
   useEffect(() => {
-    if (!running) {
-      setOpen(false);
+    if (defaultOpen) {
+      setOpen(true);
     }
-  }, [running]);
+  }, [defaultOpen]);
 
   return (
     <div className="space-y-1">
@@ -1021,16 +1307,87 @@ function SearchTranscript({
         data-testid="aiops-search-toggle"
       >
         <ToolSummaryIcon kind="search" testId="aiops-search-icon" />
-        <span className="min-w-0 truncate">{searchTranscriptLabel(running, count, query)}</span>
+        <span className="min-w-0 truncate">{failureText || searchTranscriptLabel(running, searchCount, resultCount, query)}</span>
         <DisclosureChevron open={open} testId="aiops-search-chevron" />
       </button>
-      {open && lines.length ? (
+      {running && query && !open ? <ActiveSearchStatus query={query} /> : null}
+      {open && (running && query || visibleRows.length) ? (
         <div
           className={cn("space-y-1 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS, TOOL_TRANSCRIPT_CHILD_INDENT_CLASS)}
           data-testid="aiops-search-details"
         >
-          {lines.map((line, index) => (
-            <div key={`${line}:${index}`} className="whitespace-normal break-all">
+          {running && query ? <ActiveSearchStatus query={query} /> : null}
+          {visibleRows.map((row) => (
+            <SearchDetailRowView key={row.id} row={row} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ActiveSearchStatus({ query }: { query: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-sky-600" data-testid="aiops-search-running-status">
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-300" aria-hidden="true" />
+      <span className="min-w-0 truncate">{`正在搜索网页：${query}`}</span>
+    </div>
+  );
+}
+
+type SearchSummary = {
+  searchCount: number;
+  resultCount: number;
+  rows: SearchDetailRow[];
+};
+
+type SearchDetailRow = {
+  id: string;
+  label: string;
+  title: string;
+  url: string;
+  query: string;
+  snippet: string;
+  fetched?: boolean;
+  fetchError?: string;
+  kind: "source" | "query";
+};
+
+function SearchDetailRowView({ row }: { row: SearchDetailRow }) {
+  const [open, setOpen] = useState(false);
+  const detailLines = [
+    row.fetched ? "已读取正文" : "",
+    row.fetchError ? `读取失败：${row.fetchError}` : "",
+    row.snippet,
+  ].filter(Boolean);
+
+  return (
+    <div className="space-y-1" data-testid="aiops-search-detail-line">
+      <button
+        type="button"
+        className="group flex min-w-0 items-start gap-1.5 text-left text-slate-400 transition-colors hover:text-slate-600"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        data-testid="aiops-search-detail-row-toggle"
+      >
+        <span className="pt-[1px]" aria-hidden="true">-</span>
+        <span className={cn(
+          "min-w-0 whitespace-normal break-all",
+          row.url ? "text-sky-600 group-hover:underline" : "",
+        )}>
+          {row.label}
+        </span>
+        {detailLines.length ? (
+          <DisclosureChevron open={open} testId="aiops-search-detail-chevron" className="mt-[5px]" />
+        ) : null}
+      </button>
+      {open && detailLines.length ? (
+        <div
+          className="space-y-1 pl-4 text-[13px] leading-6 text-slate-400"
+          data-testid="aiops-search-detail-expanded"
+        >
+          {detailLines.map((line) => (
+            <div key={line} className="whitespace-normal break-all">
               {line}
             </div>
           ))}
@@ -1038,6 +1395,102 @@ function SearchTranscript({
       ) : null}
     </div>
   );
+}
+
+function summarizeSearchBlocks(blocks: AiopsProcessBlock[]): SearchSummary {
+  const queries = uniqueLines(blocks.map(searchQueryForBlock));
+  const results = uniqueSearchSources(blocks.flatMap(searchResultSources));
+  const browsedSources = blocks.flatMap((block) => {
+    const url = browseUrlForBlock(block);
+    if (!url) return [];
+    return [{
+      label: "已打开页面",
+      url,
+      query: searchQueryForBlock(block),
+      snippet: "",
+    }];
+  });
+  const resultSources = uniqueSearchSources([...results, ...browsedSources]);
+  const rows = resultSources.length
+    ? resultSources.map((source, index) => sourceToSearchDetailRow(source, index))
+    : queries.map((query, index) => ({
+      id: `query:${index}:${query}`,
+      label: query,
+      title: "",
+      url: "",
+      query,
+      snippet: "",
+      kind: "query" as const,
+    }));
+
+  return {
+    searchCount: Math.max(1, blocks.filter(isSearchLikeBlock).length),
+    resultCount: resultSources.length,
+    rows,
+  };
+}
+
+type SearchSource = {
+  label: string;
+  url: string;
+  query?: string;
+  snippet?: string;
+  fetched?: boolean;
+  fetchError?: string;
+};
+
+function uniqueSearchSources(sources: SearchSource[]) {
+  const seen = new Map<string, number>();
+  const result: SearchSource[] = [];
+  for (const source of sources) {
+    const label = cleanSearchResultText(source.label);
+    const url = extractUrl(source.url || source.label);
+    const query = cleanSearchLine(source.query);
+    const snippet = cleanSearchResultText(source.snippet);
+    const key = (url || label).toLowerCase();
+    if (!label && !url) continue;
+    const existingIndex = seen.get(key);
+    if (existingIndex !== undefined) {
+      const existing = result[existingIndex];
+      result[existingIndex] = {
+        ...existing,
+        query: existing.query || query,
+        snippet: existing.snippet || snippet,
+        fetched: existing.fetched || Boolean(source.fetched),
+        fetchError: existing.fetchError || cleanSearchResultText(source.fetchError),
+      };
+      continue;
+    }
+    seen.set(key, result.length);
+    result.push({
+      label: label || url,
+      url,
+      query,
+      snippet,
+      fetched: Boolean(source.fetched),
+      fetchError: cleanSearchResultText(source.fetchError),
+    });
+  }
+  return result;
+}
+
+function sourceToSearchDetailRow(source: SearchSource, index: number): SearchDetailRow {
+  return {
+    id: `source:${index}:${source.url || source.label}`,
+    label: source.url || searchSourceRowLabel(source),
+    title: source.url ? searchSourceRowLabel(source) : "",
+    url: source.url,
+    query: source.query || "",
+    snippet: source.snippet || "",
+    fetched: source.fetched,
+    fetchError: source.fetchError,
+    kind: "source",
+  };
+}
+
+function searchSourceRowLabel(source: SearchSource) {
+  const label = source.label.length > 96 ? `${source.label.slice(0, 96).trim()}…` : source.label;
+  return label;
 }
 
 function readableBlockSummary(block?: AiopsProcessBlock) {
@@ -1055,23 +1508,36 @@ function readableBlockSummary(block?: AiopsProcessBlock) {
     const text = cleanToolText(stripHtml(block.text || "") || block.displayKind || "");
     return text || "正在调用工具";
   }
+  if (block.kind === "approval" && block.status === "rejected") {
+    const target = stripHtml(block.command || block.targetSummary || block.text || "").trim();
+    return target ? `已拒绝，将基于已有证据继续分析：${target}` : "已拒绝，将基于已有证据继续分析";
+  }
   return cleanToolText(stripHtml(block.text || "") || block.displayKind || block.kind);
 }
 
-function searchLines(block: AiopsProcessBlock) {
+function searchResultSources(block: AiopsProcessBlock): SearchSource[] {
+  const sources: SearchSource[] = [];
   const query = searchQueryForBlock(block);
-  const lines = query ? [query] : [];
   for (const result of block.results || []) {
+    const title = cleanSearchResultText(result.title);
     const url = extractUrl(result.url);
-    if (url) {
-      lines.push(url);
+    const snippet = cleanSearchResultText(result.snippet);
+    if (title || snippet || url) {
+      sources.push({
+        label: title || snippet || url,
+        url,
+        query,
+        snippet,
+        fetched: Boolean(result.fetched),
+        fetchError: result.fetchError,
+      });
     }
   }
   const browsedUrl = browseUrlForBlock(block);
   if (browsedUrl) {
-    lines.push(browsedUrl);
+    sources.push({ label: "已打开页面", url: browsedUrl, query, snippet: "" });
   }
-  return uniqueLines(lines).slice(0, 8);
+  return uniqueSearchSources(sources);
 }
 
 function primarySearchQuery(blocks: AiopsProcessBlock[]) {
@@ -1084,11 +1550,12 @@ function primarySearchQuery(blocks: AiopsProcessBlock[]) {
   return "";
 }
 
-function searchTranscriptLabel(running: boolean, count: number, query: string) {
-  if (running) {
-    return query ? `正在搜索网页（${query}）` : "正在搜索网页";
+function searchTranscriptLabel(running: boolean, searchCount: number, resultCount: number, _query: string) {
+  const countLabel = `网页搜索 ${Math.max(1, searchCount)} 次`;
+  if (!running || resultCount > 0) {
+    return `${countLabel} · 找到 ${resultCount} 个来源`;
   }
-  return `网页检索 ${count} 项`;
+  return countLabel;
 }
 
 function uniqueLines(lines: string[]) {
@@ -1186,6 +1653,22 @@ function cleanSearchLine(value?: string) {
     return "";
   }
   return text.length > 180 ? `${text.slice(0, 180).trim()}…` : text;
+}
+
+function cleanSearchResultText(value?: string) {
+  let text = unwrapProviderPayload(value || "");
+  text = decodeHtmlish(text)
+    .replace(/provider-native\s+/gi, "")
+    .replace(/Do not repeat this exact query.*$/gi, "")
+    .replace(/provider returned no textual summary.*$/gi, "")
+    .replace(/\s*;\s*$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  text = text.replace(/^["'""]+|["'""]+$/g, "").trim();
+  if (!text || isInternalSearchLine(text) || isRawPayloadLine(text)) {
+    return "";
+  }
+  return text.length > 220 ? `${text.slice(0, 220).trim()}…` : text;
 }
 
 function isGenericSearchLabel(value: string) {
@@ -1407,6 +1890,18 @@ function formatElapsedDuration(totalSeconds: number) {
   }
   parts.push(`${remainingSeconds}s`);
   return parts.join(" ");
+}
+
+function formatFinalGenerationDuration(durationMs?: number) {
+  const value = Number(durationMs);
+  if (!Number.isFinite(value) || value <= 0) {
+    return "";
+  }
+  const rounded = Math.max(1, Math.round(value));
+  if (rounded < 1000) {
+    return `整理最终回答 ${rounded}ms`;
+  }
+  return `整理最终回答 ${formatElapsedDuration(Math.round(rounded / 1000))}`;
 }
 
 function estimateElapsedSeconds(process: AiopsProcessBlock[]) {

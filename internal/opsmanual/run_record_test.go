@@ -94,3 +94,17 @@ func TestSummarizeRunRecordsTracksConsecutiveFailuresAndRecovery(t *testing.T) {
 		t.Fatalf("recovered summary = %#v, want latest passed and no suppression", recovered)
 	}
 }
+
+func TestOpsManualUsageStatsDistinguishUsedSkippedSucceededFailed(t *testing.T) {
+	summary := SummarizeRunRecords([]RunRecord{
+		{ID: "used-success", ExecutionStatus: "passed", ValidationStatus: "passed", CompletedAt: "2026-05-14T04:00:00Z"},
+		{ID: "used-failed", ExecutionStatus: "failed", FailureReason: "timeout", CompletedAt: "2026-05-14T03:00:00Z"},
+		{ID: "skipped", ExecutionStatus: "skipped", UserFeedback: "user skipped recommendation", CompletedAt: "2026-05-14T02:00:00Z"},
+	})
+	if summary.UsedCount != 2 || summary.SkippedCount != 1 {
+		t.Fatalf("summary usage counts = %#v, want two used and one skipped", summary)
+	}
+	if summary.SuccessCount != 1 || summary.FailureCount != 1 {
+		t.Fatalf("summary success/failure = %#v, want skipped excluded from success and failure", summary)
+	}
+}

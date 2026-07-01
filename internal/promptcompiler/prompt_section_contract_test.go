@@ -4,13 +4,14 @@ import "testing"
 
 func TestDefaultPromptSectionContractsCoverKnownSections(t *testing.T) {
 	knownSections := []string{
-		"system.role",
-		"developer.core_rules",
-		"tools.index",
-		"runtime.policy",
-		"protocol.state",
-		"context.dynamic_assets",
-		"host_task.context",
+		"base.contract",
+		"runtime.state",
+		"profile.advisor",
+		"profile.evidence_rca",
+		"profile.host_worker",
+		"profile.host_manager",
+		"tool.surface",
+		"dynamic.context",
 		"host_agent.runtime_overlay.v1",
 		"host_agent.binding.v1",
 		"host_agent.assigned_subtask.v1",
@@ -39,7 +40,7 @@ func TestDefaultPromptSectionContractsCoverKnownSections(t *testing.T) {
 }
 
 func TestPromptSectionContractRejectsP0WithoutMaxTokens(t *testing.T) {
-	contract := LookupPromptSectionContract("system.role")
+	contract := LookupPromptSectionContract("base.contract")
 	contract.MaxTokens = 0
 
 	if err := ValidatePromptSectionContract(contract); err == nil {
@@ -48,7 +49,7 @@ func TestPromptSectionContractRejectsP0WithoutMaxTokens(t *testing.T) {
 }
 
 func TestPromptSectionContractRejectsP1WithoutCompactSchema(t *testing.T) {
-	contract := LookupPromptSectionContract("host_task.context")
+	contract := LookupPromptSectionContract("dynamic.context")
 	contract.CompactSchema = ""
 
 	if err := ValidatePromptSectionContract(contract); err == nil {
@@ -57,7 +58,7 @@ func TestPromptSectionContractRejectsP1WithoutCompactSchema(t *testing.T) {
 }
 
 func TestPromptSectionContractRejectsP1WithoutRequiredFields(t *testing.T) {
-	contract := LookupPromptSectionContract("host_task.context")
+	contract := LookupPromptSectionContract("dynamic.context")
 	contract.RequiredFields = nil
 
 	if err := ValidatePromptSectionContract(contract); err == nil {
@@ -66,31 +67,32 @@ func TestPromptSectionContractRejectsP1WithoutRequiredFields(t *testing.T) {
 }
 
 func TestPromptSectionTraceCarriesRetentionMetadata(t *testing.T) {
-	compiled := CompiledPrompt{}
-	compiled.Dynamic.HostTaskPromptAssets = []string{"assigned host task context"}
-
+	compiled, err := NewCompiler().Compile(CompileContext{HostTaskPromptAssets: []string{"assigned host task context"}})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
 	trace := BuildPromptSectionTrace(compiled)
-	var hostTask PromptSectionTrace
+	var dynamic PromptSectionTrace
 	for _, section := range trace {
-		if section.ID == "host_task.context" {
-			hostTask = section
+		if section.ID == "dynamic.context" {
+			dynamic = section
 			break
 		}
 	}
 
-	if hostTask.ID == "" {
-		t.Fatal("expected host task prompt section trace")
+	if dynamic.ID == "" {
+		t.Fatal("expected dynamic context prompt section trace")
 	}
-	if hostTask.RetentionRank != RetentionRankP1 {
-		t.Fatalf("retention rank = %q, want %q", hostTask.RetentionRank, RetentionRankP1)
+	if dynamic.RetentionRank != RetentionRankP1 {
+		t.Fatalf("retention rank = %q, want %q", dynamic.RetentionRank, RetentionRankP1)
 	}
-	if hostTask.RetentionClass != RetentionClassSummarize {
-		t.Fatalf("retention class = %q, want %q", hostTask.RetentionClass, RetentionClassSummarize)
+	if dynamic.RetentionClass != RetentionClassSummarize {
+		t.Fatalf("retention class = %q, want %q", dynamic.RetentionClass, RetentionClassSummarize)
 	}
-	if hostTask.CompactSchema == "" {
+	if dynamic.CompactSchema == "" {
 		t.Fatal("expected compact schema to be carried into trace")
 	}
-	if hostTask.Redaction == "" {
+	if dynamic.Redaction == "" {
 		t.Fatal("expected redaction policy to be carried into trace")
 	}
 }

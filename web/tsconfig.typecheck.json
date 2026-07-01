@@ -1,0 +1,34 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "moduleResolution": "Bundler",
+    "strict": false
+  },
+  "include": [
+    "src/transport/aiopsTransportTypes.ts",
+    "src/transport/aiopsTransportRuntime.ts",
+    "src/transport/aiopsTransportStateCache.ts",
+    "src/chat/components/OpsRunSummaryCard.tsx",
+    "src/chat/components/ProcessTranscript.tsx",
+    "src/chat/components/TaskChecklistCard.tsx",
+    "src/chat/components/ToolBlockPart.tsx",
+    "src/chat/components/ProcessBlockPart.tsx",
+    "src/chat/components/ApprovalBlockPart.tsx",
+    "src/chat/components/MessageMarkdown.tsx",
+    "src/pages/McpServersPage.tsx",
+    "src/pages/PromptTracePage.tsx",
+    "src/pages/complexPagesApi.ts",
+    "src/utils/promptTraceViewModel.js",
+    "src/types/**/*.d.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.spec.ts",
+    "src/**/*.spec.tsx",
+    "tests",
+    "tests-playwright",
+    "dist"
+  ]
+}

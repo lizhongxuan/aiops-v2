@@ -14,9 +14,8 @@ import (
 )
 
 func TestRunTurnObserverRecordsTurnAndModelCall(t *testing.T) {
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	observer := &recordingRuntimeObserver{}
 	kernel := newTestKernelWithSpanSource(nil)
@@ -98,9 +97,8 @@ func TestRunTurnObserverRecordsTurnAndModelCall(t *testing.T) {
 }
 
 func TestResumeTurnRestoresObservedTurnTraceContext(t *testing.T) {
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

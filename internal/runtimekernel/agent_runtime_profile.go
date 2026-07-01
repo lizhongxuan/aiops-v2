@@ -2,6 +2,13 @@ package runtimekernel
 
 import "strings"
 
+const (
+	RuntimePromptProfileAdvisor     = "advisor"
+	RuntimePromptProfileEvidenceRCA = "evidence_rca"
+	RuntimePromptProfileHostWorker  = "host_worker"
+	RuntimePromptProfileHostManager = "host_manager"
+)
+
 type RuntimeCapability string
 
 const (
@@ -25,6 +32,7 @@ const (
 
 type AgentRuntimeProfile struct {
 	Name             string
+	Profile          string
 	AgentKind        string
 	SessionType      SessionType
 	Mode             Mode
@@ -59,9 +67,44 @@ func BaseAgentRuntimeProfile() AgentRuntimeProfile {
 	return AgentRuntimeProfile{Name: "base_agent_runtime", Capabilities: capabilities}
 }
 
+func AdvisorRuntimeProfile() AgentRuntimeProfile {
+	profile := BaseAgentRuntimeProfile()
+	profile.Name = RuntimePromptProfileAdvisor
+	profile.Profile = RuntimePromptProfileAdvisor
+	profile.AgentKind = "planner"
+	profile.SessionType = SessionTypeWorkspace
+	profile.Mode = ModeChat
+	profile.AllowedActions = []string{
+		"answer_advisory",
+		"use_public_research",
+		"request_user_evidence",
+		"summarize_limitations",
+	}
+	profile.ForbiddenActions = []string{"direct_host_command", "host_mutation"}
+	return profile
+}
+
+func EvidenceRCARuntimeProfile() AgentRuntimeProfile {
+	profile := BaseAgentRuntimeProfile()
+	profile.Name = RuntimePromptProfileEvidenceRCA
+	profile.Profile = RuntimePromptProfileEvidenceRCA
+	profile.AgentKind = "planner"
+	profile.SessionType = SessionTypeWorkspace
+	profile.Mode = ModeInspect
+	profile.AllowedActions = []string{
+		"parse_user_evidence",
+		"query_observability",
+		"request_missing_evidence",
+		"summarize_missing_evidence",
+	}
+	profile.ForbiddenActions = []string{"direct_host_command", "host_mutation"}
+	return profile
+}
+
 func ManagerAgentRuntimeProfile() AgentRuntimeProfile {
 	profile := BaseAgentRuntimeProfile()
 	profile.Name = "manager_agent_full_runtime"
+	profile.Profile = RuntimePromptProfileHostManager
 	profile.AgentKind = "planner"
 	profile.SessionType = SessionTypeWorkspace
 	profile.Mode = ModeExecute
@@ -78,9 +121,16 @@ func ManagerAgentRuntimeProfile() AgentRuntimeProfile {
 	return profile
 }
 
+func HostManagerRuntimeProfile() AgentRuntimeProfile {
+	profile := ManagerAgentRuntimeProfile()
+	profile.Name = RuntimePromptProfileHostManager
+	return profile
+}
+
 func HostAgentRuntimeProfile(hostID string) AgentRuntimeProfile {
 	profile := BaseAgentRuntimeProfile()
 	profile.Name = "host_agent_full_runtime"
+	profile.Profile = RuntimePromptProfileHostWorker
 	profile.AgentKind = "worker"
 	profile.SessionType = SessionTypeHost
 	profile.Mode = ModeExecute
@@ -100,6 +150,12 @@ func HostAgentRuntimeProfile(hostID string) AgentRuntimeProfile {
 		"bypass_host_command_tool",
 		"directly_change_manager_plan",
 	}
+	return profile
+}
+
+func HostWorkerRuntimeProfile(hostID string) AgentRuntimeProfile {
+	profile := HostAgentRuntimeProfile(hostID)
+	profile.Name = RuntimePromptProfileHostWorker
 	return profile
 }
 

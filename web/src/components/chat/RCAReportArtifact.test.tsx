@@ -77,7 +77,9 @@ describe("RCAReportArtifact", () => {
   let root: Root;
 
   beforeEach(() => {
-    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    (
+      globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -95,7 +97,9 @@ describe("RCAReportArtifact", () => {
       root.render(<RCAReportArtifact artifact={artifact()} />);
     });
 
-    expect(container.querySelector('[data-testid="rca-report-artifact"]')).toBeTruthy();
+    expect(
+      container.querySelector('[data-testid="rca-report-artifact"]'),
+    ).toBeTruthy();
     expect(container.textContent).toContain("checkout 根因分析");
     expect(container.textContent).toContain("catalog 依赖");
     expect(container.textContent).toContain("传播路径");
@@ -103,7 +107,9 @@ describe("RCAReportArtifact", () => {
     expect(container.textContent).toContain("已纳入 2 条 RCA 证据");
     expect(container.textContent).not.toContain("Evidence：");
     expect(container.textContent).not.toContain("ev-1");
-    expect(container.textContent).not.toContain("coroot://project/default/checkout");
+    expect(container.textContent).not.toContain(
+      "coroot://project/default/checkout",
+    );
   });
 
   it("renders inconclusive status", async () => {
@@ -133,7 +139,12 @@ describe("RCAReportArtifact", () => {
           titleZh: "<b>事件</b>",
           evidenceRefs: [],
           payload: {
-            events: [{ message: "<img src=x onerror=alert(1)>deployment", timestamp: "2026-05-15T02:00:00Z" }],
+            events: [
+              {
+                message: "<img src=x onerror=alert(1)>deployment",
+                timestamp: "2026-05-15T02:00:00Z",
+              },
+            ],
           },
         },
       ],
@@ -167,6 +178,33 @@ describe("RCAReportArtifact", () => {
 
     expect(container.textContent).toContain("权限受限");
     expect(container.textContent).toContain("checkout 根因分析");
-    expect(container.textContent).not.toContain("coroot://project/default/secret");
+    expect(container.textContent).not.toContain(
+      "coroot://project/default/secret",
+    );
+  });
+
+  it("renders skipped RCA reason without full report sections", async () => {
+    const skipped: AiopsTransportAgentUiArtifact = {
+      id: "artifact-rca-skipped",
+      type: "rca_report",
+      titleZh: "Coroot RCA",
+      status: "skipped",
+      source: "coroot",
+      inlineData: {
+        status: "skipped",
+        skipReason: "coroot_mcp_unavailable",
+      },
+    };
+
+    await act(async () => {
+      root.render(<RCAReportArtifact artifact={skipped} />);
+    });
+
+    expect(
+      container.querySelector('[data-testid="rca-report-skipped"]'),
+    ).toBeTruthy();
+    expect(container.textContent).toContain("未进入 Coroot RCA");
+    expect(container.textContent).toContain("coroot_mcp_unavailable");
+    expect(container.textContent).not.toContain("假设排序");
   });
 });

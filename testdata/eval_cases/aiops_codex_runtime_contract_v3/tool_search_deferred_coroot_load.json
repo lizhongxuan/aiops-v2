@@ -1,0 +1,36 @@
+{
+  "name": "tool_search_deferred_coroot_load",
+  "input": "需要 Coroot 依赖链 RCA，请先通过 tool_search 加载相关工具，再采集证据。",
+  "expected": {
+    "profile": "evidence_rca",
+    "hiddenTools": [
+      "coroot.service_metrics.before_select"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "evidence_rca",
+    "visibleTools": [
+      "tool_search",
+      "coroot.service_metrics"
+    ],
+    "toolCalls": [
+      "tool_search.coroot",
+      "coroot.service_metrics"
+    ],
+    "evidenceRefs": [
+      "evidence:coroot-dependency-chain"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "tool_call",
+      "tool_result",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "evidence_rca_synthesis",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

@@ -7,28 +7,79 @@ import {
   useComposerRuntime,
   useThread,
 } from "@assistant-ui/react";
-import { ArrowUp, Check, FileText, LoaderCircle, Square, Wrench } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowUp,
+  Check,
+  FileText,
+  LoaderCircle,
+  Square,
+  Wrench,
+} from "lucide-react";
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { listHostInventory, type HostInventoryItem } from "@/api/hostInventory";
+import { opsManualsApi, type OpsManualView } from "@/api/opsManuals";
+import { listOpsGraphs } from "@/api/opsgraph";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+import type { OpsGraphSummary } from "@/pages/opsgraph/opsGraphTypes";
 import { isAiopsTransportRunning } from "@/transport/aiopsTransportConverter";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
-import type { AiopsTransportApproval, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type {
+  AiopsTransportApproval,
+  AiopsTransportState,
+} from "@/transport/aiopsTransportTypes";
 
-import { buildOpsManualParamFormSubmit, resolveStopDispatchTarget } from "./aiopsComposerActions";
-import { HostMentionSuggestionPopover } from "./HostMentionSuggestionPopover";
+import {
+  buildAiopsSpecialMentionMetadata,
+  buildOpsManualParamFormSubmit,
+  resolveStopDispatchTarget,
+} from "./aiopsComposerActions";
+import type { DisplayHostMention } from "./HostMentionChip";
+import {
+  HostMentionSuggestionPopover,
+  type ComposerMentionSuggestion,
+} from "./HostMentionSuggestionPopover";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
-import { buildHostMentionMetadata, parseHostMentionCandidates } from "../hostMentions";
+import {
+  buildHostMentionMetadata,
+  parseHostMentionCandidates,
+  parseSpecialAiMentionCandidates,
+} from "../hostMentions";
 import {
   findActiveHostMentionToken,
   replaceActiveHostMention,
   searchHostMentionSuggestions,
   type ActiveHostMentionToken,
-  type HostMentionSuggestion,
 } from "../hostMentionSearch";
+import {
+  buildCapabilityMentionBinding,
+  buildHostMentionBinding,
+  buildInputMentionMetadata,
+  buildOpsGraphMentionBinding,
+  buildOpsManualMentionBinding,
+  deriveCapabilityMentionMetadata,
+  deriveHostMentionMetadata,
+  reconcileMentionBindings,
+  type AiopsMentionBinding,
+} from "../inputMentions";
+import {
+  searchCapabilityMentionSuggestions,
+  searchMentionCategorySuggestions,
+  searchOpsGraphMentionSuggestions,
+  searchOpsManualMentionSuggestions,
+  type MentionCategory,
+} from "../mentionCatalog";
+import { HostMentionInlineOverlay, type ResourceInlineMentionCandidate } from "./HostMentionInlineOverlay";
 
 type GenerationConfirmation = {
   action: string;
@@ -45,6 +96,7 @@ const SUPPORTED_CONFIRMATION_ACTIONS = new Set([
   "confirm_runner_workflow_execution",
   "request_runner_workflow_approval",
 ]);
+const LLM_CONFIG_REQUIRED_REASON = "请先在设置中配置 LLM";
 
 type ContextFormField = {
   id: string;
@@ -55,7 +107,14 @@ type ContextFormField = {
   uiControl?: string;
   placeholder?: string;
   default?: unknown;
-  candidates?: Array<{ value?: unknown; label?: string; hint?: string; source?: string; confidence?: number; evidence?: string }>;
+  candidates?: Array<{
+    value?: unknown;
+    label?: string;
+    hint?: string;
+    source?: string;
+    confidence?: number;
+    evidence?: string;
+  }>;
 };
 
 type ContextFormRequest = {
@@ -72,7 +131,9 @@ type ContextFormRequest = {
   force?: boolean;
 };
 
-const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX = "aiops:composer-context-request:dismissed:v2:";
+const DISMISSED_CONTEXT_REQUEST_STORAGE_PREFIX =
+  "aiops:composer-context-request:dismissed:v2:";
+const APPROVAL_DECISION_TIMEOUT_MS = 10_000;
 
 export function AiopsComposer({
   className = "",
@@ -84,16 +145,23 @@ export function AiopsComposer({
   const state = useAssistantTransportState() as AiopsTransportState;
   const threadIsRunning = useThread((snapshot) => snapshot.isRunning);
   const workspace = useSessionWorkspaceContext();
+  const visibleDisabledReason =
+    workspace.composerDisabledReason === LLM_CONFIG_REQUIRED_REASON
+      ? ""
+      : workspace.composerDisabledReason;
   const sendCommand = useAssistantTransportSendCommand();
   const target = useSessionTargetContext();
   const isRunning = isAiopsTransportRunning(state) || threadIsRunning;
-  const [generationConfirmation, setGenerationConfirmation] = useState<GenerationConfirmation | null>(null);
-  const [contextRequest, setContextRequest] = useState<ContextFormRequest | null>(null);
+  const [generationConfirmation, setGenerationConfirmation] =
+    useState<GenerationConfirmation | null>(null);
+  const [contextRequest, setContextRequest] =
+    useState<ContextFormRequest | null>(null);
   const dismissedContextRequestKeysRef = useRef(new Set<string>());
 
   useEffect(() => {
     function handleConfirmation(event: Event) {
-      const detail = (event as CustomEvent<Partial<GenerationConfirmation>>).detail || {};
+      const detail =
+        (event as CustomEvent<Partial<GenerationConfirmation>>).detail || {};
       const action = String(detail.action || "").trim();
       if (!SUPPORTED_CONFIRMATION_ACTIONS.has(action)) {
         return;
@@ -103,26 +171,44 @@ export function AiopsComposer({
         title: String(detail.title || confirmationTitle(action)),
         sourceTitle: String(detail.sourceTitle || "当前对话"),
         artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
-        metadata: detail.metadata && typeof detail.metadata === "object" ? detail.metadata : undefined,
+        metadata:
+          detail.metadata && typeof detail.metadata === "object"
+            ? detail.metadata
+            : undefined,
       });
     }
     window.addEventListener("aiops:composer-confirmation", handleConfirmation);
-    return () => window.removeEventListener("aiops:composer-confirmation", handleConfirmation);
+    return () =>
+      window.removeEventListener(
+        "aiops:composer-confirmation",
+        handleConfirmation,
+      );
   }, []);
 
   useEffect(() => {
     function handleContextSubmit(event: Event) {
-      const detail = (event as CustomEvent<{ text?: string; artifactId?: string; metadata?: Record<string, string> }>).detail || {};
+      const detail =
+        (
+          event as CustomEvent<{
+            text?: string;
+            artifactId?: string;
+            metadata?: Record<string, string>;
+          }>
+        ).detail || {};
       const text = String(detail.text || "").trim();
       if (!text) return;
-      const metadata = detail.metadata && typeof detail.metadata === "object" ? detail.metadata : {};
+      const metadata =
+        detail.metadata && typeof detail.metadata === "object"
+          ? detail.metadata
+          : {};
       sendCommand({
         type: "add-message",
         message: {
           role: "user",
           metadata: {
             ...target.metadata,
-            opsManualAction: metadata.opsManualAction || "submit_required_context",
+            opsManualAction:
+              metadata.opsManualAction || "submit_required_context",
             sourceArtifactId: detail.artifactId,
             ...metadata,
           },
@@ -132,25 +218,41 @@ export function AiopsComposer({
       } as Parameters<typeof sendCommand>[0]);
       setContextRequest(null);
     }
-    window.addEventListener("aiops:composer-context-submit", handleContextSubmit);
-    return () => window.removeEventListener("aiops:composer-context-submit", handleContextSubmit);
+    window.addEventListener(
+      "aiops:composer-context-submit",
+      handleContextSubmit,
+    );
+    return () =>
+      window.removeEventListener(
+        "aiops:composer-context-submit",
+        handleContextSubmit,
+      );
   }, [sendCommand, target.hostId, target.metadata]);
 
   useEffect(() => {
     function handleContextRequest(event: Event) {
-      const detail = (event as CustomEvent<Partial<ContextFormRequest>>).detail || {};
+      const detail =
+        (event as CustomEvent<Partial<ContextFormRequest>>).detail || {};
       const fields = Array.isArray(detail.fields)
         ? detail.fields
             .map((field) => {
-              const rawField = field as ContextFormField & { ui_control?: unknown };
+              const rawField = field as ContextFormField & {
+                ui_control?: unknown;
+              };
               return {
                 id: String(rawField?.id || "").trim(),
                 label: String(rawField?.label || rawField?.id || "").trim(),
                 type: rawField?.type ? String(rawField.type) : "",
                 required: Boolean(rawField?.required),
                 sensitive: Boolean(rawField?.sensitive),
-                uiControl: rawField?.uiControl ? String(rawField.uiControl) : rawField?.ui_control ? String(rawField.ui_control) : "",
-                placeholder: rawField?.placeholder ? String(rawField.placeholder) : "",
+                uiControl: rawField?.uiControl
+                  ? String(rawField.uiControl)
+                  : rawField?.ui_control
+                    ? String(rawField.ui_control)
+                    : "",
+                placeholder: rawField?.placeholder
+                  ? String(rawField.placeholder)
+                  : "",
                 default: rawField?.default,
                 candidates: normalizeContextCandidates(rawField?.candidates),
               };
@@ -186,7 +288,9 @@ export function AiopsComposer({
         artifactId: detail.artifactId ? String(detail.artifactId) : undefined,
         manualId: detail.manualId ? String(detail.manualId) : undefined,
         workflowId: detail.workflowId ? String(detail.workflowId) : undefined,
-        submitAction: detail.submitAction ? String(detail.submitAction) : undefined,
+        submitAction: detail.submitAction
+          ? String(detail.submitAction)
+          : undefined,
         key,
         dismissKeys: [key, fallbackKey],
         title: String(detail.title || "补充运维信息"),
@@ -195,8 +299,15 @@ export function AiopsComposer({
         fields,
       });
     }
-    window.addEventListener("aiops:composer-context-request", handleContextRequest);
-    return () => window.removeEventListener("aiops:composer-context-request", handleContextRequest);
+    window.addEventListener(
+      "aiops:composer-context-request",
+      handleContextRequest,
+    );
+    return () =>
+      window.removeEventListener(
+        "aiops:composer-context-request",
+        handleContextRequest,
+      );
   }, [state.sessionId, state.threadId]);
 
   const pendingApproval = selectComposerApproval(state);
@@ -257,8 +368,10 @@ export function AiopsComposer({
           state={state}
           threadIsRunning={threadIsRunning}
         />
-        {workspace.composerDisabledReason ? (
-          <div className="px-1 text-xs text-amber-700">{workspace.composerDisabledReason}</div>
+        {visibleDisabledReason ? (
+          <div className="px-1 text-xs text-amber-700">
+            {visibleDisabledReason}
+          </div>
         ) : null}
       </div>
     </div>
@@ -291,14 +404,15 @@ function ContextRequestComposer({
         .filter(([, value]) => String(value || "").trim()),
     ) as Record<string, string>;
     if (Object.keys(params).length === 0) return;
-    const submission = request.submitAction === "submit_ops_manual_param_form"
-      ? buildOpsManualParamFormSubmit({
-          artifactId: request.artifactId,
-          manualId: request.manualId,
-          workflowId: request.workflowId,
-          params,
-        })
-      : legacyContextFormSubmit(request, params);
+    const submission =
+      request.submitAction === "submit_ops_manual_param_form"
+        ? buildOpsManualParamFormSubmit({
+            artifactId: request.artifactId,
+            manualId: request.manualId,
+            workflowId: request.workflowId,
+            params,
+          })
+        : legacyContextFormSubmit(request, params);
     sendCommand({
       type: "add-message",
       message: {
@@ -322,7 +436,9 @@ function ContextRequestComposer({
   return (
     <div
       className={[
-        variant === "chat" ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6" : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
+        variant === "chat"
+          ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6"
+          : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
         className,
       ]
         .filter(Boolean)
@@ -339,7 +455,9 @@ function ContextRequestComposer({
             <FileText className="h-4 w-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[15px] font-semibold leading-6 text-slate-950">{request.title}</div>
+            <div className="truncate text-[15px] font-semibold leading-6 text-slate-950">
+              {request.title}
+            </div>
           </div>
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -347,7 +465,10 @@ function ContextRequestComposer({
             const control = contextFieldControl(field);
             if (control === "select") {
               return (
-                <div key={field.id} className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600">
+                <div
+                  key={field.id}
+                  className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600"
+                >
                   <label htmlFor={field.id} className="font-medium">
                     {contextFieldDisplayLabel(field)}
                   </label>
@@ -358,7 +479,10 @@ function ContextRequestComposer({
                     className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-slate-400"
                   >
                     {field.candidates?.map((candidate, index) => (
-                      <option key={`${contextCandidateValue(candidate)}-${index}`} value={contextCandidateValue(candidate)}>
+                      <option
+                        key={`${contextCandidateValue(candidate)}-${index}`}
+                        value={contextCandidateValue(candidate)}
+                      >
                         {contextCandidateLabel(candidate)}
                       </option>
                     ))}
@@ -368,16 +492,28 @@ function ContextRequestComposer({
             }
             if (control === "radio_cards") {
               return (
-                <div key={field.id} className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600">
-                  <span className="font-medium">{contextFieldDisplayLabel(field)}</span>
+                <div
+                  key={field.id}
+                  className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600"
+                >
+                  <span className="font-medium">
+                    {contextFieldDisplayLabel(field)}
+                  </span>
                   <div className="grid gap-2">
                     {field.candidates?.map((candidate, index) => (
-                      <label key={`${contextCandidateValue(candidate)}-${index}`} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                      <label
+                        key={`${contextCandidateValue(candidate)}-${index}`}
+                        className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
+                      >
                         <input
                           type="radio"
                           name={field.id}
                           value={contextCandidateValue(candidate)}
-                          defaultChecked={index === 0 || contextCandidateValue(candidate) === contextFieldDefaultValue(field)}
+                          defaultChecked={
+                            index === 0 ||
+                            contextCandidateValue(candidate) ===
+                              contextFieldDefaultValue(field)
+                          }
                         />
                         <span>{contextCandidateLabel(candidate)}</span>
                       </label>
@@ -388,7 +524,10 @@ function ContextRequestComposer({
             }
             const label = contextFieldDisplayLabel(field);
             return (
-              <label key={field.id} className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600">
+              <label
+                key={field.id}
+                className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-600"
+              >
                 <span className="font-medium">{label}</span>
                 <input
                   type={contextFieldInputType(field)}
@@ -396,15 +535,25 @@ function ContextRequestComposer({
                   className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-slate-400"
                   placeholder={contextFieldPlaceholder(field)}
                   defaultValue={contextFieldDefaultValue(field)}
-                  autoComplete={contextFieldIsSensitive(field) ? "off" : undefined}
-                  spellCheck={contextFieldIsSensitive(field) ? false : undefined}
+                  autoComplete={
+                    contextFieldIsSensitive(field) ? "off" : undefined
+                  }
+                  spellCheck={
+                    contextFieldIsSensitive(field) ? false : undefined
+                  }
                 />
               </label>
             );
           })}
         </div>
         <div className="mt-3 flex justify-end gap-2">
-          <Button type="button" variant="outline" size="sm" className="rounded-md" onClick={onCancel}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="rounded-md"
+            onClick={onCancel}
+          >
             取消
           </Button>
           <Button
@@ -425,7 +574,9 @@ function normalizeContextFieldId(id: string) {
 }
 
 function contextFieldControl(field: ContextFormField) {
-  const explicit = String(field.uiControl || "").trim().toLowerCase();
+  const explicit = String(field.uiControl || "")
+    .trim()
+    .toLowerCase();
   if (explicit === "select" || explicit === "radio_cards") {
     return field.candidates?.length ? explicit : "text";
   }
@@ -437,7 +588,10 @@ function contextFieldDisplayLabel(field: ContextFormField) {
   const id = normalizeContextFieldId(field.id);
   if (id === "target_location") return "目标位置（可选）";
   if (id === "symptom") return "现象/证据（可选）";
-  if (contextFieldIsSensitive(field) && !/secret|引用|敏感/i.test(field.label)) {
+  if (
+    contextFieldIsSensitive(field) &&
+    !/secret|引用|敏感/i.test(field.label)
+  ) {
     return `${field.label}（Secret 引用）`;
   }
   return field.label;
@@ -455,16 +609,22 @@ function contextFieldSubmitLabel(field: ContextFormField) {
 function contextFieldPlaceholder(field: ContextFormField) {
   const id = normalizeContextFieldId(field.id);
   if (contextFieldIsSensitive(field)) {
-    return field.placeholder || "例如 secret://team/db-password，避免填写明文密码";
+    return (
+      field.placeholder || "例如 secret://team/db-password，避免填写明文密码"
+    );
   }
   if (id === "target_location") return "留空使用当前选择主机";
-  if (id === "symptom") return field.placeholder || "指标、日志、报错、Trace/Case ID、时间范围或关键参数";
+  if (id === "symptom")
+    return (
+      field.placeholder || "指标、日志、报错、Trace/Case ID、时间范围或关键参数"
+    );
   return field.placeholder || field.label;
 }
 
 function contextFieldDefaultValue(field: ContextFormField) {
   if (contextFieldIsSensitive(field) && !field.candidates?.length) return "";
-  if (field.default !== undefined && field.default !== null) return String(field.default);
+  if (field.default !== undefined && field.default !== null)
+    return String(field.default);
   const firstCandidate = field.candidates?.[0];
   return firstCandidate ? contextCandidateValue(firstCandidate) : "";
 }
@@ -482,34 +642,49 @@ function contextFieldInputType(field: ContextFormField) {
 
 function contextFieldIsSensitive(field: ContextFormField) {
   const id = normalizeContextFieldId(field.id);
-  const type = String(field.type || "").trim().toLowerCase();
-  const control = String(field.uiControl || "").trim().toLowerCase();
+  const type = String(field.type || "")
+    .trim()
+    .toLowerCase();
+  const control = String(field.uiControl || "")
+    .trim()
+    .toLowerCase();
   return (
     Boolean(field.sensitive) ||
     type === "secret_ref" ||
     type === "secret" ||
     control === "secret_ref" ||
     control === "secret" ||
-    /(^|[_-])(password|passwd|secret|token|credential|api[_-]?key)([_-]|$)/i.test(id)
+    /(^|[_-])(password|passwd|secret|token|credential|api[_-]?key)([_-]|$)/i.test(
+      id,
+    )
   );
 }
 
-function contextCandidateValue(candidate: NonNullable<ContextFormField["candidates"]>[number]) {
+function contextCandidateValue(
+  candidate: NonNullable<ContextFormField["candidates"]>[number],
+) {
   return String(candidate.value ?? candidate.label ?? "");
 }
 
-function contextCandidateLabel(candidate: NonNullable<ContextFormField["candidates"]>[number]) {
+function contextCandidateLabel(
+  candidate: NonNullable<ContextFormField["candidates"]>[number],
+) {
   return String(candidate.label || candidate.value || "候选项");
 }
 
-function legacyContextFormSubmit(request: ContextFormRequest, params: Record<string, string>) {
+function legacyContextFormSubmit(
+  request: ContextFormRequest,
+  params: Record<string, string>,
+) {
   const lines = request.fields
     .map((field) => {
       const value = params[field.id];
       return value ? `${contextFieldSubmitLabel(field)}：${value}` : "";
     })
     .filter(Boolean);
-  const contextLine = request.contextText?.trim() ? [`关联上下文：${request.contextText.trim()}`] : [];
+  const contextLine = request.contextText?.trim()
+    ? [`关联上下文：${request.contextText.trim()}`]
+    : [];
   return {
     text: `补充必要信息，继续下一步自动排查：\n${[...contextLine, ...lines].join("\n")}`,
     metadata: {
@@ -519,7 +694,9 @@ function legacyContextFormSubmit(request: ContextFormRequest, params: Record<str
   };
 }
 
-function normalizeContextCandidates(value: unknown): ContextFormField["candidates"] {
+function normalizeContextCandidates(
+  value: unknown,
+): ContextFormField["candidates"] {
   if (!Array.isArray(value)) return [];
   return value
     .map((item) => {
@@ -530,11 +707,19 @@ function normalizeContextCandidates(value: unknown): ContextFormField["candidate
         label: record.label ? String(record.label) : undefined,
         hint: record.hint ? String(record.hint) : undefined,
         source: record.source ? String(record.source) : undefined,
-        confidence: typeof record.confidence === "number" ? record.confidence : undefined,
+        confidence:
+          typeof record.confidence === "number" ? record.confidence : undefined,
         evidence: record.evidence ? String(record.evidence) : undefined,
       };
     })
-    .filter((candidate): candidate is NonNullable<ContextFormField["candidates"]>[number] => Boolean(candidate && (candidate.value !== undefined || candidate.label)));
+    .filter(
+      (
+        candidate,
+      ): candidate is NonNullable<ContextFormField["candidates"]>[number] =>
+        Boolean(
+          candidate && (candidate.value !== undefined || candidate.label),
+        ),
+    );
 }
 
 function contextRequestKey(
@@ -599,7 +784,8 @@ function GenerationConfirmationComposer({
 }) {
   const sendCommand = useAssistantTransportSendCommand();
   const target = useSessionTargetContext();
-  const Icon = confirmation.action === "generate_ops_manual_candidate" ? FileText : Wrench;
+  const Icon =
+    confirmation.action === "generate_ops_manual_candidate" ? FileText : Wrench;
   const copy = confirmationCopy(confirmation.action, confirmation.sourceTitle);
 
   function confirm() {
@@ -623,7 +809,9 @@ function GenerationConfirmationComposer({
   return (
     <div
       className={[
-        variant === "chat" ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6" : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
+        variant === "chat"
+          ? "shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6"
+          : "border-t border-zinc-200 bg-white px-4 py-3 lg:px-8",
         className,
       ]
         .filter(Boolean)
@@ -637,15 +825,30 @@ function GenerationConfirmationComposer({
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-xs font-medium text-slate-400">二次确认</div>
-            <div className="mt-1 text-[15px] font-semibold leading-6 text-slate-950">{confirmation.title}</div>
-            <p className="mt-1 text-sm leading-6 text-slate-600">{copy.description}</p>
+            <div className="mt-1 text-[15px] font-semibold leading-6 text-slate-950">
+              {confirmation.title}
+            </div>
+            <p className="mt-1 text-sm leading-6 text-slate-600">
+              {copy.description}
+            </p>
           </div>
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" variant="outline" size="sm" className="rounded-md" onClick={onCancel}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="rounded-md"
+            onClick={onCancel}
+          >
             取消
           </Button>
-          <Button type="button" size="sm" className="rounded-md bg-slate-950 text-white hover:bg-slate-800" onClick={confirm}>
+          <Button
+            type="button"
+            size="sm"
+            className="rounded-md bg-slate-950 text-white hover:bg-slate-800"
+            onClick={confirm}
+          >
             {copy.confirmLabel}
           </Button>
         </div>
@@ -699,20 +902,33 @@ function confirmationCopy(action: string, sourceTitle: string) {
   };
 }
 
-function selectComposerApproval(state: AiopsTransportState): AiopsTransportApproval | undefined {
-  const approvals = Object.values(state.pendingApprovals || {}).filter((approval) => {
-    const status = approval.status?.trim();
-    return !status || status === "pending" || status === "blocked";
-  });
+function selectComposerApproval(
+  state: AiopsTransportState,
+): AiopsTransportApproval | undefined {
+  const livePendingApprovals = state.runtimeLiveness?.pendingApprovals;
+  const approvals = Object.values(state.pendingApprovals || {}).filter(
+    (approval) => {
+      const approvalId = approval.id?.trim();
+      if (livePendingApprovals && approvalId && !livePendingApprovals[approvalId]) {
+        return false;
+      }
+      const status = approval.status?.trim();
+      return !status || status === "pending" || status === "blocked";
+    },
+  );
   if (approvals.length === 0) {
     return undefined;
   }
   const currentTurnID = state.currentTurnId?.trim();
-  const currentTurnApproval = approvals.find((approval) => approval.turnId?.trim() === currentTurnID);
+  const currentTurnApproval = approvals.find(
+    (approval) => approval.turnId?.trim() === currentTurnID,
+  );
   if (currentTurnApproval) {
     return currentTurnApproval;
   }
-  return approvals.sort((a, b) => (b.requestedAt || "").localeCompare(a.requestedAt || ""))[0];
+  return approvals.sort((a, b) =>
+    (b.requestedAt || "").localeCompare(a.requestedAt || ""),
+  )[0];
 }
 
 function ComposerBody({
@@ -728,11 +944,21 @@ function ComposerBody({
 }) {
   const workspace = useSessionWorkspaceContext();
   const composer = useComposerRuntime();
+  const composerState = useComposer((snapshot) => snapshot);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [hosts, setHosts] = useState<HostInventoryItem[]>([]);
   const [hostInventoryFailed, setHostInventoryFailed] = useState(false);
-  const [activeToken, setActiveToken] = useState<ActiveHostMentionToken | null>(null);
+  const [opsManuals, setOpsManuals] = useState<OpsManualView[]>([]);
+  const [opsManualsFailed, setOpsManualsFailed] = useState(false);
+  const [opsGraphs, setOpsGraphs] = useState<OpsGraphSummary[]>([]);
+  const [opsGraphsFailed, setOpsGraphsFailed] = useState(false);
+  const [activeToken, setActiveToken] = useState<ActiveHostMentionToken | null>(
+    null,
+  );
+  const [inputText, setInputText] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const suppressedSubmittedTextRef = useRef("");
+  const selectedMentionBindingsRef = useRef<AiopsMentionBinding[]>([]);
   const suggestionPopoverId = "host-mention-suggestions";
 
   useEffect(() => {
@@ -758,15 +984,102 @@ function ComposerBody({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    opsManualsApi.list({ status: "verified", limit: 100 })
+      .then((payload) => {
+        if (!cancelled) {
+          setOpsManuals(payload.items);
+          setOpsManualsFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpsManualsFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listOpsGraphs()
+      .then((payload) => {
+        if (!cancelled) {
+          setOpsGraphs(payload.graphs || payload.items || []);
+          setOpsGraphsFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpsGraphsFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const suggestions = useMemo(
-    () => (activeToken && !hostInventoryFailed ? searchHostMentionSuggestions(hosts, activeToken.query, { limit: 10 }) : []),
-    [activeToken, hostInventoryFailed, hosts],
+    () => mentionSuggestionsForToken({
+      activeToken,
+      hosts,
+      hostInventoryFailed,
+      opsManuals,
+      opsManualsFailed,
+      opsGraphs,
+      opsGraphsFailed,
+    }),
+    [activeToken, hostInventoryFailed, hosts, opsGraphs, opsGraphsFailed, opsManuals, opsManualsFailed],
   );
-  const suggestionOpen = Boolean(activeToken) && !isRunning && !workspace.composerDisabledReason && !hostInventoryFailed;
+  const composerSnapshotText = composerState?.text || "";
+  const suppressedSubmittedText = suppressedSubmittedTextRef.current;
+  const currentComposerText =
+    inputText ||
+    (suppressedSubmittedText && composerSnapshotText === suppressedSubmittedText
+      ? ""
+      : composerSnapshotText);
+  const inlineHostMentions = useMemo(
+    () => displayHostMentions(currentComposerText, hosts),
+    [currentComposerText, hosts],
+  );
+  const inlineSpecialMentions = useMemo(
+    () => parseSpecialAiMentionCandidates(currentComposerText),
+    [currentComposerText],
+  );
+  const selectedHostMentions = useMemo(
+    () => uniqueDisplayHostMentions(inlineHostMentions),
+    [inlineHostMentions],
+  );
+  const reconciledMentionBindings = useMemo(
+    () =>
+      reconcileMentionBindings(
+        currentComposerText,
+        selectedMentionBindingsRef.current,
+      ),
+    [currentComposerText],
+  );
+  const inlineResourceMentions = useMemo(
+    () => displayResourceMentions(reconciledMentionBindings),
+    [reconciledMentionBindings],
+  );
+  const inlineMentions = useMemo(
+    () => mergeInlineMentions(inlineHostMentions, inlineSpecialMentions, inlineResourceMentions),
+    [inlineHostMentions, inlineResourceMentions, inlineSpecialMentions],
+  );
+  const suggestionOpen =
+    Boolean(activeToken) &&
+    !isRunning &&
+    !workspace.composerDisabledReason;
+  const hasInlineMentions = inlineMentions.length > 0;
 
   const refreshActiveToken = useCallback(() => {
     const input = inputRef.current;
     if (!input) return;
+    suppressedSubmittedTextRef.current = "";
+    setInputText(input.value);
     const cursor = input.selectionStart ?? input.value.length;
     const nextToken = findActiveHostMentionToken(input.value, cursor);
     setActiveToken(nextToken);
@@ -774,11 +1087,102 @@ function ComposerBody({
   }, []);
 
   const applySuggestion = useCallback(
-    (suggestion: HostMentionSuggestion) => {
+    (suggestion: ComposerMentionSuggestion) => {
       const input = inputRef.current;
       if (!input || !activeToken) return;
-      const next = replaceActiveHostMention(input.value, activeToken, suggestion);
+      if (suggestion.kind === "category") {
+        const nextText = `${input.value.slice(0, activeToken.start)}${suggestion.prefix}${input.value.slice(activeToken.end)}`;
+        const nextCursor = activeToken.start + suggestion.prefix.length;
+        const nextToken: ActiveHostMentionToken = {
+          start: activeToken.start,
+          end: nextCursor,
+          query: suggestion.prefix.slice(1),
+          raw: suggestion.prefix,
+        };
+        selectedMentionBindingsRef.current = selectedMentionBindingsRef.current.filter(
+          (binding) => binding.range.start !== activeToken.start,
+        );
+        composer.setText(nextText);
+        setInputText(nextText);
+        input.value = nextText;
+        input.setSelectionRange(nextCursor, nextCursor);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        setActiveToken(nextToken);
+        setHighlightedIndex(0);
+        return;
+      }
+      const next = replaceActiveHostMention(
+        input.value,
+        activeToken,
+        suggestion,
+      );
+      const rawText = next.text.slice(activeToken.start, next.cursor).trim();
+      const existingBindings = selectedMentionBindingsRef.current.filter(
+        (binding) => binding.range.start !== activeToken.start,
+      );
+      selectedMentionBindingsRef.current =
+        suggestion.kind === "capability"
+          ? [
+              ...existingBindings,
+              buildCapabilityMentionBinding({
+                tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                rawText,
+                range: {
+                  start: activeToken.start,
+                  end: activeToken.start + rawText.length,
+                },
+                capability: suggestion.payload.capability,
+              }),
+            ]
+          : suggestion.kind === "resource" && suggestion.payload.resourceKind === "ops_manual"
+            ? [
+                ...existingBindings,
+                buildOpsManualMentionBinding({
+                  tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                  rawText,
+                  range: {
+                    start: activeToken.start,
+                    end: activeToken.start + rawText.length,
+                  },
+                  manualId: suggestion.payload.manualId,
+                  title: suggestion.payload.title,
+                  workflowId: suggestion.payload.workflowId,
+                  status: suggestion.payload.status,
+                }),
+              ]
+            : suggestion.kind === "resource" && suggestion.payload.resourceKind === "ops_graph"
+              ? [
+                  ...existingBindings,
+                  buildOpsGraphMentionBinding({
+                    tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                    rawText,
+                    range: {
+                      start: activeToken.start,
+                      end: activeToken.start + rawText.length,
+                    },
+                    graphId: suggestion.payload.graphId,
+                    name: suggestion.payload.name,
+                    environment: suggestion.payload.environment,
+                  }),
+                ]
+          : [
+              ...existingBindings,
+              buildHostMentionBinding({
+                tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                rawText,
+                range: {
+                  start: activeToken.start,
+                  end: activeToken.start + rawText.length,
+                },
+                hostId: suggestion.payload.hostId,
+                address: suggestion.payload.address,
+                displayName: suggestion.payload.displayName,
+                status: suggestion.payload.status,
+              }),
+            ];
       composer.setText(next.text);
+      setInputText(next.text);
       input.value = next.text;
       input.setSelectionRange(next.cursor, next.cursor);
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -788,6 +1192,48 @@ function ComposerBody({
     },
     [activeToken, composer],
   );
+  useEffect(() => {
+    if (
+      !suppressedSubmittedTextRef.current ||
+      inputText ||
+      composerSnapshotText !== suppressedSubmittedTextRef.current
+    ) {
+      return;
+    }
+    composer.setText("");
+    if (inputRef.current?.value === suppressedSubmittedTextRef.current) {
+      inputRef.current.value = "";
+    }
+  }, [composer, composerSnapshotText, inputText]);
+
+  const clearComposerInput = useCallback((submittedText = "") => {
+    suppressedSubmittedTextRef.current = submittedText;
+    const clear = () => {
+      composer.setText("");
+      setInputText("");
+      setActiveToken(null);
+      setHighlightedIndex(0);
+      selectedMentionBindingsRef.current = [];
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
+    };
+    clear();
+    window.requestAnimationFrame(clear);
+    window.setTimeout(clear, 0);
+  }, [composer]);
+
+  useEffect(() => {
+    if (!isRunning) {
+      return;
+    }
+    const submittedText =
+      inputRef.current?.value || inputText || composerSnapshotText;
+    if (!submittedText) {
+      return;
+    }
+    clearComposerInput(submittedText);
+  }, [clearComposerInput, composerSnapshotText, inputText, isRunning]);
 
   return (
     <ComposerPrimitive.Root
@@ -806,59 +1252,296 @@ function ComposerBody({
           onSelect={applySuggestion}
         />
       ) : null}
-      <ComposerPrimitive.Input asChild submitOnEnter>
-        <Textarea
-          ref={inputRef}
-          data-testid="omnibar-input"
-          rows={1}
-          placeholder="输入你的问题或任务"
-          disabled={Boolean(workspace.composerDisabledReason) || isRunning}
-          aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
-          aria-expanded={suggestionOpen}
-          onInput={refreshActiveToken}
-          onClick={refreshActiveToken}
-          onKeyUp={(event) => {
-            if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) {
-              return;
-            }
-            refreshActiveToken();
-          }}
-          onKeyDown={(event) => {
-            if (!suggestionOpen) return;
-            if (event.key === "Escape") {
-              event.preventDefault();
-              setActiveToken(null);
-              return;
-            }
-            if (event.key === "ArrowDown") {
-              event.preventDefault();
-              setHighlightedIndex((index) => (suggestions.length ? (index + 1) % suggestions.length : 0));
-              return;
-            }
-            if (event.key === "ArrowUp") {
-              event.preventDefault();
-              setHighlightedIndex((index) => (suggestions.length ? (index - 1 + suggestions.length) % suggestions.length : 0));
-              return;
-            }
-            if ((event.key === "Enter" || event.key === "Tab") && suggestions[highlightedIndex]) {
-              event.preventDefault();
-              applySuggestion(suggestions[highlightedIndex]);
-            }
-          }}
-          className={
-            variant === "chat"
-              ? "max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
-              : "max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm"
-          }
+      <div
+        className={
+          variant === "chat" ? "relative min-h-12" : "relative min-w-0 flex-1"
+        }
+      >
+        <HostMentionInlineOverlay
+          text={currentComposerText}
+          mentions={inlineMentions}
+          variant={variant}
         />
-      </ComposerPrimitive.Input>
+        <ComposerPrimitive.Input asChild submitOnEnter>
+          <Textarea
+            ref={inputRef}
+            data-testid="omnibar-input"
+            rows={1}
+            placeholder="输入你的问题或任务"
+            spellCheck={false}
+            disabled={Boolean(workspace.composerDisabledReason) || isRunning}
+            aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
+            aria-expanded={suggestionOpen}
+            onInput={refreshActiveToken}
+            onClick={refreshActiveToken}
+            onKeyUp={(event) => {
+              if (
+                ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(
+                  event.key,
+                )
+              ) {
+                return;
+              }
+              refreshActiveToken();
+            }}
+            onKeyDown={(event) => {
+              if (!suggestionOpen) return;
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setActiveToken(null);
+                return;
+              }
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setHighlightedIndex((index) =>
+                  suggestions.length ? (index + 1) % suggestions.length : 0,
+                );
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setHighlightedIndex((index) =>
+                  suggestions.length
+                    ? (index - 1 + suggestions.length) % suggestions.length
+                    : 0,
+                );
+                return;
+              }
+              if (
+                (event.key === "Enter" || event.key === "Tab") &&
+                suggestions[highlightedIndex]
+              ) {
+                event.preventDefault();
+                applySuggestion(suggestions[highlightedIndex]);
+              }
+            }}
+            className={cn(
+              variant === "chat"
+                ? "relative z-10 max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
+                : "relative z-10 max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm",
+              hasInlineMentions &&
+                "text-transparent caret-slate-950 selection:bg-sky-200/70",
+            )}
+          />
+        </ComposerPrimitive.Input>
+      </div>
 
-      <div className={variant === "chat" ? "flex shrink-0 items-center justify-between" : "mb-1 flex shrink-0 items-center gap-2"}>
-        <span className="text-xs text-slate-400 pl-1">{workspace.llmLabel}</span>
-        <TargetAwareSendButton variant={variant} isRunning={isRunning} state={state} threadIsRunning={threadIsRunning} />
+      <div
+        className={
+          variant === "chat"
+            ? "flex shrink-0 items-center justify-between"
+            : "mb-1 flex shrink-0 items-center gap-2"
+        }
+      >
+        <span className="text-xs text-slate-400 pl-1">
+          {workspace.llmLabel}
+        </span>
+        <TargetAwareSendButton
+          variant={variant}
+          isRunning={isRunning}
+          state={state}
+          threadIsRunning={threadIsRunning}
+          hostMentions={selectedHostMentions}
+          mentionBindings={reconciledMentionBindings}
+          onComposerCleared={clearComposerInput}
+        />
       </div>
     </ComposerPrimitive.Root>
   );
+}
+
+function displayHostMentions(
+  text: string,
+  hosts: HostInventoryItem[],
+): DisplayHostMention[] {
+  const mentions: DisplayHostMention[] = [];
+  for (const mention of parseHostMentionCandidates(text)) {
+    if (mention.source === "local_alias") {
+      mentions.push({
+        ...mention,
+        value: "server-local",
+        hostId: "server-local",
+        displayName: "local",
+        resolved: true,
+      });
+      continue;
+    }
+    const host = findHostForMention(hosts, mention.value);
+    if (!host) {
+      continue;
+    }
+    const displayMention: DisplayHostMention = {
+      ...mention,
+      hostId: cleanHostText(host.id) || cleanHostText(host.hostId),
+      displayName:
+        cleanHostText(host.name) ||
+        cleanHostText(host.ip) ||
+        cleanHostText(
+          (host as HostInventoryItem & { address?: string }).address,
+        ) ||
+        mention.raw,
+      resolved: true,
+    };
+    mentions.push(displayMention);
+  }
+  return mentions;
+}
+
+function mentionSuggestionsForToken({
+  activeToken,
+  hosts,
+  hostInventoryFailed,
+  opsManuals,
+  opsManualsFailed,
+  opsGraphs,
+  opsGraphsFailed,
+}: {
+  activeToken: ActiveHostMentionToken | null;
+  hosts: HostInventoryItem[];
+  hostInventoryFailed: boolean;
+  opsManuals: OpsManualView[];
+  opsManualsFailed: boolean;
+  opsGraphs: OpsGraphSummary[];
+  opsGraphsFailed: boolean;
+}): ComposerMentionSuggestion[] {
+  if (!activeToken) {
+    return [];
+  }
+  const route = mentionMenuRoute(activeToken.query);
+  if (route.kind === "host") {
+    return hostInventoryFailed
+      ? []
+      : searchHostMentionSuggestions(hosts, route.query, { limit: 8 });
+  }
+  if (route.kind === "capability") {
+    return searchCapabilityMentionSuggestions(route.query, {
+      category: route.category,
+    }).slice(0, 8);
+  }
+  if (route.kind === "ops_manuals") {
+    return opsManualsFailed
+      ? []
+      : searchOpsManualMentionSuggestions(opsManuals, route.query, { limit: 8 });
+  }
+  if (route.kind === "ops_graph") {
+    return opsGraphsFailed
+      ? []
+      : searchOpsGraphMentionSuggestions(opsGraphs, route.query, { limit: 8 });
+  }
+  return searchMentionCategorySuggestions(route.query).slice(0, 8);
+}
+
+type MentionMenuRoute =
+  | { kind: "category"; query: string }
+  | { kind: "host"; query: string }
+  | { kind: "capability"; category: Exclude<MentionCategory, "host" | "ops_graph" | "ops_manuals">; query: string }
+  | { kind: "ops_graph"; query: string }
+  | { kind: "ops_manuals"; query: string };
+
+function mentionMenuRoute(query: string): MentionMenuRoute {
+  const normalized = cleanHostText(query);
+  const hostQuery = stripMentionCategoryPrefix(normalized, "host-");
+  if (hostQuery !== null) {
+    return { kind: "host", query: hostQuery };
+  }
+  const monitorQuery = stripMentionCategoryPrefix(normalized, "monitor-");
+  if (monitorQuery !== null) {
+    return { kind: "capability", category: "monitor", query: monitorQuery };
+  }
+  const graphQuery = stripMentionCategoryPrefix(normalized, "opsgraph-");
+  if (graphQuery !== null) {
+    return { kind: "ops_graph", query: graphQuery };
+  }
+  const manualQuery = stripMentionCategoryPrefix(normalized, "manual-");
+  if (manualQuery !== null) {
+    return { kind: "ops_manuals", query: manualQuery };
+  }
+  return { kind: "category", query: normalized };
+}
+
+function stripMentionCategoryPrefix(query: string, prefix: string) {
+  const normalized = query.toLowerCase();
+  return normalized.startsWith(prefix) ? query.slice(prefix.length) : null;
+}
+
+function mergeInlineMentions(
+  hostMentions: DisplayHostMention[],
+  specialMentions: ReturnType<typeof parseSpecialAiMentionCandidates>,
+  resourceMentions: ResourceInlineMentionCandidate[],
+) {
+  return [...hostMentions, ...specialMentions, ...resourceMentions].sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function displayResourceMentions(bindings: AiopsMentionBinding[]): ResourceInlineMentionCandidate[] {
+  return bindings
+    .filter((binding) => binding.kind === "ops_manual" || binding.kind === "ops_graph")
+    .map((binding) => {
+      const payload = objectPayload(binding.payload);
+      const value =
+        binding.kind === "ops_manual"
+          ? cleanHostText(payload.manualId) || binding.rawText.replace(/^@/, "")
+          : cleanHostText(payload.graphId) || binding.rawText.replace(/^@/, "");
+      const displayName =
+        binding.kind === "ops_manual"
+          ? cleanHostText(payload.title) || value
+          : cleanHostText(payload.name) || value;
+      return {
+        tokenId: binding.tokenId,
+        raw: binding.rawText,
+        value,
+        start: binding.range.start,
+        end: binding.range.end,
+        source: "ops_resource" as const,
+        kind: binding.kind as "ops_manual" | "ops_graph",
+        displayName,
+      };
+    });
+}
+
+function uniqueDisplayHostMentions(
+  mentions: DisplayHostMention[],
+): DisplayHostMention[] {
+  const seen = new Set<string>();
+  const selected: DisplayHostMention[] = [];
+  for (const displayMention of mentions) {
+    const key = hostDisplayMentionKey(displayMention);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    selected.push(displayMention);
+  }
+  return selected;
+}
+
+function findHostForMention(hosts: HostInventoryItem[], value: string) {
+  const normalized = normalizeHostMentionValue(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return hosts.find((host) => {
+    const extended = host as HostInventoryItem & {
+      address?: string;
+      hostId?: string;
+    };
+    return [host.name, host.ip, extended.address, host.id, extended.hostId]
+      .map(normalizeHostMentionValue)
+      .some((candidate) => candidate === normalized);
+  });
+}
+
+function hostDisplayMentionKey(mention: DisplayHostMention) {
+  return normalizeHostMentionValue(
+    mention.hostId || mention.value || mention.raw,
+  );
+}
+
+function normalizeHostMentionValue(value: unknown) {
+  return cleanHostText(value).replace(/^@+/, "").toLowerCase();
+}
+
+function cleanHostText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function TargetAwareSendButton({
@@ -866,18 +1549,23 @@ function TargetAwareSendButton({
   isRunning,
   state,
   threadIsRunning,
+  hostMentions,
+  mentionBindings,
+  onComposerCleared,
 }: {
   variant: "default" | "chat";
   isRunning: boolean;
   state: AiopsTransportState;
   threadIsRunning: boolean;
+  hostMentions: DisplayHostMention[];
+  mentionBindings: AiopsMentionBinding[];
+  onComposerCleared: (submittedText: string) => void;
 }) {
   const api = useAssistantApi();
   const composer = useComposerRuntime();
   const composerState = useComposer((snapshot) => snapshot);
   const sendCommand = useAssistantTransportSendCommand();
   const commands = useAiopsTransportCommands();
-  const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
   const [stopping, setStopping] = useState(false);
   const [forceStopVisible, setForceStopVisible] = useState(false);
@@ -901,7 +1589,11 @@ function TargetAwareSendButton({
     return () => clearTimeout(timer);
   }, [stopping, isRunning]);
 
-  const disabled = (stopping && !forceStopVisible) || (!isRunning && (!composerState?.text?.trim() || Boolean(workspace.composerDisabledReason)));
+  const disabled =
+    (stopping && !forceStopVisible) ||
+    (!isRunning &&
+      (!composerState?.text?.trim() ||
+        Boolean(workspace.composerDisabledReason)));
   const stopDispatchTarget = resolveStopDispatchTarget(state, threadIsRunning);
 
   async function stopRun(reason: string) {
@@ -918,7 +1610,15 @@ function TargetAwareSendButton({
       type="button"
       size={variant === "chat" ? "icon" : "icon-lg"}
       data-testid="omnibar-primary-action"
-      aria-label={forceStopVisible ? "强制停止" : stopping ? "正在停止" : isRunning ? "停止生成" : "send message"}
+      aria-label={
+        forceStopVisible
+          ? "强制停止"
+          : stopping
+            ? "正在停止"
+            : isRunning
+              ? "停止生成"
+              : "send message"
+      }
       disabled={disabled}
       className={
         variant === "chat"
@@ -944,16 +1644,17 @@ function TargetAwareSendButton({
         const text = composer.getState().text.trim();
         if (!text) return;
         composer.setText("");
-        const mentions = parseHostMentionCandidates(text);
+        onComposerCleared(text);
         const command = {
           type: "add-message",
           message: {
             role: "user",
             metadata: {
-              ...target.metadata,
-              ...buildHostMentionMetadata(mentions),
+              ...buildInputMentionMetadata(mentionBindings),
+              ...hostMentionMetadataForSubmit(mentionBindings, hostMentions),
+              ...capabilityMetadataForSubmit(mentionBindings, text),
             },
-            ...(target.hostId ? { hostId: target.hostId } : {}),
+            ...hostIdMessageFieldForSubmit(mentionBindings, hostMentions),
             parts: [{ type: "text", text }],
           },
         } as Parameters<typeof sendCommand>[0];
@@ -973,40 +1674,131 @@ function TargetAwareSendButton({
   );
 }
 
-function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApproval }) {
+function hostIdMessageField(hostMentions: DisplayHostMention[]) {
+  const hostIds = Array.from(
+    new Set(hostMentions.map((mention) => cleanHostText(mention.hostId)).filter(Boolean)),
+  );
+  return hostIds.length === 1 ? { hostId: hostIds[0] } : {};
+}
+
+function hostMentionMetadataForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  hostMentions: DisplayHostMention[],
+) {
+  const structuredMetadata = deriveHostMentionMetadata(mentionBindings);
+  return Object.keys(structuredMetadata).length
+    ? structuredMetadata
+    : buildHostMentionMetadata(hostMentions);
+}
+
+function capabilityMetadataForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  text: string,
+) {
+  const structuredMetadata = deriveCapabilityMentionMetadata(mentionBindings);
+  return Object.keys(structuredMetadata).length
+    ? structuredMetadata
+    : buildAiopsSpecialMentionMetadata(text);
+}
+
+function hostIdMessageFieldForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  hostMentions: DisplayHostMention[],
+) {
+  const structuredHostIds = Array.from(
+    new Set(
+      mentionBindings
+        .filter((binding) => binding.kind === "host")
+        .map((binding) =>
+          cleanHostText(
+            objectPayload(binding.payload).hostId || decodeHostPath(binding.path),
+          ),
+        )
+        .filter(Boolean),
+    ),
+  );
+  if (structuredHostIds.length === 1) return { hostId: structuredHostIds[0] };
+  if (structuredHostIds.length > 1) return {};
+  return hostIdMessageField(hostMentions);
+}
+
+function decodeHostPath(path: string) {
+  const raw = cleanHostText(path).replace(/^host:\/\//, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function objectPayload(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function BlockedApprovalComposer({
+  approval,
+}: {
+  approval: AiopsTransportApproval;
+}) {
   const commands = useAiopsTransportCommands();
-  const [decision, setDecision] = useState<"accept" | "accept_session" | "reject">("accept");
-  const [submittingDecision, setSubmittingDecision] = useState<"accept" | "accept_session" | "reject" | null>(null);
+  const [decision, setDecision] = useState<
+    "accept" | "accept_session" | "reject"
+  >("accept");
+  const [submittingDecision, setSubmittingDecision] = useState<
+    "accept" | "accept_session" | "reject" | null
+  >(null);
   const [submitError, setSubmitError] = useState("");
+  const timeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const commandText = approval.command || approval.reason || approval.id;
   const isSubmitting = Boolean(submittingDecision) && !submitError;
 
   useEffect(() => {
+    clearApprovalDecisionTimeout(timeoutRef);
     setDecision("accept");
     setSubmittingDecision(null);
     setSubmitError("");
+    return () => clearApprovalDecisionTimeout(timeoutRef);
   }, [approval.id]);
 
-  function submitDecision(nextDecision: "accept" | "accept_session" | "reject" = decision) {
+  function submitDecision(
+    nextDecision: "accept" | "accept_session" | "reject" = decision,
+  ) {
     if (isSubmitting) {
       return;
     }
     setSubmittingDecision(nextDecision);
     setSubmitError("");
+    clearApprovalDecisionTimeout(timeoutRef);
     try {
       commands.approvalDecision(approval.id, nextDecision);
+      timeoutRef.current = window.setTimeout(() => {
+        setSubmittingDecision(null);
+        setSubmitError(
+          `审批请求超时：后端 ${APPROVAL_DECISION_TIMEOUT_MS / 1000} 秒内未返回继续执行状态，请刷新状态或重试。`,
+        );
+      }, APPROVAL_DECISION_TIMEOUT_MS);
     } catch (error) {
+      clearApprovalDecisionTimeout(timeoutRef);
       setSubmittingDecision(null);
-      setSubmitError(error instanceof Error ? error.message : "提交审批失败，请重试");
+      setSubmitError(
+        error instanceof Error ? error.message : "提交审批失败，请重试",
+      );
     }
   }
 
   return (
-    <div className="shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6" data-testid="codex-approval-inline">
+    <div
+      className="shrink-0 bg-white px-4 pb-4 pt-2 md:pb-6"
+      data-testid="codex-approval-inline"
+    >
       <div className="mx-auto max-w-3xl rounded-[1.75rem] border border-slate-200 bg-white p-4 shadow-[0_10px_28px_rgba(15,23,42,0.10)]">
         <div className="space-y-3">
           <div>
-            <div className="text-xs font-medium text-slate-400">等待审批</div>
+            <div className="text-xs font-medium text-slate-400">
+              {approvalInlineTitle(approval)}
+            </div>
             <div className="mt-1 text-[15px] font-semibold leading-6 text-slate-950">
               要执行这个命令，需要你确认吗？
             </div>
@@ -1017,6 +1809,21 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
           >
             {commandText}
           </div>
+          {approvalInlineDetails(approval).length ? (
+            <dl
+              className="grid gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-700 sm:grid-cols-[4.5rem_1fr]"
+              data-testid="codex-approval-details"
+            >
+              {approvalInlineDetails(approval).map((detail) => (
+                <div key={detail.label} className="contents">
+                  <dt className="font-medium text-slate-500">{detail.label}</dt>
+                  <dd className="min-w-0 break-words text-slate-800">
+                    {detail.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : null}
           <div className="space-y-1" role="radiogroup" aria-label="审批选项">
             <ApprovalChoice
               selected={decision === "accept"}
@@ -1039,13 +1846,19 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
             />
           </div>
           {isSubmitting ? (
-            <div className="flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700" role="status">
+            <div
+              className="flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-sm text-blue-700"
+              role="status"
+            >
               <LoaderCircle className="h-4 w-4 animate-spin" />
               <span>已提交确认，正在继续执行...</span>
             </div>
           ) : null}
           {submitError ? (
-            <div className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+            <div
+              className="rounded-xl bg-red-50 px-3 py-2 text-sm text-red-700"
+              role="alert"
+            >
               {submitError}
             </div>
           ) : null}
@@ -1074,6 +1887,62 @@ function BlockedApprovalComposer({ approval }: { approval: AiopsTransportApprova
       </div>
     </div>
   );
+}
+
+function approvalInlineDetails(approval: AiopsTransportApproval) {
+  return [
+    { label: "目标", value: approval.targetSummary },
+    { label: "风险", value: approval.risk },
+    { label: "来源", value: approvalInlineSourceLabel(approval.source) },
+    { label: "影响", value: approval.expectedEffect },
+    { label: "回滚", value: approval.rollback },
+    { label: "验收", value: approval.validation },
+  ].filter((item): item is { label: string; value: string } =>
+    Boolean(item.value),
+  );
+}
+
+function approvalInlineTitle(approval: AiopsTransportApproval) {
+  const target = approvalInlinePrimaryTarget(approval.targetSummary);
+  return target ? `${target} 等待审批` : "等待审批";
+}
+
+function approvalInlinePrimaryTarget(targetSummary?: string) {
+  const value = targetSummary?.trim();
+  if (!value) return "";
+  const first = value
+    .split(/[；;,，]/)
+    .map((item) => item.trim())
+    .find(Boolean);
+  if (!first) return "";
+  if (first.startsWith("host:")) return first.slice("host:".length).trim();
+  return first;
+}
+
+function approvalInlineSourceLabel(source?: string) {
+  switch (source) {
+    case "ai_chat_direct":
+      return "AI Chat";
+    case "ops_manual":
+      return "运维手册";
+    case "workflow":
+      return "Workflow";
+    case "runbook":
+      return "Runbook";
+    case "terminal_policy":
+      return "终端策略";
+    default:
+      return source;
+  }
+}
+
+function clearApprovalDecisionTimeout(
+  timeoutRef: { current: ReturnType<typeof window.setTimeout> | null },
+) {
+  if (timeoutRef.current) {
+    window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = null;
+  }
 }
 
 function ApprovalChoice({

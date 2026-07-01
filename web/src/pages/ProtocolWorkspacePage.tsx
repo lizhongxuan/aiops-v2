@@ -13,6 +13,7 @@ import { EmptyPanel, RiskBadge } from "@/pages/complexPageComponents";
 import { resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { ChatTransportProvider } from "@/transport/ChatTransportProvider";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
+import { getCachedAiopsTransportState } from "@/transport/aiopsTransportStateCache";
 import type {
   AiopsProcessBlock,
   AiopsTransportApproval,
@@ -22,9 +23,12 @@ import type {
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 export function ProtocolWorkspacePage() {
-  const fallbackState = useMemo(() => resolveUiFixtureState() || createInitialAiopsTransportState("protocol-workspace"), []);
+  const fallbackState = useMemo(
+    () => resolveUiFixtureState() || getCachedAiopsTransportState("workspace") || createInitialAiopsTransportState("protocol-workspace"),
+    [],
+  );
   const [activeThreadId, setActiveThreadId] = useState(fallbackState.threadId || "protocol-workspace");
-  const [autoResume, setAutoResume] = useState(false);
+  const [autoResume, setAutoResume] = useState(shouldAutoResumeProtocolState(fallbackState));
   const [initialState, setInitialState] = useState(fallbackState);
 
   return (
@@ -41,11 +45,15 @@ export function ProtocolWorkspacePage() {
         setInitialState(nextInitialState || createInitialAiopsTransportState(nextThreadId));
       }}
     >
-      <ChatTransportProvider autoResume={autoResume} key={activeThreadId} initialState={initialState} threadId={activeThreadId}>
+      <ChatTransportProvider autoResume={autoResume} cacheScope="workspace" key={activeThreadId} initialState={initialState} threadId={activeThreadId}>
         <ProtocolWorkspaceContent />
       </ChatTransportProvider>
     </SessionContextBar>
   );
+}
+
+function shouldAutoResumeProtocolState(state: AiopsTransportState) {
+  return state.status === "working" || state.status === "blocked" || Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
 }
 
 function ProtocolWorkspaceContent() {

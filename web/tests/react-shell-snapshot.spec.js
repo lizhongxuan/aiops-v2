@@ -167,14 +167,6 @@ function finalMarkdownState(status) {
             outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
             updatedAt: "2026-05-08T02:00:05.000Z",
           },
-          {
-            id: `assistant-markdown-final-${status}`,
-            kind: "assistant",
-            displayKind: "assistant.final",
-            status: running ? "running" : "completed",
-            text: markdownFinalText,
-            updatedAt: "2026-05-08T02:00:12.000Z",
-          },
         ],
         final: {
           id: `final-markdown-${status}`,
@@ -238,6 +230,97 @@ function runningPreludeBeforeToolsState() {
     },
     seq: 3,
     updatedAt: "2026-05-08T02:00:04.000Z",
+  };
+}
+
+function codexLikeProcessTranscriptState() {
+  const now = "2026-06-27T10:00:00.000Z";
+  const turnId = "turn-codex-like-process";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "browser-flow-session",
+    threadId: "browser-flow-session",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-27T10:00:08.000Z",
+        updatedAt: "2026-06-27T10:00:08.000Z",
+        user: {
+          id: "user-codex-like-process",
+          text: "@server-local 查看cpu情况",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-tool-search",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-search-tools"],
+            updatedAt: "2026-06-27T10:00:01.000Z",
+          },
+          {
+            id: "tool-search-tools",
+            kind: "tool",
+            displayKind: "tool_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "tool_search",
+            inputSummary: "host CPU monitoring status check server local",
+            queries: ["host CPU monitoring status check server local"],
+            updatedAt: "2026-06-27T10:00:02.000Z",
+          },
+          {
+            id: "assistant-exec-command",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-cpu"],
+            updatedAt: "2026-06-27T10:00:03.000Z",
+          },
+          {
+            id: "cmd-cpu",
+            kind: "command",
+            foldGroupKind: "command",
+            status: "completed",
+            text: "top -l 1 | head",
+            command: "top -l 1 | head",
+            outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
+            updatedAt: "2026-06-27T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-codex-like-process",
+          text: "CPU 当前空闲约 73%，没有看到持续高负载；建议继续观察 load average 和异常进程。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 10,
+    updatedAt: "2026-06-27T10:00:08.000Z",
   };
 }
 
@@ -758,12 +841,24 @@ test("process transcript keeps narration and expanded search details aligned", a
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
   await page.getByTestId("aiops-process-header").click();
   await page.getByTestId("aiops-search-toggle").click();
+  await page.getByTestId("aiops-search-detail-row-toggle").first().click();
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页检索 2 项");
+  await expect(transcript).toContainText("网页检索 2 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
+});
+
+test("codex-like process transcript interleaves commentary and tools", async ({ page }) => {
+  await routeShellApis(page, codexLikeProcessTranscriptState());
+  await page.goto("/");
+  await page.getByTestId("aiops-process-header").click();
+  const transcript = page.getByTestId("aiops-process-transcript-body");
+  await expect(transcript).toContainText("检索可用工具");
+  await expect(transcript).toContainText("执行只读命令");
+  await expect(page.getByTestId("aiops-final-text")).toContainText("CPU 当前空闲约 73%");
+  await expect(transcript).toHaveScreenshot("codex-like-process-transcript.png");
 });
 
 test("assistant final markdown keeps the same layout while running and after completion", async ({ page }) => {
@@ -827,6 +922,7 @@ test("chat renders rca report artifact", async ({ page }) => {
 
 test("chat shows context compaction and externalized evidence states", async ({ page }) => {
   const state = contextCompactionTransportState();
+  await page.clock.setFixedTime("2026-05-22T08:00:05.000Z");
   await routeShellApis(page, state);
   await page.route("**/api/external-references/spill-1", async (route) => {
     await route.fulfill({
@@ -854,18 +950,19 @@ test("chat shows context compaction and externalized evidence states", async ({ 
   }
   await expect(toolRow).toBeVisible();
   await toolRow.click();
-  await expect(page.getByText("结果较大，仅显示摘要。")).toBeVisible();
+  await expect(page.getByText("Large nginx log result was externalized. Summary: 17 upstream timeout lines.")).toBeVisible();
+  await expect(page.getByText("结果较大，仅显示摘要。")).toHaveCount(0);
   await expect(page.getByText(/upstream timed out/)).toHaveCount(0);
   await expect(page.getByTestId("context-status-notice")).toHaveScreenshot("context-compaction-notice.png");
   await expect(page.getByTestId("aiops-process-transcript")).toHaveScreenshot("context-compaction-process.png");
 });
 
-test("ops manual direct hit shows distinct skip reference and preflight actions", async ({ page }) => {
+test("ops manual direct hit shows distinct use reference and skip actions", async ({ page }) => {
   await routeShellApis(page, opsManualDirectActionsState());
 
   await page.goto("/");
   const card = page.getByTestId("ops-manual-search-result-card");
-  await expect(card).toContainText("运行预检");
+  await expect(card).toContainText("使用该手册/Workflow");
   await expect(card).toContainText("仅参考手册");
   await expect(card).toContainText("不使用");
   await expect(card).toHaveScreenshot("ops-manual-direct-three-actions.png");

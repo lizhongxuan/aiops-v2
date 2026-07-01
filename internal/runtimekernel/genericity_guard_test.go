@@ -70,7 +70,7 @@ func TestCoreRuntimeProductionFilesAvoidProviderSpecificTerms(t *testing.T) {
 	term := "coroot"
 	for _, path := range []string{
 		"model_input.go",
-		"eino_kernel.go",
+		"runtime_kernel.go",
 		"tool_pack_intent.go",
 	} {
 		data, err := os.ReadFile(path)
@@ -79,6 +79,27 @@ func TestCoreRuntimeProductionFilesAvoidProviderSpecificTerms(t *testing.T) {
 		}
 		if strings.Contains(strings.ToLower(string(data)), term) {
 			t.Fatalf("%s contains provider-specific term %q; core runtime rules must use generic metadata/capability/resource signals", path, term)
+		}
+	}
+}
+
+func TestCoreProductionFilesAvoidScenarioSpecificTerms(t *testing.T) {
+	terms := []string{"pg_mon", "主机a", "主机b", "主机c", "服务a", "服务b", "服务c"}
+	paths := []string{
+		"runtime_kernel.go",
+		"model_input.go",
+		"tool_pack_intent.go",
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lower := strings.ToLower(string(data))
+		for _, term := range terms {
+			if strings.Contains(lower, term) {
+				t.Fatalf("%s contains scenario-specific term %q; use generic metadata/capability/resource signals", path, term)
+			}
 		}
 	}
 }

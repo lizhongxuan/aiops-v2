@@ -54,6 +54,14 @@ func (g RunnerGraphGenerator) GenerateGraph(_ context.Context, req GenerateGraph
 			"title":  req.Plan.Title,
 		},
 	}
+	if req.Plan.ReviewStatus != "" {
+		graph.Workflow.Vars["review_status"] = string(req.Plan.ReviewStatus)
+		graph.UI["review_status"] = string(req.Plan.ReviewStatus)
+	}
+	if strings.TrimSpace(req.Plan.ResourceKind) != "" {
+		graph.Workflow.Vars["resource_kind"] = req.Plan.ResourceKind
+		graph.UI["resource_kind"] = req.Plan.ResourceKind
+	}
 
 	graph.Nodes = append(graph.Nodes, visual.Node{
 		ID:       "start",
@@ -69,6 +77,7 @@ func (g RunnerGraphGenerator) GenerateGraph(_ context.Context, req GenerateGraph
 		if nodeID == "" {
 			nodeID = fmt.Sprintf("node-%d", i+1)
 		}
+		nodeUI := uiForPlanNode(planNode)
 		step := workflow.Step{
 			ID:      nodeID,
 			Name:    nodeID,
@@ -91,10 +100,7 @@ func (g RunnerGraphGenerator) GenerateGraph(_ context.Context, req GenerateGraph
 			Label:    firstNonEmpty(planNode.Title, nodeID),
 			Inputs:   ioToVisualInputs(planNode.Inputs),
 			Outputs:  ioToVisualOutputs(planNode.Outputs),
-			UI: map[string]any{
-				"kind":        string(planNode.Kind),
-				"description": planNode.Description,
-			},
+			UI:       nodeUI,
 		})
 		graph.Edges = append(graph.Edges, visual.Edge{
 			ID:     fmt.Sprintf("%s-to-%s", previousID, nodeID),
@@ -132,6 +138,9 @@ func (g RunnerGraphGenerator) GenerateGraph(_ context.Context, req GenerateGraph
 }
 
 func scriptForPlanNode(node WorkflowPlanNode) string {
+	if stage := configString(node.Config, "stage"); stage != "" {
+		return resourceStageScript(node, stage)
+	}
 	topic := configString(node.Config, "topic")
 	fixture := workflowScriptFixtureForTopic(topic)
 	nodeID := sanitizeID(node.ID)
@@ -203,6 +212,58 @@ print("AIOPS_NODE_RESULT_END")`, pythonLiteral(fixture.KeyItems), target, pyBool
 	}
 }
 
+func uiForPlanNode(node WorkflowPlanNode) map[string]any {
+	ui := map[string]any{
+		"kind":        string(node.Kind),
+		"description": node.Description,
+	}
+	stage := configString(node.Config, "stage")
+	if stage != "" {
+		ui["stage"] = stage
+	}
+	readOnly := configBool(node.Config, "read_only") || stage == "preflight" || stage == "verify"
+	if readOnly {
+		ui["read_only"] = true
+	}
+	requiresApproval := configBool(node.Config, "requires_approval")
+	if requiresApproval {
+		ui["requires_approval"] = true
+	}
+	return ui
+}
+
+func resourceStageScript(node WorkflowPlanNode, stage string) string {
+	nodeID := sanitizeID(node.ID)
+	if nodeID == "" {
+		nodeID = "resource-" + stage
+	}
+	outputID := firstWorkflowIOID(node.Outputs, stage+"_result")
+	readOnly := configBool(node.Config, "read_only") || stage == "preflight" || stage == "verify"
+	requiresApproval := configBool(node.Config, "requires_approval")
+	return fmt.Sprintf(`import json
+from datetime import datetime, timezone
+
+stage_result = {
+    "stage": %q,
+    "read_only": %s,
+    "requires_approval": %s,
+    "status": "draft",
+    "evidence_sources": %s,
+}
+envelope = {
+    "schema_version": "aiops.node_result/v1",
+    "node_id": %q,
+    "node_type": "script.python",
+    "status": "success",
+    "finished_at": datetime.now(timezone.utc).isoformat(),
+    "outputs": {%q: stage_result},
+    "metrics": {"draft": True},
+}
+print("AIOPS_NODE_RESULT_BEGIN")
+print(json.dumps(envelope, ensure_ascii=False))
+print("AIOPS_NODE_RESULT_END")`, stage, pyBool(readOnly), pyBool(requiresApproval), pythonLiteral(configSlice(node.Config, "evidence_sources")), nodeID, outputID)
+}
+
 type workflowScriptFixture struct {
 	ItemsOutputID string
 	Items         []map[string]string
@@ -243,6 +304,32 @@ func configString(config map[string]any, key string) string {
 	return strings.TrimSpace(value)
 }
 
+func configBool(config map[string]any, key string) bool {
+	if config == nil {
+		return false
+	}
+	value, _ := config[key].(bool)
+	return value
+}
+
+func configSlice(config map[string]any, key string) []any {
+	if config == nil {
+		return nil
+	}
+	switch value := config[key].(type) {
+	case []any:
+		return value
+	case []string:
+		output := make([]any, 0, len(value))
+		for _, item := range value {
+			output = append(output, item)
+		}
+		return output
+	default:
+		return []any{}
+	}
+}
+
 func firstWorkflowIOID(items []WorkflowIO, fallback ...string) string {
 	for _, item := range items {
 		if strings.TrimSpace(item.ID) != "" {
@@ -275,10 +362,11 @@ func ioToVisualInputs(input []WorkflowIO) []visual.InputParamSpec {
 	for _, item := range input {
 		output = append(output, visual.InputParamSpec{
 			Key:         sanitizeID(item.ID),
-			Type:        firstNonEmpty(item.Type, "any"),
+			Type:        visualParamType(item.Type),
 			Label:       item.ID,
 			Description: item.Description,
 			Required:    item.Required,
+			UI:          visualParamUI(item.Type),
 		})
 	}
 	return output
@@ -292,10 +380,11 @@ func ioToVisualOutputs(input []WorkflowIO) []visual.OutputParamSpec {
 	for _, item := range input {
 		output = append(output, visual.OutputParamSpec{
 			Key:         sanitizeID(item.ID),
-			Type:        firstNonEmpty(item.Type, "any"),
+			Type:        visualParamType(item.Type),
 			Label:       item.ID,
 			Description: item.Description,
 			Required:    item.Required,
+			UI:          visualParamUI(item.Type),
 			ExtractSource: visual.ExtractSource{
 				Type: "jsonpath",
 				Path: "$.outputs." + sanitizeID(item.ID),
@@ -303,6 +392,24 @@ func ioToVisualOutputs(input []WorkflowIO) []visual.OutputParamSpec {
 		})
 	}
 	return output
+}
+
+func visualParamType(planType string) string {
+	switch strings.TrimSpace(planType) {
+	case "":
+		return "any"
+	case "secret_ref":
+		return "secret"
+	default:
+		return strings.TrimSpace(planType)
+	}
+}
+
+func visualParamUI(planType string) map[string]any {
+	if strings.TrimSpace(planType) != "secret_ref" {
+		return nil
+	}
+	return map[string]any{"plan_type": "secret_ref"}
 }
 
 func workflowName(title, sessionID string) string {

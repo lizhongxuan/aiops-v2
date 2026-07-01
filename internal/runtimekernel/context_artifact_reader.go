@@ -14,14 +14,12 @@ type ContextArtifactReaderOptions struct {
 	Repository      ContextArtifactRepository
 	SpillRepository ToolResultSpillRepository
 	MaxReadBytes    int
-	DefaultPreview  int
 }
 
 type ContextArtifactReader struct {
 	repository      ContextArtifactRepository
 	spillRepository ToolResultSpillRepository
 	maxReadBytes    int
-	defaultPreview  int
 }
 
 type ContextArtifactReadRequest struct {
@@ -57,15 +55,10 @@ func NewContextArtifactReader(opts ContextArtifactReaderOptions) ContextArtifact
 	if maxReadBytes <= 0 {
 		maxReadBytes = defaultContextArtifactReadBytes
 	}
-	defaultPreview := opts.DefaultPreview
-	if defaultPreview <= 0 {
-		defaultPreview = 240
-	}
 	return ContextArtifactReader{
 		repository:      opts.Repository,
 		spillRepository: opts.SpillRepository,
 		maxReadBytes:    maxReadBytes,
-		defaultPreview:  defaultPreview,
 	}
 }
 

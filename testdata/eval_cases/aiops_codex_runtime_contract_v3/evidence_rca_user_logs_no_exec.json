@@ -1,0 +1,34 @@
+{
+  "name": "evidence_rca_user_logs_no_exec",
+  "input": "基于我贴出的 PostgreSQL 日志做 RCA：checkpoint too frequent, write latency spike。不要执行命令。",
+  "expected": {
+    "profile": "evidence_rca",
+    "hiddenTools": [
+      "exec_command",
+      "hostops.direct_write"
+    ],
+    "noSyntheticCompletedTurn": true,
+    "noDualMechanism": true,
+    "noConcurrentRegularTurns": true,
+    "route": "evidence_rca",
+    "visibleTools": [
+      "tool_search",
+      "search_ops_manuals"
+    ],
+    "toolCalls": [
+      "user_evidence_ingested"
+    ],
+    "evidenceRefs": [
+      "evidence:user-log-excerpt"
+    ],
+    "timeline": [
+      "route_selected",
+      "tool_surface_snapshot",
+      "assistant_message(commentary)",
+      "assistant_message(final_answer)"
+    ],
+    "finalVerificationStatus": "evidence_rca_synthesis",
+    "permissionToolSurfaceFingerprint": "stable",
+    "partialUnknownNotReportedAsConfirmedHealthy": true
+  }
+}

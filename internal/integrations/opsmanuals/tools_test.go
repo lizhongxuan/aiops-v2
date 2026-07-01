@@ -39,6 +39,11 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	if meta.Layer != tooling.ToolLayerDeferred || meta.Pack != "ops_manual_flow" || !meta.DeferByDefault {
 		t.Fatalf("layer metadata = layer:%q pack:%q defer:%v, want deferred ops_manual_flow", meta.Layer, meta.Pack, meta.DeferByDefault)
 	}
+	for _, want := range []string{"repair", "recover", "restore", "修复", "恢复"} {
+		if !containsString(meta.Triggers, want) {
+			t.Fatalf("triggers = %#v, missing %q", meta.Triggers, want)
+		}
+	}
 	discovery := meta.EffectiveDiscovery()
 	if discovery.DiscoveryGroup != "runbook" || discovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !discovery.RequiresSelect {
 		t.Fatalf("search_ops_manuals discovery = %+v, want deferred runbook select-only discovery", discovery)
@@ -92,6 +97,23 @@ func TestRegisterBuiltinsInstallsSearchOpsManuals(t *testing.T) {
 	}
 	if !strings.Contains(string(schema.Properties["operation_frame"]), "object_type") || !strings.Contains(string(schema.Properties["operation_frame"]), "operation.action") || !strings.Contains(string(schema.Properties["operation_frame"]), "target.name") {
 		t.Fatalf("operation_frame schema lacks semantic guidance: %s", string(schema.Properties["operation_frame"]))
+	}
+}
+
+func TestDomainRulesOpsManualToolMetadataIncludesWorkflowGuidance(t *testing.T) {
+	repo := core.NewMemoryStore()
+	service := core.NewService(repo)
+	tool := newSearchOpsManualsTool(service, nil)
+	prompt := tool.Prompt(tooling.PromptContext{})
+	for _, want := range []string{
+		"OpsManual workflow guidance",
+		"Do not execute workflows directly.",
+		"resolve_ops_manual_params",
+		"run_ops_manual_preflight",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("ops manual prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -373,6 +395,163 @@ func TestSearchOpsManualsReferenceOnlyInstructsReadOnlyAutomationOrBlocker(t *te
 		if !containsString(payload.Instructions, want) {
 			t.Fatalf("instructions = %#v, want %q", payload.Instructions, want)
 		}
+	}
+}
+
+func TestOpsManualHighConfidenceRecommendationIncludesBoundaryAndStats(t *testing.T) {
+	payload := searchOpsManualsModelResult(core.SearchOpsManualsResult{
+		Decision:              core.DecisionDirectExecute,
+		Summary:               "找到高置信运维手册。",
+		RecommendedNextAction: "confirm_use_ops_manual",
+		Manuals: []core.SearchManualHit{{
+			Manual: core.OpsManual{
+				ID:      "manual-pg-backup-ubuntu",
+				Title:   "PostgreSQL 备份 Ubuntu 运维手册",
+				Version: "v1",
+				WorkflowRef: core.WorkflowRef{
+					WorkflowID: "workflow-pg-backup-ubuntu",
+				},
+				Operation: core.OperationProfile{
+					TargetType: "postgresql",
+					Action:     "backup",
+					RiskLevel:  "medium",
+				},
+				Applicability: core.ApplicabilityProfile{
+					Middleware:         "postgresql",
+					MiddlewareVersions: []string{"15"},
+					OS:                 []string{"ubuntu"},
+					Platform:           []string{"vm"},
+					ExecutionSurface:   []string{"ssh"},
+				},
+				Diagnosis: core.DiagnosisProfile{
+					ApplicableSymptoms: []string{"pg_isready normal"},
+					NotApplicableWhen:  []string{"database is still in archive recovery"},
+				},
+				CannotUseWhen: []string{"目标实例未知"},
+				RiskPolicy: core.RiskPolicy{
+					BlastRadius:          "single_host",
+					DataMutation:         false,
+					ApprovalRequiredWhen: []string{"production_backup_window"},
+				},
+			},
+			BoundWorkflowID:   "workflow-pg-backup-ubuntu",
+			MatchLevel:        "same_object_same_operation",
+			UsableMode:        core.DecisionDirectExecute,
+			MatchedFields:     []string{"object_type", "operation_type", "required_context", "environment"},
+			RecommendedAction: "run_preflight_probe",
+			RunRecordSummary:  core.RunRecordSummary{SuccessCount: 3, FailureCount: 1, RecentResult: "passed", LatestStatus: "passed"},
+			PreflightStatus:   core.PreflightStatusNotRun,
+			ScoreBreakdown:    core.ScoreBreakdown{FinalScore: 0.91, RunHistoryScore: 0.2},
+			EnvironmentDiffs:  nil,
+			BlockedReasons:    nil,
+			HintSources:       []string{"memory_hint"},
+		}},
+	})
+
+	if len(payload.Manuals) != 1 {
+		t.Fatalf("manuals = %#v, want one high confidence manual", payload.Manuals)
+	}
+	manual := payload.Manuals[0]
+	if manual.Confidence != "high" || manual.TraceOnly {
+		t.Fatalf("manual confidence/trace_only = %q/%v, want high/false", manual.Confidence, manual.TraceOnly)
+	}
+	for _, want := range []string{"same_object_same_operation", "successful_run_history", "workflow_bound", "risk_explainable"} {
+		if !containsString(manual.MatchReasons, want) {
+			t.Fatalf("match reasons = %#v, want %q", manual.MatchReasons, want)
+		}
+	}
+	for _, want := range []string{"target=postgresql", "operation=backup", "version=15", "os=ubuntu", "execution_surface=ssh", "risk=medium"} {
+		if !containsString(manual.ApplicabilityBoundary, want) {
+			t.Fatalf("applicability boundary = %#v, want %q", manual.ApplicabilityBoundary, want)
+		}
+	}
+	if !containsString(manual.NotApplicableWhen, "database is still in archive recovery") || !containsString(manual.NotApplicableWhen, "目标实例未知") {
+		t.Fatalf("not applicable = %#v, want diagnosis and cannot-use boundaries", manual.NotApplicableWhen)
+	}
+	if manual.HistoryStats.UsedCount != 4 || manual.HistoryStats.SuccessCount != 3 || manual.HistoryStats.SuccessRate != 75 {
+		t.Fatalf("history stats = %#v, want used=4 success=3 success_rate=75", manual.HistoryStats)
+	}
+	if manual.Workflow.ID != "workflow-pg-backup-ubuntu" || manual.Workflow.RiskLevel != "medium" || manual.Workflow.RequiredTarget != "postgresql" {
+		t.Fatalf("workflow summary = %#v, want id/risk/required target", manual.Workflow)
+	}
+	if !containsString(payload.Instructions, "user may skip") {
+		t.Fatalf("instructions = %#v, want explicit skip option", payload.Instructions)
+	}
+}
+
+func TestWorkflowSkipFallsBackToGeneralChat(t *testing.T) {
+	payload := searchOpsManualsModelResult(core.SearchOpsManualsResult{
+		Decision:              core.DecisionDirectExecute,
+		Summary:               "找到高置信手册和绑定 Workflow。",
+		RecommendedNextAction: "confirm_use_ops_manual",
+		Manuals: []core.SearchManualHit{{
+			Manual: core.OpsManual{
+				ID:    "manual-redis-repair",
+				Title: "Redis 修复手册",
+				WorkflowRef: core.WorkflowRef{
+					WorkflowID: "workflow-redis-repair",
+				},
+				Operation: core.OperationProfile{
+					TargetType: "redis",
+					Action:     "repair",
+					RiskLevel:  "medium",
+				},
+			},
+			BoundWorkflowID:  "workflow-redis-repair",
+			MatchLevel:       "same_object_same_operation",
+			UsableMode:       core.DecisionDirectExecute,
+			RunRecordSummary: core.RunRecordSummary{SuccessCount: 1},
+		}},
+	})
+
+	if payload.RecommendedNextAction != "confirm_use_ops_manual" {
+		t.Fatalf("recommended_next_action = %q, want confirm_use_ops_manual before user decision", payload.RecommendedNextAction)
+	}
+	if !containsString(payload.Instructions, "The user may skip; if the user declines, continue ordinary AI Chat handling without this manual/workflow.") {
+		t.Fatalf("instructions = %#v, want skip to ordinary AI Chat boundary", payload.Instructions)
+	}
+	if !containsString(payload.Instructions, "Do not execute the workflow directly.") {
+		t.Fatalf("instructions = %#v, want no direct workflow execution", payload.Instructions)
+	}
+}
+
+func TestOpsManualLowConfidenceIsTraceOnly(t *testing.T) {
+	payload := searchOpsManualsModelResult(core.SearchOpsManualsResult{
+		Decision:              core.DecisionReference,
+		Summary:               "找到可参考手册，但不是高置信匹配。",
+		RecommendedNextAction: "continue_general_chat",
+		Manuals: []core.SearchManualHit{{
+			Manual: core.OpsManual{
+				ID:    "manual-generic-stateful-cluster-repair",
+				Title: "通用有状态集群恢复运维手册",
+				Operation: core.OperationProfile{
+					TargetType: "stateful_cluster",
+					Action:     "rca_or_repair",
+					RiskLevel:  "high",
+				},
+			},
+			MatchLevel:        "generic_stateful_cluster_repair",
+			UsableMode:        core.DecisionReference,
+			RecommendedAction: "reference_manual",
+			BlockedReasons:    []string{"generic fallback is not a high-confidence manual match"},
+		}},
+	})
+
+	if payload.RecommendedNextAction == "confirm_use_ops_manual" {
+		t.Fatalf("recommended_next_action = %q, low confidence must not ask for manual confirmation", payload.RecommendedNextAction)
+	}
+	if len(payload.Manuals) != 1 {
+		t.Fatalf("manuals = %#v, want trace-only manual", payload.Manuals)
+	}
+	manual := payload.Manuals[0]
+	if !manual.TraceOnly || manual.Confidence != "low" {
+		t.Fatalf("manual confidence/trace_only = %q/%v, want low/true", manual.Confidence, manual.TraceOnly)
+	}
+	if manual.RecommendedAction == "confirm_use_ops_manual" {
+		t.Fatalf("manual = %#v, low confidence must not recommend confirm_use_ops_manual", manual)
+	}
+	if !containsString(payload.Instructions, "Continue safe read-only investigation") {
+		t.Fatalf("instructions = %#v, want general chat continuation", payload.Instructions)
 	}
 }
 

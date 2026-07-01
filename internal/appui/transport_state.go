@@ -55,6 +55,7 @@ const (
 	AiopsTransportProcessStatusFailed    AiopsTransportProcessStatus = "failed"
 	AiopsTransportProcessStatusBlocked   AiopsTransportProcessStatus = "blocked"
 	AiopsTransportProcessStatusRejected  AiopsTransportProcessStatus = "rejected"
+	AiopsTransportProcessStatusSkipped   AiopsTransportProcessStatus = "skipped"
 )
 
 type AiopsTransportFinalStatus string
@@ -71,6 +72,7 @@ type AiopsTransportState struct {
 	ThreadID            string                               `json:"threadId"`
 	Status              AiopsTransportStatus                 `json:"status"`
 	CurrentTurnID       string                               `json:"currentTurnId,omitempty"`
+	OpsRun              *AiopsTransportOpsRun                `json:"opsRun,omitempty"`
 	Turns               map[string]AiopsTransportTurn        `json:"turns"`
 	TurnOrder           []string                             `json:"turnOrder"`
 	PendingApprovals    map[string]AiopsTransportApproval    `json:"pendingApprovals"`
@@ -85,11 +87,31 @@ type AiopsTransportState struct {
 	UpdatedAt           string                               `json:"updatedAt"`
 }
 
+type AiopsTransportOpsRun struct {
+	ID                 string              `json:"id"`
+	SessionID          string              `json:"sessionId,omitempty"`
+	TurnID             string              `json:"turnId,omitempty"`
+	ClientTurnID       string              `json:"clientTurnId,omitempty"`
+	Source             string              `json:"source"`
+	Status             string              `json:"status"`
+	Title              string              `json:"title,omitempty"`
+	RouteMode          string              `json:"routeMode,omitempty"`
+	TargetSummary      string              `json:"targetSummary,omitempty"`
+	ToolSurfaceSummary string              `json:"toolSurfaceSummary,omitempty"`
+	EvidenceCount      int                 `json:"evidenceCount,omitempty"`
+	CurrentStep        string              `json:"currentStep,omitempty"`
+	CurrentStepID      string              `json:"currentStepId,omitempty"`
+	CheckpointID       string              `json:"checkpointId,omitempty"`
+	AgentRun           *AgentRunView       `json:"agentRun,omitempty"`
+	PostRunSuggestions []PostRunSuggestion `json:"postRunSuggestions,omitempty"`
+}
+
 type AiopsTransportTurn struct {
 	ID                string                          `json:"id"`
 	User              *AiopsTransportMessage          `json:"user,omitempty"`
 	Intent            *AiopsTransportIntent           `json:"intent,omitempty"`
 	Process           []AiopsProcessBlock             `json:"process,omitempty"`
+	Timeline          []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
 	ContextGovernance []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
 	AgentUIArtifacts  []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
 	Final             *AiopsTransportFinal            `json:"final,omitempty"`
@@ -97,6 +119,16 @@ type AiopsTransportTurn struct {
 	StartedAt         string                          `json:"startedAt,omitempty"`
 	CompletedAt       string                          `json:"completedAt,omitempty"`
 	UpdatedAt         string                          `json:"updatedAt,omitempty"`
+}
+
+type AiopsTransportTimelineItem struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Status      string `json:"status,omitempty"`
+	Text        string `json:"text,omitempty"`
+	PayloadKind string `json:"payloadKind,omitempty"`
+	CreatedAt   string `json:"createdAt,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
 }
 
 type AiopsTransportMessage struct {
@@ -111,25 +143,46 @@ type AiopsTransportIntent struct {
 }
 
 type AiopsTransportFinal struct {
-	ID     string                    `json:"id"`
-	Text   string                    `json:"text"`
-	Status AiopsTransportFinalStatus `json:"status"`
+	ID         string                    `json:"id"`
+	Text       string                    `json:"text"`
+	Status     AiopsTransportFinalStatus `json:"status"`
+	DurationMs int64                     `json:"durationMs,omitempty"`
 }
 
 type AiopsProcessBlock struct {
 	ID                  string                      `json:"id"`
 	Kind                AiopsTransportProcessKind   `json:"kind"`
 	DisplayKind         string                      `json:"displayKind,omitempty"`
+	Phase               string                      `json:"phase,omitempty"`
+	StreamState         string                      `json:"streamState,omitempty"`
+	CommentarySource    string                      `json:"commentarySource,omitempty"`
+	ToolCallIDs         []string                    `json:"toolCallIds,omitempty"`
+	EvidenceBoundary    string                      `json:"evidenceBoundary,omitempty"`
 	Status              AiopsTransportProcessStatus `json:"status"`
 	Text                string                      `json:"text"`
 	Command             string                      `json:"command,omitempty"`
 	InputSummary        string                      `json:"inputSummary,omitempty"`
 	OutputPreview       string                      `json:"outputPreview,omitempty"`
+	FoldGroupID         string                      `json:"foldGroupId,omitempty"`
+	FoldGroupKind       string                      `json:"foldGroupKind,omitempty"`
 	Steps               []AiopsTransportPlanStep    `json:"steps,omitempty"`
 	Queries             []string                    `json:"queries,omitempty"`
 	Results             []AiopsSearchResult         `json:"results,omitempty"`
+	Operation           string                      `json:"operation,omitempty"`
+	URL                 string                      `json:"url,omitempty"`
+	Adapter             string                      `json:"adapter,omitempty"`
+	Backend             string                      `json:"backend,omitempty"`
+	SourceCount         int                         `json:"sourceCount,omitempty"`
+	ToolCallID          string                      `json:"toolCallId,omitempty"`
+	CheckpointID        string                      `json:"checkpointId,omitempty"`
 	ApprovalID          string                      `json:"approvalId,omitempty"`
 	Source              string                      `json:"source,omitempty"`
+	TargetSummary       string                      `json:"targetSummary,omitempty"`
+	Risk                string                      `json:"risk,omitempty"`
+	RiskSummary         string                      `json:"riskSummary,omitempty"`
+	ExpectedEffect      string                      `json:"expectedEffect,omitempty"`
+	Rollback            string                      `json:"rollback,omitempty"`
+	Validation          string                      `json:"validation,omitempty"`
 	Confidence          string                      `json:"confidence,omitempty"`
 	Window              string                      `json:"window,omitempty"`
 	RawRef              string                      `json:"rawRef,omitempty"`
@@ -186,20 +239,30 @@ type AiopsTransportPlanStep struct {
 }
 
 type AiopsSearchResult struct {
-	Title   string `json:"title,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Snippet string `json:"snippet,omitempty"`
+	Title       string `json:"title,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Fetched     bool   `json:"fetched,omitempty"`
+	FetchError  string `json:"fetchError,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
 }
 
 type AiopsTransportApproval struct {
-	ID          string `json:"id"`
-	TurnID      string `json:"turnId,omitempty"`
-	Type        string `json:"type,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Command     string `json:"command,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-	RequestedAt string `json:"requestedAt,omitempty"`
-	ResolvedAt  string `json:"resolvedAt,omitempty"`
+	ID             string `json:"id"`
+	TurnID         string `json:"turnId,omitempty"`
+	Type           string `json:"type,omitempty"`
+	Status         string `json:"status,omitempty"`
+	Command        string `json:"command,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	TargetSummary  string `json:"targetSummary,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
+	Validation     string `json:"validation,omitempty"`
+	RequestedAt    string `json:"requestedAt,omitempty"`
+	ResolvedAt     string `json:"resolvedAt,omitempty"`
 }
 
 type AiopsTransportMcpSurface struct {

@@ -27,6 +27,16 @@ func (m *directGenerateChatModel) BindTools([]*schema.ToolInfo) error {
 	return nil
 }
 
+type bindCaptureChatModel struct {
+	directGenerateChatModel
+	boundTools []*schema.ToolInfo
+}
+
+func (m *bindCaptureChatModel) BindTools(tools []*schema.ToolInfo) error {
+	m.boundTools = append([]*schema.ToolInfo(nil), tools...)
+	return nil
+}
+
 func TestStreamGenerateChatModelGenerateUsesInnerGenerate(t *testing.T) {
 	wrapped := &streamGenerateChatModel{inner: &directGenerateChatModel{}}
 
@@ -46,6 +56,275 @@ func TestOpenAIReasoningEffortOnlyAppliesToOpenAINativeReasoningModels(t *testin
 	if got := openAIReasoningEffortForModel("glm-4.7", "high"); got != "" {
 		t.Fatalf("glm-4.7 effort = %q, want empty OpenAI-native effort", got)
 	}
+}
+
+func TestOpenAICompatibleExtraFieldsAreProviderScoped(t *testing.T) {
+	openaiExtra := openAICompatibleExtraFields("openai", ProviderConfig{
+		ThinkingType:    "enabled",
+		ReasoningEffort: "max",
+		ToolStream:      true,
+	})
+	if len(openaiExtra) != 0 {
+		t.Fatalf("openai extra fields = %#v, want none", openaiExtra)
+	}
+
+	deepseekExtra := openAICompatibleExtraFields("deepseek", ProviderConfig{
+		ThinkingType:    "enabled",
+		ReasoningEffort: "max",
+	})
+	if got := nestedString(deepseekExtra, "thinking", "type"); got != "enabled" {
+		t.Fatalf("deepseek thinking.type = %q, want enabled in %#v", got, deepseekExtra)
+	}
+	if deepseekExtra["reasoning_effort"] != "max" {
+		t.Fatalf("deepseek reasoning_effort = %#v, want max", deepseekExtra["reasoning_effort"])
+	}
+	if _, ok := deepseekExtra["tool_stream"]; ok {
+		t.Fatalf("deepseek extra fields should not include tool_stream: %#v", deepseekExtra)
+	}
+
+	zhipuExtra := openAICompatibleExtraFields("zhipu", ProviderConfig{
+		ThinkingType:    "disabled",
+		ReasoningEffort: "xhigh",
+		ToolStream:      true,
+	})
+	if got := nestedString(zhipuExtra, "thinking", "type"); got != "disabled" {
+		t.Fatalf("zhipu thinking.type = %q, want disabled in %#v", got, zhipuExtra)
+	}
+	if zhipuExtra["reasoning_effort"] != "xhigh" {
+		t.Fatalf("zhipu reasoning_effort = %#v, want xhigh", zhipuExtra["reasoning_effort"])
+	}
+	if zhipuExtra["tool_stream"] != true {
+		t.Fatalf("zhipu tool_stream = %#v, want true", zhipuExtra["tool_stream"])
+	}
+}
+
+func TestOpenAICompatibleNativeWebSearchToolsPreferProviderTool(t *testing.T) {
+	toolInfos := []*schema.ToolInfo{
+		{
+			Name: "web_search",
+			Desc: "Search the public web with the custom implementation.",
+			ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+				"query": {Type: schema.String, Required: true},
+			}),
+		},
+		{
+			Name: "read_logs",
+			Desc: "Read local logs.",
+			ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+				"path": {Type: schema.String, Required: true},
+			}),
+		},
+	}
+
+	for _, provider := range []string{"openai"} {
+		t.Run(provider, func(t *testing.T) {
+			extra := openAICompatibleNativeWebSearchExtraFields(provider, toolInfos)
+			rawTools, ok := extra["tools"].([]any)
+			if !ok {
+				t.Fatalf("tools extra = %#v, want []any", extra["tools"])
+			}
+			if len(rawTools) != 2 {
+				t.Fatalf("tools = %#v, want provider web_search plus read_logs function", rawTools)
+			}
+
+			first, ok := rawTools[0].(map[string]any)
+			if !ok || first["type"] != "web_search" {
+				t.Fatalf("first tool = %#v, want native web_search", rawTools[0])
+			}
+			if _, ok := first["web_search"]; ok {
+				t.Fatalf("%s native web_search payload = %#v, should not include zhipu-specific web_search object", provider, first)
+			}
+			if hasFunctionToolNamed(rawTools, "web_search") {
+				t.Fatalf("tools include custom web_search function: %#v", rawTools)
+			}
+			if !hasFunctionToolNamed(rawTools, "read_logs") {
+				t.Fatalf("tools missing read_logs function: %#v", rawTools)
+			}
+		})
+	}
+
+	if extra := openAICompatibleNativeWebSearchExtraFields("deepseek", toolInfos); len(extra) != 0 {
+		t.Fatalf("deepseek native web search extra fields = %#v, want none", extra)
+	}
+	if extra := openAICompatibleNativeWebSearchExtraFields("zhipu", toolInfos); len(extra) != 0 {
+		t.Fatalf("zhipu native web search extra fields = %#v, want none for OpenAI-compatible chat completions API", extra)
+	}
+}
+
+func TestProviderSupportsNativeWebSearchRequiresOpenAIHostedEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		baseURL  string
+		want     bool
+	}{
+		{name: "openai default", provider: "openai", want: true},
+		{name: "openai official", provider: "openai", baseURL: "https://api.openai.com/v1", want: true},
+		{name: "openai compatible deepseek", provider: "openai", baseURL: "https://api.deepseek.com", want: false},
+		{name: "openai compatible zhipu", provider: "openai", baseURL: "https://api.z.ai/api/paas/v4", want: false},
+		{name: "zhipu official", provider: "zhipu", baseURL: "https://api.z.ai/api/paas/v4", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerSupportsNativeWebSearchForConfig(tt.provider, tt.baseURL); got != tt.want {
+				t.Fatalf("providerSupportsNativeWebSearchForConfig(%q, %q) = %v, want %v", tt.provider, tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamGenerateChatModelBindToolsOmitsCustomWebSearchForOpenAINativeProvider(t *testing.T) {
+	capture := &bindCaptureChatModel{}
+	wrapped := &streamGenerateChatModel{inner: capture, provider: "openai", nativeWebSearch: true}
+	toolInfos := []*schema.ToolInfo{
+		{Name: "web_search", Desc: "Custom public web search."},
+		{Name: "read_logs", Desc: "Read local logs."},
+	}
+
+	if err := wrapped.BindTools(toolInfos); err != nil {
+		t.Fatalf("BindTools() error = %v", err)
+	}
+	if hasToolInfoNamed(capture.boundTools, "web_search") {
+		t.Fatalf("inner BindTools received custom web_search: %#v", capture.boundTools)
+	}
+	if !hasToolInfoNamed(capture.boundTools, "read_logs") {
+		t.Fatalf("inner BindTools missing read_logs: %#v", capture.boundTools)
+	}
+	if !hasToolInfoNamed(wrapped.boundTools, "web_search") {
+		t.Fatalf("wrapped bound tools should retain web_search for native request rewrite: %#v", wrapped.boundTools)
+	}
+
+	for _, provider := range []string{"deepseek", "zhipu"} {
+		t.Run(provider, func(t *testing.T) {
+			capture := &bindCaptureChatModel{}
+			wrapped := &streamGenerateChatModel{inner: capture, provider: provider, nativeWebSearch: false}
+			if err := wrapped.BindTools(toolInfos); err != nil {
+				t.Fatalf("%s BindTools() error = %v", provider, err)
+			}
+			if !hasToolInfoNamed(capture.boundTools, "web_search") {
+				t.Fatalf("%s should keep custom web_search function tool: %#v", provider, capture.boundTools)
+			}
+		})
+	}
+}
+
+func TestStreamGenerateChatModelKeepsCustomWebSearchForOpenAICompatibleEndpoint(t *testing.T) {
+	capture := &bindCaptureChatModel{}
+	wrapped := &streamGenerateChatModel{inner: capture, provider: "openai", nativeWebSearch: false}
+	toolInfos := []*schema.ToolInfo{
+		{Name: "web_search", Desc: "Custom public web search."},
+		{Name: "read_logs", Desc: "Read local logs."},
+	}
+
+	if err := wrapped.BindTools(toolInfos); err != nil {
+		t.Fatalf("BindTools() error = %v", err)
+	}
+	if !hasToolInfoNamed(capture.boundTools, "web_search") {
+		t.Fatalf("OpenAI-compatible endpoint should keep custom web_search function tool: %#v", capture.boundTools)
+	}
+}
+
+func TestExtractProviderNativeWebSearchEventsFromOpenAICompatibleResponse(t *testing.T) {
+	raw := []byte(`{
+		"output": [
+			{
+				"id": "ws_123",
+				"type": "web_search_call",
+				"action": {
+					"query": "OpenAI web_search docs",
+					"sources": [
+						{"title": "Web search guide", "url": "https://platform.openai.com/docs/guides/tools-web-search", "snippet": "Use web_search as a hosted tool."}
+					]
+				}
+			},
+			{
+				"type": "message",
+				"content": [
+					{
+						"type": "output_text",
+						"text": "Use web_search.",
+						"annotations": [
+							{"type": "url_citation", "title": "OpenAI tools", "url": "https://platform.openai.com/docs/guides/tools"}
+						]
+					}
+				]
+			}
+		]
+	}`)
+
+	events := ExtractProviderNativeWebSearchEvents(raw, "openai")
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1: %#v", len(events), events)
+	}
+	event := events[0]
+	if event.ID != "ws_123" || event.Provider != "openai" || event.Query != "OpenAI web_search docs" {
+		t.Fatalf("event identity = %#v, want provider/query/id", event)
+	}
+	if len(event.Sources) != 2 {
+		t.Fatalf("sources = %#v, want web_search_call source plus annotation source", event.Sources)
+	}
+	if event.Sources[0].URL != "https://platform.openai.com/docs/guides/tools-web-search" {
+		t.Fatalf("first source = %#v", event.Sources[0])
+	}
+}
+
+func TestExtractProviderNativeWebSearchEventsFromChatCompletionAnnotations(t *testing.T) {
+	raw := []byte(`{
+		"choices": [
+			{
+				"message": {
+					"content": "A cited answer.",
+					"annotations": [
+						{"type": "url_citation", "title": "Docs", "url": "https://example.com/docs", "snippet": "native citation"}
+					]
+				}
+			}
+		]
+	}`)
+
+	events := ExtractProviderNativeWebSearchEvents(raw, "zhipu")
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1: %#v", len(events), events)
+	}
+	if events[0].Provider != "zhipu" {
+		t.Fatalf("provider = %q, want zhipu", events[0].Provider)
+	}
+	if len(events[0].Sources) != 1 || events[0].Sources[0].URL != "https://example.com/docs" {
+		t.Fatalf("sources = %#v, want annotation source", events[0].Sources)
+	}
+}
+
+func hasFunctionToolNamed(tools []any, name string) bool {
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok || tool["type"] != "function" {
+			continue
+		}
+		function, _ := tool["function"].(map[string]any)
+		if function["name"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasToolInfoNamed(tools []*schema.ToolInfo, name string) bool {
+	for _, tool := range tools {
+		if tool != nil && tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func nestedString(values map[string]any, key string, nestedKey string) string {
+	raw, ok := values[key].(map[string]any)
+	if !ok {
+		return ""
+	}
+	value, _ := raw[nestedKey].(string)
+	return value
 }
 
 func TestParseOpenAIReasoningEventAcceptsSummaryMethodsAndDropsRawByDefault(t *testing.T) {

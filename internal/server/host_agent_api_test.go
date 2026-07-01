@@ -43,6 +43,10 @@ func TestHostAgentAPIRegisterAcceptsBearerToken(t *testing.T) {
 		"hostname":      "prod-web-01",
 		"os":            "linux",
 		"arch":          "amd64",
+		"osRelease":     "Ubuntu 24.04 LTS",
+		"kernelVersion": "6.8.0-31-generic",
+		"cpuCores":      8,
+		"memoryBytes":   34359738368,
 		"agentVersion":  "v0.1.0",
 		"listenAddress": ":7072",
 		"capabilities":  []string{"script.shell", "terminal"},
@@ -67,6 +71,9 @@ func TestHostAgentAPIRegisterAcceptsBearerToken(t *testing.T) {
 	}
 	if payload.Status != "online" || payload.Host.Status != "online" {
 		t.Fatalf("register response = %+v", payload)
+	}
+	if payload.Host.OSRelease != "Ubuntu 24.04 LTS" || payload.Host.KernelVersion != "6.8.0-31-generic" || payload.Host.CPUCores != 8 || payload.Host.MemoryBytes != 34359738368 {
+		t.Fatalf("register host system basics = %+v", payload.Host)
 	}
 }
 
@@ -94,7 +101,14 @@ func TestHostAgentAPIHeartbeatAcceptsHeaderToken(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	body, _ := json.Marshal(map[string]any{"hostId": "host-a", "agentVersion": "v0.1.0"})
+	body, _ := json.Marshal(map[string]any{
+		"hostId":        "host-a",
+		"agentVersion":  "v0.1.0",
+		"osRelease":     "Debian GNU/Linux 12",
+		"kernelVersion": "6.1.0-21-amd64",
+		"cpuCores":      4,
+		"memoryBytes":   8589934592,
+	})
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/v1/host-agents/heartbeat", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("NewRequest() error = %v", err)
@@ -115,6 +129,9 @@ func TestHostAgentAPIHeartbeatAcceptsHeaderToken(t *testing.T) {
 	}
 	if payload.Status != "online" || payload.LastHeartbeat == "" {
 		t.Fatalf("heartbeat response = %+v", payload)
+	}
+	if payload.Host.OSRelease != "Debian GNU/Linux 12" || payload.Host.KernelVersion != "6.1.0-21-amd64" || payload.Host.CPUCores != 4 || payload.Host.MemoryBytes != 8589934592 {
+		t.Fatalf("heartbeat host system basics = %+v", payload.Host)
 	}
 }
 

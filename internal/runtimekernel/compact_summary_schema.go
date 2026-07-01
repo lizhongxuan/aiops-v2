@@ -11,15 +11,20 @@ const CompactSummarySchemaVersionV1 = "compact_summary_v1"
 type CompactSummaryV1 struct {
 	SchemaVersion      string                        `json:"schemaVersion"`
 	UserGoal           string                        `json:"userGoal"`
+	CurrentProfile     string                        `json:"currentProfile,omitempty"`
+	TargetRefs         []string                      `json:"targetRefs,omitempty"`
 	LatestUserMessages []CompactSummaryMessageRefV1  `json:"latestUserMessages"`
 	ActiveConstraints  []string                      `json:"activeConstraints"`
 	CurrentTask        CompactSummaryCurrentTaskV1   `json:"currentTask"`
 	ConfirmedFacts     []CompactSummaryFactV1        `json:"confirmedFacts"`
+	Inferences         []CompactSummaryInferenceV1   `json:"inferences,omitempty"`
 	OpenQuestions      []string                      `json:"openQuestions"`
 	Decisions          []CompactSummaryDecisionV1    `json:"decisions"`
 	Artifacts          []CompactSummaryArtifactV1    `json:"artifacts"`
 	PendingApprovals   []CompactSummaryPendingItemV1 `json:"pendingApprovals"`
 	PendingEvidence    []CompactSummaryPendingItemV1 `json:"pendingEvidence"`
+	RejectedApprovals  []CompactSummaryPendingItemV1 `json:"rejectedApprovals,omitempty"`
+	ToolPacksLoaded    []string                      `json:"toolPacksLoaded,omitempty"`
 	PlanState          CompactSummaryPlanStateV1     `json:"planState"`
 	NextStep           CompactSummaryNextStepV1      `json:"nextStep"`
 }
@@ -42,6 +47,12 @@ type CompactSummaryFactV1 struct {
 type CompactSummaryDecisionV1 struct {
 	Decision  string `json:"decision"`
 	SourceRef string `json:"sourceRef,omitempty"`
+}
+
+type CompactSummaryInferenceV1 struct {
+	Statement  string `json:"statement"`
+	Confidence string `json:"confidence,omitempty"`
+	SourceRef  string `json:"sourceRef,omitempty"`
 }
 
 type CompactSummaryArtifactV1 struct {
